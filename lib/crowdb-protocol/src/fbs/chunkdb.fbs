@@ -102,6 +102,7 @@ table FBChunkStrip {
 // A chunk — logical block composed of strips.
 table FBChunk {
     id:crowdb.rpc.proto.FBInt128;
+    modify_ts:uint64;
     state:FBChunkState;
     create_ts_ms:uint64;
     sealed_ts_ms:uint64;
@@ -142,6 +143,7 @@ table FBAppendChunkRequest {
     id:uint64;
     rpc_create_nano:uint64;
     chunk_id:crowdb.rpc.proto.FBInt128;
+    modify_ts:uint64;
     strip_size:uint32;
     strip_count:uint32;
     strip_type:FBStripType;
@@ -157,6 +159,8 @@ table FBAppendChunkResponse {
     error_msg:string;
     range_start:uint32;
     range_end:uint32;
+    modify_ts:uint64;
+    strips:[FBChunkStrip];
     chunk:FBChunk;
 }
 

@@ -19,6 +19,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use tokio::task::JoinHandle;
 
 use crate::chunk::parity_writer::spawn_parity_writes;
 use crate::chunk::strip::StripResult;
@@ -44,6 +45,7 @@ pub struct EcStripWriter {
     pub(crate) bytes_written: u64,
     pub(crate) partial: bool,
     pub(crate) finished: bool,
+    pub(crate) data_handles: Vec<JoinHandle<Result<()>>>,
 }
 
 impl EcStripWriter {
@@ -66,6 +68,7 @@ impl EcStripWriter {
             bytes_written: 0,
             partial: false,
             finished: false,
+            data_handles: Vec::with_capacity(ec_scheme.data_num),
         }
     }
 
@@ -139,7 +142,7 @@ impl EcStripWriter {
     ///
     /// Returns `Continue` if the strip has room for more blocks,
     /// `Pause` if the strip is now full.
-    pub async fn push(&mut self, buffer: Bytes) -> Result<FeedStatus> {
+    pub fn push(&mut self, buffer: Bytes) -> Result<FeedStatus> {
         if self.finished {
             return Err(IoError::Finished);
         }
@@ -153,14 +156,16 @@ impl EcStripWriter {
         let block_len = u64::try_from(buffer.len()).unwrap_or(0);
         let is_partial = block_len < unit_bytes;
 
-        // Write the data block to disk. Clone is required: disk_writer
-        // takes ownership, but buffer is also borrowed by ec_worker below.
-        // Bytes::clone is an Arc bump — no data copy.
-        let seg = self.segment(self.next_block)?;
-        self.disk_writer.write(seg, unit_bytes, buffer.clone()).await?;
-
         // Feed to EcWorker for streaming compute.
         self.ec_worker.push(&buffer)?;
+
+        // Submit the independent durable write without serializing the next
+        // shard on its completion. A strip owns at most data_num handles.
+        let seg = *self.segment(self.next_block)?;
+        let disk_writer = self.disk_writer.clone();
+        self.data_handles.push(tokio::spawn(async move {
+            disk_writer.write(&seg, unit_bytes, buffer).await
+        }));
 
         self.next_block += 1;
         self.data_blocks_written += 1;
@@ -193,13 +198,14 @@ impl EcStripWriter {
         let parity = self.ec_worker.finish()?;
 
         // Spawn parallel parity write + fsync tasks (no join).
-        let parity_handles = spawn_parity_writes(
+        let mut completion_handles = std::mem::take(&mut self.data_handles);
+        completion_handles.extend(spawn_parity_writes(
             &self.chunk,
             self.strip_index,
             parity,
             &self.disk_writer,
             &self.ec_scheme,
-        )?;
+        )?);
 
         // Reset the EC worker for reuse.
         self.ec_worker.reset();
@@ -210,23 +216,26 @@ impl EcStripWriter {
             data_blocks_written: self.data_blocks_written,
             bytes_written: self.bytes_written,
             partial: self.partial,
-            parity_handles,
+            completion_handles,
         })
     }
 
     /// Abort: drop in-flight writes, return already-durable state.
     /// No parity tasks are spawned (abort is called instead of
     /// `finish`), so no handles to abort.
-    pub fn abort(&mut self) -> Result<StripResult> {
+    pub async fn abort(&mut self) -> Result<StripResult> {
         self.finished = true;
         self.ec_worker.reset();
+        for handle in self.data_handles.drain(..) {
+            let _ = handle.await;
+        }
         Ok(StripResult {
             chunk_id: self.chunk.id.unwrap_or_default(),
             strip_index_in_chunk: self.strip_index,
             data_blocks_written: self.data_blocks_written,
             bytes_written: self.bytes_written,
             partial: self.partial,
-            parity_handles: Vec::new(),
+            completion_handles: Vec::new(),
         })
     }
 

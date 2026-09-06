@@ -22,7 +22,6 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_chunk_client::{ChunkAllocator, ChunkClientConfig, ChunkWriter, DiskWriter, Result};
 use crowdb_common::ec::EcScheme;
-use crowdb_diskio_client::DiskId;
 use crowdb_protocol::chunkdb::rpc::Strip as StripOneof;
 use crowdb_protocol::chunkdb::rpc::{
     AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse, Chunk, ChunkStrip,
@@ -42,6 +41,23 @@ struct OrderingDiskWriter {
     events: Mutex<Vec<String>>,
     parity_inflight: AtomicUsize,
     parity_max: AtomicUsize,
+}
+
+#[derive(Debug, Default)]
+struct ConcurrentDiskWriter {
+    inflight: AtomicUsize,
+    max_inflight: AtomicUsize,
+}
+
+#[async_trait]
+impl DiskWriter for ConcurrentDiskWriter {
+    async fn write(&self, _seg: &Segment, _unit_bytes: u64, _data: Bytes) -> Result<()> {
+        let inflight = self.inflight.fetch_add(1, Ordering::Relaxed) + 1;
+        self.max_inflight.fetch_max(inflight, Ordering::Relaxed);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        self.inflight.fetch_sub(1, Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 impl OrderingDiskWriter {
@@ -72,14 +88,6 @@ impl DiskWriter for OrderingDiskWriter {
             .lock()
             .unwrap()
             .push(format!("write:{}", disk_id.high));
-        Ok(())
-    }
-
-    async fn fsync(&self, disk_id: DiskId) -> Result<()> {
-        self.events
-            .lock()
-            .unwrap()
-            .push(format!("fsync:{}", disk_id.high));
         Ok(())
     }
 }
@@ -164,6 +172,7 @@ impl ChunkAllocator for MockChunkAllocator {
         let strip = make_strip(0, req.data_num, req.code_num, segments);
         let chunk = Chunk {
             id: Some(chunk_id),
+            modify_ts: 1,
             state: 1,
             create_ts_ms: 0,
             sealed_ts_ms: 0,
@@ -197,20 +206,12 @@ impl ChunkAllocator for MockChunkAllocator {
             .chunks
             .get_mut(&(chunk_id.high, chunk_id.low))
             .expect("append to unknown chunk");
-        entry.0.push(strip);
-        let strips = entry.0.clone();
-
-        let chunk = Chunk {
-            id: Some(chunk_id),
-            state: 1,
-            create_ts_ms: 0,
-            sealed_ts_ms: 0,
-            capacity: data_num as u32 * (strip_seq + 1),
-            sealed_length: 0,
-            strips,
-            chunk_type: ChunkType::Repo as i32,
-        };
-        Ok(AppendChunkResponse { chunk: Some(chunk) })
+        entry.0.push(strip.clone());
+        Ok(AppendChunkResponse {
+            modify_ts: u64::from(strip_seq) + 1,
+            strips: vec![strip],
+            chunk: None,
+        })
     }
 
     async fn seal_chunk(&self, req: SealChunkRequest) -> Result<SealChunkResponse> {
@@ -251,12 +252,11 @@ impl ChunkAllocator for MockChunkAllocator {
 fn test_config(max_chunk_size: u64) -> Arc<ChunkClientConfig> {
     Arc::new(ChunkClientConfig {
         max_chunk_size,
-        prealloc_depth: 2,
+        strip_preparation_depth: 2,
         parity_depth: 2,
-        chunk_prefetch_depth: 1,
+        chunk_preparation_depth: 1,
         read_buffer_size: 4096,
         max_cached_buffer: 8 * 4096,
-        prefetch_chunk_count: 1,
         memory_budget: 0,
     })
 }
@@ -444,38 +444,6 @@ async fn chunk_writer_empty_seal() {
 }
 
 #[tokio::test]
-async fn chunk_writer_waits_for_parity_before_fsync() {
-    let chunkdb = MockChunkAllocator::new();
-    let diskio = Arc::new(OrderingDiskWriter::default());
-    let ec = ec_4_1();
-    let config = test_config(1024 * 1024 * 1024);
-    let mut cw = ChunkWriter::new(Arc::new(chunkdb.clone()), diskio.clone(), ec, config);
-
-    let chunk = {
-        let pf = crowdb_chunk_client::ChunkPrefetch::new(
-            Arc::new(chunkdb),
-            ec,
-            test_config(1024 * 1024 * 1024),
-            crowdb_protocol::chunk_id::CHUNK_TYPE_REPO,
-        );
-        pf.on_demand().await.unwrap()
-    };
-    cw.open(chunk, None).unwrap();
-    for i in 0..DATA_NUM as u8 {
-        cw.push(block(i, UNIT_BYTES as usize)).await.unwrap();
-    }
-    cw.seal().await.unwrap();
-
-    let events = diskio.events();
-    let parity = events.iter().position(|event| event == "write:1004").unwrap();
-    let first_fsync = events
-        .iter()
-        .position(|event| event.starts_with("fsync:"))
-        .unwrap();
-    assert!(parity < first_fsync, "events = {events:?}");
-}
-
-#[tokio::test]
 async fn chunk_writer_bounds_cross_strip_parity_tasks() {
     let chunkdb = MockChunkAllocator::new();
     let diskio = Arc::new(OrderingDiskWriter::default());
@@ -497,6 +465,34 @@ async fn chunk_writer_bounds_cross_strip_parity_tasks() {
     cw.seal().await.unwrap();
 
     assert_eq!(diskio.parity_max(), 1);
+}
+
+#[tokio::test]
+async fn chunk_writer_submits_independent_data_writes_concurrently() {
+    let chunkdb = MockChunkAllocator::new();
+    let diskio = Arc::new(ConcurrentDiskWriter::default());
+    let ec = ec_4_1();
+    let mut cw = ChunkWriter::new(
+        Arc::new(chunkdb.clone()),
+        diskio.clone(),
+        ec,
+        test_config(1024 * 1024 * 1024),
+    );
+    let pf = crowdb_chunk_client::ChunkPrefetch::new(
+        Arc::new(chunkdb),
+        ec,
+        test_config(1024 * 1024 * 1024),
+        crowdb_protocol::chunk_id::CHUNK_TYPE_REPO,
+    );
+    cw.open(pf.on_demand().await.unwrap(), None).unwrap();
+
+    for i in 0..DATA_NUM as u8 {
+        cw.push(block(i, UNIT_BYTES as usize)).await.unwrap();
+    }
+    cw.seal().await.unwrap();
+
+    assert!(diskio.max_inflight.load(Ordering::Relaxed) > 1);
+    assert_eq!(diskio.inflight.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]

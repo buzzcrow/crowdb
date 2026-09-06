@@ -1,9 +1,9 @@
 use super::{
     build_delete_range_response, map_error, parse_fb_chunk_strip, proto_chunk_type, proto_strip_type,
-    submit_chunk_result, submit_error, submit_fb_response, Arc, ChunkId, ChunkdbRpcService,
-    FBAllocateChunkRequest, FBAppendChunkRequest, FBChunkdbRetCode, FBDeleteChunkRangeRequest,
-    FBDeleteChunkRequest, FBMsgType, FBSealChunkRequest, FBUpdateChunkStripRequest, RequestGuard, RpcServer,
-    ServerRequest,
+    submit_append_result, submit_chunk_result, submit_error, submit_fb_response, Arc, ChunkId,
+    ChunkdbRpcService, FBAllocateChunkRequest, FBAppendChunkRequest, FBChunkdbRetCode,
+    FBDeleteChunkRangeRequest, FBDeleteChunkRequest, FBMsgType, FBSealChunkRequest,
+    FBUpdateChunkStripRequest, RequestGuard, RpcServer, ServerRequest,
 };
 
 impl ChunkdbRpcService {
@@ -163,6 +163,7 @@ impl ChunkdbRpcService {
             let result = handler
                 .append_chunk(
                     &chunk_id,
+                    fb_req.modify_ts(),
                     strip_count,
                     strip_type,
                     data_num,
@@ -174,7 +175,7 @@ impl ChunkdbRpcService {
             if result.is_ok() {
                 request.mark_success();
             }
-            submit_chunk_result(
+            submit_append_result(
                 &server,
                 conn_handle_usize as *mut std::ffi::c_void,
                 req_id,

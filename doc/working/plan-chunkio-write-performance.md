@@ -67,28 +67,28 @@ refine it through a three-node `NullDisk` benchmark.
   `lib/crowdb-common/cpp/include/crowdb-common/diskio_uring.h`,
   `lib/crowdb-common/cpp/tests/diskio_uring_test.cpp`,
   `app/crowdb-diskio/src/dio_main.cpp`, `app/crowdb-diskio/tests/`.
-- [~] **Simplify durable writes**: define one DiskIO write-completion contract,
+- [x] **Simplify durable writes**: define one DiskIO write-completion contract,
   remove chunk-client fsync scheduling, keep production BlockDisk synchronous,
   and make dummy benchmarks explicitly non-durable. Files:
   `lib/crowdb-chunk-client/src/`, `lib/crowdb-diskio-client/src/`,
   `app/crowdb-diskio/src/`, `lib/crowdb-chunk-client/tests/`,
   `lib/crowdb-diskio-client/tests/`.
-- [ ] **Bound data-write overlap**: feed EC before waiting for independent
+- [x] **Bound data-write overlap**: feed EC before waiting for independent
   writes, retain bounded completions in the strip/chunk owner, and safely drain
   submitted work on seal and abort. Files: `lib/crowdb-chunk-client/src/chunk/`,
   `lib/crowdb-chunk-client/src/config.rs`, `lib/crowdb-chunk-client/tests/`.
-- [ ] **Simplify preparation ownership**: replace timer/atomic strip polling
+- [x] **Simplify preparation ownership**: replace timer/atomic strip polling
   with consumption-driven bounded preparation, consolidate chunk/strip depth
   controls, and continuously prepare unknown-size chunks. Files:
   `lib/crowdb-chunk-client/src/chunk/`,
   `lib/crowdb-chunk-client/src/writer/large_async_object.rs`,
   `lib/crowdb-chunk-client/src/config.rs`, `lib/crowdb-chunk-client/tests/`.
-- [ ] **Add incremental chunk append**: add monotonic `modify_ts`, send the
+- [x] **Add incremental chunk append**: add monotonic `modify_ts`, send the
   observed revision on append, return only new strips on a match, and return
   full current chunk information on mismatch. Files: `lib/crowdb-protocol/`,
   `lib/crowdb-chunkdb/`, `lib/crowdb-chunkdb-client/`,
   `lib/crowdb-chunk-client/`, and affected tests.
-- [ ] **Split topology refresh**: expose independent ChunkDB and DiskIO refresh
+- [x] **Split topology refresh**: expose independent ChunkDB and DiskIO refresh
   operations and test their failure boundaries. Files:
   `lib/crowdb-chunk-client/src/client.rs`, `lib/crowdb-chunkdb-client/`,
   `lib/crowdb-chunk-client/tests/`.

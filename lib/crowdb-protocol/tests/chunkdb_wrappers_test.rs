@@ -51,6 +51,7 @@ macro_rules! build_mirror_chunk {
             $fbb,
             &FBChunkArgs {
                 id: Some(&$chunk_id),
+                modify_ts: 1,
                 state: $state,
                 create_ts_ms: 1000,
                 sealed_ts_ms: 0,
@@ -214,6 +215,7 @@ fn ec_strip_union_variant() {
         &mut fbb,
         &FBChunkArgs {
             id: Some(&chunk_id),
+            modify_ts: 1,
             state: FBChunkState::Active,
             create_ts_ms: 2000,
             sealed_ts_ms: 0,

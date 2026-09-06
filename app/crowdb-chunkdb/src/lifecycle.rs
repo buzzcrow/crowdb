@@ -6,5 +6,7 @@
 mod handler;
 pub mod state;
 
-pub use handler::{CacheHint, ChunkGuard, ChunkLockMap, LifecycleError, LifecycleHandler, LockPolicy};
+pub use handler::{
+    AppendChunkOutcome, CacheHint, ChunkGuard, ChunkLockMap, LifecycleError, LifecycleHandler, LockPolicy,
+};
 pub use state::{ChunkState, StateTransitionError};

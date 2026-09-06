@@ -41,6 +41,9 @@ BlockDisk::BlockDisk(DiskId id, const std::string &path, std::shared_ptr<IoEngin
 #ifdef O_DIRECT
         flags |= O_DIRECT;
 #endif
+#ifdef O_DSYNC
+        flags |= O_DSYNC;
+#endif
     }
     fd_         = ::open(path.c_str(), flags);
     block_size_ = (fd_ >= 0) ? query_block_size(fd_) : 512;

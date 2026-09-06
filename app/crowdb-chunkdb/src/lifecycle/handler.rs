@@ -67,6 +67,13 @@ pub enum LifecycleError {
     Cleanup(String),
 }
 
+#[derive(Debug)]
+pub struct AppendChunkOutcome {
+    pub modify_ts: u64,
+    pub strips: Vec<ChunkStrip>,
+    pub chunk: Option<Chunk>,
+}
+
 /// Lock policy — how to handle contention on a per-chunk mutex.
 #[derive(Debug, Clone)]
 pub enum LockPolicy {
@@ -292,6 +299,7 @@ impl LifecycleHandler {
 
         let chunk = Chunk {
             id: Some(id),
+            modify_ts: 1,
             state: ProtoChunkState::Active as i32,
             create_ts_ms: now_ms,
             sealed_ts_ms: 0,
@@ -370,13 +378,14 @@ impl LifecycleHandler {
     pub async fn append_chunk(
         &self,
         chunk_id: &ChunkId,
+        observed_modify_ts: u64,
         strip_count: u32,
         strip_type: ProtoStripType,
         data_num: u32,
         code_num: u32,
         copy_count: u32,
         unit_count: u32,
-    ) -> Result<Chunk, LifecycleError> {
+    ) -> Result<AppendChunkOutcome, LifecycleError> {
         self.check_range(chunk_id)?;
 
         let mut guard = if let Some(locks) = &self.locks {
@@ -398,6 +407,13 @@ impl LifecycleHandler {
         };
         let current_state = ChunkState::from_proto(chunk.state);
         current_state.check_can_append()?;
+        if observed_modify_ts != chunk.modify_ts {
+            return Ok(AppendChunkOutcome {
+                modify_ts: chunk.modify_ts,
+                strips: Vec::new(),
+                chunk: Some(chunk),
+            });
+        }
 
         let snap = self.topology.snapshot();
         let mirror_copies = if copy_count == 0 { 3 } else { copy_count as usize };
@@ -440,6 +456,7 @@ impl LifecycleHandler {
         }
         chunk.strips.extend(appended.iter().cloned());
         chunk.capacity = chunk.strips.iter().map(|s| s.capacity).sum();
+        chunk.modify_ts = chunk.modify_ts.saturating_add(1);
         if let Err(error) = self.store.put_chunk(&chunk).await {
             self.allocator.rollback_strips(&appended).await?;
             return Err(error.into());
@@ -449,7 +466,11 @@ impl LifecycleHandler {
             g.refresh(chunk.clone());
         }
         info!(chunk_id = ?chunk_id, added_strips = strip_count, "chunk appended");
-        Ok(chunk)
+        Ok(AppendChunkOutcome {
+            modify_ts: chunk.modify_ts,
+            strips: appended,
+            chunk: None,
+        })
     }
 
     /// Seal a chunk — no more appends allowed.
@@ -487,6 +508,7 @@ impl LifecycleHandler {
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
 
         chunk.state = ProtoChunkState::Sealed as i32;
+        chunk.modify_ts = chunk.modify_ts.saturating_add(1);
         chunk.sealed_length = seal_length;
         chunk.sealed_ts_ms = now_ms;
 
@@ -548,6 +570,7 @@ impl LifecycleHandler {
         // Publish Deleted before making any referenced block reusable.
         let all_segments: Vec<_> = chunk.strips.iter().flat_map(extract_segments).collect();
         chunk.state = ProtoChunkState::Deleted as i32;
+        chunk.modify_ts = chunk.modify_ts.saturating_add(1);
         self.store.put_chunk(&chunk).await?;
 
         if let Some(ref mut g) = guard {
@@ -623,6 +646,7 @@ impl LifecycleHandler {
         let removed_count = to_remove.len();
         chunk.strips = to_keep;
         chunk.capacity = chunk.strips.iter().map(|s| s.capacity).sum();
+        chunk.modify_ts = chunk.modify_ts.saturating_add(1);
         self.store.put_chunk(&chunk).await?;
 
         if let Some(ref mut g) = guard {
@@ -726,6 +750,7 @@ impl LifecycleHandler {
         // Replace the strip.
         chunk.strips[idx] = new_strip.clone();
         chunk.capacity = chunk.strips.iter().map(|s| s.capacity).sum();
+        chunk.modify_ts = chunk.modify_ts.saturating_add(1);
         if let Err(error) = self.store.put_chunk(&chunk).await {
             self.allocator
                 .rollback_strips(std::slice::from_ref(&new_strip))

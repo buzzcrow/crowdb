@@ -37,7 +37,8 @@ use crowdb_protocol::chunkdb_fb::{
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::fb::FBMsgType;
 use crowdb_protocol::fb_wrappers::chunkdb::{
-    FBAllocateChunkResponseRef, FBDeleteChunkRangeResponseRef, FBListChunksResponseRef,
+    FBAllocateChunkResponseRef, FBAppendChunkResponseRef, FBDeleteChunkRangeResponseRef,
+    FBListChunksResponseRef,
 };
 use crowdb_rpc_ffi::{Buffer, Connection, RpcClient, RpcError, RpcServer};
 
@@ -201,6 +202,7 @@ impl ChunkdbRpcTransport {
             id: req_id,
             rpc_create_nano: 0,
             chunk_id: chunk_id_off.as_ref(),
+            modify_ts: req.modify_ts,
             strip_size: req.strip_size,
             strip_count: req.strip_count,
             strip_type: strip_type_to_fb(
@@ -224,13 +226,17 @@ impl ChunkdbRpcTransport {
             rpc_endpoint,
         )
         .await?;
-        // AppendChunk response shares the same shape as AllocateChunkResponse.
-        let r = FBAllocateChunkResponseRef::new(resp.bytes());
+        let r = FBAppendChunkResponseRef::new(resp.bytes());
         if !r.valid() {
             return Err(ChunkdbClientError::Rpc("append_chunk response malformed".into()));
         }
         check_ret_code(r.ret_code(), r.error_msg())?;
         Ok(AppendChunkResponse {
+            modify_ts: r.modify_ts(),
+            strips: r
+                .strips()
+                .map(|strips| strips.iter().map(|strip| parse_fb_chunk_strip(&strip)).collect())
+                .unwrap_or_default(),
             chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)),
         })
     }
@@ -570,6 +576,7 @@ fn parse_fb_chunk(fb: &crowdb_protocol::chunkdb_fb::FBChunk<'_>) -> Chunk {
         .unwrap_or_default();
     Chunk {
         id,
+        modify_ts: fb.modify_ts(),
         state: state as i32,
         create_ts_ms: fb.create_ts_ms(),
         sealed_ts_ms: fb.sealed_ts_ms(),

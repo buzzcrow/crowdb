@@ -164,22 +164,4 @@ impl DiskWriter for RoutedDiskWriter {
         }
         Ok(())
     }
-
-    async fn fsync(&self, disk_id: DiskId) -> Result<()> {
-        let route = self.route(disk_id)?;
-        let future = self
-            .client
-            .fsync(&self.server, &route.connection, disk_id)
-            .map_err(|error| IoError::WriteFailed(format!("{}: {error}", route.endpoint)))?;
-        let code = DiskioClient::await_fsync_response(future)
-            .await
-            .map_err(|error| IoError::WriteFailed(format!("{}: {error}", route.endpoint)))?;
-        if code != DiskIoRetCode::Success {
-            return Err(IoError::WriteFailed(format!(
-                "{} returned {code:?}",
-                route.endpoint
-            )));
-        }
-        Ok(())
-    }
 }

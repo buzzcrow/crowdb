@@ -95,17 +95,13 @@ Use two controls with one meaning each:
 
 Known- and unknown-size streams should both maintain the same bounded lead.
 
-### 3.4 Topology refresh is incomplete
+### 3.4 Topology refresh follows server boundaries
 
-`ChunkIoClient::refresh_topology` refreshes DiskIO ownership routes only.
-`ChunkdbClient` and its range bindings are not retained by `ClientTopology`, so
-the public method cannot refresh all topology implied by its name.
-
-Expose separate refresh operations by server boundary. ChunkDB endpoint and
-range-binding refresh belongs to the ChunkDB route owner; DiskIO service and
-disk-owner refresh belongs to `RoutedDiskWriter`. The application facade may
-offer both operations, but it must not hide two independent failure domains
-behind one ambiguous refresh method.
+`ChunkIoClient` exposes `refresh_chunkdb_routes` and
+`refresh_diskio_routes`. The former refreshes ChunkDB endpoints and range
+bindings; the latter atomically republishes DiskIO service and disk ownership
+routes. Each server-specific client owns its discovery details and failure
+domain.
 
 ### 3.5 Public surface is too broad
 

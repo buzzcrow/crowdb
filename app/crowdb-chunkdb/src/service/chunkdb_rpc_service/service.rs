@@ -35,11 +35,11 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::chunkdb_fb::{
     FBAllocateChunkRequest, FBAllocateChunkResponse, FBAllocateChunkResponseArgs, FBAppendChunkRequest,
-    FBChunk, FBChunkArgs, FBChunkState, FBChunkStrip, FBChunkStripArgs, FBChunkType, FBChunkdbRetCode,
-    FBDeleteChunkRangeRequest, FBDeleteChunkRangeResponse, FBDeleteChunkRangeResponseArgs,
-    FBDeleteChunkRequest, FBEcState, FBEcStrip, FBEcStripArgs, FBInt128, FBListChunksRequest,
-    FBListChunksResponse, FBListChunksResponseArgs, FBMirrorStrip, FBMirrorStripArgs, FBQueryChunkRequest,
-    FBSealChunkRequest, FBSegment, FBStripBody, FBStripType, FBUpdateChunkStripRequest,
+    FBAppendChunkResponse, FBAppendChunkResponseArgs, FBChunk, FBChunkArgs, FBChunkState, FBChunkStrip,
+    FBChunkStripArgs, FBChunkType, FBChunkdbRetCode, FBDeleteChunkRangeRequest, FBDeleteChunkRangeResponse,
+    FBDeleteChunkRangeResponseArgs, FBDeleteChunkRequest, FBEcState, FBEcStrip, FBEcStripArgs, FBInt128,
+    FBListChunksRequest, FBListChunksResponse, FBListChunksResponseArgs, FBMirrorStrip, FBMirrorStripArgs,
+    FBQueryChunkRequest, FBSealChunkRequest, FBSegment, FBStripBody, FBStripType, FBUpdateChunkStripRequest,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::fb::FBMsgType;
@@ -47,7 +47,7 @@ use crowdb_rpc_ffi::{Buffer, RpcServer, ServerRequest};
 use flatbuffers::FlatBufferBuilder;
 use tokio::runtime::Handle;
 
-use crate::lifecycle::{LifecycleError, LifecycleHandler};
+use crate::lifecycle::{AppendChunkOutcome, LifecycleError, LifecycleHandler};
 use crate::metrics::{ChunkdbMetrics, RequestGuard, RequestKind};
 
 /// crowdb-rpc handler set for `ChunkdbService`. Holds the same
@@ -165,5 +165,5 @@ mod wire;
 
 use wire::{
     build_delete_range_response, build_list_response, map_error, parse_fb_chunk_strip, proto_chunk_type,
-    proto_strip_type, submit_chunk_result, submit_error, submit_fb_response,
+    proto_strip_type, submit_append_result, submit_chunk_result, submit_error, submit_fb_response,
 };

@@ -109,6 +109,18 @@ impl ChunkdbClient {
         Ok(())
     }
 
+    /// Refresh `ChunkDB` service endpoints and range ownership bindings.
+    pub async fn refresh_routes(&self) -> Result<()> {
+        self.refresh_endpoints().await?;
+        if let Some(binding) = &self.range_binding {
+            binding
+                .refresh()
+                .await
+                .map_err(|error| ChunkdbClientError::Unreachable(format!("range refresh failed: {error}")))?;
+        }
+        Ok(())
+    }
+
     /// Get the first cached endpoint (or refresh + pick first).
     async fn first_endpoint(&self) -> Result<String> {
         if let Some(endpoint) = self.endpoint_cache.load().values().next() {

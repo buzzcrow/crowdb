@@ -15,6 +15,7 @@ use crate::chunkdb_fb::{
     FBDeleteChunkResponse, FBListChunksResponse, FBQueryChunkResponse, FBSealChunkResponse,
     FBUpdateChunkStripResponse,
 };
+use flatbuffers::Vector;
 
 use super::parse_root;
 
@@ -100,6 +101,14 @@ impl<'a> FBAppendChunkResponseRef<'a> {
     }
     pub fn chunk(&self) -> Option<FBChunk<'a>> {
         self.root.and_then(|r| r.chunk())
+    }
+    pub fn modify_ts(&self) -> u64 {
+        self.root.map_or(0, |r| r.modify_ts())
+    }
+    pub fn strips(
+        &self,
+    ) -> Option<Vector<'a, flatbuffers::ForwardsUOffset<crate::chunkdb_fb::FBChunkStrip<'a>>>> {
+        self.root.and_then(|r| r.strips())
     }
 }
 

@@ -86,7 +86,6 @@ verify_logs() {
         && rg -q 'chunkio\.object\.write\.e2e\.lh' "$cli_metrics_file" \
         && rg -q 'chunkio\.chunk\.allocate\.e2e\.lh' "$cli_metrics_file" \
         && rg -q 'chunkio\.diskio\.write\.e2e\.lh' "$cli_metrics_file" \
-        && rg -q 'chunkio\.diskio\.fsync\.e2e\.lh' "$cli_metrics_file" \
         && regression_require_metric_files 'crowdb-kv-server-metrics-*.log' rust cpp-rpc cpp-tree \
         && regression_require_metric_files 'crowdb-diskdb-metrics-*.log' rust cpp-rpc \
         && regression_require_metric_files 'crowdb-chunkdb-metrics-*.log' rust cpp-rpc \

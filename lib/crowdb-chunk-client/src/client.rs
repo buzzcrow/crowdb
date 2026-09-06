@@ -10,7 +10,6 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
 use crowdb_common::ec::EcScheme;
-use crowdb_diskio_client::DiskId;
 use crowdb_kv_client::{
     ClientConfig, CrowdbKvClient, HardwareClient, RangeBindingClient, ServiceRegistryClient,
 };
@@ -65,6 +64,7 @@ pub struct ChunkIoClient {
 struct ClientTopology {
     service: ServiceRegistryClient,
     hardware: HardwareClient,
+    chunkdb: Arc<ChunkdbClient>,
     disk_writer: Arc<RoutedDiskWriter>,
 }
 
@@ -83,11 +83,12 @@ impl ChunkIoClient {
         chunkdb.refresh_endpoints().await?;
         let disk_writer = Arc::new(RoutedDiskWriter::connect(&service, &hardware).await?);
         Ok(Self {
-            allocator: chunkdb,
+            allocator: chunkdb.clone(),
             disk_writer: disk_writer.clone(),
             topology: Some(Arc::new(ClientTopology {
                 service,
                 hardware,
+                chunkdb,
                 disk_writer,
             })),
             metrics: None,
@@ -119,8 +120,16 @@ impl ChunkIoClient {
         self
     }
 
-    /// Rebuild and atomically publish service and disk ownership routes.
-    pub async fn refresh_topology(&self) -> Result<()> {
+    /// Refresh `ChunkDB` service endpoints and range ownership routes.
+    pub async fn refresh_chunkdb_routes(&self) -> Result<()> {
+        let topology = self.topology.as_ref().ok_or_else(|| {
+            crate::IoError::Topology("discovery is unavailable for a parts-based client".into())
+        })?;
+        topology.chunkdb.refresh_routes().await.map_err(Into::into)
+    }
+
+    /// Rebuild and atomically publish `DiskIO` service and disk ownership routes.
+    pub async fn refresh_diskio_routes(&self) -> Result<()> {
         let topology = self.topology.as_ref().ok_or_else(|| {
             crate::IoError::Topology("discovery is unavailable for a parts-based client".into())
         })?;
@@ -218,15 +227,6 @@ impl DiskWriter for MetricsDiskWriter {
         let result = self.inner.write(seg, unit_bytes, data).await;
         if result.is_ok() {
             self.metrics.diskio_write_bytes.observe(bytes);
-            operation.mark_success();
-        }
-        result
-    }
-
-    async fn fsync(&self, disk_id: DiskId) -> Result<()> {
-        let mut operation = self.metrics.diskio_fsync.start();
-        let result = self.inner.fsync(disk_id).await;
-        if result.is_ok() {
             operation.mark_success();
         }
         result

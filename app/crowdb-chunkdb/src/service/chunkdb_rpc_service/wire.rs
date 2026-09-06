@@ -1,10 +1,11 @@
 use super::{
-    Buffer, Chunk, ChunkId, ChunkStrip, DiskId, FBAllocateChunkResponse, FBAllocateChunkResponseArgs,
-    FBChunk, FBChunkArgs, FBChunkState, FBChunkStrip, FBChunkStripArgs, FBChunkType, FBChunkdbRetCode,
-    FBDeleteChunkRangeResponse, FBDeleteChunkRangeResponseArgs, FBEcState, FBEcStrip, FBEcStripArgs,
-    FBInt128, FBListChunksResponse, FBListChunksResponseArgs, FBMirrorStrip, FBMirrorStripArgs, FBSegment,
-    FBStripBody, FBStripType, FlatBufferBuilder, LifecycleError, ProtoChunkState, ProtoChunkType,
-    ProtoEcState, ProtoStrip, ProtoStripType, RpcServer,
+    AppendChunkOutcome, Buffer, Chunk, ChunkId, ChunkStrip, DiskId, FBAllocateChunkResponse,
+    FBAllocateChunkResponseArgs, FBAppendChunkResponse, FBAppendChunkResponseArgs, FBChunk, FBChunkArgs,
+    FBChunkState, FBChunkStrip, FBChunkStripArgs, FBChunkType, FBChunkdbRetCode, FBDeleteChunkRangeResponse,
+    FBDeleteChunkRangeResponseArgs, FBEcState, FBEcStrip, FBEcStripArgs, FBInt128, FBListChunksResponse,
+    FBListChunksResponseArgs, FBMirrorStrip, FBMirrorStripArgs, FBSegment, FBStripBody, FBStripType,
+    FlatBufferBuilder, LifecycleError, ProtoChunkState, ProtoChunkType, ProtoEcState, ProtoStrip,
+    ProtoStripType, RpcServer,
 };
 
 // ── Error mapping + submission helpers ────────────────────────────
@@ -81,6 +82,53 @@ pub(super) fn submit_chunk_result(
             submit_fb_response(server, conn_handle, ctrl, msg_type, req_id);
         }
     }
+}
+
+pub(super) fn submit_append_result(
+    server: &RpcServer,
+    conn_handle: *mut std::ffi::c_void,
+    req_id: u64,
+    create_nano: u64,
+    msg_type: u16,
+    result: Result<AppendChunkOutcome, LifecycleError>,
+) {
+    let mut fbb = FlatBufferBuilder::new();
+    let (code, message, range_start, range_end, outcome) = match result {
+        Ok(outcome) => (FBChunkdbRetCode::Success, None, 0, 0, Some(outcome)),
+        Err(error) => {
+            let (code, message, start, end) = map_error(&error);
+            (code, Some(message), start, end, None)
+        }
+    };
+    let error_msg = message.as_deref().map(|value| fbb.create_string(value));
+    let chunk = outcome
+        .as_ref()
+        .and_then(|value| value.chunk.as_ref())
+        .map(|value| build_chunk_offset(&mut fbb, value));
+    let strip_offsets = outcome.as_ref().map_or_else(Vec::new, |value| {
+        value
+            .strips
+            .iter()
+            .map(|strip| build_chunk_strip_offset(&mut fbb, strip))
+            .collect()
+    });
+    let strips = (!strip_offsets.is_empty()).then(|| fbb.create_vector(&strip_offsets));
+    let response = FBAppendChunkResponse::create(
+        &mut fbb,
+        &FBAppendChunkResponseArgs {
+            id: req_id,
+            rpc_create_nano: create_nano,
+            ret_code: code,
+            error_msg,
+            range_start,
+            range_end,
+            modify_ts: outcome.as_ref().map_or(0, |value| value.modify_ts),
+            strips,
+            chunk,
+        },
+    );
+    fbb.finish(response, None);
+    submit_fb_response(server, conn_handle, fbb.collapse(), msg_type, req_id);
 }
 
 /// Submit a synchronous error response (from the dispatch thread).
@@ -333,6 +381,7 @@ pub(super) fn build_chunk_offset<'a>(
         fbb,
         &FBChunkArgs {
             id: Some(&id_off),
+            modify_ts: chunk.modify_ts,
             state: fb_chunk_state(state),
             create_ts_ms: chunk.create_ts_ms,
             sealed_ts_ms: chunk.sealed_ts_ms,

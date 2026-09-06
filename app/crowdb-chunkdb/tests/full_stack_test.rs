@@ -132,35 +132,34 @@ async fn chunkdb_lock_serializes_concurrent_append() {
     let id1 = chunk_id;
     let id2 = chunk_id;
     let t1 = tokio::spawn(async move {
-        h1.append_chunk(&id1, 1, StripType::Mirror, 0, 0, 3, 1)
+        h1.append_chunk(&id1, 1, 1, StripType::Mirror, 0, 0, 3, 1)
             .await
             .expect("append 1")
     });
     let t2 = tokio::spawn(async move {
-        h2.append_chunk(&id2, 1, StripType::Mirror, 0, 0, 3, 1)
+        h2.append_chunk(&id2, 1, 1, StripType::Mirror, 0, 0, 3, 1)
             .await
             .expect("append 2")
     });
     let r1 = t1.await.expect("task 1");
     let r2 = t2.await.expect("task 2");
-    // Both appends succeeded; the lock serialized them so one ran
-    // first (2 strips) and the other ran second (3 strips). The
-    // important invariant: no lost update — total is 1 + 1 + 1 = 3.
-    let max_strips = r1.strips.len().max(r2.strips.len());
+    // One request appends; the other observes a stale revision and receives
+    // the refreshed parent without allocating a duplicate strip.
+    let outcomes = [&r1, &r2];
     assert_eq!(
-        max_strips, 3,
-        "should have 3 strips after 2 serialized appends, got {max_strips}"
+        outcomes
+            .iter()
+            .filter(|outcome| outcome.strips.len() == 1)
+            .count(),
+        1
     );
-    let min_strips = r1.strips.len().min(r2.strips.len());
     assert_eq!(
-        min_strips, 2,
-        "first append should see 2 strips, got {min_strips}"
+        outcomes.iter().filter(|outcome| outcome.chunk.is_some()).count(),
+        1
     );
-    eprintln!(
-        "concurrent append serialized correctly: {} and {} strips",
-        r1.strips.len(),
-        r2.strips.len()
-    );
+    let current = harness.handler.query_chunk(&chunk_id).await.expect("query chunk");
+    assert_eq!(current.strips.len(), 2);
+    assert_eq!(current.modify_ts, 2);
 }
 
 #[tokio::test]
@@ -193,12 +192,12 @@ async fn chunkdb_lock_no_deadlock_different_chunks() {
     let h1 = Arc::clone(&harness.handler);
     let h2 = Arc::clone(&harness.handler);
     let t1 = tokio::spawn(async move {
-        h1.append_chunk(&id_a, 1, StripType::Mirror, 0, 0, 3, 1)
+        h1.append_chunk(&id_a, 1, 1, StripType::Mirror, 0, 0, 3, 1)
             .await
             .expect("append A")
     });
     let t2 = tokio::spawn(async move {
-        h2.append_chunk(&id_b, 1, StripType::Mirror, 0, 0, 3, 1)
+        h2.append_chunk(&id_b, 1, 1, StripType::Mirror, 0, 0, 3, 1)
             .await
             .expect("append B")
     });
@@ -208,8 +207,10 @@ async fn chunkdb_lock_no_deadlock_different_chunks() {
     })
     .await
     .expect("no deadlock — both appends completed within 10s");
-    assert_eq!(r1.strips.len(), 2, "chunk A should have 2 strips");
-    assert_eq!(r2.strips.len(), 2, "chunk B should have 2 strips");
+    assert_eq!(r1.strips.len(), 1, "chunk A should return one appended strip");
+    assert_eq!(r2.strips.len(), 1, "chunk B should return one appended strip");
+    assert_eq!(r1.modify_ts, 2);
+    assert_eq!(r2.modify_ts, 2);
     eprintln!("no deadlock: both chunks appended independently");
 }
 
@@ -236,10 +237,11 @@ async fn chunkdb_cache_hit_on_second_query() {
     // Append (should be a cache hit — no store round-trip for get_chunk).
     let appended = harness
         .handler
-        .append_chunk(&chunk_id, 1, StripType::Mirror, 0, 0, 3, 1)
+        .append_chunk(&chunk_id, 1, 1, StripType::Mirror, 0, 0, 3, 1)
         .await
         .expect("append_chunk");
-    assert_eq!(appended.strips.len(), 2, "should have 2 strips after append");
+    assert_eq!(appended.strips.len(), 1, "should return only the appended strip");
+    assert_eq!(appended.modify_ts, 2);
 
     // Seal (should also be a cache hit after append refreshed the cache).
     let sealed = harness
@@ -376,7 +378,7 @@ async fn chunkdb_lock_serializes_concurrent_append_delete() {
     let h2 = Arc::clone(&harness.handler);
     let id1 = chunk_id;
     let id2 = chunk_id;
-    let t1 = tokio::spawn(async move { h1.append_chunk(&id1, 1, StripType::Mirror, 0, 0, 3, 1).await });
+    let t1 = tokio::spawn(async move { h1.append_chunk(&id1, 1, 1, StripType::Mirror, 0, 0, 3, 1).await });
     let t2 = tokio::spawn(async move { h2.delete_chunk(&id2).await });
     let (append_res, delete_res) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         (t1.await.expect("append task"), t2.await.expect("delete task"))
@@ -389,11 +391,11 @@ async fn chunkdb_lock_serializes_concurrent_append_delete() {
     // Append may succeed (if it ran first) or fail with
     // InvalidStateTransition (if delete ran first) — both are valid.
     match &append_res {
-        Ok(c) => assert_eq!(
-            c.state,
-            ChunkState::Active as i32,
-            "append ran first → returns Active chunk (delete runs after)"
-        ),
+        Ok(outcome) => {
+            assert_eq!(outcome.modify_ts, 2);
+            assert_eq!(outcome.strips.len(), 1);
+            assert!(outcome.chunk.is_none());
+        }
         Err(LifecycleError::InvalidStateTransition(_)) => {
             eprintln!("delete ran first → append rejected (InvalidStateTransition)");
         }

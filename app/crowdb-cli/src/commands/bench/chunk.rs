@@ -224,6 +224,7 @@ async fn append(
     id: ChunkId,
     args: &ChunkdbArgs,
 ) -> crowdb_chunkdb_client::Result<()> {
+    let current = query(client, id).await?;
     let strip_type = match args.strip_type {
         ChunkdbStripMode::Mirror => StripType::Mirror,
         ChunkdbStripMode::Ec => StripType::Ec,
@@ -231,6 +232,7 @@ async fn append(
     client
         .append_chunk(AppendChunkRequest {
             chunk_id: Some(id),
+            modify_ts: current.modify_ts,
             strip_size: 1,
             strip_count: 1,
             strip_type: strip_type as i32,

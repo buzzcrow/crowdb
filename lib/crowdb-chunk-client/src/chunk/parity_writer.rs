@@ -1,10 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! `spawn_parity_writes` — parity write + fsync spawn helper.
+//! `spawn_parity_writes` — durable parity-write spawn helper.
 //!
 //! Extracted from `EcStripWriter::finish`. Spawns parallel parity
-//! write tasks + deduplicated fsync tasks for a finished strip and
+//! write tasks for a finished strip and
 //! returns the `JoinHandle`s **without joining** — the caller
 //! (`ChunkWriter`) collects them and joins at `seal()` time. This
 //! decouples parity durability from strip finish: strip N+1's data
@@ -12,7 +12,6 @@
 //! §3). Replaces the old `ParityBatch` (per-strip join) — the
 //! batch-join semantics are gone; `ChunkWriter` owns the handles.
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use tokio::task::JoinHandle;
@@ -20,18 +19,15 @@ use tokio::task::JoinHandle;
 use crate::disk_io::DiskWriter;
 use crate::{IoError, Result};
 use crowdb_common::ec::EcScheme;
-use crowdb_diskio_client::DiskId;
 use crowdb_protocol::chunkdb::rpc::Chunk;
 use crowdb_protocol::chunkdb::rpc::Strip as StripOneof;
 use crowdb_protocol::diskdb::rpc::Segment;
 
-/// Spawn parity write + fsync tasks for a finished strip. Returns
+/// Spawn durable parity-write tasks for a finished strip. Returns
 /// `JoinHandle`s without joining — caller joins at seal time.
 ///
-/// For each parity shard `i`, spawns a task that writes the shard to
-/// segment `data_num + i` via `DiskWriter::write`. Then spawns
-/// deduplicated `fsync` tasks (one per unique `disk_id` in the
-/// strip's segments).
+/// For each parity shard `i`, writes the shard to segment `data_num + i` via
+/// `DiskWriter::write`. Production write completion is durable.
 pub fn spawn_parity_writes(
     chunk: &Arc<Chunk>,
     strip_index: u32,
@@ -65,17 +61,6 @@ pub fn spawn_parity_writes(
         writes.push((seg, bytes::Bytes::from(shard)));
     }
 
-    // Deduplicated fsync tasks (one per unique disk_id in the strip).
-    let mut fsynced: HashSet<(u64, u64)> = HashSet::new();
-    let mut disk_ids = Vec::new();
-    for seg in &ec.segments {
-        if let Some(did) = seg.disk_id.as_ref() {
-            if fsynced.insert((did.high, did.low)) {
-                disk_ids.push(DiskId::new(did.high, did.low));
-            }
-        }
-    }
-
     let dw = disk_writer.clone();
     Ok(vec![tokio::spawn(async move {
         let mut write_tasks = tokio::task::JoinSet::new();
@@ -85,15 +70,6 @@ pub fn spawn_parity_writes(
         }
         while let Some(result) = write_tasks.join_next().await {
             result.map_err(|e| IoError::Internal(format!("parity write task failed: {e}")))??;
-        }
-
-        let mut fsync_tasks = tokio::task::JoinSet::new();
-        for disk_id in disk_ids {
-            let dw = dw.clone();
-            fsync_tasks.spawn(async move { dw.fsync(disk_id).await });
-        }
-        while let Some(result) = fsync_tasks.join_next().await {
-            result.map_err(|e| IoError::Internal(format!("fsync task failed: {e}")))??;
         }
         Ok(())
     })])

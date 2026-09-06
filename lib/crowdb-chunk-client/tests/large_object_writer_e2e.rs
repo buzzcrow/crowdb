@@ -182,12 +182,11 @@ async fn e2e_case1_single_chunk_multi_strip() {
     // in 1 chunk.
     let config = Arc::new(ChunkClientConfig {
         max_chunk_size: 1024 * 1024 * 1024,
-        prealloc_depth: 2,
+        strip_preparation_depth: 2,
         parity_depth: 2,
-        chunk_prefetch_depth: 1,
+        chunk_preparation_depth: 1,
         read_buffer_size: 1024 * 1024,
         max_cached_buffer: 4 * 1024 * 1024,
-        prefetch_chunk_count: 1,
         memory_budget: 0,
     });
 
@@ -232,12 +231,11 @@ async fn e2e_case2_chunk_rotation() {
     // 20 MB / 4 MB = 5 strips → 3 chunks (2 × 2 strips + 1 × 1 strip).
     let config = Arc::new(ChunkClientConfig {
         max_chunk_size: 8 * 1024 * 1024,
-        prealloc_depth: 2,
+        strip_preparation_depth: 2,
         parity_depth: 2,
-        chunk_prefetch_depth: 1,
+        chunk_preparation_depth: 1,
         read_buffer_size: 1024 * 1024,
         max_cached_buffer: 4 * 1024 * 1024,
-        prefetch_chunk_count: 1,
         memory_budget: 0,
     });
 

@@ -23,6 +23,7 @@ fn make_lock_map(capacity: usize) -> Arc<ChunkLockMap> {
 fn make_chunk(id: ChunkId, state: i32) -> Chunk {
     Chunk {
         id: Some(id),
+        modify_ts: 1,
         state,
         create_ts_ms: 0,
         sealed_ts_ms: 0,

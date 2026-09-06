@@ -189,6 +189,27 @@ impl LargeAsyncObjectWriter {
         self.ensure_open().await
     }
 
+    async fn stop_chunk_prefetch(&mut self) {
+        if let Some(handle) = self.chunk_prefetch_handle.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+        if let Some(mut rx) = self.chunk_prefetch_rx.take() {
+            while let Ok(result) = rx.try_recv() {
+                if let Ok(chunk) = result {
+                    if let Some(chunk_id) = chunk.id {
+                        let _ = self
+                            .allocator
+                            .delete_chunk(DeleteChunkRequest {
+                                chunk_id: Some(chunk_id),
+                            })
+                            .await;
+                    }
+                }
+            }
+        }
+    }
+
     /// Async stream write. Runs fetch stage + chunk-level drive loop
     /// concurrently. The strip-level drive loop is in
     /// `ChunkWriter::push` (auto-rotates strips).
@@ -263,9 +284,7 @@ impl LargeAsyncObjectWriter {
         }
 
         self.seal_current().await?;
-        if let Some(handle) = self.chunk_prefetch_handle.take() {
-            handle.abort();
-        }
+        self.stop_chunk_prefetch().await;
 
         Ok(std::mem::take(&mut self.locations))
     }
@@ -275,24 +294,7 @@ impl LargeAsyncObjectWriter {
         if let Some(mut cw) = self.chunk_writer.take() {
             let _ = cw.abort().await;
         }
-        if let Some(handle) = self.chunk_prefetch_handle.take() {
-            handle.abort();
-            let _ = handle.await;
-        }
-        if let Some(mut rx) = self.chunk_prefetch_rx.take() {
-            while let Ok(result) = rx.try_recv() {
-                if let Ok(chunk) = result {
-                    if let Some(chunk_id) = chunk.id {
-                        let _ = self
-                            .allocator
-                            .delete_chunk(DeleteChunkRequest {
-                                chunk_id: Some(chunk_id),
-                            })
-                            .await;
-                    }
-                }
-            }
-        }
+        self.stop_chunk_prefetch().await;
         Ok(std::mem::take(&mut self.locations))
     }
 }
@@ -336,9 +338,7 @@ impl ChunkIoWriter for LargeAsyncObjectWriter {
         }
         self.finished = true;
         self.seal_current().await?;
-        if let Some(handle) = self.chunk_prefetch_handle.take() {
-            handle.abort();
-        }
+        self.stop_chunk_prefetch().await;
         Ok(std::mem::take(&mut self.locations))
     }
 
