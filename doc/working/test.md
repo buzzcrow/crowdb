@@ -87,29 +87,52 @@ runner's test results. A timeout is recorded when the task exceeded the
 
 Status icons: ✅ = PASS (0 failures), ⚠️ = PASS with ignored tests, ❌ = TIMEOUT or failures.
 
-| Suite               | Tests | macOS  | Linux (08-28) | Linux (09-06) | Status          |
-| ------------------- | ----- | ------ | ------------- | ------------- | --------------- |
-| `test-tree-ct`      | 416   | 20.1 s | 15.78 s       | 39.41 s       | ✅              |
-| `test-common-ct`    | 21    | —      | 17.78 s       | 0.56 s        | ✅              |
-| `test-tree-ffi`     | 30    | 13.5 s | 0.54 s        | 0.45 s        | ✅              |
-| `test-rpc-ct`       | 57    | —      | 2.59 s        | 3.72 s        | ✅              |
-| `test-rpc-ffi`      | 13    | —      | 0.68 s        | 0.35 s        | ✅              |
-| `test-diskio-ct`    | 95    | —      | 4.46 s        | 6.56 s        | ✅              |
-| `test-common`       | 65    | 21.9 s | 9.78 s        | 9.63 s        | ✅              |
-| `test-protocol`     | 121   | 12.2 s | 0.70 s        | 0.06 s        | ✅              |
-| `test-kv-core`      | 558   | 43.2 s | 63.20 s       | 51.42 s       | ✅              |
-| `test-kv-client`    | 49    | 23.4 s | 4.70 s        | 2.91 s        | ✅              |
-| `test-chunkdb-client` | 10  | 13.8 s | 2.00 s        | 0.00 s        | ✅              |
-| `test-kv-server`    | 81    | 53.0 s | 43.52 s       | 43.81 s       | ✅              |
-| `test-diskdb`       | 127   | 42.8 s | 25.76 s       | 56.35 s       | ✅              |
-| `test-diskdb-client` | 7    | 13.9 s | 16.81 s       | 4.72 s        | ✅              |
-| `test-chunkdb`      | 76    | 27.8 s | 19.75 s       | 7.45 s        | ✅              |
-| `test-chunk-client` | 49    | —      | 12.11 s       | 14.50 s       | ✅              |
-| `test-diskio-client` | 4    | —      | 43.22 s       | 14.69 s       | ✅              |
-| `test-console-shared` | 64  | 39.2 s | 9.36 s        | 179.72 s      | ✅              |
-| `test-console-cli`  | 17    | 69.4 s | 44.09 s       | 19.15 s       | ⚠️ (5 ignored)  |
-| `test-console-server` | 74  | 50.7 s | 42.72 s       | 90.31 s       | ✅              |
-| `test-console-ui`   | 138   | 165.7 s | 270.0 s      | 209.23 s      | ✅              |
+| Suite                 | Tests | macOS    | Linux (08-28) | Linux (09-06) | Status |
+| --------------------- | ----- | -------- | ------------- | ------------- | ------ |
+| `test-tree-ct`        | 444   | 20.1 s   | 15.78 s       | 42.2 s        | ✅     |
+| `test-common-ct`      | 26    | —        | 17.78 s       | 0.60 s        | ✅     |
+| `test-tree-ffi`       | 31    | 13.5 s   | 0.54 s        | 0.84 s        | ✅     |
+| `test-rpc-ct`         | 63    | —        | 2.59 s        | 4.14 s        | ✅     |
+| `test-rpc-ffi`        | 15    | —        | 0.68 s        | 0.75 s        | ✅     |
+| `test-diskio-ct`      | 99    | —        | 4.46 s        | 6.93 s        | ✅     |
+| `test-common`         | 74    | 21.9 s   | 9.78 s        | 9.99 s        | ✅     |
+| `test-protocol`       | 127   | 12.2 s   | 0.70 s        | 0.35 s        | ✅     |
+| `test-kv-core`        | 570   | 43.2 s   | 63.20 s       | 57.06 s       | ✅     |
+| `test-kv-client`      | 58    | 23.4 s   | 4.70 s        | 6.34 s        | ✅     |
+| `test-chunkdb-client` | 10    | 13.8 s   | 2.00 s        | 3.30 s        | ✅     |
+| `test-kv-server`      | 87    | 53.0 s   | 43.52 s       | 44.06 s       | ✅     |
+| `test-diskdb`         | 138   | 42.8 s   | 25.76 s       | 26.30 s       | ✅     |
+| `test-diskdb-client`  | 7     | 13.9 s   | 16.81 s       | 23.08 s       | ✅     |
+| `test-chunkdb`        | 79    | 27.8 s   | 19.75 s       | 39.32 s       | ✅     |
+| `test-chunk-client`   | 56    | —        | 12.11 s       | 10.78 s       | ✅     |
+| `test-diskio-client`  | 4     | —        | 43.22 s       | 19.31 s       | ✅     |
+| `test-console-shared` | 114   | 39.2 s   | 9.36 s        | 59.91 s       | ✅     |
+| `test-console-cli`    | 13    | 69.4 s   | 44.09 s       | 10.44 s       | ✅     |
+| `test-console-server` | 81    | 50.7 s   | 42.72 s       | 69.67 s       | ✅     |
+| `test-console-ui`     | 138   | 165.7 s  | 270.0 s       | 254.98 s      | ✅     |
+
+---
+
+## Slowest Tests (2026-09-06)
+
+All individual tests or test binaries with wall-clock time >= 7 s.
+
+| Suite                 | Time    | Test / binary                                                              |
+| --------------------- | ------- | -------------------------------------------------------------------------- |
+| `test-kv-core`        | 41.64 s | `group_test` — Paxos group election, reconfiguration, recovery (99 tests)  |
+| `test-console-shared` | 15.13 s | `lifecycle_e2e_test` — lifecycle E2E (1 test)                              |
+| `test-console-server` | 14.58 s | `replica_leader_removal_test` — leader removal (2 tests)                   |
+| `test-console-server` | 13.50 s | `rolling_upgrade_test` — rolling upgrade (1 test)                          |
+| `test-diskio-client`  | 11.15 s | `disk_io_full_test` — full disk IO E2E (1 test)                            |
+| `test-console-server` | 10.35 s | `cluster_restart_incremental_test` — restart cycles (5 tests)              |
+| `test-console-ui`     | 10.7 s  | `50-chunk-capacity-disk-group:428` — assign disk-group to diskdb via UI    |
+| `test-kv-server`      | 9.39 s  | `cluster_e2e_test` — cluster E2E with kv-server subprocess spawns (6)      |
+| `test-console-ui`     | 8.8 s   | `21-kv-reconfig:254` — stop non-leader, stop leader triggers reelection    |
+| `test-console-ui`     | 7.9 s   | `13-todo-ui-behavior:269` — close dialog, preserve KV on DiskDB fail       |
+| `test-console-ui`     | 7.7 s   | `31-kv-ops-advanced:98` — prefix/selected/inline delete + copy, load more  |
+| `test-chunkdb`        | 7.39 s  | `full_stack_test` — full stack E2E (7 tests)                               |
+| `test-console-server` | 7.37 s  | `cluster_deployer_test` — deployer lifecycle (3 tests)                     |
+| `test-common`         | 7.01 s  | `config_test` — config watcher tests (8 tests)                             |
 
 ---
 
@@ -142,208 +165,3 @@ Source: `app/crowdb-kv-server/`. Tests: 9 files.
   no network partition simulation infrastructure exists in the testkit.
   Needs a partition/drop mechanism (e.g. a proxy layer or toxiproxy-style
   interceptor) before the test can be written.
-
-## Console UI E2E (`test-console-ui`) — 2026-09-06
-
-Source: `app/crowdb-web/ui/e2e/`. 138 tests (84 Vitest + 54 Playwright),
-3 min 29.23 s for the latest incremental build (single worker, real backend +
-real `crowdb-kv-server` subprocess, system Chrome). All 54
-Playwright tests pass; 0 failures.
-
-Vitest: 7 files, 84 tests, 2.88 s. Playwright: 54 tests passed in 3.3 min.
-The task total includes the Rust build, Vitest, frontend production build,
-web-server startup, Playwright, and teardown.
-
-Before the stale group-0 fix, the clean-build baseline was 376.954 s and an
-independent incremental run reported 54 Playwright passes in 4.4 min. A second
-measured repeat took 443 s but is excluded from the passing baseline because
-the web server exited during `30-kv-ops-basic`.
-
-### Fixes applied (2026-09-06)
-
-- `http_add_rack_node` in `app/crowdb-web/src/lifecycle.rs` now guards its
-  best-effort sysdata sync with `has_fully_running_group0`, matching
-  `http_add_node` and `http_add_rack`. Without the guard, node creation via
-  `POST /api/racks/:id/nodes` attempted a full retry budget against a
-  non-existent group-0 endpoint before bootstrap, stalling the web server
-  and causing cascading E2E failures (shifting failure locations, server
-  disappearance, `ECONNREFUSED 127.0.0.1:4193`).
-- `handleRefresh` in `app/crowdb-web/ui/src/App.tsx` now always calls
-  `refreshAllServers()` regardless of the active domain. Previously
-  `refreshAllServers` was conditional on `physicalActive || capacityActive`,
-  which created a race when the domain was switched and Refresh was clicked
-  before React re-rendered. The race caused `allServers` (which drives
-  `diskdbNodeIds` and DDB tree items) to remain stale, so DDB-xxx items
-  were absent from the cluster tree even though the API confirmed DiskDB
-  registration.
-- `/internal/reset` now clears every client wrapper that owns or retains the
-  shared KV topology cache: DiskDB, service discovery, and the direct KV
-  client. It also clears cached RPC connections. Previously only the direct
-  `kv_client` slot was cleared; discovery and DiskDB wrappers kept the old
-  group-0 leader (`127.0.0.1:10001`) alive across tests.
-- `group0_available` performs an active local-process and topology check only
-  when the web server runs in E2E test mode. A cached group-0 node without a
-  live tracked process is marked down, and live candidates are refreshed
-  before group-0-backed tree reads. Production remains cache-based because a
-  production console cannot assume that a remotely hosted group-0 process has
-  a locally tracked PID.
-
-### Slowest Playwright tests (per-test wall-clock, latest run, 2026-09-06)
-
-The latest full incremental run took 0h 3m 29.23s; Playwright reported
-3.3 min. Individual test durations below are seconds.
-
-| Duration | Spec:line | Test |
-| -------- | --------- | ---- |
-| 16.9 s | `13-todo-ui-behavior:29` | creates three fully-enabled nodes and keeps derived DiskDB listeners disjoint |
-| 9.2 s  | `21-kv-reconfig:254` | stopping a non-leader keeps quorum, stopping the leader triggers reelection |
-| 8.1 s  | `13-todo-ui-behavior:269` | closes the node dialog and preserves KV when DiskDB deployment fails |
-| 7.6 s  | `31-kv-ops-advanced:98` | prefix/selected/inline delete + copy, load more, all-groups |
-| 6.6 s  | `21-kv-reconfig:313` | deleting non-leader nodes preserves quorum down to majority |
-| 6.3 s  | `21-kv-reconfig:379` | stopping shared node degrades both stores, restart recovers |
-| 6.3 s  | `51-chunk-capacity-disk:100` | disk maintenance operations, set-status, and health badges |
-| 5.4 s  | `10-cluster-rack-node:32` | creates racks and nodes through the UI and verifies the real backend |
-| 5.2 s  | `50-chunk-capacity-disk-group:565` | full deploy flow: deploy DiskDB via UI, restart, stop, delete |
-| 5.0 s  | `01-shell-ui-behaviors:31` | dialog defaults, cancel, and tree interactions |
-
-### Slow steps (>= 5 s, from `stepTimer` instrumentation, latest run)
-
-No instrumented step reached five seconds. The slowest recorded setup steps
-were the three node deployments in `13-todo-ui-behavior` at 3.160 s, 4.236 s,
-and 2.831 s; its combined topology setup was 4.186 s.
-
-### Runtime investigation result
-
-- **`10-cluster-rack-node:244`: 54.489 s → 3.3 s in full-suite order.** The
-  51.809 s `del-gate: delete rack UI` step came from stale client ownership,
-  not rack deletion itself. An earlier flow stopped group-0, but cached
-  discovery/DiskDB wrappers retained the old shared KV client after reset.
-  The later tree rebuild saw cached store 0 and retried that dead leader. Full
-  client invalidation at reset plus the E2E-only live topology check removes
-  the stale endpoint before disk-group reads. An ordered two-test reproduction
-  also passes with the target at 3.4 s.
-- **`13-todo-ui-behavior:29` (16.9 s)** — no single boundary exceeded five
-  seconds. The total is cumulative: three real KV +
-  DiskDB deployments, topology creation, and cross-domain ownership checks.
-- **`21-kv-reconfig:254` (9.2 s)** is expected election work and has no new
-  obvious slow boundary. Tests in the 5–8 s range likewise have no single
-  five-second instrumented step, so they remain acceptable.
-- The former lifecycle cascade, full-chain flow, and DiskDB capacity assignment
-  completed in 3.8 s, 4.0 s, and 2.8 s respectively.
-
-### UI E2E optimization and diagnosis lessons
-
-- Remeasure both the exact test and its original suite position before editing.
-  Before this fix, rack deletion was about 3.7 s alone but 54–55 s after the
-  preceding shell flows because the ordered run retained a dead group-0
-  endpoint.
-- Use `stepTimer` around the mutation response, service-state poll, DOM
-  refresh, and teardown. Command wall time includes the frontend build and web
-  server startup and is not the per-test regression signal.
-- Compare the exact test, complete spec, and original ordered selection. An
-  exact pass followed by a parallel suite failure points to isolation; the
-  deployer failure was confirmed as shared topology/port interference by a
-  passing serial run.
-- Preserve behavior while removing duplicate setup. The full-chain test keeps
-  one complete UI-created path; dedicated KV specs retain multi-node Add
-  Replica coverage.
-- Keep timing controls at the process boundary. DiskDB's ten-second cadence
-  became one second only under web-server test mode, while production defaults
-  stayed unchanged.
-- Test-only liveness shortcuts must use resources the test harness owns. Local
-  PID checks are valid for E2E-spawned servers but cannot define production
-  group-0 availability, where the leader may be remote.
-- Reset every owner of shared cached state, not only the factory slot that
-  originally created it. Wrapper clients can retain an `Arc` to topology and
-  connection caches after the direct slot has been cleared.
-- Poll lifecycle APIs and assert the resulting DOM instead of sleeping. Reuse
-  one API request context within a poll phase.
-- Treat strict-locator failures as missing scope: target `main`, the named
-  sidebar, or a named dialog instead of choosing a page-level first match.
-
-### Non-UI slow tests (2026-09-05)
-
-Slowest individual tests from the Rust and C++ suites measured after the
-optimizations below. C++ ctest reports per-test wall-clock; Rust reports
-per-test-binary wall-clock (individual test functions are not timed by the
-default harness). Already-fixed items (test-tree-ct GC, test-kv-core
-group_test, test-diskio-client) are omitted.
-
-| Duration | Suite | Test / binary |
-| -------- | ----- | ------------- |
-| 62.7 s   | `test-console-shared` | `ops_hardware_test.rs` (hardware ops tests) |
-| 62.7 s   | `test-console-shared` | `lib.rs` (console-shared unit tests) |
-| 31.4 s   | `test-console-shared` | `ops_kv_server_test.rs` (KV server ops) |
-| 24.0 s   | `test-diskdb` | `diskdb_e2e_test.rs` (DiskDB E2E) |
-| 20.3 s   | `test-console-server` | `lifecycle_routes_test.rs` (deploy/restart/stop) |
-| 16.1 s   | `test-console-cli` | `lifecycle_cli_test.rs` (CLI lifecycle commands) |
-| 15.2 s   | `test-console-server` | `ops_migration_test.rs` (ops migration routes) |
-| 14.1 s   | `test-console-server` | `cluster_restart_incremental_test.rs` (restart cycles) |
-| 11.5 s   | `test-kv-server` | `recovery_failure_test.rs` (failure recovery) |
-| 11.4 s   | `test-diskio-client` | `disk_io_full_test.rs` (full disk IO E2E) |
-| 10.1 s   | `test-kv-server` | `cluster_e2e_test.rs` (cluster E2E) |
-| 7.6 s    | `test-console-server` | `replica_leader_removal_test.rs` (leader removal) |
-| 7.4 s    | `test-kv-server` | `recovery_test.rs` (WAL recovery) |
-| 6.3 s    | `test-common` | `store_test.rs` (store lifecycle) |
-| 1.2 s    | `test-tree-ct` | `CompactSparseBlocksFailureInjectionTest.ReopenFromPriorAnchorIsClean/(1,true)` |
-
-Hot spots (root-cause analysis, 2026-09-05):
-
-- **`test-console-shared` ops_hardware + lib.rs (63 + 63 s)** — the two
-  binaries dominate `test-console-shared` (180 s total). `ops_hardware_test.rs`
-  has 16 `#[tokio::test]` functions exercising hardware CRUD, disk-group
-  operations, and zone loading against real subprocesses. `lib.rs` has 56 unit
-  tests with no sleeps/spawns — its 63 s is **build/link time + tokio runtime
-  startup** (24 `#[tokio::test]` functions each start a runtime). Not a pure
-  runtime bottleneck; the ops_hardware binary is the actionable target.
-- **`test-console-shared` ops_kv_server_test.rs (31 s)** — KV server ops
-  tests with real `crowdb-kv-server` subprocess spawns and leader election
-  waits. Sharing servers across tests would help.
-- **`test-diskdb` diskdb_e2e_test.rs (24 s)** — 5 tests, 15 kv-server
-  spawns (3 per test). `allocate_all_free_all` does 1536 individual
-  `allocate_block` RPC calls against a real cluster. Sharing clusters
-  across tests or reducing allocation count would help.
-- **`test-console-server` lifecycle/ops-migration (20 + 15 + 14 s)** —
-  all dominated by real `crowdb-kv-server` subprocess spawns and
-  `stop_pid_with_timeout(5s)` cleanup. `lifecycle_routes_test.rs` spawns
-  ~6 processes with 4× 5 s stop timeouts. `ops_migration_test.rs` spawns
-  1 server per test (5 tests) with 5 s stop timeout each.
-  `cluster_restart_incremental_test.rs` does ~40 process spawns across 5
-  tests. Sharing servers across tests or shortening stop timeout in test
-  mode would help.
-- **`test-console-cli` lifecycle_cli_test.rs (16 s)** — 1 test, 10 CLI
-  subprocess invocations + 1 kv-server. Server bootstrap waits 30 s
-  readiness + 5 s leader election. `kv server restart` and `stop` each
-  pay 15 s stop timeout + 30 s readiness. Reducing CLI invocations or
-  batching assertions would cut ~5 s.
-- **`test-kv-server` recovery_failure_test.rs (12 s)** — 1 test spawns a
-  full 3-node cluster just to assert `ZoneLoader` rejects a malformed
-  disk group. Over-provisioned: an in-process single-node or mock would
-  cut most of the 12 s. (Note: this file is in `crowdb-diskdb/tests/`,
-  not `crowdb-kv-server/tests/`.)
-- **`test-kv-server` cluster_e2e_test.rs (10 s)** — 6 tests, 20 kv-server
-  spawns. `--election-profile e2e` uses 300–600 ms election timeouts.
-  `wait_for_stable_leader` called 3× in the 5-node test, each with 800 ms
-  `stable_for` delay. Sharing clusters across tests where topology allows
-  would reduce spawn overhead.
-
-### Applied optimizations (2026-09-05)
-
-- **`test-tree-ct` GC/compact tests (was 53 + 31 s → now 4.5 + 4.7 s)** —
-  set `SyncMode::kSkip` (already documented as "tests/CI only" in
-  `page_store.h:31–35`) after `open_blocks()` in
-  `lib/crowdb-tree/tests/unit/gc_test.cpp:259,313`. Also applied to
-  `NormalSnapshotDoesNotRelocateSparseBlocks`. The anchor-protection test
-  retains `kFull` because it reopens the store and verifies on-disk
-  durability. `test-tree-ct` dropped from 71.7 s to 41.0 s.
-- **`test-kv-core` group_test.rs (was 45.4 s → now 36.0 s)** — lowered
-  timeout ceilings from 5/10/15 s to 3/5/5 s across all `group_test/*.rs`
-  files, and reduced `r65_replication` heartbeat test from 50 puts to 10
-  puts. All 98 tests still pass. `test-kv-core` dropped from 56.9 s to
-  45.8 s.
-- **`test-diskio-client` disk_io_full_test.rs (was 30.0 s → now 11.2 s)**
-  — reduced `BENCH_CYCLES` from 100 to 25 in
-  `lib/crowdb-test-harness/src/diskio.rs:560` (still 100 write+read RPCs
-  per backend, sufficient for concurrency smoke), and shortened group-0
-  sync interval from 2000 ms to 200 ms (`diskio.rs:201`).
-  `test-diskio-client` dropped from 44.5 s to 14.6 s.

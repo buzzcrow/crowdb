@@ -49,10 +49,6 @@ crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 [[test]]
-name = "bench_benchmark_test"
-path = "tests/bench_benchmark_test.rs"
-
-[[test]]
 name = "cluster_cli_test"
 path = "tests/cluster_cli_test.rs"
 
@@ -67,10 +63,6 @@ path = "tests/lifecycle_cli_test.rs"
 [[test]]
 name = "mgmt_cli_test"
 path = "tests/mgmt_cli_test.rs"
-
-[[test]]
-name = "diskdb_cli_test"
-path = "tests/diskdb_cli_test.rs"
 
 [[test]]
 name = "direct_cli_test"

@@ -30,7 +30,8 @@ and transport exposed through FFI.
 - Use 60-second shell timeouts by default. Start hang-prone commands in the
   background and poll. Show complete output; do not hide errors with filters.
 - Markdown is primarily read raw. Prefer bullets; use tables for real
-  comparisons only. `doc/doc_index.md` always uses tables.
+  comparisons only. `doc/doc_index.md` always uses tables. When a table is
+  used, pad columns with spaces so the raw markdown aligns visually.
 
 ## Skill dispatch
 
