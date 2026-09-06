@@ -89,7 +89,9 @@ ZONE_SIZE="${DISKDB_BENCH_ZONE_SIZE:-274877906944}"
 RUN_STAMP=$(date +%Y%m%d-%H%M%S)
 LOG_ROOT="${DISKDB_BENCH_LOG_ROOT:-$(pwd)/bench-log/diskdb-regression-$RUN_STAMP}"
 RESULTS_FILE="${DISKDB_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
-CURRENT_CONFIG=""
+REGRESSION_LOG_ROOT="$LOG_ROOT"
+source tools/bench-regression-common.sh
+CURRENT_CONFIG="$REGRESSION_CONFIG"
 FAILURES=0
 CASE_NUMBER=0
 
@@ -104,7 +106,7 @@ if [ -n "$DATA_GROUP_OVERRIDE" ] && ! [[ "$DATA_GROUP_OVERRIDE" =~ ^[1-9][0-9]*$
 fi
 
 cli() {
-    ./target/release/crowdb-cli --log-root "$LOG_ROOT" --config "$CURRENT_CONFIG" "$@"
+    regression_cli "$@"
 }
 
 destroy_cluster() {
@@ -117,12 +119,12 @@ trap destroy_cluster EXIT
 
 verify_logs() {
     local label="$1" kv_metrics diskdb_metrics cli_metrics kv_rpc diskdb_rpc cli_rpc
-    kv_metrics=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/log/crowdb-kv-server-metrics-*.log' -type f | wc -l)
-    diskdb_metrics=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/log/crowdb-diskdb-metrics-*.log' -type f | wc -l)
-    cli_metrics=$(find "$LOG_ROOT" -path '*/bench-diskdb-*/crowdb-cli-metrics-*.log' -type f | wc -l)
-    kv_rpc=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/log/crowdb-kv-server-rpc-*.log' -type f | wc -l)
-    diskdb_rpc=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/log/crowdb-diskdb-rpc-*.log' -type f | wc -l)
-    cli_rpc=$(find "$LOG_ROOT" -path '*/bench-diskdb-*/crowdb-cli-rpc-*.log' -type f | wc -l)
+    kv_metrics=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/kv-server-*/log/crowdb-kv-server-metrics-*.log' -type f | wc -l)
+    diskdb_metrics=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/diskdb-*/log/crowdb-diskdb-metrics-*.log' -type f | wc -l)
+    cli_metrics=$(find "$LOG_ROOT" -path '*/cli-bench-diskdb-*/crowdb-cli-metrics-*.log' -type f | wc -l)
+    kv_rpc=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/kv-server-*/log/crowdb-kv-server-rpc-*.log' -type f | wc -l)
+    diskdb_rpc=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/diskdb-*/log/crowdb-diskdb-rpc-*.log' -type f | wc -l)
+    cli_rpc=$(find "$LOG_ROOT" -path '*/cli-bench-diskdb-*/crowdb-cli-rpc-*.log' -type f | wc -l)
     local expected_servers=$((CASE_NUMBER * 3)) expected_clients="$CASE_NUMBER"
     if [ "$kv_metrics" -ne "$expected_servers" ] || [ "$diskdb_metrics" -ne "$expected_servers" ] \
         || [ "$cli_metrics" -ne "$expected_clients" ] || [ "$kv_rpc" -ne "$expected_servers" ] \
@@ -130,6 +132,8 @@ verify_logs() {
         echo "ERROR: incomplete logs for $label (kv=$kv_metrics/$kv_rpc diskdb=$diskdb_metrics/$diskdb_rpc cli=$cli_metrics/$cli_rpc)" >&2
         return 1
     fi
+    regression_require_metric_files 'crowdb-kv-server-metrics-*.log' rust cpp-rpc cpp-tree || return 1
+    regression_require_metric_files 'crowdb-diskdb-metrics-*.log' rust cpp-rpc || return 1
     echo "    logs: kv=$kv_metrics/$kv_rpc diskdb=$diskdb_metrics/$diskdb_rpc cli=$cli_metrics/$cli_rpc root=$LOG_ROOT"
 }
 
@@ -140,7 +144,7 @@ field() {
 
 deploy_case() {
     local label="$1" mode="$2"
-    CURRENT_CONFIG="$LOG_ROOT/$label-console.toml"
+    CURRENT_CONFIG="$REGRESSION_CONFIG"
     local backend_args=(--kv-backend mem-block --wal-backend mem-block)
     if [ "$mode" = "block" ]; then
         backend_args=(--kv-backend block --wal-backend block-device)
@@ -193,7 +197,7 @@ run_case() {
     epoll_workers="$workers"
     set +e
     output=$(timeout --signal=INT --kill-after=10 "$((DURATION + 40))" \
-        ./target/release/crowdb-cli --log-root "$LOG_ROOT" --config "$CURRENT_CONFIG" \
+        pixi run -- ./target/release/crowdb-cli --log-root "$LOG_ROOT" --config "$CURRENT_CONFIG" \
         bench diskdb "$workload" --duration-secs "$DURATION" \
         --concurrency "$concurrency" --unit-count 1 --blocks-per-request "$blocks" \
         --diskdb-connections "$DDB_CONNECTIONS" \

@@ -61,6 +61,17 @@ design is detailed in the sub-design `design-crowdb-console-ui.md`.
 - Authentication, authorization, multi-tenancy, audit logging.
 - Persisting console state beyond local config files.
 
+Local deployments use one stable directory per server process:
+`rack<id>/node<id>/<service>-<server-id>/`. Each server owns its `bin/`,
+`conf/`, and `log/` directories. KV servers additionally keep `waldata/`
+and `ctdata/` directly under the server directory. Process IDs belong in
+log filenames and persisted runtime state, not directory names, so a restart
+continues to use the same server directory.
+
+The default simulated topology is one rack containing all requested nodes.
+Benchmarks that need distinct failure domains create additional racks
+explicitly; full-stack deployment does not silently move nodes between racks.
+
 ## 2. High-Level Architecture
 
 `crowdb-console` is **one project** split across the `lib/` and `app/`
@@ -268,6 +279,13 @@ analog: CockroachDB system ranges).
     as "nothing assigned yet" and retries.
   - Console restart: two-way fallback. Group 0 missing → TOML mode;
     group 0 exists → group 0 authoritative.
+
+The TOML file remains available for the whole local-deployment lifecycle.
+Group-0 initialization does not make it disposable: subsequent CLI processes
+use it to find endpoints and tracked process IDs for status, clean, restart,
+and destroy operations. Regression runs keep `console.toml` at the retained
+run root after teardown as diagnostic state; it is not stored inside a single
+command's invocation directory.
 
 - **Group-0 sysdata schema** (text-path keys, JSON values):
   - `/hw/rack/<rack_id>` — rack metadata (`RackValue`)
@@ -702,6 +720,10 @@ config extension. The `runtime/` directory is gitignored. The
 - **Operation log** — a per-session file under `~/.lib/crowdb-kv/log/` records
   every outbound action (HTTP/crowdb-rpc/SSH) with enough detail to reproduce
   by copy-pasting the equivalent curl/crowdb-cli/ssh command.
+- Each CLI process writes beneath
+  `<log-root>/cli-<command-chain>-<timestamp>/`. The `cli-` namespace makes
+  command artifacts distinct from server directories and aggregate result
+  files.
 
 ## 9. Observability
 
@@ -711,6 +733,12 @@ config extension. The `runtime/` directory is gitignored. The
   broader observability work for `crowdb-kv-server` begins.
 - All console-issued operations attach a correlation id propagated as
   `x-crowdb-kv-corr-id` to `crowdb-kv-server` request headers.
+- Regression service metrics have a content contract: KV emits `rust`,
+  `cpp-rpc`, `cpp-tree`, and `misc`; DiskDB and ChunkDB emit `rust`,
+  `cpp-rpc`, and `misc`; DiskIO emits `cpp-rpc` and `misc`. A tracing or RPC
+  log may legitimately remain empty when its configured level observed no
+  events; metric validation therefore checks metric sections and counters
+  independently of auxiliary log size.
 
 ## 10. Open Questions
 

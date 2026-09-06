@@ -44,7 +44,13 @@ cd "$(dirname "$0")/.."
 # This is a release throughput sentinel — never run under ASan.
 unset CROWDB_ASAN
 
-RESULTS_FILE="doc/working/bench-write-regression.tsv"
+RUN_STAMP=$(date +%Y%m%d-%H%M%S)
+LOG_ROOT="${KV_WRITE_BENCH_LOG_ROOT:-$(pwd)/bench-log/kv-write-regression-$RUN_STAMP}"
+RESULTS_FILE="${KV_WRITE_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
+REGRESSION_LOG_ROOT="$LOG_ROOT"
+source tools/bench-regression-common.sh
+export CROWDB_LOG_ROOT="$LOG_ROOT"
+regression_init
 DURATION=20
 KEYSPACE=1000000
 VALUE_SIZE=512
@@ -159,7 +165,7 @@ run_bench() {
 # group 0 sysdata.
 deploy_group() {
     local name="$1" win="$2" coalesce="$3" workers="$4"
-    local config_file="/tmp/bench-write-reg-${name}.toml"
+    local config_file="$LOG_ROOT/${name}-console.toml"
     echo "=== deploying cluster '$name' (win=$win, coalesce=$coalesce, workers=$workers) ==="
     rm -f "$config_file"
     pixi run -- cargo run --release -p crowdb-cli -- --config "$config_file" \
@@ -172,7 +178,7 @@ deploy_group() {
     pixi run -- cargo run --release -p crowdb-cli -- --config "$config_file" \
         kv group add -s 0 -g 1 -n 1,2,3 2>&1 | tail -3
     # Store config path for run_bench/teardown_group.
-    echo "$config_file" > "/tmp/bench-write-reg-${name}.cfgpath"
+    echo "$config_file" > "$LOG_ROOT/${name}.cfgpath"
     # Baseline RSS right after deploy (before any sub-test).
     local _baseline; _baseline=$(sample_rss "$config_file" "post-deploy-baseline")
 }
@@ -181,11 +187,11 @@ deploy_group() {
 teardown_group() {
     local name="$1"
     local config_file
-    config_file=$(cat "/tmp/bench-write-reg-${name}.cfgpath" 2>/dev/null || echo "")
+    config_file=$(cat "$LOG_ROOT/${name}.cfgpath" 2>/dev/null || echo "")
     if [ -n "$config_file" ] && [ -f "$config_file" ]; then
         pixi run -- cargo run --release -p crowdb-cli -- --config "$config_file" \
             cluster destroy 2>&1 | tail -2
-        rm -f "$config_file" "/tmp/bench-write-reg-${name}.cfgpath"
+        rm -f "$LOG_ROOT/${name}.cfgpath"
     fi
 }
 

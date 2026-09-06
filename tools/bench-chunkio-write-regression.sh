@@ -28,8 +28,10 @@ TIMEOUT_SECS="${CHUNKIO_BENCH_TIMEOUT:-120}"
 RUN_STAMP=$(date +%Y%m%d-%H%M%S)
 LOG_ROOT="${CHUNKIO_BENCH_LOG_ROOT:-$(pwd)/bench-log/chunkio-write-regression-$RUN_STAMP}"
 RESULTS_FILE="${CHUNKIO_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
-CURRENT_CONFIG=""
-CURRENT_LOG_ROOT=""
+REGRESSION_LOG_ROOT="$LOG_ROOT"
+source tools/bench-regression-common.sh
+CURRENT_CONFIG="$REGRESSION_CONFIG"
+CURRENT_LOG_ROOT="$LOG_ROOT"
 BENCH_LOG_DIR=""
 FAILURES=0
 
@@ -39,16 +41,14 @@ if ! [[ "$TIMEOUT_SECS" =~ ^[1-9][0-9]*$ ]]; then
 fi
 
 cli() {
-    ./target/release/crowdb-cli --log-root "$CURRENT_LOG_ROOT" --config "$CURRENT_CONFIG" "$@"
+    regression_cli "$@"
 }
 
 destroy_cluster() {
     if [ -n "$CURRENT_CONFIG" ] && [ -f "$CURRENT_CONFIG" ]; then
-        timeout 30 ./target/release/crowdb-cli --log-root "$CURRENT_LOG_ROOT" \
-            --config "$CURRENT_CONFIG" cluster destroy || true
+        regression_destroy
     fi
     CURRENT_CONFIG=""
-    CURRENT_LOG_ROOT=""
 }
 trap destroy_cluster EXIT
 
@@ -84,7 +84,11 @@ verify_logs() {
         && rg -q 'chunkio\.object\.write\.e2e\.lh' "$cli_metrics_file" \
         && rg -q 'chunkio\.chunk\.allocate\.e2e\.lh' "$cli_metrics_file" \
         && rg -q 'chunkio\.diskio\.write\.e2e\.lh' "$cli_metrics_file" \
-        && rg -q 'chunkio\.diskio\.fsync\.e2e\.lh' "$cli_metrics_file"
+        && rg -q 'chunkio\.diskio\.fsync\.e2e\.lh' "$cli_metrics_file" \
+        && regression_require_metric_files 'crowdb-kv-server-metrics-*.log' rust cpp-rpc cpp-tree \
+        && regression_require_metric_files 'crowdb-diskdb-metrics-*.log' rust cpp-rpc \
+        && regression_require_metric_files 'crowdb-chunkdb-metrics-*.log' rust cpp-rpc \
+        && regression_require_metric_files 'crowdb-diskio-metrics-*.log' cpp-rpc
 }
 
 run_case() {
@@ -92,8 +96,7 @@ run_case() {
     if [ -n "$CASES" ] && [[ " $CASES " != *" $label "* ]]; then
         return
     fi
-    CURRENT_LOG_ROOT="$LOG_ROOT/$label-$RUN_STAMP"
-    CURRENT_CONFIG="$CURRENT_LOG_ROOT/console.toml"
+    CURRENT_CONFIG="$REGRESSION_CONFIG"
     echo ">>> $label (objects=$objects size=$object_size concurrency=$concurrency EC=4+1)"
     set +e
     cli cluster local-deploy -t combined --metrics-interval 1 --allow-unsafe-ec
@@ -112,7 +115,7 @@ run_case() {
     local output status line avg_bw max_bw
     set +e
     output=$(timeout --signal=INT --kill-after=10 "$TIMEOUT_SECS" \
-        ./target/release/crowdb-cli --log-root "$CURRENT_LOG_ROOT" --config "$CURRENT_CONFIG" \
+        pixi run -- ./target/release/crowdb-cli --log-root "$CURRENT_LOG_ROOT" --config "$CURRENT_CONFIG" \
         bench chunkio write --objects "$objects" --object-size "$object_size" \
         --concurrency "$concurrency" --data-num 4 --code-num 1 \
         --block-size 1048576 --chunk-size 1073741824 --seed 1 \
@@ -170,6 +173,7 @@ echo "=== building release binaries ==="
 pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
 pixi run build-cpp
 mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"
+regression_init
 printf 'case\trequested\tsize_bytes\tsize_mib\tconcurrency\tcompleted\terrors\tincomplete\tstop\tobjects_s\tlogical_mib_s\tphysical_mib_s\tp50_us\tp99_us\tmem_bw_avg_mib\tmem_bw_max_mib\n' >"$RESULTS_FILE"
 
 run_case large_1t 2 67108864 1

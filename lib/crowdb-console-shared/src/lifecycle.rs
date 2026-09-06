@@ -294,8 +294,8 @@ async fn deploy_local_in_workspace(
         cmd.arg(arg);
     }
     if let Some(dir) = workspace_dir {
-        // The workspace dir is the node root; waldata/conf/ctdata/log
-        // are derived subdirs.
+        // The workspace dir is the server root; waldata/conf/ctdata/log
+        // are direct children.
         cmd.arg("--root").arg(dir);
         // Merge stdout and stderr into one file. We open a temp file before
         // spawn (PID unknown), then rename it with the PID after spawn.
@@ -946,6 +946,7 @@ pub async fn deploy_diskdb_local(
             message: "listen_port, http_port, and rpc_port must all be non-zero".into(),
         });
     }
+    std::fs::create_dir_all(workspace_dir.join("log"))?;
 
     // Use the pre-copied binary in the workspace bin/ dir, falling
     // back to a PATH/env search if not yet staged.

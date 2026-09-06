@@ -14,11 +14,12 @@
 // Engine is auto-detected — no --engine flag. Disks with an empty path
 // are dummy disks (NullDisk by default, MemDisk with --dummy-disk mem).
 
+#include "crowdb-common/metrics/metrics.h"
+#include "crowdb-common/metrics/system_metrics.h"
 #include "crowdb-kv-client/c_api.h"
 #include "crowdb-rpc/scheduled_executor.h"
 #include "crowdb-rpc/server/server.h"
 #include "crowdb-rpc/transport/socket_transport.h"
-#include "crowdb-common/metrics/system_metrics.h"
 #include "dio_config.h"
 #include "disk/block_disk.h"
 #include "disk/disk_set.h"
@@ -52,8 +53,8 @@ static void on_signal(int)
 // Format a timestamp as ISO 8601 (matching the Rust metrics runner).
 static std::string iso8601_now()
 {
-    auto now = std::chrono::system_clock::now();
-    auto tt  = std::chrono::system_clock::to_time_t(now);
+    auto      now = std::chrono::system_clock::now();
+    auto      tt  = std::chrono::system_clock::to_time_t(now);
     struct tm tm_buf;
     gmtime_r(&tt, &tm_buf);
     char buf[32];
@@ -68,7 +69,7 @@ static FILE *open_metrics_log(const std::string &log_dir)
     std::error_code ec;
     std::filesystem::create_directories(log_dir, ec);
     std::string path = log_dir + "/crowdb-diskio-metrics-" + std::to_string(::getpid()) + ".log";
-    FILE *fp = std::fopen(path.c_str(), "a");
+    FILE       *fp   = std::fopen(path.c_str(), "a");
     if (fp != nullptr) {
         std::setvbuf(fp, nullptr, _IOLBF, 0); // line-buffered
         std::printf("metrics log: %s\n", path.c_str());
@@ -78,16 +79,14 @@ static FILE *open_metrics_log(const std::string &log_dir)
 
 // Periodic system metrics flush. Reschedules itself on the executor
 // every interval_secs to emulate a periodic timer.
-static void schedule_metrics_flush(
-    crowdb::rpc::ScheduledExecutor &scheduler,
-    crowdb::common::metrics::SystemCollector &collector,
-    FILE *metrics_fp,
-    uint32_t interval_secs)
+static void schedule_metrics_flush(crowdb::rpc::ScheduledExecutor           &scheduler,
+                                   crowdb::common::metrics::SystemCollector &collector, FILE *metrics_fp,
+                                   uint32_t interval_secs)
 {
-    auto *sched_ptr  = &scheduler;
-    auto *coll_ptr   = &collector;
-    auto *fp_ptr     = metrics_fp;
-    auto  interval   = interval_secs;
+    auto *sched_ptr = &scheduler;
+    auto *coll_ptr  = &collector;
+    auto *fp_ptr    = metrics_fp;
+    auto  interval  = interval_secs;
 
     scheduler.schedule(
         [sched_ptr, coll_ptr, fp_ptr, interval]() {
@@ -96,10 +95,11 @@ static void schedule_metrics_flush(
 
             auto snap = coll_ptr->collect();
             auto ts   = iso8601_now();
-            std::fprintf(fp_ptr, "[%s window=%.3fs]\n", ts.c_str(),
-                         static_cast<double>(interval));
+            std::fprintf(fp_ptr, "[%s window=%.3fs]\n", ts.c_str(), static_cast<double>(interval));
             std::fprintf(fp_ptr, "misc\n");
             crowdb::common::metrics::flush_system(fp_ptr, snap);
+            crowdb::common::metrics::MetricsRegistry::global().flush_to(fp_ptr, static_cast<double>(interval),
+                                                                        ts.c_str(), "cpp-rpc", 0);
             std::fflush(fp_ptr);
 
             // Reschedule for the next tick.
@@ -247,7 +247,7 @@ int main(int argc, char *argv[])
 
     // Start system metrics logging (CPU, RSS, TCP, DRAM BW).
     std::unique_ptr<crowdb::common::metrics::SystemCollector> sys_collector;
-    FILE *metrics_fp = nullptr;
+    FILE                                                     *metrics_fp = nullptr;
     if (cfg.metrics_interval_secs > 0) {
         metrics_fp = open_metrics_log(cfg.metrics_log_dir);
         if (metrics_fp != nullptr) {
@@ -272,6 +272,8 @@ int main(int argc, char *argv[])
         std::fprintf(metrics_fp, "[%s window=final]\n", ts.c_str());
         std::fprintf(metrics_fp, "misc\n");
         crowdb::common::metrics::flush_system(metrics_fp, snap);
+        crowdb::common::metrics::MetricsRegistry::global().flush_to(
+            metrics_fp, static_cast<double>(cfg.metrics_interval_secs), ts.c_str(), "cpp-rpc", 0);
         std::fflush(metrics_fp);
         std::fclose(metrics_fp);
     }

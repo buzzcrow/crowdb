@@ -2,7 +2,7 @@
 # CROWDB ChunkDB EC allocation regression.
 #
 # Three co-located logical nodes, each running KV, DiskDB, and ChunkDB.
-# The fixture has three racks, three KV data groups, and four 4-TiB logical
+# The fixture has one rack, three KV data groups, and four 4-TiB logical
 # disks per DiskDB. Each operation allocates one EC 8+4 strip. DiskDB requests
 # are batched per data group within that strip; strips are not batched together.
 #
@@ -40,7 +40,9 @@ ZONE_SIZE="${CHUNKDB_BENCH_ZONE_SIZE:-274877906944}"
 RUN_STAMP=$(date +%Y%m%d-%H%M%S)
 LOG_ROOT="${CHUNKDB_BENCH_LOG_ROOT:-$(pwd)/bench-log/chunkdb-regression-$RUN_STAMP}"
 RESULTS_FILE="${CHUNKDB_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
-CURRENT_CONFIG=""
+REGRESSION_LOG_ROOT="$LOG_ROOT"
+source tools/bench-regression-common.sh
+CURRENT_CONFIG="$REGRESSION_CONFIG"
 FAILURES=0
 CASE_NUMBER=0
 
@@ -51,7 +53,7 @@ if ! [[ "$DURATION" =~ ^[1-9][0-9]*$ ]] || ! [[ "$DISK_CAPACITY" =~ ^[1-9][0-9]*
 fi
 
 cli() {
-    ./target/release/crowdb-cli --log-root "$LOG_ROOT" --config "$CURRENT_CONFIG" "$@"
+    regression_cli "$@"
 }
 
 destroy_cluster() {
@@ -70,14 +72,14 @@ field() {
 verify_logs() {
     local label="$1" kv_metrics diskdb_metrics chunkdb_metrics cli_metrics
     local kv_rpc diskdb_rpc chunkdb_rpc cli_rpc expected_servers expected_clients
-    kv_metrics=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/log/crowdb-kv-server-metrics-*.log' -type f | wc -l)
-    diskdb_metrics=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/log/crowdb-diskdb-metrics-*.log' -type f | wc -l)
-    chunkdb_metrics=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/log/crowdb-chunkdb-metrics-*.log' -type f | wc -l)
-    cli_metrics=$(find "$LOG_ROOT" -path '*/bench-chunkdb-*/crowdb-cli-metrics-*.log' -type f | wc -l)
-    kv_rpc=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/log/crowdb-kv-server-rpc-*.log' -type f | wc -l)
-    diskdb_rpc=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/log/crowdb-diskdb-rpc-*.log' -type f | wc -l)
-    chunkdb_rpc=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/log/crowdb-chunkdb-rpc-*.log' -type f | wc -l)
-    cli_rpc=$(find "$LOG_ROOT" -path '*/bench-chunkdb-*/crowdb-cli-rpc-*.log' -type f | wc -l)
+    kv_metrics=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/kv-server-*/log/crowdb-kv-server-metrics-*.log' -type f | wc -l)
+    diskdb_metrics=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/diskdb-*/log/crowdb-diskdb-metrics-*.log' -type f | wc -l)
+    chunkdb_metrics=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/chunkdb-*/log/crowdb-chunkdb-metrics-*.log' -type f | wc -l)
+    cli_metrics=$(find "$LOG_ROOT" -path '*/cli-bench-chunkdb-*/crowdb-cli-metrics-*.log' -type f | wc -l)
+    kv_rpc=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/kv-server-*/log/crowdb-kv-server-rpc-*.log' -type f | wc -l)
+    diskdb_rpc=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/diskdb-*/log/crowdb-diskdb-rpc-*.log' -type f | wc -l)
+    chunkdb_rpc=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/chunkdb-*/log/crowdb-chunkdb-rpc-*.log' -type f | wc -l)
+    cli_rpc=$(find "$LOG_ROOT" -path '*/cli-bench-chunkdb-*/crowdb-cli-rpc-*.log' -type f | wc -l)
     expected_servers=$((CASE_NUMBER * 3))
     expected_clients="$CASE_NUMBER"
     if [ "$kv_metrics" -ne "$expected_servers" ] || [ "$diskdb_metrics" -ne "$expected_servers" ] \
@@ -87,6 +89,9 @@ verify_logs() {
         echo "ERROR: incomplete logs for $label (kv=$kv_metrics/$kv_rpc diskdb=$diskdb_metrics/$diskdb_rpc chunkdb=$chunkdb_metrics/$chunkdb_rpc cli=$cli_metrics/$cli_rpc)" >&2
         return 1
     fi
+    regression_require_metric_files 'crowdb-kv-server-metrics-*.log' rust cpp-rpc cpp-tree || return 1
+    regression_require_metric_files 'crowdb-diskdb-metrics-*.log' rust cpp-rpc || return 1
+    regression_require_metric_files 'crowdb-chunkdb-metrics-*.log' rust cpp-rpc || return 1
     echo "    logs: kv=$kv_metrics/$kv_rpc diskdb=$diskdb_metrics/$diskdb_rpc chunkdb=$chunkdb_metrics/$chunkdb_rpc cli=$cli_metrics/$cli_rpc"
 }
 
@@ -95,9 +100,9 @@ run_case() {
     if [ -n "$CASES" ] && [[ " $CASES " != *" $label "* ]]; then
         return
     fi
+    CURRENT_CONFIG="$REGRESSION_CONFIG"
     local connections="${CONNECTIONS_OVERRIDE:-$profile_connections}"
     local workers="${RPC_WORKERS_OVERRIDE:-$profile_workers}"
-    CURRENT_CONFIG="$LOG_ROOT/$label-console.toml"
     CASE_NUMBER=$((CASE_NUMBER + 1))
     echo ">>> $label (EC 8+4, concurrency=$concurrency)"
     cli cluster local-deploy -t combined \
@@ -113,7 +118,7 @@ run_case() {
     local output status line space busy expected
     set +e
     output=$(timeout --signal=INT --kill-after=10 "$((DURATION + 40))" \
-        ./target/release/crowdb-cli --log-root "$LOG_ROOT" --config "$CURRENT_CONFIG" \
+        pixi run -- ./target/release/crowdb-cli --log-root "$LOG_ROOT" --config "$CURRENT_CONFIG" \
         bench chunkdb allocate --duration-secs "$DURATION" --concurrency "$concurrency" \
         --chunkdb-connections "$connections" --chunkdb-client-rpc-workers "$workers" \
         --strip-count 1 --strip-type ec --data-num 8 --code-num 4 \
@@ -153,6 +158,7 @@ run_case() {
 echo "=== building release binaries ==="
 pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
 mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"
+regression_init
 printf 'Wl\tGrp\tThr\tStrip\tEC\tCli\tCdb\tDdb\tKv\tWkr\tWin\tCoal\tchunk/s\tblock/s\tp50\tp99\tDur\tErr\tStop\tSpc\n' >"$RESULTS_FILE"
 
 run_case 1 allocate_ec8_4_1t 2 2

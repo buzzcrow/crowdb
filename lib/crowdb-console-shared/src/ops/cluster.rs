@@ -620,7 +620,7 @@ pub struct LocalChunkdbDeployConfig {
     pub metrics_interval: Option<u64>,
 }
 
-/// Summary of the three-node, three-rack full `ChunkDB` benchmark stack.
+/// Summary of the three-node, one-rack full `ChunkDB` benchmark stack.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LocalCombinedDeploySummary {
     pub kv_nodes: usize,
@@ -642,7 +642,6 @@ pub async fn local_deploy_combined(
     chunk: &LocalChunkdbDeployConfig,
 ) -> Result<LocalCombinedDeploySummary> {
     local_deploy(ctx, 3, Some(workspace), tunables).await?;
-    assign_benchmark_racks(ctx).await?;
     for group_id in &disk.data_groups {
         crate::ops::kv_logical::add_group(ctx, 0, *group_id, 100 + *group_id, &[1, 2, 3]).await?;
     }
@@ -651,7 +650,7 @@ pub async fn local_deploy_combined(
     let chunkdb = local_deploy_chunkdb(ctx, workspace, chunk).await?;
     Ok(LocalCombinedDeploySummary {
         kv_nodes: 3,
-        racks: 3,
+        racks: 1,
         diskdb_instances: diskdb.instance_count,
         chunkdb_instances: chunkdb.instance_count,
         diskio_instances: diskio,
@@ -763,49 +762,6 @@ async fn wait_for_diskio_registration(ctx: &OpContext, expected: &HashMap<u64, (
     }
 }
 
-async fn assign_benchmark_racks(ctx: &OpContext) -> Result<()> {
-    for rack_id in 1..=3 {
-        if ctx.config().racks.iter().all(|rack| rack.id != rack_id) {
-            ctx.config_mut().add_rack(RackEntry {
-                id: rack_id,
-                name: format!("rack-{rack_id}"),
-            })?;
-        }
-        ctx.sysmd()
-            .add_rack(
-                rack_id,
-                &RackValue {
-                    status: HwStatus::Up as i32,
-                    node_ids: Vec::new(),
-                },
-            )
-            .await?;
-    }
-    for node_id in 1..=3 {
-        let rack_id = node_id;
-        if rack_id != 1 {
-            ctx.sysmd().remove_node(1, node_id).await?;
-        }
-        if let Some(node) = ctx.config_mut().nodes.iter_mut().find(|node| node.id == node_id) {
-            node.rack_id = rack_id;
-        }
-        ctx.sysmd()
-            .add_node(
-                rack_id,
-                node_id,
-                &NodeValue {
-                    status: HwStatus::Up as i32,
-                    last_used_dg_id: 0,
-                    disk_group_ids: Vec::new(),
-                    status_changed_at_ms: 0,
-                    temp_failure_since_ms: None,
-                },
-            )
-            .await?;
-    }
-    Ok(())
-}
-
 /// Attach `instance_count` `ChunkDB` instances to distinct configured nodes.
 ///
 /// # Errors
@@ -856,7 +812,7 @@ pub async fn local_deploy_chunkdb(
     let deployments = futures::future::join_all(nodes.into_iter().take(instance_count).enumerate().map(
         |(index, node)| {
             let instance_id = 20_000 + u64::try_from(index).unwrap_or(u64::MAX);
-            let server_id = format!("chunkdb-{instance_id}");
+            let server_id = format!("chunkdb-{}", index + 1);
             let node_dir = workspace
                 .join(format!("rack{}", node.rack_id))
                 .join(format!("node{}", node.id))
@@ -1129,11 +1085,11 @@ async fn deploy_diskdb_instances(
         .map(|server| server.url.clone())
         .collect::<Vec<_>>();
     for (index, node) in nodes.iter().enumerate() {
-        let node_dir = workspace
-            .join(format!("rack{}", node.rack_id))
-            .join(format!("node{}", node.id));
-        std::fs::create_dir_all(node_dir.join("log"))?;
         let server_id = format!("diskdb-{}", node.id);
+        let server_dir = workspace
+            .join(format!("rack{}", node.rack_id))
+            .join(format!("node{}", node.id))
+            .join(&server_id);
         let deployed = lifecycle::deploy_diskdb_local(
             &DiskdbDeployRequest {
                 server_id: server_id.clone(),
@@ -1149,7 +1105,7 @@ async fn deploy_diskdb_instances(
                 kv_server_mgmt_seeds: seeds.clone(),
             },
             node,
-            &node_dir,
+            &server_dir,
         )
         .await?;
         ctx.config_mut().add_server(ServerEntry {
@@ -1405,14 +1361,15 @@ async fn deploy_servers(
             ssh_key: None,
             ssh_password: None,
         };
-        // Each node gets its own subdirectory under the workspace so
-        // WAL data, btree data, and logs are isolated per kv-server.
-        let node_dir = workspace
+        // Every process owns a stable server directory. WAL and btree data
+        // remain direct children of that directory as waldata/ and ctdata/.
+        let server_dir = workspace
             .join(format!("rack{rack_id}"))
-            .join(format!("node{nid}"));
-        std::fs::create_dir_all(node_dir.join("log"))?;
-        std::fs::create_dir_all(node_dir.join("bin"))?;
-        let deployed = lifecycle::deploy_local_in_dir(&req, &node_entry, &node_dir).await?;
+            .join(format!("node{nid}"))
+            .join(format!("kv-server-{nid}"));
+        std::fs::create_dir_all(server_dir.join("log"))?;
+        std::fs::create_dir_all(server_dir.join("bin"))?;
+        let deployed = lifecycle::deploy_local_in_dir(&req, &node_entry, &server_dir).await?;
 
         let mut cfg = ctx.config_mut();
         cfg.add_server(ServerEntry {

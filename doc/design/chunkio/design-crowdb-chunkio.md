@@ -385,10 +385,11 @@ application-independent aggregate throughput, latency, error, and preparation
 stall fields. `crowdb-cli bench chunkio write` only maps arguments, starts the
 standard process metrics collector, and formats the result.
 
-The regression fixture starts three co-located logical nodes: three KV
-servers, three DiskDB, three ChunkDB, and three DiskIO processes backed by
-`NullDisk`. A 4+1 strip on three racks requires the local-test-only unsafe EC
-placement option; disk ownership and routing remain strict. The retained logs
+The regression fixture starts three co-located logical nodes in one rack:
+three KV servers, three DiskDB, three ChunkDB, and three DiskIO processes
+backed by `NullDisk`. A 4+1 strip in this intentionally compact local topology
+requires the local-test-only unsafe EC placement option; disk ownership and
+routing remain strict. The retained logs
 contain `bw_mib` when host PMU counters are available. This is observed host
 memory traffic during the workload, not physical DIMM peak bandwidth and not
 an application-byte estimate. Loopback TCP, EC expansion, RPC framing, kernel

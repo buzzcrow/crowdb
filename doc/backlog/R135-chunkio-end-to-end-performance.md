@@ -141,7 +141,7 @@ and use it to remove measured critical-path and memory-copy costs.
 
 8. **Three-node benchmark deployment** — extend
    `lib/crowdb-console-shared/src/ops/cluster.rs` and CLI deployment to start
-   three racks/nodes, three KV servers, three DiskDB, three ChunkDB, and three
+   one rack with three nodes, three KV servers, three DiskDB, three ChunkDB, and three
    DiskIO using `NullDisk`. Create group 0, three replicated KV data groups,
    and one DiskIO-owned disk group per node. Wait for leaders, registrations,
    bindings, topology, and disk discovery before measurement.
@@ -171,11 +171,12 @@ and use it to remove measured critical-path and memory-copy costs.
 
 11. **Regression sentinel and retained artifacts** — add
     `tools/bench-chunkio-write-regression.sh`, following R98/R131. Build the
-    five binaries, deploy a fresh topology per case, run a bounded object-size
-    and concurrency matrix, and retain parameters, results, and CLI plus all
-    twelve service logs. Continue after individual failures, preserve partial
-    data on timeout, destroy the cluster, and exit non-zero after the matrix if
-    any correctness or execution gate failed.
+    five binaries, group cases by deploy-time configuration, clean and restart
+    stateful services between compatible cases, run a bounded object-size and
+    concurrency matrix, and retain parameters, results, and CLI plus all twelve
+    service logs. Continue after individual failures, preserve partial data on
+    timeout, destroy the cluster, and exit non-zero after the matrix if any
+    correctness or execution gate failed.
 
 ```text
 Preparation path: object request -> bounded chunk/strip allocation
@@ -242,7 +243,7 @@ Edge-case outcomes:
 **Deployment and routing**:
 
 - Start a clean local fixture -> inspect configuration and service registry ->
-  assert exactly three racks, three nodes, three KV servers, three DiskDB,
+  assert exactly one rack, three nodes, three KV servers, three DiskDB,
   three ChunkDB, three DiskIO, group 0, three replicated data groups, and one
   DiskIO-owned disk group per node. Invariant: benchmark topology matches the
   production-shaped three-node layout. E2E test.

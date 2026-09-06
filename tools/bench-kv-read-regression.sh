@@ -35,7 +35,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-RESULTS_FILE="doc/working/bench-read-regression.tsv"
+RUN_STAMP=$(date +%Y%m%d-%H%M%S)
+LOG_ROOT="${KV_READ_BENCH_LOG_ROOT:-$(pwd)/bench-log/kv-read-regression-$RUN_STAMP}"
+RESULTS_FILE="${KV_READ_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
+REGRESSION_LOG_ROOT="$LOG_ROOT"
+source tools/bench-regression-common.sh
+export CROWDB_LOG_ROOT="$LOG_ROOT"
+regression_init
 DURATION=20
 KEYSPACE=100000
 DEPLOY_NAME="kv-read-regression-$$"
@@ -125,8 +131,7 @@ echo -e "label\tread_mode\tT:C\tverify\tops_s\tavg_us\tp50_us\tp99_us\tp999_us\t
 
 # Phase 1: deploy the cluster once via `cluster local-deploy`.
 echo "=== Deploying 3-node KV cluster via local-deploy ==="
-CONFIG_FILE="/tmp/bench-read-regression-$$.toml"
-rm -f "$CONFIG_FILE"
+CONFIG_FILE="$REGRESSION_CONFIG"
 pixi run -- cargo run --release -p crowdb-cli -- --config "$CONFIG_FILE" \
     cluster local-deploy -n 3 -t kv \
     --kv-backend mem-block --wal-backend mem-block
@@ -163,7 +168,6 @@ run_subtest "minslot_16t_verify" minslot      zero 16 16 8
 echo "=== Tearing down cluster ==="
 pixi run -- cargo run --release -p crowdb-cli -- --config "$CONFIG_FILE" \
     cluster destroy
-rm -f "$CONFIG_FILE"
 
 echo "=== DONE ==="
 echo "Results in $RESULTS_FILE"

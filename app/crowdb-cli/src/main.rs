@@ -44,7 +44,7 @@ struct Cli {
     json: bool,
 
     /// Root directory for this run's logs. Each invocation creates a
-    /// per-run subfolder `<root>/<command-chain>-<YYYYMMDD-HHMMSS>/`
+    /// per-run subfolder `<root>/cli-<command-chain>-<YYYYMMDD-HHMMSS>/`
     /// holding the tracing log, crowdb-rpc transport log, and ops log.
     /// Defaults to `cli-log/` (resolved from CWD). Regression scripts
     /// typically pass a fixed root (e.g. `bench-log`) so runs accumulate
@@ -169,7 +169,7 @@ fn main() -> ExitCode {
 
     // Each CLI run gets its own log folder so logs from different
     // invocations don't interleave. The folder is
-    // `<log_root>/<command-chain>-<YYYYMMDD-HHMMSS>/` and holds the
+    // `<log_root>/cli-<command-chain>-<YYYYMMDD-HHMMSS>/` and holds the
     // tracing log, the C++ crowdb-rpc transport log, and the ops log.
     // `--log-root` defaults to `cli-log/` (CWD-relative); regression
     // scripts pass a fixed root (e.g. `bench-log`) to accumulate runs.
@@ -179,7 +179,7 @@ fn main() -> ExitCode {
             .join("cli-log")
     });
     let invocation_dir = log_root.join(format!(
-        "{}-{}",
+        "cli-{}-{}",
         cli.command_slug(),
         crowdb_common::logging::timestamp_secs()
     ));

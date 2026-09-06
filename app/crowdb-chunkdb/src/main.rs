@@ -366,7 +366,20 @@ fn create_metrics(
     }
     let file = crowdb_common::logging::open_metrics_log(log_dir, "crowdb-chunkdb", max_file_mb, max_files)
         .expect("failed to open metrics log file");
-    let runner = MetricsRunner::new(file, interval_secs);
+    let mut runner = MetricsRunner::new(file, interval_secs);
+    runner.set_cpp_flush(|writer, window_secs, timestamp, rust_width, count_w, tps_w| {
+        let cpp_width = crowdb_rpc_ffi::cpp_global_metrics_max_name_len();
+        if let Some(metrics) = crowdb_rpc_ffi::flush_cpp_global_metrics(
+            window_secs,
+            timestamp,
+            "cpp-rpc",
+            rust_width.max(cpp_width),
+            count_w,
+            tps_w,
+        ) {
+            let _ = std::io::Write::write_all(writer, metrics.as_bytes());
+        }
+    });
     let metrics = {
         let mut registry = runner
             .registry()
