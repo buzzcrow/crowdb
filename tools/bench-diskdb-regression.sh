@@ -94,6 +94,8 @@ source tools/bench-regression-common.sh
 CURRENT_CONFIG="$REGRESSION_CONFIG"
 FAILURES=0
 CASE_NUMBER=0
+DEPLOY_NUMBER=0
+CASE_IN_GROUP=0
 
 if ! [[ "$DURATION" =~ ^[1-9][0-9]*$ ]] \
     || ! [[ "$DISK_CAPACITY" =~ ^[1-9][0-9]*$ ]] || ! [[ "$ZONE_SIZE" =~ ^[1-9][0-9]*$ ]]; then
@@ -126,9 +128,9 @@ verify_logs() {
     diskdb_rpc=$(find "$LOG_ROOT" -path '*/deploy/rack*/node*/diskdb-*/log/crowdb-diskdb-rpc-*.log' -type f | wc -l)
     cli_rpc=$(find "$LOG_ROOT" -path '*/cli-bench-diskdb-*/crowdb-cli-rpc-*.log' -type f | wc -l)
     local expected_servers=$((CASE_NUMBER * 3)) expected_clients="$CASE_NUMBER"
-    if [ "$kv_metrics" -ne "$expected_servers" ] || [ "$diskdb_metrics" -ne "$expected_servers" ] \
-        || [ "$cli_metrics" -ne "$expected_clients" ] || [ "$kv_rpc" -ne "$expected_servers" ] \
-        || [ "$diskdb_rpc" -ne "$expected_servers" ] || [ "$cli_rpc" -ne "$expected_clients" ]; then
+    if [ "$kv_metrics" -ne $((DEPLOY_NUMBER * 3)) ] || [ "$diskdb_metrics" -lt "$expected_servers" ] \
+        || [ "$cli_metrics" -ne "$expected_clients" ] || [ "$kv_rpc" -ne $((DEPLOY_NUMBER * 3)) ] \
+        || [ "$diskdb_rpc" -lt "$expected_servers" ] || [ "$cli_rpc" -ne "$expected_clients" ]; then
         echo "ERROR: incomplete logs for $label (kv=$kv_metrics/$kv_rpc diskdb=$diskdb_metrics/$diskdb_rpc cli=$cli_metrics/$cli_rpc)" >&2
         return 1
     fi
@@ -142,9 +144,30 @@ field() {
     sed -n "s/.*${name}=\([^ ]*\).*/\1/p" <<<"$line"
 }
 
-deploy_case() {
-    local label="$1" mode="$2"
+any_case_selected() {
+    [ -z "$CASES" ] && return 0
+    local label
+    for label in "$@"; do
+        [[ " $CASES " == *" $label "* ]] && return 0
+    done
+    return 1
+}
+
+deploy_group() {
+    local mode="$1" profile_connections="$2" profile_workers="$3" profile_groups="$4"
     CURRENT_CONFIG="$REGRESSION_CONFIG"
+    CASE_IN_GROUP=0
+    DEPLOY_NUMBER=$((DEPLOY_NUMBER + 1))
+    local connections="${CONNECTIONS_OVERRIDE:-$profile_connections}"
+    local workers="${RPC_WORKERS_OVERRIDE:-$profile_workers}"
+    DATA_GROUP_COUNT="${DATA_GROUP_OVERRIDE:-$profile_groups}"
+    DDB_CONNECTIONS="$connections"
+    KV_CONNECTIONS="$connections"
+    KV_PEER_POOL="$connections"
+    DDB_CLIENT_WORKERS="$workers"
+    DDB_RPC_WORKERS="$workers"
+    KV_CLIENT_WORKERS="$workers"
+    KV_RPC_WORKERS="$workers"
     local backend_args=(--kv-backend mem-block --wal-backend mem-block)
     if [ "$mode" = "block" ]; then
         backend_args=(--kv-backend block --wal-backend block-device)
@@ -176,25 +199,19 @@ deploy_case() {
 
 run_case() {
     local workload="$1" mode="$2" concurrency="$3" blocks="$4" label="$5"
-    local profile_connections="$6" profile_workers="$7" profile_groups="$8"
     if [ -n "$CASES" ] && [[ " $CASES " != *" $label "* ]]; then
         return
     fi
-    local connections="${CONNECTIONS_OVERRIDE:-$profile_connections}"
-    local workers="${RPC_WORKERS_OVERRIDE:-$profile_workers}"
-    DATA_GROUP_COUNT="${DATA_GROUP_OVERRIDE:-$profile_groups}"
-    DDB_CONNECTIONS="$connections"
-    KV_CONNECTIONS="$connections"
-    KV_PEER_POOL="$connections"
-    DDB_CLIENT_WORKERS="$workers"
-    DDB_RPC_WORKERS="$workers"
-    KV_CLIENT_WORKERS="$workers"
-    KV_RPC_WORKERS="$workers"
     echo ">>> $label ($workload, mode=$mode, concurrency=$concurrency, blocks=$blocks)"
     CASE_NUMBER=$((CASE_NUMBER + 1))
-    deploy_case "$label" "$mode"
+    if [ "$CASE_IN_GROUP" -gt 0 ]; then
+        local groups=() group
+        for group in $(seq 1 "$DATA_GROUP_COUNT"); do groups+=("$group"); done
+        regression_reset_stack "${groups[@]}"
+    fi
+    CASE_IN_GROUP=$((CASE_IN_GROUP + 1))
     local output status line epoll_workers
-    epoll_workers="$workers"
+    epoll_workers="$DDB_RPC_WORKERS"
     set +e
     output=$(timeout --signal=INT --kill-after=10 "$((DURATION + 40))" \
         pixi run -- ./target/release/crowdb-cli --log-root "$LOG_ROOT" --config "$CURRENT_CONFIG" \
@@ -230,7 +247,6 @@ run_case() {
     if ! verify_logs "$label"; then
         FAILURES=$((FAILURES + 1))
     fi
-    destroy_cluster
     if [ "$status" -ne 0 ]; then
         echo "ERROR: benchmark failed for $label (exit=$status)" >&2
         FAILURES=$((FAILURES + 1))
@@ -243,16 +259,28 @@ mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"
 printf 'Wl\tGrp\tThr\tBlk\tCli\tDdb\tKv\tWkr\tWin\tCoal\tops/s\tp50\tp99\tDur\tErr\tSpc\n' >"$RESULTS_FILE"
 
 for mode in $MODES; do
-    run_case allocate "$mode" 1 1 "allocate_${mode}_1t" 2 2 3
-    run_case allocate "$mode" 16 1 "allocate_${mode}_16t" 2 2 3
-    run_case allocate "$mode" 128 1 "allocate_${mode}_128t" 4 4 3
-    run_case allocate "$mode" 256 1 "allocate_${mode}_256t" 4 4 3
-    run_case allocate "$mode" 256 1 "allocate_${mode}_256t_1grp" 4 4 1
-    run_case mix "$mode" 1 1 "mix_${mode}_1t" 2 2 3
-    run_case mix "$mode" 16 1 "mix_${mode}_16t" 2 2 3
-    run_case mix "$mode" 128 1 "mix_${mode}_128t" 4 4 3
-    run_case mix "$mode" 256 1 "mix_${mode}_256t" 4 4 3
-    run_case mix "$mode" 256 1 "mix_${mode}_256t_1grp" 4 4 1
+    if any_case_selected "allocate_${mode}_1t" "allocate_${mode}_16t" "mix_${mode}_1t" "mix_${mode}_16t"; then
+        deploy_group "$mode" 2 2 3
+        run_case allocate "$mode" 1 1 "allocate_${mode}_1t"
+        run_case allocate "$mode" 16 1 "allocate_${mode}_16t"
+        run_case mix "$mode" 1 1 "mix_${mode}_1t"
+        run_case mix "$mode" 16 1 "mix_${mode}_16t"
+        destroy_cluster
+    fi
+    if any_case_selected "allocate_${mode}_128t" "allocate_${mode}_256t" "mix_${mode}_128t" "mix_${mode}_256t"; then
+        deploy_group "$mode" 4 4 3
+        run_case allocate "$mode" 128 1 "allocate_${mode}_128t"
+        run_case allocate "$mode" 256 1 "allocate_${mode}_256t"
+        run_case mix "$mode" 128 1 "mix_${mode}_128t"
+        run_case mix "$mode" 256 1 "mix_${mode}_256t"
+        destroy_cluster
+    fi
+    if any_case_selected "allocate_${mode}_256t_1grp" "mix_${mode}_256t_1grp"; then
+        deploy_group "$mode" 4 4 1
+        run_case allocate "$mode" 256 1 "allocate_${mode}_256t_1grp"
+        run_case mix "$mode" 256 1 "mix_${mode}_256t_1grp"
+        destroy_cluster
+    fi
 done
 
 echo "=== DONE ==="

@@ -34,6 +34,7 @@ CURRENT_CONFIG="$REGRESSION_CONFIG"
 CURRENT_LOG_ROOT="$LOG_ROOT"
 BENCH_LOG_DIR=""
 FAILURES=0
+CASE_NUMBER=0
 
 if ! [[ "$TIMEOUT_SECS" =~ ^[1-9][0-9]*$ ]]; then
     echo "ERROR: CHUNKIO_BENCH_TIMEOUT must be a positive integer" >&2
@@ -79,8 +80,9 @@ verify_logs() {
     diskio=$(find "$CURRENT_LOG_ROOT" -type f -name 'crowdb-diskio-metrics-*.log' | wc -l)
     cli_metrics=$(find "$CURRENT_LOG_ROOT" -type f -name 'crowdb-cli-metrics-*.log' | wc -l)
     cli_metrics_file=$(find "$BENCH_LOG_DIR" -type f -name 'crowdb-cli-metrics-*.log' | head -n 1)
-    [ "$kv" -eq 3 ] && [ "$diskdb" -eq 3 ] && [ "$chunkdb" -eq 3 ] \
-        && [ "$diskio" -eq 3 ] && [ "$cli_metrics" -eq 1 ] \
+    [ "$kv" -eq 3 ] && [ "$diskdb" -ge $((CASE_NUMBER * 3)) ] \
+        && [ "$chunkdb" -ge $((CASE_NUMBER * 3)) ] \
+        && [ "$diskio" -ge $((CASE_NUMBER * 3)) ] && [ "$cli_metrics" -eq "$CASE_NUMBER" ] \
         && rg -q 'chunkio\.object\.write\.e2e\.lh' "$cli_metrics_file" \
         && rg -q 'chunkio\.chunk\.allocate\.e2e\.lh' "$cli_metrics_file" \
         && rg -q 'chunkio\.diskio\.write\.e2e\.lh' "$cli_metrics_file" \
@@ -98,19 +100,10 @@ run_case() {
     fi
     CURRENT_CONFIG="$REGRESSION_CONFIG"
     echo ">>> $label (objects=$objects size=$object_size concurrency=$concurrency EC=4+1)"
-    set +e
-    cli cluster local-deploy -t combined --metrics-interval 1 --allow-unsafe-ec
-    local deploy_status=$?
-    set -e
-    if [ "$deploy_status" -ne 0 ]; then
-        printf '%s\t%s\t%s\t%s\t%s\t0\t1\t%s\tfailed\t0\t0\t0\t0\t0\tunsupported\tunsupported\n' \
-            "$label" "$objects" "$object_size" "$((object_size / 1048576))" \
-            "$concurrency" "$objects" >>"$RESULTS_FILE"
-        echo "ERROR: deployment failed for $label (exit=$deploy_status)" >&2
-        FAILURES=$((FAILURES + 1))
-        destroy_cluster
-        return 0
+    if [ "$CASE_NUMBER" -gt 0 ]; then
+        regression_reset_stack 1
     fi
+    CASE_NUMBER=$((CASE_NUMBER + 1))
 
     local output status line avg_bw max_bw
     set +e
@@ -166,7 +159,6 @@ run_case() {
         echo "ERROR: $label failed or did not retain all service metrics" >&2
         FAILURES=$((FAILURES + 1))
     fi
-    destroy_cluster
 }
 
 echo "=== building release binaries ==="
@@ -176,8 +168,11 @@ mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"
 regression_init
 printf 'case\trequested\tsize_bytes\tsize_mib\tconcurrency\tcompleted\terrors\tincomplete\tstop\tobjects_s\tlogical_mib_s\tphysical_mib_s\tp50_us\tp99_us\tmem_bw_avg_mib\tmem_bw_max_mib\n' >"$RESULTS_FILE"
 
+cli cluster local-deploy -t combined --metrics-interval 1 --allow-unsafe-ec
+
 run_case large_1t 2 67108864 1
 run_case large_4t 8 67108864 4
+destroy_cluster
 
 echo "=== DONE ==="
 echo "Logs and results retained in $LOG_ROOT"

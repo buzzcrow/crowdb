@@ -171,9 +171,26 @@ pub struct ConsoleConfig {
     pub disk_groups: Vec<DiskGroupEntry>,
     #[serde(default, rename = "disk")]
     pub disks: Vec<DiskEntry>,
+    /// Reproducible commands for locally deployed benchmark services.
+    #[serde(default)]
+    pub local_launches: BTreeMap<String, LocalLaunchSpec>,
     /// Optional `[bench]` section. Reserved for future use.
     #[serde(default, skip_serializing_if = "BenchConfig::is_empty")]
     pub(crate) bench: BenchConfig,
+}
+
+/// Retained local process state used to restart a benchmark service without
+/// changing its identity or endpoint.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalLaunchSpec {
+    pub program: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    pub workdir: String,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readiness_url: Option<String>,
 }
 
 /// `[bench]` section. Reserved for future knobs (default reporting
@@ -361,6 +378,8 @@ struct PersistedConsoleConfig {
     disk_group: BTreeMap<String, PersistedDiskGroupEntry>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     disk: BTreeMap<String, PersistedDiskEntry>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    local_launch: BTreeMap<String, LocalLaunchSpec>,
     #[serde(default, skip_serializing_if = "BenchConfig::is_empty")]
     bench: BenchConfig,
 }
@@ -550,7 +569,9 @@ impl ConsoleConfig {
                 kind: "server".into(),
                 id: id.to_string(),
             })?;
-        Ok(self.servers.remove(pos))
+        let server = self.servers.remove(pos);
+        self.local_launches.remove(&server.id);
+        Ok(server)
     }
 
     /// All server URLs in registration order.
@@ -1040,6 +1061,7 @@ impl ConsoleConfig {
             group,
             disk_group,
             disk,
+            local_launch: self.local_launches.clone(),
             bench: self.bench.clone(),
         }
     }
@@ -1139,6 +1161,7 @@ impl ConsoleConfig {
             groups,
             disk_groups,
             disks,
+            local_launches: persisted.local_launch,
             bench: persisted.bench,
         }
     }
@@ -1156,7 +1179,9 @@ impl ConsoleConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConsoleConfig, GroupEntry, ReplicaEntry, ServerEntry, StoreEntry, TomlFileEngine};
+    use super::{
+        ConsoleConfig, GroupEntry, LocalLaunchSpec, ReplicaEntry, ServerEntry, StoreEntry, TomlFileEngine,
+    };
     use crowdb_test_harness::test_dirs;
 
     #[test]
@@ -1176,6 +1201,16 @@ mod tests {
         cfg.add_server(a).unwrap();
         cfg.add_server(ServerEntry::new("b", "http://127.0.0.1:10001"))
             .unwrap();
+        cfg.local_launches.insert(
+            "b".into(),
+            LocalLaunchSpec {
+                program: "/tmp/deploy/bin/crowdb-diskdb".into(),
+                args: vec!["--config".into(), "conf/server.toml".into()],
+                workdir: "/tmp/deploy".into(),
+                env: std::collections::BTreeMap::from([("LD_LIBRARY_PATH".into(), "/tmp/lib".into())]),
+                readiness_url: Some("http://127.0.0.1:10002".into()),
+            },
+        );
         cfg.stores.push(StoreEntry {
             store_id: 7,
             nodes: vec![1, 2],

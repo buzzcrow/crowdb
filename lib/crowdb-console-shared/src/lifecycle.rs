@@ -19,7 +19,7 @@ use tokio::time::Instant;
 use tracing::{debug, warn};
 
 use crate::clients::http::ServerClient;
-use crate::config::NodeEntry;
+use crate::config::{LocalLaunchSpec, NodeEntry};
 use crate::error::{Error, Result};
 
 /// Inputs for a deploy. The console picks the ports; the user provides ids.
@@ -93,6 +93,53 @@ pub struct DeployedDiskdb {
     pub server_id: String,
     pub endpoint: String,
     pub pid: u32,
+    pub launch: LocalLaunchSpec,
+}
+
+/// Stop and relaunch a locally deployed auxiliary service from its retained
+/// launch specification.
+///
+/// # Errors
+/// Returns an error when the old process cannot stop, the replacement cannot
+/// start, or its configured readiness endpoint does not become healthy.
+pub async fn restart_local_service(server_id: &str, pid: u32, spec: &LocalLaunchSpec) -> Result<u32> {
+    if process_is_alive(pid) {
+        stop_pid_with_timeout(pid, Duration::from_secs(15))?;
+    }
+    let workdir = Path::new(&spec.workdir);
+    let log_dir = workdir.join("log");
+    std::fs::create_dir_all(&log_dir)?;
+    let output_path = log_dir.join(format!("{server_id}.restart.stdout.log"));
+    let output = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&output_path)?;
+    let mut command = Command::new(&spec.program);
+    command
+        .args(&spec.args)
+        .envs(&spec.env)
+        .current_dir(workdir)
+        .stdout(Stdio::from(output.try_clone()?))
+        .stderr(Stdio::from(output))
+        .kill_on_drop(false);
+    let mut child = command.spawn()?;
+    let new_pid = child.id().ok_or_else(|| Error::Validation {
+        field: "pid".into(),
+        message: format!("restarted {server_id} child has no pid"),
+    })?;
+    if let Some(url) = &spec.readiness_url {
+        wait_for_diskdb_ready(&mut child, url, &output_path, new_pid, Duration::from_secs(30)).await?;
+    } else {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        if let Some(status) = child.try_wait()? {
+            return Err(Error::UpstreamRpc {
+                node_id: server_id.into(),
+                status: format!("restarted process exited early with {status}"),
+            });
+        }
+    }
+    std::mem::forget(child);
+    Ok(new_pid)
 }
 
 /// Inputs for a local `ChunkDB` deployment.
@@ -112,7 +159,7 @@ pub struct ChunkdbDeployRequest {
     pub metrics_interval: Option<u64>,
 }
 
-/// Inputs for one local `NullDisk` DiskIO service.
+/// Inputs for one local `NullDisk` `DiskIO` service.
 #[derive(Debug, Clone)]
 pub struct DiskioDeployRequest {
     pub server_id: String,
@@ -1031,7 +1078,42 @@ pub async fn deploy_diskdb_local(
         server_id: req.server_id.clone(),
         endpoint,
         pid,
+        launch: LocalLaunchSpec {
+            program: launch_binary.to_string_lossy().into_owned(),
+            args: diskdb_launch_args(req, &config_path, workspace_dir),
+            workdir: workspace_dir.to_string_lossy().into_owned(),
+            env: std::collections::BTreeMap::default(),
+            readiness_url: Some(mgmt_url),
+        },
     })
+}
+
+fn diskdb_launch_args(req: &DiskdbDeployRequest, config_path: &Path, workspace_dir: &Path) -> Vec<String> {
+    let mut args = vec![
+        "--config".into(),
+        config_path.to_string_lossy().into_owned(),
+        "--log-dir".into(),
+        workspace_dir.join("log").to_string_lossy().into_owned(),
+        "--listen-addr".into(),
+        format!("127.0.0.1:{}", req.listen_port),
+        "--http-addr".into(),
+        format!("127.0.0.1:{}", req.http_port),
+        "--rpc-listen-addr".into(),
+        format!("127.0.0.1:{}", req.rpc_port),
+    ];
+    if let Some(value) = req.metrics_interval {
+        args.extend(["--metrics-interval".into(), value.to_string()]);
+    }
+    if let Some(value) = req.rpc_workers {
+        args.extend(["--rpc-workers".into(), value.to_string()]);
+    }
+    if let Some(value) = req.kv_connections {
+        args.extend(["--kv-connections".into(), value.to_string()]);
+    }
+    if let Some(value) = req.kv_client_rpc_workers {
+        args.extend(["--kv-client-rpc-workers".into(), value.to_string()]);
+    }
+    args
 }
 
 /// Spawn `crowdb-chunkdb` locally and wait for HTTP readiness.
@@ -1088,7 +1170,7 @@ pub async fn deploy_chunkdb_local(
         .create(true)
         .append(true)
         .open(&output_path)?;
-    let mut command = Command::new(launch_binary);
+    let mut command = Command::new(&launch_binary);
     command
         .arg("--config")
         .arg(&config_path)
@@ -1122,10 +1204,33 @@ pub async fn deploy_chunkdb_local(
         server_id: req.server_id.clone(),
         endpoint,
         pid,
+        launch: LocalLaunchSpec {
+            program: launch_binary.to_string_lossy().into_owned(),
+            args: chunkdb_launch_args(req, &config_path, &log_dir),
+            workdir: workspace_dir.to_string_lossy().into_owned(),
+            env: std::collections::BTreeMap::default(),
+            readiness_url: Some(management),
+        },
     })
 }
 
-/// Spawn one local DiskIO service with a `NullDisk` backend.
+fn chunkdb_launch_args(req: &ChunkdbDeployRequest, config_path: &Path, log_dir: &Path) -> Vec<String> {
+    let mut args = vec![
+        "--config".into(),
+        config_path.to_string_lossy().into_owned(),
+        "--log-dir".into(),
+        log_dir.to_string_lossy().into_owned(),
+    ];
+    if let Some(value) = req.rpc_workers {
+        args.extend(["--rpc-workers".into(), value.to_string()]);
+    }
+    if let Some(value) = req.metrics_interval {
+        args.extend(["--metrics-interval".into(), value.to_string()]);
+    }
+    args
+}
+
+/// Spawn one local `DiskIO` service with a `NullDisk` backend.
 ///
 /// Readiness is completed by the caller through the group-0 service registry,
 /// which proves both KV synchronization and ownership publication.
@@ -1156,7 +1261,7 @@ pub async fn deploy_diskio_local(
         .append(true)
         .open(&output_path)?;
     let endpoint = format!("http://{}:{}", node.host, req.rpc_port);
-    let mut command = Command::new(launch_binary);
+    let mut command = Command::new(&launch_binary);
     command
         .arg("--bind")
         .arg(&node.host)
@@ -1207,7 +1312,49 @@ pub async fn deploy_diskio_local(
         server_id: req.server_id.clone(),
         endpoint,
         pid,
+        launch: LocalLaunchSpec {
+            program: launch_binary.to_string_lossy().into_owned(),
+            args: diskio_launch_args(req),
+            workdir: workspace_dir.to_string_lossy().into_owned(),
+            env: diskio_ffi_lib_dir(workspace_dir)
+                .map(|path| {
+                    std::collections::BTreeMap::from([(
+                        "LD_LIBRARY_PATH".into(),
+                        path.to_string_lossy().into_owned(),
+                    )])
+                })
+                .unwrap_or_default(),
+            readiness_url: None,
+        },
     })
+}
+
+fn diskio_launch_args(req: &DiskioDeployRequest) -> Vec<String> {
+    let mut args = vec![
+        "--bind".into(),
+        "127.0.0.1".into(),
+        "--port".into(),
+        req.rpc_port.to_string(),
+        "--dummy-disk".into(),
+        "null".into(),
+        "--kv-seeds".into(),
+        req.kv_server_mgmt_seeds.join(","),
+        "--instance-id".into(),
+        req.instance_id.to_string(),
+        "--rack-id".into(),
+        req.rack_id.to_string(),
+        "--node-id".into(),
+        req.node_id.to_string(),
+        "--dg-id".into(),
+        req.disk_group_id.to_string(),
+        "--sync-interval-ms".into(),
+        "1000".into(),
+        "--auto-discover-disks".into(),
+    ];
+    if let Some(value) = req.metrics_interval {
+        args.extend(["--metrics-interval".into(), value.to_string()]);
+    }
+    args
 }
 
 fn diskio_ffi_lib_dir(workspace_dir: &Path) -> Option<PathBuf> {

@@ -29,6 +29,23 @@ regression_destroy() {
     fi
 }
 
+# Wipe each listed KV data group, then restart the auxiliary storage stack once.
+regression_reset_stack() {
+    local groups=("$@") index last
+    if [ "${#groups[@]}" -eq 0 ]; then
+        echo "ERROR: regression_reset_stack requires at least one KV group" >&2
+        return 2
+    fi
+    last=$((${#groups[@]} - 1))
+    for index in "${!groups[@]}"; do
+        if [ "$index" -eq "$last" ]; then
+            regression_cli cluster clean --store 0 --group "${groups[$index]}" --restart-services
+        else
+            regression_cli cluster clean --store 0 --group "${groups[$index]}"
+        fi
+    done
+}
+
 regression_require_metric_section() {
     local file="$1" section="$2"
     [ -s "$file" ] && rg -q "^${section}$" "$file"

@@ -45,6 +45,8 @@ source tools/bench-regression-common.sh
 CURRENT_CONFIG="$REGRESSION_CONFIG"
 FAILURES=0
 CASE_NUMBER=0
+DEPLOY_NUMBER=0
+CASE_IN_GROUP=0
 
 if ! [[ "$DURATION" =~ ^[1-9][0-9]*$ ]] || ! [[ "$DISK_CAPACITY" =~ ^[1-9][0-9]*$ ]] \
     || ! [[ "$ZONE_SIZE" =~ ^[1-9][0-9]*$ ]]; then
@@ -69,6 +71,15 @@ field() {
     sed -n "s/.*\(^\| \)${name}=\([^ ]*\).*/\2/p" <<<"$line"
 }
 
+any_case_selected() {
+    [ -z "$CASES" ] && return 0
+    local label
+    for label in "$@"; do
+        [[ " $CASES " == *" $label "* ]] && return 0
+    done
+    return 1
+}
+
 verify_logs() {
     local label="$1" kv_metrics diskdb_metrics chunkdb_metrics cli_metrics
     local kv_rpc diskdb_rpc chunkdb_rpc cli_rpc expected_servers expected_clients
@@ -82,10 +93,10 @@ verify_logs() {
     cli_rpc=$(find "$LOG_ROOT" -path '*/cli-bench-chunkdb-*/crowdb-cli-rpc-*.log' -type f | wc -l)
     expected_servers=$((CASE_NUMBER * 3))
     expected_clients="$CASE_NUMBER"
-    if [ "$kv_metrics" -ne "$expected_servers" ] || [ "$diskdb_metrics" -ne "$expected_servers" ] \
-        || [ "$chunkdb_metrics" -ne "$expected_servers" ] || [ "$cli_metrics" -ne "$expected_clients" ] \
-        || [ "$kv_rpc" -ne "$expected_servers" ] || [ "$diskdb_rpc" -ne "$expected_servers" ] \
-        || [ "$chunkdb_rpc" -ne "$expected_servers" ] || [ "$cli_rpc" -ne "$expected_clients" ]; then
+    if [ "$kv_metrics" -ne $((DEPLOY_NUMBER * 3)) ] || [ "$diskdb_metrics" -lt "$expected_servers" ] \
+        || [ "$chunkdb_metrics" -lt "$expected_servers" ] || [ "$cli_metrics" -ne "$expected_clients" ] \
+        || [ "$kv_rpc" -ne $((DEPLOY_NUMBER * 3)) ] || [ "$diskdb_rpc" -lt "$expected_servers" ] \
+        || [ "$chunkdb_rpc" -lt "$expected_servers" ] || [ "$cli_rpc" -ne "$expected_clients" ]; then
         echo "ERROR: incomplete logs for $label (kv=$kv_metrics/$kv_rpc diskdb=$diskdb_metrics/$diskdb_rpc chunkdb=$chunkdb_metrics/$chunkdb_rpc cli=$cli_metrics/$cli_rpc)" >&2
         return 1
     fi
@@ -93,6 +104,22 @@ verify_logs() {
     regression_require_metric_files 'crowdb-diskdb-metrics-*.log' rust cpp-rpc || return 1
     regression_require_metric_files 'crowdb-chunkdb-metrics-*.log' rust cpp-rpc || return 1
     echo "    logs: kv=$kv_metrics/$kv_rpc diskdb=$diskdb_metrics/$diskdb_rpc chunkdb=$chunkdb_metrics/$chunkdb_rpc cli=$cli_metrics/$cli_rpc"
+}
+
+deploy_group() {
+    local connections="$1" workers="$2"
+    CURRENT_CONFIG="$REGRESSION_CONFIG"
+    CASE_IN_GROUP=0
+    DEPLOY_NUMBER=$((DEPLOY_NUMBER + 1))
+    cli cluster local-deploy -t combined \
+        --kv-backend mem-block --wal-backend mem-block --metrics-interval 1 \
+        --event-write --peer-pool-size "$connections" --rpc-workers "$workers" \
+        --max-inflight "$KV_INFLIGHT" --coalesce-max-keys "$KV_COALESCE" \
+        --data-groups 1,2,3 --disk-groups-per-node 1 --disks-per-group 4 \
+        --disk-capacity-bytes "$DISK_CAPACITY" --disk-zone-size-bytes "$ZONE_SIZE" \
+        --disk-unit-size-bytes 1048576 --kv-connections "$connections" \
+        --kv-client-rpc-workers "$workers" --diskdb-connections "$connections" \
+        --diskdb-client-rpc-workers "$workers" --chunkdb-instances 3
 }
 
 run_case() {
@@ -105,15 +132,10 @@ run_case() {
     local workers="${RPC_WORKERS_OVERRIDE:-$profile_workers}"
     CASE_NUMBER=$((CASE_NUMBER + 1))
     echo ">>> $label (EC 8+4, concurrency=$concurrency)"
-    cli cluster local-deploy -t combined \
-        --kv-backend mem-block --wal-backend mem-block --metrics-interval 1 \
-        --event-write --peer-pool-size "$connections" --rpc-workers "$workers" \
-        --max-inflight "$KV_INFLIGHT" --coalesce-max-keys "$KV_COALESCE" \
-        --data-groups 1,2,3 --disk-groups-per-node 1 --disks-per-group 4 \
-        --disk-capacity-bytes "$DISK_CAPACITY" --disk-zone-size-bytes "$ZONE_SIZE" \
-        --disk-unit-size-bytes 1048576 --kv-connections "$connections" \
-        --kv-client-rpc-workers "$workers" --diskdb-connections "$connections" \
-        --diskdb-client-rpc-workers "$workers" --chunkdb-instances 3
+    if [ "$CASE_IN_GROUP" -gt 0 ]; then
+        regression_reset_stack 1 2 3
+    fi
+    CASE_IN_GROUP=$((CASE_IN_GROUP + 1))
 
     local output status line space busy expected
     set +e
@@ -148,7 +170,6 @@ run_case() {
     if ! verify_logs "$label"; then
         FAILURES=$((FAILURES + 1))
     fi
-    destroy_cluster
     if [ "$status" -ne 0 ]; then
         echo "ERROR: benchmark failed for $label (exit=$status)" >&2
         FAILURES=$((FAILURES + 1))
@@ -161,11 +182,19 @@ mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"
 regression_init
 printf 'Wl\tGrp\tThr\tStrip\tEC\tCli\tCdb\tDdb\tKv\tWkr\tWin\tCoal\tchunk/s\tblock/s\tp50\tp99\tDur\tErr\tStop\tSpc\n' >"$RESULTS_FILE"
 
-run_case 1 allocate_ec8_4_1t 2 2
-run_case 16 allocate_ec8_4_16t 2 2
-run_case 128 allocate_ec8_4_128t 4 4
-run_case 256 allocate_ec8_4_256t 4 4
-run_case 512 allocate_ec8_4_512t 4 4
+if any_case_selected allocate_ec8_4_1t allocate_ec8_4_16t; then
+    deploy_group "${CONNECTIONS_OVERRIDE:-2}" "${RPC_WORKERS_OVERRIDE:-2}"
+    run_case 1 allocate_ec8_4_1t 2 2
+    run_case 16 allocate_ec8_4_16t 2 2
+    destroy_cluster
+fi
+if any_case_selected allocate_ec8_4_128t allocate_ec8_4_256t allocate_ec8_4_512t; then
+    deploy_group "${CONNECTIONS_OVERRIDE:-4}" "${RPC_WORKERS_OVERRIDE:-4}"
+    run_case 128 allocate_ec8_4_128t 4 4
+    run_case 256 allocate_ec8_4_256t 4 4
+    run_case 512 allocate_ec8_4_512t 4 4
+    destroy_cluster
+fi
 
 echo "=== DONE ==="
 echo "Logs and results retained in $LOG_ROOT"

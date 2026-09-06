@@ -430,6 +430,11 @@ pub async fn destroy(ctx: &OpContext) -> Result<()> {
         cfg.stores.clear();
         cfg.groups.clear();
         cfg.servers.clear();
+        cfg.local_launches.clear();
+        cfg.disks.clear();
+        cfg.disk_groups.clear();
+        cfg.nodes.clear();
+        cfg.racks.clear();
     }
 
     Ok(())
@@ -472,6 +477,7 @@ pub async fn reset(ctx: &OpContext) -> Result<()> {
 pub struct CleanResult {
     pub new_leader: String,
     pub wiped_nodes: u64,
+    pub restarted_services: u64,
 }
 
 /// Wipe user data on every node (drop + recreate WAL + engine for
@@ -520,11 +526,92 @@ pub async fn clean(ctx: &OpContext, store_id: u64, group_id: u64) -> Result<Clea
     }
 
     // Wait for re-election: poll topology until a leader is found.
-    let leader = wait_for_leader(&mgmt_urls, store_id, group_id, std::time::Duration::from_secs(10)).await;
+    if wiped != u64::try_from(mgmt_urls.len()).unwrap_or(u64::MAX) {
+        return Err(Error::UpstreamRpc {
+            node_id: "kv-cluster".into(),
+            status: format!("wiped {wiped} of {} KV servers", mgmt_urls.len()),
+        });
+    }
+    let leader = wait_for_leader(&mgmt_urls, store_id, group_id, std::time::Duration::from_secs(10))
+        .await
+        .ok_or_else(|| Error::UpstreamRpc {
+            node_id: format!("store-{store_id}-group-{group_id}"),
+            status: "leader unavailable after data wipe".into(),
+        })?;
     Ok(CleanResult {
-        new_leader: leader.unwrap_or_default(),
+        new_leader: leader,
         wiped_nodes: wiped,
+        restarted_services: 0,
     })
+}
+
+/// Restart every locally deployed non-KV storage service using its retained
+/// launch command, preserving stable service identity and endpoints.
+///
+/// # Errors
+/// Returns an error if launch state is missing or any process cannot restart.
+pub async fn restart_storage_services(ctx: &OpContext) -> Result<u64> {
+    let mut services = ctx
+        .config()
+        .servers
+        .iter()
+        .filter(|server| {
+            matches!(
+                server.service_type,
+                ServiceType::Diskdb | ServiceType::Diskio | ServiceType::Chunkdb
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for server in &services {
+        let pid = server.pid.ok_or_else(|| Error::Validation {
+            field: "pid".into(),
+            message: format!("{} has no tracked process", server.id),
+        })?;
+        lifecycle::stop_pid_with_timeout(pid, std::time::Duration::from_secs(15))?;
+    }
+    services.sort_by_key(|server| match server.service_type {
+        ServiceType::Diskdb => 0,
+        ServiceType::Diskio => 1,
+        ServiceType::Chunkdb => 2,
+        _ => 3,
+    });
+    for server in &services {
+        let spec = ctx
+            .config()
+            .local_launches
+            .get(&server.id)
+            .cloned()
+            .ok_or_else(|| Error::Validation {
+                field: "local_launch".into(),
+                message: format!("{} has no retained launch command", server.id),
+            })?;
+        let pid = lifecycle::restart_local_service(&server.id, server.pid.unwrap_or_default(), &spec).await?;
+        if let Some(entry) = ctx
+            .config_mut()
+            .servers
+            .iter_mut()
+            .find(|entry| entry.id == server.id)
+        {
+            entry.pid = Some(pid);
+        }
+    }
+    let diskdb_count = services
+        .iter()
+        .filter(|server| server.service_type == ServiceType::Diskdb)
+        .count();
+    let chunkdb_count = services
+        .iter()
+        .filter(|server| server.service_type == ServiceType::Chunkdb)
+        .count();
+    if diskdb_count > 0 {
+        wait_for_diskdb_registration(ctx, diskdb_count).await?;
+    }
+    if chunkdb_count > 0 {
+        wait_for_chunkdb_registration(ctx, chunkdb_count).await?;
+        wait_for_chunkdb_bindings(ctx, chunkdb_count).await?;
+    }
+    Ok(u64::try_from(services.len()).unwrap_or(u64::MAX))
 }
 
 /// Poll `/topology` on every server until a leader for the target
@@ -707,6 +794,9 @@ async fn local_deploy_diskio(
             &node_dir,
         )
         .await?;
+        ctx.config_mut()
+            .local_launches
+            .insert(server_id.clone(), deployed.launch.clone());
         expected_owners.insert(30_000 + node.id, (deployed.endpoint.clone(), node.id * 100 + 1));
         ctx.config_mut().add_server(ServerEntry {
             id: server_id,
@@ -840,6 +930,9 @@ pub async fn local_deploy_chunkdb(
     .await;
     for deployment in deployments {
         let (index, node, server_id, deployed) = deployment?;
+        ctx.config_mut()
+            .local_launches
+            .insert(server_id.clone(), deployed.launch.clone());
         ctx.config_mut().add_server(ServerEntry {
             id: server_id,
             url: deployed.endpoint.clone(),
@@ -1108,6 +1201,9 @@ async fn deploy_diskdb_instances(
             &server_dir,
         )
         .await?;
+        ctx.config_mut()
+            .local_launches
+            .insert(server_id.clone(), deployed.launch.clone());
         ctx.config_mut().add_server(ServerEntry {
             id: server_id,
             url: deployed.endpoint.clone(),

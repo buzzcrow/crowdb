@@ -389,7 +389,9 @@ The regression fixture starts three co-located logical nodes in one rack:
 three KV servers, three DiskDB, three ChunkDB, and three DiskIO processes
 backed by `NullDisk`. A 4+1 strip in this intentionally compact local topology
 requires the local-test-only unsafe EC placement option; disk ownership and
-routing remain strict. The retained logs
+routing remain strict. Unsafe placement still balances blocks across the
+available nodes within a rack; it relaxes the failure-domain limit without
+concentrating the strip on the first node. The retained logs
 contain `bw_mib` when host PMU counters are available. This is observed host
 memory traffic during the workload, not physical DIMM peak bandwidth and not
 an application-byte estimate. Loopback TCP, EC expansion, RPC framing, kernel

@@ -644,6 +644,19 @@ Services (`crowdb-kv-server`, `crowdb-diskdb`, `crowdb-chunkdb`,
 are elected, not assigned; as long as group-0 replicas survive, they
 elect a leader. Topology (racks/nodes/disk-groups/disks) is preserved.
 
+For repeated full-stack benchmarks, `cluster clean --restart-services`
+extends the boundary after the KV wipe. The console stops all locally deployed
+DiskDB, DiskIO, and ChunkDB processes, then starts DiskDB and DiskIO before
+ChunkDB with the same identities, endpoints, working directories, and launch
+arguments. It waits for health, service registration, and ChunkDB range
+bindings before returning. KV processes remain running so group 0 and hardware
+topology survive. Suites with multiple data groups clean every group and request
+the service restart on the final clean.
+
+Local auxiliary launch commands are retained in the run-root `console.toml`.
+They are diagnostic lifecycle state, are removed with their server entry, and
+are cleared by `cluster destroy`.
+
 ### 7.5 `kv server delete` — graceful + require-empty
 
 All operations use graceful Paxos reconfiguration — no force-kill

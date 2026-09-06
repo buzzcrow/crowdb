@@ -131,6 +131,9 @@ pub enum ClusterVerb {
         /// Target group ID (default 0 = system group; use 1+ for bench groups).
         #[arg(long, default_value_t = 0)]
         group: u64,
+        /// Restart DiskDB, DiskIO, and ChunkDB after the KV wipe.
+        #[arg(long, default_value_t = false)]
+        restart_services: bool,
     },
     /// Show cluster status (list all stores from group-0 sysdata).
     Status,
@@ -528,19 +531,36 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                 }
             }
         }
-        ClusterVerb::Clean { store, group } => {
+        ClusterVerb::Clean {
+            store,
+            group,
+            restart_services,
+        } => {
             let ctx = match op_context(cli) {
                 Ok(c) => c,
                 Err(c) => return c,
             };
             match crowdb_console_shared::ops::cluster::clean(&ctx, store, group).await {
-                Ok(result) => {
+                Ok(mut result) => {
+                    if restart_services {
+                        match crowdb_console_shared::ops::cluster::restart_storage_services(&ctx).await {
+                            Ok(count) => result.restarted_services = count,
+                            Err(error) => {
+                                let _ = commit_config(cli, &ctx);
+                                eprintln!("error: cluster clean service restart: {error}");
+                                return ExitCode::from(2);
+                            }
+                        }
+                        if let Err(code) = commit_config(cli, &ctx) {
+                            return code;
+                        }
+                    }
                     if cli.json {
                         return print_json(cli, &result);
                     }
                     println!(
-                        "cluster clean: wiped {} nodes, leader = {}",
-                        result.wiped_nodes, result.new_leader
+                        "cluster clean: wiped {} nodes, restarted {} services, leader = {}",
+                        result.wiped_nodes, result.restarted_services, result.new_leader
                     );
                     ExitCode::SUCCESS
                 }

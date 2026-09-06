@@ -36,10 +36,10 @@ reuse compatible clusters safely, and retain complete service metrics.
 - [x] **Unify retained artifacts**: migrate KV read/write/scan, RPC, DiskDB,
   ChunkDB, ChunkIO, and disk/chunk sentinels to the common run layout. Files:
   `tools/bench-*-regression.sh`.
-- [~] **Share compatible clusters**: deploy once for cases with identical
+- [x] **Share compatible clusters**: deploy once for cases with identical
   server tunables, clean between cases, and redeploy only when deploy-time
   settings change. Files: regression scripts.
-- [ ] **Full-stack reset boundary**: add clean/restart orchestration for KV,
+- [x] **Full-stack reset boundary**: add clean/restart orchestration for KV,
   DiskDB, ChunkDB, and DiskIO so cached in-memory state cannot leak between
   cases. Files: console shared operations, CLI cluster commands, server
   lifecycle code, tests.
@@ -61,11 +61,11 @@ reuse compatible clusters safely, and retain complete service metrics.
 
 ## Phase 4: Verification and cleanup
 
-- [ ] **Unit tests**: cover CLI slug naming, stable server paths, service IDs,
+- [x] **Unit tests**: cover CLI slug naming, stable server paths, service IDs,
   and clean/restart state transitions.
-- [ ] **Integration tests**: deploy the local combined stack, inspect its tree,
+- [x] **Integration tests**: deploy the local combined stack, inspect its tree,
   run two cleaned workloads on one cluster, and verify all metric sections.
-- [ ] **Regression smoke tests**: run short cases for every sentinel through
+- [~] **Regression smoke tests**: run short cases for every sentinel through
   `pixi run` and inspect retained structures.
 - [ ] **Quality gates**: run Rust formatting, clippy, affected tests, shell
   syntax checks, and `git diff --check` through the required tooling.

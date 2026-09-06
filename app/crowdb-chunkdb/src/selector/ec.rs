@@ -114,11 +114,16 @@ fn try_distribute(
         rack_index = (rack_index + 1) % rack_ids.len();
 
         let dgs_in_rack = by_rack.get(&rack)?;
-        // Find a node in this rack with capacity.
-        let candidate = dgs_in_rack.iter().find(|dg| {
-            let load = node_load.get(&dg.node_id).copied().unwrap_or(0);
-            (load as usize) < max_per_node
-        });
+        // Pick the least-loaded node in this rack. Selecting the first node
+        // repeatedly would concentrate an unsafe one-rack plan on one
+        // DiskDB group even when the remaining nodes have capacity.
+        let candidate = dgs_in_rack
+            .iter()
+            .filter(|dg| {
+                let load = node_load.get(&dg.node_id).copied().unwrap_or(0);
+                (load as usize) < max_per_node
+            })
+            .min_by_key(|dg| (node_load.get(&dg.node_id).copied().unwrap_or(0), dg.node_id));
 
         if let Some(dg) = candidate {
             *node_load.entry(dg.node_id).or_insert(0) += 1;

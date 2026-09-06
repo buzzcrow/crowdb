@@ -136,6 +136,24 @@ fn ec_select_8_4_unsafe_fallback_3_nodes() {
 }
 
 #[test]
+fn ec_select_4_1_unsafe_one_rack_balances_nodes() {
+    let cache = build_topology(&[(1, &[10, 11, 12])]);
+    let plan = EcPlacement::select(
+        &cache.snapshot(),
+        4,
+        1,
+        &PlacementConstraints::new().allow_unsafe_ec(),
+    )
+    .unwrap();
+    let mut node_load = std::collections::HashMap::new();
+    for entry in plan.entries {
+        *node_load.entry(entry.node_id).or_insert(0_u32) += 1;
+    }
+    assert_eq!(node_load.len(), 3);
+    assert!(node_load.values().all(|load| *load <= 2));
+}
+
+#[test]
 fn ec_select_unsafe_mode_succeeds_with_single_node() {
     let cache = build_topology(&[(1, &[10])]);
     let snap = cache.snapshot();
