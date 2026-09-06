@@ -64,9 +64,10 @@ model, and the design choices that make a 1 TB upload cost the same
   push block?" so a dedicated upload task can ignore it and block,
   while a shared handler task can pre-check via the non-async
   `require_data` hint and return 503 instead of stalling.
-- **Bounded preallocation, not eager allocation.** A 1 TB object does
-  not allocate all 250K strips at once. The prealloc task stays only
-  `prealloc_depth` strips (default 2) ahead of the write cursor,
+- **Bounded preparation, not eager allocation.** A 1 TB object does
+  not allocate all 250K strips at once. Consumption-driven channels stay only
+  `strip_preparation_depth` strips (default 2) and
+  `chunk_preparation_depth` chunks (default 1) ahead,
   keeping allocation rate and KV metadata pressure bounded regardless
   of object size while keeping the cursor fed.
 - **Shard-based EC, no re-split copy.** The pipeline already holds data
@@ -133,7 +134,6 @@ block channel. The `ChunkWriter` drive loop is identical in both modes.
                                           │   [Parity Task N] (background)
                                           │   EC encode → 1 parity block
                                           │   write parity → 5th disk
-                                          │   fsync all 5 disks
                                           │   (no join — handles collected)
                                           ▼
                                      auto-rotate to strip N+1, block 0
@@ -141,7 +141,7 @@ block channel. The `ChunkWriter` drive loop is identical in both modes.
                                           │
                                           │  internal strip prefetch:
                                           │   append_chunk ahead of cursor
-                                          │   (bounded: prealloc_depth=2)
+                                          │   (bounded: strip_preparation_depth=2)
 ```
 
 The flow, step by step:
@@ -156,32 +156,34 @@ The flow, step by step:
 - **ChunkWriter::push (drive loop).** The central coordinator. It
   owns `Arc<Chunk>` and shares it with `EcStripWriter` by ref count.
   On each `push`, if the current strip is full, it finishes the strip
-  (spawns parity writes + fsyncs as background tasks, collects handles,
+  (submits bounded data/parity writes and collects completion handles,
   no join), checks `is_full()` (chunk-level), and either returns
   `Pause` (chunk full — caller rotates chunks) or opens the next strip
   (from `chunk.strips` if pre-appended by the internal strip prefetch,
   or via inline `append_chunk` RPC). It then pushes the block to the
   new strip's data segment via `DiskWriter::write` — one disk per
-  block, no EC wait. Strip N+1's data writes overlap with strip N's
-  parity writes + fsyncs.
+  block. Independent data blocks are submitted without serial completion
+  waits, and strip N+1 overlaps strip N's parity completion.
 - **Parity.** One background task per strip. It receives the strip's
   data blocks, EC-encodes via `encode_parity_from_shards` (§5) into
-  `code_num` parity blocks, writes them to the remaining segments via
-  `DiskWriter::write`, and `fsync`s all disks via `DiskWriter::fsync`.
+  `code_num` parity blocks and writes them to the remaining segments via
+  `DiskWriter::write`.
   Parity handles are collected by `ChunkWriter` and joined at `seal`
   time (not at strip finish) — this decouples parity durability from
   strip rotation, allowing strip N+1's data writes to start before
   strip N's parity completes.
 - **Strip prefetch (internal to ChunkWriter).** A background task
   appends strips to the current chunk via `append_chunk` ahead of the
-  write cursor, bounded by `prealloc_depth` (default 2). The
-  `append_chunk` response replaces `self.chunk` (Arc-swap — old Arc in
+  write cursor, bounded by `strip_preparation_depth` (default 2). A normal
+  `append_chunk` response contains only new strips plus `modify_ts`; the
+  writer merges them locally. A stale revision response supplies the complete
+  current chunk and is retried once. The result replaces `self.chunk` (Arc-swap — old Arc in
   any in-flight `EcStripWriter` stays alive). For known-size objects,
   the prefetch stops after enough strips are allocated; for
-  unknown-size objects, it stays `prealloc_depth` ahead.
+  unknown-size objects, it stays `strip_preparation_depth` ahead.
 - **Chunk prefetch (ChunkPrefetch, object layer).** Pre-allocates the
   next `Chunk` (1 strip each) ahead of rotation, up to
-  `chunk_prefetch_depth` ahead. On chunk rotation, the object layer
+  `chunk_preparation_depth` ahead. On chunk rotation, the object layer
   pulls the next `Chunk` from the prefetch receiver (fast path —
   pre-allocated) or calls `on_demand` (slow path — prefetch fell
   behind). The `Chunk` is passed to `ChunkWriter::open`, which wraps it
@@ -338,8 +340,8 @@ Edge cases:
   update_chunk_strip / query via `ChunkAllocator`. chunkdb handles
   placement and lifecycle; the writer is unaware of internal placement
   logic — it receives `Segment` placements and writes to them.
-- **diskio** — the writer writes data + parity blocks via
-  `DiskWriter::write` and flushes via `DiskWriter::fsync`.
+- **diskio** — the writer writes data and parity blocks through the single
+  durable-completion contract `DiskWriter::write`.
   `RoutedDiskWriter` owns discovery and routes every segment by disk ID to the
   unique live DiskIO owner. The fixed-connection `DiskioBlockWriter` remains a
   low-level adapter for focused fixtures.
@@ -353,9 +355,9 @@ Edge cases:
 | Knob | Default | Role |
 | --- | --- | --- |
 | `max_chunk_size` | 1 GB | Chunk rotation threshold. |
-| `prealloc_depth` | 2 strips | Strip preallocation ahead of write cursor. |
+| `strip_preparation_depth` | 2 strips | Strip preparation ahead of write cursor. |
 | `parity_depth` | 2 tasks | In-flight parity task bound. |
-| `chunk_prefetch_depth` | 1 chunk | Chunk prefetch ahead of rotation. |
+| `chunk_preparation_depth` | 1 chunk | Chunk preparation ahead of rotation. |
 | fetch granularity | 1 MB | One data block per fetch call. |
 | `max_cached_buffer` | 4 MB | Un-written data budget in fetch channel (one strip). |
 | `memory_budget` | (pool) | `WriterPool` total; `max_concurrent = budget / per-writer-footprint`. |
@@ -377,6 +379,11 @@ client never chooses an arbitrary DiskIO endpoint. Connections are reused per
 endpoint. The application and CLI do not construct allocators, RPC servers,
 connections, chunks, strips, or parity workers.
 
+Topology refresh follows server ownership. `refresh_chunkdb_routes` refreshes
+ChunkDB endpoints and range bindings; `refresh_diskio_routes` refreshes
+DiskIO service and disk-owner routes. Metrics wrappers only observe the two
+narrow seams and do not own scheduling or discovery.
+
 ## 11. Performance Workload
 
 `run_large_write_benchmark` is a library-owned, deterministic, bounded-source
@@ -395,5 +402,5 @@ concentrating the strip on the first node. The retained logs
 contain `bw_mib` when host PMU counters are available. This is observed host
 memory traffic during the workload, not physical DIMM peak bandwidth and not
 an application-byte estimate. Loopback TCP, EC expansion, RPC framing, kernel
-copies, EC calculation, fsync, and metadata work all keep end-to-end logical
+copies, EC calculation, synchronous writes, and metadata work all keep end-to-end logical
 throughput below that hardware envelope.

@@ -38,7 +38,9 @@ pub struct RetryConfig {
 impl Default for RetryConfig {
     fn default() -> Self {
         Self {
-            max_retries: 3,
+            // Range bindings can become visible in group-0 up to one server
+            // refresh tick before the new owner installs them locally.
+            max_retries: 5,
             initial_backoff: Duration::from_millis(50),
         }
     }

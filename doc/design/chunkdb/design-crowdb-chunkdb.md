@@ -840,8 +840,11 @@ mutating RPC acquires the per-chunk lock before its RMW cycle:
   `put_chunk`, start background segment commit → `guard.refresh(chunk)`.
 - `allocate_chunk` (auto-generated ID): skip the lock (UUID collision
   negligible). After `put_chunk`, `populate_cache(id, chunk)` directly.
-- `append_chunk`: `check_range` → `acquire` → state check, allocate
-  strips, `put_chunk`, `commit_strip_segments` → `guard.refresh(chunk)`.
+- `append_chunk`: `check_range` → `acquire` → state/revision check. A matching
+  `modify_ts` allocates strips, increments the revision, persists the chunk,
+  and returns only the new strips plus the revision. A stale revision performs
+  no allocation and returns the complete current chunk so the client can
+  refresh and retry. Successful mutation ends with `guard.refresh(chunk)`.
 - `seal_chunk`: same as append but no diskdb calls (fast path).
 - `delete_chunk`: `check_range` → `acquire` → state check → persist Deleted
   with segments as cleanup intent → free segments → clear the segment list

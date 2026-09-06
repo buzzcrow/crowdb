@@ -102,6 +102,9 @@ pub async fn run(cli: &Cli, verb: ChunkioBenchVerb) -> ExitCode {
             result.preparation_stalls,
             result.preparation_stall_us,
         );
+        for message in &result.error_messages {
+            eprintln!("chunkio write error: {message}");
+        }
     }
     if result.errors == 0 && result.incomplete_objects == 0 {
         ExitCode::SUCCESS

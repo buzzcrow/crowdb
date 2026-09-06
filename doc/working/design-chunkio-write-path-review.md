@@ -152,6 +152,38 @@ normally tens to hundreds of microseconds and response `writev` is normally
 tens of microseconds. Those stages are orders of magnitude below the client
 write latency and cannot account for a repeated delay near 50 ms.
 
+### 4.1 Post-enhancement result
+
+The retained rerun at `/tmp/crowdb-chunkio-write-enhanced-3` completed with
+zero errors, complete service metrics, and no unregistered-descriptor or
+`DiskNotExist` warnings:
+
+- One writer: 134.5 MiB/s logical, 168.1 MiB/s physical, and 89,401 us
+  reported p50 object latency.
+- Four writers: 1,818.0 MiB/s logical, 2,272.5 MiB/s physical, 137,833 us p50,
+  and 143,356 us p99 object latency.
+- Against the original retained 22.0/129.6 MiB/s logical measurements, this is
+  approximately 6.1x at one writer and 14.0x at four writers.
+- The four-writer client measured 6.4 ms average per 1 MiB DiskIO completion;
+  RPC `read_to_parse` and `writev` averaged 0.9 ms and 1.0 ms respectively.
+  The former repeated 28-49 ms idle delay is absent.
+
+The one-writer case includes startup convergence rather than steady write
+cost: its two chunk allocations averaged 383 ms with a 1 s histogram maximum,
+and preparation stalls totaled 766 ms. ChunkDB range bindings can become
+visible to clients before the selected server's one-second range refresh.
+`NotMyRange` retry now covers that interval. This latency should be separated
+from steady-state write throughput in a future longer-running case.
+
+The remaining four-writer NullDisk limit is no longer ChunkDB allocation or a
+serialized client write. It is the aggregate in-memory RPC/io_uring path under
+high concurrency: client CPU was about 203% user plus 323% system, RPC stages
+rose toward 1 ms, and DiskIO completion averaged 6.4 ms while carrying 2.27
+GiB/s physical payload. NullDisk is explicitly non-durable, so this result is
+a scheduling/transport ceiling, not a claim about production block-device
+durability throughput. A production-device benchmark is the next measurement
+needed before further write-path optimization.
+
 ## 5. Benchmark Validity Defect
 
 The DiskIO logs repeatedly report that NullDisk file descriptors are not

@@ -7,16 +7,16 @@
 #   CHUNKIO_BENCH_RESULTS     result TSV path
 #   CHUNKIO_BENCH_TIMEOUT     seconds allowed per case (default: 120)
 #
-# Reference run (2026-09-06): AMD Ryzen 9 5950X, 16c/32t, Linux 6.8,
+# Reference run (2026-09-07): AMD Ryzen 9 5950X, 16c/32t, Linux 6.8,
 # three-node loopback deployment, three NullDisk instances, EC 4+1,
 # 1 MiB blocks, 1 GiB chunks, two 64 MiB objects per worker.
 #
 # Case      Obj  Size MiB  C  TPS obj/s  logical MiB/s  physical MiB/s  p50 us   p99 us   errors
-# large_1t    2        64  1       0.39           25.0            31.3  2471891  2471891       0
-# large_4t    8        64  4       2.20          140.5           175.7  1686185  1873776       0
+# large_1t    2        64  1       2.10          134.5           168.1    89401    89401       0
+# large_4t    8        64  4      28.41         1818.0          2272.5   137833   143356       0
 #
-# Memory-counter samples for the same run were 90.4/292.4 MiB/s average/max
-# for large_1t and 216.9/411.8 MiB/s for large_4t. These values are retained
+# Memory-counter samples for the same run were 467.0/467.0 MiB/s average/max
+# for large_1t and 1332.5/1332.5 MiB/s for large_4t. These values are retained
 # as a diagnostic baseline, not hard thresholds; the sentinel gates complete
 # object accounting, zero errors, stop reason, and complete service metrics.
 set -euo pipefail
@@ -89,7 +89,8 @@ verify_logs() {
         && regression_require_metric_files 'crowdb-kv-server-metrics-*.log' rust cpp-rpc cpp-tree \
         && regression_require_metric_files 'crowdb-diskdb-metrics-*.log' rust cpp-rpc \
         && regression_require_metric_files 'crowdb-chunkdb-metrics-*.log' rust cpp-rpc \
-        && regression_require_metric_files 'crowdb-diskio-metrics-*.log' cpp-rpc
+        && regression_require_metric_files 'crowdb-diskio-metrics-*.log' cpp-rpc \
+        && ! rg -q 'fd .*not registered|DiskNotExist' "$CURRENT_LOG_ROOT"/cli-cluster-local-deploy-*/deploy/*/*/*/log
 }
 
 run_case() {

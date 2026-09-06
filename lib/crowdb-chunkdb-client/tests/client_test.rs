@@ -9,7 +9,7 @@ use std::time::Duration;
 #[test]
 fn retry_config_default() {
     let r = RetryConfig::default();
-    assert_eq!(r.max_retries, 3);
+    assert_eq!(r.max_retries, 5);
     assert_eq!(r.initial_backoff, Duration::from_millis(50));
 }
 

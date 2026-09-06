@@ -324,7 +324,7 @@ injection on either type.
 
 `Disk` is a C++ virtual base with subclasses:
 
-- **BlockDisk** — real block device, opened with `O_DIRECT | O_RDWR`
+- **BlockDisk** — real block device, opened with `O_DIRECT | O_DSYNC | O_RDWR`
   (Linux). Aligned I/O only. The primary production disk type for
   NVMe/SATA SSDs and HDDs. The device path comes from the
   `device_path` field in `DiskValue` (group-0 sysdata).
@@ -338,6 +338,12 @@ Each `Disk` shares the node's `IoEngine` instance (auto-detected:
 uring on Linux with liburing, blocking otherwise). Dummy disks
 (`NullDisk`, `MemDisk`) wrap the shared engine with a
 `DummyDiskEngine` for read-content hack and optional fault injection.
+
+Every valid descriptor used by `UringEngine`, including dummy disks discovered
+after startup, is registered with `DiskIOUring`. Removal unregisters the
+descriptor after draining in-flight work. The first group-0 disk sync runs
+immediately so a restarted service does not advertise an empty `DiskSet` for
+one refresh interval.
 
 `Zone` holds `{zone_index, base_offset, capacity, state}`. The
 physical offset for an I/O is `zone.base_offset + zone_offset`. Zone

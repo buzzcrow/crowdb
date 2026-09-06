@@ -92,7 +92,7 @@ refine it through a three-node `NullDisk` benchmark.
   operations and test their failure boundaries. Files:
   `lib/crowdb-chunk-client/src/client.rs`, `lib/crowdb-chunkdb-client/`,
   `lib/crowdb-chunk-client/tests/`.
-- [ ] **Rerun performance matrix**: run the retained one- and four-writer
+- [x] **Rerun performance matrix**: run the retained one- and four-writer
   NullDisk sentinel without descriptor warnings, compare all client/service
   metrics, and update the working analysis with the new bottleneck. Files:
   `tools/bench-chunkio-write-regression.sh`,
