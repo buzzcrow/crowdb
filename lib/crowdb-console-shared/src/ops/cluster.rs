@@ -563,12 +563,28 @@ pub async fn restart_storage_services(ctx: &OpContext) -> Result<u64> {
         })
         .cloned()
         .collect::<Vec<_>>();
+    let launches = services
+        .iter()
+        .map(|server| {
+            let pid = server.pid.ok_or_else(|| Error::Validation {
+                field: "pid".into(),
+                message: format!("{} has no tracked process", server.id),
+            })?;
+            let spec = ctx
+                .config()
+                .local_launches
+                .get(&server.id)
+                .cloned()
+                .ok_or_else(|| Error::Validation {
+                    field: "local_launch".into(),
+                    message: format!("{} has no retained launch command", server.id),
+                })?;
+            Ok((server.id.clone(), (pid, spec)))
+        })
+        .collect::<Result<std::collections::HashMap<_, _>>>()?;
     for server in &services {
-        let pid = server.pid.ok_or_else(|| Error::Validation {
-            field: "pid".into(),
-            message: format!("{} has no tracked process", server.id),
-        })?;
-        lifecycle::stop_pid_with_timeout(pid, std::time::Duration::from_secs(15))?;
+        let (pid, _) = &launches[&server.id];
+        lifecycle::stop_pid_with_timeout(*pid, std::time::Duration::from_secs(15))?;
     }
     services.sort_by_key(|server| match server.service_type {
         ServiceType::Diskdb => 0,
@@ -577,16 +593,8 @@ pub async fn restart_storage_services(ctx: &OpContext) -> Result<u64> {
         _ => 3,
     });
     for server in &services {
-        let spec = ctx
-            .config()
-            .local_launches
-            .get(&server.id)
-            .cloned()
-            .ok_or_else(|| Error::Validation {
-                field: "local_launch".into(),
-                message: format!("{} has no retained launch command", server.id),
-            })?;
-        let pid = lifecycle::restart_local_service(&server.id, server.pid.unwrap_or_default(), &spec).await?;
+        let (old_pid, spec) = &launches[&server.id];
+        let pid = lifecycle::restart_local_service(&server.id, *old_pid, spec).await?;
         if let Some(entry) = ctx
             .config_mut()
             .servers
