@@ -21,7 +21,7 @@ use crowdb_protocol::generate_chunk_id;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
-use super::kv_client::{build_kv_client, KvClientTunables};
+use super::kv::{build_kv_client, KvClientTunables};
 use super::metrics::BenchMetrics;
 use super::verb::{ChunkdbArgs, ChunkdbBenchVerb, ChunkdbStripMode};
 use crate::Cli;

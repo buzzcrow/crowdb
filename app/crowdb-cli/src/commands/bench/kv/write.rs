@@ -17,11 +17,13 @@ use crowdb_console_shared::snapshot::MetricFieldView;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
-use super::kv_client::{build_kv_client, KvClientTunables};
-use super::loader::{run_workload, BenchRecorder};
-use super::metrics::BenchMetrics;
-use super::result::{BenchOps, BenchResult, ReplicaStats, ServerMetrics, ServerRpcLatency, TransportStats};
-use super::verb::WriteArgs;
+use super::client::{build_kv_client, KvClientTunables};
+use crate::commands::bench::loader::{run_workload, BenchRecorder};
+use crate::commands::bench::metrics::BenchMetrics;
+use crate::commands::bench::result::{
+    BenchOps, BenchResult, ReplicaStats, ServerMetrics, ServerRpcLatency, TransportStats,
+};
+use crate::commands::bench::verb::WriteArgs;
 use crate::commands::load_config;
 use crate::Cli;
 

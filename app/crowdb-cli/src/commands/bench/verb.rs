@@ -358,14 +358,14 @@ pub enum BenchReadEndpoint {
 pub async fn run_bench_verb(cli: &Cli, verb: BenchVerb) -> ExitCode {
     match verb {
         BenchVerb::Rpc(args) => super::rpc::run(cli, args).await,
-        BenchVerb::Diskdb(verb) => super::diskdb::run(cli, verb).await,
-        BenchVerb::Chunkdb(verb) => super::chunkdb::run(cli, verb).await,
-        BenchVerb::Chunkio(verb) => super::chunkio::run(cli, verb).await,
+        BenchVerb::Diskdb(verb) => super::disk::db::run(cli, verb).await,
+        BenchVerb::Chunkdb(verb) => super::chunk::run(cli, verb).await,
+        BenchVerb::Chunkio(verb) => super::io::run(cli, verb).await,
         BenchVerb::Kv(kv) => match kv {
-            KvBenchVerb::Prepare(args) => super::kv_prepare::run(cli, args).await,
-            KvBenchVerb::Read(args) => super::kv_read::run(cli, args).await,
-            KvBenchVerb::Write(args) => super::kv_write::run(cli, args).await,
-            KvBenchVerb::Scan(args) => super::kv_scan::run(cli, args).await,
+            KvBenchVerb::Prepare(args) => super::kv::prepare::run(cli, args).await,
+            KvBenchVerb::Read(args) => super::kv::read::run(cli, args).await,
+            KvBenchVerb::Write(args) => super::kv::write::run(cli, args).await,
+            KvBenchVerb::Scan(args) => super::kv::scan::run(cli, args).await,
         },
     }
 }

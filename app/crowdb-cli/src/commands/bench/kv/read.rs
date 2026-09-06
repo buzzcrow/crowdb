@@ -16,11 +16,11 @@ use crowdb_kv_client::{CrowdbKvClient, GetOutcome, ReadEndpointPolicy, ReadMode}
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
-use super::kv_client::{build_kv_client, KvClientTunables};
-use super::loader::{run_workload, BenchRecorder};
-use super::metrics::BenchMetrics;
-use super::result::{BenchOps, BenchResult};
-use super::verb::{BenchMinSlot, BenchReadEndpoint, BenchReadMode, ReadArgs};
+use super::client::{build_kv_client, KvClientTunables};
+use crate::commands::bench::loader::{run_workload, BenchRecorder};
+use crate::commands::bench::metrics::BenchMetrics;
+use crate::commands::bench::result::{BenchOps, BenchResult};
+use crate::commands::bench::verb::{BenchMinSlot, BenchReadEndpoint, BenchReadMode, ReadArgs};
 use crate::Cli;
 
 pub async fn run(cli: &Cli, args: ReadArgs) -> ExitCode {
@@ -153,7 +153,7 @@ fn make_read_workload(
 }
 
 /// Build the expected first `verify` bytes for key `id`: byte `i` =
-/// `(id + i) % 256` (same pattern as `kv_prepare::build_value`).
+/// `(id + i) % 256` (same pattern as `super::prepare::build_value`).
 fn expected_value(id: u64, size: usize, verify: usize) -> Vec<u8> {
     let len = verify.min(size);
     (0..len)

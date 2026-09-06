@@ -1,14 +1,14 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-#[path = "../src/commands/bench/diskdb_workload.rs"]
-mod diskdb_workload;
+#[path = "../src/commands/bench/disk/workload.rs"]
+mod workload;
 
 use std::collections::HashSet;
 
-use diskdb_workload::select_free;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
+use workload::select_free;
 
 #[test]
 fn deterministic_mixed_selection_preserves_live_set_accounting() {

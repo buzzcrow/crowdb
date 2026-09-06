@@ -14,11 +14,11 @@ use std::time::{Duration, Instant};
 
 use crowdb_kv_client::{ReadEndpointPolicy, ReadMode};
 
-use super::kv_client::{build_kv_client, KvClientTunables};
-use super::loader::{run_workload, BenchRecorder};
-use super::metrics::BenchMetrics;
-use super::result::{BenchOps, BenchResult};
-use super::verb::{BenchMinSlot, BenchReadEndpoint, BenchReadMode, ScanArgs};
+use super::client::{build_kv_client, KvClientTunables};
+use crate::commands::bench::loader::{run_workload, BenchRecorder};
+use crate::commands::bench::metrics::BenchMetrics;
+use crate::commands::bench::result::{BenchOps, BenchResult};
+use crate::commands::bench::verb::{BenchMinSlot, BenchReadEndpoint, BenchReadMode, ScanArgs};
 use crate::Cli;
 
 #[allow(clippy::too_many_lines)]

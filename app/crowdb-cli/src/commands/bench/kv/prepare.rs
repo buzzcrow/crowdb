@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::kv_client::{build_kv_client, KvClientTunables};
-use super::verb::PrepareArgs;
+use super::client::{build_kv_client, KvClientTunables};
+use crate::commands::bench::verb::PrepareArgs;
 use crate::Cli;
 
 pub async fn run(cli: &Cli, args: PrepareArgs) -> ExitCode {

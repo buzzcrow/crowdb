@@ -4,14 +4,18 @@
 //! `cluster` domain — cluster-level ops: init, reset, clean, status,
 //! topology, plus hardware subcommands (rack/node/disk-group/disk).
 
+pub mod hardware;
+
+pub(crate) use hardware::{
+    run_disk_group_verb, run_disk_verb, run_node_verb, run_rack_verb, DiskGroupVerb, DiskVerb, NodeVerb,
+    RackVerb,
+};
+
 use std::process::ExitCode;
 
 use clap::Subcommand;
 
-use crate::commands::{
-    commit_config, op_context, print_json, run_disk_group_verb, run_disk_verb, run_node_verb, run_rack_verb,
-    DiskGroupVerb, DiskVerb, NodeVerb, RackVerb,
-};
+use crate::commands::{commit_config, op_context, print_json};
 use crate::Cli;
 
 #[derive(Subcommand, Debug)]

@@ -16,11 +16,11 @@ use crowdb_protocol::diskdb::rpc::{AllocateBlocksRequest, CompactZoneRequest, Fr
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
-use super::diskdb_workload::select_free;
-use super::kv_client::{build_kv_client, KvClientTunables};
-use super::loader::BenchRecorder;
-use super::metrics::BenchMetrics;
-use super::verb::{DiskdbArgs, DiskdbBenchVerb};
+use super::workload::select_free;
+use crate::commands::bench::kv::{build_kv_client, KvClientTunables};
+use crate::commands::bench::loader::BenchRecorder;
+use crate::commands::bench::metrics::BenchMetrics;
+use crate::commands::bench::verb::{DiskdbArgs, DiskdbBenchVerb};
 use crate::Cli;
 
 #[derive(Default)]
