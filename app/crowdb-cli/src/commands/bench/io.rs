@@ -63,6 +63,7 @@ pub async fn run(cli: &Cli, verb: ChunkioBenchVerb) -> ExitCode {
         }),
     };
     let mut metrics = BenchMetrics::new(&cli.log_dir, args.metrics_interval);
+    let client = client.with_metrics(&metrics.chunk_io);
     metrics.start();
     let result = run_large_write_benchmark(
         client,

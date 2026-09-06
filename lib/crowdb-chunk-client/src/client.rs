@@ -6,14 +6,25 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
+use bytes::Bytes;
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
 use crowdb_common::ec::EcScheme;
+use crowdb_diskio_client::DiskId;
 use crowdb_kv_client::{
     ClientConfig, CrowdbKvClient, HardwareClient, RangeBindingClient, ServiceRegistryClient,
 };
-use crowdb_protocol::chunkdb::rpc::Location;
+use crowdb_protocol::chunkdb::rpc::{
+    AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse, DeleteChunkRequest,
+    DeleteChunkResponse, Location, QueryChunkRequest, QueryChunkResponse, SealChunkRequest,
+    SealChunkResponse, UpdateChunkStripRequest, UpdateChunkStripResponse,
+};
+use crowdb_protocol::diskdb::rpc::Segment;
 
-use crate::{ChunkClientConfig, DiskWriter, LargeAsyncObjectWriter, Result, RoutedDiskWriter};
+use crate::{
+    ChunkAllocator, ChunkClientConfig, ChunkClientMetrics, DiskWriter, LargeAsyncObjectWriter, Result,
+    RoutedDiskWriter,
+};
 
 /// Discovery and transport configuration for [`ChunkIoClient`].
 #[derive(Debug, Clone)]
@@ -48,6 +59,7 @@ pub struct ChunkIoClient {
     allocator: Arc<dyn crate::ChunkAllocator>,
     disk_writer: Arc<dyn DiskWriter>,
     topology: Option<Arc<ClientTopology>>,
+    metrics: Option<Arc<ChunkClientMetrics>>,
 }
 
 struct ClientTopology {
@@ -78,6 +90,7 @@ impl ChunkIoClient {
                 hardware,
                 disk_writer,
             })),
+            metrics: None,
         })
     }
 
@@ -87,7 +100,23 @@ impl ChunkIoClient {
             allocator,
             disk_writer,
             topology: None,
+            metrics: None,
         }
+    }
+
+    /// Attach aggregate write-path metrics registered by the embedding process.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: &Arc<ChunkClientMetrics>) -> Self {
+        self.allocator = Arc::new(MetricsChunkAllocator {
+            inner: self.allocator,
+            metrics: Arc::clone(metrics),
+        });
+        self.disk_writer = Arc::new(MetricsDiskWriter {
+            inner: self.disk_writer,
+            metrics: Arc::clone(metrics),
+        });
+        self.metrics = Some(Arc::clone(metrics));
+        self
     }
 
     /// Rebuild and atomically publish service and disk ownership routes.
@@ -119,7 +148,88 @@ impl ChunkIoClient {
             object_size,
             policy,
             prepared_at: Instant::now(),
+            metrics: self.metrics.clone(),
         }
+    }
+}
+
+struct MetricsChunkAllocator {
+    inner: Arc<dyn ChunkAllocator>,
+    metrics: Arc<ChunkClientMetrics>,
+}
+
+#[async_trait]
+impl ChunkAllocator for MetricsChunkAllocator {
+    async fn allocate_chunk(&self, req: AllocateChunkRequest) -> Result<AllocateChunkResponse> {
+        let mut operation = self.metrics.chunk_allocate.start();
+        let result = self.inner.allocate_chunk(req).await;
+        if result.is_ok() {
+            operation.mark_success();
+        }
+        result
+    }
+
+    async fn append_chunk(&self, req: AppendChunkRequest) -> Result<AppendChunkResponse> {
+        let mut operation = self.metrics.chunk_append.start();
+        let result = self.inner.append_chunk(req).await;
+        if result.is_ok() {
+            operation.mark_success();
+        }
+        result
+    }
+
+    async fn seal_chunk(&self, req: SealChunkRequest) -> Result<SealChunkResponse> {
+        let mut operation = self.metrics.chunk_seal.start();
+        let result = self.inner.seal_chunk(req).await;
+        if result.is_ok() {
+            operation.mark_success();
+        }
+        result
+    }
+
+    async fn delete_chunk(&self, req: DeleteChunkRequest) -> Result<DeleteChunkResponse> {
+        let mut operation = self.metrics.chunk_delete.start();
+        let result = self.inner.delete_chunk(req).await;
+        if result.is_ok() {
+            operation.mark_success();
+        }
+        result
+    }
+
+    async fn update_chunk_strip(&self, req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse> {
+        self.inner.update_chunk_strip(req).await
+    }
+
+    async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse> {
+        self.inner.query_chunk(req).await
+    }
+}
+
+struct MetricsDiskWriter {
+    inner: Arc<dyn DiskWriter>,
+    metrics: Arc<ChunkClientMetrics>,
+}
+
+#[async_trait]
+impl DiskWriter for MetricsDiskWriter {
+    async fn write(&self, seg: &Segment, unit_bytes: u64, data: Bytes) -> Result<()> {
+        let bytes = u64::try_from(data.len()).unwrap_or(u64::MAX);
+        let mut operation = self.metrics.diskio_write.start();
+        let result = self.inner.write(seg, unit_bytes, data).await;
+        if result.is_ok() {
+            self.metrics.diskio_write_bytes.observe(bytes);
+            operation.mark_success();
+        }
+        result
+    }
+
+    async fn fsync(&self, disk_id: DiskId) -> Result<()> {
+        let mut operation = self.metrics.diskio_fsync.start();
+        let result = self.inner.fsync(disk_id).await;
+        if result.is_ok() {
+            operation.mark_success();
+        }
+        result
     }
 }
 
@@ -163,6 +273,7 @@ pub struct PreparedLargeWrite {
     object_size: Option<u64>,
     policy: LargeWritePolicy,
     prepared_at: Instant,
+    metrics: Option<Arc<ChunkClientMetrics>>,
 }
 
 impl PreparedLargeWrite {
@@ -171,6 +282,7 @@ impl PreparedLargeWrite {
         mut self,
         source: impl tokio::io::AsyncRead + Unpin + Send,
     ) -> Result<LargeWriteResult> {
+        let mut operation = self.metrics.as_ref().map(|metrics| metrics.object_write.start());
         let locations = self.writer.write_stream(source, self.object_size).await?;
         let logical_bytes: u64 = locations.iter().map(|location| location.length).sum();
         let block_bytes = self.policy.client.read_buffer_size as u64;
@@ -182,6 +294,13 @@ impl PreparedLargeWrite {
         let parity_bytes =
             (full_strips * block_bytes + tail_parity_bytes) * self.policy.ec_scheme.code_num as u64;
         let physical_bytes = logical_bytes + parity_bytes;
+        if let Some(metrics) = &self.metrics {
+            metrics.logical_bytes.observe(logical_bytes);
+            metrics.physical_bytes.observe(physical_bytes);
+        }
+        if let Some(operation) = &mut operation {
+            operation.mark_success();
+        }
         Ok(LargeWriteResult {
             chunks: locations.len(),
             locations,

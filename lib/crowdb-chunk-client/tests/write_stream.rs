@@ -29,6 +29,7 @@ use crowdb_chunk_client::{
     WriterPool,
 };
 use crowdb_common::ec::EcScheme;
+use crowdb_common::metrics::{MetricPoint, MetricsRegistry};
 use crowdb_diskio_client::DiskId;
 use crowdb_protocol::chunkdb::rpc::Strip as StripOneof;
 use crowdb_protocol::chunkdb::rpc::{
@@ -485,6 +486,45 @@ async fn write_stream_returns_allocation_error_when_fetch_is_backpressured() {
     .expect("allocation failure must cancel the backpressured fetch stage");
 
     assert!(matches!(result, Err(IoError::AllocationFailed(_))));
+}
+
+#[tokio::test]
+async fn chunk_client_metrics_cover_object_chunk_and_diskio_layers() {
+    let chunkdb = MockChunkAllocator::new();
+    let tmp = test_dirs::tempdir_in_test_data("chunk-client");
+    let diskio = LocalFileDiskWriter::new(tmp.path());
+    let mut registry = MetricsRegistry::new();
+    let metrics = Arc::new(crowdb_chunk_client::ChunkClientMetrics::register(&mut registry));
+    let client = ChunkIoClient::from_parts(Arc::new(chunkdb), Arc::new(diskio)).with_metrics(&metrics);
+    let policy = LargeWritePolicy {
+        ec_scheme: ec_4_1(),
+        client: test_config(1024 * 1024),
+    };
+
+    client
+        .prepare_large_write(Some(4096), policy)
+        .write_stream(&[0x5a; 4096][..])
+        .await
+        .unwrap();
+
+    for name in [
+        "chunkio.object.write.e2e.lh",
+        "chunkio.chunk.allocate.e2e.lh",
+        "chunkio.chunk.seal.e2e.lh",
+        "chunkio.diskio.write.e2e.lh",
+        "chunkio.diskio.fsync.e2e.lh",
+    ] {
+        assert!(
+            matches!(registry.snapshot_named(name, 1.0), Some(MetricPoint::Histogram { total, .. }) if total > 0)
+        );
+    }
+    assert!(matches!(
+        registry.snapshot_named("chunkio.object.logical.bw", 1.0),
+        Some(MetricPoint::Bandwidth {
+            total_bytes: 4096,
+            ..
+        })
+    ));
 }
 
 #[tokio::test]

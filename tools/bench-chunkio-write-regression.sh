@@ -72,14 +72,19 @@ memory_bandwidth() {
 }
 
 verify_logs() {
-    local kv diskdb chunkdb diskio cli_metrics
+    local kv diskdb chunkdb diskio cli_metrics cli_metrics_file
     kv=$(find "$CURRENT_LOG_ROOT" -type f -name 'crowdb-kv-server-metrics-*.log' | wc -l)
     diskdb=$(find "$CURRENT_LOG_ROOT" -type f -name 'crowdb-diskdb-metrics-*.log' | wc -l)
     chunkdb=$(find "$CURRENT_LOG_ROOT" -type f -name 'crowdb-chunkdb-metrics-*.log' | wc -l)
     diskio=$(find "$CURRENT_LOG_ROOT" -type f -name 'crowdb-diskio-metrics-*.log' | wc -l)
     cli_metrics=$(find "$CURRENT_LOG_ROOT" -type f -name 'crowdb-cli-metrics-*.log' | wc -l)
+    cli_metrics_file=$(find "$BENCH_LOG_DIR" -type f -name 'crowdb-cli-metrics-*.log' | head -n 1)
     [ "$kv" -eq 3 ] && [ "$diskdb" -eq 3 ] && [ "$chunkdb" -eq 3 ] \
-        && [ "$diskio" -eq 3 ] && [ "$cli_metrics" -eq 1 ]
+        && [ "$diskio" -eq 3 ] && [ "$cli_metrics" -eq 1 ] \
+        && rg -q 'chunkio\.object\.write\.e2e\.lh' "$cli_metrics_file" \
+        && rg -q 'chunkio\.chunk\.allocate\.e2e\.lh' "$cli_metrics_file" \
+        && rg -q 'chunkio\.diskio\.write\.e2e\.lh' "$cli_metrics_file" \
+        && rg -q 'chunkio\.diskio\.fsync\.e2e\.lh' "$cli_metrics_file"
 }
 
 run_case() {
