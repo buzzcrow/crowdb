@@ -714,11 +714,11 @@ deploy metadata:
   a second teardown on the same name exits 0 with "already torn down".
 
 The all-in-one `bench kv` verb is preserved as the quick one-shot path.
-The regression scripts
-(`tools/bench-kv-read-regression.sh`,
-`tools/bench-kv-scan-regression.sh`) use the lifecycle flow: deploy
-once → prepare once → run N sub-tests → teardown once, amortizing
-overhead.
+Regression scripts use the lifecycle flow: deploy once, prepare when needed,
+run compatible sub-tests with reset boundaries, then teardown once. Each
+sentinel accepts environment overrides for case selection and duration; KV
+read, write, and scan also accept a reduced keyspace. These controls provide a
+short structural smoke without changing the default regression matrix.
 
 `ClusterHandle` is a runtime artifact (JSON under `runtime/`), not a
 config extension. The `runtime/` directory is gitignored. The

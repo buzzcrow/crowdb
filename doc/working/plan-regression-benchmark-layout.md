@@ -65,11 +65,11 @@ reuse compatible clusters safely, and retain complete service metrics.
   and clean/restart state transitions.
 - [x] **Integration tests**: deploy the local combined stack, inspect its tree,
   run two cleaned workloads on one cluster, and verify all metric sections.
-- [~] **Regression smoke tests**: run short cases for every sentinel through
+- [x] **Regression smoke tests**: run short cases for every sentinel through
   `pixi run` and inspect retained structures.
-- [ ] **Quality gates**: run Rust formatting, clippy, affected tests, shell
+- [x] **Quality gates**: run Rust formatting, clippy, affected tests, shell
   syntax checks, and `git diff --check` through the required tooling.
-- [ ] **Finish documentation**: reconcile the permanent design with verified
+- [~] **Finish documentation**: reconcile the permanent design with verified
   behavior and delete this working plan once every item is complete.
 
 ## Files

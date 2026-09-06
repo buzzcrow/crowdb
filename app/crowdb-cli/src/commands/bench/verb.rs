@@ -31,7 +31,7 @@ pub enum BenchVerb {
 
 #[derive(Subcommand, Debug)]
 pub enum ChunkioBenchVerb {
-    /// Stream deterministic large objects through ChunkDB and DiskIO.
+    /// Stream deterministic large objects through `ChunkDB` and `DiskIO`.
     Write(ChunkioArgs),
 }
 

@@ -97,8 +97,9 @@ REGRESSION_LOG_ROOT="$LOG_ROOT"
 source tools/bench-regression-common.sh
 export CROWDB_LOG_ROOT="$LOG_ROOT"
 regression_init
-DURATION=20
-VALUE_SIZE=128
+DURATION="${RPC_BENCH_DURATION:-20}"
+VALUE_SIZE="${RPC_BENCH_VALUE_SIZE:-128}"
+CASES="${RPC_BENCH_CASES:-}"
 CONFIG_FILE="$REGRESSION_CONFIG"
 
 # Deploy a fresh fb-server via `cluster local-deploy -t rpc`.
@@ -135,6 +136,9 @@ stop_server() {
 
 run_bench() {
     local loaders="$1" conn="$2" label="$3" io_engines="${4:-1}" wkr="${5:-1}" mode="${6:-coroutine}" nagle="${7:-0}"
+    if [ -n "$CASES" ] && [[ " $CASES " != *" $label "* ]]; then
+        return
+    fi
     echo ">>> $label (io_engines=$io_engines, io_workers=$wkr, mode=$mode, nagle=$nagle) ..."
 
     # Start fb server with matching config.

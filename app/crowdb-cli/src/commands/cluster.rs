@@ -131,7 +131,7 @@ pub enum ClusterVerb {
         /// Target group ID (default 0 = system group; use 1+ for bench groups).
         #[arg(long, default_value_t = 0)]
         group: u64,
-        /// Restart DiskDB, DiskIO, and ChunkDB after the KV wipe.
+        /// Restart `DiskDB`, `DiskIO`, and `ChunkDB` after the KV wipe.
         #[arg(long, default_value_t = false)]
         restart_services: bool,
     },

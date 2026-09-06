@@ -51,9 +51,10 @@ REGRESSION_LOG_ROOT="$LOG_ROOT"
 source tools/bench-regression-common.sh
 export CROWDB_LOG_ROOT="$LOG_ROOT"
 regression_init
-DURATION=20
-KEYSPACE=1000000
-VALUE_SIZE=512
+DURATION="${KV_WRITE_BENCH_DURATION:-20}"
+KEYSPACE="${KV_WRITE_BENCH_KEYSPACE:-1000000}"
+VALUE_SIZE="${KV_WRITE_BENCH_VALUE_SIZE:-512}"
+CASES="${KV_WRITE_BENCH_CASES:-}"
 
 # sample_rss <config_file> <label>
 # Reads server PIDs from the config file and reports total RSS (MB)
@@ -82,9 +83,12 @@ sample_rss() {
 # Cleans user data, then runs the write workload, parses JSON output.
 run_bench() {
     local deploy="$1" threads="$2" conn="$3" label="$4"
+    if [ -n "$CASES" ] && [[ " $CASES " != *" $label "* ]]; then
+        return
+    fi
     echo ">>> $label ..."
     local config_file
-    config_file=$(cat "/tmp/bench-write-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
+    config_file=$(cat "$LOG_ROOT/${deploy}.cfgpath" 2>/dev/null || echo "")
     if [ -z "$config_file" ] || [ ! -f "$config_file" ]; then
         echo "    ERROR: no config for deploy '$deploy'"
         echo -e "$label\t0\t0\t0\t0\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0" >> "$RESULTS_FILE"
@@ -276,23 +280,27 @@ pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server 2>&1 | tail 
 echo -e "label\twin\tcoalesce\tworkers\tops_s\twal_per_node\tp50_us\tp99_us\terrors\tsrv_sagg\tsrv_ragg\tcli_sagg\tcli_ragg\tr2_avg\tr2_tps\tr3_avg\tr3_tps\tinflight_enq\tinflight_wait_us" > "$RESULTS_FILE"
 
 # Group A: win=32, coalesce=16 (5 sub-tests, workers=2 except 128T+)
-DEPLOY_A="write-reg-A-$$-$(date +%s)"
-WIN=32 COALESCE=16 RPC_WORKERS=2 deploy_group "$DEPLOY_A" 32 16 2
-echo "=== write (win=32, coalesce=16) ==="
-WIN=32 COALESCE=16 RPC_WORKERS=2 run_bench "$DEPLOY_A" 1 1 "write_1t_1c_win32_coales16"           # ref: 4,019 ops/s
-WIN=32 COALESCE=16 RPC_WORKERS=2 run_bench "$DEPLOY_A" 16 2 "write_16t_2c_win32_coales16"         # ref: 63,668 ops/s
-WIN=32 COALESCE=16 RPC_WORKERS=2 run_bench "$DEPLOY_A" 64 4 "write_64t_4c_win32_coales16"         # ref: 157,310 ops/s
-WIN=32 COALESCE=16 RPC_WORKERS=4 run_bench "$DEPLOY_A" 128 4 "write_128t_4c_win32_coales16"       # ref: 189,585 ops/s
-WIN=32 COALESCE=16 RPC_WORKERS=4 run_bench "$DEPLOY_A" 256 8 "write_256t_8c_win32_coales16"       # ref: 187,452 ops/s
-teardown_group "$DEPLOY_A"
+if [ -z "$CASES" ] || [[ "$CASES" == *"win32_coales16"* ]]; then
+    DEPLOY_A="write-reg-A-$$-$(date +%s)"
+    WIN=32 COALESCE=16 RPC_WORKERS=2 deploy_group "$DEPLOY_A" 32 16 2
+    echo "=== write (win=32, coalesce=16) ==="
+    WIN=32 COALESCE=16 RPC_WORKERS=2 run_bench "$DEPLOY_A" 1 1 "write_1t_1c_win32_coales16"
+    WIN=32 COALESCE=16 RPC_WORKERS=2 run_bench "$DEPLOY_A" 16 2 "write_16t_2c_win32_coales16"
+    WIN=32 COALESCE=16 RPC_WORKERS=2 run_bench "$DEPLOY_A" 64 4 "write_64t_4c_win32_coales16"
+    WIN=32 COALESCE=16 RPC_WORKERS=4 run_bench "$DEPLOY_A" 128 4 "write_128t_4c_win32_coales16"
+    WIN=32 COALESCE=16 RPC_WORKERS=4 run_bench "$DEPLOY_A" 256 8 "write_256t_8c_win32_coales16"
+    teardown_group "$DEPLOY_A"
+fi
 
 # Group B: win=64, coalesce=64 (2 sub-tests, workers=4)
-DEPLOY_B="write-reg-B-$$-$(date +%s)"
-WIN=64 COALESCE=64 RPC_WORKERS=4 deploy_group "$DEPLOY_B" 64 64 4
-echo "=== write (win=64, coalesce=64) ==="
-WIN=64 COALESCE=64 RPC_WORKERS=4 run_bench "$DEPLOY_B" 512 16 "write_512t_16c_win64_coales64"     # ref: 233,601 ops/s
-WIN=64 COALESCE=64 RPC_WORKERS=4 run_bench "$DEPLOY_B" 1000 16 "write_1000t_16c_win64_coales64"   # ref: 208,114 ops/s
-teardown_group "$DEPLOY_B"
+if [ -z "$CASES" ] || [[ "$CASES" == *"win64_coales64"* ]]; then
+    DEPLOY_B="write-reg-B-$$-$(date +%s)"
+    WIN=64 COALESCE=64 RPC_WORKERS=4 deploy_group "$DEPLOY_B" 64 64 4
+    echo "=== write (win=64, coalesce=64) ==="
+    WIN=64 COALESCE=64 RPC_WORKERS=4 run_bench "$DEPLOY_B" 512 16 "write_512t_16c_win64_coales64"
+    WIN=64 COALESCE=64 RPC_WORKERS=4 run_bench "$DEPLOY_B" 1000 16 "write_1000t_16c_win64_coales64"
+    teardown_group "$DEPLOY_B"
+fi
 
 echo "=== DONE ==="
 echo "Results in $RESULTS_FILE"

@@ -102,15 +102,21 @@ pub async fn run_large_write_benchmark(
         stop_reason: stop_reason.into(),
         logical_bytes: total.logical_bytes,
         physical_bytes: total.physical_bytes,
-        logical_mib_per_sec: total.logical_bytes as f64 / 1_048_576.0 / elapsed_secs,
-        physical_mib_per_sec: total.physical_bytes as f64 / 1_048_576.0 / elapsed_secs,
-        objects_per_sec: total.objects as f64 / elapsed_secs,
+        logical_mib_per_sec: u64_as_f64(total.logical_bytes) / 1_048_576.0 / elapsed_secs,
+        physical_mib_per_sec: u64_as_f64(total.physical_bytes) / 1_048_576.0 / elapsed_secs,
+        objects_per_sec: u64_as_f64(total.objects) / elapsed_secs,
         latency_p50_us: percentile(&total.latencies, 50),
         latency_p99_us: percentile(&total.latencies, 99),
         preparation_stalls: total.preparation_stalls,
         preparation_stall_us: total.preparation_stall_us,
         error_messages: total.error_messages,
     }
+}
+
+fn u64_as_f64(value: u64) -> f64 {
+    let high = u32::try_from(value >> 32).unwrap_or(u32::MAX);
+    let low = u32::try_from(value & u64::from(u32::MAX)).unwrap_or(u32::MAX);
+    f64::from(high).mul_add(4_294_967_296.0, f64::from(low))
 }
 
 async fn run_worker(

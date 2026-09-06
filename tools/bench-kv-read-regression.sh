@@ -42,12 +42,16 @@ REGRESSION_LOG_ROOT="$LOG_ROOT"
 source tools/bench-regression-common.sh
 export CROWDB_LOG_ROOT="$LOG_ROOT"
 regression_init
-DURATION=20
-KEYSPACE=100000
+DURATION="${KV_READ_BENCH_DURATION:-20}"
+KEYSPACE="${KV_READ_BENCH_KEYSPACE:-100000}"
+CASES="${KV_READ_BENCH_CASES:-}"
 DEPLOY_NAME="kv-read-regression-$$"
 
 run_subtest() {
     local label="$1" read_mode="$2" min_slot="$3" threads="$4" connections="$5" verify_bytes="${6:-0}"
+    if [ -n "$CASES" ] && [[ " $CASES " != *" $label "* ]]; then
+        return
+    fi
     local read_endpoint
     if [ "$read_mode" = "minslot" ]; then
         read_endpoint="any-replica"

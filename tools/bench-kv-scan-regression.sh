@@ -40,8 +40,9 @@ REGRESSION_LOG_ROOT="$LOG_ROOT"
 source tools/bench-regression-common.sh
 export CROWDB_LOG_ROOT="$LOG_ROOT"
 regression_init
-DURATION=20
-KEYSPACE=100000
+DURATION="${KV_SCAN_BENCH_DURATION:-20}"
+KEYSPACE="${KV_SCAN_BENCH_KEYSPACE:-100000}"
+CASES="${KV_SCAN_BENCH_CASES:-}"
 DEPLOY_NAME="kv-scan-regression-$$"
 
 # Keys are k{id:020} (zero-padded to 20 digits after 'k'), per
@@ -55,6 +56,9 @@ pad_key() {
 
 run_subtest() {
     local label="$1" limit="$2" prefix="$3" start_after="$4" value_size="$5" read_mode="$6" min_slot="$7" threads="$8" connections="$9" mix="${10:-}"
+    if [ -n "$CASES" ] && [[ " $CASES " != *" $label "* ]]; then
+        return
+    fi
     local read_endpoint
     if [ "$read_mode" = "minslot" ]; then
         read_endpoint="any-replica"
