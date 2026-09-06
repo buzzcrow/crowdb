@@ -1054,7 +1054,7 @@ async fn benchmark_runner_aggregates_concurrent_large_writes() {
     let chunkdb = MockChunkAllocator::new();
     let tmp = test_dirs::tempdir_in_test_data("chunk-client");
     let diskio = LocalFileDiskWriter::new(tmp.path());
-    let client = ChunkIoClient::from_parts(Arc::new(chunkdb), Arc::new(diskio));
+    let client = ChunkIoClient::from_parts(Arc::new(chunkdb.clone()), Arc::new(diskio));
     let result = run_large_write_benchmark(
         client,
         LargeWriteBenchmarkConfig {
@@ -1062,6 +1062,7 @@ async fn benchmark_runner_aggregates_concurrent_large_writes() {
             object_size: 4 * UNIT_BYTES,
             concurrency: 2,
             seed: 7,
+            prepared_write_count: 2,
             policy: LargeWritePolicy {
                 ec_scheme: ec_4_1(),
                 client: test_config(1024 * 1024),
@@ -1078,5 +1079,9 @@ async fn benchmark_runner_aggregates_concurrent_large_writes() {
     assert_eq!(result.physical_bytes, 10 * UNIT_BYTES);
     assert!(result.objects_per_sec > 0.0);
     assert!(result.latency_p50_us > 0);
+    assert_eq!(result.preparation_stalls, 0);
     assert!(result.error_messages.is_empty());
+    let state = chunkdb.snapshot();
+    assert!(state.allocate_calls >= 2);
+    assert_eq!(state.seal_calls, 2);
 }

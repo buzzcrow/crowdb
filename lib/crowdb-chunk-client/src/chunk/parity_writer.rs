@@ -8,7 +8,7 @@
 //! returns the `JoinHandle`s **without joining** — the caller
 //! (`ChunkWriter`) collects them and joins at `seal()` time. This
 //! decouples parity durability from strip finish: strip N+1's data
-//! writes overlap with strip N's parity writes + fsyncs (root design
+//! writes overlap with strip N's parity writes (root design
 //! §3). Replaces the old `ParityBatch` (per-strip join) — the
 //! batch-join semantics are gone; `ChunkWriter` owns the handles.
 

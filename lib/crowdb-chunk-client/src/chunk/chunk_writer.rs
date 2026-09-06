@@ -331,9 +331,20 @@ impl ChunkWriter {
             .ok_or_else(|| IoError::Internal("finish_strip with no open strip".into()))?;
         let mut strip_result = strip.finish().await?;
         self.bytes_in_chunk += strip_result.bytes_written;
-        // Collect parity handles for seal-time join.
-        self.completion_handles
-            .extend(std::mem::take(&mut strip_result.completion_handles));
+        // One queue entry represents one completed strip. This keeps
+        // `parity_depth` expressed in strips instead of accidentally counting
+        // every data and parity shard as an independent depth unit.
+        let handles = std::mem::take(&mut strip_result.completion_handles);
+        if !handles.is_empty() {
+            self.completion_handles.push_back(tokio::spawn(async move {
+                for handle in handles {
+                    handle.await.map_err(|error| {
+                        IoError::Internal(format!("strip write task panicked: {error}"))
+                    })??;
+                }
+                Ok(())
+            }));
+        }
         Ok(strip_result)
     }
 
@@ -346,7 +357,7 @@ impl ChunkWriter {
                 .ok_or_else(|| IoError::Internal("missing write completion".into()))?;
             handle
                 .await
-                .map_err(|error| IoError::Internal(format!("parity task panicked: {error}")))??;
+                .map_err(|error| IoError::Internal(format!("strip completion task panicked: {error}")))??;
         }
         Ok(())
     }

@@ -72,6 +72,7 @@ pub async fn run(cli: &Cli, verb: ChunkioBenchVerb) -> ExitCode {
             object_size: args.object_size,
             concurrency: args.concurrency,
             seed: args.seed,
+            prepared_write_count: args.prepared_writes,
             policy,
         },
     )
@@ -87,9 +88,11 @@ pub async fn run(cli: &Cli, verb: ChunkioBenchVerb) -> ExitCode {
         }
     } else {
         println!(
-            "chunkio write: requested={} object_size={} objects={} errors={} incomplete={} stop={} objects_s={:.2} logical_mib_s={:.1} physical_mib_s={:.1} p50_us={} p99_us={} prep_stalls={} prep_stall_us={}",
+            "chunkio write: requested={} object_size={} prepared_writes={} prepare_s={:.3} objects={} errors={} incomplete={} stop={} objects_s={:.2} logical_mib_s={:.1} physical_mib_s={:.1} p50_us={} p99_us={} prep_stalls={} prep_stall_us={}",
             result.requested_objects,
             args.object_size,
+            args.prepared_writes,
+            result.preparation_secs,
             result.objects,
             result.errors,
             result.incomplete_objects,

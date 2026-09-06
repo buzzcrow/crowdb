@@ -40,6 +40,7 @@ pub struct LargeAsyncObjectWriter {
     pub(crate) chunk_writer: Option<ChunkWriter>,
     pub(crate) chunk_prefetch_rx: Option<mpsc::Receiver<Result<Chunk>>>,
     pub(crate) chunk_prefetch_handle: Option<JoinHandle<()>>,
+    pub(crate) prepared_chunk: Option<Chunk>,
     pub(crate) locations: Vec<ProtoLocation>,
     pub(crate) logical_offset: u64,
     pub(crate) object_size: Option<u64>,
@@ -64,6 +65,7 @@ impl LargeAsyncObjectWriter {
             chunk_writer: None,
             chunk_prefetch_rx: None,
             chunk_prefetch_handle: None,
+            prepared_chunk: None,
             locations: Vec::new(),
             logical_offset: 0,
             object_size: None,
@@ -102,6 +104,29 @@ impl LargeAsyncObjectWriter {
         self.chunk_prefetch_handle = Some(prefetch_handle);
     }
 
+    /// Wait until the first chunk is allocated without opening the writer.
+    /// Applications use this before admitting load so initial placement is not
+    /// charged to the data path.
+    pub(crate) async fn wait_until_prepared(&mut self) -> Result<()> {
+        if self.prepared_chunk.is_some() || self.chunk_writer.is_some() {
+            return Ok(());
+        }
+        let rx = self
+            .chunk_prefetch_rx
+            .as_mut()
+            .ok_or_else(|| IoError::Internal("chunk preparation is not running".into()))?;
+        match rx.recv().await {
+            Some(Ok(chunk)) => {
+                self.prepared_chunk = Some(chunk);
+                Ok(())
+            }
+            Some(Err(error)) => Err(error),
+            None => Err(IoError::Internal(
+                "chunk preparation ended before producing a chunk".into(),
+            )),
+        }
+    }
+
     /// Seal the current chunk (if any) and record its ProtoLocation.
     pub(crate) async fn seal_current(&mut self) -> Result<()> {
         if let Some(mut cw) = self.chunk_writer.take() {
@@ -125,6 +150,9 @@ impl LargeAsyncObjectWriter {
     /// Pull the next `Chunk` from the prefetch channel (or on-demand
     /// if the channel is exhausted).
     pub(crate) async fn next_chunk(&mut self) -> Result<Option<Chunk>> {
+        if let Some(chunk) = self.prepared_chunk.take() {
+            return Ok(Some(chunk));
+        }
         if let Some(rx) = self.chunk_prefetch_rx.as_mut() {
             match rx.try_recv() {
                 Ok(result) => return result.map(Some),
@@ -193,6 +221,16 @@ impl LargeAsyncObjectWriter {
         if let Some(handle) = self.chunk_prefetch_handle.take() {
             handle.abort();
             let _ = handle.await;
+        }
+        if let Some(chunk) = self.prepared_chunk.take() {
+            if let Some(chunk_id) = chunk.id {
+                let _ = self
+                    .allocator
+                    .delete_chunk(DeleteChunkRequest {
+                        chunk_id: Some(chunk_id),
+                    })
+                    .await;
+            }
         }
         if let Some(mut rx) = self.chunk_prefetch_rx.take() {
             while let Ok(result) = rx.try_recv() {

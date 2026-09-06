@@ -5,7 +5,7 @@
 //!
 //! `push` writes a data block to disk via `DiskWriter` and feeds the
 //! buffer to `EcWorker` for streaming compute. `finish` spawns the
-//! pre-computed parity shards + deduplicated fsyncs in parallel via
+//! pre-computed parity shards in parallel via
 //! `parity_writer::spawn_parity_writes` and returns the handles
 //! **without joining** — `ChunkWriter` collects them and joins at
 //! `seal()` time. Each disk block (data + parity) can be written in
@@ -182,7 +182,7 @@ impl EcStripWriter {
         Ok(status)
     }
 
-    /// End of strip: spawn parity writes + fsyncs in parallel (no
+    /// End of strip: spawn parity writes in parallel (no
     /// join) and return the strip result with parity handles. The
     /// caller (`ChunkWriter`) collects the handles and joins them at
     /// `seal()` time — strip N+1's data writes overlap with strip N's
@@ -197,7 +197,7 @@ impl EcStripWriter {
         // Finalize EC compute — get parity shards.
         let parity = self.ec_worker.finish()?;
 
-        // Spawn parallel parity write + fsync tasks (no join).
+        // Spawn parallel parity write tasks (no join).
         let mut completion_handles = std::mem::take(&mut self.data_handles);
         completion_handles.extend(spawn_parity_writes(
             &self.chunk,

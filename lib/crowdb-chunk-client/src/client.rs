@@ -3,6 +3,7 @@
 
 //! Application-facing chunk IO client and prepared large writes.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -160,6 +161,34 @@ impl ChunkIoClient {
             metrics: self.metrics.clone(),
         }
     }
+
+    /// Allocate the first chunk for several write sessions before admitting
+    /// load. All allocations start together; the returned queue owns every
+    /// prepared chunk and callers must write or abort each session.
+    pub async fn prepare_large_writes(
+        &self,
+        count: usize,
+        object_size: Option<u64>,
+        policy: LargeWritePolicy,
+    ) -> Result<VecDeque<PreparedLargeWrite>> {
+        let mut writes: VecDeque<_> = (0..count)
+            .map(|_| self.prepare_large_write(object_size, policy.clone()))
+            .collect();
+        let mut preparation_error = None;
+        for write in &mut writes {
+            if let Err(error) = write.wait_until_prepared().await {
+                preparation_error = Some(error);
+                break;
+            }
+        }
+        if let Some(error) = preparation_error {
+            while let Some(write) = writes.pop_front() {
+                let _ = write.abort().await;
+            }
+            return Err(error);
+        }
+        Ok(writes)
+    }
 }
 
 struct MetricsChunkAllocator {
@@ -277,11 +306,18 @@ pub struct PreparedLargeWrite {
 }
 
 impl PreparedLargeWrite {
+    /// Wait until this session owns its first allocated chunk.
+    pub async fn wait_until_prepared(&mut self) -> Result<()> {
+        self.writer.wait_until_prepared().await?;
+        Ok(())
+    }
+
     /// Stream the object and return durable locations plus accounting.
     pub async fn write_stream(
         mut self,
         source: impl tokio::io::AsyncRead + Unpin + Send,
     ) -> Result<LargeWriteResult> {
+        let write_started = Instant::now();
         let mut operation = self.metrics.as_ref().map(|metrics| metrics.object_write.start());
         let locations = self.writer.write_stream(source, self.object_size).await?;
         let logical_bytes: u64 = locations.iter().map(|location| location.length).sum();
@@ -307,7 +343,7 @@ impl PreparedLargeWrite {
             logical_bytes,
             physical_bytes,
             strips,
-            elapsed: self.prepared_at.elapsed(),
+            elapsed: write_started.elapsed(),
             preparation_stalls: self.writer.preparation_stalls(),
             preparation_stall_time: self.writer.preparation_stall_time(),
         })
@@ -316,5 +352,10 @@ impl PreparedLargeWrite {
     /// Time elapsed since the request prepared this write session.
     pub fn preparation_age(&self) -> Duration {
         self.prepared_at.elapsed()
+    }
+
+    /// Release a prepared session that will not be written.
+    pub async fn abort(mut self) -> Result<()> {
+        self.writer.abort_pipeline().await.map(|_| ())
     }
 }

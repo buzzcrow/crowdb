@@ -55,6 +55,9 @@ pub struct ChunkioArgs {
     pub seed: u8,
     #[arg(long, default_value_t = 1)]
     pub metrics_interval: u64,
+    /// Write sessions to prepare before benchmark timing starts.
+    #[arg(long, default_value_t = 10)]
+    pub prepared_writes: usize,
 }
 
 #[derive(Subcommand, Debug)]

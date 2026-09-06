@@ -70,6 +70,11 @@ model, and the design choices that make a 1 TB upload cost the same
   `chunk_preparation_depth` chunks (default 1) ahead,
   keeping allocation rate and KV metadata pressure bounded regardless
   of object size while keeping the cursor fed.
+- **Warm admission, then continuous replacement.** Services that know their
+  write policy prepare a configurable queue of write sessions before admitting
+  load. The first chunk of every queued session is allocated concurrently.
+  Consuming a session starts its replacement while the active object writes,
+  so ChunkDB convergence and ordinary allocation are outside the data path.
 - **Shard-based EC, no re-split copy.** The pipeline already holds data
   as separate 1 MB `Bytes` blocks. Re-splitting a contiguous buffer
   just to feed `crowdb_common::ec::encode` would copy 4 MB per strip for
@@ -168,7 +173,9 @@ The flow, step by step:
   data blocks, EC-encodes via `encode_parity_from_shards` (§5) into
   `code_num` parity blocks and writes them to the remaining segments via
   `DiskWriter::write`.
-  Parity handles are collected by `ChunkWriter` and joined at `seal`
+  Data and parity handles are grouped into one completion per strip.
+  `ChunkWriter` retains at most `parity_depth` strip completions and joins all
+  remaining completions at `seal`
   time (not at strip finish) — this decouples parity durability from
   strip rotation, allowing strip N+1's data writes to start before
   strip N's parity completes.
@@ -356,7 +363,7 @@ Edge cases:
 | --- | --- | --- |
 | `max_chunk_size` | 1 GB | Chunk rotation threshold. |
 | `strip_preparation_depth` | 2 strips | Strip preparation ahead of write cursor. |
-| `parity_depth` | 2 tasks | In-flight parity task bound. |
+| `parity_depth` | 2 strips | Completed-strip write groups allowed in flight. |
 | `chunk_preparation_depth` | 1 chunk | Chunk preparation ahead of rotation. |
 | fetch granularity | 1 MB | One data block per fetch call. |
 | `max_cached_buffer` | 4 MB | Un-written data budget in fetch channel (one strip). |
@@ -371,6 +378,13 @@ the object size and `LargeWritePolicy` become known. The single-use
 `PreparedLargeWrite::write_stream` consumes an `AsyncRead` and returns
 `LargeWriteResult` with locations, logical and EC-expanded physical bytes,
 chunk and strip counts, elapsed time, and preparation stalls.
+
+`prepare_large_writes` starts several single-use sessions concurrently and
+waits until each owns its first chunk. A server calls it before opening its load
+gate, keeps the returned queue, and starts one replacement session whenever it
+consumes one. Queue depth is an application admission setting; the benchmark
+defaults to ten through `--prepared-writes`. Unused sessions are explicitly
+aborted so their Active chunks are deleted.
 
 The write hot path reads an immutable disk-ID route snapshot through
 `ArcSwap`. Refresh constructs a complete replacement off-path and publishes it
@@ -387,10 +401,12 @@ narrow seams and do not own scheduling or discovery.
 ## 11. Performance Workload
 
 `run_large_write_benchmark` is a library-owned, deterministic, bounded-source
-workload. It runs an object-count target with bounded concurrency and returns
-application-independent aggregate throughput, latency, error, and preparation
-stall fields. `crowdb-cli bench chunkio write` only maps arguments, starts the
-standard process metrics collector, and formats the result.
+workload. Before its timer starts, it prepares the configured number of write
+sessions and distributes them across workers. Each worker starts a replacement
+allocation when it consumes a session. The result separates preparation time
+from timed load and includes aggregate throughput, latency, error, and
+preparation-stall fields. `crowdb-cli bench chunkio write` only maps arguments,
+starts the standard process metrics collector, and formats the result.
 
 The regression fixture starts three co-located logical nodes in one rack:
 three KV servers, three DiskDB, three ChunkDB, and three DiskIO processes
@@ -404,3 +420,24 @@ memory traffic during the workload, not physical DIMM peak bandwidth and not
 an application-byte estimate. Loopback TCP, EC expansion, RPC framing, kernel
 copies, EC calculation, synchronous writes, and metadata work all keep end-to-end logical
 throughput below that hardware envelope.
+
+### 11.1 Current NullDisk Baseline
+
+The steady single-writer sentinel uses 20 64 MiB objects, EC 4+1, 1 MiB
+blocks, and ten prepared write sessions. Preparation is reported separately
+and the load timer starts only after all ten first chunks are available. Its
+retained baseline is 543.2 MiB/s logical and 679.0 MiB/s physical, with
+114,119 us p50 and 131,454 us p99 object latency, zero errors, and zero
+preparation stalls. Initial preparation took 0.769 seconds and is not included
+in throughput.
+
+This result establishes the scheduling ceiling of one writer against NullDisk;
+it does not represent durable block-device throughput. During the run, 1 MiB
+DiskIO completions averaged about 2 ms, the writer kept four DiskIO operations
+in flight, and client CPU reached roughly 24% user plus 127% system. Strip
+append averaged about 2 ms and produced no data-path stalls because the bounded
+strip-preparation task ran concurrently. The remaining gap between one writer
+and the multi-writer aggregate is therefore the per-writer EC/RPC/DiskIO
+pipeline width and CPU/kernel transport cost. Further concurrency changes need
+a production-device result first so optimization does not target a NullDisk
+artifact.
