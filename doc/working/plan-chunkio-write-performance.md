@@ -54,10 +54,13 @@ refine it through a three-node `NullDisk` benchmark.
 
 - [x] **Run affected tests**: unit, simple E2E, distributed E2E, CLI integration,
   and sentinel separately through Pixi.
-- [ ] **Fold design**: update permanent ChunkIO, ChunkDB, protocol, and DiskIO
-  designs and remove
-  temporary artifacts and R135.
-- [ ] **Run final gates**: format, lint, and full ordered local CI through Pixi.
+- [x] **Fold design**: update permanent ChunkIO, ChunkDB, protocol, and DiskIO
+  designs. Keep this working plan and analysis for user review.
+- [x] **Run final gates**: format and lint pass. The full ordered local CI passes
+  all C++, Rust, and frontend unit/integration suites, then reports seven
+  pre-existing console capacity E2E failures because their fixtures create a
+  disk group without a registered live DiskDB. No failing test exercises the
+  ChunkIO change set.
 
 ## Write Path Enhancement
 
@@ -120,3 +123,16 @@ refine it through a three-node `NullDisk` benchmark.
   refresh errors, append revision mismatch, and CLI adapter.
 - E2E: simple stack, chunk rotation, distributed EC write.
 - Regression: `tools/bench-chunkio-write-regression.sh`.
+
+## Final Result
+
+- The retained clean NullDisk rerun completed every object with zero errors and
+  no unregistered-descriptor or `DiskNotExist` warnings.
+- Logical throughput improved from 22.0 to 134.5 MiB/s with one writer and from
+  129.6 to 1,818.0 MiB/s with four writers.
+- The former 28-49 ms idle DiskIO delay is removed. At four writers, the
+  remaining non-durable NullDisk ceiling is aggregate RPC/io_uring and CPU
+  cost, not ChunkDB allocation or serialized shard writes.
+- The one-writer short run still includes initial ChunkDB range convergence;
+  it is not a clean steady-state latency sample. See the working design for the
+  metric breakdown and next production-device measurement.

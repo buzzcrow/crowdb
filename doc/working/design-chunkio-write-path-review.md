@@ -7,22 +7,22 @@ This temporary review follows
 [`R135`](../backlog/R135-chunkio-end-to-end-performance.md), the
 [`ChunkIO design`](../design/chunkio/design-crowdb-chunkio.md), and the
 [`DiskIO design`](../design/diskio/design-crowdb-diskio.md). The functional
-write-flow work and regression benchmark have landed, but the retained results
-show that the current write path is not yet a reasonable performance baseline.
-This document records the code-ownership review and the next measurements and
-changes proposed for review before implementation.
+write-flow work and regression benchmark have landed. The enhancement is now
+implemented and remeasured. This document records the code-ownership review,
+root cause, implemented changes, clean benchmark result, and remaining
+production-device measurement.
 
 ## 1. Status
 
-`doc/working/plan-chunkio-write-performance.md` is not complete. Its remaining
-items are:
+`doc/working/plan-chunkio-write-performance.md` is complete. The accepted
+behavior is folded into the permanent ChunkIO, ChunkDB, protocol, and DiskIO
+designs. This working document is retained for user review.
 
-- Fold the accepted behavior into the permanent ChunkIO and DiskIO designs,
-  then remove the temporary R135 artifacts.
-- Run formatting, lint, and the full ordered local CI gates through Pixi.
-
-The design fold should wait until the responsibility and performance decisions
-in this review are accepted.
+Formatting and Rust lint pass. The full ordered local CI passes the C++, Rust,
+frontend unit, CLI, server, and storage/client suites. Its final Playwright
+stage reports seven console capacity failures whose fixtures attempt to create
+a disk group without a registered live DiskDB. Those failures are outside this
+change set and do not exercise ChunkIO.
 
 ## 2. Current Ownership
 
@@ -46,9 +46,9 @@ external services and allow focused tests without recreating production
 protocol or transport objects. `PreparedLargeWrite` is also justified because
 preparation has a real lifetime distinct from stream execution.
 
-`MetricsChunkAllocator` and `MetricsDiskWriter` are small decorators rather
-than new domain layers. They should move out of `client.rs` if retained, but
-they are not the principal ownership problem.
+The former `MetricsChunkAllocator` and `MetricsDiskWriter` decorators were
+removed. Metrics are recorded at the existing orchestration boundaries, so
+the public facade no longer grows wrapper types solely for instrumentation.
 
 ## 3. Responsibility Problems
 
@@ -211,10 +211,9 @@ Before optimizing the Rust client:
 6. Use the clean result to decide how much remaining latency belongs to RPC
    transport, the DiskIO handler, io_uring, memfd I/O, and synchronous write.
 
-## 6. Proposed Write Scheduling
+## 6. Implemented Write Scheduling
 
-The next performance change should use existing domain owners instead of a new
-wrapper layer.
+The enhanced path uses the existing domain owners without a new wrapper layer.
 
 1. `LargeAsyncObjectWriter` reads bounded blocks and passes them to the current
    `ChunkWriter`.
