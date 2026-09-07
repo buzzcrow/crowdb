@@ -8,17 +8,18 @@
 #   CHUNKIO_BENCH_TIMEOUT     seconds allowed per case (default: 120)
 #   CHUNKIO_PREFETCH_CHUNKS   chunks warmed before timed load (default: 10)
 #
-# Reference run (2026-09-07): AMD Ryzen 9 5950X, 16c/32t, Linux 6.8,
+# Reference run (2026-09-07): Intel CPU 7960, 4 memory channels, Linux 6.11,
 # three-node loopback deployment, three NullDisk instances, EC 8+4,
 # 1 MiB blocks, 1 GiB chunks, and 16 MiB objects.
+# (AMD Ryzen 9 5950X runs use 2 memory channels; results differ.)
 #
 # Case        Obj    C  logical MiB/s  physical MiB/s  p50 us  p99 us  errors
-# stream_1t   707    1          564.9           847.4    27973   36957       0
-# direct_1t  1768    1         1413.3          2119.9    10525   20595       0
-# stream_4t  2179    4         1739.8          2609.7    35990   64296       0
-# direct_4t  2503    4         2000.5          3000.7    29893   70755       0
-# stream_32t 1700   32         1351.3          2027.0   375642  537538       0
-# direct_32t 2287   32         1822.2          2733.2   274565  415085       0
+# stream_1t   200    1          159.0           238.4   101586  114235       0
+# direct_1t   272    1          216.4           324.6    71393   86673       0
+# stream_4t  2412    4         1921.5          2882.3    32871   52572       0
+# direct_4t  3270    4         2604.7          3907.1    23404   40939       0
+# stream_32t 4192   32         3334.7          5002.1   146270  301247       0
+# direct_32t 4454   32         3539.9          5309.8   138605  259200       0
 #
 # Host memory-counter samples are retained as diagnostic data, not hard
 # thresholds. The sentinel gates accounting, errors, stop reason, and metrics.
