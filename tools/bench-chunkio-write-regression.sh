@@ -64,33 +64,14 @@ field() {
 }
 
 memory_bandwidth() {
-    local direction="$1" mode="$2"
-    find "$BENCH_LOG_DIR" -type f -name 'crowdb-cli-metrics-*.log' -print0 |
-        xargs -0 awk -v direction="$direction" -v mode="$mode" '
-            /^sys / {
-                read = write = total = "";
-                for (i = 1; i <= NF; ++i) {
-                    if ($i ~ /^bw_read_mib=/) { split($i, pair, "="); read = pair[2] }
-                    if ($i ~ /^bw_write_mib=/) { split($i, pair, "="); write = pair[2] }
-                    if ($i ~ /^bw_total_mib=/) { split($i, pair, "="); total = pair[2] }
-                }
-                if (direction == "total") {
-                    if (total == "" || total == "unsupported") {
-                        if (read == "" || write == "" || read == "unsupported" || write == "unsupported") next;
-                        total = read + write;
-                    }
-                    value = total;
-                } else {
-                    value = direction == "read" ? read : write;
-                    if (value == "" || value == "unsupported") next;
-                }
-                count++; sum += value; if (count == 1 || value > max) max = value;
-            }
-            END {
-                if (count == 0) print "unsupported";
-                else if (mode == "max") printf "%.1f", max;
-                else printf "%.1f", sum / count;
-            }'
+    local line="$1" field="$2"
+    local value
+    value=$(sed -n "s/.*${field}=\([^ ]*\).*/\1/p" <<<"$line")
+    if [[ -z "$value" || "$value" == "unsupported" ]]; then
+        echo "unsupported"
+    else
+        printf '%s' "$value"
+    fi
 }
 
 verify_logs() {
@@ -147,13 +128,13 @@ run_case() {
     printf '%s\n' "$output"
     BENCH_LOG_DIR=$(sed -n 's/^log dir: //p' <<<"$output" | tail -n 1)
     line=$(sed -n '/^chunkio write:/p' <<<"$output" | tail -n 1)
-    if [ -n "$BENCH_LOG_DIR" ] && [ -d "$BENCH_LOG_DIR" ]; then
-        read_avg=$(memory_bandwidth read avg)
-        read_max=$(memory_bandwidth read max)
-        write_avg=$(memory_bandwidth write avg)
-        write_max=$(memory_bandwidth write max)
-        total_avg=$(memory_bandwidth total avg)
-        total_max=$(memory_bandwidth total max)
+    if [ -n "$line" ]; then
+        read_avg=$(memory_bandwidth "$line" dram_read_mib_s)
+        read_max="$read_avg"
+        write_avg=$(memory_bandwidth "$line" dram_write_mib_s)
+        write_max="$write_avg"
+        total_avg=$(memory_bandwidth "$line" dram_total_mib_s)
+        total_max="$total_avg"
     else
         read_avg=unsupported
         read_max=unsupported

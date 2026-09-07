@@ -182,9 +182,14 @@ if [[ "$VENDOR" == "AuthenticAMD" ]]; then
 elif [[ "$VENDOR" == "GenuineIntel" ]]; then
   echo "[3/5] Intel: uncore_imc PMU"
   modprobe intel_uncore 2>/dev/null || true   # usually built-in; no-op if so
-  [[ -e /sys/bus/event_source/devices/uncore_imc ]] \
-    || fail "uncore_imc device missing (check grep INTEL_UNCORE /boot/config-$(uname -r))"
-  ok "uncore_imc device present"
+  # Some platforms expose a single /sys/bus/event_source/devices/uncore_imc;
+  # others (Skylake-X, many HEDT/server parts) expose per-channel
+  # uncore_imc_0 .. uncore_imc_N. Accept either form.
+  IMC_DEVICES=( $(ls -1 /sys/bus/event_source/devices/ 2>/dev/null \
+      | grep -E '^uncore_imc(_[0-9]+)?$' | sort) )
+  [[ ${#IMC_DEVICES[@]} -gt 0 ]] \
+    || fail "no uncore_imc device found (check grep INTEL_UNCORE /boot/config-$(uname -r))"
+  ok "uncore_imc devices present (${#IMC_DEVICES[@]}): ${IMC_DEVICES[*]}"
 
   echo "[4/5] Intel: cas_count events"
   perf list 2>/dev/null | grep -q 'uncore_imc/cas_count_read' \
@@ -194,7 +199,8 @@ elif [[ "$VENDOR" == "GenuineIntel" ]]; then
   ok "cas_count_read + cas_count_write listed"
 
   echo "[5/5] Intel: non-zero read"
-  # uncore_imc is system-wide; -a is required.
+  # uncore_imc is system-wide; -a is required. perf expands the base PMU
+  # name across all per-channel instances automatically.
   OUT="$(perf stat -a -e 'uncore_imc/cas_count_read/' -- sleep 1 2>&1)"
   echo "$OUT" | grep -qi 'not supported' && fail "cas_count_read returned <not supported> (paranoid or missing -a?)"
   VAL="$(echo "$OUT" | grep 'cas_count_read' | awk '{print $1}')"

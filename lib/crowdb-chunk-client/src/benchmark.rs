@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crowdb_common::metrics::perf::DramBwCounter;
 use serde::Serialize;
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio::task::JoinSet;
@@ -55,6 +56,15 @@ pub struct LargeWriteBenchmarkResult {
     pub assembly_copy_us: u64,
     pub ec_encode_us: u64,
     pub completion_wait_us: u64,
+    /// Workload-window DRAM read bandwidth in MiB/s, measured from
+    /// after prefetch to all writes complete. `None` when the PMU is
+    /// unavailable (non-Linux, missing module, insufficient permissions).
+    pub dram_read_mib_s: Option<f64>,
+    /// Workload-window DRAM write bandwidth in MiB/s. `None` on AMD
+    /// (total-only PMU) or when the PMU is unavailable.
+    pub dram_write_mib_s: Option<f64>,
+    /// Workload-window aggregate DRAM bandwidth in MiB/s (read + write).
+    pub dram_total_mib_s: Option<f64>,
     pub error_messages: Vec<String>,
 }
 
@@ -93,6 +103,10 @@ pub async fn run_large_write_benchmark(
     let preparation_secs = preparation_started.elapsed().as_secs_f64();
     let started = Instant::now();
     let deadline = config.duration.map(|duration| started + duration);
+    // Open the DRAM BW counter after prefetch so the workload-window
+    // measurement excludes prefetch traffic. The first read_bytes_per_sec
+    // call returns bandwidth averaged since this point.
+    let mut dram_bw = DramBwCounter::new();
     let next_object = Arc::new(AtomicU64::new(0));
     let mut tasks = JoinSet::new();
     for mut worker_prepared in prepared {
@@ -126,6 +140,15 @@ pub async fn run_large_write_benchmark(
     } else {
         "failed"
     };
+    // Read the workload-window DRAM BW. This covers exactly from after
+    // prefetch (counter creation) to all writes complete (now).
+    let to_mib = |v: f64| v / 1024.0 / 1024.0;
+    let (dram_read_mib_s, dram_write_mib_s, dram_total_mib_s) = dram_bw
+        .as_mut()
+        .and_then(DramBwCounter::read_bytes_per_sec)
+        .map_or((None, None, None), |(r, w, total)| {
+            (r.map(to_mib), w.map(to_mib), Some(to_mib(total)))
+        });
     LargeWriteBenchmarkResult {
         preparation_secs,
         elapsed_secs,
@@ -150,6 +173,9 @@ pub async fn run_large_write_benchmark(
         assembly_copy_us: total.assembly_copy_us,
         ec_encode_us: total.ec_encode_us,
         completion_wait_us: total.completion_wait_us,
+        dram_read_mib_s,
+        dram_write_mib_s,
+        dram_total_mib_s,
         error_messages: total.error_messages,
     }
 }
@@ -196,6 +222,9 @@ fn failed_before_load(config: &LargeWriteBenchmarkConfig, message: String) -> La
         assembly_copy_us: 0,
         ec_encode_us: 0,
         completion_wait_us: 0,
+        dram_read_mib_s: None,
+        dram_write_mib_s: None,
+        dram_total_mib_s: None,
         error_messages: vec![message],
     }
 }

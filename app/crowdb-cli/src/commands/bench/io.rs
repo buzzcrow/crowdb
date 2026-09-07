@@ -101,8 +101,17 @@ pub async fn run(cli: &Cli, verb: ChunkioBenchVerb) -> ExitCode {
 }
 
 fn print_text_result(args: &ChunkioArgs, result: &LargeWriteBenchmarkResult) {
+    let dram_read = result
+        .dram_read_mib_s
+        .map_or_else(|| "unsupported".to_string(), |v| format!("{v:.1}"));
+    let dram_write = result
+        .dram_write_mib_s
+        .map_or_else(|| "unsupported".to_string(), |v| format!("{v:.1}"));
+    let dram_total = result
+        .dram_total_mib_s
+        .map_or_else(|| "unsupported".to_string(), |v| format!("{v:.1}"));
     println!(
-            "chunkio write: requested={} object_size={} prefetch_chunks={} prepare_s={:.3} objects={} errors={} incomplete={} stop={} objects_s={:.2} logical_mib_s={:.1} physical_mib_s={:.1} p50_us={} p99_us={} prep_stalls={} prep_stall_us={}",
+            "chunkio write: requested={} object_size={} prefetch_chunks={} prepare_s={:.3} objects={} errors={} incomplete={} stop={} objects_s={:.2} logical_mib_s={:.1} physical_mib_s={:.1} p50_us={} p99_us={} prep_stalls={} prep_stall_us={} dram_read_mib_s={dram_read} dram_write_mib_s={dram_write} dram_total_mib_s={dram_total}",
             result.requested_objects,
             args.object_size,
             args.prefetch_chunks,
