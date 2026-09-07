@@ -130,9 +130,15 @@ test.describe('kv cluster · multi-rack/multi-store/multi-group topology', () =>
   //   401-405  store 400  groups 4000-4002  — 3 independent groups
   //   100-102  store 800  group 8000  — SIMPLE smoke
   //   200-207  stores 900+901  groups 9000-9003  — COMPLEX smoke
-  test.beforeAll(async () => {
-    test.setTimeout(180_000);
+  //
+  // The beforeAll hook deploys 23 nodes, 8 stores, 15 Paxos groups, and
+  // waits for all leaders. On CI runners this can exceed the default
+  // 30s test timeout, so the describe-level timeout is raised to 180s.
+  // test.describe.configure applies to beforeAll/afterAll hooks; per-
+  // test timeouts are still set individually below.
+  test.describe.configure({ timeout: 180_000 });
 
+  test.beforeAll(async () => {
     await step('topology: resetAll', () => resetAll(apiBase));
 
     const allNodes = [

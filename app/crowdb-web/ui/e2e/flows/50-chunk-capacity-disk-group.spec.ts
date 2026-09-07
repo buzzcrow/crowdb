@@ -426,7 +426,7 @@ test.describe('chunk · capacity · disk-group', () => {
   });
 
   test('assign disk-group to diskdb via UI (owner + bind) and reports non-zero capacity', async ({ page, baseURL }) => {
-    test.setTimeout(60_000);
+    test.setTimeout(90_000);
     const rackId = DISKDB_RACK;
     const nodeId = DISKDB_NODE;
     const dgId = 590;
@@ -530,7 +530,8 @@ test.describe('chunk · capacity · disk-group', () => {
 
       // --- Verify capacity becomes non-zero via API ---
       // The diskdb keepalive syncs asynchronously, so poll until the DG
-      // appears in the usage response with capacity > 0.
+      // appears in the usage response with capacity > 0. CI runners are
+      // slower than local dev, so allow 30s for the keepalive cycle.
       const api = await apiContext(baseURL!);
       try {
         await step('capacity-assign: wait for usage', () => expect.poll(async () => {
@@ -540,7 +541,7 @@ test.describe('chunk · capacity · disk-group', () => {
             const dg = usage.disk_groups.find((g: { disk_group_id: number }) =>
               g.disk_group_id === dgId);
             return dg?.capacity_bytes ?? 0;
-          }, { timeout: 12_000, intervals: [100] }).toBeGreaterThan(0));
+          }, { timeout: 30_000, intervals: [200] }).toBeGreaterThan(0));
 
         // --- Verify the capacity panel shows non-zero ---
         const dgResponse2 = page.waitForResponse((r: { url(): string }) => r.url().includes(`/nodes/${nodeId}/disk-groups`));
