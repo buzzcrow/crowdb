@@ -37,8 +37,12 @@ pub enum ChunkioBenchVerb {
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct ChunkioArgs {
-    #[arg(long, default_value_t = 1)]
+    /// Maximum admitted objects; duration is the normal stopping condition.
+    #[arg(long, default_value_t = u64::MAX)]
     pub objects: u64,
+    /// Stop admitting new objects after this many seconds, then drain writes.
+    #[arg(long, default_value_t = 20)]
+    pub duration_secs: u64,
     #[arg(long, default_value_t = 16 * 1024 * 1024)]
     pub object_size: u64,
     #[arg(long, default_value_t = 1)]
@@ -61,6 +65,9 @@ pub struct ChunkioArgs {
     /// Strips appended ahead within each active chunk.
     #[arg(long, default_value_t = 2)]
     pub prefetch_strips_per_chunk: usize,
+    /// Send owned `Bytes` blocks directly, bypassing stream fetch assembly.
+    #[arg(long, default_value_t = false)]
+    pub direct_buffers: bool,
 }
 
 #[derive(Subcommand, Debug)]

@@ -379,19 +379,20 @@ impl ChunkIoWriter for LargeAsyncObjectWriter {
             self.chunk_prefetch_rx = Some(rx);
             self.chunk_prefetch_handle = Some(handle);
         }
-        // Ensure a ChunkWriter is open.
-        self.ensure_open().await?;
-        // Push the block (auto-rotates strips internally).
-        let cw = self
-            .chunk_writer
-            .as_mut()
-            .ok_or_else(|| IoError::Internal("no chunk writer".into()))?;
-        let status = cw.push(buffer).await?;
-        // If the chunk is full, rotate to a new chunk.
-        if cw.is_full() {
-            self.rotate_chunk().await?;
+        loop {
+            self.ensure_open().await?;
+            let status = self
+                .chunk_writer
+                .as_mut()
+                .ok_or_else(|| IoError::Internal("no chunk writer".into()))?
+                .push(buffer.clone())
+                .await?;
+            if status == FeedStatus::Pause {
+                self.rotate_chunk().await?;
+                continue;
+            }
+            return Ok(FeedStatus::Continue);
         }
-        Ok(status)
     }
 
     async fn on_finish(&mut self) -> Result<Vec<ProtoLocation>> {

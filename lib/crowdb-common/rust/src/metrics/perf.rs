@@ -1,17 +1,18 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 
-//! DRAM bandwidth counter via `perf_event_open` (Linux only).
+//! DRAM read/write bandwidth counter via `perf_event_open` (Linux only).
 //!
-//! Opens a system-wide uncore PMU counter at construction time and
-//! reads the cumulative byte count on each [`DramBwCounter::read_bytes`]
-//! call. The caller computes delta / elapsed to get a window average.
+//! Opens system-wide uncore PMU counters at construction time and
+//! reads cumulative byte counts on each [`DramBwCounter::read_bytes_per_sec`]
+//! call. It returns separate directions where the platform exposes them and
+//! an aggregate total otherwise.
 //!
 //! Two PMU backends are auto-detected:
-//! - **AMD Zen** — `amd_df` PMU, `dram_channel_data_controller_0..7`
-//!   events summed, scaled by `6.1e-5 MiB` per tick (the
-//!   `nps1_die_to_dram` metric formula).
-//! - **Intel** — `uncore_imc` PMU, `cas_count_read` + `cas_count_write`
-//!   events, each tick = 64 B.
+//! - **AMD Zen 3** — `amd_df` PMU, the kernel-provided
+//!   `dram_channel_data_controller_0..7` aggregate events. These counters
+//!   do not distinguish reads from writes.
+//! - **Intel** — `uncore_imc` PMU, `cas_count_read` and
+//!   `cas_count_write` events separately, each tick = 64 B.
 //!
 //! On non-Linux platforms or when the PMU is unavailable (missing
 //! kernel module, insufficient permissions), [`DramBwCounter::new`]
@@ -29,8 +30,6 @@
 
 #[cfg(target_os = "linux")]
 mod imp {
-    use std::io::Read;
-    use std::os::unix::io::FromRawFd;
     use std::time::Instant;
 
     // perf_event_attr.size — the kernel uses this to know which fields
@@ -70,14 +69,21 @@ mod imp {
 
     // perf_event_attr.flags bits
     const PERF_FLAG_DISABLED: u64 = 1;
-    // read_format: just the total counter value (no extra fields).
-    const READ_FORMAT_TOTAL: u64 = 0;
+    const PERF_FORMAT_TOTAL_TIME_ENABLED: u64 = 1;
+    const PERF_FORMAT_TOTAL_TIME_RUNNING: u64 = 2;
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct PerfRead {
+        value: u64,
+        time_enabled: u64,
+        time_running: u64,
+    }
 
     /// A single opened perf counter fd + its previous reading.
     struct PerfFd {
         fd: i32,
-        prev_value: u64,
-        prev_instant: Instant,
+        prev: PerfRead,
     }
 
     impl PerfFd {
@@ -92,7 +98,7 @@ mod imp {
                 size: PERF_ATTR_SIZE,
                 config,
                 flags: PERF_FLAG_DISABLED,
-                read_format: READ_FORMAT_TOTAL,
+                read_format: PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING,
                 ..Default::default()
             };
 
@@ -118,32 +124,34 @@ mod imp {
 
             Some(Self {
                 fd,
-                prev_value: 0,
-                prev_instant: Instant::now(),
+                prev: PerfRead::default(),
             })
         }
 
         /// Read the current cumulative counter value.
-        fn read(&mut self) -> u64 {
-            // read() on a perf fd returns a u64 (with read_format=0).
-            let mut buf = [0u8; 8];
-            let mut file = unsafe { std::fs::File::from_raw_fd(self.fd) };
-            let _ = file.read(&mut buf);
-            // Don't close the fd — from_raw_fd will close on drop.
-            // Use into_raw_fd to prevent close.
-            let _ = std::os::unix::io::IntoRawFd::into_raw_fd(file);
-            u64::from_le_bytes(buf)
+        fn read(&self) -> Option<PerfRead> {
+            let mut sample = PerfRead::default();
+            let size = std::mem::size_of::<PerfRead>();
+            let read = unsafe {
+                libc::read(
+                    self.fd,
+                    (&mut sample as *mut PerfRead).cast::<libc::c_void>(),
+                    size,
+                )
+            };
+            (read == isize::try_from(size).ok()?).then_some(sample)
         }
 
-        /// Read and compute delta since last call.
-        fn read_delta(&mut self) -> (u64, f64) {
-            let current = self.read();
-            let delta = current.saturating_sub(self.prev_value);
-            let now = Instant::now();
-            let elapsed = now.duration_since(self.prev_instant).as_secs_f64();
-            self.prev_value = current;
-            self.prev_instant = now;
-            (delta, elapsed)
+        /// Return a multiplex-corrected event delta.
+        fn read_delta(&self) -> Option<(PerfRead, f64)> {
+            let current = self.read()?;
+            let value = current.value.checked_sub(self.prev.value)?;
+            let enabled = current.time_enabled.checked_sub(self.prev.time_enabled)?;
+            let running = current.time_running.checked_sub(self.prev.time_running)?;
+            if running == 0 {
+                return None;
+            }
+            Some((current, value as f64 * enabled as f64 / running as f64))
         }
     }
 
@@ -196,6 +204,18 @@ mod imp {
         Some((umask_val << 8) | event_val)
     }
 
+    fn intel_imc_names() -> Vec<String> {
+        let mut names: Vec<_> = std::fs::read_dir("/sys/bus/event_source/devices")
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name == "uncore_imc" || name.starts_with("uncore_imc_"))
+            .collect();
+        names.sort_unstable();
+        names
+    }
+
     /// Build an AMD DF config value from event + umask, respecting the
     /// bit layout: event occupies config bits 0-7, 32-35, 59-60;
     /// umask occupies config bits 8-15.
@@ -209,10 +229,8 @@ mod imp {
         (umask << 8) | low | (mid << 32) | (high << 59)
     }
 
-    /// AMD DF dram_channel_data_controller event encodings (from perf's
-    /// JSON metric database). umask=0x38 for all channels; event values
-    /// are 0x07, 0x47, 0x87, 0xc7, 0x107, 0x147, 0x187, 0x1c7.
-    const AMD_DF_CHANNEL_EVENTS: [u64; 8] = [
+    /// Aggregate request-with-data counters exported by Linux perf for Zen 3.
+    const AMD_DF_TOTAL_EVENTS: [u64; 8] = [
         amd_df_config(0x07, 0x38),
         amd_df_config(0x47, 0x38),
         amd_df_config(0x87, 0x38),
@@ -223,14 +241,17 @@ mod imp {
         amd_df_config(0x1c7, 0x38),
     ];
 
-    /// DRAM bandwidth counter. Auto-detects AMD vs Intel PMU.
+    /// DRAM read/write bandwidth counter. Auto-detects AMD vs Intel PMU.
     /// Returns `None` if no suitable PMU is available.
     pub struct DramBwCounter {
-        // AMD: 8 channel fds, each tick = 6.1e-5 MiB.
-        // Intel: 2 fds (read + write), each tick = 64 B.
-        fds: Vec<PerfFd>,
+        // AMD Zen 3: 8 aggregate channel fds, each tick = 64 B.
+        // Intel: 1 read + 1 write fd, each tick = 64 B.
+        read_fds: Vec<PerfFd>,
+        write_fds: Vec<PerfFd>,
+        total_fds: Vec<PerfFd>,
         // Scale factor: multiply raw delta sum by this to get bytes.
         scale: f64,
+        sampled_at: Instant,
     }
 
     impl DramBwCounter {
@@ -238,35 +259,35 @@ mod imp {
         /// Detects the platform and opens the appropriate PMU events.
         #[must_use]
         pub fn new() -> Option<Self> {
-            // Try AMD first: amd_df with dram_channel_data_controller_0..7
+            // Try AMD first: amd_df aggregate DRAM channel data.
             if let Some(counter) = Self::new_amd() {
                 return Some(counter);
             }
-            // Try Intel: uncore_imc with cas_count_read + cas_count_write
+            // Try Intel: uncore_imc with cas_count_read + cas_count_write.
             if let Some(counter) = Self::new_intel() {
                 return Some(counter);
             }
             None
         }
 
-        /// AMD: open 8 dram_channel_data_controller fds.
-        /// Zen 3 has only 4 hardware counters, so perf will multiplex.
-        /// Each tick ≈ 6.1e-5 MiB = 64 bytes (after scaling).
-        /// The 8-channel sum × scale gives total die DRAM bytes.
-        /// Event encodings are hardcoded from perf's JSON metric database
-        /// (amd_df does not expose events/ in sysfs).
+        /// AMD Zen 3 exposes only aggregate request-with-data counters.
         fn new_amd() -> Option<Self> {
             let pmu_type = read_pmu_type("amd_df")?;
             let cpu = read_pmu_cpumask("amd_df");
-            let mut fds = Vec::with_capacity(8);
-            for &config in &AMD_DF_CHANNEL_EVENTS {
+            let mut total_fds = Vec::with_capacity(8);
+            for &config in &AMD_DF_TOTAL_EVENTS {
                 let fd = PerfFd::open(pmu_type, config, cpu)?;
-                fds.push(fd);
+                total_fds.push(fd);
             }
-            // Scale: 6.1e-5 MiB per tick = 6.1e-5 * 1048576 bytes ≈ 64 bytes.
-            // The nps1_die_to_dram metric uses ScaleUnit=6.1e-5MiB.
-            let scale = 6.1e-5 * 1024.0 * 1024.0; // bytes per tick
-            Some(Self { fds, scale })
+            // Each tick = 64 bytes of DRAM data.
+            let scale = 64.0;
+            Some(Self {
+                read_fds: Vec::new(),
+                write_fds: Vec::new(),
+                total_fds,
+                scale,
+                sampled_at: Instant::now(),
+            })
         }
 
         /// Intel: open cas_count_read + cas_count_write on uncore_imc.
@@ -274,48 +295,89 @@ mod imp {
         /// For multi-socket, perf expands to all uncore_imc instances,
         /// but we open one fd per event (system-wide covers all).
         fn new_intel() -> Option<Self> {
-            let pmu_type = read_pmu_type("uncore_imc")?;
-            let cpu = read_pmu_cpumask("uncore_imc");
-            let read_config = read_pmu_event_config("uncore_imc", "cas_count_read")?;
-            let write_config = read_pmu_event_config("uncore_imc", "cas_count_write")?;
-            let read_fd = PerfFd::open(pmu_type, read_config, cpu)?;
-            let write_fd = PerfFd::open(pmu_type, write_config, cpu)?;
+            let names = intel_imc_names();
+            if names.is_empty() {
+                return None;
+            }
+            let mut read_fds = Vec::with_capacity(names.len());
+            let mut write_fds = Vec::with_capacity(names.len());
+            for name in names {
+                let pmu_type = read_pmu_type(&name)?;
+                let cpu = read_pmu_cpumask(&name);
+                let read_config = read_pmu_event_config(&name, "cas_count_read")?;
+                let write_config = read_pmu_event_config(&name, "cas_count_write")?;
+                read_fds.push(PerfFd::open(pmu_type, read_config, cpu)?);
+                write_fds.push(PerfFd::open(pmu_type, write_config, cpu)?);
+            }
             // Each tick = 64 bytes.
             let scale = 64.0;
             Some(Self {
-                fds: vec![read_fd, write_fd],
+                read_fds,
+                write_fds,
+                total_fds: Vec::new(),
                 scale,
+                sampled_at: Instant::now(),
             })
         }
 
-        /// Read the current DRAM bandwidth in bytes/sec since the last call.
+        /// Read DRAM read and write bandwidth in bytes/sec since the last call.
         /// Returns `None` if the read fails.
-        pub fn read_bytes_per_sec(&mut self) -> Option<f64> {
-            if self.fds.is_empty() {
-                return None;
-            }
-            let mut total_delta: u64 = 0;
-            let mut max_elapsed: f64 = 0.0;
-            for fd in &mut self.fds {
-                let (delta, elapsed) = fd.read_delta();
-                total_delta = total_delta.saturating_add(delta);
-                if elapsed > max_elapsed {
-                    max_elapsed = elapsed;
+        pub fn read_bytes_per_sec(&mut self) -> Option<(Option<f64>, Option<f64>, f64)> {
+            if !self.total_fds.is_empty() {
+                let (delta, samples) = sample_deltas(&self.total_fds)?;
+                let now = Instant::now();
+                let elapsed = now.duration_since(self.sampled_at).as_secs_f64();
+                if elapsed <= 0.0 {
+                    return None;
                 }
+                commit_samples(&mut self.total_fds, samples);
+                self.sampled_at = now;
+                return Some((None, None, delta * self.scale / elapsed));
             }
-            if max_elapsed <= 0.0 {
+            if self.read_fds.is_empty() || self.write_fds.is_empty() {
                 return None;
             }
-            let bytes = total_delta as f64 * self.scale;
-            Some(bytes / max_elapsed)
+            let (read_delta, read_samples) = sample_deltas(&self.read_fds)?;
+            let (write_delta, write_samples) = sample_deltas(&self.write_fds)?;
+            let now = Instant::now();
+            let elapsed = now.duration_since(self.sampled_at).as_secs_f64();
+            if elapsed <= 0.0 {
+                return None;
+            }
+            commit_samples(&mut self.read_fds, read_samples);
+            commit_samples(&mut self.write_fds, write_samples);
+            self.sampled_at = now;
+            let read = read_delta * self.scale / elapsed;
+            let write = write_delta * self.scale / elapsed;
+            Some((Some(read), Some(write), read + write))
+        }
+    }
+
+    fn sample_deltas(fds: &[PerfFd]) -> Option<(f64, Vec<PerfRead>)> {
+        let mut total_delta = 0.0;
+        let mut samples = Vec::with_capacity(fds.len());
+        for fd in fds {
+            let (sample, delta) = fd.read_delta()?;
+            samples.push(sample);
+            total_delta += delta;
+        }
+        Some((total_delta, samples))
+    }
+
+    fn commit_samples(fds: &mut [PerfFd], samples: Vec<PerfRead>) {
+        for (fd, sample) in fds.iter_mut().zip(samples) {
+            fd.prev = sample;
         }
     }
 
     impl Default for DramBwCounter {
         fn default() -> Self {
             Self::new().unwrap_or(Self {
-                fds: Vec::new(),
+                read_fds: Vec::new(),
+                write_fds: Vec::new(),
+                total_fds: Vec::new(),
                 scale: 0.0,
+                sampled_at: Instant::now(),
             })
         }
     }
@@ -331,7 +393,7 @@ mod imp {
         pub fn new() -> Option<Self> {
             None
         }
-        pub fn read_bytes_per_sec(&mut self) -> Option<f64> {
+        pub fn read_bytes_per_sec(&mut self) -> Option<(Option<f64>, Option<f64>, f64)> {
             None
         }
     }

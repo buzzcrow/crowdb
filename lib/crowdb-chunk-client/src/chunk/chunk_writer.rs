@@ -101,7 +101,8 @@ impl ChunkWriter {
             return Err(IoError::AllocationFailed("open: chunk has no strips".into()));
         }
         self.object_size = object_size;
-        self.strips_remaining = compute_strips_remaining(object_size, &self.ec_scheme, &self.config);
+        self.strips_remaining =
+            compute_strips_remaining(object_size, chunk.strips.len(), &self.ec_scheme, &self.config);
         let chunk = Arc::new(chunk);
         let strip = EcStripWriter::new(Arc::clone(&chunk), 0, self.disk_writer.clone(), self.ec_scheme);
         self.chunk = Some(chunk);
@@ -288,7 +289,7 @@ impl ChunkWriter {
         let strip_data_bytes = ec_scheme.data_num as u64 * unit_bytes;
         let strips_per_chunk = (max_chunk_size / strip_data_bytes) as u32;
         let mut strips_remaining = self.strips_remaining;
-        let mut next_strip_index = self.write_cursor + 1;
+        let mut next_strip_index = chunk.strips.len() as u32;
         let handle: JoinHandle<()> = tokio::spawn(async move {
             loop {
                 // Stop conditions:
@@ -533,6 +534,7 @@ impl ChunkWriter {
 /// internal strip prefetch task for planning.
 fn compute_strips_remaining(
     object_size: Option<u64>,
+    allocated_strips: usize,
     ec_scheme: &EcScheme,
     config: &ChunkClientConfig,
 ) -> Option<usize> {
@@ -540,8 +542,7 @@ fn compute_strips_remaining(
     let unit_bytes = u64::from((config.read_buffer_size / 1024) as u32) * 1024;
     let strip_data_capacity = ec_scheme.data_num as u64 * unit_bytes;
     let total_strips = total.div_ceil(strip_data_capacity) as usize;
-    // Subtract 1 for the initial strip from allocate_chunk.
-    Some(total_strips.saturating_sub(1))
+    Some(total_strips.saturating_sub(allocated_strips))
 }
 
 /// Append one strip and merge the incremental response into the local chunk.

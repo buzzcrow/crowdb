@@ -2,9 +2,11 @@
 
 #include "crowdb-common/metrics/system_metrics.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -146,19 +148,30 @@ struct perf_event_attr_min
     uint64_t sig_data;
 };
 
-static constexpr uint64_t PERF_FLAG_DISABLED   = 1ULL;
-static constexpr uint64_t PERF_IOC_ENABLE      = 0x2400ULL;
-static constexpr uint64_t PERF_FLAG_FD_CLOEXEC = 8ULL;
+static constexpr uint64_t PERF_FLAG_DISABLED             = 1ULL;
+static constexpr uint64_t PERF_IOC_ENABLE                = 0x2400ULL;
+static constexpr uint64_t PERF_FLAG_FD_CLOEXEC           = 8ULL;
+static constexpr uint64_t PERF_FORMAT_TOTAL_TIME_ENABLED = 1ULL;
+static constexpr uint64_t PERF_FORMAT_TOTAL_TIME_RUNNING = 2ULL;
 
 struct SystemCollector::DramBwImpl
 {
     struct Fd
     {
-        int      fd   = -1;
-        uint64_t prev = 0;
+        struct Sample
+        {
+            uint64_t value        = 0;
+            uint64_t time_enabled = 0;
+            uint64_t time_running = 0;
+        };
+
+        int    fd = -1;
+        Sample prev;
     };
 
-    std::vector<Fd> fds;
+    std::vector<Fd> read_fds;
+    std::vector<Fd> write_fds;
+    std::vector<Fd> total_fds;
     double          scale        = 0.0; // bytes per tick
     uint64_t        prev_time_us = 0;
 
@@ -169,7 +182,17 @@ struct SystemCollector::DramBwImpl
 
     ~DramBwImpl() // NOLINT(modernize-use-equals-default) — closes fds, not trivial
     {
-        for (auto &f : fds) {
+        for (auto &f : read_fds) {
+            if (f.fd >= 0) {
+                close(f.fd);
+            }
+        }
+        for (auto &f : write_fds) {
+            if (f.fd >= 0) {
+                close(f.fd);
+            }
+        }
+        for (auto &f : total_fds) {
             if (f.fd >= 0) {
                 close(f.fd);
             }
@@ -186,7 +209,7 @@ struct SystemCollector::DramBwImpl
         attr.size        = sizeof(attr);
         attr.config      = config;
         attr.flags       = PERF_FLAG_DISABLED;
-        attr.read_format = 0;
+        attr.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
         return static_cast<int>(syscall(SYS_perf_event_open, &attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC));
     }
 
@@ -195,14 +218,13 @@ struct SystemCollector::DramBwImpl
         ioctl(fd, PERF_IOC_ENABLE, 0);
     }
 
-    static uint64_t read_fd(int fd)
+    static std::optional<Fd::Sample> read_fd(int fd)
     {
-        uint64_t val = 0;
-        // perf fds are not seekable — must use read(), not pread().
-        if (read(fd, &val, sizeof(val)) != sizeof(val)) {
-            return 0;
+        Fd::Sample sample;
+        if (read(fd, &sample, sizeof(sample)) != sizeof(sample)) {
+            return std::nullopt;
         }
-        return val;
+        return sample;
     }
 
     static std::optional<uint32_t> read_pmu_type(const std::string &name)
@@ -262,11 +284,23 @@ struct SystemCollector::DramBwImpl
         return (umask_val << 8U) | event_val; // NOLINT(bugprone-signed-bitwise) — uint64_t operands
     }
 
-    // AMD DF dram_channel_data_controller encodings (from perf JSON).
-    // umask=0x38 for all channels; event values span config bits 0-7
-    // and 32-35. Pre-computed: config = (umask<<8)|low|((event>>8&0xF)<<32).
-    static constexpr std::array<uint64_t, 8> AMD_DF_CHANNEL_EVENTS = {
-        0x3807, 0x3847, 0x3887, 0x38C7, 0x100003807ULL, 0x100003847ULL, 0x100003887ULL, 0x1000038C7ULL,
+    static std::vector<std::string> intel_imc_names()
+    {
+        std::vector<std::string> names;
+        std::error_code          error;
+        for (const auto &entry : std::filesystem::directory_iterator("/sys/bus/event_source/devices", error)) {
+            std::string name = entry.path().filename().string();
+            if (name == "uncore_imc" || name.starts_with("uncore_imc_")) {
+                names.push_back(std::move(name));
+            }
+        }
+        std::sort(names.begin(), names.end());
+        return names;
+    }
+
+    // Aggregate request-with-data events exported by Linux perf for Zen 3.
+    static constexpr std::array<uint64_t, 8> AMD_DF_TOTAL_EVENTS = {
+        0x3807, 0x3847, 0x3887, 0x38c7, 0x100003807ULL, 0x100003847ULL, 0x100003887ULL, 0x1000038c7ULL,
     };
 
     void init()
@@ -283,62 +317,98 @@ struct SystemCollector::DramBwImpl
         if (!pmu_type) {
             return false;
         }
-        int cpu = read_pmu_cpumask("amd_df");
-        for (uint64_t config : AMD_DF_CHANNEL_EVENTS) {
+        int             cpu = read_pmu_cpumask("amd_df");
+        std::vector<Fd> totals;
+        totals.reserve(AMD_DF_TOTAL_EVENTS.size());
+        for (uint64_t config : AMD_DF_TOTAL_EVENTS) {
             int fd = perf_open(*pmu_type, config, cpu);
             if (fd < 0) {
+                close_fds(totals);
                 return false;
             }
             perf_enable(fd);
-            fds.push_back({fd, 0});
+            totals.push_back({fd, {}});
         }
-        // 6.1e-5 MiB per tick = 6.1e-5 * 1048576 bytes.
-        scale = 6.1e-5 * 1024.0 * 1024.0;
+        total_fds = std::move(totals);
+        // Each tick = 64 bytes of DRAM data.
+        scale = 64.0;
         return true;
     }
 
     bool try_intel()
     {
-        auto pmu_type = read_pmu_type("uncore_imc");
-        if (!pmu_type) {
+        auto names = intel_imc_names();
+        if (names.empty()) {
             return false;
         }
-        int  cpu       = read_pmu_cpumask("uncore_imc");
-        auto read_cfg  = read_pmu_event("uncore_imc", "cas_count_read");
-        auto write_cfg = read_pmu_event("uncore_imc", "cas_count_write");
-        if (!read_cfg || !write_cfg) {
-            return false;
-        }
-        int rfd = perf_open(*pmu_type, *read_cfg, cpu);
-        int wfd = perf_open(*pmu_type, *write_cfg, cpu);
-        if (rfd < 0 || wfd < 0) {
-            if (rfd >= 0) {
-                close(rfd);
+        std::vector<Fd> reads;
+        std::vector<Fd> writes;
+        reads.reserve(names.size());
+        writes.reserve(names.size());
+        for (const auto &name : names) {
+            auto pmu_type  = read_pmu_type(name);
+            auto read_cfg  = read_pmu_event(name, "cas_count_read");
+            auto write_cfg = read_pmu_event(name, "cas_count_write");
+            if (!pmu_type || !read_cfg || !write_cfg) {
+                close_fds(reads);
+                close_fds(writes);
+                return false;
             }
-            if (wfd >= 0) {
-                close(wfd);
+            int cpu = read_pmu_cpumask(name);
+            int rfd = perf_open(*pmu_type, *read_cfg, cpu);
+            int wfd = perf_open(*pmu_type, *write_cfg, cpu);
+            if (rfd < 0 || wfd < 0) {
+                if (rfd >= 0)
+                    close(rfd);
+                if (wfd >= 0)
+                    close(wfd);
+                close_fds(reads);
+                close_fds(writes);
+                return false;
             }
-            return false;
+            perf_enable(rfd);
+            perf_enable(wfd);
+            reads.push_back({rfd, {}});
+            writes.push_back({wfd, {}});
         }
-        perf_enable(rfd);
-        perf_enable(wfd);
-        fds.push_back({rfd, 0});
-        fds.push_back({wfd, 0});
-        scale = 64.0; // 64 bytes per tick
+        read_fds  = std::move(reads);
+        write_fds = std::move(writes);
+        scale     = 64.0; // 64 bytes per tick
         return true;
     }
 
-    std::optional<double> read_bytes_per_sec()
+    struct Bandwidth
     {
-        if (fds.empty()) {
+        std::optional<double> read;
+        std::optional<double> write;
+        double                total = 0.0;
+    };
+
+    std::optional<Bandwidth> read_bytes_per_sec()
+    {
+        if (!total_fds.empty()) {
+            auto sample = sample_deltas(total_fds);
+            if (!sample) {
+                return std::nullopt;
+            }
+            uint64_t cur_time   = now_us();
+            uint64_t elapsed_us = cur_time - prev_time_us;
+            if (elapsed_us == 0) {
+                return std::nullopt;
+            }
+            commit_samples(total_fds, sample->second);
+            prev_time_us   = cur_time;
+            double elapsed = static_cast<double>(elapsed_us) / 1'000'000.0;
+            return Bandwidth{std::nullopt, std::nullopt, sample->first * scale / elapsed};
+        }
+        if (read_fds.empty() || write_fds.empty()) {
             return std::nullopt;
         }
 
-        uint64_t total_delta = 0;
-        for (auto &f : fds) {
-            uint64_t cur   = read_fd(f.fd);
-            uint64_t delta = cur - std::exchange(f.prev, cur);
-            total_delta += delta;
+        auto read_sample  = sample_deltas(read_fds);
+        auto write_sample = sample_deltas(write_fds);
+        if (!read_sample || !write_sample) {
+            return std::nullopt;
         }
 
         uint64_t cur_time   = now_us();
@@ -346,11 +416,55 @@ struct SystemCollector::DramBwImpl
         if (elapsed_us == 0) {
             elapsed_us = 1;
         }
-        prev_time_us = cur_time;
-
-        double bytes        = static_cast<double>(total_delta) * scale;
+        commit_samples(read_fds, read_sample->second);
+        commit_samples(write_fds, write_sample->second);
+        prev_time_us        = cur_time;
         double elapsed_secs = static_cast<double>(elapsed_us) / 1'000'000.0;
-        return bytes / elapsed_secs;
+        double read_bytes   = read_sample->first * scale;
+        double write_bytes  = write_sample->first * scale;
+        double read_bw      = read_bytes / elapsed_secs;
+        double write_bw     = write_bytes / elapsed_secs;
+        return Bandwidth{read_bw, write_bw, read_bw + write_bw};
+    }
+
+  private:
+    static std::optional<std::pair<double, std::vector<Fd::Sample>>> sample_deltas(const std::vector<Fd> &fds)
+    {
+        std::vector<Fd::Sample> samples;
+        samples.reserve(fds.size());
+        double total = 0.0;
+        for (const auto &f : fds) {
+            auto sample = read_fd(f.fd);
+            if (!sample || sample->value < f.prev.value || sample->time_enabled < f.prev.time_enabled ||
+                sample->time_running < f.prev.time_running) {
+                return std::nullopt;
+            }
+            uint64_t running = sample->time_running - f.prev.time_running;
+            if (running == 0) {
+                return std::nullopt;
+            }
+            uint64_t value   = sample->value - f.prev.value;
+            uint64_t enabled = sample->time_enabled - f.prev.time_enabled;
+            total += static_cast<double>(value) * static_cast<double>(enabled) / static_cast<double>(running);
+            samples.push_back(*sample);
+        }
+        return std::pair{total, std::move(samples)};
+    }
+
+    static void commit_samples(std::vector<Fd> &fds, const std::vector<Fd::Sample> &samples)
+    {
+        for (size_t index = 0; index < fds.size(); ++index) {
+            fds[index].prev = samples[index];
+        }
+    }
+
+    static void close_fds(std::vector<Fd> &fds)
+    {
+        for (auto &fd : fds) {
+            if (fd.fd >= 0)
+                close(fd.fd);
+            fd.fd = -1;
+        }
     }
 };
 
@@ -390,7 +504,7 @@ SystemCollector::SystemCollector()
     prev_tcp_lost_           = lost;
     prev_time_us_            = now_us();
     dram_bw_                 = new DramBwImpl();
-    if (dram_bw_->fds.empty()) {
+    if (dram_bw_->read_fds.empty() && dram_bw_->write_fds.empty() && dram_bw_->total_fds.empty()) {
         delete dram_bw_;
         dram_bw_ = nullptr;
     }
@@ -459,9 +573,15 @@ SystemMetricsSnapshot SystemCollector::collect()
 
 #ifdef __linux__
     if (dram_bw_ != nullptr) {
-        snap.dram_bw_mib = dram_bw_->read_bytes_per_sec();
-        if (snap.dram_bw_mib) {
-            *snap.dram_bw_mib /= 1024.0 * 1024.0;
+        auto bw = dram_bw_->read_bytes_per_sec();
+        if (bw) {
+            if (bw->read) {
+                snap.dram_read_mib = *bw->read / 1024.0 / 1024.0;
+            }
+            if (bw->write) {
+                snap.dram_write_mib = *bw->write / 1024.0 / 1024.0;
+            }
+            snap.dram_total_mib = bw->total / 1024.0 / 1024.0;
         }
     }
 #endif
@@ -471,21 +591,20 @@ SystemMetricsSnapshot SystemCollector::collect()
 
 void flush_system(FILE *fp, const SystemMetricsSnapshot &snap)
 {
-    double rss_gb = static_cast<double>(snap.rss_kb) / 1024.0 / 1024.0;
-    if (snap.dram_bw_mib) {
-        std::fprintf(fp, "sys  cpu.user=%llu%% cpu.sys=%llu%% rss_gb=%.2f tcp_retrans=%llu tcp_lost=%llu bw_mib=%.1f\n",
-                     static_cast<unsigned long long>(snap.cpu_user_pct),
-                     static_cast<unsigned long long>(snap.cpu_sys_pct), rss_gb,
-                     static_cast<unsigned long long>(snap.tcp_retransmits),
-                     static_cast<unsigned long long>(snap.tcp_lost), *snap.dram_bw_mib);
-    }
-    else {
-        std::fprintf(
-            fp, "sys  cpu.user=%llu%% cpu.sys=%llu%% rss_gb=%.2f tcp_retrans=%llu tcp_lost=%llu bw_mib=unsupported\n",
-            static_cast<unsigned long long>(snap.cpu_user_pct), static_cast<unsigned long long>(snap.cpu_sys_pct),
-            rss_gb, static_cast<unsigned long long>(snap.tcp_retransmits),
-            static_cast<unsigned long long>(snap.tcp_lost));
-    }
+    double rss_gb   = static_cast<double>(snap.rss_kb) / 1024.0 / 1024.0;
+    auto   print_bw = [fp](const std::optional<double> &value) {
+        value ? std::fprintf(fp, "%.1f", *value) : std::fprintf(fp, "unsupported");
+    };
+    std::fprintf(fp, "sys  cpu.user=%llu%% cpu.sys=%llu%% rss_gb=%.2f tcp_retrans=%llu tcp_lost=%llu bw_read_mib=",
+                 static_cast<unsigned long long>(snap.cpu_user_pct), static_cast<unsigned long long>(snap.cpu_sys_pct),
+                 rss_gb, static_cast<unsigned long long>(snap.tcp_retransmits),
+                 static_cast<unsigned long long>(snap.tcp_lost));
+    print_bw(snap.dram_read_mib);
+    std::fprintf(fp, " bw_write_mib=");
+    print_bw(snap.dram_write_mib);
+    std::fprintf(fp, " bw_total_mib=");
+    print_bw(snap.dram_total_mib);
+    std::fprintf(fp, "\n");
 }
 
 } // namespace crowdb::common::metrics

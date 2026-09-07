@@ -19,6 +19,7 @@ use crate::Cli;
 pub async fn run(cli: &Cli, verb: ChunkioBenchVerb) -> ExitCode {
     let ChunkioBenchVerb::Write(args) = verb;
     if args.objects == 0
+        || args.duration_secs == 0
         || args.object_size == 0
         || args.concurrency == 0
         || args.block_size == 0
@@ -70,10 +71,12 @@ pub async fn run(cli: &Cli, verb: ChunkioBenchVerb) -> ExitCode {
         client,
         LargeWriteBenchmarkConfig {
             object_count: args.objects,
+            duration: Some(std::time::Duration::from_secs(args.duration_secs)),
             object_size: args.object_size,
             concurrency: args.concurrency,
             seed: args.seed,
             prefetch_chunks: args.prefetch_chunks,
+            direct_buffers: args.direct_buffers,
             policy,
         },
     )

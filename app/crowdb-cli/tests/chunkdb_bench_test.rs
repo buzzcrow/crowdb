@@ -59,6 +59,7 @@ fn chunkio_write_exposes_large_write_controls() {
         "--seed",
         "--prefetch-chunks",
         "--prefetch-strips-per-chunk",
+        "--direct-buffers",
     ] {
         assert!(stdout.contains(option), "missing {option}");
     }

@@ -9,17 +9,19 @@
 #   CHUNKIO_PREFETCH_CHUNKS   chunks warmed before timed load (default: 10)
 #
 # Reference run (2026-09-07): AMD Ryzen 9 5950X, 16c/32t, Linux 6.8,
-# three-node loopback deployment, three NullDisk instances, EC 4+1,
+# three-node loopback deployment, three NullDisk instances, EC 8+4,
 # 1 MiB blocks, 1 GiB chunks, and 16 MiB objects.
 #
-# Case      Obj  Size MiB  C  TPS obj/s  logical MiB/s  physical MiB/s  p50 us  p99 us  errors
-# large_1t   40        16  1      44.04          704.6           880.7    21447   30333       0
-# large_4t  160        16  4     125.60         2009.7          2512.1    31652   42280       0
+# Case        Obj    C  logical MiB/s  physical MiB/s  p50 us  p99 us  errors
+# stream_1t   707    1          564.9           847.4    27973   36957       0
+# direct_1t  1768    1         1413.3          2119.9    10525   20595       0
+# stream_4t  2179    4         1739.8          2609.7    35990   64296       0
+# direct_4t  2503    4         2000.5          3000.7    29893   70755       0
+# stream_32t 1700   32         1351.3          2027.0   375642  537538       0
+# direct_32t 2287   32         1822.2          2733.2   274565  415085       0
 #
-# Memory-counter samples were 628.8/874.9 MiB/s average/max for large_1t and
-# 1971.4/2127.1 MiB/s for large_4t. They are retained
-# as a diagnostic baseline, not hard thresholds; the sentinel gates complete
-# object accounting, zero errors, stop reason, and complete service metrics.
+# Host memory-counter samples are retained as diagnostic data, not hard
+# thresholds. The sentinel gates accounting, errors, stop reason, and metrics.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -61,16 +63,32 @@ field() {
 }
 
 memory_bandwidth() {
-    local mode="$1"
+    local direction="$1" mode="$2"
     find "$BENCH_LOG_DIR" -type f -name 'crowdb-cli-metrics-*.log' -print0 |
-        xargs -0 sed -n 's/.*bw_mib=\([0-9.]*\).*/\1/p' |
-        awk -v mode="$mode" '
-            NR == 1 { max = $1 }
-            { sum += $1; if ($1 > max) max = $1 }
+        xargs -0 awk -v direction="$direction" -v mode="$mode" '
+            /^sys / {
+                read = write = total = "";
+                for (i = 1; i <= NF; ++i) {
+                    if ($i ~ /^bw_read_mib=/) { split($i, pair, "="); read = pair[2] }
+                    if ($i ~ /^bw_write_mib=/) { split($i, pair, "="); write = pair[2] }
+                    if ($i ~ /^bw_total_mib=/) { split($i, pair, "="); total = pair[2] }
+                }
+                if (direction == "total") {
+                    if (total == "" || total == "unsupported") {
+                        if (read == "" || write == "" || read == "unsupported" || write == "unsupported") next;
+                        total = read + write;
+                    }
+                    value = total;
+                } else {
+                    value = direction == "read" ? read : write;
+                    if (value == "" || value == "unsupported") next;
+                }
+                count++; sum += value; if (count == 1 || value > max) max = value;
+            }
             END {
-                if (NR == 0) print "unsupported";
+                if (count == 0) print "unsupported";
                 else if (mode == "max") printf "%.1f", max;
-                else printf "%.1f", sum / NR;
+                else printf "%.1f", sum / count;
             }'
 }
 
@@ -96,25 +114,32 @@ verify_logs() {
 }
 
 run_case() {
-    local label="$1" objects="$2" object_size="$3" concurrency="$4"
+    local label="$1" object_size="$2" concurrency="$3" input_mode="$4"
+    local objects=1000000 duration_secs=20
     if [ -n "$CASES" ] && [[ " $CASES " != *" $label "* ]]; then
         return
     fi
     CURRENT_CONFIG="$REGRESSION_CONFIG"
-    echo ">>> $label (objects=$objects size=$object_size concurrency=$concurrency EC=4+1)"
+    echo ">>> $label (duration=${duration_secs}s size=$object_size concurrency=$concurrency EC=8+4)"
     if [ "$CASE_NUMBER" -gt 0 ]; then
         regression_reset_stack 1
     fi
     CASE_NUMBER=$((CASE_NUMBER + 1))
 
-    local output status line avg_bw max_bw
+    local output status line read_avg read_max write_avg write_max total_avg total_max
+    local input_args=()
+    if [ "$input_mode" = direct ]; then
+        input_args+=(--direct-buffers)
+    fi
     set +e
     output=$(timeout --signal=INT --kill-after=10 "$TIMEOUT_SECS" \
         pixi run -- ./target/release/crowdb-cli --log-root "$CURRENT_LOG_ROOT" --config "$CURRENT_CONFIG" \
-        bench chunkio write --objects "$objects" --object-size "$object_size" \
-        --concurrency "$concurrency" --data-num 4 --code-num 1 \
+        bench chunkio write --objects "$objects" --duration-secs "$duration_secs" \
+        --object-size "$object_size" \
+        --concurrency "$concurrency" --data-num 8 --code-num 4 \
         --block-size 1048576 --chunk-size 1073741824 --seed 1 \
         --prefetch-chunks "$PREFETCH_CHUNKS" --prefetch-strips-per-chunk 2 \
+        "${input_args[@]}" \
         --metrics-interval 1 2>&1)
     status=$?
     set -e
@@ -122,27 +147,38 @@ run_case() {
     BENCH_LOG_DIR=$(sed -n 's/^log dir: //p' <<<"$output" | tail -n 1)
     line=$(sed -n '/^chunkio write:/p' <<<"$output" | tail -n 1)
     if [ -n "$BENCH_LOG_DIR" ] && [ -d "$BENCH_LOG_DIR" ]; then
-        avg_bw=$(memory_bandwidth avg)
-        max_bw=$(memory_bandwidth max)
+        read_avg=$(memory_bandwidth read avg)
+        read_max=$(memory_bandwidth read max)
+        write_avg=$(memory_bandwidth write avg)
+        write_max=$(memory_bandwidth write max)
+        total_avg=$(memory_bandwidth total avg)
+        total_max=$(memory_bandwidth total max)
     else
-        avg_bw=unsupported
-        max_bw=unsupported
+        read_avg=unsupported
+        read_max=unsupported
+        write_avg=unsupported
+        write_max=unsupported
+        total_avg=unsupported
+        total_max=unsupported
     fi
     if [ -z "$line" ]; then
-        printf '%s\t%s\t%s\t%s\t%s\t0\t1\t%s\tfailed\t0\t0\t0\t0\t0\t%s\t%s\n' \
-            "$label" "$objects" "$object_size" "$((object_size / 1048576))" \
-            "$concurrency" "$objects" "$avg_bw" "$max_bw" >>"$RESULTS_FILE"
+        printf '%s\t%s\t%s\t%s\t%s\t0\t1\t%s\tfailed\t0\t0\t0\t0\t0\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$label" 0 "$object_size" "$((object_size / 1048576))" \
+            "$concurrency" "$objects" "$read_avg" "$read_max" "$write_avg" "$write_max" \
+            "$total_avg" "$total_max" >>"$RESULTS_FILE"
     else
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-            "$label" "$objects" "$object_size" "$((object_size / 1048576))" "$concurrency" \
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$label" "$(field "$line" requested)" "$object_size" "$((object_size / 1048576))" "$concurrency" \
             "$(field "$line" objects)" "$(field "$line" errors)" \
             "$(field "$line" incomplete)" "$(field "$line" stop)" \
             "$(field "$line" objects_s)" "$(field "$line" logical_mib_s)" \
             "$(field "$line" physical_mib_s)" \
             "$(field "$line" p50_us)" "$(field "$line" p99_us)" \
-            "$avg_bw" "$max_bw" >>"$RESULTS_FILE"
+            "$read_avg" "$read_max" "$write_avg" "$write_max" \
+            "$total_avg" "$total_max" >>"$RESULTS_FILE"
     fi
-    local completed errors incomplete stop objects_s logical physical p50 p99 valid=1
+    local requested completed errors incomplete stop objects_s logical physical p50 p99 valid=1
+    requested=$(field "$line" requested)
     completed=$(field "$line" objects)
     errors=$(field "$line" errors)
     incomplete=$(field "$line" incomplete)
@@ -152,7 +188,7 @@ run_case() {
     physical=$(field "$line" physical_mib_s)
     p50=$(field "$line" p50_us)
     p99=$(field "$line" p99_us)
-    if [ -z "$line" ] || [ "$completed" != "$objects" ] || [ "$errors" != 0 ] \
+    if [ -z "$line" ] || [ "$completed" != "$requested" ] || [ "$errors" != 0 ] \
         || [ "$incomplete" != 0 ] || [ "$stop" != complete ] \
         || [ -z "$objects_s" ] || [ -z "$logical" ] || [ -z "$physical" ] \
         || [ -z "$p50" ] || [ -z "$p99" ]; then
@@ -169,12 +205,16 @@ pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-di
 pixi run build-cpp
 mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"
 regression_init
-printf 'case\trequested\tsize_bytes\tsize_mib\tconcurrency\tcompleted\terrors\tincomplete\tstop\tobjects_s\tlogical_mib_s\tphysical_mib_s\tp50_us\tp99_us\tmem_bw_avg_mib\tmem_bw_max_mib\n' >"$RESULTS_FILE"
+printf 'case\trequested\tsize_bytes\tsize_mib\tconcurrency\tcompleted\terrors\tincomplete\tstop\tobjects_s\tlogical_mib_s\tphysical_mib_s\tp50_us\tp99_us\tmem_read_avg_mib\tmem_read_max_mib\tmem_write_avg_mib\tmem_write_max_mib\tmem_total_avg_mib\tmem_total_max_mib\n' >"$RESULTS_FILE"
 
 cli cluster local-deploy -t combined --metrics-interval 1 --allow-unsafe-ec
 
-run_case large_1t 40 16777216 1
-run_case large_4t 160 16777216 4
+run_case stream_1t 16777216 1 stream
+run_case direct_1t 16777216 1 direct
+run_case stream_4t 16777216 4 stream
+run_case direct_4t 16777216 4 direct
+run_case stream_32t 16777216 32 stream
+run_case direct_32t 16777216 32 direct
 destroy_cluster
 
 echo "=== DONE ==="

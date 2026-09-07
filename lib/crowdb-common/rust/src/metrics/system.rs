@@ -1,12 +1,12 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 
 //! OS-level system metrics: CPU time, memory RSS, TCP retransmits, and
-//! DRAM bandwidth.
+//! DRAM read/write bandwidth.
 //!
 //! On Linux, reads `/proc/self/stat` for CPU jiffies, `/proc/self/status`
 //! for RSS, `/proc/net/snmp` for TCP retransmit/lost counters, and
-//! `perf_event_open` for DRAM read+write bandwidth (AMD `amd_df` or Intel
-//! `uncore_imc` uncore PMU). On macOS (and other non-Linux platforms),
+//! `perf_event_open` for DRAM read and write bandwidth (AMD `amd_df` or
+//! Intel `uncore_imc` uncore PMU). On macOS (and other non-Linux platforms),
 //! CPU and RSS are read via `ps` command output; TCP and DRAM BW are
 //! stubbed (reported as 0 / unsupported).
 
@@ -34,16 +34,23 @@ pub struct SystemMetrics {
     pub tcp_retransmits: u64,
     /// TCP lost segment count delta since previous snapshot (Linux only).
     pub tcp_lost: u64,
-    /// Average DRAM read+write bandwidth in MiB/s since the previous
+    /// Average DRAM read bandwidth in MiB/s since the previous
     /// snapshot. `None` when the PMU is unavailable (non-Linux, missing
     /// kernel module, or insufficient permissions).
-    pub dram_bw_mib: Option<f64>,
+    pub dram_read_mib: Option<f64>,
+    /// Average DRAM write bandwidth in MiB/s since the previous
+    /// snapshot. `None` when the PMU is unavailable.
+    pub dram_write_mib: Option<f64>,
+    /// Average aggregate DRAM bandwidth. Available on AMD even when the
+    /// platform PMU cannot distinguish reads from writes.
+    pub dram_total_mib: Option<f64>,
 }
 
 /// Collects OS-level metrics by reading `/proc` (Linux) or using
 /// `ps` (macOS). Maintains previous-state to compute deltas for
 /// CPU time and TCP counters. On Linux, also owns a `DramBwCounter`
-/// that reads the uncore PMU via `perf_event_open`.
+/// that reads the uncore PMU via `perf_event_open`. Directional bandwidth is
+/// reported only when the platform exposes direction-safe events.
 #[allow(clippy::struct_field_names)]
 pub struct SystemCollector {
     prev_cpu_user_us: u64,
@@ -58,8 +65,8 @@ pub struct SystemCollector {
 impl SystemCollector {
     /// Create a new collector. The first `collect()` call will report
     /// deltas from this baseline. On Linux, attempts to open a DRAM
-    /// bandwidth PMU counter; if unavailable, `dram_bw_mib` will be
-    /// `None` in all snapshots.
+    /// bandwidth PMU counter; if unavailable, `dram_read_mib` and
+    /// `dram_write_mib` will be `None` in all snapshots.
     #[must_use]
     pub fn new() -> Self {
         let (user_us, sys_us) = read_cpu_times();
@@ -108,13 +115,16 @@ impl SystemCollector {
             .unwrap_or(0);
 
         #[cfg(target_os = "linux")]
-        let dram_bw_mib = self
+        let (dram_read_mib, dram_write_mib, dram_total_mib) = self
             .dram_bw
             .as_mut()
             .and_then(DramBwCounter::read_bytes_per_sec)
-            .map(|bps| bps / 1024.0 / 1024.0);
+            .map_or((None, None, None), |(r, w, total)| {
+                let to_mib = |value: f64| value / 1024.0 / 1024.0;
+                (r.map(to_mib), w.map(to_mib), Some(to_mib(total)))
+            });
         #[cfg(not(target_os = "linux"))]
-        let dram_bw_mib = None;
+        let (dram_read_mib, dram_write_mib, dram_total_mib) = (None, None, None);
 
         SystemMetrics {
             cpu_user_pct,
@@ -122,7 +132,9 @@ impl SystemCollector {
             rss_kb,
             tcp_retransmits,
             tcp_lost,
-            dram_bw_mib,
+            dram_read_mib,
+            dram_write_mib,
+            dram_total_mib,
         }
     }
 }
@@ -137,13 +149,16 @@ impl Default for SystemCollector {
 pub fn flush_system<W: Write>(writer: &mut W, snap: &SystemMetrics) {
     #[allow(clippy::cast_precision_loss)]
     let rss_gb = snap.rss_kb as f64 / 1024.0 / 1024.0;
-    let bw = match snap.dram_bw_mib {
-        Some(b) => format!("{b:.1}"),
-        None => "unsupported".to_string(),
+    let (bw_read, bw_write) = match (snap.dram_read_mib, snap.dram_write_mib) {
+        (Some(r), Some(w)) => (format!("{r:.1}"), format!("{w:.1}")),
+        _ => ("unsupported".to_string(), "unsupported".to_string()),
     };
+    let bw_total = snap
+        .dram_total_mib
+        .map_or_else(|| "unsupported".to_string(), |v| format!("{v:.1}"));
     let _ = writeln!(
         writer,
-        "sys  cpu.user={}% cpu.sys={}% rss_gb={rss_gb:.2} tcp_retrans={} tcp_lost={} bw_mib={bw}",
+        "sys  cpu.user={}% cpu.sys={}% rss_gb={rss_gb:.2} tcp_retrans={} tcp_lost={} bw_read_mib={bw_read} bw_write_mib={bw_write} bw_total_mib={bw_total}",
         snap.cpu_user_pct, snap.cpu_sys_pct, snap.tcp_retransmits, snap.tcp_lost,
     );
 }
@@ -283,7 +298,9 @@ mod tests {
             rss_kb: 4096,
             tcp_retransmits: 3,
             tcp_lost: 1,
-            dram_bw_mib: Some(512.5),
+            dram_read_mib: Some(512.5),
+            dram_write_mib: Some(128.3),
+            dram_total_mib: Some(640.8),
         };
         let mut buf = Vec::new();
         flush_system(&mut buf, &snap);
@@ -293,7 +310,9 @@ mod tests {
         assert!(out.contains("rss_gb=0.00"));
         assert!(out.contains("tcp_retrans=3"));
         assert!(out.contains("tcp_lost=1"));
-        assert!(out.contains("bw_mib=512.5"));
+        assert!(out.contains("bw_read_mib=512.5"));
+        assert!(out.contains("bw_write_mib=128.3"));
+        assert!(out.contains("bw_total_mib=640.8"));
     }
 
     #[test]
@@ -304,11 +323,15 @@ mod tests {
             rss_kb: 0,
             tcp_retransmits: 0,
             tcp_lost: 0,
-            dram_bw_mib: None,
+            dram_read_mib: None,
+            dram_write_mib: None,
+            dram_total_mib: None,
         };
         let mut buf = Vec::new();
         flush_system(&mut buf, &snap);
         let out = String::from_utf8(buf).unwrap();
-        assert!(out.contains("bw_mib=unsupported"));
+        assert!(out.contains("bw_read_mib=unsupported"));
+        assert!(out.contains("bw_total_mib=unsupported"));
+        assert!(out.contains("bw_write_mib=unsupported"));
     }
 }

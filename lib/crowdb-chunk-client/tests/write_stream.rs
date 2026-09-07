@@ -80,6 +80,7 @@ struct MockChunkState {
     chunks: HashMap<(u64, u64), (Vec<ChunkStrip>, u32, bool)>,
     next_segment_offset: u64,
     allocate_calls: usize,
+    allocated_strip_counts: Vec<u32>,
     append_calls: usize,
     seal_calls: usize,
     delete_calls: usize,
@@ -100,6 +101,7 @@ impl ChunkAllocator for MockChunkAllocator {
     async fn allocate_chunk(&self, req: AllocateChunkRequest) -> Result<AllocateChunkResponse> {
         let mut st = self.state.lock().unwrap();
         st.allocate_calls += 1;
+        st.allocated_strip_counts.push(req.strip_count);
         let chunk_id = req.chunk_id.unwrap_or_default();
         let data_num = req.data_num as usize;
         let code_num = req.code_num as usize;
@@ -1059,10 +1061,12 @@ async fn benchmark_runner_aggregates_concurrent_large_writes() {
         client,
         LargeWriteBenchmarkConfig {
             object_count: 2,
+            duration: None,
             object_size: 4 * UNIT_BYTES,
             concurrency: 2,
             seed: 7,
             prefetch_chunks: 2,
+            direct_buffers: false,
             policy: LargeWritePolicy {
                 ec_scheme: ec_4_1(),
                 client: test_config(1024 * 1024),
@@ -1078,13 +1082,48 @@ async fn benchmark_runner_aggregates_concurrent_large_writes() {
     assert_eq!(result.logical_bytes, 8 * UNIT_BYTES);
     assert_eq!(result.physical_bytes, 10 * UNIT_BYTES);
     assert_eq!(result.source_reads, 8);
-    assert_eq!(result.assembly_copies, 8);
-    assert_eq!(result.assembly_copy_bytes, 8 * UNIT_BYTES);
+    assert_eq!(result.assembly_copies, 0);
+    assert_eq!(result.assembly_copy_bytes, 0);
     assert!(result.objects_per_sec > 0.0);
     assert!(result.latency_p50_us > 0);
     assert_eq!(result.preparation_stalls, 0);
     assert!(result.error_messages.is_empty());
     let state = chunkdb.snapshot();
     assert!(state.allocate_calls >= 2);
+    assert!(state.allocated_strip_counts.iter().all(|count| *count == 2));
     assert_eq!(state.seal_calls, 2);
+}
+
+#[tokio::test]
+async fn benchmark_direct_buffers_bypass_fetch_copy() {
+    let object_size = 3 * UNIT_BYTES + 128;
+    let chunkdb = MockChunkAllocator::new();
+    let tmp = test_dirs::tempdir_in_test_data("chunk-client");
+    let diskio = LocalFileDiskWriter::new(tmp.path());
+    let client = ChunkIoClient::from_parts(Arc::new(chunkdb), Arc::new(diskio));
+    let result = run_large_write_benchmark(
+        client,
+        LargeWriteBenchmarkConfig {
+            object_count: 1,
+            duration: None,
+            object_size,
+            concurrency: 1,
+            seed: 7,
+            prefetch_chunks: 1,
+            direct_buffers: true,
+            policy: LargeWritePolicy {
+                ec_scheme: ec_4_1(),
+                client: test_config(1024 * 1024),
+            },
+        },
+    )
+    .await;
+
+    assert_eq!(result.objects, 1);
+    assert_eq!(result.errors, 0);
+    assert_eq!(result.logical_bytes, object_size);
+    assert_eq!(result.physical_bytes, object_size + UNIT_BYTES);
+    assert_eq!(result.source_reads, 0);
+    assert_eq!(result.assembly_copies, 0);
+    assert_eq!(result.assembly_copy_bytes, 0);
 }

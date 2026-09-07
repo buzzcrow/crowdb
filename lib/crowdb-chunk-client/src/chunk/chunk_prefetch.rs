@@ -92,6 +92,7 @@ impl ChunkPrefetch {
                 self.ec_scheme,
                 write_granularity_kb,
                 self.chunk_type_byte,
+                self.config.prefetch_strips_per_chunk,
             )
             .await?;
 
@@ -110,6 +111,7 @@ impl ChunkPrefetch {
             self.ec_scheme,
             write_granularity_kb,
             self.chunk_type_byte,
+            self.config.prefetch_strips_per_chunk,
         )
         .await
     }
@@ -121,12 +123,13 @@ pub(crate) async fn allocate_new_chunk(
     ec_scheme: EcScheme,
     write_granularity_kb: u32,
     chunk_type_byte: u8,
+    prefetch_strips_per_chunk: usize,
 ) -> Result<Chunk> {
     let chunk_id = crowdb_protocol::generate_chunk_id(chunk_type_byte).to_proto();
     let req = AllocateChunkRequest {
         chunk_id: Some(chunk_id),
         write_granularity: write_granularity_kb,
-        strip_count: 1,
+        strip_count: u32::try_from(prefetch_strips_per_chunk).unwrap_or(u32::MAX),
         strip_type: StripType::Ec as i32,
         data_num: ec_scheme.data_num as u32,
         code_num: ec_scheme.code_num as u32,

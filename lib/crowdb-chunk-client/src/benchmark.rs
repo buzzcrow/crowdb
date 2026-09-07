@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tokio::io::{AsyncRead, ReadBuf};
@@ -18,11 +18,14 @@ use crate::{ChunkIoClient, LargeWritePolicy};
 #[derive(Debug, Clone)]
 pub struct LargeWriteBenchmarkConfig {
     pub object_count: u64,
+    /// Admission duration. `None` runs until `object_count` is reached.
+    pub duration: Option<Duration>,
     pub object_size: u64,
     pub concurrency: usize,
     pub seed: u8,
     /// Write sessions whose first chunks are allocated before timing starts.
     pub prefetch_chunks: usize,
+    pub direct_buffers: bool,
     pub policy: LargeWritePolicy,
 }
 
@@ -89,13 +92,16 @@ pub async fn run_large_write_benchmark(
     };
     let preparation_secs = preparation_started.elapsed().as_secs_f64();
     let started = Instant::now();
+    let deadline = config.duration.map(|duration| started + duration);
     let next_object = Arc::new(AtomicU64::new(0));
     let mut tasks = JoinSet::new();
     for mut worker_prepared in prepared {
         let client = client.clone();
         let config = config.clone();
         let next_object = next_object.clone();
-        tasks.spawn(async move { run_worker(client, config, next_object, &mut worker_prepared).await });
+        tasks.spawn(
+            async move { run_worker(client, config, deadline, next_object, &mut worker_prepared).await },
+        );
     }
     let mut total = WorkerResult::default();
     while let Some(result) = tasks.join_next().await {
@@ -112,8 +118,9 @@ pub async fn run_large_write_benchmark(
     }
     total.latencies.sort_unstable();
     let elapsed_secs = started.elapsed().as_secs_f64().max(f64::EPSILON);
+    let requested_objects = next_object.load(Ordering::Relaxed).min(config.object_count);
     let accounted = total.objects.saturating_add(total.errors);
-    let incomplete_objects = config.object_count.saturating_sub(accounted);
+    let incomplete_objects = requested_objects.saturating_sub(accounted);
     let stop_reason = if total.errors == 0 && incomplete_objects == 0 {
         "complete"
     } else {
@@ -122,7 +129,7 @@ pub async fn run_large_write_benchmark(
     LargeWriteBenchmarkResult {
         preparation_secs,
         elapsed_secs,
-        requested_objects: config.object_count,
+        requested_objects,
         objects: total.objects,
         errors: total.errors,
         incomplete_objects,
@@ -202,12 +209,16 @@ fn u64_as_f64(value: u64) -> f64 {
 async fn run_worker(
     client: ChunkIoClient,
     config: LargeWriteBenchmarkConfig,
+    deadline: Option<Instant>,
     next_object: Arc<AtomicU64>,
     prepared: &mut VecDeque<crate::PreparedLargeWrite>,
 ) -> WorkerResult {
     let mut result = WorkerResult::default();
-    let random_block = Arc::<[u8]>::from(random_bytes(config.policy.client.read_buffer_size, config.seed));
+    let random_block = bytes::Bytes::from(random_bytes(config.policy.client.read_buffer_size, config.seed));
     loop {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            break;
+        }
         let object = next_object.fetch_add(1, Ordering::Relaxed);
         if object >= config.object_count {
             break;
@@ -218,7 +229,20 @@ async fn run_worker(
             .pop_front()
             .unwrap_or_else(|| client.prepare_large_write(Some(config.object_size), config.policy.clone()));
         prepared.push_back(client.prepare_large_write(Some(config.object_size), config.policy.clone()));
-        match write.write_stream(source).await {
+        let write_result = if config.direct_buffers {
+            let block_bytes = random_block.len() as u64;
+            let blocks = config.object_size.div_ceil(block_bytes);
+            write
+                .write_buffers((0..blocks).map(|index| {
+                    let remaining = config.object_size - index * block_bytes;
+                    random_block
+                        .slice(..usize::try_from(remaining.min(block_bytes)).unwrap_or(random_block.len()))
+                }))
+                .await
+        } else {
+            write.write_stream(source).await
+        };
+        match write_result {
             Ok(write) => {
                 result.objects += 1;
                 result.logical_bytes += write.logical_bytes;
@@ -286,13 +310,13 @@ fn random_bytes(size: usize, seed: u8) -> Vec<u8> {
 }
 
 struct RepeatingBufferReader {
-    block: Arc<[u8]>,
+    block: bytes::Bytes,
     remaining: u64,
     offset: usize,
 }
 
 impl RepeatingBufferReader {
-    fn new(block: Arc<[u8]>, remaining: u64) -> Self {
+    fn new(block: bytes::Bytes, remaining: u64) -> Self {
         Self {
             block,
             remaining,

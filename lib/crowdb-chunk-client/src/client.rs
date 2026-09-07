@@ -22,8 +22,8 @@ use crowdb_protocol::chunkdb::rpc::{
 use crowdb_protocol::diskdb::rpc::Segment;
 
 use crate::{
-    ChunkAllocator, ChunkClientConfig, ChunkClientMetrics, DiskWriter, LargeAsyncObjectWriter, Result,
-    RoutedDiskWriter,
+    ChunkAllocator, ChunkClientConfig, ChunkClientMetrics, ChunkIoWriter, DiskWriter, LargeAsyncObjectWriter,
+    Result, RoutedDiskWriter,
 };
 
 /// Discovery and transport configuration for [`ChunkIoClient`].
@@ -327,40 +327,46 @@ impl PreparedLargeWrite {
         let write_started = Instant::now();
         let mut operation = self.metrics.as_ref().map(|metrics| metrics.object_write.start());
         let locations = self.writer.write_stream(source, self.object_size).await?;
-        let logical_bytes: u64 = locations.iter().map(|location| location.length).sum();
-        let block_bytes = self.policy.client.read_buffer_size as u64;
-        let strip_data_bytes = block_bytes * self.policy.ec_scheme.data_num as u64;
-        let full_strips = logical_bytes / strip_data_bytes;
-        let tail_bytes = logical_bytes % strip_data_bytes;
-        let strips = full_strips + u64::from(tail_bytes > 0);
-        let tail_parity_bytes = tail_bytes.min(block_bytes);
-        let parity_bytes =
-            (full_strips * block_bytes + tail_parity_bytes) * self.policy.ec_scheme.code_num as u64;
-        let physical_bytes = logical_bytes + parity_bytes;
+        let result = build_large_write_result(&self.writer, &self.policy, locations, write_started.elapsed());
         if let Some(metrics) = &self.metrics {
-            metrics.logical_bytes.observe(logical_bytes);
-            metrics.physical_bytes.observe(physical_bytes);
+            metrics.logical_bytes.observe(result.logical_bytes);
+            metrics.physical_bytes.observe(result.physical_bytes);
         }
         if let Some(operation) = &mut operation {
             operation.mark_success();
         }
-        Ok(LargeWriteResult {
-            chunks: locations.len(),
-            locations,
-            logical_bytes,
-            physical_bytes,
-            strips,
-            elapsed: write_started.elapsed(),
-            preparation_stalls: self.writer.preparation_stalls(),
-            preparation_stall_time: self.writer.preparation_stall_time(),
-            source_reads: self.writer.source_reads,
-            source_read_time: self.writer.source_read_time,
-            assembly_copies: self.writer.assembly_copies,
-            assembly_copy_bytes: self.writer.assembly_copy_bytes,
-            assembly_copy_time: self.writer.assembly_copy_time,
-            ec_encode_time: self.writer.ec_encode_time,
-            completion_wait_time: self.writer.completion_wait_time,
-        })
+        Ok(result)
+    }
+
+    /// Send owned blocks directly without the stream fetch/assembly copy.
+    pub async fn write_buffers(
+        mut self,
+        buffers: impl IntoIterator<Item = Bytes>,
+    ) -> Result<LargeWriteResult> {
+        let write_started = Instant::now();
+        let mut operation = self.metrics.as_ref().map(|metrics| metrics.object_write.start());
+        for buffer in buffers {
+            if let Err(error) = self.writer.on_data(buffer).await {
+                let _ = self.writer.abort_pipeline().await;
+                return Err(error);
+            }
+        }
+        let locations = match self.writer.on_finish().await {
+            Ok(locations) => locations,
+            Err(error) => {
+                let _ = self.writer.abort_pipeline().await;
+                return Err(error);
+            }
+        };
+        let result = build_large_write_result(&self.writer, &self.policy, locations, write_started.elapsed());
+        if let Some(metrics) = &self.metrics {
+            metrics.logical_bytes.observe(result.logical_bytes);
+            metrics.physical_bytes.observe(result.physical_bytes);
+        }
+        if let Some(operation) = &mut operation {
+            operation.mark_success();
+        }
+        Ok(result)
     }
 
     /// Time elapsed since the request prepared this write session.
@@ -371,5 +377,38 @@ impl PreparedLargeWrite {
     /// Release a prepared session that will not be written.
     pub async fn abort(mut self) -> Result<()> {
         self.writer.abort_pipeline().await.map(|_| ())
+    }
+}
+
+fn build_large_write_result(
+    writer: &LargeAsyncObjectWriter,
+    policy: &LargeWritePolicy,
+    locations: Vec<Location>,
+    elapsed: Duration,
+) -> LargeWriteResult {
+    let logical_bytes: u64 = locations.iter().map(|location| location.length).sum();
+    let block_bytes = policy.client.read_buffer_size as u64;
+    let strip_data_bytes = block_bytes * policy.ec_scheme.data_num as u64;
+    let full_strips = logical_bytes / strip_data_bytes;
+    let tail_bytes = logical_bytes % strip_data_bytes;
+    let strips = full_strips + u64::from(tail_bytes > 0);
+    let parity_bytes =
+        (full_strips * block_bytes + tail_bytes.min(block_bytes)) * policy.ec_scheme.code_num as u64;
+    LargeWriteResult {
+        chunks: locations.len(),
+        locations,
+        logical_bytes,
+        physical_bytes: logical_bytes + parity_bytes,
+        strips,
+        elapsed,
+        preparation_stalls: writer.preparation_stalls(),
+        preparation_stall_time: writer.preparation_stall_time(),
+        source_reads: writer.source_reads,
+        source_read_time: writer.source_read_time,
+        assembly_copies: writer.assembly_copies,
+        assembly_copy_bytes: writer.assembly_copy_bytes,
+        assembly_copy_time: writer.assembly_copy_time,
+        ec_encode_time: writer.ec_encode_time,
+        completion_wait_time: writer.completion_wait_time,
     }
 }

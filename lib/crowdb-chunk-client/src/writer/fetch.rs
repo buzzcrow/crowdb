@@ -36,22 +36,17 @@ where
     R: tokio::io::AsyncRead + Unpin + Send,
 {
     let mut buf = BytesMut::with_capacity(read_buffer_size);
-    let mut read_buf = vec![0u8; read_buffer_size];
     let mut stats = FetchStats::default();
 
     loop {
+        buf.reserve(read_buffer_size.saturating_sub(buf.len()));
         let read_started = Instant::now();
-        let result = reader.read(&mut read_buf).await;
+        let result = reader.read_buf(&mut buf).await;
         stats.source_read_time += read_started.elapsed();
         match result {
             Ok(0) => break,
-            Ok(n) => {
+            Ok(_) => {
                 stats.source_reads += 1;
-                let copy_started = Instant::now();
-                buf.extend_from_slice(&read_buf[..n]);
-                stats.assembly_copy_time += copy_started.elapsed();
-                stats.assembly_copies += 1;
-                stats.assembly_copy_bytes += u64::try_from(n).unwrap_or(u64::MAX);
                 while buf.len() >= read_buffer_size {
                     let block = buf.split_to(read_buffer_size);
                     if block_tx.send(block.freeze()).await.is_err() {

@@ -1,13 +1,13 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 
 // OS-level system metrics: CPU time, memory RSS, TCP retransmits, and
-// DRAM bandwidth. Mirrors the Rust `crowdb_common::metrics::system`
+// DRAM read/write bandwidth. Mirrors the Rust `crowdb_common::metrics::system`
 // module so C++ servers (crowdb-diskio) and Rust servers (crowdb-kv-server)
 // report the same `sys.*` metric lines.
 //
 // On Linux, reads /proc/self/stat for CPU jiffies, /proc/self/status for
 // RSS, /proc/net/snmp for TCP counters, and perf_event_open for DRAM
-// read+write bandwidth (AMD amd_df or Intel uncore_imc uncore PMU).
+// bandwidth (AMD amd_df aggregate or Intel uncore_imc read/write PMU).
 // On macOS, CPU and RSS use `ps`; TCP and DRAM BW are stubbed.
 #pragma once
 
@@ -31,9 +31,15 @@ struct SystemMetricsSnapshot
     uint64_t tcp_retransmits = 0;
     // TCP lost segment count delta since previous snapshot (Linux only).
     uint64_t tcp_lost = 0;
-    // Average DRAM read+write bandwidth in MiB/s since the previous
+    // Average DRAM read bandwidth in MiB/s since the previous
     // snapshot. std::nullopt when the PMU is unavailable.
-    std::optional<double> dram_bw_mib;
+    std::optional<double> dram_read_mib;
+    // Average DRAM write bandwidth in MiB/s since the previous
+    // snapshot. std::nullopt when the PMU is unavailable.
+    std::optional<double> dram_write_mib;
+    // Aggregate DRAM bandwidth. Available when an AMD PMU cannot split
+    // reads and writes.
+    std::optional<double> dram_total_mib;
 };
 
 // Collects OS-level metrics by reading /proc (Linux) or using ps (macOS).

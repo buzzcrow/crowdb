@@ -38,7 +38,9 @@ TEST(SystemMetricsTest, FlushWritesAllFields)
     snap.rss_kb          = 4096;
     snap.tcp_retransmits = 3;
     snap.tcp_lost        = 1;
-    snap.dram_bw_mib     = 512.5;
+    snap.dram_read_mib   = 512.5;
+    snap.dram_write_mib  = 128.3;
+    snap.dram_total_mib  = 640.8;
 
     // Write to a temp file via FILE*.
     FILE *fp = std::tmpfile();
@@ -56,13 +58,17 @@ TEST(SystemMetricsTest, FlushWritesAllFields)
     EXPECT_TRUE(out.find("rss_gb=0.00") != std::string::npos);
     EXPECT_TRUE(out.find("tcp_retrans=3") != std::string::npos);
     EXPECT_TRUE(out.find("tcp_lost=1") != std::string::npos);
-    EXPECT_TRUE(out.find("bw_mib=512.5") != std::string::npos);
+    EXPECT_TRUE(out.find("bw_read_mib=512.5") != std::string::npos);
+    EXPECT_TRUE(out.find("bw_write_mib=128.3") != std::string::npos);
+    EXPECT_TRUE(out.find("bw_total_mib=640.8") != std::string::npos);
 }
 
 TEST(SystemMetricsTest, FlushWritesUnsupportedWhenNone)
 {
     SystemMetricsSnapshot snap;
-    snap.dram_bw_mib = std::nullopt;
+    snap.dram_read_mib  = std::nullopt;
+    snap.dram_write_mib = std::nullopt;
+    snap.dram_total_mib = std::nullopt;
 
     FILE *fp = std::tmpfile();
     ASSERT_NE(fp, nullptr);
@@ -74,5 +80,7 @@ TEST(SystemMetricsTest, FlushWritesUnsupportedWhenNone)
     std::fclose(fp);
 
     std::string out(buf.data());
-    EXPECT_TRUE(out.find("bw_mib=unsupported") != std::string::npos);
+    EXPECT_TRUE(out.find("bw_read_mib=unsupported") != std::string::npos);
+    EXPECT_TRUE(out.find("bw_write_mib=unsupported") != std::string::npos);
+    EXPECT_TRUE(out.find("bw_total_mib=unsupported") != std::string::npos);
 }
