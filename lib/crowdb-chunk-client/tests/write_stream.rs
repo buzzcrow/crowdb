@@ -283,7 +283,7 @@ impl ChunkAllocator for FailingChunkAllocator {
 fn test_config(max_chunk_size: u64) -> Arc<ChunkClientConfig> {
     Arc::new(ChunkClientConfig {
         max_chunk_size,
-        strip_preparation_depth: 2,
+        prefetch_strips_per_chunk: 2,
         parity_depth: 2,
         chunk_preparation_depth: 1,
         read_buffer_size: 4096,
@@ -863,7 +863,7 @@ async fn push_mode_backpressure() {
     let ec = ec_4_1();
     let config = Arc::new(ChunkClientConfig {
         max_chunk_size: 1024 * 1024,
-        strip_preparation_depth: 2,
+        prefetch_strips_per_chunk: 2,
         parity_depth: 2,
         chunk_preparation_depth: 1,
         read_buffer_size: 4096,
@@ -952,7 +952,7 @@ async fn write_stream_bounded_prealloc() {
     let ec = ec_4_1();
     let config = Arc::new(ChunkClientConfig {
         max_chunk_size: 1024 * 1024 * 1024,
-        strip_preparation_depth: 2,
+        prefetch_strips_per_chunk: 2,
         parity_depth: 2,
         chunk_preparation_depth: 1,
         read_buffer_size: 4096,
@@ -1008,7 +1008,7 @@ async fn writer_pool_budget_rejects_over_budget() {
     let ec = ec_4_1();
     let config = Arc::new(ChunkClientConfig {
         max_chunk_size: 1024 * 1024 * 1024,
-        strip_preparation_depth: 2,
+        prefetch_strips_per_chunk: 2,
         parity_depth: 2,
         chunk_preparation_depth: 1,
         read_buffer_size: 1024 * 1024,
@@ -1037,7 +1037,7 @@ async fn writer_pool_per_writer_memory() {
     let ec = ec_4_1();
     let config = Arc::new(ChunkClientConfig {
         max_chunk_size: 1024 * 1024 * 1024,
-        strip_preparation_depth: 2,
+        prefetch_strips_per_chunk: 2,
         parity_depth: 2,
         chunk_preparation_depth: 1,
         read_buffer_size: 1024 * 1024,
@@ -1062,7 +1062,7 @@ async fn benchmark_runner_aggregates_concurrent_large_writes() {
             object_size: 4 * UNIT_BYTES,
             concurrency: 2,
             seed: 7,
-            prepared_write_count: 2,
+            prefetch_chunks: 2,
             policy: LargeWritePolicy {
                 ec_scheme: ec_4_1(),
                 client: test_config(1024 * 1024),
@@ -1077,6 +1077,9 @@ async fn benchmark_runner_aggregates_concurrent_large_writes() {
     assert_eq!(result.stop_reason, "complete");
     assert_eq!(result.logical_bytes, 8 * UNIT_BYTES);
     assert_eq!(result.physical_bytes, 10 * UNIT_BYTES);
+    assert_eq!(result.source_reads, 8);
+    assert_eq!(result.assembly_copies, 8);
+    assert_eq!(result.assembly_copy_bytes, 8 * UNIT_BYTES);
     assert!(result.objects_per_sec > 0.0);
     assert!(result.latency_p50_us > 0);
     assert_eq!(result.preparation_stalls, 0);

@@ -8,12 +8,12 @@ use std::sync::Arc;
 
 use crowdb_chunk_client::{
     run_large_write_benchmark, ChunkClientConfig, ChunkIoClient, ChunkIoClientConfig,
-    LargeWriteBenchmarkConfig, LargeWritePolicy,
+    LargeWriteBenchmarkConfig, LargeWriteBenchmarkResult, LargeWritePolicy,
 };
 use crowdb_common::ec::EcScheme;
 
 use super::metrics::BenchMetrics;
-use super::verb::ChunkioBenchVerb;
+use super::verb::{ChunkioArgs, ChunkioBenchVerb};
 use crate::Cli;
 
 pub async fn run(cli: &Cli, verb: ChunkioBenchVerb) -> ExitCode {
@@ -59,6 +59,7 @@ pub async fn run(cli: &Cli, verb: ChunkioBenchVerb) -> ExitCode {
             max_chunk_size: args.chunk_size,
             read_buffer_size: args.block_size,
             max_cached_buffer: args.block_size.saturating_mul(args.data_num),
+            prefetch_strips_per_chunk: args.prefetch_strips_per_chunk,
             ..ChunkClientConfig::default()
         }),
     };
@@ -72,7 +73,7 @@ pub async fn run(cli: &Cli, verb: ChunkioBenchVerb) -> ExitCode {
             object_size: args.object_size,
             concurrency: args.concurrency,
             seed: args.seed,
-            prepared_write_count: args.prepared_writes,
+            prefetch_chunks: args.prefetch_chunks,
             policy,
         },
     )
@@ -87,11 +88,21 @@ pub async fn run(cli: &Cli, verb: ChunkioBenchVerb) -> ExitCode {
             }
         }
     } else {
-        println!(
-            "chunkio write: requested={} object_size={} prepared_writes={} prepare_s={:.3} objects={} errors={} incomplete={} stop={} objects_s={:.2} logical_mib_s={:.1} physical_mib_s={:.1} p50_us={} p99_us={} prep_stalls={} prep_stall_us={}",
+        print_text_result(&args, &result);
+    }
+    if result.errors == 0 && result.incomplete_objects == 0 {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn print_text_result(args: &ChunkioArgs, result: &LargeWriteBenchmarkResult) {
+    println!(
+            "chunkio write: requested={} object_size={} prefetch_chunks={} prepare_s={:.3} objects={} errors={} incomplete={} stop={} objects_s={:.2} logical_mib_s={:.1} physical_mib_s={:.1} p50_us={} p99_us={} prep_stalls={} prep_stall_us={}",
             result.requested_objects,
             args.object_size,
-            args.prepared_writes,
+            args.prefetch_chunks,
             result.preparation_secs,
             result.objects,
             result.errors,
@@ -104,14 +115,18 @@ pub async fn run(cli: &Cli, verb: ChunkioBenchVerb) -> ExitCode {
             result.latency_p99_us,
             result.preparation_stalls,
             result.preparation_stall_us,
-        );
-        for message in &result.error_messages {
-            eprintln!("chunkio write error: {message}");
-        }
-    }
-    if result.errors == 0 && result.incomplete_objects == 0 {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
+    );
+    println!(
+            "chunkio flow: source_reads={} source_read_us={} assembly_copies={} assembly_copy_bytes={} assembly_copy_us={} ec_encode_us={} completion_wait_us={}",
+            result.source_reads,
+            result.source_read_us,
+            result.assembly_copies,
+            result.assembly_copy_bytes,
+            result.assembly_copy_us,
+            result.ec_encode_us,
+            result.completion_wait_us,
+    );
+    for message in &result.error_messages {
+        eprintln!("chunkio write error: {message}");
     }
 }

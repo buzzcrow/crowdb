@@ -62,7 +62,7 @@ fn location_proto_bytes_round_trip_3_entries() {
 fn chunk_client_config_defaults() {
     let cfg = ChunkClientConfig::default();
     assert_eq!(cfg.max_chunk_size, 1024 * 1024 * 1024);
-    assert_eq!(cfg.strip_preparation_depth, 2);
+    assert_eq!(cfg.prefetch_strips_per_chunk, 2);
     assert_eq!(cfg.parity_depth, 2);
     assert_eq!(cfg.chunk_preparation_depth, 1);
     assert_eq!(cfg.read_buffer_size, 1024 * 1024);

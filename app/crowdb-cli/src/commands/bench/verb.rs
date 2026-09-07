@@ -39,7 +39,7 @@ pub enum ChunkioBenchVerb {
 pub struct ChunkioArgs {
     #[arg(long, default_value_t = 1)]
     pub objects: u64,
-    #[arg(long, default_value_t = 64 * 1024 * 1024)]
+    #[arg(long, default_value_t = 16 * 1024 * 1024)]
     pub object_size: u64,
     #[arg(long, default_value_t = 1)]
     pub concurrency: usize,
@@ -55,9 +55,12 @@ pub struct ChunkioArgs {
     pub seed: u8,
     #[arg(long, default_value_t = 1)]
     pub metrics_interval: u64,
-    /// Write sessions to prepare before benchmark timing starts.
+    /// First chunks to prepare before benchmark timing starts.
     #[arg(long, default_value_t = 10)]
-    pub prepared_writes: usize,
+    pub prefetch_chunks: usize,
+    /// Strips appended ahead within each active chunk.
+    #[arg(long, default_value_t = 2)]
+    pub prefetch_strips_per_chunk: usize,
 }
 
 #[derive(Subcommand, Debug)]

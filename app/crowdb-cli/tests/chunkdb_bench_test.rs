@@ -57,7 +57,8 @@ fn chunkio_write_exposes_large_write_controls() {
         "--data-num",
         "--code-num",
         "--seed",
-        "--prepared-writes",
+        "--prefetch-chunks",
+        "--prefetch-strips-per-chunk",
     ] {
         assert!(stdout.contains(option), "missing {option}");
     }

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use serde::Serialize;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, ReadBuf};
 use tokio::task::JoinSet;
 
 use crate::{ChunkIoClient, LargeWritePolicy};
@@ -22,7 +22,7 @@ pub struct LargeWriteBenchmarkConfig {
     pub concurrency: usize,
     pub seed: u8,
     /// Write sessions whose first chunks are allocated before timing starts.
-    pub prepared_write_count: usize,
+    pub prefetch_chunks: usize,
     pub policy: LargeWritePolicy,
 }
 
@@ -45,6 +45,13 @@ pub struct LargeWriteBenchmarkResult {
     pub latency_p99_us: u64,
     pub preparation_stalls: u64,
     pub preparation_stall_us: u64,
+    pub source_reads: u64,
+    pub source_read_us: u64,
+    pub assembly_copies: u64,
+    pub assembly_copy_bytes: u64,
+    pub assembly_copy_us: u64,
+    pub ec_encode_us: u64,
+    pub completion_wait_us: u64,
     pub error_messages: Vec<String>,
 }
 
@@ -55,6 +62,13 @@ struct WorkerResult {
     physical_bytes: u64,
     preparation_stalls: u64,
     preparation_stall_us: u64,
+    source_reads: u64,
+    source_read_us: u64,
+    assembly_copies: u64,
+    assembly_copy_bytes: u64,
+    assembly_copy_us: u64,
+    ec_encode_us: u64,
+    completion_wait_us: u64,
     latencies: Vec<u64>,
     errors: u64,
     error_messages: Vec<String>,
@@ -122,6 +136,13 @@ pub async fn run_large_write_benchmark(
         latency_p99_us: percentile(&total.latencies, 99),
         preparation_stalls: total.preparation_stalls,
         preparation_stall_us: total.preparation_stall_us,
+        source_reads: total.source_reads,
+        source_read_us: total.source_read_us,
+        assembly_copies: total.assembly_copies,
+        assembly_copy_bytes: total.assembly_copy_bytes,
+        assembly_copy_us: total.assembly_copy_us,
+        ec_encode_us: total.ec_encode_us,
+        completion_wait_us: total.completion_wait_us,
         error_messages: total.error_messages,
     }
 }
@@ -132,7 +153,7 @@ async fn prepare_writes(
 ) -> crate::Result<Vec<VecDeque<crate::PreparedLargeWrite>>> {
     let workers = config.concurrency.max(1);
     let object_count = usize::try_from(config.object_count).unwrap_or(usize::MAX);
-    let count = config.prepared_write_count.max(workers).min(object_count);
+    let count = config.prefetch_chunks.max(workers).min(object_count);
     let mut queues: Vec<VecDeque<_>> = (0..workers).map(|_| VecDeque::new()).collect();
     let writes = client
         .prepare_large_writes(count, Some(config.object_size), config.policy.clone())
@@ -161,6 +182,13 @@ fn failed_before_load(config: &LargeWriteBenchmarkConfig, message: String) -> La
         latency_p99_us: 0,
         preparation_stalls: 0,
         preparation_stall_us: 0,
+        source_reads: 0,
+        source_read_us: 0,
+        assembly_copies: 0,
+        assembly_copy_bytes: 0,
+        assembly_copy_us: 0,
+        ec_encode_us: 0,
+        completion_wait_us: 0,
         error_messages: vec![message],
     }
 }
@@ -178,13 +206,13 @@ async fn run_worker(
     prepared: &mut VecDeque<crate::PreparedLargeWrite>,
 ) -> WorkerResult {
     let mut result = WorkerResult::default();
+    let random_block = Arc::<[u8]>::from(random_bytes(config.policy.client.read_buffer_size, config.seed));
     loop {
         let object = next_object.fetch_add(1, Ordering::Relaxed);
         if object >= config.object_count {
             break;
         }
-        let byte = config.seed.wrapping_add(object as u8);
-        let source = tokio::io::repeat(byte).take(config.object_size);
+        let source = RepeatingBufferReader::new(random_block.clone(), config.object_size);
         let started = Instant::now();
         let write = prepared
             .pop_front()
@@ -198,6 +226,13 @@ async fn run_worker(
                 result.preparation_stalls += write.preparation_stalls;
                 result.preparation_stall_us +=
                     u64::try_from(write.preparation_stall_time.as_micros()).unwrap_or(u64::MAX);
+                result.source_reads += write.source_reads;
+                result.source_read_us += duration_us(write.source_read_time);
+                result.assembly_copies += write.assembly_copies;
+                result.assembly_copy_bytes += write.assembly_copy_bytes;
+                result.assembly_copy_us += duration_us(write.assembly_copy_time);
+                result.ec_encode_us += duration_us(write.ec_encode_time);
+                result.completion_wait_us += duration_us(write.completion_wait_time);
                 result
                     .latencies
                     .push(u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX));
@@ -220,10 +255,69 @@ fn merge_worker(total: &mut WorkerResult, worker: WorkerResult) {
     total.physical_bytes += worker.physical_bytes;
     total.preparation_stalls += worker.preparation_stalls;
     total.preparation_stall_us += worker.preparation_stall_us;
+    total.source_reads += worker.source_reads;
+    total.source_read_us += worker.source_read_us;
+    total.assembly_copies += worker.assembly_copies;
+    total.assembly_copy_bytes += worker.assembly_copy_bytes;
+    total.assembly_copy_us += worker.assembly_copy_us;
+    total.ec_encode_us += worker.ec_encode_us;
+    total.completion_wait_us += worker.completion_wait_us;
     total.latencies.extend(worker.latencies);
     total.errors += worker.errors;
     for message in worker.error_messages {
         record_error(&mut total.error_messages, message);
+    }
+}
+
+fn duration_us(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
+
+fn random_bytes(size: usize, seed: u8) -> Vec<u8> {
+    let mut state = u64::from(seed).wrapping_add(0x9e37_79b9_7f4a_7c15);
+    let mut bytes = vec![0; size];
+    for byte in &mut bytes {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        *byte = state as u8;
+    }
+    bytes
+}
+
+struct RepeatingBufferReader {
+    block: Arc<[u8]>,
+    remaining: u64,
+    offset: usize,
+}
+
+impl RepeatingBufferReader {
+    fn new(block: Arc<[u8]>, remaining: u64) -> Self {
+        Self {
+            block,
+            remaining,
+            offset: 0,
+        }
+    }
+}
+
+impl AsyncRead for RepeatingBufferReader {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.remaining == 0 || self.block.is_empty() {
+            return std::task::Poll::Ready(Ok(()));
+        }
+        let count = output
+            .remaining()
+            .min(self.block.len() - self.offset)
+            .min(usize::try_from(self.remaining).unwrap_or(usize::MAX));
+        output.put_slice(&self.block[self.offset..self.offset + count]);
+        self.remaining -= count as u64;
+        self.offset = (self.offset + count) % self.block.len();
+        std::task::Poll::Ready(Ok(()))
     }
 }
 

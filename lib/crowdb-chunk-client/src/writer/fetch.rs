@@ -10,8 +10,18 @@
 
 use bytes::Bytes;
 use bytes::BytesMut;
+use std::time::{Duration, Instant};
 use tokio::io::AsyncReadExt;
 use tokio::sync::mpsc;
+
+#[derive(Debug, Default)]
+pub struct FetchStats {
+    pub source_reads: u64,
+    pub source_read_time: Duration,
+    pub assembly_copies: u64,
+    pub assembly_copy_bytes: u64,
+    pub assembly_copy_time: Duration,
+}
 
 /// Run the fetch stage: reads from `reader` in ≤ `read_buffer_size`
 /// chunks, accumulates to full blocks, and sends `Bytes` to the block
@@ -21,22 +31,31 @@ pub async fn run_fetch_stage<R>(
     mut reader: R,
     block_tx: mpsc::Sender<Bytes>,
     read_buffer_size: usize,
-) -> std::io::Result<()>
+) -> std::io::Result<FetchStats>
 where
     R: tokio::io::AsyncRead + Unpin + Send,
 {
     let mut buf = BytesMut::with_capacity(read_buffer_size);
     let mut read_buf = vec![0u8; read_buffer_size];
+    let mut stats = FetchStats::default();
 
     loop {
-        match reader.read(&mut read_buf).await {
+        let read_started = Instant::now();
+        let result = reader.read(&mut read_buf).await;
+        stats.source_read_time += read_started.elapsed();
+        match result {
             Ok(0) => break,
             Ok(n) => {
+                stats.source_reads += 1;
+                let copy_started = Instant::now();
                 buf.extend_from_slice(&read_buf[..n]);
+                stats.assembly_copy_time += copy_started.elapsed();
+                stats.assembly_copies += 1;
+                stats.assembly_copy_bytes += u64::try_from(n).unwrap_or(u64::MAX);
                 while buf.len() >= read_buffer_size {
                     let block = buf.split_to(read_buffer_size);
                     if block_tx.send(block.freeze()).await.is_err() {
-                        return Ok(());
+                        return Ok(stats);
                     }
                 }
             }
@@ -46,5 +65,5 @@ where
     if !buf.is_empty() {
         let _ = block_tx.send(buf.freeze()).await;
     }
-    Ok(())
+    Ok(stats)
 }

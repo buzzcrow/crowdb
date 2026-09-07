@@ -10,6 +10,7 @@
 
 use bytes::Bytes;
 use crowdb_protocol::common::ChunkId;
+use std::time::Duration;
 use tokio::task::JoinHandle;
 
 use crate::Result;
@@ -24,6 +25,7 @@ pub struct StripResult {
     pub bytes_written: u64,
     /// True if the last block was < unit_bytes (partial strip at EOF).
     pub partial: bool,
+    pub ec_encode_time: Duration,
     /// Durable data/parity write completions joined by `ChunkWriter`.
     pub completion_handles: Vec<JoinHandle<Result<()>>>,
 }

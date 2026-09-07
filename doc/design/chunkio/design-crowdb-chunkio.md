@@ -66,7 +66,7 @@ model, and the design choices that make a 1 TB upload cost the same
   `require_data` hint and return 503 instead of stalling.
 - **Bounded preparation, not eager allocation.** A 1 TB object does
   not allocate all 250K strips at once. Consumption-driven channels stay only
-  `strip_preparation_depth` strips (default 2) and
+  `prefetch_strips_per_chunk` strips (default 2) and
   `chunk_preparation_depth` chunks (default 1) ahead,
   keeping allocation rate and KV metadata pressure bounded regardless
   of object size while keeping the cursor fed.
@@ -146,7 +146,7 @@ block channel. The `ChunkWriter` drive loop is identical in both modes.
                                           │
                                           │  internal strip prefetch:
                                           │   append_chunk ahead of cursor
-                                          │   (bounded: strip_preparation_depth=2)
+                                          │   (bounded: prefetch_strips_per_chunk=2)
 ```
 
 The flow, step by step:
@@ -181,13 +181,13 @@ The flow, step by step:
   strip N's parity completes.
 - **Strip prefetch (internal to ChunkWriter).** A background task
   appends strips to the current chunk via `append_chunk` ahead of the
-  write cursor, bounded by `strip_preparation_depth` (default 2). A normal
+  write cursor, bounded by `prefetch_strips_per_chunk` (default 2). A normal
   `append_chunk` response contains only new strips plus `modify_ts`; the
   writer merges them locally. A stale revision response supplies the complete
   current chunk and is retried once. The result replaces `self.chunk` (Arc-swap — old Arc in
   any in-flight `EcStripWriter` stays alive). For known-size objects,
   the prefetch stops after enough strips are allocated; for
-  unknown-size objects, it stays `strip_preparation_depth` ahead.
+  unknown-size objects, it stays `prefetch_strips_per_chunk` ahead.
 - **Chunk prefetch (ChunkPrefetch, object layer).** Pre-allocates the
   next `Chunk` (1 strip each) ahead of rotation, up to
   `chunk_preparation_depth` ahead. On chunk rotation, the object layer
@@ -362,7 +362,7 @@ Edge cases:
 | Knob | Default | Role |
 | --- | --- | --- |
 | `max_chunk_size` | 1 GB | Chunk rotation threshold. |
-| `strip_preparation_depth` | 2 strips | Strip preparation ahead of write cursor. |
+| `prefetch_strips_per_chunk` | 2 strips | Strip preparation ahead of write cursor. |
 | `parity_depth` | 2 strips | Completed-strip write groups allowed in flight. |
 | `chunk_preparation_depth` | 1 chunk | Chunk preparation ahead of rotation. |
 | fetch granularity | 1 MB | One data block per fetch call. |
@@ -383,7 +383,7 @@ chunk and strip counts, elapsed time, and preparation stalls.
 waits until each owns its first chunk. A server calls it before opening its load
 gate, keeps the returned queue, and starts one replacement session whenever it
 consumes one. Queue depth is an application admission setting; the benchmark
-defaults to ten through `--prepared-writes`. Unused sessions are explicitly
+defaults to ten through `--prefetch-chunks`. Unused sessions are explicitly
 aborted so their Active chunks are deleted.
 
 The write hot path reads an immutable disk-ID route snapshot through
@@ -421,23 +421,51 @@ an application-byte estimate. Loopback TCP, EC expansion, RPC framing, kernel
 copies, EC calculation, synchronous writes, and metadata work all keep end-to-end logical
 throughput below that hardware envelope.
 
-### 11.1 Current NullDisk Baseline
+### 11.1 Production-Path NullDisk Baseline
 
-The steady single-writer sentinel uses 20 64 MiB objects, EC 4+1, 1 MiB
-blocks, and ten prepared write sessions. Preparation is reported separately
-and the load timer starts only after all ten first chunks are available. Its
-retained baseline is 543.2 MiB/s logical and 679.0 MiB/s physical, with
-114,119 us p50 and 131,454 us p99 object latency, zero errors, and zero
-preparation stalls. Initial preparation took 0.769 seconds and is not included
-in throughput.
+The sentinel uses 16 MiB objects, EC 4+1, 1 MiB blocks, ten prefetched chunks,
+and two strips prefetched per active chunk. Each worker creates one deterministic
+random 1 MiB source block and reuses it. Every object still traverses the
+production `AsyncRead`, fetch assembly, EC, routed RPC, DiskIO handler, and
+io_uring submission path. RPC sends every 1 MiB data or parity payload through
+the loopback socket. The storage target is the only substitution: NullDisk
+replaces production BlockDisk and does not request stable-media durability.
 
-This result establishes the scheduling ceiling of one writer against NullDisk;
-it does not represent durable block-device throughput. During the run, 1 MiB
-DiskIO completions averaged about 2 ms, the writer kept four DiskIO operations
-in flight, and client CPU reached roughly 24% user plus 127% system. Strip
-append averaged about 2 ms and produced no data-path stalls because the bounded
-strip-preparation task ran concurrently. The remaining gap between one writer
-and the multi-writer aggregate is therefore the per-writer EC/RPC/DiskIO
-pipeline width and CPU/kernel transport cost. Further concurrency changes need
-a production-device result first so optimization does not target a NullDisk
-artifact.
+| Measurement | One writer | Four writers |
+| --- | ---: | ---: |
+| Objects / logical bytes | 40 / 640 MiB | 160 / 2,560 MiB |
+| Logical throughput | 704.6 MiB/s | 2,009.7 MiB/s |
+| Physical RPC throughput | 880.7 MiB/s | 2,512.1 MiB/s |
+| Object latency p50 / p99 | 21.447 / 30.333 ms | 31.652 / 42.280 ms |
+| Prefetch time before load | 0.773 s | 0.002 s |
+| Data-path preparation stalls | 0 | 3 / 1.550 ms total |
+| Observed host memory bandwidth avg / max | 628.8 / 874.9 MiB/s | 1,971.4 / 2,127.1 MiB/s |
+
+Per-object client-stage time is measured inside the production writer. Times
+overlap and therefore must not be added to predict object latency.
+
+| Flow step | One writer | Four writers | Work per object |
+| --- | ---: | ---: | --- |
+| Source `AsyncRead` | 0.848 ms | 2.645 ms | 16 reads and 16 MiB copied from reusable source |
+| Fetch assembly copy | 8.081 ms | 5.904 ms | 16 copies and 16 MiB into owned `Bytes` blocks |
+| EC encode | 9.415 ms | 14.808 ms | Four 4+1 strips, 4 MiB parity output |
+| Write-completion waits | 1.456 ms | 6.701 ms | Bounded strip groups; all writes joined before seal |
+| ChunkDB append RPC | 2.295 ms each | 2.427 ms each | Three background strip appends |
+| ChunkDB seal RPC | 0.771 ms | 0.686 ms | One seal after durable completions |
+| DiskIO write RPC | 1.526 ms each | 5.880 ms each | 20 full 1 MiB socket payloads |
+| Client RPC read-to-parse | 0.070 ms each | 0.773 ms each | Response receive and parse |
+| Client RPC writev | 0.308 ms each | 0.774 ms each | Request control plus owned payload |
+
+The application-visible data path performs two counted copies per input block:
+the source or socket reader fills the fetch scratch buffer, then fetch assembly
+copies into the owned `Bytes` block. The one-writer run therefore performs
+1,280 counted input-copy operations over 1.25 GiB; the four-writer run performs
+5,120 over 5 GiB. `Bytes` cloning for EC ownership and RPC handoff is reference
+counting, not a payload copy. Kernel socket and io_uring/device DMA movement is
+reflected in host memory bandwidth but is not reported as an application copy.
+
+Strip prefetch is not the limiting step: append runs concurrently and produces
+no stall for one writer. The dominant measured client costs are fetch assembly
+and EC encode. At four writers, DiskIO/RPC latency and completion waits rise as
+the loopback and kernel path saturate. These results are a production-pipeline
+scheduling baseline, not a durable-device claim.

@@ -47,6 +47,13 @@ pub struct LargeAsyncObjectWriter {
     pub(crate) finished: bool,
     pub(crate) preparation_stalls: u64,
     pub(crate) preparation_stall_time: Duration,
+    pub(crate) source_reads: u64,
+    pub(crate) source_read_time: Duration,
+    pub(crate) assembly_copies: u64,
+    pub(crate) assembly_copy_bytes: u64,
+    pub(crate) assembly_copy_time: Duration,
+    pub(crate) ec_encode_time: Duration,
+    pub(crate) completion_wait_time: Duration,
 }
 
 impl LargeAsyncObjectWriter {
@@ -72,6 +79,13 @@ impl LargeAsyncObjectWriter {
             finished: false,
             preparation_stalls: 0,
             preparation_stall_time: Duration::ZERO,
+            source_reads: 0,
+            source_read_time: Duration::ZERO,
+            assembly_copies: 0,
+            assembly_copy_bytes: 0,
+            assembly_copy_time: Duration::ZERO,
+            ec_encode_time: Duration::ZERO,
+            completion_wait_time: Duration::ZERO,
         }
     }
 
@@ -134,6 +148,8 @@ impl LargeAsyncObjectWriter {
             let (stalls, stall_time) = cw.preparation_metrics();
             self.preparation_stalls += stalls;
             self.preparation_stall_time += stall_time;
+            self.ec_encode_time += cw.ec_encode_time;
+            self.completion_wait_time += cw.completion_wait_time;
             let bytes = location.length;
             if bytes > 0 {
                 self.locations.push(ProtoLocation {
@@ -316,10 +332,18 @@ impl LargeAsyncObjectWriter {
             },
             drive_fut,
         );
-        if let Err(error) = pipeline_result {
-            let _ = self.abort_pipeline().await;
-            return Err(error);
-        }
+        let (fetch_stats, ()) = match pipeline_result {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = self.abort_pipeline().await;
+                return Err(error);
+            }
+        };
+        self.source_reads += fetch_stats.source_reads;
+        self.source_read_time += fetch_stats.source_read_time;
+        self.assembly_copies += fetch_stats.assembly_copies;
+        self.assembly_copy_bytes += fetch_stats.assembly_copy_bytes;
+        self.assembly_copy_time += fetch_stats.assembly_copy_time;
 
         self.seal_current().await?;
         self.stop_chunk_prefetch().await;

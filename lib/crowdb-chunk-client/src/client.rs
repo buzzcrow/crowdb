@@ -51,6 +51,13 @@ pub struct LargeWriteResult {
     pub elapsed: Duration,
     pub preparation_stalls: u64,
     pub preparation_stall_time: Duration,
+    pub source_reads: u64,
+    pub source_read_time: Duration,
+    pub assembly_copies: u64,
+    pub assembly_copy_bytes: u64,
+    pub assembly_copy_time: Duration,
+    pub ec_encode_time: Duration,
+    pub completion_wait_time: Duration,
 }
 
 /// A reusable client that owns discovery and transport wiring.
@@ -346,6 +353,13 @@ impl PreparedLargeWrite {
             elapsed: write_started.elapsed(),
             preparation_stalls: self.writer.preparation_stalls(),
             preparation_stall_time: self.writer.preparation_stall_time(),
+            source_reads: self.writer.source_reads,
+            source_read_time: self.writer.source_read_time,
+            assembly_copies: self.writer.assembly_copies,
+            assembly_copy_bytes: self.writer.assembly_copy_bytes,
+            assembly_copy_time: self.writer.assembly_copy_time,
+            ec_encode_time: self.writer.ec_encode_time,
+            completion_wait_time: self.writer.completion_wait_time,
         })
     }
 

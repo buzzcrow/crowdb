@@ -17,6 +17,7 @@
 //! `self.chunk.strips[self.strip_index]`.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use tokio::task::JoinHandle;
@@ -195,7 +196,9 @@ impl EcStripWriter {
         self.finished = true;
 
         // Finalize EC compute — get parity shards.
+        let encode_started = Instant::now();
         let parity = self.ec_worker.finish()?;
+        let ec_encode_time = encode_started.elapsed();
 
         // Spawn parallel parity write tasks (no join).
         let mut completion_handles = std::mem::take(&mut self.data_handles);
@@ -216,6 +219,7 @@ impl EcStripWriter {
             data_blocks_written: self.data_blocks_written,
             bytes_written: self.bytes_written,
             partial: self.partial,
+            ec_encode_time,
             completion_handles,
         })
     }
@@ -235,6 +239,7 @@ impl EcStripWriter {
             data_blocks_written: self.data_blocks_written,
             bytes_written: self.bytes_written,
             partial: self.partial,
+            ec_encode_time: Duration::ZERO,
             completion_handles: Vec::new(),
         })
     }

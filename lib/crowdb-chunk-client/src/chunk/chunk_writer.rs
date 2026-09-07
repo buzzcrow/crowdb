@@ -35,7 +35,7 @@ use crowdb_protocol::common::ChunkId;
 /// completion handles from each `finish_strip` and joins them at
 /// `seal` time. Runs an internal strip-prefetch task that
 /// appends strips ahead of `write_cursor`, bounded by
-/// `strip_preparation_depth`.
+/// `prefetch_strips_per_chunk`.
 pub struct ChunkWriter {
     pub(crate) allocator: Arc<dyn ChunkAllocator>,
     pub(crate) disk_writer: Arc<dyn DiskWriter>,
@@ -52,6 +52,8 @@ pub struct ChunkWriter {
     pub(crate) prefetch_rx: Option<mpsc::Receiver<Result<Chunk>>>,
     pub(crate) preparation_stalls: u64,
     pub(crate) preparation_stall_time: Duration,
+    pub(crate) ec_encode_time: Duration,
+    pub(crate) completion_wait_time: Duration,
 }
 
 impl ChunkWriter {
@@ -78,6 +80,8 @@ impl ChunkWriter {
             prefetch_rx: None,
             preparation_stalls: 0,
             preparation_stall_time: Duration::ZERO,
+            ec_encode_time: Duration::ZERO,
+            completion_wait_time: Duration::ZERO,
         }
     }
 
@@ -85,7 +89,7 @@ impl ChunkWriter {
     /// `Arc`, opens the first strip (already present from
     /// `allocate_chunk`), and starts the internal strip-prefetch task
     /// that appends strips ahead of `write_cursor` (bounded by
-    /// `strip_preparation_depth`). `object_size` drives prefetch planning:
+    /// `prefetch_strips_per_chunk`). `object_size` drives prefetch planning:
     /// known-size objects stop pre-appending when enough strips are
     /// allocated; unknown-size objects pre-append up to
     /// `strips_per_chunk`.
@@ -266,7 +270,7 @@ impl ChunkWriter {
 
     /// Start the internal strip-prefetch background task. Appends
     /// strips to the chunk ahead of `write_cursor`, bounded by
-    /// `strip_preparation_depth`. Known-size objects stop when
+    /// `prefetch_strips_per_chunk`. Known-size objects stop when
     /// `strips_remaining` hits 0; unknown-size objects pre-append up
     /// to `strips_per_chunk`. Sends cumulative `Chunk` values via a
     /// channel; `drain_prefetch` picks them up.
@@ -274,7 +278,7 @@ impl ChunkWriter {
         let Some(mut chunk) = self.chunk.as_deref().cloned() else {
             return;
         };
-        let (tx, rx) = mpsc::channel::<Result<Chunk>>(self.config.strip_preparation_depth);
+        let (tx, rx) = mpsc::channel::<Result<Chunk>>(self.config.prefetch_strips_per_chunk);
         self.prefetch_rx = Some(rx);
         let allocator = Arc::clone(&self.allocator);
         let ec_scheme = self.ec_scheme;
@@ -330,6 +334,7 @@ impl ChunkWriter {
             .take()
             .ok_or_else(|| IoError::Internal("finish_strip with no open strip".into()))?;
         let mut strip_result = strip.finish().await?;
+        self.ec_encode_time += strip_result.ec_encode_time;
         self.bytes_in_chunk += strip_result.bytes_written;
         // One queue entry represents one completed strip. This keeps
         // `parity_depth` expressed in strips instead of accidentally counting
@@ -351,6 +356,7 @@ impl ChunkWriter {
     async fn await_parity_capacity(&mut self) -> Result<()> {
         let depth = self.config.parity_depth.max(1);
         while self.completion_handles.len() >= depth {
+            let started = Instant::now();
             let handle = self
                 .completion_handles
                 .pop_front()
@@ -358,6 +364,7 @@ impl ChunkWriter {
             handle
                 .await
                 .map_err(|error| IoError::Internal(format!("strip completion task panicked: {error}")))??;
+            self.completion_wait_time += started.elapsed();
         }
         Ok(())
     }
@@ -416,11 +423,13 @@ impl ChunkWriter {
             Some(cid) if bytes_in_chunk > 0 => {
                 // Join all in-flight writes before sealing.
                 let handles = std::mem::take(&mut self.completion_handles);
+                let wait_started = Instant::now();
                 for handle in handles {
                     handle
                         .await
                         .map_err(|e| IoError::Internal(format!("parity task panicked: {e}")))??;
                 }
+                self.completion_wait_time += wait_started.elapsed();
                 let unit_bytes = u64::from((self.config.read_buffer_size / 1024) as u32) * 1024;
                 let sealed_length_units = (bytes_in_chunk / unit_bytes) as u32;
                 self.allocator

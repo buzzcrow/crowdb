@@ -25,7 +25,7 @@ pub struct ChunkClientConfig {
     /// Max chunk size before rotation (bytes). Default 1 GB.
     pub max_chunk_size: u64,
     /// Strips allocated ahead of the write cursor. Default 2.
-    pub strip_preparation_depth: usize,
+    pub prefetch_strips_per_chunk: usize,
     /// Maximum completed-strip parity/finalization tasks in flight. Default 2.
     pub parity_depth: usize,
     /// Chunks allocated ahead. Default 1.
@@ -45,7 +45,7 @@ impl Default for ChunkClientConfig {
             read_buffer_size: MB,
             max_cached_buffer: 4 * MB,
             max_chunk_size: GB as u64,
-            strip_preparation_depth: 2,
+            prefetch_strips_per_chunk: 2,
             parity_depth: 2,
             chunk_preparation_depth: 1,
             memory_budget: 0,
@@ -67,8 +67,8 @@ impl ChunkClientConfig {
         if self.max_chunk_size == 0 {
             return Err(IoError::Internal("max_chunk_size must be > 0".into()));
         }
-        if self.strip_preparation_depth == 0 {
-            return Err(IoError::Internal("strip_preparation_depth must be > 0".into()));
+        if self.prefetch_strips_per_chunk == 0 {
+            return Err(IoError::Internal("prefetch_strips_per_chunk must be > 0".into()));
         }
         if self.parity_depth == 0 {
             return Err(IoError::Internal("parity_depth must be > 0".into()));

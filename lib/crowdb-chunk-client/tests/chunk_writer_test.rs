@@ -252,7 +252,7 @@ impl ChunkAllocator for MockChunkAllocator {
 fn test_config(max_chunk_size: u64) -> Arc<ChunkClientConfig> {
     Arc::new(ChunkClientConfig {
         max_chunk_size,
-        strip_preparation_depth: 2,
+        prefetch_strips_per_chunk: 2,
         parity_depth: 2,
         chunk_preparation_depth: 1,
         read_buffer_size: 4096,

@@ -6,19 +6,18 @@
 #   CHUNKIO_BENCH_LOG_ROOT    retained run root
 #   CHUNKIO_BENCH_RESULTS     result TSV path
 #   CHUNKIO_BENCH_TIMEOUT     seconds allowed per case (default: 120)
-#   CHUNKIO_PREPARED_WRITES   sessions warmed before timed load (default: 10)
+#   CHUNKIO_PREFETCH_CHUNKS   chunks warmed before timed load (default: 10)
 #
 # Reference run (2026-09-07): AMD Ryzen 9 5950X, 16c/32t, Linux 6.8,
 # three-node loopback deployment, three NullDisk instances, EC 4+1,
-# 1 MiB blocks, 1 GiB chunks, two 64 MiB objects per worker.
+# 1 MiB blocks, 1 GiB chunks, and 16 MiB objects.
 #
-# Case       Obj  Size MiB  C  TPS obj/s  logical MiB/s  physical MiB/s  p50 us   p99 us   errors
-# large_1t     2        64  1       2.10          134.5           168.1    89401    89401       0
-# steady_1t   20        64  1       8.49          543.2           679.0   114119   131454       0
-# large_4t     8        64  4      28.41         1818.0          2272.5   137833   143356       0
+# Case      Obj  Size MiB  C  TPS obj/s  logical MiB/s  physical MiB/s  p50 us  p99 us  errors
+# large_1t   40        16  1      44.04          704.6           880.7    21447   30333       0
+# large_4t  160        16  4     125.60         2009.7          2512.1    31652   42280       0
 #
-# Memory-counter samples were 467.0/467.0 MiB/s average/max for large_1t,
-# 542.7/820.8 MiB/s for steady_1t, and 1332.5/1332.5 MiB/s for large_4t. They are retained
+# Memory-counter samples were 628.8/874.9 MiB/s average/max for large_1t and
+# 1971.4/2127.1 MiB/s for large_4t. They are retained
 # as a diagnostic baseline, not hard thresholds; the sentinel gates complete
 # object accounting, zero errors, stop reason, and complete service metrics.
 set -euo pipefail
@@ -27,7 +26,7 @@ cd "$(dirname "$0")/.."
 unset CROWDB_ASAN
 CASES="${CHUNKIO_BENCH_CASES:-}"
 TIMEOUT_SECS="${CHUNKIO_BENCH_TIMEOUT:-120}"
-PREPARED_WRITES="${CHUNKIO_PREPARED_WRITES:-10}"
+PREFETCH_CHUNKS="${CHUNKIO_PREFETCH_CHUNKS:-10}"
 RUN_STAMP=$(date +%Y%m%d-%H%M%S)
 LOG_ROOT="${CHUNKIO_BENCH_LOG_ROOT:-$(pwd)/bench-log/chunkio-write-regression-$RUN_STAMP}"
 RESULTS_FILE="${CHUNKIO_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
@@ -115,7 +114,8 @@ run_case() {
         bench chunkio write --objects "$objects" --object-size "$object_size" \
         --concurrency "$concurrency" --data-num 4 --code-num 1 \
         --block-size 1048576 --chunk-size 1073741824 --seed 1 \
-        --prepared-writes "$PREPARED_WRITES" --metrics-interval 1 2>&1)
+        --prefetch-chunks "$PREFETCH_CHUNKS" --prefetch-strips-per-chunk 2 \
+        --metrics-interval 1 2>&1)
     status=$?
     set -e
     printf '%s\n' "$output"
@@ -173,9 +173,8 @@ printf 'case\trequested\tsize_bytes\tsize_mib\tconcurrency\tcompleted\terrors\ti
 
 cli cluster local-deploy -t combined --metrics-interval 1 --allow-unsafe-ec
 
-run_case large_1t 2 67108864 1
-run_case steady_1t 20 67108864 1
-run_case large_4t 8 67108864 4
+run_case large_1t 40 16777216 1
+run_case large_4t 160 16777216 4
 destroy_cluster
 
 echo "=== DONE ==="
