@@ -430,7 +430,10 @@ an application-byte estimate. Loopback TCP, EC expansion, RPC framing, kernel
 copies, EC calculation, synchronous writes, and metadata work all keep end-to-end logical
 throughput below that hardware envelope.
 
-### 11.1 Production-Path NullDisk Baseline
+### 11.1 Intel Core i9-7960X Baseline
+
+Reference run 2026-09-08: Intel Core i9-7960X (16c/32t, Skylake-X), 4 DDR4
+channels at 2667 MT/s (~85 GB/s peak), Linux 6.11, `perf_event_paranoid=-1`.
 
 The sentinel uses 16 MiB objects, EC 8+4, 1 MiB blocks, ten prefetched chunks,
 and two strips prefetched per active chunk. Each worker creates one deterministic
@@ -441,24 +444,24 @@ and real io_uring submission. RPC sends every 1 MiB data or parity payload throu
 the loopback socket. The storage target is the only substitution: NullDisk
 replaces production BlockDisk and does not request stable-media durability.
 
-| Mode | Writers | Logical MiB/s | Physical MiB/s | p50 / p99 ms | DRAM read avg | DRAM write avg | DRAM total avg |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Stream | 1 | 868.1 | 1,302.1 | 18.398 / 26.312 | 30,203 | 5,085 | 35,289 |
-| Direct buffers | 1 | 1,655.0 | 2,482.6 | 8.614 / 17.813 | 36,346 | 8,232 | 44,578 |
-| Stream | 4 | 1,725.3 | 2,587.9 | 35.688 / 69.845 | 61,902 | 11,438 | 73,340 |
-| Direct buffers | 4 | 2,043.7 | 3,065.5 | 29.227 / 75.410 | 57,731 | 12,092 | 69,824 |
-| Stream | 32 | 1,622.5 | 2,433.8 | 310.529 / 429.501 | 61,442 | 11,385 | 72,827 |
-| Direct buffers | 32 | 1,821.5 | 2,732.3 | 275.345 / 377.645 | 59,066 | 10,790 | 69,856 |
+| Mode           | Writers | Logical MiB/s | Physical MiB/s |      p50 / p99 ms | DRAM read avg | DRAM write avg | DRAM total avg |
+| -------------- | ------: | ------------: | -------------: | ----------------: | ------------: | -------------: | -------------: |
+| Stream         |       1 |         162.5 |          243.8 |  99.191 / 111.225 |       2,496.6 |        1,393.0 |        3,889.6 |
+| Direct buffers |       1 |         229.1 |          343.7 |   69.191 / 85.641 |       1,996.1 |        1,228.7 |        3,224.8 |
+| Stream         |       4 |       1,965.6 |        2,948.5 |   31.917 / 51.806 |      12,699.7 |       10,943.0 |       23,642.7 |
+| Direct buffers |       4 |       2,672.1 |        4,008.1 |   22.811 / 40.000 |      11,799.6 |       12,051.5 |       23,851.1 |
+| Stream         |      32 |       3,249.3 |        4,873.9 | 151.716 / 267.992 |      19,562.5 |       15,603.7 |       35,166.2 |
+| Direct buffers |      32 |       3,547.9 |        5,321.9 | 138.654 / 261.388 |      14,816.5 |       12,766.6 |       27,583.1 |
 
 Per-object client-stage time is measured inside the production writer. Times
 overlap and therefore must not be added to predict object latency.
 
-| Flow step | Stream 1 | Direct 1 | Stream 4 | Direct 4 | Stream 32 | Direct 32 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Source/read copy | 4.964 | 0 | 6.365 | 0 | 13.808 | 0 |
-| Fetch assembly copy | 0 | 0 | 0 | 0 | 0 | 0 |
-| EC encode | 9.502 | 6.553 | 19.803 | 17.530 | 38.411 | 35.658 |
-| Write-completion wait | 2.863 | 2.542 | 9.809 | 12.517 | 260.446 | 242.566 |
+| Flow step             | Stream 1 | Direct 1 | Stream 4 | Direct 4 | Stream 32 | Direct 32 |
+| --------------------- | -------: | -------: | -------: | -------: | --------: | --------: |
+| Source/read copy      |   20.247 |        0 |    3.737 |        0 |     8.704 |         0 |
+| Fetch assembly copy   |        0 |        0 |        0 |        0 |         0 |         0 |
+| EC encode             |   20.175 |   13.164 |   15.213 |   12.357 |    22.045 |    20.222 |
+| Write-completion wait |   53.990 |   54.238 |   11.741 |   10.118 |   122.786 |   120.972 |
 
 All values are milliseconds per object, aggregated across concurrent writers;
 stages overlap and must not be summed into latency. Every object has two data
@@ -478,7 +481,27 @@ times frontend bandwidth. The multiplex-corrected host read/write counters are r
 but is not a complete byte ledger and can be below RPC bandwidth because of its
 sampling scope and interval.
 
-### 11.2 Bottleneck Conclusion
+### 11.2 AMD Ryzen 9 5950X Baseline
+
+Reference run: _pending._
+
+| Mode           | Writers | Logical MiB/s | Physical MiB/s | p50 / p99 ms | DRAM read avg | DRAM write avg | DRAM total avg |
+| -------------- | ------: | ------------: | -------------: | -----------: | ------------: | -------------: | -------------: |
+| Stream         |       1 |               |                |              |               |                |                |
+| Direct buffers |       1 |               |                |              |               |                |                |
+| Stream         |       4 |               |                |              |               |                |                |
+| Direct buffers |       4 |               |                |              |               |                |                |
+| Stream         |      32 |               |                |              |               |                |                |
+| Direct buffers |      32 |               |                |              |               |                |                |
+
+| Flow step             | Stream 1 | Direct 1 | Stream 4 | Direct 4 | Stream 32 | Direct 32 |
+| --------------------- | -------: | -------: | -------: | -------: | --------: | --------: |
+| Source/read copy      |          |          |          |          |           |           |
+| Fetch assembly copy   |          |          |          |          |           |           |
+| EC encode             |          |          |          |          |           |           |
+| Write-completion wait |          |          |          |          |           |           |
+
+### 11.3 Bottleneck Conclusion
 
 Independent blocks are already parallel: each of the eight data writes is
 spawned as soon as its block enters `EcStripWriter`, then four parity writes are
@@ -487,11 +510,11 @@ strip, permits `parity_depth` strip groups in flight, and joins them before
 seal. There is no serial per-block completion wait.
 
 Chunk preparation is also off the measured hot path. The remaining single-write
-gap is input ownership plus cache pressure: direct buffers reach 1,655 MiB/s,
-1.91 times the stream result, and spend no time in source reads. Four direct
-writers peak at 2,044 logical MiB/s. At 32 writers throughput regresses to 1,822
-MiB/s while completion wait rises to 243 ms/object and DiskIO RPC latency to
-129 ms/write. The loopback RPC/DiskIO queue is saturated well before 32 writers;
-more concurrency increases latency rather than bandwidth. Further work should
-profile and reduce RPC/kernel transport cost and EC/cache contention. Increasing
-prefetch or adding wrapper layers will not address the measured bottleneck.
+gap is input ownership plus cache pressure: direct buffers reach 229.1 MiB/s,
+1.41 times the stream result, and spend no time in source reads. Four direct
+writers peak at 2,672.1 logical MiB/s. At 32 writers throughput rises to 3,547.9
+MiB/s but completion wait rises to 121 ms/object. The loopback RPC/DiskIO queue
+is saturated well before 32 writers; more concurrency increases latency rather
+than bandwidth. Further work should profile and reduce RPC/kernel transport cost
+and EC/cache contention. Increasing prefetch or adding wrapper layers will not
+address the measured bottleneck.

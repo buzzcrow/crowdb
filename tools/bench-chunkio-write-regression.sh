@@ -8,18 +8,18 @@
 #   CHUNKIO_BENCH_TIMEOUT     seconds allowed per case (default: 120)
 #   CHUNKIO_PREFETCH_CHUNKS   chunks warmed before timed load (default: 10)
 #
-# Reference run (2026-09-07): Intel CPU 7960, 4 memory channels, Linux 6.11,
-# three-node loopback deployment, three NullDisk instances, EC 8+4,
-# 1 MiB blocks, 1 GiB chunks, and 16 MiB objects.
+# Reference run (2026-09-08): Intel Core i9-7960X, 4 memory channels,
+# Linux 6.11, three-node loopback deployment, three NullDisk instances,
+# EC 8+4, 1 MiB blocks, 1 GiB chunks, and 16 MiB objects.
 # (AMD Ryzen 9 5950X runs use 2 memory channels; results differ.)
 #
-# Case        Obj    C  logical MiB/s  physical MiB/s  p50 us  p99 us  errors
-# stream_1t   200    1          159.0           238.4   101586  114235       0
-# direct_1t   272    1          216.4           324.6    71393   86673       0
-# stream_4t  2412    4         1921.5          2882.3    32871   52572       0
-# direct_4t  3270    4         2604.7          3907.1    23404   40939       0
-# stream_32t 4192   32         3334.7          5002.1   146270  301247       0
-# direct_32t 4454   32         3539.9          5309.8   138605  259200       0
+# Case        Obj    C  logical  physical  p50 us  p99 us  dram_read  dram_write  dram_total  errors
+# stream_1t   204    1   162.5    243.8     99191  111225    2496.6     1393.0      3889.6       0
+# direct_1t   288    1   229.1    343.7     69191   85641    1996.1     1228.7      3224.8       0
+# stream_4t  2467    4  1965.6   2948.5     31917   51806   12699.7    10943.0     23642.7       0
+# direct_4t  3352    4  2672.1   4008.1     22811   40000   11799.6    12051.5     23851.1       0
+# stream_32t 4089   32  3249.3   4873.9    151716  267992   19562.5    15603.7     35166.2       0
+# direct_32t 4495   32  3547.9   5321.9    138654  261388   14816.5    12766.6     27583.1       0
 #
 # Host memory-counter samples are retained as diagnostic data, not hard
 # thresholds. The sentinel gates accounting, errors, stop reason, and metrics.

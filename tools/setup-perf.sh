@@ -67,7 +67,15 @@ if [[ -n "$DIMM_RAW" ]]; then
       if (size == "") return
       printf "    %-28s %-10s %-10s %-12s\n", loc, size, type, speed
       dimms++
-      ch = loc; sub(/-?DIMM.*/, "", ch)
+      # Derive channel key from the DIMM locator. Common formats:
+      #   "DIMM_A1"  -> channel "A"  (Skylake-X: letter after DIMM_ is the channel)
+      #   "ChannelA-DIMM1" -> "ChannelA" (some server boards)
+      # Strip a "DIMM_" prefix and trailing digits to isolate the channel
+      # letter; fall back to the full locator if no DIMM_ prefix is present.
+      ch = loc
+      if (ch ~ /^DIMM_/) { sub(/^DIMM_/, "", ch); sub(/[0-9].*$/, "", ch) }
+      else              { sub(/-?DIMM.*/, "", ch) }
+      if (ch == "") ch = loc
       if (!(ch in seen)) { seen[ch]=1; channels++ }
       if (mt_s == "" && speed ~ /[0-9]+/) {
         mt_s = speed; sub(/[^0-9].*/, "", mt_s)
@@ -157,7 +165,10 @@ if [[ "$VENDOR" == "AuthenticAMD" ]]; then
   ok "amd_df device present"
 
   echo "[4/5] AMD: nps1_die_to_dram metric"
-  perf list 2>/dev/null | grep -q nps1_die_to_dram \
+  # `perf list | grep -q` under pipefail returns 141 (SIGPIPE) because grep -q
+  # exits after the first match while perf list is still writing thousands of
+  # lines. Use a herestring to avoid the pipe entirely.
+  grep -q nps1_die_to_dram < <(perf list 2>/dev/null) \
     || fail "nps1_die_to_dram metric not listed by perf"
   ok "metric listed"
 
@@ -192,9 +203,12 @@ elif [[ "$VENDOR" == "GenuineIntel" ]]; then
   ok "uncore_imc devices present (${#IMC_DEVICES[@]}): ${IMC_DEVICES[*]}"
 
   echo "[4/5] Intel: cas_count events"
-  perf list 2>/dev/null | grep -q 'uncore_imc/cas_count_read' \
+  # `perf list | grep -q` under pipefail returns 141 (SIGPIPE) because grep -q
+  # exits after the first match while perf list is still writing thousands of
+  # lines. Use a herestring to avoid the pipe entirely.
+  grep -q 'uncore_imc/cas_count_read' < <(perf list 2>/dev/null) \
     || fail "uncore_imc/cas_count_read not listed by perf"
-  perf list 2>/dev/null | grep -q 'uncore_imc/cas_count_write' \
+  grep -q 'uncore_imc/cas_count_write' < <(perf list 2>/dev/null) \
     || fail "uncore_imc/cas_count_write not listed by perf"
   ok "cas_count_read + cas_count_write listed"
 

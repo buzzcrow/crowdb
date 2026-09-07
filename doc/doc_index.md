@@ -30,7 +30,7 @@ when a task touches a topic in its row.
 
 ## Working & Flow-Analysis Docs
 
-Plan files live under `doc/working/`; flow analyses live under `doc/design/kv/`.
+Plan files live under `doc/working/`; flow analyses live under `doc/design/{kv,chunkio,rpc}/`.
 
 | Doc | When to read |
 | --- | --- |
@@ -38,6 +38,7 @@ Plan files live under `doc/working/`; flow analyses live under `doc/design/kv/`.
 | `doc/design/kv/kv-read-flow-analysis.md` | KV point-read flow trace, benchmarks, open issues. |
 | `doc/design/kv/kv-scan-flow-analysis.md` | KV scan flow trace, benchmarks, open issues. |
 | `doc/design/kv/kv-write-flow-analysis.md` | KV write path trace and optimization opportunities. |
+| `doc/design/chunkio/chunkio-write-flow-analysis.md` | Chunk IO large-write flow trace, benchmark results, and bottleneck analysis. |
 | `doc/design/rpc/rpc-flow-analysis.md` | RPC transport flow trace, benchmarks, and performance history. |
 
 ## Dev Environment (`doc/dev/`)
