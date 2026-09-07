@@ -140,8 +140,9 @@ disk-group.
 ### 3.3 No CAS needed; exclusive ownership
 
 Each disk-group is owned by exactly one diskdb instance at a time (map
-in group 0). A zone in a disk-group therefore has a single writer, so no
-KV-level CAS is required. A blind `Put` of the zone record is enough.
+in group 0). DiskDB persists only blind, commutative record mutations, so no
+KV-level CAS is required. Allocation incarnations and immutable free facts
+make delayed retries safe without ordering the parallel KV write path.
 In-memory concurrency within one instance is handled by **per-bit CAS**
 on the usage bitmap (`compare_exchange` on 64-bit words), not a
 zone-level lock. Multiple threads can allocate from the same zone
@@ -153,14 +154,15 @@ state machine.
 
 For each allocate or free, diskdb **cannot** update the full zone
 bitmap in KV, as that would be a large write for the paxos group on every
-block. Instead, each allocate writes a small **`BusyBlockValue`** at
-the `BusyBlockKey`, and each free writes a **`FreeBlockValue`** at the
-`FreeBlockKey` (and deletes the `BusyBlockKey` in the same
-`batch_write`). The bitmap is **derived** from the records, never
+block. Instead, each allocate writes a small **`BusyBlockValue`** carrying a
+monotonic `allocation_ts` at the `BusyBlockKey`. Each free writes an immutable
+**`FreeBlockValue`** at an incarnation-qualified `FreeBlockKey`; it does not
+delete the busy record. The bitmap is **derived** from the records, never
 written directly as a full bitmap on the hot path. The free path is
 **persist-only**: the bitmap is not touched on free (the bit stays set,
 `used_count` is not decremented); compaction is the sole mechanism for
-clearing freed bits. This makes the bitmap a conservative over-estimate
+clearing freed bits after matching the free fact to the current busy
+incarnation. This makes the bitmap a conservative over-estimate
 that never shows freed space as available until compaction reconciles
 it from records.
 
@@ -709,6 +711,31 @@ lib/crowdb-diskdb-client    (client library for callers: allocate/free/query; cr
   extension traits are re-exported from `crowdb_protocol`; internal types
   (metas, key layout, `AllocatedRange`, `ActiveZoneContext`, bitmap)
   are Rust structs.
+
+  Liveness and RPC use pure index modules with private implementation
+  children:
+
+  ```text
+  liveness/keepalive.rs
+  └── keepalive/
+      ├── scheduler.rs       KeepAlive facade, tick, and BackgroundTask
+      ├── heartbeat.rs       service-registry heartbeat publication
+      ├── observation.rs     group-0 ownership, bind, and disk observation
+      ├── reconciliation.rs  runtime ownership and disk reconciliation
+      └── loading.rs         generation-fenced asynchronous zone loading
+
+  service/diskdb_rpc_service.rs
+  └── diskdb_rpc_service/
+      ├── service.rs         DiskdbRpcService state and handler registration
+      ├── mutations.rs       allocate, commit, and free handlers
+      ├── queries.rs         capacity and inventory query handlers
+      ├── admin.rs           recovery, compaction, and scanner handlers
+      └── wire.rs            FlatBuffer parsing and response construction
+  ```
+
+  `KeepAlive::tick` is the liveness orchestrator and preserves the order
+  heartbeat → observation → reconciliation. `DiskdbRpcService` remains the
+  public registration facade; all mutations pass through `mutation_gate`.
 - **`lib/crowdb-diskdb-client`** — client library for easy access to the server
   (allocate/free/query), mirroring `crowdb-kv-client`'s retry +
   topology-cache pattern. crowdb-rpc transport; flatbuffers framing.
@@ -745,6 +772,9 @@ All public and inter-module APIs are `async`. Runtime is `tokio`
   [`design-crowdb-diskdb-zone-management.md`](design-crowdb-diskdb-zone-management.md) §8.
 - Disk-level active zone set uses RCU publish (`Arc` swap) for
   lock-free reads; rotation takes a brief write lock.
+- Disk-group allocation context retains its read lock. Allocation and usage
+  clone one `Arc` while holding it, and configuration replacement is rare;
+  `ArcSwap` publication is reserved for evidence of contention here.
 - **Free-side lookup structures** — disk-id → disk hash map and
   zone-index → zone vec for O(1) lookups on the free path. Details in
   [`design-crowdb-diskdb-zone-management.md`](design-crowdb-diskdb-zone-management.md) §8.
@@ -787,8 +817,8 @@ hardcoded tunables in business logic). Defaults:
 - **Compaction** — snapshot compaction threshold (record count or
   time), compaction cadence (periodic interval for strategy 3)
 - **Disk** — block / unit size (default 1 MB), zone size
-- **Free validation** — `validate_owner_on_free` (default false — no
-  KV read on free; enable for strict ownership validation)
+- **Free validation** — no read on the free path; compaction validates the
+  immutable free fact against the current busy incarnation
 - **Scanner** — `scan_interval_secs` (600), `ghost.detect` (true),
   `ghost.auto_correct` (false — manual review first; enable for
   self-healing), `integrity.verify` (true),

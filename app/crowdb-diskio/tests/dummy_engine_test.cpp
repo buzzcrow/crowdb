@@ -4,8 +4,8 @@
 // NullDisk + MemDisk + DummyDiskEngine tests: drop-write, pattern read,
 // store-and-read-back, fault injection (error rate, latency).
 //
-// All tests use BlockingEngine as the inner engine (no real disk I/O —
-// memfd backing). The full blocking pwrite/pread path executes.
+// All tests use BlockingEngine as the inner engine (no real disk I/O).
+// The full blocking pwrite/pread path executes.
 #include "disk/disk_properties.h"
 #include "disk/mem_disk.h"
 #include "disk/null_disk.h"
@@ -14,6 +14,7 @@
 #include "engine/dummy/dummy_engine.h"
 
 #include <gtest/gtest.h>
+#include <sys/stat.h>
 
 #include <atomic>
 #include <chrono>
@@ -50,6 +51,15 @@ template <typename Pred> bool wait_for(Pred pred, int max_iters = 200, int sleep
 } // namespace
 
 // ── NullDisk tests ──────────────────────────────────────────────────
+
+TEST(NullDisk, BackingDoesNotUseTmpfs)
+{
+    auto        engine = make_engine();
+    auto        disk   = std::make_shared<crowdb::diskio::NullDisk>(crowdb::diskio::DiskId{1, 1}, engine, make_zones());
+    struct stat status{};
+    ASSERT_EQ(::fstat(disk->fd(), &status), 0);
+    EXPECT_TRUE(S_ISCHR(status.st_mode));
+}
 
 TEST(NullDisk, WriteReturnsSuccess)
 {
@@ -99,8 +109,8 @@ TEST(NullDisk, DifferentDiskIdsProduceDifferentContent)
 
 TEST(NullDisk, FsyncIsNoOp)
 {
-    auto             engine = make_engine();
-    auto             disk = std::make_shared<crowdb::diskio::NullDisk>(crowdb::diskio::DiskId{5, 5}, engine, make_zones());
+    auto engine = make_engine();
+    auto disk   = std::make_shared<crowdb::diskio::NullDisk>(crowdb::diskio::DiskId{5, 5}, engine, make_zones());
     std::atomic<int> res{-1};
     disk->engine()->submit_fsync(disk.get(), [&](int r) { res.store(r, std::memory_order_relaxed); });
     wait_for([&] { return res.load() != -1; });
@@ -134,8 +144,8 @@ TEST(MemDisk, WriteAndReadBack)
 
 TEST(MemDisk, FsyncSucceeds)
 {
-    auto             engine = make_engine();
-    auto             disk   = std::make_shared<crowdb::diskio::MemDisk>(crowdb::diskio::DiskId{7, 7}, engine, make_zones());
+    auto engine = make_engine();
+    auto disk   = std::make_shared<crowdb::diskio::MemDisk>(crowdb::diskio::DiskId{7, 7}, engine, make_zones());
     std::atomic<int> res{-1};
     disk->engine()->submit_fsync(disk.get(), [&](int r) { res.store(r, std::memory_order_relaxed); });
     wait_for([&] { return res.load() != -1; });
@@ -146,7 +156,7 @@ TEST(MemDisk, FsyncSucceeds)
 
 TEST(DummyDisk, ErrorRateOneAllErrors)
 {
-    auto                         engine = make_engine();
+    auto                           engine = make_engine();
     crowdb::diskio::DiskProperties props{0, 0, 1.0};
     auto disk = std::make_shared<crowdb::diskio::NullDisk>(crowdb::diskio::DiskId{8, 8}, engine, make_zones(), props);
     std::vector<uint8_t> data(4096, 0xAB);
@@ -159,7 +169,7 @@ TEST(DummyDisk, ErrorRateOneAllErrors)
 
 TEST(DummyDisk, ErrorRateZeroNoErrors)
 {
-    auto                         engine = make_engine();
+    auto                           engine = make_engine();
     crowdb::diskio::DiskProperties props{0, 0, 0.0};
     auto disk = std::make_shared<crowdb::diskio::NullDisk>(crowdb::diskio::DiskId{9, 9}, engine, make_zones(), props);
     std::vector<uint8_t> data(4096, 0xAB);
@@ -172,7 +182,7 @@ TEST(DummyDisk, ErrorRateZeroNoErrors)
 
 TEST(DummyDisk, LatencyInjectionDelaysCompletion)
 {
-    auto                         engine = make_engine();
+    auto                           engine = make_engine();
     crowdb::diskio::DiskProperties props{50, 50, 0.0};
     auto disk = std::make_shared<crowdb::diskio::NullDisk>(crowdb::diskio::DiskId{10, 10}, engine, make_zones(), props);
     std::vector<uint8_t> data(4096, 0xAB);
@@ -188,7 +198,7 @@ TEST(DummyDisk, LatencyInjectionDelaysCompletion)
 
 TEST(DummyDisk, ErrorRateHalfApproximatelyHalfErrors)
 {
-    auto                         engine = make_engine();
+    auto                           engine = make_engine();
     crowdb::diskio::DiskProperties props{0, 0, 0.5};
     auto disk = std::make_shared<crowdb::diskio::NullDisk>(crowdb::diskio::DiskId{11, 11}, engine, make_zones(), props);
     constexpr int    kOps = 1000;

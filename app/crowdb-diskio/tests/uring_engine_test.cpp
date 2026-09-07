@@ -10,6 +10,7 @@
 #ifdef CROWDB_HAVE_LIBURING
 
 #    include "disk/disk.h"
+#    include "disk/null_disk.h"
 #    include "disk/types.h"
 
 #    include <fcntl.h>
@@ -19,6 +20,7 @@
 #    include <chrono>
 #    include <cstdio>
 #    include <filesystem>
+#    include <memory>
 #    include <string>
 #    include <thread>
 #    include <vector>
@@ -111,7 +113,7 @@ class TestDisk : public crowdb::diskio::Disk
 
   private:
     crowdb::diskio::DiskId    id_;
-    int                     fd_;
+    int                       fd_;
     crowdb::diskio::IoEngine *engine_;
 };
 } // namespace
@@ -122,7 +124,7 @@ TEST(UringEngine, WriteReadRoundTrip)
     ASSERT_EQ(::truncate(path.c_str(), 1 << 16), 0);
 
     crowdb::diskio::UringEngine engine(256);
-    TestDisk                  disk({1, 1}, path, &engine);
+    TestDisk                    disk({1, 1}, path, &engine);
     engine.uring().register_fd(disk.fd());
 
     std::vector<uint8_t> in(4096);
@@ -157,7 +159,7 @@ TEST(UringEngine, FsyncAfterWrite)
     ASSERT_EQ(::truncate(path.c_str(), 4096), 0);
 
     crowdb::diskio::UringEngine engine(64);
-    TestDisk                  disk({2, 2}, path, &engine);
+    TestDisk                    disk({2, 2}, path, &engine);
     engine.uring().register_fd(disk.fd());
 
     std::vector<uint8_t> in(4096, 0xAB);
@@ -184,7 +186,7 @@ TEST(UringEngine, MultipleConcurrentWritesAllComplete)
     ASSERT_EQ(::truncate(path.c_str(), 100 * 4096), 0);
 
     crowdb::diskio::UringEngine engine(256);
-    TestDisk                  disk({3, 3}, path, &engine);
+    TestDisk                    disk({3, 3}, path, &engine);
     engine.uring().register_fd(disk.fd());
 
     constexpr int        kOps = 50;
@@ -215,7 +217,7 @@ TEST(UringEngine, InFlightCountViaUringEngine)
     ASSERT_EQ(::truncate(path.c_str(), 1 << 16), 0);
 
     crowdb::diskio::UringEngine engine(256);
-    TestDisk                  disk({4, 4}, path, &engine);
+    TestDisk                    disk({4, 4}, path, &engine);
     engine.uring().register_fd(disk.fd());
 
     EXPECT_EQ(engine.uring().in_flight_count(disk.fd()), 0u);
@@ -235,7 +237,7 @@ TEST(UringEngine, CancelFdViaUringEngine)
     ASSERT_EQ(::truncate(path.c_str(), 1 << 16), 0);
 
     crowdb::diskio::UringEngine engine(64);
-    TestDisk                  disk({5, 5}, path, &engine);
+    TestDisk                    disk({5, 5}, path, &engine);
     engine.uring().register_fd(disk.fd());
 
     // Submit a write, then cancel via cancel_fd.
@@ -259,10 +261,34 @@ TEST(UringEngine, CancelFdViaUringEngine)
     std::remove(path.c_str());
 }
 
+TEST(UringEngine, NullDiskUsesDiscardFd)
+{
+    auto                              engine = std::make_shared<crowdb::diskio::UringEngine>(64);
+    std::vector<crowdb::diskio::Zone> zones{
+        {0, 0, 1 << 24}
+    };
+    auto disk = std::make_shared<crowdb::diskio::NullDisk>(crowdb::diskio::DiskId{6, 6}, engine, std::move(zones));
+    engine->uring().register_fd(disk->fd());
+
+    std::vector<uint8_t> data(4096, 0xAB);
+    std::atomic<int>     result{-1};
+    disk->engine()->submit_write(disk.get(), 1LL << 40, data.data(), data.size(),
+                                 [&](int res) { result.store(res, std::memory_order_release); });
+    ASSERT_TRUE(wait_for([&] { return result.load(std::memory_order_acquire) != -1; }));
+    EXPECT_EQ(result.load(), static_cast<int>(data.size()));
+
+    result.store(-1, std::memory_order_release);
+    disk->engine()->submit_fsync(disk.get(), [&](int res) { result.store(res, std::memory_order_release); });
+    ASSERT_TRUE(wait_for([&] { return result.load(std::memory_order_acquire) != -1; }));
+    EXPECT_EQ(result.load(), 0);
+
+    engine->uring().unregister_fd(disk->fd());
+}
+
 TEST(UringEngine, NullDiskReturnsError)
 {
     crowdb::diskio::UringEngine engine(64);
-    std::atomic<int>          got_res{0};
+    std::atomic<int>            got_res{0};
     engine.submit_write(nullptr, 0, nullptr, 0, [&](int res) { got_res.store(res); });
     EXPECT_EQ(got_res.load(), -EBADF);
 }

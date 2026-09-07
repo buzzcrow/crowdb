@@ -110,7 +110,6 @@ async fn main() {
     info!("  wal_backend         {}", args.wal_backend);
     info!("  max_inflight        {}", args.max_inflight);
     info!("  coalesce_max_keys   {:?}", args.coalesce_max_keys);
-    info!("  coalesce_drain_threshold {:?}", args.coalesce_drain_threshold);
     info!("  peer_pool_size      {}", args.peer_pool_size);
     info!("  event_write         {}", args.event_write);
     info!("  enable_nagle        {}", args.enable_nagle);
@@ -144,9 +143,6 @@ async fn main() {
     if let Some(max_keys) = args.coalesce_max_keys {
         config.paxos.coalesce_max_keys = max_keys;
     }
-    config.paxos.coalesce_drain_threshold = args
-        .coalesce_drain_threshold
-        .unwrap_or(config.paxos.max_inflight_proposals / 4);
     config.server.peer_pool_size = args.peer_pool_size;
     config.server.enable_nagle = args.enable_nagle;
     config.server.quickack = args.quickack;
@@ -481,7 +477,7 @@ async fn create_and_start_stores(
                 .unwrap_or(0)
         };
         let addr: SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
-        debug!(store_id, bind_addr = %addr, "creating PxKvStore");
+        debug!(s = store_id, bind_addr = %addr, "creating PxKvStore");
         let mut store = PxKvStore::new(store_id, addr);
         store.rpc_workers = registry.rpc_workers;
         if let Some(ref mr) = registry.metrics_registry {
@@ -516,7 +512,7 @@ async fn create_and_start_stores(
             {
                 Ok(group) => group,
                 Err(e) => {
-                    tracing::error!(store_id, group_id, error = %e, "failed to create WAL-backed group");
+                    tracing::error!(s = store_id, g = group_id, error = %e, "failed to create WAL-backed group");
                     continue;
                 }
             };
@@ -524,7 +520,7 @@ async fn create_and_start_stores(
         }
 
         if let Err(e) = store.start().await {
-            tracing::error!(store_id, port, error = %e, "failed to start store, skipping");
+            tracing::error!(s = store_id, port, error = %e, "failed to start store, skipping");
             continue;
         }
 
@@ -572,7 +568,7 @@ async fn graceful_shutdown(registry: Arc<KvStoreRegistry>) {
         if !report.is_clean() {
             total_errors += report.errors.len();
             for err in &report.errors {
-                tracing::error!(store_id, "{err}");
+                tracing::error!(s = store_id, "{err}");
             }
         }
     }

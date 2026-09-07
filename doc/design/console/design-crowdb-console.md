@@ -61,6 +61,17 @@ design is detailed in the sub-design `design-crowdb-console-ui.md`.
 - Authentication, authorization, multi-tenancy, audit logging.
 - Persisting console state beyond local config files.
 
+Local deployments use one stable directory per server process:
+`rack<id>/node<id>/<service>-<server-id>/`. Each server owns its `bin/`,
+`conf/`, and `log/` directories. KV servers additionally keep `waldata/`
+and `ctdata/` directly under the server directory. Process IDs belong in
+log filenames and persisted runtime state, not directory names, so a restart
+continues to use the same server directory.
+
+The default simulated topology is one rack containing all requested nodes.
+Benchmarks that need distinct failure domains create additional racks
+explicitly; full-stack deployment does not silently move nodes between racks.
+
 ## 2. High-Level Architecture
 
 `crowdb-console` is **one project** split across the `lib/` and `app/`
@@ -268,6 +279,13 @@ analog: CockroachDB system ranges).
     as "nothing assigned yet" and retries.
   - Console restart: two-way fallback. Group 0 missing → TOML mode;
     group 0 exists → group 0 authoritative.
+
+The TOML file remains available for the whole local-deployment lifecycle.
+Group-0 initialization does not make it disposable: subsequent CLI processes
+use it to find endpoints and tracked process IDs for status, clean, restart,
+and destroy operations. Regression runs keep `console.toml` at the retained
+run root after teardown as diagnostic state; it is not stored inside a single
+command's invocation directory.
 
 - **Group-0 sysdata schema** (text-path keys, JSON values):
   - `/hw/rack/<rack_id>` — rack metadata (`RackValue`)
@@ -626,6 +644,19 @@ Services (`crowdb-kv-server`, `crowdb-diskdb`, `crowdb-chunkdb`,
 are elected, not assigned; as long as group-0 replicas survive, they
 elect a leader. Topology (racks/nodes/disk-groups/disks) is preserved.
 
+For repeated full-stack benchmarks, `cluster clean --restart-services`
+extends the boundary after the KV wipe. The console stops all locally deployed
+DiskDB, DiskIO, and ChunkDB processes, then starts DiskDB and DiskIO before
+ChunkDB with the same identities, endpoints, working directories, and launch
+arguments. It waits for health, service registration, and ChunkDB range
+bindings before returning. KV processes remain running so group 0 and hardware
+topology survive. Suites with multiple data groups clean every group and request
+the service restart on the final clean.
+
+Local auxiliary launch commands are retained in the run-root `console.toml`.
+They are diagnostic lifecycle state, are removed with their server entry, and
+are cleared by `cluster destroy`.
+
 ### 7.5 `kv server delete` — graceful + require-empty
 
 All operations use graceful Paxos reconfiguration — no force-kill
@@ -683,11 +714,11 @@ deploy metadata:
   a second teardown on the same name exits 0 with "already torn down".
 
 The all-in-one `bench kv` verb is preserved as the quick one-shot path.
-The regression scripts
-(`tools/bench-kv-read-regression.sh`,
-`tools/bench-kv-scan-regression.sh`) use the lifecycle flow: deploy
-once → prepare once → run N sub-tests → teardown once, amortizing
-overhead.
+Regression scripts use the lifecycle flow: deploy once, prepare when needed,
+run compatible sub-tests with reset boundaries, then teardown once. Each
+sentinel accepts environment overrides for case selection and duration; KV
+read, write, and scan also accept a reduced keyspace. These controls provide a
+short structural smoke without changing the default regression matrix.
 
 `ClusterHandle` is a runtime artifact (JSON under `runtime/`), not a
 config extension. The `runtime/` directory is gitignored. The
@@ -702,6 +733,10 @@ config extension. The `runtime/` directory is gitignored. The
 - **Operation log** — a per-session file under `~/.lib/crowdb-kv/log/` records
   every outbound action (HTTP/crowdb-rpc/SSH) with enough detail to reproduce
   by copy-pasting the equivalent curl/crowdb-cli/ssh command.
+- Each CLI process writes beneath
+  `<log-root>/cli-<command-chain>-<timestamp>/`. The `cli-` namespace makes
+  command artifacts distinct from server directories and aggregate result
+  files.
 
 ## 9. Observability
 
@@ -711,6 +746,12 @@ config extension. The `runtime/` directory is gitignored. The
   broader observability work for `crowdb-kv-server` begins.
 - All console-issued operations attach a correlation id propagated as
   `x-crowdb-kv-corr-id` to `crowdb-kv-server` request headers.
+- Regression service metrics have a content contract: KV emits `rust`,
+  `cpp-rpc`, `cpp-tree`, and `misc`; DiskDB and ChunkDB emit `rust`,
+  `cpp-rpc`, and `misc`; DiskIO emits `cpp-rpc` and `misc`. A tracing or RPC
+  log may legitimately remain empty when its configured level observed no
+  events; metric validation therefore checks metric sections and counters
+  independently of auxiliary log size.
 
 ## 10. Open Questions
 

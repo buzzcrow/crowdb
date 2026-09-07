@@ -153,8 +153,8 @@ fn execute_reconcile(plan: &[ReconcileAction], registry: &KvStoreRegistry) {
                     store.add_group(new_group);
                     seeded += 1;
                     info!(
-                        store_id = action.store_id,
-                        group_id = action.group_id,
+                        s = action.store_id,
+                        g = action.group_id,
                         peer_count = action.seed_remotes.len(),
                         "reconcile: seeded remotes from group 0 (node-config.json was empty)"
                     );
@@ -164,9 +164,9 @@ fn execute_reconcile(plan: &[ReconcileAction], registry: &KvStoreRegistry) {
         for (rid, ep) in &action.mismatches {
             mismatches += 1;
             warn!(
-                store_id = action.store_id,
-                group_id = action.group_id,
-                replica_id = rid,
+                s = action.store_id,
+                g = action.group_id,
+                replica = rid,
                 endpoint = %ep,
                 "reconcile: group 0 has peer not wired locally"
             );
@@ -187,7 +187,7 @@ async fn scan_replica_records(
 ) -> Option<Vec<ReplicaRecord>> {
     let prefix = b"/kv/replica/";
     let resp = store0
-        .kv_scan(0, prefix, b"", b"", 0, 0, 0, false, false, 0, 0, 0)
+        .kv_scan(0, prefix, b"", b"", 0, 0, 0, false, false, 0, false, 0, 0, 0)
         .await;
     if !resp.ok {
         warn!(error = %resp.error, "reconcile: failed to scan /kv/replica/");

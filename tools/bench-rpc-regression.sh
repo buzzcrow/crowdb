@@ -90,10 +90,17 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-RESULTS_FILE="doc/working/bench-rpc-regression.tsv"
-DURATION=20
-VALUE_SIZE=128
-CONFIG_FILE="/tmp/bench-rpc-regression-$$.toml"
+RUN_STAMP=$(date +%Y%m%d-%H%M%S)
+LOG_ROOT="${RPC_BENCH_LOG_ROOT:-$(pwd)/bench-log/rpc-regression-$RUN_STAMP}"
+RESULTS_FILE="${RPC_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
+REGRESSION_LOG_ROOT="$LOG_ROOT"
+source tools/bench-regression-common.sh
+export CROWDB_LOG_ROOT="$LOG_ROOT"
+regression_init
+DURATION="${RPC_BENCH_DURATION:-20}"
+VALUE_SIZE="${RPC_BENCH_VALUE_SIZE:-128}"
+CASES="${RPC_BENCH_CASES:-}"
+CONFIG_FILE="$REGRESSION_CONFIG"
 
 # Deploy a fresh fb-server via `cluster local-deploy -t rpc`.
 # Echoes the allocated port on stdout.
@@ -103,7 +110,6 @@ start_server() {
     if [ "$nagle" = "1" ]; then
         nagle_arg="--enable-nagle"
     fi
-    rm -f "$CONFIG_FILE"
     echo "    [server] cluster local-deploy -t rpc --io-engines=$io_engines --io-workers=$io_workers $nagle_arg" >&2
     local output
     output=$(pixi run -- cargo run --release -p crowdb-cli -- --config "$CONFIG_FILE" \
@@ -130,6 +136,9 @@ stop_server() {
 
 run_bench() {
     local loaders="$1" conn="$2" label="$3" io_engines="${4:-1}" wkr="${5:-1}" mode="${6:-coroutine}" nagle="${7:-0}"
+    if [ -n "$CASES" ] && [[ " $CASES " != *" $label "* ]]; then
+        return
+    fi
     echo ">>> $label (io_engines=$io_engines, io_workers=$wkr, mode=$mode, nagle=$nagle) ..."
 
     # Start fb server with matching config.
@@ -181,7 +190,7 @@ run_bench() {
 }
 
 # Cleanup on exit — stop server if still running.
-trap 'stop_server; rm -f "$CONFIG_FILE"' EXIT
+trap 'stop_server' EXIT
 
 echo -e "label\twkr\tops_s\tavg_us\tp50_us\tp99_us\tp999_us\tnagle\terrors" > "$RESULTS_FILE"
 

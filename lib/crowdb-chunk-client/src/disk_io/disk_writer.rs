@@ -20,20 +20,16 @@ use crowdb_rpc_ffi::{Connection, RpcServer};
 
 use crate::{IoError, Result};
 
-/// Block-IO seam. Write data blocks to disk + fsync.
+/// Block-IO seam. A successful write is durable for production BlockDisk.
 #[async_trait]
 pub trait DiskWriter: Send + Sync {
     /// Write `data` to the disk/zone/offset described by `seg`.
     /// `unit_bytes` converts `seg.unit_offset` to a byte offset.
     async fn write(&self, seg: &Segment, unit_bytes: u64, data: Bytes) -> Result<()>;
-
-    /// Flush all pending writes on `disk_id` to durable storage.
-    async fn fsync(&self, disk_id: DiskId) -> Result<()>;
 }
 
 /// Production `DiskWriter` — wraps `DiskioClient` + `RpcServer` +
-/// `Connection`. Each `write`/`fsync` sends the RPC and awaits the
-/// response, checking the return code.
+/// `Connection`. Each durable `write` sends the RPC and awaits the response.
 pub struct DiskioBlockWriter {
     client: Arc<DiskioClient>,
     server: Arc<RpcServer>,
@@ -60,13 +56,13 @@ impl DiskWriter for DiskioBlockWriter {
         let zone_offset = seg.unit_offset * unit_bytes;
         let fut = self
             .client
-            .write(
+            .write_bytes(
                 &self.server,
                 &self.conn,
                 disk_id,
                 seg.zone_index,
                 zone_offset,
-                data.to_vec(),
+                data,
             )
             .map_err(|e| IoError::WriteFailed(e.to_string()))?;
         let code = DiskioClient::await_write_response(fut)
@@ -74,20 +70,6 @@ impl DiskWriter for DiskioBlockWriter {
             .map_err(|e| IoError::WriteFailed(e.to_string()))?;
         if code != DiskIoRetCode::Success {
             return Err(IoError::WriteFailed(format!("disk write returned {code:?}")));
-        }
-        Ok(())
-    }
-
-    async fn fsync(&self, disk_id: DiskId) -> Result<()> {
-        let fut = self
-            .client
-            .fsync(&self.server, &self.conn, disk_id)
-            .map_err(|e| IoError::WriteFailed(e.to_string()))?;
-        let code = DiskioClient::await_fsync_response(fut)
-            .await
-            .map_err(|e| IoError::WriteFailed(e.to_string()))?;
-        if code != DiskIoRetCode::Success {
-            return Err(IoError::WriteFailed(format!("disk fsync returned {code:?}")));
         }
         Ok(())
     }

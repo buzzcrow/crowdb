@@ -12,6 +12,7 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use std::{collections::HashMap, collections::HashSet};
 
 use dashmap::DashMap;
 use tracing::warn;
@@ -19,10 +20,10 @@ use tracing::warn;
 use crowdb_kv_client::ServiceRegistryClient;
 use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::{
-    AllocateBlocksRequest, AllocateResponse, CompactZoneRequest, CompactZoneResponse, FreeBlocksRequest,
-    FreeResponse, GetDiskGroupInfoResponse, GetDiskInfoResponse, GetScanStatusResponse,
-    QueryCapacityStatsRequest, QueryCapacityStatsResponse, RebuildZoneBitmapResponse, RecalcDiskUsageRequest,
-    RecalcDiskUsageResponse, TriggerScanResponse,
+    AllocateBlocksRequest, AllocateResponse, CommitBlocksRequest, CommitBlocksResponse, CompactZoneRequest,
+    CompactZoneResponse, FreeBlocksRequest, FreeResponse, GetDiskGroupInfoResponse, GetDiskInfoResponse,
+    GetScanStatusResponse, QueryCapacityStatsRequest, QueryCapacityStatsResponse, RebuildZoneBitmapResponse,
+    RecalcDiskUsageRequest, RecalcDiskUsageResponse, TriggerScanResponse,
 };
 use crowdb_protocol::DiskGroupId;
 
@@ -89,16 +90,32 @@ impl DiskdbClient {
             .read_all_diskdb_instances()
             .await
             .map_err(|e| DiskdbClientError::Unreachable(format!("read_all_diskdb_instances: {e}")))?;
+        let mut observed = HashMap::new();
         for (_id, value) in instances {
             if let Some(extra) = &value.extra {
                 if let Some(diskdb) = &extra.diskdb {
                     for &dg_id in &diskdb.owned_dg_ids {
-                        self.endpoint_cache.insert(dg_id, value.rpc_endpoint.clone());
+                        observed.insert(dg_id, value.rpc_endpoint.clone());
                     }
                 }
             }
         }
+        let observed_ids: HashSet<_> = observed.keys().copied().collect();
+        self.endpoint_cache
+            .retain(|dg_id, _| observed_ids.contains(dg_id));
+        for (dg_id, endpoint) in observed {
+            self.endpoint_cache.insert(dg_id, endpoint);
+        }
+        self.disk_to_dg.retain(|_, dg_id| observed_ids.contains(dg_id));
         Ok(())
+    }
+
+    /// Return the currently discovered disk-groups in stable order.
+    #[must_use]
+    pub fn disk_group_ids(&self) -> Vec<DiskGroupId> {
+        let mut ids: Vec<_> = self.endpoint_cache.iter().map(|entry| *entry.key()).collect();
+        ids.sort_unstable();
+        ids
     }
 
     /// Look up the endpoint for `dg_id`, refreshing on cache miss.
@@ -122,11 +139,18 @@ impl DiskdbClient {
     /// Returns `DiskdbClientError::Rpc` for RPC failures, `Unreachable` for connection errors.
     pub async fn allocate_blocks(&self, req: AllocateBlocksRequest) -> Result<AllocateResponse> {
         let dg_id = req.disk_group_id;
-        self.with_rpc_retry(dg_id, |endpoint, rpc| {
-            let req = req.clone();
-            async move { rpc.allocate_blocks(&endpoint, &req).await }
-        })
-        .await
+        let response = self
+            .with_rpc_retry(dg_id, |endpoint, rpc| {
+                let req = req.clone();
+                async move { rpc.allocate_blocks(&endpoint, &req).await }
+            })
+            .await?;
+        for segment in &response.segments {
+            if let Some(disk_id) = segment.disk_id {
+                self.disk_to_dg.insert(disk_id, dg_id);
+            }
+        }
+        Ok(response)
     }
 
     /// Free blocks. The request carries `Segment`s (each with
@@ -169,6 +193,42 @@ impl DiskdbClient {
         Ok(FreeResponse {
             freed_count: total_freed,
         })
+    }
+
+    /// Commit tentative blocks. Requests spanning disk-groups are split
+    /// and routed to each current owner.
+    ///
+    /// # Errors
+    /// Returns `DiskdbClientError::Rpc` for RPC failures and
+    /// `Unreachable` for routing or connection errors.
+    pub async fn commit_blocks(&self, req: CommitBlocksRequest) -> Result<CommitBlocksResponse> {
+        if req.segments.is_empty() {
+            return Ok(CommitBlocksResponse { committed_count: 0 });
+        }
+        let mut groups: Vec<(DiskGroupId, Vec<_>)> = Vec::new();
+        for seg in &req.segments {
+            let disk_id = seg
+                .disk_id
+                .ok_or_else(|| DiskdbClientError::Rpc("segment.disk_id required".into()))?;
+            let dg_id = self.dg_for_disk(disk_id).await?;
+            if let Some((_, segs)) = groups.iter_mut().find(|(group_id, _)| *group_id == dg_id) {
+                segs.push(*seg);
+            } else {
+                groups.push((dg_id, vec![*seg]));
+            }
+        }
+        let mut committed_count = 0u32;
+        for (dg_id, segments) in groups {
+            let sub_req = CommitBlocksRequest { segments };
+            let response = self
+                .with_rpc_retry(dg_id, |endpoint, rpc| {
+                    let request = sub_req.clone();
+                    async move { rpc.commit_blocks(&endpoint, &request).await }
+                })
+                .await?;
+            committed_count += response.committed_count;
+        }
+        Ok(CommitBlocksResponse { committed_count })
     }
 
     /// Query capacity stats at the disk-group level (all owned groups
@@ -425,9 +485,14 @@ impl DiskdbClient {
             match op(endpoint, Arc::clone(&rpc)).await {
                 Ok(result) => return Ok(result),
                 Err(e) => {
-                    if matches!(e, DiskdbClientError::Unreachable(_)) {
+                    if matches!(
+                        e,
+                        DiskdbClientError::Unreachable(_) | DiskdbClientError::NotOwner(_)
+                    ) {
                         warn!(dg_id, attempt, error = %e, "rpc transient error, retrying");
                         last_err = Some(e);
+                        self.endpoint_cache.remove(&dg_id);
+                        self.disk_to_dg.retain(|_, cached_dg_id| *cached_dg_id != dg_id);
                         let _ = self.refresh_endpoints().await;
                         tokio::time::sleep(backoff).await;
                         backoff *= 2;
@@ -451,16 +516,4 @@ pub fn normalize_endpoint(endpoint: &str) -> String {
         format!("http://{endpoint}")
     };
     with_scheme.replacen("://0.0.0.0:", "://127.0.0.1:", 1)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn retry_config_default() {
-        let r = RetryConfig::default();
-        assert_eq!(r.max_retries, 3);
-        assert_eq!(r.initial_backoff, Duration::from_millis(50));
-    }
 }

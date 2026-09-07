@@ -33,9 +33,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-RESULTS_FILE="doc/working/bench-scan-regression.tsv"
-DURATION=20
-KEYSPACE=100000
+RUN_STAMP=$(date +%Y%m%d-%H%M%S)
+LOG_ROOT="${KV_SCAN_BENCH_LOG_ROOT:-$(pwd)/bench-log/kv-scan-regression-$RUN_STAMP}"
+RESULTS_FILE="${KV_SCAN_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
+REGRESSION_LOG_ROOT="$LOG_ROOT"
+source tools/bench-regression-common.sh
+export CROWDB_LOG_ROOT="$LOG_ROOT"
+regression_init
+DURATION="${KV_SCAN_BENCH_DURATION:-20}"
+KEYSPACE="${KV_SCAN_BENCH_KEYSPACE:-100000}"
+CASES="${KV_SCAN_BENCH_CASES:-}"
 DEPLOY_NAME="kv-scan-regression-$$"
 
 # Keys are k{id:020} (zero-padded to 20 digits after 'k'), per
@@ -49,6 +56,9 @@ pad_key() {
 
 run_subtest() {
     local label="$1" limit="$2" prefix="$3" start_after="$4" value_size="$5" read_mode="$6" min_slot="$7" threads="$8" connections="$9" mix="${10:-}"
+    if [ -n "$CASES" ] && [[ " $CASES " != *" $label "* ]]; then
+        return
+    fi
     local read_endpoint
     if [ "$read_mode" = "minslot" ]; then
         read_endpoint="any-replica"
@@ -139,8 +149,7 @@ echo -e "label\tlimit\tprefix\tstart_after\tvalue_size\tread_mode\tT:C\tscans_s\
 
 # Phase 1: deploy the cluster once via `cluster local-deploy`.
 echo "=== Deploying 3-node KV cluster via local-deploy ==="
-CONFIG_FILE="/tmp/bench-scan-regression-$$.toml"
-rm -f "$CONFIG_FILE"
+CONFIG_FILE="$REGRESSION_CONFIG"
 pixi run -- cargo run --release -p crowdb-cli -- --config "$CONFIG_FILE" \
     cluster local-deploy -n 3 -t kv \
     --kv-backend mem-block --wal-backend mem-block
@@ -189,7 +198,6 @@ run_subtest "minslot_32t"     1000   "" ""                        64    minslot 
 echo "=== Tearing down cluster ==="
 pixi run -- cargo run --release -p crowdb-cli -- --config "$CONFIG_FILE" \
     cluster destroy
-rm -f "$CONFIG_FILE"
 
 echo "=== DONE ==="
 echo "Results in $RESULTS_FILE"

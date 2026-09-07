@@ -4,12 +4,14 @@
 //! `DdbDiskGroup` — per-disk-group manager: owns the disks, the RCU
 //! allocatable-disk context, and the round-robin cursor.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
+use arc_swap::ArcSwap;
 use crowdb_protocol::common::{DiskId, HwStatus};
+use crowdb_protocol::diskdb::rpc::BusyBlockValue;
 use crowdb_protocol::DiskGroupId;
+use dashmap::DashMap;
 
 use crate::metrics::DiskMetrics;
 use crate::model::disk::{DdbDisk, DiskUsage};
@@ -18,30 +20,44 @@ use crate::model::zone::{AllocatedRange, DdbZone, ZoneUsage};
 /// RCU-published set of allocatable disks within the named
 /// disk-group, replaced via `Arc` swap on add/remove/status-change.
 pub type AllocateDiskContext = Vec<Arc<DdbDisk>>;
+pub type Bind = (u64, u64);
 
 /// Result of a successful allocation: `(disk, zone, range)`.
 pub type AllocClaim = (Arc<DdbDisk>, Arc<DdbZone>, AllocatedRange);
+
+// Keeps abandoned tentative allocations from growing the process without
+// bound. Eviction is safe: commit falls back to the durable KV record.
+const MAX_TENTATIVE_BLOCKS: usize = 262_144;
+
+/// Tentative allocation retained until the normal near-term commit arrives.
+#[derive(Clone)]
+pub struct TentativeBlock {
+    pub disk_id: DiskId,
+    pub zone_index: u32,
+    pub unit_offset: u64,
+    pub value: BusyBlockValue,
+}
 
 /// A disk-group manager — one per owned disk-group.
 pub struct DdbDiskGroup {
     pub disk_group_id: DiskGroupId,
     pub node_id: u64,
     pub rack_id: u64,
-    pub status: RwLock<HwStatus>,
+    status: AtomicI32,
     /// `(store_id, group_id)` for the bound paxos data group.
-    pub bind: RwLock<(u64, u64)>,
+    bind: ArcSwap<Bind>,
     pub disks: RwLock<Vec<Arc<DdbDisk>>>,
     /// O(1) disk-id → disk lookup for the free path.
-    disk_index: RwLock<HashMap<DiskId, Arc<DdbDisk>>>,
+    disk_index: DashMap<DiskId, Arc<DdbDisk>>,
     /// RCU context of allocatable disks within this disk-group.
-    allocating_disks: RwLock<Arc<AllocateDiskContext>>,
+    allocating_disks: ArcSwap<AllocateDiskContext>,
     /// Round-robin cursor over `allocating_disks`.
     pos_v_disk_ctx: AtomicU64,
-    /// Per-disk-group monotonic timestamp source for `FreeBlockValue.freed_ts`.
-    /// Advanced by `max(now(), last + 1)` on each free. Initialized to
-    /// `max(now(), max(freed_ts of all scanned free records) + 1)` after
-    /// recovery (§8 Monotonic timestamp source).
-    free_ts_source: AtomicU64,
+    /// Per-disk-group monotonic allocation-incarnation source.
+    allocation_ts_source: AtomicU64,
+    /// `allocation_ts -> tentative allocation`; recovery-safe KV reads are
+    /// used when an entry is absent after restart or eviction.
+    tentative_blocks: DashMap<u64, TentativeBlock>,
 }
 
 impl DdbDiskGroup {
@@ -52,22 +68,54 @@ impl DdbDiskGroup {
             rack_id,
             // A.1: start at Init — the sync loop applies the real
             // group-0 status on the first tick.
-            status: RwLock::new(HwStatus::Init),
-            bind: RwLock::new((0, 0)),
+            status: AtomicI32::new(HwStatus::Init as i32),
+            bind: ArcSwap::from_pointee((0, 0)),
             disks: RwLock::new(Vec::new()),
-            disk_index: RwLock::new(HashMap::new()),
-            allocating_disks: RwLock::new(Arc::new(Vec::new())),
+            disk_index: DashMap::new(),
+            allocating_disks: ArcSwap::from_pointee(Vec::new()),
             pos_v_disk_ctx: AtomicU64::new(0),
-            free_ts_source: AtomicU64::new(now_nanos()),
+            allocation_ts_source: AtomicU64::new(now_nanos()),
+            tentative_blocks: DashMap::new(),
         }
+    }
+
+    pub fn cache_tentative(&self, block: TentativeBlock) {
+        if self.tentative_blocks.len() >= MAX_TENTATIVE_BLOCKS {
+            let eviction_key = self.tentative_blocks.iter().next().map(|entry| *entry.key());
+            if let Some(allocation_ts) = eviction_key {
+                self.tentative_blocks.remove(&allocation_ts);
+            }
+        }
+        self.tentative_blocks.insert(block.value.allocation_ts, block);
+    }
+
+    pub fn tentative(&self, allocation_ts: u64) -> Option<TentativeBlock> {
+        self.tentative_blocks
+            .get(&allocation_ts)
+            .map(|entry| entry.clone())
+    }
+
+    pub fn remove_tentative(&self, allocation_ts: u64) -> bool {
+        self.tentative_blocks.remove(&allocation_ts).is_some()
+    }
+
+    pub fn remove_matching_tentative(
+        &self,
+        allocation_ts: u64,
+        disk_id: DiskId,
+        zone_index: u32,
+        unit_offset: u64,
+    ) -> bool {
+        self.tentative_blocks
+            .remove_if(&allocation_ts, |_, block| {
+                block.disk_id == disk_id && block.zone_index == zone_index && block.unit_offset == unit_offset
+            })
+            .is_some()
     }
 
     /// Add a disk to this disk-group. Rebuilds the allocatable disk set.
     pub fn add_disk(&self, disk: Arc<DdbDisk>) {
-        {
-            let mut idx = self.disk_index.write().unwrap();
-            idx.insert(disk.disk_id, Arc::clone(&disk));
-        }
+        self.disk_index.insert(disk.disk_id, Arc::clone(&disk));
         self.disks.write().unwrap().push(disk);
         self.rebuild_allocating_disks();
     }
@@ -82,7 +130,7 @@ impl DdbDiskGroup {
             let mut disks = self.disks.write().unwrap();
             disks.retain(|d| d.disk_id != *disk_id);
         }
-        self.disk_index.write().unwrap().remove(disk_id);
+        self.disk_index.remove(disk_id);
         self.rebuild_allocating_disks();
     }
 
@@ -90,21 +138,20 @@ impl DdbDiskGroup {
     pub fn rebuild_allocating_disks(&self) {
         let disks = self.disks.read().unwrap();
         let new_ctx: Vec<Arc<DdbDisk>> = disks.iter().filter(|d| d.allocatable()).cloned().collect();
-        *self.allocating_disks.write().unwrap() = Arc::new(new_ctx);
+        self.allocating_disks.store(Arc::new(new_ctx));
     }
 
-    /// Generate the next monotonic `freed_ts` for a `FreeBlockValue`.
+    /// Generate the next monotonic allocation incarnation.
     /// Advances the source by `max(now(), last + 1)` to guarantee
     /// monotonicity even if the wall clock jumps backwards.
-    pub fn next_freed_ts(&self) -> u64 {
+    pub fn next_allocation_ts(&self) -> u64 {
         let now = now_nanos();
         loop {
-            let prev = self.free_ts_source.load(Ordering::Acquire);
-            // Saturating add keeps monotonicity at u64::MAX instead of
-            // wrapping to 0 (which would break the compact_ts watermark).
+            let prev = self.allocation_ts_source.load(Ordering::Acquire);
+            // Saturating add avoids wrapping to a reusable incarnation.
             let next = now.max(prev.saturating_add(1));
             if self
-                .free_ts_source
+                .allocation_ts_source
                 .compare_exchange(prev, next, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
@@ -113,18 +160,32 @@ impl DdbDiskGroup {
         }
     }
 
-    /// Initialize the timestamp source after zone load to
-    /// `max(now(), max_freed_ts + 1)`. Called once after all zones in
-    /// the disk-group are loaded.
-    pub fn init_free_ts_source_after_load(&self, max_freed_ts: u64) {
+    /// Initialize the incarnation source above every recovered incarnation.
+    pub fn init_allocation_ts_source_after_load(&self, max_allocation_ts: u64) {
         let now = now_nanos();
-        let target = now.max(max_freed_ts + 1);
-        self.free_ts_source.store(target, Ordering::Release);
+        let target = now.max(max_allocation_ts.saturating_add(1));
+        self.allocation_ts_source.fetch_max(target, Ordering::AcqRel);
     }
 
     /// Whether this disk-group can accept allocations.
     pub fn allocatable(&self) -> bool {
-        *self.status.read().unwrap() == HwStatus::Up
+        self.status() == HwStatus::Up
+    }
+
+    pub fn status(&self) -> HwStatus {
+        HwStatus::try_from(self.status.load(Ordering::Acquire)).unwrap_or(HwStatus::Init)
+    }
+
+    pub fn bind(&self) -> Bind {
+        **self.bind.load()
+    }
+
+    pub fn set_bind(&self, bind: Bind) {
+        self.bind.store(Arc::new(bind));
+    }
+
+    pub fn set_status(&self, status: HwStatus) {
+        self.status.store(status as i32, Ordering::Release);
     }
 
     /// Allocate a single block — round-robin over allocatable disks
@@ -141,7 +202,7 @@ impl DdbDiskGroup {
         if !self.allocatable() {
             return Err(AllocError::NoSpace);
         }
-        let ctx = Arc::clone(&self.allocating_disks.read().unwrap());
+        let ctx = self.allocating_disks.load_full();
         if ctx.is_empty() {
             return Err(AllocError::NoSpace);
         }
@@ -184,6 +245,7 @@ impl DdbDiskGroup {
                     results.push((disk, zone, range));
                 }
                 Err(AllocError::NoSpace) => break,
+                Err(error @ AllocError::Persistence) => return Err(error),
             }
         }
 
@@ -192,7 +254,7 @@ impl DdbDiskGroup {
         }
 
         // Second pass: full scan (random start, skip excluded + used).
-        let ctx = Arc::clone(&self.allocating_disks.read().unwrap());
+        let ctx = self.allocating_disks.load_full();
         while results.len() < count as usize {
             let mut claimed = false;
             #[allow(clippy::cast_possible_truncation)]
@@ -221,16 +283,27 @@ impl DdbDiskGroup {
         if results.len() == count as usize {
             Ok(results)
         } else {
+            for (_, zone, range) in &results {
+                if !zone.rollback_allocate(range.unit_offset, range.unit_count) {
+                    tracing::error!(
+                        disk_group_id = self.disk_group_id,
+                        zone_index = zone.zone_index,
+                        unit_offset = range.unit_offset,
+                        unit_count = range.unit_count,
+                        "partial allocation rollback failed; range remains conservatively busy"
+                    );
+                }
+            }
             Err(AllocError::NoSpace)
         }
     }
 
     /// Free a block by `(disk_id, zone_index, unit_offset, unit_count)`.
     pub fn free_block(&self, disk_id: &DiskId, zone_index: u32, unit_offset: u64, unit_count: u32) -> bool {
-        let disk = {
-            let idx = self.disk_index.read().unwrap();
-            idx.get(disk_id).cloned()
-        };
+        let disk = self
+            .disk_index
+            .get(disk_id)
+            .map(|entry| Arc::clone(entry.value()));
         match disk {
             Some(d) => d.free(zone_index, unit_offset, unit_count),
             None => false,
@@ -258,7 +331,7 @@ impl DdbDiskGroup {
         #[allow(clippy::cast_possible_truncation)]
         let disk_count = disks_guard.len() as u32;
         #[allow(clippy::cast_possible_truncation)]
-        let allocatable_disk_count = self.allocating_disks.read().unwrap().len() as u32;
+        let allocatable_disk_count = self.allocating_disks.load().len() as u32;
         let free_bytes = capacity_bytes.saturating_sub(busy_bytes);
         DiskGroupUsage {
             disk_group_id: self.disk_group_id,
@@ -275,16 +348,16 @@ impl DdbDiskGroup {
     /// Returns `None` for an unknown disk or out-of-range zone.
     #[must_use]
     pub fn zone_usage(&self, disk_id: DiskId, zone_index: u32) -> Option<ZoneUsage> {
-        let disk = {
-            let idx = self.disk_index.read().unwrap();
-            idx.get(&disk_id).cloned()
-        }?;
-        let zones = disk.zones.read().unwrap();
+        let disk = self
+            .disk_index
+            .get(&disk_id)
+            .map(|entry| Arc::clone(entry.value()))?;
+        let zones = disk.zones.load();
         let idx = zone_index as usize;
         if idx >= zones.len() {
             return None;
         }
-        let unit_size_bytes = disk.disk_value.read().unwrap().unit_size_bytes;
+        let unit_size_bytes = disk.disk_value.unit_size_bytes;
         Some(ZoneUsage::from_zone(&zones[idx], unit_size_bytes))
     }
 
@@ -293,18 +366,17 @@ impl DdbDiskGroup {
     /// attached (test disks).
     #[must_use]
     pub fn disk_metrics(&self, disk_id: DiskId) -> Option<Arc<DiskMetrics>> {
-        let idx = self.disk_index.read().unwrap();
-        let disk = idx.get(&disk_id)?;
-        disk.metrics.clone()
+        self.disk_index
+            .get(&disk_id)
+            .and_then(|disk| disk.metrics.clone())
     }
 
     /// The disk's `unit_size_bytes` (from `disk_value`), or `None` for
     /// an unknown disk. Used by the free path to record byte counters.
     #[must_use]
     pub fn disk_unit_size(&self, disk_id: DiskId) -> Option<u32> {
-        let idx = self.disk_index.read().unwrap();
-        let disk = idx.get(&disk_id)?;
-        let unit_size = disk.disk_value.read().unwrap().unit_size_bytes;
+        let disk = self.disk_index.get(&disk_id)?;
+        let unit_size = disk.disk_value.unit_size_bytes;
         Some(unit_size)
     }
 
@@ -312,8 +384,9 @@ impl DdbDiskGroup {
     /// Returns `None` for an unknown disk.
     #[must_use]
     pub fn get_disk(&self, disk_id: DiskId) -> Option<Arc<DdbDisk>> {
-        let idx = self.disk_index.read().unwrap();
-        idx.get(&disk_id).cloned()
+        self.disk_index
+            .get(&disk_id)
+            .map(|entry| Arc::clone(entry.value()))
     }
 }
 
@@ -334,11 +407,12 @@ pub struct DiskGroupUsage {
 pub enum AllocError {
     /// No disk/zone can satisfy the request.
     NoSpace,
+    /// Durable allocation record persistence failed.
+    Persistence,
 }
 
-/// Current wall-clock time in nanoseconds (monotonic source for
-/// `FreeBlockValue.freed_ts`).
-fn now_nanos() -> u64 {
+/// Current wall-clock time in nanoseconds.
+pub(crate) fn now_nanos() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

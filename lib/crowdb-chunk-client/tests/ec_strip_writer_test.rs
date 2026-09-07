@@ -11,7 +11,6 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_chunk_client::{DiskWriter, EcStripWriter, Result};
 use crowdb_common::ec::EcScheme;
-use crowdb_diskio_client::DiskId;
 use crowdb_protocol::chunkdb::rpc::Strip as StripOneof;
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkStrip, ChunkType, EcStrip, StripType};
 use crowdb_protocol::common::{ChunkId, DiskId as ProtoDiskId};
@@ -22,9 +21,6 @@ struct NoopDiskWriter;
 #[async_trait]
 impl DiskWriter for NoopDiskWriter {
     async fn write(&self, _seg: &Segment, _unit_bytes: u64, _data: Bytes) -> Result<()> {
-        Ok(())
-    }
-    async fn fsync(&self, _id: DiskId) -> Result<()> {
         Ok(())
     }
 }
@@ -41,6 +37,7 @@ fn make_chunk(unit_kb: u32, num_segments: usize) -> Arc<Chunk> {
             unit_offset: i as u64 * 10,
             unit_count: 1,
             owner_chunk: Some(ChunkId { high: 1, low: 1 }),
+            allocation_ts: i as u64 + 1,
         })
         .collect();
     let strip = ChunkStrip {
@@ -62,6 +59,7 @@ fn make_chunk(unit_kb: u32, num_segments: usize) -> Arc<Chunk> {
     };
     Arc::new(Chunk {
         id: Some(ChunkId { high: 1, low: 1 }),
+        modify_ts: 1,
         state: 1,
         create_ts_ms: 0,
         sealed_ts_ms: 0,

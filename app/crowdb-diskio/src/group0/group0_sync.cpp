@@ -7,6 +7,7 @@
 #include "disk/block_disk.h"
 #include "disk/mem_disk.h"
 #include "disk/null_disk.h"
+#include "engine/uring/uring_engine.h"
 
 #include <folly/dynamic.h>
 #include <folly/json.h>
@@ -86,8 +87,14 @@ void Group0Sync::start()
         return;
     }
 
-    // Schedule the first sync immediately (delay=0).
-    schedule_next_sync();
+    // Populate disks before advertising readiness. Later refreshes use the
+    // configured interval.
+    sync_task_id_ = executor_.schedule(
+        [this] {
+            do_sync();
+            schedule_next_sync();
+        },
+        0);
 }
 
 void Group0Sync::stop()
@@ -209,6 +216,16 @@ void Group0Sync::reconcile_disks(const std::string &json)
             // Real block device.
             disk = std::make_shared<BlockDisk>(did, device_path, engine_, std::move(zones), true);
         }
+#ifdef CROWDB_HAVE_LIBURING
+        // Register the disk's fd with the uring for fd→pipeline routing.
+        // All disk types go through the uring submit path; unregistered
+        // fds fall back to pipeline 0 but their completions are not
+        // reliably delivered.
+        if (auto uring_engine = std::dynamic_pointer_cast<UringEngine>(engine_);
+            uring_engine != nullptr && disk->fd() >= 0) {
+            uring_engine->uring().register_fd(disk->fd());
+        }
+#endif
         disk_set_->add(disk);
         std::printf("group-0: added disk {%llu,%llu} path=%s zones=%u\n", static_cast<unsigned long long>(did.high),
                     static_cast<unsigned long long>(did.low), device_path.empty() ? "(null)" : device_path.c_str(),
@@ -220,6 +237,13 @@ void Group0Sync::reconcile_disks(const std::string &json)
     // the Disk alive); new requests get DiskNotExist.
     for (const auto &existing_id : disk_set_->disk_ids()) {
         if (seen_ids.find(existing_id) == seen_ids.end()) {
+#ifdef CROWDB_HAVE_LIBURING
+            auto disk = disk_set_->find_disk(existing_id);
+            if (auto uring_engine = std::dynamic_pointer_cast<UringEngine>(engine_);
+                uring_engine != nullptr && disk != nullptr && disk->fd() >= 0) {
+                uring_engine->uring().unregister_fd(disk->fd());
+            }
+#endif
             disk_set_->remove_disk(existing_id);
             std::printf("group-0: removed disk {%llu,%llu} (no longer in group-0)\n",
                         static_cast<unsigned long long>(existing_id.high),
@@ -238,7 +262,7 @@ void Group0Sync::heartbeat()
 
     SyncCallbackCtx ctx;
     crowdb_svc_heartbeat_diskio(svc_client_, cfg_.instance_id, cfg_.rpc_endpoint.c_str(), dg_ids_json.c_str(), "[]",
-                              on_ffi_complete, &ctx);
+                                on_ffi_complete, &ctx);
     if (!wait_for_ctx(ctx)) {
         std::fprintf(stderr, "warning: group-0 heartbeat timed out\n");
         return;

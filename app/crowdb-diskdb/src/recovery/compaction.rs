@@ -13,6 +13,7 @@
 //! atomic `batch_write` (I6) — they succeed or fail together. No window
 //! where the snapshot is durable but the free records survive.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -24,6 +25,7 @@ use crate::ddb_config::CompactionConfig;
 use crate::ddb_kv_client::{Bind, DdbKvClient};
 use crate::metrics::DiskdbMetrics;
 use crate::model::disk_group_container::DdbDiskGroupContainer;
+use crate::model::records::ZoneRecords;
 use crate::model::zone::DdbZone;
 use crate::recovery::ZoneLoadError;
 
@@ -52,6 +54,7 @@ impl Drop for CompactingGuard<'_> {
 /// If diskdb crashes during the batch, the KV group's paxos
 /// consensus ensures the batch is atomic — either all ops are
 /// applied or none are.
+#[allow(clippy::too_many_lines)]
 pub async fn compact_zone(
     kv: &DdbKvClient,
     bind: Bind,
@@ -79,69 +82,67 @@ pub async fn compact_zone(
 
     // Step 1: scan free records for the zone (no zone lock — KV read).
     let scan_start = std::time::Instant::now();
-    let records = kv.read_zone_records(bind, &disk_id, zone_idx).await?;
+    let (records, scan_cutoff) = kv.read_zone_records_bounded(bind, &disk_id, zone_idx).await?;
     metrics
         .compaction_scan_free_latency
         .observe(scan_start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX));
-    let free_keys: Vec<Vec<u8>> = records.free.iter().map(|r| r.key.to_bytes()).collect();
-    #[allow(clippy::cast_possible_truncation)]
-    let free_count = free_keys.len() as u32;
-    if free_count == 0 {
-        // Nothing to compact.
-        zone.uncompacted_free_record_count.store(0, Ordering::Release);
-        zone.mark_compacted_ready();
-        metrics.compaction_latency.observe(
-            compaction_start
-                .elapsed()
-                .as_nanos()
-                .try_into()
-                .unwrap_or(u64::MAX),
+    let previous_cutoff = zone.compact_slot.load(Ordering::Acquire);
+    if scan_cutoff <= previous_cutoff {
+        tracing::debug!(
+            disk_id = ?disk_id,
+            zone_index = zone_idx,
+            scan_cutoff,
+            previous_cutoff,
+            "compaction deferred until contiguous applied advances"
         );
         return Ok(());
     }
 
-    // Step 2: in-memory compaction — partition by watermark,
-    // range_clear only new records, advance compact_ts (zone lock
-    // held only for the bitmap mutation, I9).
+    let free_keys: Vec<Vec<u8>> = records.free.iter().map(|r| r.key.to_bytes()).collect();
+    #[allow(clippy::cast_possible_truncation)]
+    let free_count = free_keys.len() as u32;
+
+    let matching_frees = matching_free_records(&records, scan_cutoff);
+    let busy_by_offset: HashMap<u64, _> = records
+        .busy
+        .iter()
+        .map(|record| (record.key.unit_offset, record))
+        .collect();
+    let busy_keys: Vec<Vec<u8>> = matching_frees
+        .iter()
+        .filter_map(|free| busy_by_offset.get(&free.key.unit_offset))
+        .map(|busy| busy.key.to_bytes())
+        .collect();
+
+    // Step 2: prepare the prospective durable bitmap without changing the
+    // live zone. A failed batch must leave all in-memory state unchanged.
     let merge_start = std::time::Instant::now();
-    let result = zone.compact_zone_inner(&records.free);
+    let zv = zone.prepare_compaction(&matching_frees, scan_cutoff);
     metrics
         .compaction_merge_bitmap_latency
         .observe(merge_start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX));
 
-    // Step 3: determine snapshot_slot = current applied frontier.
-    let snapshot_slot = match kv.get_applied_slot(bind).await {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!(
-                disk_id = ?disk_id,
-                zone_index = zone_idx,
-                error = %e,
-                "get_applied_slot failed; anchoring at slot 0"
-            );
-            0
-        }
-    };
-
-    // Step 4: build the new ZoneValue (with CRC + advanced compact_ts).
-    zone.snapshot_slot.store(snapshot_slot, Ordering::Release);
-    let zv = zone.to_zone_value();
-
-    // Step 5: atomic batch_write — Put ZoneValue + Delete all free
+    // Step 3: atomic batch_write — Put ZoneValue + Delete all free
     // records (I6). They succeed or fail together.
     let persist_start = std::time::Instant::now();
-    kv.compact_zone_batch(bind, &disk_id, zone_idx, &zv, &free_keys)
+    kv.compact_zone_batch(bind, &disk_id, zone_idx, &zv, &busy_keys, &free_keys)
         .await?;
     metrics
         .compaction_kv_persist_latency
         .observe(persist_start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX));
 
-    // Step 6: decrement uncompacted_free_record_count by the total
+    // Step 4: publish the durable result to the live cache only after the
+    // atomic batch succeeds. A crash before publication reloads the snapshot.
+    let result = zone.compact_zone_inner(&matching_frees);
+    zone.snapshot_slot.store(scan_cutoff, Ordering::Release);
+    zone.compact_slot.store(scan_cutoff, Ordering::Release);
+
+    // Step 5: decrement uncompacted_free_record_count by the total
     // free records processed (both stale and new were deleted).
     zone.uncompacted_free_record_count
         .fetch_sub(free_count, Ordering::AcqRel);
 
-    // Step 7: mark the zone as compacted and ready for rotation.
+    // Step 6: mark the zone as compacted and ready for rotation.
     zone.mark_compacted_ready();
 
     metrics
@@ -162,11 +163,42 @@ pub async fn compact_zone(
         new_free_count = result.new_free_count,
         stale_free_count = result.stale_free_count,
         compact_ts = result.new_compact_ts,
-        snapshot_slot,
+        snapshot_slot = scan_cutoff,
         "compaction completed"
     );
 
     Ok(())
+}
+
+fn matching_free_records(records: &ZoneRecords, scan_cutoff: u64) -> Vec<crate::model::records::FreeRecord> {
+    let busy_by_offset: HashMap<u64, _> = records
+        .busy
+        .iter()
+        .map(|record| (record.key.unit_offset, record))
+        .collect();
+    records
+        .free
+        .iter()
+        .filter(|free| {
+            free.commit_slot <= scan_cutoff
+                && busy_by_offset.get(&free.key.unit_offset).is_some_and(|busy| {
+                    free.key.allocation_ts == free.value.pre_allocation_ts
+                        && busy.value.allocation_ts == free.value.pre_allocation_ts
+                        && busy.value.unit_count == free.value.unit_count
+                        && busy.value.owner_chunk == free.value.previous_owner
+                })
+        })
+        .cloned()
+        .collect()
+}
+
+#[cfg(feature = "test-util")]
+#[must_use]
+pub fn matching_free_records_for_tests(
+    records: &ZoneRecords,
+    scan_cutoff: u64,
+) -> Vec<crate::model::records::FreeRecord> {
+    matching_free_records(records, scan_cutoff)
 }
 
 /// Snapshot compaction engine. Owns a `DdbKvClient` and runs as a
@@ -218,16 +250,16 @@ impl CompactionEngine {
             let Some(dg) = container.get_disk_group(dg_id) else {
                 continue;
             };
-            let bind = *dg.bind.read().unwrap();
+            let bind = dg.bind();
             let disks = dg.disks.read().unwrap().clone();
             for disk in disks {
                 // Collect active zone indices to skip (I4).
                 let active_zone_indices: std::collections::HashSet<u32> = {
-                    let active = disk.active_zone_context.read().unwrap();
+                    let active = disk.active_zone_context.load();
                     active.iter().map(|z| z.zone_index).collect()
                 };
-                let zones = disk.zones.read().unwrap().clone();
-                for zone in zones {
+                let zones = disk.zones.load_full();
+                for zone in zones.iter() {
                     // Skip active zones — no concurrent allocate (I4).
                     if active_zone_indices.contains(&zone.zone_index) {
                         continue;
@@ -239,7 +271,7 @@ impl CompactionEngine {
                         continue;
                     }
                     if let Err(e) =
-                        compact_zone(&self.kv, bind, disk.disk_id, &zone, zone.zone_index, metrics).await
+                        compact_zone(&self.kv, bind, disk.disk_id, zone, zone.zone_index, metrics).await
                     {
                         tracing::warn!(
                             disk_id = ?disk.disk_id,
@@ -343,7 +375,7 @@ impl PreparatoryThread {
             let Some(dg) = container.get_disk_group(dg_id) else {
                 continue;
             };
-            let bind = *dg.bind.read().unwrap();
+            let bind = dg.bind();
             let disks = dg.disks.read().unwrap().clone();
             for disk in disks {
                 self.preparatory_cycle_for_disk(bind, &disk, zone_rotate_count, metrics)
@@ -360,7 +392,7 @@ impl PreparatoryThread {
         zone_rotate_count: u32,
         metrics: &DiskdbMetrics,
     ) {
-        let zones = disk.zones.read().unwrap().clone();
+        let zones = disk.zones.load_full();
         let zone_num = zones.len();
         if zone_num == 0 || zone_rotate_count == 0 {
             return;
@@ -368,7 +400,7 @@ impl PreparatoryThread {
 
         // Collect active zone indices to skip (I4).
         let active_zone_indices: std::collections::HashSet<u32> = {
-            let active = disk.active_zone_context.read().unwrap();
+            let active = disk.active_zone_context.load();
             active.iter().map(|z| z.zone_index).collect()
         };
 

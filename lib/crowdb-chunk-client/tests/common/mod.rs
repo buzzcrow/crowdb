@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Shared test support — `LocalFileDiskWriter` (real file I/O) +
+//! Shared test support — `LocalFileDiskWriter` (non-durable file I/O) +
 //! read-back helpers for write-then-read verification.
 
 use std::collections::HashMap;
@@ -17,14 +17,13 @@ use crowdb_diskio_client::DiskId;
 use crowdb_protocol::diskdb::rpc::Segment;
 
 /// Test-only `DiskWriter` that writes blocks to per-disk files under a
-/// temp dir. Tracks write + fsync counts for assertions. Data can be
+/// temp dir. Tracks write counts for assertions. Data can be
 /// read back via `read_block` for write-then-read verification.
 #[derive(Clone)]
 pub struct LocalFileDiskWriter {
     root: PathBuf,
     paths: Arc<Mutex<HashMap<(u64, u64), PathBuf>>>,
     write_count: Arc<AtomicUsize>,
-    fsync_count: Arc<AtomicUsize>,
 }
 
 #[allow(dead_code)] // methods may be unused in some test binaries
@@ -39,18 +38,12 @@ impl LocalFileDiskWriter {
             root,
             paths: Arc::new(Mutex::new(HashMap::new())),
             write_count: Arc::new(AtomicUsize::new(0)),
-            fsync_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     /// Total number of `write` calls.
     pub fn write_count(&self) -> usize {
         self.write_count.load(Ordering::Relaxed)
-    }
-
-    /// Total number of `fsync` calls.
-    pub fn fsync_count(&self) -> usize {
-        self.fsync_count.load(Ordering::Relaxed)
     }
 
     fn file_path(&self, disk_id: DiskId) -> PathBuf {
@@ -100,23 +93,6 @@ impl DiskWriter for LocalFileDiskWriter {
         file.write_all(&data)
             .map_err(|e| IoError::WriteFailed(format!("write failed: {e}")))?;
         self.write_count.fetch_add(1, Ordering::Relaxed);
-        Ok(())
-    }
-
-    async fn fsync(&self, disk_id: DiskId) -> Result<()> {
-        let path = self.file_path(disk_id);
-        // Skip fsync if the file doesn't exist (partial strip — not
-        // all disks in the placement were written to).
-        if !path.exists() {
-            return Ok(());
-        }
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .open(&path)
-            .map_err(|e| IoError::WriteFailed(format!("open file failed: {e}")))?;
-        file.sync_all()
-            .map_err(|e| IoError::WriteFailed(format!("fsync failed: {e}")))?;
-        self.fsync_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 }

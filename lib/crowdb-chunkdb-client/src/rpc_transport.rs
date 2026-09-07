@@ -37,7 +37,8 @@ use crowdb_protocol::chunkdb_fb::{
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::fb::FBMsgType;
 use crowdb_protocol::fb_wrappers::chunkdb::{
-    FBAllocateChunkResponseRef, FBDeleteChunkRangeResponseRef, FBListChunksResponseRef,
+    FBAllocateChunkResponseRef, FBAppendChunkResponseRef, FBDeleteChunkRangeResponseRef,
+    FBListChunksResponseRef,
 };
 use crowdb_rpc_ffi::{Buffer, Connection, RpcClient, RpcError, RpcServer};
 
@@ -49,7 +50,9 @@ use crate::{ChunkdbClientError, Result};
 pub struct ChunkdbRpcTransport {
     server: Arc<RpcServer>,
     rpc: Arc<RpcClient>,
-    connections: DashMap<String, Connection>,
+    connections: DashMap<String, Vec<Connection>>,
+    pool_size: usize,
+    conn_rr: AtomicU64,
     next_req_id: AtomicU64,
 }
 
@@ -67,21 +70,35 @@ impl ChunkdbRpcTransport {
     /// but is used to establish connections to remote endpoints.
     #[must_use]
     pub fn new() -> Self {
-        Self::with_workers(2)
+        Self::with_pool_size(1, 2)
     }
 
     /// Create a new crowdb-rpc transport with `workers` I/O worker threads.
     #[must_use]
     pub fn with_workers(workers: u32) -> Self {
+        Self::with_pool_size(1, workers)
+    }
+
+    /// Create a transport with `pool_size` connections per endpoint and
+    /// `workers` crowdb-rpc I/O workers.
+    #[must_use]
+    pub fn with_pool_size(pool_size: usize, workers: u32) -> Self {
         let server = Arc::new(RpcServer::with_engines(None, 1, workers));
         server.start();
+        server.register_conn_count_gauge("rpc.client.connections");
         let rpc = Arc::new(RpcClient::new());
         rpc.set_completion_pool_size(1024);
-        rpc.start_reaper(5_000_000_000, 500_000_000);
+        // A chunk allocation spans DiskDB allocate + commit and two KV state
+        // writes. Keep the client deadline aligned with DiskDB's 10-second
+        // mutation window so a temporary KV tail does not abandon the whole
+        // chunk after its physical blocks have already been allocated.
+        rpc.start_reaper(10_000_000_000, 500_000_000);
         Self {
             server,
             rpc,
             connections: DashMap::new(),
+            pool_size: pool_size.max(1),
+            conn_rr: AtomicU64::new(0),
             next_req_id: AtomicU64::new(1),
         }
     }
@@ -93,19 +110,25 @@ impl ChunkdbRpcTransport {
     /// Get or create a `Connection` for the given rpc endpoint.
     fn conn_for(&self, rpc_endpoint: &str) -> Result<Connection> {
         let normalized = normalize_endpoint(rpc_endpoint);
-        if let Some(conn) = self.connections.get(&normalized) {
-            return Ok(conn.clone());
+        if let Some(conns) = self.connections.get(&normalized) {
+            if conns.len() == self.pool_size {
+                let index = rr_index(&self.conn_rr, conns.len());
+                return Ok(conns[index].clone());
+            }
         }
         let (host, port) = parse_endpoint(&normalized).map_err(|reason| {
             ChunkdbClientError::Unreachable(format!("invalid endpoint {rpc_endpoint}: {reason}"))
         })?;
-        let conn = self
-            .server
-            .connect(&host, port)
-            .map_err(|e| ChunkdbClientError::Unreachable(format!("rpc connect to {host}:{port}: {e:?}")))?;
-        self.rpc.attach(&conn);
-        self.connections.insert(normalized, conn.clone());
-        Ok(conn)
+        let mut entry = self.connections.entry(normalized).or_default();
+        while entry.len() < self.pool_size {
+            let conn = self.server.connect(&host, port).map_err(|e| {
+                ChunkdbClientError::Unreachable(format!("rpc connect to {host}:{port}: {e:?}"))
+            })?;
+            self.rpc.attach(&conn);
+            entry.push(conn);
+        }
+        let index = rr_index(&self.conn_rr, entry.len());
+        Ok(entry[index].clone())
     }
 
     // ── AllocateChunk ─────────────────────────────────────────────
@@ -179,6 +202,7 @@ impl ChunkdbRpcTransport {
             id: req_id,
             rpc_create_nano: 0,
             chunk_id: chunk_id_off.as_ref(),
+            modify_ts: req.modify_ts,
             strip_size: req.strip_size,
             strip_count: req.strip_count,
             strip_type: strip_type_to_fb(
@@ -202,13 +226,17 @@ impl ChunkdbRpcTransport {
             rpc_endpoint,
         )
         .await?;
-        // AppendChunk response shares the same shape as AllocateChunkResponse.
-        let r = FBAllocateChunkResponseRef::new(resp.bytes());
+        let r = FBAppendChunkResponseRef::new(resp.bytes());
         if !r.valid() {
             return Err(ChunkdbClientError::Rpc("append_chunk response malformed".into()));
         }
         check_ret_code(r.ret_code(), r.error_msg())?;
         Ok(AppendChunkResponse {
+            modify_ts: r.modify_ts(),
+            strips: r
+                .strips()
+                .map(|strips| strips.iter().map(|strip| parse_fb_chunk_strip(&strip)).collect())
+                .unwrap_or_default(),
             chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)),
         })
     }
@@ -479,6 +507,11 @@ impl ChunkdbRpcTransport {
     }
 }
 
+fn rr_index(counter: &AtomicU64, len: usize) -> usize {
+    let len_u64 = u64::try_from(len).unwrap_or(u64::MAX);
+    usize::try_from(counter.fetch_add(1, Ordering::Relaxed) % len_u64).unwrap_or(0)
+}
+
 impl Default for ChunkdbRpcTransport {
     fn default() -> Self {
         Self::new()
@@ -543,6 +576,7 @@ fn parse_fb_chunk(fb: &crowdb_protocol::chunkdb_fb::FBChunk<'_>) -> Chunk {
         .unwrap_or_default();
     Chunk {
         id,
+        modify_ts: fb.modify_ts(),
         state: state as i32,
         create_ts_ms: fb.create_ts_ms(),
         sealed_ts_ms: fb.sealed_ts_ms(),
@@ -621,6 +655,7 @@ where
             unit_offset: s.unit_offset(),
             zone_index: s.zone_index(),
             unit_count: s.unit_count(),
+            allocation_ts: s.allocation_ts(),
         })
         .collect()
 }
@@ -687,6 +722,7 @@ fn build_strip_body_offset(
                         &FBInt128::new(disk_id.high, disk_id.low),
                         &FBInt128::new(owner.high, owner.low),
                         s.unit_offset,
+                        s.allocation_ts,
                         s.zone_index,
                         s.unit_count,
                     )
@@ -712,6 +748,7 @@ fn build_strip_body_offset(
                         &FBInt128::new(disk_id.high, disk_id.low),
                         &FBInt128::new(owner.high, owner.low),
                         s.unit_offset,
+                        s.allocation_ts,
                         s.zone_index,
                         s.unit_count,
                     )
@@ -793,7 +830,11 @@ fn fb_ec_state_to_proto(s: crowdb_protocol::chunkdb_fb::FBEcState) -> ProtoEcSta
 // ── Endpoint helpers ──────────────────────────────────────────────
 
 fn rpc_error_to_client(e: RpcError) -> ChunkdbClientError {
-    ChunkdbClientError::Rpc(format!("rpc error: {e:?}"))
+    if e.is_retryable() {
+        ChunkdbClientError::Unavailable(format!("rpc transient: {e:?}"))
+    } else {
+        ChunkdbClientError::Rpc(format!("rpc error: {e:?}"))
+    }
 }
 
 fn normalize_endpoint(endpoint: &str) -> String {

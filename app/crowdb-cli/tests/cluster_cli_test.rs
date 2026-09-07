@@ -7,8 +7,42 @@
 mod common;
 
 use std::time::Duration;
+use std::{fs, process::Command};
 
-use common::direct::{crowdb_cli_bin, run, spawn_group0};
+use common::direct::{crowdb_cli_bin, run, spawn_group0, tempdir};
+
+#[test]
+fn invocation_log_directory_has_cli_prefix() {
+    let cli = crowdb_cli_bin();
+    if !cli.exists() {
+        eprintln!("skipping: crowdb-cli binary not built ({})", cli.display());
+        return;
+    }
+    let root = tempdir("cli-log-prefix");
+    let config = root.join("missing-console.toml");
+    let output = Command::new(cli)
+        .arg("--log-root")
+        .arg(&root)
+        .arg("--config")
+        .arg(config)
+        .args(["cluster", "local-deploy", "--service-type", "invalid"])
+        .output()
+        .expect("run crowdb-cli");
+    assert!(!output.status.success());
+    let dirs = fs::read_dir(&root)
+        .expect("read log root")
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(dirs.len(), 1, "unexpected invocation directories: {dirs:?}");
+    assert!(
+        dirs[0].starts_with("cli-cluster-local-deploy-"),
+        "unexpected invocation directory: {}",
+        dirs[0]
+    );
+    let _ = fs::remove_dir_all(root);
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(clippy::too_many_lines)]

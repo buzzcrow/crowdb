@@ -10,6 +10,7 @@
 
 use bytes::Bytes;
 use crowdb_protocol::common::ChunkId;
+use std::time::Duration;
 use tokio::task::JoinHandle;
 
 use crate::Result;
@@ -24,9 +25,9 @@ pub struct StripResult {
     pub bytes_written: u64,
     /// True if the last block was < unit_bytes (partial strip at EOF).
     pub partial: bool,
-    /// Parity task handles — joined by `ChunkWriter` at seal time
-    /// (decoupled from strip finish in Phase 3.1).
-    pub parity_handles: Vec<JoinHandle<Result<()>>>,
+    pub ec_encode_time: Duration,
+    /// Durable data/parity write completions joined by `ChunkWriter`.
+    pub completion_handles: Vec<JoinHandle<Result<()>>>,
 }
 
 /// Strip writer enum — Rust enum (not trait object) for monomorphic
@@ -44,12 +45,12 @@ impl StripWriter {
     /// Push a data block to the strip.
     pub async fn push(&mut self, buffer: Bytes) -> Result<FeedStatus> {
         match self {
-            Self::Ec(w) => w.push(buffer).await,
+            Self::Ec(w) => w.push(buffer),
             Self::Mirror(w) => w.push(buffer).await,
         }
     }
 
-    /// End of strip: write parity (EC), fsync, return the strip result.
+    /// End of strip: submit parity and return all write completions.
     pub async fn finish(&mut self) -> Result<StripResult> {
         match self {
             Self::Ec(w) => w.finish().await,
@@ -60,7 +61,7 @@ impl StripWriter {
     /// Abort: drop in-flight writes, return already-durable state.
     pub async fn abort(&mut self) -> Result<StripResult> {
         match self {
-            Self::Ec(w) => w.abort(),
+            Self::Ec(w) => w.abort().await,
             Self::Mirror(w) => w.abort().await,
         }
     }

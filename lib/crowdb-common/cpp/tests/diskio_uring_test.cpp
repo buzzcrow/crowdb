@@ -336,3 +336,36 @@ TEST(DiskIOUring, UnregisteredFdRoutesToPipeline0)
     ::close(fd);
     std::remove(path.c_str());
 }
+
+TEST(DiskIOUring, IdleSubmissionDoesNotWaitForPollTimeout)
+{
+    std::string path = temp_path();
+    int         fd   = ::open(path.c_str(), O_RDWR);
+    ASSERT_GE(fd, 0);
+    ASSERT_EQ(::ftruncate(fd, 4096), 0);
+
+    Topology topo;
+    topo.pipelines.push_back({256, PollingMode::Hybrid});
+    DiskIOUring uring(std::move(topo));
+    uring.register_fd(fd);
+
+    // Let the small hybrid busy-poll budget expire so the poll thread enters
+    // its event wait before the first submission.
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    std::atomic<bool>    done{false};
+    std::atomic<int>     got_res{-1};
+    std::vector<uint8_t> buf(4096, 1);
+    auto                 started = std::chrono::steady_clock::now();
+    uring.submit_write(fd, buf.data(), buf.size(), 0, [&](int res) {
+        got_res.store(res, std::memory_order_relaxed);
+        done.store(true, std::memory_order_release);
+    });
+
+    ASSERT_TRUE(wait_for([&] { return done.load(std::memory_order_acquire); }, 20, 1));
+    auto elapsed = std::chrono::steady_clock::now() - started;
+    EXPECT_LT(elapsed, std::chrono::milliseconds(20));
+    EXPECT_EQ(got_res.load(), static_cast<int>(buf.size()));
+
+    ::close(fd);
+    std::remove(path.c_str());
+}

@@ -123,6 +123,8 @@ pub struct ChunkStrip {
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct Chunk {
     pub id: Option<ChunkId>,
+    /// Monotonic per-chunk modification revision.
+    pub modify_ts: u64,
     pub state: i32,
     pub create_ts_ms: u64,
     pub sealed_ts_ms: u64,
@@ -172,6 +174,8 @@ pub struct AllocateChunkResponse {
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct AppendChunkRequest {
     pub chunk_id: Option<ChunkId>,
+    /// Chunk revision observed by the caller.
+    pub modify_ts: u64,
     pub strip_size: u32,
     pub strip_count: u32,
     pub strip_type: i32,
@@ -182,6 +186,11 @@ pub struct AppendChunkRequest {
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct AppendChunkResponse {
+    /// Revision after a successful append, or the current revision on mismatch.
+    pub modify_ts: u64,
+    /// Newly appended strips when the request revision matched.
+    pub strips: Vec<ChunkStrip>,
+    /// Complete current chunk when the request revision was stale.
     pub chunk: Option<Chunk>,
 }
 

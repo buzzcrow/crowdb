@@ -19,7 +19,7 @@ use tokio::time::Instant;
 use tracing::{debug, warn};
 
 use crate::clients::http::ServerClient;
-use crate::config::NodeEntry;
+use crate::config::{LocalLaunchSpec, NodeEntry};
 use crate::error::{Error, Result};
 
 /// Inputs for a deploy. The console picks the ports; the user provides ids.
@@ -50,9 +50,6 @@ pub struct DeployRequest {
     /// `--coalesce-max-keys` value. `None` leaves the spawned server's
     /// own default in effect.
     pub coalesce_max_keys: Option<usize>,
-    /// `--coalesce-drain-threshold` value. `None` leaves the spawned
-    /// server's own default in effect.
-    pub coalesce_drain_threshold: Option<usize>,
     /// `--peer-pool-size` value. `None` leaves the spawned server's
     /// own default in effect.
     pub peer_pool_size: Option<usize>,
@@ -96,6 +93,83 @@ pub struct DeployedDiskdb {
     pub server_id: String,
     pub endpoint: String,
     pub pid: u32,
+    pub launch: LocalLaunchSpec,
+}
+
+/// Stop and relaunch a locally deployed auxiliary service from its retained
+/// launch specification.
+///
+/// # Errors
+/// Returns an error when the old process cannot stop, the replacement cannot
+/// start, or its configured readiness endpoint does not become healthy.
+pub async fn restart_local_service(server_id: &str, pid: u32, spec: &LocalLaunchSpec) -> Result<u32> {
+    if process_is_alive(pid) {
+        stop_pid_with_timeout(pid, Duration::from_secs(15))?;
+    }
+    let workdir = Path::new(&spec.workdir);
+    let log_dir = workdir.join("log");
+    std::fs::create_dir_all(&log_dir)?;
+    let output_path = log_dir.join(format!("{server_id}.restart.stdout.log"));
+    let output = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&output_path)?;
+    let mut command = Command::new(&spec.program);
+    command
+        .args(&spec.args)
+        .envs(&spec.env)
+        .current_dir(workdir)
+        .stdout(Stdio::from(output.try_clone()?))
+        .stderr(Stdio::from(output))
+        .kill_on_drop(false);
+    let mut child = command.spawn()?;
+    let new_pid = child.id().ok_or_else(|| Error::Validation {
+        field: "pid".into(),
+        message: format!("restarted {server_id} child has no pid"),
+    })?;
+    if let Some(url) = &spec.readiness_url {
+        wait_for_diskdb_ready(&mut child, url, &output_path, new_pid, Duration::from_secs(30)).await?;
+    } else {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        if let Some(status) = child.try_wait()? {
+            return Err(Error::UpstreamRpc {
+                node_id: server_id.into(),
+                status: format!("restarted process exited early with {status}"),
+            });
+        }
+    }
+    std::mem::forget(child);
+    Ok(new_pid)
+}
+
+/// Inputs for a local `ChunkDB` deployment.
+#[derive(Debug, Clone)]
+pub struct ChunkdbDeployRequest {
+    pub server_id: String,
+    pub instance_id: u64,
+    pub http_port: u16,
+    pub rpc_port: u16,
+    pub kv_server_mgmt_seeds: Vec<String>,
+    pub allow_unsafe_ec: bool,
+    pub rpc_workers: Option<u32>,
+    pub kv_connections: Option<usize>,
+    pub kv_client_rpc_workers: Option<u32>,
+    pub diskdb_connections: Option<usize>,
+    pub diskdb_client_rpc_workers: Option<u32>,
+    pub metrics_interval: Option<u64>,
+}
+
+/// Inputs for one local `NullDisk` `DiskIO` service.
+#[derive(Debug, Clone)]
+pub struct DiskioDeployRequest {
+    pub server_id: String,
+    pub instance_id: u64,
+    pub rpc_port: u16,
+    pub rack_id: u64,
+    pub node_id: u64,
+    pub disk_group_id: u64,
+    pub kv_server_mgmt_seeds: Vec<String>,
+    pub metrics_interval: Option<u64>,
 }
 
 /// Spawn `crowdb-kv-server` locally. The `node.host` is folded into the
@@ -163,9 +237,6 @@ fn apply_benchmark_flags(cmd: &mut Command, req: &DeployRequest) {
     }
     if let Some(max_keys) = req.coalesce_max_keys {
         cmd.arg("--coalesce-max-keys").arg(max_keys.to_string());
-    }
-    if let Some(threshold) = req.coalesce_drain_threshold {
-        cmd.arg("--coalesce-drain-threshold").arg(threshold.to_string());
     }
     if let Some(workers) = req.rpc_workers {
         cmd.arg("--rpc-workers").arg(workers.to_string());
@@ -270,8 +341,8 @@ async fn deploy_local_in_workspace(
         cmd.arg(arg);
     }
     if let Some(dir) = workspace_dir {
-        // The workspace dir is the node root; waldata/conf/ctdata/log
-        // are derived subdirs.
+        // The workspace dir is the server root; waldata/conf/ctdata/log
+        // are direct children.
         cmd.arg("--root").arg(dir);
         // Merge stdout and stderr into one file. We open a temp file before
         // spawn (PID unknown), then rename it with the PID after spawn.
@@ -326,11 +397,11 @@ async fn deploy_local_in_workspace(
         }
     }
 
-    // Detach: drop the Child handle so the process is not killed when
-    // this function returns. The pid is the user's tracking handle.
-    std::mem::forget(child);
-
     wait_for_ready(&mgmt_url, Duration::from_secs(30)).await?;
+
+    // Keep ownership of the child in a reaper task so exited children do not
+    // become zombies under the console process.
+    tokio::spawn(reap_child(child, pid, "crowdb-kv-server"));
 
     Ok(DeployedServer {
         server_id: req.server_id.clone(),
@@ -338,6 +409,13 @@ async fn deploy_local_in_workspace(
         rpc_url,
         pid,
     })
+}
+
+async fn reap_child(mut child: Child, pid: u32, service: &'static str) {
+    match child.wait().await {
+        Ok(status) => debug!(pid, service, %status, "child exited"),
+        Err(error) => warn!(pid, service, %error, "failed to reap child"),
+    }
 }
 
 /// Send SIGTERM to a tracked pid on the **local** host. Returns
@@ -519,7 +597,9 @@ fn stage_server_binary(binary: &std::path::Path, workspace_dir: &std::path::Path
         field: "binary".into(),
         message: format!("could not resolve server binary path: {}", binary.display()),
     })?;
-    let staged = workspace_dir.join("bin").join(
+    let bin_dir = workspace_dir.join("bin");
+    std::fs::create_dir_all(&bin_dir).map_err(Error::Io)?;
+    let staged = bin_dir.join(
         source
             .file_name()
             .unwrap_or_else(|| std::ffi::OsStr::new("crowdb-kv-server")),
@@ -623,6 +703,19 @@ fn is_executable(path: &std::path::Path) -> bool {
 #[derive(Debug, Clone, Default)]
 pub struct DiskdbDeployRequest {
     pub server_id: String,
+    /// Stable instance ID used for group-0 ownership assignment.
+    pub instance_id: Option<u64>,
+    /// Metrics flush interval override in seconds.
+    pub metrics_interval: Option<u64>,
+    /// crowdb-rpc server worker override.
+    pub rpc_workers: Option<u32>,
+    /// KV client connection-pool override.
+    pub kv_connections: Option<usize>,
+    /// KV client crowdb-rpc worker override.
+    pub kv_client_rpc_workers: Option<u32>,
+    /// Keepalive and group-0 sync interval override in seconds.
+    /// `None` preserves the `crowdb-diskdb` defaults.
+    pub keepalive_interval_secs: Option<u32>,
     /// Main listener port (diskdb `listen_addr`).
     pub listen_port: u16,
     /// HTTP management port (diskdb `http_listen_addr`).
@@ -664,6 +757,52 @@ pub fn crowdb_diskdb_bin() -> Option<PathBuf> {
     }
     warn!("crowdb-diskdb binary not found via env, sibling, or $PATH");
     None
+}
+
+/// Resolve the path to the `crowdb-chunkdb` binary.
+#[must_use]
+pub fn crowdb_chunkdb_bin() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("CROWDB_CHUNKDB_BIN") {
+        return Some(PathBuf::from(path));
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(directory) = executable.parent() {
+            let mut path = directory.to_path_buf();
+            for _ in 0..3 {
+                let candidate = path.join("crowdb-chunkdb");
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+                if !path.pop() {
+                    break;
+                }
+            }
+        }
+    }
+    find_in_path(std::ffi::OsStr::new("crowdb-chunkdb"))
+}
+
+/// Resolve the C++ `crowdb-diskio` binary.
+#[must_use]
+pub fn crowdb_diskio_bin() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("CROWDB_DISKIO_BIN") {
+        return Some(PathBuf::from(path));
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(directory) = executable.parent() {
+            let mut path = directory.to_path_buf();
+            for _ in 0..6 {
+                let candidate = path.join("app/crowdb-diskio/build/crowdb-diskio");
+                if candidate.exists() {
+                    return Some(candidate);
+                }
+                if !path.pop() {
+                    break;
+                }
+            }
+        }
+    }
+    find_in_path(std::ffi::OsStr::new("crowdb-diskio"))
 }
 
 /// Locate the standalone `crowdb-rpc-fb-server` C++ binary (built via
@@ -712,6 +851,7 @@ fn resolve_diskdb_config_path(
     listen_port: u16,
     http_port: u16,
     rpc_port: u16,
+    instance_id: Option<u64>,
     kv_server_mgmt_seeds: &[String],
 ) -> Result<PathBuf> {
     let conf = workspace_dir.join("conf");
@@ -732,11 +872,13 @@ fn resolve_diskdb_config_path(
     // Minimal valid config — only [server] is required; all other
     // sections default via `#[serde(default)]` on `DdbConfig` fields
     // (values match `DdbConfig::default()`).
+    let instance_id = instance_id.map_or_else(String::new, |id| format!("instance_id = \"{id}\"\n"));
     let config = format!(
         "[server]\n\
          listen_addr = \"0.0.0.0:{listen_port}\"\n\
          http_listen_addr = \"0.0.0.0:{http_port}\"\n\
          rpc_listen_addr = \"0.0.0.0:{rpc_port}\"\n\
+         {instance_id}\
          kv_server_mgmt_seeds = [{seeds}]\n",
     );
     std::fs::write(&path, config).map_err(Error::Io)?;
@@ -851,6 +993,7 @@ pub async fn deploy_diskdb_local(
             message: "listen_port, http_port, and rpc_port must all be non-zero".into(),
         });
     }
+    std::fs::create_dir_all(workspace_dir.join("log"))?;
 
     // Use the pre-copied binary in the workspace bin/ dir, falling
     // back to a PATH/env search if not yet staged.
@@ -870,6 +1013,7 @@ pub async fn deploy_diskdb_local(
         req.listen_port,
         req.http_port,
         req.rpc_port,
+        req.instance_id,
         &req.kv_server_mgmt_seeds,
     )?;
     // The public endpoint is the crowdb-rpc listener. The main listener is
@@ -888,6 +1032,19 @@ pub async fn deploy_diskdb_local(
 
     let mut cmd = Command::new(&launch_binary);
     cmd.arg("--config").arg(&config_path);
+    cmd.arg("--log-dir").arg(workspace_dir.join("log"));
+    if let Some(interval) = req.metrics_interval {
+        cmd.arg("--metrics-interval").arg(interval.to_string());
+    }
+    if let Some(workers) = req.rpc_workers {
+        cmd.arg("--rpc-workers").arg(workers.to_string());
+    }
+    if let Some(connections) = req.kv_connections {
+        cmd.arg("--kv-connections").arg(connections.to_string());
+    }
+    if let Some(workers) = req.kv_client_rpc_workers {
+        cmd.arg("--kv-client-rpc-workers").arg(workers.to_string());
+    }
     cmd.arg("--listen-addr")
         .arg(format!("{}:{}", node.host, req.listen_port));
     cmd.arg("--http-addr")
@@ -914,12 +1071,317 @@ pub async fn deploy_diskdb_local(
     let to = log_dir.join(format!("crowdb-diskdb-{pid}.out.log"));
     let _ = std::fs::rename(&from, &to);
     wait_for_diskdb_ready(&mut child, &mgmt_url, &to, pid, Duration::from_secs(30)).await?;
-    // Detach only after readiness succeeds so the child can be polled for an
-    // early exit without changing ownership of a successful process.
+    // Keep ownership of the child in a reaper task so exited children do not
+    // become zombies under the console process.
+    tokio::spawn(reap_child(child, pid, "crowdb-diskdb"));
+    Ok(DeployedDiskdb {
+        server_id: req.server_id.clone(),
+        endpoint,
+        pid,
+        launch: LocalLaunchSpec {
+            program: launch_binary.to_string_lossy().into_owned(),
+            args: diskdb_launch_args(req, &config_path, workspace_dir),
+            workdir: workspace_dir.to_string_lossy().into_owned(),
+            env: std::collections::BTreeMap::default(),
+            readiness_url: Some(mgmt_url),
+        },
+    })
+}
+
+fn diskdb_launch_args(req: &DiskdbDeployRequest, config_path: &Path, workspace_dir: &Path) -> Vec<String> {
+    let mut args = vec![
+        "--config".into(),
+        config_path.to_string_lossy().into_owned(),
+        "--log-dir".into(),
+        workspace_dir.join("log").to_string_lossy().into_owned(),
+        "--listen-addr".into(),
+        format!("127.0.0.1:{}", req.listen_port),
+        "--http-addr".into(),
+        format!("127.0.0.1:{}", req.http_port),
+        "--rpc-listen-addr".into(),
+        format!("127.0.0.1:{}", req.rpc_port),
+    ];
+    if let Some(value) = req.metrics_interval {
+        args.extend(["--metrics-interval".into(), value.to_string()]);
+    }
+    if let Some(value) = req.rpc_workers {
+        args.extend(["--rpc-workers".into(), value.to_string()]);
+    }
+    if let Some(value) = req.kv_connections {
+        args.extend(["--kv-connections".into(), value.to_string()]);
+    }
+    if let Some(value) = req.kv_client_rpc_workers {
+        args.extend(["--kv-client-rpc-workers".into(), value.to_string()]);
+    }
+    args
+}
+
+/// Spawn `crowdb-chunkdb` locally and wait for HTTP readiness.
+///
+/// # Errors
+/// Returns an error for invalid ports, missing binaries, I/O failures, or readiness timeout.
+pub async fn deploy_chunkdb_local(
+    req: &ChunkdbDeployRequest,
+    node: &NodeEntry,
+    workspace_dir: &Path,
+) -> Result<DeployedDiskdb> {
+    if req.http_port == 0 || req.rpc_port == 0 || req.http_port == req.rpc_port {
+        return Err(Error::Validation {
+            field: "port".into(),
+            message: "chunkdb HTTP and RPC ports must be non-zero and distinct".into(),
+        });
+    }
+    let binary = crowdb_chunkdb_bin().ok_or_else(|| Error::NotFound {
+        kind: "binary".into(),
+        id: "crowdb-chunkdb (set CROWDB_CHUNKDB_BIN)".into(),
+    })?;
+    let launch_binary = stage_server_binary(&binary, workspace_dir)?;
+    let config_dir = workspace_dir.join("conf");
+    let log_dir = workspace_dir.join("log");
+    std::fs::create_dir_all(&config_dir)?;
+    std::fs::create_dir_all(&log_dir)?;
+    let config_path = config_dir.join("crowdb_chunkdb_config.toml");
+    let seeds = req
+        .kv_server_mgmt_seeds
+        .iter()
+        .map(|seed| format!("{seed:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let config = format!(
+        "[server]\nhttp_listen_addr = \"{}:{}\"\nrpc_listen_addr = \"{}:{}\"\ninstance_id = \"{}\"\nkv_server_mgmt_seeds = [{}]\nkeepalive_interval_secs = 1\nkv_pool_size = {}\nkv_rpc_workers = {}\ndiskdb_pool_size = {}\ndiskdb_rpc_workers = {}\n\n[topology]\nrefresh_interval_secs = 1\n\n[range_guard]\nallow_all_when_empty = false\n\n[lifecycle]\ncache_capacity = 10000\nsweep_chunk_lock_interval_secs = 60\nlock_hold_warn_threshold_ms = 1000\n\n[placement]\nallow_unsafe_ec = {}\n",
+        node.host,
+        req.http_port,
+        node.host,
+        req.rpc_port,
+        req.instance_id,
+        seeds,
+        req.kv_connections.unwrap_or(1),
+        req.kv_client_rpc_workers.unwrap_or(2),
+        req.diskdb_connections.unwrap_or(1),
+        req.diskdb_client_rpc_workers.unwrap_or(2),
+        req.allow_unsafe_ec,
+    );
+    std::fs::write(&config_path, config)?;
+
+    let endpoint = format!("http://{}:{}", node.host, req.rpc_port);
+    let management = format!("http://{}:{}", node.host, req.http_port);
+    let output_path = log_dir.join("crowdb-chunkdb.stdout.log");
+    let output = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&output_path)?;
+    let mut command = Command::new(&launch_binary);
+    command
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--log-dir")
+        .arg(&log_dir)
+        .current_dir(workspace_dir)
+        .stdout(Stdio::from(output.try_clone()?))
+        .stderr(Stdio::from(output))
+        .kill_on_drop(false);
+    if let Some(workers) = req.rpc_workers {
+        command.arg("--rpc-workers").arg(workers.to_string());
+    }
+    if let Some(interval) = req.metrics_interval {
+        command.arg("--metrics-interval").arg(interval.to_string());
+    }
+    let mut child = command.spawn()?;
+    let pid = child.id().ok_or_else(|| Error::Validation {
+        field: "pid".into(),
+        message: "spawned ChunkDB child has no pid".into(),
+    })?;
+    wait_for_diskdb_ready(
+        &mut child,
+        &management,
+        &output_path,
+        pid,
+        Duration::from_secs(30),
+    )
+    .await?;
     std::mem::forget(child);
     Ok(DeployedDiskdb {
         server_id: req.server_id.clone(),
         endpoint,
         pid,
+        launch: LocalLaunchSpec {
+            program: launch_binary.to_string_lossy().into_owned(),
+            args: chunkdb_launch_args(req, &config_path, &log_dir),
+            workdir: workspace_dir.to_string_lossy().into_owned(),
+            env: std::collections::BTreeMap::default(),
+            readiness_url: Some(management),
+        },
     })
+}
+
+fn chunkdb_launch_args(req: &ChunkdbDeployRequest, config_path: &Path, log_dir: &Path) -> Vec<String> {
+    let mut args = vec![
+        "--config".into(),
+        config_path.to_string_lossy().into_owned(),
+        "--log-dir".into(),
+        log_dir.to_string_lossy().into_owned(),
+    ];
+    if let Some(value) = req.rpc_workers {
+        args.extend(["--rpc-workers".into(), value.to_string()]);
+    }
+    if let Some(value) = req.metrics_interval {
+        args.extend(["--metrics-interval".into(), value.to_string()]);
+    }
+    args
+}
+
+/// Spawn one local `DiskIO` service with a `NullDisk` backend.
+///
+/// Readiness is completed by the caller through the group-0 service registry,
+/// which proves both KV synchronization and ownership publication.
+///
+/// # Errors
+/// Returns an error for invalid ports, missing binaries, or an early child exit.
+pub async fn deploy_diskio_local(
+    req: &DiskioDeployRequest,
+    node: &NodeEntry,
+    workspace_dir: &Path,
+) -> Result<DeployedDiskdb> {
+    if req.rpc_port == 0 {
+        return Err(Error::Validation {
+            field: "rpc_port".into(),
+            message: "DiskIO RPC port must be non-zero".into(),
+        });
+    }
+    let binary = crowdb_diskio_bin().ok_or_else(|| Error::NotFound {
+        kind: "binary".into(),
+        id: "crowdb-diskio (set CROWDB_DISKIO_BIN)".into(),
+    })?;
+    let launch_binary = stage_server_binary(&binary, workspace_dir)?;
+    let log_dir = workspace_dir.join("log");
+    std::fs::create_dir_all(&log_dir)?;
+    let output_path = log_dir.join("crowdb-diskio.stdout.log");
+    let output = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&output_path)?;
+    let endpoint = format!("http://{}:{}", node.host, req.rpc_port);
+    let mut command = Command::new(&launch_binary);
+    command
+        .arg("--bind")
+        .arg(&node.host)
+        .arg("--port")
+        .arg(req.rpc_port.to_string())
+        .arg("--dummy-disk")
+        .arg("null")
+        .arg("--kv-seeds")
+        .arg(req.kv_server_mgmt_seeds.join(","))
+        .arg("--instance-id")
+        .arg(req.instance_id.to_string())
+        .arg("--rack-id")
+        .arg(req.rack_id.to_string())
+        .arg("--node-id")
+        .arg(req.node_id.to_string())
+        .arg("--dg-id")
+        .arg(req.disk_group_id.to_string())
+        .arg("--sync-interval-ms")
+        .arg("1000")
+        .arg("--auto-discover-disks")
+        .current_dir(workspace_dir)
+        .stdout(Stdio::from(output.try_clone()?))
+        .stderr(Stdio::from(output))
+        .kill_on_drop(false);
+    if let Some(interval) = req.metrics_interval {
+        command.arg("--metrics-interval").arg(interval.to_string());
+    }
+    if let Some(lib_dir) = diskio_ffi_lib_dir(workspace_dir) {
+        command.env("LD_LIBRARY_PATH", lib_dir);
+    }
+    let mut child = command.spawn()?;
+    let pid = child.id().ok_or_else(|| Error::Validation {
+        field: "pid".into(),
+        message: "spawned DiskIO child has no pid".into(),
+    })?;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    if let Some(status) = child.try_wait()? {
+        return Err(Error::UpstreamRpc {
+            node_id: req.server_id.clone(),
+            status: format!(
+                "DiskIO exited before registration with {status}; log={}",
+                output_path.display()
+            ),
+        });
+    }
+    std::mem::forget(child);
+    Ok(DeployedDiskdb {
+        server_id: req.server_id.clone(),
+        endpoint,
+        pid,
+        launch: LocalLaunchSpec {
+            program: launch_binary.to_string_lossy().into_owned(),
+            args: diskio_launch_args(req),
+            workdir: workspace_dir.to_string_lossy().into_owned(),
+            env: diskio_ffi_lib_dir(workspace_dir)
+                .map(|path| {
+                    std::collections::BTreeMap::from([(
+                        "LD_LIBRARY_PATH".into(),
+                        path.to_string_lossy().into_owned(),
+                    )])
+                })
+                .unwrap_or_default(),
+            readiness_url: None,
+        },
+    })
+}
+
+fn diskio_launch_args(req: &DiskioDeployRequest) -> Vec<String> {
+    let mut args = vec![
+        "--bind".into(),
+        "127.0.0.1".into(),
+        "--port".into(),
+        req.rpc_port.to_string(),
+        "--dummy-disk".into(),
+        "null".into(),
+        "--kv-seeds".into(),
+        req.kv_server_mgmt_seeds.join(","),
+        "--instance-id".into(),
+        req.instance_id.to_string(),
+        "--rack-id".into(),
+        req.rack_id.to_string(),
+        "--node-id".into(),
+        req.node_id.to_string(),
+        "--dg-id".into(),
+        req.disk_group_id.to_string(),
+        "--sync-interval-ms".into(),
+        "1000".into(),
+        "--auto-discover-disks".into(),
+    ];
+    if let Some(value) = req.metrics_interval {
+        args.extend(["--metrics-interval".into(), value.to_string()]);
+    }
+    args
+}
+
+fn diskio_ffi_lib_dir(workspace_dir: &Path) -> Option<PathBuf> {
+    let mut roots = vec![workspace_dir.to_path_buf()];
+    if let Ok(current) = std::env::current_dir() {
+        roots.push(current);
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(parent) = executable.parent() {
+            roots.push(parent.to_path_buf());
+        }
+    }
+    for mut root in roots {
+        for _ in 0..8 {
+            if root.join("libcrowdb_kv_client.so").exists() {
+                return Some(root);
+            }
+            for profile in ["debug", "release"] {
+                let candidate = root.join("target").join(profile);
+                if candidate.join("libcrowdb_kv_client.so").exists() {
+                    return Some(candidate);
+                }
+            }
+            if !root.pop() {
+                break;
+            }
+        }
+    }
+    None
 }

@@ -32,6 +32,7 @@ pub struct OpContext {
     kv: Arc<CrowdbKvClient>,
     config: RwLock<ConsoleConfig>,
     discovery: Option<Arc<ServiceDiscoveryClient>>,
+    test_scenario: bool,
 }
 
 impl std::fmt::Debug for OpContext {
@@ -41,6 +42,7 @@ impl std::fmt::Debug for OpContext {
             .field("kv", &"Arc<CrowdbKvClient>")
             .field("config", &self.config)
             .field("discovery", &self.discovery.is_some())
+            .field("test_scenario", &self.test_scenario)
             .finish()
     }
 }
@@ -55,6 +57,22 @@ impl OpContext {
     /// find a new leader when the seeded one is down.
     #[must_use]
     pub fn new(group0_endpoint: String, mgmt_seeds: Vec<String>, config: ConsoleConfig) -> Self {
+        Self::build(group0_endpoint, mgmt_seeds, config, false)
+    }
+
+    /// Build an `OpContext` for tests that intentionally omit a live group-0
+    /// cluster. Best-effort sysdata synchronization is skipped in this mode.
+    #[must_use]
+    pub fn new_for_test(group0_endpoint: String, mgmt_seeds: Vec<String>, config: ConsoleConfig) -> Self {
+        Self::build(group0_endpoint, mgmt_seeds, config, true)
+    }
+
+    fn build(
+        group0_endpoint: String,
+        mgmt_seeds: Vec<String>,
+        config: ConsoleConfig,
+        test_scenario: bool,
+    ) -> Self {
         let mut seeds = mgmt_seeds;
         if !seeds.iter().any(|s| s == &group0_endpoint) {
             seeds.push(group0_endpoint.clone());
@@ -71,6 +89,7 @@ impl OpContext {
             kv: shared,
             config: RwLock::new(config),
             discovery,
+            test_scenario,
         }
     }
 
@@ -100,6 +119,7 @@ impl OpContext {
             kv,
             config: RwLock::new(config),
             discovery,
+            test_scenario: false,
         }
     }
 
@@ -129,6 +149,7 @@ impl OpContext {
             kv,
             config: RwLock::new(config),
             discovery,
+            test_scenario: false,
         }
     }
 
@@ -136,6 +157,13 @@ impl OpContext {
     #[must_use]
     pub fn sysmd(&self) -> &CrowdbSysmdClient {
         &self.sysmd
+    }
+
+    /// Whether this context intentionally represents a test scenario without
+    /// a live group-0 cluster.
+    #[must_use]
+    pub fn is_test_scenario(&self) -> bool {
+        self.test_scenario
     }
 
     /// Access the [`CrowdbKvClient`] for the KV data-plane.

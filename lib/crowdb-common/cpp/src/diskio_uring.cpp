@@ -69,6 +69,7 @@ DiskIOUring::DiskIOUring(Topology topo)
         }
         p->sq_shift  = io_uring_sqe_shift(&p->ring);
         p->sqe_ready = std::make_unique<std::atomic<bool>[]>(p->ring.sq.ring_entries);
+        p->index     = i;
         p->mode      = cfg.mode;
         p->hybrid    = cfg.hybrid;
         p->sqpoll    = cfg.sqpoll;
@@ -316,12 +317,7 @@ void DiskIOUring::submit_lockfree(Pipeline &p, int fd, std::function<void(int)> 
 
         if (tail - head >= p.ring.sq.ring_entries) {
             // SQ full — wake poll thread, yield, retry.
-            p.pending_submit.store(true, std::memory_order_release);
-            size_t      pi = static_cast<size_t>(&p - &*pipelines_[0]);
-            PollThread *pt = find_poll_thread(pi);
-            if (pt != nullptr) {
-                wake_poll_thread(*pt);
-            }
+            mark_pending(p);
             std::this_thread::yield();
             continue;
         }
@@ -333,7 +329,7 @@ void DiskIOUring::submit_lockfree(Pipeline &p, int fd, std::function<void(int)> 
             prep(sqe);
             io_uring_sqe_set_data(sqe, entry);
             p.sqe_ready[idx].store(true, std::memory_order_release);
-            p.pending_submit.store(true, std::memory_order_release);
+            mark_pending(p);
             return;
         }
     }
@@ -566,6 +562,18 @@ void DiskIOUring::wake_poll_thread(PollThread &pt)
         if (pipelines_[pi]->valid) {
             uint64_t one = 1;
             (void)::write(pipelines_[pi]->eventfd, &one, sizeof(one));
+        }
+    }
+}
+
+void DiskIOUring::mark_pending(Pipeline &p)
+{
+    // One wake per empty-to-pending batch. The eventfd remains readable when
+    // the poll thread has not entered epoll_wait yet, closing that race.
+    if (!p.pending_submit.exchange(true, std::memory_order_acq_rel)) {
+        PollThread *pt = find_poll_thread(p.index);
+        if (pt != nullptr) {
+            wake_poll_thread(*pt);
         }
     }
 }
