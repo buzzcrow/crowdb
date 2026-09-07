@@ -697,11 +697,20 @@ export class CrowdbClusterDeployer {
     }
   }
 
-  /** Full teardown: stop all servers + reset config. */
+  /**
+   * Full teardown: reset config (which gracefully shuts down KV data
+   * in dependency order, then SIGTERMs all processes). Call `reset()`
+   * directly instead of `stop()` + `reset()` — stopping servers first
+   * prevents the RPC cleanup from removing store/group metadata from
+   * group-0 sysdata, causing "store already exists" errors on the
+   * next `start()`.
+   */
   async teardown(): Promise<void> {
     const totalStart = Date.now();
-    await this.stop();
     await this.reset();
+    this.deployedNodeIds = [];
+    this.diskdbNodeIds = [];
+    this._info = null;
     const totalMs = Date.now() - totalStart;
     if (totalMs >= VERY_SLOW_THRESHOLD_MS) {
       console.error(`[DEPLOYER] teardown() took ${totalMs}ms total (very slow)`);
