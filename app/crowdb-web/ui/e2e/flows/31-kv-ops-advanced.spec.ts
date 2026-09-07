@@ -44,6 +44,10 @@ async function scanAndRefresh(page: any) {
     const response = await scanResponse;
     expect(response.ok(), await response.text()).toBeTruthy();
     expect(await response.json()).toMatchObject({ items: expect.any(Array) });
+    // The response can arrive before React commits this scan, and a put's
+    // delayed auto-scan may supersede it. Wait for the latest scan to finish
+    // so subsequent row actions cannot target a detached table element.
+    await expect(scan).toBeEnabled();
     await expect(page.getByTestId('kv-scan-table')).toBeVisible({ timeout: 3_000 });
   });
 }
