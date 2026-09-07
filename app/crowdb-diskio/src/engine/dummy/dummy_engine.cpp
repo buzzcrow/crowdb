@@ -166,6 +166,10 @@ void DummyDiskEngine::submit_fsync(Disk *disk, std::function<void(int)> on_compl
             cb(res);
         }
     };
+    if (hack_reads_) {
+        inner_->submit_write(disk, 0, nullptr, 0, std::move(wrapped));
+        return;
+    }
     inner_->submit_fsync(disk, std::move(wrapped));
 }
 

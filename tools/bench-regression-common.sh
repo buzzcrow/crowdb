@@ -48,12 +48,12 @@ regression_reset_stack() {
 
 regression_require_metric_section() {
     local file="$1" section="$2"
-    [ -s "$file" ] && rg -q "^${section}$" "$file"
+    [ -s "$file" ] && grep -Eq -- "^${section}$" "$file"
 }
 
 regression_require_metric_counter() {
     local file="$1" pattern="$2"
-    [ -s "$file" ] && rg -q "$pattern" "$file"
+    [ -s "$file" ] && grep -Eq -- "$pattern" "$file"
 }
 
 regression_require_metric_files() {

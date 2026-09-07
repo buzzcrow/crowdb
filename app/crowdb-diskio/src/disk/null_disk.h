@@ -1,10 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-// NullDisk: dummy block device backed by memfd_create. The full uring
-// or blocking I/O path executes (real pwrite/pread on the memfd), but:
-// - Writes: data goes to tmpfs memory (discarded — not read back).
-// - Reads: the inner engine preads from the memfd, then the wrapper
+// NullDisk: dummy block device backed by /dev/zero. The full uring
+// or blocking I/O path executes (real pwrite/pread on the discard fd), but:
+// - Writes: data is discarded without consuming page-cache memory.
+// - Reads: the inner engine preads from /dev/zero, then the wrapper
 //   engine overwrites the buffer with deterministic pattern data.
 //
 // Used for benchmark tests: measures uring/blocking overhead without
@@ -66,9 +66,9 @@ class NullDisk : public Disk
     Zone *find_zone(uint32_t zone_index) override;
 
   private:
-    DiskId                            id_;
-    int                               fd_;
-    std::shared_ptr<IoEngine>         wrapper_;
+    DiskId                    id_;
+    int                       fd_;
+    std::shared_ptr<IoEngine> wrapper_;
 };
 
 } // namespace crowdb::diskio

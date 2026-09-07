@@ -103,14 +103,14 @@ verify_logs() {
     [ "$kv" -eq 3 ] && [ "$diskdb" -ge $((CASE_NUMBER * 3)) ] \
         && [ "$chunkdb" -ge $((CASE_NUMBER * 3)) ] \
         && [ "$diskio" -ge $((CASE_NUMBER * 3)) ] && [ "$cli_metrics" -eq "$CASE_NUMBER" ] \
-        && rg -q 'chunkio\.object\.write\.e2e\.lh' "$cli_metrics_file" \
-        && rg -q 'chunkio\.chunk\.allocate\.e2e\.lh' "$cli_metrics_file" \
-        && rg -q 'chunkio\.diskio\.write\.e2e\.lh' "$cli_metrics_file" \
+        && grep -Eq -- 'chunkio\.object\.write\.e2e\.lh' "$cli_metrics_file" \
+        && grep -Eq -- 'chunkio\.chunk\.allocate\.e2e\.lh' "$cli_metrics_file" \
+        && grep -Eq -- 'chunkio\.diskio\.write\.e2e\.lh' "$cli_metrics_file" \
         && regression_require_metric_files 'crowdb-kv-server-metrics-*.log' rust cpp-rpc cpp-tree \
         && regression_require_metric_files 'crowdb-diskdb-metrics-*.log' rust cpp-rpc \
         && regression_require_metric_files 'crowdb-chunkdb-metrics-*.log' rust cpp-rpc \
         && regression_require_metric_files 'crowdb-diskio-metrics-*.log' cpp-rpc \
-        && ! rg -q 'fd .*not registered|DiskNotExist' "$CURRENT_LOG_ROOT"/cli-cluster-local-deploy-*/deploy/*/*/*/log
+        && ! grep -ERq -- 'fd .*not registered|DiskNotExist' "$CURRENT_LOG_ROOT"/cli-cluster-local-deploy-*/deploy/*/*/*/log
 }
 
 run_case() {

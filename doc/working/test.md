@@ -76,9 +76,7 @@ the appropriate component task.
 
 ## Suite Timing
 
-The historical measurements below were taken on 2026-08-28 on Linux
-(post-task-fb pull `81d56124` + KV client dead-connection fix) and macOS.
-The latest Linux run was performed on 2026-09-05 by running each component
+The latest Linux run was performed on 2026-09-07 by running each component
 Pixi task independently, in table order. Latest times are wall-clock task
 times including incremental build and subprocess startup/shutdown. C++ ctest
 suites report their test count from ctest; Rust and UI suites report the
@@ -87,51 +85,51 @@ runner's test results. A timeout is recorded when the task exceeded the
 
 Status icons: ✅ = PASS (0 failures), ⚠️ = PASS with ignored tests, ❌ = TIMEOUT or failures.
 
-| Suite                 | Tests | macOS    | Linux (08-28) | Linux (09-06) | Status |
-| --------------------- | ----- | -------- | ------------- | ------------- | ------ |
-| `test-tree-ct`        | 444   | 20.1 s   | 15.78 s       | 42.2 s        | ✅     |
-| `test-common-ct`      | 26    | —        | 17.78 s       | 0.60 s        | ✅     |
-| `test-tree-ffi`       | 31    | 13.5 s   | 0.54 s        | 0.84 s        | ✅     |
-| `test-rpc-ct`         | 63    | —        | 2.59 s        | 4.14 s        | ✅     |
-| `test-rpc-ffi`        | 15    | —        | 0.68 s        | 0.75 s        | ✅     |
-| `test-diskio-ct`      | 99    | —        | 4.46 s        | 6.93 s        | ✅     |
-| `test-common`         | 74    | 21.9 s   | 9.78 s        | 9.99 s        | ✅     |
-| `test-protocol`       | 127   | 12.2 s   | 0.70 s        | 0.35 s        | ✅     |
-| `test-kv-core`        | 570   | 43.2 s   | 63.20 s       | 57.06 s       | ✅     |
-| `test-kv-client`      | 58    | 23.4 s   | 4.70 s        | 6.34 s        | ✅     |
-| `test-chunkdb-client` | 10    | 13.8 s   | 2.00 s        | 3.30 s        | ✅     |
-| `test-kv-server`      | 87    | 53.0 s   | 43.52 s       | 44.06 s       | ✅     |
-| `test-diskdb`         | 138   | 42.8 s   | 25.76 s       | 26.30 s       | ✅     |
-| `test-diskdb-client`  | 7     | 13.9 s   | 16.81 s       | 23.08 s       | ✅     |
-| `test-chunkdb`        | 79    | 27.8 s   | 19.75 s       | 39.32 s       | ✅     |
-| `test-chunk-client`   | 56    | —        | 12.11 s       | 10.78 s       | ✅     |
-| `test-diskio-client`  | 4     | —        | 43.22 s       | 19.31 s       | ✅     |
-| `test-console-shared` | 114   | 39.2 s   | 9.36 s        | 59.91 s       | ✅     |
-| `test-console-cli`    | 13    | 69.4 s   | 44.09 s       | 10.44 s       | ✅     |
-| `test-console-server` | 81    | 50.7 s   | 42.72 s       | 69.67 s       | ✅     |
-| `test-console-ui`     | 138   | 165.7 s  | 270.0 s       | 254.98 s      | ✅     |
+| Suite                 | Tests | macOS    | Linux (09-07) | Status |
+| --------------------- | ----- | -------- | ------------- | ------ |
+| `test-tree-ct`        | 445   | 20.1 s   | 39.27 s       | ✅     |
+| `test-common-ct`      | 27    | —        | 0.57 s        | ✅     |
+| `test-tree-ffi`       | 31    | 13.5 s   | 0.80 s        | ✅     |
+| `test-rpc-ct`         | 64    | —        | 4.00 s        | ✅     |
+| `test-rpc-ffi`        | 15    | —        | 0.78 s        | ✅     |
+| `test-diskio-ct`      | 102   | —        | 6.52 s        | ✅     |
+| `test-common`         | 74    | 21.9 s   | 9.96 s        | ✅     |
+| `test-protocol`       | 127   | 12.2 s   | 0.36 s        | ✅     |
+| `test-kv-core`        | 570   | 43.2 s   | 50.39 s       | ✅     |
+| `test-kv-client`      | 58    | 23.4 s   | 6.23 s        | ✅     |
+| `test-chunkdb-client` | 10    | 13.8 s   | 2.39 s        | ✅     |
+| `test-kv-server`      | 87    | 53.0 s   | 34.22 s       | ✅     |
+| `test-diskdb`         | 138   | 42.8 s   | 24.52 s       | ✅     |
+| `test-diskdb-client`  | 7     | 13.9 s   | 8.25 s        | ✅     |
+| `test-chunkdb`        | 80    | 27.8 s   | 16.37 s       | ✅     |
+| `test-chunk-client`   | 58    | —        | 8.61 s        | ✅     |
+| `test-diskio-client`  | 4     | —        | 8.41 s        | ✅     |
+| `test-console-shared` | 115   | 39.2 s   | 34.66 s       | ✅     |
+| `test-console-cli`    | 14    | 69.4 s   | 10.83 s       | ✅     |
+| `test-console-server` | 81    | 50.7 s   | 64.92 s       | ✅     |
+| `test-console-ui`     | 138   | 165.7 s  | 249.03 s      | ✅     |
 
 ---
 
-## Slowest Tests (2026-09-06)
+## Slowest Tests (2026-09-07)
 
 All individual tests or test binaries with wall-clock time >= 7 s.
 
 | Suite                 | Time    | Test / binary                                                              |
 | --------------------- | ------- | -------------------------------------------------------------------------- |
-| `test-kv-core`        | 41.64 s | `group_test` — Paxos group election, reconfiguration, recovery (99 tests)  |
-| `test-console-shared` | 15.13 s | `lifecycle_e2e_test` — lifecycle E2E (1 test)                              |
-| `test-console-server` | 14.58 s | `replica_leader_removal_test` — leader removal (2 tests)                   |
-| `test-console-server` | 13.50 s | `rolling_upgrade_test` — rolling upgrade (1 test)                          |
-| `test-diskio-client`  | 11.15 s | `disk_io_full_test` — full disk IO E2E (1 test)                            |
-| `test-console-server` | 10.35 s | `cluster_restart_incremental_test` — restart cycles (5 tests)              |
-| `test-console-ui`     | 10.7 s  | `50-chunk-capacity-disk-group:428` — assign disk-group to diskdb via UI    |
-| `test-kv-server`      | 9.39 s  | `cluster_e2e_test` — cluster E2E with kv-server subprocess spawns (6)      |
-| `test-console-ui`     | 8.8 s   | `21-kv-reconfig:254` — stop non-leader, stop leader triggers reelection    |
-| `test-console-ui`     | 7.9 s   | `13-todo-ui-behavior:269` — close dialog, preserve KV on DiskDB fail       |
-| `test-console-ui`     | 7.7 s   | `31-kv-ops-advanced:98` — prefix/selected/inline delete + copy, load more  |
-| `test-chunkdb`        | 7.39 s  | `full_stack_test` — full stack E2E (7 tests)                               |
-| `test-console-server` | 7.37 s  | `cluster_deployer_test` — deployer lifecycle (3 tests)                     |
+| `test-kv-core`        | 35.75 s | `group_test` — Paxos group election, reconfiguration, recovery (99 tests)  |
+| `test-console-ui`     | 21.6 s  | `13-todo-ui-behavior:29` — deploy 3 nodes, disjoint DiskDB listeners       |
+| `test-console-shared` | 15.15 s | `lifecycle_e2e_test` — lifecycle E2E (1 test)                              |
+| `test-console-server` | 13.46 s | `rolling_upgrade_test` — rolling upgrade (1 test)                          |
+| `test-chunkdb`        | 11.96 s | `full_stack_test` — full stack E2E (7 tests)                               |
+| `test-console-server` | 10.89 s | `cluster_restart_incremental_test` — restart cycles (5 tests)              |
+| `test-console-ui`     | 10.8 s  | `50-chunk-capacity-disk-group:428` — assign disk-group to diskdb via UI    |
+| `test-console-ui`     | 9.5 s   | `21-kv-reconfig:254` — stop non-leader, stop leader triggers reelection    |
+| `test-kv-server`      | 9.02 s  | `cluster_e2e_test` — cluster E2E with kv-server subprocess spawns (6)      |
+| `test-console-ui`     | 8.1 s   | `13-todo-ui-behavior:269` — close dialog, preserve KV on DiskDB fail       |
+| `test-console-ui`     | 7.9 s   | `31-kv-ops-advanced:98` — prefix/selected/inline delete + copy, load more  |
+| `test-console-server` | 7.43 s  | `cluster_deployer_test` — deployer lifecycle (3 tests)                     |
+| `test-console-server` | 7.22 s  | `replica_leader_removal_test` — leader removal (2 tests)                   |
 | `test-common`         | 7.01 s  | `config_test` — config watcher tests (8 tests)                             |
 
 ---
