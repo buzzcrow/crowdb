@@ -13,6 +13,7 @@
 //! for push mode.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use tokio::sync::mpsc;
@@ -27,7 +28,7 @@ use crate::traits::ChunkAllocator;
 use crate::writer::fetch::run_fetch_stage;
 use crate::{IoError, Result};
 use crowdb_common::ec::EcScheme;
-use crowdb_protocol::chunkdb::rpc::{Chunk, Location as ProtoLocation};
+use crowdb_protocol::chunkdb::rpc::{Chunk, DeleteChunkRequest, Location as ProtoLocation};
 
 /// Large-object writer — async stream. Owns the chunk-level drive
 /// loop + fetch stage; strip-level rotation is in `ChunkWriter::push`.
@@ -39,10 +40,20 @@ pub struct LargeAsyncObjectWriter {
     pub(crate) chunk_writer: Option<ChunkWriter>,
     pub(crate) chunk_prefetch_rx: Option<mpsc::Receiver<Result<Chunk>>>,
     pub(crate) chunk_prefetch_handle: Option<JoinHandle<()>>,
+    pub(crate) prepared_chunk: Option<Chunk>,
     pub(crate) locations: Vec<ProtoLocation>,
     pub(crate) logical_offset: u64,
     pub(crate) object_size: Option<u64>,
     pub(crate) finished: bool,
+    pub(crate) preparation_stalls: u64,
+    pub(crate) preparation_stall_time: Duration,
+    pub(crate) source_reads: u64,
+    pub(crate) source_read_time: Duration,
+    pub(crate) assembly_copies: u64,
+    pub(crate) assembly_copy_bytes: u64,
+    pub(crate) assembly_copy_time: Duration,
+    pub(crate) ec_encode_time: Duration,
+    pub(crate) completion_wait_time: Duration,
 }
 
 impl LargeAsyncObjectWriter {
@@ -61,10 +72,20 @@ impl LargeAsyncObjectWriter {
             chunk_writer: None,
             chunk_prefetch_rx: None,
             chunk_prefetch_handle: None,
+            prepared_chunk: None,
             locations: Vec::new(),
             logical_offset: 0,
             object_size: None,
             finished: false,
+            preparation_stalls: 0,
+            preparation_stall_time: Duration::ZERO,
+            source_reads: 0,
+            source_read_time: Duration::ZERO,
+            assembly_copies: 0,
+            assembly_copy_bytes: 0,
+            assembly_copy_time: Duration::ZERO,
+            ec_encode_time: Duration::ZERO,
+            completion_wait_time: Duration::ZERO,
         }
     }
 
@@ -73,10 +94,62 @@ impl LargeAsyncObjectWriter {
         self.config.per_writer_memory(&self.ec_scheme)
     }
 
+    /// Number of times the data path waited for chunk preparation.
+    pub fn preparation_stalls(&self) -> u64 {
+        self.preparation_stalls
+    }
+
+    /// Total time the data path waited for chunk preparation.
+    pub fn preparation_stall_time(&self) -> Duration {
+        self.preparation_stall_time
+    }
+
+    /// Start bounded chunk preparation before source consumption begins.
+    pub(crate) fn prepare(&mut self, object_size: Option<u64>) {
+        self.object_size = object_size;
+        let prefetch = ChunkPrefetch::new(
+            self.allocator.clone(),
+            self.ec_scheme,
+            self.config.clone(),
+            crowdb_protocol::chunk_id::CHUNK_TYPE_REPO,
+        );
+        let (chunk_rx, prefetch_handle) = prefetch.spawn(object_size);
+        self.chunk_prefetch_rx = Some(chunk_rx);
+        self.chunk_prefetch_handle = Some(prefetch_handle);
+    }
+
+    /// Wait until the first chunk is allocated without opening the writer.
+    /// Applications use this before admitting load so initial placement is not
+    /// charged to the data path.
+    pub(crate) async fn wait_until_prepared(&mut self) -> Result<()> {
+        if self.prepared_chunk.is_some() || self.chunk_writer.is_some() {
+            return Ok(());
+        }
+        let rx = self
+            .chunk_prefetch_rx
+            .as_mut()
+            .ok_or_else(|| IoError::Internal("chunk preparation is not running".into()))?;
+        match rx.recv().await {
+            Some(Ok(chunk)) => {
+                self.prepared_chunk = Some(chunk);
+                Ok(())
+            }
+            Some(Err(error)) => Err(error),
+            None => Err(IoError::Internal(
+                "chunk preparation ended before producing a chunk".into(),
+            )),
+        }
+    }
+
     /// Seal the current chunk (if any) and record its ProtoLocation.
     pub(crate) async fn seal_current(&mut self) -> Result<()> {
         if let Some(mut cw) = self.chunk_writer.take() {
             let location = cw.seal().await?;
+            let (stalls, stall_time) = cw.preparation_metrics();
+            self.preparation_stalls += stalls;
+            self.preparation_stall_time += stall_time;
+            self.ec_encode_time += cw.ec_encode_time;
+            self.completion_wait_time += cw.completion_wait_time;
             let bytes = location.length;
             if bytes > 0 {
                 self.locations.push(ProtoLocation {
@@ -93,8 +166,24 @@ impl LargeAsyncObjectWriter {
     /// Pull the next `Chunk` from the prefetch channel (or on-demand
     /// if the channel is exhausted).
     pub(crate) async fn next_chunk(&mut self) -> Result<Option<Chunk>> {
+        if let Some(chunk) = self.prepared_chunk.take() {
+            return Ok(Some(chunk));
+        }
         if let Some(rx) = self.chunk_prefetch_rx.as_mut() {
-            match rx.recv().await {
+            match rx.try_recv() {
+                Ok(result) => return result.map(Some),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    self.chunk_prefetch_rx = None;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(rx) = self.chunk_prefetch_rx.as_mut() {
+            let started = Instant::now();
+            self.preparation_stalls += 1;
+            let result = rx.recv().await;
+            self.preparation_stall_time += started.elapsed();
+            match result {
                 Some(Ok(c)) => return Ok(Some(c)),
                 Some(Err(e)) => return Err(e),
                 None => {
@@ -109,7 +198,10 @@ impl LargeAsyncObjectWriter {
             self.config.clone(),
             crowdb_protocol::chunk_id::CHUNK_TYPE_REPO,
         );
+        let started = Instant::now();
+        self.preparation_stalls += 1;
         let chunk = pf.on_demand().await?;
+        self.preparation_stall_time += started.elapsed();
         Ok(Some(chunk))
     }
 
@@ -141,6 +233,37 @@ impl LargeAsyncObjectWriter {
         self.ensure_open().await
     }
 
+    async fn stop_chunk_prefetch(&mut self) {
+        if let Some(handle) = self.chunk_prefetch_handle.take() {
+            handle.abort();
+            let _ = handle.await;
+        }
+        if let Some(chunk) = self.prepared_chunk.take() {
+            if let Some(chunk_id) = chunk.id {
+                let _ = self
+                    .allocator
+                    .delete_chunk(DeleteChunkRequest {
+                        chunk_id: Some(chunk_id),
+                    })
+                    .await;
+            }
+        }
+        if let Some(mut rx) = self.chunk_prefetch_rx.take() {
+            while let Ok(result) = rx.try_recv() {
+                if let Ok(chunk) = result {
+                    if let Some(chunk_id) = chunk.id {
+                        let _ = self
+                            .allocator
+                            .delete_chunk(DeleteChunkRequest {
+                                chunk_id: Some(chunk_id),
+                            })
+                            .await;
+                    }
+                }
+            }
+        }
+    }
+
     /// Async stream write. Runs fetch stage + chunk-level drive loop
     /// concurrently. The strip-level drive loop is in
     /// `ChunkWriter::push` (auto-rotates strips).
@@ -158,17 +281,9 @@ impl LargeAsyncObjectWriter {
             return Ok(Vec::new());
         }
 
-        self.object_size = object_size;
-
-        let prefetch = ChunkPrefetch::new(
-            self.allocator.clone(),
-            self.ec_scheme,
-            self.config.clone(),
-            crowdb_protocol::chunk_id::CHUNK_TYPE_REPO,
-        );
-        let (chunk_rx, prefetch_handle) = prefetch.spawn(object_size);
-        self.chunk_prefetch_rx = Some(chunk_rx);
-        self.chunk_prefetch_handle = Some(prefetch_handle);
+        if self.chunk_prefetch_rx.is_none() {
+            self.prepare(object_size);
+        }
 
         let channel_cap = (self.config.max_cached_buffer / self.config.read_buffer_size).max(1);
         let (block_tx, mut block_rx) = mpsc::channel::<Bytes>(channel_cap);
@@ -209,13 +324,29 @@ impl LargeAsyncObjectWriter {
             Ok::<(), IoError>(())
         };
 
-        let (_fetch_result, drive_result) = tokio::join!(fetch_fut, drive_fut);
-        drive_result?;
+        let pipeline_result = tokio::try_join!(
+            async {
+                fetch_fut
+                    .await
+                    .map_err(|error| IoError::SourceRead(error.to_string()))
+            },
+            drive_fut,
+        );
+        let (fetch_stats, ()) = match pipeline_result {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = self.abort_pipeline().await;
+                return Err(error);
+            }
+        };
+        self.source_reads += fetch_stats.source_reads;
+        self.source_read_time += fetch_stats.source_read_time;
+        self.assembly_copies += fetch_stats.assembly_copies;
+        self.assembly_copy_bytes += fetch_stats.assembly_copy_bytes;
+        self.assembly_copy_time += fetch_stats.assembly_copy_time;
 
         self.seal_current().await?;
-        if let Some(handle) = self.chunk_prefetch_handle.take() {
-            handle.abort();
-        }
+        self.stop_chunk_prefetch().await;
 
         Ok(std::mem::take(&mut self.locations))
     }
@@ -225,9 +356,7 @@ impl LargeAsyncObjectWriter {
         if let Some(mut cw) = self.chunk_writer.take() {
             let _ = cw.abort().await;
         }
-        if let Some(handle) = self.chunk_prefetch_handle.take() {
-            handle.abort();
-        }
+        self.stop_chunk_prefetch().await;
         Ok(std::mem::take(&mut self.locations))
     }
 }
@@ -250,19 +379,20 @@ impl ChunkIoWriter for LargeAsyncObjectWriter {
             self.chunk_prefetch_rx = Some(rx);
             self.chunk_prefetch_handle = Some(handle);
         }
-        // Ensure a ChunkWriter is open.
-        self.ensure_open().await?;
-        // Push the block (auto-rotates strips internally).
-        let cw = self
-            .chunk_writer
-            .as_mut()
-            .ok_or_else(|| IoError::Internal("no chunk writer".into()))?;
-        let status = cw.push(buffer).await?;
-        // If the chunk is full, rotate to a new chunk.
-        if cw.is_full() {
-            self.rotate_chunk().await?;
+        loop {
+            self.ensure_open().await?;
+            let status = self
+                .chunk_writer
+                .as_mut()
+                .ok_or_else(|| IoError::Internal("no chunk writer".into()))?
+                .push(buffer.clone())
+                .await?;
+            if status == FeedStatus::Pause {
+                self.rotate_chunk().await?;
+                continue;
+            }
+            return Ok(FeedStatus::Continue);
         }
-        Ok(status)
     }
 
     async fn on_finish(&mut self) -> Result<Vec<ProtoLocation>> {
@@ -271,9 +401,7 @@ impl ChunkIoWriter for LargeAsyncObjectWriter {
         }
         self.finished = true;
         self.seal_current().await?;
-        if let Some(handle) = self.chunk_prefetch_handle.take() {
-            handle.abort();
-        }
+        self.stop_chunk_prefetch().await;
         Ok(std::mem::take(&mut self.locations))
     }
 

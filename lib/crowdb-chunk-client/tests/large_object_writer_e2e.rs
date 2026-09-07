@@ -10,8 +10,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crowdb_chunk_client::{ChunkClientConfig, DiskWriter, DiskioBlockWriter, LargeAsyncObjectWriter};
-use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport, RetryConfig as ChunkdbRetryConfig};
+use crowdb_chunk_client::{ChunkClientConfig, ChunkIoClient, ChunkIoClientConfig, LargeWritePolicy};
 use crowdb_common::ec::EcScheme;
 use crowdb_diskio_client::DiskioClient;
 use crowdb_protocol::common::DiskId as ProtoDiskId;
@@ -71,10 +70,7 @@ struct E2eStack {
     _diskdb: DiskdbProcess,
     _diskio: DiskioProcess,
     _chunkdb: ChunkdbProcess,
-    rpc_server: Arc<RpcServer>,
-    conn: crowdb_rpc_ffi::Connection,
-    dio_client: Arc<DiskioClient>,
-    chunkdb_client: ChunkdbClient,
+    client: ChunkIoClient,
 }
 
 async fn start_e2e_stack() -> E2eStack {
@@ -102,10 +98,10 @@ async fn start_e2e_stack() -> E2eStack {
     diskdb.wait_for_ready().await;
     eprintln!("crowdb-diskdb ready");
 
-    // 4. Start diskio (block I/O, mem backend).
-    eprintln!("=== starting crowdb-diskio (mem) ===");
+    // 4. Start diskio (block I/O, NullDisk backend).
+    eprintln!("=== starting crowdb-diskio (null) ===");
     let diskio = DiskioProcess::start(&DiskioStartOpts {
-        dummy_disk: "mem",
+        dummy_disk: "null",
         kv_seeds: &cluster.mgmt_endpoints,
         disks: &[],
         fault_error_rate: 0.0,
@@ -128,34 +124,27 @@ async fn start_e2e_stack() -> E2eStack {
 
     // 5. Start chunkdb (chunk manager).
     eprintln!("=== starting crowdb-chunkdb ===");
-    let chunkdb = ChunkdbProcess::start(&cluster.mgmt_endpoints);
+    let chunkdb = ChunkdbProcess::start_with_unsafe_ec(&cluster.mgmt_endpoints, true);
     chunkdb.wait_for_ready().await;
     eprintln!("crowdb-chunkdb ready");
 
-    // 6. Build chunkdb client + refresh endpoints.
-    let svc = cluster.make_service_registry_client();
-    let transport = std::sync::Arc::new(ChunkdbRpcTransport::new());
-    let chunkdb_client = ChunkdbClient::with_retry_config(
-        svc,
-        ChunkdbRetryConfig {
-            max_retries: 5,
-            initial_backoff: Duration::from_millis(100),
-        },
-        transport,
-    );
-    // Wait for chunkdb to register in the service registry.
+    // 6. Build the application-facing client from management seeds.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    loop {
-        if chunkdb_client.refresh_endpoints().await.is_ok() {
-            break;
+    let client = loop {
+        if let Ok(client) = ChunkIoClient::connect(ChunkIoClientConfig {
+            management_seeds: cluster.mgmt_endpoints.clone(),
+        })
+        .await
+        {
+            break client;
         }
         assert!(
             std::time::Instant::now() <= deadline,
-            "chunkdb client failed to refresh endpoints within 10s"
+            "chunk IO client failed to discover services within 10s"
         );
         tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    eprintln!("chunkdb client endpoints refreshed");
+    };
+    eprintln!("chunk IO client connected");
 
     // Give the chunkdb server time to discover the diskdb endpoint via
     // the service registry topology refresh (runs every 2s).
@@ -167,10 +156,7 @@ async fn start_e2e_stack() -> E2eStack {
         _diskdb: diskdb,
         _diskio: diskio,
         _chunkdb: chunkdb,
-        rpc_server,
-        conn,
-        dio_client,
-        chunkdb_client,
+        client,
     }
 }
 
@@ -196,29 +182,29 @@ async fn e2e_case1_single_chunk_multi_strip() {
     // in 1 chunk.
     let config = Arc::new(ChunkClientConfig {
         max_chunk_size: 1024 * 1024 * 1024,
-        prealloc_depth: 2,
+        prefetch_strips_per_chunk: 2,
         parity_depth: 2,
-        chunk_prefetch_depth: 1,
+        chunk_preparation_depth: 1,
         read_buffer_size: 1024 * 1024,
         max_cached_buffer: 4 * 1024 * 1024,
-        prefetch_chunk_count: 1,
         memory_budget: 0,
     });
 
-    let diskio_writer: Arc<dyn DiskWriter> = Arc::new(DiskioBlockWriter::new(
-        stack.dio_client.clone(),
-        stack.rpc_server.clone(),
-        stack.conn.clone(),
-    ));
-
-    let mut writer = LargeAsyncObjectWriter::new(Arc::new(stack.chunkdb_client), diskio_writer, ec, config);
-
     let data = make_test_data(12 * 1024 * 1024);
     eprintln!("=== writing 12 MB ===");
-    let locs = writer
-        .write_stream(data.as_slice(), Some(12 * 1024 * 1024_u64))
+    let result = stack
+        .client
+        .prepare_large_write(
+            Some(12 * 1024 * 1024_u64),
+            LargeWritePolicy {
+                ec_scheme: ec,
+                client: config,
+            },
+        )
+        .write_stream(data.as_slice())
         .await
         .expect("write_stream should succeed");
+    let locs = result.locations;
 
     // 1 chunk → 1 Location.
     assert_eq!(locs.len(), 1, "Case 1: expected 1 Location (single chunk)");
@@ -245,29 +231,29 @@ async fn e2e_case2_chunk_rotation() {
     // 20 MB / 4 MB = 5 strips → 3 chunks (2 × 2 strips + 1 × 1 strip).
     let config = Arc::new(ChunkClientConfig {
         max_chunk_size: 8 * 1024 * 1024,
-        prealloc_depth: 2,
+        prefetch_strips_per_chunk: 2,
         parity_depth: 2,
-        chunk_prefetch_depth: 1,
+        chunk_preparation_depth: 1,
         read_buffer_size: 1024 * 1024,
         max_cached_buffer: 4 * 1024 * 1024,
-        prefetch_chunk_count: 1,
         memory_budget: 0,
     });
 
-    let diskio_writer: Arc<dyn DiskWriter> = Arc::new(DiskioBlockWriter::new(
-        stack.dio_client.clone(),
-        stack.rpc_server.clone(),
-        stack.conn.clone(),
-    ));
-
-    let mut writer = LargeAsyncObjectWriter::new(Arc::new(stack.chunkdb_client), diskio_writer, ec, config);
-
     let data = make_test_data(20 * 1024 * 1024);
     eprintln!("=== writing 20 MB ===");
-    let locs = writer
-        .write_stream(data.as_slice(), Some(20 * 1024 * 1024_u64))
+    let result = stack
+        .client
+        .prepare_large_write(
+            Some(20 * 1024 * 1024_u64),
+            LargeWritePolicy {
+                ec_scheme: ec,
+                client: config,
+            },
+        )
+        .write_stream(data.as_slice())
         .await
         .expect("write_stream should succeed");
+    let locs = result.locations;
 
     // 5 strips / 2 strips per chunk = 2.5 → 3 chunks → 3 Locations.
     assert_eq!(locs.len(), 3, "Case 2: expected 3 Locations (rotation)");

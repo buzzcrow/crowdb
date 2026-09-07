@@ -26,7 +26,6 @@ when adding or resolving a tracked item.
 - **`lib/crowdb-tree/include/crowdb-tree/mapping_table.h:120`** —
   `Options::mapping_segment_slots` is fixed at `kSegmentSize`; needs
   parameterization for variable segment slot counts.
-
 ## crowdb-chunk-client
 
 - **`lib/crowdb-chunk-client/tests/common/mod.rs`** — `LocalFileDiskWriter`

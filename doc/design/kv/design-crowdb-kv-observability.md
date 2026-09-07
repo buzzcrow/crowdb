@@ -101,6 +101,11 @@ reset window state). Interval is typically 5s or 10s.
   post-flush callback that calls C++ `flush_metrics_str()` for each engine
   and writes the `cpp-tree` block. Also provides `snapshot(prefix)` for
   in-memory access without resetting window state.
+  The pre-flush engine collector loads immutable `ArcSwap` snapshots of its
+  per-group and per-store handles. Cumulative delta cursors live beside those
+  handles as atomics. Sampling therefore takes no handle-list or delta-state
+  mutex; discovery registers new metric handles in a separate bounded registry
+  phase and publishes a replacement snapshot.
 - C++ (`lib/crowdb-tree/include/lib/crowdb-tree/metrics.h`, `lib/crowdb-tree/src/metrics.cpp`):
   Same type-grouped pattern. `Crowdbtree` owns its own `MetricsRegistry`
   internally (`init_metrics(prefix)` called from `open()`). Metric handles
@@ -177,6 +182,12 @@ on whitespace, parse as numbers).
 `registry.snapshot(prefix)` returns current values without resetting window
 state. Enables future `/metrics` HTTP endpoint and GUI integration. No need
 to parse log files to get metric values.
+
+Management status is a curated view, not a second metrics system. Each status
+field names one registry metric and reads it through exact-name lookup. Missing
+or not-yet-registered names are omitted. The status path never registers a
+metric or retains duplicate hot-path counters; `/metrics` remains the endpoint
+for the complete registry.
 
 ### 2.8 FFI Boundary
 
@@ -294,8 +305,10 @@ handle. Two counters cover follower-read distribution:
   followers are lagging and the policy is providing little benefit.
 
 The client library also maintains per-op-kind window latency histograms
-(`WindowLatency` / `WindowLatencySnapshot`), drained by `drain_window`
-for periodic flushing and merged into the bench runner's cumulative
+(`WindowLatency` / `WindowLatencySnapshot`). Recording threads select one of
+64 stable shards and contend only with recorders assigned to that shard;
+`drain_window` locks and merges one shard at a time for periodic flushing and
+feeds the bench runner's cumulative
 `bench.*.lh` histograms. These use `crowdb-common`'s `PreciseHistogram`
 (not the server's fixed-bucket `LatencyHistogram`) because the bench
 needs p50/p90/p99/p999/max at ≥3 significant digits, the same precision
@@ -454,14 +467,28 @@ later if a detached use case appears.
 
 ### 3.9 Log Content Guidelines
 
-No strict `component=` field template (D6). Guidelines:
+Server and client logs use the same context field names:
 
-- Every line should be clear and readable, carrying enough context to
-  locate the code position and the surrounding state.
-- Bring rich info for identifying bugs — structured fields where they
-  fit naturally, but author flexibility wins over a rigid template.
-- Consensus-event logs must carry `node_id`, `group_id`, `slot`,
-  `term` where applicable (per §1 mandatory signals).
+- `s`: store ID when known.
+- `g`: group ID when known.
+- `replica`: the replica executing or receiving an operation.
+- `leader`: the server's current leader or the client's currently believed
+  leader. Omit it when unknown; do not copy a merely targeted replica into it.
+
+Stable `s`, `g`, and `replica` context belongs in tracing spans at task and RPC
+boundaries. Spawned futures are explicitly instrumented because Tokio tasks do
+not inherit the caller's active span. Leadership is dynamic, so `leader` or
+`role` is recorded on the event whose interpretation needs it instead of being
+captured in a long-lived span.
+
+C++ thread names are published as immutable thread-id/name maps. The spdlog
+formatter atomically loads a snapshot keyed by the originating log message's
+thread ID; it does not use formatter-thread TLS and takes no shared mutex.
+
+- Every line should carry enough context to locate the code position and the
+  surrounding state.
+- Consensus-event logs must carry `replica`, `g`, `slot`, and `term` where
+  applicable (per §1 mandatory signals).
 - Machine-parseability is a plus — AI agents do the real log-digging.
 
 ### 3.10 Extension Path

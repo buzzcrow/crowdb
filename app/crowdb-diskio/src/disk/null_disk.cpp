@@ -6,44 +6,25 @@
 #include "engine/dummy/dummy_engine.h"
 
 #include <fcntl.h>
-#include <sys/mman.h>
 #include <unistd.h>
-
-#include <cerrno>
-#include <cstring>
 
 namespace crowdb::diskio
 {
 
 namespace
 {
-// Create a memfd and ftruncate it to a small size. The actual I/O
-// goes through the kernel (pwrite/pread on tmpfs), exercising the
-// full uring/blocking path. Content is discarded — NullDisk reads
-// return pattern data via the wrapper engine, not the memfd content.
-int create_memfd(int64_t capacity)
+// /dev/zero accepts reads and writes at arbitrary offsets while retaining no
+// data. I/O still traverses the uring/blocking engine without growing tmpfs.
+int open_discard_fd()
 {
-#ifdef __linux__
-    int fd = ::memfd_create("crowdb-null-disk", 0);
-    if (fd < 0) {
-        return -1;
-    }
-    if (::ftruncate(fd, capacity) < 0) {
-        ::close(fd);
-        return -1;
-    }
-    return fd;
-#else
-    (void)capacity;
-    return -1;
-#endif
+    return ::open("/dev/zero", O_RDWR | O_CLOEXEC);
 }
 } // namespace
 
 NullDisk::NullDisk(DiskId id, std::shared_ptr<IoEngine> engine, std::vector<Zone> zones,
                    std::optional<DiskProperties> props)
     : id_(id),
-      fd_(create_memfd(zones.empty() ? 4096 : zones[0].capacity))
+      fd_(open_discard_fd())
 {
     // Wrap the shared engine with read-content hack + optional fault injection.
     wrapper_ = std::make_shared<DummyDiskEngine>(std::move(engine), true, props);

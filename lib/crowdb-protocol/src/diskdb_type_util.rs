@@ -142,14 +142,14 @@ impl ZoneValueExt for ZoneValue {
     fn compute_checksum(&mut self) {
         let mut hasher = crc32fast::Hasher::new();
         hasher.update(&self.usage_bitmap);
-        hasher.update(&self.compact_ts.to_le_bytes());
+        hasher.update(&self.compact_slot.to_le_bytes());
         self.crc32 = hasher.finalize();
     }
 
     fn verify_checksum(&self) -> bool {
         let mut hasher = crc32fast::Hasher::new();
         hasher.update(&self.usage_bitmap);
-        hasher.update(&self.compact_ts.to_le_bytes());
+        hasher.update(&self.compact_slot.to_le_bytes());
         self.crc32 == hasher.finalize()
     }
 

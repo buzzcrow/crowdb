@@ -44,7 +44,7 @@ async fn maybe_apply_persisted_config(group: &mut PxGroup, config_root: &Path, s
                 Ok(None) => {}
                 Err(e) => {
                     tracing::warn!(
-                        group_id = group.group_id(),
+                        g = group.group_id(),
                         error = %e,
                         "failed to load persisted group config"
                     );
@@ -53,7 +53,7 @@ async fn maybe_apply_persisted_config(group: &mut PxGroup, config_root: &Path, s
         }
         Err(e) => {
             tracing::warn!(
-                group_id = group.group_id(),
+                g = group.group_id(),
                 error = %e,
                 "failed to load node-config.json"
             );
@@ -186,9 +186,8 @@ pub async fn create_group_with_wal(
         store_id,
         group_id,
         max_inflight = config.max_inflight(),
-        admission = config.inflight_admission().label(),
+        reject_on_window_full = config.reject_on_inflight_window_full(),
         coalesce_max_keys = config.paxos.coalesce_max_keys,
-        coalesce_drain_threshold = config.paxos.coalesce_drain_threshold,
         skip_fsync = config.wal_skip_fsync,
         wal_early_ack = config.wal_early_ack,
         "group created with config"

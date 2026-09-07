@@ -585,6 +585,7 @@ checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 name = "crowdb-chunk-client"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "async-trait",
  "bincode",
  "bytes",
@@ -597,6 +598,7 @@ dependencies = [
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
+ "serde",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -639,6 +641,7 @@ dependencies = [
 name = "crowdb-chunkdb-client"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "bytes",
  "crowdb-kv-client",
  "crowdb-protocol",
@@ -658,8 +661,11 @@ dependencies = [
  "chrono",
  "clap",
  "crossbeam-channel",
+ "crowdb-chunk-client",
+ "crowdb-chunkdb-client",
  "crowdb-common",
  "crowdb-console-shared",
+ "crowdb-diskdb-client",
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
@@ -684,6 +690,7 @@ version = "0.1.0"
 dependencies = [
  "crowdb-test-harness",
  "flate2",
+ "libc",
  "notify",
  "notify-debouncer-mini",
  "serde",
@@ -771,6 +778,7 @@ dependencies = [
 name = "crowdb-diskio-client"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "crowdb-common",
  "crowdb-kv-client",
  "crowdb-protocol",
@@ -821,6 +829,7 @@ dependencies = [
 name = "crowdb-kv-client"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "axum",
  "bytes",
  "crowdb-common",
@@ -844,6 +853,7 @@ dependencies = [
 name = "crowdb-kv-server"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "axum",
  "bytes",
  "clap",
@@ -891,6 +901,7 @@ dependencies = [
 name = "crowdb-rpc-ffi"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "cc",
  "crowdb-common",
  "crowdb-protocol",

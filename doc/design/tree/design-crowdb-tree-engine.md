@@ -374,6 +374,14 @@ old ones via the epoch manager.
 | Point/range readers (N) | Epoch enter/exit; L0 overlay + lock-free atomic loads of immutable pages |
 | Long readers / export | Pin a `RootVersion` (refcount) + L0 snapshot for a stable MVCC view |
 
+Demand-load serialization is intentionally confined to the cold
+`Crowdbtree::resident` path. The first lookup is lock-free; only an unloaded
+mapping takes `load_mutex_`, rechecks, reads, and installs. Per-page in-flight
+state would improve simultaneous cold misses but adds another lifetime state
+machine, so it is deferred until cold-load contention is measured. The applied
+slot gap set likewise retains its short mutex: slots are normally contiguous
+and the set stays small.
+
 Invariants:
 
 - **I1** A page is freed only after no reader epoch can reference it.
@@ -877,7 +885,7 @@ pub trait KVEngine: Send + Sync {
     fn get(&self, key: &[u8]) -> KVFuture<Option<(u64, Vec<u8>)>>;
     fn scan(&self, prefix: &[u8], limit: usize) -> KVFuture<(Vec<(Vec<u8>, u64, Vec<u8>)>, bool)>;
     // iter_all / clear / compare / resume_from_slot /
-    // persist_snapshot / set_gc_watermark / collect_garbage: plain sync fns.
+    // persist_snapshot / set_gc_watermark / compact_sparse_blocks: plain sync fns.
     // Diagnostic/maintenance-path only (compare/iter_all: tests + snapshot
     // export; the rest: restore path + the periodic group-maintenance
     // task), never on the hot Paxos-accept / crowdb-rpc-read path, so a brief

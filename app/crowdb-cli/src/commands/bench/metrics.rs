@@ -16,6 +16,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use crowdb_chunk_client::ChunkClientMetrics;
 use crowdb_common::logging::open_named_log;
 use crowdb_common::metrics::{MetricsRegistry, MetricsRunner};
 
@@ -27,6 +28,7 @@ use super::loader::BenchRecorder;
 /// `set_cpp_flush` callback installed at construction time.
 pub struct BenchMetrics {
     pub recorder: Arc<BenchRecorder>,
+    pub chunk_io: Arc<ChunkClientMetrics>,
     runner: Option<MetricsRunner>,
 }
 
@@ -51,8 +53,10 @@ impl BenchMetrics {
         if metrics_interval == 0 {
             let mut reg = MetricsRegistry::new();
             let recorder = Arc::new(BenchRecorder::from_registry(&mut reg));
+            let chunk_io = Arc::new(ChunkClientMetrics::register(&mut reg));
             return Self {
                 recorder,
+                chunk_io,
                 runner: None,
             };
         }
@@ -63,8 +67,10 @@ impl BenchMetrics {
                 eprintln!("warn: failed to open metrics log: {e}");
                 let mut reg = MetricsRegistry::new();
                 let recorder = Arc::new(BenchRecorder::from_registry(&mut reg));
+                let chunk_io = Arc::new(ChunkClientMetrics::register(&mut reg));
                 return Self {
                     recorder,
+                    chunk_io,
                     runner: None,
                 };
             }
@@ -88,11 +94,13 @@ impl BenchMetrics {
             }
         });
         let reg = runner.registry().clone();
-        let recorder = Arc::new(BenchRecorder::from_registry(
-            &mut reg.lock().expect("metrics registry poisoned"),
-        ));
+        let mut registry = reg.lock().expect("metrics registry poisoned");
+        let recorder = Arc::new(BenchRecorder::from_registry(&mut registry));
+        let chunk_io = Arc::new(ChunkClientMetrics::register(&mut registry));
+        drop(registry);
         Self {
             recorder,
+            chunk_io,
             runner: Some(runner),
         }
     }

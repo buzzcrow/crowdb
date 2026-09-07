@@ -8,10 +8,10 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crowdb_diskdb::model::disk::DdbDisk;
-use crowdb_diskdb::model::disk_group::{AllocError, DdbDiskGroup};
+use crowdb_diskdb::model::disk_group::{AllocError, DdbDiskGroup, TentativeBlock};
 use crowdb_diskdb::model::zone::DdbZone;
 use crowdb_protocol::common::{DiskId, HwStatus};
-use crowdb_protocol::diskdb::rpc::DiskValue;
+use crowdb_protocol::diskdb::rpc::{BusyBlockValue, DiskValue};
 
 fn disk_id(n: u64) -> DiskId {
     DiskId { high: 0, low: n }
@@ -36,7 +36,7 @@ fn make_disk(disk_low: u64, zone_count: u32, zone_capacity: u32) -> Arc<DdbDisk>
     disk.set_effective_status(HwStatus::Up);
     for zi in 0..zone_count {
         let zone = Arc::new(DdbZone::new(disk_id(disk_low), zi, DG, zone_capacity));
-        disk.add_zone(zone);
+        disk.add_zone(&zone);
     }
     disk.rebuild_active_zones(ZONE_ROTATE);
     disk
@@ -45,12 +45,34 @@ fn make_disk(disk_low: u64, zone_count: u32, zone_capacity: u32) -> Arc<DdbDisk>
 fn make_dg_with_disks(disk_specs: &[(u64, u32, u32)]) -> Arc<DdbDiskGroup> {
     let dg = Arc::new(DdbDiskGroup::new(DG, 1, 1));
     // Default group status is Init; set to Up for allocation tests.
-    *dg.status.write().unwrap() = HwStatus::Up;
+    dg.set_status(HwStatus::Up);
     for &(disk_low, zone_count, zone_capacity) in disk_specs {
         let disk = make_disk(disk_low, zone_count, zone_capacity);
         dg.add_disk(disk);
     }
     dg
+}
+
+#[test]
+fn tentative_cache_removes_only_matching_block() {
+    let dg = DdbDiskGroup::new(DG, 1, 1);
+    let block = TentativeBlock {
+        disk_id: disk_id(7),
+        zone_index: 3,
+        unit_offset: 11,
+        value: BusyBlockValue {
+            allocation_ts: 99,
+            unit_count: 2,
+            ..Default::default()
+        },
+    };
+    dg.cache_tentative(block);
+
+    assert!(dg.tentative(99).is_some());
+    assert!(!dg.remove_matching_tentative(99, disk_id(8), 3, 11));
+    assert!(dg.tentative(99).is_some());
+    assert!(dg.remove_matching_tentative(99, disk_id(7), 3, 11));
+    assert!(dg.tentative(99).is_none());
 }
 
 // ── DdbDisk ────────────────────────────────────────────────────
@@ -99,7 +121,7 @@ fn disk_free_is_persist_only() {
     let disk = make_disk(1, 1, 64);
     // Fill the zone completely.
     while disk.disk_allocate(1, CAS_RETRY, ZONE_ROTATE).is_some() {}
-    let zones = disk.zones.read().unwrap();
+    let zones = disk.zones.load();
     assert_eq!(zones[0].used_count.load(std::sync::atomic::Ordering::Acquire), 64);
     let backlog_before = zones[0]
         .uncompacted_free_record_count
@@ -136,7 +158,7 @@ fn rotate_clears_compacted_ready_on_published_zones() {
     // rebuild_active_zones picks the first 4 zones. Mark all zones
     // compacted_ready = true first (simulating recovery / compaction).
     {
-        let zones = disk.zones.read().unwrap();
+        let zones = disk.zones.load();
         for zone in zones.iter() {
             zone.mark_compacted_ready();
         }
@@ -150,7 +172,7 @@ fn rotate_clears_compacted_ready_on_published_zones() {
     disk.disk_allocate(1, CAS_RETRY, ZONE_ROTATE);
     // After rotation, the new active zones should have
     // compacted_ready = false (cleared on publish).
-    let active = disk.active_zone_context.read().unwrap();
+    let active = disk.active_zone_context.load();
     assert!(
         !active.is_empty(),
         "active set should not be empty after rotation"
@@ -225,6 +247,18 @@ fn dg_allocate_blocks_no_space_when_count_exceeds_disks() {
     // reusing disks, so the 3rd block can't be placed.
     let result = dg.allocate_blocks(1, 3, &[], CAS_RETRY, ZONE_ROTATE);
     assert!(matches!(result, Err(AllocError::NoSpace)));
+}
+
+#[test]
+fn dg_allocate_blocks_no_space_rolls_back_partial_claims() {
+    let dg = make_dg_with_disks(&[(1, 1, 128), (2, 1, 128)]);
+    let usage_before = dg.aggregate_usage();
+
+    let result = dg.allocate_blocks(1, 3, &[], CAS_RETRY, ZONE_ROTATE);
+
+    assert!(matches!(result, Err(AllocError::NoSpace)));
+    assert_eq!(dg.aggregate_usage().busy_bytes, usage_before.busy_bytes);
+    assert!(dg.allocate_blocks(1, 2, &[], CAS_RETRY, ZONE_ROTATE).is_ok());
 }
 
 #[test]

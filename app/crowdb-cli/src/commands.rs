@@ -8,27 +8,17 @@
 //! corresponding `ops::*` function.
 
 pub(crate) mod bench;
-pub(crate) mod chunk_diskdb;
-pub(crate) mod chunk_stub;
+pub(crate) mod chunk;
 pub(crate) mod cluster;
-pub(crate) mod hardware;
-pub(crate) mod kv_data;
-pub(crate) mod kv_logical;
-pub(crate) mod kv_server;
+pub(crate) mod kv;
 
 pub(crate) use bench::{run_bench_verb, BenchVerb};
-pub(crate) use chunk_diskdb::{run_chunk_diskdb_verb, ChunkDiskdbVerb};
-pub(crate) use chunk_stub::{run_chunk_stub_verb, ChunkStubVerb};
+pub(crate) use chunk::{run_chunk_diskdb_verb, run_chunk_stub_verb, ChunkDiskdbVerb, ChunkStubVerb};
 pub(crate) use cluster::{run_cluster_verb, ClusterVerb};
-pub(crate) use hardware::{
-    run_disk_group_verb, run_disk_verb, run_node_verb, run_rack_verb, DiskGroupVerb, DiskVerb, NodeVerb,
-    RackVerb,
+pub(crate) use kv::{
+    run_group_verb, run_kv_data_verb, run_kv_server_verb, run_replica_verb, run_store_verb, GroupVerb,
+    KvDataVerb, KvServerVerb, ReplicaVerb, StoreVerb,
 };
-pub(crate) use kv_data::{run_kv_data_verb, KvDataVerb};
-pub(crate) use kv_logical::{
-    run_group_verb, run_replica_verb, run_store_verb, GroupVerb, ReplicaVerb, StoreVerb,
-};
-pub(crate) use kv_server::{run_kv_server_verb, KvServerVerb};
 
 use std::process::ExitCode;
 

@@ -9,8 +9,10 @@
 //! `clean` removes orphaned sysdata entries without touching running
 //! servers.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
+use crowdb_kv_client::RangeBindingClient;
 use crowdb_protocol::common::{HwStatus, NodeValue, RackValue, ReplicaValue};
 use crowdb_protocol::mgmt::{RemoteReplicaInfo, SystemInitRequest};
 use crowdb_protocol::port_alloc::{self, PortAllocConfig};
@@ -19,7 +21,10 @@ use crowdb_protocol::ServicePort;
 use crate::clients::http::ServerClient;
 use crate::config::{NodeEntry, RackEntry, ReplicaEntry, ServerEntry, ServiceType};
 use crate::error::{Error, Result};
-use crate::lifecycle::{self, crowdb_kv_server_bin, DeployRequest};
+use crate::lifecycle::{
+    self, crowdb_kv_server_bin, ChunkdbDeployRequest, DeployRequest, DiskdbDeployRequest, DiskioDeployRequest,
+};
+use crate::ops::hardware::{self, AddDiskInput};
 use crate::ops::OpContext;
 
 /// Summary of a completed cluster init.
@@ -425,6 +430,11 @@ pub async fn destroy(ctx: &OpContext) -> Result<()> {
         cfg.stores.clear();
         cfg.groups.clear();
         cfg.servers.clear();
+        cfg.local_launches.clear();
+        cfg.disks.clear();
+        cfg.disk_groups.clear();
+        cfg.nodes.clear();
+        cfg.racks.clear();
     }
 
     Ok(())
@@ -467,6 +477,7 @@ pub async fn reset(ctx: &OpContext) -> Result<()> {
 pub struct CleanResult {
     pub new_leader: String,
     pub wiped_nodes: u64,
+    pub restarted_services: u64,
 }
 
 /// Wipe user data on every node (drop + recreate WAL + engine for
@@ -479,7 +490,12 @@ pub struct CleanResult {
 /// Returns an error if no servers are configured.
 pub async fn clean(ctx: &OpContext, store_id: u64, group_id: u64) -> Result<CleanResult> {
     let cfg = ctx.config().clone();
-    let mut mgmt_urls: Vec<String> = cfg.servers.iter().map(|s| s.url.clone()).collect();
+    let mut mgmt_urls: Vec<String> = cfg
+        .servers
+        .iter()
+        .filter(|server| server.service_type == ServiceType::Kv)
+        .map(|server| server.url.clone())
+        .collect();
     mgmt_urls.sort();
     mgmt_urls.dedup();
     if mgmt_urls.is_empty() {
@@ -510,11 +526,100 @@ pub async fn clean(ctx: &OpContext, store_id: u64, group_id: u64) -> Result<Clea
     }
 
     // Wait for re-election: poll topology until a leader is found.
-    let leader = wait_for_leader(&mgmt_urls, store_id, group_id, std::time::Duration::from_secs(10)).await;
+    if wiped != u64::try_from(mgmt_urls.len()).unwrap_or(u64::MAX) {
+        return Err(Error::UpstreamRpc {
+            node_id: "kv-cluster".into(),
+            status: format!("wiped {wiped} of {} KV servers", mgmt_urls.len()),
+        });
+    }
+    let leader = wait_for_leader(&mgmt_urls, store_id, group_id, std::time::Duration::from_secs(10))
+        .await
+        .ok_or_else(|| Error::UpstreamRpc {
+            node_id: format!("store-{store_id}-group-{group_id}"),
+            status: "leader unavailable after data wipe".into(),
+        })?;
     Ok(CleanResult {
-        new_leader: leader.unwrap_or_default(),
+        new_leader: leader,
         wiped_nodes: wiped,
+        restarted_services: 0,
     })
+}
+
+/// Restart every locally deployed non-KV storage service using its retained
+/// launch command, preserving stable service identity and endpoints.
+///
+/// # Errors
+/// Returns an error if launch state is missing or any process cannot restart.
+pub async fn restart_storage_services(ctx: &OpContext) -> Result<u64> {
+    let mut services = ctx
+        .config()
+        .servers
+        .iter()
+        .filter(|server| {
+            matches!(
+                server.service_type,
+                ServiceType::Diskdb | ServiceType::Diskio | ServiceType::Chunkdb
+            )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let launches = services
+        .iter()
+        .map(|server| {
+            let pid = server.pid.ok_or_else(|| Error::Validation {
+                field: "pid".into(),
+                message: format!("{} has no tracked process", server.id),
+            })?;
+            let spec = ctx
+                .config()
+                .local_launches
+                .get(&server.id)
+                .cloned()
+                .ok_or_else(|| Error::Validation {
+                    field: "local_launch".into(),
+                    message: format!("{} has no retained launch command", server.id),
+                })?;
+            Ok((server.id.clone(), (pid, spec)))
+        })
+        .collect::<Result<std::collections::HashMap<_, _>>>()?;
+    for server in &services {
+        let (pid, _) = &launches[&server.id];
+        lifecycle::stop_pid_with_timeout(*pid, std::time::Duration::from_secs(15))?;
+    }
+    services.sort_by_key(|server| match server.service_type {
+        ServiceType::Diskdb => 0,
+        ServiceType::Diskio => 1,
+        ServiceType::Chunkdb => 2,
+        _ => 3,
+    });
+    for server in &services {
+        let (old_pid, spec) = &launches[&server.id];
+        let pid = lifecycle::restart_local_service(&server.id, *old_pid, spec).await?;
+        if let Some(entry) = ctx
+            .config_mut()
+            .servers
+            .iter_mut()
+            .find(|entry| entry.id == server.id)
+        {
+            entry.pid = Some(pid);
+        }
+    }
+    let diskdb_count = services
+        .iter()
+        .filter(|server| server.service_type == ServiceType::Diskdb)
+        .count();
+    let chunkdb_count = services
+        .iter()
+        .filter(|server| server.service_type == ServiceType::Chunkdb)
+        .count();
+    if diskdb_count > 0 {
+        wait_for_diskdb_registration(ctx, diskdb_count).await?;
+    }
+    if chunkdb_count > 0 {
+        wait_for_chunkdb_registration(ctx, chunkdb_count).await?;
+        wait_for_chunkdb_bindings(ctx, chunkdb_count).await?;
+    }
+    Ok(u64::try_from(services.len()).unwrap_or(u64::MAX))
 }
 
 /// Poll `/topology` on every server until a leader for the target
@@ -568,6 +673,587 @@ pub struct LocalDeploySummary {
     pub init_summary: InitSummary,
 }
 
+/// `DiskDB` topology attached to an existing local KV deployment.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LocalDiskdbDeploySummary {
+    pub instance_count: usize,
+    pub disk_group_count: usize,
+    pub disk_count: usize,
+    pub data_groups: Vec<u64>,
+}
+
+/// Inputs for [`local_deploy_diskdb`].
+#[derive(Debug, Clone)]
+pub struct LocalDiskdbDeployConfig {
+    pub disk_groups_per_node: usize,
+    pub disks_per_group: usize,
+    pub capacity_bytes: u64,
+    pub zone_size_bytes: u64,
+    pub unit_size_bytes: u32,
+    pub data_groups: Vec<u64>,
+    pub rpc_workers: Option<u32>,
+    pub kv_connections: Option<usize>,
+    pub kv_client_rpc_workers: Option<u32>,
+}
+
+/// Summary of `ChunkDB` instances attached to a local deployment.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LocalChunkdbDeploySummary {
+    pub instance_count: usize,
+}
+
+/// Transport controls for locally deployed `ChunkDB` instances.
+#[derive(Debug, Clone)]
+pub struct LocalChunkdbDeployConfig {
+    pub instance_count: usize,
+    pub allow_unsafe_ec: bool,
+    pub rpc_workers: Option<u32>,
+    pub kv_connections: Option<usize>,
+    pub kv_client_rpc_workers: Option<u32>,
+    pub diskdb_connections: Option<usize>,
+    pub diskdb_client_rpc_workers: Option<u32>,
+    pub metrics_interval: Option<u64>,
+}
+
+/// Summary of the three-node, one-rack full `ChunkDB` benchmark stack.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LocalCombinedDeploySummary {
+    pub kv_nodes: usize,
+    pub racks: usize,
+    pub diskdb_instances: usize,
+    pub chunkdb_instances: usize,
+    pub diskio_instances: usize,
+}
+
+/// Deploy the canonical full-stack `ChunkDB` benchmark topology.
+///
+/// # Errors
+/// Returns an error when any KV, hardware, `DiskDB`, or `ChunkDB` provisioning phase fails.
+pub async fn local_deploy_combined(
+    ctx: &OpContext,
+    workspace: &std::path::Path,
+    tunables: Option<&KvDeployTunables>,
+    disk: &LocalDiskdbDeployConfig,
+    chunk: &LocalChunkdbDeployConfig,
+) -> Result<LocalCombinedDeploySummary> {
+    local_deploy(ctx, 3, Some(workspace), tunables).await?;
+    for group_id in &disk.data_groups {
+        crate::ops::kv_logical::add_group(ctx, 0, *group_id, 100 + *group_id, &[1, 2, 3]).await?;
+    }
+    let diskdb = local_deploy_diskdb(ctx, workspace, disk).await?;
+    let diskio = local_deploy_diskio(ctx, workspace, chunk.metrics_interval).await?;
+    let chunkdb = local_deploy_chunkdb(ctx, workspace, chunk).await?;
+    Ok(LocalCombinedDeploySummary {
+        kv_nodes: 3,
+        racks: 1,
+        diskdb_instances: diskdb.instance_count,
+        chunkdb_instances: chunkdb.instance_count,
+        diskio_instances: diskio,
+    })
+}
+
+async fn local_deploy_diskio(
+    ctx: &OpContext,
+    workspace: &std::path::Path,
+    metrics_interval: Option<u64>,
+) -> Result<usize> {
+    let mut nodes = ctx.config().nodes.clone();
+    nodes.sort_by_key(|node| node.id);
+    let seeds = ctx
+        .config()
+        .servers
+        .iter()
+        .filter(|server| server.service_type == ServiceType::Kv)
+        .map(|server| server.url.clone())
+        .collect::<Vec<_>>();
+    let leader_seed = wait_for_leader(&seeds, 0, 0, std::time::Duration::from_secs(10))
+        .await
+        .ok_or_else(|| Error::UpstreamRpc {
+            node_id: "group0".into(),
+            status: "leader unavailable before DiskIO deployment".into(),
+        })?;
+    let count = u16::try_from(nodes.len()).unwrap_or(u16::MAX);
+    let ports =
+        port_alloc::alloc_port_range(ServicePort::DiskioRpc, 0, count, &PortAllocConfig::new(workspace))
+            .map_err(|error| Error::Validation {
+                field: "port_alloc".into(),
+                message: error.to_string(),
+            })?;
+    let mut expected_owners = HashMap::with_capacity(nodes.len());
+
+    for (index, node) in nodes.iter().enumerate() {
+        let server_id = format!("diskio-{}", node.id);
+        let node_dir = workspace
+            .join(format!("rack{}", node.rack_id))
+            .join(format!("node{}", node.id))
+            .join(&server_id);
+        let deployed = lifecycle::deploy_diskio_local(
+            &DiskioDeployRequest {
+                server_id: server_id.clone(),
+                instance_id: 30_000 + node.id,
+                rpc_port: ports[index],
+                rack_id: node.rack_id,
+                node_id: node.id,
+                disk_group_id: node.id * 100 + 1,
+                kv_server_mgmt_seeds: vec![leader_seed.clone()],
+                metrics_interval,
+            },
+            node,
+            &node_dir,
+        )
+        .await?;
+        ctx.config_mut()
+            .local_launches
+            .insert(server_id.clone(), deployed.launch.clone());
+        expected_owners.insert(30_000 + node.id, (deployed.endpoint.clone(), node.id * 100 + 1));
+        ctx.config_mut().add_server(ServerEntry {
+            id: server_id,
+            url: deployed.endpoint.clone(),
+            node_id: Some(node.id),
+            rpc_url: Some(deployed.endpoint),
+            rest_port: None,
+            rpc_port: Some(ports[index]),
+            auto_start: true,
+            binary: None,
+            election_profile: None,
+            pid: Some(deployed.pid),
+            service_type: ServiceType::Diskio,
+            rpc_workers: None,
+            no_fsync: false,
+        })?;
+    }
+    wait_for_diskio_registration(ctx, &expected_owners).await?;
+    Ok(nodes.len())
+}
+
+async fn wait_for_diskio_registration(ctx: &OpContext, expected: &HashMap<u64, (String, u64)>) -> Result<()> {
+    let discovery = ctx.discovery_or_error()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        discovery.invalidate(Some("diskio"));
+        if discovery.discover_all("diskio").await.is_ok_and(|instances| {
+            instances.len() == expected.len()
+                && instances.into_iter().all(|(_, instance)| {
+                    expected
+                        .get(&instance.instance_id)
+                        .is_some_and(|(endpoint, dg_id)| {
+                            instance.rpc_endpoint == endpoint.strip_prefix("http://").unwrap_or(endpoint)
+                                && instance
+                                    .extra
+                                    .and_then(|extra| extra.diskdb)
+                                    .is_some_and(|diskio| diskio.owned_dg_ids == [*dg_id])
+                        })
+                })
+        }) {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::UpstreamRpc {
+                node_id: "group0-service-registry".into(),
+                status: format!(
+                    "expected {} exact living DiskIO ownership registrations before timeout",
+                    expected.len()
+                ),
+            });
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+/// Attach `instance_count` `ChunkDB` instances to distinct configured nodes.
+///
+/// # Errors
+/// Returns an error for invalid topology, port allocation, spawn, or readiness failures.
+pub async fn local_deploy_chunkdb(
+    ctx: &OpContext,
+    workspace: &std::path::Path,
+    config: &LocalChunkdbDeployConfig,
+) -> Result<LocalChunkdbDeploySummary> {
+    let instance_count = config.instance_count;
+    let mut nodes = ctx.config().nodes.clone();
+    nodes.sort_by_key(|node| node.id);
+    if instance_count == 0 || nodes.len() < instance_count {
+        return Err(Error::Validation {
+            field: "chunkdb_instances".into(),
+            message: format!("need at least {instance_count} configured nodes"),
+        });
+    }
+    let seeds = ctx
+        .config()
+        .servers
+        .iter()
+        .filter(|server| server.service_type == ServiceType::Kv)
+        .map(|server| server.url.clone())
+        .collect::<Vec<_>>();
+    if seeds.is_empty() {
+        return Err(Error::Validation {
+            field: "kv_servers".into(),
+            message: "deploy KV before ChunkDB".into(),
+        });
+    }
+    let port_config = PortAllocConfig::new(workspace);
+    let count = u16::try_from(instance_count).unwrap_or(u16::MAX);
+    let http_ports =
+        port_alloc::alloc_port_range(ServicePort::ChunkdbHttp, 0, count, &port_config).map_err(|error| {
+            Error::Validation {
+                field: "port_alloc".into(),
+                message: error.to_string(),
+            }
+        })?;
+    let rpc_ports =
+        port_alloc::alloc_port_range(ServicePort::ChunkdbRpc, 0, count, &port_config).map_err(|error| {
+            Error::Validation {
+                field: "port_alloc".into(),
+                message: error.to_string(),
+            }
+        })?;
+    let deployments = futures::future::join_all(nodes.into_iter().take(instance_count).enumerate().map(
+        |(index, node)| {
+            let instance_id = 20_000 + u64::try_from(index).unwrap_or(u64::MAX);
+            let server_id = format!("chunkdb-{}", index + 1);
+            let node_dir = workspace
+                .join(format!("rack{}", node.rack_id))
+                .join(format!("node{}", node.id))
+                .join(&server_id);
+            let request = ChunkdbDeployRequest {
+                server_id: server_id.clone(),
+                instance_id,
+                http_port: http_ports[index],
+                rpc_port: rpc_ports[index],
+                kv_server_mgmt_seeds: seeds.clone(),
+                allow_unsafe_ec: config.allow_unsafe_ec,
+                rpc_workers: config.rpc_workers,
+                kv_connections: config.kv_connections,
+                kv_client_rpc_workers: config.kv_client_rpc_workers,
+                diskdb_connections: config.diskdb_connections,
+                diskdb_client_rpc_workers: config.diskdb_client_rpc_workers,
+                metrics_interval: config.metrics_interval,
+            };
+            async move {
+                let deployed = lifecycle::deploy_chunkdb_local(&request, &node, &node_dir).await?;
+                Ok::<_, Error>((index, node, server_id, deployed))
+            }
+        },
+    ))
+    .await;
+    for deployment in deployments {
+        let (index, node, server_id, deployed) = deployment?;
+        ctx.config_mut()
+            .local_launches
+            .insert(server_id.clone(), deployed.launch.clone());
+        ctx.config_mut().add_server(ServerEntry {
+            id: server_id,
+            url: deployed.endpoint.clone(),
+            node_id: Some(node.id),
+            rpc_url: Some(deployed.endpoint),
+            rest_port: Some(http_ports[index]),
+            rpc_port: Some(rpc_ports[index]),
+            auto_start: true,
+            binary: None,
+            election_profile: None,
+            pid: Some(deployed.pid),
+            service_type: ServiceType::Chunkdb,
+            rpc_workers: None,
+            no_fsync: false,
+        })?;
+    }
+    wait_for_chunkdb_registration(ctx, instance_count).await?;
+    wait_for_chunkdb_bindings(ctx, instance_count).await?;
+    Ok(LocalChunkdbDeploySummary { instance_count })
+}
+
+async fn wait_for_chunkdb_bindings(ctx: &OpContext, expected_instances: usize) -> Result<()> {
+    let bindings = RangeBindingClient::from_shared(Arc::clone(ctx.kv_arc()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(35);
+    loop {
+        if bindings.refresh().await.is_ok() {
+            let snapshot = bindings.snapshot();
+            let instance_ids = snapshot
+                .iter()
+                .map(|binding| binding.instance_id)
+                .collect::<HashSet<_>>();
+            let mut next_bucket = 0_u32;
+            for binding in &snapshot {
+                if u32::from(binding.range_start) != next_bucket {
+                    break;
+                }
+                next_bucket = u32::from(binding.range_end) + 1;
+            }
+            if next_bucket == u32::from(u16::MAX) + 1 && instance_ids.len() == expected_instances {
+                return Ok(());
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::UpstreamRpc {
+                node_id: "group0-chunkdb-bindings".into(),
+                status: "complete chunkdb bucket ownership was not published before timeout".into(),
+            });
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+async fn wait_for_chunkdb_registration(ctx: &OpContext, expected: usize) -> Result<()> {
+    let discovery = ctx.discovery_or_error()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        discovery.invalidate(Some("chunkdb"));
+        if discovery
+            .discover_all("chunkdb")
+            .await
+            .is_ok_and(|instances| instances.len() >= expected)
+        {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::UpstreamRpc {
+                node_id: "group0-service-registry".into(),
+                status: format!("expected {expected} living chunkdb instances before timeout"),
+            });
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// Attach one `DiskDB` instance per configured KV node and provision its disks.
+///
+/// # Errors
+///
+/// Returns an error when the requested topology is invalid, its KV data groups
+/// do not exist, metadata provisioning fails, ports cannot be allocated, or a
+/// local `DiskDB` process cannot be deployed.
+pub async fn local_deploy_diskdb(
+    ctx: &OpContext,
+    workspace: &std::path::Path,
+    cfg: &LocalDiskdbDeployConfig,
+) -> Result<LocalDiskdbDeploySummary> {
+    let nodes = validate_diskdb_deploy(ctx, cfg)?;
+    ensure_diskdb_hardware(ctx, &nodes).await?;
+    let (disk_group_count, disk_count) = provision_diskdb_topology(ctx, &nodes, cfg).await?;
+    let ports = alloc_diskdb_ports(workspace, nodes.len())?;
+    deploy_diskdb_instances(ctx, workspace, &nodes, &ports, cfg).await?;
+
+    Ok(LocalDiskdbDeploySummary {
+        instance_count: nodes.len(),
+        disk_group_count,
+        disk_count,
+        data_groups: cfg.data_groups.clone(),
+    })
+}
+
+async fn ensure_diskdb_hardware(ctx: &OpContext, nodes: &[NodeEntry]) -> Result<()> {
+    for node in nodes {
+        if ctx.sysmd().get_rack(node.rack_id).await?.is_none() {
+            ctx.sysmd()
+                .add_rack(
+                    node.rack_id,
+                    &RackValue {
+                        status: HwStatus::Up as i32,
+                        node_ids: Vec::new(),
+                    },
+                )
+                .await?;
+        }
+        if ctx.sysmd().get_node(node.rack_id, node.id).await?.is_none() {
+            ctx.sysmd()
+                .add_node(
+                    node.rack_id,
+                    node.id,
+                    &NodeValue {
+                        status: HwStatus::Up as i32,
+                        last_used_dg_id: 0,
+                        disk_group_ids: Vec::new(),
+                        status_changed_at_ms: 0,
+                        temp_failure_since_ms: None,
+                    },
+                )
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_diskdb_deploy(ctx: &OpContext, cfg: &LocalDiskdbDeployConfig) -> Result<Vec<NodeEntry>> {
+    if cfg.disk_groups_per_node == 0 || cfg.disks_per_group == 0 || cfg.data_groups.is_empty() {
+        return Err(Error::Validation {
+            field: "diskdb_topology".into(),
+            message: "disk groups, disks, and data groups must be non-empty".into(),
+        });
+    }
+    let mut nodes = ctx.config().nodes.clone();
+    nodes.sort_by_key(|node| node.id);
+    if nodes.is_empty() {
+        return Err(Error::Validation {
+            field: "nodes".into(),
+            message: "deploy the KV cluster before DiskDB".into(),
+        });
+    }
+    let configured_groups = ctx.config().groups.clone();
+    for group_id in &cfg.data_groups {
+        if !configured_groups
+            .iter()
+            .any(|group| group.store_id == 0 && group.group_id == *group_id)
+        {
+            return Err(Error::NotFound {
+                kind: "kv_group".into(),
+                id: format!("0:{group_id}"),
+            });
+        }
+    }
+    Ok(nodes)
+}
+
+async fn provision_diskdb_topology(
+    ctx: &OpContext,
+    nodes: &[NodeEntry],
+    cfg: &LocalDiskdbDeployConfig,
+) -> Result<(usize, usize)> {
+    let lease_expiry_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
+        .saturating_add(3_600_000);
+    let mut disk_group_count = 0usize;
+    let mut disk_count = 0usize;
+    for node in nodes {
+        for local_group in 0..cfg.disk_groups_per_node {
+            let disk_group_id = node.id * 100 + u64::try_from(local_group).unwrap_or(u64::MAX) + 1;
+            hardware::add_disk_group(ctx, node.id, disk_group_id, &format!("bench-dg-{disk_group_id}"))
+                .await?;
+            let disks = (0..cfg.disks_per_group)
+                .map(|disk| AddDiskInput {
+                    disk_id: format!("{:016x}{:016x}", disk_group_id, disk + 1),
+                    disk_type: "BLOCK_SSD".into(),
+                    capacity_bytes: cfg.capacity_bytes,
+                    zone_size_bytes: cfg.zone_size_bytes,
+                    unit_size_bytes: cfg.unit_size_bytes,
+                    device_path: String::new(),
+                })
+                .collect::<Vec<_>>();
+            hardware::add_disks_batch(ctx, node.id, disk_group_id, &disks).await?;
+            let instance_id = 10_000 + node.id;
+            ctx.sysmd()
+                .set_owner(node.rack_id, node.id, disk_group_id, instance_id, lease_expiry_ms)
+                .await?;
+            let data_group = cfg.data_groups[disk_group_count % cfg.data_groups.len()];
+            ctx.sysmd()
+                .set_bind(node.rack_id, node.id, disk_group_id, 0, data_group)
+                .await?;
+            disk_group_count += 1;
+            disk_count += disks.len();
+        }
+    }
+
+    Ok((disk_group_count, disk_count))
+}
+
+struct DiskdbPorts {
+    listen: Vec<u16>,
+    http: Vec<u16>,
+    rpc: Vec<u16>,
+}
+
+fn alloc_diskdb_ports(workspace: &std::path::Path, node_count: usize) -> Result<DiskdbPorts> {
+    std::fs::create_dir_all(workspace)?;
+    let port_cfg = PortAllocConfig::new(workspace);
+    let count = u16::try_from(node_count).unwrap_or(u16::MAX);
+    let alloc = |service| {
+        port_alloc::alloc_port_range(service, 0, count, &port_cfg).map_err(|error| Error::Validation {
+            field: "port_alloc".into(),
+            message: error.to_string(),
+        })
+    };
+    Ok(DiskdbPorts {
+        listen: alloc(ServicePort::DiskdbListen)?,
+        http: alloc(ServicePort::DiskdbHttp)?,
+        rpc: alloc(ServicePort::DiskdbRpc)?,
+    })
+}
+
+async fn deploy_diskdb_instances(
+    ctx: &OpContext,
+    workspace: &std::path::Path,
+    nodes: &[NodeEntry],
+    ports: &DiskdbPorts,
+    config: &LocalDiskdbDeployConfig,
+) -> Result<()> {
+    let seeds = ctx
+        .config()
+        .servers
+        .iter()
+        .filter(|server| server.service_type == ServiceType::Kv)
+        .map(|server| server.url.clone())
+        .collect::<Vec<_>>();
+    for (index, node) in nodes.iter().enumerate() {
+        let server_id = format!("diskdb-{}", node.id);
+        let server_dir = workspace
+            .join(format!("rack{}", node.rack_id))
+            .join(format!("node{}", node.id))
+            .join(&server_id);
+        let deployed = lifecycle::deploy_diskdb_local(
+            &DiskdbDeployRequest {
+                server_id: server_id.clone(),
+                instance_id: Some(10_000 + node.id),
+                metrics_interval: Some(1),
+                rpc_workers: config.rpc_workers,
+                kv_connections: config.kv_connections,
+                kv_client_rpc_workers: config.kv_client_rpc_workers,
+                keepalive_interval_secs: None,
+                listen_port: ports.listen[index],
+                http_port: ports.http[index],
+                rpc_port: ports.rpc[index],
+                kv_server_mgmt_seeds: seeds.clone(),
+            },
+            node,
+            &server_dir,
+        )
+        .await?;
+        ctx.config_mut()
+            .local_launches
+            .insert(server_id.clone(), deployed.launch.clone());
+        ctx.config_mut().add_server(ServerEntry {
+            id: server_id,
+            url: deployed.endpoint.clone(),
+            node_id: Some(node.id),
+            rpc_url: Some(deployed.endpoint),
+            rest_port: Some(ports.http[index]),
+            rpc_port: Some(ports.rpc[index]),
+            auto_start: true,
+            binary: None,
+            election_profile: None,
+            pid: Some(deployed.pid),
+            service_type: ServiceType::Diskdb,
+            rpc_workers: None,
+            no_fsync: false,
+        })?;
+    }
+    wait_for_diskdb_registration(ctx, nodes.len()).await?;
+    Ok(())
+}
+
+async fn wait_for_diskdb_registration(ctx: &OpContext, expected: usize) -> Result<()> {
+    let discovery = ctx.discovery_or_error()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        discovery.invalidate(Some("diskdb"));
+        if discovery
+            .discover_all("diskdb")
+            .await
+            .is_ok_and(|instances| instances.len() >= expected)
+        {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::UpstreamRpc {
+                node_id: "group0-service-registry".into(),
+                status: format!("expected {expected} living diskdb instances before timeout"),
+            });
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
 /// Deploy a local N-node KV cluster on `127.0.0.1`: creates rack 1,
 /// nodes 1..=N in the config, forks a `crowdb-kv-server` on each node
 /// with auto-allocated ports, then bootstraps group 0 via [`init`].
@@ -588,8 +1274,6 @@ pub struct KvDeployTunables {
     pub max_inflight: Option<usize>,
     /// `--coalesce-max-keys` value.
     pub coalesce_max_keys: Option<usize>,
-    /// `--coalesce-drain-threshold` value.
-    pub coalesce_drain_threshold: Option<usize>,
     /// `--event-write` flag.
     pub event_write: Option<bool>,
     /// `--send-queue-capacity` value.
@@ -764,7 +1448,6 @@ async fn deploy_servers(
             peer_pool_size: tunables.and_then(|t| t.peer_pool_size),
             max_inflight: tunables.and_then(|t| t.max_inflight),
             coalesce_max_keys: tunables.and_then(|t| t.coalesce_max_keys),
-            coalesce_drain_threshold: tunables.and_then(|t| t.coalesce_drain_threshold),
             event_write: tunables.and_then(|t| t.event_write),
             send_queue_capacity: tunables.and_then(|t| t.send_queue_capacity),
             metrics_interval: tunables.and_then(|t| t.metrics_interval),
@@ -782,14 +1465,15 @@ async fn deploy_servers(
             ssh_key: None,
             ssh_password: None,
         };
-        // Each node gets its own subdirectory under the workspace so
-        // WAL data, btree data, and logs are isolated per kv-server.
-        let node_dir = workspace
+        // Every process owns a stable server directory. WAL and btree data
+        // remain direct children of that directory as waldata/ and ctdata/.
+        let server_dir = workspace
             .join(format!("rack{rack_id}"))
-            .join(format!("node{nid}"));
-        std::fs::create_dir_all(node_dir.join("log"))?;
-        std::fs::create_dir_all(node_dir.join("bin"))?;
-        let deployed = lifecycle::deploy_local_in_dir(&req, &node_entry, &node_dir).await?;
+            .join(format!("node{nid}"))
+            .join(format!("kv-server-{nid}"));
+        std::fs::create_dir_all(server_dir.join("log"))?;
+        std::fs::create_dir_all(server_dir.join("bin"))?;
+        let deployed = lifecycle::deploy_local_in_dir(&req, &node_entry, &server_dir).await?;
 
         let mut cfg = ctx.config_mut();
         cfg.add_server(ServerEntry {

@@ -37,6 +37,11 @@ impl EcPlacement {
         code_num: usize,
         constraints: &PlacementConstraints,
     ) -> Result<PlacementPlan, PlacementError> {
+        if data_num == 0 || code_num == 0 {
+            return Err(PlacementError::InvalidShape(
+                "EC data_num and code_num must both be non-zero".to_string(),
+            ));
+        }
         let total_blocks = data_num + code_num;
         let dgs = healthy_dgs(snap, constraints);
         if dgs.is_empty() {
@@ -58,6 +63,10 @@ impl EcPlacement {
                 entries,
                 safe_mode: true,
             });
+        }
+
+        if !constraints.allow_unsafe_ec {
+            return Err(PlacementError::UnsafePlacementRequired);
         }
 
         // Fall back to unsafe mode: max `total_blocks` per node (i.e.
@@ -105,11 +114,16 @@ fn try_distribute(
         rack_index = (rack_index + 1) % rack_ids.len();
 
         let dgs_in_rack = by_rack.get(&rack)?;
-        // Find a node in this rack with capacity.
-        let candidate = dgs_in_rack.iter().find(|dg| {
-            let load = node_load.get(&dg.node_id).copied().unwrap_or(0);
-            (load as usize) < max_per_node
-        });
+        // Pick the least-loaded node in this rack. Selecting the first node
+        // repeatedly would concentrate an unsafe one-rack plan on one
+        // DiskDB group even when the remaining nodes have capacity.
+        let candidate = dgs_in_rack
+            .iter()
+            .filter(|dg| {
+                let load = node_load.get(&dg.node_id).copied().unwrap_or(0);
+                (load as usize) < max_per_node
+            })
+            .min_by_key(|dg| (node_load.get(&dg.node_id).copied().unwrap_or(0), dg.node_id));
 
         if let Some(dg) = candidate {
             *node_load.entry(dg.node_id).or_insert(0) += 1;

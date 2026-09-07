@@ -49,6 +49,14 @@ pub enum DiskIoRetCode {
     ConnectionError = 6,
 }
 
+#[derive(Clone, Copy)]
+struct WriteTarget {
+    disk_id: DiskId,
+    zone_index: u32,
+    zone_offset: u64,
+    size: u32,
+}
+
 impl From<i16> for DiskIoRetCode {
     fn from(v: i16) -> Self {
         match v {
@@ -131,24 +139,72 @@ impl DiskioClient {
         zone_offset: u64,
         data: Vec<u8>,
     ) -> Result<CallFuture, DiskioError> {
-        let req_id = self.next_id();
         let size = u32::try_from(data.len()).map_err(|_| DiskioError::Rpc("data too large".into()))?;
+        self.write_buffer(
+            server,
+            conn,
+            WriteTarget {
+                disk_id,
+                zone_index,
+                zone_offset,
+                size,
+            },
+            Buffer::from_vec(data),
+        )
+    }
+
+    /// Send a disk write while retaining an owned `Bytes` allocation through
+    /// RPC completion, without copying it into a `Vec` or C++ buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DiskioError::Rpc` if the data is too large or the send fails.
+    pub fn write_bytes(
+        &self,
+        server: &RpcServer,
+        conn: &Connection,
+        disk_id: DiskId,
+        zone_index: u32,
+        zone_offset: u64,
+        data: bytes::Bytes,
+    ) -> Result<CallFuture, DiskioError> {
+        let size = u32::try_from(data.len()).map_err(|_| DiskioError::Rpc("data too large".into()))?;
+        self.write_buffer(
+            server,
+            conn,
+            WriteTarget {
+                disk_id,
+                zone_index,
+                zone_offset,
+                size,
+            },
+            Buffer::from_owned_bytes(data),
+        )
+    }
+
+    fn write_buffer(
+        &self,
+        server: &RpcServer,
+        conn: &Connection,
+        target: WriteTarget,
+        data_buf: Buffer,
+    ) -> Result<CallFuture, DiskioError> {
+        let req_id = self.next_id();
         let mut fbb = FlatBufferBuilder::new();
-        let fb_disk_id = disk_id.to_fb();
+        let fb_disk_id = target.disk_id.to_fb();
         let off = FBDiskWriteRequest::create(
             &mut fbb,
             &FBDiskWriteRequestArgs {
                 id: req_id,
                 rpc_create_nano: 0,
                 disk_id: Some(&fb_disk_id),
-                zone_index,
-                zone_offset,
-                size,
+                zone_index: target.zone_index,
+                zone_offset: target.zone_offset,
+                size: target.size,
             },
         );
         fbb.finish(off, None);
         let control = Buffer::from_bytes(fbb.finished_data());
-        let data_buf = Buffer::from_vec(data);
         let msg_type = FBMsgType::EDiskWriteRequest.0 as u16;
         self.rpc
             .call(server, conn, req_id, control, Some(data_buf), msg_type)

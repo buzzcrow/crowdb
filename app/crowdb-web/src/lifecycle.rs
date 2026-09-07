@@ -71,6 +71,22 @@ pub async fn http_list_racks(
     }))
 }
 
+fn has_fully_running_group0(state: &AppState) -> bool {
+    let replica_nodes = {
+        let cfg = state.config.read().unwrap();
+        cfg.group(0, 0).map(|group| {
+            group
+                .replicas
+                .iter()
+                .map(|replica| replica.node_id)
+                .collect::<Vec<_>>()
+        })
+    };
+    replica_nodes.is_some_and(|nodes| {
+        !nodes.is_empty() && nodes.iter().all(|node_id| state.runtime_pid(node_id).is_some())
+    })
+}
+
 /// Add a new rack.
 ///
 /// # Panics
@@ -91,13 +107,15 @@ pub async fn http_add_rack(
         cfg.add_rack(entry.clone()).map_err(map_config_err)?;
     }
     state.persist().map_err(map_persist_err)?;
-    // Best-effort sysdata sync (non-blocking — config already committed).
-    if let Ok(ctx) = state.op_context().await {
-        let value = crowdb_protocol::common::RackValue {
-            status: crowdb_protocol::common::HwStatus::Up as i32,
-            node_ids: Vec::new(),
-        };
-        let _ = ctx.sysmd().add_rack(body.id, &value).await;
+    // Avoid the full retry budget before bootstrap or during partial shutdown.
+    if has_fully_running_group0(&state) {
+        if let Ok(ctx) = state.op_context().await {
+            let value = crowdb_protocol::common::RackValue {
+                status: crowdb_protocol::common::HwStatus::Up as i32,
+                node_ids: Vec::new(),
+            };
+            let _ = ctx.sysmd().add_rack(body.id, &value).await;
+        }
     }
     Ok((StatusCode::CREATED, Json(entry)))
 }
@@ -118,9 +136,10 @@ pub async fn http_remove_rack(
         cfg.remove_rack(id).map_err(map_config_err)?;
     }
     state.persist().map_err(map_persist_err)?;
-    // Best-effort sysdata sync (non-blocking — config already committed).
-    if let Ok(ctx) = state.op_context().await {
-        let _ = ctx.sysmd().remove_rack_cascade(id).await;
+    if has_fully_running_group0(&state) {
+        if let Ok(ctx) = state.op_context().await {
+            let _ = ctx.sysmd().remove_rack_cascade(id).await;
+        }
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -166,16 +185,17 @@ pub async fn http_add_node(
     state
         .prepare_node_workspace(entry.id.to_string())
         .map_err(|e| err_500(e.to_string()))?;
-    // Best-effort sysdata sync (non-blocking — config already committed).
-    if let Ok(ctx) = state.op_context().await {
-        let value = crowdb_protocol::common::NodeValue {
-            status: crowdb_protocol::common::HwStatus::Up as i32,
-            last_used_dg_id: 0,
-            disk_group_ids: Vec::new(),
-            status_changed_at_ms: 0,
-            temp_failure_since_ms: None,
-        };
-        let _ = ctx.sysmd().add_node(entry.rack_id, entry.id, &value).await;
+    if has_fully_running_group0(&state) {
+        if let Ok(ctx) = state.op_context().await {
+            let value = crowdb_protocol::common::NodeValue {
+                status: crowdb_protocol::common::HwStatus::Up as i32,
+                last_used_dg_id: 0,
+                disk_group_ids: Vec::new(),
+                status_changed_at_ms: 0,
+                temp_failure_since_ms: None,
+            };
+            let _ = ctx.sysmd().add_node(entry.rack_id, entry.id, &value).await;
+        }
     }
     Ok((StatusCode::CREATED, Json(entry)))
 }
@@ -439,16 +459,18 @@ pub async fn http_add_rack_node(
     state
         .prepare_node_workspace(entry.id.to_string())
         .map_err(|e| err_500(e.to_string()))?;
-    // Best-effort sysdata sync (non-blocking — config already committed).
-    if let Ok(ctx) = state.op_context().await {
-        let value = crowdb_protocol::common::NodeValue {
-            status: crowdb_protocol::common::HwStatus::Up as i32,
-            last_used_dg_id: 0,
-            disk_group_ids: Vec::new(),
-            status_changed_at_ms: 0,
-            temp_failure_since_ms: None,
-        };
-        let _ = ctx.sysmd().add_node(entry.rack_id, entry.id, &value).await;
+    // Avoid the full retry budget before bootstrap or during partial shutdown.
+    if has_fully_running_group0(&state) {
+        if let Ok(ctx) = state.op_context().await {
+            let value = crowdb_protocol::common::NodeValue {
+                status: crowdb_protocol::common::HwStatus::Up as i32,
+                last_used_dg_id: 0,
+                disk_group_ids: Vec::new(),
+                status_changed_at_ms: 0,
+                temp_failure_since_ms: None,
+            };
+            let _ = ctx.sysmd().add_node(entry.rack_id, entry.id, &value).await;
+        }
     }
     Ok((StatusCode::CREATED, Json(entry)))
 }
@@ -560,6 +582,8 @@ pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<Server
                 service_type: match s.service_type {
                     crowdb_console_shared::config::ServiceType::Kv => "kv",
                     crowdb_console_shared::config::ServiceType::Diskdb => "diskdb",
+                    crowdb_console_shared::config::ServiceType::Chunkdb => "chunkdb",
+                    crowdb_console_shared::config::ServiceType::Diskio => "diskio",
                     crowdb_console_shared::config::ServiceType::Rpc => "rpc",
                 }
                 .to_string(),
@@ -595,9 +619,6 @@ pub struct DeployNodeServerBody {
     /// `--coalesce-max-keys` value for R45 proposal coalescing.
     #[serde(default)]
     coalesce_max_keys: Option<usize>,
-    /// `--coalesce-drain-threshold` value for R45b drain heuristic.
-    #[serde(default)]
-    coalesce_drain_threshold: Option<usize>,
     /// `--peer-pool-size` value for inter-server RPC connection pool.
     #[serde(default)]
     peer_pool_size: Option<usize>,
@@ -690,7 +711,6 @@ pub async fn http_deploy_node_server(
         metrics_interval: body.metrics_interval,
         max_inflight: body.max_inflight,
         coalesce_max_keys: body.coalesce_max_keys,
-        coalesce_drain_threshold: body.coalesce_drain_threshold,
         peer_pool_size: body.peer_pool_size,
         enable_nagle: body.enable_nagle,
         quickack: body.quickack,
@@ -768,10 +788,24 @@ pub async fn http_restart_node_server(
             Some(n) if n.ssh_enabled() => crowdb_console_shared::ssh::stop_via_ssh(&n, pid)
                 .await
                 .map_err(|e| err_502(format!("ssh stop (restart): {e}")))?,
-            _ => tokio::task::spawn_blocking(move || lifecycle::stop_pid(pid))
-                .await
-                .map_err(|e| err_500(format!("spawn_blocking (restart): {e}")))?
-                .unwrap_or(false),
+            _ => {
+                let timeout = if state.test_mode {
+                    std::time::Duration::from_secs(1)
+                } else {
+                    std::time::Duration::from_secs(15)
+                };
+                let sent =
+                    tokio::task::spawn_blocking(move || lifecycle::stop_pid_with_timeout(pid, timeout))
+                        .await
+                        .map_err(|e| err_500(format!("spawn_blocking (restart): {e}")))?
+                        .unwrap_or(false);
+                if lifecycle::process_is_alive(pid) {
+                    return Err(err_502(format!(
+                        "process {pid} is still alive after restart stop"
+                    )));
+                }
+                sent
+            }
         };
     }
 
@@ -905,10 +939,6 @@ pub async fn http_stop_node_server(
     if state.diskdb_runtime_pid(node_id).is_none() {
         state.monitor_cache.mark_down(node_id, "server stopped").await;
     }
-    // Refresh group-0 leader so the next op_context targets the
-    // post-election leader instead of the stopped node (which would
-    // trigger a 5s transport-error retry cycle in the KV client).
-    state.refresh_group0_leader(Some(node_id)).await;
     Ok(Json(StopResult { sent }))
 }
 
@@ -1106,7 +1136,7 @@ pub async fn http_internal_reset(
     }
 
     // 8. Clear caches and workspace directories.
-    state.clear_kv_client().await;
+    state.clear_cluster_clients().await;
     // Defer workspace cleanup to a background task — the KV server
     // processes are still shutting down (async SIGTERM in
     // stop_all_services), and removing their WAL/engine files while
@@ -1502,12 +1532,14 @@ pub async fn http_add_node_disk_group(
         .map_err(map_config_err)?;
     state.commit_op_context(&ctx).map_err(map_persist_err)?;
 
-    // Auto-assign ownership: pick the diskdb instance with the
-    // fewest owned DGs and write the ownership entry to group-0.
-    if let Some(hw) = crate::mgmt::build_hardware_client(&state).await {
-        if let Err(e) = auto_assign_owner(&hw, entry.rack_id, node_id, entry.id).await {
-            tracing::warn!(disk_group_id = entry.id, error = %e, "sysdata sync: auto-assign owner failed");
-        }
+    let hw = crate::mgmt::build_hardware_client(&state)
+        .await
+        .ok_or_else(|| err_502("no group-0 endpoint; disk-group owner cannot be assigned"))?;
+    if let Err(error) = auto_assign_owner(&hw, entry.rack_id, node_id, entry.id).await {
+        let rollback = state.op_context().await.map_err(|e| err_502(format!("{e}")))?;
+        let _ = ops::hardware::remove_disk_group(&rollback, node_id, entry.id).await;
+        let _ = state.commit_op_context(&rollback);
+        return Err(err_502(format!("auto-assign owner: {error}")));
     }
 
     Ok((StatusCode::CREATED, Json(entry)))
@@ -1519,30 +1551,11 @@ pub async fn http_add_node_disk_group(
 ///
 /// Pure function — no I/O — so it can be unit-tested without a live
 /// group-0 connection.
-fn pick_least_loaded_instance(
-    instance_ids: &[u64],
-    owners: &[crowdb_protocol::sysdata::DiskdbOwnerEntry],
-) -> Option<u64> {
-    if instance_ids.is_empty() {
-        return None;
-    }
-    let mut counts: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
-    for o in owners {
-        *counts.entry(o.instance_id).or_default() += 1;
-    }
-    instance_ids
-        .iter()
-        .map(|id| (*id, counts.get(id).copied().unwrap_or(0)))
-        .min_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)))
-        .map(|(id, _)| id)
-}
-
 /// Auto-assign a newly created disk-group to the diskdb instance with
 /// the fewest owned DGs. Reads the service registry for live diskdb
 /// instances and the current ownership map, counts DGs per instance,
 /// picks the one with the lowest count, and writes the ownership entry
-/// to group-0. Does nothing (returns Ok) if no diskdb instances are
-/// registered.
+/// to group-0. Fails if no diskdb instances are registered.
 async fn auto_assign_owner(
     hw: &crowdb_kv_client::HardwareClient,
     rack_id: RackId,
@@ -1555,23 +1568,33 @@ async fn auto_assign_owner(
         .await
         .map_err(|e| format!("read_all_diskdb_instances: {e}"))?;
     if instances.is_empty() {
-        tracing::info!(dg_id, "auto-assign: no diskdb instances registered; skipping");
-        return Ok(());
+        return Err("no live diskdb instances registered".to_string());
     }
     let owners = hw.list_owners().await.map_err(|e| format!("list_owners: {e}"))?;
     let instance_ids: Vec<u64> = instances.iter().map(|(id, _)| *id).collect();
-    let Some(instance_id) = pick_least_loaded_instance(&instance_ids, &owners) else {
-        return Ok(());
-    };
+    let instance_id = crate::owner_assignment::pick_least_loaded_instance(&instance_ids, &owners)
+        .ok_or_else(|| "no eligible diskdb instance".to_string())?;
     // Lease = 1 hour from now (the diskdb keepalive will refresh it).
     #[allow(clippy::cast_possible_truncation)]
     let lease_expiry_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
         + 3_600_000;
-    hw.set_owner(rack_id, node_id, dg_id, instance_id, lease_expiry_ms)
+    let disk_group = hw
+        .get_disk_group(rack_id, node_id, dg_id)
         .await
-        .map_err(|e| format!("set_owner: {e}"))?;
+        .map_err(|e| format!("get_disk_group: {e}"))?
+        .ok_or_else(|| format!("disk-group {dg_id} missing from group 0"))?;
+    hw.add_disk_group_with_owner(
+        rack_id,
+        node_id,
+        dg_id,
+        &disk_group.value,
+        instance_id,
+        lease_expiry_ms,
+    )
+    .await
+    .map_err(|e| format!("add_disk_group_with_owner: {e}"))?;
     tracing::info!(dg_id, instance_id, "auto-assign: assigned DG to diskdb instance");
     Ok(())
 }
@@ -1880,65 +1903,4 @@ pub async fn http_remove_disk(
         .map_err(map_config_err)?;
     state.commit_op_context(&ctx).map_err(map_persist_err)?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::pick_least_loaded_instance;
-    use crowdb_protocol::common_type::{DiskGroupId, NodeId, RackId};
-    use crowdb_protocol::sysdata::DiskdbOwnerEntry;
-
-    fn owner(rack: RackId, node: NodeId, dg: DiskGroupId, inst: u64) -> DiskdbOwnerEntry {
-        DiskdbOwnerEntry {
-            rack_id: rack,
-            node_id: node,
-            dg_id: dg,
-            instance_id: inst,
-            lease_expiry_ms: 0,
-        }
-    }
-
-    #[test]
-    fn pick_returns_none_for_empty_instances() {
-        assert_eq!(pick_least_loaded_instance(&[], &[]), None);
-    }
-
-    #[test]
-    fn pick_assigns_to_only_instance() {
-        assert_eq!(pick_least_loaded_instance(&[1], &[]), Some(1));
-    }
-
-    #[test]
-    fn pick_assigns_to_least_loaded() {
-        // Instance 1 owns 2 DGs, instance 2 owns 0 → pick 2.
-        let owners = vec![owner(1, 1, 1, 1), owner(1, 1, 2, 1)];
-        assert_eq!(pick_least_loaded_instance(&[1, 2], &owners), Some(2));
-    }
-
-    #[test]
-    fn pick_breaks_tie_by_lowest_instance_id() {
-        // Both own 1 DG → pick lower instance_id.
-        let owners = vec![owner(1, 1, 1, 1), owner(1, 1, 2, 2)];
-        assert_eq!(pick_least_loaded_instance(&[1, 2], &owners), Some(1));
-    }
-
-    #[test]
-    fn pick_ignores_owners_for_unknown_instances() {
-        // Instance 3 owns DGs but is not in the live instance list.
-        let owners = vec![owner(1, 1, 1, 3), owner(1, 1, 2, 3)];
-        assert_eq!(pick_least_loaded_instance(&[1, 2], &owners), Some(1));
-    }
-
-    #[test]
-    fn pick_counts_correctly_with_mixed_owners() {
-        // Instance 1: 1 DG, instance 2: 2 DGs, instance 3: 1 DG.
-        // Tie between 1 and 3 (both 1) → pick 1 (lower id).
-        let owners = vec![
-            owner(1, 1, 1, 1),
-            owner(1, 1, 2, 2),
-            owner(1, 1, 3, 2),
-            owner(1, 1, 4, 3),
-        ];
-        assert_eq!(pick_least_loaded_instance(&[1, 2, 3], &owners), Some(1));
-    }
 }

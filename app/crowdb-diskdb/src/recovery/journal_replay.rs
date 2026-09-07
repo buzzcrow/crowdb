@@ -23,8 +23,8 @@ use crate::model::zone::{DdbZone, DdbZoneHealth};
 use crate::recovery::ZoneLoadError;
 
 /// Inner zone load — strategy 2 (journal scan replay).
-/// Returns a loaded `Zone`, the max `freed_ts` from scanned free
-/// records (0 if no free records), and whether a valid snapshot was
+/// Returns a loaded `Zone`, the maximum allocation incarnation observed in
+/// busy/free records, and whether a valid snapshot was
 /// found (`true` = snapshot existed and was used; `false` = no
 /// snapshot, fresh zone). The `snapshot_found` flag is used by
 /// `background_zone_load` (B.2) to decide whether to write a baseline
@@ -40,21 +40,22 @@ pub async fn load_zone_inner(
     // Step a: load the latest ZoneValue snapshot.
     let snapshot = kv.get_zone_value(bind, &disk_id, zone_idx).await?;
 
-    let (usage_bits, snapshot_slot, snapshot_compact_ts, snapshot_found) = match &snapshot {
-        Some(zv) if zv.verify_checksum() => {
-            // Valid snapshot — restore bitmap + snapshot_slot + compact_ts.
-            let bits = crowdb_protocol::UsageBitmap::restore(&zv.usage_bitmap);
-            (bits, zv.snapshot_slot, zv.compact_ts, true)
-        }
-        Some(_zv) => {
-            // CRC fail — fall back to strategy 1.
-            return Err(ZoneLoadError::SnapshotCrcFail);
-        }
-        None => {
-            // No snapshot — empty bitmap, replay from slot 0.
-            (crowdb_protocol::UsageBitmap::new(unit_capacity), 0, 0, false)
-        }
-    };
+    let (usage_bits, snapshot_slot, snapshot_compact_ts, snapshot_compact_slot, snapshot_found) =
+        match &snapshot {
+            Some(zv) if zv.verify_checksum() => {
+                // Valid snapshot — restore bitmap + snapshot_slot + compact_ts.
+                let bits = crowdb_protocol::UsageBitmap::restore(&zv.usage_bitmap);
+                (bits, zv.snapshot_slot, zv.compact_ts, zv.compact_slot, true)
+            }
+            Some(_zv) => {
+                // CRC fail — fall back to strategy 1.
+                return Err(ZoneLoadError::SnapshotCrcFail);
+            }
+            None => {
+                // No snapshot — empty bitmap, replay from slot 0.
+                (crowdb_protocol::UsageBitmap::new(unit_capacity), 0, 0, 0, false)
+            }
+        };
 
     // Step b: journal scan busy ops from snapshot_slot+1 to MAX.
     // Only busy ops are needed — free ops (Delete BusyBlockKey, Put
@@ -76,6 +77,7 @@ pub async fn load_zone_inner(
     // conservative over-estimate. Compaction will range_clear the
     // freed bits when it processes the free records on disk.
     let mut used_count = usage_bits.count_set();
+    let mut max_allocation_ts = 0;
     for op in &busy_ops {
         if op.is_delete {
             // Delete BusyBlockKey (free) — IGNORE (Option B).
@@ -85,6 +87,7 @@ pub async fn load_zone_inner(
         // Put BusyBlockKey → range_set (allocate).
         if let Ok(bk) = BusyBlockKey::from_bytes(&op.key) {
             if let Ok(bv) = bincode::deserialize::<BusyBlockValue>(&op.value) {
+                max_allocation_ts = max_allocation_ts.max(bv.allocation_ts);
                 #[allow(clippy::cast_possible_truncation)]
                 let offset = bk.unit_offset as u32;
                 let _ = usage_bits.range_set(offset, bv.unit_count);
@@ -111,11 +114,11 @@ pub async fn load_zone_inner(
     // Extract max freed_ts from Put FreeBlockKey ops (for timestamp
     // source seeding — §8 Monotonic timestamp source). Delete ops
     // have empty values.
-    let max_freed_ts = free_ops
+    let max_free_allocation_ts = free_ops
         .iter()
         .filter(|op| !op.is_delete)
         .filter_map(|op| bincode::deserialize::<FreeBlockValue>(&op.value).ok())
-        .map(|fv| fv.freed_ts)
+        .map(|fv| fv.pre_allocation_ts)
         .max()
         .unwrap_or(0);
 
@@ -129,13 +132,14 @@ pub async fn load_zone_inner(
         disk_id,
         zone_index: zone_idx,
         disk_group_id,
-        zone_state: std::sync::RwLock::new(DdbZoneHealth::Healthy),
+        zone_state: std::sync::atomic::AtomicU8::new(DdbZoneHealth::Healthy as u8),
         unit_capacity,
         usage_bits,
         last_pos_64: std::sync::atomic::AtomicU64::new(0),
         used_count: std::sync::atomic::AtomicU32::new(u32::try_from(used_count).unwrap_or(u32::MAX)),
         snapshot_slot: std::sync::atomic::AtomicU64::new(snapshot_slot),
         compact_ts: std::sync::atomic::AtomicU64::new(snapshot_compact_ts),
+        compact_slot: std::sync::atomic::AtomicU64::new(snapshot_compact_slot),
         compacted_ready: std::sync::atomic::AtomicBool::new(true),
         zone_lock: std::sync::RwLock::new(()),
         uncompacted_free_record_count: std::sync::atomic::AtomicU32::new(uncompacted_free_record_count),
@@ -144,5 +148,9 @@ pub async fn load_zone_inner(
         compacting: std::sync::atomic::AtomicBool::new(false),
     };
 
-    Ok((zone, max_freed_ts, snapshot_found))
+    Ok((
+        zone,
+        max_allocation_ts.max(max_free_allocation_ts),
+        snapshot_found,
+    ))
 }

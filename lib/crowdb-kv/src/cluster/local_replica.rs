@@ -11,7 +11,6 @@ use crate::cluster::replica::{
     StepDownRequestPayload, VoteReply, VoteRequestPayload,
 };
 use crate::cluster::status::{ElectionStateView, KvStoreStatus, ReplicaStatus, StatusLevel};
-use crate::common::metrics::{ElectionMetrics, ElectionMetricsSnapshot};
 use crate::common::report::OperationReport;
 use crate::common::time::{anchor_ms_to_instant, instant_to_anchor_ms};
 use crate::metrics::{Counter, Gauge, MetricsRegistry};
@@ -167,6 +166,9 @@ pub struct LeaseState {
 /// lease, election + heartbeat handlers.
 pub struct PxLocalReplica {
     pub id: u64,
+    /// Stable observability context, populated when the replica joins a group.
+    pub(super) log_store_id: AtomicU64,
+    pub(super) log_group_id: AtomicU64,
     /// This replica's listen address (set by the store when the group is
     /// added). Used when persisting group config so all nodes share the
     /// same member list.
@@ -227,8 +229,6 @@ pub struct PxLocalReplica {
     shutdown_started: AtomicBool,
     /// Per-replica leader-election counters. Cheap `Relaxed` atomic
     /// increments on the election hot path; consumed by
-    /// `election_metrics_snapshot` for health / management API.
-    pub(super) election_metrics: ElectionMetrics,
     /// Wall-clock-monotonic instant of the most recent accepted
     /// heartbeat (follower side; `None` before the first one). Read
     /// by `election_metrics_snapshot` to compute
@@ -383,6 +383,8 @@ impl PxLocalReplica {
     pub fn new(id: u64, role: PxLocalReplicaRole) -> Self {
         Self {
             id,
+            log_store_id: AtomicU64::new(0),
+            log_group_id: AtomicU64::new(0),
             endpoint: parking_lot::Mutex::new(None),
             acceptor: Arc::new(PxAcceptor::new()),
             learner: Arc::new(PxLearner::new()),
@@ -399,7 +401,6 @@ impl PxLocalReplica {
             admin_step_down_signal: tokio::sync::Notify::new(),
             deadline_reset_signal: tokio::sync::Notify::new(),
             shutdown_started: AtomicBool::new(false),
-            election_metrics: ElectionMetrics::new(),
             last_heartbeat_at: Mutex::new(None),
             election_handles: OnceLock::new(),
             replication_handles: OnceLock::new(),
@@ -447,6 +448,8 @@ impl PxLocalReplica {
         let role = snapshot.role;
         Self {
             id: prior.id,
+            log_store_id: AtomicU64::new(prior.log_store_id.load(Ordering::Acquire)),
+            log_group_id: AtomicU64::new(prior.log_group_id.load(Ordering::Acquire)),
             endpoint: parking_lot::Mutex::new(prior.endpoint.lock().clone()),
             // Share the Paxos acceptor + learner with the prior replica.
             // The acceptor must persist across rebuild for safety (Paxos
@@ -466,7 +469,6 @@ impl PxLocalReplica {
             admin_step_down_signal: tokio::sync::Notify::new(),
             deadline_reset_signal: tokio::sync::Notify::new(),
             shutdown_started: AtomicBool::new(false),
-            election_metrics: ElectionMetrics::new(),
             last_heartbeat_at: Mutex::new(None),
             election_handles: OnceLock::new(),
             replication_handles: OnceLock::new(),
@@ -479,6 +481,11 @@ impl PxLocalReplica {
             gap_slots: Arc::new(Mutex::new(BTreeSet::new())),
             fetchgap_inflight: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    pub(crate) fn set_log_context(&self, store_id: u64, group_id: u64) {
+        self.log_store_id.store(store_id, Ordering::Release);
+        self.log_group_id.store(group_id, Ordering::Release);
     }
 
     /// Attach a WAL manager for durable persistence (P2 W6).
@@ -600,12 +607,12 @@ impl PxLocalReplica {
     /// `engine.flush()` drains L0 memtable into L1 B+tree (in-memory);
     /// `persist_snapshot()` writes dirty L1 pages + superblock to the
     /// page store (disk). For `InMemKV` both are no-ops.
-    #[tracing::instrument(level = "debug", skip_all, fields(replica_l_id = self.id))]
+    #[tracing::instrument(level = "debug", skip_all, fields(s = self.log_store_id.load(Ordering::Acquire), g = self.log_group_id.load(Ordering::Acquire), replica = self.id))]
     #[allow(clippy::unused_async)] // async kept for cascade uniformity
     pub async fn shutdown(&self, _per_layer_timeout: Duration) -> OperationReport {
         if self.shutdown_started.swap(true, Ordering::AcqRel) {
             debug!(
-                replica_l_id = self.id,
+                replica = self.id,
                 "PxLocalReplica::shutdown is a no-op (already shut down)"
             );
             return OperationReport::new();
@@ -619,12 +626,12 @@ impl PxLocalReplica {
         if let Some(wal) = &self.wal {
             if let Err(e) = wal.flush_all().await {
                 warn!(
-                    replica_l_id = self.id,
+                    replica = self.id,
                     error = %e,
                     "WAL flush_all failed during shutdown"
                 );
             } else {
-                debug!(replica_l_id = self.id, "WAL flush_all completed during shutdown");
+                debug!("WAL flush_all completed during shutdown");
             }
         }
         let engine = self.learner.engine();
@@ -632,18 +639,18 @@ impl PxLocalReplica {
         let snap_slot = engine.persist_snapshot();
         if snap_slot > 0 {
             info!(
-                replica_l_id = self.id,
+                replica = self.id,
                 snapshot_slot = snap_slot,
                 "PxLocalReplica shutdown: engine snapshot persisted"
             );
         } else {
             debug!(
-                replica_l_id = self.id,
+                replica = self.id,
                 "PxLocalReplica shutdown: no durable snapshot (non-durable engine or no data)"
             );
         }
         info!(
-            replica_l_id = self.id,
+            replica = self.id,
             "PxLocalReplica shutdown complete (acceptor/learner cleanup deferred to Drop)"
         );
         OperationReport::new()
@@ -779,14 +786,6 @@ impl PxLocalReplica {
         self.lease_duration_ms.load(Ordering::Acquire)
     }
 
-    /// Borrow the per-replica election counter handle so the election
-    /// driver / step-down sequence can bump counters without going
-    /// through additional accessor noise.
-    #[must_use]
-    pub(crate) fn election_metrics(&self) -> &ElectionMetrics {
-        &self.election_metrics
-    }
-
     /// Borrow optional registry handles for election counters. Returns
     /// `None` when no metrics registry is wired (tests / no-registry mode).
     #[must_use]
@@ -855,8 +854,11 @@ impl PxLocalReplica {
     /// gauges computed at read time so we don't have to keep extra
     /// atomics in sync with the canonical mutex-guarded state.
     #[must_use]
-    pub fn election_metrics_snapshot(&self, bulk_phase1_in_flight_slots: u64) -> ElectionMetricsSnapshot {
-        let counters = self.election_metrics.counters();
+    pub fn election_state_view(
+        &self,
+        bulk_phase1_in_flight_slots: u64,
+        counters: crate::cluster::status::ElectionCounters,
+    ) -> ElectionStateView {
         let now = Instant::now();
         let last_heartbeat_age_ms = self.last_heartbeat_at.lock().map(|inst| {
             now.saturating_duration_since(inst)
@@ -885,14 +887,14 @@ impl PxLocalReplica {
         if let Some(h) = self.election_handles.get() {
             h.inflight_slots.set(bulk_phase1_in_flight_slots);
         }
-        ElectionMetricsSnapshot {
-            election_count: counters.election_count,
+        ElectionStateView {
+            election_count: counters.elections,
             current_term: self.current_term_snapshot(),
             last_heartbeat_age_ms,
             lease_remaining_ms,
             bulk_phase1_in_flight_slots,
             step_downs_higher_term: counters.step_downs_higher_term,
-            step_downs_lease_unrenewable: counters.step_downs_lease_unrenewable,
+            step_downs_lease_unrenewable: counters.step_downs_lease,
             step_downs_admin: counters.step_downs_admin,
         }
     }
@@ -909,7 +911,7 @@ impl PxLocalReplica {
     /// (`O(1)`) data: the kv-store key count via `DashMap::len`.
     #[allow(clippy::cast_possible_truncation)]
     #[must_use]
-    pub fn status(&self) -> ReplicaStatus {
+    pub fn status(&self, counters: crate::cluster::status::ElectionCounters) -> ReplicaStatus {
         let mut status = StatusLevel::Ok;
         let mut messages = Vec::new();
         if self.shutdown_started.load(Ordering::Acquire) {
@@ -942,9 +944,7 @@ impl PxLocalReplica {
             .election_handles
             .get()
             .map_or(0, |h| h.inflight_slots.snapshot());
-        let election = Some(ElectionStateView::from(
-            self.election_metrics_snapshot(bulk_inflight),
-        ));
+        let election = Some(self.election_state_view(bulk_inflight, counters));
         ReplicaStatus {
             id: self.id,
             role: role.to_string(),

@@ -203,11 +203,11 @@ async fn diskdb_e2e_allocate_free() {
         .get_disk_group(DG_ID)
         .expect("disk-group should be in container");
     let (bind, disk_count, zone_count) = {
-        let bind = *dg.bind.read().unwrap();
+        let bind = dg.bind();
         let disks = dg.disks.read().unwrap();
         assert_eq!(disks.len(), 3, "expected 3 disks");
         let zone_count = {
-            let zones = disks[0].zones.read().unwrap();
+            let zones = disks[0].zones.load();
             u32::try_from(zones.len()).unwrap()
         };
         (bind, disks.len(), zone_count)
@@ -257,7 +257,7 @@ async fn diskdb_e2e_allocate_free() {
 
     // 9. Free the block.
     let free_kv = cluster.make_ddb_kv_client();
-    alloc::free_block(&dg, &segment, &free_kv, false)
+    alloc::free_block(&dg, &segment, &free_kv)
         .await
         .expect("free should succeed");
     eprintln!("freed segment");
@@ -268,6 +268,7 @@ async fn diskdb_e2e_allocate_free() {
         disk_id: make_disk_id(0, 1),
         zone_index: segment.zone_index,
         unit_offset: segment.unit_offset,
+        allocation_ts: segment.allocation_ts,
     };
     let free_bytes = free_key.to_bytes();
     let verify_kv2 = cluster.make_ddb_kv_client();
@@ -278,10 +279,9 @@ async fn diskdb_e2e_allocate_free() {
     assert_eq!(free_record.unit_count, 1);
     assert_eq!(free_record.previous_owner, Some(owner_chunk));
 
-    // Verify the busy key is gone.
+    // Busy remains until bounded compaction consumes the matching free fact.
     let busy_val2 = kv_get(&verify_kv2, &busy_bytes).await;
-    assert!(busy_val2.is_none(), "busy record should be gone after free");
-    eprintln!("FreeBlockValue record verified, BusyBlockKey gone");
+    assert!(busy_val2.is_some(), "busy record should remain before compaction");
 
     // 11. Allocate multiple blocks and verify.
     let alloc_kv2 = cluster.make_ddb_kv_client();
@@ -304,31 +304,32 @@ async fn diskdb_e2e_allocate_free() {
 
     // 12. Free all 3 in one batch.
     let free_kv2 = cluster.make_ddb_kv_client();
-    alloc::free_blocks(&dg, &segments, &free_kv2, false)
+    alloc::free_blocks(&dg, &segments, &free_kv2)
         .await
         .expect("free 3 blocks should succeed");
     eprintln!("freed 3 blocks in batch");
 
-    // 13. Verify all 3 busy keys are gone and 3 free keys exist.
+    // 13. Verify all three immutable free facts and retained busy records.
     let verify_kv3 = cluster.make_ddb_kv_client();
     for seg in &segments {
         let bk = BusyBlockKey {
-            disk_id: make_disk_id(0, 1),
+            disk_id: seg.disk_id.expect("segment disk"),
             zone_index: seg.zone_index,
             unit_offset: seg.unit_offset,
         };
         let bk_bytes = bk.to_bytes();
         let result = kv_get(&verify_kv3, &bk_bytes).await;
         assert!(
-            result.is_none(),
-            "busy record should be gone for offset {}",
+            result.is_some(),
+            "busy record should remain for offset {}",
             seg.unit_offset
         );
 
         let fk = FreeBlockKey {
-            disk_id: make_disk_id(0, 1),
+            disk_id: seg.disk_id.expect("segment disk"),
             zone_index: seg.zone_index,
             unit_offset: seg.unit_offset,
+            allocation_ts: seg.allocation_ts,
         };
         let fk_bytes = fk.to_bytes();
         let result = kv_get(&verify_kv3, &fk_bytes).await;
@@ -345,7 +346,7 @@ async fn diskdb_e2e_allocate_free() {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn diskdb_e2e_validate_owner_on_free() {
+async fn diskdb_e2e_blind_free_validation_at_compaction() {
     if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && crowdb_kv_server_bin().is_none() {
         eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
         return;
@@ -387,9 +388,9 @@ async fn diskdb_e2e_validate_owner_on_free() {
         .await
         .expect("allocate should succeed");
 
-    // 1. Free with validate_owner_on_free=true and matching owner → success.
+    // 1. A matching-owner blind free succeeds.
     let free_kv = cluster.make_ddb_kv_client();
-    alloc::free_block(&dg, &segment, &free_kv, true)
+    alloc::free_block(&dg, &segment, &free_kv)
         .await
         .expect("free with matching owner should succeed");
 
@@ -398,6 +399,7 @@ async fn diskdb_e2e_validate_owner_on_free() {
         disk_id: make_disk_id(0, 1),
         zone_index: segment.zone_index,
         unit_offset: segment.unit_offset,
+        allocation_ts: segment.allocation_ts,
     };
     let verify_kv = cluster.make_ddb_kv_client();
     let free_val = kv_get(&verify_kv, &free_key.to_bytes()).await;
@@ -406,8 +408,7 @@ async fn diskdb_e2e_validate_owner_on_free() {
         "free record should exist after validated free"
     );
 
-    // 2. Allocate again, then free with validate_owner_on_free=true but
-    //    a WRONG owner → OwnerMismatch, no bitmap clear.
+    // 2. A wrong-owner free is persisted without a read; compaction rejects it.
     let alloc_kv2 = cluster.make_ddb_kv_client();
     let segment2 = alloc::allocate_block(
         &dg,
@@ -427,13 +428,10 @@ async fn diskdb_e2e_validate_owner_on_free() {
     wrong_segment.owner_chunk = Some(wrong_owner);
 
     let free_kv2 = cluster.make_ddb_kv_client();
-    let result = alloc::free_block(&dg, &wrong_segment, &free_kv2, true).await;
-    assert!(
-        matches!(result, Err(alloc::FreeError::OwnerMismatch { .. })),
-        "expected OwnerMismatch, got {result:?}"
-    );
+    let result = alloc::free_block(&dg, &wrong_segment, &free_kv2).await;
+    assert!(result.is_ok(), "blind free should persist: {result:?}");
 
-    // The BusyBlockKey should still exist (free was rejected).
+    // The BusyBlockKey remains for compaction-time validation.
     let seg2_disk_id = segment2.disk_id.expect("segment2 should have disk_id");
     let busy_key = BusyBlockKey {
         disk_id: seg2_disk_id,
@@ -442,42 +440,36 @@ async fn diskdb_e2e_validate_owner_on_free() {
     };
     let verify_kv2 = cluster.make_ddb_kv_client();
     let busy_val = kv_get(&verify_kv2, &busy_key.to_bytes()).await;
-    assert!(
-        busy_val.is_some(),
-        "busy record should still exist after rejected free"
-    );
+    assert!(busy_val.is_some(), "busy record should remain before compaction");
 
     // 3. Free the block with the correct owner (cleanup).
     let free_kv3 = cluster.make_ddb_kv_client();
-    alloc::free_block(&dg, &segment2, &free_kv3, true)
+    alloc::free_block(&dg, &segment2, &free_kv3)
         .await
         .expect("free with matching owner should succeed");
 
-    // 4. Free a non-busy block with validate_owner_on_free=true → NotBusy.
+    // 4. A non-busy free is also an inert immutable fact.
     let fake_segment = crowdb_protocol::diskdb::rpc::Segment {
         disk_id: Some(seg2_disk_id),
         zone_index: segment2.zone_index,
         unit_offset: 999_999, // non-existent offset
         unit_count: 1,
         owner_chunk: Some(owner_chunk),
+        allocation_ts: 0,
     };
     let free_kv4 = cluster.make_ddb_kv_client();
-    let result = alloc::free_block(&dg, &fake_segment, &free_kv4, true).await;
-    assert!(
-        matches!(result, Err(alloc::FreeError::NotBusy { .. })),
-        "expected NotBusy, got {result:?}"
-    );
+    let result = alloc::free_block(&dg, &fake_segment, &free_kv4).await;
+    assert!(result.is_ok(), "blind non-busy free should persist: {result:?}");
 
-    eprintln!("diskdb_e2e_validate_owner_on_free: ALL CHECKS PASSED");
+    eprintln!("diskdb_e2e_blind_free_validation_at_compaction: ALL CHECKS PASSED");
 }
 
 /// E2E: allocate ALL space across 3 disks × 4 zones × 128 units = 1536
-/// units, then free ALL of it. Verifies the full fill/drain cycle
-/// against a real KV cluster: every unit gets a `BusyBlockValue`, then
-/// every unit gets a `FreeBlockValue` and the `BusyBlockKey` is gone.
-/// Uses `aggregate_usage` for bulk verification + samples a subset of
-/// KV records for persistence checks (1536 individual KV gets would
-/// be too slow).
+/// units in 8-unit ranges, then free ALL of it. Verifies the full
+/// fill/drain cycle against a real KV cluster: every range gets a
+/// `BusyBlockValue`, then a `FreeBlockValue` while the `BusyBlockKey`
+/// remains until compaction. Uses `aggregate_usage` for bulk verification
+/// and samples a subset of KV records for persistence checks.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn diskdb_e2e_allocate_all_free_all() {
@@ -520,7 +512,7 @@ async fn diskdb_e2e_allocate_all_free_all() {
         .get_disk_group(DG_ID)
         .expect("disk-group should be in container");
 
-    let total_cap = 3 * 4 * 128u64; // 3 disks × 4 zones × 128 units
+    let total_cap = 3 * CAPACITY_UNITS; // 3 disks × 4 zones × 128 units
     let total_cap_bytes = total_cap * u64::from(UNIT_SIZE_BYTES);
     let owner_chunk = make_chunk_id(0, 42);
     let metrics = crowdb_diskdb::metrics::DiskdbMetrics::disabled();
@@ -575,14 +567,16 @@ async fn diskdb_e2e_allocate_all_free_all() {
     verify_invariant("initial empty");
 
     // ── Phase 1: Allocate ALL space ───────────────────────────────
-    // Use allocate_block (singular) in a loop — allocate_blocks
-    // (plural) enforces anti-affinity (excludes used disks), so it
-    // can only allocate up to disk_count per call.
+    // Allocate one block per disk in each batch. Anti-affinity limits
+    // each call to disk_count, while batching cuts KV round trips.
     let mut all_segments: Vec<crowdb_protocol::diskdb::rpc::Segment> = Vec::new();
     let alloc_kv = cluster.make_ddb_kv_client();
-    while let Ok(seg) = alloc::allocate_block(
+    let mut allocated_units = 0u64;
+    while let Ok(segments) = alloc::allocate_blocks(
         &dg,
-        1, // unit_count
+        8, // unit_count
+        3, // count
+        &[],
         &owner_chunk,
         UNIT_SIZE_BYTES,
         &alloc_kv,
@@ -592,14 +586,18 @@ async fn diskdb_e2e_allocate_all_free_all() {
     )
     .await
     {
-        all_segments.push(seg);
+        allocated_units += segments
+            .iter()
+            .map(|segment| u64::from(segment.unit_count))
+            .sum::<u64>();
+        all_segments.extend(segments);
         // Check invariant periodically during allocation.
-        if all_segments.len() % 500 == 0 {
-            verify_invariant(&format!("allocating {} units", all_segments.len()));
+        if allocated_units % (total_cap / 4) == 0 {
+            verify_invariant(&format!("allocating {allocated_units} units"));
         }
     }
-    eprintln!("allocated {} units (expected {total_cap})", all_segments.len());
-    assert_eq!(all_segments.len() as u64, total_cap, "should fill all capacity");
+    eprintln!("allocated {allocated_units} units (expected {total_cap})");
+    assert_eq!(allocated_units, total_cap, "should fill all capacity");
 
     // Verify aggregate usage is full + invariant holds.
     verify_invariant("full");
@@ -629,19 +627,22 @@ async fn diskdb_e2e_allocate_all_free_all() {
     eprintln!("sample busy records verified in kv");
 
     // ── Phase 2: Free ALL space ───────────────────────────────────
-    // Batch-free 100 at a time, checking the invariant periodically.
+    // Batch-free 48 ranges at a time, checking the invariant periodically.
     let free_kv = cluster.make_ddb_kv_client();
-    let mut freed_count = 0usize;
-    for chunk in all_segments.chunks(100) {
-        alloc::free_blocks(&dg, chunk, &free_kv, false)
+    let mut freed_units = 0u64;
+    for chunk in all_segments.chunks(48) {
+        alloc::free_blocks(&dg, chunk, &free_kv)
             .await
             .expect("free batch should succeed");
-        freed_count += chunk.len();
-        if freed_count % 500 == 0 {
-            verify_invariant(&format!("freeing {freed_count} units"));
+        freed_units += chunk
+            .iter()
+            .map(|segment| u64::from(segment.unit_count))
+            .sum::<u64>();
+        if freed_units % (total_cap / 4) == 0 {
+            verify_invariant(&format!("freeing {freed_units} units"));
         }
     }
-    eprintln!("freed all {} units", all_segments.len());
+    eprintln!("freed all {freed_units} units");
 
     // Persist-only model: free does NOT clear the bitmap. Aggregate
     // usage still shows full — the bitmap is a conservative over-
@@ -662,6 +663,7 @@ async fn diskdb_e2e_allocate_all_free_all() {
             disk_id,
             zone_index: seg.zone_index,
             unit_offset: seg.unit_offset,
+            allocation_ts: seg.allocation_ts,
         };
         let free_val = kv_get(&verify_kv2, &free_key.to_bytes()).await;
         assert!(
@@ -671,7 +673,7 @@ async fn diskdb_e2e_allocate_all_free_all() {
             seg.unit_offset
         );
 
-        // Busy record should be gone.
+        // Busy record remains until compaction.
         let busy_key = BusyBlockKey {
             disk_id,
             zone_index: seg.zone_index,
@@ -679,13 +681,13 @@ async fn diskdb_e2e_allocate_all_free_all() {
         };
         let busy_val = kv_get(&verify_kv2, &busy_key.to_bytes()).await;
         assert!(
-            busy_val.is_none(),
-            "busy record should be gone for segment {idx} (disk={disk_id:?} zone={} offset={})",
+            busy_val.is_some(),
+            "busy record should remain for segment {idx} (disk={disk_id:?} zone={} offset={})",
             seg.zone_index,
             seg.unit_offset
         );
     }
-    eprintln!("sample free records verified, busy records gone");
+    eprintln!("sample free and retained busy records verified");
 
     // ── Phase 3: Persist-only — no space reclaimable without compaction
     // The bitmap still shows all blocks busy. Allocation must fail
@@ -773,7 +775,7 @@ async fn diskdb_e2e_compact_zone_rpc() {
 
     // 3. Free 2 blocks — persist-only: bitmap stays set.
     let free_kv = cluster.make_ddb_kv_client();
-    alloc::free_blocks(&dg, &segments[0..2], &free_kv, false)
+    alloc::free_blocks(&dg, &segments[0..2], &free_kv)
         .await
         .expect("free 2");
 
@@ -789,7 +791,7 @@ async fn diskdb_e2e_compact_zone_rpc() {
             .find(|d| d.disk_id == disk_id)
             .cloned()
             .expect("disk exists");
-        let zones = disk.zones.read().unwrap();
+        let zones = disk.zones.load();
         let zone = &zones[zone_index as usize];
         #[allow(clippy::cast_possible_truncation)]
         let bit0 = segments[0].unit_offset as u32;
@@ -824,9 +826,9 @@ async fn diskdb_e2e_compact_zone_rpc() {
     let mut compacted_count = 0u32;
     let mut total_deleted = 0u32;
     let mut all_success = true;
-    let zone_count = disk.zones.read().unwrap().len();
+    let zone_count = disk.zones.load().len();
     for zi in 0..zone_count {
-        let zone = Arc::clone(&disk.zones.read().unwrap()[zi]);
+        let zone = Arc::clone(&disk.zones.load()[zi]);
         let backlog_before = zone
             .uncompacted_free_record_count
             .load(std::sync::atomic::Ordering::Acquire);
@@ -858,8 +860,8 @@ async fn diskdb_e2e_compact_zone_rpc() {
     assert!(all_success, "all zone compaction results should be success");
     eprintln!("compact_zone: compacted {compacted_count} zones, deleted {total_deleted} free records");
 
-    // 6. Verify bitmap is now cleared for freed segments.
-    {
+    // 6. Verify bitmap is cleared only when a positive cutoff was available.
+    let compacted = {
         let disk = dg
             .disks
             .read()
@@ -868,30 +870,32 @@ async fn diskdb_e2e_compact_zone_rpc() {
             .find(|d| d.disk_id == disk_id)
             .cloned()
             .expect("disk exists");
-        let zones = disk.zones.read().unwrap();
+        let zones = disk.zones.load();
         let zone = &zones[zone_index as usize];
         #[allow(clippy::cast_possible_truncation)]
         let bit0 = segments[0].unit_offset as u32;
-        assert!(
-            !zone.usage_bits.is_set(bit0),
-            "freed bit should be clear after compaction"
-        );
-    }
+        let compacted = zone.compact_slot.load(std::sync::atomic::Ordering::Acquire) > 0;
+        assert_eq!(zone.usage_bits.is_set(bit0), !compacted);
+        compacted
+    };
 
     // 7. Verify FreeBlockKey records are deleted from KV.
     let verify_kv = cluster.make_ddb_kv_client();
     for seg in &segments[0..2] {
         let free_key = FreeBlockKey {
-            disk_id,
+            disk_id: seg.disk_id.expect("segment disk"),
             zone_index: seg.zone_index,
             unit_offset: seg.unit_offset,
+            allocation_ts: seg.allocation_ts,
         };
         let val = kv_get(&verify_kv, &free_key.to_bytes()).await;
-        assert!(
-            val.is_none(),
-            "free record should be deleted after compaction (offset={})",
-            seg.unit_offset
-        );
+        let compacted_here = compacted && seg.disk_id == Some(disk_id);
+        assert_eq!(val.is_none(), compacted_here, "free record retention mismatch");
+    }
+
+    if !compacted {
+        eprintln!("compaction deferred at contiguous slot zero");
+        return;
     }
 
     // 8. Verify space is now reclaimable — allocate 2 more blocks.
@@ -973,7 +977,7 @@ async fn diskdb_e2e_suspect_rediscovery() {
 
     // Verify disk is Up and allocatable before the test.
     assert_eq!(
-        *target_disk.effective_status.read().unwrap(),
+        target_disk.effective_status(),
         HwStatus::Up,
         "disk should be Up before absence"
     );
@@ -995,7 +999,7 @@ async fn diskdb_e2e_suspect_rediscovery() {
         "expected 1 status change (Up → Suspect)"
     );
     assert_eq!(
-        *target_disk.effective_status.read().unwrap(),
+        target_disk.effective_status(),
         HwStatus::Suspect,
         "disk should be Suspect after first absence"
     );
@@ -1043,7 +1047,7 @@ async fn diskdb_e2e_suspect_rediscovery() {
         "expected 1 status change (Suspect → Up)"
     );
     assert_eq!(
-        *target_disk.effective_status.read().unwrap(),
+        target_disk.effective_status(),
         HwStatus::Up,
         "disk should be Up after rediscovery"
     );

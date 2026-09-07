@@ -176,7 +176,7 @@ async fn scan_zone_records(
         .await
     {
         // Try bincode decode (CRC is checked separately below).
-        if let Ok(zv) = bincode::deserialize::<crowdb_protocol::diskdb::rpc::ZoneValue>(&value) {
+        if let Ok(zv) = crowdb_protocol::diskdb::rpc::ZoneValue::from_bytes(&value) {
             zone_value = Some(zv);
         } else {
             // Bincode failure — synthesize a corrupt snapshot so
@@ -186,6 +186,7 @@ async fn scan_zone_records(
                 snapshot_slot: 0,
                 crc32: 1, // intentionally wrong so verify_checksum fails
                 compact_ts: 0,
+                compact_slot: 0,
             });
         }
     }

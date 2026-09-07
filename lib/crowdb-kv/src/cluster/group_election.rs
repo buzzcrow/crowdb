@@ -23,7 +23,7 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace, warn, Instrument};
 
 use crate::cluster::group::{AcceptAttempt, PrepareAttempt, PxGroup, RemoteReplicaKind};
 use crate::cluster::local_replica::PxLocalReplicaRole;
@@ -156,8 +156,8 @@ impl LeaderElection for PxGroup {
     async fn start_election_loop(self: &Arc<Self>) {
         if self.config.election.election_driver_disabled {
             debug!(
-                group_id = self.group_id,
-                replica_l_id = self.local_replica().id,
+                g = self.group_id,
+                replica = self.local_replica().id,
                 "election driver disabled by config; not spawning"
             );
             return;
@@ -165,8 +165,8 @@ impl LeaderElection for PxGroup {
         let mut driver_guard = self.driver_handle.lock().await;
         if driver_guard.is_some() {
             debug!(
-                group_id = self.group_id,
-                replica_l_id = self.local_replica().id,
+                g = self.group_id,
+                replica = self.local_replica().id,
                 "election driver already running; not spawning again"
             );
             return;
@@ -176,7 +176,7 @@ impl LeaderElection for PxGroup {
         *driver_guard = Some(handle);
     }
 
-    #[tracing::instrument(level = "info", skip_all, fields(group_id = self.group_id, term = term))]
+    #[tracing::instrument(level = "info", skip_all, fields(s = self.log_store_id().unwrap_or(0), g = self.group_id, replica = self.local_replica().id, term))]
     async fn run_bulk_phase1(
         &self,
         term: u64,
@@ -225,7 +225,7 @@ impl LeaderElection for PxGroup {
 
         if ceiling <= floor {
             self.leader_read_ready.store(true, Ordering::Release);
-            debug!(group_id, term, "bulk phase 1 skipped (empty range)");
+            debug!(term, "bulk phase 1 skipped (empty range)");
             return;
         }
 
@@ -384,29 +384,25 @@ impl PxGroup {
     /// 6. Drain in-flight proposals via the propose leadership gate.
     pub(crate) fn step_down(&self, tenure_cancel: &CancellationToken, my_term: u64, reason: StepDownReason) {
         info!(
-            group_id = self.group_id,
-            replica_l_id = self.local_replica().id,
+            g = self.group_id,
+            replica = self.local_replica().id,
             my_term,
             ?reason,
             "stepping down from leader"
         );
-        let metrics = self.local_replica().election_metrics();
         let handles = self.local_replica().election_registry_handles();
         match reason {
             StepDownReason::HigherTerm(_) => {
-                metrics.record_step_down_higher_term();
                 if let Some(h) = handles {
                     h.step_downs_higher_term.inc();
                 }
             }
             StepDownReason::LeaseUnrenewable => {
-                metrics.record_step_down_lease_unrenewable();
                 if let Some(h) = handles {
                     h.step_downs_lease.inc();
                 }
             }
             StepDownReason::Admin => {
-                metrics.record_step_down_admin();
                 if let Some(h) = handles {
                     h.step_downs_admin.inc();
                 }
@@ -448,7 +444,15 @@ impl PxGroup {
 /// fails.
 #[must_use]
 pub fn spawn(group: Weak<PxGroup>, cfg: PxElectionConfig, cancel: CancellationToken) -> JoinHandle<()> {
-    tokio::spawn(PxGroup::run_election_driver(group, cfg, cancel))
+    let span = group.upgrade().map_or_else(tracing::Span::none, |group| {
+        let g = group.group_id();
+        let replica = group.local_replica().id;
+        group.log_store_id().map_or_else(
+            || tracing::info_span!("election_driver", g, replica),
+            |s| tracing::info_span!("election_driver", s, g, replica),
+        )
+    });
+    tokio::spawn(PxGroup::run_election_driver(group, cfg, cancel).instrument(span))
 }
 
 /// Tiny xorshift64* PRNG used to randomize the per-replica election
@@ -512,8 +516,6 @@ impl PxGroup {
             return;
         };
         info!(
-            group_id = store_group_id,
-            replica_l_id,
             election_min_ms = cfg.election_min_ms,
             election_max_ms = cfg.election_max_ms,
             heartbeat_interval_ms = cfg.heartbeat_interval_ms,
@@ -540,17 +542,11 @@ impl PxGroup {
 
         loop {
             if cancel.is_cancelled() {
-                info!(
-                    group_id = store_group_id,
-                    replica_l_id, "election driver cancelled"
-                );
+                info!("election driver cancelled");
                 return;
             }
             let Some(g) = group.upgrade() else {
-                debug!(
-                    group_id = store_group_id,
-                    replica_l_id, "election driver: group dropped; exiting"
-                );
+                debug!("election driver: group dropped; exiting");
                 return;
             };
             let role = g.local_replica().role();
@@ -575,19 +571,19 @@ impl PxGroup {
                     tokio::select! {
                         biased;
                         () = cancel.cancelled() => {
-                            info!(group_id = store_group_id, replica_l_id, "election driver cancelled");
+                            info!("election driver cancelled");
                             return;
                         }
                         () = &mut reset_fut => {
                             // A heartbeat was accepted or a vote was granted
                             // to a peer; reset the election deadline (Raft rule).
                             election_deadline = next_election_deadline(Instant::now(), &cfg, &mut rng);
-                            trace!(group_id = store_group_id, replica_l_id, "election deadline reset on heartbeat / granted vote");
+                            trace!("election deadline reset on heartbeat / granted vote");
                         }
                         () = tokio::time::sleep_until(election_deadline) => {
                             let role = g.local_replica().role();
                             let term = g.local_replica().current_term_snapshot();
-                            debug!(group_id = store_group_id, replica_l_id, ?role, current_term = term, "election deadline fired");
+                            debug!(?role, current_term = term, "election deadline fired");
                             match role {
                                 PxLocalReplicaRole::Follower | PxLocalReplicaRole::PreCandidate | PxLocalReplicaRole::Candidate => {
                                     g.run_election_attempt(&cfg, &cancel).await;

@@ -1,15 +1,17 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! `bench` command — KV workload + RPC echo benchmark.
+//! `bench` command — KV, RPC, disk, chunk, and chunk-IO workloads.
 //!
-//! Module index only; workload implementations live in `bench/`.
+//! Module index only; workload implementations live in `bench/`. Each
+//! sub-topic has its own sub-module: `kv`, `rpc`, `disk`, `chunk`, `io`.
+//! Shared helpers (`loader`, `metrics`, `result`, `verb`) live directly
+//! under `bench/`.
 
-pub mod kv_client;
-pub mod kv_prepare;
-pub mod kv_read;
-pub mod kv_scan;
-pub mod kv_write;
+pub mod chunk;
+pub mod disk;
+pub mod io;
+pub mod kv;
 pub mod loader;
 pub mod metrics;
 pub mod result;

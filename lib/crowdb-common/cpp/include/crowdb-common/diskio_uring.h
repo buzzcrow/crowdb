@@ -176,6 +176,7 @@ class DiskIOUring
     struct Pipeline
     {
         struct io_uring ring{};
+        size_t          index   = 0;
         int             eventfd = -1;
         bool            valid   = false;
         PollingMode     mode    = PollingMode::Classic;
@@ -231,6 +232,9 @@ class DiskIOUring
 
     // Wake a sleeping poll thread via eventfd write (coalesced).
     void wake_poll_thread(PollThread &pt);
+
+    // Publish the idle-to-pending transition and wake the owning poll thread.
+    void mark_pending(Pipeline &p);
 
     // Find the poll thread that owns a given pipeline.
     PollThread *find_poll_thread(size_t pipeline_index);

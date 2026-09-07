@@ -18,6 +18,149 @@ pub enum BenchVerb {
     Kv(KvBenchVerb),
     /// Raw crowdb-rpc echo throughput benchmark against a fb-server.
     Rpc(RpcArgs),
+    /// Distributed disk-block allocation benchmark.
+    #[command(subcommand)]
+    Diskdb(DiskdbBenchVerb),
+    /// Distributed chunk lifecycle benchmark.
+    #[command(subcommand)]
+    Chunkdb(ChunkdbBenchVerb),
+    /// End-to-end chunk data IO benchmark.
+    #[command(subcommand)]
+    Chunkio(ChunkioBenchVerb),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ChunkioBenchVerb {
+    /// Stream deterministic large objects through `ChunkDB` and `DiskIO`.
+    Write(ChunkioArgs),
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct ChunkioArgs {
+    /// Maximum admitted objects; duration is the normal stopping condition.
+    #[arg(long, default_value_t = u64::MAX)]
+    pub objects: u64,
+    /// Stop admitting new objects after this many seconds, then drain writes.
+    #[arg(long, default_value_t = 20)]
+    pub duration_secs: u64,
+    #[arg(long, default_value_t = 16 * 1024 * 1024)]
+    pub object_size: u64,
+    #[arg(long, default_value_t = 1)]
+    pub concurrency: usize,
+    #[arg(long, default_value_t = 1024 * 1024)]
+    pub block_size: usize,
+    #[arg(long, default_value_t = 1024 * 1024 * 1024)]
+    pub chunk_size: u64,
+    #[arg(long, default_value_t = 4)]
+    pub data_num: usize,
+    #[arg(long, default_value_t = 1)]
+    pub code_num: usize,
+    #[arg(long, default_value_t = 1)]
+    pub seed: u8,
+    #[arg(long, default_value_t = 1)]
+    pub metrics_interval: u64,
+    /// First chunks to prepare before benchmark timing starts.
+    #[arg(long, default_value_t = 10)]
+    pub prefetch_chunks: usize,
+    /// Strips appended ahead within each active chunk.
+    #[arg(long, default_value_t = 2)]
+    pub prefetch_strips_per_chunk: usize,
+    /// Send owned `Bytes` blocks directly, bypassing stream fetch assembly.
+    #[arg(long, default_value_t = false)]
+    pub direct_buffers: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ChunkdbBenchVerb {
+    /// Allocate chunks until the time limit.
+    Allocate(ChunkdbArgs),
+    /// Run a deterministic lifecycle operation mix.
+    Mix(ChunkdbArgs),
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct ChunkdbArgs {
+    #[arg(long, default_value_t = 10)]
+    pub duration_secs: u64,
+    #[arg(long, default_value_t = 4)]
+    pub concurrency: usize,
+    /// Connections kept per `ChunkDB` endpoint.
+    #[arg(long, default_value_t = 1)]
+    pub chunkdb_connections: usize,
+    /// crowdb-rpc I/O workers used by the `ChunkDB` client transport.
+    #[arg(long, default_value_t = 2)]
+    pub chunkdb_client_rpc_workers: u32,
+    #[arg(long, default_value_t = 1)]
+    pub strip_count: u32,
+    #[arg(long, default_value_t = 1024)]
+    pub write_granularity_kb: u32,
+    #[arg(long, value_enum, default_value_t = ChunkdbStripMode::Mirror)]
+    pub strip_type: ChunkdbStripMode,
+    #[arg(long, default_value_t = 3)]
+    pub copy_count: u32,
+    #[arg(long, default_value_t = 4)]
+    pub data_num: u32,
+    #[arg(long, default_value_t = 2)]
+    pub code_num: u32,
+    #[arg(long, default_value_t = 1)]
+    pub seed: u64,
+    /// Metrics flush interval in seconds. 0 disables the metrics log.
+    #[arg(long, default_value_t = 1)]
+    pub metrics_interval: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ChunkdbStripMode {
+    Mirror,
+    Ec,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DiskdbBenchVerb {
+    /// Allocate until capacity exhaustion or the time limit.
+    Allocate(DiskdbArgs),
+    /// Run deterministic 70% allocate and 30% free traffic.
+    Mix(DiskdbArgs),
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct DiskdbArgs {
+    /// Run duration in seconds.
+    #[arg(long, default_value_t = 10)]
+    pub duration_secs: u64,
+    /// Concurrent workload tasks.
+    #[arg(long, default_value_t = 4)]
+    pub concurrency: usize,
+    /// Connections kept per `DiskDB` endpoint.
+    #[arg(long, default_value_t = 1)]
+    pub diskdb_connections: usize,
+    /// crowdb-rpc I/O workers used by the `DiskDB` client transport.
+    #[arg(long, default_value_t = 2)]
+    pub diskdb_client_rpc_workers: u32,
+    /// Allocation size in disk units.
+    #[arg(long, default_value_t = 1)]
+    pub unit_count: u32,
+    /// Blocks requested by each allocation RPC.
+    #[arg(long, default_value_t = 1)]
+    pub blocks_per_request: u32,
+    /// Expected unit size, used for space verification.
+    #[arg(long, default_value_t = 1_048_576)]
+    pub unit_size_bytes: u64,
+    /// Storage mode configured by cluster initialization.
+    #[arg(long, value_enum, default_value_t = DiskdbBenchMode::Mem)]
+    pub mode: DiskdbBenchMode,
+    /// Deterministic workload seed.
+    #[arg(long, default_value_t = 1)]
+    pub seed: u64,
+    /// Metrics flush interval in seconds. 0 disables the metrics log.
+    #[arg(long, default_value_t = 1)]
+    pub metrics_interval: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum DiskdbBenchMode {
+    Mem,
+    Block,
 }
 
 #[derive(Subcommand, Debug)]
@@ -228,11 +371,14 @@ pub enum BenchReadEndpoint {
 pub async fn run_bench_verb(cli: &Cli, verb: BenchVerb) -> ExitCode {
     match verb {
         BenchVerb::Rpc(args) => super::rpc::run(cli, args).await,
+        BenchVerb::Diskdb(verb) => super::disk::db::run(cli, verb).await,
+        BenchVerb::Chunkdb(verb) => super::chunk::run(cli, verb).await,
+        BenchVerb::Chunkio(verb) => super::io::run(cli, verb).await,
         BenchVerb::Kv(kv) => match kv {
-            KvBenchVerb::Prepare(args) => super::kv_prepare::run(cli, args).await,
-            KvBenchVerb::Read(args) => super::kv_read::run(cli, args).await,
-            KvBenchVerb::Write(args) => super::kv_write::run(cli, args).await,
-            KvBenchVerb::Scan(args) => super::kv_scan::run(cli, args).await,
+            KvBenchVerb::Prepare(args) => super::kv::prepare::run(cli, args).await,
+            KvBenchVerb::Read(args) => super::kv::read::run(cli, args).await,
+            KvBenchVerb::Write(args) => super::kv::write::run(cli, args).await,
+            KvBenchVerb::Scan(args) => super::kv::scan::run(cli, args).await,
         },
     }
 }

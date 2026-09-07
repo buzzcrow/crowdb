@@ -20,20 +20,28 @@
     clippy::doc_markdown
 )]
 
+pub mod benchmark;
 pub mod chunk;
+pub mod client;
 pub mod config;
 pub mod disk_io;
 pub mod error;
 pub mod io;
+pub mod metrics;
 pub mod traits;
 pub mod worker;
 pub mod writer;
 
+pub use benchmark::{run_large_write_benchmark, LargeWriteBenchmarkConfig, LargeWriteBenchmarkResult};
 pub use chunk::{ChunkPrefetch, ChunkWriter, EcStripWriter, MirrorStripWriter, StripResult, StripWriter};
+pub use client::{
+    ChunkIoClient, ChunkIoClientConfig, LargeWritePolicy, LargeWriteResult, PreparedLargeWrite,
+};
 pub use config::ChunkClientConfig;
-pub use disk_io::{DiskWriter, DiskioBlockWriter};
+pub use disk_io::{DiskWriter, DiskioBlockWriter, RoutedDiskWriter};
 pub use error::{IoError, Result};
 pub use io::{BackpressurePolicy, ChunkIoWriter, FeedStatus};
+pub use metrics::ChunkClientMetrics;
 pub use traits::ChunkAllocator;
 pub use worker::{EcWorker, HashWorker};
 pub use writer::{LargeAsyncObjectWriter, LargeObjectWriter, PooledWriter, SmallObjectWriter, WriterPool};

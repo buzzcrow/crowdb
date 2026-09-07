@@ -20,6 +20,9 @@ crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
 crowdb-common = { path = "../../lib/crowdb-common/rust" }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
+crowdb-diskdb-client = { path = "../../lib/crowdb-diskdb-client" }
+crowdb-chunkdb-client = { path = "../../lib/crowdb-chunkdb-client" }
+crowdb-chunk-client = { path = "../../lib/crowdb-chunk-client" }
 flatbuffers = { workspace = true }
 clap = { version = "4", features = ["derive", "env"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net"] }
@@ -46,10 +49,6 @@ crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 [[test]]
-name = "bench_benchmark_test"
-path = "tests/bench_benchmark_test.rs"
-
-[[test]]
 name = "cluster_cli_test"
 path = "tests/cluster_cli_test.rs"
 
@@ -66,9 +65,17 @@ name = "mgmt_cli_test"
 path = "tests/mgmt_cli_test.rs"
 
 [[test]]
-name = "diskdb_cli_test"
-path = "tests/diskdb_cli_test.rs"
-
-[[test]]
 name = "direct_cli_test"
 path = "tests/direct_cli_test.rs"
+
+[[test]]
+name = "diskdb_bench_test"
+path = "tests/diskdb_bench_test.rs"
+
+[[test]]
+name = "disk_workload_test"
+path = "tests/disk_workload_test.rs"
+
+[[test]]
+name = "chunkdb_bench_test"
+path = "tests/chunkdb_bench_test.rs"

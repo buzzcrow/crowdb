@@ -106,6 +106,7 @@ const CROWDB_RPC_LIVENESS_CHECK: Duration = Duration::from_secs(5);
 /// connection liveness. On `FBWatchNotifyError` with
 /// `not_leader_hint` or liveness-check failure, reconnect.
 #[allow(clippy::too_many_lines)]
+#[tracing::instrument(level = "debug", skip_all, fields(s = store_id, g = group_id))]
 async fn crowdb_rpc_reader_loop(
     kv: Arc<CrowdbKvClient>,
     store_id: u64,
@@ -122,11 +123,7 @@ async fn crowdb_rpc_reader_loop(
             continue;
         }
         let Some(endpoint) = kv.topology.leader(store_id, group_id) else {
-            tracing::warn!(
-                store_id,
-                group_id,
-                "watch_notify(crowdb-rpc): leader still unknown after refresh"
-            );
+            tracing::warn!("watch_notify(crowdb-rpc): leader still unknown after refresh");
             sleep_backoff(&mut backoff).await;
             continue;
         };
@@ -199,7 +196,7 @@ async fn crowdb_rpc_reader_loop(
         // Reset backoff on successful subscribe.
         backoff = Duration::from_millis(50);
         tracing::info!(
-            store_id, group_id, endpoint = %endpoint,
+            leader = %endpoint,
             "watch_notify(crowdb-rpc): subscribed, waiting for push frames"
         );
 
@@ -259,8 +256,10 @@ fn register_crowdb_rpc_handlers(
     kv: Arc<CrowdbKvClient>,
     store_id: u64,
 ) {
+    let runtime = tokio::runtime::Handle::current();
     // Handler for `FBWatchNotify` push frames.
     let notify_tx_h = Arc::clone(notify_tx);
+    let notify_runtime = runtime.clone();
     rpc.register_handler(
         FBMsgType::EWatchNotify.0 as u16,
         move |req: crowdb_rpc_ffi::ClientRequest| {
@@ -288,7 +287,7 @@ fn register_crowdb_rpc_handlers(
                 values,
             };
             let tx = Arc::clone(&notify_tx_h);
-            tokio::spawn(async move {
+            notify_runtime.spawn(async move {
                 let _ = tx.send(notify).await;
             });
         },
@@ -296,6 +295,7 @@ fn register_crowdb_rpc_handlers(
 
     // Handler for `FBWatchNotifyError` push frames.
     let reconnect_tx_h = reconnect_tx;
+    let reconnect_runtime = runtime;
     rpc.register_handler(
         FBMsgType::EWatchNotifyError.0 as u16,
         move |req: crowdb_rpc_ffi::ClientRequest| {
@@ -307,12 +307,14 @@ fn register_crowdb_rpc_handlers(
             let error = fb.error().unwrap_or("").to_string();
             if !hint.is_empty() {
                 tracing::info!(
-                    store_id, hint = %hint,
+                    s = store_id,
+                    g = fb.group_id(),
+                    leader = %hint,
                     "watch_notify(crowdb-rpc): not_leader_hint, reconnecting"
                 );
                 kv.topology.set_leader(store_id, fb.group_id(), hint);
                 let tx = reconnect_tx_h.clone();
-                tokio::spawn(async move {
+                reconnect_runtime.spawn(async move {
                     let _ = tx.send(()).await;
                 });
             } else if !error.is_empty() {

@@ -13,7 +13,7 @@ use dashmap::DashMap;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
+use tracing::{debug, info_span, Instrument};
 
 use crate::cluster::group_config::GroupConfigStore;
 use crate::cluster::group_election::{LeaderElection, PendingLeaderHandoff, ReadBarrierOutcome};
@@ -22,7 +22,7 @@ use crate::cluster::local_replica::PxLocalReplica;
 use crate::cluster::node_config::NodeConfigStore;
 use crate::cluster::remote_replica::PxRemoteReplica;
 use crate::cluster::replica::Replica;
-use crate::common::config::{AdmissionPolicy, CrowDBConfig, PaxosConfig};
+use crate::common::config::{CrowDBConfig, PaxosConfig};
 use crate::metrics::{Counter, Gauge, LatencySummary};
 use crate::paxos::roles::{Acceptor, DedupTag, PxBallot, PxLogEntry, SlotIndex};
 use crate::paxos::{PxGroupId, PxNodeId};
@@ -83,6 +83,7 @@ pub(crate) struct PendingBatch {
 
 pub struct PxGroup {
     pub group_id: PxGroupId,
+    log_store_id: AtomicU64,
     pub(crate) cached_quorum: usize,
     pub(crate) local_replica: PxLocalReplica,
     pub(crate) remote_replicas: Vec<RemoteReplicaKind>,
@@ -204,6 +205,10 @@ pub struct PxGroup {
     /// `run_pass` to gate periodic WAL durable flushes on
     /// `wal_flush_interval_ms`.
     pub(crate) last_wal_flush_time: parking_lot::Mutex<std::time::Instant>,
+    /// Monotonic timestamp of the last `compact_sparse_blocks` pass. Used by
+    /// `run_pass` to gate cadence-driven block compaction on
+    /// `merge_gc_interval_ms` (R129).
+    pub(crate) last_merge_gc_time_ms: AtomicU64,
     /// Gap 5 step 2: notified when a memtable freeze happens in the C++
     /// engine, so the maintenance loop can flush immediately instead of
     /// waiting for the next tick. Shared with the learner's apply path
@@ -328,8 +333,10 @@ impl PxGroup {
         // O6: capture replica_id before the move into the struct for the
         // per-replica snapshot jitter below.
         let replica_id = local_replica.id;
+        local_replica.log_group_id.store(group_id, Ordering::Release);
         let mut group = Self {
             group_id,
+            log_store_id: AtomicU64::new(0),
             cached_quorum: 0,
             local_replica,
             remote_replicas: Vec::new(),
@@ -356,7 +363,7 @@ impl PxGroup {
             group_snapshot_slot: AtomicU64::new(0),
             inflight: InflightAdmission::new(
                 PaxosConfig::DEFAULT.max_inflight_proposals,
-                PaxosConfig::DEFAULT.inflight_admission,
+                PaxosConfig::DEFAULT.reject_on_inflight_window_full,
             ),
             config_store: None,
             node_config_store: None,
@@ -373,6 +380,9 @@ impl PxGroup {
                     .unwrap_or_else(std::time::Instant::now),
             ),
             last_wal_flush_time: parking_lot::Mutex::new(std::time::Instant::now()),
+            last_merge_gc_time_ms: AtomicU64::new(crate::common::time::instant_to_anchor_ms(
+                std::time::Instant::now(),
+            )),
             flush_notify: Arc::new(tokio::sync::Notify::new()),
             flushes_since_snapshot: AtomicU64::new(0),
             read_handles: OnceLock::new(),
@@ -447,7 +457,7 @@ impl PxGroup {
         self.set_election_config(config.election);
         self.set_inflight_config(
             config.paxos.max_inflight_proposals,
-            config.paxos.inflight_admission,
+            config.paxos.reject_on_inflight_window_full,
         );
         self.coalesce_max_keys.store(
             config.paxos.coalesce_max_keys as u16,
@@ -465,10 +475,10 @@ impl PxGroup {
     /// called before the group starts serving proposals. Also syncs the
     /// params into `self.config.paxos` so the held config stays the
     /// source of truth.
-    pub fn set_inflight_config(&mut self, max_inflight: usize, policy: AdmissionPolicy) {
-        self.inflight = InflightAdmission::new(max_inflight, policy);
+    pub fn set_inflight_config(&mut self, max_inflight: usize, reject_on_window_full: bool) {
+        self.inflight = InflightAdmission::new(max_inflight, reject_on_window_full);
         self.config.paxos.max_inflight_proposals = max_inflight;
-        self.config.paxos.inflight_admission = policy;
+        self.config.paxos.reject_on_inflight_window_full = reject_on_window_full;
     }
 
     /// Current inflight proposal window size (total permits).
@@ -477,10 +487,10 @@ impl PxGroup {
         self.inflight.total_permits()
     }
 
-    /// Current admission policy.
+    /// Current `reject_on_inflight_window_full` setting.
     #[must_use]
-    pub fn inflight_admission_policy(&self) -> AdmissionPolicy {
-        self.inflight.policy
+    pub fn reject_on_inflight_window_full(&self) -> bool {
+        self.inflight.reject_on_window_full
     }
 
     /// Get the config store, if set.
@@ -529,9 +539,13 @@ impl PxGroup {
         let weak = Arc::downgrade(self);
         let cancel = self.tenure_cancel.clone();
         let group_id = self.group_id;
-        let handle = tokio::spawn(async move {
-            run_fetchgap_driver(weak, group_id, cancel).await;
-        });
+        let replica = self.local_replica.id;
+        let task = async move { run_fetchgap_driver(weak, group_id, cancel).await };
+        let span = self.log_store_id().map_or_else(
+            || info_span!("fetchgap_driver", g = group_id, replica),
+            |s| info_span!("fetchgap_driver", s, g = group_id, replica),
+        );
+        let handle = tokio::spawn(task.instrument(span));
         *guard = Some(handle);
     }
 
@@ -548,6 +562,18 @@ impl PxGroup {
 
     pub fn group_id(&self) -> PxGroupId {
         self.group_id
+    }
+
+    pub(crate) fn set_log_store_id(&self, store_id: u64) {
+        self.log_store_id.store(store_id, Ordering::Release);
+        self.local_replica.set_log_context(store_id, self.group_id);
+    }
+
+    pub(crate) fn log_store_id(&self) -> Option<u64> {
+        match self.log_store_id.load(Ordering::Acquire) {
+            0 => None,
+            store_id => Some(store_id),
+        }
     }
 
     pub fn local_replica(&self) -> &PxLocalReplica {
@@ -725,7 +751,7 @@ impl PxGroup {
             AcceptAttempt::Chosen => {
                 replica.learn_chosen(&entry, &[]).await;
                 self.fan_out_chosen_notice(&entry, group_id);
-                debug!(group_id, slot = gap_slot, "background repair filled gap");
+                debug!(slot = gap_slot, "background repair filled gap");
                 RepairOutcome::Filled { slot: gap_slot }
             }
             AcceptAttempt::Retry { error, .. } | AcceptAttempt::Fail { error } => {
@@ -783,7 +809,7 @@ impl PxGroup {
             };
             let remote_id = remote.node_id;
             if let Err(err) = remote.send_chosen_notice(slot, term, leader_id, group_id, ballot_round) {
-                debug!(group_id, slot, term, remote_id, endpoint = %remote.endpoint, error = %err, "fan_out_chosen_notice: peer notice failed (best-effort)");
+                debug!(slot, term, peer = remote_id, endpoint = %remote.endpoint, error = %err, "fan_out_chosen_notice: peer notice failed (best-effort)");
             }
         }
     }
@@ -798,19 +824,16 @@ impl PxGroup {
     pub(crate) fn handle_fetch_gap(&self, slot: SlotIndex) -> Option<crate::rpc::FetchGapResponse> {
         let replica = &self.local_replica;
         if !replica.is_leader() {
-            debug!(
-                group_id = self.group_id,
-                slot, "handle_fetch_gap: not leader, ignoring"
-            );
+            debug!(slot, role = ?replica.role(), leader = ?replica.believed_leader_id(), "handle_fetch_gap: not leader, ignoring");
             return None;
         }
         let entry = replica.acceptor.accepted_at(slot)?;
         let group_id = self.group_id;
         debug!(
-            group_id,
             slot,
             round = entry.ballot.round,
-            leader_id = entry.ballot.leader_id,
+            leader = entry.ballot.leader_id,
+            role = "leader",
             term = entry.term,
             payload_len = entry.payload.len(),
             "handle_fetch_gap: replying with accepted value"

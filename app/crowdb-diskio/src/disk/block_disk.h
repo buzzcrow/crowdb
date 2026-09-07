@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-// BlockDisk: opens a Linux block device with O_DIRECT | O_RDWR.
+// BlockDisk: opens a Linux block device with O_DIRECT | O_DSYNC | O_RDWR.
 // block_size() = logical block size (from BLKSSZGET ioctl, or default 512).
 // Linux-only.
 #pragma once

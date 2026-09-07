@@ -212,7 +212,7 @@ Components:
 - **DiskSet** — holds `HashMap<DiskId, shared_ptr<Disk>>`, opened at
   startup from the node's disk list. Resolves `disk_id` to a `Disk`.
 - **Disk** — virtual base with subclasses: `BlockDisk` (real block
-  device, `O_DIRECT`), `NullDisk` (memfd, drop-write + pattern read),
+  device, `O_DIRECT`), `NullDisk` (`/dev/zero`, drop-write + pattern read),
   `MemDisk` (memfd, store + read-back).
   Each `Disk` shares the node's `IoEngine` instance; dummy disks wrap
   it with a `DummyDiskEngine` for read-content hack and optional fault
@@ -292,8 +292,8 @@ The dummy-disk wrapper. `DummyDiskEngine` wraps a real `IoEngine`
   a `pread`, the wrapper overwrites the buffer with deterministic
   pattern data generated from `disk_id` + `phys_offset` (xorshift64
   PRNG). The full uring/blocking `pwrite`/`pread` syscall path
-  executes against a `memfd_create` backing — no real disk I/O, but
-  the ring mechanics, syscall cost, and DiskIOUring batching all run.
+  executes against `/dev/zero` — no real disk I/O or retained page-cache
+  data, but the ring mechanics, syscall cost, and DiskIOUring batching all run.
   Used for benchmark tests that measure uring overhead without
   storage.
 - **Fault injection** (NullDisk + MemDisk): per-I/O random latency
@@ -305,16 +305,17 @@ The dummy-disk wrapper. `DummyDiskEngine` wraps a real `IoEngine`
 
 ### 5.4 NullDisk and MemDisk
 
-Two dummy disk types, both backed by `memfd_create` (tmpfs):
+Two dummy disk types use different memory semantics:
 
-- **NullDisk** — the default dummy disk. Writes go to tmpfs (discarded
-  — NullDisk never reads them back). Reads execute the full `pread`
-  path, then the `DummyDiskEngine` wrapper overwrites the buffer with
-  pattern data. For benchmark tests: measures uring/blocking overhead
-  without real disk I/O or storage capacity limits.
-- **MemDisk** — stores written data and reads it back. For end-to-end
-  correctness tests that verify I/O data integrity. The full
-  `pwrite`/`pread` path executes against the memfd; no real disk I/O.
+- **NullDisk** — the default dummy disk, backed by `/dev/zero`. Writes are
+  discarded without retaining page-cache data. Reads execute the full
+  `pread` path, then the `DummyDiskEngine` wrapper overwrites the buffer
+  with pattern data. For benchmark tests: measures uring/blocking overhead
+  without real disk I/O, storage capacity limits, or memory growth.
+- **MemDisk** — backed by `memfd_create` (tmpfs), stores written data and
+  reads it back. For end-to-end correctness tests that verify I/O data
+  integrity. The full `pwrite`/`pread` path executes against the memfd;
+  no real disk I/O.
 
 Both dummy disks share the node's `IoEngine` instance (uring or
 blocking, auto-detected). Optional `DiskProperties` enable fault
@@ -324,12 +325,13 @@ injection on either type.
 
 `Disk` is a C++ virtual base with subclasses:
 
-- **BlockDisk** — real block device, opened with `O_DIRECT | O_RDWR`
+- **BlockDisk** — real block device, opened with `O_DIRECT | O_DSYNC | O_RDWR`
   (Linux). Aligned I/O only. The primary production disk type for
   NVMe/SATA SSDs and HDDs. The device path comes from the
   `device_path` field in `DiskValue` (group-0 sysdata).
-- **NullDisk** — memfd-backed dummy disk. Writes discarded; reads
-  return deterministic pattern data via `DummyDiskEngine` wrapper.
+- **NullDisk** — `/dev/zero`-backed dummy disk. Writes are discarded
+  without retained memory; reads return deterministic pattern data via
+  `DummyDiskEngine` wrapper.
   Default dummy disk type. For benchmark tests.
 - **MemDisk** — memfd-backed dummy disk. Stores written data and
   reads it back. For end-to-end correctness tests.
@@ -338,6 +340,12 @@ Each `Disk` shares the node's `IoEngine` instance (auto-detected:
 uring on Linux with liburing, blocking otherwise). Dummy disks
 (`NullDisk`, `MemDisk`) wrap the shared engine with a
 `DummyDiskEngine` for read-content hack and optional fault injection.
+
+Every valid descriptor used by `UringEngine`, including dummy disks discovered
+after startup, is registered with `DiskIOUring`. Removal unregisters the
+descriptor after draining in-flight work. The first group-0 disk sync runs
+immediately so a restarted service does not advertise an empty `DiskSet` for
+one refresh interval.
 
 `Zone` holds `{zone_index, base_offset, capacity, state}`. The
 physical offset for an I/O is `zone.base_offset + zone_offset`. Zone
@@ -618,11 +626,17 @@ async fn read(&self, segment: &Segment, test_pattern_offset: u64) -> Result<Byte
 async fn fsync(&self, disk_id: &DiskId) -> Result<(), IoError>
 ```
 
-The client routes to the correct node's diskio server based on
-`segment.node_id` (from the node's service registry entry in
-group-0). Connection pooling is handled by `crowdb-rpc-ffi`'s
-`ConnectionPool`. Follows the existing `crowdb-diskdb-client` /
-`crowdb-chunkdb-client` crate pattern.
+The chunk client combines DiskIO service registrations with hardware disk-group
+ownership to build an immutable `disk_id -> endpoint + connection` snapshot.
+Every disk group must have exactly one live owner. Missing and duplicate owners
+fail discovery; there is no fallback endpoint. Refresh builds the snapshot away
+from the write path and publishes it atomically.
+
+`DiskioClient::write_bytes` retains the caller's owned `Bytes` allocation in
+the RPC buffer until completion. This avoids a client-side `Bytes` to `Vec`
+payload copy. On the server, the decoded payload continues directly into
+`IoEngine::write`, so no additional copy is introduced between RPC receive and
+I/O submission.
 
 A connection drop during a write is similar to a timeout: the client
 does not know the result (the I/O may still complete on the server —

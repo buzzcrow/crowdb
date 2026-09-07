@@ -46,6 +46,8 @@ pub struct AppState {
     /// console with identical "instance query failed" warnings every
     /// poll cycle when a diskdb instance is unreachable.
     pub warn_dedup: Arc<std::sync::Mutex<HashMap<String, std::time::Instant>>>,
+    /// Enables faster spawned-process intervals for E2E runs.
+    pub test_mode: bool,
 }
 
 impl Default for AppState {
@@ -97,7 +99,15 @@ impl AppState {
             kv_client: Arc::new(tokio::sync::RwLock::new(None)),
             discovery_client: Arc::new(tokio::sync::RwLock::new(None)),
             warn_dedup: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            test_mode: false,
         }
+    }
+
+    /// Enable or disable E2E test-mode behavior.
+    #[must_use]
+    pub fn with_test_mode(mut self, test_mode: bool) -> Self {
+        self.test_mode = test_mode;
+        self
     }
 
     /// Persist the current config to `config_path`, if one was provided.
@@ -312,10 +322,18 @@ impl AppState {
         c
     }
 
-    /// Drop the cached `CrowdbKvClient` so the next KV request rebuilds
-    /// the topology cache from scratch. Called on `/internal/reset`.
-    pub async fn clear_kv_client(&self) {
+    /// Drop every client that retains cluster topology so the next
+    /// request rebuilds from the post-reset cluster. The discovery and
+    /// `DiskDB` clients both retain the shared `CrowdbKvClient`, so
+    /// clearing only `kv_client` would leave its old group-0 leader hint
+    /// reachable through those wrappers.
+    pub async fn clear_cluster_clients(&self) {
+        *self.diskdb_client.write().await = None;
+        *self.discovery_client.write().await = None;
         *self.kv_client.write().await = None;
+        if let Some(transport) = self.kv_rpc_transport.read().await.as_ref() {
+            transport.clear_connections();
+        }
     }
 
     /// Get or lazily build the cached `ServiceDiscoveryClient`. Shares
@@ -446,7 +464,7 @@ impl AppState {
         };
         let alive: Vec<u64> = group0_nodes
             .iter()
-            .filter(|&&n| exclude_node != Some(n))
+            .filter(|&&n| exclude_node != Some(n) && self.runtime_pid(n).is_some())
             .copied()
             .collect();
         tracing::debug!(
@@ -691,6 +709,29 @@ mod tests {
         assert!(
             Arc::ptr_eq(ctx.kv_arc(), &cached),
             "OpContext must share the cached CrowdbKvClient"
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_cluster_clients_drops_every_topology_owner() {
+        let state = AppState::default();
+        let old_kv = state.kv_client().await;
+        let old_discovery = state.discovery_client().await;
+        *state.diskdb_client.write().await = Some(crowdb_diskdb_client::DiskdbClient::new(
+            old_discovery.registry().clone(),
+            Arc::new(crowdb_diskdb_client::DiskdbRpcTransport::new()),
+        ));
+
+        state.clear_cluster_clients().await;
+
+        assert!(state.kv_client.read().await.is_none());
+        assert!(state.discovery_client.read().await.is_none());
+        assert!(state.diskdb_client.read().await.is_none());
+
+        let rebuilt_kv = state.kv_client().await;
+        assert!(
+            !Arc::ptr_eq(&old_kv, &rebuilt_kv),
+            "a reset must not reuse the prior topology cache"
         );
     }
 
