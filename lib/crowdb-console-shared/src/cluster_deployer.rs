@@ -27,6 +27,7 @@ use crate::cluster::{NodeId, RackId};
 use crate::config::NodeEntry;
 use crate::diskdb::DeployDiskdbBody;
 use crate::error::{Error, Result};
+use crate::lifecycle::process_is_alive;
 
 /// Threshold above which a phase is considered slow (warning).
 const SLOW_THRESHOLD: Duration = Duration::from_secs(2);
@@ -613,6 +614,21 @@ impl CrowdbClusterDeployer {
     pub async fn stop(&mut self) {
         let total_start = Instant::now();
 
+        // Collect PIDs before the HTTP stop calls clear them, so we can
+        // wait for the processes to actually exit. The console's stop
+        // endpoint fires SIGTERM via spawn_blocking without awaiting,
+        // so the HTTP response returns before the process is gone.
+        let server_pids: Vec<u32> = self
+            .info
+            .as_ref()
+            .map(|i| i.nodes.iter().map(|n| n.pid).collect())
+            .unwrap_or_default();
+        let ddb_pids: Vec<u32> = self
+            .info
+            .as_ref()
+            .map(|i| i.diskdb_instances.iter().map(|d| d.pid).collect())
+            .unwrap_or_default();
+
         // Stop diskdb + KV servers in parallel for speed.
         let t = Instant::now();
         let diskdb_count = self.diskdb_node_ids.len();
@@ -638,6 +654,38 @@ impl CrowdbClusterDeployer {
             let _ = handle.await;
         }
         log_phase_time("stop_all_servers", t);
+
+        // Wait for the processes to actually exit so the next cycle can
+        // reuse ports and WAL dirs without racing the old processes.
+        // The console sends SIGTERM but doesn't await the exit; without
+        // this wait, the next start() can fail with "address already in
+        // use" when the new server tries to bind before the old one has
+        // released its ports.
+        let t = Instant::now();
+        let all_pids: Vec<u32> = server_pids.iter().chain(ddb_pids.iter()).copied().collect();
+        if !all_pids.is_empty() {
+            let wait_deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let alive: Vec<u32> = all_pids
+                    .iter()
+                    .copied()
+                    .filter(|p| process_is_alive(*p))
+                    .collect();
+                if alive.is_empty() {
+                    break;
+                }
+                if Instant::now() >= wait_deadline {
+                    tracing::warn!(
+                        alive_pids = ?alive,
+                        "stop() waited 10s but {} process(es) still alive",
+                        alive.len()
+                    );
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        log_phase_time("wait_for_process_exit", t);
 
         self.info = None;
 
@@ -667,17 +715,76 @@ impl CrowdbClusterDeployer {
         }
     }
 
-    /// Full teardown: stop all servers + reset config. Idempotent.
+    /// Full teardown: reset config (which gracefully shuts down KV
+    /// data in dependency order, then SIGTERMs all processes), then
+    /// wait for the processes to actually exit so the next cycle can
+    /// reuse ports and WAL dirs without racing.
+    ///
+    /// The order matters: `reset()` must run while the KV servers are
+    /// still alive so it can RPC-remove user groups/stores and clean
+    /// group-0 sysdata. If we stop the servers first, the RPC cleanup
+    /// is skipped and the next cycle's `start()` hits "store already
+    /// exists" because the WAL still carries the old store metadata.
     ///
     /// # Errors
-    /// Best-effort on stop; surfaces reset errors.
+    /// Surfaces reset errors.
     pub async fn teardown(&mut self) -> Result<()> {
         let total_start = Instant::now();
-        self.stop().await;
+
+        // Collect PIDs before reset clears them, so we can wait for
+        // process exit after reset returns.
+        let server_pids: Vec<u32> = self
+            .info
+            .as_ref()
+            .map(|i| i.nodes.iter().map(|n| n.pid).collect())
+            .unwrap_or_default();
+        let ddb_pids: Vec<u32> = self
+            .info
+            .as_ref()
+            .map(|i| i.diskdb_instances.iter().map(|d| d.pid).collect())
+            .unwrap_or_default();
 
         let t = Instant::now();
         self.reset().await?;
         log_phase_time("teardown_reset", t);
+
+        // Clear deployed node tracking — reset already stopped them.
+        self.deployed_node_ids.clear();
+        self.diskdb_node_ids.clear();
+
+        // Wait for the processes to actually exit. reset()'s
+        // stop_all_services fires SIGTERM via spawn_blocking without
+        // awaiting, so the HTTP response returns before the processes
+        // are gone. Without this wait, the next start() can fail with
+        // "address already in use" when the new server tries to bind
+        // before the old one has released its ports.
+        let t = Instant::now();
+        let all_pids: Vec<u32> = server_pids.iter().chain(ddb_pids.iter()).copied().collect();
+        if !all_pids.is_empty() {
+            let wait_deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                let alive: Vec<u32> = all_pids
+                    .iter()
+                    .copied()
+                    .filter(|p| process_is_alive(*p))
+                    .collect();
+                if alive.is_empty() {
+                    break;
+                }
+                if Instant::now() >= wait_deadline {
+                    tracing::warn!(
+                        alive_pids = ?alive,
+                        "teardown() waited 10s but {} process(es) still alive",
+                        alive.len()
+                    );
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        log_phase_time("teardown_wait_for_exit", t);
+
+        self.info = None;
 
         let total = total_start.elapsed();
         let total_ms = total.as_millis();

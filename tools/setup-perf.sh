@@ -3,7 +3,7 @@
 # Licensed under the Apache License, Version 2.0.
 #
 # One-shot perf environment setup for Ubuntu 24.04. Run with sudo:
-#   sudo bash doc/dev/setup-perf.sh
+#   sudo bash tools/setup-perf.sh
 #
 # Detects AMD vs Intel and configures the right PMU. Each step prints
 # a checkmark/cross with the expected value; exits non-zero on the first

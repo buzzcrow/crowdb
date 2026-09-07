@@ -17,7 +17,7 @@ One-time host setup for perf counters and CROWDB benchmarks on Ubuntu
 ## Run
 
 ```bash
-sudo bash doc/dev/setup-perf.sh
+sudo bash tools/setup-perf.sh
 ```
 
 The script auto-detects AMD vs Intel, applies every setting below, and
