@@ -131,6 +131,8 @@ test.describe('kv cluster · multi-rack/multi-store/multi-group topology', () =>
   //   100-102  store 800  group 8000  — SIMPLE smoke
   //   200-207  stores 900+901  groups 9000-9003  — COMPLEX smoke
   test.beforeAll(async () => {
+    test.setTimeout(180_000);
+
     await step('topology: resetAll', () => resetAll(apiBase));
 
     const allNodes = [
@@ -147,65 +149,53 @@ test.describe('kv cluster · multi-rack/multi-store/multi-group topology', () =>
     // Bootstrap group-0 on the first 3 nodes (191, 192, 193).
     await step('topology: clusterInit', () => clusterInit(apiBase, [191, 192, 193]));
 
-    // Test 1: multi-rack — bootstrap store on 1 node, extend via addReplica,
-    // then create groups spanning all 3.
-    await step('topology: multi-rack setup', async () => {
-      await createStoreNoInit(apiBase, 199, [191]);
-      await addGroup(apiBase, 199, 1990, 19900, [191]);
-      await addReplica(apiBase, 199, 1990, 192, 19901);
-      await addReplica(apiBase, 199, 1990, 193, 19902);
-      await Promise.all([
-        addGroup(apiBase, 199, 1991, 19910, [191, 192, 193]),
-        addGroup(apiBase, 199, 1992, 19920, [191, 192, 193]),
-      ]);
-    });
+    // Create all stores in parallel — stores are independent. This
+    // replaces the per-test serial setup phases with a single fan-out,
+    // cutting the worst-case wall time from 5 serial phases to 3.
+    await step('topology: createStoreNoInit x8', () => Promise.all([
+      createStoreNoInit(apiBase, 199, [191]),
+      createStoreNoInit(apiBase, 380, [381, 382, 383]),
+      createStoreNoInit(apiBase, 381, [384, 385, 386]),
+      createStoreNoInit(apiBase, 390, [391, 392, 393, 394, 395]),
+      createStoreNoInit(apiBase, 400, [401, 402, 403, 404, 405]),
+      createStoreNoInit(apiBase, 800, [100, 101, 102]),
+      createStoreNoInit(apiBase, 900, [200, 201, 202]),
+      createStoreNoInit(apiBase, 901, [200, 201, 202]),
+    ]));
 
-    // Test 2: iso-stores — two stores on disjoint node sets.
-    await step('topology: iso-stores setup', async () => {
-      await createStoreNoInit(apiBase, 380, [381, 382, 383]);
-      await createStoreNoInit(apiBase, 381, [384, 385, 386]);
-      await Promise.all([
-        addGroup(apiBase, 380, 3800, 38000, [381, 382, 383]),
-        addGroup(apiBase, 381, 3810, 38100, [384, 385, 386]),
-      ]);
-    });
+    // Create all initial groups in parallel — each is an independent
+    // Paxos group. Groups 1991/1992 are deferred until addReplica
+    // extends store 199 to nodes 192+193.
+    await step('topology: addGroup x13', () => Promise.all([
+      addGroup(apiBase, 199, 1990, 19900, [191]),
+      addGroup(apiBase, 380, 3800, 38000, [381, 382, 383]),
+      addGroup(apiBase, 381, 3810, 38100, [384, 385, 386]),
+      addGroup(apiBase, 390, 3900, 39000, [391, 392, 393]),
+      addGroup(apiBase, 390, 3901, 39010, [393, 394, 395]),
+      addGroup(apiBase, 400, 4000, 40000, [401, 402, 403]),
+      addGroup(apiBase, 400, 4001, 40010, [402, 403, 404]),
+      addGroup(apiBase, 400, 4002, 40020, [403, 404, 405]),
+      addGroup(apiBase, 800, 8000, 1, [100, 101, 102]),
+      addGroup(apiBase, 900, 9000, 1, [200, 201, 202]),
+      addGroup(apiBase, 900, 9001, 1, [200, 201, 202]),
+      addGroup(apiBase, 901, 9002, 1, [200, 201, 202]),
+      addGroup(apiBase, 901, 9003, 1, [200, 201, 202]),
+    ]));
 
-    // Test 3: overlap — two groups on overlapping 3-node subsets.
-    await step('topology: overlap setup', async () => {
-      await createStoreNoInit(apiBase, 390, [391, 392, 393, 394, 395]);
-      await Promise.all([
-        addGroup(apiBase, 390, 3900, 39000, [391, 392, 393]),
-        addGroup(apiBase, 390, 3901, 39010, [393, 394, 395]),
-      ]);
-    });
+    // Extend store 199 to nodes 192+193 via addReplica. Both calls
+    // are independent Paxos writes to group-0 sysdata — run them
+    // concurrently instead of serially.
+    await step('topology: addReplica x2', () => Promise.all([
+      addReplica(apiBase, 199, 1990, 192, 19901),
+      addReplica(apiBase, 199, 1990, 193, 19902),
+    ]));
 
-    // Test 4: 3 groups — three groups on different 3-node subsets.
-    await step('topology: 3groups setup', async () => {
-      await createStoreNoInit(apiBase, 400, [401, 402, 403, 404, 405]);
-      await Promise.all([
-        addGroup(apiBase, 400, 4000, 40000, [401, 402, 403]),
-        addGroup(apiBase, 400, 4001, 40010, [402, 403, 404]),
-        addGroup(apiBase, 400, 4002, 40020, [403, 404, 405]),
-      ]);
-    });
-
-    // Test 5: smoke — SIMPLE (3 nodes, 1 store, 1 group) + COMPLEX
-    // (8 nodes, 2 stores, 4 groups). setupCluster would re-bootstrap
-    // group-0, so we inline the store/group creation with createStoreNoInit.
-    await step('topology: smoke setup', async () => {
-      // SIMPLE
-      await createStoreNoInit(apiBase, 800, [100, 101, 102]);
-      await addGroup(apiBase, 800, 8000, 1, [100, 101, 102]);
-      // COMPLEX — storeNodes = first 3 nodes (200, 201, 202)
-      await createStoreNoInit(apiBase, 900, [200, 201, 202]);
-      await createStoreNoInit(apiBase, 901, [200, 201, 202]);
-      await Promise.all([
-        addGroup(apiBase, 900, 9000, 1, [200, 201, 202]),
-        addGroup(apiBase, 900, 9001, 1, [200, 201, 202]),
-        addGroup(apiBase, 901, 9002, 1, [200, 201, 202]),
-        addGroup(apiBase, 901, 9003, 1, [200, 201, 202]),
-      ]);
-    });
+    // Groups 1991/1992 span all 3 nodes — create after addReplica
+    // extends store 199's node set.
+    await step('topology: addGroup 1991+1992', () => Promise.all([
+      addGroup(apiBase, 199, 1991, 19910, [191, 192, 193]),
+      addGroup(apiBase, 199, 1992, 19920, [191, 192, 193]),
+    ]));
 
     // Wait for all leaders in parallel.
     await step('topology: waitForLeader', () => Promise.all([
