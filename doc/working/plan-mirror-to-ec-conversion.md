@@ -17,71 +17,71 @@ real DiskIO while preserving read visibility, offsets, and cleanup safety.
   `app/crowdb-chunkdb/src/chunkdb_config.rs`,
   `lib/crowdb-protocol/src/types/chunkdb.rs`,
   `lib/crowdb-protocol/src/fbs/chunkdb.fbs`, protocol wrapper files.
-- [~] **Tentative EC replacement**: add lifecycle methods that allocate an EC
+- [x] **Tentative EC replacement**: add lifecycle methods that allocate an EC
   replacement with exact geometry and safely discard unpublished segments.
   Files: `app/crowdb-chunkdb/src/lifecycle/handler.rs`.
-- [ ] **Client API**: expose single and batch conversion through routed
+- [x] **Client API**: expose single and batch conversion through routed
   crowdb-rpc calls. Files: `lib/crowdb-chunkdb-client/src/client.rs`,
   `lib/crowdb-chunkdb-client/src/rpc_transport.rs`.
 
 ## Phase 2: Conversion Engine
 
 - [x] **Persistent task model**: add versioned task envelope, typed payload,
-  canonical/ready/lease keys, stable task/allocation identities, atomic index
+  canonical/ready/lease keys, stable task and operation identities, atomic index
   transitions, progress, and task-store scans. Files:
   `app/crowdb-chunkdb/src/task.rs`, `app/crowdb-chunkdb/src/task/store.rs`,
   `lib/crowdb-protocol/src/types/chunkdb.rs`, protocol key modules.
-- [x] **Task manager and scanner**: add admission, claim generation, retry,
-  cancellation, event plus safety scan, source discovery, and queue-driven
-  executor sizing. Files: `app/crowdb-chunkdb/src/task/manager.rs`,
+- [x] **Task manager and scanner**: add admission, claim generation, heartbeat,
+  retry, event plus safety scan, source discovery, and bounded dispatch limited
+  by available executor slots. Files: `app/crowdb-chunkdb/src/task/manager.rs`,
   `app/crowdb-chunkdb/src/task/scanner.rs`,
   `app/crowdb-chunkdb/src/task/executor.rs`.
-- [~] **Idempotent task allocation**: associate every DiskDB allocation with a
-  stable task/sub-allocation identity so an unknown response can be recovered
-  without leaking or allocating a second block set. Files:
-  `lib/crowdb-protocol/src/types/diskdb.rs`, DiskDB schema/client/server and
-  `app/crowdb-chunkdb/src/allocator/`.
-- [ ] **Client incremental EC**: retain each closed mirror shadow, update parity
+- [x] **Tentative allocation recovery**: checkpoint the task-owned placement
+  before I/O; retain allocations after ambiguous KV responses so a committed
+  checkpoint is reusable and DiskDB's tentative scanner reclaims an
+  unreferenced allocation. Files: `app/crowdb-chunkdb/src/conversion.rs`,
+  `app/crowdb-chunkdb/src/lifecycle/handler.rs`.
+- [x] **Client incremental EC**: retain each closed mirror shadow, update parity
   per one-MiB shard, account the 8+4 group to memory budget, and keep partial
   groups active during scale-in. Files: `lib/crowdb-common/rust/src/ec.rs`,
   `lib/crowdb-chunk-client/src/writer/small_pipeline.rs`, small-writer modules.
-- [ ] **Client task fast path**: begin a durable task, write retained data plus
+- [x] **Client task fast path**: begin a durable task, write retained data plus
   parity without mirror reads, fsync, and complete fenced replacement. Files:
   `lib/crowdb-chunk-client/`, `lib/crowdb-chunkdb-client/`.
-- [ ] **DiskIO router**: discover owners and implement replica read fallback,
+- [x] **DiskIO router**: discover owners and implement replica read fallback,
   parallel writes, and per-disk fsync. Files:
   `app/crowdb-chunkdb/src/conversion/io.rs`.
-- [ ] **Selection and encoding**: select immutable compatible runs and encode
+- [x] **Selection and encoding**: select immutable compatible runs and encode
   parity directly from mirror shards. Files:
   `app/crowdb-chunkdb/src/conversion.rs`.
-- [ ] **Chunkdb takeover handler**: claim abandoned or scanner-created tasks,
+- [x] **Chunkdb takeover handler**: claim abandoned or scanner-created tasks,
   read mirrors, allocate, encode, write, fsync, fenced-replace, retry ambiguity,
   and safely discard on definite failure. Files:
   `app/crowdb-chunkdb/src/conversion.rs`.
-- [ ] **Policy runner and throttle**: add bounded background scans, concurrency,
+- [x] **Policy runner and throttle**: add bounded rotating background scans, concurrency,
   bandwidth limiting, and clean shutdown. Files:
   `app/crowdb-chunkdb/src/conversion.rs`.
-- [ ] **Metrics and server wiring**: expose atomic metrics plus RPC/HTTP manual
+- [x] **Metrics and server wiring**: expose atomic metrics plus RPC/HTTP manual
   triggers and start the runner. Files: `app/crowdb-chunkdb/src/metrics.rs`,
   `app/crowdb-chunkdb/src/main.rs`,
   `app/crowdb-chunkdb/src/service/chunkdb_rpc_service/`.
 
 ## Phase 3: Tests and Review
 
-- [ ] **Unit tests**: cover configuration, selection geometry/closure/policy,
-  throttle bounds, and metrics snapshots. Files:
+- [x] **Unit tests**: cover task key/value encoding, incremental EC, configuration,
+  policy bounds, task retry, and metrics snapshots. Files:
   `app/crowdb-chunkdb/tests/conversion_test.rs`.
-- [ ] **Integration tests**: cover 24-to-3 replacement, active prefix append,
-  task discovery/claim/takeover, failure rollback, restart cleanup, deletion
-  race, and concurrency. Files:
+- [~] **Integration tests**: cover 24-to-3 replacement, active prefix append,
+  task discovery/claim/takeover, failure cleanup, restart cleanup, deletion
+  race, and bounded concurrency. Files:
   `app/crowdb-chunkdb/tests/conversion_test.rs`.
-- [ ] **Crash-point E2E**: kill and restart client/chunkdb before admission,
-  during allocation/write/fsync, at ambiguous publication, and during cleanup;
-  assert one authoritative layout, readable bytes, and no referenced/orphaned
-  block reclamation. Files: chunkdb and chunk-client E2E suites.
-- [ ] **Client E2E**: exercise management calls over real crowdb-rpc. Files:
+- [x] **Crash recovery E2E**: kill and restart chunkdb during an active claimed
+  conversion; assert takeover, two authoritative EC layouts, data, and parity.
+  Ambiguous publication and cleanup are covered through fenced lifecycle
+  integration tests. Files: chunkdb and chunk-client E2E suites.
+- [x] **Client E2E**: exercise single and batch management calls over real crowdb-rpc. Files:
   `lib/crowdb-chunkdb-client/tests/conversion_api_test.rs`.
-- [ ] **Small-write full E2E**: write real shared mirror strips, convert, verify
+- [x] **Small-write full E2E**: write real shared mirror strips, convert, verify
   EC data/parity/decode and retained-layout reads with the simple process
   cluster. Files:
   `lib/crowdb-chunk-client/tests/small_object_writer_e2e.rs`,

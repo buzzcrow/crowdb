@@ -16,7 +16,7 @@ use crowdb_chunk_client::{
     ChunkIoClient, ChunkIoWriter, DiskWriter, IoError, Result, RoutedDiskWriter, SmallWritePolicy,
 };
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
-use crowdb_common::ec::{encode_parity_from_shards, EcScheme};
+use crowdb_common::ec::{decode, encode_parity_from_shards, EcScheme};
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{
     Chunk, ChunkState, ConversionFilter, Location, Strip, TriggerConversionBatchRequest,
@@ -236,6 +236,17 @@ async fn eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread()
             .await;
         assert_eq!(actual, expected);
     }
+    let mut degraded = Vec::with_capacity(12);
+    for segment in &ec.segments {
+        degraded.push(Some(
+            stack
+                .read_segment(segment, unit_bytes, 0, u32::try_from(MIB).unwrap())
+                .await,
+        ));
+    }
+    degraded[3] = None;
+    let reconstructed = decode(EcScheme::new(8, 4), degraded).unwrap();
+    assert_eq!(reconstructed[3], data[3]);
     stack.client.shutdown_small_writes().await.unwrap();
 }
 
@@ -246,7 +257,7 @@ async fn chunkdb_takes_over_durable_conversion_task_after_client_io_failure() {
     }
     let mut configured = policy();
     configured.chunk_capacity = 16 * MIB as u64;
-    configured.writer_lease = Duration::from_millis(200);
+    configured.writer_lease = Duration::from_secs(2);
     let stack = E2eStack::start(configured.clone()).await;
     let (allocator, disk_writer) = real_write_parts(&stack).await;
     let fault = Arc::new(FailWritesFromCall {
@@ -260,7 +271,14 @@ async fn chunkdb_takes_over_durable_conversion_task_after_client_io_failure() {
         locations.push(write_object(&client, Bytes::from(vec![value + 1; MIB])).await);
     }
     let location = locations[0].clone();
-    let converted = tokio::time::timeout(Duration::from_secs(10), async {
+    let failed_fast_path = stack.query_chunk(&location).await;
+    assert_eq!(failed_fast_path.strips.len(), 8);
+    assert!(failed_fast_path
+        .strips
+        .iter()
+        .all(|strip| matches!(strip.strip, Some(Strip::MirrorStrip(_)))));
+    assert_eq!(client.small_write_metrics().failed, 0);
+    let converted = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let chunk = stack.query_chunk(&location).await;
             if matches!(chunk.strips.as_slice(), [strip] if matches!(strip.strip, Some(Strip::EcStrip(_)))) {

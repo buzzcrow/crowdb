@@ -43,24 +43,26 @@ in the same KV group as its chunk and contains:
 
 - stable task ID, kind, payload version, chunk ID, and deterministic operation
   identity;
-- state (`Pending`, `Claimed`, `Running`, `Retryable`, `Completed`, `Failed`,
-  or `Cancelled`), attempt count, priority, and last error;
+- state (`Pending`, `Running`, `RetryWait`, `Completed`, `Failed`, or
+  `Cancelled`), attempt count, priority, and last error;
 - owner instance, claim generation, lease deadline, and source chunk revision;
 - kind-specific progress sufficient for idempotent takeover.
 
-`TaskManager` owns persistence, admission, claim/release, status queries,
-cancellation before publication, metrics, and dispatch. `TaskScanner` scans
+`TaskManager` owns persistence, admission, claim/release, lease renewal,
+retry, completion, failure, and dispatch. `TaskScanner` scans
 both task records and chunk source-of-truth records. It requeues expired claims
 and creates deterministic tasks for closed mirror groups that have no task.
 An event wakes it after client admission; a periodic scan is only a missed-event
-safety net. `TaskExecutor` dispatches to registered kind handlers. Pending
-queue bytes/count control worker scale between configured bounds; elapsed idle
-time is not a scaling input.
+safety net. `TaskExecutor` dispatches to registered kind handlers with a fixed
+configured concurrency bound. The scanner claims no more tasks than the
+executor's available slots, so claimed work does not wait in an in-memory
+queue while its lease expires.
 
-Duplicate execution is safe even across ownership changes: allocation belongs
-to the task's stable identity, data writes are repeatable, and publication is
-fenced by the exact old strip range plus chunk revision. At most one duplicate
-can publish. A losing executor re-queries metadata before it frees anything.
+Duplicate execution is safe even across ownership changes: data writes are
+repeatable, and publication is fenced by the exact old strip range plus chunk
+revision and deterministic operation identity. At most one duplicate can
+publish. A losing executor leaves tentative allocations to DiskDB's scanner
+rather than risking the release of referenced blocks.
 
 The first handler is `MirrorToEcTask`. The envelope intentionally supports
 later `ReplicaRepair`, `EcRebuild`, `RetiredSegmentCleanup`,
@@ -96,9 +98,9 @@ to the identity rather than overwriting an older terminal record.
 The ready index orders higher priority first and then retry eligibility. Its value
 is empty; the canonical record is always fetched before claim. The lease index
 lets the scanner find expired claims without scanning every running task.
-Pending queue record count and `estimated_queue_bytes` from canonical values
-drive executor scale-out/in. `eligible-at` and lease deadlines schedule retry
-and takeover only; elapsed idle time is not an executor scaling input.
+`eligible-at` and lease deadlines schedule retry and takeover. Executor
+concurrency is fixed by `max_concurrency`; each scan uses its current available
+capacity as the claim limit.
 
 State changes update the canonical value and its old/new index keys in one KV
 batch. The scanner treats indexes as rebuildable: a missing or stale index is
@@ -145,24 +147,22 @@ is copied into executor completion requests. Error text has a fixed encoded
 limit so repeated failures cannot grow records without bound.
 
 The manager understands only the envelope. Each registered `TaskHandler`
-declares its stable `kind`, supported `kind_version`, payload verifier,
-estimated-cost function, and `execute` implementation. Unknown kinds or newer
-payload versions are retained and reported as unsupported; they are never
-deleted or executed by an older binary.
+declares its stable `kind`, supported `kind_version`, and `execute`
+implementation. Unknown kinds or newer payload versions are retained and
+failed as unsupported; they are never executed by an incompatible handler.
 
 ### 2.3 Mirror-to-EC Payload
 
 `MirrorToEcTaskV1` contains the exact old mirror strips, first vector index,
-scheme, allocation identity, optional tentative EC strip, and phase. Storing
+scheme, optional tentative EC strip, and phase. Storing
 the full old range makes ambiguous-result comparison possible after the chunk
-has already changed. The phase is one of `Discovered`, `Allocated`,
-`Writing`, `Durable`, `Published`, or `Cleaning`; a takeover may conservatively
-repeat writes regardless of the recorded writing phase.
+has already changed. The phase is one of `Discovered`, `Allocated`, `Durable`,
+or `Published`; a takeover conservatively repeats writes unless publication is
+already visible.
 
 The common task state controls scheduling; the payload phase records domain
-progress. Neither controls what readers see. Terminal task records are retained
-for a bounded audit window and then compacted only after the handler proves no
-segments remain task-owned.
+progress. Neither controls what readers see. Terminal task records remain as
+the deterministic deduplication record.
 
 ## 3. Conversion Selection
 
@@ -203,10 +203,12 @@ after a client stops before completion. Mirror reads try replicas in metadata or
 all replicas is an unrecoverable group failure; it does not modify metadata and
 does not stop other chunk conversions.
 
-Writes issue all data and parity shard writes concurrently. A write or fsync
-failure discards the entire tentative EC allocation. A later scan may choose a
-fresh placement. No conversion state is published before all shards are
-durable.
+Writes issue all data and parity shard writes concurrently. On a definite write
+or fsync failure, the task first clears its durable reference to the tentative
+EC strip. DiskDB's tentative-block scanner then reclaims it; this ordering
+prevents an older heartbeat from restoring a reference after immediate free.
+A later attempt may choose fresh placement. No conversion state is published
+before all shards are durable.
 
 ## 5. EC Replacement
 
@@ -282,8 +284,9 @@ only old mirror segments after the layout-validity grace. The persisted
 2. **Client crashes after the eighth mirror but before task admission:** the
    scanner derives the same deterministic task from the closed strip range.
 3. **Crash before or during EC allocation:** the task stays retryable and no
-   chunk metadata changes. Allocation responses are associated with the stable
-   task identity; an unknown response is reconciled before allocating again.
+   chunk metadata changes. A checkpointed placement is reused. If allocation
+   succeeded but its response or checkpoint outcome is unknown, the block set
+   remains tentative and DiskDB reclaims it when no durable task references it.
 4. **Crash during EC writes or before fsync:** mirrors remain authoritative. A
    takeover rewrites all 12 shards and fsyncs them; it does not trust a partial
    progress bitmap for durability.
@@ -299,12 +302,11 @@ only old mirror segments after the layout-validity grace. The persisted
    together. Reconciliation frees only old-only segments after layout grace and
    can repeat safely.
 
-An allocation whose RPC result is unknown must not trigger a second unrelated
-allocation. The task allocation call therefore carries a stable allocation
-identity and is idempotent per disk group. This closes the response-loss window
-where physical blocks could otherwise become untracked. Resource leakage is
-treated as a correctness failure for the task system even though mirror data
-would remain readable.
+DiskDB allocation itself has no task-level idempotency key. Correctness instead
+depends on tentative allocation state: an unknown response can leave temporary
+garbage, but it cannot publish or become readable, and DiskDB's tentative
+scanner eventually reclaims it. The mirror layout remains authoritative
+throughout this window.
 
 ## 7. Policy and Throttling
 
@@ -320,11 +322,13 @@ pub struct ConversionConfig {
     pub max_concurrency: usize,
     pub max_bandwidth_mbps: u64,
     pub scan_interval_secs: u64,
+    pub task_lease_secs: u64,
 }
 ```
 
 Defaults are disabled for rollout safety, 8+4, one-hour seal age, eight mirror
-strips, four workers, 50 MiB/s, and a 30-second scan interval. Validation
+strips, four workers, 50 MiB/s, a 30-second scan interval, and a 30-second task
+lease. Validation
 rejects zero scheme dimensions, a mirror threshold below `data_num`, zero
 concurrency/bandwidth/interval, and overflow-prone rates.
 

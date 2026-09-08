@@ -523,17 +523,25 @@ impl OwnedChunk {
         if !self.policy.conversion_enabled {
             return Ok(());
         }
+        if image.is_empty() {
+            return Err(IoError::Internal(
+                "closed mirror strip has an empty retained image".into(),
+            ));
+        }
         if self.conversion_group.is_none() {
             let scheme = EcScheme::new(self.policy.conversion_data_num, self.policy.conversion_code_num);
+            let remaining_shards = self.remaining_in_chunk() / image.len() as u64;
+            if 1_u64.saturating_add(remaining_shards) < scheme.data_num as u64 {
+                return Ok(());
+            }
             let bytes = scheme
                 .total_blocks()
                 .checked_mul(image.len())
                 .ok_or(IoError::MemoryBudgetExhausted)?;
             let permits = u32::try_from(bytes).map_err(|_| IoError::MemoryBudgetExhausted)?;
             let budget = Arc::clone(&self.budget)
-                .acquire_many_owned(permits)
-                .await
-                .map_err(|_| IoError::Finished)?;
+                .try_acquire_many_owned(permits)
+                .map_err(|_| IoError::MemoryBudgetExhausted)?;
             self.conversion_group = Some(PendingEcGroup {
                 old_strips: Vec::with_capacity(scheme.data_num),
                 data_shards: Vec::with_capacity(scheme.data_num),
