@@ -64,8 +64,12 @@ impl TaskScanner {
 
         let ready = self.store.scan_ready(now_ms, self.scan_limit).await?;
         summary.ready_indexes_seen = u64::try_from(ready.len()).unwrap_or(u64::MAX);
-        let mut claims = Vec::with_capacity(ready.len());
+        let capacity = self.executor.available_capacity();
+        let mut claims = Vec::with_capacity(ready.len().min(capacity));
         for index in ready {
+            if claims.len() == capacity {
+                break;
+            }
             match self.manager.claim(&index, now_ms).await {
                 Ok(Some(claim)) => claims.push(claim),
                 Ok(None) => {}

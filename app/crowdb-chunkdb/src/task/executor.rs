@@ -75,6 +75,11 @@ impl TaskExecutor {
         })
     }
 
+    #[must_use]
+    pub fn available_capacity(&self) -> usize {
+        self.permits.available_permits()
+    }
+
     /// Execute one claimed task and persist its outcome.
     ///
     /// # Errors

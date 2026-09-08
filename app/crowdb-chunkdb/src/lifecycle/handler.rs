@@ -912,14 +912,11 @@ impl LifecycleHandler {
                 not_before_ms: unix_time_ms().saturating_add(self.layout_validity_ms),
             });
         }
-        if let Err(error) = self.store.put_chunk(&chunk).await {
-            self.allocator
-                .pool()
-                .free_blocks(new_only)
-                .await
-                .map_err(LifecycleError::Cleanup)?;
-            return Err(error.into());
-        }
+        // A failed response is ambiguous: the chunk update may already be
+        // durable. Never free committed replacement blocks here because a
+        // retry (or recovery task) can safely replay the same operation,
+        // whereas rollback could free blocks referenced by the new layout.
+        self.store.put_chunk(&chunk).await?;
         if let Some(current) = &mut guard {
             current.refresh(chunk.clone());
         }

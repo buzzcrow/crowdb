@@ -373,17 +373,18 @@ async fn main() {
             }
         })
     });
-    let task_scanner_handle = match ConversionDiskIo::connect(
+    let (task_scanner_handle, conversion_route_refresh_handle) = match ConversionDiskIo::connect(
         &ServiceRegistryClient::from_shared(Arc::clone(&kv)),
         &HardwareClient::from_shared(Arc::clone(&kv)),
     )
     .await
     {
         Ok(io) => {
+            let io = Arc::new(io);
             let task_handler = Arc::new(MirrorToEcTaskHandler::new(
                 Arc::clone(&handler),
                 Arc::clone(&task_store),
-                Arc::new(io),
+                Arc::clone(&io),
                 Arc::clone(&workflow_metrics.conversion),
                 config.conversion.max_bandwidth_mbps,
             ));
@@ -403,11 +404,34 @@ async fn main() {
                 Duration::from_secs(1),
             );
             let scanner_stop = stop_rx.clone();
-            Some(tokio::spawn(async move { scanner.run(scanner_stop).await }))
+            let scanner_handle = tokio::spawn(async move { scanner.run(scanner_stop).await });
+            let service = ServiceRegistryClient::from_shared(Arc::clone(&kv));
+            let hardware = HardwareClient::from_shared(Arc::clone(&kv));
+            let mut refresh_stop = stop_rx.clone();
+            let refresh_interval = Duration::from_secs(u64::from(config.topology.refresh_interval_secs));
+            let refresh_handle = tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(refresh_interval);
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        _ = ticker.tick() => {
+                            if let Err(error) = io.refresh(&service, &hardware).await {
+                                warn!(%error, "background conversion DiskIO route refresh failed");
+                            }
+                        }
+                        changed = refresh_stop.changed() => {
+                            if changed.is_err() || *refresh_stop.borrow() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            });
+            (Some(scanner_handle), Some(refresh_handle))
         }
         Err(error) => {
             warn!(%error, "background conversion DiskIO is unavailable; client fast path remains enabled");
-            None
+            (None, None)
         }
     };
     let rpc_service = Arc::new(
@@ -443,6 +467,9 @@ async fn main() {
     let _ = notify_handle.await;
     let _ = writer_lease_sweep_handle.await;
     if let Some(handle) = task_scanner_handle {
+        let _ = handle.await;
+    }
+    if let Some(handle) = conversion_route_refresh_handle {
         let _ = handle.await;
     }
     if let Some(handle) = conversion_scan_handle {

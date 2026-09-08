@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use arc_swap::ArcSwapOption;
 use bytes::Bytes;
 use crowdb_common::ec::{encode_parity_from_shards, EcScheme};
 use crowdb_protocol::chunk_task::{
@@ -77,6 +78,7 @@ pub struct ConversionCoordinator {
     code_num: u32,
     min_mirror_strips: u32,
     min_age_ms: u64,
+    scan_cursor: ArcSwapOption<ChunkId>,
 }
 
 pub struct MirrorToEcTaskHandler {
@@ -144,7 +146,6 @@ impl MirrorToEcTaskHandler {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn execute_once(&self, task: &ChunkTaskValue) -> Result<(), ConversionRunError> {
         let mut current = self
             .tasks
@@ -445,6 +446,7 @@ impl ConversionCoordinator {
             code_num: 4,
             min_mirror_strips: 8,
             min_age_ms: 3_600_000,
+            scan_cursor: ArcSwapOption::empty(),
         }
     }
 
@@ -575,13 +577,10 @@ impl ConversionCoordinator {
         allocated_task.revision = allocated_task.revision.saturating_add(1);
         allocated_task.updated_at_ms = now_ms;
         allocated_task.payload = encode_payload(&payload)?;
-        if let Err(error) = self.tasks.write_transition(Some(&task), &allocated_task).await {
-            let _ = self
-                .lifecycle
-                .discard_conversion_strip(&payload.chunk_id, &replacement)
-                .await;
-            return Err(error.into());
-        }
+        // The checkpoint response is ambiguous. Retain the tentative blocks:
+        // recovery can reuse them if the task update committed, and DiskDB's
+        // tentative scanner reclaims them if it did not.
+        self.tasks.write_transition(Some(&task), &allocated_task).await?;
         Ok(PreparedConversion {
             task_id: task.task_id,
             operation_id,
@@ -691,7 +690,17 @@ impl ConversionCoordinator {
         now_ms: u64,
     ) -> Result<u64, ConversionError> {
         let limit = if max_chunks == 0 { 256 } else { max_chunks };
-        let chunks = self.lifecycle.list_chunks(None, limit).await?;
+        let start_after = self.scan_cursor.load_full();
+        let chunks = self.lifecycle.list_chunks(start_after.as_deref(), limit).await?;
+        if chunks.is_empty() {
+            self.scan_cursor.store(None);
+            return Ok(0);
+        }
+        if chunks.len() < usize::try_from(limit).unwrap_or(usize::MAX) {
+            self.scan_cursor.store(None);
+        } else if let Some(last) = chunks.last().and_then(|chunk| chunk.id) {
+            self.scan_cursor.store(Some(Arc::new(last)));
+        }
         let mut accepted_chunks = 0_u64;
         for chunk in chunks {
             if sealed_only && chunk.state != ChunkState::Sealed as i32 {

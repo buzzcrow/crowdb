@@ -137,6 +137,21 @@ async fn task_survives_claim_expiry_takeover_and_completion() {
     assert_eq!(stored.revision, 5);
     assert_eq!(stored.claim_generation, 2);
     assert_eq!(stored.attempt, 2);
+
+    for id in 10..13 {
+        let mut queued = task_value();
+        queued.task_id.low = id;
+        queued.operation_id.low = id;
+        restarted_manager.admit(queued).await.unwrap();
+    }
+    let bounded = scanner.run_once(300).await.unwrap();
+    assert_eq!(bounded.ready_indexes_seen, 3);
+    assert_eq!(bounded.tasks_claimed, 2);
+    assert_eq!(bounded.tasks_completed_or_requeued, 2);
+    assert_eq!(store.scan_ready(301, 16).await.unwrap().len(), 1);
+    let drained = scanner.run_once(301).await.unwrap();
+    assert_eq!(drained.tasks_claimed, 1);
+    assert!(store.scan_ready(302, 16).await.unwrap().is_empty());
 }
 
 #[tokio::test]

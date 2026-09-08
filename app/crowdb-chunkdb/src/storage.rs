@@ -167,6 +167,9 @@ impl ChunkStore {
                 }
             }
         }
+        chunks.sort_unstable_by_key(|chunk| chunk.id.map(|id| (id.high, id.low)));
+        chunks.dedup_by_key(|chunk| chunk.id);
+        chunks.truncate(usize::try_from(max_keys).unwrap_or(usize::MAX));
         Ok(chunks)
     }
 
