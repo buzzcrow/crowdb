@@ -363,9 +363,9 @@ the dependency list is organized by service.
     R111's inline fallback is unrecoverable. R111 can ship before
     R83 (it just returns partial results without escalation), but
     the full recovery story needs both.
-- **Depended on by**: none yet. R112 (small-write IO error
-  handling) will reuse R111's mirror fallback + rebuild for the
-  small-object read path (same `ChunkReader`).
+- **Depended on by**: none yet. R111 reads the mirror and converted EC
+  strips produced by R106 and degraded by R112, but the write-side
+  requirements do not depend on the reader implementation.
 
 **Acceptance**
 

@@ -87,10 +87,10 @@ complexity, and dependency. Before implementation, follow the
 
 ### Data Path (diskio + chunk object writers + read flow)
 
-Dependency order: R93 → R106, R107 → R110, R111, R112
-(R110/R112 reuse R110's negative list; R111 reuses R110's negative
-list + degraded-strip tracking). The RPC migration items (R115,
-R116, R117) are in a separate area (see RPC Migration section
+Dependency order: R94/R105 → R106 → R107; R106/R107/R110 → R112 →
+R93; R107/R110 → R111. R93 is R106's post-write space-reclamation
+integration, not a correctness blocker for R106. The RPC migration items
+(R115, R116, R117) are in a separate area (see RPC Migration section
 below); R32 depends on R115.
 
 - **[R135](R135-chunkio-end-to-end-performance.md)** — Chunk IO write-flow
@@ -106,22 +106,25 @@ below); R32 depends on R115.
   result plumbing reusable for later small-write and read workloads.
 
 - **[R93](R93-chunkdb-mirror-to-ec-conversion.md)** — Mirror-to-EC
-  conversion — Area: chunkdb — Background conversion of mirror strips
-  to EC strips in shared chunks. Reads mirror data via diskio (R105),
-  EC-encodes via isa-l, allocates EC strip blocks, writes via diskio,
-  and atomically swaps via `update_chunk_strip`. Reclaims 3×→1.5×
+  conversion — Area: chunkdb — Background conversion groups adjacent
+  mirror strips into capacity-compatible EC strips in shared chunks.
+  Reads mirror data via diskio (R105), EC-encodes via isa-l, allocates
+  EC blocks, writes via diskio, and atomically swaps the strip range.
+  Reclaims 3×→1.5×
   storage (8+4 EC) on shared chunks. Configurable policy (seal age,
-  strip count, manual trigger) + bandwidth throttling. Foundation
-  for R106's mirror-first write strategy.
-- **[R106](R106-chunkdb-small-object-writer.md)** — Small object
-  shared chunk writer — Area: chunkdb — Shared 256 MB chunks for
-  small objects (< EC strip threshold). Dynamic pool of write
-  pipelines, each with a worker task that fetches queued buffers and
-  writes batches to shared chunks (aggregation for max TPS). Write
-  to 3 mirror strips first → return success → background mirror→EC
-  conversion (R93). Dynamic pipeline scale in/out based on queue
-  depth for max BW + aggregation. Implements `ChunkIoWriter` (R94).
-  Reference: the reference's `SharedObjWriter` + `Write2M1ECChunkHandler`.
+  strip count, manual trigger) + bandwidth throttling. Space-
+  reclamation follow-up for R106's mirror-first write strategy.
+- **[R106](R106-chunkio-small-object-writer.md)** — Small-object
+  shared-chunk writer — Area: chunkio — Per-object `ChunkIoWriter`
+  handles submit complete objects to a bounded shared pool.
+  Single-owner pipelines aggregate objects into durable mirror writes
+  on Repo chunks and return an independent `Location` per object.
+  Whole-object reservations avoid fragmented-ingress deadlock; a
+  fenced durable cursor is part of each batch's acknowledgement
+  barrier. Lock-free routing, object-boundary chunk rotation, and
+  queue-delay hysteresis provide safe scale out/in. R93 later converts
+  completed mirror strips to EC; R112 repairs foreground failures
+  within R106's batch boundaries.
 - **[R107](R107-chunkdb-chunk-read-flow.md)** — Chunk object read
   flow — Area: chunkdb — Reconstructs object bytes from a `Location`
   array (R94). Queries chunk strip layout via `query_chunk`, maps
@@ -139,8 +142,8 @@ below); R32 depends on R115.
   `update_chunk_strip`), diskdb (block allocation with disk
   exclusion), diskio (write/fsync error detection). Single-block
   replacement on write failure (not whole-strip retry): keep
-  successful blocks, re-allocate the failed block on a healthy
-  disk via diskdb, `update_chunk_strip` to replace the segment in
+  successful blocks, use chunkdb placement to re-allocate the failed
+  block on a healthy disk, and `update_chunk_strip` to replace it in
   chunkdb. Negative list (TTL-based) temporarily blocks bad disks
   from new allocations across diskdb — shared with R111 (read) and
   R112 (small-write). Degraded strip tracking (parity missing,
@@ -166,24 +169,19 @@ below); R32 depends on R115.
   applies to both `read_range` and `ChunkReadStream`). Escalation
   to R83 when inline fallback is unrecoverable. Reuses R110's
   negative list and degraded-strip tracking.
-- **[R112](R112-chunkdb-small-write-io-error-handling.md)** —
-  Small-write IO error handling (multi-service cooperation) — Area:
-  chunkdb / diskdb / diskio — In-line error handler for the
-  small-write data path (R106), spanning the same three services
-  as R110. Reuses R110's negative list and escalation reporting,
-  but adds batch-aware per-object retry (a single diskio write
-  carries a batch of N small objects — a partial failure must
-  track which objects were written and retry only the unwritten
-  ones) and mirror-replica replacement specific to the shared-
-  chunk writer (R106 writes 3 mirror replicas first, then R93
-  converts to EC in the background — a single replica failure is
-  tolerated but must be re-allocated + `update_chunk_strip` to
-  restore 3-replica durability). Shared chunk rotation safety
-  (mid-rotation failure must not corrupt the sealed portion or
-  span a corrupted boundary). Clear boundary with R93's mirror→EC
-  conversion (R112 handles write-path failures; R93 handles
-  conversion-path failures). Escalation to R83 when inline retries
-  are exhausted.
+- **[R112](R112-chunkio-small-write-io-error-handling.md)** —
+  Small-write IO error handling — Area: chunkio / chunkdb / diskdb /
+  diskio — Batch-level repair for R106's shared-chunk pipelines.
+  Retains the batch ledger and one complete 1 MiB shadow for the
+  pipeline's open mirror block, then replaces one failed replica
+  without sealing the Active chunk through chunkdb's placement-aware
+  diskdb allocation plus a fenced, set-difference strip-range update,
+  and fans out object locations only after full mirror durability.
+  Reuses
+  R110's negative list and escalates to R83 after bounded retries.
+  Rotation, scale-in drain, and R93 conversion use explicit ownership
+  boundaries; physical partial progress never becomes per-object
+  success.
 - **[R113](R113-chunkio-batch-strip-allocation.md)** — Batch strip
   allocation + deferred chunkdb confirm — Area: chunkio / chunkdb /
   diskdb — Optimize the large-write strip allocation path (R94) to

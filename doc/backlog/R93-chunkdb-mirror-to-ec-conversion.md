@@ -5,8 +5,8 @@
 
 **Problem**
 
-Shared chunks (R106 small-object writer) write data to 3 mirror strips
-first for low write latency — the caller gets success after 3 mirror
+Shared chunks (R106 small-object writer) write data to mirror strips
+with 3 replicas first for low write latency — the caller gets success after 3 mirror
 writes, before EC encoding. Mirror strips use 3× storage (3 full
 copies). As data ages and becomes colder, the 3× storage overhead is
 wasteful: an 8+4 EC strip stores the same data capacity at 1.5×
@@ -28,44 +28,41 @@ wasted space (300 TB mirror vs 150 TB EC at 8+4).
 
 **Design pointers**: chunkdb root design §2 (Non-Goals: "No
 mirror-to-EC conversion in v1"), §5.2 (Strip — mirror vs EC data
-capacity), §10.6 (`update_chunk_strip` RPC — the atomic strip
-replacement primitive that R93 builds on), §11 (EC Encoding/Decoding
-— isa-l encode from data blocks). The `update_chunk_strip` lifecycle
-handler (§10.6) already supports replacing a strip: "free old strip's
-segments → commit new strip's segments → replace strip → `put_chunk`".
-R93 orchestrates the conversion: read mirror data, EC-encode, allocate
-EC strip blocks, write EC data+parity, then `update_chunk_strip` to
-swap atomically.
+capacity), §10.6 (`update_chunk_strip` RPC — the single-strip base that
+R112 generalizes to atomic range replacement), §11 (EC
+Encoding/Decoding — isa-l encode from data blocks).
+R93 orchestrates the conversion: read a capacity-compatible group of
+mirror strips, EC-encode, allocate EC blocks, write data+parity, then
+atomically replace that strip range.
 
 **Use scenarios**:
 
 - **Background conversion of a sealed shared chunk**: A shared chunk
   has been sealed (no more writes). A background conversion task
-  picks it up, reads each mirror strip's data, EC-encodes it into
-  data+parity blocks, allocates an EC strip via chunkdb, writes the
-  EC blocks via diskio (R105), and calls `update_chunk_strip` to
-  replace the mirror strip with the EC strip. The old mirror blocks
+  picks it up, reads eight adjacent 1 MiB mirror strips, EC-encodes the
+  8 MiB into 8+4 one-unit shards, allocates an EC strip via chunkdb,
+  writes the EC blocks via diskio (R105), and atomically replaces the
+  eight-strip range with that EC strip. The old mirror blocks
   are freed. Expected: the chunk's data capacity is preserved; storage
   overhead drops from 3× to 1.5× (8+4 EC).
 
 - **Conversion of an active shared chunk**: A shared chunk is still
-  receiving writes (Active state). A mirror strip that is fully
-  written (no more appends expected to that strip's offset range) can
-  be converted while the chunk continues to receive writes to new
-  strips. The conversion reads the completed mirror strip, EC-encodes,
-  and swaps. Expected: no write latency impact for new writes (they
-  go to new strips); the converted strip is read-only after swap.
+  receiving writes (Active state). Eight adjacent mirror strips that
+  carry R106's durable closed marker can be converted while the chunk
+  continues to receive writes to later strips. Expected: no write
+  latency impact for new writes; the converted range is read-only.
 
 - **Conversion under read load**: A reader (R107) is reading from a
-  mirror strip that is being converted. The conversion is atomic via
-  `update_chunk_strip` — the reader either sees the old mirror strip
-  or the new EC strip, never a partial state. Expected: reads
+  mirror range that is being converted. The range replacement is
+  atomic — the reader either sees all old mirror strips or the new EC
+  strip, never a partial state. Retired mirrors remain allocated through
+  R107's bounded layout-validity window. Expected: reads
   continue without error; the reader may need to switch from mirror
   read to EC read if the conversion completes mid-read.
 
 - **Conversion failure recovery**: The EC encode fails (isa-l error)
   or an EC block write fails (disk error). The conversion aborts; the
-  mirror strip is untouched; the partially allocated EC blocks are
+  mirror-strip group is untouched; the partially allocated EC blocks are
   freed via chunkdb rollback. Expected: the chunk is unchanged; the
   conversion task retries later or skips the strip.
 
@@ -77,57 +74,71 @@ swap atomically.
 
 **Solution**
 
-A background conversion service in chunkdb that transforms mirror
-strips to EC strips using the existing `update_chunk_strip` RPC as
-the atomic swap primitive. The conversion reads mirror data via
+A background conversion service in chunkdb that transforms compatible
+mirror-strip groups into EC strips using R112's fenced
+`replace_chunk_strip_range` as the atomic swap primitive. The conversion reads mirror data via
 diskio (R105), EC-encodes via isa-l (crowdb-common), allocates EC strip
 blocks via chunkdb, writes EC data+parity via diskio, and swaps the
-strip atomically. Conversion is triggered by a configurable policy
+strip range atomically. Conversion is triggered by a configurable policy
 (seal age, mirror strip count, manual trigger) and throttled to avoid
 starving foreground traffic.
 
-**One-line summary**: Background mirror→EC strip conversion using
-diskio for data read/write, isa-l for EC encode, and `update_chunk_strip`
-for the atomic swap — reclaims 3×→1.5× storage on shared chunks.
+**One-line summary**: group adjacent mirror strips into capacity-
+compatible EC stripes, then use diskio, isa-l, and a fenced atomic range
+swap to reclaim 3×→1.5× storage without changing logical offsets.
 
 **Numbered work items**:
 
 1. **Conversion task** (`app/crowdb-chunkdb/src/conversion.rs`) — a
    background `BgRunner` task (following the diskdb `ScannerTask`/
    `BgRunner` pattern, §10) that scans for convertible chunks. A
-   chunk is convertible if: (a) it has mirror strips, (b) it is
-   Sealed or the specific strip's offset range is fully written, (c)
+   chunk is convertible if: (a) it has at least `data_num` adjacent,
+   equal-capacity mirror strips, (b) it is Sealed or every strip in the
+   range has R106's durable closed marker, (c)
    it meets the conversion policy (age, strip count, manual trigger).
-   The task enqueues convertible strips into a work queue with
+   The task enqueues compatible strip groups into a work queue with
    configurable concurrency (default 4 parallel conversions) and
    bandwidth throttling (default 50 MB/s, configurable).
 
 2. **Conversion logic** (`app/crowdb-chunkdb/src/conversion.rs`) —
-   for each mirror strip:
-   - Read the mirror data from one replica via `DiskIoClient::read`
+   for each group of `data_num` adjacent mirror strips:
+   - Read each mirror strip's data from one replica via `DiskIoClient::read`
      (R105). If the primary replica's disk is `Bad`, fall back to
      another replica.
-   - EC-encode the data via `crowdb-common` isa-l wrapper: split the
-     mirror data into `data_num` data blocks, encode `code_num`
-     parity blocks.
-   - Allocate an EC strip via chunkdb's `AllocateStrip` (placement:
-     rack-aware EC placement, §7.2).
+   - Concatenate the `data_num` equal-capacity inputs as the EC data
+     shards and encode `code_num` parity shards via `crowdb-common`.
+     Each shard keeps the mirror strip's integral diskdb unit count, so
+     no sub-unit allocation is assumed.
+   - Allocate `data_num + code_num` shards via chunkdb's rack-aware EC
+     placement (§7.2). Set the replacement strip's `chunk_offset` to
+     the first mirror's offset and its logical capacity and sealed
+     length to the sums across the old range.
    - Write the `data_num` + `code_num` blocks to the allocated
      segments via `DiskIoClient::write` (R105), in parallel.
    - `fsync` each disk via `DiskIoClient::fsync` (R105).
-   - Call `update_chunk_strip(chunk_id, strip_index, new_ec_strip)`
-     to atomically swap: frees old mirror segments, commits new EC
-     segments, updates chunk metadata in KV.
+   - Call `replace_chunk_strip_range` with the chunk ID, expected
+     revision, exact mirror-strip range, stable operation identity, and
+     new EC strip. Commit only new EC segments, atomically splice the
+     replacement together with its cleanup intent, and then clean up
+     only removed mirror segments. Require equal old/new total logical
+     capacity so every later strip offset remains unchanged. This
+     requires R112's fenced,
+     restart-safe strip replacement contract; query-and-compare alone
+     cannot recover old segments after a server crash.
+   - Preserve the chunk's monotonic `next_strip_sequence`. Replacing
+     eight entries with one does not renumber later strips, and a later
+     append consumes the persisted next value rather than
+     `strips.len()`.
    - On any failure: free the partially allocated EC blocks via
-     chunkdb, leave the mirror strip untouched, log the error, retry
+     chunkdb, leave the mirror range untouched, log the error, retry
      later.
 
 3. **Conversion policy** (`app/crowdb-chunkdb/src/conversion.rs`) —
    configurable triggers:
    - `conversion_min_seal_age_secs` (default 3600) — only convert
      strips in chunks sealed more than N seconds ago.
-   - `conversion_min_mirror_strips` (default 4) — only convert chunks
-     with at least N mirror strips (amortize the conversion overhead).
+   - `conversion_min_mirror_strips` (default 8) — only convert chunks
+     with at least one full `data_num` group (amortize conversion).
    - `conversion_max_concurrency` (default 4) — max parallel
      conversions.
    - `conversion_max_bandwidth_mbps` (default 50) — throttle read +
@@ -160,11 +171,11 @@ Conversion Task                chunkdb           diskio (R105)       isa-l
      │    chunks (mirror strips)  │                   │                │
      │ ◄──────────────────────────│                   │                │
      │                            │                   │                │
-     │ 2. Read mirror data        │                   │                │
-     │    from one replica        │                   │                │
+     │ 2. Read mirror group       │                   │                │
+     │    from healthy replicas   │                   │                │
      │ ──────────────────────────────────────────────►│                │
      │ ◄──────────────────────────────────────────────│                │
-     │  (Bytes: mirror strip data)                    │                │
+     │  (Bytes: data_num mirror strips)               │                │
      │                            │                   │                │
      │ 3. EC encode (data + parity)                   │                │
      │ ───────────────────────────────────────────────────────────────►│
@@ -184,12 +195,12 @@ Conversion Task                chunkdb           diskio (R105)       isa-l
      │ ──────────────────────────────────────────────►│                │
      │ ◄──────────────────────────────────────────────│                │
      │                            │                   │                │
-     │ 7. update_chunk_strip      │                   │                │
-     │    (atomic swap)           │                   │                │
+     │ 7. replace strip range     │                   │                │
+     │    (atomic splice)         │                   │                │
      │ ──────────────────────────►│                   │                │
-     │    (frees mirror segs,     │                   │                │
-     │     commits EC segs,       │                   │                │
-     │     put_chunk)             │                   │                │
+     │    (commit EC, publish +   │                   │                │
+     │     cleanup intent, free   │                   │                │
+     │     old-only segments)     │                   │                │
      │ ◄──────────────────────────│                   │                │
      │  Ok(())                    │                   │                │
 ```
@@ -203,15 +214,16 @@ Conversion Task                chunkdb           diskio (R105)       isa-l
   blocks, leave mirror strip, retry later.
 - EC block write fails (disk error on target) → abort, free allocated
   blocks, retry with a new EC strip allocation (different placement).
-- `update_chunk_strip` fails (KV error) → the EC blocks are written
-  but the metadata is not swapped; on retry, the conversion detects
-  the stale state (EC blocks allocated but strip not swapped) and
-  retries the swap or cleans up the orphaned blocks.
+- `replace_chunk_strip_range` returns an ambiguous error → retry the same R112
+  operation identity. The persisted cleanup intent distinguishes an
+  installed EC strip awaiting old-segment cleanup from an uncommitted
+  replacement; a different revision or strip is a conflict.
 - Chunk is deleted during conversion → the conversion task detects
   the `Deleted` state and aborts; any allocated EC blocks are freed.
-- Concurrent conversion + read → `update_chunk_strip` is atomic under
+- Concurrent conversion + read → range replacement is atomic under
   the per-chunk lock (§10); the reader sees either the old mirror or
-  the new EC strip, never a partial state.
+  the new EC strip, never a partial state, and old segments remain
+  readable until the layout-validity grace expires.
 - Conversion throttling under foreground load → bandwidth limiter
   (token bucket) reduces conversion I/O rate when foreground disk
   I/O is high; conversion pauses if the disk is near saturation.
@@ -220,23 +232,25 @@ Conversion Task                chunkdb           diskio (R105)       isa-l
 
 - **Depends on**: **R105** (disk IO engine) — reads mirror data and
   writes EC blocks via `DiskIoClient`. **chunkdb** (landed, R85) —
-  uses `update_chunk_strip` RPC, `AllocateStrip`, chunk metadata.
-  **crowdb-common EC** (landed with R85) — isa-l encode.
-- **Depended on by**:
-  - **R106** (small object writer) — depends on R93 to convert the
+  uses R112's range-replacement RPC, `AllocateStrip`, and chunk metadata.
+  **crowdb-common EC** (landed with R85) — isa-l encode. **R112 strip
+  replacement transaction** — supplies revision fencing,
+  capacity-preserving validation, set-difference commit/free, and
+  persisted cleanup intent.
+- **Integrates with**:
+  - **R106** (small object writer) — integrates with R93 to convert the
     mirror strips that the writer produces. R106 can land before R93
-    is fully implemented (mirror strips are correct, just space-
-    inefficient), but R93 is the mechanism that makes R106's
+    (mirror strips are correct but space-inefficient); R93 makes the
     mirror-first strategy viable long-term.
 
 **Acceptance**
 
 **Conversion correctness**:
-- A sealed shared chunk with 3 mirror strips (each 1 MB, 3 replicas)
-  → run conversion → chunk has 3 EC strips (each 8+4, 1 MB data
-  capacity), old mirror segments are freed. Verify via `query_chunk`:
-  strip types are EC, old segment IDs are not present. Integration
-  test.
+- A sealed shared chunk with 24 adjacent mirror strips (each 1 MiB, 3
+  replicas) → run conversion → chunk has 3 EC strips (each 8+4, 8 MiB
+  logical capacity with 1 MiB shards), every later `chunk_offset` and
+  the total chunk capacity are unchanged, and all 72 old mirror
+  segments are freed. Verify via `query_chunk`. Integration test.
 - Data integrity after conversion: read the chunk's data via R107
   (read flow) before and after conversion → identical bytes.
   Integration test.
@@ -249,14 +263,28 @@ Conversion Task                chunkdb           diskio (R105)       isa-l
   either the old mirror strip or the new EC strip, never errors.
   Integration test (start read mid-conversion).
 - Conversion failure mid-way (inject diskio write error on 2nd EC
-  block) → mirror strip is untouched, EC blocks are freed, chunk
-  metadata shows the original mirror strip. Integration test.
+  block) → the eight-strip mirror range is untouched, EC blocks are
+  freed, and chunk metadata shows every original mirror strip.
+  Integration test.
+- Chunkdb restarts after publishing an EC strip but before freeing its
+  mirror segments → persisted cleanup resumes, only old mirror segments
+  are freed, and the EC replacement is not replayed. Integration test.
+- Convert the first eight strips of an Active chunk, then append a new
+  mirror strip → the append uses `next_strip_sequence`, no sequence is
+  duplicated, and all strip offsets remain ordered. Integration test.
+- Start a read with the old mirror-range layout immediately before
+  conversion → conversion publishes the EC strip but does not make old
+  segments reusable until the advertised layout-validity grace expires;
+  the read succeeds or retries under R107's deadline. Integration test.
 
 **Conversion policy**:
 - Chunk sealed < `conversion_min_seal_age_secs` ago → not enqueued
   for conversion. Unit test (mock time).
 - Chunk with < `conversion_min_mirror_strips` → not enqueued. Unit
   test.
+- A sealed tail with ten equal-capacity mirror strips → convert the
+  first eight as one 8+4 group, leave the final two mirrored, and keep
+  all logical offsets unchanged. Integration test.
 - Manual trigger via `trigger_conversion(chunk_id)` → chunk is
   enqueued regardless of policy. Integration test.
 
@@ -275,10 +303,10 @@ Conversion Task                chunkdb           diskio (R105)       isa-l
   blocks are freed. Integration test.
 
 **Metrics**:
-- After converting 3 mirror strips → `conversion_completed_count` =
-  3, `conversion_bytes_read` = 3 MB, `conversion_bytes_written` = 36
-  MB (3 × 12 blocks × 1 MB for 8+4 EC), `conversion_stripes_freed` =
-  9 (3 strips × 3 mirror replicas). Integration test.
+- After converting 24 one-MiB mirror strips into three 8+4 groups →
+  `conversion_completed_count` = 3, `conversion_bytes_read` = 24 MiB,
+  `conversion_bytes_written` = 36 MiB, and
+  `conversion_stripes_freed` = 72 mirror segments. Integration test.
 
 **Test commands**: `pixi run cargo test -p crowdb-chunkdb --test
 conversion`, `pixi run cargo test -p crowdb-chunkdb-client --test

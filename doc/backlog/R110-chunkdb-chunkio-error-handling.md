@@ -79,8 +79,8 @@ negative list and degraded-strip tracking for the read path).
   is being written (13 EC strips, 4+1). The diskio write to block 2
   of strip 5 fails (disk I/O error). The writer does NOT discard the
   whole strip — it keeps the 3 successful data blocks + the parity
-  block, allocates a new block on a different disk (via diskdb
-  `AllocateBlocks`), retries the write of block 2 to the new block,
+  block, asks chunkdb placement to allocate a new block on a different
+  disk, retries the write of block 2 to the new block,
   and updates the strip's segment metadata via `update_chunk_strip`
   to point at the new block. The write continues. Expected: no data
   loss, the strip is complete with 1 replaced block, the write
@@ -157,8 +157,8 @@ missing), and escalates to R83 recovery when retries are exhausted.
    (`lib/crowdb-chunk-client/src/writer/large_object.rs`) — when a
    diskio `write` or `fsync` fails for one block in a strip, the
    writer does NOT discard the whole strip. It allocates a new
-   block on a healthy disk (via diskdb `AllocateBlocks` with the
-   negative list filter), retries the write via diskio, and calls
+   block through chunkdb's placement-aware replacement allocation with
+   the negative-list filter, retries the write via diskio, and calls
    chunkdb `update_chunk_strip` to replace the failed segment in
    the strip's metadata. The other blocks in the strip are
    untouched. Bounded by `max_block_retries` (default 3) per block.
@@ -170,13 +170,14 @@ missing), and escalates to R83 recovery when retries are exhausted.
    `lib/crowdb-chunkdb-client/` protocol) — when a parity task fails
    (EC encode error or parity write failure after retries), the
    strip is marked degraded: data blocks are durable but parity is
-   missing. The chunk can still be sealed. The degraded state is
-   recorded in chunk metadata (new field or strip state) so R83 can
-   find and rebuild degraded strips, and so R111's reader can
-   tolerate reading degraded strips. A degraded strip has reduced
-   fault tolerance (no parity for that strip) — reads still work
-   (all data blocks present), but a subsequent data block failure
-   in the same strip cannot be recovered.
+   missing. Define the protocol artifact as strip health plus the
+   unavailable segment identities so the same record can represent an
+   unavailable mirror replica for R112, not only missing EC parity. The
+   chunk can still be sealed. The degraded state is recorded in chunk
+   metadata so R83 can find and rebuild degraded strips, and so R111's
+   reader can avoid unavailable segments. A degraded strip has reduced
+   fault tolerance; reads continue only while the remaining required
+   data is recoverable.
    **Services**: chunkdb (degraded state in strip metadata),
    diskio (parity write failure detection).
 
@@ -216,8 +217,8 @@ missing), and escalates to R83 recovery when retries are exhausted.
        │              │
        │              ▼
        │ ┌──────────────────────────┐
-       │ │ diskdb: AllocateBlocks   │
-       │ │ (exclude neg. list disks)│
+       │ │ chunkdb replacement      │
+       │ │ placement -> diskdb      │
        │ └────────────┬─────────────┘
        │              │
        │              ▼
@@ -269,8 +270,9 @@ missing), and escalates to R83 recovery when retries are exhausted.
 - Writer dropped mid-replacement → `Drop` impl frees the partial
   chunk (same as R94); the replacement block is orphaned and freed
   by diskdb GC.
-- Negative list full (all disks in a disk-group excluded) →
-  allocation fails; writer aborts with `IoError::NoHealthyDisk`.
+- Negative list full (all disks in a disk-group excluded) → allocation
+  fails; writer aborts with `IoError::AllocationFailed` retaining the
+  no-healthy-disk cause.
 
 **Dependencies**
 
@@ -282,9 +284,9 @@ organized by service.
     returns are the trigger for R110's error handler. R110 consumes
     diskio errors; it does not modify diskio itself.
   - **diskdb** (landed) — `AllocateBlocks` RPC for replacement
-    blocks. May need an `exclude_disks` filter extension (see Open
-    Questions). Disk status transitions (`Suspect`) via the sync
-    path (§8) for escalation to R83.
+    blocks after chunkdb selects placement and passes exclusions. Disk
+    status transitions (`Suspect`) via the sync path (§8) for
+    escalation to R83.
   - **chunkdb** (landed, R85) — `update_chunk_strip` RPC for
     replacing failed segments in strip metadata. May need a
     degraded-strip state extension (see Open Questions).
@@ -332,6 +334,10 @@ organized by service.
   marked degraded, chunk sealed with degraded strip recorded.
   `query_chunk` shows the strip with degraded state (parity
   missing). Integration test.
+- A mirror degradation record containing one unavailable segment
+  identity survives protocol round-trip and `query_chunk`, allowing
+  R112/R111/R83 to identify the failed replica without changing the
+  healthy segment entries. Unit test.
 
 **Fsync failure**:
 - `write_stream` with a diskio mock that fails `fsync` on 1 of 5
@@ -359,22 +365,19 @@ crowdb-chunk-client --test error_handling_e2e` (E2E with real servers
 
 **Open Questions**
 
-- **`AllocateBlocks` disk exclusion**: Does diskdb's `AllocateBlocks`
-  RPC already support an `exclude_disks` filter, or does it need to
-  be added? The current proto may only support `disk_group_id`
-  selection. If it needs extension, this is a diskdb protocol change
-  that must be filed separately. Alternative: the client-side
-  placement logic filters out negative-list disks after receiving
-  candidates from diskdb (but this requires diskdb to return
-  multiple candidates, which it may not). Needs investigation.
+- **Replacement allocation RPC shape**: R112 defines the chunkdb-
+  mediated replacement seam so mirror and EC writers preserve placement
+  invariants. Decide whether R110 lands that shared RPC first or depends
+  on the R112 protocol work; direct client-to-diskdb allocation is not
+  acceptable because disk exclusions alone cannot enforce node/rack
+  anti-affinity.
 
-- **Degraded strip state representation**: Should a degraded strip
-  (parity missing) be represented as a new `StripState` enum variant
-  in the chunk metadata proto, or as a flag on the existing `EcStrip`?
-  A new variant is cleaner but requires a proto change; a flag is
-  simpler but less type-safe. The chunkdb design §5.2 defines
-  `ECState` — does it already have a `Degraded` variant? Needs
-  design work.
+- **Degraded strip state representation**: Should strip health and
+  unavailable segment identities be fields on `ChunkStrip`, a shared
+  side record keyed by chunk/strip/revision, or type-specific fields on
+  `MirrorStrip` and `EcStrip`? The first two represent mirror and EC
+  failures uniformly; type-specific fields are simpler locally but
+  duplicate reader and R83 logic. This decision is shared with R112.
 
 - **Negative list scope**: Should the negative list be per-writer
   (each `write_stream` call has its own), per-client (shared across

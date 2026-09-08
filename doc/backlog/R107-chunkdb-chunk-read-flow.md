@@ -147,19 +147,27 @@ disks, and concatenating across multi-chunk objects.
    the reader calls `chunkdb.query_chunk(chunk_id)` to get the
    chunk's strip layout. It maps the `Location`'s `[offset, length)`
    to the strips that cover that range:
-   - Strip `i` covers data offsets `[i × strip_data_capacity, (i+1) ×
-     strip_data_capacity)` within the chunk.
-   - For a `Location` with `[offset, offset+length)`, the reader
-     computes `start_strip = offset / strip_data_capacity` and
-     `end_strip = (offset + length - 1) / strip_data_capacity`.
-   - For each strip in `[start_strip, end_strip]`, compute the byte
-     range within that strip: `strip_start = max(offset, i ×
-     strip_data_capacity) - i × strip_data_capacity`,
-     `strip_end = min(offset + length, (i+1) × strip_data_capacity)
-     - i × strip_data_capacity`.
+   - Treat each stored strip as the half-open interval
+     `[chunk_offset, chunk_offset + capacity)`. Validate that intervals
+     are ordered, non-overlapping, and cover the requested bytes; never
+     derive offsets from vector index or a uniform capacity.
+   - Binary-search `chunk_offset` for the first overlapping strip, then
+     walk stored intervals until `offset + length`. For each interval,
+     compute the intersection relative to that strip's own
+     `chunk_offset`.
    - The last strip may be partial (`sealed_length < strip_data_
      capacity`) — the reader respects `sealed_length` as the actual
      data length.
+   This supports R93 layouts where eight narrow mirror entries become
+   one equal-total-capacity EC entry while later offsets remain stable.
+
+   Record the local start time of each `query_chunk` request and enforce
+   the server-advertised maximum layout-validity duration with a safety
+   margin. All disk reads using that layout must finish before the
+   resulting deadline. On expiry, cancel or discard their bytes,
+   re-query, and retry within a bound. R112 defers reuse of replaced
+   segments beyond the same duration, so a reader never returns bytes
+   from storage reclaimed under its layout.
 
 3. **EC strip read** (`reader.rs`) — for an EC strip (8+4):
    - Read the `data_num` (8) data blocks via `DiskIoClient::read`,
@@ -279,6 +287,9 @@ Caller                ChunkReader           chunkdb          diskio (R105)    is
   `ChunkNotFound` → `ReadError::ChunkDeleted`.
 - Strip converted (mirror→EC) since write → reader handles both
   types transparently; `Location` offsets are stable.
+- Layout validity expires during disk reads → discard those bytes,
+  re-query the current layout, and retry; never return data from the
+  expired segment map.
 - EC strip with 1-4 missing blocks (≤ `code_num`) → EC decode
   reconstructs; read succeeds with higher latency.
 - EC strip with > 4 missing blocks (> `code_num` for 8+4) →
@@ -303,6 +314,9 @@ Caller                ChunkReader           chunkdb          diskio (R105)    is
   `DiskIoClient`. **chunkdb** (landed, R85) — `query_chunk` RPC for
   strip layout. **crowdb-common EC** (landed) — isa-l decode for EC
   recovery.
+- **Integrates with**: **R93/R112** — maps mixed-width strip ranges by
+  stored geometry and observes the bounded layout-validity window used
+  for deferred segment reclamation.
 - **Depended on by**: nothing (terminal data-path component). R83
   (chunkdb recovery) uses R107's EC decode logic for rebuilding lost
   data.
@@ -325,6 +339,14 @@ Caller                ChunkReader           chunkdb          diskio (R105)    is
   returned, bytes match. Integration test.
 - Write 100 × 16 KB objects to a shared chunk, read each by its
   `Location` → all 100 reads return correct bytes. Integration test.
+- Convert eight adjacent 1 MiB mirror strips into one 8 MiB EC strip
+  while leaving a mirror tail, then read locations before, within, and
+  after the converted range → every read maps by stored offsets and
+  returns the original bytes. Integration test.
+- Hold an old layout until its validity deadline expires during a
+  concurrent replacement → reader discards the old-layout result,
+  re-queries, and returns only data read through the current layout.
+  Integration test.
 
 **EC recovery read**:
 - Write a 50 MB object (7 EC strips), mark one data block's disk as

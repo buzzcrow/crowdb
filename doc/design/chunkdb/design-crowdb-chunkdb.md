@@ -334,7 +334,9 @@ Each strip tracks:
 A **chunk** is a container for strips. Chunk properties:
 - **128-bit ID**: Chunk type (8 bits) + Timestamp (48 bits) + Randomness (72 bits).
 - **State**: `Init` → `Active` → `Sealed` → `Deleted`.
-- **Type**: Metadata, Shared, Specific.
+- **Type**: Repo, WAL, B-tree page, or page index. Shared versus
+  dedicated is a client-side packing and ownership policy for Repo
+  chunks, not a wire-level chunk type.
 - **Capacity**: Total data capacity across all strips.
 - **Write granularity**: Minimum write alignment (e.g., 4 KB).
 - **Strips**: Ordered list of strips (mirror or EC).
@@ -1077,7 +1079,7 @@ nonzero aggregate status.
 **Future work** (separate requirements):
 - In-chunk GC operations (reclaim, collapse, merge)
 - Mirror-to-EC conversion for shared chunks
-- Specific chunk type (direct EC write for large objects)
+- Shared and dedicated Repo-chunk write policies in the client data path
 - Recovery flow (disk failure handling, EC rebuild)
 - Metrics and observability
 - Console/CLI integration
