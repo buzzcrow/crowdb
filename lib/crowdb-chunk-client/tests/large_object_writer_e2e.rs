@@ -8,7 +8,7 @@ mod e2e_stack;
 
 use std::sync::Arc;
 
-use crowdb_chunk_client::{ChunkClientConfig, LargeWritePolicy, SmallWritePolicy};
+use crowdb_chunk_client::{ChunkClientConfig, ChunkReadPolicy, LargeWritePolicy, SmallWritePolicy};
 use crowdb_common::ec::{encode_parity_from_shards, EcScheme};
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, EcState, Location, Strip};
 
@@ -49,6 +49,24 @@ fn make_test_data(size: usize) -> Vec<u8> {
     (0..size)
         .map(|index| u8::try_from((index * 17 + 37) % 251).unwrap())
         .collect()
+}
+
+fn assert_bytes_match(actual: &[u8], expected: &[u8]) {
+    assert_eq!(actual.len(), expected.len());
+    if let Some(index) = actual
+        .iter()
+        .zip(expected)
+        .position(|(left, right)| left != right)
+    {
+        panic!(
+            "first byte mismatch at {index}: actual={}, expected={}, MiB starts={:?}",
+            actual[index],
+            expected[index],
+            (0..actual.len() / MIB)
+                .map(|block| actual[block * MIB])
+                .collect::<Vec<_>>()
+        );
+    }
 }
 
 async fn read_ec_location(stack: &E2eStack, chunk: &Chunk, location: &Location) -> Vec<u8> {
@@ -144,6 +162,16 @@ async fn large_write_multi_strip_persists_data_metadata_and_parity() {
     assert_eq!(chunk.strips.len(), 3);
     assert_eq!(read_ec_location(&stack, &chunk, location).await, data);
     assert_ec_parity(&stack, &chunk, location).await;
+    let read = stack.client.read_object(&result.locations).await.unwrap();
+    assert_bytes_match(&read, &data);
+    assert_eq!(
+        stack
+            .client
+            .read_range(&result.locations, 3 * MIB as u64 + 17, 9 * MIB as u64 + 31)
+            .await
+            .unwrap(),
+        data[3 * MIB + 17..9 * MIB + 31]
+    );
 }
 
 #[tokio::test]
@@ -190,6 +218,32 @@ async fn large_write_rotates_chunks_without_losing_data() {
         assert_ec_parity(&stack, &chunk, location).await;
     }
     assert_eq!(read_back, data);
+
+    assert_eq!(stack.client.read_object(&result.locations).await.unwrap(), data);
+    assert_eq!(
+        stack
+            .client
+            .read_range(&result.locations, 7 * MIB as u64, 10 * MIB as u64)
+            .await
+            .unwrap(),
+        data[7 * MIB..10 * MIB]
+    );
+    let read_client = stack
+        .client
+        .clone()
+        .with_read_policy(ChunkReadPolicy {
+            stream_window_bytes: 3 * MIB,
+            ..ChunkReadPolicy::default()
+        })
+        .unwrap();
+    let mut stream = read_client.read_stream(&result.locations).unwrap();
+    let mut streamed = Vec::new();
+    while let Some(part) = stream.next_chunk().await {
+        let part = part.unwrap();
+        assert!(part.len() <= 3 * MIB);
+        streamed.extend_from_slice(&part);
+    }
+    assert_eq!(streamed, data);
 }
 
 #[tokio::test]
@@ -218,4 +272,5 @@ async fn large_write_unknown_size_partial_tail_is_durable() {
     assert!(chunk.strips.len() >= 2);
     assert_eq!(read_ec_location(&stack, &chunk, location).await, data);
     assert_ec_parity(&stack, &chunk, location).await;
+    assert_eq!(stack.client.read_object(&result.locations).await.unwrap(), data);
 }

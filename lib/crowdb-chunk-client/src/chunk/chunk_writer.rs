@@ -551,12 +551,25 @@ async fn append_strip(chunkdb: &dyn ChunkAllocator, mut chunk: Chunk, ec_scheme:
     let chunk_id = chunk
         .id
         .ok_or_else(|| IoError::AllocationFailed("append_chunk: chunk missing id".into()))?;
+    let unit_count = chunk
+        .strips
+        .first()
+        .and_then(|strip| match strip.strip.as_ref() {
+            Some(crowdb_protocol::chunkdb::rpc::Strip::EcStrip(ec)) => ec.segments.first(),
+            Some(crowdb_protocol::chunkdb::rpc::Strip::MirrorStrip(mirror)) => mirror.segments.first(),
+            None => None,
+        })
+        .map(|segment| segment.unit_count)
+        .filter(|count| *count > 0)
+        .ok_or_else(|| {
+            IoError::AllocationFailed("append_chunk: existing strip has no segment geometry".into())
+        })?;
     for attempt in 0..2 {
         let resp = chunkdb
             .append_chunk(AppendChunkRequest {
                 chunk_id: Some(chunk_id),
                 modify_ts: chunk.modify_ts,
-                strip_size: ec_scheme.data_num as u32,
+                strip_size: unit_count,
                 strip_count: 1,
                 strip_type: StripType::Ec as i32,
                 data_num: ec_scheme.data_num as u32,

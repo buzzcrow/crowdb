@@ -33,6 +33,19 @@ pub trait DiskWriter: Send + Sync {
         Ok(())
     }
 
+    /// Read an arbitrary byte range relative to the start of `seg`.
+    async fn read(
+        &self,
+        _seg: &Segment,
+        _unit_bytes: u64,
+        _segment_offset: u64,
+        _length: u32,
+    ) -> Result<Bytes> {
+        Err(IoError::ReadFailed(
+            "reads are unsupported by this DiskIO seam".into(),
+        ))
+    }
+
     /// Write an aligned range relative to the start of `seg`.
     async fn write_at(&self, seg: &Segment, unit_bytes: u64, segment_offset: u64, data: Bytes) -> Result<()> {
         validate_segment_write(seg, unit_bytes, segment_offset, data.len())?;
@@ -50,6 +63,24 @@ pub trait DiskWriter: Send + Sync {
             .ok_or_else(|| IoError::WriteFailed("segment-relative offset exceeds segment".into()))?;
         self.write(&adjusted, unit_bytes, data).await
     }
+}
+
+fn validate_segment_read(seg: &Segment, unit_bytes: u64, segment_offset: u64, length: u32) -> Result<()> {
+    if unit_bytes == 0 {
+        return Err(IoError::ReadFailed("unit_bytes must be nonzero".into()));
+    }
+    let segment_bytes = u64::from(seg.unit_count)
+        .checked_mul(unit_bytes)
+        .ok_or_else(|| IoError::ReadFailed("segment byte capacity overflow".into()))?;
+    let end = segment_offset
+        .checked_add(u64::from(length))
+        .ok_or_else(|| IoError::ReadFailed("segment-relative read end overflow".into()))?;
+    if end > segment_bytes {
+        return Err(IoError::ReadFailed(format!(
+            "segment-relative read end {end} exceeds segment capacity {segment_bytes}"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_segment_write(
@@ -127,4 +158,51 @@ impl DiskWriter for DiskioBlockWriter {
         }
         Ok(())
     }
+
+    async fn read(&self, seg: &Segment, unit_bytes: u64, segment_offset: u64, length: u32) -> Result<Bytes> {
+        validate_segment_read(seg, unit_bytes, segment_offset, length)?;
+        if length == 0 {
+            return Ok(Bytes::new());
+        }
+        let disk_id = seg
+            .disk_id
+            .as_ref()
+            .ok_or_else(|| IoError::ReadFailed("segment missing disk_id".into()))?;
+        let disk_id = DiskId::new(disk_id.high, disk_id.low);
+        let zone_offset = seg
+            .unit_offset
+            .checked_mul(unit_bytes)
+            .and_then(|offset| offset.checked_add(segment_offset))
+            .ok_or_else(|| IoError::ReadFailed("disk read offset overflow".into()))?;
+        let future = self
+            .client
+            .read(
+                &self.server,
+                &self.conn,
+                disk_id,
+                seg.zone_index,
+                zone_offset,
+                length,
+                0,
+            )
+            .map_err(|error| IoError::ReadFailed(error.to_string()))?;
+        let (code, data) = DiskioClient::await_read_response(future)
+            .await
+            .map_err(|error| IoError::ReadFailed(error.to_string()))?;
+        read_response(code, data, length)
+    }
+}
+
+fn read_response(code: DiskIoRetCode, data: Option<Vec<u8>>, expected: u32) -> Result<Bytes> {
+    if code != DiskIoRetCode::Success {
+        return Err(IoError::ReadFailed(format!("disk read returned {code:?}")));
+    }
+    let data = data.ok_or_else(|| IoError::ReadFailed("successful disk read omitted data".into()))?;
+    if data.len() != expected as usize {
+        return Err(IoError::ReadFailed(format!(
+            "disk read returned {} bytes, expected {expected}",
+            data.len()
+        )));
+    }
+    Ok(Bytes::from(data))
 }

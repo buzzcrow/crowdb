@@ -186,4 +186,60 @@ impl DiskWriter for RoutedDiskWriter {
         }
         Ok(())
     }
+
+    async fn read(&self, seg: &Segment, unit_bytes: u64, segment_offset: u64, length: u32) -> Result<Bytes> {
+        if length == 0 {
+            return Ok(Bytes::new());
+        }
+        let id = seg
+            .disk_id
+            .map(|id| DiskId::new(id.high, id.low))
+            .ok_or_else(|| IoError::ReadFailed("segment missing disk_id".into()))?;
+        let segment_bytes = u64::from(seg.unit_count)
+            .checked_mul(unit_bytes)
+            .ok_or_else(|| IoError::ReadFailed("segment byte capacity overflow".into()))?;
+        let end = segment_offset
+            .checked_add(u64::from(length))
+            .ok_or_else(|| IoError::ReadFailed("segment-relative read end overflow".into()))?;
+        if unit_bytes == 0 || end > segment_bytes {
+            return Err(IoError::ReadFailed("disk read is outside its segment".into()));
+        }
+        let route = self.route(id)?;
+        let zone_offset = seg
+            .unit_offset
+            .checked_mul(unit_bytes)
+            .and_then(|offset| offset.checked_add(segment_offset))
+            .ok_or_else(|| IoError::ReadFailed("disk read offset overflow".into()))?;
+        let future = self
+            .client
+            .read(
+                &self.server,
+                &route.connection,
+                id,
+                seg.zone_index,
+                zone_offset,
+                length,
+                0,
+            )
+            .map_err(|error| IoError::ReadFailed(format!("{}: {error}", route.endpoint)))?;
+        let (code, data) = DiskioClient::await_read_response(future)
+            .await
+            .map_err(|error| IoError::ReadFailed(format!("{}: {error}", route.endpoint)))?;
+        if code != DiskIoRetCode::Success {
+            return Err(IoError::ReadFailed(format!(
+                "{} returned {code:?}",
+                route.endpoint
+            )));
+        }
+        let data =
+            data.ok_or_else(|| IoError::ReadFailed(format!("{} omitted read data", route.endpoint)))?;
+        if data.len() != length as usize {
+            return Err(IoError::ReadFailed(format!(
+                "{} returned {} bytes, expected {length}",
+                route.endpoint,
+                data.len()
+            )));
+        }
+        Ok(Bytes::from(data))
+    }
 }

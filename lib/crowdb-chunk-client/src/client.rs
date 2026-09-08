@@ -25,8 +25,9 @@ use crowdb_protocol::diskdb::rpc::Segment;
 use crate::metrics::SmallWriteMetrics;
 use crate::writer::small_pool::SmallWritePool;
 use crate::{
-    ChunkAllocator, ChunkClientConfig, ChunkClientMetrics, ChunkIoWriter, DiskWriter, LargeAsyncObjectWriter,
-    Result, RoutedDiskWriter, SmallObjectWriter, SmallWriteMetricsSnapshot, SmallWritePolicy,
+    ChunkAllocator, ChunkClientConfig, ChunkClientMetrics, ChunkIoWriter, ChunkReadPolicy, ChunkReadStream,
+    ChunkReader, DiskWriter, LargeAsyncObjectWriter, ReadResult, Result, RoutedDiskWriter, SmallObjectWriter,
+    SmallWriteMetricsSnapshot, SmallWritePolicy,
 };
 
 /// Discovery and transport configuration for [`ChunkIoClient`].
@@ -73,6 +74,7 @@ pub struct ChunkIoClient {
     topology: Option<Arc<ClientTopology>>,
     metrics: Option<Arc<ChunkClientMetrics>>,
     small_pool: Arc<SmallWritePool>,
+    reader: ChunkReader,
 }
 
 struct ClientTopology {
@@ -102,6 +104,8 @@ impl ChunkIoClient {
             config.small_write,
             Arc::new(SmallWriteMetrics::default()),
         )?;
+        let reader = ChunkReader::new(chunkdb.clone(), disk_writer.clone(), ChunkReadPolicy::default())
+            .map_err(|error| crate::IoError::Internal(error.to_string()))?;
         Ok(Self {
             allocator: chunkdb.clone(),
             disk_writer: disk_writer.clone(),
@@ -113,6 +117,7 @@ impl ChunkIoClient {
             })),
             metrics: None,
             small_pool,
+            reader,
         })
     }
 
@@ -134,12 +139,19 @@ impl ChunkIoClient {
             small_write,
             Arc::new(SmallWriteMetrics::default()),
         )?;
+        let reader = ChunkReader::new(
+            Arc::clone(&allocator),
+            Arc::clone(&disk_writer),
+            ChunkReadPolicy::default(),
+        )
+        .map_err(|error| crate::IoError::Internal(error.to_string()))?;
         Ok(Self {
             allocator,
             disk_writer,
             topology: None,
             metrics: None,
             small_pool,
+            reader,
         })
     }
 
@@ -162,7 +174,34 @@ impl ChunkIoClient {
             Arc::clone(&metrics.small_write),
         )
         .unwrap_or_else(|_| unreachable!("existing small-write policy was already validated"));
+        self.reader = ChunkReader::new(
+            Arc::clone(&self.allocator),
+            Arc::clone(&self.disk_writer),
+            ChunkReadPolicy::default(),
+        )
+        .unwrap_or_else(|_| unreachable!("default read policy is valid"));
         self
+    }
+
+    /// Replace the object-read memory and layout-retry policy.
+    pub fn with_read_policy(mut self, policy: ChunkReadPolicy) -> ReadResult<Self> {
+        self.reader = ChunkReader::new(Arc::clone(&self.allocator), Arc::clone(&self.disk_writer), policy)?;
+        Ok(self)
+    }
+
+    /// Reconstruct a complete object from writer-produced locations.
+    pub async fn read_object(&self, locations: &[Location]) -> ReadResult<Bytes> {
+        self.reader.read_object(locations).await
+    }
+
+    /// Reconstruct the logical half-open range `[start, end)`.
+    pub async fn read_range(&self, locations: &[Location], start: u64, end: u64) -> ReadResult<Bytes> {
+        self.reader.read_range(locations, start, end).await
+    }
+
+    /// Build a pull-based, memory-windowed object stream.
+    pub fn read_stream(&self, locations: &[Location]) -> ReadResult<ChunkReadStream> {
+        self.reader.read_stream(locations)
     }
 
     /// Reserve one bounded object and return its single-use writer handle.
@@ -338,6 +377,14 @@ impl DiskWriter for MetricsDiskWriter {
             operation.mark_success();
         }
         result
+    }
+
+    async fn fsync(&self, seg: &Segment) -> Result<()> {
+        self.inner.fsync(seg).await
+    }
+
+    async fn read(&self, seg: &Segment, unit_bytes: u64, segment_offset: u64, length: u32) -> Result<Bytes> {
+        self.inner.read(seg, unit_bytes, segment_offset, length).await
     }
 }
 

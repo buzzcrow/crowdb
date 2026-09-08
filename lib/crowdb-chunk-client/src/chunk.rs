@@ -9,7 +9,8 @@
 //! write cursor. `StripWriter` (enum) owns one strip's data + parity
 //! write. `parity_writer::spawn_parity_writes` spawns parity write +
 //! fsync tasks (joined at seal, not at strip finish). Later:
-//! `chunk_reader.rs` / `strip_reader.rs` for R107.
+//! `ChunkReader` maps stable object locations through current mirror or EC
+//! layouts.
 
 pub mod chunk_prefetch;
 pub mod chunk_reader;
@@ -21,7 +22,9 @@ pub mod strip;
 pub mod strip_reader;
 
 pub use chunk_prefetch::ChunkPrefetch;
+pub use chunk_reader::{ChunkReadPolicy, ChunkReadStream, ChunkReader};
 pub use chunk_writer::ChunkWriter;
 pub use ec_strip_writer::EcStripWriter;
 pub use mirror_strip_writer::MirrorStripWriter;
 pub use strip::{StripResult, StripWriter};
+pub use strip_reader::StripReader;

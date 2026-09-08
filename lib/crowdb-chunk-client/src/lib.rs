@@ -34,13 +34,16 @@ pub mod worker;
 pub mod writer;
 
 pub use benchmark::{run_large_write_benchmark, LargeWriteBenchmarkConfig, LargeWriteBenchmarkResult};
-pub use chunk::{ChunkPrefetch, ChunkWriter, EcStripWriter, MirrorStripWriter, StripResult, StripWriter};
+pub use chunk::{
+    ChunkPrefetch, ChunkReadPolicy, ChunkReadStream, ChunkReader, ChunkWriter, EcStripWriter,
+    MirrorStripWriter, StripReader, StripResult, StripWriter,
+};
 pub use client::{
     ChunkIoClient, ChunkIoClientConfig, LargeWritePolicy, LargeWriteResult, PreparedLargeWrite,
 };
 pub use config::{ChunkClientConfig, SmallWritePolicy};
 pub use disk_io::{DiskWriter, DiskioBlockWriter, RoutedDiskWriter};
-pub use error::{IoError, Result};
+pub use error::{IoError, ReadError, ReadResult, Result};
 pub use io::{BackpressurePolicy, ChunkIoWriter, FeedStatus};
 pub use metrics::{ChunkClientMetrics, SmallWriteMetricsSnapshot};
 #[cfg(feature = "test-util")]

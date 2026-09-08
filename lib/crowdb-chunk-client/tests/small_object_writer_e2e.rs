@@ -188,6 +188,14 @@ async fn small_write_batches_concurrent_objects_and_reads_them_back() {
     assert!(metrics.batches < metrics.completed);
     assert!(metrics.max_batch_objects > 1);
     for (data, location) in completed {
+        assert_eq!(
+            stack
+                .client
+                .read_object(std::slice::from_ref(&location))
+                .await
+                .unwrap(),
+            data
+        );
         let chunk = stack.query_chunk(&location).await;
         assert_mirror_data(&stack, &chunk, &location, &data).await;
     }
@@ -247,6 +255,16 @@ async fn eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread()
     degraded[3] = None;
     let reconstructed = decode(EcScheme::new(8, 4), degraded).unwrap();
     assert_eq!(reconstructed[3], data[3]);
+    for (location, expected) in locations.iter().zip(&data) {
+        assert_eq!(
+            stack
+                .client
+                .read_object(std::slice::from_ref(location))
+                .await
+                .unwrap(),
+            *expected
+        );
+    }
     stack.client.shutdown_small_writes().await.unwrap();
 }
 
@@ -387,6 +405,24 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
     assert_eq!(after_append.strips.len(), 2);
     assert!(matches!(after_append.strips[0].strip, Some(Strip::EcStrip(_))));
     assert_mirror_data(&stack, &after_append, &appended, &appended_data).await;
+    for (location, expected) in locations.iter().zip(&data) {
+        assert_eq!(
+            stack
+                .client
+                .read_object(std::slice::from_ref(location))
+                .await
+                .unwrap(),
+            *expected
+        );
+    }
+    assert_eq!(
+        stack
+            .client
+            .read_object(std::slice::from_ref(&appended))
+            .await
+            .unwrap(),
+        appended_data
+    );
     stack.client.shutdown_small_writes().await.unwrap();
 }
 
@@ -479,6 +515,16 @@ async fn automatic_chunkdb_scan_converts_three_groups_and_preserves_tail() {
     }
     for (location, expected) in locations[24..].iter().zip(&data[24..]) {
         assert_mirror_data(&stack, &converted, location, expected).await;
+    }
+    for (location, expected) in locations.iter().zip(&data) {
+        assert_eq!(
+            stack
+                .client
+                .read_object(std::slice::from_ref(location))
+                .await
+                .unwrap(),
+            *expected
+        );
     }
 }
 
