@@ -38,8 +38,9 @@ specified in the
 - **No small-object writer details.** Shared-chunk packing is a separate
   component specified by the
   [small-object writer design](design-crowdb-chunkio-small-object-writer.md).
-- **No reader.** The read path (location resolution, strip fetch, EC
-  decode, range reads) is a separate component.
+- **Reader is a separate component.** Location resolution, mirror/EC fetch,
+  partial decode, range reads, and bounded streaming are specified in
+  [Chunk Object Reader](design-crowdb-chunkio-reader.md).
 - **No single-block replacement on write failure.** The error path
   retries whole strips and frees failed segments; in-place single-block
   repair is a future refinement and an integration point, not a v1

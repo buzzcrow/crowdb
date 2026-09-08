@@ -87,7 +87,7 @@ complexity, and dependency. Before implementation, follow the
 
 ### Data Path (diskio + chunk object writers + read flow)
 
-Dependency order: R107/R110 → R111. Mirror-to-EC conversion is landed as
+Dependency order: R110 → R111. Mirror-to-EC conversion is landed as
 post-write space reclamation and is not a foreground correctness blocker. The RPC migration items
 (R115, R116, R117) are in a separate area (see RPC Migration section
 below); R32 depends on R115.
@@ -103,16 +103,6 @@ below); R32 depends on R115.
   support it, and record logical/physical bandwidth, loopback traffic, object
   latency, errors, exact accounting, and service logs. Keep shared fixture and
   result plumbing reusable for later small-write and read workloads.
-
-- **[R107](R107-chunkdb-chunk-read-flow.md)** — Chunk object read
-  flow — Area: chunkdb — Reconstructs object bytes from a `Location`
-  array (R94). Queries chunk strip layout via `query_chunk`, maps
-  offsets to strips, reads blocks via diskio (R105). Handles EC
-  decode (for missing blocks, ≤ `code_num`) and mirror fallback (for
-  failed replicas). Multi-chunk assembly in `logical_offset` order.
-  Partial range reads (`read_range`). Streaming read for large
-  objects (memory-bounded `ChunkReadStream`). Transparent across
-  mirror→EC conversion (R93).
 
 - **[R110](R110-chunkdb-chunkio-error-handling.md)** — Large-write
   IO error handling (write path) — Area: chunkdb / diskdb / diskio
