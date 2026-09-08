@@ -71,7 +71,7 @@ real DiskIO while preserving read visibility, offsets, and cleanup safety.
 - [x] **Unit tests**: cover task key/value encoding, incremental EC, configuration,
   policy bounds, task retry, and metrics snapshots. Files:
   `app/crowdb-chunkdb/tests/conversion_test.rs`.
-- [~] **Integration tests**: cover 24-to-3 replacement, active prefix append,
+- [x] **Integration tests**: cover 24-to-3 replacement, active prefix append,
   task discovery/claim/takeover, failure cleanup, restart cleanup, deletion
   race, and bounded concurrency. Files:
   `app/crowdb-chunkdb/tests/conversion_test.rs`.

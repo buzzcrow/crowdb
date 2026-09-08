@@ -14,14 +14,16 @@ use std::time::Duration;
 
 use common::cluster::{seed_hardware, ChunkdbHarness, DiskdbServer, KvCluster, DATA_GROUP_ID, STORE_ID};
 use crowdb_chunkdb::allocator::StripAllocType;
-use crowdb_chunkdb::conversion::ConversionCoordinator;
+use crowdb_chunkdb::conversion::io::ConversionDiskIo;
+use crowdb_chunkdb::conversion::{decode_payload, ConversionCoordinator, MirrorToEcTaskHandler};
 use crowdb_chunkdb::lifecycle::{ChunkLockMap, LifecycleError, LifecycleHandler};
-use crowdb_chunkdb::metrics::LifecycleMetrics;
+use crowdb_chunkdb::metrics::{ChunkdbMetrics, LifecycleMetrics};
 use crowdb_chunkdb::routing::{default_binding_table, BindingCache};
 use crowdb_chunkdb::selector::PlacementConstraints;
 use crowdb_chunkdb::task::{
-    TaskAdmission, TaskExecutor, TaskHandler, TaskManager, TaskOutcome, TaskScanner, TaskStore,
+    TaskAdmission, TaskClaim, TaskExecutor, TaskHandler, TaskManager, TaskOutcome, TaskScanner, TaskStore,
 };
+use crowdb_common::metrics::MetricsRegistry;
 use crowdb_protocol::chunk_task::{
     ChunkTaskState, ChunkTaskValue, CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_MIRROR_TO_EC,
 };
@@ -439,6 +441,96 @@ async fn mirror_range_is_atomically_replaced_by_tentative_ec_strip() {
     let reclaimed = harness.handler.query_chunk(&chunk_id).await.unwrap();
     assert_eq!(reclaimed.strips, vec![durable_replacement]);
     assert!(reclaimed.cleanup_intents.is_empty());
+}
+
+#[tokio::test]
+async fn deletion_during_conversion_clears_task_ownership_before_tentative_cleanup() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let chunk = harness
+        .handler
+        .allocate_chunk(None, 1, 8, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .await
+        .expect("allocate mirror range");
+    let chunk_id = chunk.id.expect("chunk id");
+    let chunk = harness
+        .handler
+        .seal_chunk(&chunk_id, chunk.capacity)
+        .await
+        .expect("seal mirror range");
+
+    let task_bindings = BindingCache::new();
+    task_bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let task_store = Arc::new(TaskStore::new(cluster.make_crowdb_client(), task_bindings));
+    let coordinator = ConversionCoordinator::new(Arc::clone(&harness.handler), Arc::clone(&task_store));
+    let prepared = coordinator
+        .prepare(
+            chunk_id,
+            chunk.modify_ts,
+            0,
+            chunk.strips,
+            8,
+            4,
+            7002,
+            30_000,
+            100,
+        )
+        .await
+        .expect("prepare conversion");
+    let task = task_store
+        .get(&chunk_id, TASK_KIND_MIRROR_TO_EC, &prepared.task_id)
+        .await
+        .unwrap()
+        .expect("durable conversion task");
+    assert!(decode_payload(&task.payload).unwrap().replacement_strip.is_some());
+
+    harness
+        .handler
+        .delete_chunk(&chunk_id)
+        .await
+        .expect("delete chunk");
+    let io = Arc::new(ConversionDiskIo::empty_for_tests());
+    let mut registry = MetricsRegistry::new();
+    let metrics = ChunkdbMetrics::register(&mut registry).conversion;
+    let manager = Arc::new(TaskManager::new(Arc::clone(&task_store), 7002, 30_000));
+    let executor = TaskExecutor::new(
+        manager,
+        1,
+        vec![Arc::new(MirrorToEcTaskHandler::new(
+            Arc::clone(&harness.handler),
+            Arc::clone(&task_store),
+            io,
+            metrics,
+            50,
+        ))],
+    )
+    .unwrap();
+    executor.execute(TaskClaim { task }).await.unwrap();
+
+    let failed = task_store
+        .get(&chunk_id, TASK_KIND_MIRROR_TO_EC, &prepared.task_id)
+        .await
+        .unwrap()
+        .expect("terminal conversion task");
+    assert_eq!(failed.state, ChunkTaskState::Failed);
+    assert!(decode_payload(&failed.payload)
+        .unwrap()
+        .replacement_strip
+        .is_none());
+    harness
+        .handler
+        .discard_conversion_strip(&chunk_id, &prepared.replacement_strip)
+        .await
+        .expect("reclaim unreferenced tentative replacement");
+    let deleted = harness.handler.query_chunk(&chunk_id).await.unwrap();
+    assert_eq!(deleted.state, ChunkState::Deleted as i32);
+    assert!(deleted.strips.is_empty());
 }
 
 #[tokio::test]

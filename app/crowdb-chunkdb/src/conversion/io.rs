@@ -34,6 +34,16 @@ pub struct ConversionDiskIo {
 }
 
 impl ConversionDiskIo {
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn empty_for_tests() -> Self {
+        Self {
+            client: Arc::new(DiskioClient::new()),
+            server: Arc::new(RpcServer::new(None)),
+            routes: ArcSwap::from_pointee(HashMap::new()),
+        }
+    }
+
     pub async fn connect(
         service: &ServiceRegistryClient,
         hardware: &HardwareClient,
