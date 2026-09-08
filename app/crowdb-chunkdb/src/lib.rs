@@ -21,4 +21,5 @@ pub mod routing;
 pub mod selector;
 pub mod service;
 pub mod storage;
+pub mod task;
 pub mod topology;

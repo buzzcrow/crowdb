@@ -12,13 +12,131 @@ mod common;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::cluster::{seed_hardware, ChunkdbHarness, DiskdbServer, KvCluster};
+use common::cluster::{seed_hardware, ChunkdbHarness, DiskdbServer, KvCluster, DATA_GROUP_ID, STORE_ID};
 use crowdb_chunkdb::allocator::StripAllocType;
 use crowdb_chunkdb::lifecycle::{ChunkLockMap, LifecycleError, LifecycleHandler};
 use crowdb_chunkdb::metrics::LifecycleMetrics;
+use crowdb_chunkdb::routing::{default_binding_table, BindingCache};
 use crowdb_chunkdb::selector::PlacementConstraints;
+use crowdb_chunkdb::task::{
+    TaskAdmission, TaskExecutor, TaskHandler, TaskManager, TaskOutcome, TaskScanner, TaskStore,
+};
+use crowdb_protocol::chunk_task::{
+    ChunkTaskState, ChunkTaskValue, CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_MIRROR_TO_EC,
+};
 use crowdb_protocol::chunkdb::rpc::{ChunkState, ChunkType, Strip, StripType};
 use crowdb_protocol::common::ChunkId;
+
+fn task_value() -> ChunkTaskValue {
+    ChunkTaskValue {
+        schema_version: CHUNK_TASK_SCHEMA_VERSION,
+        task_id: ChunkId { high: 3, low: 4 },
+        partition_id: ChunkId { high: 1, low: 2 },
+        kind: TASK_KIND_MIRROR_TO_EC,
+        kind_version: 1,
+        state: ChunkTaskState::Pending,
+        priority: 10,
+        revision: 1,
+        operation_id: ChunkId { high: 5, low: 6 },
+        source_revision: 7,
+        created_at_ms: 100,
+        updated_at_ms: 100,
+        eligible_at_ms: 100,
+        attempt: 0,
+        max_attempts: 3,
+        estimated_queue_bytes: 20 * 1024 * 1024,
+        claim_owner: 0,
+        claim_generation: 0,
+        claim_deadline_ms: 0,
+        last_error_code: 0,
+        last_error: String::new(),
+        payload: vec![1, 2, 3],
+    }
+}
+
+struct CompleteTaskHandler;
+
+impl TaskHandler for CompleteTaskHandler {
+    fn kind(&self) -> u16 {
+        TASK_KIND_MIRROR_TO_EC
+    }
+
+    fn supports_version(&self, version: u16) -> bool {
+        version == 1
+    }
+
+    fn execute<'a>(&'a self, _task: &'a ChunkTaskValue) -> crowdb_chunkdb::task::executor::TaskFuture<'a> {
+        Box::pin(async { TaskOutcome::Complete })
+    }
+}
+
+#[tokio::test]
+async fn task_survives_claim_expiry_takeover_and_completion() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+
+    let cluster = KvCluster::start().await;
+    let bindings = BindingCache::new();
+    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let store = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
+    let first_manager = TaskManager::new(Arc::clone(&store), 41, 100);
+    let task = task_value();
+
+    assert!(matches!(
+        first_manager.admit(task.clone()).await.unwrap(),
+        TaskAdmission::Created(_)
+    ));
+    assert!(matches!(
+        first_manager.admit(task.clone()).await.unwrap(),
+        TaskAdmission::Existing(_)
+    ));
+
+    let ready = store.scan_ready(100, 16).await.unwrap();
+    assert_eq!(ready.len(), 1);
+    let first_claim = first_manager.claim(&ready[0], 100).await.unwrap().unwrap();
+    assert_eq!(first_claim.task.claim_generation, 1);
+    assert_eq!(first_claim.task.attempt, 1);
+    assert!(store.scan_ready(100, 16).await.unwrap().is_empty());
+    assert!(store.scan_expired_leases(199, 16).await.unwrap().is_empty());
+
+    drop(first_manager);
+    let restarted_manager = Arc::new(TaskManager::new(Arc::clone(&store), 42, 100));
+    let executor = Arc::new(
+        TaskExecutor::new(
+            Arc::clone(&restarted_manager),
+            2,
+            vec![Arc::new(CompleteTaskHandler)],
+        )
+        .unwrap(),
+    );
+    let scanner = TaskScanner::new(
+        Arc::clone(&store),
+        Arc::clone(&restarted_manager),
+        executor,
+        16,
+        Duration::from_secs(30),
+    );
+    let summary = scanner.run_once(200).await.unwrap();
+    assert_eq!(summary.expired_claims_requeued, 1);
+    assert_eq!(summary.ready_indexes_seen, 1);
+    assert_eq!(summary.tasks_claimed, 1);
+    assert_eq!(summary.tasks_completed_or_requeued, 1);
+    assert_eq!(summary.dispatch_errors, 0);
+
+    assert!(store.scan_ready(210, 16).await.unwrap().is_empty());
+    assert!(store.scan_expired_leases(u64::MAX, 16).await.unwrap().is_empty());
+    let stored = store
+        .get(&task.partition_id, task.kind, &task.task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.state, ChunkTaskState::Completed);
+    assert_eq!(stored.revision, 5);
+    assert_eq!(stored.claim_generation, 2);
+    assert_eq!(stored.attempt, 2);
+}
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]

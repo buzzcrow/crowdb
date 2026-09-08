@@ -26,17 +26,17 @@ real DiskIO while preserving read visibility, offsets, and cleanup safety.
 
 ## Phase 2: Conversion Engine
 
-- [ ] **Persistent task model**: add versioned task envelope, typed payload,
+- [x] **Persistent task model**: add versioned task envelope, typed payload,
   canonical/ready/lease keys, stable task/allocation identities, atomic index
   transitions, progress, and task-store scans. Files:
   `app/crowdb-chunkdb/src/task.rs`, `app/crowdb-chunkdb/src/task/store.rs`,
   `lib/crowdb-protocol/src/types/chunkdb.rs`, protocol key modules.
-- [ ] **Task manager and scanner**: add admission, claim generation, retry,
+- [x] **Task manager and scanner**: add admission, claim generation, retry,
   cancellation, event plus safety scan, source discovery, and queue-driven
   executor sizing. Files: `app/crowdb-chunkdb/src/task/manager.rs`,
   `app/crowdb-chunkdb/src/task/scanner.rs`,
   `app/crowdb-chunkdb/src/task/executor.rs`.
-- [ ] **Idempotent task allocation**: associate every DiskDB allocation with a
+- [~] **Idempotent task allocation**: associate every DiskDB allocation with a
   stable task/sub-allocation identity so an unknown response can be recovered
   without leaking or allocating a second block set. Files:
   `lib/crowdb-protocol/src/types/diskdb.rs`, DiskDB schema/client/server and
