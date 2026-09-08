@@ -87,10 +87,9 @@ complexity, and dependency. Before implementation, follow the
 
 ### Data Path (diskio + chunk object writers + read flow)
 
-Chunk reads, read repair, and mirror-to-EC conversion are landed. R110 remains
-for large-write error handling. The RPC migration items
-(R115, R116, R117) are in a separate area (see RPC Migration section
-below); R32 depends on R115.
+Chunk reads, read repair, mirror-to-EC conversion, and large-write error
+handling are landed. The RPC migration items (R115, R116, R117) are in a
+separate area (see RPC Migration section below); R32 depends on R115.
 
 - **[R135](R135-chunkio-end-to-end-performance.md)** — Chunk IO write-flow
   review and end-to-end performance — Area: chunkio / chunkdb / diskdb /
@@ -104,22 +103,6 @@ below); R32 depends on R115.
   latency, errors, exact accounting, and service logs. Keep shared fixture and
   result plumbing reusable for later small-write and read workloads.
 
-- **[R110](R110-chunkdb-chunkio-error-handling.md)** — Large-write
-  IO error handling (write path) — Area: chunkdb / diskdb / diskio
-  — In-line error handler for the large-write data path (R94),
-  spanning three services: chunkdb (strip metadata,
-  `update_chunk_strip`), diskdb (block allocation with disk
-  exclusion), diskio (write/fsync error detection). Single-block
-  replacement on write failure (not whole-strip retry): keep
-  successful blocks, use chunkdb placement to re-allocate the failed
-  block on a healthy disk, and `update_chunk_strip` to replace it in
-  chunkdb. Negative list (TTL-based) temporarily blocks bad disks
-  from new allocations across diskdb — shared with the read path and
-  R112 (small-write). Degraded strip tracking (parity missing,
-  data durable). Escalation to R83 recovery when inline retries
-  are exhausted. Read-path error handling is a separate requirement
-  reader; R110 defines the negative list and degraded-strip
-  tracking that R112 reuses.
 - **[R113](R113-chunkio-batch-strip-allocation.md)** — Batch strip
   allocation + deferred chunkdb confirm — Area: chunkio / chunkdb /
   diskdb — Optimize the large-write strip allocation path (R94) to

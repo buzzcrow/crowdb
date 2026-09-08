@@ -866,9 +866,12 @@ mutating RPC acquires the per-chunk lock before its RMW cycle:
   cleanup intent → `guard.refresh(chunk)`. An identical operation retry at the
   successor revision returns the installed chunk. Any other revision or range
   is a conflict.
-- `allocate_replacement_segment`: use mirror placement while excluding nodes
-  holding surviving replicas and every supplied failed disk; return one
-  geometry-compatible tentative segment owned by the chunk.
+- `allocate_replacement_segment`: inspect the current owning strip and return
+  one geometry-compatible tentative segment. Mirror replacement excludes
+  survivor nodes. EC replacement excludes nodes already at the strip's
+  per-node failure-domain limit; explicitly unsafe layouts retain their
+  balanced per-node ceiling. Every old and surviving strip disk is excluded,
+  so no two shards share one disk.
 - `discard_replacement_segment`: under the lifecycle guard, free a tentative
   segment only when it belongs to the chunk and current metadata does not
   reference it.

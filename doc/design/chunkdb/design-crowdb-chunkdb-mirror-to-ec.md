@@ -110,9 +110,11 @@ suppressing necessary repair.
 `RepairStripTaskHandler` re-queries current metadata and treats the marker as
 authority. It reads one full healthy mirror or full EC shards, records any new
 I/O failures before retrying, reconstructs unavailable shards, and allocates
-replacement segments excluding every disk already used by the strip. Normal
-placement also excludes survivor nodes; a separate disabled-by-default test
-escape hatch may relax only node anti-affinity, never same-disk exclusion.
+replacement segments excluding every disk already used by the strip. Mirror
+placement excludes survivor nodes. EC replacement instead preserves the
+current safe `code_num` per-node limit, or the balanced ceiling of an
+explicitly unsafe layout. A disabled-by-default test escape hatch may relax
+only node anti-affinity, never same-disk exclusion.
 
 Each replacement is fully written and fsynced before exact revision-and-range
 fenced publication. The publication removes repaired markers and adds retired

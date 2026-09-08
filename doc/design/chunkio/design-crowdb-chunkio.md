@@ -41,10 +41,6 @@ specified in the
 - **Reader is a separate component.** Location resolution, mirror/EC fetch,
   partial decode, range reads, and bounded streaming are specified in
   [Chunk Object Reader](design-crowdb-chunkio-reader.md).
-- **No single-block replacement on write failure.** The error path
-  retries whole strips and frees failed segments; in-place single-block
-  repair is a future refinement and an integration point, not a v1
-  behavior.
 - **No GC of leaked partial chunks.** Best-effort cleanup on abort
   leaves Active chunks for a future reaper; this doc does not specify
   the reaper.
@@ -82,10 +78,10 @@ specified in the
   just to feed `crowdb_common::ec::encode` would copy 4 MB per strip for
   no benefit. `encode_parity_from_shards` takes pre-split shards
   directly and reuses the existing isa-l FFI path — no new C++ code.
-- **Strip failure aborts the object.** A diskio failure from any data or
-  parity block fails the strip and aborts the object, deleting unsealed
-  chunks. Neither single-block replacement nor whole-strip placement retry is
-  part of the current writer.
+- **Repair one failed shard, not the strip.** A durable data or parity write
+  failure keeps every successful shard and retries only the failed segment
+  through ChunkDB placement and fenced publication. Exhaustion aborts the
+  unpublished object; reduced redundancy is never reported as success.
 - **Memory budget per pool, not per object.** A `WriterPool` tracks a
   total `memory_budget` and an atomic `in_use` counter; `try_acquire`
   rejects with `MemoryBudgetExhausted` when full, enabling backpressure
@@ -318,16 +314,27 @@ must return already-sealed `ProtoLocation`s for caller cleanup.
   parity handles, `seal_chunk` RPC, return `ProtoLocation`. If the
   chunk is empty (0 bytes written), `delete_chunk` instead of
   `seal_chunk`.
-- **Error / abort** (`on_error`) — cancel in-flight pipeline
-  tasks, `ChunkWriter::abort()`: stop strip prefetch, abort current
-  strip, drop parity handles, `delete_chunk` on the partial chunk,
-  return `ProtoLocation`s of already-sealed chunks.
-- **Whole-strip retry** — on a diskio write failure for any block of a
-  strip, retry the whole strip: `append_chunk` a new strip with a fresh
-  placement, re-write all data + parity, free the failed strip's
-  segments. Up to 3 retries; on exhaustion, `IoError::WriteFailed` with
-  the partial `ProtoLocation` array. The abort/cleanup paths are
-  integration points for future single-block replacement.
+- **Error / abort** (`on_error`) — stop strip and chunk prefetch, retain and
+  drain every submitted write completion, then `delete_chunk` on the partial
+  chunk. Draining before deletion prevents a late write from hitting reused
+  storage. The public prepared-write API returns an error rather than a
+  partially successful object.
+- **Single-segment replacement** — a failed data or parity completion retains
+  its `Bytes`, inserts the failed disk into the client-wide lock-free negative
+  list, and queries current chunk metadata. ChunkDB allocates one tentative
+  placement excluding every existing strip disk and nodes already at the
+  strip's failure-domain limit. The client writes that segment and publishes a
+  geometry-identical strip through exact revision-and-range replacement.
+  Successful shards are untouched.
+- **Fencing and retry** — publication uses a deterministic operation ID.
+  Ambiguous results retry the identical request. A definite revision conflict
+  discards the tentative segment, re-queries, and retries only while the exact
+  failed identity remains. Repeated disk failures extend their exclusion TTL.
+  Attempts are bounded by `large_write_repair_attempts`, three by default.
+- **Repair exhaustion** — `ChunkWriter::seal` returns the failure before
+  `seal_chunk`; its owner drains remaining completions and deletes the active
+  chunk. It never seals a strip with missing parity or publishes degraded
+  large-object locations.
 - **Dropped writer** — dropping does not perform async metadata cleanup.
   Applications call `on_error` when abandoning a started push-mode write;
   an Active partial chunk left by process loss remains for future lifecycle
@@ -338,9 +345,9 @@ Edge cases:
 - `on_data` after `on_finish` / `on_error` → `IoError::Finished`.
 - `on_finish` twice → `IoError::Finished`.
 - `on_error` with no sealed chunks → `Ok(vec![])`.
-- EC encode failure → pipeline aborts immediately (no retry — EC encode
-  is a CPU/isal error, not a placement issue). A future refinement may
-  mark the strip degraded or retry with a fallback encoder.
+- EC encode failure → pipeline aborts immediately. EC encode is a CPU/ISA-L
+  failure rather than a disk placement failure and cannot use segment
+  replacement.
 - `delete_chunk` fails during cleanup → log + continue (best-effort;
   the partial chunk stays Active and is reaped by a future GC task).
 
