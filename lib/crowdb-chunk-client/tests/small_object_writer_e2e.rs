@@ -18,7 +18,10 @@ use crowdb_chunk_client::{
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
 use crowdb_common::ec::{encode_parity_from_shards, EcScheme};
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
-use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, Location, Strip, TriggerConversionRequest};
+use crowdb_protocol::chunkdb::rpc::{
+    Chunk, ChunkState, ConversionFilter, Location, Strip, TriggerConversionBatchRequest,
+    TriggerConversionRequest,
+};
 use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_test_harness::chunkdb::ChunkdbStartOptions;
@@ -358,6 +361,14 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
             .await;
         assert_eq!(actual, expected);
     }
+    let appended_data = Bytes::from(vec![0xd3; MIB]);
+    let appended = write_object(&stack.client, appended_data.clone()).await;
+    assert_eq!(appended.chunk_id, location.chunk_id);
+    assert_eq!(appended.offset, 8 * MIB as u64);
+    let after_append = stack.query_chunk(&appended).await;
+    assert_eq!(after_append.strips.len(), 2);
+    assert!(matches!(after_append.strips[0].strip, Some(Strip::EcStrip(_))));
+    assert_mirror_data(&stack, &after_append, &appended, &appended_data).await;
     stack.client.shutdown_small_writes().await.unwrap();
 }
 
@@ -391,6 +402,17 @@ async fn automatic_chunkdb_scan_converts_three_groups_and_preserves_tail() {
         .iter()
         .all(|location| location.chunk_id == locations[0].chunk_id));
     stack.client.shutdown_small_writes().await.unwrap();
+    let (chunkdb, _) = real_write_parts(&stack).await;
+    let too_young = chunkdb
+        .trigger_conversion_batch(TriggerConversionBatchRequest {
+            filter: ConversionFilter {
+                sealed_only: true,
+                max_chunks: 10,
+            },
+        })
+        .await
+        .expect("batch conversion trigger");
+    assert_eq!(too_young.accepted_chunks, 0);
 
     let converted = tokio::time::timeout(Duration::from_secs(25), async {
         loop {
