@@ -1,14 +1,160 @@
 use super::{
     build_delete_range_response, build_discard_replacement_response, map_error, parse_fb_chunk_strip,
     parse_fb_segment, parse_fb_segments, proto_chunk_type, proto_strip_type, submit_append_result,
-    submit_chunk_result, submit_error, submit_fb_response, submit_segment_result, Arc, ChunkId,
-    ChunkdbRpcService, FBAdvanceChunkWriteRequest, FBAllocateChunkRequest,
-    FBAllocateReplacementSegmentRequest, FBAppendChunkRequest, FBChunkdbRetCode, FBDeleteChunkRangeRequest,
-    FBDeleteChunkRequest, FBDiscardReplacementSegmentRequest, FBMsgType, FBReplaceChunkStripRangeRequest,
-    FBSealChunkRequest, FBUpdateChunkStripRequest, RequestGuard, RpcServer, ServerRequest,
+    submit_chunk_result, submit_conversion_chunk_result, submit_error, submit_fb_response,
+    submit_prepared_conversion_result, submit_segment_result, Arc, ChunkId, ChunkdbRpcService,
+    FBAdvanceChunkWriteRequest, FBAllocateChunkRequest, FBAllocateReplacementSegmentRequest,
+    FBAppendChunkRequest, FBChunkdbRetCode, FBCompleteMirrorToEcConversionRequest, FBDeleteChunkRangeRequest,
+    FBDeleteChunkRequest, FBDiscardReplacementSegmentRequest, FBMsgType,
+    FBPrepareMirrorToEcConversionRequest, FBReplaceChunkStripRangeRequest, FBSealChunkRequest,
+    FBUpdateChunkStripRequest, RequestGuard, RpcServer, ServerRequest,
 };
+use crate::conversion::ConversionError;
 
 impl ChunkdbRpcService {
+    pub(super) fn handle_prepare_conversion(
+        &self,
+        req: ServerRequest,
+        server: &Arc<RpcServer>,
+        mut request: RequestGuard,
+    ) {
+        let req_id = req.request_id;
+        let create_nano = req.rpc_create_nano;
+        let msg_type = FBMsgType::EPrepareMirrorToEcConversionResponse.0 as u16;
+        let conn_handle = req.conn_handle as usize;
+        let conversion = self.conversion.clone();
+        let server = Arc::clone(server);
+        self.rt.spawn(async move {
+            let Some(conversion) = conversion else {
+                submit_prepared_conversion_result(
+                    &server,
+                    conn_handle as *mut _,
+                    req_id,
+                    create_nano,
+                    msg_type,
+                    Err(ConversionError::Payload("conversion service is disabled".into())),
+                );
+                return;
+            };
+            let Ok(fb) = flatbuffers::root::<FBPrepareMirrorToEcConversionRequest>(req.control()) else {
+                submit_prepared_conversion_result(
+                    &server,
+                    conn_handle as *mut _,
+                    req_id,
+                    create_nano,
+                    msg_type,
+                    Err(ConversionError::Payload("invalid conversion request".into())),
+                );
+                return;
+            };
+            let Some(chunk_id) = fb.chunk_id().map(|id| ChunkId {
+                high: id.high(),
+                low: id.low(),
+            }) else {
+                submit_prepared_conversion_result(
+                    &server,
+                    conn_handle as *mut _,
+                    req_id,
+                    create_nano,
+                    msg_type,
+                    Err(ConversionError::Payload("missing chunk_id".into())),
+                );
+                return;
+            };
+            let values = fb.old_strips();
+            let old_strips = values
+                .map(|strips| {
+                    strips
+                        .iter()
+                        .filter_map(|strip| parse_fb_chunk_strip(&strip))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let result = if values.is_some_and(|strips| strips.len() != old_strips.len()) {
+                Err(ConversionError::Payload("invalid mirror strip range".into()))
+            } else {
+                conversion
+                    .prepare(
+                        chunk_id,
+                        fb.expected_modify_ts(),
+                        fb.start_index(),
+                        old_strips,
+                        fb.data_num(),
+                        fb.code_num(),
+                        fb.client_owner(),
+                        fb.claim_lease_ms(),
+                        unix_time_ms(),
+                    )
+                    .await
+            };
+            if result.is_ok() {
+                request.mark_success();
+            }
+            submit_prepared_conversion_result(
+                &server,
+                conn_handle as *mut _,
+                req_id,
+                create_nano,
+                msg_type,
+                result,
+            );
+        });
+    }
+
+    pub(super) fn handle_complete_conversion(
+        &self,
+        req: ServerRequest,
+        server: &Arc<RpcServer>,
+        mut request: RequestGuard,
+    ) {
+        let req_id = req.request_id;
+        let create_nano = req.rpc_create_nano;
+        let msg_type = FBMsgType::ECompleteMirrorToEcConversionResponse.0 as u16;
+        let conn_handle = req.conn_handle as usize;
+        let conversion = self.conversion.clone();
+        let server = Arc::clone(server);
+        self.rt.spawn(async move {
+            let parsed = (|| {
+                let fb = flatbuffers::root::<FBCompleteMirrorToEcConversionRequest>(req.control())
+                    .map_err(|_| ConversionError::Payload("invalid completion request".into()))?;
+                let chunk_id = fb
+                    .chunk_id()
+                    .map(|id| ChunkId {
+                        high: id.high(),
+                        low: id.low(),
+                    })
+                    .ok_or_else(|| ConversionError::Payload("missing chunk_id".into()))?;
+                let task_id = fb
+                    .task_id()
+                    .map(|id| ChunkId {
+                        high: id.high(),
+                        low: id.low(),
+                    })
+                    .ok_or_else(|| ConversionError::Payload("missing task_id".into()))?;
+                Ok((chunk_id, task_id, fb.client_owner()))
+            })();
+            let result = match (conversion, parsed) {
+                (Some(conversion), Ok((chunk_id, task_id, client_owner))) => {
+                    conversion
+                        .complete(chunk_id, task_id, client_owner, unix_time_ms())
+                        .await
+                }
+                (None, _) => Err(ConversionError::Payload("conversion service is disabled".into())),
+                (_, Err(error)) => Err(error),
+            };
+            if result.is_ok() {
+                request.mark_success();
+            }
+            submit_conversion_chunk_result(
+                &server,
+                conn_handle as *mut _,
+                req_id,
+                create_nano,
+                msg_type,
+                result,
+            );
+        });
+    }
     pub(super) fn handle_discard_replacement(
         &self,
         req: ServerRequest,
@@ -806,6 +952,14 @@ impl ChunkdbRpcService {
             );
         });
     }
+}
+
+fn unix_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 fn submit_invalid_request(

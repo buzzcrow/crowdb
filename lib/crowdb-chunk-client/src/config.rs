@@ -34,6 +34,9 @@ pub struct SmallWritePolicy {
     pub cooldown: Duration,
     pub chunk_capacity: u64,
     pub mirror_copies: u32,
+    pub conversion_enabled: bool,
+    pub conversion_data_num: usize,
+    pub conversion_code_num: usize,
     pub writer_lease: Duration,
     pub failed_disk_ttl: Duration,
     pub repair_attempts_per_replica: usize,
@@ -58,6 +61,9 @@ impl Default for SmallWritePolicy {
             cooldown: Duration::from_millis(100),
             chunk_capacity: 1024 * 1024 * 1024,
             mirror_copies: 3,
+            conversion_enabled: true,
+            conversion_data_num: 8,
+            conversion_code_num: 4,
             writer_lease: Duration::from_secs(30),
             failed_disk_ttl: Duration::from_secs(60),
             repair_attempts_per_replica: 3,
@@ -74,9 +80,22 @@ impl SmallWritePolicy {
             ));
         }
         let shadow_budget = self.max_pipelines.saturating_mul(HARD_LIMIT);
-        if self.memory_budget < self.object_limit.saturating_add(shadow_budget) {
+        let conversion_budget = if self.conversion_enabled {
+            self.conversion_data_num
+                .saturating_add(self.conversion_code_num)
+                .saturating_mul(HARD_LIMIT)
+        } else {
+            0
+        };
+        if self.memory_budget
+            < self
+                .object_limit
+                .saturating_add(shadow_budget)
+                .saturating_add(conversion_budget)
+        {
             return Err(IoError::Internal(
-                "small write memory budget must cover maximum pipeline shadows and one object".into(),
+                "small write memory budget must cover pipeline shadows, one conversion group, and one object"
+                    .into(),
             ));
         }
         if self.memory_budget > u32::MAX as usize {
@@ -95,6 +114,8 @@ impl SmallWritePolicy {
             || self.scale_out_queue_objects > self.queue_capacity
             || self.chunk_capacity < self.object_limit as u64
             || self.mirror_copies == 0
+            || self.conversion_data_num == 0
+            || self.conversion_code_num == 0
             || self.batch_deadline.is_zero()
             || self.control_interval.is_zero()
             || self.writer_lease.is_zero()

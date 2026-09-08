@@ -10,6 +10,7 @@ use std::time::Duration;
 use clap::Parser;
 use crowdb_chunkdb::allocator::{ChunkAllocator, DiskdbClientPool};
 use crowdb_chunkdb::chunkdb_config::ChunkdbConfig;
+use crowdb_chunkdb::conversion::ConversionCoordinator;
 use crowdb_chunkdb::lifecycle::{ChunkLockMap, LifecycleHandler};
 use crowdb_chunkdb::metrics::ChunkdbMetrics;
 use crowdb_chunkdb::metrics::LifecycleMetrics;
@@ -17,6 +18,7 @@ use crowdb_chunkdb::range_guard::RangeGuard;
 use crowdb_chunkdb::routing::{default_binding_table, BindingCache};
 use crowdb_chunkdb::service::ChunkdbRpcService;
 use crowdb_chunkdb::storage::ChunkStore;
+use crowdb_chunkdb::task::TaskStore;
 use crowdb_chunkdb::topology::{
     build_snapshot, notify::NotifyHandler, refresh::run_refresh_loop, TopologyCache,
 };
@@ -195,7 +197,8 @@ async fn main() {
     // Binding cache + chunk store.
     let bindings = BindingCache::new();
     bindings.replace(default_binding_table(0, 0));
-    let store = Arc::new(ChunkStore::new(Arc::clone(&kv), bindings));
+    let store = Arc::new(ChunkStore::new(Arc::clone(&kv), bindings.clone()));
+    let task_store = Arc::new(TaskStore::new(Arc::clone(&kv), bindings));
 
     // Range guard (R99): load chunkdb instance binding from group-0.
     // Falls back to allow-all when no binding table exists (v1 compat).
@@ -322,11 +325,14 @@ async fn main() {
     // Build the crowdb-rpc server. The RpcServer listens on the RPC
     // port and dispatches to ChunkdbRpcService handlers.
     let rpc_rt_handle = tokio::runtime::Handle::current();
-    let rpc_service = Arc::new(ChunkdbRpcService::new(
+    let conversion = Arc::new(ConversionCoordinator::new(
         Arc::clone(&handler),
-        Arc::clone(&workflow_metrics),
-        rpc_rt_handle,
+        Arc::clone(&task_store),
     ));
+    let rpc_service = Arc::new(
+        ChunkdbRpcService::new(Arc::clone(&handler), Arc::clone(&workflow_metrics), rpc_rt_handle)
+            .with_conversion(conversion),
+    );
     let rpc_server = Arc::new(crowdb_rpc_ffi::RpcServer::with_engines(None, 1, args.rpc_workers));
     rpc_server
         .listen(

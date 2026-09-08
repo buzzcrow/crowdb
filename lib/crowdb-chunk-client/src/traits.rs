@@ -12,10 +12,12 @@ use async_trait::async_trait;
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
     AllocateReplacementSegmentRequest, AllocateReplacementSegmentResponse, AppendChunkRequest,
-    AppendChunkResponse, DeleteChunkRequest, DeleteChunkResponse, DiscardReplacementSegmentRequest,
-    DiscardReplacementSegmentResponse, QueryChunkRequest, QueryChunkResponse, ReplaceChunkStripRangeRequest,
-    ReplaceChunkStripRangeResponse, SealChunkRequest, SealChunkResponse, UpdateChunkStripRequest,
-    UpdateChunkStripResponse,
+    AppendChunkResponse, CompleteMirrorToEcConversionRequest, CompleteMirrorToEcConversionResponse,
+    DeleteChunkRequest, DeleteChunkResponse, DiscardReplacementSegmentRequest,
+    DiscardReplacementSegmentResponse, PrepareMirrorToEcConversionRequest,
+    PrepareMirrorToEcConversionResponse, QueryChunkRequest, QueryChunkResponse,
+    ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse, SealChunkRequest, SealChunkResponse,
+    UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use std::sync::Arc;
 
@@ -58,6 +60,22 @@ pub trait ChunkAllocator: Send + Sync {
     ) -> Result<DiscardReplacementSegmentResponse> {
         Err(crate::IoError::AllocationFailed(
             "replacement cleanup is unsupported by this allocator".into(),
+        ))
+    }
+    async fn prepare_mirror_to_ec_conversion(
+        &self,
+        _req: PrepareMirrorToEcConversionRequest,
+    ) -> Result<PrepareMirrorToEcConversionResponse> {
+        Err(crate::IoError::AllocationFailed(
+            "mirror-to-EC preparation is unsupported by this allocator".into(),
+        ))
+    }
+    async fn complete_mirror_to_ec_conversion(
+        &self,
+        _req: CompleteMirrorToEcConversionRequest,
+    ) -> Result<CompleteMirrorToEcConversionResponse> {
+        Err(crate::IoError::MetadataConflict(
+            "mirror-to-EC completion is unsupported by this allocator".into(),
         ))
     }
 }
@@ -105,6 +123,18 @@ impl<T: ChunkAllocator + ?Sized> ChunkAllocator for Arc<T> {
     ) -> Result<DiscardReplacementSegmentResponse> {
         (**self).discard_replacement_segment(req).await
     }
+    async fn prepare_mirror_to_ec_conversion(
+        &self,
+        req: PrepareMirrorToEcConversionRequest,
+    ) -> Result<PrepareMirrorToEcConversionResponse> {
+        (**self).prepare_mirror_to_ec_conversion(req).await
+    }
+    async fn complete_mirror_to_ec_conversion(
+        &self,
+        req: CompleteMirrorToEcConversionRequest,
+    ) -> Result<CompleteMirrorToEcConversionResponse> {
+        (**self).complete_mirror_to_ec_conversion(req).await
+    }
 }
 
 // ── Concrete impl for ChunkdbClient ──────────────────────────────
@@ -149,5 +179,17 @@ impl ChunkAllocator for crowdb_chunkdb_client::ChunkdbClient {
         req: DiscardReplacementSegmentRequest,
     ) -> Result<DiscardReplacementSegmentResponse> {
         Ok(crowdb_chunkdb_client::ChunkdbClient::discard_replacement_segment(self, req).await?)
+    }
+    async fn prepare_mirror_to_ec_conversion(
+        &self,
+        req: PrepareMirrorToEcConversionRequest,
+    ) -> Result<PrepareMirrorToEcConversionResponse> {
+        Ok(crowdb_chunkdb_client::ChunkdbClient::prepare_mirror_to_ec_conversion(self, req).await?)
+    }
+    async fn complete_mirror_to_ec_conversion(
+        &self,
+        req: CompleteMirrorToEcConversionRequest,
+    ) -> Result<CompleteMirrorToEcConversionResponse> {
+        Ok(crowdb_chunkdb_client::ChunkdbClient::complete_mirror_to_ec_conversion(self, req).await?)
     }
 }

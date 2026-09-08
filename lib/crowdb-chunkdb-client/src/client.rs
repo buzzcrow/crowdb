@@ -20,11 +20,12 @@ use crowdb_protocol::chunk_id::ChunkIdParts;
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
     AllocateReplacementSegmentRequest, AllocateReplacementSegmentResponse, AppendChunkRequest,
-    AppendChunkResponse, DeleteChunkRangeRequest, DeleteChunkRangeResponse, DeleteChunkRequest,
-    DeleteChunkResponse, DiscardReplacementSegmentRequest, DiscardReplacementSegmentResponse,
-    ListChunksRequest, ListChunksResponse, QueryChunkRequest, QueryChunkResponse,
-    ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse, SealChunkRequest, SealChunkResponse,
-    UpdateChunkStripRequest, UpdateChunkStripResponse,
+    AppendChunkResponse, CompleteMirrorToEcConversionRequest, CompleteMirrorToEcConversionResponse,
+    DeleteChunkRangeRequest, DeleteChunkRangeResponse, DeleteChunkRequest, DeleteChunkResponse,
+    DiscardReplacementSegmentRequest, DiscardReplacementSegmentResponse, ListChunksRequest,
+    ListChunksResponse, PrepareMirrorToEcConversionRequest, PrepareMirrorToEcConversionResponse,
+    QueryChunkRequest, QueryChunkResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse,
+    SealChunkRequest, SealChunkResponse, UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::InstanceId;
@@ -347,6 +348,38 @@ impl ChunkdbClient {
         self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
             let req = req.clone();
             async move { transport.send_replace_chunk_strip_range(&endpoint, &req).await }
+        })
+        .await
+    }
+
+    pub async fn prepare_mirror_to_ec_conversion(
+        &self,
+        req: PrepareMirrorToEcConversionRequest,
+    ) -> Result<PrepareMirrorToEcConversionResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move {
+                transport
+                    .send_prepare_mirror_to_ec_conversion(&endpoint, &req)
+                    .await
+            }
+        })
+        .await
+    }
+
+    pub async fn complete_mirror_to_ec_conversion(
+        &self,
+        req: CompleteMirrorToEcConversionRequest,
+    ) -> Result<CompleteMirrorToEcConversionResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move {
+                transport
+                    .send_complete_mirror_to_ec_conversion(&endpoint, &req)
+                    .await
+            }
         })
         .await
     }

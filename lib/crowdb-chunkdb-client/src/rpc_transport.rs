@@ -23,7 +23,8 @@ use flatbuffers::FlatBufferBuilder;
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteResponse, AllocateChunkResponse, AllocateReplacementSegmentResponse,
     AppendChunkResponse, Chunk, ChunkState as ProtoChunkState, ChunkStrip, ChunkType as ProtoChunkType,
-    DeleteChunkRangeResponse, DeleteChunkResponse, DiscardReplacementSegmentResponse, ListChunksResponse,
+    CompleteMirrorToEcConversionResponse, DeleteChunkRangeResponse, DeleteChunkResponse,
+    DiscardReplacementSegmentResponse, ListChunksResponse, PrepareMirrorToEcConversionResponse,
     QueryChunkResponse, ReplaceChunkStripRangeResponse, SealChunkResponse, StripCleanupIntent,
     StripType as ProtoStripType, UpdateChunkStripResponse,
 };
@@ -32,13 +33,15 @@ use crowdb_protocol::chunkdb_fb::{
     FBAdvanceChunkWriteRequest, FBAdvanceChunkWriteRequestArgs, FBAllocateChunkRequest,
     FBAllocateChunkRequestArgs, FBAllocateReplacementSegmentRequest, FBAllocateReplacementSegmentRequestArgs,
     FBAllocateReplacementSegmentResponse, FBAppendChunkRequest, FBAppendChunkRequestArgs, FBChunkState,
-    FBChunkStrip, FBChunkType, FBChunkdbRetCode, FBDeleteChunkRangeRequest, FBDeleteChunkRangeRequestArgs,
+    FBChunkStrip, FBChunkType, FBChunkdbRetCode, FBCompleteMirrorToEcConversionRequest,
+    FBCompleteMirrorToEcConversionRequestArgs, FBDeleteChunkRangeRequest, FBDeleteChunkRangeRequestArgs,
     FBDeleteChunkRequest, FBDeleteChunkRequestArgs, FBDiscardReplacementSegmentRequest,
     FBDiscardReplacementSegmentRequestArgs, FBDiscardReplacementSegmentResponse, FBInt128,
-    FBListChunksRequest, FBListChunksRequestArgs, FBQueryChunkRequest, FBQueryChunkRequestArgs,
-    FBReplaceChunkStripRangeRequest, FBReplaceChunkStripRangeRequestArgs, FBSealChunkRequest,
-    FBSealChunkRequestArgs, FBSegment, FBStripBody, FBStripType, FBUpdateChunkStripRequest,
-    FBUpdateChunkStripRequestArgs,
+    FBListChunksRequest, FBListChunksRequestArgs, FBPrepareMirrorToEcConversionRequest,
+    FBPrepareMirrorToEcConversionRequestArgs, FBPrepareMirrorToEcConversionResponse, FBQueryChunkRequest,
+    FBQueryChunkRequestArgs, FBReplaceChunkStripRangeRequest, FBReplaceChunkStripRangeRequestArgs,
+    FBSealChunkRequest, FBSealChunkRequestArgs, FBSegment, FBStripBody, FBStripType,
+    FBUpdateChunkStripRequest, FBUpdateChunkStripRequestArgs,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::fb::FBMsgType;
@@ -648,6 +651,108 @@ impl ChunkdbRpcTransport {
         }
         check_ret_code(response.ret_code(), response.error_msg())?;
         Ok(ReplaceChunkStripRangeResponse {
+            chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)),
+        })
+    }
+
+    pub async fn send_prepare_mirror_to_ec_conversion(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::PrepareMirrorToEcConversionRequest,
+    ) -> Result<PrepareMirrorToEcConversionResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let chunk_id = req.chunk_id.map(|id| FBInt128::new(id.high, id.low));
+        let old_values: Vec<_> = req
+            .old_strips
+            .iter()
+            .map(|strip| build_chunk_strip_offset(&mut builder, strip))
+            .collect();
+        let old_strips = builder.create_vector(&old_values);
+        let request = FBPrepareMirrorToEcConversionRequest::create(
+            &mut builder,
+            &FBPrepareMirrorToEcConversionRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                chunk_id: chunk_id.as_ref(),
+                expected_modify_ts: req.expected_modify_ts,
+                start_index: req.start_index,
+                old_strips: Some(old_strips),
+                data_num: req.data_num,
+                code_num: req.code_num,
+                client_owner: req.client_owner,
+                claim_lease_ms: req.claim_lease_ms,
+            },
+        );
+        builder.finish(request, None);
+        let response = call_rpc(
+            &self.rpc,
+            &self.server,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::EPrepareMirrorToEcConversionRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = flatbuffers::root::<FBPrepareMirrorToEcConversionResponse>(response.bytes())
+            .map_err(|_| ChunkdbClientError::Rpc("prepare conversion response malformed".into()))?;
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        Ok(PrepareMirrorToEcConversionResponse {
+            task_id: response.task_id().map(|id| ChunkId {
+                high: id.high(),
+                low: id.low(),
+            }),
+            operation_id: response.operation_id().map(|id| ChunkId {
+                high: id.high(),
+                low: id.low(),
+            }),
+            replacement_strip: response
+                .replacement_strip()
+                .map(|strip| parse_fb_chunk_strip(&strip)),
+        })
+    }
+
+    pub async fn send_complete_mirror_to_ec_conversion(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::CompleteMirrorToEcConversionRequest,
+    ) -> Result<CompleteMirrorToEcConversionResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let chunk_id = req.chunk_id.map(|id| FBInt128::new(id.high, id.low));
+        let task_id = req.task_id.map(|id| FBInt128::new(id.high, id.low));
+        let request = FBCompleteMirrorToEcConversionRequest::create(
+            &mut builder,
+            &FBCompleteMirrorToEcConversionRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                chunk_id: chunk_id.as_ref(),
+                task_id: task_id.as_ref(),
+                client_owner: req.client_owner,
+            },
+        );
+        builder.finish(request, None);
+        let response = call_rpc(
+            &self.rpc,
+            &self.server,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::ECompleteMirrorToEcConversionRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = FBAllocateChunkResponseRef::new(response.bytes());
+        if !response.valid() {
+            return Err(ChunkdbClientError::Rpc(
+                "complete conversion response malformed".into(),
+            ));
+        }
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        Ok(CompleteMirrorToEcConversionResponse {
             chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)),
         })
     }

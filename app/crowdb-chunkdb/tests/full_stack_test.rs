@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use common::cluster::{seed_hardware, ChunkdbHarness, DiskdbServer, KvCluster, DATA_GROUP_ID, STORE_ID};
 use crowdb_chunkdb::allocator::StripAllocType;
+use crowdb_chunkdb::conversion::ConversionCoordinator;
 use crowdb_chunkdb::lifecycle::{ChunkLockMap, LifecycleError, LifecycleHandler};
 use crowdb_chunkdb::metrics::LifecycleMetrics;
 use crowdb_chunkdb::routing::{default_binding_table, BindingCache};
@@ -366,12 +367,31 @@ async fn mirror_range_is_atomically_replaced_by_tentative_ec_strip() {
         .await
         .expect("allocate mirror range");
     let chunk_id = chunk.id.expect("chunk id");
-
-    let replacement = harness
+    let chunk = harness
         .handler
-        .allocate_conversion_strip(&chunk_id, &chunk.strips, 8, 4)
+        .seal_chunk(&chunk_id, chunk.capacity)
         .await
-        .expect("allocate tentative EC replacement");
+        .expect("seal mirror range");
+
+    let task_bindings = BindingCache::new();
+    task_bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let task_store = Arc::new(TaskStore::new(cluster.make_crowdb_client(), task_bindings));
+    let coordinator = ConversionCoordinator::new(Arc::clone(&harness.handler), Arc::clone(&task_store));
+    let prepared = coordinator
+        .prepare(
+            chunk_id,
+            chunk.modify_ts,
+            0,
+            chunk.strips.clone(),
+            8,
+            4,
+            7001,
+            30_000,
+            100,
+        )
+        .await
+        .expect("prepare durable conversion task");
+    let replacement = prepared.replacement_strip;
     let Some(Strip::EcStrip(ec)) = &replacement.strip else {
         panic!("expected EC replacement");
     };
@@ -379,42 +399,30 @@ async fn mirror_range_is_atomically_replaced_by_tentative_ec_strip() {
     assert_eq!(replacement.capacity, chunk.capacity);
     assert_eq!(replacement.chunk_offset, 0);
 
-    let operation_id = ChunkId { high: 93, low: 1 };
-    let converted = harness
-        .handler
-        .replace_chunk_strip_range(
-            &chunk_id,
-            chunk.modify_ts,
-            0,
-            &chunk.strips,
-            std::slice::from_ref(&replacement),
-            operation_id,
-        )
+    let converted = coordinator
+        .complete(chunk_id, prepared.task_id, 7001, 101)
         .await
-        .expect("publish EC replacement");
-    assert_eq!(converted.strips, vec![replacement.clone()]);
-    assert_eq!(converted.last_strip_replacement, Some(operation_id));
+        .expect("publish durable EC replacement");
+    let mut durable_replacement = replacement.clone();
+    let Some(Strip::EcStrip(ec)) = &mut durable_replacement.strip else {
+        unreachable!();
+    };
+    ec.ec_state = crowdb_protocol::chunkdb::rpc::EcState::Parity as i32;
+    assert_eq!(converted.strips, vec![durable_replacement.clone()]);
+    assert_eq!(converted.last_strip_replacement, Some(prepared.operation_id));
     assert_eq!(converted.cleanup_intents.len(), 1);
     assert_eq!(converted.cleanup_intents[0].retired_segments.len(), 24);
 
-    let retry = harness
-        .handler
-        .replace_chunk_strip_range(
-            &chunk_id,
-            chunk.modify_ts,
-            0,
-            &chunk.strips,
-            std::slice::from_ref(&replacement),
-            operation_id,
-        )
+    let retry = coordinator
+        .complete(chunk_id, prepared.task_id, 7001, 102)
         .await
-        .expect("idempotent publish retry");
+        .expect("idempotent task completion retry");
     assert_eq!(retry, converted);
 
     tokio::time::sleep(Duration::from_millis(5)).await;
     assert_eq!(harness.handler.reconcile_pending_chunks().await.unwrap(), 1);
     let reclaimed = harness.handler.query_chunk(&chunk_id).await.unwrap();
-    assert_eq!(reclaimed.strips, vec![replacement]);
+    assert_eq!(reclaimed.strips, vec![durable_replacement]);
     assert!(reclaimed.cleanup_intents.is_empty());
 }
 

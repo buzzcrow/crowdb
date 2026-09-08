@@ -33,7 +33,7 @@ pub fn all_binaries_available() -> bool {
 }
 
 fn standard_disk_ids() -> Vec<ProtoDiskId> {
-    (1..=5).map(|index| make_disk_id(0, index)).collect()
+    (1..=12).map(|index| make_disk_id(0, index)).collect()
 }
 
 pub struct E2eStack {

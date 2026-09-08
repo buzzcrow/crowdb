@@ -369,3 +369,36 @@ pub struct TriggerConversionBatchRequest {
 pub struct TriggerConversionBatchResponse {
     pub accepted_chunks: u64,
 }
+
+/// Begin the foreground no-reread conversion path for one exact mirror range.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct PrepareMirrorToEcConversionRequest {
+    pub chunk_id: Option<ChunkId>,
+    pub expected_modify_ts: u64,
+    pub start_index: u32,
+    pub old_strips: Vec<ChunkStrip>,
+    pub data_num: u32,
+    pub code_num: u32,
+    pub client_owner: u64,
+    pub claim_lease_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct PrepareMirrorToEcConversionResponse {
+    pub task_id: Option<ChunkId>,
+    pub operation_id: Option<ChunkId>,
+    pub replacement_strip: Option<ChunkStrip>,
+}
+
+/// Publish a prepared conversion after every replacement shard is durable.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct CompleteMirrorToEcConversionRequest {
+    pub chunk_id: Option<ChunkId>,
+    pub task_id: Option<ChunkId>,
+    pub client_owner: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct CompleteMirrorToEcConversionResponse {
+    pub chunk: Option<Chunk>,
+}

@@ -5,11 +5,13 @@ use super::{
     FBChunkArgs, FBChunkState, FBChunkStrip, FBChunkStripArgs, FBChunkType, FBChunkdbRetCode,
     FBDeleteChunkRangeResponse, FBDeleteChunkRangeResponseArgs, FBDiscardReplacementSegmentResponse,
     FBDiscardReplacementSegmentResponseArgs, FBEcState, FBEcStrip, FBEcStripArgs, FBInt128,
-    FBListChunksResponse, FBListChunksResponseArgs, FBMirrorStrip, FBMirrorStripArgs, FBQueryChunkResponse,
+    FBListChunksResponse, FBListChunksResponseArgs, FBMirrorStrip, FBMirrorStripArgs,
+    FBPrepareMirrorToEcConversionResponse, FBPrepareMirrorToEcConversionResponseArgs, FBQueryChunkResponse,
     FBQueryChunkResponseArgs, FBSegment, FBStripBody, FBStripCleanupIntent, FBStripCleanupIntentArgs,
     FBStripType, FlatBufferBuilder, LifecycleError, ProtoChunkState, ProtoChunkType, ProtoEcState,
     ProtoStrip, ProtoStripType, RpcServer,
 };
+use crate::conversion::{ConversionError, PreparedConversion};
 
 // ── Error mapping + submission helpers ────────────────────────────
 
@@ -296,6 +298,83 @@ pub(super) fn submit_segment_result(
     );
     fbb.finish(response, None);
     submit_fb_response(server, conn_handle, fbb.collapse(), msg_type, req_id);
+}
+
+pub(super) fn submit_prepared_conversion_result(
+    server: &RpcServer,
+    conn_handle: *mut std::ffi::c_void,
+    req_id: u64,
+    create_nano: u64,
+    msg_type: u16,
+    result: Result<PreparedConversion, ConversionError>,
+) {
+    let mut fbb = FlatBufferBuilder::new();
+    let (code, message, prepared) = match result {
+        Ok(prepared) => (FBChunkdbRetCode::Success, None, Some(prepared)),
+        Err(error) => {
+            let (code, message) = map_conversion_error(&error);
+            (code, Some(message), None)
+        }
+    };
+    let error_msg = message.as_deref().map(|value| fbb.create_string(value));
+    let task_id = prepared
+        .as_ref()
+        .map(|value| FBInt128::new(value.task_id.high, value.task_id.low));
+    let operation_id = prepared
+        .as_ref()
+        .map(|value| FBInt128::new(value.operation_id.high, value.operation_id.low));
+    let replacement_strip = prepared
+        .as_ref()
+        .map(|value| build_chunk_strip_offset(&mut fbb, &value.replacement_strip));
+    let response = FBPrepareMirrorToEcConversionResponse::create(
+        &mut fbb,
+        &FBPrepareMirrorToEcConversionResponseArgs {
+            id: req_id,
+            rpc_create_nano: create_nano,
+            ret_code: code,
+            error_msg,
+            range_start: 0,
+            range_end: 0,
+            task_id: task_id.as_ref(),
+            operation_id: operation_id.as_ref(),
+            replacement_strip,
+        },
+    );
+    fbb.finish(response, None);
+    submit_fb_response(server, conn_handle, fbb.collapse(), msg_type, req_id);
+}
+
+pub(super) fn submit_conversion_chunk_result(
+    server: &RpcServer,
+    conn_handle: *mut std::ffi::c_void,
+    req_id: u64,
+    create_nano: u64,
+    msg_type: u16,
+    result: Result<Chunk, ConversionError>,
+) {
+    let (code, message, chunk) = match result {
+        Ok(chunk) => (FBChunkdbRetCode::Success, None, chunk),
+        Err(error) => {
+            let (code, message) = map_conversion_error(&error);
+            (code, Some(message), Chunk::default())
+        }
+    };
+    let response = build_chunk_response(req_id, create_nano, code, message.as_deref(), 0, 0, &chunk);
+    submit_fb_response(server, conn_handle, response, msg_type, req_id);
+}
+
+fn map_conversion_error(error: &ConversionError) -> (FBChunkdbRetCode, String) {
+    match error {
+        ConversionError::Lifecycle(error) => {
+            let (code, message, _, _) = map_error(error);
+            (code, message)
+        }
+        ConversionError::Conflict => (FBChunkdbRetCode::Aborted, error.to_string()),
+        ConversionError::StaleClaim => (FBChunkdbRetCode::FailedPrecondition, error.to_string()),
+        ConversionError::TaskStore(_) | ConversionError::Payload(_) => {
+            (FBChunkdbRetCode::Internal, error.to_string())
+        }
+    }
 }
 
 // ── Response builders ─────────────────────────────────────────────

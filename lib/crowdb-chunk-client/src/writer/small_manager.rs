@@ -155,6 +155,7 @@ fn scale_in_candidate(pipelines: &[ManagedPipeline], min_pipelines: usize) -> Op
         || pipelines.iter().any(|pipeline| {
             pipeline.route.queued_objects.load(Ordering::Relaxed) != 0
                 || pipeline.route.busy.load(Ordering::Acquire)
+                || pipeline.route.conversion_active.load(Ordering::Acquire)
         })
     {
         return None;

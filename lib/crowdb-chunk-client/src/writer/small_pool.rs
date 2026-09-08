@@ -59,6 +59,7 @@ pub(crate) struct PipelineRoute {
     pub queued_objects: AtomicU64,
     pub last_active_ms: AtomicU64,
     pub busy: AtomicBool,
+    pub conversion_active: Arc<AtomicBool>,
 }
 
 impl PipelineRoute {
@@ -69,6 +70,7 @@ impl PipelineRoute {
             queued_objects: AtomicU64::new(0),
             last_active_ms: AtomicU64::new(now_ms),
             busy: AtomicBool::new(false),
+            conversion_active: Arc::new(AtomicBool::new(false)),
         }
     }
 

@@ -412,3 +412,46 @@ table FBTriggerConversionBatchResponse {
     range_end:uint32;
     accepted_chunks:uint64;
 }
+
+table FBPrepareMirrorToEcConversionRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    chunk_id:crowdb.rpc.proto.FBInt128;
+    expected_modify_ts:uint64;
+    start_index:uint32;
+    old_strips:[FBChunkStrip];
+    data_num:uint32;
+    code_num:uint32;
+    client_owner:uint64;
+    claim_lease_ms:uint64;
+}
+
+table FBPrepareMirrorToEcConversionResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    ret_code:FBChunkdbRetCode;
+    error_msg:string;
+    range_start:uint32;
+    range_end:uint32;
+    task_id:crowdb.rpc.proto.FBInt128;
+    operation_id:crowdb.rpc.proto.FBInt128;
+    replacement_strip:FBChunkStrip;
+}
+
+table FBCompleteMirrorToEcConversionRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    chunk_id:crowdb.rpc.proto.FBInt128;
+    task_id:crowdb.rpc.proto.FBInt128;
+    client_owner:uint64;
+}
+
+table FBCompleteMirrorToEcConversionResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    ret_code:FBChunkdbRetCode;
+    error_msg:string;
+    range_start:uint32;
+    range_end:uint32;
+    chunk:FBChunk;
+}

@@ -8,9 +8,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
+use crowdb_common::ec::{EcScheme, IncrementalParity};
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AllocateChunkRequest, AllocateReplacementSegmentRequest, AppendChunkRequest,
-    Chunk, ChunkType, DeleteChunkRequest, DiscardReplacementSegmentRequest, Location,
+    Chunk, ChunkType, CompleteMirrorToEcConversionRequest, DeleteChunkRequest,
+    DiscardReplacementSegmentRequest, Location, PrepareMirrorToEcConversionRequest,
     ReplaceChunkStripRangeRequest, SealChunkRequest, Strip, StripType,
 };
 use crowdb_protocol::diskdb::rpc::Segment;
@@ -33,14 +35,14 @@ pub(crate) struct ManagedPipeline {
 }
 
 pub(crate) async fn spawn(runtime: Arc<SmallPoolRuntime>, _id: u64) -> Result<ManagedPipeline> {
-    let owned = OwnedChunk::allocate(&runtime).await?;
+    let (sender, receiver) = mpsc::channel(runtime.policy.queue_capacity);
+    let route = Arc::new(PipelineRoute::new(sender, runtime.now_ms()));
+    let owned = OwnedChunk::allocate(&runtime, Arc::clone(&route.conversion_active)).await?;
     let shadow_bytes =
         u32::try_from(u64::from(owned.current_strip()?.capacity).saturating_mul(1024)).unwrap_or(u32::MAX);
     let shadow_budget = Arc::clone(&runtime.budget)
         .try_acquire_many_owned(shadow_bytes)
         .map_err(|_| IoError::MemoryBudgetExhausted)?;
-    let (sender, receiver) = mpsc::channel(runtime.policy.queue_capacity);
-    let route = Arc::new(PipelineRoute::new(sender, runtime.now_ms()));
     let retire = Arc::new(AtomicBool::new(false));
     let wake = Arc::new(Notify::new());
     let worker = PipelineWorker {
@@ -146,7 +148,9 @@ impl PipelineWorker {
         if self.chunk.remaining_in_chunk() < object_len as u64 {
             let replacement = match self.replacement.take() {
                 Some(chunk) => chunk,
-                None => OwnedChunk::allocate(&self.runtime).await?,
+                None => {
+                    OwnedChunk::allocate(&self.runtime, Arc::clone(&self.route.conversion_active)).await?
+                }
             };
             self.chunk.finish().await?;
             self.chunk = replacement;
@@ -164,7 +168,9 @@ impl PipelineWorker {
         if self.replacement.is_none()
             && self.chunk.remaining_in_chunk() < self.runtime.policy.object_limit as u64
         {
-            self.replacement = OwnedChunk::allocate(&self.runtime).await.ok();
+            self.replacement = OwnedChunk::allocate(&self.runtime, Arc::clone(&self.route.conversion_active))
+                .await
+                .ok();
         }
     }
 
@@ -231,10 +237,20 @@ struct OwnedChunk {
     shadow: Option<BytesMut>,
     failed_disks: Arc<FailedDiskList>,
     metrics: Arc<SmallWriteMetrics>,
+    budget: Arc<tokio::sync::Semaphore>,
+    conversion_active: Arc<AtomicBool>,
+    conversion_group: Option<PendingEcGroup>,
+}
+
+struct PendingEcGroup {
+    old_strips: Vec<crowdb_protocol::chunkdb::rpc::ChunkStrip>,
+    data_shards: Vec<Bytes>,
+    parity: IncrementalParity,
+    _budget: OwnedSemaphorePermit,
 }
 
 impl OwnedChunk {
-    async fn allocate(runtime: &SmallPoolRuntime) -> Result<Self> {
+    async fn allocate(runtime: &SmallPoolRuntime, conversion_active: Arc<AtomicBool>) -> Result<Self> {
         let writer_epoch = next_writer_epoch();
         let lease_ms = u64::try_from(runtime.policy.writer_lease.as_millis()).unwrap_or(u64::MAX);
         let response = runtime
@@ -265,6 +281,9 @@ impl OwnedChunk {
             shadow: None,
             failed_disks: Arc::clone(&runtime.failed_disks),
             metrics: Arc::clone(&runtime.metrics),
+            budget: Arc::clone(&runtime.budget),
+            conversion_active,
+            conversion_group: None,
         })
     }
 
@@ -364,8 +383,14 @@ impl OwnedChunk {
             metrics.tail_waste_bytes.fetch_add(tail, Ordering::Relaxed);
         }
         self.advance(strip_end, Some(strip.strip_sequence)).await?;
-        self.clear_shadow();
-        Ok(())
+        let closed = self
+            .chunk
+            .strips
+            .iter()
+            .find(|current| current.strip_sequence == strip.strip_sequence)
+            .cloned()
+            .ok_or_else(|| IoError::MetadataConflict("closed mirror strip disappeared".into()))?;
+        self.retain_closed_strip(closed).await
     }
 
     async fn write_batch(&mut self, batch: Vec<PendingObject>, metrics: &SmallWriteMetrics) -> Result<()> {
@@ -455,6 +480,16 @@ impl OwnedChunk {
         let strip_end = u64::from(strip.chunk_offset.saturating_add(strip.capacity)) * 1024;
         let closed = (end == strip_end).then_some(strip.strip_sequence);
         self.advance(end, closed).await?;
+        if let Some(sequence) = closed {
+            let closed_strip = self
+                .chunk
+                .strips
+                .iter()
+                .find(|current| current.strip_sequence == sequence)
+                .cloned()
+                .ok_or_else(|| IoError::MetadataConflict("closed mirror strip disappeared".into()))?;
+            self.retain_closed_strip(closed_strip).await?;
+        }
         metrics.batches.fetch_add(1, Ordering::Relaxed);
         metrics
             .batch_objects
@@ -469,6 +504,145 @@ impl OwnedChunk {
             .max_batch_bytes
             .fetch_max(logical_bytes as u64, Ordering::Relaxed);
         Ok(locations)
+    }
+
+    async fn retain_closed_strip(&mut self, strip: crowdb_protocol::chunkdb::rpc::ChunkStrip) -> Result<()> {
+        let image = self
+            .shadow
+            .take()
+            .ok_or_else(|| IoError::Internal("closed mirror strip has no retained image".into()))?
+            .freeze();
+        self.metrics
+            .shadow_bytes
+            .fetch_sub(image.len() as u64, Ordering::Relaxed);
+        if !self.policy.conversion_enabled {
+            return Ok(());
+        }
+        if self.conversion_group.is_none() {
+            let scheme = EcScheme::new(self.policy.conversion_data_num, self.policy.conversion_code_num);
+            let bytes = scheme
+                .total_blocks()
+                .checked_mul(image.len())
+                .ok_or(IoError::MemoryBudgetExhausted)?;
+            let permits = u32::try_from(bytes).map_err(|_| IoError::MemoryBudgetExhausted)?;
+            let budget = Arc::clone(&self.budget)
+                .acquire_many_owned(permits)
+                .await
+                .map_err(|_| IoError::Finished)?;
+            self.conversion_group = Some(PendingEcGroup {
+                old_strips: Vec::with_capacity(scheme.data_num),
+                data_shards: Vec::with_capacity(scheme.data_num),
+                parity: IncrementalParity::new(scheme)
+                    .map_err(|error| IoError::EcEncodeFailed(error.to_string()))?,
+                _budget: budget,
+            });
+            self.conversion_active.store(true, Ordering::Release);
+        }
+        let group = self
+            .conversion_group
+            .as_mut()
+            .unwrap_or_else(|| unreachable!("conversion group initialized"));
+        group
+            .parity
+            .push(&image)
+            .map_err(|error| IoError::EcEncodeFailed(error.to_string()))?;
+        group.old_strips.push(strip);
+        group.data_shards.push(image);
+        if group.parity.is_complete() {
+            let result = self.convert_retained_group().await;
+            self.conversion_active.store(false, Ordering::Release);
+            return result;
+        }
+        Ok(())
+    }
+
+    async fn convert_retained_group(&mut self) -> Result<()> {
+        let group = self
+            .conversion_group
+            .take()
+            .unwrap_or_else(|| unreachable!("complete conversion group exists"));
+        let chunk_id = self
+            .chunk
+            .id
+            .ok_or_else(|| IoError::MetadataConflict("shared chunk has no id".into()))?;
+        let first_sequence = group
+            .old_strips
+            .first()
+            .map(|strip| strip.strip_sequence)
+            .ok_or_else(|| IoError::Internal("conversion group is empty".into()))?;
+        let start_index = self
+            .chunk
+            .strips
+            .iter()
+            .position(|strip| strip.strip_sequence == first_sequence)
+            .ok_or_else(|| IoError::MetadataConflict("conversion source disappeared".into()))?;
+        let prepared = self
+            .allocator
+            .prepare_mirror_to_ec_conversion(PrepareMirrorToEcConversionRequest {
+                chunk_id: Some(chunk_id),
+                expected_modify_ts: self.chunk.modify_ts,
+                start_index: u32::try_from(start_index).unwrap_or(u32::MAX),
+                old_strips: group.old_strips,
+                data_num: u32::try_from(self.policy.conversion_data_num).unwrap_or(u32::MAX),
+                code_num: u32::try_from(self.policy.conversion_code_num).unwrap_or(u32::MAX),
+                client_owner: self.writer_epoch,
+                claim_lease_ms: u64::try_from(self.policy.writer_lease.as_millis()).unwrap_or(u64::MAX),
+            })
+            .await?;
+        let task_id = prepared
+            .task_id
+            .ok_or_else(|| IoError::AllocationFailed("conversion preparation returned no task id".into()))?;
+        let replacement = prepared.replacement_strip.ok_or_else(|| {
+            IoError::AllocationFailed("conversion preparation returned no replacement".into())
+        })?;
+        let Some(Strip::EcStrip(ec)) = &replacement.strip else {
+            return Err(IoError::AllocationFailed(
+                "conversion preparation returned a non-EC strip".into(),
+            ));
+        };
+        let parity = group
+            .parity
+            .finish()
+            .map_err(|error| IoError::EcEncodeFailed(error.to_string()))?;
+        let mut shards = group.data_shards;
+        shards.extend(parity.into_iter().map(Bytes::from));
+        if ec.segments.len() != shards.len() {
+            return Err(IoError::AllocationFailed(format!(
+                "conversion returned {} segments for {} shards",
+                ec.segments.len(),
+                shards.len()
+            )));
+        }
+        let unit_bytes = u64::from(replacement.unit_kb) * 1024;
+        let mut writes = tokio::task::JoinSet::new();
+        for (segment, shard) in ec.segments.iter().copied().zip(shards) {
+            let disk_writer = Arc::clone(&self.disk_writer);
+            writes.spawn(async move { disk_writer.write_at(&segment, unit_bytes, 0, shard).await });
+        }
+        while let Some(result) = writes.join_next().await {
+            result.map_err(|error| IoError::WriteFailed(format!("EC writer task failed: {error}")))??;
+        }
+        let mut syncs = tokio::task::JoinSet::new();
+        for segment in &ec.segments {
+            let segment = *segment;
+            let disk_writer = Arc::clone(&self.disk_writer);
+            syncs.spawn(async move { disk_writer.fsync(&segment).await });
+        }
+        while let Some(result) = syncs.join_next().await {
+            result.map_err(|error| IoError::WriteFailed(format!("EC fsync task failed: {error}")))??;
+        }
+        let response = self
+            .allocator
+            .complete_mirror_to_ec_conversion(CompleteMirrorToEcConversionRequest {
+                chunk_id: Some(chunk_id),
+                task_id: Some(task_id),
+                client_owner: self.writer_epoch,
+            })
+            .await?;
+        self.chunk = response
+            .chunk
+            .ok_or_else(|| IoError::MetadataConflict("conversion completion returned no chunk".into()))?;
+        Ok(())
     }
 
     async fn write_mirrors_with_repair(
@@ -737,6 +911,8 @@ impl OwnedChunk {
             return Ok(());
         };
         self.clear_shadow();
+        self.conversion_group = None;
+        self.conversion_active.store(false, Ordering::Release);
         if self.cursor == 0 {
             self.allocator
                 .delete_chunk(DeleteChunkRequest {

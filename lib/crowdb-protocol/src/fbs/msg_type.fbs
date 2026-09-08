@@ -118,4 +118,8 @@ enum FBMsgType : int16 {
     ETriggerConversionResponse = 3325,
     ETriggerConversionBatchRequest = 3326,
     ETriggerConversionBatchResponse = 3327,
+    EPrepareMirrorToEcConversionRequest = 3328,
+    EPrepareMirrorToEcConversionResponse = 3329,
+    ECompleteMirrorToEcConversionRequest = 3330,
+    ECompleteMirrorToEcConversionResponse = 3331,
 }

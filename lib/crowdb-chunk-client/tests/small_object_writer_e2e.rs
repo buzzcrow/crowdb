@@ -16,6 +16,7 @@ use crowdb_chunk_client::{
     ChunkIoClient, ChunkIoWriter, DiskWriter, IoError, Result, RoutedDiskWriter, SmallWritePolicy,
 };
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
+use crowdb_common::ec::{encode_parity_from_shards, EcScheme};
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, Location, Strip};
 use crowdb_protocol::common::DiskId;
@@ -185,6 +186,51 @@ async fn small_write_batches_concurrent_objects_and_reads_them_back() {
     for (data, location) in completed {
         let chunk = stack.query_chunk(&location).await;
         assert_mirror_data(&stack, &chunk, &location, &data).await;
+    }
+    stack.client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
+async fn eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread() {
+    if !all_binaries_available() {
+        return;
+    }
+    let mut configured = policy();
+    configured.chunk_capacity = 16 * MIB as u64;
+    let stack = E2eStack::start(configured).await;
+    let mut data = Vec::new();
+    let mut locations = Vec::new();
+    for index in 0_u8..8 {
+        let shard = Bytes::from(vec![index.wrapping_mul(29).wrapping_add(7); MIB]);
+        locations.push(write_object(&stack.client, shard.clone()).await);
+        data.push(shard);
+    }
+    assert!(locations
+        .iter()
+        .all(|location| location.chunk_id == locations[0].chunk_id));
+    let chunk = stack.query_chunk(&locations[0]).await;
+    assert_eq!(chunk.strips.len(), 1);
+    let strip = &chunk.strips[0];
+    let Some(Strip::EcStrip(ec)) = &strip.strip else {
+        panic!("expected converted EC strip");
+    };
+    assert_eq!((ec.data_num, ec.code_num), (8, 4));
+    assert_eq!(ec.ec_state, crowdb_protocol::chunkdb::rpc::EcState::Parity as i32);
+    assert_eq!(ec.segments.len(), 12);
+    let unit_bytes = u64::from(strip.unit_kb) * KIB as u64;
+    for (segment, expected) in ec.segments[..8].iter().zip(&data) {
+        let actual = stack
+            .read_segment(segment, unit_bytes, 0, u32::try_from(MIB).unwrap())
+            .await;
+        assert_eq!(&actual, expected.as_ref());
+    }
+    let refs: Vec<&[u8]> = data.iter().map(Bytes::as_ref).collect();
+    let expected_parity = encode_parity_from_shards(EcScheme::new(8, 4), &refs).unwrap();
+    for (segment, expected) in ec.segments[8..].iter().zip(expected_parity) {
+        let actual = stack
+            .read_segment(segment, unit_bytes, 0, u32::try_from(MIB).unwrap())
+            .await;
+        assert_eq!(actual, expected);
     }
     stack.client.shutdown_small_writes().await.unwrap();
 }

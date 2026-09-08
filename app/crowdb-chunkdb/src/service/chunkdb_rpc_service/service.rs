@@ -38,13 +38,15 @@ use crowdb_protocol::chunkdb_fb::{
     FBAllocateReplacementSegmentRequest, FBAllocateReplacementSegmentResponse,
     FBAllocateReplacementSegmentResponseArgs, FBAppendChunkRequest, FBAppendChunkResponse,
     FBAppendChunkResponseArgs, FBChunk, FBChunkArgs, FBChunkState, FBChunkStrip, FBChunkStripArgs,
-    FBChunkType, FBChunkdbRetCode, FBDeleteChunkRangeRequest, FBDeleteChunkRangeResponse,
-    FBDeleteChunkRangeResponseArgs, FBDeleteChunkRequest, FBDiscardReplacementSegmentRequest,
-    FBDiscardReplacementSegmentResponse, FBDiscardReplacementSegmentResponseArgs, FBEcState, FBEcStrip,
-    FBEcStripArgs, FBInt128, FBListChunksRequest, FBListChunksResponse, FBListChunksResponseArgs,
-    FBMirrorStrip, FBMirrorStripArgs, FBQueryChunkRequest, FBQueryChunkResponse, FBQueryChunkResponseArgs,
-    FBReplaceChunkStripRangeRequest, FBSealChunkRequest, FBSegment, FBStripBody, FBStripCleanupIntent,
-    FBStripCleanupIntentArgs, FBStripType, FBUpdateChunkStripRequest,
+    FBChunkType, FBChunkdbRetCode, FBCompleteMirrorToEcConversionRequest, FBDeleteChunkRangeRequest,
+    FBDeleteChunkRangeResponse, FBDeleteChunkRangeResponseArgs, FBDeleteChunkRequest,
+    FBDiscardReplacementSegmentRequest, FBDiscardReplacementSegmentResponse,
+    FBDiscardReplacementSegmentResponseArgs, FBEcState, FBEcStrip, FBEcStripArgs, FBInt128,
+    FBListChunksRequest, FBListChunksResponse, FBListChunksResponseArgs, FBMirrorStrip, FBMirrorStripArgs,
+    FBPrepareMirrorToEcConversionRequest, FBPrepareMirrorToEcConversionResponse,
+    FBPrepareMirrorToEcConversionResponseArgs, FBQueryChunkRequest, FBQueryChunkResponse,
+    FBQueryChunkResponseArgs, FBReplaceChunkStripRangeRequest, FBSealChunkRequest, FBSegment, FBStripBody,
+    FBStripCleanupIntent, FBStripCleanupIntentArgs, FBStripType, FBUpdateChunkStripRequest,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::fb::FBMsgType;
@@ -52,6 +54,7 @@ use crowdb_rpc_ffi::{Buffer, RpcServer, ServerRequest};
 use flatbuffers::FlatBufferBuilder;
 use tokio::runtime::Handle;
 
+use crate::conversion::ConversionCoordinator;
 use crate::lifecycle::{AppendChunkOutcome, LifecycleError, LifecycleHandler};
 use crate::metrics::{ChunkdbMetrics, RequestGuard, RequestKind};
 
@@ -64,11 +67,23 @@ pub struct ChunkdbRpcService {
     /// Tokio runtime handle for spawning async work from the C++ I/O
     /// thread callback.
     rt: Handle,
+    conversion: Option<Arc<ConversionCoordinator>>,
 }
 
 impl ChunkdbRpcService {
     pub fn new(handler: Arc<LifecycleHandler>, metrics: Arc<ChunkdbMetrics>, rt: Handle) -> Self {
-        Self { handler, metrics, rt }
+        Self {
+            handler,
+            metrics,
+            rt,
+            conversion: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_conversion(mut self, conversion: Arc<ConversionCoordinator>) -> Self {
+        self.conversion = Some(conversion);
+        self
     }
 
     /// Register all chunkdb request handlers into the `RpcServer`.
@@ -155,6 +170,28 @@ impl ChunkdbRpcService {
             ),
         );
         self.register_replacement_handlers(server);
+        self.register_conversion_handlers(server);
+    }
+
+    fn register_conversion_handlers(self: &Arc<Self>, server: &Arc<RpcServer>) {
+        server.register_handler(
+            FBMsgType::EPrepareMirrorToEcConversionRequest.0 as u16,
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::UpdateChunkStrip,
+                Self::handle_prepare_conversion,
+            ),
+        );
+        server.register_handler(
+            FBMsgType::ECompleteMirrorToEcConversionRequest.0 as u16,
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::UpdateChunkStrip,
+                Self::handle_complete_conversion,
+            ),
+        );
     }
 
     fn register_replacement_handlers(self: &Arc<Self>, server: &Arc<RpcServer>) {
@@ -185,6 +222,24 @@ impl ChunkdbRpcService {
                 Self::handle_discard_replacement,
             ),
         );
+        server.register_handler(
+            FBMsgType::EPrepareMirrorToEcConversionRequest.0 as u16,
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::UpdateChunkStrip,
+                Self::handle_prepare_conversion,
+            ),
+        );
+        server.register_handler(
+            FBMsgType::ECompleteMirrorToEcConversionRequest.0 as u16,
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::UpdateChunkStrip,
+                Self::handle_complete_conversion,
+            ),
+        );
     }
 
     /// Build a handler closure that dispatches to the given method.
@@ -211,6 +266,7 @@ mod wire;
 use wire::{
     build_delete_range_response, build_discard_replacement_response, build_list_response,
     build_query_response, map_error, parse_fb_chunk_strip, parse_fb_segment, parse_fb_segments,
-    proto_chunk_type, proto_strip_type, submit_append_result, submit_chunk_result, submit_error,
-    submit_fb_response, submit_segment_result,
+    proto_chunk_type, proto_strip_type, submit_append_result, submit_chunk_result,
+    submit_conversion_chunk_result, submit_error, submit_fb_response, submit_prepared_conversion_result,
+    submit_segment_result,
 };
