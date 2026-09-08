@@ -1,0 +1,40 @@
+include "common_type.fbs";
+
+namespace crowdb.chunkdb.task;
+
+enum FBChunkTaskState : ubyte {
+    Pending = 0,
+    Running = 1,
+    RetryWait = 2,
+    Completed = 3,
+    Failed = 4,
+    Cancelled = 5,
+}
+
+table FBChunkTaskValue {
+    schema_version:uint16;
+    task_id:crowdb.rpc.proto.FBInt128;
+    partition_id:crowdb.rpc.proto.FBInt128;
+    kind:uint16;
+    kind_version:uint16;
+    state:FBChunkTaskState;
+    priority:ubyte;
+    revision:uint64;
+    operation_id:crowdb.rpc.proto.FBInt128;
+    source_revision:uint64;
+    created_at_ms:uint64;
+    updated_at_ms:uint64;
+    eligible_at_ms:uint64;
+    attempt:uint32;
+    max_attempts:uint32;
+    estimated_queue_bytes:uint64;
+    claim_owner:uint64;
+    claim_generation:uint64;
+    claim_deadline_ms:uint64;
+    last_error_code:uint16;
+    last_error:string;
+    payload:[ubyte];
+}
+
+root_type FBChunkTaskValue;
+file_identifier "CTSK";

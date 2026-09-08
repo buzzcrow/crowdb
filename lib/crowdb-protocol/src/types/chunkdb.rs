@@ -340,3 +340,32 @@ pub struct ListChunksResponse {
     pub chunks: Vec<Chunk>,
     pub next_token: Option<ChunkId>,
 }
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct TriggerConversionRequest {
+    pub chunk_id: Option<ChunkId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct TriggerConversionResponse {
+    pub accepted_groups: u64,
+}
+
+/// Server-local batch conversion filter.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ConversionFilter {
+    /// Restrict the scan to sealed chunks.
+    pub sealed_only: bool,
+    /// Stop after this many candidate chunks. Zero uses the server page bound.
+    pub max_chunks: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct TriggerConversionBatchRequest {
+    pub filter: ConversionFilter,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct TriggerConversionBatchResponse {
+    pub accepted_chunks: u64,
+}

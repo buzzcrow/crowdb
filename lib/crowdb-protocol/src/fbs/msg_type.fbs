@@ -114,4 +114,8 @@ enum FBMsgType : int16 {
     EReplaceChunkStripRangeResponse = 3321,
     EDiscardReplacementSegmentRequest = 3322,
     EDiscardReplacementSegmentResponse = 3323,
+    ETriggerConversionRequest = 3324,
+    ETriggerConversionResponse = 3325,
+    ETriggerConversionBatchRequest = 3326,
+    ETriggerConversionBatchResponse = 3327,
 }

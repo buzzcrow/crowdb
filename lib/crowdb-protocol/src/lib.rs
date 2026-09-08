@@ -26,6 +26,10 @@ pub mod chunkdb {
     }
 }
 
+pub mod chunk_task {
+    pub use crate::types::chunk_task::*;
+}
+
 pub mod diskio {
     pub mod rpc {
         pub use crate::types::diskio::*;
@@ -140,6 +144,17 @@ mod chunkdb_generated {
     )]
     include!(concat!(env!("OUT_DIR"), "/chunkdb_generated.rs"));
 }
+mod chunk_task_generated {
+    #![allow(
+        unsafe_code,
+        clippy::all,
+        clippy::pedantic,
+        dead_code,
+        non_camel_case_types,
+        non_snake_case
+    )]
+    include!(concat!(env!("OUT_DIR"), "/chunk_task_generated.rs"));
+}
 
 /// Flatbuffer control-message types for the crowdb-rpc library (R104).
 ///
@@ -230,6 +245,15 @@ pub mod chunkdb_fb {
     pub use crate::chunkdb_generated::crowdb::rpc::proto::FBInt128;
 }
 
+/// Flatbuffer persistent task value types.
+pub mod chunk_task_fb {
+    pub use crate::chunk_task_generated::crowdb::chunkdb::task::*;
+    pub use crate::chunk_task_generated::crowdb::rpc::proto::FBInt128;
+}
+
+pub mod chunk_task_value;
+pub use chunk_task_value::{decode_chunk_task_value, encode_chunk_task_value, ChunkTaskValueError};
+
 /// Zero-copy flatbuffer wrapper classes (design-crowdb-rpc.md §6).
 /// Each `Ref` struct holds a `&[u8]` reference to the control buffer
 /// and exposes typed accessors that read through the flatbuffer root
@@ -253,9 +277,9 @@ pub use chunk_id::{
 
 pub mod key;
 pub use key::{
-    BinaryKey, BindMapKey, BusyBlockKey, DiskGroupKey, DiskKey, FreeBlockKey, InstanceKey, KeyError,
-    KvGroupKey, KvReplicaKey, KvStoreKey, NodeKey, OwnerMapKey, RackKey, RecoveryScanProgressKey, TextKey,
-    ZoneKey, CROWDB_KEY_MAGIC, DISKDB_WATCH_PREFIXES,
+    BinaryKey, BindMapKey, BusyBlockKey, ChunkTaskKey, DiskGroupKey, DiskKey, FreeBlockKey, InstanceKey,
+    KeyError, KvGroupKey, KvReplicaKey, KvStoreKey, LeasedChunkTaskKey, NodeKey, OwnerMapKey, RackKey,
+    ReadyChunkTaskKey, RecoveryScanProgressKey, TextKey, ZoneKey, CROWDB_KEY_MAGIC, DISKDB_WATCH_PREFIXES,
 };
 
 pub mod sysdata;

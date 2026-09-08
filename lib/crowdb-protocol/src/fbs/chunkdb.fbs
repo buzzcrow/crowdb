@@ -377,3 +377,38 @@ table FBListChunksResponse {
     next_token:crowdb.rpc.proto.FBInt128;
     has_next_token:bool;
 }
+
+// ── Mirror-to-EC Conversion ─────────────────────────────────────
+
+table FBTriggerConversionRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    chunk_id:crowdb.rpc.proto.FBInt128;
+}
+
+table FBTriggerConversionResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    ret_code:FBChunkdbRetCode;
+    error_msg:string;
+    range_start:uint32;
+    range_end:uint32;
+    accepted_groups:uint64;
+}
+
+table FBTriggerConversionBatchRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    sealed_only:bool;
+    max_chunks:uint32;
+}
+
+table FBTriggerConversionBatchResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    ret_code:FBChunkdbRetCode;
+    error_msg:string;
+    range_start:uint32;
+    range_end:uint32;
+    accepted_chunks:uint64;
+}
