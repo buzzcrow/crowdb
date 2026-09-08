@@ -73,10 +73,9 @@ and manages chunk state transitions (allocate → seal → delete). All
 state changes are durably persisted to CROWDB KV before being acknowledged
 to callers.
 
-chunkdb **manages chunk metadata**; it does **not** perform data I/O.
-Callers (a future object store, chunkio service) write to the
-allocated disk blocks themselves and tell chunkdb when chunks are sealed
-or deleted.
+chunkdb manages chunk metadata and orchestrates background maintenance I/O
+through DiskIO clients. Foreground callers write allocated blocks themselves
+and tell chunkdb when chunks are sealed or deleted.
 
 **Language:** Rust. **Runtime:** tokio (async everywhere).
 
@@ -100,17 +99,14 @@ lifecycle management, placement policy, and EC coordination, nothing more.
 
 ## 2. Non-Goals (Design Envelope)
 
-- **No data I/O.** chunkdb allocates blocks and manages chunk metadata; it
-  does not read/write block contents. A future diskio-like component does
-  data I/O.
+- **No local block engine.** chunkdb does not own devices or implement block
+  reads and writes. Maintenance handlers route I/O through DiskIO services.
 - **No local WAL.** CROWDB KV's WAL is the sole durability mechanism.
 - **No consensus code.** chunkdb is a client of crowdb-kv; all interaction
   uses the existing crowdb-kv API.
 - **No GC operations in v1.** Garbage collection (reclaim, collapse, merge)
   is deferred to a future requirement. Chunks are allocated and deleted as
   whole units in v1.
-- **No mirror-to-EC conversion in v1.** Background conversion of mirror
-  strips to EC strips (for shared chunks) is deferred to a future requirement.
 - **No EC strip type restrictions.** Chunk type (repo/WAL/btree-page/page-index)
   is independent of strip type (mirror/EC). Any chunk can use either strip type
   based on configuration. v1 supports both mirror and EC strips for all chunk types.
@@ -1095,6 +1091,7 @@ nonzero aggregate status.
 **v1 (R85)**:
 - Basic chunkdb server and client
 - Mirror and EC strip allocation
+- Synchronous and background mirror-to-EC conversion through persistent tasks
 - Rack/node-aware placement
 - Topology cache with group-0 integration and watch/notify for real-time updates
 - Basic chunk lifecycle (allocate/seal/delete)
@@ -1105,7 +1102,6 @@ nonzero aggregate status.
 
 **Future work** (separate requirements):
 - In-chunk GC operations (reclaim, collapse, merge)
-- Mirror-to-EC conversion for shared chunks
 - Shared and dedicated Repo-chunk write policies in the client data path
 - Recovery flow (disk failure handling, EC rebuild)
 - Metrics and observability

@@ -87,10 +87,8 @@ complexity, and dependency. Before implementation, follow the
 
 ### Data Path (diskio + chunk object writers + read flow)
 
-Dependency order: R107/R110 → R93; R107/R110 → R111. R93 builds on the
-landed small-write repair and fenced strip-range replacement, and remains a
-post-write space-reclamation integration rather than a foreground correctness
-blocker. The RPC migration items
+Dependency order: R107/R110 → R111. Mirror-to-EC conversion is landed as
+post-write space reclamation and is not a foreground correctness blocker. The RPC migration items
 (R115, R116, R117) are in a separate area (see RPC Migration section
 below); R32 depends on R115.
 
@@ -106,15 +104,6 @@ below); R32 depends on R115.
   latency, errors, exact accounting, and service logs. Keep shared fixture and
   result plumbing reusable for later small-write and read workloads.
 
-- **[R93](R93-chunkdb-mirror-to-ec-conversion.md)** — Mirror-to-EC
-  conversion — Area: chunkdb — Background conversion groups adjacent
-  mirror strips into capacity-compatible EC strips in shared chunks.
-  Reads mirror data via diskio (R105), EC-encodes via isa-l, allocates
-  EC blocks, writes via diskio, and atomically swaps the strip range.
-  Reclaims 3×→1.5×
-  storage (8+4 EC) on shared chunks. Configurable policy (seal age,
-  strip count, manual trigger) + bandwidth throttling. Space-
-  reclamation follow-up for the landed mirror-first write strategy.
 - **[R107](R107-chunkdb-chunk-read-flow.md)** — Chunk object read
   flow — Area: chunkdb — Reconstructs object bytes from a `Location`
   array (R94). Queries chunk strip layout via `query_chunk`, maps
