@@ -217,8 +217,8 @@ Edge-case outcomes:
   must not mask it with skipped objects or relaxed timeouts.
 - R113 may later use this sentinel to validate batch strip allocation, but R135
   does not depend on R113 and must measure the current allocation behavior.
-- R106 and R107 may add small-write and read workloads later. They reuse this
-  fixture but are outside R135 acceptance.
+- The small-write path and R107 may add small-write and read workloads to this
+  fixture, but they are outside R135 acceptance.
 
 ## Acceptance
 

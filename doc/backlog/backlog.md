@@ -87,9 +87,9 @@ complexity, and dependency. Before implementation, follow the
 
 ### Data Path (diskio + chunk object writers + read flow)
 
-Dependency order: R94/R105 → R106 → R107; R106/R107/R110 → R112 →
-R93; R107/R110 → R111. R93 is R106's post-write space-reclamation
-integration, not a correctness blocker for R106. The RPC migration items
+Dependency order: R107/R110 → R112 → R93; R107/R110 → R111. R93 is the
+landed small-object writer's post-write space-reclamation integration, not a
+foreground correctness blocker. The RPC migration items
 (R115, R116, R117) are in a separate area (see RPC Migration section
 below); R32 depends on R115.
 
@@ -113,18 +113,7 @@ below); R32 depends on R115.
   Reclaims 3×→1.5×
   storage (8+4 EC) on shared chunks. Configurable policy (seal age,
   strip count, manual trigger) + bandwidth throttling. Space-
-  reclamation follow-up for R106's mirror-first write strategy.
-- **[R106](R106-chunkio-small-object-writer.md)** — Small-object
-  shared-chunk writer — Area: chunkio — Per-object `ChunkIoWriter`
-  handles submit complete objects to a bounded shared pool.
-  Single-owner pipelines aggregate objects into durable mirror writes
-  on Repo chunks and return an independent `Location` per object.
-  Whole-object reservations avoid fragmented-ingress deadlock; a
-  fenced durable cursor is part of each batch's acknowledgement
-  barrier. Lock-free routing, object-boundary chunk rotation, and
-  queue-delay hysteresis provide safe scale out/in. R93 later converts
-  completed mirror strips to EC; R112 repairs foreground failures
-  within R106's batch boundaries.
+  reclamation follow-up for the landed mirror-first write strategy.
 - **[R107](R107-chunkdb-chunk-read-flow.md)** — Chunk object read
   flow — Area: chunkdb — Reconstructs object bytes from a `Location`
   array (R94). Queries chunk strip layout via `query_chunk`, maps
@@ -155,7 +144,7 @@ below); R32 depends on R115.
   IO error handling (unified read path) — Area: chunkdb / diskdb /
   diskio — In-line error handler for the read path (R107), which
   is unified across large objects (EC strips, R94) and small
-  objects (mirror strips, R106, before R93 conversion). EC decode
+  objects (mirror strips before R93 conversion). EC decode
   fallback for failed EC blocks (read surviving data + parity,
   isa-l decode the missing block, within `code_num` tolerance);
   mirror replica fallback for failed mirror strips (read next
@@ -171,7 +160,7 @@ below); R32 depends on R115.
   negative list and degraded-strip tracking.
 - **[R112](R112-chunkio-small-write-io-error-handling.md)** —
   Small-write IO error handling — Area: chunkio / chunkdb / diskdb /
-  diskio — Batch-level repair for R106's shared-chunk pipelines.
+  diskio — Batch-level repair for the shared-chunk pipelines.
   Retains the batch ledger and one complete 1 MiB shadow for the
   pipeline's open mirror block, then replaces one failed replica
   without sealing the Active chunk through chunkdb's placement-aware

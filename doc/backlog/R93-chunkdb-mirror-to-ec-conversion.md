@@ -5,7 +5,7 @@
 
 **Problem**
 
-Shared chunks (R106 small-object writer) write data to mirror strips
+The landed small-object writer stores shared-chunk data in mirror strips
 with 3 replicas first for low write latency — the caller gets success after 3 mirror
 writes, before EC encoding. Mirror strips use 3× storage (3 full
 copies). As data ages and becomes colder, the 3× storage overhead is
@@ -15,13 +15,13 @@ overhead (12 blocks for 8 data blocks) vs 3× for 3-way mirror.
 chunkdb v1 (R85) supports both mirror and EC strips but has no
 mechanism to convert one to the other. The chunkdb design §2 Non-Goals
 explicitly defers "Background conversion of mirror strips to EC strips
-(for shared chunks)" to a future requirement. R106's small-object
+(for shared chunks)" to a future requirement. The small-object
 writer depends on this conversion — without it, shared chunks
 permanently carry 3× mirror overhead.
 
 **Current behavior + impact**: A mirror strip stays a mirror strip
 forever. There is no `convert_strip` or background conversion task.
-Shared chunks (once R106 lands) will accumulate mirror strips at 3×
+Shared chunks accumulate mirror strips at 3×
 storage cost with no path to the more space-efficient EC encoding.
 For a cluster storing 100 TB of small-object data, this is 200 TB of
 wasted space (300 TB mirror vs 150 TB EC at 8+4).
@@ -48,7 +48,7 @@ atomically replace that strip range.
 
 - **Conversion of an active shared chunk**: A shared chunk is still
   receiving writes (Active state). Eight adjacent mirror strips that
-  carry R106's durable closed marker can be converted while the chunk
+  carry the writer's durable closed marker can be converted while the chunk
   continues to receive writes to later strips. Expected: no write
   latency impact for new writes; the converted range is read-only.
 
@@ -94,7 +94,7 @@ swap to reclaim 3×→1.5× storage without changing logical offsets.
    `BgRunner` pattern, §10) that scans for convertible chunks. A
    chunk is convertible if: (a) it has at least `data_num` adjacent,
    equal-capacity mirror strips, (b) it is Sealed or every strip in the
-   range has R106's durable closed marker, (c)
+   range has the writer's durable closed marker, (c)
    it meets the conversion policy (age, strip count, manual trigger).
    The task enqueues compatible strip groups into a work queue with
    configurable concurrency (default 4 parallel conversions) and
@@ -238,10 +238,9 @@ Conversion Task                chunkdb           diskio (R105)       isa-l
   capacity-preserving validation, set-difference commit/free, and
   persisted cleanup intent.
 - **Integrates with**:
-  - **R106** (small object writer) — integrates with R93 to convert the
-    mirror strips that the writer produces. R106 can land before R93
-    (mirror strips are correct but space-inefficient); R93 makes the
-    mirror-first strategy viable long-term.
+  - **Small-object writer** — R93 converts the mirror strips that the
+    landed writer produces. Those strips are correct but space-inefficient;
+    R93 makes the mirror-first strategy viable long-term.
 
 **Acceptance**
 

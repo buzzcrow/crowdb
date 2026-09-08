@@ -10,7 +10,7 @@ object bytes from a `Location` array. The same `ChunkReader`
 (`lib/crowdb-chunk-client/src/reader.rs`) serves both object sizes:
 - **Large objects** (R94) — EC strips; read `data_num` data blocks,
   EC-decode missing blocks from surviving data + parity.
-- **Small objects** (R106) — mirror strips (before R93 conversion);
+- **Small objects** — mirror strips (before R93 conversion);
   read one replica, fall back to another replica on failure. After
   R93 conversion the strips become EC and the read path handles the
   transition transparently.
@@ -110,7 +110,7 @@ reuses for the read path).
 
 - **Mirror replica read failure, fallback + rebuild**: A small
   object is being read from a shared chunk (3 mirror strips, written
-  by R106). The primary replica's diskio read fails. The reader
+  by the shared-chunk writer). The primary replica's diskio read fails. The reader
   falls back to the second replica (mirror fallback), returns the
   data, and triggers a background rebuild: allocate a new block on a
   healthy disk, copy the data from the surviving replica, and
@@ -364,7 +364,7 @@ the dependency list is organized by service.
     R83 (it just returns partial results without escalation), but
     the full recovery story needs both.
 - **Depended on by**: none yet. R111 reads the mirror and converted EC
-  strips produced by R106 and degraded by R112, but the write-side
+  strips produced by the small-object writer and degraded by R112, but the write-side
   requirements do not depend on the reader implementation.
 
 **Acceptance**

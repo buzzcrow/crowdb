@@ -5,7 +5,7 @@
 
 **Problem**
 
-R94 (large-object writer) and R106 (small-object writer) produce
+The large- and small-object writers produce
 `Location` arrays that record where object data lives across chunks.
 There is no reader that takes a `Location` array and reconstructs the
 object's bytes. Without a read flow, the write path is a one-way
@@ -17,7 +17,7 @@ The read flow must handle both strip types:
   and return the object's bytes. If some data blocks are missing
   (disk failure), read surviving data + parity blocks and EC-decode
   via isa-l.
-- **Mirror strips** (small objects, R106, before R93 conversion):
+- **Mirror strips** (small objects before R93 conversion):
   read one mirror replica; if the primary replica's disk is `Bad`,
   fall back to another replica. After R93 conversion, mirror strips
   become EC strips and the read flow must handle the transition
@@ -335,7 +335,8 @@ Caller                ChunkReader           chunkdb          diskio (R105)    is
   comparison for large data).
 
 **Small object read (mirror)**:
-- Write a 16 KB object via R106, read it via `read_object` → 16 KB
+- Write a 16 KB object through the small-object writer, read it via
+  `read_object` → 16 KB
   returned, bytes match. Integration test.
 - Write 100 × 16 KB objects to a shared chunk, read each by its
   `Location` → all 100 reads return correct bytes. Integration test.

@@ -5,7 +5,7 @@
 
 **Problem**
 
-R106 writes many small objects through elastic pipelines. Each
+The landed small-object writer writes many objects through elastic pipelines. Each
 pipeline owns one active `ChunkType::Repo` chunk in shared-packing mode,
 aggregates whole objects into a physical batch, writes mirror strips,
 and returns an independent `Location` to every object after durable
@@ -33,15 +33,17 @@ does not have:
 - R93 conversion must never replace strip metadata concurrently with an
   active small-write repair.
 
-**Current behavior + impact**: R106 is not implemented, and its
-baseline failure contract can only fail the affected pipeline. There is
+**Current behavior + impact**: The baseline failure contract can only fail the
+affected pipeline. There is
 no small-write replica replacement, failed-disk exclusion, retry
 budget, metadata repair, or recovery escalation. Replaying individual
 objects based on a partial disk write would be unsafe because physical
 bytes may exist without durable completion and no object location has
 yet been published.
 
-**Design pointers**: R106 defines object batching, single-owner chunks,
+**Design pointers**: the
+[small-object writer design](../design/chunkio/design-crowdb-chunkio-small-object-writer.md)
+defines object batching, single-owner chunks,
 location publication, rotation, and pipeline drain. chunkio design §7
 defines the existing whole-strip retry boundary and §8 defines the
 `ChunkAllocator` and `DiskWriter` seams. chunkdb design §5.2 defines
@@ -90,7 +92,7 @@ retired segment reuse.
 
 **Solution**
 
-**One-line approach**: extend each R106 pipeline with a batch-level
+**One-line approach**: extend each small-write pipeline with a batch-level
 repair state machine and one 1 MiB open-block shadow that replaces
 failed mirror replicas in the same Active chunk, reuses R110's failed-
 disk exclusion, and publishes per-object locations only after the batch
@@ -133,14 +135,14 @@ returns to full mirror durability.
 
 4. **Shared negative list**
    (`lib/crowdb-chunk-client/src/negative_list.rs`) — reuse R110's
-   TTL-based disk exclusion across large writes, reads, and every R106
+   TTL-based disk exclusion across large writes, reads, and every small-write
    pipeline in one client. Add the failed disk before requesting a
    replacement. Replacement allocation must exclude all live entries;
    pipeline scale decisions remain based on queue load, not disk
    placement.
 
 5. **One-block pipeline shadow**
-   (`writer/small_pipeline.rs`) — use R106's 1 MiB small-write mirror
+   (`writer/small_pipeline.rs`) — use the 1 MiB small-write mirror
    block and keep one complete shadow only for each pipeline's
    currently open block. Initialize unwritten bytes deterministically,
    copy every admitted batch into its block-relative range, and retain
@@ -211,7 +213,7 @@ returns to full mirror durability.
    bound repair attempts per failed replica. A batch commits only when
    all configured mirror replicas are durable and chunk metadata
    references their current segments. Then fan out the independent
-   R106 locations. On retry exhaustion, return one error to every
+   object locations. On retry exhaustion, return one error to every
    object in the uncommitted batch; never return locations for only a
    subset based on physical write progress.
 
@@ -242,7 +244,7 @@ returns to full mirror durability.
     (`app/crowdb-chunkdb/src/conversion.rs`) — migrate conversion to
     the fenced range-replacement request defined in work item 7.
     R93 may convert a sealed chunk or a capacity-compatible group of
-    closed mirror strips whose durable state proves that R106 will not
+    closed mirror strips whose durable state proves that the writer will not
     append to it again. R112 owns
     failures before that close boundary; R93 owns encode, parity-write,
     and metadata-swap failures after conversion starts. Revision and
@@ -296,7 +298,7 @@ returns to full mirror durability.
 **Flow diagram**:
 
 ```text
- R106 pipeline              diskio                 diskdb/chunkdb
+ small-write pipeline       diskio                 diskdb/chunkdb
       |                        |                          |
       | durable mirror write   |                          |
       |----------------------->|                          |
@@ -326,7 +328,7 @@ returns to full mirror durability.
 **Dependencies**
 
 - **Depends on**:
-  - **R106** — supplies the batch ledger inputs, exclusive pipeline
+  - **Small-object writer** — supplies the batch ledger inputs, exclusive pipeline
     ownership, object completion senders, rotation, and drain boundary.
   - **R105 / diskio** — reports durable-write failure without treating
     partial physical progress as object success.
@@ -346,7 +348,7 @@ returns to full mirror durability.
   - **R83** — rebuilds persistent failures after inline repair
     exhaustion. R112 can fail safely before R83 lands, but automated
     recovery requires both.
-  - **R93** — begins after the R106/R112 foreground durability
+  - **R93** — begins after the small-writer/R112 foreground durability
     boundary and owns conversion failures.
 - **Depended on by**: **R93** uses the range transaction for grouped
   mirror-to-EC conversion. R111 integrates with the same degraded-strip
@@ -390,7 +392,7 @@ returns to full mirror durability.
   its configured total budget, when scale-out is attempted, assert the
   new pipeline is not published and existing pipelines continue.
   Integration test.
-- Given a failed disk in the shared negative list, when any R106
+- Given a failed disk in the shared negative list, when any small-write
   pipeline requests replacement allocation, assert the request excludes
   that disk. Integration test.
 - Given two healthy mirror replicas occupy known disks, nodes, and
@@ -449,7 +451,7 @@ returns to full mirror durability.
 
 - Given foreground mirror success followed by an injected conversion
   failure, when R93 runs, assert the strip remains mirrored and readable
-  and no completed R106 handle receives another result. Integration
+  and no completed small-object handle receives another result. Integration
   test.
 - Given repair and R93 conversion start from the same chunk revision,
   when both submit fenced strip updates, assert exactly one commits and
