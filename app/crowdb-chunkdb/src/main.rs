@@ -303,7 +303,8 @@ async fn main() {
             .with_range_guard(Arc::clone(&range_guard))
             .with_locks(Arc::clone(&lock_map))
             .with_metrics(Arc::clone(&workflow_metrics))
-            .with_allow_unsafe_ec(config.placement.allow_unsafe_ec),
+            .with_allow_unsafe_ec(config.placement.allow_unsafe_ec)
+            .with_layout_validity(Duration::from_millis(config.lifecycle.layout_validity_ms)),
     );
     match handler.reconcile_pending_chunks().await {
         Ok(count) => info!(count, "pending chunk allocations reconciled"),
@@ -431,6 +432,9 @@ async fn run_writer_lease_sweep_loop(
             _ = ticker.tick() => {
                 if let Err(error) = handler.seal_expired_writer_chunks().await {
                     warn!(%error, "shared writer lease sweep failed");
+                }
+                if let Err(error) = handler.reconcile_pending_chunks().await {
+                    warn!(%error, "chunk cleanup reconciliation failed");
                 }
             }
             changed = stop.changed() => {

@@ -27,12 +27,16 @@ pub struct SmallWritePolicy {
     pub batch_deadline: Duration,
     pub scale_out_queue_bytes: usize,
     pub scale_out_queue_objects: usize,
+    /// Compatibility setting retained for callers; queue state alone decides scale-in.
     pub scale_in_delay: Duration,
     pub control_interval: Duration,
+    /// Compatibility setting retained for callers; it is not a scaling signal.
     pub cooldown: Duration,
     pub chunk_capacity: u64,
     pub mirror_copies: u32,
     pub writer_lease: Duration,
+    pub failed_disk_ttl: Duration,
+    pub repair_attempts_per_replica: usize,
 }
 
 impl Default for SmallWritePolicy {
@@ -40,7 +44,7 @@ impl Default for SmallWritePolicy {
         const MIB: usize = 1024 * 1024;
         Self {
             object_limit: MIB,
-            memory_budget: 64 * MIB,
+            memory_budget: 96 * MIB,
             queue_capacity: 1_024,
             min_pipelines: 1,
             max_pipelines: 32,
@@ -55,6 +59,8 @@ impl Default for SmallWritePolicy {
             chunk_capacity: 1024 * 1024 * 1024,
             mirror_copies: 3,
             writer_lease: Duration::from_secs(30),
+            failed_disk_ttl: Duration::from_secs(60),
+            repair_attempts_per_replica: 3,
         }
     }
 }
@@ -67,9 +73,10 @@ impl SmallWritePolicy {
                 "small object limit must be in 1..=1 MiB".into(),
             ));
         }
-        if self.memory_budget < self.object_limit {
+        let shadow_budget = self.max_pipelines.saturating_mul(HARD_LIMIT);
+        if self.memory_budget < self.object_limit.saturating_add(shadow_budget) {
             return Err(IoError::Internal(
-                "small write memory budget must cover one maximum-size object".into(),
+                "small write memory budget must cover maximum pipeline shadows and one object".into(),
             ));
         }
         if self.memory_budget > u32::MAX as usize {
@@ -91,6 +98,8 @@ impl SmallWritePolicy {
             || self.batch_deadline.is_zero()
             || self.control_interval.is_zero()
             || self.writer_lease.is_zero()
+            || self.failed_disk_ttl.is_zero()
+            || self.repair_attempts_per_replica == 0
         {
             return Err(IoError::Internal("invalid small write policy".into()));
         }

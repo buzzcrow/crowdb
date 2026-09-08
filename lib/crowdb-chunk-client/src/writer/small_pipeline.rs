@@ -5,16 +5,20 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
 use crowdb_protocol::chunkdb::rpc::{
-    AdvanceChunkWriteRequest, AllocateChunkRequest, AppendChunkRequest, Chunk, ChunkType, DeleteChunkRequest,
-    Location, SealChunkRequest, Strip, StripType,
+    AdvanceChunkWriteRequest, AllocateChunkRequest, AllocateReplacementSegmentRequest, AppendChunkRequest,
+    Chunk, ChunkType, DeleteChunkRequest, DiscardReplacementSegmentRequest, Location,
+    ReplaceChunkStripRangeRequest, SealChunkRequest, Strip, StripType,
 };
-use tokio::sync::{mpsc, Notify};
+use crowdb_protocol::diskdb::rpc::Segment;
+use tokio::sync::{mpsc, Notify, OwnedSemaphorePermit};
 
 use crate::config::SmallWritePolicy;
 use crate::metrics::SmallWriteMetrics;
+use crate::negative_list::FailedDiskList;
 use crate::{ChunkAllocator, DiskWriter, IoError, Result};
 
 use super::small_pool::{PendingObject, PipelineRoute, SmallPoolRuntime};
@@ -30,6 +34,11 @@ pub(crate) struct ManagedPipeline {
 
 pub(crate) async fn spawn(runtime: Arc<SmallPoolRuntime>, _id: u64) -> Result<ManagedPipeline> {
     let owned = OwnedChunk::allocate(&runtime).await?;
+    let shadow_bytes =
+        u32::try_from(u64::from(owned.current_strip()?.capacity).saturating_mul(1024)).unwrap_or(u32::MAX);
+    let shadow_budget = Arc::clone(&runtime.budget)
+        .try_acquire_many_owned(shadow_bytes)
+        .map_err(|_| IoError::MemoryBudgetExhausted)?;
     let (sender, receiver) = mpsc::channel(runtime.policy.queue_capacity);
     let route = Arc::new(PipelineRoute::new(sender, runtime.now_ms()));
     let retire = Arc::new(AtomicBool::new(false));
@@ -43,6 +52,7 @@ pub(crate) async fn spawn(runtime: Arc<SmallPoolRuntime>, _id: u64) -> Result<Ma
         chunk: owned,
         replacement: None,
         carry: None,
+        _shadow_budget: shadow_budget,
     };
     let join = tokio::spawn(worker.run());
     Ok(ManagedPipeline {
@@ -69,6 +79,7 @@ struct PipelineWorker {
     chunk: OwnedChunk,
     replacement: Option<OwnedChunk>,
     carry: Option<PendingObject>,
+    _shadow_budget: OwnedSemaphorePermit,
 }
 
 impl PipelineWorker {
@@ -132,9 +143,7 @@ impl PipelineWorker {
     }
 
     async fn ensure_object_fits(&mut self, object_len: usize) -> Result<()> {
-        let unit_bytes = self.chunk.unit_bytes()?;
-        let physical_len = align_up(object_len as u64, unit_bytes)?;
-        if self.chunk.remaining_in_chunk() < physical_len {
+        if self.chunk.remaining_in_chunk() < object_len as u64 {
             let replacement = match self.replacement.take() {
                 Some(chunk) => chunk,
                 None => OwnedChunk::allocate(&self.runtime).await?,
@@ -142,7 +151,7 @@ impl PipelineWorker {
             self.chunk.finish().await?;
             self.chunk = replacement;
         }
-        if self.chunk.remaining_in_strip() < physical_len {
+        if self.chunk.remaining_in_strip() < object_len as u64 {
             if self.chunk.current_strip().is_ok() {
                 self.chunk.close_strip(&self.runtime.metrics).await?;
             }
@@ -172,10 +181,6 @@ impl PipelineWorker {
         let deadline = tokio::time::Instant::now() + self.runtime.policy.batch_deadline;
         let mut bytes = first.len;
         let mut batch = vec![first];
-        let unit_bytes = self
-            .chunk
-            .current_strip()
-            .map_or(1, |strip| u64::from(strip.unit_kb) * 1024);
         while batch.len() < self.runtime.policy.max_batch_objects
             && bytes < self.runtime.policy.max_batch_bytes
         {
@@ -188,8 +193,7 @@ impl PipelineWorker {
                 .chunk
                 .remaining_in_strip()
                 .min(self.chunk.remaining_in_chunk());
-            let physical_bytes = align_up(candidate_bytes as u64, unit_bytes).unwrap_or(u64::MAX);
-            if candidate_bytes > self.runtime.policy.max_batch_bytes || physical_bytes > available {
+            if candidate_bytes > self.runtime.policy.max_batch_bytes || candidate_bytes as u64 > available {
                 self.carry = Some(next);
                 break;
             }
@@ -224,6 +228,9 @@ struct OwnedChunk {
     chunk: Chunk,
     cursor: u64,
     writer_epoch: u64,
+    shadow: Option<BytesMut>,
+    failed_disks: Arc<FailedDiskList>,
+    metrics: Arc<SmallWriteMetrics>,
 }
 
 impl OwnedChunk {
@@ -255,22 +262,14 @@ impl OwnedChunk {
             chunk,
             cursor: 0,
             writer_epoch,
+            shadow: None,
+            failed_disks: Arc::clone(&runtime.failed_disks),
+            metrics: Arc::clone(&runtime.metrics),
         })
     }
 
     fn remaining_in_chunk(&self) -> u64 {
         self.policy.chunk_capacity.saturating_sub(self.cursor)
-    }
-
-    fn unit_bytes(&self) -> Result<u64> {
-        self.current_strip()
-            .or_else(|_| {
-                self.chunk
-                    .strips
-                    .last()
-                    .ok_or_else(|| IoError::AllocationFailed("shared chunk has no strips".into()))
-            })
-            .map(|strip| u64::from(strip.unit_kb) * 1024)
     }
 
     fn current_strip(&self) -> Result<&crowdb_protocol::chunkdb::rpc::ChunkStrip> {
@@ -362,17 +361,11 @@ impl OwnedChunk {
         let strip_end = u64::from(strip.chunk_offset.saturating_add(strip.capacity)) * 1024;
         let tail = strip_end.saturating_sub(self.cursor);
         if tail > 0 {
-            let unit_bytes = u64::from(strip.unit_kb) * 1024;
-            self.write_mirrors(
-                &strip,
-                self.cursor - u64::from(strip.chunk_offset) * 1024,
-                Bytes::from(vec![0; tail as usize]),
-                unit_bytes,
-            )
-            .await?;
             metrics.tail_waste_bytes.fetch_add(tail, Ordering::Relaxed);
         }
-        self.advance(strip_end, Some(strip.strip_sequence)).await
+        self.advance(strip_end, Some(strip.strip_sequence)).await?;
+        self.clear_shadow();
+        Ok(())
     }
 
     async fn write_batch(&mut self, batch: Vec<PendingObject>, metrics: &SmallWriteMetrics) -> Result<()> {
@@ -402,16 +395,29 @@ impl OwnedChunk {
         let strip = self.current_strip()?.clone();
         let unit_bytes = u64::from(strip.unit_kb) * 1024;
         let logical_bytes: usize = batch.iter().map(|object| object.len).sum();
-        let physical_bytes = align_up(logical_bytes as u64, unit_bytes)? as usize;
-        if physical_bytes as u64 > self.remaining_in_strip()
-            || physical_bytes as u64 > self.remaining_in_chunk()
+        if logical_bytes as u64 > self.remaining_in_strip()
+            || logical_bytes as u64 > self.remaining_in_chunk()
         {
             return Err(IoError::Internal(
                 "assembled batch crosses mirror strip or chunk".into(),
             ));
         }
         let start = self.cursor;
-        let mut buffer = BytesMut::zeroed(physical_bytes);
+        let strip_bytes = usize::try_from(strip.capacity)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(1024);
+        let strip_start = u64::from(strip.chunk_offset) * 1024;
+        let block_offset = usize::try_from(start.saturating_sub(strip_start)).unwrap_or(usize::MAX);
+        if self.shadow.is_none() {
+            self.shadow = Some(BytesMut::zeroed(strip_bytes));
+            self.metrics
+                .shadow_bytes
+                .fetch_add(strip_bytes as u64, Ordering::Relaxed);
+        }
+        let shadow = self
+            .shadow
+            .as_mut()
+            .unwrap_or_else(|| unreachable!("shadow initialized"));
         let mut copied = 0;
         let mut locations = Vec::with_capacity(batch.len());
         let chunk_id = self
@@ -421,7 +427,8 @@ impl OwnedChunk {
         for object in batch {
             let object_start = copied;
             for fragment in &object.fragments {
-                buffer[copied..copied + fragment.len()].copy_from_slice(fragment);
+                let destination = block_offset + copied;
+                shadow[destination..destination + fragment.len()].copy_from_slice(fragment);
                 copied += fragment.len();
             }
             locations.push(Location {
@@ -432,10 +439,19 @@ impl OwnedChunk {
                 logical_length: object.len as u64,
             });
         }
-        let segment_offset = start - u64::from(strip.chunk_offset) * 1024;
-        self.write_mirrors(&strip, segment_offset, buffer.freeze(), unit_bytes)
-            .await?;
-        let end = start + physical_bytes as u64;
+        let image = self
+            .shadow
+            .take()
+            .unwrap_or_else(|| unreachable!("shadow initialized"))
+            .freeze();
+        let (image, write_result) = self.write_mirrors_with_repair(&strip, image, unit_bytes).await;
+        self.shadow = Some(
+            image
+                .try_into_mut()
+                .unwrap_or_else(|shared| BytesMut::from(shared.as_ref())),
+        );
+        write_result?;
+        let end = start + logical_bytes as u64;
         let strip_end = u64::from(strip.chunk_offset.saturating_add(strip.capacity)) * 1024;
         let closed = (end == strip_end).then_some(strip.strip_sequence);
         self.advance(end, closed).await?;
@@ -455,30 +471,241 @@ impl OwnedChunk {
         Ok(locations)
     }
 
-    async fn write_mirrors(
-        &self,
+    async fn write_mirrors_with_repair(
+        &mut self,
         strip: &crowdb_protocol::chunkdb::rpc::ChunkStrip,
-        segment_offset: u64,
         data: Bytes,
         unit_bytes: u64,
-    ) -> Result<()> {
+    ) -> (Bytes, Result<()>) {
         let Some(Strip::MirrorStrip(mirror)) = &strip.strip else {
-            return Err(IoError::Internal("shared chunk strip is not mirrored".into()));
+            return (
+                data,
+                Err(IoError::Internal("shared chunk strip is not mirrored".into())),
+            );
         };
         let mut write_tasks = tokio::task::JoinSet::new();
         for segment in &mirror.segments {
             let segment = *segment;
             let disk_writer = Arc::clone(&self.disk_writer);
             let data = data.clone();
-            write_tasks.spawn(async move {
-                disk_writer
-                    .write_at(&segment, unit_bytes, segment_offset, data)
-                    .await
-            });
+            write_tasks
+                .spawn(async move { (segment, disk_writer.write_at(&segment, unit_bytes, 0, data).await) });
         }
+        let mut failed = Vec::new();
         while let Some(result) = write_tasks.join_next().await {
-            result.map_err(|error| IoError::WriteFailed(format!("mirror writer task failed: {error}")))??;
+            let (segment, result) = match result {
+                Ok(result) => result,
+                Err(error) => {
+                    return (
+                        data,
+                        Err(IoError::WriteFailed(format!(
+                            "mirror writer task failed: {error}"
+                        ))),
+                    );
+                }
+            };
+            if result.is_err() {
+                failed.push(segment);
+            }
         }
+        for segment in failed {
+            if let Err(error) = self
+                .repair_replica(strip.strip_sequence, segment, data.clone(), unit_bytes)
+                .await
+            {
+                return (data, Err(error));
+            }
+        }
+        (data, Ok(()))
+    }
+
+    async fn repair_replica(
+        &mut self,
+        strip_sequence: u32,
+        failed: Segment,
+        image: Bytes,
+        unit_bytes: u64,
+    ) -> Result<()> {
+        let _repair = RepairMetricGuard::new(Arc::clone(&self.metrics));
+        self.try_repair_replica(strip_sequence, failed, image, unit_bytes)
+            .await
+    }
+
+    async fn try_repair_replica(
+        &mut self,
+        strip_sequence: u32,
+        failed: Segment,
+        image: Bytes,
+        unit_bytes: u64,
+    ) -> Result<()> {
+        let failed_disk = failed
+            .disk_id
+            .ok_or_else(|| IoError::Internal("failed mirror segment has no disk id".into()))?;
+        self.failed_disks.insert(failed_disk);
+        for _ in 0..self.policy.repair_attempts_per_replica {
+            self.metrics.repair_attempts.fetch_add(1, Ordering::Relaxed);
+            let strip_index = self
+                .chunk
+                .strips
+                .iter()
+                .position(|strip| strip.strip_sequence == strip_sequence)
+                .ok_or_else(|| IoError::MetadataConflict("mirror strip disappeared during repair".into()))?;
+            let old_strip = self.chunk.strips[strip_index].clone();
+            let Some(Strip::MirrorStrip(mut mirror)) = old_strip.strip.clone() else {
+                return Err(IoError::MetadataConflict(
+                    "mirror strip changed type during repair".into(),
+                ));
+            };
+            let survivors: Vec<_> = mirror
+                .segments
+                .iter()
+                .copied()
+                .filter(|segment| *segment != failed)
+                .collect();
+            let excluded = self.failed_disks.live();
+            self.metrics
+                .negative_list_hits
+                .fetch_add(excluded.len() as u64, Ordering::Relaxed);
+            let response = self
+                .allocator
+                .allocate_replacement_segment(AllocateReplacementSegmentRequest {
+                    chunk_id: self.chunk.id,
+                    old_segment: Some(failed),
+                    surviving_segments: survivors,
+                    exclude_disk_ids: excluded,
+                })
+                .await;
+            let Ok(response) = response else {
+                continue;
+            };
+            let Some(replacement) = response.segment else {
+                continue;
+            };
+            if self
+                .disk_writer
+                .write_at(&replacement, unit_bytes, 0, image.clone())
+                .await
+                .is_err()
+            {
+                if let Some(disk) = replacement.disk_id {
+                    self.failed_disks.insert(disk);
+                }
+                self.discard_replacement(replacement).await;
+                continue;
+            }
+            let Some(slot) = mirror.segments.iter_mut().find(|segment| **segment == failed) else {
+                self.discard_replacement(replacement).await;
+                return Err(IoError::MetadataConflict(
+                    "failed segment no longer belongs to strip".into(),
+                ));
+            };
+            *slot = replacement;
+            let mut new_strip = old_strip.clone();
+            new_strip.strip = Some(Strip::MirrorStrip(mirror));
+            let operation_id = crowdb_protocol::common::ChunkId {
+                high: self.writer_epoch ^ self.chunk.modify_ts,
+                low: u64::from(strip_sequence) ^ failed.unit_offset,
+            };
+            let request = ReplaceChunkStripRangeRequest {
+                chunk_id: self.chunk.id,
+                expected_modify_ts: self.chunk.modify_ts,
+                start_index: u32::try_from(strip_index).unwrap_or(u32::MAX),
+                old_strips: vec![old_strip],
+                replacement_strips: vec![new_strip],
+                operation_id: Some(operation_id),
+            };
+            match self.install_replacement(request, replacement).await {
+                Ok(chunk) => {
+                    self.chunk = chunk;
+                    self.metrics.repaired_replicas.fetch_add(1, Ordering::Relaxed);
+                    self.metrics
+                        .repairs_avoiding_rotation
+                        .fetch_add(1, Ordering::Relaxed);
+                    return Ok(());
+                }
+                Err(error @ IoError::MetadataConflict(_)) => return Err(error),
+                Err(_) => {}
+            }
+            // The replacement may already be installed after an ambiguous
+            // response, so never allocate or discard a different candidate.
+            break;
+        }
+        self.metrics.exhausted_repairs.fetch_add(1, Ordering::Relaxed);
+        self.mark_replica_unavailable(strip_sequence, failed).await?;
+        Err(IoError::WriteFailed("mirror replica repair exhausted".into()))
+    }
+
+    async fn install_replacement(
+        &self,
+        request: ReplaceChunkStripRangeRequest,
+        replacement: Segment,
+    ) -> Result<Chunk> {
+        for attempt in 0..self.policy.repair_attempts_per_replica {
+            if attempt > 0 {
+                self.metrics.repair_attempts.fetch_add(1, Ordering::Relaxed);
+            }
+            match self.allocator.replace_chunk_strip_range(request.clone()).await {
+                Ok(response) => {
+                    return response.chunk.ok_or_else(|| {
+                        IoError::MetadataConflict("range replacement returned no chunk".into())
+                    });
+                }
+                Err(error @ IoError::MetadataConflict(_)) => {
+                    self.discard_replacement(replacement).await;
+                    return Err(error);
+                }
+                Err(_) => {}
+            }
+        }
+        Err(IoError::WriteFailed(
+            "replacement metadata retry exhausted".into(),
+        ))
+    }
+
+    async fn discard_replacement(&self, replacement: Segment) {
+        let _ = self
+            .allocator
+            .discard_replacement_segment(DiscardReplacementSegmentRequest {
+                chunk_id: self.chunk.id,
+                segment: Some(replacement),
+            })
+            .await;
+    }
+
+    async fn mark_replica_unavailable(&mut self, strip_sequence: u32, failed: Segment) -> Result<()> {
+        let strip_index = self
+            .chunk
+            .strips
+            .iter()
+            .position(|strip| strip.strip_sequence == strip_sequence)
+            .ok_or_else(|| IoError::MetadataConflict("failed strip disappeared".into()))?;
+        let old = self.chunk.strips[strip_index].clone();
+        let strip_start = u64::from(old.chunk_offset) * 1024;
+        if self.cursor <= strip_start {
+            return Ok(());
+        }
+        let mut degraded = old.clone();
+        if !degraded.unavailable_segments.contains(&failed) {
+            degraded.unavailable_segments.push(failed);
+        }
+        let operation_id = crowdb_protocol::common::ChunkId {
+            high: self.writer_epoch ^ self.chunk.modify_ts ^ u64::MAX,
+            low: u64::from(strip_sequence) ^ failed.unit_offset,
+        };
+        let response = self
+            .allocator
+            .replace_chunk_strip_range(ReplaceChunkStripRangeRequest {
+                chunk_id: self.chunk.id,
+                expected_modify_ts: self.chunk.modify_ts,
+                start_index: u32::try_from(strip_index).unwrap_or(u32::MAX),
+                old_strips: vec![old],
+                replacement_strips: vec![degraded],
+                operation_id: Some(operation_id),
+            })
+            .await?;
+        self.chunk = response
+            .chunk
+            .ok_or_else(|| IoError::MetadataConflict("degraded marker returned no chunk".into()))?;
         Ok(())
     }
 
@@ -509,6 +736,7 @@ impl OwnedChunk {
         let Some(chunk_id) = self.chunk.id else {
             return Ok(());
         };
+        self.clear_shadow();
         if self.cursor == 0 {
             self.allocator
                 .delete_chunk(DeleteChunkRequest {
@@ -526,13 +754,42 @@ impl OwnedChunk {
         }
         Ok(())
     }
+
+    fn clear_shadow(&mut self) {
+        if let Some(shadow) = self.shadow.take() {
+            self.metrics
+                .shadow_bytes
+                .fetch_sub(shadow.len() as u64, Ordering::Relaxed);
+        }
+    }
 }
 
-fn align_up(value: u64, alignment: u64) -> Result<u64> {
-    value
-        .checked_add(alignment.saturating_sub(1))
-        .map(|sum| sum / alignment * alignment)
-        .ok_or_else(|| IoError::Internal("batch alignment overflow".into()))
+struct RepairMetricGuard {
+    metrics: Arc<SmallWriteMetrics>,
+    started: Instant,
+}
+
+impl RepairMetricGuard {
+    fn new(metrics: Arc<SmallWriteMetrics>) -> Self {
+        metrics.active_repairs.fetch_add(1, Ordering::Relaxed);
+        Self {
+            metrics,
+            started: Instant::now(),
+        }
+    }
+}
+
+impl Drop for RepairMetricGuard {
+    fn drop(&mut self) {
+        let elapsed = u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.metrics.active_repairs.fetch_sub(1, Ordering::Relaxed);
+        self.metrics
+            .repair_latency_ns
+            .fetch_add(elapsed, Ordering::Relaxed);
+        self.metrics
+            .max_repair_latency_ns
+            .fetch_max(elapsed, Ordering::Relaxed);
+    }
 }
 
 fn next_writer_epoch() -> u64 {

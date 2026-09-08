@@ -108,4 +108,10 @@ enum FBMsgType : int16 {
     EListChunksResponse = 3315,
     EAdvanceChunkWriteRequest = 3316,
     EAdvanceChunkWriteResponse = 3317,
+    EAllocateReplacementSegmentRequest = 3318,
+    EAllocateReplacementSegmentResponse = 3319,
+    EReplaceChunkStripRangeRequest = 3320,
+    EReplaceChunkStripRangeResponse = 3321,
+    EDiscardReplacementSegmentRequest = 3322,
+    EDiscardReplacementSegmentResponse = 3323,
 }

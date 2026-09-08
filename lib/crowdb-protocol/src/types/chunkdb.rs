@@ -15,7 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::common::ChunkId;
+use crate::common::{ChunkId, DiskId};
 use crate::diskdb::rpc::Segment;
 
 /// Implement `From<Enum> for i32` and `TryFrom<i32> for Enum`.
@@ -116,6 +116,8 @@ pub struct ChunkStrip {
     pub strip_type: i32,
     pub strip: Option<Strip>,
     pub usage_bitmap: Vec<u8>,
+    /// Replica identities known unavailable until background recovery.
+    pub unavailable_segments: Vec<Segment>,
 }
 
 // ── Chunk ───────────────────────────────────────────────────────
@@ -140,6 +142,19 @@ pub struct Chunk {
     pub closed_strip_sequence: Option<u32>,
     /// Server-clock deadline after which an Active shared chunk is orphaned.
     pub writer_lease_deadline_ms: u64,
+    /// Next identity assigned by append; never decreases after range splices.
+    pub next_strip_sequence: u32,
+    /// Retired segment sets awaiting the reader layout-validity grace.
+    pub cleanup_intents: Vec<StripCleanupIntent>,
+    /// Most recently committed fenced replacement operation.
+    pub last_strip_replacement: Option<ChunkId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct StripCleanupIntent {
+    pub operation_id: Option<ChunkId>,
+    pub retired_segments: Vec<Segment>,
+    pub not_before_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -229,6 +244,8 @@ pub struct QueryChunkRequest {
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct QueryChunkResponse {
     pub chunk: Option<Chunk>,
+    /// Maximum time a caller may continue using the returned layout.
+    pub layout_validity_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -271,6 +288,43 @@ pub struct UpdateChunkStripRequest {
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct UpdateChunkStripResponse {
+    pub chunk: Option<Chunk>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct AllocateReplacementSegmentRequest {
+    pub chunk_id: Option<ChunkId>,
+    pub old_segment: Option<Segment>,
+    pub surviving_segments: Vec<Segment>,
+    pub exclude_disk_ids: Vec<DiskId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct AllocateReplacementSegmentResponse {
+    pub segment: Option<Segment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct DiscardReplacementSegmentRequest {
+    pub chunk_id: Option<ChunkId>,
+    pub segment: Option<Segment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct DiscardReplacementSegmentResponse {}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct ReplaceChunkStripRangeRequest {
+    pub chunk_id: Option<ChunkId>,
+    pub expected_modify_ts: u64,
+    pub start_index: u32,
+    pub old_strips: Vec<ChunkStrip>,
+    pub replacement_strips: Vec<ChunkStrip>,
+    pub operation_id: Option<ChunkId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct ReplaceChunkStripRangeResponse {
     pub chunk: Option<Chunk>,
 }
 

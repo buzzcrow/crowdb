@@ -678,6 +678,10 @@ impl ChunkdbHarness {
     /// Wire the chunkdb lifecycle handler against the running kv
     /// cluster + diskdb server.
     pub async fn start(cluster: &KvCluster) -> Self {
+        Self::start_with_layout_validity(cluster, Duration::from_secs(30)).await
+    }
+
+    pub async fn start_with_layout_validity(cluster: &KvCluster, layout_validity: Duration) -> Self {
         let kv = cluster.make_crowdb_client();
 
         // Topology cache + refresh loop.
@@ -703,13 +707,13 @@ impl ChunkdbHarness {
         let allocator = Arc::new(ChunkAllocator::new(Arc::clone(&pool)));
 
         let handler = Arc::new(
-            LifecycleHandler::new(Arc::clone(&store), Arc::clone(&allocator), topology.clone()).with_locks(
-                Arc::new(crowdb_chunkdb::lifecycle::ChunkLockMap::new(
+            LifecycleHandler::new(Arc::clone(&store), Arc::clone(&allocator), topology.clone())
+                .with_layout_validity(layout_validity)
+                .with_locks(Arc::new(crowdb_chunkdb::lifecycle::ChunkLockMap::new(
                     10_000,
                     Arc::new(crowdb_chunkdb::metrics::LifecycleMetrics::new()),
                     std::time::Duration::from_secs(60),
-                )),
-            ),
+                ))),
         );
 
         Self {

@@ -155,6 +155,7 @@ fn make_strip(strip_seq: u32, data_num: u32, code_num: u32, segments: Vec<Segmen
             segments,
         })),
         usage_bitmap: Vec::new(),
+        unavailable_segments: Vec::new(),
     }
 }
 
@@ -184,6 +185,9 @@ impl ChunkAllocator for MockChunkAllocator {
             acknowledged_cursor: 0,
             closed_strip_sequence: None,
             writer_lease_deadline_ms: 0,
+            next_strip_sequence: 1,
+            cleanup_intents: vec![],
+            last_strip_replacement: None,
         };
         st.chunks
             .insert((chunk_id.high, chunk_id.low), (vec![strip], 0, false));
@@ -247,7 +251,10 @@ impl ChunkAllocator for MockChunkAllocator {
     }
 
     async fn query_chunk(&self, _req: QueryChunkRequest) -> Result<QueryChunkResponse> {
-        Ok(QueryChunkResponse { chunk: None })
+        Ok(QueryChunkResponse {
+            chunk: None,
+            layout_validity_ms: 0,
+        })
     }
 }
 

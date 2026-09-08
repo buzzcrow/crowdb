@@ -115,14 +115,14 @@ impl E2eStack {
         let service = ServiceRegistryClient::from_shared(kv);
         let chunkdb = ChunkdbClient::new(service, Arc::new(ChunkdbRpcTransport::new()));
         chunkdb.refresh_endpoints().await.unwrap();
-        chunkdb
+        let response = chunkdb
             .query_chunk(QueryChunkRequest {
                 chunk_id: location.chunk_id,
             })
             .await
-            .unwrap()
-            .chunk
-            .expect("location chunk")
+            .unwrap();
+        assert!(response.layout_validity_ms > 0);
+        response.chunk.expect("location chunk")
     }
 
     pub async fn read_segment(

@@ -1,12 +1,280 @@
 use super::{
-    build_delete_range_response, map_error, parse_fb_chunk_strip, proto_chunk_type, proto_strip_type,
-    submit_append_result, submit_chunk_result, submit_error, submit_fb_response, Arc, ChunkId,
-    ChunkdbRpcService, FBAdvanceChunkWriteRequest, FBAllocateChunkRequest, FBAppendChunkRequest,
-    FBChunkdbRetCode, FBDeleteChunkRangeRequest, FBDeleteChunkRequest, FBMsgType, FBSealChunkRequest,
-    FBUpdateChunkStripRequest, RequestGuard, RpcServer, ServerRequest,
+    build_delete_range_response, build_discard_replacement_response, map_error, parse_fb_chunk_strip,
+    parse_fb_segment, parse_fb_segments, proto_chunk_type, proto_strip_type, submit_append_result,
+    submit_chunk_result, submit_error, submit_fb_response, submit_segment_result, Arc, ChunkId,
+    ChunkdbRpcService, FBAdvanceChunkWriteRequest, FBAllocateChunkRequest,
+    FBAllocateReplacementSegmentRequest, FBAppendChunkRequest, FBChunkdbRetCode, FBDeleteChunkRangeRequest,
+    FBDeleteChunkRequest, FBDiscardReplacementSegmentRequest, FBMsgType, FBReplaceChunkStripRangeRequest,
+    FBSealChunkRequest, FBUpdateChunkStripRequest, RequestGuard, RpcServer, ServerRequest,
 };
 
 impl ChunkdbRpcService {
+    pub(super) fn handle_discard_replacement(
+        &self,
+        req: ServerRequest,
+        server: &Arc<RpcServer>,
+        mut request: RequestGuard,
+    ) {
+        let req_id = req.request_id;
+        let create_nano = req.rpc_create_nano;
+        let msg_type = FBMsgType::EDiscardReplacementSegmentResponse.0 as u16;
+        let conn_handle = req.conn_handle as usize;
+        let handler = Arc::clone(&self.handler);
+        let server = Arc::clone(server);
+        self.rt.spawn(async move {
+            let Ok(request_fb) = flatbuffers::root::<FBDiscardReplacementSegmentRequest>(req.control())
+            else {
+                submit_error(
+                    &server,
+                    conn_handle as *mut _,
+                    req_id,
+                    create_nano,
+                    msg_type,
+                    FBChunkdbRetCode::InvalidArgument,
+                    "invalid request flatbuffer",
+                );
+                return;
+            };
+            let Some(chunk_id) = request_fb.chunk_id().map(|id| ChunkId {
+                high: id.high(),
+                low: id.low(),
+            }) else {
+                submit_error(
+                    &server,
+                    conn_handle as *mut _,
+                    req_id,
+                    create_nano,
+                    msg_type,
+                    FBChunkdbRetCode::InvalidArgument,
+                    "missing chunk_id",
+                );
+                return;
+            };
+            let Some(segment) = request_fb.segment().map(parse_fb_segment) else {
+                submit_error(
+                    &server,
+                    conn_handle as *mut _,
+                    req_id,
+                    create_nano,
+                    msg_type,
+                    FBChunkdbRetCode::InvalidArgument,
+                    "missing segment",
+                );
+                return;
+            };
+            let result = handler.discard_replacement_segment(&chunk_id, segment).await;
+            let (code, message, range_start, range_end) = match result {
+                Ok(()) => {
+                    request.mark_success();
+                    (FBChunkdbRetCode::Success, None, 0, 0)
+                }
+                Err(error) => {
+                    let (code, message, start, end) = map_error(&error);
+                    (code, Some(message), start, end)
+                }
+            };
+            let response = build_discard_replacement_response(
+                req_id,
+                create_nano,
+                code,
+                message.as_deref(),
+                range_start,
+                range_end,
+            );
+            submit_fb_response(&server, conn_handle as *mut _, response, msg_type, req_id);
+        });
+    }
+
+    pub(super) fn handle_allocate_replacement(
+        &self,
+        req: ServerRequest,
+        server: &Arc<RpcServer>,
+        mut request: RequestGuard,
+    ) {
+        let req_id = req.request_id;
+        let create_nano = req.rpc_create_nano;
+        let msg_type = FBMsgType::EAllocateReplacementSegmentResponse.0 as u16;
+        let conn_handle = req.conn_handle as usize;
+        let handler = Arc::clone(&self.handler);
+        let server = Arc::clone(server);
+        self.rt.spawn(async move {
+            let Ok(request_fb) = flatbuffers::root::<FBAllocateReplacementSegmentRequest>(req.control())
+            else {
+                submit_error(
+                    &server,
+                    conn_handle as *mut _,
+                    req_id,
+                    create_nano,
+                    msg_type,
+                    FBChunkdbRetCode::InvalidArgument,
+                    "invalid request flatbuffer",
+                );
+                return;
+            };
+            let Some(chunk_id) = request_fb.chunk_id().map(|id| ChunkId {
+                high: id.high(),
+                low: id.low(),
+            }) else {
+                submit_error(
+                    &server,
+                    conn_handle as *mut _,
+                    req_id,
+                    create_nano,
+                    msg_type,
+                    FBChunkdbRetCode::InvalidArgument,
+                    "missing chunk_id",
+                );
+                return;
+            };
+            let Some(old_segment) = request_fb.old_segment().map(parse_fb_segment) else {
+                submit_error(
+                    &server,
+                    conn_handle as *mut _,
+                    req_id,
+                    create_nano,
+                    msg_type,
+                    FBChunkdbRetCode::InvalidArgument,
+                    "missing old_segment",
+                );
+                return;
+            };
+            let surviving = parse_fb_segments(request_fb.surviving_segments());
+            let excluded = request_fb
+                .exclude_disk_ids()
+                .map(|values| {
+                    values
+                        .iter()
+                        .map(|id| super::DiskId {
+                            high: id.high(),
+                            low: id.low(),
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let result = handler
+                .allocate_replacement_segment(&chunk_id, &old_segment, &surviving, &excluded)
+                .await;
+            if result.is_ok() {
+                request.mark_success();
+            }
+            submit_segment_result(
+                &server,
+                conn_handle as *mut _,
+                req_id,
+                create_nano,
+                msg_type,
+                result,
+            );
+        });
+    }
+
+    pub(super) fn handle_replace_range(
+        &self,
+        req: ServerRequest,
+        server: &Arc<RpcServer>,
+        mut request: RequestGuard,
+    ) {
+        let req_id = req.request_id;
+        let create_nano = req.rpc_create_nano;
+        let msg_type = FBMsgType::EReplaceChunkStripRangeResponse.0 as u16;
+        let conn_handle = req.conn_handle as usize;
+        let handler = Arc::clone(&self.handler);
+        let server = Arc::clone(server);
+        self.rt.spawn(async move {
+            let Ok(request_fb) = flatbuffers::root::<FBReplaceChunkStripRangeRequest>(req.control()) else {
+                submit_invalid_request(
+                    &server,
+                    conn_handle,
+                    req_id,
+                    create_nano,
+                    msg_type,
+                    "invalid request flatbuffer",
+                );
+                return;
+            };
+            let Some(chunk_id) = request_fb.chunk_id().map(|id| ChunkId {
+                high: id.high(),
+                low: id.low(),
+            }) else {
+                submit_invalid_request(
+                    &server,
+                    conn_handle,
+                    req_id,
+                    create_nano,
+                    msg_type,
+                    "missing chunk_id",
+                );
+                return;
+            };
+            let Some(operation_id) = request_fb.operation_id().map(|id| ChunkId {
+                high: id.high(),
+                low: id.low(),
+            }) else {
+                submit_invalid_request(
+                    &server,
+                    conn_handle,
+                    req_id,
+                    create_nano,
+                    msg_type,
+                    "missing operation_id",
+                );
+                return;
+            };
+            let old_values = request_fb.old_strips();
+            let replacement_values = request_fb.replacement_strips();
+            let old = old_values
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|strip| parse_fb_chunk_strip(&strip))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let replacement = replacement_values
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|strip| parse_fb_chunk_strip(&strip))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if old_values.is_some_and(|values| values.len() != old.len())
+                || replacement_values.is_some_and(|values| values.len() != replacement.len())
+            {
+                submit_invalid_request(
+                    &server,
+                    conn_handle,
+                    req_id,
+                    create_nano,
+                    msg_type,
+                    "invalid strip in replacement range",
+                );
+                return;
+            }
+            let result = handler
+                .replace_chunk_strip_range(
+                    &chunk_id,
+                    request_fb.expected_modify_ts(),
+                    request_fb.start_index(),
+                    &old,
+                    &replacement,
+                    operation_id,
+                )
+                .await;
+            if result.is_ok() {
+                request.mark_success();
+            }
+            submit_chunk_result(
+                &server,
+                conn_handle as *mut _,
+                req_id,
+                create_nano,
+                msg_type,
+                result,
+            );
+        });
+    }
+
     // ── AllocateChunk ─────────────────────────────────────────────
 
     pub(super) fn handle_allocate(
@@ -538,4 +806,23 @@ impl ChunkdbRpcService {
             );
         });
     }
+}
+
+fn submit_invalid_request(
+    server: &RpcServer,
+    conn_handle: usize,
+    req_id: u64,
+    create_nano: u64,
+    msg_type: u16,
+    message: &str,
+) {
+    submit_error(
+        server,
+        conn_handle as *mut _,
+        req_id,
+        create_nano,
+        msg_type,
+        FBChunkdbRetCode::InvalidArgument,
+        message,
+    );
 }

@@ -13,8 +13,10 @@ use crowdb_chunk_client::{
 };
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
-    AppendChunkRequest, AppendChunkResponse, Chunk, ChunkState, ChunkStrip, ChunkType, DeleteChunkRequest,
-    DeleteChunkResponse, MirrorStrip, QueryChunkRequest, QueryChunkResponse, SealChunkRequest,
+    AllocateReplacementSegmentRequest, AllocateReplacementSegmentResponse, AppendChunkRequest,
+    AppendChunkResponse, Chunk, ChunkState, ChunkStrip, ChunkType, DeleteChunkRequest, DeleteChunkResponse,
+    DiscardReplacementSegmentRequest, DiscardReplacementSegmentResponse, MirrorStrip, QueryChunkRequest,
+    QueryChunkResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse, SealChunkRequest,
     SealChunkResponse, Strip, StripType, UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
@@ -28,6 +30,10 @@ struct MockState {
     advances: usize,
     seals: usize,
     deletes: usize,
+    replacement_allocations: usize,
+    replacements: usize,
+    discards: usize,
+    replacement_exclusions: Vec<Vec<DiskId>>,
 }
 
 #[derive(Default)]
@@ -36,6 +42,9 @@ struct MockAllocator {
     advance_delay_ms: AtomicU64,
     fail_allocations: AtomicBool,
     fail_on_attempt: AtomicU64,
+    fail_replacement_allocations: AtomicBool,
+    fail_replacements: AtomicBool,
+    timeout_after_replacement_once: AtomicBool,
     state: Mutex<MockState>,
 }
 
@@ -48,6 +57,17 @@ impl MockAllocator {
             state.advances,
             state.seals,
             state.deletes,
+        )
+    }
+
+    fn repair_snapshot(&self) -> (usize, usize, usize, Vec<Vec<DiskId>>, Vec<Chunk>) {
+        let state = self.state.lock().unwrap();
+        (
+            state.replacement_allocations,
+            state.replacements,
+            state.discards,
+            state.replacement_exclusions.clone(),
+            state.chunks.values().cloned().collect(),
         )
     }
 }
@@ -78,6 +98,9 @@ impl ChunkAllocator for MockAllocator {
             acknowledged_cursor: 0,
             closed_strip_sequence: None,
             writer_lease_deadline_ms: req.writer_lease_ms,
+            next_strip_sequence: 1,
+            cleanup_intents: vec![],
+            last_strip_replacement: None,
         };
         let mut state = self.state.lock().unwrap();
         state.allocations += 1;
@@ -161,7 +184,88 @@ impl ChunkAllocator for MockAllocator {
         let state = self.state.lock().unwrap();
         Ok(QueryChunkResponse {
             chunk: state.chunks.get(&(id.high, id.low)).cloned(),
+            layout_validity_ms: 0,
         })
+    }
+
+    async fn allocate_replacement_segment(
+        &self,
+        req: AllocateReplacementSegmentRequest,
+    ) -> Result<AllocateReplacementSegmentResponse> {
+        if self.fail_replacement_allocations.load(Ordering::Relaxed) {
+            return Err(IoError::AllocationFailed(
+                "injected replacement allocation failure".into(),
+            ));
+        }
+        let old = req.old_segment.expect("old replacement segment");
+        let mut state = self.state.lock().unwrap();
+        state.replacement_allocations += 1;
+        state.replacement_exclusions.push(req.exclude_disk_ids);
+        let ordinal = u64::try_from(state.replacement_allocations).unwrap();
+        Ok(AllocateReplacementSegmentResponse {
+            segment: Some(Segment {
+                disk_id: Some(DiskId {
+                    high: 100 + ordinal,
+                    low: 0,
+                }),
+                unit_offset: 100_000 + ordinal * u64::from(old.unit_count),
+                allocation_ts: 10_000 + ordinal,
+                ..old
+            }),
+        })
+    }
+
+    async fn replace_chunk_strip_range(
+        &self,
+        req: ReplaceChunkStripRangeRequest,
+    ) -> Result<ReplaceChunkStripRangeResponse> {
+        if self.fail_replacements.load(Ordering::Relaxed) {
+            return Err(IoError::WriteFailed(
+                "injected replacement metadata failure".into(),
+            ));
+        }
+        let id = req.chunk_id.expect("replacement chunk id");
+        let operation_id = req.operation_id.expect("replacement operation id");
+        let mut state = self.state.lock().unwrap();
+        let chunk = state.chunks.get_mut(&(id.high, id.low)).unwrap();
+        let start = usize::try_from(req.start_index).unwrap();
+        if chunk.modify_ts == req.expected_modify_ts.saturating_add(1)
+            && chunk.last_strip_replacement == Some(operation_id)
+            && chunk.strips.get(start..start + req.replacement_strips.len())
+                == Some(req.replacement_strips.as_slice())
+        {
+            return Ok(ReplaceChunkStripRangeResponse {
+                chunk: Some(chunk.clone()),
+            });
+        }
+        let end = start + req.old_strips.len();
+        if chunk.modify_ts != req.expected_modify_ts
+            || chunk.strips.get(start..end) != Some(req.old_strips.as_slice())
+        {
+            return Err(IoError::MetadataConflict("injected stale replacement".into()));
+        }
+        chunk.strips.splice(start..end, req.replacement_strips);
+        chunk.modify_ts += 1;
+        chunk.last_strip_replacement = Some(operation_id);
+        let installed = chunk.clone();
+        state.replacements += 1;
+        drop(state);
+        if self.timeout_after_replacement_once.swap(false, Ordering::AcqRel) {
+            return Err(IoError::WriteFailed(
+                "injected response loss after metadata commit".into(),
+            ));
+        }
+        Ok(ReplaceChunkStripRangeResponse {
+            chunk: Some(installed),
+        })
+    }
+
+    async fn discard_replacement_segment(
+        &self,
+        _req: DiscardReplacementSegmentRequest,
+    ) -> Result<DiscardReplacementSegmentResponse> {
+        self.state.lock().unwrap().discards += 1;
+        Ok(DiscardReplacementSegmentResponse {})
     }
 }
 
@@ -190,6 +294,7 @@ fn make_strip(chunk_id: ChunkId, sequence: u32, copies: u32) -> ChunkStrip {
         strip_type: StripType::Mirror as i32,
         strip: Some(Strip::MirrorStrip(MirrorStrip { segments })),
         usage_bitmap: Vec::new(),
+        unavailable_segments: Vec::new(),
     }
 }
 
@@ -227,6 +332,23 @@ impl DiskWriter for RecordingDiskWriter {
     }
 }
 
+struct SelectiveFailureDiskWriter {
+    failed_initial_disks: Vec<u64>,
+    writes: Mutex<Vec<(u64, Bytes)>>,
+}
+
+#[async_trait]
+impl DiskWriter for SelectiveFailureDiskWriter {
+    async fn write(&self, seg: &Segment, _unit_bytes: u64, data: Bytes) -> Result<()> {
+        let disk = seg.disk_id.expect("disk id").high;
+        if self.failed_initial_disks.contains(&disk) {
+            return Err(IoError::WriteFailed(format!("injected disk {disk} failure")));
+        }
+        self.writes.lock().unwrap().push((disk, data));
+        Ok(())
+    }
+}
+
 fn policy() -> SmallWritePolicy {
     SmallWritePolicy {
         object_limit: 1024 * 1024,
@@ -245,6 +367,8 @@ fn policy() -> SmallWritePolicy {
         chunk_capacity: 1024 * 1024 * 1024,
         mirror_copies: 3,
         writer_lease: Duration::from_secs(30),
+        failed_disk_ttl: Duration::from_secs(60),
+        repair_attempts_per_replica: 3,
     }
 }
 
@@ -313,7 +437,7 @@ async fn small_object_ingress_validates_size_and_releases_reservation() {
 async fn small_object_whole_budget_waits_without_partial_reservation() {
     let mut bounded = policy();
     bounded.object_limit = 64 * 1024;
-    bounded.memory_budget = 64 * 1024;
+    bounded.memory_budget = 1024 * 1024 + 64 * 1024;
     bounded.scale_out_queue_bytes = 64 * 1024;
     let (client, _, _) = client(bounded);
     let mut first = client.prepare_small_write(64 * 1024).await.unwrap();
@@ -359,6 +483,8 @@ async fn small_object_mirror_failure_fails_every_object_without_cursor_commit() 
     assert_eq!(allocator.snapshot().2, 0);
     assert_eq!(client.small_write_metrics().completed, 0);
     assert_eq!(client.small_write_metrics().failed, 4);
+    let (replacement_allocations, replacements, discards, _, _) = allocator.repair_snapshot();
+    assert_eq!((replacement_allocations, replacements, discards), (3, 0, 3));
     disk.fail.store(false, Ordering::Relaxed);
     let recovered = tokio::time::timeout(Duration::from_secs(1), async {
         let mut writer = client.prepare_small_write(4096).await.unwrap();
@@ -370,6 +496,136 @@ async fn small_object_mirror_failure_fails_every_object_without_cursor_commit() 
     .unwrap();
     assert_eq!(recovered[0].length, 4096);
     assert!(allocator.snapshot().0 >= 2);
+    assert!(client.small_write_metrics().exhausted_repairs >= 1);
+    assert!(client.small_write_metrics().pipeline_replacements >= 1);
+    client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
+async fn small_object_replacement_allocation_exhaustion_publishes_no_location() {
+    let allocator = Arc::new(MockAllocator::default());
+    allocator
+        .fail_replacement_allocations
+        .store(true, Ordering::Relaxed);
+    let disk = Arc::new(SelectiveFailureDiskWriter {
+        failed_initial_disks: vec![1],
+        writes: Mutex::new(Vec::new()),
+    });
+    let client = ChunkIoClient::from_parts_with_small_policy(allocator.clone(), disk, policy()).unwrap();
+    let mut writer = client.prepare_small_write(4096).await.unwrap();
+    writer.on_data(Bytes::from(vec![7; 4096])).await.unwrap();
+    assert!(matches!(writer.on_finish().await, Err(IoError::WriteFailed(_))));
+    assert_eq!(allocator.repair_snapshot().0, 0);
+    let metrics = client.small_write_metrics();
+    assert_eq!(metrics.completed, 0);
+    assert_eq!(metrics.failed, 1);
+    assert_eq!(metrics.repair_attempts, 3);
+    assert_eq!(metrics.exhausted_repairs, 1);
+    allocator
+        .fail_replacement_allocations
+        .store(false, Ordering::Relaxed);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while client.small_write_metrics().pipeline_replacements == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("failed pipeline should be replaced");
+    client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
+async fn small_object_metadata_exhaustion_publishes_no_location() {
+    let allocator = Arc::new(MockAllocator::default());
+    allocator.fail_replacements.store(true, Ordering::Relaxed);
+    let disk = Arc::new(SelectiveFailureDiskWriter {
+        failed_initial_disks: vec![1],
+        writes: Mutex::new(Vec::new()),
+    });
+    let client = ChunkIoClient::from_parts_with_small_policy(allocator.clone(), disk, policy()).unwrap();
+    let mut writer = client.prepare_small_write(4096).await.unwrap();
+    writer.on_data(Bytes::from(vec![8; 4096])).await.unwrap();
+    assert!(matches!(writer.on_finish().await, Err(IoError::WriteFailed(_))));
+    let (allocations, replacements, discards, _, chunks) = allocator.repair_snapshot();
+    assert_eq!((allocations, replacements, discards), (1, 0, 0));
+    assert_eq!(chunks[0].acknowledged_cursor, 0);
+    let metrics = client.small_write_metrics();
+    assert_eq!(metrics.completed, 0);
+    assert_eq!(metrics.failed, 1);
+    assert_eq!(metrics.repair_attempts, 3);
+    assert_eq!(metrics.exhausted_repairs, 1);
+    allocator.fail_replacements.store(false, Ordering::Relaxed);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while client.small_write_metrics().pipeline_replacements == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("failed pipeline should be replaced");
+    client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
+async fn small_object_repairs_two_failed_replicas_from_the_same_shadow() {
+    let allocator = Arc::new(MockAllocator::default());
+    let disk = Arc::new(SelectiveFailureDiskWriter {
+        failed_initial_disks: vec![1, 2],
+        writes: Mutex::new(Vec::new()),
+    });
+    let client =
+        ChunkIoClient::from_parts_with_small_policy(allocator.clone(), disk.clone(), policy()).unwrap();
+    let mut writer = client.prepare_small_write(12 * 1024).await.unwrap();
+    writer.on_data(Bytes::from(vec![0x5a; 12 * 1024])).await.unwrap();
+    let locations = writer.on_finish().await.unwrap();
+    assert_eq!(locations.len(), 1);
+
+    let (allocations, replacements, discards, exclusions, chunks) = allocator.repair_snapshot();
+    assert_eq!((allocations, replacements, discards), (2, 2, 0));
+    assert!(exclusions[0].iter().any(|disk| disk.high == 1));
+    assert!(exclusions[1].iter().any(|disk| disk.high == 1));
+    assert!(exclusions[1].iter().any(|disk| disk.high == 2));
+    let replacement_images: Vec<_> = {
+        let recorded = disk.writes.lock().unwrap();
+        recorded
+            .iter()
+            .filter(|(disk, _)| *disk >= 100)
+            .map(|(_, image)| image.clone())
+            .collect()
+    };
+    assert_eq!(replacement_images.len(), 2);
+    assert_eq!(replacement_images[0].len(), 1024 * 1024);
+    assert_eq!(replacement_images[0], replacement_images[1]);
+    assert_eq!(&replacement_images[0][..12 * 1024], vec![0x5a; 12 * 1024]);
+    assert_eq!(chunks[0].state, ChunkState::Active as i32);
+    assert_eq!(chunks[0].acknowledged_cursor, 12 * 1024);
+    assert_eq!(client.small_write_metrics().repaired_replicas, 2);
+    assert_eq!(client.small_write_metrics().repairs_avoiding_rotation, 2);
+    assert_eq!(client.small_write_metrics().active_repairs, 0);
+    assert!(client.small_write_metrics().repair_latency_ns > 0);
+    assert_eq!(allocator.snapshot().3, 0);
+    client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
+async fn small_object_retries_ambiguous_metadata_commit_without_reallocating() {
+    let allocator = Arc::new(MockAllocator::default());
+    allocator
+        .timeout_after_replacement_once
+        .store(true, Ordering::Relaxed);
+    let disk = Arc::new(SelectiveFailureDiskWriter {
+        failed_initial_disks: vec![1],
+        writes: Mutex::new(Vec::new()),
+    });
+    let client = ChunkIoClient::from_parts_with_small_policy(allocator.clone(), disk, policy()).unwrap();
+    let mut writer = client.prepare_small_write(4096).await.unwrap();
+    writer.on_data(Bytes::from(vec![3; 4096])).await.unwrap();
+    assert_eq!(writer.on_finish().await.unwrap()[0].length, 4096);
+
+    let (allocations, replacements, discards, _, chunks) = allocator.repair_snapshot();
+    assert_eq!((allocations, replacements, discards), (1, 1, 0));
+    assert!(chunks[0].last_strip_replacement.is_some());
+    assert_eq!(client.small_write_metrics().repair_attempts, 2);
+    assert_eq!(client.small_write_metrics().repaired_replicas, 1);
     client.shutdown_small_writes().await.unwrap();
 }
 

@@ -118,6 +118,16 @@ pub struct SmallWriteMetrics {
     pub(crate) scale_out: AtomicU64,
     pub(crate) scale_in: AtomicU64,
     pub(crate) tail_waste_bytes: AtomicU64,
+    pub(crate) repair_attempts: AtomicU64,
+    pub(crate) repaired_replicas: AtomicU64,
+    pub(crate) exhausted_repairs: AtomicU64,
+    pub(crate) negative_list_hits: AtomicU64,
+    pub(crate) active_repairs: AtomicU64,
+    pub(crate) repair_latency_ns: AtomicU64,
+    pub(crate) max_repair_latency_ns: AtomicU64,
+    pub(crate) pipeline_replacements: AtomicU64,
+    pub(crate) repairs_avoiding_rotation: AtomicU64,
+    pub(crate) shadow_bytes: AtomicU64,
 }
 
 impl Default for SmallWriteMetrics {
@@ -139,6 +149,16 @@ impl Default for SmallWriteMetrics {
             scale_out: AtomicU64::new(0),
             scale_in: AtomicU64::new(0),
             tail_waste_bytes: AtomicU64::new(0),
+            repair_attempts: AtomicU64::new(0),
+            repaired_replicas: AtomicU64::new(0),
+            exhausted_repairs: AtomicU64::new(0),
+            negative_list_hits: AtomicU64::new(0),
+            active_repairs: AtomicU64::new(0),
+            repair_latency_ns: AtomicU64::new(0),
+            max_repair_latency_ns: AtomicU64::new(0),
+            pipeline_replacements: AtomicU64::new(0),
+            repairs_avoiding_rotation: AtomicU64::new(0),
+            shadow_bytes: AtomicU64::new(0),
         }
     }
 }
@@ -162,6 +182,16 @@ pub struct SmallWriteMetricsSnapshot {
     pub scale_out: u64,
     pub scale_in: u64,
     pub tail_waste_bytes: u64,
+    pub repair_attempts: u64,
+    pub repaired_replicas: u64,
+    pub exhausted_repairs: u64,
+    pub negative_list_hits: u64,
+    pub active_repairs: u64,
+    pub repair_latency_ns: u64,
+    pub max_repair_latency_ns: u64,
+    pub pipeline_replacements: u64,
+    pub repairs_avoiding_rotation: u64,
+    pub shadow_bytes: u64,
 }
 
 impl SmallWriteMetrics {
@@ -195,6 +225,16 @@ impl SmallWriteMetrics {
             scale_out: self.scale_out.load(Ordering::Relaxed),
             scale_in: self.scale_in.load(Ordering::Relaxed),
             tail_waste_bytes: self.tail_waste_bytes.load(Ordering::Relaxed),
+            repair_attempts: self.repair_attempts.load(Ordering::Relaxed),
+            repaired_replicas: self.repaired_replicas.load(Ordering::Relaxed),
+            exhausted_repairs: self.exhausted_repairs.load(Ordering::Relaxed),
+            negative_list_hits: self.negative_list_hits.load(Ordering::Relaxed),
+            active_repairs: self.active_repairs.load(Ordering::Relaxed),
+            repair_latency_ns: self.repair_latency_ns.load(Ordering::Relaxed),
+            max_repair_latency_ns: self.max_repair_latency_ns.load(Ordering::Relaxed),
+            pipeline_replacements: self.pipeline_replacements.load(Ordering::Relaxed),
+            repairs_avoiding_rotation: self.repairs_avoiding_rotation.load(Ordering::Relaxed),
+            shadow_bytes: self.shadow_bytes.load(Ordering::Relaxed),
         }
     }
 }

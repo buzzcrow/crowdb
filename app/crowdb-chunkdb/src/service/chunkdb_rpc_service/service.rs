@@ -35,12 +35,16 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::chunkdb_fb::{
     FBAdvanceChunkWriteRequest, FBAllocateChunkRequest, FBAllocateChunkResponse, FBAllocateChunkResponseArgs,
-    FBAppendChunkRequest, FBAppendChunkResponse, FBAppendChunkResponseArgs, FBChunk, FBChunkArgs,
-    FBChunkState, FBChunkStrip, FBChunkStripArgs, FBChunkType, FBChunkdbRetCode, FBDeleteChunkRangeRequest,
-    FBDeleteChunkRangeResponse, FBDeleteChunkRangeResponseArgs, FBDeleteChunkRequest, FBEcState, FBEcStrip,
+    FBAllocateReplacementSegmentRequest, FBAllocateReplacementSegmentResponse,
+    FBAllocateReplacementSegmentResponseArgs, FBAppendChunkRequest, FBAppendChunkResponse,
+    FBAppendChunkResponseArgs, FBChunk, FBChunkArgs, FBChunkState, FBChunkStrip, FBChunkStripArgs,
+    FBChunkType, FBChunkdbRetCode, FBDeleteChunkRangeRequest, FBDeleteChunkRangeResponse,
+    FBDeleteChunkRangeResponseArgs, FBDeleteChunkRequest, FBDiscardReplacementSegmentRequest,
+    FBDiscardReplacementSegmentResponse, FBDiscardReplacementSegmentResponseArgs, FBEcState, FBEcStrip,
     FBEcStripArgs, FBInt128, FBListChunksRequest, FBListChunksResponse, FBListChunksResponseArgs,
-    FBMirrorStrip, FBMirrorStripArgs, FBQueryChunkRequest, FBSealChunkRequest, FBSegment, FBStripBody,
-    FBStripType, FBUpdateChunkStripRequest,
+    FBMirrorStrip, FBMirrorStripArgs, FBQueryChunkRequest, FBQueryChunkResponse, FBQueryChunkResponseArgs,
+    FBReplaceChunkStripRangeRequest, FBSealChunkRequest, FBSegment, FBStripBody, FBStripCleanupIntent,
+    FBStripCleanupIntentArgs, FBStripType, FBUpdateChunkStripRequest,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::fb::FBMsgType;
@@ -67,7 +71,7 @@ impl ChunkdbRpcService {
         Self { handler, metrics, rt }
     }
 
-    /// Register all 8 chunkdb request handlers into the `RpcServer`.
+    /// Register all chunkdb request handlers into the `RpcServer`.
     pub fn register_handlers(self: &Arc<Self>, server: &Arc<RpcServer>) {
         server.register_handler(
             FBMsgType::EAllocateChunkRequest.0 as u16,
@@ -150,6 +154,37 @@ impl ChunkdbRpcService {
                 Self::handle_list,
             ),
         );
+        self.register_replacement_handlers(server);
+    }
+
+    fn register_replacement_handlers(self: &Arc<Self>, server: &Arc<RpcServer>) {
+        server.register_handler(
+            FBMsgType::EAllocateReplacementSegmentRequest.0 as u16,
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::UpdateChunkStrip,
+                Self::handle_allocate_replacement,
+            ),
+        );
+        server.register_handler(
+            FBMsgType::EReplaceChunkStripRangeRequest.0 as u16,
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::UpdateChunkStrip,
+                Self::handle_replace_range,
+            ),
+        );
+        server.register_handler(
+            FBMsgType::EDiscardReplacementSegmentRequest.0 as u16,
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::UpdateChunkStrip,
+                Self::handle_discard_replacement,
+            ),
+        );
     }
 
     /// Build a handler closure that dispatches to the given method.
@@ -174,6 +209,8 @@ mod queries;
 mod wire;
 
 use wire::{
-    build_delete_range_response, build_list_response, map_error, parse_fb_chunk_strip, proto_chunk_type,
-    proto_strip_type, submit_append_result, submit_chunk_result, submit_error, submit_fb_response,
+    build_delete_range_response, build_discard_replacement_response, build_list_response,
+    build_query_response, map_error, parse_fb_chunk_strip, parse_fb_segment, parse_fb_segments,
+    proto_chunk_type, proto_strip_type, submit_append_result, submit_chunk_result, submit_error,
+    submit_fb_response, submit_segment_result,
 };

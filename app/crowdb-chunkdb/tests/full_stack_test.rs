@@ -10,10 +10,15 @@
 mod common;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use common::cluster::{seed_hardware, ChunkdbHarness, DiskdbServer, KvCluster};
-use crowdb_chunkdb::lifecycle::LifecycleError;
-use crowdb_protocol::chunkdb::rpc::{ChunkState, ChunkType, StripType};
+use crowdb_chunkdb::allocator::StripAllocType;
+use crowdb_chunkdb::lifecycle::{ChunkLockMap, LifecycleError, LifecycleHandler};
+use crowdb_chunkdb::metrics::LifecycleMetrics;
+use crowdb_chunkdb::selector::PlacementConstraints;
+use crowdb_protocol::chunkdb::rpc::{ChunkState, ChunkType, Strip, StripType};
+use crowdb_protocol::common::ChunkId;
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
@@ -105,6 +110,195 @@ async fn chunkdb_full_stack_allocate_seal_delete() {
         .expect("query after delete");
     assert_eq!(queried_after.state, ChunkState::Deleted as i32);
     eprintln!("chunk queried after delete (state=Deleted)");
+}
+
+#[tokio::test]
+async fn chunkdb_fenced_range_replacement_is_idempotent_and_preserves_geometry() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary not found");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let chunk = harness
+        .handler
+        .allocate_chunk(None, 1, 2, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .await
+        .unwrap();
+    let chunk_id = chunk.id.unwrap();
+    let old = chunk.strips[0].clone();
+    let Some(Strip::MirrorStrip(mut mirror)) = old.strip.clone() else {
+        panic!("expected mirror strip");
+    };
+    let failed = mirror.segments[0];
+    let replacement = harness
+        .handler
+        .allocate_replacement_segment(
+            &chunk_id,
+            &failed,
+            &mirror.segments[1..],
+            &[failed.disk_id.unwrap()],
+        )
+        .await
+        .unwrap();
+    assert_ne!(replacement.disk_id, failed.disk_id);
+    mirror.segments[0] = replacement;
+    let mut installed = old.clone();
+    installed.strip = Some(Strip::MirrorStrip(mirror));
+    let operation_id = ChunkId { high: 9, low: 7 };
+    let updated = harness
+        .handler
+        .replace_chunk_strip_range(
+            &chunk_id,
+            chunk.modify_ts,
+            0,
+            std::slice::from_ref(&old),
+            std::slice::from_ref(&installed),
+            operation_id,
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.capacity, chunk.capacity);
+    assert_eq!(updated.next_strip_sequence, chunk.next_strip_sequence);
+    assert_eq!(updated.strips[0], installed);
+    assert_eq!(updated.cleanup_intents.len(), 1);
+    assert_eq!(updated.cleanup_intents[0].retired_segments, vec![failed]);
+
+    let retried = harness
+        .handler
+        .replace_chunk_strip_range(
+            &chunk_id,
+            chunk.modify_ts,
+            0,
+            std::slice::from_ref(&old),
+            std::slice::from_ref(&installed),
+            operation_id,
+        )
+        .await
+        .unwrap();
+    assert_eq!(retried, updated);
+    assert_stale_replacement_conflicts(&harness, chunk_id, &chunk, &installed).await;
+
+    let mut consolidated = harness
+        .allocator
+        .allocate_strip(
+            &harness.topology.snapshot(),
+            &chunk_id,
+            StripAllocType::Mirror { copy_count: 3 },
+            2,
+            updated.strips[0].strip_sequence,
+            &PlacementConstraints::new(),
+        )
+        .await
+        .unwrap();
+    consolidated.chunk_offset = updated.strips[0].chunk_offset;
+    let consolidated = harness
+        .handler
+        .replace_chunk_strip_range(
+            &chunk_id,
+            updated.modify_ts,
+            0,
+            &updated.strips,
+            std::slice::from_ref(&consolidated),
+            ChunkId { high: 11, low: 12 },
+        )
+        .await
+        .unwrap();
+    assert_eq!(consolidated.strips.len(), 1);
+    assert_eq!(consolidated.capacity, chunk.capacity);
+    assert_eq!(consolidated.next_strip_sequence, chunk.next_strip_sequence);
+    assert_eq!(consolidated.cleanup_intents.len(), 2);
+}
+
+async fn assert_stale_replacement_conflicts(
+    harness: &ChunkdbHarness,
+    chunk_id: ChunkId,
+    original: &crowdb_protocol::chunkdb::rpc::Chunk,
+    installed: &crowdb_protocol::chunkdb::rpc::ChunkStrip,
+) {
+    let conflict = harness
+        .handler
+        .replace_chunk_strip_range(
+            &chunk_id,
+            original.modify_ts,
+            0,
+            std::slice::from_ref(&original.strips[1]),
+            std::slice::from_ref(installed),
+            ChunkId { high: 10, low: 8 },
+        )
+        .await;
+    assert!(matches!(conflict, Err(LifecycleError::StateConflict)));
+}
+
+#[tokio::test]
+async fn chunkdb_restart_reconciles_expired_replacement_cleanup_intent() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary not found");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start_with_layout_validity(&cluster, Duration::from_millis(1)).await;
+    let chunk = harness
+        .handler
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .await
+        .unwrap();
+    let chunk_id = chunk.id.unwrap();
+    let old = chunk.strips[0].clone();
+    let Some(Strip::MirrorStrip(mut mirror)) = old.strip.clone() else {
+        panic!("expected mirror strip");
+    };
+    let failed = mirror.segments[0];
+    let replacement = harness
+        .handler
+        .allocate_replacement_segment(
+            &chunk_id,
+            &failed,
+            &mirror.segments[1..],
+            &[failed.disk_id.unwrap()],
+        )
+        .await
+        .unwrap();
+    mirror.segments[0] = replacement;
+    let mut installed = old.clone();
+    installed.strip = Some(Strip::MirrorStrip(mirror));
+    harness
+        .handler
+        .replace_chunk_strip_range(
+            &chunk_id,
+            chunk.modify_ts,
+            0,
+            std::slice::from_ref(&old),
+            std::slice::from_ref(&installed),
+            ChunkId { high: 31, low: 41 },
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    let restarted = LifecycleHandler::new(
+        Arc::clone(&harness.store),
+        Arc::clone(&harness.allocator),
+        harness.topology.clone(),
+    )
+    .with_layout_validity(Duration::from_millis(1))
+    .with_locks(Arc::new(ChunkLockMap::new(
+        10_000,
+        Arc::new(LifecycleMetrics::new()),
+        Duration::from_secs(60),
+    )));
+    assert_eq!(restarted.reconcile_pending_chunks().await.unwrap(), 1);
+    let reconciled = restarted.query_chunk(&chunk_id).await.unwrap();
+    assert_eq!(reconciled.strips[0], installed);
+    assert!(reconciled.cleanup_intents.is_empty());
+    assert_eq!(
+        reconciled.last_strip_replacement,
+        Some(ChunkId { high: 31, low: 41 })
+    );
 }
 
 #[tokio::test]

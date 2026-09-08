@@ -188,6 +188,9 @@ impl<'a> FBQueryChunkResponseRef<'a> {
     pub fn chunk(&self) -> Option<FBChunk<'a>> {
         self.root.and_then(|r| r.chunk())
     }
+    pub fn layout_validity_ms(&self) -> u64 {
+        self.root.map_or(0, |r| r.layout_validity_ms())
+    }
 }
 
 // ── FBSealChunkResponseRef ───────────────────────────────────────

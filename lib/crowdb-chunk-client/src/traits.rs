@@ -11,8 +11,10 @@
 use async_trait::async_trait;
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
-    AppendChunkRequest, AppendChunkResponse, DeleteChunkRequest, DeleteChunkResponse, QueryChunkRequest,
-    QueryChunkResponse, SealChunkRequest, SealChunkResponse, UpdateChunkStripRequest,
+    AllocateReplacementSegmentRequest, AllocateReplacementSegmentResponse, AppendChunkRequest,
+    AppendChunkResponse, DeleteChunkRequest, DeleteChunkResponse, DiscardReplacementSegmentRequest,
+    DiscardReplacementSegmentResponse, QueryChunkRequest, QueryChunkResponse, ReplaceChunkStripRangeRequest,
+    ReplaceChunkStripRangeResponse, SealChunkRequest, SealChunkResponse, UpdateChunkStripRequest,
     UpdateChunkStripResponse,
 };
 use std::sync::Arc;
@@ -34,6 +36,30 @@ pub trait ChunkAllocator: Send + Sync {
     async fn delete_chunk(&self, req: DeleteChunkRequest) -> Result<DeleteChunkResponse>;
     async fn update_chunk_strip(&self, req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse>;
     async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse>;
+    async fn allocate_replacement_segment(
+        &self,
+        _req: AllocateReplacementSegmentRequest,
+    ) -> Result<AllocateReplacementSegmentResponse> {
+        Err(crate::IoError::AllocationFailed(
+            "replacement allocation is unsupported by this allocator".into(),
+        ))
+    }
+    async fn replace_chunk_strip_range(
+        &self,
+        _req: ReplaceChunkStripRangeRequest,
+    ) -> Result<ReplaceChunkStripRangeResponse> {
+        Err(crate::IoError::MetadataConflict(
+            "strip range replacement is unsupported by this allocator".into(),
+        ))
+    }
+    async fn discard_replacement_segment(
+        &self,
+        _req: DiscardReplacementSegmentRequest,
+    ) -> Result<DiscardReplacementSegmentResponse> {
+        Err(crate::IoError::AllocationFailed(
+            "replacement cleanup is unsupported by this allocator".into(),
+        ))
+    }
 }
 
 // Blanket impl so the pipeline can hold `Arc<dyn ChunkAllocator>` and
@@ -61,6 +87,24 @@ impl<T: ChunkAllocator + ?Sized> ChunkAllocator for Arc<T> {
     async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse> {
         (**self).query_chunk(req).await
     }
+    async fn allocate_replacement_segment(
+        &self,
+        req: AllocateReplacementSegmentRequest,
+    ) -> Result<AllocateReplacementSegmentResponse> {
+        (**self).allocate_replacement_segment(req).await
+    }
+    async fn replace_chunk_strip_range(
+        &self,
+        req: ReplaceChunkStripRangeRequest,
+    ) -> Result<ReplaceChunkStripRangeResponse> {
+        (**self).replace_chunk_strip_range(req).await
+    }
+    async fn discard_replacement_segment(
+        &self,
+        req: DiscardReplacementSegmentRequest,
+    ) -> Result<DiscardReplacementSegmentResponse> {
+        (**self).discard_replacement_segment(req).await
+    }
 }
 
 // ── Concrete impl for ChunkdbClient ──────────────────────────────
@@ -87,5 +131,23 @@ impl ChunkAllocator for crowdb_chunkdb_client::ChunkdbClient {
     }
     async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse> {
         Ok(crowdb_chunkdb_client::ChunkdbClient::query_chunk(self, req).await?)
+    }
+    async fn allocate_replacement_segment(
+        &self,
+        req: AllocateReplacementSegmentRequest,
+    ) -> Result<AllocateReplacementSegmentResponse> {
+        Ok(crowdb_chunkdb_client::ChunkdbClient::allocate_replacement_segment(self, req).await?)
+    }
+    async fn replace_chunk_strip_range(
+        &self,
+        req: ReplaceChunkStripRangeRequest,
+    ) -> Result<ReplaceChunkStripRangeResponse> {
+        Ok(crowdb_chunkdb_client::ChunkdbClient::replace_chunk_strip_range(self, req).await?)
+    }
+    async fn discard_replacement_segment(
+        &self,
+        req: DiscardReplacementSegmentRequest,
+    ) -> Result<DiscardReplacementSegmentResponse> {
+        Ok(crowdb_chunkdb_client::ChunkdbClient::discard_replacement_segment(self, req).await?)
     }
 }

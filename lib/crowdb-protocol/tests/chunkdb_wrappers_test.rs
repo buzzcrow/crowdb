@@ -42,6 +42,9 @@ fn chunkdb_advance_write_response_exposes_fenced_cursor_metadata() {
             acknowledged_cursor: 4096,
             closed_strip_sequence: 0,
             writer_lease_deadline_ms: 1234,
+            next_strip_sequence: 1,
+            cleanup_intents: None,
+            last_strip_replacement: None,
         },
     );
     let response = FBAdvanceChunkWriteResponse::create(
@@ -92,6 +95,7 @@ macro_rules! build_mirror_chunk {
                 strip_body_type: FBStripBody::FBMirrorStrip,
                 strip_body: Some(mirror.as_union_value()),
                 usage_bitmap: None,
+                unavailable_segments: None,
             },
         );
         let strips = $fbb.create_vector(&[strip]);
@@ -111,6 +115,9 @@ macro_rules! build_mirror_chunk {
                 acknowledged_cursor: 0,
                 closed_strip_sequence: u32::MAX,
                 writer_lease_deadline_ms: 0,
+                next_strip_sequence: 1,
+                cleanup_intents: None,
+                last_strip_replacement: None,
             },
         )
     }};
@@ -259,6 +266,7 @@ fn ec_strip_union_variant() {
             strip_body_type: FBStripBody::FBEcStrip,
             strip_body: Some(ec.as_union_value()),
             usage_bitmap: None,
+            unavailable_segments: None,
         },
     );
     let strips = fbb.create_vector(&[strip]);
@@ -279,6 +287,9 @@ fn ec_strip_union_variant() {
             acknowledged_cursor: 0,
             closed_strip_sequence: u32::MAX,
             writer_lease_deadline_ms: 0,
+            next_strip_sequence: 2,
+            cleanup_intents: None,
+            last_strip_replacement: None,
         },
     );
     let resp = FBAllocateChunkResponse::create(

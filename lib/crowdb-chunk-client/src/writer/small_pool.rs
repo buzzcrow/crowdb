@@ -14,6 +14,7 @@ use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 
 use crate::config::SmallWritePolicy;
 use crate::metrics::SmallWriteMetrics;
+use crate::negative_list::FailedDiskList;
 use crate::{ChunkAllocator, DiskWriter, IoError, Result};
 
 use super::small_manager::{self, ManagerCommand};
@@ -97,6 +98,7 @@ pub(crate) struct SmallPoolRuntime {
     pub closed: AtomicBool,
     pub route_nonce: AtomicU64,
     pub manager_tx: mpsc::UnboundedSender<ManagerCommand>,
+    pub failed_disks: Arc<FailedDiskList>,
     pub(crate) budget: Arc<Semaphore>,
 }
 

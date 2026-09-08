@@ -34,8 +34,9 @@ use crowdb_diskio_client::DiskId;
 use crowdb_protocol::chunkdb::rpc::Strip as StripOneof;
 use crowdb_protocol::chunkdb::rpc::{
     AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse, Chunk, ChunkStrip,
-    ChunkType, DeleteChunkRequest, DeleteChunkResponse, EcStrip, QueryChunkRequest, QueryChunkResponse,
-    SealChunkRequest, SealChunkResponse, StripType, UpdateChunkStripRequest, UpdateChunkStripResponse,
+    ChunkType, DeleteChunkRequest, DeleteChunkResponse, EcStrip, MirrorStrip, QueryChunkRequest,
+    QueryChunkResponse, SealChunkRequest, SealChunkResponse, StripType, UpdateChunkStripRequest,
+    UpdateChunkStripResponse,
 };
 use crowdb_protocol::common::DiskId as ProtoDiskId;
 use crowdb_protocol::diskdb::rpc::Segment;
@@ -103,9 +104,14 @@ impl ChunkAllocator for MockChunkAllocator {
         st.allocate_calls += 1;
         st.allocated_strip_counts.push(req.strip_count);
         let chunk_id = req.chunk_id.unwrap_or_default();
+        let is_mirror = req.strip_type == StripType::Mirror as i32;
         let data_num = req.data_num as usize;
         let code_num = req.code_num as usize;
-        let total = data_num + code_num;
+        let total = if is_mirror {
+            req.copy_count as usize
+        } else {
+            data_num + code_num
+        };
 
         let mut segments = Vec::with_capacity(total);
         for i in 0..total {
@@ -116,29 +122,44 @@ impl ChunkAllocator for MockChunkAllocator {
                 }),
                 zone_index: 0,
                 unit_offset: st.next_segment_offset,
-                unit_count: 1,
+                unit_count: if is_mirror {
+                    (req.write_granularity / 4).max(1)
+                } else {
+                    1
+                },
                 owner_chunk: Some(chunk_id),
                 allocation_ts: st.next_segment_offset + 1,
             });
             st.next_segment_offset += 1;
         }
 
+        let (capacity, strip) = if is_mirror {
+            let capacity = req.write_granularity;
+            (capacity, StripOneof::MirrorStrip(MirrorStrip { segments }))
+        } else {
+            let capacity = data_num as u32;
+            (
+                capacity,
+                StripOneof::EcStrip(EcStrip {
+                    data_num: req.data_num,
+                    code_num: req.code_num,
+                    ec_state: 0,
+                    segments,
+                }),
+            )
+        };
         let strip = ChunkStrip {
             chunk_offset: 0,
             strip_sequence: 0,
             unit_kb: 4,
-            capacity: data_num as u32,
+            capacity,
             create_ts_ms: 0,
             sealed_ts_ms: 0,
             sealed_length: 0,
-            strip_type: StripType::Ec as i32,
-            strip: Some(StripOneof::EcStrip(EcStrip {
-                data_num: req.data_num,
-                code_num: req.code_num,
-                ec_state: 0,
-                segments,
-            })),
+            strip_type: req.strip_type,
+            strip: Some(strip),
             usage_bitmap: Vec::new(),
+            unavailable_segments: Vec::new(),
         };
 
         let chunk = Chunk {
@@ -147,7 +168,7 @@ impl ChunkAllocator for MockChunkAllocator {
             state: 1,
             create_ts_ms: 0,
             sealed_ts_ms: 0,
-            capacity: data_num as u32,
+            capacity,
             sealed_length: 0,
             strips: vec![strip.clone()],
             chunk_type: ChunkType::Repo as i32,
@@ -155,6 +176,9 @@ impl ChunkAllocator for MockChunkAllocator {
             acknowledged_cursor: 0,
             closed_strip_sequence: None,
             writer_lease_deadline_ms: 0,
+            next_strip_sequence: 1,
+            cleanup_intents: vec![],
+            last_strip_replacement: None,
         };
 
         st.chunks
@@ -166,9 +190,14 @@ impl ChunkAllocator for MockChunkAllocator {
         let mut st = self.state.lock().unwrap();
         st.append_calls += 1;
         let chunk_id = req.chunk_id.unwrap_or_default();
+        let is_mirror = req.strip_type == StripType::Mirror as i32;
         let data_num = req.data_num as usize;
         let code_num = req.code_num as usize;
-        let total = data_num + code_num;
+        let total = if is_mirror {
+            req.copy_count as usize
+        } else {
+            data_num + code_num
+        };
 
         let strip_seq = st
             .chunks
@@ -184,29 +213,44 @@ impl ChunkAllocator for MockChunkAllocator {
                 }),
                 zone_index: 0,
                 unit_offset: st.next_segment_offset,
-                unit_count: 1,
+                unit_count: if is_mirror { req.strip_size.max(1) } else { 1 },
                 owner_chunk: Some(chunk_id),
                 allocation_ts: st.next_segment_offset + 1,
             });
             st.next_segment_offset += 1;
         }
 
+        let (capacity, strip) = if is_mirror {
+            let capacity = req.strip_size.saturating_mul(4);
+            (capacity, StripOneof::MirrorStrip(MirrorStrip { segments }))
+        } else {
+            let capacity = data_num as u32;
+            (
+                capacity,
+                StripOneof::EcStrip(EcStrip {
+                    data_num: req.data_num,
+                    code_num: req.code_num,
+                    ec_state: 0,
+                    segments,
+                }),
+            )
+        };
+        let chunk_offset = st
+            .chunks
+            .get(&(chunk_id.high, chunk_id.low))
+            .map_or(0, |entry| entry.0.iter().map(|strip| strip.capacity).sum());
         let strip = ChunkStrip {
-            chunk_offset: strip_seq,
+            chunk_offset,
             strip_sequence: strip_seq,
             unit_kb: 4,
-            capacity: data_num as u32,
+            capacity,
             create_ts_ms: 0,
             sealed_ts_ms: 0,
             sealed_length: 0,
-            strip_type: StripType::Ec as i32,
-            strip: Some(StripOneof::EcStrip(EcStrip {
-                data_num: req.data_num,
-                code_num: req.code_num,
-                ec_state: 0,
-                segments,
-            })),
+            strip_type: req.strip_type,
+            strip: Some(strip),
             usage_bitmap: Vec::new(),
+            unavailable_segments: Vec::new(),
         };
 
         let entry = st
@@ -250,7 +294,10 @@ impl ChunkAllocator for MockChunkAllocator {
     }
 
     async fn query_chunk(&self, _req: QueryChunkRequest) -> Result<QueryChunkResponse> {
-        Ok(QueryChunkResponse { chunk: None })
+        Ok(QueryChunkResponse {
+            chunk: None,
+            layout_validity_ms: 0,
+        })
     }
 }
 

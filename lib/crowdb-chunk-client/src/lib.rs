@@ -28,6 +28,7 @@ pub mod disk_io;
 pub mod error;
 pub mod io;
 pub mod metrics;
+mod negative_list;
 pub mod traits;
 pub mod worker;
 pub mod writer;
@@ -42,6 +43,9 @@ pub use disk_io::{DiskWriter, DiskioBlockWriter, RoutedDiskWriter};
 pub use error::{IoError, Result};
 pub use io::{BackpressurePolicy, ChunkIoWriter, FeedStatus};
 pub use metrics::{ChunkClientMetrics, SmallWriteMetricsSnapshot};
+#[cfg(feature = "test-util")]
+#[doc(hidden)]
+pub use negative_list::FailedDiskList;
 pub use traits::ChunkAllocator;
 pub use worker::{EcWorker, HashWorker};
 pub use writer::{LargeAsyncObjectWriter, LargeObjectWriter, PooledWriter, SmallObjectWriter, WriterPool};

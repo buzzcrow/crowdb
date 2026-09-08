@@ -7,6 +7,7 @@
 //! Transitions are validated; invalid transitions return
 //! `InvalidStateTransition`.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -17,9 +18,12 @@ use tracing::{info, warn};
 
 use crowdb_common::metrics::LatencyHistogram;
 use crowdb_protocol::chunkdb::rpc::{
-    Chunk, ChunkState as ProtoChunkState, ChunkStrip, ChunkType, StripType as ProtoStripType,
+    Chunk, ChunkState as ProtoChunkState, ChunkStrip, ChunkType, Strip, StripCleanupIntent,
+    StripType as ProtoStripType,
 };
 use crowdb_protocol::common::ChunkId;
+use crowdb_protocol::common::DiskId;
+use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_protocol::generate_chunk_id;
 
 use crate::allocator::{AllocError, ChunkAllocator, StripAllocType};
@@ -35,6 +39,7 @@ use super::state::{ChunkState, StateTransitionError};
 
 /// Default lock wait time for `LockPolicy::default()`.
 const DEFAULT_LOCK_WAIT: Duration = Duration::from_secs(10);
+const DEFAULT_LAYOUT_VALIDITY_MS: u64 = 30_000;
 
 /// Lifecycle error — maps to crowdb-rpc status codes in the service layer.
 #[derive(Debug, thiserror::Error)]
@@ -118,6 +123,7 @@ pub struct LifecycleHandler {
     locks: Option<Arc<ChunkLockMap>>,
     allow_unsafe_ec: bool,
     metrics: Option<Arc<ChunkdbMetrics>>,
+    layout_validity_ms: u64,
 }
 
 struct AllocationMetricGuard {
@@ -154,6 +160,10 @@ impl Drop for AllocationMetricGuard {
 
 impl LifecycleHandler {
     #[must_use]
+    pub fn layout_validity_ms(&self) -> u64 {
+        self.layout_validity_ms
+    }
+    #[must_use]
     pub fn new(store: Arc<ChunkStore>, allocator: Arc<ChunkAllocator>, topology: TopologyCache) -> Self {
         Self {
             store,
@@ -163,7 +173,14 @@ impl LifecycleHandler {
             locks: None,
             allow_unsafe_ec: false,
             metrics: None,
+            layout_validity_ms: DEFAULT_LAYOUT_VALIDITY_MS,
         }
+    }
+
+    #[must_use]
+    pub fn with_layout_validity(mut self, duration: Duration) -> Self {
+        self.layout_validity_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+        self
     }
 
     /// Attach a range guard for R99 sharded mode.
@@ -316,11 +333,10 @@ impl LifecycleHandler {
             writer_epoch,
             acknowledged_cursor: 0,
             closed_strip_sequence: None,
-            writer_lease_deadline_ms: if writer_epoch == 0 {
-                0
-            } else {
-                now_ms.saturating_add(writer_lease_ms)
-            },
+            writer_lease_deadline_ms: writer_lease_deadline(now_ms, writer_epoch, writer_lease_ms),
+            next_strip_sequence: strip_count,
+            cleanup_intents: Vec::new(),
+            last_strip_replacement: None,
         };
         if let Some(metrics) = &self.metrics {
             observe_elapsed(&metrics.allocate_record_build, record_started);
@@ -529,7 +545,19 @@ impl LifecycleHandler {
         };
 
         let constraints = self.placement_constraints();
-        let start_seq = u32::try_from(chunk.strips.len()).unwrap_or(u32::MAX);
+        let start_seq = if chunk.next_strip_sequence == 0 {
+            chunk
+                .strips
+                .iter()
+                .map(|strip| strip.strip_sequence)
+                .max()
+                .map_or(0, |sequence| sequence.saturating_add(1))
+        } else {
+            chunk.next_strip_sequence
+        };
+        let next_strip_sequence = start_seq
+            .checked_add(strip_count)
+            .ok_or_else(|| LifecycleError::InvalidRequest("chunk strip sequence space exhausted".into()))?;
 
         let mut appended = Vec::with_capacity(strip_count as usize);
         for i in 0..strip_count {
@@ -556,6 +584,7 @@ impl LifecycleHandler {
             return Err(error);
         }
         chunk.strips.extend(appended.iter().cloned());
+        chunk.next_strip_sequence = next_strip_sequence;
         chunk.capacity = chunk.strips.iter().map(|s| s.capacity).sum();
         chunk.modify_ts = chunk.modify_ts.saturating_add(1);
         if let Err(error) = self.store.put_chunk(&chunk).await {
@@ -764,18 +793,55 @@ impl LifecycleHandler {
         Ok(())
     }
 
-    /// Update a single strip within a chunk (e.g. after EC parity
-    /// computation). Replaces the strip at `strip_index` with the new
-    /// strip, freeing the old strip's segments and committing the new
-    /// strip's segments. The chunk must be Active or Sealed.
+    /// Compatibility wrapper for a fenced one-strip range replacement.
     pub async fn update_chunk_strip(
         &self,
         chunk_id: &ChunkId,
         strip_index: u32,
         new_strip: ChunkStrip,
     ) -> Result<Chunk, LifecycleError> {
-        self.check_range(chunk_id)?;
+        let chunk = self.query_chunk(chunk_id).await?;
+        let idx = usize::try_from(strip_index).unwrap_or(usize::MAX);
+        if idx >= chunk.strips.len() {
+            return Err(LifecycleError::StripIndexOutOfRange {
+                index: strip_index,
+                len: chunk.strips.len(),
+            });
+        }
+        let operation_id = ChunkId {
+            high: chunk_id.high ^ chunk.modify_ts,
+            low: chunk_id.low ^ u64::from(strip_index),
+        };
+        self.replace_chunk_strip_range(
+            chunk_id,
+            chunk.modify_ts,
+            strip_index,
+            std::slice::from_ref(&chunk.strips[idx]),
+            std::slice::from_ref(&new_strip),
+            operation_id,
+        )
+        .await
+    }
 
+    /// Atomically replace a capacity-compatible strip range under a revision
+    /// fence. Newly introduced segments are committed before publication;
+    /// removed segments stay allocated until the reader-layout grace expires.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn replace_chunk_strip_range(
+        &self,
+        chunk_id: &ChunkId,
+        expected_modify_ts: u64,
+        start_index: u32,
+        old_strips: &[ChunkStrip],
+        replacement_strips: &[ChunkStrip],
+        operation_id: ChunkId,
+    ) -> Result<Chunk, LifecycleError> {
+        self.check_range(chunk_id)?;
+        if old_strips.is_empty() || replacement_strips.is_empty() {
+            return Err(LifecycleError::InvalidRequest(
+                "strip replacement ranges must be non-empty".into(),
+            ));
+        }
         let mut guard = if let Some(locks) = &self.locks {
             Some(
                 locks
@@ -785,92 +851,155 @@ impl LifecycleHandler {
         } else {
             None
         };
-
         let mut chunk = match &guard {
-            Some(g) => g
+            Some(current) => current
                 .chunk()
                 .unwrap_or_else(|| unreachable!("acquire guarantees chunk on Ok"))
                 .clone(),
             None => self.store.get_chunk(chunk_id).await?,
         };
-        let current_state = ChunkState::from_proto(chunk.state);
-        // Strip updates can happen on Active (EC encoding) or Sealed
-        // (parity rebuild after seal) chunks.
-        if current_state != ChunkState::Active && current_state != ChunkState::Sealed {
+        let state = ChunkState::from_proto(chunk.state);
+        if state != ChunkState::Active && state != ChunkState::Sealed {
             return Err(LifecycleError::InvalidStateTransition(StateTransitionError::new(
-                current_state,
+                state,
                 "Active|Sealed",
             )));
         }
-
-        let idx = usize::try_from(strip_index).unwrap_or(usize::MAX);
-        if idx >= chunk.strips.len() {
+        let start = usize::try_from(start_index).unwrap_or(usize::MAX);
+        let end = start.saturating_add(old_strips.len());
+        if end > chunk.strips.len() {
             return Err(LifecycleError::StripIndexOutOfRange {
-                index: strip_index,
+                index: start_index,
                 len: chunk.strips.len(),
             });
         }
-        if new_strip.strip_sequence != chunk.strips[idx].strip_sequence {
-            return Err(LifecycleError::InvalidRequest(format!(
-                "replacement strip sequence {} does not match existing sequence {}",
-                new_strip.strip_sequence, chunk.strips[idx].strip_sequence
-            )));
-        }
-        let expected_segments = match &new_strip.strip {
-            Some(crowdb_protocol::chunkdb::rpc::Strip::MirrorStrip(mirror)) => mirror.segments.len(),
-            Some(crowdb_protocol::chunkdb::rpc::Strip::EcStrip(ec)) => {
-                let expected = usize::try_from(ec.data_num.saturating_add(ec.code_num)).unwrap_or(usize::MAX);
-                if ec.data_num == 0 || ec.code_num == 0 || ec.segments.len() != expected {
-                    return Err(LifecycleError::InvalidRequest(
-                        "replacement EC strip shape is invalid".into(),
-                    ));
-                }
-                expected
-            }
-            None => {
-                return Err(LifecycleError::InvalidRequest(
-                    "replacement strip has no segments".into(),
-                ))
-            }
-        };
-        if expected_segments == 0
-            || extract_segments(&new_strip)
-                .iter()
-                .any(|segment| segment.owner_chunk.as_ref() != Some(chunk_id) || segment.unit_count == 0)
+        if chunk.modify_ts == expected_modify_ts.saturating_add(1)
+            && chunk.last_strip_replacement == Some(operation_id)
+            && chunk
+                .strips
+                .get(start..start.saturating_add(replacement_strips.len()))
+                == Some(replacement_strips)
         {
-            return Err(LifecycleError::InvalidRequest(
-                "replacement segments must be non-empty and owned by the chunk".into(),
-            ));
+            return Ok(chunk);
         }
+        if chunk.modify_ts != expected_modify_ts || chunk.strips[start..end] != *old_strips {
+            return Err(LifecycleError::StateConflict);
+        }
+        validate_replacement_geometry(old_strips, replacement_strips, chunk_id)?;
+        let next_strip_sequence = validate_replacement_sequences(&chunk, start..end, replacement_strips)?;
 
-        // Commit the replacement before publishing it.
-        let old_segments = extract_segments(&chunk.strips[idx]);
-        self.commit_strip_segments(std::slice::from_ref(&new_strip))
-            .await?;
+        let old_segments: HashSet<_> = old_strips.iter().flat_map(extract_segments).collect();
+        let new_segments: HashSet<_> = replacement_strips.iter().flat_map(extract_segments).collect();
+        let new_only: Vec<_> = new_segments.difference(&old_segments).copied().collect();
+        let old_only: Vec<_> = old_segments.difference(&new_segments).copied().collect();
+        self.allocator
+            .pool()
+            .commit_blocks(new_only.clone())
+            .await
+            .map_err(LifecycleError::Commit)?;
 
-        // Replace the strip.
-        chunk.strips[idx] = new_strip.clone();
-        chunk.capacity = chunk.strips.iter().map(|s| s.capacity).sum();
+        chunk
+            .strips
+            .splice(start..end, replacement_strips.iter().cloned());
+        chunk.capacity = chunk.strips.iter().map(|strip| strip.capacity).sum();
+        chunk.next_strip_sequence = next_strip_sequence;
         chunk.modify_ts = chunk.modify_ts.saturating_add(1);
+        chunk.last_strip_replacement = Some(operation_id);
+        if !old_only.is_empty() {
+            chunk.cleanup_intents.push(StripCleanupIntent {
+                operation_id: Some(operation_id),
+                retired_segments: old_only,
+                not_before_ms: unix_time_ms().saturating_add(self.layout_validity_ms),
+            });
+        }
         if let Err(error) = self.store.put_chunk(&chunk).await {
             self.allocator
-                .rollback_strips(std::slice::from_ref(&new_strip))
-                .await?;
-            return Err(error.into());
-        }
-
-        if let Some(ref mut g) = guard {
-            g.refresh(chunk.clone());
-        }
-        if !old_segments.is_empty() {
-            self.allocator
                 .pool()
-                .free_blocks(old_segments)
+                .free_blocks(new_only)
                 .await
                 .map_err(LifecycleError::Cleanup)?;
+            return Err(error.into());
         }
-        info!(chunk_id = ?chunk_id, strip_index, "chunk strip updated");
+        if let Some(current) = &mut guard {
+            current.refresh(chunk.clone());
+        }
+        info!(chunk_id = ?chunk_id, start_index, "chunk strip range replaced");
         Ok(chunk)
+    }
+
+    /// Allocate one tentative segment for an in-place mirror repair.
+    pub async fn allocate_replacement_segment(
+        &self,
+        chunk_id: &ChunkId,
+        old_segment: &Segment,
+        surviving_segments: &[Segment],
+        exclude_disk_ids: &[DiskId],
+    ) -> Result<Segment, LifecycleError> {
+        self.check_range(chunk_id)?;
+        if old_segment.owner_chunk.as_ref() != Some(chunk_id) || old_segment.unit_count == 0 {
+            return Err(LifecycleError::InvalidRequest(
+                "replacement geometry must belong to the chunk".into(),
+            ));
+        }
+        let snap = self.topology.snapshot();
+        let mut constraints = self.placement_constraints();
+        for disk_group in snap.disk_groups() {
+            let survives_here = surviving_segments.iter().any(|segment| {
+                segment
+                    .disk_id
+                    .is_some_and(|disk| disk_group.value.disk_ids.contains(&disk))
+            });
+            if survives_here {
+                constraints.exclude_nodes.push(disk_group.node_id);
+            }
+        }
+        self.allocator
+            .allocate_replacement_segment(
+                &snap,
+                chunk_id,
+                old_segment.unit_count,
+                &constraints,
+                exclude_disk_ids.to_vec(),
+            )
+            .await
+            .map_err(LifecycleError::Allocation)
+    }
+
+    /// Release a tentative replacement that was never published.
+    pub async fn discard_replacement_segment(
+        &self,
+        chunk_id: &ChunkId,
+        segment: Segment,
+    ) -> Result<(), LifecycleError> {
+        self.check_range(chunk_id)?;
+        if segment.owner_chunk.as_ref() != Some(chunk_id) {
+            return Err(LifecycleError::InvalidRequest(
+                "discarded replacement does not belong to chunk".into(),
+            ));
+        }
+        let _guard = if let Some(locks) = &self.locks {
+            Some(
+                locks
+                    .acquire(chunk_id, &self.store, &LockPolicy::default(), CacheHint::NoCache)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let chunk = self.store.get_chunk(chunk_id).await?;
+        if chunk
+            .strips
+            .iter()
+            .flat_map(extract_segments)
+            .any(|current| current == segment)
+        {
+            return Err(LifecycleError::StateConflict);
+        }
+        self.allocator
+            .pool()
+            .free_blocks(vec![segment])
+            .await
+            .map_err(LifecycleError::Cleanup)
     }
 
     /// Query a chunk by ID.
@@ -906,6 +1035,38 @@ impl LifecycleHandler {
                 break;
             }
             for mut chunk in chunks.iter().cloned() {
+                if !chunk.cleanup_intents.is_empty() {
+                    let intent_count = chunk.cleanup_intents.len();
+                    let current_segments: HashSet<_> =
+                        chunk.strips.iter().flat_map(extract_segments).collect();
+                    let now_ms = unix_time_ms();
+                    let mut pending = Vec::new();
+                    for intent in std::mem::take(&mut chunk.cleanup_intents) {
+                        if intent.not_before_ms > now_ms {
+                            pending.push(intent);
+                            continue;
+                        }
+                        let retired: Vec<_> = intent
+                            .retired_segments
+                            .iter()
+                            .filter(|segment| !current_segments.contains(segment))
+                            .copied()
+                            .collect();
+                        self.allocator
+                            .pool()
+                            .free_blocks(retired)
+                            .await
+                            .map_err(LifecycleError::Cleanup)?;
+                    }
+                    chunk.cleanup_intents = pending;
+                    if chunk.cleanup_intents.len() != intent_count {
+                        self.store.put_chunk(&chunk).await?;
+                        if let (Some(locks), Some(chunk_id)) = (&self.locks, chunk.id) {
+                            locks.populate_cache(&chunk_id, chunk.clone());
+                        }
+                        reconciled = reconciled.saturating_add(1);
+                    }
+                }
                 match ChunkState::from_proto(chunk.state) {
                     ChunkState::Init => {
                         self.commit_strip_segments(&chunk.strips).await?;
@@ -1034,6 +1195,122 @@ fn extract_segments(strip: &ChunkStrip) -> Vec<crowdb_protocol::diskdb::rpc::Seg
     }
 }
 
+fn validate_replacement_geometry(
+    old: &[ChunkStrip],
+    replacement: &[ChunkStrip],
+    chunk_id: &ChunkId,
+) -> Result<(), LifecycleError> {
+    let old_capacity: u32 = old.iter().map(|strip| strip.capacity).sum();
+    let new_capacity: u32 = replacement.iter().map(|strip| strip.capacity).sum();
+    if old_capacity != new_capacity
+        || old[0].chunk_offset != replacement[0].chunk_offset
+        || old[0].strip_sequence != replacement[0].strip_sequence
+    {
+        return Err(LifecycleError::InvalidRequest(
+            "replacement must preserve first offset, first sequence, and total capacity".into(),
+        ));
+    }
+    if replacement
+        .iter()
+        .flat_map(extract_segments)
+        .any(|segment| segment.owner_chunk.as_ref() != Some(chunk_id) || segment.unit_count == 0)
+    {
+        return Err(LifecycleError::InvalidRequest(
+            "replacement segments must be non-empty and owned by the chunk".into(),
+        ));
+    }
+    let mut expected_offset = replacement[0].chunk_offset;
+    for strip in replacement {
+        if strip.capacity == 0 || strip.unit_kb == 0 || strip.chunk_offset != expected_offset {
+            return Err(LifecycleError::InvalidRequest(
+                "replacement strips must be non-empty and contiguous".into(),
+            ));
+        }
+        expected_offset = expected_offset
+            .checked_add(strip.capacity)
+            .ok_or_else(|| LifecycleError::InvalidRequest("replacement strip range overflows u32".into()))?;
+        let segments = extract_segments(strip);
+        let shape_is_valid = match &strip.strip {
+            Some(Strip::MirrorStrip(_)) => {
+                !segments.is_empty()
+                    && segments
+                        .iter()
+                        .all(|segment| segment.unit_count.saturating_mul(strip.unit_kb) == strip.capacity)
+            }
+            Some(Strip::EcStrip(ec)) => {
+                ec.data_num > 0
+                    && ec.code_num > 0
+                    && segments.len()
+                        == usize::try_from(ec.data_num.saturating_add(ec.code_num)).unwrap_or(usize::MAX)
+                    && segments.iter().all(|segment| {
+                        segment
+                            .unit_count
+                            .saturating_mul(strip.unit_kb)
+                            .saturating_mul(ec.data_num)
+                            == strip.capacity
+                    })
+            }
+            None => false,
+        };
+        if !shape_is_valid {
+            return Err(LifecycleError::InvalidRequest(
+                "replacement strip has invalid mirror or EC geometry".into(),
+            ));
+        }
+        let segment_set: HashSet<_> = segments.into_iter().collect();
+        if strip
+            .unavailable_segments
+            .iter()
+            .any(|segment| !segment_set.contains(segment))
+        {
+            return Err(LifecycleError::InvalidRequest(
+                "unavailable replicas must belong to the replacement strip".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_replacement_sequences(
+    chunk: &Chunk,
+    replaced: std::ops::Range<usize>,
+    replacement: &[ChunkStrip],
+) -> Result<u32, LifecycleError> {
+    let retained: HashSet<_> = chunk
+        .strips
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !replaced.contains(index))
+        .map(|(_, strip)| strip.strip_sequence)
+        .collect();
+    let mut seen = HashSet::with_capacity(replacement.len());
+    for (index, strip) in replacement.iter().enumerate() {
+        let sequence_is_invalid = index > 0
+            && (strip.strip_sequence < chunk.next_strip_sequence
+                || strip.strip_sequence <= replacement[index - 1].strip_sequence);
+        if !seen.insert(strip.strip_sequence)
+            || retained.contains(&strip.strip_sequence)
+            || sequence_is_invalid
+        {
+            return Err(LifecycleError::InvalidRequest(
+                "replacement strip sequences must be unique and newly allocated after the first".into(),
+            ));
+        }
+    }
+    replacement
+        .iter()
+        .skip(1)
+        .try_fold(chunk.next_strip_sequence, |next, strip| {
+            strip
+                .strip_sequence
+                .checked_add(1)
+                .map(|candidate| next.max(candidate))
+                .ok_or_else(|| {
+                    LifecycleError::InvalidRequest("replacement strip sequence space exhausted".into())
+                })
+        })
+}
+
 fn observe_elapsed(metric: &LatencyHistogram, started: std::time::Instant) {
     metric.observe(started.elapsed().as_nanos().try_into().unwrap_or(u64::MAX));
 }
@@ -1044,6 +1321,14 @@ fn unix_time_ms() -> u64 {
         .map_or(0, |duration| {
             u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
         })
+}
+
+fn writer_lease_deadline(now_ms: u64, writer_epoch: u64, writer_lease_ms: u64) -> u64 {
+    if writer_epoch == 0 {
+        0
+    } else {
+        now_ms.saturating_add(writer_lease_ms)
+    }
 }
 
 fn close_acknowledged_strips(chunk: &mut Chunk, now_ms: u64) {

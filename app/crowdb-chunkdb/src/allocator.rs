@@ -18,7 +18,7 @@ use tracing::{info, warn};
 use crowdb_common::metrics::LatencyHistogram;
 use crowdb_protocol::chunkdb::rpc::StripType as ProtoStripType;
 use crowdb_protocol::chunkdb::rpc::{ChunkStrip, EcStrip, MirrorStrip};
-use crowdb_protocol::common::ChunkId;
+use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
 
 use crate::metrics::ChunkdbMetrics;
@@ -124,6 +124,52 @@ impl ChunkAllocator {
             (snap.unit_size_bytes() / 1024).max(1),
         );
         Ok(strip)
+    }
+
+    pub async fn allocate_replacement_segment(
+        &self,
+        snap: &TopologySnapshot,
+        owner_chunk: &ChunkId,
+        unit_count: u32,
+        constraints: &PlacementConstraints,
+        exclude_disk_ids: Vec<DiskId>,
+    ) -> Result<Segment, AllocError> {
+        self.pool.update_disk_id_lookup(&snap.disk_groups());
+        let plan = MirrorPlacement::select(snap, 1, constraints)?;
+        let entry = plan
+            .entries
+            .first()
+            .ok_or(crate::selector::PlacementError::NoHealthyDiskGroups)?;
+        let response = self
+            .pool
+            .allocate_blocks_excluding(entry.disk_group_id, 1, unit_count, owner_chunk, exclude_disk_ids)
+            .await
+            .map_err(|error| AllocError::AllocateFailed {
+                dg_id: entry.disk_group_id,
+                error: error.to_string(),
+            })?;
+        if response.segments.len() != 1 {
+            self.rollback_or_error(
+                &response.segments,
+                AllocError::PartialAllocation {
+                    requested: 1,
+                    got: u32::try_from(response.segments.len()).unwrap_or(u32::MAX),
+                },
+            )
+            .await?;
+        }
+        let segment = response.segments[0];
+        if let Some(reason) = self.validate_segment(&segment, entry.disk_group_id, owner_chunk, unit_count) {
+            self.rollback_or_error(
+                &response.segments,
+                AllocError::InvalidResponse {
+                    dg_id: entry.disk_group_id,
+                    reason,
+                },
+            )
+            .await?;
+        }
+        Ok(segment)
     }
 
     /// Allocate blocks in parallel across all placement entries.
@@ -361,6 +407,7 @@ fn assemble_strip(
                 segments: segments.to_vec(),
             })),
             usage_bitmap: Vec::new(),
+            unavailable_segments: Vec::new(),
         },
         StripAllocType::Ec { data_num, code_num } => ChunkStrip {
             chunk_offset: 0,
@@ -380,6 +427,7 @@ fn assemble_strip(
                 segments: segments.to_vec(),
             })),
             usage_bitmap: Vec::new(),
+            unavailable_segments: Vec::new(),
         },
     }
 }

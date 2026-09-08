@@ -97,6 +97,7 @@ table FBChunkStrip {
     strip_type:FBStripType;
     strip_body:FBStripBody;
     usage_bitmap:[ubyte];
+    unavailable_segments:[crowdb.diskdb.proto.FBSegment];
 }
 
 // A chunk — logical block composed of strips.
@@ -114,6 +115,15 @@ table FBChunk {
     acknowledged_cursor:uint64;
     closed_strip_sequence:uint32 = 4294967295;
     writer_lease_deadline_ms:uint64;
+    next_strip_sequence:uint32;
+    cleanup_intents:[FBStripCleanupIntent];
+    last_strip_replacement:crowdb.rpc.proto.FBInt128;
+}
+
+table FBStripCleanupIntent {
+    operation_id:crowdb.rpc.proto.FBInt128;
+    retired_segments:[crowdb.diskdb.proto.FBSegment];
+    not_before_ms:uint64;
 }
 
 // ── AllocateChunk ────────────────────────────────────────────────
@@ -209,6 +219,7 @@ table FBQueryChunkResponse {
     range_start:uint32;
     range_end:uint32;
     chunk:FBChunk;
+    layout_validity_ms:uint64;
 }
 
 // ── SealChunk ────────────────────────────────────────────────────
@@ -278,6 +289,64 @@ table FBUpdateChunkStripRequest {
 }
 
 table FBUpdateChunkStripResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    ret_code:FBChunkdbRetCode;
+    error_msg:string;
+    range_start:uint32;
+    range_end:uint32;
+    chunk:FBChunk;
+}
+
+// ── Replacement Allocation + Fenced Range Swap ─────────────────
+
+table FBAllocateReplacementSegmentRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    chunk_id:crowdb.rpc.proto.FBInt128;
+    old_segment:crowdb.diskdb.proto.FBSegment;
+    surviving_segments:[crowdb.diskdb.proto.FBSegment];
+    exclude_disk_ids:[crowdb.rpc.proto.FBInt128];
+}
+
+table FBAllocateReplacementSegmentResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    ret_code:FBChunkdbRetCode;
+    error_msg:string;
+    range_start:uint32;
+    range_end:uint32;
+    segment:crowdb.diskdb.proto.FBSegment;
+}
+
+table FBDiscardReplacementSegmentRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    chunk_id:crowdb.rpc.proto.FBInt128;
+    segment:crowdb.diskdb.proto.FBSegment;
+}
+
+table FBDiscardReplacementSegmentResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    ret_code:FBChunkdbRetCode;
+    error_msg:string;
+    range_start:uint32;
+    range_end:uint32;
+}
+
+table FBReplaceChunkStripRangeRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    chunk_id:crowdb.rpc.proto.FBInt128;
+    expected_modify_ts:uint64;
+    start_index:uint32;
+    old_strips:[FBChunkStrip];
+    replacement_strips:[FBChunkStrip];
+    operation_id:crowdb.rpc.proto.FBInt128;
+}
+
+table FBReplaceChunkStripRangeResponse {
     id:uint64;
     rpc_create_nano:uint64;
     ret_code:FBChunkdbRetCode;

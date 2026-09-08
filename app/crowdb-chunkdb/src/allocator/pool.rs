@@ -129,11 +129,23 @@ impl DiskdbClientPool {
         unit_count: u32,
         owner_chunk: &ChunkId,
     ) -> Result<AllocateResponse, DiskdbClientError> {
+        self.allocate_blocks_excluding(dg_id, count, unit_count, owner_chunk, Vec::new())
+            .await
+    }
+
+    pub async fn allocate_blocks_excluding(
+        &self,
+        dg_id: u64,
+        count: u32,
+        unit_count: u32,
+        owner_chunk: &ChunkId,
+        exclude_disk_ids: Vec<DiskId>,
+    ) -> Result<AllocateResponse, DiskdbClientError> {
         let req = AllocateBlocksRequest {
             disk_group_id: dg_id,
             unit_count,
             count,
-            exclude_disk_ids: vec![],
+            exclude_disk_ids,
             owner_chunk: Some(*owner_chunk),
         };
 

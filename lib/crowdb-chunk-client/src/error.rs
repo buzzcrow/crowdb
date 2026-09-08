@@ -12,6 +12,8 @@ pub enum IoError {
     AllocationFailed(String),
     #[error("disk write failed: {0}")]
     WriteFailed(String),
+    #[error("chunk metadata conflict: {0}")]
+    MetadataConflict(String),
     #[error("source read failed: {0}")]
     SourceRead(String),
     #[error("invalid disk IO topology: {0}")]
@@ -35,7 +37,10 @@ pub type Result<T> = std::result::Result<T, IoError>;
 
 impl From<crowdb_chunkdb_client::ChunkdbClientError> for IoError {
     fn from(e: crowdb_chunkdb_client::ChunkdbClientError) -> Self {
-        Self::AllocationFailed(e.to_string())
+        match e {
+            crowdb_chunkdb_client::ChunkdbClientError::Aborted(message) => Self::MetadataConflict(message),
+            other => Self::AllocationFailed(other.to_string()),
+        }
     }
 }
 

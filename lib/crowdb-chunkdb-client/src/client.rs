@@ -19,10 +19,12 @@ use crowdb_kv_client::{RangeBindingClient, ServiceRegistryClient};
 use crowdb_protocol::chunk_id::ChunkIdParts;
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
-    AppendChunkRequest, AppendChunkResponse, DeleteChunkRangeRequest, DeleteChunkRangeResponse,
-    DeleteChunkRequest, DeleteChunkResponse, ListChunksRequest, ListChunksResponse, QueryChunkRequest,
-    QueryChunkResponse, SealChunkRequest, SealChunkResponse, UpdateChunkStripRequest,
-    UpdateChunkStripResponse,
+    AllocateReplacementSegmentRequest, AllocateReplacementSegmentResponse, AppendChunkRequest,
+    AppendChunkResponse, DeleteChunkRangeRequest, DeleteChunkRangeResponse, DeleteChunkRequest,
+    DeleteChunkResponse, DiscardReplacementSegmentRequest, DiscardReplacementSegmentResponse,
+    ListChunksRequest, ListChunksResponse, QueryChunkRequest, QueryChunkResponse,
+    ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse, SealChunkRequest, SealChunkResponse,
+    UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::InstanceId;
@@ -309,6 +311,42 @@ impl ChunkdbClient {
         self.with_rpc_retry(chunk_id.as_ref(), |t, ep| {
             let req = req.clone();
             async move { t.send_update_chunk_strip(&ep, &req).await }
+        })
+        .await
+    }
+
+    pub async fn allocate_replacement_segment(
+        &self,
+        req: AllocateReplacementSegmentRequest,
+    ) -> Result<AllocateReplacementSegmentResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move { transport.send_allocate_replacement_segment(&endpoint, &req).await }
+        })
+        .await
+    }
+
+    pub async fn discard_replacement_segment(
+        &self,
+        req: DiscardReplacementSegmentRequest,
+    ) -> Result<DiscardReplacementSegmentResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move { transport.send_discard_replacement_segment(&endpoint, &req).await }
+        })
+        .await
+    }
+
+    pub async fn replace_chunk_strip_range(
+        &self,
+        req: ReplaceChunkStripRangeRequest,
+    ) -> Result<ReplaceChunkStripRangeResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move { transport.send_replace_chunk_strip_range(&endpoint, &req).await }
         })
         .await
     }

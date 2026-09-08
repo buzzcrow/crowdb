@@ -163,6 +163,13 @@ pub struct LifecycleConfig {
     pub sweep_chunk_lock_interval_secs: u32,
     /// Warn if a chunk lock is held longer than N milliseconds.
     pub lock_hold_warn_threshold_ms: u64,
+    /// Minimum lifetime of a retired strip layout before block reuse.
+    #[serde(default = "default_layout_validity_ms")]
+    pub layout_validity_ms: u64,
+}
+
+const fn default_layout_validity_ms() -> u64 {
+    30_000
 }
 
 impl Default for LifecycleConfig {
@@ -171,6 +178,7 @@ impl Default for LifecycleConfig {
             cache_capacity: 10_000,
             sweep_chunk_lock_interval_secs: 60,
             lock_hold_warn_threshold_ms: 1000,
+            layout_validity_ms: default_layout_validity_ms(),
         }
     }
 }
@@ -182,6 +190,9 @@ impl LifecycleConfig {
         }
         if self.sweep_chunk_lock_interval_secs == 0 {
             return Err("lifecycle.sweep_chunk_lock_interval_secs must be > 0".into());
+        }
+        if self.layout_validity_ms == 0 {
+            return Err("lifecycle.layout_validity_ms must be > 0".into());
         }
         Ok(())
     }
