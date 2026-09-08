@@ -53,6 +53,8 @@ async fn chunkdb_full_stack_allocate_seal_delete() {
             0,
             3, // 3 mirror copies
             ChunkType::Repo,
+            0,
+            0,
         )
         .await
         .expect("allocate_chunk");
@@ -120,7 +122,7 @@ async fn chunkdb_lock_serializes_concurrent_append() {
     // Allocate a chunk.
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
         .await
         .expect("allocate_chunk");
     let chunk_id = *chunk.id.as_ref().expect("chunk has id");
@@ -177,12 +179,12 @@ async fn chunkdb_lock_no_deadlock_different_chunks() {
     // Allocate two chunks.
     let chunk_a = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
         .await
         .expect("allocate A");
     let chunk_b = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
         .await
         .expect("allocate B");
     let id_a = *chunk_a.id.as_ref().expect("chunk A id");
@@ -229,7 +231,7 @@ async fn chunkdb_cache_hit_on_second_query() {
     // Allocate a chunk (populates cache via populate_cache for auto-gen ID).
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
         .await
         .expect("allocate_chunk");
     let chunk_id = *chunk.id.as_ref().expect("chunk has id");
@@ -283,7 +285,7 @@ async fn chunkdb_lock_serializes_concurrent_seal() {
     // Allocate a chunk (Active).
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
         .await
         .expect("allocate_chunk");
     let chunk_id = *chunk.id.as_ref().expect("chunk has id");
@@ -325,7 +327,7 @@ async fn chunkdb_lock_serializes_concurrent_delete() {
     // Allocate a chunk (Active).
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
         .await
         .expect("allocate_chunk");
     let chunk_id = *chunk.id.as_ref().expect("chunk has id");
@@ -364,7 +366,7 @@ async fn chunkdb_lock_serializes_concurrent_append_delete() {
     // Allocate a chunk (Active).
     let chunk = harness
         .handler
-        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo)
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
         .await
         .expect("allocate_chunk");
     let chunk_id = *chunk.id.as_ref().expect("chunk has id");
@@ -405,4 +407,51 @@ async fn chunkdb_lock_serializes_concurrent_append_delete() {
     let final_chunk = harness.handler.query_chunk(&chunk_id).await.expect("query final");
     assert_eq!(final_chunk.state, ChunkState::Deleted as i32);
     eprintln!("concurrent append+delete serialized: final state Deleted");
+}
+
+#[tokio::test]
+async fn chunkdb_shared_writer_cursor_is_fenced_and_orphan_is_sealed() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    let hw = cluster.make_hardware_client();
+    seed_hardware(&hw).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let chunk = harness
+        .handler
+        .allocate_chunk(None, 1024, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 99, 20)
+        .await
+        .expect("allocate shared chunk");
+    let chunk_id = chunk.id.expect("chunk id");
+    let advanced = harness
+        .handler
+        .advance_chunk_write(&chunk_id, 99, chunk.modify_ts, 1024 * 1024, Some(0), 20)
+        .await
+        .expect("advance cursor");
+    assert_eq!(advanced.acknowledged_cursor, 1024 * 1024);
+    assert_eq!(advanced.closed_strip_sequence, Some(0));
+    assert!(matches!(
+        harness
+            .handler
+            .advance_chunk_write(
+                &chunk_id,
+                100,
+                advanced.modify_ts,
+                1024 * 1024 + 4096,
+                Some(0),
+                20
+            )
+            .await,
+        Err(LifecycleError::StateConflict)
+    ));
+    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    assert_eq!(harness.handler.seal_expired_writer_chunks().await.unwrap(), 1);
+    let sealed = harness.handler.query_chunk(&chunk_id).await.unwrap();
+    assert_eq!(sealed.state, ChunkState::Sealed as i32);
+    assert_eq!(sealed.sealed_length, 1024);
+    assert_eq!(sealed.acknowledged_cursor, 1024 * 1024);
+    assert_eq!(sealed.closed_strip_sequence, Some(0));
 }

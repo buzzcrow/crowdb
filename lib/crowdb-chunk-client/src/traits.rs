@@ -10,9 +10,10 @@
 
 use async_trait::async_trait;
 use crowdb_protocol::chunkdb::rpc::{
-    AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse, DeleteChunkRequest,
-    DeleteChunkResponse, QueryChunkRequest, QueryChunkResponse, SealChunkRequest, SealChunkResponse,
-    UpdateChunkStripRequest, UpdateChunkStripResponse,
+    AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
+    AppendChunkRequest, AppendChunkResponse, DeleteChunkRequest, DeleteChunkResponse, QueryChunkRequest,
+    QueryChunkResponse, SealChunkRequest, SealChunkResponse, UpdateChunkStripRequest,
+    UpdateChunkStripResponse,
 };
 use std::sync::Arc;
 
@@ -24,6 +25,11 @@ use crate::Result;
 pub trait ChunkAllocator: Send + Sync {
     async fn allocate_chunk(&self, req: AllocateChunkRequest) -> Result<AllocateChunkResponse>;
     async fn append_chunk(&self, req: AppendChunkRequest) -> Result<AppendChunkResponse>;
+    async fn advance_chunk_write(&self, _req: AdvanceChunkWriteRequest) -> Result<AdvanceChunkWriteResponse> {
+        Err(crate::IoError::Internal(
+            "advance_chunk_write is unsupported by this allocator".into(),
+        ))
+    }
     async fn seal_chunk(&self, req: SealChunkRequest) -> Result<SealChunkResponse>;
     async fn delete_chunk(&self, req: DeleteChunkRequest) -> Result<DeleteChunkResponse>;
     async fn update_chunk_strip(&self, req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse>;
@@ -39,6 +45,9 @@ impl<T: ChunkAllocator + ?Sized> ChunkAllocator for Arc<T> {
     }
     async fn append_chunk(&self, req: AppendChunkRequest) -> Result<AppendChunkResponse> {
         (**self).append_chunk(req).await
+    }
+    async fn advance_chunk_write(&self, req: AdvanceChunkWriteRequest) -> Result<AdvanceChunkWriteResponse> {
+        (**self).advance_chunk_write(req).await
     }
     async fn seal_chunk(&self, req: SealChunkRequest) -> Result<SealChunkResponse> {
         (**self).seal_chunk(req).await
@@ -63,6 +72,9 @@ impl ChunkAllocator for crowdb_chunkdb_client::ChunkdbClient {
     }
     async fn append_chunk(&self, req: AppendChunkRequest) -> Result<AppendChunkResponse> {
         Ok(crowdb_chunkdb_client::ChunkdbClient::append_chunk(self, req).await?)
+    }
+    async fn advance_chunk_write(&self, req: AdvanceChunkWriteRequest) -> Result<AdvanceChunkWriteResponse> {
+        Ok(crowdb_chunkdb_client::ChunkdbClient::advance_chunk_write(self, req).await?)
     }
     async fn seal_chunk(&self, req: SealChunkRequest) -> Result<SealChunkResponse> {
         Ok(crowdb_chunkdb_client::ChunkdbClient::seal_chunk(self, req).await?)

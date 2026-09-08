@@ -260,6 +260,8 @@ async fn allocate(client: &ChunkdbClient, args: &ChunkdbArgs) -> crowdb_chunkdb_
             code_num: args.code_num,
             copy_count: args.copy_count,
             chunk_type: ChunkType::Repo as i32,
+            writer_epoch: 0,
+            writer_lease_ms: 0,
         })
         .await
     {

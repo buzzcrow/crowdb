@@ -151,6 +151,10 @@ impl ChunkAllocator for MockChunkAllocator {
             sealed_length: 0,
             strips: vec![strip.clone()],
             chunk_type: ChunkType::Repo as i32,
+            writer_epoch: req.writer_epoch,
+            acknowledged_cursor: 0,
+            closed_strip_sequence: None,
+            writer_lease_deadline_ms: 0,
         };
 
         st.chunks

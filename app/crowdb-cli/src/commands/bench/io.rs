@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crowdb_chunk_client::{
     run_large_write_benchmark, ChunkClientConfig, ChunkIoClient, ChunkIoClientConfig,
-    LargeWriteBenchmarkConfig, LargeWriteBenchmarkResult, LargeWritePolicy,
+    LargeWriteBenchmarkConfig, LargeWriteBenchmarkResult, LargeWritePolicy, SmallWritePolicy,
 };
 use crowdb_common::ec::EcScheme;
 
@@ -45,6 +45,7 @@ pub async fn run(cli: &Cli, verb: ChunkioBenchVerb) -> ExitCode {
     }
     let client = match ChunkIoClient::connect(ChunkIoClientConfig {
         management_seeds: seeds,
+        small_write: SmallWritePolicy::default(),
     })
     .await
     {

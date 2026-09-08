@@ -37,11 +37,11 @@ pub use chunk::{ChunkPrefetch, ChunkWriter, EcStripWriter, MirrorStripWriter, St
 pub use client::{
     ChunkIoClient, ChunkIoClientConfig, LargeWritePolicy, LargeWriteResult, PreparedLargeWrite,
 };
-pub use config::ChunkClientConfig;
+pub use config::{ChunkClientConfig, SmallWritePolicy};
 pub use disk_io::{DiskWriter, DiskioBlockWriter, RoutedDiskWriter};
 pub use error::{IoError, Result};
 pub use io::{BackpressurePolicy, ChunkIoWriter, FeedStatus};
-pub use metrics::ChunkClientMetrics;
+pub use metrics::{ChunkClientMetrics, SmallWriteMetricsSnapshot};
 pub use traits::ChunkAllocator;
 pub use worker::{EcWorker, HashWorker};
 pub use writer::{LargeAsyncObjectWriter, LargeObjectWriter, PooledWriter, SmallObjectWriter, WriterPool};

@@ -15,15 +15,18 @@ use crowdb_kv_client::{
     ClientConfig, CrowdbKvClient, HardwareClient, RangeBindingClient, ServiceRegistryClient,
 };
 use crowdb_protocol::chunkdb::rpc::{
-    AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse, DeleteChunkRequest,
-    DeleteChunkResponse, Location, QueryChunkRequest, QueryChunkResponse, SealChunkRequest,
-    SealChunkResponse, UpdateChunkStripRequest, UpdateChunkStripResponse,
+    AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
+    AppendChunkRequest, AppendChunkResponse, DeleteChunkRequest, DeleteChunkResponse, Location,
+    QueryChunkRequest, QueryChunkResponse, SealChunkRequest, SealChunkResponse, UpdateChunkStripRequest,
+    UpdateChunkStripResponse,
 };
 use crowdb_protocol::diskdb::rpc::Segment;
 
+use crate::metrics::SmallWriteMetrics;
+use crate::writer::small_pool::SmallWritePool;
 use crate::{
     ChunkAllocator, ChunkClientConfig, ChunkClientMetrics, ChunkIoWriter, DiskWriter, LargeAsyncObjectWriter,
-    Result, RoutedDiskWriter,
+    Result, RoutedDiskWriter, SmallObjectWriter, SmallWriteMetricsSnapshot, SmallWritePolicy,
 };
 
 /// Discovery and transport configuration for [`ChunkIoClient`].
@@ -31,6 +34,8 @@ use crate::{
 pub struct ChunkIoClientConfig {
     /// KV management endpoints used to discover ChunkDB, DiskIO, and disks.
     pub management_seeds: Vec<String>,
+    /// Shared small-object aggregation and elasticity policy.
+    pub small_write: SmallWritePolicy,
 }
 
 /// Large-write EC and bounded-buffer policy.
@@ -67,6 +72,7 @@ pub struct ChunkIoClient {
     disk_writer: Arc<dyn DiskWriter>,
     topology: Option<Arc<ClientTopology>>,
     metrics: Option<Arc<ChunkClientMetrics>>,
+    small_pool: Arc<SmallWritePool>,
 }
 
 struct ClientTopology {
@@ -90,6 +96,12 @@ impl ChunkIoClient {
         let chunkdb = Arc::new(chunkdb);
         chunkdb.refresh_endpoints().await?;
         let disk_writer = Arc::new(RoutedDiskWriter::connect(&service, &hardware).await?);
+        let small_pool = SmallWritePool::new(
+            chunkdb.clone(),
+            disk_writer.clone(),
+            config.small_write,
+            Arc::new(SmallWriteMetrics::default()),
+        )?;
         Ok(Self {
             allocator: chunkdb.clone(),
             disk_writer: disk_writer.clone(),
@@ -100,17 +112,35 @@ impl ChunkIoClient {
                 disk_writer,
             })),
             metrics: None,
+            small_pool,
         })
     }
 
     /// Construct from low-level seams. Intended for focused tests and embedded fixtures.
     pub fn from_parts(allocator: Arc<dyn crate::ChunkAllocator>, disk_writer: Arc<dyn DiskWriter>) -> Self {
-        Self {
+        Self::from_parts_with_small_policy(allocator, disk_writer, SmallWritePolicy::default())
+            .unwrap_or_else(|_| unreachable!("default small-write policy is valid"))
+    }
+
+    /// Construct low-level seams with an explicit small-write policy.
+    pub fn from_parts_with_small_policy(
+        allocator: Arc<dyn crate::ChunkAllocator>,
+        disk_writer: Arc<dyn DiskWriter>,
+        small_write: SmallWritePolicy,
+    ) -> Result<Self> {
+        let small_pool = SmallWritePool::new(
+            Arc::clone(&allocator),
+            Arc::clone(&disk_writer),
+            small_write,
+            Arc::new(SmallWriteMetrics::default()),
+        )?;
+        Ok(Self {
             allocator,
             disk_writer,
             topology: None,
             metrics: None,
-        }
+            small_pool,
+        })
     }
 
     /// Attach aggregate write-path metrics registered by the embedding process.
@@ -125,7 +155,45 @@ impl ChunkIoClient {
             metrics: Arc::clone(metrics),
         });
         self.metrics = Some(Arc::clone(metrics));
+        self.small_pool = SmallWritePool::new(
+            Arc::clone(&self.allocator),
+            Arc::clone(&self.disk_writer),
+            (*self.small_pool.policy).clone(),
+            Arc::clone(&metrics.small_write),
+        )
+        .unwrap_or_else(|_| unreachable!("existing small-write policy was already validated"));
         self
+    }
+
+    /// Reserve one bounded object and return its single-use writer handle.
+    pub async fn prepare_small_write(&self, object_size: usize) -> Result<SmallObjectWriter> {
+        if object_size == 0 {
+            return Ok(SmallObjectWriter::empty());
+        }
+        let (runtime, reservation) = self.small_pool.reserve(object_size).await?;
+        Ok(SmallObjectWriter::new(runtime, object_size, reservation))
+    }
+
+    /// Stop admission, drain accepted objects, and finalize shared chunks.
+    pub async fn shutdown_small_writes(&self) -> Result<()> {
+        self.small_pool.shutdown().await
+    }
+
+    /// Snapshot lock-free shared small-write counters and gauges.
+    pub fn small_write_metrics(&self) -> SmallWriteMetricsSnapshot {
+        let mut snapshot = self.small_pool.metrics.snapshot();
+        if snapshot.batches != 0 {
+            snapshot.average_batch_fill_ppm = snapshot
+                .batch_bytes
+                .saturating_mul(1_000_000)
+                .checked_div(
+                    snapshot
+                        .batches
+                        .saturating_mul(self.small_pool.policy.max_batch_bytes as u64),
+                )
+                .unwrap_or(0);
+        }
+        snapshot
     }
 
     /// Refresh `ChunkDB` service endpoints and range ownership routes.
@@ -221,6 +289,10 @@ impl ChunkAllocator for MetricsChunkAllocator {
             operation.mark_success();
         }
         result
+    }
+
+    async fn advance_chunk_write(&self, req: AdvanceChunkWriteRequest) -> Result<AdvanceChunkWriteResponse> {
+        self.inner.advance_chunk_write(req).await
     }
 
     async fn seal_chunk(&self, req: SealChunkRequest) -> Result<SealChunkResponse> {

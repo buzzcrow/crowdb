@@ -34,12 +34,13 @@ use crowdb_protocol::chunkdb::rpc::{
     Strip as ProtoStrip, StripType as ProtoStripType,
 };
 use crowdb_protocol::chunkdb_fb::{
-    FBAllocateChunkRequest, FBAllocateChunkResponse, FBAllocateChunkResponseArgs, FBAppendChunkRequest,
-    FBAppendChunkResponse, FBAppendChunkResponseArgs, FBChunk, FBChunkArgs, FBChunkState, FBChunkStrip,
-    FBChunkStripArgs, FBChunkType, FBChunkdbRetCode, FBDeleteChunkRangeRequest, FBDeleteChunkRangeResponse,
-    FBDeleteChunkRangeResponseArgs, FBDeleteChunkRequest, FBEcState, FBEcStrip, FBEcStripArgs, FBInt128,
-    FBListChunksRequest, FBListChunksResponse, FBListChunksResponseArgs, FBMirrorStrip, FBMirrorStripArgs,
-    FBQueryChunkRequest, FBSealChunkRequest, FBSegment, FBStripBody, FBStripType, FBUpdateChunkStripRequest,
+    FBAdvanceChunkWriteRequest, FBAllocateChunkRequest, FBAllocateChunkResponse, FBAllocateChunkResponseArgs,
+    FBAppendChunkRequest, FBAppendChunkResponse, FBAppendChunkResponseArgs, FBChunk, FBChunkArgs,
+    FBChunkState, FBChunkStrip, FBChunkStripArgs, FBChunkType, FBChunkdbRetCode, FBDeleteChunkRangeRequest,
+    FBDeleteChunkRangeResponse, FBDeleteChunkRangeResponseArgs, FBDeleteChunkRequest, FBEcState, FBEcStrip,
+    FBEcStripArgs, FBInt128, FBListChunksRequest, FBListChunksResponse, FBListChunksResponseArgs,
+    FBMirrorStrip, FBMirrorStripArgs, FBQueryChunkRequest, FBSealChunkRequest, FBSegment, FBStripBody,
+    FBStripType, FBUpdateChunkStripRequest,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::fb::FBMsgType;
@@ -84,6 +85,15 @@ impl ChunkdbRpcService {
                 Arc::clone(server),
                 RequestKind::AppendChunk,
                 Self::handle_append,
+            ),
+        );
+        server.register_handler(
+            FBMsgType::EAdvanceChunkWriteRequest.0 as u16,
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::AdvanceChunkWrite,
+                Self::handle_advance_write,
             ),
         );
         server.register_handler(

@@ -132,6 +132,14 @@ pub struct Chunk {
     pub sealed_length: u32,
     pub strips: Vec<ChunkStrip>,
     pub chunk_type: i32,
+    /// Nonzero epoch that exclusively owns shared-chunk advances.
+    pub writer_epoch: u64,
+    /// Durable physical byte cursor acknowledged to readers.
+    pub acknowledged_cursor: u64,
+    /// Highest mirror strip durably closed by the writer.
+    pub closed_strip_sequence: Option<u32>,
+    /// Server-clock deadline after which an Active shared chunk is orphaned.
+    pub writer_lease_deadline_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -164,6 +172,10 @@ pub struct AllocateChunkRequest {
     pub code_num: u32,
     pub copy_count: u32,
     pub chunk_type: i32,
+    /// Optional shared-writer epoch. Zero keeps dedicated-chunk semantics.
+    pub writer_epoch: u64,
+    /// Lease duration installed for a nonzero writer epoch.
+    pub writer_lease_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -191,6 +203,21 @@ pub struct AppendChunkResponse {
     /// Newly appended strips when the request revision matched.
     pub strips: Vec<ChunkStrip>,
     /// Complete current chunk when the request revision was stale.
+    pub chunk: Option<Chunk>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct AdvanceChunkWriteRequest {
+    pub chunk_id: Option<ChunkId>,
+    pub writer_epoch: u64,
+    pub expected_modify_ts: u64,
+    pub acknowledged_cursor: u64,
+    pub closed_strip_sequence: Option<u32>,
+    pub writer_lease_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct AdvanceChunkWriteResponse {
     pub chunk: Option<Chunk>,
 }
 

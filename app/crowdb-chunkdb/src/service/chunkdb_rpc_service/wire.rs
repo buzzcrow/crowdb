@@ -389,6 +389,10 @@ pub(super) fn build_chunk_offset<'a>(
             sealed_length: chunk.sealed_length,
             strips: strips_vec,
             chunk_type: fb_chunk_type(chunk_type),
+            writer_epoch: chunk.writer_epoch,
+            acknowledged_cursor: chunk.acknowledged_cursor,
+            closed_strip_sequence: chunk.closed_strip_sequence.unwrap_or(u32::MAX),
+            writer_lease_deadline_ms: chunk.writer_lease_deadline_ms,
         },
     )
 }

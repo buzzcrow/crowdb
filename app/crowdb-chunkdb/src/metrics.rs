@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 pub enum RequestKind {
     AllocateChunk,
     AppendChunk,
+    AdvanceChunkWrite,
     QueryChunk,
     SealChunk,
     DeleteChunk,
@@ -26,9 +27,10 @@ pub enum RequestKind {
 }
 
 impl RequestKind {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::AllocateChunk,
         Self::AppendChunk,
+        Self::AdvanceChunkWrite,
         Self::QueryChunk,
         Self::SealChunk,
         Self::DeleteChunk,
@@ -41,6 +43,7 @@ impl RequestKind {
         match self {
             Self::AllocateChunk => "allocate_chunk",
             Self::AppendChunk => "append_chunk",
+            Self::AdvanceChunkWrite => "advance_chunk_write",
             Self::QueryChunk => "query_chunk",
             Self::SealChunk => "seal_chunk",
             Self::DeleteChunk => "delete_chunk",
@@ -63,7 +66,7 @@ struct RequestMetric {
 
 /// Uniform completed-request latency/count, inflight, and error metrics.
 pub struct RequestMetrics {
-    methods: [RequestMetric; 8],
+    methods: [RequestMetric; 9],
 }
 
 impl RequestMetrics {

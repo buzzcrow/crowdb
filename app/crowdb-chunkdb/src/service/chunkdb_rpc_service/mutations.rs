@@ -1,8 +1,8 @@
 use super::{
     build_delete_range_response, map_error, parse_fb_chunk_strip, proto_chunk_type, proto_strip_type,
     submit_append_result, submit_chunk_result, submit_error, submit_fb_response, Arc, ChunkId,
-    ChunkdbRpcService, FBAllocateChunkRequest, FBAppendChunkRequest, FBChunkdbRetCode,
-    FBDeleteChunkRangeRequest, FBDeleteChunkRequest, FBMsgType, FBSealChunkRequest,
+    ChunkdbRpcService, FBAdvanceChunkWriteRequest, FBAllocateChunkRequest, FBAppendChunkRequest,
+    FBChunkdbRetCode, FBDeleteChunkRangeRequest, FBDeleteChunkRequest, FBMsgType, FBSealChunkRequest,
     FBUpdateChunkStripRequest, RequestGuard, RpcServer, ServerRequest,
 };
 
@@ -82,6 +82,76 @@ impl ChunkdbRpcService {
                     code_num,
                     copy_count,
                     chunk_type,
+                    fb_req.writer_epoch(),
+                    fb_req.writer_lease_ms(),
+                )
+                .await;
+            if result.is_ok() {
+                request.mark_success();
+            }
+            submit_chunk_result(
+                &server,
+                conn_handle_usize as *mut std::ffi::c_void,
+                req_id,
+                create_nano,
+                msg_type,
+                result,
+            );
+        });
+    }
+
+    // ── AdvanceChunkWrite ────────────────────────────────────────
+
+    pub(super) fn handle_advance_write(
+        &self,
+        req: ServerRequest,
+        server: &Arc<RpcServer>,
+        mut request: RequestGuard,
+    ) {
+        let req_id = req.request_id;
+        let create_nano = req.rpc_create_nano;
+        let msg_type = FBMsgType::EAdvanceChunkWriteResponse.0 as u16;
+        let conn_handle_usize = req.conn_handle as usize;
+        let handler = Arc::clone(&self.handler);
+        let server = Arc::clone(server);
+        self.rt.spawn(async move {
+            let Ok(fb_req) = flatbuffers::root::<FBAdvanceChunkWriteRequest>(req.control()) else {
+                submit_error(
+                    &server,
+                    conn_handle_usize as *mut std::ffi::c_void,
+                    req_id,
+                    create_nano,
+                    msg_type,
+                    FBChunkdbRetCode::InvalidArgument,
+                    "invalid request flatbuffer",
+                );
+                return;
+            };
+            let Some(chunk_id) = fb_req.chunk_id().map(|id| ChunkId {
+                high: id.high(),
+                low: id.low(),
+            }) else {
+                submit_error(
+                    &server,
+                    conn_handle_usize as *mut std::ffi::c_void,
+                    req_id,
+                    create_nano,
+                    msg_type,
+                    FBChunkdbRetCode::InvalidArgument,
+                    "missing chunk_id",
+                );
+                return;
+            };
+            let closed_sequence =
+                (fb_req.closed_strip_sequence() != u32::MAX).then(|| fb_req.closed_strip_sequence());
+            let result = handler
+                .advance_chunk_write(
+                    &chunk_id,
+                    fb_req.writer_epoch(),
+                    fb_req.expected_modify_ts(),
+                    fb_req.acknowledged_cursor(),
+                    closed_sequence,
+                    fb_req.writer_lease_ms(),
                 )
                 .await;
             if result.is_ok() {

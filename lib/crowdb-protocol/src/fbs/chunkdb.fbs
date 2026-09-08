@@ -110,6 +110,10 @@ table FBChunk {
     sealed_length:uint32;
     strips:[FBChunkStrip];
     chunk_type:FBChunkType;
+    writer_epoch:uint64;
+    acknowledged_cursor:uint64;
+    closed_strip_sequence:uint32 = 4294967295;
+    writer_lease_deadline_ms:uint64;
 }
 
 // ── AllocateChunk ────────────────────────────────────────────────
@@ -125,6 +129,8 @@ table FBAllocateChunkRequest {
     code_num:uint32;
     copy_count:uint32;
     chunk_type:FBChunkType;
+    writer_epoch:uint64;
+    writer_lease_ms:uint64;
 }
 
 table FBAllocateChunkResponse {
@@ -161,6 +167,29 @@ table FBAppendChunkResponse {
     range_end:uint32;
     modify_ts:uint64;
     strips:[FBChunkStrip];
+    chunk:FBChunk;
+}
+
+// ── AdvanceChunkWrite ────────────────────────────────────────────
+
+table FBAdvanceChunkWriteRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    chunk_id:crowdb.rpc.proto.FBInt128;
+    writer_epoch:uint64;
+    expected_modify_ts:uint64;
+    acknowledged_cursor:uint64;
+    closed_strip_sequence:uint32 = 4294967295;
+    writer_lease_ms:uint64;
+}
+
+table FBAdvanceChunkWriteResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    ret_code:FBChunkdbRetCode;
+    error_msg:string;
+    range_start:uint32;
+    range_end:uint32;
     chunk:FBChunk;
 }
 

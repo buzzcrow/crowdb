@@ -20,6 +20,10 @@ pub enum IoError {
     EcEncodeFailed(String),
     #[error("memory budget exhausted")]
     MemoryBudgetExhausted,
+    #[error("object size {size} exceeds small-object limit {limit}")]
+    ObjectTooLarge { size: usize, limit: usize },
+    #[error("object size mismatch: declared {declared} bytes, received {actual}")]
+    ObjectSizeMismatch { declared: usize, actual: usize },
     #[error("writer already finished")]
     Finished,
     #[error("internal error: {0}")]

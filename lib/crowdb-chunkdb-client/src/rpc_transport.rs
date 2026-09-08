@@ -21,24 +21,25 @@ use dashmap::DashMap;
 use flatbuffers::FlatBufferBuilder;
 
 use crowdb_protocol::chunkdb::rpc::{
-    AllocateChunkResponse, AppendChunkResponse, Chunk, ChunkState as ProtoChunkState, ChunkStrip,
-    ChunkType as ProtoChunkType, DeleteChunkRangeResponse, DeleteChunkResponse, ListChunksResponse,
-    QueryChunkResponse, SealChunkResponse, StripType as ProtoStripType, UpdateChunkStripResponse,
+    AdvanceChunkWriteResponse, AllocateChunkResponse, AppendChunkResponse, Chunk,
+    ChunkState as ProtoChunkState, ChunkStrip, ChunkType as ProtoChunkType, DeleteChunkRangeResponse,
+    DeleteChunkResponse, ListChunksResponse, QueryChunkResponse, SealChunkResponse,
+    StripType as ProtoStripType, UpdateChunkStripResponse,
 };
 use crowdb_protocol::chunkdb::rpc::{EcState as ProtoEcState, EcStrip, MirrorStrip, Strip as ProtoStrip};
 use crowdb_protocol::chunkdb_fb::{
-    FBAllocateChunkRequest, FBAllocateChunkRequestArgs, FBAppendChunkRequest, FBAppendChunkRequestArgs,
-    FBChunkState, FBChunkStrip, FBChunkType, FBChunkdbRetCode, FBDeleteChunkRangeRequest,
-    FBDeleteChunkRangeRequestArgs, FBDeleteChunkRequest, FBDeleteChunkRequestArgs, FBInt128,
-    FBListChunksRequest, FBListChunksRequestArgs, FBQueryChunkRequest, FBQueryChunkRequestArgs,
-    FBSealChunkRequest, FBSealChunkRequestArgs, FBStripBody, FBStripType, FBUpdateChunkStripRequest,
-    FBUpdateChunkStripRequestArgs,
+    FBAdvanceChunkWriteRequest, FBAdvanceChunkWriteRequestArgs, FBAllocateChunkRequest,
+    FBAllocateChunkRequestArgs, FBAppendChunkRequest, FBAppendChunkRequestArgs, FBChunkState, FBChunkStrip,
+    FBChunkType, FBChunkdbRetCode, FBDeleteChunkRangeRequest, FBDeleteChunkRangeRequestArgs,
+    FBDeleteChunkRequest, FBDeleteChunkRequestArgs, FBInt128, FBListChunksRequest, FBListChunksRequestArgs,
+    FBQueryChunkRequest, FBQueryChunkRequestArgs, FBSealChunkRequest, FBSealChunkRequestArgs, FBStripBody,
+    FBStripType, FBUpdateChunkStripRequest, FBUpdateChunkStripRequestArgs,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::fb::FBMsgType;
 use crowdb_protocol::fb_wrappers::chunkdb::{
-    FBAllocateChunkResponseRef, FBAppendChunkResponseRef, FBDeleteChunkRangeResponseRef,
-    FBListChunksResponseRef,
+    FBAdvanceChunkWriteResponseRef, FBAllocateChunkResponseRef, FBAppendChunkResponseRef,
+    FBDeleteChunkRangeResponseRef, FBListChunksResponseRef,
 };
 use crowdb_rpc_ffi::{Buffer, Connection, RpcClient, RpcError, RpcServer};
 
@@ -159,6 +160,8 @@ impl ChunkdbRpcTransport {
             chunk_type: chunk_type_to_fb(
                 ProtoChunkType::try_from(req.chunk_type).unwrap_or(ProtoChunkType::Repo),
             ),
+            writer_epoch: req.writer_epoch,
+            writer_lease_ms: req.writer_lease_ms,
         };
         let fb_req = FBAllocateChunkRequest::create(&mut builder, &args);
         builder.finish(fb_req, None);
@@ -183,6 +186,52 @@ impl ChunkdbRpcTransport {
         check_ret_code(r.ret_code(), r.error_msg())?;
         Ok(AllocateChunkResponse {
             chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)),
+        })
+    }
+
+    /// Durably advance a shared chunk's fenced physical cursor.
+    pub async fn send_advance_chunk_write(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::AdvanceChunkWriteRequest,
+    ) -> Result<AdvanceChunkWriteResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let chunk_id = req.chunk_id.as_ref().map(|id| FBInt128::new(id.high, id.low));
+        let fb_req = FBAdvanceChunkWriteRequest::create(
+            &mut builder,
+            &FBAdvanceChunkWriteRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                chunk_id: chunk_id.as_ref(),
+                writer_epoch: req.writer_epoch,
+                expected_modify_ts: req.expected_modify_ts,
+                acknowledged_cursor: req.acknowledged_cursor,
+                closed_strip_sequence: req.closed_strip_sequence.unwrap_or(u32::MAX),
+                writer_lease_ms: req.writer_lease_ms,
+            },
+        );
+        builder.finish(fb_req, None);
+        let response = call_rpc(
+            &self.rpc,
+            &self.server,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::EAdvanceChunkWriteRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = FBAdvanceChunkWriteResponseRef::new(response.bytes());
+        if !response.valid() {
+            return Err(ChunkdbClientError::Rpc(
+                "advance_chunk_write response malformed".into(),
+            ));
+        }
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        Ok(AdvanceChunkWriteResponse {
+            chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)),
         })
     }
 
@@ -584,6 +633,10 @@ fn parse_fb_chunk(fb: &crowdb_protocol::chunkdb_fb::FBChunk<'_>) -> Chunk {
         sealed_length: fb.sealed_length(),
         strips,
         chunk_type: chunk_type as i32,
+        writer_epoch: fb.writer_epoch(),
+        acknowledged_cursor: fb.acknowledged_cursor(),
+        closed_strip_sequence: (fb.closed_strip_sequence() != u32::MAX).then(|| fb.closed_strip_sequence()),
+        writer_lease_deadline_ms: fb.writer_lease_deadline_ms(),
     }
 }
 

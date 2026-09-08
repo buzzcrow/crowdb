@@ -106,4 +106,6 @@ enum FBMsgType : int16 {
     EUpdateChunkStripResponse = 3313,
     EListChunksRequest = 3314,
     EListChunksResponse = 3315,
+    EAdvanceChunkWriteRequest = 3316,
+    EAdvanceChunkWriteResponse = 3317,
 }

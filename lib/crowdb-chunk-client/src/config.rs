@@ -8,9 +8,89 @@
 //! `ChunkPrefetch`, `ChunkWriter`, `EcStripWriter`) read the fields
 //! they need from this single config.
 
+use std::time::Duration;
+
 use crowdb_common::ec::EcScheme;
 
 use crate::IoError;
+
+/// Bounded aggregation and elasticity policy for shared small writes.
+#[derive(Debug, Clone)]
+pub struct SmallWritePolicy {
+    pub object_limit: usize,
+    pub memory_budget: usize,
+    pub queue_capacity: usize,
+    pub min_pipelines: usize,
+    pub max_pipelines: usize,
+    pub max_batch_bytes: usize,
+    pub max_batch_objects: usize,
+    pub batch_deadline: Duration,
+    pub scale_out_delay: Duration,
+    pub scale_in_delay: Duration,
+    pub control_interval: Duration,
+    pub cooldown: Duration,
+    pub chunk_capacity: u64,
+    pub mirror_copies: u32,
+    pub writer_lease: Duration,
+}
+
+impl Default for SmallWritePolicy {
+    fn default() -> Self {
+        const MIB: usize = 1024 * 1024;
+        Self {
+            object_limit: MIB,
+            memory_budget: 64 * MIB,
+            queue_capacity: 1_024,
+            min_pipelines: 1,
+            max_pipelines: 8,
+            max_batch_bytes: MIB,
+            max_batch_objects: 1_024,
+            batch_deadline: Duration::from_millis(2),
+            scale_out_delay: Duration::from_millis(20),
+            scale_in_delay: Duration::from_secs(30),
+            control_interval: Duration::from_millis(10),
+            cooldown: Duration::from_millis(100),
+            chunk_capacity: 1024 * 1024 * 1024,
+            mirror_copies: 3,
+            writer_lease: Duration::from_secs(30),
+        }
+    }
+}
+
+impl SmallWritePolicy {
+    pub fn validate(&self) -> Result<(), IoError> {
+        const HARD_LIMIT: usize = 1024 * 1024;
+        if self.object_limit == 0 || self.object_limit > HARD_LIMIT {
+            return Err(IoError::Internal(
+                "small object limit must be in 1..=1 MiB".into(),
+            ));
+        }
+        if self.memory_budget < self.object_limit {
+            return Err(IoError::Internal(
+                "small write memory budget must cover one maximum-size object".into(),
+            ));
+        }
+        if self.memory_budget > u32::MAX as usize {
+            return Err(IoError::Internal(
+                "small write memory budget must fit Tokio semaphore permits".into(),
+            ));
+        }
+        if self.queue_capacity == 0
+            || self.min_pipelines == 0
+            || self.min_pipelines > self.max_pipelines
+            || self.max_batch_bytes == 0
+            || self.max_batch_objects == 0
+            || self.chunk_capacity < self.object_limit as u64
+            || self.mirror_copies == 0
+            || self.batch_deadline.is_zero()
+            || self.control_interval.is_zero()
+            || self.writer_lease.is_zero()
+        {
+            return Err(IoError::Internal("invalid small write policy".into()));
+        }
+        Ok(())
+    }
+}
 
 /// Configuration for the chunk data path. Shared by all writers.
 #[derive(Debug, Clone)]

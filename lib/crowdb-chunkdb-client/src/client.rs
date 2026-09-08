@@ -18,10 +18,11 @@ use arc_swap::ArcSwap;
 use crowdb_kv_client::{RangeBindingClient, ServiceRegistryClient};
 use crowdb_protocol::chunk_id::ChunkIdParts;
 use crowdb_protocol::chunkdb::rpc::{
-    AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse,
-    DeleteChunkRangeRequest, DeleteChunkRangeResponse, DeleteChunkRequest, DeleteChunkResponse,
-    ListChunksRequest, ListChunksResponse, QueryChunkRequest, QueryChunkResponse, SealChunkRequest,
-    SealChunkResponse, UpdateChunkStripRequest, UpdateChunkStripResponse,
+    AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
+    AppendChunkRequest, AppendChunkResponse, DeleteChunkRangeRequest, DeleteChunkRangeResponse,
+    DeleteChunkRequest, DeleteChunkResponse, ListChunksRequest, ListChunksResponse, QueryChunkRequest,
+    QueryChunkResponse, SealChunkRequest, SealChunkResponse, UpdateChunkStripRequest,
+    UpdateChunkStripResponse,
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::InstanceId;
@@ -245,6 +246,19 @@ impl ChunkdbClient {
         self.with_rpc_retry(chunk_id.as_ref(), |t, ep| {
             let req = req.clone();
             async move { t.send_append_chunk(&ep, &req).await }
+        })
+        .await
+    }
+
+    /// Durably advance a shared chunk's fenced write cursor.
+    pub async fn advance_chunk_write(
+        &self,
+        req: AdvanceChunkWriteRequest,
+    ) -> Result<AdvanceChunkWriteResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move { transport.send_advance_chunk_write(&endpoint, &req).await }
         })
         .await
     }

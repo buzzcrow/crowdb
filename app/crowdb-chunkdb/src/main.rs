@@ -312,6 +312,11 @@ async fn main() {
             return;
         }
     }
+    let writer_lease_sweep_handle = tokio::spawn(run_writer_lease_sweep_loop(
+        Arc::clone(&handler),
+        sweep_interval,
+        stop_rx.clone(),
+    ));
 
     // Build the crowdb-rpc server. The RpcServer listens on the RPC
     // port and dispatches to ChunkdbRpcService handlers.
@@ -343,6 +348,7 @@ async fn main() {
     let _ = http_handle.await;
     let _ = refresh_handle.await;
     let _ = notify_handle.await;
+    let _ = writer_lease_sweep_handle.await;
     let _ = range_refresh_handle.await;
     let _ = sweep_handle.await;
     if let Some(h) = keepalive_handle {
@@ -407,6 +413,29 @@ async fn run_sweep_loop(
                 if *stop.borrow() {
                     info!("sweep task stopping");
                     break;
+                }
+            }
+        }
+    }
+}
+
+async fn run_writer_lease_sweep_loop(
+    handler: Arc<LifecycleHandler>,
+    interval: Duration,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = ticker.tick() => {
+                if let Err(error) = handler.seal_expired_writer_chunks().await {
+                    warn!(%error, "shared writer lease sweep failed");
+                }
+            }
+            changed = stop.changed() => {
+                if changed.is_ok() && *stop.borrow() {
+                    return;
                 }
             }
         }

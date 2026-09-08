@@ -10,9 +10,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crowdb_chunk_client::{ChunkClientConfig, ChunkIoClient, ChunkIoClientConfig, LargeWritePolicy};
+use bytes::Bytes;
+use crowdb_chunk_client::{
+    ChunkClientConfig, ChunkIoClient, ChunkIoClientConfig, ChunkIoWriter, LargeWritePolicy, SmallWritePolicy,
+};
+use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
 use crowdb_common::ec::EcScheme;
-use crowdb_diskio_client::DiskioClient;
+use crowdb_diskio_client::{DiskId, DiskIoRetCode, DiskioClient};
+use crowdb_kv_client::{ClientConfig, CrowdbKvClient, ServiceRegistryClient};
+use crowdb_protocol::chunkdb::rpc::{QueryChunkRequest, Strip};
 use crowdb_protocol::common::DiskId as ProtoDiskId;
 use crowdb_rpc_ffi::RpcServer;
 use crowdb_test_harness::chunkdb::{self as cdb_harness, ChunkdbProcess};
@@ -66,11 +72,14 @@ fn ec_4_1() -> EcScheme {
 /// Set up the full stack: kv cluster + hardware + diskdb + diskio +
 /// chunkdb. Returns all the processes + RPC resources + chunkdb client.
 struct E2eStack {
-    _cluster: KvCluster,
+    cluster: KvCluster,
     _diskdb: DiskdbProcess,
     _diskio: DiskioProcess,
     _chunkdb: ChunkdbProcess,
     client: ChunkIoClient,
+    rpc_server: Arc<RpcServer>,
+    diskio_client: Arc<DiskioClient>,
+    diskio_connection: crowdb_rpc_ffi::Connection,
 }
 
 async fn start_e2e_stack() -> E2eStack {
@@ -99,9 +108,9 @@ async fn start_e2e_stack() -> E2eStack {
     eprintln!("crowdb-diskdb ready");
 
     // 4. Start diskio (block I/O, NullDisk backend).
-    eprintln!("=== starting crowdb-diskio (null) ===");
+    eprintln!("=== starting crowdb-diskio (mem) ===");
     let diskio = DiskioProcess::start(&DiskioStartOpts {
-        dummy_disk: "null",
+        dummy_disk: "mem",
         kv_seeds: &cluster.mgmt_endpoints,
         disks: &[],
         fault_error_rate: 0.0,
@@ -131,8 +140,13 @@ async fn start_e2e_stack() -> E2eStack {
     // 6. Build the application-facing client from management seeds.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let client = loop {
+        let small_write = SmallWritePolicy {
+            mirror_copies: 1,
+            ..SmallWritePolicy::default()
+        };
         if let Ok(client) = ChunkIoClient::connect(ChunkIoClientConfig {
             management_seeds: cluster.mgmt_endpoints.clone(),
+            small_write,
         })
         .await
         {
@@ -152,11 +166,14 @@ async fn start_e2e_stack() -> E2eStack {
     eprintln!("chunkdb topology settled");
 
     E2eStack {
-        _cluster: cluster,
+        cluster,
         _diskdb: diskdb,
         _diskio: diskio,
         _chunkdb: chunkdb,
         client,
+        rpc_server,
+        diskio_client: dio_client,
+        diskio_connection: conn,
     }
 }
 
@@ -277,4 +294,85 @@ async fn e2e_case2_chunk_rotation() {
         }
     }
     eprintln!("Case 2 OK: 3 Locations, total = 20 MB");
+}
+
+#[tokio::test]
+async fn small_object_e2e_shared_locations_match_every_mirror_replica() {
+    if !check_all_binaries() {
+        return;
+    }
+    let stack = start_e2e_stack().await;
+    let objects = [
+        Bytes::from(vec![3; 4 * 1024]),
+        Bytes::from(vec![5; 16 * 1024]),
+        Bytes::from(vec![7; 64 * 1024]),
+    ];
+    let mut tasks = Vec::new();
+    for object in objects.iter().cloned() {
+        let client = stack.client.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut writer = client.prepare_small_write(object.len()).await.unwrap();
+            writer.on_data(object.clone()).await.unwrap();
+            (object, writer.on_finish().await.unwrap().remove(0))
+        }));
+    }
+    let mut completed = Vec::new();
+    for task in tasks {
+        completed.push(task.await.unwrap());
+    }
+    let chunk_id = completed[0].1.chunk_id.expect("location chunk id");
+    assert!(completed
+        .iter()
+        .all(|(_, location)| location.chunk_id == Some(chunk_id)));
+
+    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+        stack.cluster.mgmt_endpoints.clone(),
+    )));
+    let service = ServiceRegistryClient::from_shared(kv);
+    let chunkdb = ChunkdbClient::new(service, Arc::new(ChunkdbRpcTransport::new()));
+    chunkdb.refresh_endpoints().await.unwrap();
+    let chunk = chunkdb
+        .query_chunk(QueryChunkRequest {
+            chunk_id: Some(chunk_id),
+        })
+        .await
+        .unwrap()
+        .chunk
+        .unwrap();
+
+    for (expected, location) in completed {
+        let strip = chunk
+            .strips
+            .iter()
+            .find(|strip| {
+                let start = u64::from(strip.chunk_offset) * 1024;
+                let end = start + u64::from(strip.capacity) * 1024;
+                start <= location.offset && location.offset + location.length <= end
+            })
+            .expect("location strip");
+        let Strip::MirrorStrip(mirror) = strip.strip.as_ref().expect("strip body") else {
+            panic!("small-object strip must be mirrored");
+        };
+        let unit_bytes = u64::from(strip.unit_kb) * 1024;
+        let relative = location.offset - u64::from(strip.chunk_offset) * 1024;
+        for segment in &mirror.segments {
+            let disk_id = segment.disk_id.expect("segment disk id");
+            let read = stack
+                .diskio_client
+                .read(
+                    &stack.rpc_server,
+                    &stack.diskio_connection,
+                    DiskId::new(disk_id.high, disk_id.low),
+                    segment.zone_index,
+                    segment.unit_offset * unit_bytes + relative,
+                    u32::try_from(location.length).unwrap(),
+                    0,
+                )
+                .expect("send replica read");
+            let (code, bytes) = DiskioClient::await_read_response(read).await.unwrap();
+            assert_eq!(code, DiskIoRetCode::Success);
+            assert_eq!(bytes.unwrap(), expected);
+        }
+    }
+    stack.client.shutdown_small_writes().await.unwrap();
 }
