@@ -94,13 +94,13 @@ impl ChunkClientMetrics {
             logical_bytes: registry.register_bandwidth("chunkio.object.logical.bw"),
             physical_bytes: registry.register_bandwidth("chunkio.object.physical.bw"),
             diskio_write_bytes: registry.register_bandwidth("chunkio.diskio.write.bw"),
-            small_write: Arc::new(SmallWriteMetrics::default()),
+            small_write: Arc::new(SmallWriteMetrics::register(registry)),
         }
     }
 }
 
 /// Lock-free counters and gauges for the shared small-write pool.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct SmallWriteMetrics {
     pub(crate) submitted: AtomicU64,
     pub(crate) completed: AtomicU64,
@@ -113,11 +113,34 @@ pub struct SmallWriteMetrics {
     pub(crate) max_batch_bytes: AtomicU64,
     pub(crate) queue_delay_ns: AtomicU64,
     pub(crate) max_queue_delay_ns: AtomicU64,
-    pub(crate) active_pipelines: AtomicU64,
-    pub(crate) draining_pipelines: AtomicU64,
+    pub(crate) active_pipelines: Arc<Gauge>,
+    pub(crate) draining_pipelines: Arc<Gauge>,
     pub(crate) scale_out: AtomicU64,
     pub(crate) scale_in: AtomicU64,
     pub(crate) tail_waste_bytes: AtomicU64,
+}
+
+impl Default for SmallWriteMetrics {
+    fn default() -> Self {
+        Self {
+            submitted: AtomicU64::new(0),
+            completed: AtomicU64::new(0),
+            failed: AtomicU64::new(0),
+            reserved_bytes: AtomicU64::new(0),
+            batches: AtomicU64::new(0),
+            batch_objects: AtomicU64::new(0),
+            batch_bytes: AtomicU64::new(0),
+            max_batch_objects: AtomicU64::new(0),
+            max_batch_bytes: AtomicU64::new(0),
+            queue_delay_ns: AtomicU64::new(0),
+            max_queue_delay_ns: AtomicU64::new(0),
+            active_pipelines: Arc::new(Gauge::new("chunkio.small_write.active_pipelines.g".into())),
+            draining_pipelines: Arc::new(Gauge::new("chunkio.small_write.draining_pipelines.g".into())),
+            scale_out: AtomicU64::new(0),
+            scale_in: AtomicU64::new(0),
+            tail_waste_bytes: AtomicU64::new(0),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -142,6 +165,14 @@ pub struct SmallWriteMetricsSnapshot {
 }
 
 impl SmallWriteMetrics {
+    fn register(registry: &mut MetricsRegistry) -> Self {
+        Self {
+            active_pipelines: registry.register_gauge("chunkio.small_write.active_pipelines.g"),
+            draining_pipelines: registry.register_gauge("chunkio.small_write.draining_pipelines.g"),
+            ..Self::default()
+        }
+    }
+
     #[must_use]
     pub fn snapshot(&self) -> SmallWriteMetricsSnapshot {
         let batches = self.batches.load(Ordering::Relaxed);
@@ -159,8 +190,8 @@ impl SmallWriteMetrics {
             average_batch_fill_ppm: 0,
             queue_delay_ns: self.queue_delay_ns.load(Ordering::Relaxed),
             max_queue_delay_ns: self.max_queue_delay_ns.load(Ordering::Relaxed),
-            active_pipelines: self.active_pipelines.load(Ordering::Relaxed),
-            draining_pipelines: self.draining_pipelines.load(Ordering::Relaxed),
+            active_pipelines: self.active_pipelines.snapshot(),
+            draining_pipelines: self.draining_pipelines.snapshot(),
             scale_out: self.scale_out.load(Ordering::Relaxed),
             scale_in: self.scale_in.load(Ordering::Relaxed),
             tail_waste_bytes: self.tail_waste_bytes.load(Ordering::Relaxed),

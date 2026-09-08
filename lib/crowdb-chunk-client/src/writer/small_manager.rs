@@ -66,12 +66,12 @@ async fn run(
             command = commands.recv() => {
                 let Some(ManagerCommand::Shutdown(done)) = command else { break; };
                 runtime.publish(&[]);
-                runtime.metrics.draining_pipelines.store(pipelines.len() as u64, Ordering::Relaxed);
+                runtime.metrics.draining_pipelines.set(pipelines.len() as u64);
                 for pipeline in &pipelines {
                     pipeline.begin_retire();
                 }
                 let result = join_all(pipelines).await;
-                runtime.metrics.draining_pipelines.store(0, Ordering::Relaxed);
+                runtime.metrics.draining_pipelines.set(0);
                 let _ = done.send(result);
                 return;
             }
@@ -104,10 +104,10 @@ async fn run(
                 if let Some(index) = scale_in_candidate(&runtime, &pipelines) {
                     let pipeline = pipelines.remove(index);
                     publish(&runtime, &pipelines);
-                    runtime.metrics.draining_pipelines.fetch_add(1, Ordering::Relaxed);
+                    runtime.metrics.draining_pipelines.inc();
                     pipeline.begin_retire();
                     let _ = pipeline.join.await;
-                    runtime.metrics.draining_pipelines.fetch_sub(1, Ordering::Relaxed);
+                    runtime.metrics.draining_pipelines.dec();
                     runtime.metrics.scale_in.fetch_add(1, Ordering::Relaxed);
                     last_change = Instant::now();
                 }
@@ -142,31 +142,26 @@ async fn reap_finished(runtime: &SmallPoolRuntime, pipelines: &mut Vec<ManagedPi
 }
 
 fn should_scale_out(runtime: &SmallPoolRuntime, pipelines: &[ManagedPipeline]) -> bool {
-    if pipelines.is_empty()
-        || pipelines
-            .iter()
-            .any(|pipeline| !pipeline.route.busy.load(Ordering::Acquire))
-    {
-        return false;
-    }
-    let now = runtime.now_ms();
-    let delay = duration_ms(runtime.policy.scale_out_delay);
     pipelines.iter().any(|pipeline| {
-        let oldest = pipeline.route.oldest_enqueue_ms.load(Ordering::Relaxed);
-        oldest != 0 && now.saturating_sub(oldest) >= delay
+        pipeline.route.queued_bytes.load(Ordering::Relaxed) >= runtime.policy.scale_out_queue_bytes as u64
+            || pipeline.route.queued_objects.load(Ordering::Relaxed)
+                >= runtime.policy.scale_out_queue_objects as u64
     })
 }
 
 fn scale_in_candidate(runtime: &SmallPoolRuntime, pipelines: &[ManagedPipeline]) -> Option<usize> {
-    if pipelines.len() <= runtime.policy.min_pipelines {
+    if pipelines.len() <= runtime.policy.min_pipelines
+        || pipelines.iter().any(|pipeline| {
+            pipeline.route.queued_objects.load(Ordering::Relaxed) != 0
+                || pipeline.route.busy.load(Ordering::Acquire)
+        })
+    {
         return None;
     }
     let now = runtime.now_ms();
     let delay = duration_ms(runtime.policy.scale_in_delay);
     pipelines.iter().position(|pipeline| {
-        pipeline.route.queued_bytes.load(Ordering::Relaxed) == 0
-            && !pipeline.route.busy.load(Ordering::Acquire)
-            && now.saturating_sub(pipeline.route.last_active_ms.load(Ordering::Relaxed)) >= delay
+        now.saturating_sub(pipeline.route.last_active_ms.load(Ordering::Relaxed)) >= delay
     })
 }
 

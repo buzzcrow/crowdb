@@ -141,9 +141,11 @@ chunk.
 
 One manager owns pipeline membership. It publishes a scale-out candidate only
 after the candidate's first chunk is ready; initialization failure leaves the
-old snapshot intact. Sustained queue age and utilization can add one pipeline
-after a cooldown. A sufficiently idle, empty route can be unpublished and
-drained while preserving the configured minimum.
+old snapshot intact. A route whose queued bytes or queued object count reaches
+its configured high-water mark can add one pipeline after a cooldown.
+Scale-out depends only on queued work, not worker utilization or request age.
+When the whole pool has no queued or active work, a sufficiently idle route
+can be unpublished and drained while preserving the configured minimum.
 
 Unexpected worker termination removes the failed route and creates replacements
 until the minimum is restored. Explicit shutdown closes admission, unpublishes
@@ -153,10 +155,11 @@ owned chunks. Dropping the pool closes admission but cannot await cleanup.
 ## 8. Policy and Metrics
 
 Defaults accept objects and batches up to 1 MiB, reserve 64 MiB pool-wide, use
-one to eight pipelines, allow 1,024 queued objects per pipeline, create 1 GiB
-chunks, and write three mirrors. Configuration validates nonzero bounds, a
-budget at least as large as the object limit, ordered pipeline limits, and
-progress-capable durations.
+one to 32 pipelines, allow 1,024 queued objects per pipeline, and scale out
+when one route queues at least 4 MiB or 128 objects. Shared chunks have a 1 GiB
+client-side capacity and write three mirrors. Configuration validates nonzero
+bounds, reachable queue high-water marks, a budget at least as large as the
+object limit, ordered pipeline limits, and progress-capable durations.
 
 Atomic metrics cover submitted, completed, and failed objects; reserved bytes;
 batch sizes and fill; queue delay; active and draining pipelines; scale changes;

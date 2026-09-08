@@ -551,6 +551,22 @@ async fn chunk_client_metrics_cover_object_chunk_and_diskio_layers() {
             ..
         })
     ));
+
+    let mut writer = client.prepare_small_write(4096).await.unwrap();
+    assert!(matches!(
+        registry.snapshot_named("chunkio.small_write.active_pipelines.g", 1.0),
+        Some(MetricPoint::Gauge { value: 1, .. })
+    ));
+    assert!(matches!(
+        registry.snapshot_named("chunkio.small_write.draining_pipelines.g", 1.0),
+        Some(MetricPoint::Gauge { value: 0, .. })
+    ));
+    writer.on_error().await.unwrap();
+    client.shutdown_small_writes().await.unwrap();
+    assert!(matches!(
+        registry.snapshot_named("chunkio.small_write.active_pipelines.g", 1.0),
+        Some(MetricPoint::Gauge { value: 0, .. })
+    ));
 }
 
 #[tokio::test]

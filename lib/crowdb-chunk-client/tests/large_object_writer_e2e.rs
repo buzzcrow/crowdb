@@ -18,7 +18,7 @@ use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
 use crowdb_common::ec::EcScheme;
 use crowdb_diskio_client::{DiskId, DiskIoRetCode, DiskioClient};
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, ServiceRegistryClient};
-use crowdb_protocol::chunkdb::rpc::{QueryChunkRequest, Strip};
+use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, Location, QueryChunkRequest, Strip};
 use crowdb_protocol::common::DiskId as ProtoDiskId;
 use crowdb_rpc_ffi::RpcServer;
 use crowdb_test_harness::chunkdb::{self as cdb_harness, ChunkdbProcess};
@@ -83,6 +83,14 @@ struct E2eStack {
 }
 
 async fn start_e2e_stack() -> E2eStack {
+    start_e2e_stack_with_small_policy(SmallWritePolicy {
+        mirror_copies: 1,
+        ..SmallWritePolicy::default()
+    })
+    .await
+}
+
+async fn start_e2e_stack_with_small_policy(small_write: SmallWritePolicy) -> E2eStack {
     // 1. Start kv cluster.
     eprintln!("=== starting kv cluster ===");
     let cluster = KvCluster::start().await;
@@ -140,13 +148,9 @@ async fn start_e2e_stack() -> E2eStack {
     // 6. Build the application-facing client from management seeds.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let client = loop {
-        let small_write = SmallWritePolicy {
-            mirror_copies: 1,
-            ..SmallWritePolicy::default()
-        };
         if let Ok(client) = ChunkIoClient::connect(ChunkIoClientConfig {
             management_seeds: cluster.mgmt_endpoints.clone(),
-            small_write,
+            small_write: small_write.clone(),
         })
         .await
         {
@@ -175,6 +179,78 @@ async fn start_e2e_stack() -> E2eStack {
         diskio_client: dio_client,
         diskio_connection: conn,
     }
+}
+
+async fn write_small_object(client: &ChunkIoClient, data: Bytes) -> Location {
+    let mut writer = client.prepare_small_write(data.len()).await.unwrap();
+    writer.on_data(data).await.unwrap();
+    writer.on_finish().await.unwrap().remove(0)
+}
+
+async fn query_chunk(client: &ChunkdbClient, location: &Location) -> Chunk {
+    client
+        .query_chunk(QueryChunkRequest {
+            chunk_id: location.chunk_id,
+        })
+        .await
+        .unwrap()
+        .chunk
+        .expect("location chunk")
+}
+
+async fn assert_location_on_every_mirror(
+    stack: &E2eStack,
+    chunk: &Chunk,
+    location: &Location,
+    expected: &[u8],
+) {
+    let strip = chunk
+        .strips
+        .iter()
+        .find(|strip| {
+            let start = u64::from(strip.chunk_offset) * 1024;
+            let end = start + u64::from(strip.capacity) * 1024;
+            start <= location.offset && location.offset + location.length <= end
+        })
+        .expect("location strip");
+    let Strip::MirrorStrip(mirror) = strip.strip.as_ref().expect("strip body") else {
+        panic!("small-object strip must be mirrored");
+    };
+    let unit_bytes = u64::from(strip.unit_kb) * 1024;
+    let relative = location.offset - u64::from(strip.chunk_offset) * 1024;
+    for segment in &mirror.segments {
+        let disk_id = segment.disk_id.expect("segment disk id");
+        let read = stack
+            .diskio_client
+            .read(
+                &stack.rpc_server,
+                &stack.diskio_connection,
+                DiskId::new(disk_id.high, disk_id.low),
+                segment.zone_index,
+                segment.unit_offset * unit_bytes + relative,
+                u32::try_from(location.length).unwrap(),
+                0,
+            )
+            .expect("send replica read");
+        let (code, bytes) = DiskioClient::await_read_response(read).await.unwrap();
+        assert_eq!(code, DiskIoRetCode::Success);
+        assert_eq!(bytes.as_deref(), Some(expected));
+    }
+}
+
+async fn wait_for_small_metrics(client: &ChunkIoClient, predicate: impl Fn() -> bool) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !predicate() {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "small-write metrics did not converge: {:?}",
+            client.small_write_metrics()
+        )
+    });
 }
 
 /// Generate deterministic test data of the given size.
@@ -297,33 +373,70 @@ async fn e2e_case2_chunk_rotation() {
 }
 
 #[tokio::test]
-async fn small_object_e2e_shared_locations_match_every_mirror_replica() {
+async fn small_object_e2e_elasticity_rotation_and_mirror_data() {
     if !check_all_binaries() {
         return;
     }
-    let stack = start_e2e_stack().await;
-    let objects = [
-        Bytes::from(vec![3; 4 * 1024]),
-        Bytes::from(vec![5; 16 * 1024]),
-        Bytes::from(vec![7; 64 * 1024]),
-    ];
+    let stack = start_e2e_stack_with_small_policy(SmallWritePolicy {
+        memory_budget: 16 * 1024 * 1024,
+        queue_capacity: 256,
+        min_pipelines: 1,
+        max_pipelines: 4,
+        max_batch_objects: 1,
+        scale_out_queue_bytes: 32 * 1024,
+        scale_out_queue_objects: 2,
+        scale_in_delay: Duration::from_millis(50),
+        control_interval: Duration::from_millis(1),
+        cooldown: Duration::from_millis(1),
+        chunk_capacity: 2 * 1024 * 1024,
+        mirror_copies: 1,
+        ..SmallWritePolicy::default()
+    })
+    .await;
+
+    let first_data = Bytes::from(vec![3; 700 * 1024]);
+    let second_data = Bytes::from(vec![5; 400 * 1024]);
+    let third_data = Bytes::from(vec![7; 700 * 1024]);
+    let first = write_small_object(&stack.client, first_data.clone()).await;
+    let second = write_small_object(&stack.client, second_data.clone()).await;
+    let third = write_small_object(&stack.client, third_data.clone()).await;
+    assert_eq!(first.chunk_id, second.chunk_id);
+    assert_eq!(first.offset, 0);
+    assert_eq!(second.offset, 1024 * 1024);
+    assert_ne!(second.chunk_id, third.chunk_id);
+    assert_eq!(third.offset, 0);
+
+    let task_count = 64;
+    let barrier = Arc::new(tokio::sync::Barrier::new(task_count + 1));
     let mut tasks = Vec::new();
-    for object in objects.iter().cloned() {
+    for value in 0..task_count {
         let client = stack.client.clone();
+        let barrier = Arc::clone(&barrier);
         tasks.push(tokio::spawn(async move {
+            let object = Bytes::from(vec![u8::try_from(value).unwrap(); 64 * 1024]);
             let mut writer = client.prepare_small_write(object.len()).await.unwrap();
             writer.on_data(object.clone()).await.unwrap();
+            barrier.wait().await;
             (object, writer.on_finish().await.unwrap().remove(0))
         }));
     }
+    barrier.wait().await;
+    wait_for_small_metrics(&stack.client, || stack.client.small_write_metrics().scale_out > 0).await;
+    assert!(stack.client.small_write_metrics().active_pipelines > 1);
+
     let mut completed = Vec::new();
     for task in tasks {
         completed.push(task.await.unwrap());
     }
-    let chunk_id = completed[0].1.chunk_id.expect("location chunk id");
-    assert!(completed
-        .iter()
-        .all(|(_, location)| location.chunk_id == Some(chunk_id)));
+    wait_for_small_metrics(&stack.client, || {
+        let metrics = stack.client.small_write_metrics();
+        metrics.active_pipelines == 1 && metrics.draining_pipelines == 0 && metrics.scale_in > 0
+    })
+    .await;
+    let metrics = stack.client.small_write_metrics();
+    assert!(metrics.scale_out > 0);
+    assert!(metrics.scale_in > 0);
+    assert_eq!(metrics.draining_pipelines, 0);
 
     let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
         stack.cluster.mgmt_endpoints.clone(),
@@ -331,48 +444,18 @@ async fn small_object_e2e_shared_locations_match_every_mirror_replica() {
     let service = ServiceRegistryClient::from_shared(kv);
     let chunkdb = ChunkdbClient::new(service, Arc::new(ChunkdbRpcTransport::new()));
     chunkdb.refresh_endpoints().await.unwrap();
-    let chunk = chunkdb
-        .query_chunk(QueryChunkRequest {
-            chunk_id: Some(chunk_id),
-        })
-        .await
-        .unwrap()
-        .chunk
-        .unwrap();
+    let first_chunk = query_chunk(&chunkdb, &first).await;
+    let second_chunk = query_chunk(&chunkdb, &third).await;
+    assert_eq!(first_chunk.state, ChunkState::Sealed as i32);
+    assert!(first_chunk.strips.len() >= 2);
+    assert_location_on_every_mirror(&stack, &first_chunk, &first, &first_data).await;
+    assert_location_on_every_mirror(&stack, &first_chunk, &second, &second_data).await;
+    assert_location_on_every_mirror(&stack, &second_chunk, &third, &third_data).await;
 
-    for (expected, location) in completed {
-        let strip = chunk
-            .strips
-            .iter()
-            .find(|strip| {
-                let start = u64::from(strip.chunk_offset) * 1024;
-                let end = start + u64::from(strip.capacity) * 1024;
-                start <= location.offset && location.offset + location.length <= end
-            })
-            .expect("location strip");
-        let Strip::MirrorStrip(mirror) = strip.strip.as_ref().expect("strip body") else {
-            panic!("small-object strip must be mirrored");
-        };
-        let unit_bytes = u64::from(strip.unit_kb) * 1024;
-        let relative = location.offset - u64::from(strip.chunk_offset) * 1024;
-        for segment in &mirror.segments {
-            let disk_id = segment.disk_id.expect("segment disk id");
-            let read = stack
-                .diskio_client
-                .read(
-                    &stack.rpc_server,
-                    &stack.diskio_connection,
-                    DiskId::new(disk_id.high, disk_id.low),
-                    segment.zone_index,
-                    segment.unit_offset * unit_bytes + relative,
-                    u32::try_from(location.length).unwrap(),
-                    0,
-                )
-                .expect("send replica read");
-            let (code, bytes) = DiskioClient::await_read_response(read).await.unwrap();
-            assert_eq!(code, DiskIoRetCode::Success);
-            assert_eq!(bytes.unwrap(), expected);
-        }
-    }
+    let (burst_data, burst_location) = &completed[0];
+    let burst_chunk = query_chunk(&chunkdb, burst_location).await;
+    assert_location_on_every_mirror(&stack, &burst_chunk, burst_location, burst_data).await;
+
     stack.client.shutdown_small_writes().await.unwrap();
+    assert_eq!(stack.client.small_write_metrics().active_pipelines, 0);
 }

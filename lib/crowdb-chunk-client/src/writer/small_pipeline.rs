@@ -132,7 +132,7 @@ impl PipelineWorker {
     }
 
     async fn ensure_object_fits(&mut self, object_len: usize) -> Result<()> {
-        let unit_bytes = u64::from(self.chunk.current_strip()?.unit_kb) * 1024;
+        let unit_bytes = self.chunk.unit_bytes()?;
         let physical_len = align_up(object_len as u64, unit_bytes)?;
         if self.chunk.remaining_in_chunk() < physical_len {
             let replacement = match self.replacement.take() {
@@ -262,6 +262,17 @@ impl OwnedChunk {
         self.policy.chunk_capacity.saturating_sub(self.cursor)
     }
 
+    fn unit_bytes(&self) -> Result<u64> {
+        self.current_strip()
+            .or_else(|_| {
+                self.chunk
+                    .strips
+                    .last()
+                    .ok_or_else(|| IoError::AllocationFailed("shared chunk has no strips".into()))
+            })
+            .map(|strip| u64::from(strip.unit_kb) * 1024)
+    }
+
     fn current_strip(&self) -> Result<&crowdb_protocol::chunkdb::rpc::ChunkStrip> {
         self.chunk
             .strips
@@ -271,7 +282,14 @@ impl OwnedChunk {
                 let end = start + u64::from(strip.capacity) * 1024;
                 start <= self.cursor && self.cursor < end
             })
-            .ok_or_else(|| IoError::AllocationFailed("shared chunk has no strip at cursor".into()))
+            .ok_or_else(|| {
+                IoError::AllocationFailed(format!(
+                    "shared chunk has no strip at cursor {} ({} strips, capacity {} KiB)",
+                    self.cursor,
+                    self.chunk.strips.len(),
+                    self.chunk.capacity
+                ))
+            })
     }
 
     fn remaining_in_strip(&self) -> u64 {
@@ -295,30 +313,48 @@ impl OwnedChunk {
             .chunk
             .id
             .ok_or_else(|| IoError::AllocationFailed("shared chunk missing id".into()))?;
-        let response = self
-            .allocator
-            .append_chunk(AppendChunkRequest {
-                chunk_id: Some(chunk_id),
-                modify_ts: self.chunk.modify_ts,
-                strip_size: unit_count,
-                strip_count: 1,
-                strip_type: StripType::Mirror as i32,
-                data_num: 0,
-                code_num: 0,
-                copy_count: self.policy.mirror_copies,
-            })
-            .await?;
-        if let Some(chunk) = response.chunk {
-            self.chunk = chunk;
-        } else {
+        for attempt in 0..2 {
+            let response = self
+                .allocator
+                .append_chunk(AppendChunkRequest {
+                    chunk_id: Some(chunk_id),
+                    modify_ts: self.chunk.modify_ts,
+                    strip_size: unit_count,
+                    strip_count: 1,
+                    strip_type: StripType::Mirror as i32,
+                    data_num: 0,
+                    code_num: 0,
+                    copy_count: self.policy.mirror_copies,
+                })
+                .await?;
+            if let Some(chunk) = response.chunk {
+                if chunk.id != Some(chunk_id) {
+                    return Err(IoError::AllocationFailed(
+                        "append_chunk refresh returned a different shared chunk".into(),
+                    ));
+                }
+                self.chunk = chunk;
+                if attempt == 0 {
+                    continue;
+                }
+                return Err(IoError::AllocationFailed(
+                    "shared chunk revision changed twice while appending a strip".into(),
+                ));
+            }
+            if response.strips.is_empty() {
+                return Err(IoError::AllocationFailed(
+                    "append_chunk response missing appended mirror strip".into(),
+                ));
+            }
             self.chunk.modify_ts = response.modify_ts;
             self.chunk.capacity = self
                 .chunk
                 .capacity
                 .saturating_add(response.strips.iter().map(|strip| strip.capacity).sum::<u32>());
             self.chunk.strips.extend(response.strips);
+            return Ok(());
         }
-        Ok(())
+        unreachable!("append retry loop always returns")
     }
 
     async fn close_strip(&mut self, metrics: &SmallWriteMetrics) -> Result<()> {

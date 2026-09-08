@@ -237,7 +237,8 @@ fn policy() -> SmallWritePolicy {
         max_batch_bytes: 1024 * 1024,
         max_batch_objects: 128,
         batch_deadline: Duration::from_millis(20),
-        scale_out_delay: Duration::from_secs(1),
+        scale_out_queue_bytes: 1024 * 1024,
+        scale_out_queue_objects: 128,
         scale_in_delay: Duration::from_secs(1),
         control_interval: Duration::from_millis(10),
         cooldown: Duration::from_millis(10),
@@ -245,6 +246,15 @@ fn policy() -> SmallWritePolicy {
         mirror_copies: 3,
         writer_lease: Duration::from_secs(30),
     }
+}
+
+#[test]
+fn small_object_elasticity_defaults_start_at_one_and_cap_at_thirty_two() {
+    let policy = SmallWritePolicy::default();
+    assert_eq!(policy.min_pipelines, 1);
+    assert_eq!(policy.max_pipelines, 32);
+    assert_eq!(policy.scale_out_queue_bytes, 4 * 1024 * 1024);
+    assert_eq!(policy.scale_out_queue_objects, 128);
 }
 
 fn client(policy: SmallWritePolicy) -> (ChunkIoClient, Arc<MockAllocator>, Arc<RecordingDiskWriter>) {
@@ -351,6 +361,7 @@ async fn small_object_whole_budget_waits_without_partial_reservation() {
     let mut bounded = policy();
     bounded.object_limit = 64 * 1024;
     bounded.memory_budget = 64 * 1024;
+    bounded.scale_out_queue_bytes = 64 * 1024;
     let (client, _, _) = client(bounded);
     let mut first = client.prepare_small_write(64 * 1024).await.unwrap();
     let clone = client.clone();
@@ -436,9 +447,17 @@ async fn small_object_segment_relative_write_validates_before_delegating() {
 }
 
 #[test]
-fn small_object_policy_rejects_budget_below_object_limit() {
+fn small_object_policy_rejects_unreachable_limits() {
     let mut invalid = policy();
     invalid.memory_budget = invalid.object_limit - 1;
+    assert!(invalid.validate().is_err());
+
+    let mut invalid = policy();
+    invalid.scale_out_queue_bytes = invalid.memory_budget + 1;
+    assert!(invalid.validate().is_err());
+
+    let mut invalid = policy();
+    invalid.scale_out_queue_objects = invalid.queue_capacity + 1;
     assert!(invalid.validate().is_err());
 }
 
@@ -487,6 +506,21 @@ async fn small_object_strip_rotation_pads_tail_and_keeps_object_whole() {
     assert_eq!(second.length, 400 * 1024);
     assert_eq!(allocator.snapshot().1, 1);
     assert_eq!(client.small_write_metrics().tail_waste_bytes, 324 * 1024);
+    client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
+async fn small_object_appends_strip_after_exact_physical_boundary() {
+    let (client, allocator, _) = client(policy());
+    let mut first = client.prepare_small_write(1024 * 1024).await.unwrap();
+    first.on_data(Bytes::from(vec![1; 1024 * 1024])).await.unwrap();
+    let first = first.on_finish().await.unwrap().remove(0);
+    let mut second = client.prepare_small_write(4096).await.unwrap();
+    second.on_data(Bytes::from(vec![2; 4096])).await.unwrap();
+    let second = second.on_finish().await.unwrap().remove(0);
+    assert_eq!(first.chunk_id, second.chunk_id);
+    assert_eq!(second.offset, 1024 * 1024);
+    assert_eq!(allocator.snapshot().1, 1);
     client.shutdown_small_writes().await.unwrap();
 }
 
@@ -565,13 +599,14 @@ async fn small_object_completion_waits_for_cursor_commit() {
 }
 
 #[tokio::test]
-async fn small_object_manager_scales_out_then_drains_idle_pipeline() {
+async fn small_object_manager_scales_out_by_queued_bytes_then_drains_idle_pipeline() {
     let mut elastic = policy();
     elastic.max_pipelines = 2;
     elastic.max_batch_bytes = 16 * 1024;
     elastic.max_batch_objects = 1;
     elastic.batch_deadline = Duration::from_millis(1);
-    elastic.scale_out_delay = Duration::from_millis(5);
+    elastic.scale_out_queue_bytes = 16 * 1024;
+    elastic.scale_out_queue_objects = elastic.queue_capacity;
     elastic.scale_in_delay = Duration::from_millis(20);
     elastic.control_interval = Duration::from_millis(2);
     elastic.cooldown = Duration::from_millis(1);
@@ -590,11 +625,40 @@ async fn small_object_manager_scales_out_then_drains_idle_pipeline() {
         task.await.unwrap().unwrap();
     }
     assert!(allocator.snapshot().0 >= 2);
-    assert!(client.small_write_metrics().scale_out >= 1);
+    assert_eq!(client.small_write_metrics().scale_out, 1);
     tokio::time::sleep(Duration::from_millis(80)).await;
     let metrics = client.small_write_metrics();
     assert_eq!(metrics.active_pipelines, 1);
     assert!(metrics.scale_in >= 1);
+    client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
+async fn small_object_manager_scales_out_by_queued_object_count() {
+    let mut elastic = policy();
+    elastic.max_pipelines = 2;
+    elastic.max_batch_bytes = 16 * 1024;
+    elastic.max_batch_objects = 1;
+    elastic.batch_deadline = Duration::from_millis(1);
+    elastic.scale_out_queue_bytes = elastic.memory_budget;
+    elastic.scale_out_queue_objects = 1;
+    elastic.control_interval = Duration::from_millis(1);
+    elastic.cooldown = Duration::from_millis(1);
+    let (client, _, disk) = client(elastic);
+    disk.delay_ms.store(30, Ordering::Relaxed);
+    let mut tasks = Vec::new();
+    for _ in 0..8 {
+        let clone = client.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut writer = clone.prepare_small_write(4096).await.unwrap();
+            writer.on_data(Bytes::from(vec![1; 4096])).await.unwrap();
+            writer.on_finish().await
+        }));
+    }
+    for task in tasks {
+        task.await.unwrap().unwrap();
+    }
+    assert!(client.small_write_metrics().scale_out >= 1);
     client.shutdown_small_writes().await.unwrap();
 }
 
@@ -605,7 +669,8 @@ async fn small_object_scale_out_failure_keeps_current_pipeline_routable() {
     elastic.max_batch_bytes = 16 * 1024;
     elastic.max_batch_objects = 1;
     elastic.batch_deadline = Duration::from_millis(1);
-    elastic.scale_out_delay = Duration::from_millis(2);
+    elastic.scale_out_queue_bytes = 16 * 1024;
+    elastic.scale_out_queue_objects = 1;
     elastic.control_interval = Duration::from_millis(1);
     elastic.cooldown = Duration::from_millis(1);
     let (client, allocator, disk) = client(elastic);

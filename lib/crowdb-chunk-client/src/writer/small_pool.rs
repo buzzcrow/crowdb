@@ -55,7 +55,7 @@ impl Drop for ByteReservation {
 pub(crate) struct PipelineRoute {
     pub sender: mpsc::Sender<PendingObject>,
     pub queued_bytes: AtomicU64,
-    pub oldest_enqueue_ms: AtomicU64,
+    pub queued_objects: AtomicU64,
     pub last_active_ms: AtomicU64,
     pub busy: AtomicBool,
 }
@@ -65,22 +65,20 @@ impl PipelineRoute {
         Self {
             sender,
             queued_bytes: AtomicU64::new(0),
-            oldest_enqueue_ms: AtomicU64::new(0),
+            queued_objects: AtomicU64::new(0),
             last_active_ms: AtomicU64::new(now_ms),
             busy: AtomicBool::new(false),
         }
     }
 
-    pub fn accepted(&self, bytes: usize, now_ms: u64) {
-        if self.queued_bytes.fetch_add(bytes as u64, Ordering::Relaxed) == 0 {
-            self.oldest_enqueue_ms.store(now_ms.max(1), Ordering::Relaxed);
-        }
+    pub fn accepted(&self, bytes: usize) {
+        self.queued_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+        self.queued_objects.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn rejected(&self, bytes: usize) {
-        if self.queued_bytes.fetch_sub(bytes as u64, Ordering::Relaxed) == bytes as u64 {
-            self.oldest_enqueue_ms.store(0, Ordering::Relaxed);
-        }
+        self.queued_bytes.fetch_sub(bytes as u64, Ordering::Relaxed);
+        self.queued_objects.fetch_sub(1, Ordering::Relaxed);
     }
 
     pub fn dequeued(&self, bytes: usize, now_ms: u64) {
@@ -109,9 +107,7 @@ impl SmallPoolRuntime {
 
     pub fn publish(&self, routes: &[Arc<PipelineRoute>]) {
         self.routes.store(Arc::new(routes.to_vec()));
-        self.metrics
-            .active_pipelines
-            .store(routes.len() as u64, Ordering::Relaxed);
+        self.metrics.active_pipelines.set(routes.len() as u64);
     }
 
     pub async fn reserve(self: &Arc<Self>, bytes: usize) -> Result<ByteReservation> {
@@ -144,8 +140,7 @@ impl SmallPoolRuntime {
                 continue;
             }
             let route = choose_route(&routes, self.route_nonce.fetch_add(1, Ordering::Relaxed));
-            let now_ms = self.now_ms();
-            route.accepted(object.len, now_ms);
+            route.accepted(object.len);
             match route.sender.try_send(object) {
                 Ok(()) => {
                     self.metrics.submitted.fetch_add(1, Ordering::Relaxed);

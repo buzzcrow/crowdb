@@ -25,7 +25,8 @@ pub struct SmallWritePolicy {
     pub max_batch_bytes: usize,
     pub max_batch_objects: usize,
     pub batch_deadline: Duration,
-    pub scale_out_delay: Duration,
+    pub scale_out_queue_bytes: usize,
+    pub scale_out_queue_objects: usize,
     pub scale_in_delay: Duration,
     pub control_interval: Duration,
     pub cooldown: Duration,
@@ -42,11 +43,12 @@ impl Default for SmallWritePolicy {
             memory_budget: 64 * MIB,
             queue_capacity: 1_024,
             min_pipelines: 1,
-            max_pipelines: 8,
+            max_pipelines: 32,
             max_batch_bytes: MIB,
             max_batch_objects: 1_024,
             batch_deadline: Duration::from_millis(2),
-            scale_out_delay: Duration::from_millis(20),
+            scale_out_queue_bytes: 4 * MIB,
+            scale_out_queue_objects: 128,
             scale_in_delay: Duration::from_secs(30),
             control_interval: Duration::from_millis(10),
             cooldown: Duration::from_millis(100),
@@ -80,6 +82,10 @@ impl SmallWritePolicy {
             || self.min_pipelines > self.max_pipelines
             || self.max_batch_bytes == 0
             || self.max_batch_objects == 0
+            || self.scale_out_queue_bytes == 0
+            || self.scale_out_queue_bytes > self.memory_budget
+            || self.scale_out_queue_objects == 0
+            || self.scale_out_queue_objects > self.queue_capacity
             || self.chunk_capacity < self.object_limit as u64
             || self.mirror_copies == 0
             || self.batch_deadline.is_zero()
