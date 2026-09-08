@@ -545,6 +545,7 @@ async fn chunkdb_restart_recovers_an_inflight_conversion_claim() {
             conversion_scan_interval_secs: 1,
             conversion_max_bandwidth_mbps: 1,
             conversion_task_lease_secs: 1,
+            ..ChunkdbStartOptions::default()
         },
     )
     .await;

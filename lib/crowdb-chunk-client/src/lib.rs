@@ -36,7 +36,8 @@ pub mod writer;
 pub use benchmark::{run_large_write_benchmark, LargeWriteBenchmarkConfig, LargeWriteBenchmarkResult};
 pub use chunk::{
     ChunkPrefetch, ChunkReadPolicy, ChunkReadStream, ChunkReader, ChunkWriter, EcStripWriter,
-    MirrorStripWriter, StripReader, StripResult, StripWriter,
+    FailedReadRange, MirrorStripWriter, PartialReadResult, ReadRangeData, StripReader, StripResult,
+    StripWriter,
 };
 pub use client::{
     ChunkIoClient, ChunkIoClientConfig, LargeWritePolicy, LargeWriteResult, PreparedLargeWrite,

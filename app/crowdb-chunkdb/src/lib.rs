@@ -18,6 +18,7 @@ pub mod lifecycle;
 pub mod metrics;
 pub mod migration;
 pub mod range_guard;
+pub mod repair;
 pub mod routing;
 pub mod selector;
 pub mod service;

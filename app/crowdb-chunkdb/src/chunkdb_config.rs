@@ -22,6 +22,8 @@ pub struct ChunkdbConfig {
     pub placement: PlacementConfig,
     #[serde(default)]
     pub conversion: ConversionConfig,
+    #[serde(default)]
+    pub repair: RepairConfig,
 }
 
 /// Placement safety policy.
@@ -60,6 +62,45 @@ impl BaseConfig for ChunkdbConfig {
         }
         self.lifecycle.validate()?;
         self.conversion.validate()?;
+        self.repair.validate()?;
+        Ok(())
+    }
+}
+
+/// Background repair policy for strips marked unavailable by readers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepairConfig {
+    pub enabled: bool,
+    /// Test/development escape hatch for clusters without a spare failure domain.
+    pub allow_unsafe_placement: bool,
+    pub max_concurrency: usize,
+    pub memory_bytes: usize,
+    pub scan_interval_secs: u64,
+}
+
+impl Default for RepairConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allow_unsafe_placement: false,
+            max_concurrency: 4,
+            memory_bytes: 64 * 1024 * 1024,
+            scan_interval_secs: 1,
+        }
+    }
+}
+
+impl RepairConfig {
+    fn validate(&self) -> Result<(), String> {
+        if self.max_concurrency == 0 {
+            return Err("repair.max_concurrency must be > 0".into());
+        }
+        if self.memory_bytes == 0 || self.memory_bytes > u32::MAX as usize {
+            return Err("repair.memory_bytes must be in 1..=u32::MAX".into());
+        }
+        if self.scan_interval_secs == 0 {
+            return Err("repair.scan_interval_secs must be > 0".into());
+        }
         Ok(())
     }
 }

@@ -89,6 +89,7 @@ pub struct ChunkdbProcess {
 }
 
 #[derive(Clone, Copy, Debug)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct ChunkdbStartOptions {
     pub allow_unsafe_ec: bool,
     pub conversion_enabled: bool,
@@ -96,6 +97,11 @@ pub struct ChunkdbStartOptions {
     pub conversion_scan_interval_secs: u64,
     pub conversion_max_bandwidth_mbps: u64,
     pub conversion_task_lease_secs: u64,
+    pub repair_enabled: bool,
+    pub repair_allow_unsafe_placement: bool,
+    pub repair_scan_interval_secs: u64,
+    pub repair_max_concurrency: usize,
+    pub repair_memory_bytes: usize,
 }
 
 impl Default for ChunkdbStartOptions {
@@ -107,6 +113,11 @@ impl Default for ChunkdbStartOptions {
             conversion_scan_interval_secs: 30,
             conversion_max_bandwidth_mbps: 50,
             conversion_task_lease_secs: 30,
+            repair_enabled: true,
+            repair_allow_unsafe_placement: false,
+            repair_scan_interval_secs: 1,
+            repair_max_concurrency: 4,
+            repair_memory_bytes: 64 * 1024 * 1024,
         }
     }
 }
@@ -178,6 +189,13 @@ max_bandwidth_mbps = {conversion_max_bandwidth_mbps}
 scan_interval_secs = {conversion_scan_interval_secs}
 task_lease_secs = {conversion_task_lease_secs}
 
+[repair]
+enabled = {repair_enabled}
+allow_unsafe_placement = {repair_allow_unsafe_placement}
+scan_interval_secs = {repair_scan_interval_secs}
+max_concurrency = {repair_max_concurrency}
+memory_bytes = {repair_memory_bytes}
+
 [lifecycle]
 cache_capacity = 1000
 sweep_chunk_lock_interval_secs = 10
@@ -189,6 +207,11 @@ lock_hold_warn_threshold_ms = 1000
             conversion_scan_interval_secs = options.conversion_scan_interval_secs,
             conversion_max_bandwidth_mbps = options.conversion_max_bandwidth_mbps,
             conversion_task_lease_secs = options.conversion_task_lease_secs,
+            repair_enabled = options.repair_enabled,
+            repair_allow_unsafe_placement = options.repair_allow_unsafe_placement,
+            repair_scan_interval_secs = options.repair_scan_interval_secs,
+            repair_max_concurrency = options.repair_max_concurrency,
+            repair_memory_bytes = options.repair_memory_bytes,
             seeds = kv_seeds
                 .iter()
                 .map(|s| format!("\"{s}\""))
@@ -257,6 +280,19 @@ lock_hold_warn_threshold_ms = 1000
             .json()
             .await
             .expect("decode conversion metrics")
+    }
+
+    pub async fn repair_metrics(&self) -> serde_json::Value {
+        reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{}/repair_metrics", self.http_port))
+            .send()
+            .await
+            .expect("fetch repair metrics")
+            .error_for_status()
+            .expect("repair metrics status")
+            .json()
+            .await
+            .expect("decode repair metrics")
     }
 
     pub fn crash(&mut self) {

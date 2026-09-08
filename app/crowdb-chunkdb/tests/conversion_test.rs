@@ -43,3 +43,24 @@ fn conversion_policy_rejects_invalid_bounds() {
     config.conversion.task_lease_secs = 0;
     assert!(config.validate().unwrap_err().contains("task_lease_secs"));
 }
+
+#[test]
+fn repair_policy_has_bounded_defaults_and_rejects_zero_limits() {
+    let config = ChunkdbConfig::default();
+    assert!(config.repair.enabled);
+    assert_eq!(config.repair.max_concurrency, 4);
+    assert_eq!(config.repair.memory_bytes, 64 * 1024 * 1024);
+    assert_eq!(config.repair.scan_interval_secs, 1);
+
+    let mut config = ChunkdbConfig::default();
+    config.repair.max_concurrency = 0;
+    assert!(config.validate().unwrap_err().contains("max_concurrency"));
+
+    let mut config = ChunkdbConfig::default();
+    config.repair.memory_bytes = 0;
+    assert!(config.validate().unwrap_err().contains("memory_bytes"));
+
+    let mut config = ChunkdbConfig::default();
+    config.repair.scan_interval_secs = 0;
+    assert!(config.validate().unwrap_err().contains("scan_interval_secs"));
+}

@@ -9,6 +9,7 @@ use crate::common::ChunkId;
 
 pub const CHUNK_TASK_SCHEMA_VERSION: u16 = 1;
 pub const TASK_KIND_MIRROR_TO_EC: u16 = 1;
+pub const TASK_KIND_REPAIR_STRIP: u16 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[repr(u8)]

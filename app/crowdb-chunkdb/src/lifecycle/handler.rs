@@ -932,6 +932,20 @@ impl LifecycleHandler {
         surviving_segments: &[Segment],
         exclude_disk_ids: &[DiskId],
     ) -> Result<Segment, LifecycleError> {
+        self.allocate_repair_segment(chunk_id, old_segment, surviving_segments, exclude_disk_ids, false)
+            .await
+    }
+
+    /// Allocate one tentative repair segment, optionally relaxing node
+    /// anti-affinity for deliberately undersized test clusters.
+    pub async fn allocate_repair_segment(
+        &self,
+        chunk_id: &ChunkId,
+        old_segment: &Segment,
+        surviving_segments: &[Segment],
+        exclude_disk_ids: &[DiskId],
+        allow_unsafe_placement: bool,
+    ) -> Result<Segment, LifecycleError> {
         self.check_range(chunk_id)?;
         if old_segment.owner_chunk.as_ref() != Some(chunk_id) || old_segment.unit_count == 0 {
             return Err(LifecycleError::InvalidRequest(
@@ -940,14 +954,16 @@ impl LifecycleHandler {
         }
         let snap = self.topology.snapshot();
         let mut constraints = self.placement_constraints();
-        for disk_group in snap.disk_groups() {
-            let survives_here = surviving_segments.iter().any(|segment| {
-                segment
-                    .disk_id
-                    .is_some_and(|disk| disk_group.value.disk_ids.contains(&disk))
-            });
-            if survives_here {
-                constraints.exclude_nodes.push(disk_group.node_id);
+        if !allow_unsafe_placement {
+            for disk_group in snap.disk_groups() {
+                let survives_here = surviving_segments.iter().any(|segment| {
+                    segment
+                        .disk_id
+                        .is_some_and(|disk| disk_group.value.disk_ids.contains(&disk))
+                });
+                if survives_here {
+                    constraints.exclude_nodes.push(disk_group.node_id);
+                }
             }
         }
         self.allocator

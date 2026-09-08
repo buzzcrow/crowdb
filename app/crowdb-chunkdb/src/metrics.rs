@@ -129,6 +129,7 @@ impl Drop for RequestGuard {
 pub struct ChunkdbMetrics {
     pub requests: Arc<RequestMetrics>,
     pub conversion: Arc<ConversionMetrics>,
+    pub repair: Arc<RepairMetrics>,
     pub allocate_inflight: Arc<Gauge>,
     pub allocate_strips: Arc<Counter>,
     pub allocate_blocks: Arc<Counter>,
@@ -152,6 +153,7 @@ impl ChunkdbMetrics {
         Self {
             requests: Arc::new(RequestMetrics::register(registry)),
             conversion: Arc::new(ConversionMetrics::register(registry)),
+            repair: Arc::new(RepairMetrics::register(registry)),
             allocate_inflight: registry.register_gauge("allocate.inflight.g"),
             allocate_strips: registry.register_counter("allocate.strips.c"),
             allocate_blocks: registry.register_counter("allocate.blocks.c"),
@@ -167,6 +169,97 @@ impl ChunkdbMetrics {
             allocate_rollback: registry.register_histogram("allocate.rollback.lh"),
             allocate_rollback_blocks: registry.register_counter("allocate.rollback_blocks.c"),
             allocate_errors: registry.register_counter("allocate.errors.c"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepairMetricsSnapshot {
+    pub tasks_admitted: u64,
+    pub attempts_started: u64,
+    pub attempts_completed: u64,
+    pub attempts_failed: u64,
+    pub segments_repaired: u64,
+    pub bytes_written: u64,
+    pub active: u64,
+    pub memory_bytes: u64,
+    pub memory_limit_bytes: u64,
+}
+
+pub struct RepairMetrics {
+    tasks_admitted: Arc<Counter>,
+    attempts_started: Arc<Counter>,
+    attempts_completed: Arc<Counter>,
+    attempts_failed: Arc<Counter>,
+    segments_repaired: Arc<Counter>,
+    bytes_written: Arc<Counter>,
+    active: Arc<Gauge>,
+    memory_bytes: Arc<Gauge>,
+    memory_limit_bytes: Arc<Gauge>,
+}
+
+impl RepairMetrics {
+    fn register(registry: &mut MetricsRegistry) -> Self {
+        Self {
+            tasks_admitted: registry.register_counter("repair.tasks_admitted.c"),
+            attempts_started: registry.register_counter("repair.attempts_started.c"),
+            attempts_completed: registry.register_counter("repair.attempts_completed.c"),
+            attempts_failed: registry.register_counter("repair.attempts_failed.c"),
+            segments_repaired: registry.register_counter("repair.segments_repaired.c"),
+            bytes_written: registry.register_counter("repair.bytes_written.c"),
+            active: registry.register_gauge("repair.active.g"),
+            memory_bytes: registry.register_gauge("repair.memory_bytes.g"),
+            memory_limit_bytes: registry.register_gauge("repair.memory_limit_bytes.g"),
+        }
+    }
+
+    pub(crate) fn set_memory_limit(&self, bytes: usize) {
+        self.memory_limit_bytes
+            .set(u64::try_from(bytes).unwrap_or(u64::MAX));
+    }
+
+    pub(crate) fn admit(&self, count: u64) {
+        self.tasks_admitted.inc_by(count);
+    }
+
+    pub(crate) fn start_attempt(&self) {
+        self.attempts_started.inc();
+        self.active.inc();
+    }
+
+    pub(crate) fn reserve_memory(&self, bytes: usize) {
+        let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+        self.memory_bytes.inc_by(bytes);
+    }
+
+    pub(crate) fn release_memory(&self, bytes: usize) {
+        let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+        self.memory_bytes.dec_by(bytes);
+    }
+
+    pub(crate) fn finish_attempt(&self, success: bool, segments: u64, bytes: u64) {
+        if success {
+            self.attempts_completed.inc();
+            self.segments_repaired.inc_by(segments);
+            self.bytes_written.inc_by(bytes);
+        } else {
+            self.attempts_failed.inc();
+        }
+        self.active.dec();
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> RepairMetricsSnapshot {
+        RepairMetricsSnapshot {
+            tasks_admitted: self.tasks_admitted.snapshot().total,
+            attempts_started: self.attempts_started.snapshot().total,
+            attempts_completed: self.attempts_completed.snapshot().total,
+            attempts_failed: self.attempts_failed.snapshot().total,
+            segments_repaired: self.segments_repaired.snapshot().total,
+            bytes_written: self.bytes_written.snapshot().total,
+            active: self.active.snapshot(),
+            memory_bytes: self.memory_bytes.snapshot(),
+            memory_limit_bytes: self.memory_limit_bytes.snapshot(),
         }
     }
 }
@@ -405,6 +498,33 @@ mod tests {
                 mirror_segments_retired: 24,
                 active: 0,
                 peak_active: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn repair_metrics_track_queue_attempts_io_and_memory() {
+        let mut registry = MetricsRegistry::new();
+        let metrics = RepairMetrics::register(&mut registry);
+        metrics.set_memory_limit(64);
+        metrics.admit(2);
+        metrics.start_attempt();
+        metrics.reserve_memory(16);
+        metrics.release_memory(16);
+        metrics.finish_attempt(true, 1, 32);
+
+        assert_eq!(
+            metrics.snapshot(),
+            RepairMetricsSnapshot {
+                tasks_admitted: 2,
+                attempts_started: 1,
+                attempts_completed: 1,
+                attempts_failed: 0,
+                segments_repaired: 1,
+                bytes_written: 32,
+                active: 0,
+                memory_bytes: 0,
+                memory_limit_bytes: 64,
             }
         );
     }

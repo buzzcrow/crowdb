@@ -22,7 +22,9 @@ pub mod strip;
 pub mod strip_reader;
 
 pub use chunk_prefetch::ChunkPrefetch;
-pub use chunk_reader::{ChunkReadPolicy, ChunkReadStream, ChunkReader};
+pub use chunk_reader::{
+    ChunkReadPolicy, ChunkReadStream, ChunkReader, FailedReadRange, PartialReadResult, ReadRangeData,
+};
 pub use chunk_writer::ChunkWriter;
 pub use ec_strip_writer::EcStripWriter;
 pub use mirror_strip_writer::MirrorStripWriter;

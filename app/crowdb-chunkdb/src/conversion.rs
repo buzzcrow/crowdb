@@ -87,6 +87,7 @@ pub struct MirrorToEcTaskHandler {
     io: Arc<ConversionDiskIo>,
     metrics: Arc<ConversionMetrics>,
     bandwidth: BandwidthLimiter,
+    permits: Arc<tokio::sync::Semaphore>,
 }
 
 struct BandwidthLimiter {
@@ -136,6 +137,7 @@ impl MirrorToEcTaskHandler {
         io: Arc<ConversionDiskIo>,
         metrics: Arc<ConversionMetrics>,
         max_bandwidth_mbps: u64,
+        max_concurrency: usize,
     ) -> Self {
         Self {
             lifecycle,
@@ -143,6 +145,7 @@ impl MirrorToEcTaskHandler {
             io,
             metrics,
             bandwidth: BandwidthLimiter::new(max_bandwidth_mbps.saturating_mul(1024 * 1024)),
+            permits: Arc::new(tokio::sync::Semaphore::new(max_concurrency.max(1))),
         }
     }
 
@@ -350,6 +353,13 @@ impl TaskHandler for MirrorToEcTaskHandler {
 
     fn execute<'a>(&'a self, task: &'a ChunkTaskValue) -> TaskFuture<'a> {
         Box::pin(async move {
+            let Ok(_permit) = self.permits.acquire().await else {
+                return TaskOutcome::Retry {
+                    delay_ms: 100,
+                    error_code: 12,
+                    error: "conversion executor stopped".into(),
+                };
+            };
             let accounting =
                 decode_payload(&task.payload).map_or((0, 0, 0), |payload| io_accounting(&payload));
             self.metrics.start_attempt();

@@ -61,6 +61,8 @@ pub enum ReadError {
     DiskIo(String),
     #[error("EC reconstruction failed: {0}")]
     EcDecode(String),
+    #[error("object bytes [{start}, {end}) could not be read: {message}")]
+    FailedRange { start: u64, end: u64, message: String },
 }
 
 /// Result alias for object and range reads.

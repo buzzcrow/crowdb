@@ -21,6 +21,7 @@ use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegi
 use crowdb_protocol::chunkdb::rpc::{Location, Strip};
 use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_test_harness::chunkdb::ChunkdbStartOptions;
 
 use e2e_stack::{all_binaries_available, E2eStack};
 
@@ -30,14 +31,16 @@ const MIB: usize = 1024 * KIB;
 struct FailDiskReads {
     inner: Arc<dyn DiskWriter>,
     failed: Vec<DiskId>,
+    failed_segments: Vec<Segment>,
     max_read: AtomicUsize,
 }
 
 impl FailDiskReads {
     fn fails(&self, segment: &Segment) -> bool {
-        segment
-            .disk_id
-            .is_some_and(|disk_id| self.failed.contains(&disk_id))
+        self.failed_segments.contains(segment)
+            || segment
+                .disk_id
+                .is_some_and(|disk_id| self.failed.contains(&disk_id))
     }
 
     fn observe_read(&self, length: u32) {
@@ -118,10 +121,22 @@ async fn reader_with_failures(stack: &E2eStack, failed: Vec<DiskId>) -> (ChunkIo
     let fault = Arc::new(FailDiskReads {
         inner: disk_io,
         failed,
+        failed_segments: Vec::new(),
         max_read: AtomicUsize::new(0),
     });
     let reader = ChunkIoClient::from_parts(chunkdb, fault.clone());
     (reader, fault)
+}
+
+async fn reader_with_segment_failures(stack: &E2eStack, failed_segments: Vec<Segment>) -> ChunkIoClient {
+    let (chunkdb, disk_io) = real_parts(stack).await;
+    let fault = Arc::new(FailDiskReads {
+        inner: disk_io,
+        failed: Vec::new(),
+        failed_segments,
+        max_read: AtomicUsize::new(0),
+    });
+    ChunkIoClient::from_parts(chunkdb, fault)
 }
 
 #[tokio::test]
@@ -154,6 +169,29 @@ async fn ec_range_read_recovers_only_the_requested_bytes() {
     assert_eq!(direct, data[..4096]);
     assert!(fault.max_read.load(Ordering::Relaxed) <= 16 * KIB);
     assert_eq!(reader.read_object(&result.locations).await.unwrap(), data);
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let repaired = stack.query_chunk(&result.locations[0]).await;
+        let Some(Strip::EcStrip(current)) = &repaired.strips[0].strip else {
+            panic!("large write did not remain EC");
+        };
+        if !current.segments.contains(&ec.segments[1]) && repaired.strips[0].unavailable_segments.is_empty() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "chunkdb repair task did not replace the failed full shard"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let metrics = stack.repair_metrics().await;
+    assert!(metrics["tasks_admitted"].as_u64().unwrap_or(0) >= 1);
+    assert!(metrics["attempts_completed"].as_u64().unwrap_or(0) >= 1);
+    assert!(metrics["segments_repaired"].as_u64().unwrap_or(0) >= 1);
+    assert!(metrics["bytes_written"].as_u64().unwrap_or(0) >= MIB as u64);
+    assert_eq!(metrics["memory_bytes"].as_u64(), Some(0));
+    assert_eq!(metrics["memory_limit_bytes"].as_u64(), Some(64 * MIB as u64));
 }
 
 #[tokio::test]
@@ -175,10 +213,79 @@ async fn ec_read_reports_data_loss_beyond_parity_tolerance() {
     };
     let failed = vec![ec.segments[0].disk_id.unwrap(), ec.segments[1].disk_id.unwrap()];
     let (reader, _) = reader_with_failures(&stack, failed).await;
+    let partial = reader
+        .read_range_partial(&result.locations, 0, 16 * KIB as u64)
+        .await
+        .unwrap();
+    assert!(partial.ranges.is_empty());
+    assert_eq!(partial.failures.len(), 1);
+    assert_eq!(
+        (partial.failures[0].start, partial.failures[0].end),
+        (0, 16 * KIB as u64)
+    );
+    assert!(matches!(partial.failures[0].error, ReadError::DataLoss(_)));
     assert!(matches!(
         reader.read_range(&result.locations, 0, 16 * KIB as u64).await,
-        Err(ReadError::DataLoss(_))
+        Err(ReadError::FailedRange { start: 0, end, .. }) if end == 16 * KIB as u64
     ));
+}
+
+#[tokio::test]
+async fn partial_read_preserves_healthy_ec_shard_ranges_around_data_loss() {
+    if !all_binaries_available() {
+        return;
+    }
+    let stack = E2eStack::start_with_chunkdb_options(
+        small_policy(1),
+        ChunkdbStartOptions {
+            allow_unsafe_ec: true,
+            repair_enabled: false,
+            ..ChunkdbStartOptions::default()
+        },
+    )
+    .await;
+    let data = test_data(4 * MIB);
+    let result = stack
+        .client
+        .prepare_large_write(Some(data.len() as u64), large_policy())
+        .write_stream(data.as_slice())
+        .await
+        .unwrap();
+    let chunk = stack.query_chunk(&result.locations[0]).await;
+    let Some(Strip::EcStrip(ec)) = &chunk.strips[0].strip else {
+        panic!("large write did not produce EC");
+    };
+    let reader = reader_with_segment_failures(&stack, ec.segments[1..3].to_vec()).await;
+    let partial = reader
+        .read_range_partial(&result.locations, 0, 4 * MIB as u64)
+        .await
+        .unwrap();
+    assert_eq!(partial.failures.len(), 2);
+    assert_eq!(
+        (partial.failures[0].start, partial.failures[0].end),
+        (MIB as u64, 2 * MIB as u64)
+    );
+    assert_eq!(
+        (partial.failures[1].start, partial.failures[1].end),
+        (2 * MIB as u64, 3 * MIB as u64)
+    );
+    assert_eq!(partial.ranges.len(), 2);
+    assert_eq!((partial.ranges[0].start, partial.ranges[0].end), (0, MIB as u64));
+    assert_eq!(partial.ranges[0].data, data[..MIB]);
+    assert_eq!(
+        (partial.ranges[1].start, partial.ranges[1].end),
+        (3 * MIB as u64, 4 * MIB as u64)
+    );
+    assert_eq!(partial.ranges[1].data, data[3 * MIB..4 * MIB]);
+
+    let mut stream = reader.read_stream(&result.locations).unwrap();
+    assert_eq!(stream.next_chunk().await.unwrap().unwrap(), data[..MIB]);
+    assert!(matches!(
+        stream.next_chunk().await.unwrap(),
+        Err(ReadError::FailedRange { start, end, .. })
+            if start == MIB as u64 && end == 2 * MIB as u64
+    ));
+    assert!(stream.next_chunk().await.is_none());
 }
 
 #[tokio::test]
@@ -213,7 +320,76 @@ async fn mirror_read_succeeds_and_reports_replica_loss() {
     let (unreadable, _) = reader_with_failures(&stack, vec![primary]).await;
     assert!(matches!(
         unreadable.read_object(std::slice::from_ref(&location)).await,
-        Err(ReadError::DataLoss(_))
+        Err(ReadError::FailedRange { start: 0, end, .. }) if end == data.len() as u64
     ));
+    // The durable read-failure marker changes the active chunk revision. The
+    // owning small-write pipeline must refresh that metadata and keep writing.
+    let next = Bytes::from(test_data(32 * KIB));
+    let mut writer = stack.client.prepare_small_write(next.len()).await.unwrap();
+    writer.on_data(next).await.unwrap();
+    let next_location = writer.on_finish().await.unwrap().remove(0);
+    assert_eq!(next_location.chunk_id, location.chunk_id);
     stack.client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
+async fn chunkdb_restart_admits_durable_read_failure_and_repairs_full_shard() {
+    if !all_binaries_available() {
+        return;
+    }
+    let mut options = ChunkdbStartOptions {
+        allow_unsafe_ec: true,
+        repair_enabled: false,
+        ..ChunkdbStartOptions::default()
+    };
+    let mut stack = E2eStack::start_with_chunkdb_options(small_policy(1), options).await;
+    let data = test_data(4 * MIB);
+    let result = stack
+        .client
+        .prepare_large_write(Some(data.len() as u64), large_policy())
+        .write_stream(data.as_slice())
+        .await
+        .unwrap();
+    let before = stack.query_chunk(&result.locations[0]).await;
+    let Some(Strip::EcStrip(ec)) = &before.strips[0].strip else {
+        panic!("large write did not produce EC");
+    };
+    let failed_segment = ec.segments[0];
+    let failed_disk = failed_segment.disk_id.unwrap();
+    let (reader, fault) = reader_with_failures(&stack, vec![failed_disk]).await;
+    let length = 16 * KIB as u64;
+    assert_eq!(
+        reader.read_range(&result.locations, 0, length).await.unwrap(),
+        data[..16 * KIB]
+    );
+    assert!(fault.max_read.load(Ordering::Relaxed) <= 16 * KIB);
+    let marked = stack.query_chunk(&result.locations[0]).await;
+    assert!(marked.strips[0].unavailable_segments.contains(&failed_segment));
+
+    options.repair_enabled = true;
+    options.repair_allow_unsafe_placement = true;
+    stack.crash_and_restart_chunkdb_with_options(options).await;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let repaired = stack.query_chunk(&result.locations[0]).await;
+        let Some(Strip::EcStrip(current)) = &repaired.strips[0].strip else {
+            panic!("large write did not remain EC");
+        };
+        if !current.segments.contains(&failed_segment) && repaired.strips[0].unavailable_segments.is_empty() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "restarted chunkdb did not reconstruct the full failed shard"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let (after_restart, _) = reader_with_failures(&stack, vec![failed_disk]).await;
+    assert_eq!(
+        after_restart
+            .read_range(&result.locations, 0, length)
+            .await
+            .unwrap(),
+        data[..16 * KIB]
+    );
 }

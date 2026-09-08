@@ -26,8 +26,8 @@ use crate::metrics::SmallWriteMetrics;
 use crate::writer::small_pool::SmallWritePool;
 use crate::{
     ChunkAllocator, ChunkClientConfig, ChunkClientMetrics, ChunkIoWriter, ChunkReadPolicy, ChunkReadStream,
-    ChunkReader, DiskWriter, LargeAsyncObjectWriter, ReadResult, Result, RoutedDiskWriter, SmallObjectWriter,
-    SmallWriteMetricsSnapshot, SmallWritePolicy,
+    ChunkReader, DiskWriter, LargeAsyncObjectWriter, PartialReadResult, ReadResult, Result, RoutedDiskWriter,
+    SmallObjectWriter, SmallWriteMetricsSnapshot, SmallWritePolicy,
 };
 
 /// Discovery and transport configuration for [`ChunkIoClient`].
@@ -197,6 +197,16 @@ impl ChunkIoClient {
     /// Reconstruct the logical half-open range `[start, end)`.
     pub async fn read_range(&self, locations: &[Location], start: u64, end: u64) -> ReadResult<Bytes> {
         self.reader.read_range(locations, start, end).await
+    }
+
+    /// Read a range while preserving exact successful and failed sub-ranges.
+    pub async fn read_range_partial(
+        &self,
+        locations: &[Location],
+        start: u64,
+        end: u64,
+    ) -> ReadResult<PartialReadResult> {
+        self.reader.read_range_partial(locations, start, end).await
     }
 
     /// Build a pull-based, memory-windowed object stream.

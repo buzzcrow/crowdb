@@ -56,6 +56,7 @@ impl E2eStack {
             small_write,
             ChunkdbStartOptions {
                 allow_unsafe_ec: true,
+                repair_allow_unsafe_placement: true,
                 ..ChunkdbStartOptions::default()
             },
         )
@@ -149,14 +150,29 @@ impl E2eStack {
     }
 
     #[allow(dead_code)]
+    pub async fn repair_metrics(&self) -> serde_json::Value {
+        self.chunkdb
+            .as_ref()
+            .expect("chunkdb is running")
+            .repair_metrics()
+            .await
+    }
+
+    #[allow(dead_code)]
     pub async fn crash_and_restart_chunkdb(&mut self) {
+        self.crash_and_restart_chunkdb_with_options(self.chunkdb_options)
+            .await;
+    }
+
+    #[allow(dead_code)]
+    pub async fn crash_and_restart_chunkdb_with_options(&mut self, options: ChunkdbStartOptions) {
         let mut chunkdb = self.chunkdb.take().expect("chunkdb is running");
         chunkdb.crash();
         drop(chunkdb);
-        let replacement =
-            ChunkdbProcess::start_with_options(&self.cluster.mgmt_endpoints, self.chunkdb_options);
+        let replacement = ChunkdbProcess::start_with_options(&self.cluster.mgmt_endpoints, options);
         replacement.wait_for_ready().await;
         self.chunkdb = Some(replacement);
+        self.chunkdb_options = options;
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
 

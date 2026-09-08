@@ -18,6 +18,7 @@ use crowdb_chunkdb::conversion::io::ConversionDiskIo;
 use crowdb_chunkdb::conversion::{decode_payload, ConversionCoordinator, MirrorToEcTaskHandler};
 use crowdb_chunkdb::lifecycle::{ChunkLockMap, LifecycleError, LifecycleHandler};
 use crowdb_chunkdb::metrics::{ChunkdbMetrics, LifecycleMetrics};
+use crowdb_chunkdb::repair::{decode_payload as decode_repair_payload, RepairCoordinator};
 use crowdb_chunkdb::routing::{default_binding_table, BindingCache};
 use crowdb_chunkdb::selector::PlacementConstraints;
 use crowdb_chunkdb::task::{
@@ -25,7 +26,7 @@ use crowdb_chunkdb::task::{
 };
 use crowdb_common::metrics::MetricsRegistry;
 use crowdb_protocol::chunk_task::{
-    ChunkTaskState, ChunkTaskValue, CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_MIRROR_TO_EC,
+    ChunkTaskState, ChunkTaskValue, CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_MIRROR_TO_EC, TASK_KIND_REPAIR_STRIP,
 };
 use crowdb_protocol::chunkdb::rpc::{ChunkState, ChunkType, Strip, StripType};
 use crowdb_protocol::common::ChunkId;
@@ -154,6 +155,84 @@ async fn task_survives_claim_expiry_takeover_and_completion() {
     let drained = scanner.run_once(301).await.unwrap();
     assert_eq!(drained.tasks_claimed, 1);
     assert!(store.scan_ready(302, 16).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn unavailable_strip_survives_crash_gap_and_is_admitted_as_repair_task() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let chunk = harness
+        .handler
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .await
+        .unwrap();
+    let chunk_id = chunk.id.unwrap();
+    let old = chunk.strips[0].clone();
+    let Some(Strip::MirrorStrip(mirror)) = &old.strip else {
+        panic!("expected mirror strip");
+    };
+    let failed = mirror.segments[0];
+    let mut marked = old.clone();
+    marked.unavailable_segments.push(failed);
+    let marked_chunk = harness
+        .handler
+        .replace_chunk_strip_range(
+            &chunk_id,
+            chunk.modify_ts,
+            0,
+            std::slice::from_ref(&old),
+            std::slice::from_ref(&marked),
+            ChunkId { high: 111, low: 1 },
+        )
+        .await
+        .unwrap();
+
+    let bindings = BindingCache::new();
+    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
+    let restarted = RepairCoordinator::new(Arc::clone(&harness.handler), Arc::clone(&tasks));
+    assert_eq!(restarted.admit_chunk(&marked_chunk, 100).await.unwrap(), 1);
+    assert_eq!(restarted.scan_batch(256, 101).await.unwrap(), 0);
+
+    let ready = tasks.scan_ready(101, 16).await.unwrap();
+    assert_eq!(ready.len(), 1);
+    assert_eq!(ready[0].kind, TASK_KIND_REPAIR_STRIP);
+    let task = tasks
+        .get(&chunk_id, ready[0].kind, &ready[0].task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let payload = decode_repair_payload(&task.payload).unwrap();
+    assert_eq!(payload.chunk_id, chunk_id);
+    assert_eq!(payload.strip_sequence, old.strip_sequence);
+    assert_eq!(payload.failed_segments, vec![failed]);
+    assert_eq!(task.source_revision, marked_chunk.modify_ts);
+    assert_eq!(
+        task.estimated_queue_bytes,
+        u64::from(failed.unit_count) * u64::from(old.unit_kb) * 1024 * 4
+    );
+
+    // A terminal task must not suppress repair while its durable failure
+    // marker still exists.
+    let mut completed = task.clone();
+    completed.state = ChunkTaskState::Completed;
+    completed.revision = completed.revision.saturating_add(1);
+    tasks.write_transition(Some(&task), &completed).await.unwrap();
+    assert_eq!(restarted.admit_chunk(&marked_chunk, 102).await.unwrap(), 1);
+    let revived = tasks
+        .get(&chunk_id, completed.kind, &completed.task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(revived.state, ChunkTaskState::Pending);
+    assert_eq!(revived.revision, completed.revision.saturating_add(1));
+    assert_eq!(revived.attempt, 0);
 }
 
 #[tokio::test]
@@ -508,6 +587,7 @@ async fn deletion_during_conversion_clears_task_ownership_before_tentative_clean
             io,
             metrics,
             50,
+            1,
         ))],
     )
     .unwrap();

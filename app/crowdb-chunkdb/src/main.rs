@@ -16,10 +16,11 @@ use crowdb_chunkdb::lifecycle::{ChunkLockMap, LifecycleHandler};
 use crowdb_chunkdb::metrics::ChunkdbMetrics;
 use crowdb_chunkdb::metrics::LifecycleMetrics;
 use crowdb_chunkdb::range_guard::RangeGuard;
+use crowdb_chunkdb::repair::{RepairCoordinator, RepairStripTaskHandler};
 use crowdb_chunkdb::routing::{default_binding_table, BindingCache};
 use crowdb_chunkdb::service::ChunkdbRpcService;
 use crowdb_chunkdb::storage::ChunkStore;
-use crowdb_chunkdb::task::{TaskExecutor, TaskManager, TaskScanner, TaskStore};
+use crowdb_chunkdb::task::{TaskExecutor, TaskHandler, TaskManager, TaskScanner, TaskStore};
 use crowdb_chunkdb::topology::{
     build_snapshot, notify::NotifyHandler, refresh::run_refresh_loop, TopologyCache,
 };
@@ -373,6 +374,38 @@ async fn main() {
             }
         })
     });
+    let repair = Arc::new(
+        RepairCoordinator::new(Arc::clone(&handler), Arc::clone(&task_store))
+            .with_wake(task_manager.wake_handle())
+            .with_metrics(Arc::clone(&workflow_metrics.repair)),
+    );
+    let repair_scan_handle = config.repair.enabled.then(|| {
+        let repair = Arc::clone(&repair);
+        let mut stop = stop_rx.clone();
+        let interval = Duration::from_secs(config.repair.scan_interval_secs);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        match repair.scan_batch(256, unix_time_ms()).await {
+                            Ok(accepted) if accepted > 0 => {
+                                info!(accepted, "read-repair scan admitted tasks");
+                            }
+                            Ok(_) => {}
+                            Err(error) => warn!(%error, "read-repair scan failed"),
+                        }
+                    }
+                    changed = stop.changed() => {
+                        if changed.is_err() || *stop.borrow() {
+                            return;
+                        }
+                    }
+                }
+            }
+        })
+    });
     let (task_scanner_handle, conversion_route_refresh_handle) = match ConversionDiskIo::connect(
         &ServiceRegistryClient::from_shared(Arc::clone(&kv)),
         &HardwareClient::from_shared(Arc::clone(&kv)),
@@ -381,18 +414,31 @@ async fn main() {
     {
         Ok(io) => {
             let io = Arc::new(io);
-            let task_handler = Arc::new(MirrorToEcTaskHandler::new(
+            let conversion_task_handler = Arc::new(MirrorToEcTaskHandler::new(
                 Arc::clone(&handler),
                 Arc::clone(&task_store),
                 Arc::clone(&io),
                 Arc::clone(&workflow_metrics.conversion),
                 config.conversion.max_bandwidth_mbps,
+                config.conversion.max_concurrency,
             ));
+            let repair_task_handler = Arc::new(RepairStripTaskHandler::new(
+                Arc::clone(&handler),
+                Arc::clone(&io),
+                config.repair.memory_bytes,
+                config.repair.max_concurrency,
+                config.repair.allow_unsafe_placement,
+                Arc::clone(&workflow_metrics.repair),
+            ));
+            let task_handlers: Vec<Arc<dyn TaskHandler>> = vec![conversion_task_handler, repair_task_handler];
             let executor = Arc::new(
                 TaskExecutor::new(
                     Arc::clone(&task_manager),
-                    config.conversion.max_concurrency,
-                    vec![task_handler],
+                    config
+                        .conversion
+                        .max_concurrency
+                        .saturating_add(config.repair.max_concurrency),
+                    task_handlers,
                 )
                 .expect("unique conversion task handler"),
             );
@@ -454,6 +500,7 @@ async fn main() {
         http_listen_addr,
         Arc::clone(&lock_map),
         Arc::clone(&workflow_metrics.conversion),
+        Arc::clone(&workflow_metrics.repair),
         Arc::clone(&conversion),
     ));
 
@@ -473,6 +520,9 @@ async fn main() {
         let _ = handle.await;
     }
     if let Some(handle) = conversion_scan_handle {
+        let _ = handle.await;
+    }
+    if let Some(handle) = repair_scan_handle {
         let _ = handle.await;
     }
     let _ = range_refresh_handle.await;
@@ -622,6 +672,7 @@ async fn run_http_server(
     addr: SocketAddr,
     locks: Arc<ChunkLockMap>,
     conversion_metrics: Arc<crowdb_chunkdb::metrics::ConversionMetrics>,
+    repair_metrics: Arc<crowdb_chunkdb::metrics::RepairMetrics>,
     conversion: Arc<ConversionCoordinator>,
 ) {
     let app = axum::Router::new()
@@ -641,6 +692,13 @@ async fn run_http_server(
             "/conversion_metrics",
             axum::routing::get(move || {
                 let metrics = Arc::clone(&conversion_metrics);
+                async move { axum::Json(metrics.snapshot()) }
+            }),
+        )
+        .route(
+            "/repair_metrics",
+            axum::routing::get(move || {
+                let metrics = Arc::clone(&repair_metrics);
                 async move { axum::Json(metrics.snapshot()) }
             }),
         )

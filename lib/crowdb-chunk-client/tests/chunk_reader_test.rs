@@ -29,6 +29,7 @@ const SHARD: usize = 64 * KIB;
 struct MemoryDiskIo {
     shards: Vec<(DiskId, Bytes)>,
     failed: Vec<DiskId>,
+    reads: Arc<AtomicUsize>,
 }
 
 struct SequenceAllocator {
@@ -88,6 +89,7 @@ impl DiskWriter for MemoryDiskIo {
         segment_offset: u64,
         length: u32,
     ) -> Result<Bytes> {
+        self.reads.fetch_add(1, Ordering::Relaxed);
         let disk_id = segment.disk_id.unwrap();
         if self.failed.contains(&disk_id) {
             return Err(IoError::ReadFailed("injected read failure".into()));
@@ -112,11 +114,21 @@ fn segment(index: u64) -> Segment {
 }
 
 fn reader(shards: Vec<(DiskId, Bytes)>, failed: Vec<DiskId>) -> StripReader {
-    StripReader::new(
-        Arc::new(MemoryDiskIo { shards, failed }),
+    reader_with_count(shards, failed).0
+}
+
+fn reader_with_count(shards: Vec<(DiskId, Bytes)>, failed: Vec<DiskId>) -> (StripReader, Arc<AtomicUsize>) {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let reader = StripReader::new(
+        Arc::new(MemoryDiskIo {
+            shards,
+            failed,
+            reads: Arc::clone(&reads),
+        }),
         Arc::new(Semaphore::new(8 * 1024 * 1024)),
         8 * 1024 * 1024,
-    )
+    );
+    (reader, reads)
 }
 
 #[tokio::test]
@@ -186,13 +198,91 @@ async fn ec_reader_recovers_partial_slice_and_rejects_excess_loss() {
         data[offset_index..offset_index + 8192]
     );
     let lost = reader(
-        shards,
+        shards.clone(),
         vec![segments[0].disk_id.unwrap(), segments[1].disk_id.unwrap()],
     );
     assert!(matches!(
         lost.read(&strip, 4 * SHARD as u64, 0, 8192).await,
         Err(ReadError::DataLoss(_))
     ));
+
+    let mut degraded = strip.clone();
+    degraded.unavailable_segments.push(segments[4]);
+    let direct = reader(shards.clone(), Vec::new());
+    assert_eq!(
+        direct
+            .read(&degraded, 4 * SHARD as u64, 2 * SHARD as u64 + 17, 4096)
+            .await
+            .unwrap(),
+        data[2 * SHARD + 17..2 * SHARD + 17 + 4096]
+    );
+    let mut no_parity = strip.clone();
+    let Some(Strip::EcStrip(ec)) = no_parity.strip.as_mut() else {
+        unreachable!();
+    };
+    ec.ec_state = EcState::NoParity as i32;
+    assert_eq!(
+        reader(shards.clone(), Vec::new())
+            .read(&no_parity, 4 * SHARD as u64, SHARD as u64 + 31, 4096)
+            .await
+            .unwrap(),
+        data[SHARD + 31..SHARD + 31 + 4096]
+    );
+    let no_parity_failure = reader(shards.clone(), vec![segments[2].disk_id.unwrap()]);
+    assert!(matches!(
+        no_parity_failure
+            .read(&no_parity, 4 * SHARD as u64, 2 * SHARD as u64, 4096)
+            .await,
+        Err(ReadError::DataLoss(_))
+    ));
+
+    let degraded_loss = reader(shards, vec![segments[2].disk_id.unwrap()]);
+    assert!(matches!(
+        degraded_loss
+            .read(&degraded, 4 * SHARD as u64, 2 * SHARD as u64, 4096)
+            .await,
+        Err(ReadError::DataLoss(_))
+    ));
+}
+
+#[tokio::test]
+async fn ec_recovery_reads_only_the_minimum_surviving_shards() {
+    let scheme = EcScheme::new(4, 2);
+    let data: Vec<u8> = (0..4 * SHARD)
+        .map(|index| u8::try_from((index * 17 + 11) % 251).unwrap())
+        .collect();
+    let encoded = encode(scheme, &data).unwrap();
+    let segments: Vec<_> = (1..=6).map(segment).collect();
+    let shards = segments
+        .iter()
+        .zip(encoded)
+        .map(|(segment, bytes)| (segment.disk_id.unwrap(), Bytes::from(bytes)))
+        .collect();
+    let strip = ChunkStrip {
+        unit_kb: 64,
+        capacity: 256,
+        sealed_length: 256,
+        sealed_ts_ms: 1,
+        strip_type: StripType::Ec as i32,
+        strip: Some(Strip::EcStrip(EcStrip {
+            data_num: 4,
+            code_num: 2,
+            ec_state: EcState::Parity as i32,
+            segments: segments.clone(),
+        })),
+        ..ChunkStrip::default()
+    };
+    let (reader, reads) = reader_with_count(shards, vec![segments[0].disk_id.unwrap()]);
+    assert_eq!(
+        reader
+            .read(&strip, data.len() as u64, 97, 16 * KIB as u64)
+            .await
+            .unwrap(),
+        data[97..97 + 16 * KIB]
+    );
+    // One failed direct read plus exactly data_num recovery reads. The second
+    // parity shard is not touched.
+    assert_eq!(reads.load(Ordering::Relaxed), 5);
 }
 
 #[tokio::test]
@@ -229,6 +319,7 @@ async fn object_reader_discards_bytes_from_an_expired_layout() {
             (new_segment.disk_id.unwrap(), Bytes::from_static(b"new!")),
         ],
         failed: Vec::new(),
+        reads: Arc::new(AtomicUsize::new(0)),
     });
     let reader = ChunkReader::new(
         allocator.clone(),

@@ -11,8 +11,8 @@ use bytes::{Bytes, BytesMut};
 use crowdb_common::ec::{EcScheme, IncrementalParity};
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AllocateChunkRequest, AllocateReplacementSegmentRequest, AppendChunkRequest,
-    Chunk, ChunkType, CompleteMirrorToEcConversionRequest, DeleteChunkRequest,
-    DiscardReplacementSegmentRequest, Location, PrepareMirrorToEcConversionRequest,
+    Chunk, ChunkState, ChunkType, CompleteMirrorToEcConversionRequest, DeleteChunkRequest,
+    DiscardReplacementSegmentRequest, Location, PrepareMirrorToEcConversionRequest, QueryChunkRequest,
     ReplaceChunkStripRangeRequest, SealChunkRequest, Strip, StripType,
 };
 use crowdb_protocol::diskdb::rpc::Segment;
@@ -901,22 +901,61 @@ impl OwnedChunk {
             .chunk
             .id
             .ok_or_else(|| IoError::AllocationFailed("shared chunk missing id".into()))?;
-        let response = self
-            .allocator
-            .advance_chunk_write(AdvanceChunkWriteRequest {
-                chunk_id: Some(chunk_id),
-                writer_epoch: self.writer_epoch,
-                expected_modify_ts: self.chunk.modify_ts,
-                acknowledged_cursor: cursor,
-                closed_strip_sequence,
-                writer_lease_ms: u64::try_from(self.policy.writer_lease.as_millis()).unwrap_or(u64::MAX),
-            })
-            .await?;
-        self.chunk = response
-            .chunk
-            .ok_or_else(|| IoError::AllocationFailed("cursor advance returned no chunk".into()))?;
-        self.cursor = cursor;
-        Ok(())
+        for attempt in 0..8 {
+            let response = self
+                .allocator
+                .advance_chunk_write(AdvanceChunkWriteRequest {
+                    chunk_id: Some(chunk_id),
+                    writer_epoch: self.writer_epoch,
+                    expected_modify_ts: self.chunk.modify_ts,
+                    acknowledged_cursor: cursor,
+                    closed_strip_sequence,
+                    writer_lease_ms: u64::try_from(self.policy.writer_lease.as_millis()).unwrap_or(u64::MAX),
+                })
+                .await;
+            match response {
+                Ok(response) => {
+                    self.chunk = response.chunk.ok_or_else(|| {
+                        IoError::AllocationFailed("cursor advance returned no chunk".into())
+                    })?;
+                    self.cursor = cursor;
+                    return Ok(());
+                }
+                Err(IoError::MetadataConflict(_)) if attempt < 7 => {
+                    let response = self
+                        .allocator
+                        .query_chunk(QueryChunkRequest {
+                            chunk_id: Some(chunk_id),
+                        })
+                        .await?;
+                    let refreshed = response.chunk.ok_or_else(|| {
+                        IoError::MetadataConflict("shared chunk disappeared during advance".into())
+                    })?;
+                    if refreshed.state != ChunkState::Active as i32
+                        || refreshed.writer_epoch != self.writer_epoch
+                    {
+                        return Err(IoError::MetadataConflict(
+                            "shared chunk ownership changed during advance".into(),
+                        ));
+                    }
+                    let strip_already_closed = closed_strip_sequence.map_or(true, |requested| {
+                        refreshed
+                            .closed_strip_sequence
+                            .is_some_and(|actual| actual >= requested)
+                    });
+                    if refreshed.acknowledged_cursor >= cursor && strip_already_closed {
+                        self.chunk = refreshed;
+                        self.cursor = cursor;
+                        return Ok(());
+                    }
+                    self.chunk = refreshed;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(IoError::MetadataConflict(
+            "shared chunk metadata kept changing during advance".into(),
+        ))
     }
 
     async fn finish(&mut self) -> Result<()> {
