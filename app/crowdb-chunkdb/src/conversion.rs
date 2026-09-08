@@ -199,11 +199,34 @@ impl MirrorToEcTaskHandler {
             current = self.checkpoint(&current, &payload).await?;
         }
 
-        let (planned_read_bytes, planned_write_bytes, _) = io_accounting(&payload);
+        let replacement = match self.encode_and_write(&payload).await {
+            Ok(replacement) => replacement,
+            Err(error) => {
+                self.abandon_replacement(&current, &mut payload).await?;
+                return Err(error);
+            }
+        };
+        payload.replacement_strip = Some(replacement.clone());
+        payload.phase = MirrorToEcPhase::Durable;
+        let _durable = self.checkpoint(&current, &payload).await?;
+        self.lifecycle
+            .replace_chunk_strip_range(
+                &payload.chunk_id,
+                payload.expected_modify_ts,
+                payload.start_index,
+                &payload.old_strips,
+                std::slice::from_ref(&replacement),
+                current.operation_id,
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn encode_and_write(&self, payload: &MirrorToEcTaskV1) -> Result<ChunkStrip, ConversionRunError> {
+        let (planned_read_bytes, planned_write_bytes, _) = io_accounting(payload);
         self.bandwidth
             .acquire(planned_read_bytes.saturating_add(planned_write_bytes))
             .await;
-
         let mut data = Vec::with_capacity(payload.old_strips.len());
         for strip in &payload.old_strips {
             data.push(self.read_mirror(strip).await?);
@@ -230,24 +253,27 @@ impl MirrorToEcTaskHandler {
             return Err(ConversionRunError::Conflict);
         }
         let unit_bytes = u64::from(replacement.unit_kb) * 1024;
-        let segments = ec.segments.clone();
-        self.write_and_sync(&segments, unit_bytes, shards).await?;
+        self.write_and_sync(&ec.segments, unit_bytes, shards).await?;
         let Some(Strip::EcStrip(ec)) = &mut replacement.strip else {
             unreachable!("replacement type already checked");
         };
         ec.ec_state = EcState::Parity as i32;
-        payload.replacement_strip = Some(replacement.clone());
-        payload.phase = MirrorToEcPhase::Durable;
-        let _durable = self.checkpoint(&current, &payload).await?;
+        Ok(replacement)
+    }
+
+    async fn abandon_replacement(
+        &self,
+        current: &ChunkTaskValue,
+        payload: &mut MirrorToEcTaskV1,
+    ) -> Result<(), ConversionRunError> {
+        let replacement = payload
+            .replacement_strip
+            .take()
+            .ok_or(ConversionRunError::Conflict)?;
+        payload.phase = MirrorToEcPhase::Discovered;
+        self.checkpoint(current, payload).await?;
         self.lifecycle
-            .replace_chunk_strip_range(
-                &payload.chunk_id,
-                payload.expected_modify_ts,
-                payload.start_index,
-                &payload.old_strips,
-                std::slice::from_ref(&replacement),
-                current.operation_id,
-            )
+            .discard_conversion_strip(&payload.chunk_id, &replacement)
             .await?;
         Ok(())
     }
@@ -793,7 +819,8 @@ fn validate_source(
 ) -> Result<(), ConversionError> {
     let start = usize::try_from(start_index).unwrap_or(usize::MAX);
     let end = start.saturating_add(old_strips.len());
-    if old_strips.is_empty()
+    if !convertible_chunk_state(chunk.state)
+        || old_strips.is_empty()
         || chunk.modify_ts != expected_modify_ts
         || chunk.strips.get(start..end) != Some(old_strips)
         || old_strips
@@ -819,6 +846,9 @@ fn candidate_group(
     min_age_ms: u64,
     now_ms: u64,
 ) -> bool {
+    if !convertible_chunk_state(chunk.state) {
+        return false;
+    }
     let Some(first) = strips.first() else {
         return false;
     };
@@ -841,6 +871,10 @@ fn candidate_group(
             .iter()
             .all(|strip| strip.sealed_ts_ms > 0 && strip.sealed_ts_ms.saturating_add(min_age_ms) <= now_ms);
     geometry_matches && closed && old_enough
+}
+
+fn convertible_chunk_state(state: i32) -> bool {
+    state == ChunkState::Active as i32 || state == ChunkState::Sealed as i32
 }
 
 fn locate_source(chunk: &Chunk, old_strips: &[ChunkStrip]) -> Option<u32> {
