@@ -404,8 +404,8 @@ pub fn make_disk_id(low: u64) -> DiskId {
     DiskId { high: 0, low }
 }
 
-/// Seed 3 racks × 1 node × 1 disk-group (3 disks each) — enough for
-/// mirror 3-copy placement (distinct racks) and EC placement.
+/// Seed 4 racks × 1 node × 1 disk-group (3 disks each) — enough for
+/// mirror 3-copy placement and a safe 8+4 EC strip on distinct disks.
 pub async fn seed_hardware(hw: &HardwareClient) {
     let lease_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -415,7 +415,7 @@ pub async fn seed_hardware(hw: &HardwareClient) {
         .unwrap_or(u64::MAX)
         + 3_600_000;
 
-    for i in 0..3u64 {
+    for i in 0..4u64 {
         let rack_id = 100 + i;
         let node_id = 10 + i;
         let dg_id = 1000 + i;
@@ -492,7 +492,7 @@ pub async fn seed_hardware(hw: &HardwareClient) {
 
 /// Disk-group IDs seeded by `seed_hardware`.
 pub fn seeded_dg_ids() -> Vec<u64> {
-    (0..3u64).map(|i| 1000 + i).collect()
+    (0..4u64).map(|i| 1000 + i).collect()
 }
 
 // ── diskdb crowdb-rpc server (in-process) ─────────────────────────────
@@ -531,8 +531,8 @@ impl DiskdbServer {
             "diskdb tick: groups_added={}, disks_added={}",
             outcome.groups_added, outcome.disks_added
         );
-        assert_eq!(outcome.groups_added, 3, "expected 3 disk-groups");
-        assert_eq!(outcome.disks_added, 9, "expected 9 disks");
+        assert_eq!(outcome.groups_added, 4, "expected 4 disk-groups");
+        assert_eq!(outcome.disks_added, 12, "expected 12 disks");
 
         for dg_id in seeded_dg_ids() {
             wait_for_disks_ready(&container, dg_id, 3, ZONE_COUNT).await;

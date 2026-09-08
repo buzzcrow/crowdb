@@ -867,12 +867,6 @@ impl LifecycleHandler {
         }
         let start = usize::try_from(start_index).unwrap_or(usize::MAX);
         let end = start.saturating_add(old_strips.len());
-        if end > chunk.strips.len() {
-            return Err(LifecycleError::StripIndexOutOfRange {
-                index: start_index,
-                len: chunk.strips.len(),
-            });
-        }
         if chunk.modify_ts == expected_modify_ts.saturating_add(1)
             && chunk.last_strip_replacement == Some(operation_id)
             && chunk
@@ -881,6 +875,12 @@ impl LifecycleHandler {
                 == Some(replacement_strips)
         {
             return Ok(chunk);
+        }
+        if end > chunk.strips.len() {
+            return Err(LifecycleError::StripIndexOutOfRange {
+                index: start_index,
+                len: chunk.strips.len(),
+            });
         }
         if chunk.modify_ts != expected_modify_ts || chunk.strips[start..end] != *old_strips {
             return Err(LifecycleError::StateConflict);
@@ -963,6 +963,107 @@ impl LifecycleHandler {
             )
             .await
             .map_err(LifecycleError::Allocation)
+    }
+
+    /// Allocate a tentative EC strip with the exact logical geometry of a
+    /// closed mirror range. Publication remains the caller's responsibility.
+    pub async fn allocate_conversion_strip(
+        &self,
+        chunk_id: &ChunkId,
+        old_strips: &[ChunkStrip],
+        data_num: u32,
+        code_num: u32,
+    ) -> Result<ChunkStrip, LifecycleError> {
+        self.check_range(chunk_id)?;
+        let first = old_strips
+            .first()
+            .ok_or_else(|| LifecycleError::InvalidRequest("conversion range is empty".into()))?;
+        if data_num == 0
+            || code_num == 0
+            || old_strips.len() != usize::try_from(data_num).unwrap_or(usize::MAX)
+            || first.unit_kb == 0
+        {
+            return Err(LifecycleError::InvalidRequest(
+                "conversion range does not match the EC scheme".into(),
+            ));
+        }
+        let unit_count = conversion_unit_count(old_strips, chunk_id)?;
+        let snap = self.topology.snapshot();
+        if snap.unit_size_bytes() / 1024 != first.unit_kb {
+            return Err(LifecycleError::InvalidRequest(
+                "conversion strip unit size differs from current topology".into(),
+            ));
+        }
+        let mut replacement = self
+            .allocator
+            .allocate_strip(
+                &snap,
+                chunk_id,
+                StripAllocType::Ec {
+                    data_num: usize::try_from(data_num).unwrap_or(usize::MAX),
+                    code_num: usize::try_from(code_num).unwrap_or(usize::MAX),
+                },
+                unit_count,
+                first.strip_sequence,
+                &self.placement_constraints(),
+            )
+            .await?;
+        replacement.chunk_offset = first.chunk_offset;
+        replacement.capacity = old_strips.iter().try_fold(0u32, |total, strip| {
+            total
+                .checked_add(strip.capacity)
+                .ok_or_else(|| LifecycleError::InvalidRequest("conversion capacity overflows u32".into()))
+        })?;
+        replacement.sealed_length = old_strips.iter().try_fold(0u32, |total, strip| {
+            total.checked_add(strip.sealed_length).ok_or_else(|| {
+                LifecycleError::InvalidRequest("conversion sealed length overflows u32".into())
+            })
+        })?;
+        replacement.sealed_ts_ms = old_strips
+            .iter()
+            .map(|strip| strip.sealed_ts_ms)
+            .max()
+            .unwrap_or(0);
+        Ok(replacement)
+    }
+
+    /// Release every segment in an unpublished conversion strip. The
+    /// authoritative chunk is checked under its existing lifecycle lock first.
+    pub async fn discard_conversion_strip(
+        &self,
+        chunk_id: &ChunkId,
+        strip: &ChunkStrip,
+    ) -> Result<(), LifecycleError> {
+        self.check_range(chunk_id)?;
+        let segments = extract_segments(strip);
+        if segments.is_empty()
+            || segments
+                .iter()
+                .any(|segment| segment.owner_chunk.as_ref() != Some(chunk_id))
+        {
+            return Err(LifecycleError::InvalidRequest(
+                "conversion replacement is empty or belongs to another chunk".into(),
+            ));
+        }
+        let _guard = if let Some(locks) = &self.locks {
+            Some(
+                locks
+                    .acquire(chunk_id, &self.store, &LockPolicy::default(), CacheHint::NoCache)
+                    .await?,
+            )
+        } else {
+            None
+        };
+        let chunk = self.store.get_chunk(chunk_id).await?;
+        let referenced: HashSet<_> = chunk.strips.iter().flat_map(extract_segments).collect();
+        if segments.iter().any(|segment| referenced.contains(segment)) {
+            return Err(LifecycleError::StateConflict);
+        }
+        self.allocator
+            .pool()
+            .free_blocks(segments)
+            .await
+            .map_err(LifecycleError::Cleanup)
     }
 
     /// Release a tentative replacement that was never published.
@@ -1193,6 +1294,37 @@ fn extract_segments(strip: &ChunkStrip) -> Vec<crowdb_protocol::diskdb::rpc::Seg
         Some(Strip::EcStrip(ec)) => ec.segments.clone(),
         None => Vec::new(),
     }
+}
+
+fn conversion_unit_count(old: &[ChunkStrip], chunk_id: &ChunkId) -> Result<u32, LifecycleError> {
+    let first = &old[0];
+    let unit_count = first
+        .strip
+        .as_ref()
+        .and_then(|strip| match strip {
+            Strip::MirrorStrip(mirror) => mirror.segments.first(),
+            Strip::EcStrip(_) => None,
+        })
+        .map_or(0, |segment| segment.unit_count);
+    let mut expected_offset = first.chunk_offset;
+    let valid = unit_count > 0
+        && old.iter().all(|strip| {
+            let matches = strip.unit_kb == first.unit_kb
+                && strip.capacity == first.capacity
+                && strip.chunk_offset == expected_offset
+                && strip.capacity == unit_count.saturating_mul(strip.unit_kb)
+                && matches!(&strip.strip, Some(Strip::MirrorStrip(mirror)) if !mirror.segments.is_empty()
+                    && mirror.segments.iter().all(|segment| segment.owner_chunk.as_ref() == Some(chunk_id)
+                        && segment.unit_count == unit_count));
+            expected_offset = expected_offset.saturating_add(strip.capacity);
+            matches
+        });
+    if !valid {
+        return Err(LifecycleError::InvalidRequest(
+            "conversion requires contiguous equal-capacity mirror strips".into(),
+        ));
+    }
+    Ok(unit_count)
 }
 
 fn validate_replacement_geometry(

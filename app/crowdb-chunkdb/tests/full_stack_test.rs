@@ -351,6 +351,74 @@ async fn assert_stale_replacement_conflicts(
 }
 
 #[tokio::test]
+async fn mirror_range_is_atomically_replaced_by_tentative_ec_strip() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start_with_layout_validity(&cluster, Duration::from_millis(1)).await;
+    let chunk = harness
+        .handler
+        .allocate_chunk(None, 1, 8, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .await
+        .expect("allocate mirror range");
+    let chunk_id = chunk.id.expect("chunk id");
+
+    let replacement = harness
+        .handler
+        .allocate_conversion_strip(&chunk_id, &chunk.strips, 8, 4)
+        .await
+        .expect("allocate tentative EC replacement");
+    let Some(Strip::EcStrip(ec)) = &replacement.strip else {
+        panic!("expected EC replacement");
+    };
+    assert_eq!((ec.data_num, ec.code_num, ec.segments.len()), (8, 4, 12));
+    assert_eq!(replacement.capacity, chunk.capacity);
+    assert_eq!(replacement.chunk_offset, 0);
+
+    let operation_id = ChunkId { high: 93, low: 1 };
+    let converted = harness
+        .handler
+        .replace_chunk_strip_range(
+            &chunk_id,
+            chunk.modify_ts,
+            0,
+            &chunk.strips,
+            std::slice::from_ref(&replacement),
+            operation_id,
+        )
+        .await
+        .expect("publish EC replacement");
+    assert_eq!(converted.strips, vec![replacement.clone()]);
+    assert_eq!(converted.last_strip_replacement, Some(operation_id));
+    assert_eq!(converted.cleanup_intents.len(), 1);
+    assert_eq!(converted.cleanup_intents[0].retired_segments.len(), 24);
+
+    let retry = harness
+        .handler
+        .replace_chunk_strip_range(
+            &chunk_id,
+            chunk.modify_ts,
+            0,
+            &chunk.strips,
+            std::slice::from_ref(&replacement),
+            operation_id,
+        )
+        .await
+        .expect("idempotent publish retry");
+    assert_eq!(retry, converted);
+
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    assert_eq!(harness.handler.reconcile_pending_chunks().await.unwrap(), 1);
+    let reclaimed = harness.handler.query_chunk(&chunk_id).await.unwrap();
+    assert_eq!(reclaimed.strips, vec![replacement]);
+    assert!(reclaimed.cleanup_intents.is_empty());
+}
+
+#[tokio::test]
 async fn chunkdb_restart_reconciles_expired_replacement_cleanup_intent() {
     if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
         eprintln!("skipping: crowdb-kv-server binary not found");
