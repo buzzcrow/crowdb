@@ -159,7 +159,7 @@ impl MirrorToEcTaskHandler {
         }
         let mut payload = decode_payload(&current.payload)?;
         let chunk = self.lifecycle.query_chunk(&payload.chunk_id).await?;
-        if installed(&chunk, &current, &payload) {
+        if installed(&chunk, &payload) {
             return Ok(());
         }
         if validate_source(
@@ -175,11 +175,8 @@ impl MirrorToEcTaskHandler {
                 payload.start_index = start_index;
                 current = self.checkpoint(&current, &payload).await?;
             } else {
-                if let Some(replacement) = &payload.replacement_strip {
-                    let _ = self
-                        .lifecycle
-                        .discard_conversion_strip(&payload.chunk_id, replacement)
-                        .await;
+                if payload.replacement_strip.is_some() {
+                    self.abandon_replacement(&current, &mut payload).await?;
                 }
                 return Err(ConversionRunError::Conflict);
             }
@@ -266,15 +263,15 @@ impl MirrorToEcTaskHandler {
         current: &ChunkTaskValue,
         payload: &mut MirrorToEcTaskV1,
     ) -> Result<(), ConversionRunError> {
-        let replacement = payload
+        // Clear the durable task reference first. DiskDB's tentative-block
+        // scanner reclaims the now-unreferenced allocation; freeing here
+        // could race a lease heartbeat that still carries the older payload.
+        payload
             .replacement_strip
             .take()
             .ok_or(ConversionRunError::Conflict)?;
         payload.phase = MirrorToEcPhase::Discovered;
         self.checkpoint(current, payload).await?;
-        self.lifecycle
-            .discard_conversion_strip(&payload.chunk_id, &replacement)
-            .await?;
         Ok(())
     }
 
@@ -360,15 +357,21 @@ impl TaskHandler for MirrorToEcTaskHandler {
                 .finish_attempt(result.is_ok(), accounting.0, accounting.1, accounting.2);
             match result {
                 Ok(()) => TaskOutcome::Complete,
-                Err(ConversionRunError::Conflict) => TaskOutcome::Fail {
-                    error_code: 10,
-                    error: "conversion source changed".into(),
-                },
-                Err(error) => TaskOutcome::Retry {
-                    delay_ms: 100,
-                    error_code: 11,
-                    error: error.to_string(),
-                },
+                Err(ConversionRunError::Conflict) => {
+                    tracing::warn!(task_id = ?task.task_id, "conversion source changed permanently");
+                    TaskOutcome::Fail {
+                        error_code: 10,
+                        error: "conversion source changed".into(),
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(task_id = ?task.task_id, error = %error, "conversion attempt will retry");
+                    TaskOutcome::Retry {
+                        delay_ms: 100,
+                        error_code: 11,
+                        error: error.to_string(),
+                    }
+                }
             }
         })
     }
@@ -413,12 +416,14 @@ enum ConversionRunError {
     Retry(String),
 }
 
-fn installed(chunk: &Chunk, task: &ChunkTaskValue, payload: &MirrorToEcTaskV1) -> bool {
-    let start = usize::try_from(payload.start_index).unwrap_or(usize::MAX);
-    chunk.last_strip_replacement == Some(task.operation_id)
-        && payload.replacement_strip.as_ref().is_some_and(|replacement| {
-            chunk.strips.get(start..start.saturating_add(1)) == Some(std::slice::from_ref(replacement))
+fn installed(chunk: &Chunk, payload: &MirrorToEcTaskV1) -> bool {
+    payload.replacement_strip.as_ref().is_some_and(|replacement| {
+        chunk.strips.iter().any(|strip| {
+            strip.chunk_offset == replacement.chunk_offset
+                && strip.strip_sequence == replacement.strip_sequence
+                && strip == replacement
         })
+    })
 }
 
 fn unix_time_ms() -> u64 {

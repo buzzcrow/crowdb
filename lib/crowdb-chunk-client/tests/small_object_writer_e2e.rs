@@ -376,6 +376,7 @@ async fn automatic_chunkdb_scan_converts_three_groups_and_preserves_tail() {
             conversion_enabled: true,
             conversion_min_seal_age_secs: 10,
             conversion_scan_interval_secs: 1,
+            ..ChunkdbStartOptions::default()
         },
     )
     .await;
@@ -438,6 +439,78 @@ async fn automatic_chunkdb_scan_converts_three_groups_and_preserves_tail() {
     }
     for (location, expected) in locations[24..].iter().zip(&data[24..]) {
         assert_mirror_data(&stack, &converted, location, expected).await;
+    }
+}
+
+#[tokio::test]
+async fn chunkdb_restart_recovers_an_inflight_conversion_claim() {
+    if !all_binaries_available() {
+        return;
+    }
+    let mut configured = policy();
+    configured.chunk_capacity = 32 * MIB as u64;
+    configured.conversion_enabled = false;
+    let mut stack = E2eStack::start_with_chunkdb_options(
+        configured,
+        ChunkdbStartOptions {
+            allow_unsafe_ec: true,
+            conversion_enabled: true,
+            conversion_min_seal_age_secs: 5,
+            conversion_scan_interval_secs: 1,
+            conversion_max_bandwidth_mbps: 1,
+            conversion_task_lease_secs: 1,
+        },
+    )
+    .await;
+    let mut data = Vec::new();
+    let mut locations = Vec::new();
+    for value in 71_u8..87 {
+        let shard = Bytes::from(vec![value; MIB]);
+        locations.push(write_object(&stack.client, shard.clone()).await);
+        data.push(shard);
+    }
+    stack.client.shutdown_small_writes().await.unwrap();
+    stack.wait_for_conversion_active().await;
+    stack.crash_and_restart_chunkdb().await;
+
+    let recovered = tokio::time::timeout(Duration::from_secs(12), async {
+        loop {
+            let chunk = stack.query_chunk(&locations[0]).await;
+            if chunk
+                .strips
+                .iter()
+                .filter(|strip| matches!(strip.strip, Some(Strip::EcStrip(_))))
+                .count()
+                == 2
+            {
+                break chunk;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("restarted chunkdb did not recover conversion task");
+    assert_eq!(recovered.strips.len(), 2);
+    for (group, strip) in recovered.strips.iter().enumerate() {
+        let Some(Strip::EcStrip(ec)) = &strip.strip else {
+            panic!("recovered group {group} is not EC");
+        };
+        let group_data = &data[group * 8..group * 8 + 8];
+        let unit_bytes = u64::from(strip.unit_kb) * KIB as u64;
+        for (segment, expected) in ec.segments[..8].iter().zip(group_data) {
+            let actual = stack
+                .read_segment(segment, unit_bytes, 0, u32::try_from(MIB).unwrap())
+                .await;
+            assert_eq!(&actual, expected.as_ref());
+        }
+        let refs: Vec<&[u8]> = group_data.iter().map(Bytes::as_ref).collect();
+        let parity = encode_parity_from_shards(EcScheme::new(8, 4), &refs).unwrap();
+        for (segment, expected) in ec.segments[8..].iter().zip(parity) {
+            let actual = stack
+                .read_segment(segment, unit_bytes, 0, u32::try_from(MIB).unwrap())
+                .await;
+            assert_eq!(actual, expected);
+        }
     }
 }
 

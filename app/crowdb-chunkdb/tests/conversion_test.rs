@@ -38,4 +38,8 @@ fn conversion_policy_rejects_invalid_bounds() {
     let mut config = ChunkdbConfig::default();
     config.conversion.scan_interval_secs = 0;
     assert!(config.validate().unwrap_err().contains("scan_interval_secs"));
+
+    let mut config = ChunkdbConfig::default();
+    config.conversion.task_lease_secs = 0;
+    assert!(config.validate().unwrap_err().contains("task_lease_secs"));
 }

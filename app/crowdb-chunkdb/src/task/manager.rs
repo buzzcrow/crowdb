@@ -4,6 +4,7 @@
 //! Persistent task admission, claiming, completion, and crash takeover.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use crowdb_protocol::chunk_task::{ChunkTaskState, ChunkTaskValue};
 use crowdb_protocol::{LeasedChunkTaskKey, ReadyChunkTaskKey};
@@ -51,6 +52,28 @@ impl TaskManager {
     #[must_use]
     pub fn wake_handle(&self) -> Arc<tokio::sync::Notify> {
         Arc::clone(&self.wake)
+    }
+
+    #[must_use]
+    pub fn heartbeat_interval(&self) -> Duration {
+        Duration::from_millis((self.lease_ms / 3).max(1))
+    }
+
+    /// Extend an owned running claim while its handler is still executing.
+    pub async fn renew(&self, claim: &TaskClaim, now_ms: u64) -> Result<(), TaskManagerError> {
+        let current = self
+            .load(&claim.task)
+            .await?
+            .ok_or(TaskManagerError::StaleClaim)?;
+        if !owns_claim(&current, self.instance_id, claim.task.claim_generation) {
+            return Err(TaskManagerError::StaleClaim);
+        }
+        let mut renewed = current.clone();
+        renewed.revision = renewed.revision.saturating_add(1);
+        renewed.updated_at_ms = now_ms;
+        renewed.claim_deadline_ms = now_ms.saturating_add(self.lease_ms);
+        self.store.write_transition(Some(&current), &renewed).await?;
+        Ok(())
     }
 
     /// Create a task unless its deterministic identity already exists.

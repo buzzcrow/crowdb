@@ -98,7 +98,22 @@ impl TaskExecutor {
                 .await?;
             return Ok(());
         }
-        match handler.execute(&claim.task).await {
+        let heartbeat_interval = self.manager.heartbeat_interval();
+        let outcome = {
+            let outcome = handler.execute(&claim.task);
+            tokio::pin!(outcome);
+            let first_heartbeat = tokio::time::Instant::now() + heartbeat_interval;
+            let mut heartbeat = tokio::time::interval_at(first_heartbeat, heartbeat_interval);
+            loop {
+                tokio::select! {
+                    result = &mut outcome => break result,
+                    _ = heartbeat.tick() => {
+                        self.manager.renew(&claim, unix_time_ms()).await?;
+                    }
+                }
+            }
+        };
+        match outcome {
             TaskOutcome::Complete => self.manager.complete(&claim, unix_time_ms()).await?,
             TaskOutcome::Retry {
                 delay_ms,

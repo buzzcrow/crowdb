@@ -281,6 +281,7 @@ async fn main() {
         error!(%error, "initial diskdb discovery failed; refusing readiness");
         return;
     }
+    pool.update_disk_id_lookup(&cache.snapshot().disk_groups());
     let allocator =
         Arc::new(ChunkAllocator::new(Arc::clone(&pool)).with_metrics(Arc::clone(&workflow_metrics)));
 
@@ -334,7 +335,7 @@ async fn main() {
             .as_ref()
             .and_then(|value| value.parse().ok())
             .unwrap_or(1),
-        30_000,
+        config.conversion.task_lease_secs.saturating_mul(1_000),
     ));
     let conversion = Arc::new(
         ConversionCoordinator::new(Arc::clone(&handler), Arc::clone(&task_store))

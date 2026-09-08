@@ -40,7 +40,10 @@ pub struct E2eStack {
     pub cluster: KvCluster,
     _diskdb: DiskdbProcess,
     _diskio: DiskioProcess,
-    _chunkdb: ChunkdbProcess,
+    #[allow(dead_code)]
+    chunkdb: Option<ChunkdbProcess>,
+    #[allow(dead_code)]
+    chunkdb_options: ChunkdbStartOptions,
     pub client: ChunkIoClient,
     rpc_server: Arc<RpcServer>,
     diskio_client: Arc<DiskioClient>,
@@ -114,12 +117,47 @@ impl E2eStack {
             cluster,
             _diskdb: diskdb,
             _diskio: diskio,
-            _chunkdb: chunkdb,
+            chunkdb: Some(chunkdb),
+            chunkdb_options,
             client,
             rpc_server,
             diskio_client,
             diskio_connection,
         }
+    }
+
+    #[allow(dead_code)]
+    pub async fn wait_for_conversion_active(&self) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let metrics = self
+                    .chunkdb
+                    .as_ref()
+                    .expect("chunkdb is running")
+                    .conversion_metrics()
+                    .await;
+                if metrics["attempts_completed"].as_u64().unwrap_or(0) > 0
+                    && metrics["active"].as_u64().unwrap_or(0) > 0
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("conversion never became active");
+    }
+
+    #[allow(dead_code)]
+    pub async fn crash_and_restart_chunkdb(&mut self) {
+        let mut chunkdb = self.chunkdb.take().expect("chunkdb is running");
+        chunkdb.crash();
+        drop(chunkdb);
+        let replacement =
+            ChunkdbProcess::start_with_options(&self.cluster.mgmt_endpoints, self.chunkdb_options);
+        replacement.wait_for_ready().await;
+        self.chunkdb = Some(replacement);
+        tokio::time::sleep(Duration::from_secs(3)).await;
     }
 
     pub async fn query_chunk(&self, location: &Location) -> Chunk {

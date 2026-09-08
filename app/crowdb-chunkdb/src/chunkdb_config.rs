@@ -76,6 +76,12 @@ pub struct ConversionConfig {
     pub max_concurrency: usize,
     pub max_bandwidth_mbps: u64,
     pub scan_interval_secs: u64,
+    #[serde(default = "default_conversion_task_lease_secs")]
+    pub task_lease_secs: u64,
+}
+
+const fn default_conversion_task_lease_secs() -> u64 {
+    30
 }
 
 impl Default for ConversionConfig {
@@ -89,6 +95,7 @@ impl Default for ConversionConfig {
             max_concurrency: 4,
             max_bandwidth_mbps: 50,
             scan_interval_secs: 30,
+            task_lease_secs: 30,
         }
     }
 }
@@ -109,6 +116,9 @@ impl ConversionConfig {
         }
         if self.scan_interval_secs == 0 {
             return Err("conversion.scan_interval_secs must be > 0".into());
+        }
+        if self.task_lease_secs == 0 {
+            return Err("conversion.task_lease_secs must be > 0".into());
         }
         Ok(())
     }

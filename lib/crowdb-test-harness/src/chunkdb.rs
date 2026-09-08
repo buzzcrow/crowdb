@@ -94,6 +94,8 @@ pub struct ChunkdbStartOptions {
     pub conversion_enabled: bool,
     pub conversion_min_seal_age_secs: u64,
     pub conversion_scan_interval_secs: u64,
+    pub conversion_max_bandwidth_mbps: u64,
+    pub conversion_task_lease_secs: u64,
 }
 
 impl Default for ChunkdbStartOptions {
@@ -103,6 +105,8 @@ impl Default for ChunkdbStartOptions {
             conversion_enabled: false,
             conversion_min_seal_age_secs: 3_600,
             conversion_scan_interval_secs: 30,
+            conversion_max_bandwidth_mbps: 50,
+            conversion_task_lease_secs: 30,
         }
     }
 }
@@ -170,8 +174,9 @@ code_num = 4
 min_seal_age_secs = {conversion_min_seal_age_secs}
 min_mirror_strips = 8
 max_concurrency = 4
-max_bandwidth_mbps = 50
+max_bandwidth_mbps = {conversion_max_bandwidth_mbps}
 scan_interval_secs = {conversion_scan_interval_secs}
+task_lease_secs = {conversion_task_lease_secs}
 
 [lifecycle]
 cache_capacity = 1000
@@ -182,6 +187,8 @@ lock_hold_warn_threshold_ms = 1000
             conversion_enabled = options.conversion_enabled,
             conversion_min_seal_age_secs = options.conversion_min_seal_age_secs,
             conversion_scan_interval_secs = options.conversion_scan_interval_secs,
+            conversion_max_bandwidth_mbps = options.conversion_max_bandwidth_mbps,
+            conversion_task_lease_secs = options.conversion_task_lease_secs,
             seeds = kv_seeds
                 .iter()
                 .map(|s| format!("\"{s}\""))
@@ -237,6 +244,24 @@ lock_hold_warn_threshold_ms = 1000
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    pub async fn conversion_metrics(&self) -> serde_json::Value {
+        reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{}/conversion_metrics", self.http_port))
+            .send()
+            .await
+            .expect("fetch conversion metrics")
+            .error_for_status()
+            .expect("conversion metrics status")
+            .json()
+            .await
+            .expect("decode conversion metrics")
+    }
+
+    pub fn crash(&mut self) {
+        self.child.kill().expect("kill chunkdb process");
+        self.child.wait().expect("reap chunkdb process");
     }
 }
 
