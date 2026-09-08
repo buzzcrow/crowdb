@@ -41,6 +41,7 @@ pub(crate) async fn spawn(runtime: Arc<SmallPoolRuntime>, _id: u64) -> Result<Ma
         retire: Arc::clone(&retire),
         wake: Arc::clone(&wake),
         chunk: owned,
+        replacement: None,
         carry: None,
     };
     let join = tokio::spawn(worker.run());
@@ -66,6 +67,7 @@ struct PipelineWorker {
     retire: Arc<AtomicBool>,
     wake: Arc<Notify>,
     chunk: OwnedChunk,
+    replacement: Option<OwnedChunk>,
     carry: Option<PendingObject>,
 }
 
@@ -95,7 +97,7 @@ impl PipelineWorker {
             if let Err(error) = self.ensure_object_fits(first.len).await {
                 fail_one(first, &error.to_string(), &self.runtime.metrics);
                 self.fail_remaining(&error.to_string()).await;
-                let _ = self.chunk.finish().await;
+                let _ = self.finish_chunks().await;
                 return Err(error);
             }
             let batch = self.collect_batch(first).await;
@@ -108,11 +110,12 @@ impl PipelineWorker {
             if let Err(error) = result {
                 self.receiver.close();
                 self.fail_remaining(&error.to_string()).await;
-                let _ = self.chunk.finish().await;
+                let _ = self.finish_chunks().await;
                 return Err(error);
             }
+            self.prepare_replacement().await;
         }
-        self.chunk.finish().await
+        self.finish_chunks().await
     }
 
     fn note_dequeue(&self, object: &PendingObject) {
@@ -130,8 +133,12 @@ impl PipelineWorker {
 
     async fn ensure_object_fits(&mut self, object_len: usize) -> Result<()> {
         if self.chunk.remaining_in_chunk() < object_len as u64 {
+            let replacement = match self.replacement.take() {
+                Some(chunk) => chunk,
+                None => OwnedChunk::allocate(&self.runtime).await?,
+            };
             self.chunk.finish().await?;
-            self.chunk = OwnedChunk::allocate(&self.runtime).await?;
+            self.chunk = replacement;
         }
         if self.chunk.remaining_in_strip() < object_len as u64 {
             if self.chunk.current_strip().is_ok() {
@@ -140,6 +147,23 @@ impl PipelineWorker {
             self.chunk.ensure_strip().await?;
         }
         Ok(())
+    }
+
+    async fn prepare_replacement(&mut self) {
+        if self.replacement.is_none()
+            && self.chunk.remaining_in_chunk() < self.runtime.policy.object_limit as u64
+        {
+            self.replacement = OwnedChunk::allocate(&self.runtime).await.ok();
+        }
+    }
+
+    async fn finish_chunks(&mut self) -> Result<()> {
+        let current_result = self.chunk.finish().await;
+        let replacement_result = match self.replacement.as_mut() {
+            Some(chunk) => chunk.finish().await,
+            None => Ok(()),
+        };
+        current_result.and(replacement_result)
     }
 
     async fn collect_batch(&mut self, first: PendingObject) -> Vec<PendingObject> {

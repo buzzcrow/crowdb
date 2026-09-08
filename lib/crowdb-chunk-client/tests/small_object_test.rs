@@ -487,7 +487,7 @@ async fn small_object_strip_rotation_pads_tail_and_keeps_object_whole() {
 }
 
 #[tokio::test]
-async fn small_object_chunk_rotation_seals_old_chunk_before_whole_object() {
+async fn small_object_chunk_rotation_uses_one_prepared_replacement() {
     let mut limited = policy();
     limited.chunk_capacity = 1024 * 1024;
     let (client, allocator, _) = client(limited);
@@ -503,9 +503,12 @@ async fn small_object_chunk_rotation_seals_old_chunk_before_whole_object() {
     assert_ne!(first.chunk_id, second.chunk_id);
     assert_eq!(second.offset, 0);
     let counts = allocator.snapshot();
-    assert_eq!(counts.0, 2);
+    assert_eq!(counts.0, 3);
     assert_eq!(counts.3, 1);
     client.shutdown_small_writes().await.unwrap();
+    let counts = allocator.snapshot();
+    assert_eq!(counts.3, 2);
+    assert_eq!(counts.4, 1);
 }
 
 #[tokio::test]
