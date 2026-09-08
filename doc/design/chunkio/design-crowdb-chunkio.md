@@ -81,23 +81,24 @@ specified in the
   just to feed `crowdb_common::ec::encode` would copy 4 MB per strip for
   no benefit. `encode_parity_from_shards` takes pre-split shards
   directly and reuses the existing isa-l FFI path — no new C++ code.
-- **Whole-strip retry, not single-block retry.** On a diskio write
-  failure for any block of a strip, the writer retries the whole strip
-  at a fresh placement. This keeps the strip's data/parity placement
-  atomic and avoids degraded-strip bookkeeping in v1; single-block
-  replacement is left as a future integration point.
+- **Strip failure aborts the object.** A diskio failure from any data or
+  parity block fails the strip and aborts the object, deleting unsealed
+  chunks. Neither single-block replacement nor whole-strip placement retry is
+  part of the current writer.
 - **Memory budget per pool, not per object.** A `WriterPool` tracks a
   total `memory_budget` and an atomic `in_use` counter; `try_acquire`
   rejects with `MemoryBudgetExhausted` when full, enabling backpressure
   up the call stack. Per-writer footprint is constant (~15 MB peak for
   4+1 EC, 1 MB blocks, defaults), so `max_concurrent = budget /
   per-writer-footprint` — a 1 TiB and a 50 MiB upload cost the same RAM.
-- **Two trait seams for testability.** `LargeObjectWriter` is generic
-  over one chunk-lifecycle seam (`ChunkAllocator`) and one block-IO
-  seam (`DiskWriter`), so integration tests inject mock impls without
-  real servers; E2E tests use real clients. The seams are not a runtime
-  polymorphism optimization — they exist so the pipeline can be tested
-  in isolation.
+- **Real-process E2E is the primary write-flow coverage.** Large- and
+  small-object E2E tests run the client against KV, DiskDB, DiskIO, and
+  ChunkDB processes, query committed chunk metadata, and read payloads back
+  from their allocated segments. Large-write coverage also verifies stored EC
+  parity. The `ChunkAllocator` and `DiskWriter` seams support focused tests for
+  fault injection, backpressure, cancellation, accounting, and exact boundary
+  conditions that a real cluster cannot trigger deterministically; they are
+  auxiliary coverage rather than substitutes for the end-to-end flow.
 - **Drive loop in `ChunkWriter`, not the object layer.** The
   strip-level drive loop (push block → write to disk → auto-rotate
   strips when full → spawn parity) lives inside `ChunkWriter::push`.

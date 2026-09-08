@@ -431,12 +431,11 @@ impl ChunkWriter {
                         .map_err(|e| IoError::Internal(format!("parity task panicked: {e}")))??;
                 }
                 self.completion_wait_time += wait_started.elapsed();
-                let unit_bytes = u64::from((self.config.read_buffer_size / 1024) as u32) * 1024;
-                let sealed_length_units = (bytes_in_chunk / unit_bytes) as u32;
+                let sealed_length_kb = bytes_in_chunk.div_ceil(1024) as u32;
                 self.allocator
                     .seal_chunk(SealChunkRequest {
                         chunk_id: Some(cid),
-                        seal_length: sealed_length_units,
+                        seal_length: sealed_length_kb,
                     })
                     .await?;
                 ProtoLocation {

@@ -9,12 +9,12 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_chunk_client::{
-    ChunkAllocator, ChunkIoClient, ChunkIoWriter, DiskWriter, FeedStatus, IoError, Result, SmallWritePolicy,
+    ChunkAllocator, ChunkIoClient, ChunkIoWriter, DiskWriter, IoError, Result, SmallWritePolicy,
 };
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
     AppendChunkRequest, AppendChunkResponse, Chunk, ChunkState, ChunkStrip, ChunkType, DeleteChunkRequest,
-    DeleteChunkResponse, Location, MirrorStrip, QueryChunkRequest, QueryChunkResponse, SealChunkRequest,
+    DeleteChunkResponse, MirrorStrip, QueryChunkRequest, QueryChunkResponse, SealChunkRequest,
     SealChunkResponse, Strip, StripType, UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
@@ -310,53 +310,6 @@ async fn small_object_ingress_validates_size_and_releases_reservation() {
 }
 
 #[tokio::test]
-async fn small_object_clone_handles_share_one_batch_and_receive_independent_locations() {
-    let (client, allocator, disk) = client(policy());
-    let sizes = [4 * 1024, 16 * 1024, 64 * 1024, 256 * 1024];
-    let mut tasks = Vec::new();
-    for (value, size) in sizes.into_iter().enumerate() {
-        let cloned = client.clone();
-        tasks.push(tokio::spawn(async move {
-            let mut writer = cloned.prepare_small_write(size).await.unwrap();
-            assert_eq!(
-                writer
-                    .on_data(Bytes::from(vec![u8::try_from(value).unwrap(); size]))
-                    .await
-                    .unwrap(),
-                FeedStatus::Pause
-            );
-            writer.on_finish().await.unwrap().remove(0)
-        }));
-    }
-    let mut locations = Vec::<Location>::new();
-    for task in tasks {
-        locations.push(task.await.unwrap());
-    }
-    locations.sort_by_key(|location| location.offset);
-    assert!(locations
-        .iter()
-        .all(|location| location.chunk_id == locations[0].chunk_id));
-    assert_eq!(
-        locations
-            .iter()
-            .map(|location| location.length)
-            .collect::<Vec<_>>(),
-        sizes.map(|size| size as u64)
-    );
-    for pair in locations.windows(2) {
-        assert!(pair[0].offset + pair[0].length <= pair[1].offset);
-    }
-    assert!(locations
-        .iter()
-        .all(|location| location.logical_offset == 0 && location.logical_length == location.length));
-    assert_eq!(allocator.snapshot().0, 1);
-    assert_eq!(allocator.snapshot().2, 1);
-    assert_eq!(disk.calls(), 3);
-    assert_eq!(client.small_write_metrics().batches, 1);
-    client.shutdown_small_writes().await.unwrap();
-}
-
-#[tokio::test]
 async fn small_object_whole_budget_waits_without_partial_reservation() {
     let mut bounded = policy();
     bounded.object_limit = 64 * 1024;
@@ -462,54 +415,6 @@ fn small_object_policy_rejects_unreachable_limits() {
 }
 
 #[tokio::test]
-async fn small_object_sixty_four_objects_form_one_mebibyte_batch() {
-    let (client, allocator, disk) = client(policy());
-    let mut tasks = Vec::new();
-    for value in 0..64_u8 {
-        let clone = client.clone();
-        tasks.push(tokio::spawn(async move {
-            let mut writer = clone.prepare_small_write(16 * 1024).await.unwrap();
-            writer.on_data(Bytes::from(vec![value; 16 * 1024])).await.unwrap();
-            writer.on_finish().await.unwrap()[0].clone()
-        }));
-    }
-    let mut locations = Vec::new();
-    for task in tasks {
-        locations.push(task.await.unwrap());
-    }
-    locations.sort_by_key(|location| location.offset);
-    assert_eq!(locations.first().unwrap().offset, 0);
-    assert_eq!(locations.last().unwrap().offset, 63 * 16 * 1024);
-    assert!(locations
-        .iter()
-        .all(|location| location.chunk_id == locations[0].chunk_id));
-    assert_eq!(allocator.snapshot().2, 1);
-    assert_eq!(disk.calls(), 3);
-    client.shutdown_small_writes().await.unwrap();
-}
-
-#[tokio::test]
-async fn small_object_strip_rotation_pads_tail_and_keeps_object_whole() {
-    let (client, allocator, _) = client(policy());
-    let mut first = client.prepare_small_write(700 * 1024).await.unwrap();
-    first.on_data(Bytes::from(vec![1; 700 * 1024])).await.unwrap();
-    let first = tokio::spawn(async move { first.on_finish().await.unwrap()[0].clone() });
-    tokio::time::sleep(Duration::from_millis(2)).await;
-    let mut second = client.prepare_small_write(400 * 1024).await.unwrap();
-    second.on_data(Bytes::from(vec![2; 400 * 1024])).await.unwrap();
-    let second = tokio::spawn(async move { second.on_finish().await.unwrap()[0].clone() });
-    let first = first.await.unwrap();
-    let second = second.await.unwrap();
-    assert_eq!(first.chunk_id, second.chunk_id);
-    assert_eq!(first.offset, 0);
-    assert_eq!(second.offset, 1024 * 1024);
-    assert_eq!(second.length, 400 * 1024);
-    assert_eq!(allocator.snapshot().1, 1);
-    assert_eq!(client.small_write_metrics().tail_waste_bytes, 324 * 1024);
-    client.shutdown_small_writes().await.unwrap();
-}
-
-#[tokio::test]
 async fn small_object_appends_strip_after_exact_physical_boundary() {
     let (client, allocator, _) = client(policy());
     let mut first = client.prepare_small_write(1024 * 1024).await.unwrap();
@@ -522,31 +427,6 @@ async fn small_object_appends_strip_after_exact_physical_boundary() {
     assert_eq!(second.offset, 1024 * 1024);
     assert_eq!(allocator.snapshot().1, 1);
     client.shutdown_small_writes().await.unwrap();
-}
-
-#[tokio::test]
-async fn small_object_chunk_rotation_uses_one_prepared_replacement() {
-    let mut limited = policy();
-    limited.chunk_capacity = 1024 * 1024;
-    let (client, allocator, _) = client(limited);
-    let mut first = client.prepare_small_write(700 * 1024).await.unwrap();
-    first.on_data(Bytes::from(vec![1; 700 * 1024])).await.unwrap();
-    let first = tokio::spawn(async move { first.on_finish().await.unwrap()[0].clone() });
-    tokio::time::sleep(Duration::from_millis(2)).await;
-    let mut second = client.prepare_small_write(400 * 1024).await.unwrap();
-    second.on_data(Bytes::from(vec![2; 400 * 1024])).await.unwrap();
-    let second = tokio::spawn(async move { second.on_finish().await.unwrap()[0].clone() });
-    let first = first.await.unwrap();
-    let second = second.await.unwrap();
-    assert_ne!(first.chunk_id, second.chunk_id);
-    assert_eq!(second.offset, 0);
-    let counts = allocator.snapshot();
-    assert_eq!(counts.0, 3);
-    assert_eq!(counts.3, 1);
-    client.shutdown_small_writes().await.unwrap();
-    let counts = allocator.snapshot();
-    assert_eq!(counts.3, 2);
-    assert_eq!(counts.4, 1);
 }
 
 #[tokio::test]

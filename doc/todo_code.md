@@ -34,11 +34,10 @@ when adding or resolving a tracked item.
   in `spawn_blocking`. Also: `fsync` silently skips non-existent files
   (partial strips where not all disks were written). The production
   `DiskioBlockWriter` should handle this correctly via the diskio server.
-- **`lib/crowdb-chunk-client/tests/write_stream.rs`** — `write_stream_whole_strip_retry`
-  test no longer injects failures (the old `MockDiskWriter.with_fail_once`
-  was removed). Whole-strip retry logic needs to be re-implemented in
-  `EcStripWriter` and tested with a `LocalFileDiskWriter` variant that
-  can inject failures.
+- **`lib/crowdb-chunk-client/src/chunk/ec_strip_writer.rs`** — Whole-strip
+  retry is not implemented. A data or parity write failure currently aborts
+  the object; fresh placement retry needs a replacement allocation flow and
+  deterministic fault-injection coverage.
 - **`lib/crowdb-chunk-client/tests/write_stream.rs`** —
   `push_mode_drop_mid_write_deletes_partial` has no assertion on
   `delete_calls` — `LargeObjectWriter` doesn't implement `Drop` cleanup
