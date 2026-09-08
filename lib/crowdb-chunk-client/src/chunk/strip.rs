@@ -8,12 +8,10 @@
 //! `StripPlacement` is gone — `EcStripWriter` holds `Arc<Chunk>` +
 //! index and reads segments directly from the protobuf.
 
+use crate::Result;
 use bytes::Bytes;
 use crowdb_protocol::common::ChunkId;
 use std::time::Duration;
-use tokio::task::JoinHandle;
-
-use crate::Result;
 
 /// Result of finishing a strip — returned by `StripWriter::finish` to
 /// `ChunkWriter`.
@@ -27,7 +25,7 @@ pub struct StripResult {
     pub partial: bool,
     pub ec_encode_time: Duration,
     /// Durable data/parity write completions joined by `ChunkWriter`.
-    pub completion_handles: Vec<JoinHandle<Result<()>>>,
+    pub(crate) completion_handles: Vec<crate::chunk::segment_writer::SegmentWriteHandle>,
 }
 
 /// Strip writer enum — Rust enum (not trait object) for monomorphic

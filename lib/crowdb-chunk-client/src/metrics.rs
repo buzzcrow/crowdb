@@ -77,6 +77,7 @@ pub struct ChunkClientMetrics {
     pub logical_bytes: Arc<Bandwidth>,
     pub physical_bytes: Arc<Bandwidth>,
     pub diskio_write_bytes: Arc<Bandwidth>,
+    pub large_write_repair: Arc<LargeWriteRepairMetrics>,
     pub small_write: Arc<SmallWriteMetrics>,
 }
 
@@ -94,7 +95,66 @@ impl ChunkClientMetrics {
             logical_bytes: registry.register_bandwidth("chunkio.object.logical.bw"),
             physical_bytes: registry.register_bandwidth("chunkio.object.physical.bw"),
             diskio_write_bytes: registry.register_bandwidth("chunkio.diskio.write.bw"),
+            large_write_repair: Arc::new(LargeWriteRepairMetrics::register(registry)),
             small_write: Arc::new(SmallWriteMetrics::register(registry)),
+        }
+    }
+}
+
+/// Lock-free counters for in-line large-write segment replacement.
+#[derive(Debug)]
+pub struct LargeWriteRepairMetrics {
+    pub(crate) attempts: Arc<Counter>,
+    pub(crate) repaired_segments: Arc<Counter>,
+    pub(crate) exhausted: Arc<Counter>,
+    pub(crate) negative_list_hits: Arc<Counter>,
+    pub(crate) discarded_segments: Arc<Counter>,
+}
+
+impl Default for LargeWriteRepairMetrics {
+    fn default() -> Self {
+        Self {
+            attempts: Arc::new(Counter::new("chunkio.large_write.repair.attempts.c".into())),
+            repaired_segments: Arc::new(Counter::new("chunkio.large_write.repair.completed.c".into())),
+            exhausted: Arc::new(Counter::new("chunkio.large_write.repair.exhausted.c".into())),
+            negative_list_hits: Arc::new(Counter::new(
+                "chunkio.large_write.repair.negative_list_hits.c".into(),
+            )),
+            discarded_segments: Arc::new(Counter::new(
+                "chunkio.large_write.repair.discarded_segments.c".into(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LargeWriteRepairMetricsSnapshot {
+    pub attempts: u64,
+    pub repaired_segments: u64,
+    pub exhausted: u64,
+    pub negative_list_hits: u64,
+    pub discarded_segments: u64,
+}
+
+impl LargeWriteRepairMetrics {
+    fn register(registry: &mut MetricsRegistry) -> Self {
+        Self {
+            attempts: registry.register_counter("chunkio.large_write.repair.attempts.c"),
+            repaired_segments: registry.register_counter("chunkio.large_write.repair.completed.c"),
+            exhausted: registry.register_counter("chunkio.large_write.repair.exhausted.c"),
+            negative_list_hits: registry.register_counter("chunkio.large_write.repair.negative_list_hits.c"),
+            discarded_segments: registry.register_counter("chunkio.large_write.repair.discarded_segments.c"),
+        }
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> LargeWriteRepairMetricsSnapshot {
+        LargeWriteRepairMetricsSnapshot {
+            attempts: self.attempts.snapshot().total,
+            repaired_segments: self.repaired_segments.snapshot().total,
+            exhausted: self.exhausted.snapshot().total,
+            negative_list_hits: self.negative_list_hits.snapshot().total,
+            discarded_segments: self.discarded_segments.snapshot().total,
         }
     }
 }

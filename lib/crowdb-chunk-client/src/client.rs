@@ -16,13 +16,16 @@ use crowdb_kv_client::{
 };
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
-    AppendChunkRequest, AppendChunkResponse, DeleteChunkRequest, DeleteChunkResponse, Location,
-    QueryChunkRequest, QueryChunkResponse, SealChunkRequest, SealChunkResponse, UpdateChunkStripRequest,
-    UpdateChunkStripResponse,
+    AllocateReplacementSegmentRequest, AllocateReplacementSegmentResponse, AppendChunkRequest,
+    AppendChunkResponse, DeleteChunkRequest, DeleteChunkResponse, DiscardReplacementSegmentRequest,
+    DiscardReplacementSegmentResponse, Location, QueryChunkRequest, QueryChunkResponse,
+    ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse, SealChunkRequest, SealChunkResponse,
+    UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use crowdb_protocol::diskdb::rpc::Segment;
 
 use crate::metrics::SmallWriteMetrics;
+use crate::negative_list::FailedDiskList;
 use crate::writer::small_pool::SmallWritePool;
 use crate::{
     ChunkAllocator, ChunkClientConfig, ChunkClientMetrics, ChunkIoWriter, ChunkReadPolicy, ChunkReadStream,
@@ -75,6 +78,8 @@ pub struct ChunkIoClient {
     metrics: Option<Arc<ChunkClientMetrics>>,
     small_pool: Arc<SmallWritePool>,
     reader: ChunkReader,
+    failed_disks: Arc<FailedDiskList>,
+    large_write_repair: Arc<crate::metrics::LargeWriteRepairMetrics>,
 }
 
 struct ClientTopology {
@@ -98,11 +103,14 @@ impl ChunkIoClient {
         let chunkdb = Arc::new(chunkdb);
         chunkdb.refresh_endpoints().await?;
         let disk_writer = Arc::new(RoutedDiskWriter::connect(&service, &hardware).await?);
+        let failed_disks = Arc::new(FailedDiskList::new(config.small_write.failed_disk_ttl));
+        let large_write_repair = Arc::new(crate::metrics::LargeWriteRepairMetrics::default());
         let small_pool = SmallWritePool::new(
             chunkdb.clone(),
             disk_writer.clone(),
             config.small_write,
             Arc::new(SmallWriteMetrics::default()),
+            Arc::clone(&failed_disks),
         )?;
         let reader = ChunkReader::new(chunkdb.clone(), disk_writer.clone(), ChunkReadPolicy::default())
             .map_err(|error| crate::IoError::Internal(error.to_string()))?;
@@ -118,6 +126,8 @@ impl ChunkIoClient {
             metrics: None,
             small_pool,
             reader,
+            failed_disks,
+            large_write_repair,
         })
     }
 
@@ -133,11 +143,14 @@ impl ChunkIoClient {
         disk_writer: Arc<dyn DiskWriter>,
         small_write: SmallWritePolicy,
     ) -> Result<Self> {
+        let failed_disks = Arc::new(FailedDiskList::new(small_write.failed_disk_ttl));
+        let large_write_repair = Arc::new(crate::metrics::LargeWriteRepairMetrics::default());
         let small_pool = SmallWritePool::new(
             Arc::clone(&allocator),
             Arc::clone(&disk_writer),
             small_write,
             Arc::new(SmallWriteMetrics::default()),
+            Arc::clone(&failed_disks),
         )?;
         let reader = ChunkReader::new(
             Arc::clone(&allocator),
@@ -152,6 +165,8 @@ impl ChunkIoClient {
             metrics: None,
             small_pool,
             reader,
+            failed_disks,
+            large_write_repair,
         })
     }
 
@@ -167,11 +182,13 @@ impl ChunkIoClient {
             metrics: Arc::clone(metrics),
         });
         self.metrics = Some(Arc::clone(metrics));
+        self.large_write_repair = Arc::clone(&metrics.large_write_repair);
         self.small_pool = SmallWritePool::new(
             Arc::clone(&self.allocator),
             Arc::clone(&self.disk_writer),
             (*self.small_pool.policy).clone(),
             Arc::clone(&metrics.small_write),
+            Arc::clone(&self.failed_disks),
         )
         .unwrap_or_else(|_| unreachable!("existing small-write policy was already validated"));
         self.reader = ChunkReader::new(
@@ -245,6 +262,11 @@ impl ChunkIoClient {
         snapshot
     }
 
+    /// Snapshot in-line large-write segment replacement counters.
+    pub fn large_write_repair_metrics(&self) -> crate::LargeWriteRepairMetricsSnapshot {
+        self.large_write_repair.snapshot()
+    }
+
     /// Refresh `ChunkDB` service endpoints and range ownership routes.
     pub async fn refresh_chunkdb_routes(&self) -> Result<()> {
         let topology = self.topology.as_ref().ok_or_else(|| {
@@ -270,11 +292,13 @@ impl ChunkIoClient {
         object_size: Option<u64>,
         policy: LargeWritePolicy,
     ) -> PreparedLargeWrite {
-        let mut writer = LargeAsyncObjectWriter::new(
+        let mut writer = LargeAsyncObjectWriter::new_with_repair(
             self.allocator.clone(),
             self.disk_writer.clone(),
             policy.ec_scheme,
             policy.client.clone(),
+            Arc::clone(&self.failed_disks),
+            Arc::clone(&self.large_write_repair),
         );
         writer.prepare(object_size);
         PreparedLargeWrite {
@@ -368,6 +392,27 @@ impl ChunkAllocator for MetricsChunkAllocator {
 
     async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse> {
         self.inner.query_chunk(req).await
+    }
+
+    async fn allocate_replacement_segment(
+        &self,
+        req: AllocateReplacementSegmentRequest,
+    ) -> Result<AllocateReplacementSegmentResponse> {
+        self.inner.allocate_replacement_segment(req).await
+    }
+
+    async fn replace_chunk_strip_range(
+        &self,
+        req: ReplaceChunkStripRangeRequest,
+    ) -> Result<ReplaceChunkStripRangeResponse> {
+        self.inner.replace_chunk_strip_range(req).await
+    }
+
+    async fn discard_replacement_segment(
+        &self,
+        req: DiscardReplacementSegmentRequest,
+    ) -> Result<DiscardReplacementSegmentResponse> {
+        self.inner.discard_replacement_segment(req).await
     }
 }
 

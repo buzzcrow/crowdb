@@ -146,6 +146,8 @@ pub struct ChunkClientConfig {
     pub parity_depth: usize,
     /// Chunks allocated ahead. Default 1.
     pub chunk_preparation_depth: usize,
+    /// Placement-safe replacement attempts for one failed EC segment.
+    pub large_write_repair_attempts: usize,
 
     // ── memory ──────────────────────────────────────────────────
     /// Memory budget for `WriterPool` (bytes). Default 0 = unlimited
@@ -164,6 +166,7 @@ impl Default for ChunkClientConfig {
             prefetch_strips_per_chunk: 2,
             parity_depth: 2,
             chunk_preparation_depth: 1,
+            large_write_repair_attempts: 3,
             memory_budget: 0,
         }
     }
@@ -191,6 +194,11 @@ impl ChunkClientConfig {
         }
         if self.chunk_preparation_depth == 0 {
             return Err(IoError::Internal("chunk_preparation_depth must be > 0".into()));
+        }
+        if self.large_write_repair_attempts == 0 {
+            return Err(IoError::Internal(
+                "large_write_repair_attempts must be > 0".into(),
+            ));
         }
         Ok(())
     }

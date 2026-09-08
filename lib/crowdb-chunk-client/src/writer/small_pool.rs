@@ -184,6 +184,7 @@ pub(crate) struct SmallWritePool {
     pub allocator: Arc<dyn ChunkAllocator>,
     pub disk_writer: Arc<dyn DiskWriter>,
     pub metrics: Arc<SmallWriteMetrics>,
+    pub failed_disks: Arc<FailedDiskList>,
     runtime: tokio::sync::OnceCell<Arc<SmallPoolRuntime>>,
 }
 
@@ -193,6 +194,7 @@ impl SmallWritePool {
         disk_writer: Arc<dyn DiskWriter>,
         policy: SmallWritePolicy,
         metrics: Arc<SmallWriteMetrics>,
+        failed_disks: Arc<FailedDiskList>,
     ) -> Result<Arc<Self>> {
         policy.validate()?;
         Ok(Arc::new(Self {
@@ -200,6 +202,7 @@ impl SmallWritePool {
             allocator,
             disk_writer,
             metrics,
+            failed_disks,
             runtime: tokio::sync::OnceCell::new(),
         }))
     }

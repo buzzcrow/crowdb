@@ -7,7 +7,7 @@
 //! Transitions are validated; invalid transitions return
 //! `InvalidStateTransition`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -953,29 +953,75 @@ impl LifecycleHandler {
             ));
         }
         let snap = self.topology.snapshot();
+        let disk_groups = snap.disk_groups();
         let mut constraints = self.placement_constraints();
         if !allow_unsafe_placement {
-            for disk_group in snap.disk_groups() {
-                let survives_here = surviving_segments.iter().any(|segment| {
+            let node_count = disk_groups
+                .iter()
+                .map(|disk_group| disk_group.node_id)
+                .collect::<HashSet<_>>()
+                .len();
+            let node_limit = self
+                .replacement_node_limit(chunk_id, old_segment, node_count)
+                .await?;
+            let mut survivors_by_node = HashMap::new();
+            for segment in surviving_segments {
+                if let Some(disk_group) = disk_groups.iter().find(|disk_group| {
                     segment
                         .disk_id
                         .is_some_and(|disk| disk_group.value.disk_ids.contains(&disk))
-                });
-                if survives_here {
-                    constraints.exclude_nodes.push(disk_group.node_id);
+                }) {
+                    *survivors_by_node.entry(disk_group.node_id).or_insert(0_usize) += 1;
+                }
+            }
+            constraints.exclude_nodes.extend(
+                survivors_by_node
+                    .into_iter()
+                    .filter_map(|(node_id, count)| (count >= node_limit).then_some(node_id)),
+            );
+        }
+        let mut excluded = exclude_disk_ids.to_vec();
+        for segment in std::iter::once(old_segment).chain(surviving_segments) {
+            if let Some(disk_id) = segment.disk_id {
+                if !excluded.contains(&disk_id) {
+                    excluded.push(disk_id);
                 }
             }
         }
         self.allocator
-            .allocate_replacement_segment(
-                &snap,
-                chunk_id,
-                old_segment.unit_count,
-                &constraints,
-                exclude_disk_ids.to_vec(),
-            )
+            .allocate_replacement_segment(&snap, chunk_id, old_segment.unit_count, &constraints, excluded)
             .await
             .map_err(LifecycleError::Allocation)
+    }
+
+    async fn replacement_node_limit(
+        &self,
+        chunk_id: &ChunkId,
+        old_segment: &Segment,
+        node_count: usize,
+    ) -> Result<usize, LifecycleError> {
+        let chunk = self.store.get_chunk(chunk_id).await?;
+        let strip = chunk
+            .strips
+            .iter()
+            .find(|strip| extract_segments(strip).contains(old_segment))
+            .ok_or_else(|| LifecycleError::InvalidRequest("old segment is not in the chunk".into()))?;
+        match strip.strip.as_ref() {
+            Some(Strip::MirrorStrip(_)) => Ok(1),
+            Some(Strip::EcStrip(ec)) => {
+                let total = ec.data_num as usize + ec.code_num as usize;
+                let safe_limit = ec.code_num as usize;
+                let nodes = node_count.max(1);
+                if nodes.saturating_mul(safe_limit) >= total || !self.allow_unsafe_ec {
+                    Ok(safe_limit.max(1))
+                } else {
+                    Ok(total.div_ceil(nodes).max(1))
+                }
+            }
+            None => Err(LifecycleError::InvalidRequest(
+                "replacement strip has no body".into(),
+            )),
+        }
     }
 
     /// Allocate a tentative EC strip with the exact logical geometry of a

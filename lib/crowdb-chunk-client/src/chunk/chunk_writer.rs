@@ -18,10 +18,13 @@ use tokio::task::JoinHandle;
 use tracing::warn;
 
 use crate::chunk::ec_strip_writer::EcStripWriter;
+use crate::chunk::segment_writer::{FailedSegmentWrite, SegmentRepair};
 use crate::chunk::strip::{StripResult, StripWriter};
 use crate::config::ChunkClientConfig;
 use crate::disk_io::DiskWriter;
 use crate::io::FeedStatus;
+use crate::metrics::LargeWriteRepairMetrics;
+use crate::negative_list::FailedDiskList;
 use crate::traits::ChunkAllocator;
 use crate::{IoError, Result};
 use crowdb_common::ec::EcScheme;
@@ -47,13 +50,15 @@ pub struct ChunkWriter {
     pub(crate) object_size: Option<u64>,
     pub(crate) strips_remaining: Option<usize>,
     pub(crate) current_strip: Option<StripWriter>,
-    pub(crate) completion_handles: VecDeque<JoinHandle<Result<()>>>,
+    pub(crate) completion_handles: VecDeque<JoinHandle<Result<Vec<FailedSegmentWrite>>>>,
     pub(crate) prefetch_handle: Option<JoinHandle<()>>,
     pub(crate) prefetch_rx: Option<mpsc::Receiver<Result<Chunk>>>,
     pub(crate) preparation_stalls: u64,
     pub(crate) preparation_stall_time: Duration,
     pub(crate) ec_encode_time: Duration,
     pub(crate) completion_wait_time: Duration,
+    pub(crate) failed_disks: Arc<FailedDiskList>,
+    pub(crate) repair_metrics: Arc<LargeWriteRepairMetrics>,
 }
 
 impl ChunkWriter {
@@ -63,6 +68,24 @@ impl ChunkWriter {
         disk_writer: Arc<dyn DiskWriter>,
         ec_scheme: EcScheme,
         config: Arc<ChunkClientConfig>,
+    ) -> Self {
+        Self::new_with_repair(
+            allocator,
+            disk_writer,
+            ec_scheme,
+            config,
+            Arc::new(FailedDiskList::new(Duration::from_secs(60))),
+            Arc::new(LargeWriteRepairMetrics::default()),
+        )
+    }
+
+    pub(crate) fn new_with_repair(
+        allocator: Arc<dyn ChunkAllocator>,
+        disk_writer: Arc<dyn DiskWriter>,
+        ec_scheme: EcScheme,
+        config: Arc<ChunkClientConfig>,
+        failed_disks: Arc<FailedDiskList>,
+        repair_metrics: Arc<LargeWriteRepairMetrics>,
     ) -> Self {
         Self {
             allocator,
@@ -82,6 +105,8 @@ impl ChunkWriter {
             preparation_stall_time: Duration::ZERO,
             ec_encode_time: Duration::ZERO,
             completion_wait_time: Duration::ZERO,
+            failed_disks,
+            repair_metrics,
         }
     }
 
@@ -343,12 +368,16 @@ impl ChunkWriter {
         let handles = std::mem::take(&mut strip_result.completion_handles);
         if !handles.is_empty() {
             self.completion_handles.push_back(tokio::spawn(async move {
+                let mut failures = Vec::new();
                 for handle in handles {
-                    handle.await.map_err(|error| {
-                        IoError::Internal(format!("strip write task panicked: {error}"))
-                    })??;
+                    if let Some(failure) = handle
+                        .await
+                        .map_err(|error| IoError::Internal(format!("strip write task panicked: {error}")))?
+                    {
+                        failures.push(failure);
+                    }
                 }
-                Ok(())
+                Ok(failures)
             }));
         }
         Ok(strip_result)
@@ -362,9 +391,7 @@ impl ChunkWriter {
                 .completion_handles
                 .pop_front()
                 .ok_or_else(|| IoError::Internal("missing write completion".into()))?;
-            handle
-                .await
-                .map_err(|error| IoError::Internal(format!("strip completion task panicked: {error}")))??;
+            self.finish_completion(handle).await?;
             self.completion_wait_time += started.elapsed();
         }
         Ok(())
@@ -423,12 +450,9 @@ impl ChunkWriter {
         let location = match chunk_id {
             Some(cid) if bytes_in_chunk > 0 => {
                 // Join all in-flight writes before sealing.
-                let handles = std::mem::take(&mut self.completion_handles);
                 let wait_started = Instant::now();
-                for handle in handles {
-                    handle
-                        .await
-                        .map_err(|e| IoError::Internal(format!("parity task panicked: {e}")))??;
+                while let Some(handle) = self.completion_handles.pop_front() {
+                    self.finish_completion(handle).await?;
                 }
                 self.completion_wait_time += wait_started.elapsed();
                 let sealed_length_kb = bytes_in_chunk.div_ceil(1024) as u32;
@@ -466,6 +490,28 @@ impl ChunkWriter {
         };
 
         Ok(location)
+    }
+
+    async fn finish_completion(&mut self, handle: JoinHandle<Result<Vec<FailedSegmentWrite>>>) -> Result<()> {
+        let failures = handle
+            .await
+            .map_err(|error| IoError::Internal(format!("strip completion task panicked: {error}")))??;
+        let Some(chunk_id) = self.current_chunk_id() else {
+            return Err(IoError::Internal(
+                "segment write failed without an active chunk".into(),
+            ));
+        };
+        for failure in failures {
+            let repair = SegmentRepair {
+                allocator: &self.allocator,
+                disk_writer: &self.disk_writer,
+                failed_disks: &self.failed_disks,
+                metrics: &self.repair_metrics,
+                attempts: self.config.large_write_repair_attempts,
+            };
+            self.chunk = Some(Arc::new(repair.repair(chunk_id, failure).await?));
+        }
+        Ok(())
     }
 
     /// Abort: cancel in-flight parity writes, stop the strip-prefetch

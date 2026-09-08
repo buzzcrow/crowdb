@@ -65,8 +65,12 @@ fn chunk_client_config_defaults() {
     assert_eq!(cfg.prefetch_strips_per_chunk, 2);
     assert_eq!(cfg.parity_depth, 2);
     assert_eq!(cfg.chunk_preparation_depth, 1);
+    assert_eq!(cfg.large_write_repair_attempts, 3);
     assert_eq!(cfg.read_buffer_size, 1024 * 1024);
     assert_eq!(cfg.max_cached_buffer, 4 * 1024 * 1024);
+    let mut invalid = cfg;
+    invalid.large_write_repair_attempts = 0;
+    assert!(matches!(invalid.validate(), Err(IoError::Internal(_))));
 }
 
 // ── ChunkIoWriter mock contract ──────────────────────────────────

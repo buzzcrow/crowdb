@@ -266,6 +266,7 @@ fn test_config(max_chunk_size: u64) -> Arc<ChunkClientConfig> {
         prefetch_strips_per_chunk: 2,
         parity_depth: 2,
         chunk_preparation_depth: 1,
+        large_write_repair_attempts: 3,
         read_buffer_size: 4096,
         max_cached_buffer: 8 * 4096,
         memory_budget: 0,

@@ -9,7 +9,6 @@ use std::time::Instant;
 
 use tokio::sync::{mpsc, oneshot, Semaphore};
 
-use crate::negative_list::FailedDiskList;
 use crate::{IoError, Result};
 
 use super::small_pipeline::{self, ManagedPipeline};
@@ -31,7 +30,7 @@ pub(crate) async fn start(pool: Arc<SmallWritePool>) -> Result<Arc<SmallPoolRunt
         closed: std::sync::atomic::AtomicBool::new(false),
         route_nonce: std::sync::atomic::AtomicU64::new(0),
         manager_tx,
-        failed_disks: Arc::new(FailedDiskList::new(pool.policy.failed_disk_ttl)),
+        failed_disks: Arc::clone(&pool.failed_disks),
         budget: Arc::new(Semaphore::new(pool.policy.memory_budget)),
     });
     let mut pipelines = Vec::with_capacity(pool.policy.min_pipelines);

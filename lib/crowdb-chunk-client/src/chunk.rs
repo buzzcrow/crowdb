@@ -18,6 +18,7 @@ pub mod chunk_writer;
 pub mod ec_strip_writer;
 pub mod mirror_strip_writer;
 pub mod parity_writer;
+pub(crate) mod segment_writer;
 pub mod strip;
 pub mod strip_reader;
 
