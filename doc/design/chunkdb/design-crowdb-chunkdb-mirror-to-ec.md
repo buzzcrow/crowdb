@@ -10,6 +10,9 @@ Depends on: [chunkdb](design-crowdb-chunkdb.md),
 [chunkdb RPC](design-crowdb-chunkdb-rpc.md), and
 [small-object writer](../chunkio/design-crowdb-chunkio-small-object-writer.md).
 
+The read-side producer for repair tasks is the
+[chunk object reader](../chunkio/design-crowdb-chunkio-reader.md).
+
 Satisfies: durable space reduction for shared mirror chunks and reusable
 crash-recoverable chunk maintenance tasks.
 
@@ -60,6 +63,14 @@ Mirror conversion uses the first mirror sequence and EC scheme. Its operation
 ID is also deterministic, allowing publication retries to identify an already
 installed replacement.
 
+`RepairStrip` uses the chunk as partition, the task kind as the dispatch
+namespace, and a deterministic task ID derived from strip sequence plus the
+sorted failed-segment identities. Its versioned payload contains the chunk ID,
+strip sequence, and failed segments. The canonical envelope retains source
+revision, estimated full-rebuild I/O bytes, retry state, claim generation, and
+the deterministic publication operation ID. Other task types keep their own
+payload schema while sharing the envelope, indexes, leases, and transitions.
+
 ### 2.2 Value and Handler Dispatch
 
 `ChunkTaskValue` is a verified, versioned FlatBuffer envelope containing stable
@@ -83,6 +94,32 @@ slots. The executor heartbeats while a handler runs.
 
 The configured concurrency is a fixed upper bound. Retry eligibility and lease
 deadlines schedule work; elapsed idle time does not scale worker count.
+Conversion and repair handlers also enforce independent local concurrency
+semaphores. Repair has the highest ready priority because it restores data
+redundancy, while conversion only reclaims space.
+
+### 2.4 Read Repair Admission and Execution
+
+Readers durably add exact failed segment identities to
+`ChunkStrip.unavailable_segments`. A bounded rotating metadata scan admits one
+task per strip and failure set. An existing pending, running, or retry-wait
+task deduplicates admission. A terminal task is revived at a higher revision
+when its marker remains, preventing a stale completion or failure from
+suppressing necessary repair.
+
+`RepairStripTaskHandler` re-queries current metadata and treats the marker as
+authority. It reads one full healthy mirror or full EC shards, records any new
+I/O failures before retrying, reconstructs unavailable shards, and allocates
+replacement segments excluding every disk already used by the strip. Normal
+placement also excludes survivor nodes; a separate disabled-by-default test
+escape hatch may relax only node anti-affinity, never same-disk exclusion.
+
+Each replacement is fully written and fsynced before exact revision-and-range
+fenced publication. The publication removes repaired markers and adds retired
+segments to the normal layout-validity cleanup intent. A changed layout causes
+re-query and retry. Repair tasks have unlimited attempts and use delayed retry
+rather than tight polling when memory, placement, parity, or I/O is temporarily
+unavailable.
 
 ## 3. Foreground Conversion
 
@@ -184,6 +221,13 @@ or lease scheduling; it does not control small-write pipeline scale-in/out.
 written, retired mirror segments, active handlers, and peak active handlers.
 `GET /conversion_metrics` returns a nonblocking snapshot.
 
+`RepairConfig` defaults to enabled, four concurrent handlers, a 64-MiB shared
+full-shard memory budget, and a one-second marker scan. The memory semaphore is
+reserved before shard reads. A repair larger than the configured budget stays
+durably retryable. `RepairMetrics` exposes admissions, attempts, repaired
+segments and bytes, active handlers, and current/limit/peak memory through
+`GET /repair_metrics`.
+
 ## 8. Test Contract
 
 Core coverage uses real KV, chunkdb, diskdb, DiskIO, and routed clients. It
@@ -192,3 +236,10 @@ decode, active-prefix append, client-I/O failure takeover, manual and automatic
 triggers, multiple groups plus mirror tail, bounded task dispatch, cleanup
 reconciliation, and process crash/restart recovery. Mock-based tests remain
 auxiliary for deterministic error injection and unit-level queue behavior.
+
+Read-repair coverage additionally verifies same-offset partial EC recovery,
+minimum surviving-shard reads, mirror fallback and total loss, exact partial
+ranges, stream termination, incomplete-parity behavior, durable marker
+admission across process restart, full-shard replacement, task revival,
+memory/metrics bounds, and continued writes to an active chunk whose revision
+was advanced by a reader.

@@ -87,8 +87,8 @@ complexity, and dependency. Before implementation, follow the
 
 ### Data Path (diskio + chunk object writers + read flow)
 
-Dependency order: R110 → R111. Mirror-to-EC conversion is landed as
-post-write space reclamation and is not a foreground correctness blocker. The RPC migration items
+Chunk reads, read repair, and mirror-to-EC conversion are landed. R110 remains
+for large-write error handling. The RPC migration items
 (R115, R116, R117) are in a separate area (see RPC Migration section
 below); R32 depends on R115.
 
@@ -114,30 +114,12 @@ below); R32 depends on R115.
   successful blocks, use chunkdb placement to re-allocate the failed
   block on a healthy disk, and `update_chunk_strip` to replace it in
   chunkdb. Negative list (TTL-based) temporarily blocks bad disks
-  from new allocations across diskdb — shared with R111 (read) and
+  from new allocations across diskdb — shared with the read path and
   R112 (small-write). Degraded strip tracking (parity missing,
   data durable). Escalation to R83 recovery when inline retries
   are exhausted. Read-path error handling is a separate requirement
-  (R111); R110 defines the negative list and degraded-strip
-  tracking that R111 and R112 reuse.
-- **[R111](R111-chunkdb-read-io-error-handling.md)** — Chunk read
-  IO error handling (unified read path) — Area: chunkdb / diskdb /
-  diskio — In-line error handler for the read path (R107), which
-  is unified across large objects (EC strips, R94) and small
-  objects (mirror strips before R93 conversion). EC decode
-  fallback for failed EC blocks (read surviving data + parity,
-  isa-l decode the missing block, within `code_num` tolerance);
-  mirror replica fallback for failed mirror strips (read next
-  replica). Background rebuild + replace after a successful
-  fallback (allocate new block via diskdb, write reconstructed
-  data via diskio, `update_chunk_strip` to repair the strip so
-  future reads don't pay the fallback cost). Degraded strip read
-  tolerance (parity missing — readable for full-data, partial
-  result + R83 escalation on data block failure). Partial read
-  results with explicit failed byte ranges (no silent corruption —
-  applies to both `read_range` and `ChunkReadStream`). Escalation
-  to R83 when inline fallback is unrecoverable. Reuses R110's
-  negative list and degraded-strip tracking.
+  reader; R110 defines the negative list and degraded-strip
+  tracking that R112 reuses.
 - **[R113](R113-chunkio-batch-strip-allocation.md)** — Batch strip
   allocation + deferred chunkdb confirm — Area: chunkio / chunkdb /
   diskdb — Optimize the large-write strip allocation path (R94) to
