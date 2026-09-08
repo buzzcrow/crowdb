@@ -146,14 +146,15 @@ impl SmallPoolRuntime {
             let route = choose_route(&routes, self.route_nonce.fetch_add(1, Ordering::Relaxed));
             let now_ms = self.now_ms();
             route.accepted(object.len, now_ms);
-            match route.sender.send(object).await {
+            match route.sender.try_send(object) {
                 Ok(()) => {
                     self.metrics.submitted.fetch_add(1, Ordering::Relaxed);
                     return Ok(());
                 }
                 Err(error) => {
-                    object = error.0;
+                    object = error.into_inner();
                     route.rejected(object.len);
+                    tokio::task::yield_now().await;
                 }
             }
         }

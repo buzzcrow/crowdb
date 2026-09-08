@@ -35,6 +35,7 @@ struct MockAllocator {
     next_chunk: AtomicU64,
     advance_delay_ms: AtomicU64,
     fail_allocations: AtomicBool,
+    fail_on_attempt: AtomicU64,
     state: Mutex<MockState>,
 }
 
@@ -58,6 +59,9 @@ impl ChunkAllocator for MockAllocator {
             return Err(IoError::AllocationFailed("injected allocation failure".into()));
         }
         let low = self.next_chunk.fetch_add(1, Ordering::Relaxed) + 1;
+        if self.fail_on_attempt.load(Ordering::Relaxed) == low {
+            return Err(IoError::AllocationFailed("injected allocation failure".into()));
+        }
         let chunk_id = req.chunk_id.unwrap_or(ChunkId { high: 7, low });
         let strip = make_strip(chunk_id, 0, req.copy_count.max(1));
         let chunk = Chunk {
@@ -512,6 +516,41 @@ async fn small_object_chunk_rotation_uses_one_prepared_replacement() {
 }
 
 #[tokio::test]
+async fn small_object_batch_stops_at_configured_chunk_boundary() {
+    let mut limited = policy();
+    limited.chunk_capacity = 1024 * 1024;
+    let (client, _, _) = client(limited);
+
+    let mut prefix = client.prepare_small_write(700 * 1024).await.unwrap();
+    prefix.on_data(Bytes::from(vec![1; 700 * 1024])).await.unwrap();
+    let prefix = prefix.on_finish().await.unwrap().remove(0);
+
+    let mut tasks = Vec::new();
+    for value in [2, 3] {
+        let clone = client.clone();
+        tasks.push(tokio::spawn(async move {
+            let mut writer = clone.prepare_small_write(200 * 1024).await.unwrap();
+            writer
+                .on_data(Bytes::from(vec![value; 200 * 1024]))
+                .await
+                .unwrap();
+            writer.on_finish().await.unwrap().remove(0)
+        }));
+    }
+    let first = tasks.remove(0).await.unwrap();
+    let second = tasks.remove(0).await.unwrap();
+    let same_chunk = [&first, &second]
+        .iter()
+        .filter(|location| location.chunk_id == prefix.chunk_id)
+        .count();
+    assert_eq!(same_chunk, 1);
+    assert!([&first, &second]
+        .iter()
+        .any(|location| location.chunk_id != prefix.chunk_id && location.offset == 0));
+    client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
 async fn small_object_completion_waits_for_cursor_commit() {
     let (client, allocator, _) = client(policy());
     allocator.advance_delay_ms.store(50, Ordering::Relaxed);
@@ -591,4 +630,20 @@ async fn small_object_scale_out_failure_keeps_current_pipeline_routable() {
     assert_eq!(client.small_write_metrics().active_pipelines, 1);
     allocator.fail_allocations.store(false, Ordering::Relaxed);
     client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
+async fn small_object_initialization_failure_retires_prepared_pipelines() {
+    let mut initial = policy();
+    initial.min_pipelines = 2;
+    initial.max_pipelines = 2;
+    let (client, allocator, _) = client(initial);
+    allocator.fail_on_attempt.store(2, Ordering::Relaxed);
+
+    assert!(matches!(
+        client.prepare_small_write(4096).await,
+        Err(IoError::AllocationFailed(_))
+    ));
+    assert_eq!(allocator.snapshot().0, 1);
+    assert_eq!(allocator.snapshot().4, 1);
 }

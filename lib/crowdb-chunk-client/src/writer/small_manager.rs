@@ -34,7 +34,16 @@ pub(crate) async fn start(pool: Arc<SmallWritePool>) -> Result<Arc<SmallPoolRunt
     });
     let mut pipelines = Vec::with_capacity(pool.policy.min_pipelines);
     for id in 0..pool.policy.min_pipelines {
-        pipelines.push(small_pipeline::spawn(Arc::clone(&runtime), id as u64).await?);
+        match small_pipeline::spawn(Arc::clone(&runtime), id as u64).await {
+            Ok(pipeline) => pipelines.push(pipeline),
+            Err(error) => {
+                for pipeline in &pipelines {
+                    pipeline.begin_retire();
+                }
+                let _ = join_all(pipelines).await;
+                return Err(error);
+            }
+        }
     }
     publish(&runtime, &pipelines);
     tokio::spawn(run(Arc::clone(&runtime), pipelines, manager_rx));

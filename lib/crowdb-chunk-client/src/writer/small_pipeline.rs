@@ -132,7 +132,9 @@ impl PipelineWorker {
     }
 
     async fn ensure_object_fits(&mut self, object_len: usize) -> Result<()> {
-        if self.chunk.remaining_in_chunk() < object_len as u64 {
+        let unit_bytes = u64::from(self.chunk.current_strip()?.unit_kb) * 1024;
+        let physical_len = align_up(object_len as u64, unit_bytes)?;
+        if self.chunk.remaining_in_chunk() < physical_len {
             let replacement = match self.replacement.take() {
                 Some(chunk) => chunk,
                 None => OwnedChunk::allocate(&self.runtime).await?,
@@ -140,7 +142,7 @@ impl PipelineWorker {
             self.chunk.finish().await?;
             self.chunk = replacement;
         }
-        if self.chunk.remaining_in_strip() < object_len as u64 {
+        if self.chunk.remaining_in_strip() < physical_len {
             if self.chunk.current_strip().is_ok() {
                 self.chunk.close_strip(&self.runtime.metrics).await?;
             }
@@ -170,6 +172,10 @@ impl PipelineWorker {
         let deadline = tokio::time::Instant::now() + self.runtime.policy.batch_deadline;
         let mut bytes = first.len;
         let mut batch = vec![first];
+        let unit_bytes = self
+            .chunk
+            .current_strip()
+            .map_or(1, |strip| u64::from(strip.unit_kb) * 1024);
         while batch.len() < self.runtime.policy.max_batch_objects
             && bytes < self.runtime.policy.max_batch_bytes
         {
@@ -177,16 +183,17 @@ impl PipelineWorker {
                 break;
             };
             self.note_dequeue(&next);
-            let limit = self
-                .runtime
-                .policy
-                .max_batch_bytes
-                .min(usize::try_from(self.chunk.remaining_in_strip()).unwrap_or(usize::MAX));
-            if bytes.saturating_add(next.len) > limit {
+            let candidate_bytes = bytes.saturating_add(next.len);
+            let available = self
+                .chunk
+                .remaining_in_strip()
+                .min(self.chunk.remaining_in_chunk());
+            let physical_bytes = align_up(candidate_bytes as u64, unit_bytes).unwrap_or(u64::MAX);
+            if candidate_bytes > self.runtime.policy.max_batch_bytes || physical_bytes > available {
                 self.carry = Some(next);
                 break;
             }
-            bytes += next.len;
+            bytes = candidate_bytes;
             batch.push(next);
         }
         batch
@@ -360,8 +367,12 @@ impl OwnedChunk {
         let unit_bytes = u64::from(strip.unit_kb) * 1024;
         let logical_bytes: usize = batch.iter().map(|object| object.len).sum();
         let physical_bytes = align_up(logical_bytes as u64, unit_bytes)? as usize;
-        if physical_bytes as u64 > self.remaining_in_strip() {
-            return Err(IoError::Internal("assembled batch crosses mirror strip".into()));
+        if physical_bytes as u64 > self.remaining_in_strip()
+            || physical_bytes as u64 > self.remaining_in_chunk()
+        {
+            return Err(IoError::Internal(
+                "assembled batch crosses mirror strip or chunk".into(),
+            ));
         }
         let start = self.cursor;
         let mut buffer = BytesMut::zeroed(physical_bytes);
