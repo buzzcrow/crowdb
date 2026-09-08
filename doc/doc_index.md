@@ -15,7 +15,7 @@ when a task touches a topic in its row.
 | `doc/design/diskdb/design-crowdb-diskdb.md` | Root diskdb design — read first for any diskdb design or architecture question. |
 | `doc/design/diskio/design-crowdb-diskio.md` | Root diskio design — per-node data I/O engine (io_uring + pwrite/pread fallback), IoEngine abstraction, DiskIOUring multi-pipeline topology, bad-disk cancel-by-fd, RPC service + Rust client. |
 | `doc/design/chunkdb/design-crowdb-chunkdb.md` | Root chunkdb design — read first for any chunkdb design or architecture question. |
-| `doc/design/chunkio/design-crowdb-chunkio.md` | Root chunk IO data path design — `crowdb-chunk-client` crate write pipeline: block-granularity EC flow, backpressure + memory budget, chunk rotation, key design choices. |
+| `doc/design/chunkio/design-crowdb-chunkio.md` | Root chunk IO data path design — large-object EC write pipeline, backpressure, memory budget, and chunk rotation. |
 | `doc/design/tree/design-crowdb-tree.md` | Root tree design — read first for storage-engine work. |
 | `doc/design/rpc/design-crowdb-rpc.md` | Root RPC design — read first for `crowdb-rpc` engine, FFI, or transport questions. |
 | `doc/design/console/design-crowdb-console.md` | Root console design — read first for console work. |
@@ -57,7 +57,7 @@ Plan files live under `doc/working/`; flow analyses live under `doc/design/{kv,c
 | `SECURITY.md` | When reporting or handling a security vulnerability. |
 | `CODE_OF_CONDUCT.md` | Community behavior guidelines. |
 
-## Sub-Designs (`doc/design/{kv,tree,console,protocol,diskdb,rpc}/`)
+## Sub-Designs (`doc/design/{kv,tree,console,protocol,diskdb,diskio,chunkdb,chunkio,rpc}/`)
 
 | Doc | Read when working on |
 | --- | --- |
@@ -87,6 +87,7 @@ Plan files live under `doc/working/`; flow analyses live under `doc/design/{kv,c
 | `doc/design/chunkdb/design-crowdb-chunkdb-rpc.md` | chunkdb RPC: crowdb-rpc flatbuffer transport for ChunkdbService (8 unary RPCs), `CHUNKDB_RPC_BASE = 9961` port allocation, `chunkdb.fbs` schema (enums + nested types + `FBStripBody` union), zero-copy `Ref` wrappers, `ChunkdbRpcService` server handler, `ChunkdbRpcTransport` client transport, `ChunkdbClient::with_rpc_transport` selection, `rpc_listen_addr` config, error model (`LifecycleError` → `FBChunkdbRetCode` → `ChunkdbClientError`). |
 | `doc/design/chunkdb/chunkdb-allocate-flow-analysis.md` | chunkdb EC 8+4 allocation benchmark: three-node co-located fixture, connection/worker matrix, workflow metrics, clean results, and commit-stage bottleneck. |
 | `doc/design/chunkio/design-crowdb-chunkio.md` | chunk IO data path root: `crowdb-chunk-client` crate write pipeline — block-granularity EC flow (fetch → main write → parity hand-off), backpressure + per-writer memory budget + `WriterPool`, shard-based partial EC encode, chunk rotation + `Location`, whole-strip retry + `Drop` abort, key design choices (always-store push contract, bounded preallocation, two trait seams). |
+| `doc/design/chunkio/design-crowdb-chunkio-small-object-writer.md` | Small-object shared-chunk writer: whole-object admission, lock-free routing, mirror batching, fenced durable cursor, pipeline elasticity, and orphan sealing. |
 | `doc/design/diskdb/design-crowdb-diskdb.md` | diskdb root: architecture, group-0 sysdata, disk status management, space metrics, background scanner, crate layout, concurrency. |
 | `doc/design/diskdb/design-crowdb-diskdb-zone-management.md` | Zone management: record model, allocation algorithm, persist-only free, compaction-on-rotation, preparatory thread, crash recovery, zone-level concurrency, invariants. |
 | `doc/design/diskdb/design-crowdb-diskdb-space-metrics.md` | Space metrics component: usage accessors, `QueryCapacityStats` handler, per-disk counters, recalc verifier, reporting loop, keepalive piggyback, kv-client aggregation, `crowdb-diskdb-client` library. |

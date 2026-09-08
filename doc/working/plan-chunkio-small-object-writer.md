@@ -98,11 +98,11 @@ chunks with independent durable locations and elastic lock-free routing.
 - [x] **Affected test tasks**: list pixi tasks and run each affected acceptance
   task separately, including the requirement's focused small-object command.
   Files: none.
-- [~] **Formal design**: fold the working design into a permanent chunkio
+- [x] **Formal design**: fold the working design into a permanent chunkio
   small-object sub-design and update the documentation index. Files:
   `doc/design/chunkio/design-crowdb-chunkio-small-object-writer.md`,
   `doc/design/chunkio/design-crowdb-chunkio.md`, `doc/doc_index.md`.
-- [ ] **Final cleanup**: delete the working design, completed plan, R106 detail,
+- [~] **Final cleanup**: delete the working design, completed plan, R106 detail,
   and backlog entry in a separate commit. Files:
   `doc/working/design-chunkio-small-object-writer.md`,
   `doc/working/plan-chunkio-small-object-writer.md`,

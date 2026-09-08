@@ -4,7 +4,7 @@
 # CROWDB - Design: Chunk IO Data Path (Overview)
 
 The chunk IO data path is the client-side layer that writes and reads
-object data as EC-encoded strips across diskio servers, using chunkdb
+large-object data as EC-encoded strips across diskio servers, using chunkdb
 for chunk lifecycle management (allocate, append, seal, delete). It
 lives in the `crowdb-chunk-client` crate and is consumed by object store
 layers and application upload handlers. The chunkdb server design
@@ -15,7 +15,9 @@ the diskio block IO engine is in
 This doc does not repeat their architecture — it covers the data path
 that sits between them: the write pipeline, its backpressure and memory
 model, and the design choices that make a 1 TB upload cost the same
-~15 MB of RAM as a 50 MB one.
+~15 MB of RAM as a 50 MB one. The shared mirrored path for small objects is
+specified in the
+[small-object writer design](design-crowdb-chunkio-small-object-writer.md).
 
 ## Table of Contents
 
@@ -33,10 +35,9 @@ model, and the design choices that make a 1 TB upload cost the same
 
 ## 1. Non-Goals
 
-- **No small-object writer.** Shared-chunk packing for many small
-  objects is a separate component. The `ChunkIoWriter` trait and
-  `ProtoLocation` type are designed for reuse, but the packing policy
-  is not part of this design.
+- **No small-object writer details.** Shared-chunk packing is a separate
+  component specified by the
+  [small-object writer design](design-crowdb-chunkio-small-object-writer.md).
 - **No reader.** The read path (location resolution, strip fetch, EC
   decode, range reads) is a separate component.
 - **No single-block replacement on write failure.** The error path
