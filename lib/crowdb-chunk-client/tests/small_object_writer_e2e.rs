@@ -18,9 +18,10 @@ use crowdb_chunk_client::{
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
 use crowdb_common::ec::{encode_parity_from_shards, EcScheme};
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
-use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, Location, Strip};
+use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, Location, Strip, TriggerConversionRequest};
 use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_test_harness::chunkdb::ChunkdbStartOptions;
 
 use e2e_stack::{all_binaries_available, E2eStack};
 
@@ -233,6 +234,205 @@ async fn eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread()
         assert_eq!(actual, expected);
     }
     stack.client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
+async fn chunkdb_takes_over_durable_conversion_task_after_client_io_failure() {
+    if !all_binaries_available() {
+        return;
+    }
+    let mut configured = policy();
+    configured.chunk_capacity = 16 * MIB as u64;
+    configured.writer_lease = Duration::from_millis(200);
+    let stack = E2eStack::start(configured.clone()).await;
+    let (allocator, disk_writer) = real_write_parts(&stack).await;
+    let fault = Arc::new(FailWritesFromCall {
+        inner: disk_writer,
+        calls: AtomicUsize::new(0),
+        first_failed_call: 9,
+    });
+    let client = ChunkIoClient::from_parts_with_small_policy(allocator, fault, configured).unwrap();
+    let mut locations = Vec::new();
+    for value in 0_u8..8 {
+        locations.push(write_object(&client, Bytes::from(vec![value + 1; MIB])).await);
+    }
+    let location = locations[0].clone();
+    let converted = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let chunk = stack.query_chunk(&location).await;
+            if matches!(chunk.strips.as_slice(), [strip] if matches!(strip.strip, Some(Strip::EcStrip(_)))) {
+                break chunk;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("chunkdb did not take over the expired client task");
+    let Some(Strip::EcStrip(ec)) = &converted.strips[0].strip else {
+        unreachable!();
+    };
+    assert_eq!((ec.data_num, ec.code_num, ec.segments.len()), (8, 4, 12));
+    assert_eq!(ec.ec_state, crowdb_protocol::chunkdb::rpc::EcState::Parity as i32);
+    let unit_bytes = u64::from(converted.strips[0].unit_kb) * KIB as u64;
+    let expected_data: Vec<Vec<u8>> = (1_u8..=8).map(|value| vec![value; MIB]).collect();
+    for (segment, expected) in ec.segments[..8].iter().zip(&expected_data) {
+        let actual = stack
+            .read_segment(segment, unit_bytes, 0, u32::try_from(MIB).unwrap())
+            .await;
+        assert_eq!(&actual, expected);
+    }
+    let refs: Vec<&[u8]> = expected_data.iter().map(Vec::as_slice).collect();
+    let parity = encode_parity_from_shards(EcScheme::new(8, 4), &refs).unwrap();
+    for (segment, expected) in ec.segments[8..].iter().zip(parity) {
+        let actual = stack
+            .read_segment(segment, unit_bytes, 0, u32::try_from(MIB).unwrap())
+            .await;
+        assert_eq!(actual, expected);
+    }
+    client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
+async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
+    if !all_binaries_available() {
+        return;
+    }
+    let mut configured = policy();
+    configured.chunk_capacity = 16 * MIB as u64;
+    configured.conversion_enabled = false;
+    let stack = E2eStack::start(configured).await;
+    let mut data = Vec::new();
+    let mut locations = Vec::new();
+    for value in 11_u8..19 {
+        let shard = Bytes::from(vec![value; MIB]);
+        locations.push(write_object(&stack.client, shard.clone()).await);
+        data.push(shard);
+    }
+    let location = &locations[0];
+    let before = stack.query_chunk(location).await;
+    assert_eq!(before.state, ChunkState::Active as i32);
+    assert_eq!(before.closed_strip_sequence, Some(7));
+    assert_eq!(before.strips.len(), 8);
+    assert!(before
+        .strips
+        .iter()
+        .all(|strip| matches!(strip.strip, Some(Strip::MirrorStrip(_)))));
+
+    let (chunkdb, _) = real_write_parts(&stack).await;
+    let triggered = chunkdb
+        .trigger_conversion(TriggerConversionRequest {
+            chunk_id: location.chunk_id,
+        })
+        .await
+        .expect("manual conversion trigger");
+    assert_eq!(triggered.accepted_groups, 1);
+
+    let converted = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let chunk = stack.query_chunk(location).await;
+            if matches!(chunk.strips.as_slice(), [strip] if matches!(strip.strip, Some(Strip::EcStrip(_)))) {
+                break chunk;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("manual conversion task did not finish");
+    let strip = &converted.strips[0];
+    let Some(Strip::EcStrip(ec)) = &strip.strip else {
+        unreachable!();
+    };
+    assert_eq!((ec.data_num, ec.code_num, ec.segments.len()), (8, 4, 12));
+    let unit_bytes = u64::from(strip.unit_kb) * KIB as u64;
+    for (segment, expected) in ec.segments[..8].iter().zip(&data) {
+        let actual = stack
+            .read_segment(segment, unit_bytes, 0, u32::try_from(MIB).unwrap())
+            .await;
+        assert_eq!(&actual, expected.as_ref());
+    }
+    let refs: Vec<&[u8]> = data.iter().map(Bytes::as_ref).collect();
+    let parity = encode_parity_from_shards(EcScheme::new(8, 4), &refs).unwrap();
+    for (segment, expected) in ec.segments[8..].iter().zip(parity) {
+        let actual = stack
+            .read_segment(segment, unit_bytes, 0, u32::try_from(MIB).unwrap())
+            .await;
+        assert_eq!(actual, expected);
+    }
+    stack.client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
+async fn automatic_chunkdb_scan_converts_full_group_and_preserves_tail() {
+    if !all_binaries_available() {
+        return;
+    }
+    let mut configured = policy();
+    configured.chunk_capacity = 16 * MIB as u64;
+    configured.conversion_enabled = false;
+    let stack = E2eStack::start_with_chunkdb_options(
+        configured,
+        ChunkdbStartOptions {
+            allow_unsafe_ec: true,
+            conversion_enabled: true,
+            conversion_min_seal_age_secs: 3,
+            conversion_scan_interval_secs: 1,
+        },
+    )
+    .await;
+    let mut data = Vec::new();
+    let mut locations = Vec::new();
+    for value in 31_u8..41 {
+        let shard = Bytes::from(vec![value; MIB]);
+        locations.push(write_object(&stack.client, shard.clone()).await);
+        data.push(shard);
+    }
+    assert!(locations
+        .iter()
+        .all(|location| location.chunk_id == locations[0].chunk_id));
+    stack.client.shutdown_small_writes().await.unwrap();
+
+    let converted = tokio::time::timeout(Duration::from_secs(12), async {
+        loop {
+            let chunk = stack.query_chunk(&locations[0]).await;
+            if matches!(
+                chunk.strips.first().and_then(|strip| strip.strip.as_ref()),
+                Some(Strip::EcStrip(_))
+            ) {
+                break chunk;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("automatic conversion scan did not finish");
+    assert_eq!(converted.state, ChunkState::Sealed as i32);
+    assert_eq!(converted.strips.len(), 3);
+    let ec_strip = &converted.strips[0];
+    let Some(Strip::EcStrip(ec)) = &ec_strip.strip else {
+        unreachable!();
+    };
+    assert_eq!((ec.data_num, ec.code_num, ec.segments.len()), (8, 4, 12));
+    assert!(converted.strips[1..]
+        .iter()
+        .all(|strip| matches!(strip.strip, Some(Strip::MirrorStrip(_)))));
+    let unit_bytes = u64::from(ec_strip.unit_kb) * KIB as u64;
+    for (segment, expected) in ec.segments[..8].iter().zip(&data[..8]) {
+        let actual = stack
+            .read_segment(segment, unit_bytes, 0, u32::try_from(MIB).unwrap())
+            .await;
+        assert_eq!(&actual, expected.as_ref());
+    }
+    let refs: Vec<&[u8]> = data[..8].iter().map(Bytes::as_ref).collect();
+    let parity = encode_parity_from_shards(EcScheme::new(8, 4), &refs).unwrap();
+    for (segment, expected) in ec.segments[8..].iter().zip(parity) {
+        let actual = stack
+            .read_segment(segment, unit_bytes, 0, u32::try_from(MIB).unwrap())
+            .await;
+        assert_eq!(actual, expected);
+    }
+    for (location, expected) in locations[8..].iter().zip(&data[8..]) {
+        assert_mirror_data(&stack, &converted, location, expected).await;
+    }
 }
 
 #[tokio::test]

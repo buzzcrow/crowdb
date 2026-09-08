@@ -390,7 +390,10 @@ impl OwnedChunk {
             .find(|current| current.strip_sequence == strip.strip_sequence)
             .cloned()
             .ok_or_else(|| IoError::MetadataConflict("closed mirror strip disappeared".into()))?;
-        self.retain_closed_strip(closed).await
+        if let Err(error) = self.retain_closed_strip(closed).await {
+            tracing::warn!(%error, "mirror-to-EC fast path deferred to chunkdb");
+        }
+        Ok(())
     }
 
     async fn write_batch(&mut self, batch: Vec<PendingObject>, metrics: &SmallWriteMetrics) -> Result<()> {
@@ -488,7 +491,9 @@ impl OwnedChunk {
                 .find(|current| current.strip_sequence == sequence)
                 .cloned()
                 .ok_or_else(|| IoError::MetadataConflict("closed mirror strip disappeared".into()))?;
-            self.retain_closed_strip(closed_strip).await?;
+            if let Err(error) = self.retain_closed_strip(closed_strip).await {
+                tracing::warn!(%error, "mirror-to-EC fast path deferred to chunkdb");
+            }
         }
         metrics.batches.fetch_add(1, Ordering::Relaxed);
         metrics

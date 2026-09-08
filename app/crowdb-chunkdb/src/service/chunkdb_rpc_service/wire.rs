@@ -8,8 +8,9 @@ use super::{
     FBListChunksResponse, FBListChunksResponseArgs, FBMirrorStrip, FBMirrorStripArgs,
     FBPrepareMirrorToEcConversionResponse, FBPrepareMirrorToEcConversionResponseArgs, FBQueryChunkResponse,
     FBQueryChunkResponseArgs, FBSegment, FBStripBody, FBStripCleanupIntent, FBStripCleanupIntentArgs,
-    FBStripType, FlatBufferBuilder, LifecycleError, ProtoChunkState, ProtoChunkType, ProtoEcState,
-    ProtoStrip, ProtoStripType, RpcServer,
+    FBStripType, FBTriggerConversionBatchResponse, FBTriggerConversionBatchResponseArgs,
+    FBTriggerConversionResponse, FBTriggerConversionResponseArgs, FlatBufferBuilder, LifecycleError,
+    ProtoChunkState, ProtoChunkType, ProtoEcState, ProtoStrip, ProtoStripType, RpcServer,
 };
 use crate::conversion::{ConversionError, PreparedConversion};
 
@@ -375,6 +376,56 @@ fn map_conversion_error(error: &ConversionError) -> (FBChunkdbRetCode, String) {
             (FBChunkdbRetCode::Internal, error.to_string())
         }
     }
+}
+
+pub(super) fn submit_conversion_count_result(
+    server: &RpcServer,
+    conn_handle: *mut std::ffi::c_void,
+    req_id: u64,
+    create_nano: u64,
+    msg_type: u16,
+    batch: bool,
+    result: Result<u64, ConversionError>,
+) {
+    let mut fbb = FlatBufferBuilder::new();
+    let (code, message, count) = match result {
+        Ok(count) => (FBChunkdbRetCode::Success, None, count),
+        Err(error) => {
+            let (code, message) = map_conversion_error(&error);
+            (code, Some(message), 0)
+        }
+    };
+    let error_msg = message.as_deref().map(|value| fbb.create_string(value));
+    if batch {
+        let response = FBTriggerConversionBatchResponse::create(
+            &mut fbb,
+            &FBTriggerConversionBatchResponseArgs {
+                id: req_id,
+                rpc_create_nano: create_nano,
+                ret_code: code,
+                error_msg,
+                range_start: 0,
+                range_end: 0,
+                accepted_chunks: count,
+            },
+        );
+        fbb.finish(response, None);
+    } else {
+        let response = FBTriggerConversionResponse::create(
+            &mut fbb,
+            &FBTriggerConversionResponseArgs {
+                id: req_id,
+                rpc_create_nano: create_nano,
+                ret_code: code,
+                error_msg,
+                range_start: 0,
+                range_end: 0,
+                accepted_groups: count,
+            },
+        );
+        fbb.finish(response, None);
+    }
+    submit_fb_response(server, conn_handle, fbb.collapse(), msg_type, req_id);
 }
 
 // ── Response builders ─────────────────────────────────────────────

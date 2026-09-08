@@ -5,12 +5,13 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use crowdb_chunkdb::allocator::{ChunkAllocator, DiskdbClientPool};
 use crowdb_chunkdb::chunkdb_config::ChunkdbConfig;
-use crowdb_chunkdb::conversion::ConversionCoordinator;
+use crowdb_chunkdb::conversion::io::ConversionDiskIo;
+use crowdb_chunkdb::conversion::{ConversionCoordinator, MirrorToEcTaskHandler};
 use crowdb_chunkdb::lifecycle::{ChunkLockMap, LifecycleHandler};
 use crowdb_chunkdb::metrics::ChunkdbMetrics;
 use crowdb_chunkdb::metrics::LifecycleMetrics;
@@ -18,7 +19,7 @@ use crowdb_chunkdb::range_guard::RangeGuard;
 use crowdb_chunkdb::routing::{default_binding_table, BindingCache};
 use crowdb_chunkdb::service::ChunkdbRpcService;
 use crowdb_chunkdb::storage::ChunkStore;
-use crowdb_chunkdb::task::TaskStore;
+use crowdb_chunkdb::task::{TaskExecutor, TaskManager, TaskScanner, TaskStore};
 use crowdb_chunkdb::topology::{
     build_snapshot, notify::NotifyHandler, refresh::run_refresh_loop, TopologyCache,
 };
@@ -325,13 +326,92 @@ async fn main() {
     // Build the crowdb-rpc server. The RpcServer listens on the RPC
     // port and dispatches to ChunkdbRpcService handlers.
     let rpc_rt_handle = tokio::runtime::Handle::current();
-    let conversion = Arc::new(ConversionCoordinator::new(
-        Arc::clone(&handler),
+    let task_manager = Arc::new(TaskManager::new(
         Arc::clone(&task_store),
+        config
+            .server
+            .instance_id
+            .as_ref()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1),
+        30_000,
     ));
+    let conversion = Arc::new(
+        ConversionCoordinator::new(Arc::clone(&handler), Arc::clone(&task_store))
+            .with_wake(task_manager.wake_handle())
+            .with_policy(
+                config.conversion.data_num,
+                config.conversion.code_num,
+                config.conversion.min_mirror_strips,
+                config.conversion.min_seal_age_secs.saturating_mul(1_000),
+            ),
+    );
+    let conversion_scan_handle = config.conversion.enabled.then(|| {
+        let conversion = Arc::clone(&conversion);
+        let mut stop = stop_rx.clone();
+        let interval = Duration::from_secs(config.conversion.scan_interval_secs);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        match conversion.trigger_configured_batch(false, 256, unix_time_ms()).await {
+                            Ok(accepted_chunks) if accepted_chunks > 0 => {
+                                info!(accepted_chunks, "automatic mirror-to-EC scan admitted chunks");
+                            }
+                            Ok(_) => {}
+                            Err(error) => warn!(%error, "automatic mirror-to-EC scan failed"),
+                        }
+                    }
+                    changed = stop.changed() => {
+                        if changed.is_err() || *stop.borrow() {
+                            return;
+                        }
+                    }
+                }
+            }
+        })
+    });
+    let task_scanner_handle = match ConversionDiskIo::connect(
+        &ServiceRegistryClient::from_shared(Arc::clone(&kv)),
+        &HardwareClient::from_shared(Arc::clone(&kv)),
+    )
+    .await
+    {
+        Ok(io) => {
+            let task_handler = Arc::new(MirrorToEcTaskHandler::new(
+                Arc::clone(&handler),
+                Arc::clone(&task_store),
+                Arc::new(io),
+                Arc::clone(&workflow_metrics.conversion),
+                config.conversion.max_bandwidth_mbps,
+            ));
+            let executor = Arc::new(
+                TaskExecutor::new(
+                    Arc::clone(&task_manager),
+                    config.conversion.max_concurrency,
+                    vec![task_handler],
+                )
+                .expect("unique conversion task handler"),
+            );
+            let scanner = TaskScanner::new(
+                Arc::clone(&task_store),
+                Arc::clone(&task_manager),
+                executor,
+                256,
+                Duration::from_secs(1),
+            );
+            let scanner_stop = stop_rx.clone();
+            Some(tokio::spawn(async move { scanner.run(scanner_stop).await }))
+        }
+        Err(error) => {
+            warn!(%error, "background conversion DiskIO is unavailable; client fast path remains enabled");
+            None
+        }
+    };
     let rpc_service = Arc::new(
         ChunkdbRpcService::new(Arc::clone(&handler), Arc::clone(&workflow_metrics), rpc_rt_handle)
-            .with_conversion(conversion),
+            .with_conversion(Arc::clone(&conversion)),
     );
     let rpc_server = Arc::new(crowdb_rpc_ffi::RpcServer::with_engines(None, 1, args.rpc_workers));
     rpc_server
@@ -345,7 +425,12 @@ async fn main() {
     info!(%rpc_listen_addr, "crowdb-rpc server listening (R116 migration)");
 
     // Start HTTP health + metrics + cache invalidation server.
-    let http_handle = tokio::spawn(run_http_server(http_listen_addr, Arc::clone(&lock_map)));
+    let http_handle = tokio::spawn(run_http_server(
+        http_listen_addr,
+        Arc::clone(&lock_map),
+        Arc::clone(&workflow_metrics.conversion),
+        Arc::clone(&conversion),
+    ));
 
     let rpc_server_stop = Arc::clone(&rpc_server);
     let _ = tokio::signal::ctrl_c().await;
@@ -356,6 +441,12 @@ async fn main() {
     let _ = refresh_handle.await;
     let _ = notify_handle.await;
     let _ = writer_lease_sweep_handle.await;
+    if let Some(handle) = task_scanner_handle {
+        let _ = handle.await;
+    }
+    if let Some(handle) = conversion_scan_handle {
+        let _ = handle.await;
+    }
     let _ = range_refresh_handle.await;
     let _ = sweep_handle.await;
     if let Some(h) = keepalive_handle {
@@ -499,7 +590,12 @@ fn spawn_chunkdb_keepalive(
 }
 
 /// HTTP server — health, metrics, cache invalidation endpoints.
-async fn run_http_server(addr: SocketAddr, locks: Arc<ChunkLockMap>) {
+async fn run_http_server(
+    addr: SocketAddr,
+    locks: Arc<ChunkLockMap>,
+    conversion_metrics: Arc<crowdb_chunkdb::metrics::ConversionMetrics>,
+    conversion: Arc<ConversionCoordinator>,
+) {
     let app = axum::Router::new()
         .route("/ready", axum::routing::get(|| async { "ok" }))
         .route("/health", axum::routing::get(|| async { "ok" }))
@@ -510,6 +606,50 @@ async fn run_http_server(addr: SocketAddr, locks: Arc<ChunkLockMap>) {
                 move || async move {
                     let snap = locks.metrics_snapshot();
                     axum::Json(snap)
+                }
+            }),
+        )
+        .route(
+            "/conversion_metrics",
+            axum::routing::get(move || {
+                let metrics = Arc::clone(&conversion_metrics);
+                async move { axum::Json(metrics.snapshot()) }
+            }),
+        )
+        .route(
+            "/convert_chunk",
+            axum::routing::post({
+                let conversion = Arc::clone(&conversion);
+                move |axum::Json(body): axum::Json<ConvertChunkBody>| {
+                    let conversion = Arc::clone(&conversion);
+                    async move {
+                        match conversion
+                            .trigger_configured_chunk(body.chunk_id, unix_time_ms())
+                            .await
+                        {
+                            Ok(accepted_groups) => axum::Json(serde_json::json!({
+                                "accepted_groups": accepted_groups
+                            })),
+                            Err(error) => axum::Json(serde_json::json!({ "error": error.to_string() })),
+                        }
+                    }
+                }
+            }),
+        )
+        .route(
+            "/convert_all",
+            axum::routing::post(move |axum::Json(body): axum::Json<ConvertAllBody>| {
+                let conversion = Arc::clone(&conversion);
+                async move {
+                    match conversion
+                        .trigger_configured_batch(body.sealed_only, body.max_chunks, unix_time_ms())
+                        .await
+                    {
+                        Ok(accepted_chunks) => axum::Json(serde_json::json!({
+                            "accepted_chunks": accepted_chunks
+                        })),
+                        Err(error) => axum::Json(serde_json::json!({ "error": error.to_string() })),
+                    }
                 }
             }),
         )
@@ -573,6 +713,15 @@ fn replace_port(addr: &str, port: u16) -> String {
     }
 }
 
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
 /// Request body for `POST /invalidate_chunk`.
 #[derive(serde::Deserialize)]
 struct InvalidateChunkBody {
@@ -584,4 +733,17 @@ struct InvalidateChunkBody {
 struct InvalidateRangeBody {
     bucket_start: u16,
     bucket_end: u16,
+}
+
+#[derive(serde::Deserialize)]
+struct ConvertChunkBody {
+    chunk_id: crowdb_protocol::common::ChunkId,
+}
+
+#[derive(serde::Deserialize)]
+struct ConvertAllBody {
+    #[serde(default)]
+    sealed_only: bool,
+    #[serde(default)]
+    max_chunks: u32,
 }

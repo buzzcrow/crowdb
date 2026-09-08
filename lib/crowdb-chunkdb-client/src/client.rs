@@ -25,7 +25,8 @@ use crowdb_protocol::chunkdb::rpc::{
     DiscardReplacementSegmentRequest, DiscardReplacementSegmentResponse, ListChunksRequest,
     ListChunksResponse, PrepareMirrorToEcConversionRequest, PrepareMirrorToEcConversionResponse,
     QueryChunkRequest, QueryChunkResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse,
-    SealChunkRequest, SealChunkResponse, UpdateChunkStripRequest, UpdateChunkStripResponse,
+    SealChunkRequest, SealChunkResponse, TriggerConversionBatchRequest, TriggerConversionBatchResponse,
+    TriggerConversionRequest, TriggerConversionResponse, UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::InstanceId;
@@ -380,6 +381,29 @@ impl ChunkdbClient {
                     .send_complete_mirror_to_ec_conversion(&endpoint, &req)
                     .await
             }
+        })
+        .await
+    }
+
+    pub async fn trigger_conversion(
+        &self,
+        req: TriggerConversionRequest,
+    ) -> Result<TriggerConversionResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move { transport.send_trigger_conversion(&endpoint, &req).await }
+        })
+        .await
+    }
+
+    pub async fn trigger_conversion_batch(
+        &self,
+        req: TriggerConversionBatchRequest,
+    ) -> Result<TriggerConversionBatchResponse> {
+        self.with_rpc_retry(None, |transport, endpoint| {
+            let req = req.clone();
+            async move { transport.send_trigger_conversion_batch(&endpoint, &req).await }
         })
         .await
     }

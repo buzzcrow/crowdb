@@ -128,6 +128,7 @@ impl Drop for RequestGuard {
 #[derive(Clone)]
 pub struct ChunkdbMetrics {
     pub requests: Arc<RequestMetrics>,
+    pub conversion: Arc<ConversionMetrics>,
     pub allocate_inflight: Arc<Gauge>,
     pub allocate_strips: Arc<Counter>,
     pub allocate_blocks: Arc<Counter>,
@@ -150,6 +151,7 @@ impl ChunkdbMetrics {
     pub fn register(registry: &mut MetricsRegistry) -> Self {
         Self {
             requests: Arc::new(RequestMetrics::register(registry)),
+            conversion: Arc::new(ConversionMetrics::register(registry)),
             allocate_inflight: registry.register_gauge("allocate.inflight.g"),
             allocate_strips: registry.register_counter("allocate.strips.c"),
             allocate_blocks: registry.register_counter("allocate.blocks.c"),
@@ -165,6 +167,87 @@ impl ChunkdbMetrics {
             allocate_rollback: registry.register_histogram("allocate.rollback.lh"),
             allocate_rollback_blocks: registry.register_counter("allocate.rollback_blocks.c"),
             allocate_errors: registry.register_counter("allocate.errors.c"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversionMetricsSnapshot {
+    pub attempts_started: u64,
+    pub attempts_completed: u64,
+    pub attempts_failed: u64,
+    pub bytes_read: u64,
+    pub bytes_written: u64,
+    pub mirror_segments_retired: u64,
+    pub active: u64,
+    pub peak_active: u64,
+}
+
+pub struct ConversionMetrics {
+    attempts_started: Arc<Counter>,
+    attempts_completed: Arc<Counter>,
+    attempts_failed: Arc<Counter>,
+    bytes_read: Arc<Counter>,
+    bytes_written: Arc<Counter>,
+    mirror_segments_retired: Arc<Counter>,
+    active: Arc<Gauge>,
+    peak_active: Arc<Gauge>,
+    peak_value: AtomicU64,
+}
+
+impl ConversionMetrics {
+    fn register(registry: &mut MetricsRegistry) -> Self {
+        Self {
+            attempts_started: registry.register_counter("conversion.attempts_started.c"),
+            attempts_completed: registry.register_counter("conversion.attempts_completed.c"),
+            attempts_failed: registry.register_counter("conversion.attempts_failed.c"),
+            bytes_read: registry.register_counter("conversion.bytes_read.c"),
+            bytes_written: registry.register_counter("conversion.bytes_written.c"),
+            mirror_segments_retired: registry.register_counter("conversion.mirror_segments_retired.c"),
+            active: registry.register_gauge("conversion.active.g"),
+            peak_active: registry.register_gauge("conversion.peak_active.g"),
+            peak_value: AtomicU64::new(0),
+        }
+    }
+
+    pub(crate) fn start_attempt(&self) {
+        self.attempts_started.inc();
+        self.active.inc();
+        let active = self.active.snapshot();
+        if self.peak_value.fetch_max(active, Ordering::Relaxed) < active {
+            self.peak_active.set(active);
+        }
+    }
+
+    pub(crate) fn finish_attempt(
+        &self,
+        success: bool,
+        bytes_read: u64,
+        bytes_written: u64,
+        mirror_segments_retired: u64,
+    ) {
+        if success {
+            self.attempts_completed.inc();
+            self.bytes_read.inc_by(bytes_read);
+            self.bytes_written.inc_by(bytes_written);
+            self.mirror_segments_retired.inc_by(mirror_segments_retired);
+        } else {
+            self.attempts_failed.inc();
+        }
+        self.active.dec();
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> ConversionMetricsSnapshot {
+        ConversionMetricsSnapshot {
+            attempts_started: self.attempts_started.snapshot().total,
+            attempts_completed: self.attempts_completed.snapshot().total,
+            attempts_failed: self.attempts_failed.snapshot().total,
+            bytes_read: self.bytes_read.snapshot().total,
+            bytes_written: self.bytes_written.snapshot().total,
+            mirror_segments_retired: self.mirror_segments_retired.snapshot().total,
+            active: self.active.snapshot(),
+            peak_active: self.peak_active.snapshot(),
         }
     }
 }
@@ -295,5 +378,34 @@ impl LifecycleMetrics {
             lock_hold_p99_us: lat.lock_hold.value_at_quantile(0.99),
             lock_hold_max_us: lat.lock_hold.max(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conversion_metrics_track_attempts_io_and_peak_concurrency() {
+        let mut registry = MetricsRegistry::new();
+        let metrics = ConversionMetrics::register(&mut registry);
+        metrics.start_attempt();
+        metrics.start_attempt();
+        metrics.finish_attempt(true, 8, 12, 24);
+        metrics.finish_attempt(false, 100, 100, 100);
+
+        assert_eq!(
+            metrics.snapshot(),
+            ConversionMetricsSnapshot {
+                attempts_started: 2,
+                attempts_completed: 1,
+                attempts_failed: 1,
+                bytes_read: 8,
+                bytes_written: 12,
+                mirror_segments_retired: 24,
+                active: 0,
+                peak_active: 2,
+            }
+        );
     }
 }

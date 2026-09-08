@@ -1,17 +1,105 @@
 use super::{
     build_delete_range_response, build_discard_replacement_response, map_error, parse_fb_chunk_strip,
     parse_fb_segment, parse_fb_segments, proto_chunk_type, proto_strip_type, submit_append_result,
-    submit_chunk_result, submit_conversion_chunk_result, submit_error, submit_fb_response,
-    submit_prepared_conversion_result, submit_segment_result, Arc, ChunkId, ChunkdbRpcService,
-    FBAdvanceChunkWriteRequest, FBAllocateChunkRequest, FBAllocateReplacementSegmentRequest,
-    FBAppendChunkRequest, FBChunkdbRetCode, FBCompleteMirrorToEcConversionRequest, FBDeleteChunkRangeRequest,
-    FBDeleteChunkRequest, FBDiscardReplacementSegmentRequest, FBMsgType,
-    FBPrepareMirrorToEcConversionRequest, FBReplaceChunkStripRangeRequest, FBSealChunkRequest,
-    FBUpdateChunkStripRequest, RequestGuard, RpcServer, ServerRequest,
+    submit_chunk_result, submit_conversion_chunk_result, submit_conversion_count_result, submit_error,
+    submit_fb_response, submit_prepared_conversion_result, submit_segment_result, Arc, ChunkId,
+    ChunkdbRpcService, FBAdvanceChunkWriteRequest, FBAllocateChunkRequest,
+    FBAllocateReplacementSegmentRequest, FBAppendChunkRequest, FBChunkdbRetCode,
+    FBCompleteMirrorToEcConversionRequest, FBDeleteChunkRangeRequest, FBDeleteChunkRequest,
+    FBDiscardReplacementSegmentRequest, FBMsgType, FBPrepareMirrorToEcConversionRequest,
+    FBReplaceChunkStripRangeRequest, FBSealChunkRequest, FBTriggerConversionBatchRequest,
+    FBTriggerConversionRequest, FBUpdateChunkStripRequest, RequestGuard, RpcServer, ServerRequest,
 };
 use crate::conversion::ConversionError;
 
 impl ChunkdbRpcService {
+    pub(super) fn handle_trigger_conversion(
+        &self,
+        req: ServerRequest,
+        server: &Arc<RpcServer>,
+        mut request: RequestGuard,
+    ) {
+        let req_id = req.request_id;
+        let create_nano = req.rpc_create_nano;
+        let msg_type = FBMsgType::ETriggerConversionResponse.0 as u16;
+        let conn_handle = req.conn_handle as usize;
+        let conversion = self.conversion.clone();
+        let server = Arc::clone(server);
+        self.rt.spawn(async move {
+            let parsed = (|| {
+                let fb = flatbuffers::root::<FBTriggerConversionRequest>(req.control())
+                    .map_err(|_| ConversionError::Payload("invalid conversion trigger".into()))?;
+                fb.chunk_id()
+                    .map(|id| ChunkId {
+                        high: id.high(),
+                        low: id.low(),
+                    })
+                    .ok_or_else(|| ConversionError::Payload("missing chunk_id".into()))
+            })();
+            let result = match (conversion, parsed) {
+                (Some(conversion), Ok(chunk_id)) => {
+                    conversion
+                        .trigger_configured_chunk(chunk_id, unix_time_ms())
+                        .await
+                }
+                (None, _) => Err(ConversionError::Payload("conversion service is disabled".into())),
+                (_, Err(error)) => Err(error),
+            };
+            if result.is_ok() {
+                request.mark_success();
+            }
+            submit_conversion_count_result(
+                &server,
+                conn_handle as *mut _,
+                req_id,
+                create_nano,
+                msg_type,
+                false,
+                result,
+            );
+        });
+    }
+
+    pub(super) fn handle_trigger_conversion_batch(
+        &self,
+        req: ServerRequest,
+        server: &Arc<RpcServer>,
+        mut request: RequestGuard,
+    ) {
+        let req_id = req.request_id;
+        let create_nano = req.rpc_create_nano;
+        let msg_type = FBMsgType::ETriggerConversionBatchResponse.0 as u16;
+        let conn_handle = req.conn_handle as usize;
+        let conversion = self.conversion.clone();
+        let server = Arc::clone(server);
+        self.rt.spawn(async move {
+            let parsed = flatbuffers::root::<FBTriggerConversionBatchRequest>(req.control())
+                .map(|fb| (fb.sealed_only(), fb.max_chunks()))
+                .map_err(|_| ConversionError::Payload("invalid batch conversion trigger".into()));
+            let result = match (conversion, parsed) {
+                (Some(conversion), Ok((sealed_only, max_chunks))) => {
+                    conversion
+                        .trigger_configured_batch(sealed_only, max_chunks, unix_time_ms())
+                        .await
+                }
+                (None, _) => Err(ConversionError::Payload("conversion service is disabled".into())),
+                (_, Err(error)) => Err(error),
+            };
+            if result.is_ok() {
+                request.mark_success();
+            }
+            submit_conversion_count_result(
+                &server,
+                conn_handle as *mut _,
+                req_id,
+                create_nano,
+                msg_type,
+                true,
+                result,
+            );
+        });
+    }
+
     pub(super) fn handle_prepare_conversion(
         &self,
         req: ServerRequest,

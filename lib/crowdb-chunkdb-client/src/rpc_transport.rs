@@ -26,7 +26,8 @@ use crowdb_protocol::chunkdb::rpc::{
     CompleteMirrorToEcConversionResponse, DeleteChunkRangeResponse, DeleteChunkResponse,
     DiscardReplacementSegmentResponse, ListChunksResponse, PrepareMirrorToEcConversionResponse,
     QueryChunkResponse, ReplaceChunkStripRangeResponse, SealChunkResponse, StripCleanupIntent,
-    StripType as ProtoStripType, UpdateChunkStripResponse,
+    StripType as ProtoStripType, TriggerConversionBatchResponse, TriggerConversionResponse,
+    UpdateChunkStripResponse,
 };
 use crowdb_protocol::chunkdb::rpc::{EcState as ProtoEcState, EcStrip, MirrorStrip, Strip as ProtoStrip};
 use crowdb_protocol::chunkdb_fb::{
@@ -41,6 +42,8 @@ use crowdb_protocol::chunkdb_fb::{
     FBPrepareMirrorToEcConversionRequestArgs, FBPrepareMirrorToEcConversionResponse, FBQueryChunkRequest,
     FBQueryChunkRequestArgs, FBReplaceChunkStripRangeRequest, FBReplaceChunkStripRangeRequestArgs,
     FBSealChunkRequest, FBSealChunkRequestArgs, FBSegment, FBStripBody, FBStripType,
+    FBTriggerConversionBatchRequest, FBTriggerConversionBatchRequestArgs, FBTriggerConversionBatchResponse,
+    FBTriggerConversionRequest, FBTriggerConversionRequestArgs, FBTriggerConversionResponse,
     FBUpdateChunkStripRequest, FBUpdateChunkStripRequestArgs,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
@@ -754,6 +757,78 @@ impl ChunkdbRpcTransport {
         check_ret_code(response.ret_code(), response.error_msg())?;
         Ok(CompleteMirrorToEcConversionResponse {
             chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)),
+        })
+    }
+
+    pub async fn send_trigger_conversion(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::TriggerConversionRequest,
+    ) -> Result<TriggerConversionResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let chunk_id = req.chunk_id.map(|id| FBInt128::new(id.high, id.low));
+        let request = FBTriggerConversionRequest::create(
+            &mut builder,
+            &FBTriggerConversionRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                chunk_id: chunk_id.as_ref(),
+            },
+        );
+        builder.finish(request, None);
+        let response = call_rpc(
+            &self.rpc,
+            &self.server,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::ETriggerConversionRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = flatbuffers::root::<FBTriggerConversionResponse>(response.bytes())
+            .map_err(|_| ChunkdbClientError::Rpc("conversion trigger response malformed".into()))?;
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        Ok(TriggerConversionResponse {
+            accepted_groups: response.accepted_groups(),
+        })
+    }
+
+    pub async fn send_trigger_conversion_batch(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::TriggerConversionBatchRequest,
+    ) -> Result<TriggerConversionBatchResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let request = FBTriggerConversionBatchRequest::create(
+            &mut builder,
+            &FBTriggerConversionBatchRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                sealed_only: req.filter.sealed_only,
+                max_chunks: req.filter.max_chunks,
+            },
+        );
+        builder.finish(request, None);
+        let response = call_rpc(
+            &self.rpc,
+            &self.server,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::ETriggerConversionBatchRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = flatbuffers::root::<FBTriggerConversionBatchResponse>(response.bytes())
+            .map_err(|_| ChunkdbClientError::Rpc("batch conversion response malformed".into()))?;
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        Ok(TriggerConversionBatchResponse {
+            accepted_chunks: response.accepted_chunks(),
         })
     }
 

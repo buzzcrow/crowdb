@@ -14,7 +14,7 @@ use crowdb_protocol::chunkdb::rpc::{Chunk, Location, QueryChunkRequest};
 use crowdb_protocol::common::DiskId as ProtoDiskId;
 use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_rpc_ffi::RpcServer;
-use crowdb_test_harness::chunkdb::{self as cdb_harness, ChunkdbProcess};
+use crowdb_test_harness::chunkdb::{self as cdb_harness, ChunkdbProcess, ChunkdbStartOptions};
 use crowdb_test_harness::cluster::KvCluster;
 use crowdb_test_harness::diskdb::{self as ddb_harness, DiskdbProcess};
 use crowdb_test_harness::diskio::{self as dio_harness, DiskioProcess, DiskioStartOpts};
@@ -49,6 +49,20 @@ pub struct E2eStack {
 
 impl E2eStack {
     pub async fn start(small_write: SmallWritePolicy) -> Self {
+        Self::start_with_chunkdb_options(
+            small_write,
+            ChunkdbStartOptions {
+                allow_unsafe_ec: true,
+                ..ChunkdbStartOptions::default()
+            },
+        )
+        .await
+    }
+
+    pub async fn start_with_chunkdb_options(
+        small_write: SmallWritePolicy,
+        chunkdb_options: ChunkdbStartOptions,
+    ) -> Self {
         let cluster = KvCluster::start().await;
         let hardware = cluster.make_hardware_client();
         seed_hardware(&hardware, &standard_disk_ids()).await;
@@ -76,7 +90,7 @@ impl E2eStack {
             .wait_for_disks(&diskio_client, &rpc_server, &diskio_connection)
             .await;
 
-        let chunkdb = ChunkdbProcess::start_with_unsafe_ec(&cluster.mgmt_endpoints, true);
+        let chunkdb = ChunkdbProcess::start_with_options(&cluster.mgmt_endpoints, chunkdb_options);
         chunkdb.wait_for_ready().await;
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let client = loop {
