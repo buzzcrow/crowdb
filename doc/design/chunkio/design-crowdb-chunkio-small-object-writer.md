@@ -12,7 +12,8 @@ Depends on: [chunk IO data path](design-crowdb-chunkio.md),
 [diskio](../diskio/design-crowdb-diskio.md).
 
 Satisfies: bounded small-object admission, lock-free routing, shared-chunk
-batching, fenced durable cursors, elastic pipelines, and orphan sealing.
+batching, fenced durable cursors, in-place mirror repair, elastic pipelines,
+and orphan sealing.
 
 ## Table of Contents
 
@@ -79,11 +80,14 @@ whole objects until reaching the byte limit, object-count limit, strip space,
 or deadline. An object larger than the normal batch target is written alone as
 long as it is within the object limit.
 
-Fragments are copied once into a zero-filled buffer aligned to the mirror
-segment unit. Each returned location covers only its object's exact logical
-bytes; alignment padding belongs to no object. Segment-relative writes validate
-offset and length alignment, overflow, and segment bounds before reaching
-DiskIO.
+Each pipeline reserves and retains one zero-filled 1 MiB shadow for its open
+mirror strip. Object fragments are packed contiguously at exact logical
+offsets. Each physical update writes the complete shadow to every mirror, so
+the image always contains the acknowledged prefix, current patch, and
+deterministic zero tail without reading a healthy replica. `Bytes` clones
+shared by concurrent writes are reference-counted; the worker recovers the
+unique mutable shadow after completion without another steady-state copy.
+Each returned location covers only its object's exact bytes.
 
 If the next object does not fit the strip, the worker zero-fills the tail,
 durably closes the strip, and appends or enters the next strip. If it does not
@@ -109,11 +113,13 @@ epochs or revisions conflict; backward or out-of-range cursors are invalid.
 
 The batch commit barrier is:
 
-1. Write the aligned batch concurrently to every mirror and await all durable
-   completions.
-2. Advance the fenced chunk cursor, including a newly closed strip when needed.
-3. Replace the worker's local chunk revision and cursor from the response.
-4. Publish all object-specific locations together.
+1. Patch the complete open-strip shadow and write it concurrently to every
+   mirror.
+2. Repair each failed replica from that shadow and fence the new segment into
+   chunk metadata.
+3. Advance the fenced chunk cursor, including a newly closed strip when needed.
+4. Replace the worker's local chunk revision and cursor from the response.
+5. Publish all object-specific locations together.
 
 No location is visible before its complete physical range and durable metadata
 prefix exist on every configured mirror.
@@ -126,8 +132,9 @@ cursor advances. When remaining capacity falls below the object limit, it
 prepares at most one replacement so ordinary rotation does not wait for
 allocation.
 
-Retirement seals a non-empty current chunk at its acknowledged cursor and
-deletes an empty current or replacement chunk. A write or metadata failure
+Closing a strip releases its shadow immediately. Retirement seals a non-empty
+current chunk at its acknowledged cursor and deletes an empty current or
+replacement chunk. A write or metadata failure
 fails the affected batch and every already accepted queued object, removes the
 route, and retires its chunks.
 
@@ -142,28 +149,44 @@ chunk.
 One manager owns pipeline membership. It publishes a scale-out candidate only
 after the candidate's first chunk is ready; initialization failure leaves the
 old snapshot intact. A route whose queued bytes or queued object count reaches
-its configured high-water mark can add one pipeline after a cooldown.
-Scale-out depends only on queued work, not worker utilization or request age.
-When the whole pool has no queued or active work, a sufficiently idle route
-can be unpublished and drained while preserving the configured minimum.
+its configured high-water mark can add one pipeline, up to 32 by default.
+Scale-out depends only on queued work, not worker utilization, request age, or
+elapsed idle time. When the whole pool has no queued or active work, an extra
+route can be unpublished and drained while preserving the configured minimum.
 
 Unexpected worker termination removes the failed route and creates replacements
 until the minimum is restored. Explicit shutdown closes admission, unpublishes
 all routes, drains accepted work, joins all workers, and seals or deletes their
 owned chunks. Dropping the pool closes admission but cannot await cleanup.
 
+A mirror write failure records the submitted segment's disk in one client-wide,
+TTL-based lock-free negative list. Repair allocation excludes all live failed
+disks and the nodes holding surviving replicas. The worker writes the complete
+shadow to a tentative replacement, then publishes a one-strip fenced metadata
+swap. Allocation and replacement-write failures may select a new target within
+the bounded attempt count. An ambiguous metadata result retries the identical
+operation ID and replacement, so it cannot allocate or install a duplicate.
+A definite conflict discards the tentative block when it is not referenced.
+Exhaustion fails the batch once, records an unavailable replica for an already
+acknowledged prefix, and retires the pipeline for background recovery.
+
 ## 8. Policy and Metrics
 
-Defaults accept objects and batches up to 1 MiB, reserve 64 MiB pool-wide, use
+Defaults accept objects and batches up to 1 MiB, reserve 96 MiB pool-wide, use
 one to 32 pipelines, allow 1,024 queued objects per pipeline, and scale out
 when one route queues at least 4 MiB or 128 objects. Shared chunks have a 1 GiB
 client-side capacity and write three mirrors. Configuration validates nonzero
-bounds, reachable queue high-water marks, a budget at least as large as the
-object limit, ordered pipeline limits, and progress-capable durations.
+bounds, reachable queue high-water marks, ordered pipeline limits, and a
+budget covering one 1 MiB shadow per maximum pipeline plus one admitted
+maximum-size object. The retained `scale_in_delay` and `cooldown` fields are
+configuration-compatible but do not participate in scale decisions.
 
 Atomic metrics cover submitted, completed, and failed objects; reserved bytes;
 batch sizes and fill; queue delay; active and draining pipelines; scale changes;
-and strip-tail waste. Snapshots compute aggregates without locking submission.
+and strip-tail waste. Repair metrics expose attempts, repaired and exhausted
+replicas, failed-disk exclusions, active pipelines, pipeline replacements, repairs
+that avoided rotation, complete-shadow bytes, and repair latency totals and
+maxima. Snapshots compute aggregates without locking submission.
 
 ## 9. Correctness Invariants
 
@@ -181,3 +204,8 @@ and strip-tail waste. Snapshots compute aggregates without locking submission.
   and recovery seals only at that persisted prefix.
 - **SW-I7 — Terminal completion.** Every accepted object completes or fails
   exactly once; caller cancellation may discard delivery but not batch work.
+- **SW-I8 — Repair publication.** A replacement segment is written from the
+  complete shadow and fenced into metadata before any affected location is
+  published.
+- **SW-I9 — Queue-only elasticity.** Pipeline membership changes are driven by
+  queued bytes, queued objects, and empty/non-busy state, never elapsed time.

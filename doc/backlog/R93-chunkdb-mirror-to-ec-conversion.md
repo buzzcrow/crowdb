@@ -28,8 +28,7 @@ wasted space (300 TB mirror vs 150 TB EC at 8+4).
 
 **Design pointers**: chunkdb root design §2 (Non-Goals: "No
 mirror-to-EC conversion in v1"), §5.2 (Strip — mirror vs EC data
-capacity), §10.6 (`update_chunk_strip` RPC — the single-strip base that
-R112 generalizes to atomic range replacement), §11 (EC
+capacity), §10.6 (landed fenced `replace_chunk_strip_range` transaction), §11 (EC
 Encoding/Decoding — isa-l encode from data blocks).
 R93 orchestrates the conversion: read a capacity-compatible group of
 mirror strips, EC-encode, allocate EC blocks, write data+parity, then
@@ -75,7 +74,7 @@ atomically replace that strip range.
 **Solution**
 
 A background conversion service in chunkdb that transforms compatible
-mirror-strip groups into EC strips using R112's fenced
+mirror-strip groups into EC strips using the landed fenced
 `replace_chunk_strip_range` as the atomic swap primitive. The conversion reads mirror data via
 diskio (R105), EC-encodes via isa-l (crowdb-common), allocates EC strip
 blocks via chunkdb, writes EC data+parity via diskio, and swaps the
@@ -122,8 +121,8 @@ swap to reclaim 3×→1.5× storage without changing logical offsets.
      replacement together with its cleanup intent, and then clean up
      only removed mirror segments. Require equal old/new total logical
      capacity so every later strip offset remains unchanged. This
-     requires R112's fenced,
-     restart-safe strip replacement contract; query-and-compare alone
+     uses the landed fenced, restart-safe strip replacement contract;
+     query-and-compare alone
      cannot recover old segments after a server crash.
    - Preserve the chunk's monotonic `next_strip_sequence`. Replacing
      eight entries with one does not renumber later strips, and a later
@@ -214,7 +213,7 @@ Conversion Task                chunkdb           diskio (R105)       isa-l
   blocks, leave mirror strip, retry later.
 - EC block write fails (disk error on target) → abort, free allocated
   blocks, retry with a new EC strip allocation (different placement).
-- `replace_chunk_strip_range` returns an ambiguous error → retry the same R112
+- `replace_chunk_strip_range` returns an ambiguous error → retry the same
   operation identity. The persisted cleanup intent distinguishes an
   installed EC strip awaiting old-segment cleanup from an uncommitted
   replacement; a different revision or strip is a conflict.
@@ -232,9 +231,9 @@ Conversion Task                chunkdb           diskio (R105)       isa-l
 
 - **Depends on**: **R105** (disk IO engine) — reads mirror data and
   writes EC blocks via `DiskIoClient`. **chunkdb** (landed, R85) —
-  uses R112's range-replacement RPC, `AllocateStrip`, and chunk metadata.
-  **crowdb-common EC** (landed with R85) — isa-l encode. **R112 strip
-  replacement transaction** — supplies revision fencing,
+  uses the landed range-replacement RPC, `AllocateStrip`, and chunk metadata.
+  **crowdb-common EC** (landed with R85) — isa-l encode. The landed strip
+  replacement transaction supplies revision fencing,
   capacity-preserving validation, set-difference commit/free, and
   persisted cleanup intent.
 - **Integrates with**:

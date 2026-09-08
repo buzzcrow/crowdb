@@ -340,7 +340,14 @@ A **chunk** is a container for strips. Chunk properties:
 - **Capacity**: Total data capacity across all strips.
 - **Write granularity**: Minimum write alignment (e.g., 4 KB).
 - **Strips**: Ordered list of strips (mirror or EC).
+- **Next strip sequence**: Monotonic identity consumed by append and never
+  derived from the current vector length.
+- **Cleanup intents**: Retired segment sets and their earliest safe reuse time.
+- **Last strip replacement**: Stable operation identity for idempotent retry.
 - **Logical-to-physical mapping**: Encoded offset arrays for GC (deferred).
+
+Each strip may also identify replicas known unavailable. Readers can avoid
+those segment identities while background recovery is pending.
 
 Chunk size is variable, determined by the total size of its constituent
 strips (1 MB – 4 GB range).
@@ -854,10 +861,29 @@ mutating RPC acquires the per-chunk lock before its RMW cycle:
 - `delete_chunk_range`: `check_range` → `acquire` → validate a nonzero,
   nonoverflowing range → persist the retained strips → free the removed
   strips' segments → `guard.refresh(chunk)`.
-- `update_chunk_strip`: `check_range` → `acquire` → validate state, shape,
-  sequence, capacity, and owner → commit the replacement segments → publish
-  metadata → free the old strip → `guard.refresh(chunk)`.
+- `update_chunk_strip`: compatibility wrapper over the one-strip form of
+  `replace_chunk_strip_range`.
+- `replace_chunk_strip_range`: `check_range` → `acquire` → validate Active or
+  Sealed state, expected revision, exact old range, contiguous capacity,
+  monotonic sequences, segment ownership, and mirror/EC geometry → commit only
+  new-only segments → atomically publish the replacement plus an old-only
+  cleanup intent → `guard.refresh(chunk)`. An identical operation retry at the
+  successor revision returns the installed chunk. Any other revision or range
+  is a conflict.
+- `allocate_replacement_segment`: use mirror placement while excluding nodes
+  holding surviving replicas and every supplied failed disk; return one
+  geometry-compatible tentative segment owned by the chunk.
+- `discard_replacement_segment`: under the lifecycle guard, free a tentative
+  segment only when it belongs to the chunk and current metadata does not
+  reference it.
 - `query_chunk` / `list_chunks` — unchanged (no lock, no cache).
+
+`query_chunk` advertises `layout_validity_ms`. Retired segments remain allocated
+until that reader-layout window expires. Startup and the periodic lifecycle
+scan resume cleanup intents, recheck that retired identities are absent from
+the current layout, ask DiskDB to perform its ownership-qualified free, and
+only then clear the intent. Metadata publication therefore remains committed
+even if post-commit reclamation is temporarily unavailable.
 
 ### 10.7 Error variants + service mapping
 
@@ -1025,18 +1051,19 @@ deadlocks with `.await`. Parallel allocation minimizes latency.
 
 Key configuration parameters:
 
-| Parameter                  | Default | Description                          |
-|----------------------------|---------|--------------------------------------|
-| disk_block_size            | 1 MB    | Size of disk blocks from diskdb       |
-| mirror_copy_count          | 3       | Number of replicas for mirror strips  |
-| default_ec_scheme          | 6+3     | Default EC scheme (data+parity)       |
-| topology_refresh_interval  | 30 s    | Topology cache refresh interval       |
-| placement.allow_unsafe_ec  | false   | Permit explicit degraded EC placement |
-| max_allocation_parallelism | 10      | Max parallel strip allocations        |
-| lifecycle.cache_capacity   | 10_000  | Per-chunk payload cache capacity (§10) |
-| lifecycle.sweep_chunk_lock_interval_secs | 60 | Idle lock reap interval (§10) |
-| lifecycle.lock_hold_warn_threshold_ms   | 1000 | Lock hold warn threshold (§10) |
-| server.keepalive_interval_secs          | 10   | Service-registry heartbeat interval |
+| Parameter                                | Default | Description                                             |
+|------------------------------------------|---------|---------------------------------------------------------|
+| disk_block_size                          | 1 MB    | Size of disk blocks from diskdb                         |
+| mirror_copy_count                        | 3       | Number of replicas for mirror strips                    |
+| default_ec_scheme                        | 6+3     | Default EC scheme (data+parity)                         |
+| topology_refresh_interval                | 30 s    | Topology cache refresh interval                         |
+| placement.allow_unsafe_ec                | false   | Permit explicit degraded EC placement                   |
+| max_allocation_parallelism               | 10      | Max parallel strip allocations                          |
+| lifecycle.cache_capacity                 | 10_000  | Per-chunk payload cache capacity (§10)                   |
+| lifecycle.sweep_chunk_lock_interval_secs | 60      | Idle lock reap interval (§10)                           |
+| lifecycle.lock_hold_warn_threshold_ms    | 1000    | Lock hold warn threshold (§10)                          |
+| lifecycle.layout_validity_ms             | 30_000  | Minimum retired-layout lifetime before segment reuse    |
+| server.keepalive_interval_secs           | 10      | Service-registry heartbeat interval                     |
 
 Configuration is loaded from CLI args or config file at startup.
 

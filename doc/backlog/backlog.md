@@ -87,9 +87,10 @@ complexity, and dependency. Before implementation, follow the
 
 ### Data Path (diskio + chunk object writers + read flow)
 
-Dependency order: R107/R110 → R112 → R93; R107/R110 → R111. R93 is the
-landed small-object writer's post-write space-reclamation integration, not a
-foreground correctness blocker. The RPC migration items
+Dependency order: R107/R110 → R93; R107/R110 → R111. R93 builds on the
+landed small-write repair and fenced strip-range replacement, and remains a
+post-write space-reclamation integration rather than a foreground correctness
+blocker. The RPC migration items
 (R115, R116, R117) are in a separate area (see RPC Migration section
 below); R32 depends on R115.
 
@@ -158,19 +159,6 @@ below); R32 depends on R115.
   applies to both `read_range` and `ChunkReadStream`). Escalation
   to R83 when inline fallback is unrecoverable. Reuses R110's
   negative list and degraded-strip tracking.
-- **[R112](R112-chunkio-small-write-io-error-handling.md)** —
-  Small-write IO error handling — Area: chunkio / chunkdb / diskdb /
-  diskio — Batch-level repair for the shared-chunk pipelines.
-  Retains the batch ledger and one complete 1 MiB shadow for the
-  pipeline's open mirror block, then replaces one failed replica
-  without sealing the Active chunk through chunkdb's placement-aware
-  diskdb allocation plus a fenced, set-difference strip-range update,
-  and fans out object locations only after full mirror durability.
-  Reuses
-  R110's negative list and escalates to R83 after bounded retries.
-  Rotation, scale-in drain, and R93 conversion use explicit ownership
-  boundaries; physical partial progress never becomes per-object
-  success.
 - **[R113](R113-chunkio-batch-strip-allocation.md)** — Batch strip
   allocation + deferred chunkdb confirm — Area: chunkio / chunkdb /
   diskdb — Optimize the large-write strip allocation path (R94) to
