@@ -774,3 +774,24 @@ async fn small_write_scales_out_on_queued_object_count() {
     assert_eq!(stack.client.small_write_metrics().failed, 0);
     stack.client.shutdown_small_writes().await.unwrap();
 }
+
+#[tokio::test]
+async fn small_write_carry_does_not_underflow_queue_pressure() {
+    if !all_binaries_available() {
+        return;
+    }
+    let mut configured = policy();
+    configured.max_pipelines = 2;
+    configured.max_batch_objects = configured.queue_capacity;
+    configured.max_batch_bytes = 64 * KIB;
+    configured.scale_out_queue_bytes = configured.memory_budget;
+    configured.scale_out_queue_objects = configured.queue_capacity;
+    let stack = E2eStack::start(configured).await;
+
+    let completed = concurrent_writes(&stack, 64, 40 * KIB).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    assert_eq!(completed.len(), 64);
+    assert_eq!(stack.client.small_write_metrics().scale_out, 0);
+    stack.client.shutdown_small_writes().await.unwrap();
+}

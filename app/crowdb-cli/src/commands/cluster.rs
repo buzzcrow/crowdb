@@ -51,6 +51,9 @@ pub enum ClusterVerb {
         /// [kv] `--rpc-workers` for the spawned server. 0 = server default (2).
         #[arg(long, default_value_t = 0)]
         rpc_workers: u32,
+        /// [diskio] RPC I/O worker threads. 0 = server default (1).
+        #[arg(long, default_value_t = 0)]
+        diskio_rpc_workers: u32,
         /// [kv] `--peer-pool-size` for the spawned server. 0 = server default (2).
         #[arg(long, default_value_t = 0)]
         peer_pool_size: usize,
@@ -210,6 +213,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             io_workers,
             enable_nagle,
             rpc_workers,
+            diskio_rpc_workers,
             peer_pool_size,
             max_inflight,
             coalesce_max_keys,
@@ -266,6 +270,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     instance_count: chunkdb_instances,
                     allow_unsafe_ec,
                     rpc_workers: nonzero(rpc_workers),
+                    diskio_rpc_workers: nonzero(diskio_rpc_workers),
                     kv_connections: nonzero(kv_connections),
                     kv_client_rpc_workers: nonzero(kv_client_rpc_workers),
                     diskdb_connections: nonzero(diskdb_connections),
@@ -460,6 +465,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     instance_count: chunkdb_instances,
                     allow_unsafe_ec,
                     rpc_workers: nonzero(rpc_workers),
+                    diskio_rpc_workers: nonzero(diskio_rpc_workers),
                     kv_connections: nonzero(kv_connections),
                     kv_client_rpc_workers: nonzero(kv_client_rpc_workers),
                     diskdb_connections: nonzero(diskdb_connections),

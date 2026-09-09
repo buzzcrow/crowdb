@@ -33,6 +33,7 @@ async fn connect(
     cli: &Cli,
     small_write: SmallWritePolicy,
     diskio_connections_per_endpoint: usize,
+    diskio_rpc_workers: u32,
 ) -> Result<ChunkIoClient, ExitCode> {
     let config = crate::commands::load_config(cli)?;
     let mut seeds = vec![format!("http://{}:{}", cli.sysmd_ip, cli.sysmd_port)];
@@ -48,6 +49,7 @@ async fn connect(
     ChunkIoClient::connect(ChunkIoClientConfig {
         management_seeds: seeds,
         diskio_connections_per_endpoint,
+        diskio_rpc_workers,
         small_write,
     })
     .await
@@ -80,6 +82,7 @@ async fn run_large_write(cli: &Cli, args: ChunkioArgs) -> ExitCode {
         || args.object_size == 0
         || args.concurrency == 0
         || args.diskio_connections == 0
+        || args.diskio_rpc_workers == 0
         || args.block_size == 0
         || args.data_num == 0
         || args.code_num == 0
@@ -87,7 +90,14 @@ async fn run_large_write(cli: &Cli, args: ChunkioArgs) -> ExitCode {
         eprintln!("chunkio benchmark values must be non-zero");
         return ExitCode::from(2);
     }
-    let client = match connect(cli, SmallWritePolicy::default(), args.diskio_connections).await {
+    let client = match connect(
+        cli,
+        SmallWritePolicy::default(),
+        args.diskio_connections,
+        args.diskio_rpc_workers,
+    )
+    .await
+    {
         Ok(client) => client,
         Err(code) => return code,
     };
@@ -124,6 +134,7 @@ async fn run_small_write(cli: &Cli, args: ChunkioSmallWriteArgs) -> ExitCode {
         || args.object_size > 1024 * 1024
         || args.concurrency == 0
         || args.diskio_connections == 0
+        || args.diskio_rpc_workers == 0
         || args.max_pipelines == 0
         || args.max_pipelines > 32
         || args.scale_out_queue_bytes == 0
@@ -147,7 +158,7 @@ async fn run_small_write(cli: &Cli, args: ChunkioSmallWriteArgs) -> ExitCode {
         eprintln!("invalid chunkio small-write policy: {error}");
         return ExitCode::from(2);
     }
-    let client = match connect(cli, small_write, args.diskio_connections).await {
+    let client = match connect(cli, small_write, args.diskio_connections, args.diskio_rpc_workers).await {
         Ok(client) => client,
         Err(code) => return code,
     };
@@ -178,6 +189,7 @@ async fn run_read(cli: &Cli, args: ChunkioReadArgs, workload: ReadBenchmarkWorkl
         || args.dataset_objects == 0
         || args.concurrency == 0
         || args.diskio_connections == 0
+        || args.diskio_rpc_workers == 0
         || args.small_object_size == 0
         || args.small_object_size > 1024 * 1024
         || args.large_object_size == 0
@@ -189,7 +201,14 @@ async fn run_read(cli: &Cli, args: ChunkioReadArgs, workload: ReadBenchmarkWorkl
         eprintln!("invalid chunkio read benchmark values");
         return ExitCode::from(2);
     }
-    let client = match connect(cli, SmallWritePolicy::default(), args.diskio_connections).await {
+    let client = match connect(
+        cli,
+        SmallWritePolicy::default(),
+        args.diskio_connections,
+        args.diskio_rpc_workers,
+    )
+    .await
+    {
         Ok(client) => client,
         Err(code) => return code,
     };
@@ -270,13 +289,18 @@ fn print_large_write(args: &ChunkioArgs, result: &LargeWriteBenchmarkResult) {
 
 fn print_small_write(args: &ChunkioSmallWriteArgs, result: &SmallWriteBenchmarkResult) {
     println!(
-        "chunkio write-small: requested={} object_size={} objects={} errors={} incomplete={} stop={} objects_s={:.2} logical_mib_s={:.1} p50_us={} p99_us={} batches={} max_batch_objects={} max_batch_bytes={} avg_batch_fill_ppm={} max_queue_delay_us={} active_pipelines={} draining_pipelines={} scale_out={} scale_in={} tail_waste_bytes={} dram_read_mib_s={} dram_write_mib_s={} dram_total_mib_s={}",
+        "chunkio write-small: requested={} object_size={} objects={} errors={} incomplete={} stop={} objects_s={:.2} logical_mib_s={:.1} p50_us={} p99_us={} batches={} max_batch_objects={} max_batch_bytes={} aggregate_write_requests={} aggregate_write_objects={} aggregate_write_buffers={} aggregate_write_logical_bytes={} aggregate_write_payload_bytes={} max_objects_per_write_request={} max_buffers_per_write_request={} avg_batch_fill_ppm={} max_queue_delay_us={} active_pipelines={} max_active_pipelines={} draining_pipelines={} scale_out={} scale_in={} tail_waste_bytes={} dram_read_mib_s={} dram_write_mib_s={} dram_total_mib_s={}",
         result.requested_objects, args.object_size, result.objects, result.errors,
         result.incomplete_objects, result.stop_reason, result.objects_per_sec,
         result.logical_mib_per_sec, result.latency_p50_us, result.latency_p99_us,
         result.batches, result.max_batch_objects, result.max_batch_bytes,
+        result.aggregate_write_requests, result.aggregate_write_objects,
+        result.aggregate_write_buffers, result.aggregate_write_logical_bytes,
+        result.aggregate_write_payload_bytes, result.max_objects_per_write_request,
+        result.max_buffers_per_write_request,
         result.average_batch_fill_ppm, result.max_queue_delay_us, result.active_pipelines,
-        result.draining_pipelines, result.scale_out, result.scale_in, result.tail_waste_bytes,
+        result.max_active_pipelines, result.draining_pipelines, result.scale_out,
+        result.scale_in, result.tail_waste_bytes,
         dram(result.dram_read_mib_s), dram(result.dram_write_mib_s),
         dram(result.dram_total_mib_s),
     );

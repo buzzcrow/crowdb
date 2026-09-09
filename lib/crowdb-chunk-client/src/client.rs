@@ -40,6 +40,8 @@ pub struct ChunkIoClientConfig {
     pub management_seeds: Vec<String>,
     /// Fixed lock-free connection pool size for each discovered DiskIO endpoint.
     pub diskio_connections_per_endpoint: usize,
+    /// RPC I/O workers serving DiskIO responses in this client process.
+    pub diskio_rpc_workers: u32,
     /// Shared small-object aggregation and elasticity policy.
     pub small_write: SmallWritePolicy,
 }
@@ -105,10 +107,11 @@ impl ChunkIoClient {
         let chunkdb = Arc::new(chunkdb);
         chunkdb.refresh_endpoints().await?;
         let disk_writer = Arc::new(
-            RoutedDiskWriter::connect_with_connections(
+            RoutedDiskWriter::connect_with_connections_and_workers(
                 &service,
                 &hardware,
                 config.diskio_connections_per_endpoint,
+                config.diskio_rpc_workers,
             )
             .await?,
         );
@@ -400,7 +403,12 @@ impl ChunkAllocator for MetricsChunkAllocator {
     }
 
     async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse> {
-        self.inner.query_chunk(req).await
+        let mut operation = self.metrics.chunk_query.start();
+        let result = self.inner.query_chunk(req).await;
+        if result.is_ok() {
+            operation.mark_success();
+        }
+        result
     }
 
     async fn allocate_replacement_segment(
@@ -448,7 +456,15 @@ impl DiskWriter for MetricsDiskWriter {
     }
 
     async fn read(&self, seg: &Segment, unit_bytes: u64, segment_offset: u64, length: u32) -> Result<Bytes> {
-        self.inner.read(seg, unit_bytes, segment_offset, length).await
+        let mut operation = self.metrics.diskio_read.start();
+        let result = self.inner.read(seg, unit_bytes, segment_offset, length).await;
+        if let Ok(data) = &result {
+            self.metrics
+                .diskio_read_bytes
+                .observe(u64::try_from(data.len()).unwrap_or(u64::MAX));
+            operation.mark_success();
+        }
+        result
     }
 }
 

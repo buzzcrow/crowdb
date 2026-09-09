@@ -112,6 +112,9 @@ impl SmallPoolRuntime {
     pub fn publish(&self, routes: &[Arc<PipelineRoute>]) {
         self.routes.store(Arc::new(routes.to_vec()));
         self.metrics.active_pipelines.set(routes.len() as u64);
+        self.metrics
+            .max_active_pipelines
+            .fetch_max(routes.len() as u64, Ordering::Relaxed);
     }
 
     pub async fn reserve(self: &Arc<Self>, bytes: usize) -> Result<ByteReservation> {

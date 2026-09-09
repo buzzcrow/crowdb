@@ -73,10 +73,13 @@ pub struct ChunkClientMetrics {
     pub chunk_append: OperationMetrics,
     pub chunk_seal: OperationMetrics,
     pub chunk_delete: OperationMetrics,
+    pub chunk_query: OperationMetrics,
     pub diskio_write: OperationMetrics,
+    pub diskio_read: OperationMetrics,
     pub logical_bytes: Arc<Bandwidth>,
     pub physical_bytes: Arc<Bandwidth>,
     pub diskio_write_bytes: Arc<Bandwidth>,
+    pub diskio_read_bytes: Arc<Bandwidth>,
     pub large_write_repair: Arc<LargeWriteRepairMetrics>,
     pub small_write: Arc<SmallWriteMetrics>,
 }
@@ -91,10 +94,13 @@ impl ChunkClientMetrics {
             chunk_append: OperationMetrics::register(registry, "chunkio.chunk.append"),
             chunk_seal: OperationMetrics::register(registry, "chunkio.chunk.seal"),
             chunk_delete: OperationMetrics::register(registry, "chunkio.chunk.delete"),
+            chunk_query: OperationMetrics::register(registry, "chunkio.chunk.query"),
             diskio_write: OperationMetrics::register(registry, "chunkio.diskio.write"),
+            diskio_read: OperationMetrics::register(registry, "chunkio.diskio.read"),
             logical_bytes: registry.register_bandwidth("chunkio.object.logical.bw"),
             physical_bytes: registry.register_bandwidth("chunkio.object.physical.bw"),
             diskio_write_bytes: registry.register_bandwidth("chunkio.diskio.write.bw"),
+            diskio_read_bytes: registry.register_bandwidth("chunkio.diskio.read.bw"),
             large_write_repair: Arc::new(LargeWriteRepairMetrics::register(registry)),
             small_write: Arc::new(SmallWriteMetrics::register(registry)),
         }
@@ -171,9 +177,17 @@ pub struct SmallWriteMetrics {
     pub(crate) batch_bytes: AtomicU64,
     pub(crate) max_batch_objects: AtomicU64,
     pub(crate) max_batch_bytes: AtomicU64,
+    pub(crate) aggregate_write_requests: AtomicU64,
+    pub(crate) aggregate_write_objects: AtomicU64,
+    pub(crate) aggregate_write_buffers: AtomicU64,
+    pub(crate) aggregate_write_logical_bytes: AtomicU64,
+    pub(crate) aggregate_write_payload_bytes: AtomicU64,
+    pub(crate) max_objects_per_write_request: AtomicU64,
+    pub(crate) max_buffers_per_write_request: AtomicU64,
     pub(crate) queue_delay_ns: AtomicU64,
     pub(crate) max_queue_delay_ns: AtomicU64,
     pub(crate) active_pipelines: Arc<Gauge>,
+    pub(crate) max_active_pipelines: AtomicU64,
     pub(crate) draining_pipelines: Arc<Gauge>,
     pub(crate) scale_out: AtomicU64,
     pub(crate) scale_in: AtomicU64,
@@ -202,9 +216,17 @@ impl Default for SmallWriteMetrics {
             batch_bytes: AtomicU64::new(0),
             max_batch_objects: AtomicU64::new(0),
             max_batch_bytes: AtomicU64::new(0),
+            aggregate_write_requests: AtomicU64::new(0),
+            aggregate_write_objects: AtomicU64::new(0),
+            aggregate_write_buffers: AtomicU64::new(0),
+            aggregate_write_logical_bytes: AtomicU64::new(0),
+            aggregate_write_payload_bytes: AtomicU64::new(0),
+            max_objects_per_write_request: AtomicU64::new(0),
+            max_buffers_per_write_request: AtomicU64::new(0),
             queue_delay_ns: AtomicU64::new(0),
             max_queue_delay_ns: AtomicU64::new(0),
             active_pipelines: Arc::new(Gauge::new("chunkio.small_write.active_pipelines.g".into())),
+            max_active_pipelines: AtomicU64::new(0),
             draining_pipelines: Arc::new(Gauge::new("chunkio.small_write.draining_pipelines.g".into())),
             scale_out: AtomicU64::new(0),
             scale_in: AtomicU64::new(0),
@@ -234,10 +256,18 @@ pub struct SmallWriteMetricsSnapshot {
     pub batch_bytes: u64,
     pub max_batch_objects: u64,
     pub max_batch_bytes: u64,
+    pub aggregate_write_requests: u64,
+    pub aggregate_write_objects: u64,
+    pub aggregate_write_buffers: u64,
+    pub aggregate_write_logical_bytes: u64,
+    pub aggregate_write_payload_bytes: u64,
+    pub max_objects_per_write_request: u64,
+    pub max_buffers_per_write_request: u64,
     pub average_batch_fill_ppm: u64,
     pub queue_delay_ns: u64,
     pub max_queue_delay_ns: u64,
     pub active_pipelines: u64,
+    pub max_active_pipelines: u64,
     pub draining_pipelines: u64,
     pub scale_out: u64,
     pub scale_in: u64,
@@ -255,6 +285,38 @@ pub struct SmallWriteMetricsSnapshot {
 }
 
 impl SmallWriteMetrics {
+    pub(crate) fn record_aggregate_write(
+        &self,
+        request_count: u64,
+        object_count: usize,
+        buffer_count: usize,
+        logical_bytes: usize,
+        payload_bytes: usize,
+    ) {
+        self.aggregate_write_requests
+            .fetch_add(request_count, Ordering::Relaxed);
+        self.aggregate_write_objects.fetch_add(
+            (object_count as u64).saturating_mul(request_count),
+            Ordering::Relaxed,
+        );
+        self.aggregate_write_buffers.fetch_add(
+            (buffer_count as u64).saturating_mul(request_count),
+            Ordering::Relaxed,
+        );
+        self.aggregate_write_logical_bytes.fetch_add(
+            (logical_bytes as u64).saturating_mul(request_count),
+            Ordering::Relaxed,
+        );
+        self.aggregate_write_payload_bytes.fetch_add(
+            (payload_bytes as u64).saturating_mul(request_count),
+            Ordering::Relaxed,
+        );
+        self.max_objects_per_write_request
+            .fetch_max(object_count as u64, Ordering::Relaxed);
+        self.max_buffers_per_write_request
+            .fetch_max(buffer_count as u64, Ordering::Relaxed);
+    }
+
     fn register(registry: &mut MetricsRegistry) -> Self {
         Self {
             active_pipelines: registry.register_gauge("chunkio.small_write.active_pipelines.g"),
@@ -277,10 +339,18 @@ impl SmallWriteMetrics {
             batch_bytes,
             max_batch_objects: self.max_batch_objects.load(Ordering::Relaxed),
             max_batch_bytes: self.max_batch_bytes.load(Ordering::Relaxed),
+            aggregate_write_requests: self.aggregate_write_requests.load(Ordering::Relaxed),
+            aggregate_write_objects: self.aggregate_write_objects.load(Ordering::Relaxed),
+            aggregate_write_buffers: self.aggregate_write_buffers.load(Ordering::Relaxed),
+            aggregate_write_logical_bytes: self.aggregate_write_logical_bytes.load(Ordering::Relaxed),
+            aggregate_write_payload_bytes: self.aggregate_write_payload_bytes.load(Ordering::Relaxed),
+            max_objects_per_write_request: self.max_objects_per_write_request.load(Ordering::Relaxed),
+            max_buffers_per_write_request: self.max_buffers_per_write_request.load(Ordering::Relaxed),
             average_batch_fill_ppm: 0,
             queue_delay_ns: self.queue_delay_ns.load(Ordering::Relaxed),
             max_queue_delay_ns: self.max_queue_delay_ns.load(Ordering::Relaxed),
             active_pipelines: self.active_pipelines.snapshot(),
+            max_active_pipelines: self.max_active_pipelines.load(Ordering::Relaxed),
             draining_pipelines: self.draining_pipelines.snapshot(),
             scale_out: self.scale_out.load(Ordering::Relaxed),
             scale_in: self.scale_in.load(Ordering::Relaxed),

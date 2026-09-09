@@ -141,7 +141,7 @@ impl StripReader {
                 Ok(data) => return Ok((data, failed_segments)),
                 Err(error) => {
                     failures.push(error.to_string());
-                    push_unique(&mut failed_segments, *segment);
+                    push_durable_failure(&mut failed_segments, *segment, &error);
                 }
             }
         }
@@ -200,8 +200,11 @@ impl StripReader {
         for (_, shard_index, local_start, read_len, result) in pieces {
             if let Ok(data) = result {
                 output.extend_from_slice(&data);
-            } else {
-                push_unique(&mut failed_segments, ec.segments[shard_index]);
+            } else if let Err(error) = result {
+                let durable_target_failure = error.is_durable_read_failure();
+                if durable_target_failure {
+                    push_unique(&mut failed_segments, ec.segments[shard_index]);
+                }
                 if ec.ec_state != EcState::Parity as i32 {
                     return Err((
                         ReadError::DataLoss(format!(
@@ -221,6 +224,7 @@ impl StripReader {
                         shard_index,
                         local_start,
                         read_len,
+                        durable_target_failure,
                     )
                     .await
                 {
@@ -248,6 +252,7 @@ impl StripReader {
         target: usize,
         offset: u64,
         length: u32,
+        durable_target_failure: bool,
     ) -> Result<RecoveredSlice, (ReadError, Vec<Segment>)> {
         let divisor = scheme.total_blocks().saturating_add(1);
         let max_slice = self.recovery_memory_limit / divisor;
@@ -274,6 +279,7 @@ impl StripReader {
                     target,
                     offset + u64::from(consumed),
                     part_len,
+                    durable_target_failure,
                 )
                 .await?;
             extend_unique(&mut failed_segments, recovered.failed_segments);
@@ -297,6 +303,7 @@ impl StripReader {
         target: usize,
         offset: u64,
         length: u32,
+        durable_target_failure: bool,
     ) -> Result<RecoveredSlice, (ReadError, Vec<Segment>)> {
         let mut failed_segments = Vec::new();
         let memory = (length as usize)
@@ -330,7 +337,9 @@ impl StripReader {
         let mut candidates = Vec::with_capacity(segments.len());
         for (index, segment) in segments.iter().enumerate() {
             if index == target || strip.unavailable_segments.contains(segment) {
-                push_unique(&mut failed_segments, *segment);
+                if index != target || durable_target_failure || strip.unavailable_segments.contains(segment) {
+                    push_unique(&mut failed_segments, *segment);
+                }
             } else {
                 candidates.push(index);
             }
@@ -377,26 +386,34 @@ impl StripReader {
                     shards[index] = Some(shard);
                     available = available.saturating_add(1);
                 }
-                Err(_) => push_unique(&mut failed_segments, segments[index]),
+                Err(error) => push_durable_failure(&mut failed_segments, segments[index], &error),
             }
         }
-        let missing = shards.iter().filter(|shard| shard.is_none()).count();
-        if missing > scheme.code_num {
-            return Err((
-                ReadError::DataLoss(format!(
-                    "EC strip {} lost {missing} shards with {} parity shards",
-                    strip.strip_sequence, scheme.code_num
-                )),
-                failed_segments,
-            ));
-        }
-        let decoded = decode(scheme, shards)
-            .map_err(|error| (ReadError::EcDecode(error.to_string()), failed_segments.clone()))?;
+        let decoded = decode_recoverable(strip, scheme, shards, &failed_segments)?;
         Ok(RecoveredSlice {
             data: Bytes::from(decoded[target].clone()),
             failed_segments,
         })
     }
+}
+
+fn decode_recoverable(
+    strip: &ChunkStrip,
+    scheme: EcScheme,
+    shards: Vec<Option<Vec<u8>>>,
+    failed_segments: &[Segment],
+) -> Result<Vec<Vec<u8>>, (ReadError, Vec<Segment>)> {
+    let missing = shards.iter().filter(|shard| shard.is_none()).count();
+    if missing > scheme.code_num {
+        return Err((
+            ReadError::DataLoss(format!(
+                "EC strip {} lost {missing} shards with {} parity shards",
+                strip.strip_sequence, scheme.code_num
+            )),
+            failed_segments.to_vec(),
+        ));
+    }
+    decode(scheme, shards).map_err(|error| (ReadError::EcDecode(error.to_string()), failed_segments.to_vec()))
 }
 
 struct RecoveredSlice {
@@ -457,6 +474,12 @@ fn validate_ec_read(
 fn push_unique(segments: &mut Vec<Segment>, segment: Segment) {
     if !segments.contains(&segment) {
         segments.push(segment);
+    }
+}
+
+fn push_durable_failure(segments: &mut Vec<Segment>, segment: Segment, error: &crate::IoError) {
+    if error.is_durable_read_failure() {
+        push_unique(segments, segment);
     }
 }
 

@@ -51,12 +51,22 @@ impl RoutedDiskWriter {
         hardware: &HardwareClient,
         connections_per_endpoint: usize,
     ) -> Result<Self> {
-        if connections_per_endpoint == 0 {
+        Self::connect_with_connections_and_workers(service, hardware, connections_per_endpoint, 1).await
+    }
+
+    /// Discover owners with fixed connection pools and RPC I/O workers.
+    pub async fn connect_with_connections_and_workers(
+        service: &ServiceRegistryClient,
+        hardware: &HardwareClient,
+        connections_per_endpoint: usize,
+        rpc_workers: u32,
+    ) -> Result<Self> {
+        if connections_per_endpoint == 0 || rpc_workers == 0 {
             return Err(IoError::Topology(
-                "DiskIO connections per endpoint must be non-zero".into(),
+                "DiskIO connections and RPC workers must be non-zero".into(),
             ));
         }
-        let server = Arc::new(RpcServer::new(None));
+        let server = Arc::new(RpcServer::with_engines(None, 1, rpc_workers));
         server
             .listen("127.0.0.1", 0)
             .map_err(|error| IoError::Topology(format!("start RPC client: {error}")))?;
@@ -262,20 +272,26 @@ impl DiskWriter for RoutedDiskWriter {
                 length,
                 0,
             )
-            .map_err(|error| IoError::ReadFailed(format!("{}: {error}", route.endpoint)))?;
+            .map_err(|error| IoError::TransientRead(format!("{}: {error}", route.endpoint)))?;
         let (code, data) = DiskioClient::await_read_response(future)
             .await
-            .map_err(|error| IoError::ReadFailed(format!("{}: {error}", route.endpoint)))?;
+            .map_err(|error| IoError::TransientRead(format!("{}: {error}", route.endpoint)))?;
         if code != DiskIoRetCode::Success {
-            return Err(IoError::ReadFailed(format!(
-                "{} returned {code:?}",
-                route.endpoint
-            )));
+            let message = format!("{} returned {code:?}", route.endpoint);
+            return Err(match code {
+                DiskIoRetCode::DiskNotExist | DiskIoRetCode::ZoneNotExist | DiskIoRetCode::IoError => {
+                    IoError::ReadFailed(message)
+                }
+                DiskIoRetCode::Success => unreachable!(),
+                DiskIoRetCode::PartialWrite
+                | DiskIoRetCode::InvalidAlignment
+                | DiskIoRetCode::ConnectionError => IoError::TransientRead(message),
+            });
         }
         let data =
-            data.ok_or_else(|| IoError::ReadFailed(format!("{} omitted read data", route.endpoint)))?;
+            data.ok_or_else(|| IoError::TransientRead(format!("{} omitted read data", route.endpoint)))?;
         if data.len() != length as usize {
-            return Err(IoError::ReadFailed(format!(
+            return Err(IoError::TransientRead(format!(
                 "{} returned {} bytes, expected {length}",
                 route.endpoint,
                 data.len()

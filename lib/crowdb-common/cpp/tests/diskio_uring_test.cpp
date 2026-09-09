@@ -263,6 +263,35 @@ TEST(DiskIOUring, InFlightCountTracksSubmitAndComplete)
     std::remove(path.c_str());
 }
 
+TEST(DiskIOUring, ConsecutiveIdleSubmissionsDoNotWaitForPollTimeout)
+{
+    std::string path = temp_path();
+    int         fd   = ::open(path.c_str(), O_RDWR);
+    ASSERT_GE(fd, 0);
+    ASSERT_EQ(::ftruncate(fd, 4096), 0);
+
+    Topology topo;
+    topo.pipelines.push_back({256, PollingMode::Classic});
+    DiskIOUring uring(std::move(topo));
+    uring.register_fd(fd);
+
+    std::vector<uint8_t> buf(4096, 0x5A);
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        std::atomic<bool> done{false};
+        auto              started = std::chrono::steady_clock::now();
+        uring.submit_write(fd, buf.data(), buf.size(), 0, [&](int res) {
+            EXPECT_EQ(res, static_cast<int>(buf.size()));
+            done.store(true, std::memory_order_release);
+        });
+        ASSERT_TRUE(wait_for([&] { return done.load(std::memory_order_acquire); }));
+        auto elapsed = std::chrono::steady_clock::now() - started;
+        EXPECT_LT(elapsed, std::chrono::milliseconds(25));
+    }
+
+    ::close(fd);
+    std::remove(path.c_str());
+}
+
 // ── Destructor stops threads cleanly ──────────────────────────────
 
 TEST(DiskIOUring, DestructorStopsThreadsCleanly)

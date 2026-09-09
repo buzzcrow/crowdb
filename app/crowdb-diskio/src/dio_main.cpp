@@ -205,7 +205,7 @@ int main(int argc, char *argv[])
     }
 
     // Create + start the RPC server.
-    crowdb::rpc::RpcServer server;
+    crowdb::rpc::RpcServer server(nullptr, 1, cfg.rpc_workers);
     if (!server.listen(cfg.bind_address, cfg.listen_port)) {
         std::fprintf(stderr, "error: failed to listen on %s:%d\n", cfg.bind_address.c_str(), cfg.listen_port);
         return 1;

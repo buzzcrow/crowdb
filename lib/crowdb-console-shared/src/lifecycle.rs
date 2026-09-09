@@ -169,6 +169,7 @@ pub struct DiskioDeployRequest {
     pub node_id: u64,
     pub disk_group_id: u64,
     pub kv_server_mgmt_seeds: Vec<String>,
+    pub rpc_workers: Option<u32>,
     pub metrics_interval: Option<u64>,
 }
 
@@ -1289,6 +1290,9 @@ pub async fn deploy_diskio_local(
     if let Some(interval) = req.metrics_interval {
         command.arg("--metrics-interval").arg(interval.to_string());
     }
+    if let Some(workers) = req.rpc_workers {
+        command.arg("--rpc-workers").arg(workers.to_string());
+    }
     if let Some(lib_dir) = diskio_ffi_lib_dir(workspace_dir) {
         command.env("LD_LIBRARY_PATH", lib_dir);
     }
@@ -1353,6 +1357,9 @@ fn diskio_launch_args(req: &DiskioDeployRequest) -> Vec<String> {
     ];
     if let Some(value) = req.metrics_interval {
         args.extend(["--metrics-interval".into(), value.to_string()]);
+    }
+    if let Some(value) = req.rpc_workers {
+        args.extend(["--rpc-workers".into(), value.to_string()]);
     }
     args
 }

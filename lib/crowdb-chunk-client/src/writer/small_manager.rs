@@ -98,14 +98,16 @@ async fn run(
                     }
                     continue;
                 }
-                if let Some(index) = scale_in_candidate(&pipelines, runtime.policy.min_pipelines) {
-                    let pipeline = pipelines.remove(index);
-                    publish(&runtime, &pipelines);
-                    runtime.metrics.draining_pipelines.inc();
-                    pipeline.begin_retire();
-                    let _ = pipeline.join.await;
-                    runtime.metrics.draining_pipelines.dec();
-                    runtime.metrics.scale_in.fetch_add(1, Ordering::Relaxed);
+                if runtime.metrics.reserved_bytes.load(Ordering::Acquire) == 0 {
+                    if let Some(index) = scale_in_candidate(&pipelines, runtime.policy.min_pipelines) {
+                        let pipeline = pipelines.remove(index);
+                        publish(&runtime, &pipelines);
+                        runtime.metrics.draining_pipelines.inc();
+                        pipeline.begin_retire();
+                        let _ = pipeline.join.await;
+                        runtime.metrics.draining_pipelines.dec();
+                        runtime.metrics.scale_in.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
             }
         }
@@ -142,11 +144,12 @@ async fn reap_finished(runtime: &SmallPoolRuntime, pipelines: &mut Vec<ManagedPi
 }
 
 fn should_scale_out(runtime: &SmallPoolRuntime, pipelines: &[ManagedPipeline]) -> bool {
-    pipelines.iter().any(|pipeline| {
-        pipeline.route.queued_bytes.load(Ordering::Relaxed) >= runtime.policy.scale_out_queue_bytes as u64
-            || pipeline.route.queued_objects.load(Ordering::Relaxed)
-                >= runtime.policy.scale_out_queue_objects as u64
-    })
+    !pipelines.is_empty()
+        && pipelines.iter().all(|pipeline| {
+            pipeline.route.queued_bytes.load(Ordering::Relaxed) >= runtime.policy.scale_out_queue_bytes as u64
+                || pipeline.route.queued_objects.load(Ordering::Relaxed)
+                    >= runtime.policy.scale_out_queue_objects as u64
+        })
 }
 
 fn scale_in_candidate(pipelines: &[ManagedPipeline], min_pipelines: usize) -> Option<usize> {

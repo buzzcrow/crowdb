@@ -58,6 +58,9 @@ pub struct ChunkioArgs {
     /// Connections kept per discovered `DiskIO` endpoint.
     #[arg(long, default_value_t = 4)]
     pub diskio_connections: usize,
+    /// RPC I/O workers serving `DiskIO` responses in this client.
+    #[arg(long, default_value_t = 1)]
+    pub diskio_rpc_workers: u32,
     #[arg(long, default_value_t = 1024 * 1024)]
     pub block_size: usize,
     #[arg(long, default_value_t = 1024 * 1024 * 1024)]
@@ -97,6 +100,9 @@ pub struct ChunkioSmallWriteArgs {
     /// Connections kept per discovered `DiskIO` endpoint.
     #[arg(long, default_value_t = 4)]
     pub diskio_connections: usize,
+    /// RPC I/O workers serving `DiskIO` responses in this client.
+    #[arg(long, default_value_t = 1)]
+    pub diskio_rpc_workers: u32,
     /// Maximum queue-driven pipelines; hard limit is 32.
     #[arg(long, default_value_t = 32)]
     pub max_pipelines: usize,
@@ -132,6 +138,9 @@ pub struct ChunkioReadArgs {
     /// Connections kept per discovered `DiskIO` endpoint.
     #[arg(long, default_value_t = 4)]
     pub diskio_connections: usize,
+    /// RPC I/O workers serving `DiskIO` responses in this client.
+    #[arg(long, default_value_t = 1)]
+    pub diskio_rpc_workers: u32,
     #[arg(long, default_value_t = 8 * 1024)]
     pub small_object_size: usize,
     #[arg(long, default_value_t = 16 * 1024 * 1024)]

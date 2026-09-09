@@ -69,6 +69,14 @@ async fn small_write_benchmark_uses_real_metadata_and_null_disk() {
     assert_eq!(result.incomplete_objects, 0);
     assert_eq!(result.stop_reason, "complete");
     assert!(result.batches > 0);
+    assert_eq!(result.aggregate_write_requests, result.batches);
+    assert_eq!(result.aggregate_write_objects, 8);
+    assert_eq!(result.aggregate_write_buffers, 8);
+    assert_eq!(result.aggregate_write_logical_bytes, 8 * KIB as u64);
+    assert!(result.aggregate_write_payload_bytes >= result.aggregate_write_logical_bytes);
+    assert!(result.max_objects_per_write_request > 0);
+    assert!(result.max_buffers_per_write_request > 0);
+    assert!(result.max_active_pipelines > 0);
     assert_eq!(result.active_pipelines, 0);
 }
 

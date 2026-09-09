@@ -125,6 +125,7 @@ impl E2eStack {
             if let Ok(client) = ChunkIoClient::connect(ChunkIoClientConfig {
                 management_seeds: cluster.mgmt_endpoints.clone(),
                 diskio_connections_per_endpoint: 2,
+                diskio_rpc_workers: 1,
                 small_write: small_write.clone(),
             })
             .await

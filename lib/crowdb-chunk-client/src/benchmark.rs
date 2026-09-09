@@ -4,7 +4,7 @@
 //! Reusable bounded chunk IO benchmark workloads.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -96,9 +96,17 @@ pub struct SmallWriteBenchmarkResult {
     pub batches: u64,
     pub max_batch_objects: u64,
     pub max_batch_bytes: u64,
+    pub aggregate_write_requests: u64,
+    pub aggregate_write_objects: u64,
+    pub aggregate_write_buffers: u64,
+    pub aggregate_write_logical_bytes: u64,
+    pub aggregate_write_payload_bytes: u64,
+    pub max_objects_per_write_request: u64,
+    pub max_buffers_per_write_request: u64,
     pub average_batch_fill_ppm: u64,
     pub max_queue_delay_us: u64,
     pub active_pipelines: u64,
+    pub max_active_pipelines: u64,
     pub draining_pipelines: u64,
     pub scale_out: u64,
     pub scale_in: u64,
@@ -433,6 +441,7 @@ pub async fn run_small_write_benchmark(
     let deadline = config.duration.map(|duration| started + duration);
     let mut dram_bw = DramBwCounter::new();
     let next_object = Arc::new(AtomicU64::new(0));
+    let failed = Arc::new(AtomicBool::new(false));
     let payload = bytes::Bytes::from(random_bytes(config.object_size, config.seed));
     let mut tasks = JoinSet::new();
     for _ in 0..config.concurrency.max(1) {
@@ -440,7 +449,15 @@ pub async fn run_small_write_benchmark(
         let config = config.clone();
         let next_object = Arc::clone(&next_object);
         let payload = payload.clone();
-        tasks.spawn(run_small_worker(client, config, deadline, next_object, payload));
+        let failed = Arc::clone(&failed);
+        tasks.spawn(run_small_worker(
+            client,
+            config,
+            deadline,
+            next_object,
+            payload,
+            failed,
+        ));
     }
     let mut total = SmallWorkerResult::default();
     while let Some(result) = tasks.join_next().await {
@@ -455,23 +472,23 @@ pub async fn run_small_write_benchmark(
             }
         }
     }
+    let elapsed_secs = started.elapsed().as_secs_f64().max(f64::EPSILON);
+    let dram = sample_dram(&mut dram_bw);
     if let Err(error) = client.shutdown_small_writes().await {
         total.errors += 1;
         record_error(&mut total.error_messages, format!("drain small writes: {error}"));
     }
     total.latencies.sort_unstable();
-    let elapsed_secs = started.elapsed().as_secs_f64().max(f64::EPSILON);
     let requested_objects = next_object.load(Ordering::Relaxed).min(config.object_count);
     let incomplete_objects = requested_objects.saturating_sub(total.objects.saturating_add(total.errors));
     let metrics = client.small_write_metrics();
-    let (dram_read_mib_s, dram_write_mib_s, dram_total_mib_s) = sample_dram(&mut dram_bw);
     finalize_small_result(
         total,
         requested_objects,
         incomplete_objects,
         elapsed_secs,
-        metrics,
-        (dram_read_mib_s, dram_write_mib_s, dram_total_mib_s),
+        &metrics,
+        dram,
     )
 }
 
@@ -481,10 +498,11 @@ async fn run_small_worker(
     deadline: Option<Instant>,
     next_object: Arc<AtomicU64>,
     payload: bytes::Bytes,
+    failed: Arc<AtomicBool>,
 ) -> SmallWorkerResult {
     let mut result = SmallWorkerResult::default();
     loop {
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        if failed.load(Ordering::Acquire) || deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             break;
         }
         let object = next_object.fetch_add(1, Ordering::Relaxed);
@@ -505,6 +523,7 @@ async fn run_small_worker(
                 result.latencies.push(duration_us(operation_started.elapsed()));
             }
             Err(error) => {
+                failed.store(true, Ordering::Release);
                 result.errors += 1;
                 record_error(&mut result.error_messages, format!("object {object}: {error}"));
             }
@@ -528,7 +547,7 @@ fn finalize_small_result(
     requested_objects: u64,
     incomplete_objects: u64,
     elapsed_secs: f64,
-    metrics: crate::SmallWriteMetricsSnapshot,
+    metrics: &crate::SmallWriteMetricsSnapshot,
     dram: (Option<f64>, Option<f64>, Option<f64>),
 ) -> SmallWriteBenchmarkResult {
     SmallWriteBenchmarkResult {
@@ -550,9 +569,17 @@ fn finalize_small_result(
         batches: metrics.batches,
         max_batch_objects: metrics.max_batch_objects,
         max_batch_bytes: metrics.max_batch_bytes,
+        aggregate_write_requests: metrics.aggregate_write_requests,
+        aggregate_write_objects: metrics.aggregate_write_objects,
+        aggregate_write_buffers: metrics.aggregate_write_buffers,
+        aggregate_write_logical_bytes: metrics.aggregate_write_logical_bytes,
+        aggregate_write_payload_bytes: metrics.aggregate_write_payload_bytes,
+        max_objects_per_write_request: metrics.max_objects_per_write_request,
+        max_buffers_per_write_request: metrics.max_buffers_per_write_request,
         average_batch_fill_ppm: metrics.average_batch_fill_ppm,
         max_queue_delay_us: metrics.max_queue_delay_ns / 1_000,
         active_pipelines: metrics.active_pipelines,
+        max_active_pipelines: metrics.max_active_pipelines,
         draining_pipelines: metrics.draining_pipelines,
         scale_out: metrics.scale_out,
         scale_in: metrics.scale_in,
@@ -580,9 +607,17 @@ fn failed_small_before_load(config: &SmallWriteBenchmarkConfig, message: &str) -
         batches: 0,
         max_batch_objects: 0,
         max_batch_bytes: 0,
+        aggregate_write_requests: 0,
+        aggregate_write_objects: 0,
+        aggregate_write_buffers: 0,
+        aggregate_write_logical_bytes: 0,
+        aggregate_write_payload_bytes: 0,
+        max_objects_per_write_request: 0,
+        max_buffers_per_write_request: 0,
         average_batch_fill_ppm: 0,
         max_queue_delay_us: 0,
         active_pipelines: 0,
+        max_active_pipelines: 0,
         draining_pipelines: 0,
         scale_out: 0,
         scale_in: 0,
@@ -637,6 +672,7 @@ pub async fn run_read_benchmark(client: ChunkIoClient, config: ReadBenchmarkConf
     let deadline = config.duration.map(|duration| started + duration);
     let mut dram_bw = DramBwCounter::new();
     let next_read = Arc::new(AtomicU64::new(0));
+    let failed = Arc::new(AtomicBool::new(false));
     let mut tasks = JoinSet::new();
     for _ in 0..config.concurrency.max(1) {
         let client = client.clone();
@@ -644,7 +680,10 @@ pub async fn run_read_benchmark(client: ChunkIoClient, config: ReadBenchmarkConf
         let next_read = Arc::clone(&next_read);
         let small = Arc::clone(&prepared.small);
         let large = Arc::clone(&prepared.large);
-        tasks.spawn(run_read_worker(client, config, deadline, next_read, small, large));
+        let failed = Arc::clone(&failed);
+        tasks.spawn(run_read_worker(
+            client, config, deadline, next_read, small, large, failed,
+        ));
     }
     let mut total = ReadWorkerResult::default();
     while let Some(result) = tasks.join_next().await {
@@ -681,10 +720,11 @@ async fn run_read_worker(
     next_read: Arc<AtomicU64>,
     small: Arc<Vec<PreparedReadObject>>,
     large: Arc<Vec<PreparedReadObject>>,
+    failed: Arc<AtomicBool>,
 ) -> ReadWorkerResult {
     let mut result = ReadWorkerResult::default();
     loop {
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        if failed.load(Ordering::Acquire) || deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             break;
         }
         let request = next_read.fetch_add(1, Ordering::Relaxed);
@@ -708,6 +748,7 @@ async fn run_read_worker(
                 result.latencies.push(duration_us(operation_started.elapsed()));
             }
             Ok(bytes) => {
+                failed.store(true, Ordering::Release);
                 result.errors += 1;
                 record_error(
                     &mut result.error_messages,
@@ -719,6 +760,7 @@ async fn run_read_worker(
                 );
             }
             Err(error) => {
+                failed.store(true, Ordering::Release);
                 result.errors += 1;
                 record_error(&mut result.error_messages, format!("read {request}: {error}"));
             }

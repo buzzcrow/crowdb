@@ -32,6 +32,7 @@ struct FailDiskReads {
     inner: Arc<dyn DiskWriter>,
     failed: Vec<DiskId>,
     failed_segments: Vec<Segment>,
+    transient: bool,
     max_read: AtomicUsize,
 }
 
@@ -67,7 +68,11 @@ impl DiskWriter for FailDiskReads {
     ) -> Result<Bytes> {
         self.observe_read(length);
         if self.fails(segment) {
-            return Err(IoError::ReadFailed("injected disk read failure".into()));
+            return Err(if self.transient {
+                IoError::TransientRead("injected transient read failure".into())
+            } else {
+                IoError::ReadFailed("injected disk read failure".into())
+            });
         }
         self.inner.read(segment, unit_bytes, segment_offset, length).await
     }
@@ -122,6 +127,7 @@ async fn reader_with_failures(stack: &E2eStack, failed: Vec<DiskId>) -> (ChunkIo
         inner: disk_io,
         failed,
         failed_segments: Vec::new(),
+        transient: false,
         max_read: AtomicUsize::new(0),
     });
     let reader = ChunkIoClient::from_parts(chunkdb, fault.clone());
@@ -134,9 +140,24 @@ async fn reader_with_segment_failures(stack: &E2eStack, failed_segments: Vec<Seg
         inner: disk_io,
         failed: Vec::new(),
         failed_segments,
+        transient: false,
         max_read: AtomicUsize::new(0),
     });
     ChunkIoClient::from_parts(chunkdb, fault)
+}
+
+async fn reader_with_transient_failure(stack: &E2eStack, failed: DiskId) -> ChunkIoClient {
+    let (chunkdb, disk_io) = real_parts(stack).await;
+    ChunkIoClient::from_parts(
+        chunkdb,
+        Arc::new(FailDiskReads {
+            inner: disk_io,
+            failed: vec![failed],
+            failed_segments: Vec::new(),
+            transient: true,
+            max_read: AtomicUsize::new(0),
+        }),
+    )
 }
 
 #[tokio::test]
@@ -329,6 +350,40 @@ async fn mirror_read_succeeds_and_reports_replica_loss() {
     writer.on_data(next).await.unwrap();
     let next_location = writer.on_finish().await.unwrap().remove(0);
     assert_eq!(next_location.chunk_id, location.chunk_id);
+    stack.client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
+async fn transient_mirror_read_failure_does_not_mark_segment_unavailable() {
+    if !all_binaries_available() {
+        return;
+    }
+    let stack = E2eStack::start(small_policy(1)).await;
+    let data = Bytes::from(test_data(8 * KIB));
+    let mut writer = stack.client.prepare_small_write(data.len()).await.unwrap();
+    writer.on_data(data.clone()).await.unwrap();
+    let location = writer.on_finish().await.unwrap().remove(0);
+    let before = stack.query_chunk(&location).await;
+    let strip = before
+        .strips
+        .iter()
+        .find(|strip| u64::from(strip.chunk_offset) * KIB as u64 <= location.offset)
+        .unwrap();
+    let Some(Strip::MirrorStrip(mirror)) = &strip.strip else {
+        panic!("small write did not produce a mirror strip");
+    };
+    let reader = reader_with_transient_failure(&stack, mirror.segments[0].disk_id.unwrap()).await;
+    assert!(reader.read_object(std::slice::from_ref(&location)).await.is_err());
+    let after = stack.query_chunk(&location).await;
+    assert!(after.strips[0].unavailable_segments.is_empty());
+    assert_eq!(
+        stack
+            .client
+            .read_object(std::slice::from_ref(&location))
+            .await
+            .unwrap(),
+        data
+    );
     stack.client.shutdown_small_writes().await.unwrap();
 }
 

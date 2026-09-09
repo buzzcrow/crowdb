@@ -90,23 +90,26 @@ impl PipelineWorker {
             if self.retire.load(Ordering::Acquire) {
                 self.receiver.close();
             }
-            let first = if let Some(object) = self.carry.take() {
-                Some(object)
+            let (first, dequeued) = if let Some(object) = self.carry.take() {
+                (Some(object), false)
             } else if self.retire.load(Ordering::Acquire) {
-                self.receiver.recv().await
+                (self.receiver.recv().await, true)
             } else {
-                tokio::select! {
+                let object = tokio::select! {
                     object = self.receiver.recv() => object,
                     () = self.wake.notified() => {
                         self.receiver.close();
                         self.receiver.recv().await
                     }
-                }
+                };
+                (object, true)
             };
             let Some(first) = first else {
                 break;
             };
-            self.note_dequeue(&first);
+            if dequeued {
+                self.note_dequeue(&first);
+            }
             if let Err(error) = self.ensure_object_fits(first.len).await {
                 fail_one(first, &error.to_string(), &self.runtime.metrics);
                 self.fail_remaining(&error.to_string()).await;
@@ -422,7 +425,7 @@ impl OwnedChunk {
     ) -> Result<Vec<Location>> {
         let strip = self.current_strip()?.clone();
         let unit_bytes = u64::from(strip.unit_kb) * 1024;
-        let logical_bytes: usize = batch.iter().map(|object| object.len).sum();
+        let (logical_bytes, buffer_count) = batch_shape(batch);
         if logical_bytes as u64 > self.remaining_in_strip()
             || logical_bytes as u64 > self.remaining_in_chunk()
         {
@@ -472,7 +475,16 @@ impl OwnedChunk {
             .take()
             .unwrap_or_else(|| unreachable!("shadow initialized"))
             .freeze();
-        let (image, write_result) = self.write_mirrors_with_repair(&strip, image, unit_bytes).await;
+        let (image, write_result) = self
+            .write_mirrors_with_repair(
+                &strip,
+                image,
+                unit_bytes,
+                batch.len(),
+                buffer_count,
+                logical_bytes,
+            )
+            .await;
         self.shadow = Some(
             image
                 .try_into_mut()
@@ -663,6 +675,9 @@ impl OwnedChunk {
         strip: &crowdb_protocol::chunkdb::rpc::ChunkStrip,
         data: Bytes,
         unit_bytes: u64,
+        object_count: usize,
+        buffer_count: usize,
+        logical_bytes: usize,
     ) -> (Bytes, Result<()>) {
         let Some(Strip::MirrorStrip(mirror)) = &strip.strip else {
             return (
@@ -670,6 +685,14 @@ impl OwnedChunk {
                 Err(IoError::Internal("shared chunk strip is not mirrored".into())),
             );
         };
+        let request_count = mirror.segments.len() as u64;
+        self.metrics.record_aggregate_write(
+            request_count,
+            object_count,
+            buffer_count,
+            logical_bytes,
+            data.len(),
+        );
         let mut write_tasks = tokio::task::JoinSet::new();
         for segment in &mirror.segments {
             let segment = *segment;
@@ -990,6 +1013,13 @@ impl OwnedChunk {
                 .fetch_sub(shadow.len() as u64, Ordering::Relaxed);
         }
     }
+}
+
+fn batch_shape(batch: &[PendingObject]) -> (usize, usize) {
+    (
+        batch.iter().map(|object| object.len).sum(),
+        batch.iter().map(|object| object.fragments.len()).sum(),
+    )
 }
 
 struct RepairMetricGuard {

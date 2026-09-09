@@ -120,6 +120,12 @@ bool DioConfig::parse_args(int argc, char *argv[], DioConfig &out, std::string &
                 return false;
             }
         }
+        else if (arg == "--rpc-workers" && i + 1 < argc) {
+            if (!parse_u32(argv[++i], out.rpc_workers)) {
+                err = "invalid --rpc-workers value";
+                return false;
+            }
+        }
         else if (arg == "--sq-entries" && i + 1 < argc) {
             if (!parse_u32(argv[++i], out.sq_entries)) {
                 err = "invalid --sq-entries value";
@@ -276,7 +282,7 @@ bool DioConfig::parse_args(int argc, char *argv[], DioConfig &out, std::string &
         else if (arg == "--help" || arg == "-h") {
             std::printf("usage: crowdb-diskio --port <port> [--bind <addr>] "
                         "[--dummy-disk null|mem] "
-                        "[--threads N] [--sq-entries N] [--no-o-direct] "
+                        "[--rpc-workers N] [--threads N] [--sq-entries N] [--no-o-direct] "
                         "[--fault-latency <min_ms>:<max_ms>] "
                         "[--fault-error-rate <0.0..1.0>] "
                         "[--disk <hex_id>:<path>[:<capacity>]]... "
@@ -307,6 +313,10 @@ bool DioConfig::validate(std::string &err) const
     }
     if (thread_pool_size == 0) {
         err = "thread_pool_size must be > 0";
+        return false;
+    }
+    if (rpc_workers == 0) {
+        err = "rpc_workers must be > 0";
         return false;
     }
     if (sq_entries == 0) {

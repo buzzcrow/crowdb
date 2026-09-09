@@ -185,21 +185,30 @@ impl DiskWriter for DiskioBlockWriter {
                 length,
                 0,
             )
-            .map_err(|error| IoError::ReadFailed(error.to_string()))?;
+            .map_err(|error| IoError::TransientRead(error.to_string()))?;
         let (code, data) = DiskioClient::await_read_response(future)
             .await
-            .map_err(|error| IoError::ReadFailed(error.to_string()))?;
+            .map_err(|error| IoError::TransientRead(error.to_string()))?;
         read_response(code, data, length)
     }
 }
 
 fn read_response(code: DiskIoRetCode, data: Option<Vec<u8>>, expected: u32) -> Result<Bytes> {
     if code != DiskIoRetCode::Success {
-        return Err(IoError::ReadFailed(format!("disk read returned {code:?}")));
+        let message = format!("disk read returned {code:?}");
+        return Err(match code {
+            DiskIoRetCode::DiskNotExist | DiskIoRetCode::ZoneNotExist | DiskIoRetCode::IoError => {
+                IoError::ReadFailed(message)
+            }
+            DiskIoRetCode::Success => unreachable!(),
+            DiskIoRetCode::PartialWrite
+            | DiskIoRetCode::InvalidAlignment
+            | DiskIoRetCode::ConnectionError => IoError::TransientRead(message),
+        });
     }
-    let data = data.ok_or_else(|| IoError::ReadFailed("successful disk read omitted data".into()))?;
+    let data = data.ok_or_else(|| IoError::TransientRead("successful disk read omitted data".into()))?;
     if data.len() != expected as usize {
-        return Err(IoError::ReadFailed(format!(
+        return Err(IoError::TransientRead(format!(
             "disk read returned {} bytes, expected {expected}",
             data.len()
         )));

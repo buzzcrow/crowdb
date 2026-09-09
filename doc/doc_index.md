@@ -39,6 +39,7 @@ Plan files live under `doc/working/`; flow analyses live under `doc/design/{kv,c
 | `doc/design/kv/kv-scan-flow-analysis.md` | KV scan flow trace, benchmarks, open issues. |
 | `doc/design/kv/kv-write-flow-analysis.md` | KV write path trace and optimization opportunities. |
 | `doc/design/chunkio/chunkio-write-flow-analysis.md` | Chunk IO large-write flow trace, benchmark results, and bottleneck analysis. |
+| `doc/design/chunkio/chunkio-small-io-flow-analysis.md` | Chunk IO small-write and read benchmark results, correctness limits, bottleneck analysis, and ordered optimization plan. |
 | `doc/design/rpc/rpc-flow-analysis.md` | RPC transport flow trace, benchmarks, and performance history. |
 
 ## Dev Environment (`doc/dev/`)
@@ -90,6 +91,7 @@ Plan files live under `doc/working/`; flow analyses live under `doc/design/{kv,c
 | `doc/design/chunkio/design-crowdb-chunkio.md` | chunk IO data path root: `crowdb-chunk-client` crate write pipeline — block-granularity EC flow (fetch → main write → parity hand-off), backpressure + per-writer memory budget + `WriterPool`, shard-based partial EC encode, chunk rotation + `Location`, abort cleanup, real-process E2E coverage, and fault-injection seams. |
 | `doc/design/chunkio/design-crowdb-chunkio-small-object-writer.md` | Small-object shared-chunk writer: whole-object admission, lock-free routing, complete open-strip shadow, in-place replica repair, fenced durable cursor, queue-driven pipeline elasticity, and orphan sealing. |
 | `doc/design/chunkio/design-crowdb-chunkio-reader.md` | Unified full, range, partial, and bounded-stream reads over mirror and EC layouts; same-offset EC recovery, durable failure marking, layout fencing, and repair handoff. |
+| `doc/design/chunkio/chunkio-small-io-flow-analysis.md` | Full-stack small-write and small/large/mixed-read baselines, first-failure trace, bottlenecks, and ordered improvement plan. |
 | `doc/design/diskdb/design-crowdb-diskdb.md` | diskdb root: architecture, group-0 sysdata, disk status management, space metrics, background scanner, crate layout, concurrency. |
 | `doc/design/diskdb/design-crowdb-diskdb-zone-management.md` | Zone management: record model, allocation algorithm, persist-only free, compaction-on-rotation, preparatory thread, crash recovery, zone-level concurrency, invariants. |
 | `doc/design/diskdb/design-crowdb-diskdb-space-metrics.md` | Space metrics component: usage accessors, `QueryCapacityStats` handler, per-disk counters, recalc verifier, reporting loop, keepalive piggyback, kv-client aggregation, `crowdb-diskdb-client` library. |

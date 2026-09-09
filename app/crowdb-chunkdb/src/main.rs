@@ -496,9 +496,18 @@ async fn main() {
     info!(%rpc_listen_addr, "crowdb-rpc server listening (R116 migration)");
 
     // Start HTTP health + metrics + cache invalidation server.
+    let readiness = HttpReadiness {
+        range_guard: Arc::clone(&range_guard),
+        kv: Arc::clone(&kv),
+        instance_id: config
+            .server
+            .instance_id
+            .as_ref()
+            .and_then(|value| value.parse().ok()),
+    };
     let http_handle = tokio::spawn(run_http_server(
         http_listen_addr,
-        Arc::clone(&range_guard),
+        readiness,
         Arc::clone(&lock_map),
         Arc::clone(&workflow_metrics.conversion),
         Arc::clone(&workflow_metrics.repair),
@@ -668,10 +677,16 @@ fn spawn_chunkdb_keepalive(
     Some(handle)
 }
 
+struct HttpReadiness {
+    range_guard: Arc<RangeGuard>,
+    kv: Arc<CrowdbKvClient>,
+    instance_id: Option<u64>,
+}
+
 /// HTTP server — health, metrics, cache invalidation endpoints.
 async fn run_http_server(
     addr: SocketAddr,
-    range_guard: Arc<RangeGuard>,
+    readiness: HttpReadiness,
     locks: Arc<ChunkLockMap>,
     conversion_metrics: Arc<crowdb_chunkdb::metrics::ConversionMetrics>,
     repair_metrics: Arc<crowdb_chunkdb::metrics::RepairMetrics>,
@@ -681,8 +696,9 @@ async fn run_http_server(
         .route(
             "/ready",
             axum::routing::get(move || {
-                let response = ready_response(&range_guard);
-                async move { response }
+                let range_guard = Arc::clone(&readiness.range_guard);
+                let kv = Arc::clone(&readiness.kv);
+                async move { ready_response(&range_guard, &kv, readiness.instance_id).await }
             }),
         )
         .route("/health", axum::routing::get(|| async { "ok" }))
@@ -776,7 +792,19 @@ async fn run_http_server(
     axum::serve(listener, app).await.expect("HTTP server error");
 }
 
-fn ready_response(range_guard: &RangeGuard) -> (axum::http::StatusCode, &'static str) {
+async fn ready_response(
+    range_guard: &RangeGuard,
+    kv: &CrowdbKvClient,
+    instance_id: Option<u64>,
+) -> (axum::http::StatusCode, &'static str) {
+    if let Some(instance_id) = instance_id {
+        if range_guard.load_from_group0(kv, instance_id).await.is_err() {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "range ownership refresh failed",
+            );
+        }
+    }
     if range_guard.is_ready() {
         (axum::http::StatusCode::OK, "ok")
     } else {

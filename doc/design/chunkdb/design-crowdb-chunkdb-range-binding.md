@@ -284,7 +284,7 @@ one-owner invariant that the per-chunk lock (R100) depends on.
 
 ```rust
 pub struct RangeGuard {
-    owned: Arc<RwLock<Vec<OwnedRange>>>,
+    owned: Arc<ArcSwap<Vec<OwnedRange>>>,
     allow_all_when_empty: bool,
 }
 
@@ -584,6 +584,12 @@ correctness; the owning instance accepts the free, others reject).
    (`spawn_chunkdb_keepalive`) — registers under
    `/srv/chunkdb/<instance_id>` and heartbeats periodically so the
    `BindingMonitor` in `crowdb-kv-server` can see this instance.
+7. `GET /ready` refreshes this instance's owned ranges from group-0 before
+   reporting readiness. Cluster deployment first waits for a complete binding
+   table and then requires `/ready` from every ChunkDB instance, so returning
+   from deployment guarantees that client routing and every server guard see
+   the same published assignment. HTTP liveness remains available separately
+   through `GET /health`.
 
 ### 7.2 crowdb-kv-server startup
 

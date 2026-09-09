@@ -14,6 +14,8 @@ pub enum IoError {
     WriteFailed(String),
     #[error("disk read failed: {0}")]
     ReadFailed(String),
+    #[error("transient disk read failed: {0}")]
+    TransientRead(String),
     #[error("chunk not found: {0}")]
     ChunkNotFound(String),
     #[error("chunk metadata conflict: {0}")]
@@ -34,6 +36,14 @@ pub enum IoError {
     Finished,
     #[error("internal error: {0}")]
     Internal(String),
+}
+
+impl IoError {
+    /// Whether a read failure is evidence that the segment itself is unavailable.
+    #[must_use]
+    pub(crate) fn is_durable_read_failure(&self) -> bool {
+        matches!(self, Self::ReadFailed(_))
+    }
 }
 
 /// Error returned by object and range reads.
