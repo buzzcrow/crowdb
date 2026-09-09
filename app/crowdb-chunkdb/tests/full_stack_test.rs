@@ -818,10 +818,18 @@ async fn chunkdb_cache_hit_on_second_query() {
     // Append (should be a cache hit — no store round-trip for get_chunk).
     let appended = harness
         .handler
-        .append_chunk(&chunk_id, 1, 1, StripType::Mirror, 0, 0, 3, 1)
+        .append_chunk(&chunk_id, 1, 4, StripType::Mirror, 0, 0, 3, 1)
         .await
         .expect("append_chunk");
-    assert_eq!(appended.strips.len(), 1, "should return only the appended strip");
+    assert_eq!(appended.strips.len(), 4, "should return the appended batch");
+    assert!(
+        appended
+            .strips
+            .windows(2)
+            .all(|pair| pair[1].strip_sequence == pair[0].strip_sequence + 1
+                && pair[1].chunk_offset == pair[0].chunk_offset + pair[0].capacity),
+        "batch must retain sequence and logical-offset order"
+    );
     assert_eq!(appended.modify_ts, 2);
 
     // Seal (should also be a cache hit after append refreshed the cache).

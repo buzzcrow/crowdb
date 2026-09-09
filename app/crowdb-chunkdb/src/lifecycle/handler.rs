@@ -26,7 +26,7 @@ use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_protocol::generate_chunk_id;
 
-use crate::allocator::{AllocError, ChunkAllocator, StripAllocType};
+use crate::allocator::{AllocError, ChunkAllocator, StripAllocType, StripBatchSpec};
 use crate::metrics::ChunkdbMetrics;
 use crate::metrics::LifecycleMetrics;
 use crate::range_guard::RangeGuard;
@@ -294,22 +294,21 @@ impl LifecycleHandler {
             .unwrap_or(write_granularity_kb)
             .max(1);
 
-        let mut strips = Vec::with_capacity(strip_count as usize);
-        for seq in 0..strip_count {
-            let mut strip = match self
-                .allocator
-                .allocate_strip(&snap, &id, strip_alloc_type, unit_count, seq, &constraints)
-                .await
-            {
-                Ok(strip) => strip,
-                Err(error) => {
-                    self.allocator.rollback_strips(&strips).await?;
-                    return Err(error.into());
-                }
-            };
-            strip.chunk_offset = strips.iter().map(|strip: &ChunkStrip| strip.capacity).sum();
-            strips.push(strip);
-        }
+        let mut strips = self
+            .allocator
+            .allocate_strips(
+                &snap,
+                &id,
+                StripBatchSpec {
+                    strip_type: strip_alloc_type,
+                    unit_count,
+                    start_sequence: 0,
+                    strip_count,
+                },
+                &constraints,
+            )
+            .await?;
+        assign_strip_offsets(&mut strips, 0);
 
         let record_started = std::time::Instant::now();
         let now_ms = unix_time_ms();
@@ -559,25 +558,21 @@ impl LifecycleHandler {
             .checked_add(strip_count)
             .ok_or_else(|| LifecycleError::InvalidRequest("chunk strip sequence space exhausted".into()))?;
 
-        let mut appended = Vec::with_capacity(strip_count as usize);
-        for i in 0..strip_count {
-            let seq = start_seq + i;
-            let mut strip = match self
-                .allocator
-                .allocate_strip(&snap, chunk_id, strip_alloc_type, unit_count, seq, &constraints)
-                .await
-            {
-                Ok(strip) => strip,
-                Err(error) => {
-                    self.allocator.rollback_strips(&appended).await?;
-                    return Err(error.into());
-                }
-            };
-            strip.chunk_offset = chunk
-                .capacity
-                .saturating_add(appended.iter().map(|strip: &ChunkStrip| strip.capacity).sum());
-            appended.push(strip);
-        }
+        let mut appended = self
+            .allocator
+            .allocate_strips(
+                &snap,
+                chunk_id,
+                StripBatchSpec {
+                    strip_type: strip_alloc_type,
+                    unit_count,
+                    start_sequence: start_seq,
+                    strip_count,
+                },
+                &constraints,
+            )
+            .await?;
+        assign_strip_offsets(&mut appended, chunk.capacity);
 
         if let Err(error) = self.commit_strip_segments(&appended).await {
             self.allocator.rollback_strips(&appended).await?;
@@ -1537,6 +1532,13 @@ fn validate_replacement_sequences(
 
 fn observe_elapsed(metric: &LatencyHistogram, started: std::time::Instant) {
     metric.observe(started.elapsed().as_nanos().try_into().unwrap_or(u64::MAX));
+}
+
+fn assign_strip_offsets(strips: &mut [ChunkStrip], mut chunk_offset: u32) {
+    for strip in strips {
+        strip.chunk_offset = chunk_offset;
+        chunk_offset = chunk_offset.saturating_add(strip.capacity);
+    }
 }
 
 fn unix_time_ms() -> u64 {

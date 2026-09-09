@@ -331,14 +331,22 @@ impl ChunkWriter {
                 let Ok(permit) = tx.reserve().await else {
                     break;
                 };
-                let result = append_strip(&*allocator, chunk, ec_scheme).await;
+                let runway = strips_per_chunk.saturating_sub(next_strip_index);
+                let requested = u32::try_from(config.prefetch_strips_per_chunk).unwrap_or(u32::MAX);
+                let remaining =
+                    strips_remaining.map_or(u32::MAX, |value| u32::try_from(value).unwrap_or(u32::MAX));
+                let strip_count = requested.min(runway).min(remaining);
+                if strip_count == 0 {
+                    break;
+                }
+                let result = append_strips(&*allocator, chunk, ec_scheme, strip_count).await;
                 match result {
                     Ok(new_chunk) => {
                         chunk = new_chunk.clone();
                         permit.send(Ok(new_chunk));
-                        next_strip_index += 1;
+                        next_strip_index = next_strip_index.saturating_add(strip_count);
                         if let Some(remaining) = strips_remaining.as_mut() {
-                            *remaining = remaining.saturating_sub(1);
+                            *remaining = remaining.saturating_sub(strip_count as usize);
                         }
                     }
                     Err(e) => {
@@ -425,7 +433,7 @@ impl ChunkWriter {
             .as_deref()
             .cloned()
             .ok_or_else(|| IoError::Internal("append_strip with no open chunk".into()))?;
-        append_strip(&*self.allocator, chunk, self.ec_scheme).await
+        append_strips(&*self.allocator, chunk, self.ec_scheme, 1).await
     }
 
     /// Seal the chunk: finish the current strip (if open with data),
@@ -593,7 +601,12 @@ fn compute_strips_remaining(
 /// Append one strip and merge the incremental response into the local chunk.
 /// A stale revision response carries the current full chunk; retry once with
 /// that revision so concurrent metadata changes do not duplicate an append.
-async fn append_strip(chunkdb: &dyn ChunkAllocator, mut chunk: Chunk, ec_scheme: EcScheme) -> Result<Chunk> {
+async fn append_strips(
+    chunkdb: &dyn ChunkAllocator,
+    mut chunk: Chunk,
+    ec_scheme: EcScheme,
+    strip_count: u32,
+) -> Result<Chunk> {
     let chunk_id = chunk
         .id
         .ok_or_else(|| IoError::AllocationFailed("append_chunk: chunk missing id".into()))?;
@@ -616,7 +629,7 @@ async fn append_strip(chunkdb: &dyn ChunkAllocator, mut chunk: Chunk, ec_scheme:
                 chunk_id: Some(chunk_id),
                 modify_ts: chunk.modify_ts,
                 strip_size: unit_count,
-                strip_count: 1,
+                strip_count,
                 strip_type: StripType::Ec as i32,
                 data_num: ec_scheme.data_num as u32,
                 code_num: ec_scheme.code_num as u32,

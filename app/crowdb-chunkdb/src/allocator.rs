@@ -51,6 +51,15 @@ pub enum StripAllocType {
     Ec { data_num: usize, code_num: usize },
 }
 
+/// Geometry and ordered identity range for one atomic strip batch.
+#[derive(Debug, Clone, Copy)]
+pub struct StripBatchSpec {
+    pub strip_type: StripAllocType,
+    pub unit_count: u32,
+    pub start_sequence: u32,
+    pub strip_count: u32,
+}
+
 /// Chunk allocator — orchestrates placement + parallel diskdb calls.
 pub struct ChunkAllocator {
     pool: Arc<DiskdbClientPool>,
@@ -124,6 +133,43 @@ impl ChunkAllocator {
             (snap.unit_size_bytes() / 1024).max(1),
         );
         Ok(strip)
+    }
+
+    /// Allocate independent strips concurrently from one topology snapshot.
+    /// Results retain strip-sequence order. Any member failure rolls back every
+    /// successful member before returning the first allocation error.
+    pub async fn allocate_strips(
+        &self,
+        snap: &TopologySnapshot,
+        owner_chunk: &ChunkId,
+        spec: StripBatchSpec,
+        constraints: &PlacementConstraints,
+    ) -> Result<Vec<ChunkStrip>, AllocError> {
+        let allocations = (0..spec.strip_count).map(|index| {
+            self.allocate_strip(
+                snap,
+                owner_chunk,
+                spec.strip_type,
+                spec.unit_count,
+                spec.start_sequence.saturating_add(index),
+                constraints,
+            )
+        });
+        let results = join_all(allocations).await;
+        let mut strips = Vec::with_capacity(spec.strip_count as usize);
+        let mut first_error = None;
+        for result in results {
+            match result {
+                Ok(strip) => strips.push(strip),
+                Err(error) if first_error.is_none() => first_error = Some(error),
+                Err(_) => {}
+            }
+        }
+        if let Some(error) = first_error {
+            self.rollback_strips(&strips).await?;
+            return Err(error);
+        }
+        Ok(strips)
     }
 
     pub async fn allocate_replacement_segment(

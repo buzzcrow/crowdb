@@ -1277,16 +1277,20 @@ impl OwnedChunk {
     }
 
     async fn finish(&mut self) -> Result<()> {
-        self.flush_pending_advance().await?;
+        if let Err(error) = self.flush_pending_advance().await {
+            if self.accept_external_seal().await? {
+                self.release_local_state();
+                return Ok(());
+            }
+            return Err(error);
+        }
         if self.chunk.acknowledged_cursor < self.cursor {
             self.advance(self.cursor, None).await?;
         }
         let Some(chunk_id) = self.chunk.id else {
             return Ok(());
         };
-        self.clear_shadow();
-        self.conversion_group = None;
-        self.conversion_active.store(false, Ordering::Release);
+        self.release_local_state();
         if self.cursor == 0 {
             self.allocator
                 .delete_chunk(DeleteChunkRequest {
@@ -1303,6 +1307,32 @@ impl OwnedChunk {
                 .await?;
         }
         Ok(())
+    }
+
+    async fn accept_external_seal(&mut self) -> Result<bool> {
+        let Some(chunk_id) = self.chunk.id else {
+            return Ok(false);
+        };
+        let response = self
+            .allocator
+            .query_chunk(QueryChunkRequest {
+                chunk_id: Some(chunk_id),
+            })
+            .await?;
+        let Some(chunk) = response.chunk else {
+            return Ok(false);
+        };
+        let sealed = chunk.state == ChunkState::Sealed as i32 && chunk.acknowledged_cursor >= self.cursor;
+        if sealed {
+            self.chunk = chunk;
+        }
+        Ok(sealed)
+    }
+
+    fn release_local_state(&mut self) {
+        self.clear_shadow();
+        self.conversion_group = None;
+        self.conversion_active.store(false, Ordering::Release);
     }
 
     fn clear_shadow(&mut self) {
