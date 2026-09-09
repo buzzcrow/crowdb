@@ -52,8 +52,9 @@ pub struct E2eStack {
 
 impl E2eStack {
     pub async fn start(small_write: SmallWritePolicy) -> Self {
-        Self::start_with_chunkdb_options(
+        Self::start_with_disk_and_chunkdb_options(
             small_write,
+            "mem",
             ChunkdbStartOptions {
                 allow_unsafe_ec: true,
                 repair_allow_unsafe_placement: true,
@@ -63,8 +64,31 @@ impl E2eStack {
         .await
     }
 
+    #[allow(dead_code)]
+    pub async fn start_null(small_write: SmallWritePolicy) -> Self {
+        Self::start_with_disk_and_chunkdb_options(
+            small_write,
+            "null",
+            ChunkdbStartOptions {
+                allow_unsafe_ec: true,
+                repair_allow_unsafe_placement: true,
+                ..ChunkdbStartOptions::default()
+            },
+        )
+        .await
+    }
+
+    #[allow(dead_code)]
     pub async fn start_with_chunkdb_options(
         small_write: SmallWritePolicy,
+        chunkdb_options: ChunkdbStartOptions,
+    ) -> Self {
+        Self::start_with_disk_and_chunkdb_options(small_write, "mem", chunkdb_options).await
+    }
+
+    async fn start_with_disk_and_chunkdb_options(
+        small_write: SmallWritePolicy,
+        dummy_disk: &str,
         chunkdb_options: ChunkdbStartOptions,
     ) -> Self {
         let cluster = KvCluster::start().await;
@@ -74,7 +98,7 @@ impl E2eStack {
         let diskdb = DiskdbProcess::start(&cluster.mgmt_endpoints, false);
         diskdb.wait_for_ready().await;
         let diskio = DiskioProcess::start(&DiskioStartOpts {
-            dummy_disk: "mem",
+            dummy_disk,
             kv_seeds: &cluster.mgmt_endpoints,
             disks: &[],
             fault_error_rate: 0.0,
@@ -100,6 +124,7 @@ impl E2eStack {
         let client = loop {
             if let Ok(client) = ChunkIoClient::connect(ChunkIoClientConfig {
                 management_seeds: cluster.mgmt_endpoints.clone(),
+                diskio_connections_per_endpoint: 2,
                 small_write: small_write.clone(),
             })
             .await

@@ -33,6 +33,14 @@ pub enum BenchVerb {
 pub enum ChunkioBenchVerb {
     /// Stream deterministic large objects through `ChunkDB` and `DiskIO`.
     Write(ChunkioArgs),
+    /// Aggregate deterministic small objects through the shared write pool.
+    WriteSmall(ChunkioSmallWriteArgs),
+    /// Read small objects from real writer-produced locations.
+    ReadSmall(ChunkioReadArgs),
+    /// Read large objects from real writer-produced locations.
+    ReadLarge(ChunkioReadArgs),
+    /// Run a deterministic request mix of small and large object reads.
+    ReadMix(ChunkioReadArgs),
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -47,6 +55,9 @@ pub struct ChunkioArgs {
     pub object_size: u64,
     #[arg(long, default_value_t = 1)]
     pub concurrency: usize,
+    /// Connections kept per discovered `DiskIO` endpoint.
+    #[arg(long, default_value_t = 4)]
+    pub diskio_connections: usize,
     #[arg(long, default_value_t = 1024 * 1024)]
     pub block_size: usize,
     #[arg(long, default_value_t = 1024 * 1024 * 1024)]
@@ -68,6 +79,78 @@ pub struct ChunkioArgs {
     /// Send owned `Bytes` blocks directly, bypassing stream fetch assembly.
     #[arg(long, default_value_t = false)]
     pub direct_buffers: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct ChunkioSmallWriteArgs {
+    /// Maximum admitted objects; duration is the normal stopping condition.
+    #[arg(long, default_value_t = u64::MAX)]
+    pub objects: u64,
+    /// Stop admitting new objects after this many seconds, then drain writes.
+    #[arg(long, default_value_t = 20)]
+    pub duration_secs: u64,
+    /// Small object size in bytes (maximum 1 MiB).
+    #[arg(long, default_value_t = 8 * 1024)]
+    pub object_size: usize,
+    #[arg(long, default_value_t = 32)]
+    pub concurrency: usize,
+    /// Connections kept per discovered `DiskIO` endpoint.
+    #[arg(long, default_value_t = 4)]
+    pub diskio_connections: usize,
+    /// Maximum queue-driven pipelines; hard limit is 32.
+    #[arg(long, default_value_t = 32)]
+    pub max_pipelines: usize,
+    /// Scale out when queued bytes reach this threshold.
+    #[arg(long, default_value_t = 4 * 1024 * 1024)]
+    pub scale_out_queue_bytes: usize,
+    /// Scale out when queued object count reaches this threshold.
+    #[arg(long, default_value_t = 128)]
+    pub scale_out_queue_objects: usize,
+    #[arg(long, default_value_t = 1024 * 1024)]
+    pub max_batch_bytes: usize,
+    #[arg(long, default_value_t = 1024)]
+    pub max_batch_objects: usize,
+    #[arg(long, default_value_t = 1)]
+    pub seed: u8,
+    #[arg(long, default_value_t = 1)]
+    pub metrics_interval: u64,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct ChunkioReadArgs {
+    /// Maximum admitted reads; duration is the normal stopping condition.
+    #[arg(long, default_value_t = u64::MAX)]
+    pub requests: u64,
+    /// Stop admitting reads after this many seconds, then drain them.
+    #[arg(long, default_value_t = 20)]
+    pub duration_secs: u64,
+    /// Reusable objects prepared per selected object class before timing.
+    #[arg(long, default_value_t = 32)]
+    pub dataset_objects: usize,
+    #[arg(long, default_value_t = 32)]
+    pub concurrency: usize,
+    /// Connections kept per discovered `DiskIO` endpoint.
+    #[arg(long, default_value_t = 4)]
+    pub diskio_connections: usize,
+    #[arg(long, default_value_t = 8 * 1024)]
+    pub small_object_size: usize,
+    #[arg(long, default_value_t = 16 * 1024 * 1024)]
+    pub large_object_size: u64,
+    /// Large-object percentage by request count for `read-mix`.
+    #[arg(long, default_value_t = 50)]
+    pub mixed_large_percent: u8,
+    #[arg(long, default_value_t = 1024 * 1024)]
+    pub block_size: usize,
+    #[arg(long, default_value_t = 1024 * 1024 * 1024)]
+    pub chunk_size: u64,
+    #[arg(long, default_value_t = 4)]
+    pub data_num: usize,
+    #[arg(long, default_value_t = 1)]
+    pub code_num: usize,
+    #[arg(long, default_value_t = 1)]
+    pub seed: u8,
+    #[arg(long, default_value_t = 1)]
+    pub metrics_interval: u64,
 }
 
 #[derive(Subcommand, Debug)]

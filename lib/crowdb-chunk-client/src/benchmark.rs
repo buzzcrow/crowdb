@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Reusable bounded large-write benchmark workload.
+//! Reusable bounded chunk IO benchmark workloads.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,7 +13,7 @@ use serde::Serialize;
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio::task::JoinSet;
 
-use crate::{ChunkIoClient, LargeWritePolicy};
+use crate::{ChunkIoClient, ChunkIoWriter, LargeWritePolicy, ProtoLocation};
 
 /// Deterministic large-write workload parameters.
 #[derive(Debug, Clone)]
@@ -64,6 +64,96 @@ pub struct LargeWriteBenchmarkResult {
     /// (total-only PMU) or when the PMU is unavailable.
     pub dram_write_mib_s: Option<f64>,
     /// Workload-window aggregate DRAM bandwidth in MiB/s (read + write).
+    pub dram_total_mib_s: Option<f64>,
+    pub error_messages: Vec<String>,
+}
+
+/// Deterministic small-write workload parameters.
+#[derive(Debug, Clone)]
+pub struct SmallWriteBenchmarkConfig {
+    pub object_count: u64,
+    /// Admission duration. `None` runs until `object_count` is reached.
+    pub duration: Option<Duration>,
+    pub object_size: usize,
+    pub concurrency: usize,
+    pub seed: u8,
+}
+
+/// Aggregate small-write result including queue-driven pipeline behavior.
+#[derive(Debug, Clone, Serialize)]
+pub struct SmallWriteBenchmarkResult {
+    pub elapsed_secs: f64,
+    pub requested_objects: u64,
+    pub objects: u64,
+    pub errors: u64,
+    pub incomplete_objects: u64,
+    pub stop_reason: String,
+    pub logical_bytes: u64,
+    pub logical_mib_per_sec: f64,
+    pub objects_per_sec: f64,
+    pub latency_p50_us: u64,
+    pub latency_p99_us: u64,
+    pub batches: u64,
+    pub max_batch_objects: u64,
+    pub max_batch_bytes: u64,
+    pub average_batch_fill_ppm: u64,
+    pub max_queue_delay_us: u64,
+    pub active_pipelines: u64,
+    pub draining_pipelines: u64,
+    pub scale_out: u64,
+    pub scale_in: u64,
+    pub tail_waste_bytes: u64,
+    pub dram_read_mib_s: Option<f64>,
+    pub dram_write_mib_s: Option<f64>,
+    pub dram_total_mib_s: Option<f64>,
+    pub error_messages: Vec<String>,
+}
+
+/// Object class selected by the read benchmark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadBenchmarkWorkload {
+    Small,
+    Large,
+    Mixed,
+}
+
+/// Deterministic read workload and real-write preparation parameters.
+#[derive(Debug, Clone)]
+pub struct ReadBenchmarkConfig {
+    pub request_count: u64,
+    /// Admission duration. `None` runs until `request_count` is reached.
+    pub duration: Option<Duration>,
+    /// Number of reusable prepared objects per selected object class.
+    pub dataset_objects: usize,
+    pub concurrency: usize,
+    pub small_object_size: usize,
+    pub large_object_size: u64,
+    /// Request-count ratio, not a byte ratio.
+    pub mixed_large_percent: u8,
+    pub seed: u8,
+    pub workload: ReadBenchmarkWorkload,
+    pub large_policy: LargeWritePolicy,
+}
+
+/// Aggregate read result. Preparation is reported separately from timed IO.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReadBenchmarkResult {
+    pub preparation_secs: f64,
+    pub elapsed_secs: f64,
+    pub requested_reads: u64,
+    pub reads: u64,
+    pub small_reads: u64,
+    pub large_reads: u64,
+    pub errors: u64,
+    pub incomplete_reads: u64,
+    pub stop_reason: String,
+    pub logical_bytes: u64,
+    pub logical_mib_per_sec: f64,
+    pub reads_per_sec: f64,
+    pub latency_p50_us: u64,
+    pub latency_p99_us: u64,
+    pub dram_read_mib_s: Option<f64>,
+    pub dram_write_mib_s: Option<f64>,
     pub dram_total_mib_s: Option<f64>,
     pub error_messages: Vec<String>,
 }
@@ -320,6 +410,456 @@ fn merge_worker(total: &mut WorkerResult, worker: WorkerResult) {
     for message in worker.error_messages {
         record_error(&mut total.error_messages, message);
     }
+}
+
+#[derive(Default)]
+struct SmallWorkerResult {
+    objects: u64,
+    logical_bytes: u64,
+    latencies: Vec<u64>,
+    errors: u64,
+    error_messages: Vec<String>,
+}
+
+/// Run concurrent small writes through the client's shared aggregation pool.
+pub async fn run_small_write_benchmark(
+    client: ChunkIoClient,
+    config: SmallWriteBenchmarkConfig,
+) -> SmallWriteBenchmarkResult {
+    if config.object_count == 0 || config.object_size == 0 || config.concurrency == 0 {
+        return failed_small_before_load(&config, "object count, size, and concurrency must be non-zero");
+    }
+    let started = Instant::now();
+    let deadline = config.duration.map(|duration| started + duration);
+    let mut dram_bw = DramBwCounter::new();
+    let next_object = Arc::new(AtomicU64::new(0));
+    let payload = bytes::Bytes::from(random_bytes(config.object_size, config.seed));
+    let mut tasks = JoinSet::new();
+    for _ in 0..config.concurrency.max(1) {
+        let client = client.clone();
+        let config = config.clone();
+        let next_object = Arc::clone(&next_object);
+        let payload = payload.clone();
+        tasks.spawn(run_small_worker(client, config, deadline, next_object, payload));
+    }
+    let mut total = SmallWorkerResult::default();
+    while let Some(result) = tasks.join_next().await {
+        match result {
+            Ok(worker) => merge_small_worker(&mut total, worker),
+            Err(error) => {
+                total.errors += 1;
+                record_error(
+                    &mut total.error_messages,
+                    format!("benchmark worker failed: {error}"),
+                );
+            }
+        }
+    }
+    if let Err(error) = client.shutdown_small_writes().await {
+        total.errors += 1;
+        record_error(&mut total.error_messages, format!("drain small writes: {error}"));
+    }
+    total.latencies.sort_unstable();
+    let elapsed_secs = started.elapsed().as_secs_f64().max(f64::EPSILON);
+    let requested_objects = next_object.load(Ordering::Relaxed).min(config.object_count);
+    let incomplete_objects = requested_objects.saturating_sub(total.objects.saturating_add(total.errors));
+    let metrics = client.small_write_metrics();
+    let (dram_read_mib_s, dram_write_mib_s, dram_total_mib_s) = sample_dram(&mut dram_bw);
+    finalize_small_result(
+        total,
+        requested_objects,
+        incomplete_objects,
+        elapsed_secs,
+        metrics,
+        (dram_read_mib_s, dram_write_mib_s, dram_total_mib_s),
+    )
+}
+
+async fn run_small_worker(
+    client: ChunkIoClient,
+    config: SmallWriteBenchmarkConfig,
+    deadline: Option<Instant>,
+    next_object: Arc<AtomicU64>,
+    payload: bytes::Bytes,
+) -> SmallWorkerResult {
+    let mut result = SmallWorkerResult::default();
+    loop {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            break;
+        }
+        let object = next_object.fetch_add(1, Ordering::Relaxed);
+        if object >= config.object_count {
+            break;
+        }
+        let operation_started = Instant::now();
+        let write = async {
+            let mut writer = client.prepare_small_write(config.object_size).await?;
+            writer.on_data(payload.clone()).await?;
+            writer.on_finish().await
+        }
+        .await;
+        match write {
+            Ok(_) => {
+                result.objects += 1;
+                result.logical_bytes = result.logical_bytes.saturating_add(config.object_size as u64);
+                result.latencies.push(duration_us(operation_started.elapsed()));
+            }
+            Err(error) => {
+                result.errors += 1;
+                record_error(&mut result.error_messages, format!("object {object}: {error}"));
+            }
+        }
+    }
+    result
+}
+
+fn merge_small_worker(total: &mut SmallWorkerResult, worker: SmallWorkerResult) {
+    total.objects += worker.objects;
+    total.logical_bytes += worker.logical_bytes;
+    total.latencies.extend(worker.latencies);
+    total.errors += worker.errors;
+    for message in worker.error_messages {
+        record_error(&mut total.error_messages, message);
+    }
+}
+
+fn finalize_small_result(
+    total: SmallWorkerResult,
+    requested_objects: u64,
+    incomplete_objects: u64,
+    elapsed_secs: f64,
+    metrics: crate::SmallWriteMetricsSnapshot,
+    dram: (Option<f64>, Option<f64>, Option<f64>),
+) -> SmallWriteBenchmarkResult {
+    SmallWriteBenchmarkResult {
+        elapsed_secs,
+        requested_objects,
+        objects: total.objects,
+        errors: total.errors,
+        incomplete_objects,
+        stop_reason: if total.errors == 0 && incomplete_objects == 0 {
+            "complete".into()
+        } else {
+            "failed".into()
+        },
+        logical_bytes: total.logical_bytes,
+        logical_mib_per_sec: u64_as_f64(total.logical_bytes) / 1_048_576.0 / elapsed_secs,
+        objects_per_sec: u64_as_f64(total.objects) / elapsed_secs,
+        latency_p50_us: percentile(&total.latencies, 50),
+        latency_p99_us: percentile(&total.latencies, 99),
+        batches: metrics.batches,
+        max_batch_objects: metrics.max_batch_objects,
+        max_batch_bytes: metrics.max_batch_bytes,
+        average_batch_fill_ppm: metrics.average_batch_fill_ppm,
+        max_queue_delay_us: metrics.max_queue_delay_ns / 1_000,
+        active_pipelines: metrics.active_pipelines,
+        draining_pipelines: metrics.draining_pipelines,
+        scale_out: metrics.scale_out,
+        scale_in: metrics.scale_in,
+        tail_waste_bytes: metrics.tail_waste_bytes,
+        dram_read_mib_s: dram.0,
+        dram_write_mib_s: dram.1,
+        dram_total_mib_s: dram.2,
+        error_messages: total.error_messages,
+    }
+}
+
+fn failed_small_before_load(config: &SmallWriteBenchmarkConfig, message: &str) -> SmallWriteBenchmarkResult {
+    SmallWriteBenchmarkResult {
+        elapsed_secs: 0.0,
+        requested_objects: config.object_count,
+        objects: 0,
+        errors: 1,
+        incomplete_objects: config.object_count.saturating_sub(1),
+        stop_reason: "failed".into(),
+        logical_bytes: 0,
+        logical_mib_per_sec: 0.0,
+        objects_per_sec: 0.0,
+        latency_p50_us: 0,
+        latency_p99_us: 0,
+        batches: 0,
+        max_batch_objects: 0,
+        max_batch_bytes: 0,
+        average_batch_fill_ppm: 0,
+        max_queue_delay_us: 0,
+        active_pipelines: 0,
+        draining_pipelines: 0,
+        scale_out: 0,
+        scale_in: 0,
+        tail_waste_bytes: 0,
+        dram_read_mib_s: None,
+        dram_write_mib_s: None,
+        dram_total_mib_s: None,
+        error_messages: vec![message.into()],
+    }
+}
+
+#[derive(Clone)]
+struct PreparedReadObject {
+    locations: Vec<ProtoLocation>,
+    logical_bytes: u64,
+}
+
+struct PreparedReadSet {
+    small: Arc<Vec<PreparedReadObject>>,
+    large: Arc<Vec<PreparedReadObject>>,
+}
+
+#[derive(Default)]
+struct ReadWorkerResult {
+    reads: u64,
+    small_reads: u64,
+    large_reads: u64,
+    logical_bytes: u64,
+    latencies: Vec<u64>,
+    errors: u64,
+    error_messages: Vec<String>,
+}
+
+/// Prepare real writer-produced metadata, then benchmark full-object reads.
+pub async fn run_read_benchmark(client: ChunkIoClient, config: ReadBenchmarkConfig) -> ReadBenchmarkResult {
+    if config.request_count == 0
+        || config.dataset_objects == 0
+        || config.concurrency == 0
+        || config.small_object_size == 0
+        || config.large_object_size == 0
+        || config.mixed_large_percent > 100
+    {
+        return failed_read_before_load(&config, "invalid read workload parameters");
+    }
+    let preparation_started = Instant::now();
+    let prepared = match prepare_read_set(&client, &config).await {
+        Ok(prepared) => prepared,
+        Err(error) => return failed_read_before_load(&config, &error.to_string()),
+    };
+    let preparation_secs = preparation_started.elapsed().as_secs_f64();
+    let started = Instant::now();
+    let deadline = config.duration.map(|duration| started + duration);
+    let mut dram_bw = DramBwCounter::new();
+    let next_read = Arc::new(AtomicU64::new(0));
+    let mut tasks = JoinSet::new();
+    for _ in 0..config.concurrency.max(1) {
+        let client = client.clone();
+        let config = config.clone();
+        let next_read = Arc::clone(&next_read);
+        let small = Arc::clone(&prepared.small);
+        let large = Arc::clone(&prepared.large);
+        tasks.spawn(run_read_worker(client, config, deadline, next_read, small, large));
+    }
+    let mut total = ReadWorkerResult::default();
+    while let Some(result) = tasks.join_next().await {
+        match result {
+            Ok(worker) => merge_read_worker(&mut total, worker),
+            Err(error) => {
+                total.errors += 1;
+                record_error(
+                    &mut total.error_messages,
+                    format!("benchmark worker failed: {error}"),
+                );
+            }
+        }
+    }
+    total.latencies.sort_unstable();
+    let elapsed_secs = started.elapsed().as_secs_f64().max(f64::EPSILON);
+    let requested_reads = next_read.load(Ordering::Relaxed).min(config.request_count);
+    let incomplete_reads = requested_reads.saturating_sub(total.reads.saturating_add(total.errors));
+    let (dram_read_mib_s, dram_write_mib_s, dram_total_mib_s) = sample_dram(&mut dram_bw);
+    finalize_read_result(
+        preparation_secs,
+        elapsed_secs,
+        requested_reads,
+        incomplete_reads,
+        total,
+        (dram_read_mib_s, dram_write_mib_s, dram_total_mib_s),
+    )
+}
+
+async fn run_read_worker(
+    client: ChunkIoClient,
+    config: ReadBenchmarkConfig,
+    deadline: Option<Instant>,
+    next_read: Arc<AtomicU64>,
+    small: Arc<Vec<PreparedReadObject>>,
+    large: Arc<Vec<PreparedReadObject>>,
+) -> ReadWorkerResult {
+    let mut result = ReadWorkerResult::default();
+    loop {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            break;
+        }
+        let request = next_read.fetch_add(1, Ordering::Relaxed);
+        if request >= config.request_count {
+            break;
+        }
+        let use_large = select_large_read(&config, request);
+        let objects = if use_large { &large } else { &small };
+        let index = usize::try_from(request).unwrap_or(usize::MAX) % objects.len();
+        let object = &objects[index];
+        let operation_started = Instant::now();
+        match client.read_object(&object.locations).await {
+            Ok(bytes) if bytes.len() as u64 == object.logical_bytes => {
+                result.reads += 1;
+                result.logical_bytes += object.logical_bytes;
+                if use_large {
+                    result.large_reads += 1;
+                } else {
+                    result.small_reads += 1;
+                }
+                result.latencies.push(duration_us(operation_started.elapsed()));
+            }
+            Ok(bytes) => {
+                result.errors += 1;
+                record_error(
+                    &mut result.error_messages,
+                    format!(
+                        "read {request}: length {} != {}",
+                        bytes.len(),
+                        object.logical_bytes
+                    ),
+                );
+            }
+            Err(error) => {
+                result.errors += 1;
+                record_error(&mut result.error_messages, format!("read {request}: {error}"));
+            }
+        }
+    }
+    result
+}
+
+fn select_large_read(config: &ReadBenchmarkConfig, request: u64) -> bool {
+    match config.workload {
+        ReadBenchmarkWorkload::Small => false,
+        ReadBenchmarkWorkload::Large => true,
+        ReadBenchmarkWorkload::Mixed => {
+            request.wrapping_mul(61).wrapping_add(u64::from(config.seed)) % 100
+                < u64::from(config.mixed_large_percent)
+        }
+    }
+}
+
+fn merge_read_worker(total: &mut ReadWorkerResult, worker: ReadWorkerResult) {
+    total.reads += worker.reads;
+    total.small_reads += worker.small_reads;
+    total.large_reads += worker.large_reads;
+    total.logical_bytes += worker.logical_bytes;
+    total.latencies.extend(worker.latencies);
+    total.errors += worker.errors;
+    for message in worker.error_messages {
+        record_error(&mut total.error_messages, message);
+    }
+}
+
+fn finalize_read_result(
+    preparation_secs: f64,
+    elapsed_secs: f64,
+    requested_reads: u64,
+    incomplete_reads: u64,
+    total: ReadWorkerResult,
+    dram: (Option<f64>, Option<f64>, Option<f64>),
+) -> ReadBenchmarkResult {
+    ReadBenchmarkResult {
+        preparation_secs,
+        elapsed_secs,
+        requested_reads,
+        reads: total.reads,
+        small_reads: total.small_reads,
+        large_reads: total.large_reads,
+        errors: total.errors,
+        incomplete_reads,
+        stop_reason: if total.errors == 0 && incomplete_reads == 0 {
+            "complete".into()
+        } else {
+            "failed".into()
+        },
+        logical_bytes: total.logical_bytes,
+        logical_mib_per_sec: u64_as_f64(total.logical_bytes) / 1_048_576.0 / elapsed_secs,
+        reads_per_sec: u64_as_f64(total.reads) / elapsed_secs,
+        latency_p50_us: percentile(&total.latencies, 50),
+        latency_p99_us: percentile(&total.latencies, 99),
+        dram_read_mib_s: dram.0,
+        dram_write_mib_s: dram.1,
+        dram_total_mib_s: dram.2,
+        error_messages: total.error_messages,
+    }
+}
+
+async fn prepare_read_set(
+    client: &ChunkIoClient,
+    config: &ReadBenchmarkConfig,
+) -> crate::Result<PreparedReadSet> {
+    let need_small = config.workload != ReadBenchmarkWorkload::Large;
+    let need_large = config.workload != ReadBenchmarkWorkload::Small;
+    let mut small = Vec::with_capacity(if need_small { config.dataset_objects } else { 0 });
+    let mut large = Vec::with_capacity(if need_large { config.dataset_objects } else { 0 });
+    if need_small {
+        let payload = bytes::Bytes::from(random_bytes(config.small_object_size, config.seed));
+        for _ in 0..config.dataset_objects {
+            let mut writer = client.prepare_small_write(config.small_object_size).await?;
+            writer.on_data(payload.clone()).await?;
+            small.push(PreparedReadObject {
+                locations: writer.on_finish().await?,
+                logical_bytes: config.small_object_size as u64,
+            });
+        }
+        client.shutdown_small_writes().await?;
+    }
+    if need_large {
+        let block_size = config.large_policy.client.read_buffer_size;
+        let payload = bytes::Bytes::from(random_bytes(block_size, config.seed.wrapping_add(1)));
+        for _ in 0..config.dataset_objects {
+            let block_bytes = payload.len() as u64;
+            let blocks = config.large_object_size.div_ceil(block_bytes);
+            let write = client
+                .prepare_large_write(Some(config.large_object_size), config.large_policy.clone())
+                .write_buffers((0..blocks).map(|index| {
+                    let remaining = config.large_object_size - index * block_bytes;
+                    payload.slice(..usize::try_from(remaining.min(block_bytes)).unwrap_or(payload.len()))
+                }))
+                .await?;
+            large.push(PreparedReadObject {
+                locations: write.locations,
+                logical_bytes: config.large_object_size,
+            });
+        }
+    }
+    Ok(PreparedReadSet {
+        small: Arc::new(small),
+        large: Arc::new(large),
+    })
+}
+
+fn failed_read_before_load(config: &ReadBenchmarkConfig, message: &str) -> ReadBenchmarkResult {
+    ReadBenchmarkResult {
+        preparation_secs: 0.0,
+        elapsed_secs: 0.0,
+        requested_reads: config.request_count,
+        reads: 0,
+        small_reads: 0,
+        large_reads: 0,
+        errors: 1,
+        incomplete_reads: config.request_count.saturating_sub(1),
+        stop_reason: "failed".into(),
+        logical_bytes: 0,
+        logical_mib_per_sec: 0.0,
+        reads_per_sec: 0.0,
+        latency_p50_us: 0,
+        latency_p99_us: 0,
+        dram_read_mib_s: None,
+        dram_write_mib_s: None,
+        dram_total_mib_s: None,
+        error_messages: vec![format!("prepare reads: {message}")],
+    }
+}
+
+fn sample_dram(counter: &mut Option<DramBwCounter>) -> (Option<f64>, Option<f64>, Option<f64>) {
+    let to_mib = |value: f64| value / 1024.0 / 1024.0;
+    counter
+        .as_mut()
+        .and_then(DramBwCounter::read_bytes_per_sec)
+        .map_or((None, None, None), |(read, write, total)| {
+            (read.map(to_mib), write.map(to_mib), Some(to_mib(total)))
+        })
 }
 
 fn duration_us(duration: std::time::Duration) -> u64 {

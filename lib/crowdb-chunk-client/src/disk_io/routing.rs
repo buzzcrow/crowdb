@@ -4,6 +4,7 @@
 //! Lock-free disk-ID routing for production DiskIO writes.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -19,7 +20,15 @@ use crate::{DiskWriter, IoError, Result};
 #[derive(Clone)]
 struct Route {
     endpoint: Arc<str>,
-    connection: Connection,
+    connections: Arc<[Connection]>,
+    next_connection: Arc<AtomicUsize>,
+}
+
+impl Route {
+    fn connection(&self) -> Connection {
+        let index = self.next_connection.fetch_add(1, Ordering::Relaxed) % self.connections.len();
+        self.connections[index].clone()
+    }
 }
 
 /// Disk writer backed by an atomically published disk-owner snapshot.
@@ -27,28 +36,51 @@ pub struct RoutedDiskWriter {
     client: Arc<DiskioClient>,
     server: Arc<RpcServer>,
     routes: ArcSwap<HashMap<DiskId, Route>>,
+    connections_per_endpoint: usize,
 }
 
 impl RoutedDiskWriter {
     /// Discover live DiskIO owners and connect to their endpoints.
     pub async fn connect(service: &ServiceRegistryClient, hardware: &HardwareClient) -> Result<Self> {
+        Self::connect_with_connections(service, hardware, 1).await
+    }
+
+    /// Discover owners and keep a fixed lock-free connection pool per endpoint.
+    pub async fn connect_with_connections(
+        service: &ServiceRegistryClient,
+        hardware: &HardwareClient,
+        connections_per_endpoint: usize,
+    ) -> Result<Self> {
+        if connections_per_endpoint == 0 {
+            return Err(IoError::Topology(
+                "DiskIO connections per endpoint must be non-zero".into(),
+            ));
+        }
         let server = Arc::new(RpcServer::new(None));
         server
             .listen("127.0.0.1", 0)
             .map_err(|error| IoError::Topology(format!("start RPC client: {error}")))?;
         server.start();
         let client = Arc::new(DiskioClient::new());
-        let routes = Self::discover(service, hardware, &server, &client).await?;
+        let routes = Self::discover(service, hardware, &server, &client, connections_per_endpoint).await?;
         Ok(Self {
             client,
             server,
             routes: ArcSwap::from_pointee(routes),
+            connections_per_endpoint,
         })
     }
 
     /// Refresh topology off the write path, then atomically publish it.
     pub async fn refresh(&self, service: &ServiceRegistryClient, hardware: &HardwareClient) -> Result<()> {
-        let routes = Self::discover(service, hardware, &self.server, &self.client).await?;
+        let routes = Self::discover(
+            service,
+            hardware,
+            &self.server,
+            &self.client,
+            self.connections_per_endpoint,
+        )
+        .await?;
         self.routes.store(Arc::new(routes));
         Ok(())
     }
@@ -58,6 +90,7 @@ impl RoutedDiskWriter {
         hardware: &HardwareClient,
         server: &RpcServer,
         client: &DiskioClient,
+        connections_per_endpoint: usize,
     ) -> Result<HashMap<DiskId, Route>> {
         let instances = service
             .read_all_diskio_instances()
@@ -85,7 +118,7 @@ impl RoutedDiskWriter {
             .list_all_disks()
             .await
             .map_err(|error| IoError::Topology(format!("read disks: {error}")))?;
-        let mut connections = HashMap::<String, Connection>::new();
+        let mut endpoint_routes = HashMap::<String, Route>::new();
         let mut routes = HashMap::with_capacity(disks.len());
         for disk in disks {
             let endpoint = dg_owners.get(&disk.disk_group_id).ok_or_else(|| {
@@ -94,22 +127,27 @@ impl RoutedDiskWriter {
                     disk.disk_group_id
                 ))
             })?;
-            if !connections.contains_key(endpoint) {
+            if !endpoint_routes.contains_key(endpoint) {
                 let (host, port) = parse_endpoint(endpoint)?;
-                let connection = server
-                    .connect(host, port)
-                    .map_err(|error| IoError::Topology(format!("connect DiskIO {endpoint}: {error}")))?;
-                client.attach(&connection);
-                connections.insert(endpoint.clone(), connection);
+                let mut connections = Vec::with_capacity(connections_per_endpoint);
+                for _ in 0..connections_per_endpoint {
+                    let connection = server
+                        .connect(host, port)
+                        .map_err(|error| IoError::Topology(format!("connect DiskIO {endpoint}: {error}")))?;
+                    client.attach(&connection);
+                    connections.push(connection);
+                }
+                endpoint_routes.insert(
+                    endpoint.clone(),
+                    Route {
+                        endpoint: Arc::from(endpoint.as_str()),
+                        connections: connections.into(),
+                        next_connection: Arc::new(AtomicUsize::new(0)),
+                    },
+                );
             }
             let id = DiskId::new(disk.disk_id.high, disk.disk_id.low);
-            routes.insert(
-                id,
-                Route {
-                    endpoint: Arc::from(endpoint.as_str()),
-                    connection: connections[endpoint].clone(),
-                },
-            );
+            routes.insert(id, endpoint_routes[endpoint].clone());
         }
         Ok(routes)
     }
@@ -142,11 +180,12 @@ impl DiskWriter for RoutedDiskWriter {
             .map(|id| DiskId::new(id.high, id.low))
             .ok_or_else(|| IoError::WriteFailed("segment missing disk_id".into()))?;
         let route = self.route(id)?;
+        let connection = route.connection();
         let future = self
             .client
             .write_bytes(
                 &self.server,
-                &route.connection,
+                &connection,
                 id,
                 seg.zone_index,
                 seg.unit_offset * unit_bytes,
@@ -171,9 +210,10 @@ impl DiskWriter for RoutedDiskWriter {
             .map(|id| DiskId::new(id.high, id.low))
             .ok_or_else(|| IoError::WriteFailed("segment missing disk_id".into()))?;
         let route = self.route(id)?;
+        let connection = route.connection();
         let future = self
             .client
-            .fsync(&self.server, &route.connection, id)
+            .fsync(&self.server, &connection, id)
             .map_err(|error| IoError::WriteFailed(format!("{}: {error}", route.endpoint)))?;
         let code = DiskioClient::await_fsync_response(future)
             .await
@@ -205,6 +245,7 @@ impl DiskWriter for RoutedDiskWriter {
             return Err(IoError::ReadFailed("disk read is outside its segment".into()));
         }
         let route = self.route(id)?;
+        let connection = route.connection();
         let zone_offset = seg
             .unit_offset
             .checked_mul(unit_bytes)
@@ -214,7 +255,7 @@ impl DiskWriter for RoutedDiskWriter {
             .client
             .read(
                 &self.server,
-                &route.connection,
+                &connection,
                 id,
                 seg.zone_index,
                 zone_offset,

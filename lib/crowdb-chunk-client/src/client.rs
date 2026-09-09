@@ -38,6 +38,8 @@ use crate::{
 pub struct ChunkIoClientConfig {
     /// KV management endpoints used to discover ChunkDB, DiskIO, and disks.
     pub management_seeds: Vec<String>,
+    /// Fixed lock-free connection pool size for each discovered DiskIO endpoint.
+    pub diskio_connections_per_endpoint: usize,
     /// Shared small-object aggregation and elasticity policy.
     pub small_write: SmallWritePolicy,
 }
@@ -102,7 +104,14 @@ impl ChunkIoClient {
         }
         let chunkdb = Arc::new(chunkdb);
         chunkdb.refresh_endpoints().await?;
-        let disk_writer = Arc::new(RoutedDiskWriter::connect(&service, &hardware).await?);
+        let disk_writer = Arc::new(
+            RoutedDiskWriter::connect_with_connections(
+                &service,
+                &hardware,
+                config.diskio_connections_per_endpoint,
+            )
+            .await?,
+        );
         let failed_disks = Arc::new(FailedDiskList::new(config.small_write.failed_disk_ttl));
         let large_write_repair = Arc::new(crate::metrics::LargeWriteRepairMetrics::default());
         let small_pool = SmallWritePool::new(

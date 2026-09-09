@@ -498,6 +498,7 @@ async fn main() {
     // Start HTTP health + metrics + cache invalidation server.
     let http_handle = tokio::spawn(run_http_server(
         http_listen_addr,
+        Arc::clone(&range_guard),
         Arc::clone(&lock_map),
         Arc::clone(&workflow_metrics.conversion),
         Arc::clone(&workflow_metrics.repair),
@@ -670,13 +671,20 @@ fn spawn_chunkdb_keepalive(
 /// HTTP server — health, metrics, cache invalidation endpoints.
 async fn run_http_server(
     addr: SocketAddr,
+    range_guard: Arc<RangeGuard>,
     locks: Arc<ChunkLockMap>,
     conversion_metrics: Arc<crowdb_chunkdb::metrics::ConversionMetrics>,
     repair_metrics: Arc<crowdb_chunkdb::metrics::RepairMetrics>,
     conversion: Arc<ConversionCoordinator>,
 ) {
     let app = axum::Router::new()
-        .route("/ready", axum::routing::get(|| async { "ok" }))
+        .route(
+            "/ready",
+            axum::routing::get(move || {
+                let response = ready_response(&range_guard);
+                async move { response }
+            }),
+        )
         .route("/health", axum::routing::get(|| async { "ok" }))
         .route(
             "/metrics",
@@ -766,6 +774,17 @@ async fn run_http_server(
     info!(%addr, "HTTP server listening");
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind http addr");
     axum::serve(listener, app).await.expect("HTTP server error");
+}
+
+fn ready_response(range_guard: &RangeGuard) -> (axum::http::StatusCode, &'static str) {
+    if range_guard.is_ready() {
+        (axum::http::StatusCode::OK, "ok")
+    } else {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "range ownership pending",
+        )
+    }
 }
 
 fn load_config(args: &Cli) -> ChunkdbConfig {

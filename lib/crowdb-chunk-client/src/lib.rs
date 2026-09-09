@@ -33,7 +33,11 @@ pub mod traits;
 pub mod worker;
 pub mod writer;
 
-pub use benchmark::{run_large_write_benchmark, LargeWriteBenchmarkConfig, LargeWriteBenchmarkResult};
+pub use benchmark::{
+    run_large_write_benchmark, run_read_benchmark, run_small_write_benchmark, LargeWriteBenchmarkConfig,
+    LargeWriteBenchmarkResult, ReadBenchmarkConfig, ReadBenchmarkResult, ReadBenchmarkWorkload,
+    SmallWriteBenchmarkConfig, SmallWriteBenchmarkResult,
+};
 pub use chunk::{
     ChunkPrefetch, ChunkReadPolicy, ChunkReadStream, ChunkReader, ChunkWriter, EcStripWriter,
     FailedReadRange, MirrorStripWriter, PartialReadResult, ReadRangeData, StripReader, StripResult,

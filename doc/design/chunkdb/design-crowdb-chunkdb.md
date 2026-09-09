@@ -934,6 +934,13 @@ HTTP endpoints (`main.rs` HTTP server, alongside `/ready` +
 
 All internal (no auth, same as `/ready` and `/health`).
 
+For strict range-guard deployments, `/ready` returns success only after the
+process has loaded at least one owned bucket range. This is stronger than the
+group-0 binding table being complete: operators cannot admit routed requests
+during the interval between binding publication and the process's periodic
+guard refresh. Compatibility deployments with `allow_all_when_empty=true`
+remain ready with an empty guard.
+
 ### 10.9 Edge cases
 
 - Lock map entry does not exist → created on first `acquire` via

@@ -118,7 +118,7 @@ run_case() {
         pixi run -- ./target/release/crowdb-cli --log-root "$CURRENT_LOG_ROOT" --config "$CURRENT_CONFIG" \
         bench chunkio write --objects "$objects" --duration-secs "$duration_secs" \
         --object-size "$object_size" \
-        --concurrency "$concurrency" --data-num 8 --code-num 4 \
+        --concurrency "$concurrency" --diskio-connections 8 --data-num 8 --code-num 4 \
         --block-size 1048576 --chunk-size 1073741824 --seed 1 \
         --prefetch-chunks "$PREFETCH_CHUNKS" --prefetch-strips-per-chunk 2 \
         "${input_args[@]}" \
@@ -189,7 +189,8 @@ mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"
 regression_init
 printf 'case\trequested\tsize_bytes\tsize_mib\tconcurrency\tcompleted\terrors\tincomplete\tstop\tobjects_s\tlogical_mib_s\tphysical_mib_s\tp50_us\tp99_us\tmem_read_avg_mib\tmem_read_max_mib\tmem_write_avg_mib\tmem_write_max_mib\tmem_total_avg_mib\tmem_total_max_mib\n' >"$RESULTS_FILE"
 
-cli cluster local-deploy -t combined --metrics-interval 1 --allow-unsafe-ec
+cli cluster local-deploy -t combined --metrics-interval 1 --allow-unsafe-ec \
+    --kv-backend mem-block --wal-backend mem-block --no-fsync
 
 run_case stream_1t 16777216 1 stream
 run_case direct_1t 16777216 1 direct

@@ -398,12 +398,14 @@ consumes one. Queue depth is an application admission setting; the benchmark
 defaults to ten through `--prefetch-chunks`. Unused sessions are explicitly
 aborted so their Active chunks are deleted.
 
-The write hot path reads an immutable disk-ID route snapshot through
-`ArcSwap`. Refresh constructs a complete replacement off-path and publishes it
-atomically. Missing ownership and duplicate owners are topology errors; the
-client never chooses an arbitrary DiskIO endpoint. Connections are reused per
-endpoint. The application and CLI do not construct allocators, RPC servers,
-connections, chunks, strips, or parity workers.
+The write and read hot paths read an immutable disk-ID route snapshot through
+`ArcSwap`. Every endpoint owns a fixed connection pool configured by
+`ChunkIoClientConfig::diskio_connections_per_endpoint`; an atomic counter
+selects the next connection without a route lock. Refresh constructs complete
+replacement pools off-path and publishes them atomically. Missing ownership
+and duplicate owners are topology errors; the client never chooses an
+arbitrary DiskIO endpoint. The application and CLI do not construct
+allocators, RPC servers, connections, chunks, strips, or parity workers.
 
 Topology refresh follows server ownership. `refresh_chunkdb_routes` refreshes
 ChunkDB endpoints and range bindings; `refresh_diskio_routes` refreshes
@@ -412,13 +414,28 @@ narrow seams and do not own scheduling or discovery.
 
 ## 11. Performance Workload
 
-`run_large_write_benchmark` is a library-owned, deterministic, bounded-source
-workload. Before its timer starts, it prepares the configured number of write
-sessions and distributes them across workers. Each worker starts a replacement
-allocation when it consumes a session. The result separates preparation time
-from timed load and includes aggregate throughput, latency, error, and
-preparation-stall fields. `crowdb-cli bench chunkio write` only maps arguments,
-starts the standard process metrics collector, and formats the result.
+Chunk IO performance workloads live in `crowdb-chunk-client`; CLI commands
+only map arguments, start the standard process metrics collector, and format
+results.
+
+- `run_large_write_benchmark` retains the deterministic bounded-source writer.
+  Before its timer starts, it prepares write sessions and distributes them
+  across workers. Each worker starts a replacement allocation when consuming a
+  session.
+- `run_small_write_benchmark` uses `prepare_small_write`, awaits each real
+  Location, drains the shared pool, and reports batch fill, queue delay,
+  active/draining pipeline gauges, queue-driven scale-out/scale-in, throughput,
+  latency, and exact object accounting.
+- `run_read_benchmark` prepares a bounded reusable dataset through the real
+  small- and/or large-write APIs before timing. Small, large, and deterministic
+  mixed request modes call `read_object`; mixed ratio is by request count.
+  Successful reads validate logical length. Under NullDisk they deliberately
+  do not compare payload contents.
+
+The CLI commands are `bench chunkio write`, `write-small`, `read-small`,
+`read-large`, and `read-mix`. Results separate preparation from timed load and
+include aggregate throughput, latency, errors, stop reason, and exact admitted
+versus completed accounting.
 
 The CLI workload admits objects until a shared duration deadline (20 seconds by
 default). A worker checks the deadline before admitting its next object; an
@@ -429,7 +446,10 @@ not the normal regression stopping condition.
 
 The regression fixture starts three co-located logical nodes in one rack:
 three KV servers, three DiskDB, three ChunkDB, and three DiskIO processes
-backed by `NullDisk`. An 8+4 strip in this intentionally compact local topology
+backed by `NullDisk`. KV state and WAL use `mem-block` with fsync disabled, so
+benchmark metadata also avoids real media. Read preparation still writes real
+ChunkDB/DiskDB/KV metadata and writer-produced Locations; only payload storage
+is synthetic. An 8+4 strip in this intentionally compact local topology
 requires the local-test-only unsafe EC placement option; disk ownership and
 routing remain strict. Unsafe placement still balances blocks across the
 available nodes within a rack; it relaxes the failure-domain limit without
