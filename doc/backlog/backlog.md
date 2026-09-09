@@ -87,21 +87,10 @@ complexity, and dependency. Before implementation, follow the
 
 ### Data Path (diskio + chunk object writers + read flow)
 
-Chunk reads, read repair, mirror-to-EC conversion, and large-write error
-handling are landed. The RPC migration items (R115, R116, R117) are in a
-separate area (see RPC Migration section below); R32 depends on R115.
-
-- **[R135](R135-chunkio-end-to-end-performance.md)** — Chunk IO write-flow
-  review and end-to-end performance — Area: chunkio / chunkdb / diskdb /
-  diskio / kv — Extend the three-node combined fixture to deploy three
-  DiskIO instances backed by `NullDisk`, add disk-ID-to-DiskIO routing to
-  the chunk client, and benchmark large-object writes through a library-owned
-  prepare-and-stream API. Keep allocation off the steady-state data path;
-  measure fetch, EC, block writes, fsync, and chunk seal. Review and reduce
-  memory copies, passively collect host DRAM bandwidth when hardware counters
-  support it, and record logical/physical bandwidth, loopback traffic, object
-  latency, errors, exact accounting, and service logs. Keep shared fixture and
-  result plumbing reusable for later small-write and read workloads.
+Chunk reads, read repair, mirror-to-EC conversion, write error handling, and
+end-to-end Chunk IO performance workloads are landed. The RPC migration items
+(R115, R116, R117) are in a separate area (see RPC Migration section below);
+R32 depends on R115.
 
 - **[R113](R113-chunkio-batch-strip-allocation.md)** — Batch strip
   allocation + deferred chunkdb confirm — Area: chunkio / chunkdb /
