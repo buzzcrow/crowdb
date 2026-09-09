@@ -69,6 +69,11 @@ async fn small_write_benchmark_uses_real_metadata_and_null_disk() {
     assert_eq!(result.incomplete_objects, 0);
     assert_eq!(result.stop_reason, "complete");
     assert!(result.batches > 0);
+    assert!(result.latency_p50_us <= result.latency_p90_us);
+    assert!(result.latency_p90_us <= result.latency_p95_us);
+    assert!(result.latency_p95_us <= result.latency_p99_us);
+    assert!(result.latency_p99_us <= result.latency_max_us);
+    assert_eq!(result.batch_watchdog_expirations, 0);
     assert_eq!(result.aggregate_write_requests, result.batches);
     assert_eq!(result.aggregate_write_objects, 8);
     assert_eq!(result.aggregate_write_buffers, 8);

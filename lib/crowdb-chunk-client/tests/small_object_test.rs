@@ -358,7 +358,7 @@ fn policy() -> SmallWritePolicy {
         max_pipelines: 1,
         max_batch_bytes: 1024 * 1024,
         max_batch_objects: 128,
-        batch_deadline: Duration::from_millis(20),
+        batch_watchdog: Duration::from_millis(500),
         scale_out_queue_bytes: 1024 * 1024,
         scale_out_queue_objects: 128,
         scale_in_delay: Duration::from_secs(1),
@@ -738,12 +738,45 @@ async fn small_object_completion_waits_for_cursor_commit() {
 }
 
 #[tokio::test]
+async fn small_object_does_not_wait_for_batch_watchdog() {
+    let mut configured = policy();
+    configured.batch_watchdog = Duration::from_secs(60);
+    let (client, _, _) = client(configured);
+    let mut writer = client.prepare_small_write(4096).await.unwrap();
+    writer.on_data(Bytes::from(vec![1; 4096])).await.unwrap();
+
+    let locations = tokio::time::timeout(Duration::from_millis(100), writer.on_finish())
+        .await
+        .expect("an empty queue must not delay the first object")
+        .unwrap();
+
+    assert_eq!(locations[0].length, 4096);
+    assert_eq!(client.small_write_metrics().batch_watchdog_expirations, 0);
+    client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
+async fn small_object_watchdog_observes_but_does_not_cancel_batch() {
+    let mut configured = policy();
+    configured.batch_watchdog = Duration::from_millis(5);
+    let (client, _, disk) = client(configured);
+    disk.delay_ms.store(30, Ordering::Relaxed);
+    let mut writer = client.prepare_small_write(4096).await.unwrap();
+    writer.on_data(Bytes::from(vec![1; 4096])).await.unwrap();
+
+    let locations = writer.on_finish().await.unwrap();
+
+    assert_eq!(locations[0].length, 4096);
+    assert!(client.small_write_metrics().batch_watchdog_expirations > 0);
+    client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
 async fn small_object_manager_scales_out_by_queued_bytes_then_drains_idle_pipeline() {
     let mut elastic = policy();
     elastic.max_pipelines = 2;
     elastic.max_batch_bytes = 16 * 1024;
     elastic.max_batch_objects = 1;
-    elastic.batch_deadline = Duration::from_millis(1);
     elastic.scale_out_queue_bytes = 16 * 1024;
     elastic.scale_out_queue_objects = elastic.queue_capacity;
     elastic.scale_in_delay = Duration::from_millis(20);
@@ -778,7 +811,6 @@ async fn small_object_manager_scales_out_by_queued_object_count() {
     elastic.max_pipelines = 2;
     elastic.max_batch_bytes = 16 * 1024;
     elastic.max_batch_objects = 1;
-    elastic.batch_deadline = Duration::from_millis(1);
     elastic.scale_out_queue_bytes = elastic.memory_budget;
     elastic.scale_out_queue_objects = 1;
     elastic.control_interval = Duration::from_millis(1);
@@ -807,7 +839,6 @@ async fn small_object_scale_out_failure_keeps_current_pipeline_routable() {
     elastic.max_pipelines = 2;
     elastic.max_batch_bytes = 16 * 1024;
     elastic.max_batch_objects = 1;
-    elastic.batch_deadline = Duration::from_millis(1);
     elastic.scale_out_queue_bytes = 16 * 1024;
     elastic.scale_out_queue_objects = 1;
     elastic.control_interval = Duration::from_millis(1);

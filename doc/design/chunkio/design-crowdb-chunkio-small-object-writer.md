@@ -75,10 +75,13 @@ therefore either accepted and drained or rejected intact for rerouting.
 
 ## 4. Batching and Physical Layout
 
-A pipeline starts a deadline when it receives the first object, then collects
-whole objects until reaching the byte limit, object-count limit, strip space,
-or deadline. An object larger than the normal batch target is written alone as
-long as it is within the object limit.
+A pipeline waits for the first object only while it has no work. After the
+previous batch completes, it immediately drains whole objects that are already
+queued until reaching the byte limit, object-count limit, or strip space. It
+never delays an admitted object to wait for a batching timer. Concurrent work
+naturally accumulates behind the in-flight batch and is aggregated on the next
+completion-driven drain. An object larger than the normal batch target is
+written alone as long as it is within the object limit.
 
 Each pipeline reserves and retains one zero-filled 1 MiB shadow for its open
 mirror strip. Object fragments are packed contiguously at exact logical
@@ -183,7 +186,13 @@ configuration-compatible but do not participate in scale decisions.
 
 Atomic metrics cover submitted, completed, and failed objects; reserved bytes;
 batch sizes and fill; queue delay; active and draining pipelines; scale changes;
-and strip-tail waste. Repair metrics expose attempts, repaired and exhausted
+strip-tail waste; and batch-watchdog expirations. The watchdog reports a batch
+that remains in flight beyond its configured interval, then continues awaiting
+the same durability future. It neither delays queue draining nor cancels an
+operation whose physical or metadata outcome may already be committed. The
+default 500 ms observation cadence matches the RPC pending-request reaper
+scan interval; underlying RPC clients retain their own 5- or 10-second request
+timeouts. Repair metrics expose attempts, repaired and exhausted
 replicas, failed-disk exclusions, active pipelines, pipeline replacements, repairs
 that avoided rotation, complete-shadow bytes, and repair latency totals and
 maxima. Snapshots compute aggregates without locking submission.

@@ -177,7 +177,6 @@ async fn small_write_batches_concurrent_objects_and_reads_them_back() {
     let mut configured = policy();
     configured.max_batch_objects = 64;
     configured.max_batch_bytes = MIB;
-    configured.batch_deadline = Duration::from_millis(50);
     let stack = E2eStack::start(configured).await;
     let completed = concurrent_writes(&stack, 16, 16 * KIB).await;
 

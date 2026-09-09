@@ -55,7 +55,8 @@ worker
   -> prepare_small_write
   -> enqueue whole object in shared writer pool
   -> queue-byte/object threshold may add a pipeline
-  -> pipeline batches objects into a mirror strip
+  -> completed pipeline immediately drains the objects currently queued
+  -> drained objects form the next mirror strip without a batching delay
   -> ChunkDB allocation and DiskDB/KV metadata commit
   -> DiskIO mirror writes to NullDisk
   -> completion returned to every object
@@ -74,6 +75,11 @@ mirror-to-EC traffic retain their separate counters. It also records the peak
 pipeline count. Dedicated E2E coverage stops admission and observes scale-in
 to the configured minimum from queue and busy state. Neither scale-out nor
 scale-in uses elapsed idle time as a decision input.
+
+The pipeline follows the RPC send-queue scheduling model: completion of the
+current batch immediately fetches all currently available work, bounded by the
+object and byte caps. The 500 ms batch watchdog only reports a stuck durability
+operation. It never delays a batch, triggers a flush, or cancels work.
 
 ## 3. Read Flow
 
@@ -104,23 +110,36 @@ services.
 
 ### 4.1 Small Write
 
-| Size  | Threads |       TPS | MiB/s | p50 ms | p99 ms | Scale out | Errors | Valid |
-| ----- | ------: | --------: | ----: | -----: | -----: | --------: | -----: | :---: |
-| 1 KiB |       1 |     17.16 |   0.0 | 56.013 | 57.112 |         0 |      0 | yes   |
-| 1 KiB |       4 |     68.45 |   0.1 | 56.103 | 59.383 |         0 |      0 | yes   |
-| 1 KiB |      32 |  2,380.19 |   2.3 |  9.878 | 56.322 |        23 |      0 | yes   |
-| 1 KiB |     128 | 18,706.42 |  18.3 |  6.153 | 13.904 |        38 |      0 | yes   |
-| 1 KiB |     256 | 35,807.68 |  35.0 |  6.778 | 15.937 |         5 |      0 | yes   |
-| 8 KiB |       1 |     17.78 |   0.1 | 56.045 | 58.310 |         0 |      0 | yes   |
-| 8 KiB |       4 |     69.73 |   0.5 | 56.116 | 63.483 |         0 |      0 | yes   |
-| 8 KiB |      32 |  3,454.69 |  27.0 |  8.425 | 21.520 |        23 |      0 | yes   |
-| 8 KiB |     128 | 13,801.34 | 107.8 |  8.102 | 23.686 |         5 |      0 | yes   |
-| 8 KiB |     256 | 22,802.91 | 178.1 |  9.765 | 27.339 |         9 |      0 | yes   |
+| Size  | Threads |       TPS | MiB/s | p50 ms | p99 ms | Objects/batch | Peak pipes | Errors | Valid |
+| ----- | ------: | --------: | ----: | -----: | -----: | ------------: | ---------: | -----: | :---: |
+| 1 KiB |       1 |    424.42 |   0.4 |  2.309 |  3.532 |          1.00 |          1 |      0 | yes   |
+| 1 KiB |       4 |    856.48 |   0.8 |  4.627 |  6.095 |          2.00 |          1 |      0 | yes   |
+| 1 KiB |      32 |  6,275.96 |   6.1 |  5.032 |  9.448 |          8.26 |          2 |      0 | yes   |
+| 1 KiB |     128 | 19,508.32 |  19.1 |  6.166 | 13.627 |         15.36 |          5 |      0 | yes   |
+| 1 KiB |     256 | 31,313.08 |  30.6 |  7.549 | 19.388 |         21.21 |          8 |      0 | yes   |
+| 8 KiB |       1 |    390.94 |   3.1 |  2.492 |  3.909 |          1.00 |          1 |      0 | yes   |
+| 8 KiB |       4 |    675.29 |   5.3 |  5.323 | 10.882 |          2.03 |          1 |      0 | yes   |
+| 8 KiB |      32 |  4,464.84 |  34.9 |  6.701 | 18.595 |          8.65 |          2 |      0 | yes   |
+| 8 KiB |     128 | 13,461.05 | 105.2 |  8.791 | 23.066 |         11.25 |          7 |      0 | yes   |
+| 8 KiB |     256 | 23,446.56 | 183.2 |  9.811 | 27.503 |         18.97 |          9 |      0 | yes   |
 
-The highest repeatable measured rates are 35,807.68 TPS for 1 KiB and
-22,802.91 TPS for 8 KiB, both at 256 workers. These are observed maxima, not a
-demonstrated saturation peak. Every reference row completed with zero errors
-and zero incomplete requests.
+The timer-free single-worker p50 is 2.31 ms for 1 KiB and 2.49 ms for 8 KiB;
+the earlier roughly 56 ms rows were invalidated by the io_uring wake defect and
+the batching deadline. The highest measured rates in this run are 31,313.08 TPS
+for 1 KiB and 23,446.56 TPS for 8 KiB, both at 256 workers. These are observed
+maxima, not demonstrated saturation peaks. Aggregation rises naturally with
+queue occupancy even though there is no batching delay. All watchdog counters,
+errors, and incomplete counts are zero. The retained matrix is
+`bench-log/chunkio-small-completion-drain-20260909/results.tsv`.
+
+A dedicated 1 KiB, one-worker distribution rerun completed 8,489 requests at
+424.42 TPS: p50 2.309 ms, p90 2.665 ms, p95 2.918 ms, p99 3.532 ms, and max
+26.575 ms. Maximum observed queue delay was only 90 us. Server and client stage
+windows place the steady-state cost primarily in two serial durability phases:
+the three parallel NullDisk mirror writes average roughly 0.72-0.85 ms, followed
+by the fenced `advance_chunk_write` metadata commit averaging roughly
+1.1-1.4 ms. The retained distribution run is
+`bench-log/chunkio-small-latency-distribution-20260909/results.tsv`.
 
 ### 4.2 Read Before the Correctness Fix
 

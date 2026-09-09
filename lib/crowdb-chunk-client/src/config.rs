@@ -24,7 +24,9 @@ pub struct SmallWritePolicy {
     pub max_pipelines: usize,
     pub max_batch_bytes: usize,
     pub max_batch_objects: usize,
-    pub batch_deadline: Duration,
+    /// Reports a batch that remains in flight beyond this interval. The
+    /// watchdog does not delay queue draining or cancel durability work.
+    pub batch_watchdog: Duration,
     pub scale_out_queue_bytes: usize,
     pub scale_out_queue_objects: usize,
     /// Compatibility setting retained for callers; queue state alone decides scale-in.
@@ -53,7 +55,7 @@ impl Default for SmallWritePolicy {
             max_pipelines: 32,
             max_batch_bytes: MIB,
             max_batch_objects: 1_024,
-            batch_deadline: Duration::from_millis(2),
+            batch_watchdog: Duration::from_millis(500),
             scale_out_queue_bytes: 4 * MIB,
             scale_out_queue_objects: 128,
             scale_in_delay: Duration::from_secs(30),
@@ -116,7 +118,7 @@ impl SmallWritePolicy {
             || self.mirror_copies == 0
             || self.conversion_data_num == 0
             || self.conversion_code_num == 0
-            || self.batch_deadline.is_zero()
+            || self.batch_watchdog.is_zero()
             || self.control_interval.is_zero()
             || self.writer_lease.is_zero()
             || self.failed_disk_ttl.is_zero()

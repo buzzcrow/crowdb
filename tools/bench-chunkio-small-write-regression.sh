@@ -9,21 +9,23 @@
 #
 # Reference platform: Intel Core i9-7960X (16c/32t, x86_64, Linux).
 # Configuration: 8 DiskIO connections/endpoint, 1 client DiskIO RPC worker,
-# 4 MiB scale-out queue threshold, mem-block metadata, NullDisk data
-# (2026-09-09).
+# 4 MiB scale-out queue threshold, completion-driven batching, mem-block
+# metadata, NullDisk data (2026-09-09).
 #
 # Reference results (all errors=0, incomplete=0, stop=complete):
 #   size    threads    success TPS    MiB/s    p50 us    p99 us
-#   1 KiB         1          17.16       0.0    56,013     57,112
-#   1 KiB         4          68.45       0.1    56,103     59,383
-#   1 KiB        32       2,380.19       2.3     9,878     56,322
-#   1 KiB       128      18,706.42      18.3     6,153     13,904
-#   1 KiB       256      35,807.68      35.0     6,778     15,937
-#   8 KiB         1          17.78       0.1    56,045     58,310
-#   8 KiB         4          69.73       0.5    56,116     63,483
-#   8 KiB        32       3,454.69      27.0     8,425     21,520
-#   8 KiB       128      13,801.34     107.8     8,102     23,686
-#   8 KiB       256      22,802.91     178.1     9,765     27,339
+#   1 KiB         1         424.42       0.4     2,309      3,532
+#   1 KiB         4         856.48       0.8     4,627      6,095
+#   1 KiB        32       6,275.96       6.1     5,032      9,448
+#   1 KiB       128      19,508.32      19.1     6,166     13,627
+#   1 KiB       256      31,313.08      30.6     7,549     19,388
+#   8 KiB         1         390.94       3.1     2,492      3,909
+#   8 KiB         4         675.29       5.3     5,323     10,882
+#   8 KiB        32       4,464.84      34.9     6,701     18,595
+#   8 KiB       128      13,461.05     105.2     8,791     23,066
+#   8 KiB       256      23,446.56     183.2     9,811     27,503
+# The 1 KiB/1-thread distribution rerun additionally measured p90=2,665 us,
+# p95=2,918 us, and max=26,575 us across 8,489 successful responses.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -105,11 +107,14 @@ run_case() {
     incomplete=$(field "$line" incomplete)
     stop=$(field "$line" stop)
     scale_out=$(field "$line" scale_out)
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$label" "$size" "$concurrency" "$requested" "$completed" \
         "$errors" "$incomplete" "$stop" "$(field "$line" objects_s)" \
         "$(field "$line" logical_mib_s)" "$(field "$line" p50_us)" \
-        "$(field "$line" p99_us)" "$(field "$line" batches)" \
+        "$(field "$line" p90_us)" "$(field "$line" p95_us)" \
+        "$(field "$line" p99_us)" "$(field "$line" max_us)" \
+        "$(field "$line" batches)" \
+        "$(field "$line" batch_watchdog_expirations)" \
         "$(field "$line" max_batch_objects)" "$(field "$line" aggregate_write_requests)" \
         "$(field "$line" aggregate_write_objects)" "$(field "$line" aggregate_write_buffers)" \
         "$(field "$line" aggregate_write_payload_bytes)" \
@@ -121,6 +126,7 @@ run_case() {
         || [ "$completed" -eq 0 ] || [ "$completed" != "$requested" ] \
         || [ "$errors" != 0 ] || [ "$incomplete" != 0 ] \
         || [ "$stop" != complete ] || [ -z "$(field "$line" batches)" ] \
+        || [ "$(field "$line" batch_watchdog_expirations)" != 0 ] \
         || [ -z "$(field "$line" aggregate_write_requests)" ]; then
         echo "ERROR: $label failed accounting" >&2
         FAILURES=$((FAILURES + 1))
@@ -137,7 +143,7 @@ if [ "$SKIP_BUILD" != 1 ]; then
 fi
 mkdir -p "$LOG_ROOT"
 regression_init
-printf 'case\tsize_bytes\tconcurrency\trequested\tcompleted\terrors\tincomplete\tstop\tobjects_s\tlogical_mib_s\tp50_us\tp99_us\tbatches\tmax_batch_objects\taggregate_write_requests\taggregate_write_objects\taggregate_write_buffers\taggregate_write_payload_bytes\tmax_objects_per_write_request\tmax_buffers_per_write_request\tmax_active_pipelines\tscale_out\tscale_in\n' >"$RESULTS_FILE"
+printf 'case\tsize_bytes\tconcurrency\trequested\tcompleted\terrors\tincomplete\tstop\tobjects_s\tlogical_mib_s\tp50_us\tp90_us\tp95_us\tp99_us\tmax_us\tbatches\tbatch_watchdog_expirations\tmax_batch_objects\taggregate_write_requests\taggregate_write_objects\taggregate_write_buffers\taggregate_write_payload_bytes\tmax_objects_per_write_request\tmax_buffers_per_write_request\tmax_active_pipelines\tscale_out\tscale_in\n' >"$RESULTS_FILE"
 
 deploy_args=(cluster local-deploy -t combined --metrics-interval 1 --allow-unsafe-ec \
     --kv-backend mem-block --wal-backend mem-block --no-fsync)

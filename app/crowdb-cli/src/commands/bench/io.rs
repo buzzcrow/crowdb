@@ -289,11 +289,13 @@ fn print_large_write(args: &ChunkioArgs, result: &LargeWriteBenchmarkResult) {
 
 fn print_small_write(args: &ChunkioSmallWriteArgs, result: &SmallWriteBenchmarkResult) {
     println!(
-        "chunkio write-small: requested={} object_size={} objects={} errors={} incomplete={} stop={} objects_s={:.2} logical_mib_s={:.1} p50_us={} p99_us={} batches={} max_batch_objects={} max_batch_bytes={} aggregate_write_requests={} aggregate_write_objects={} aggregate_write_buffers={} aggregate_write_logical_bytes={} aggregate_write_payload_bytes={} max_objects_per_write_request={} max_buffers_per_write_request={} avg_batch_fill_ppm={} max_queue_delay_us={} active_pipelines={} max_active_pipelines={} draining_pipelines={} scale_out={} scale_in={} tail_waste_bytes={} dram_read_mib_s={} dram_write_mib_s={} dram_total_mib_s={}",
+        "chunkio write-small: requested={} object_size={} objects={} errors={} incomplete={} stop={} objects_s={:.2} logical_mib_s={:.1} p50_us={} p90_us={} p95_us={} p99_us={} max_us={} batches={} max_batch_objects={} max_batch_bytes={} batch_watchdog_expirations={} aggregate_write_requests={} aggregate_write_objects={} aggregate_write_buffers={} aggregate_write_logical_bytes={} aggregate_write_payload_bytes={} max_objects_per_write_request={} max_buffers_per_write_request={} avg_batch_fill_ppm={} max_queue_delay_us={} active_pipelines={} max_active_pipelines={} draining_pipelines={} scale_out={} scale_in={} tail_waste_bytes={} dram_read_mib_s={} dram_write_mib_s={} dram_total_mib_s={}",
         result.requested_objects, args.object_size, result.objects, result.errors,
         result.incomplete_objects, result.stop_reason, result.objects_per_sec,
-        result.logical_mib_per_sec, result.latency_p50_us, result.latency_p99_us,
+        result.logical_mib_per_sec, result.latency_p50_us, result.latency_p90_us,
+        result.latency_p95_us, result.latency_p99_us, result.latency_max_us,
         result.batches, result.max_batch_objects, result.max_batch_bytes,
+        result.batch_watchdog_expirations,
         result.aggregate_write_requests, result.aggregate_write_objects,
         result.aggregate_write_buffers, result.aggregate_write_logical_bytes,
         result.aggregate_write_payload_bytes, result.max_objects_per_write_request,

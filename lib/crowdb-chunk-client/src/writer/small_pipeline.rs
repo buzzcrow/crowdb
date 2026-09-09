@@ -5,7 +5,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 use crowdb_common::ec::{EcScheme, IncrementalParity};
@@ -116,9 +116,9 @@ impl PipelineWorker {
                 let _ = self.finish_chunks().await;
                 return Err(error);
             }
-            let batch = self.collect_batch(first).await;
+            let batch = self.collect_batch(first);
             self.route.busy.store(true, Ordering::Release);
-            let result = self.chunk.write_batch(batch, &self.runtime.metrics).await;
+            let result = self.write_batch_with_watchdog(batch).await;
             self.route.busy.store(false, Ordering::Release);
             self.route
                 .last_active_ms
@@ -132,6 +132,34 @@ impl PipelineWorker {
             self.prepare_replacement().await;
         }
         self.finish_chunks().await
+    }
+
+    async fn write_batch_with_watchdog(&mut self, batch: Vec<PendingObject>) -> Result<()> {
+        let object_count = batch.len();
+        let logical_bytes: usize = batch.iter().map(|object| object.len).sum();
+        let watchdog = self.runtime.policy.batch_watchdog;
+        let metrics = Arc::clone(&self.runtime.metrics);
+        let write = self.chunk.write_batch(batch, &metrics);
+        tokio::pin!(write);
+        let mut elapsed = Duration::ZERO;
+        loop {
+            tokio::select! {
+                result = &mut write => return result,
+                () = tokio::time::sleep(watchdog) => {
+                    elapsed = elapsed.saturating_add(watchdog);
+                    metrics
+                        .batch_watchdog_expirations
+                        .fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(
+                        object_count,
+                        logical_bytes,
+                        watchdog_ms = watchdog.as_millis(),
+                        elapsed_ms = elapsed.as_millis(),
+                        "small-write batch remains in flight after watchdog interval"
+                    );
+                }
+            }
+        }
     }
 
     fn note_dequeue(&self, object: &PendingObject) {
@@ -186,14 +214,13 @@ impl PipelineWorker {
         current_result.and(replacement_result)
     }
 
-    async fn collect_batch(&mut self, first: PendingObject) -> Vec<PendingObject> {
-        let deadline = tokio::time::Instant::now() + self.runtime.policy.batch_deadline;
+    fn collect_batch(&mut self, first: PendingObject) -> Vec<PendingObject> {
         let mut bytes = first.len;
         let mut batch = vec![first];
         while batch.len() < self.runtime.policy.max_batch_objects
             && bytes < self.runtime.policy.max_batch_bytes
         {
-            let Ok(Some(next)) = tokio::time::timeout_at(deadline, self.receiver.recv()).await else {
+            let Ok(next) = self.receiver.try_recv() else {
                 break;
             };
             self.note_dequeue(&next);
