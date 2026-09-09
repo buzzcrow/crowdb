@@ -14,9 +14,10 @@ use crowdb_protocol::chunkdb::rpc::{
     AllocateReplacementSegmentRequest, AllocateReplacementSegmentResponse, AppendChunkRequest,
     AppendChunkResponse, CompleteMirrorToEcConversionRequest, CompleteMirrorToEcConversionResponse,
     DeleteChunkRequest, DeleteChunkResponse, DiscardReplacementSegmentRequest,
-    DiscardReplacementSegmentResponse, PrepareMirrorToEcConversionRequest,
-    PrepareMirrorToEcConversionResponse, QueryChunkRequest, QueryChunkResponse,
-    ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse, SealChunkRequest, SealChunkResponse,
+    DiscardReplacementSegmentResponse, MutateStripReservationRequest, MutateStripReservationResponse,
+    PrepareMirrorToEcConversionRequest, PrepareMirrorToEcConversionResponse, QueryChunkRequest,
+    QueryChunkResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse,
+    ReserveStripGroupRequest, ReserveStripGroupResponse, SealChunkRequest, SealChunkResponse,
     UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use std::sync::Arc;
@@ -29,6 +30,19 @@ use crate::Result;
 pub trait ChunkAllocator: Send + Sync {
     async fn allocate_chunk(&self, req: AllocateChunkRequest) -> Result<AllocateChunkResponse>;
     async fn append_chunk(&self, req: AppendChunkRequest) -> Result<AppendChunkResponse>;
+    async fn reserve_strip_group(&self, _req: ReserveStripGroupRequest) -> Result<ReserveStripGroupResponse> {
+        Err(crate::IoError::AllocationFailed(
+            "strip reservation is unsupported by this allocator".into(),
+        ))
+    }
+    async fn mutate_strip_reservation(
+        &self,
+        _req: MutateStripReservationRequest,
+    ) -> Result<MutateStripReservationResponse> {
+        Err(crate::IoError::MetadataConflict(
+            "strip reservation mutation is unsupported by this allocator".into(),
+        ))
+    }
     async fn advance_chunk_write(&self, _req: AdvanceChunkWriteRequest) -> Result<AdvanceChunkWriteResponse> {
         Err(crate::IoError::Internal(
             "advance_chunk_write is unsupported by this allocator".into(),
@@ -90,6 +104,15 @@ impl<T: ChunkAllocator + ?Sized> ChunkAllocator for Arc<T> {
     async fn append_chunk(&self, req: AppendChunkRequest) -> Result<AppendChunkResponse> {
         (**self).append_chunk(req).await
     }
+    async fn reserve_strip_group(&self, req: ReserveStripGroupRequest) -> Result<ReserveStripGroupResponse> {
+        (**self).reserve_strip_group(req).await
+    }
+    async fn mutate_strip_reservation(
+        &self,
+        req: MutateStripReservationRequest,
+    ) -> Result<MutateStripReservationResponse> {
+        (**self).mutate_strip_reservation(req).await
+    }
     async fn advance_chunk_write(&self, req: AdvanceChunkWriteRequest) -> Result<AdvanceChunkWriteResponse> {
         (**self).advance_chunk_write(req).await
     }
@@ -146,6 +169,15 @@ impl ChunkAllocator for crowdb_chunkdb_client::ChunkdbClient {
     }
     async fn append_chunk(&self, req: AppendChunkRequest) -> Result<AppendChunkResponse> {
         Ok(crowdb_chunkdb_client::ChunkdbClient::append_chunk(self, req).await?)
+    }
+    async fn reserve_strip_group(&self, req: ReserveStripGroupRequest) -> Result<ReserveStripGroupResponse> {
+        Ok(crowdb_chunkdb_client::ChunkdbClient::reserve_strip_group(self, req).await?)
+    }
+    async fn mutate_strip_reservation(
+        &self,
+        req: MutateStripReservationRequest,
+    ) -> Result<MutateStripReservationResponse> {
+        Ok(crowdb_chunkdb_client::ChunkdbClient::mutate_strip_reservation(self, req).await?)
     }
     async fn advance_chunk_write(&self, req: AdvanceChunkWriteRequest) -> Result<AdvanceChunkWriteResponse> {
         Ok(crowdb_chunkdb_client::ChunkdbClient::advance_chunk_write(self, req).await?)

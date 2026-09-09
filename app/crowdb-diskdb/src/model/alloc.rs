@@ -195,12 +195,13 @@ pub async fn allocate_block(
 /// Returns `AllocError::NoSpace` if not all `count` blocks can be
 /// placed (even after compaction fallback), or a KV client error if
 /// the batch persist fails.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub async fn allocate_blocks(
     dg: &Arc<DdbDiskGroup>,
     unit_count: u32,
     count: u32,
     exclude_disks: &[DiskId],
+    allow_disk_reuse: bool,
     owner_chunk: &ChunkId,
     unit_size: u32,
     kv: &DdbKvClient,
@@ -210,13 +211,26 @@ pub async fn allocate_blocks(
 ) -> std::result::Result<Vec<Segment>, AllocError> {
     // Phase 1: bitmap CAS for all blocks.
     let phase1_start = std::time::Instant::now();
-    let claims: Vec<AllocClaim> = match dg.allocate_blocks(
-        unit_count,
-        count,
-        exclude_disks,
-        cas_retry_limit,
-        zone_rotate_count,
-    ) {
+    let allocate = || {
+        if allow_disk_reuse {
+            dg.allocate_blocks_reusing_disks(
+                unit_count,
+                count,
+                exclude_disks,
+                cas_retry_limit,
+                zone_rotate_count,
+            )
+        } else {
+            dg.allocate_blocks(
+                unit_count,
+                count,
+                exclude_disks,
+                cas_retry_limit,
+                zone_rotate_count,
+            )
+        }
+    };
+    let claims: Vec<AllocClaim> = match allocate() {
         Ok(claims) if claims.len() == count as usize => claims,
         Ok(claims) => {
             metrics.allocate_partial_batches.inc();
@@ -227,13 +241,7 @@ pub async fn allocate_blocks(
             // No space at all — try compaction fallback then retry.
             tracing::info!("allocate_blocks NoSpace — running synchronous compaction fallback");
             compact_fallback(dg, kv, zone_rotate_count, metrics).await;
-            dg.allocate_blocks(
-                unit_count,
-                count,
-                exclude_disks,
-                cas_retry_limit,
-                zone_rotate_count,
-            )?
+            allocate()?
         }
         Err(error @ AllocError::Persistence) => return Err(error),
     };

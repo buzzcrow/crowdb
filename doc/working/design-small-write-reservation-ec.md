@@ -50,8 +50,8 @@ uses the refreshed chunk and recomputes the remaining runway.
 
 ### 3.1 Metadata and RPC
 
-Reservations are stored with the owning `Chunk`, outside `Chunk.strips`, so the
-chunk lifecycle guard and one KV record provide revision ordering. Each record
+Reservations are stored in a co-routed record beside the owning `Chunk`, outside
+`Chunk.strips`, so the chunk lifecycle guard provides revision ordering. Each record
 contains a deterministic reservation ID, writer epoch, lease generation and
 deadline, placement epoch, state, logical sequence/offset, and tentative strip.
 
@@ -78,8 +78,9 @@ returns a state conflict.
 
 Reserve allocates tentative blocks and persists reservation ownership without
 changing readable chunk layout. Consume is durable before DiskIO is allowed.
-The client keeps a bounded queue of already-consumed reservations so this
-metadata barrier remains on the prefetch line rather than the object path.
+The client keeps a bounded queue of reserved strips. It persists `Consumed`
+immediately before first DiskIO, so an unwritten prefetched tail remains safely
+cancellable.
 
 After mirror DiskIO succeeds, confirmation atomically removes the reservation,
 attaches its strip in sequence, advances the acknowledged cursor supplied by
@@ -215,3 +216,15 @@ to valid pre-change cases, 1 KiB/1T improved from 2,489.69 to 2,621.36 TPS,
 to 120,843.78 TPS. The post-change 8 KiB/1T result is 2,214.55 TPS; its first
 baseline attempt hit a transient range-readiness failure and is excluded from
 the A/B ratio.
+
+The final real foreground-EC regression matrix is retained under
+`bench-log/r113-r136-r137-final-ten-case-20260910/`. All ten 20-second cases
+completed with zero errors, zero incomplete objects, zero batch-watchdog
+expirations, and exact three-copy foreground payload accounting. The endpoint
+results are 2,662.00 TPS for 1 KiB/1T (p99 700 us), 347,090.75 TPS for
+1 KiB/256T (p99 10,499 us), 1,989.17 TPS for 8 KiB/1T (p99 839 us), and
+48,507.89 TPS for 8 KiB/256T (p99 42,929 us). The single-thread 1 KiB result is
+above the R113 mirror-only checkpoint; the remaining cases include the
+additional incremental parity CPU, parity DiskIO, and initial joint allocation
+that checkpoint did not perform. A longer steady-state A/B remains necessary
+before assigning a strict EC-enabled throughput threshold.

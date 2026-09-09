@@ -16,7 +16,9 @@ use common::cluster::{seed_hardware, ChunkdbHarness, DiskdbServer, KvCluster, DA
 use crowdb_chunkdb::allocator::StripAllocType;
 use crowdb_chunkdb::conversion::io::ConversionDiskIo;
 use crowdb_chunkdb::conversion::{decode_payload, ConversionCoordinator, MirrorToEcTaskHandler};
-use crowdb_chunkdb::lifecycle::{ChunkLockMap, LifecycleError, LifecycleHandler};
+use crowdb_chunkdb::lifecycle::{
+    ChunkLockMap, LifecycleError, LifecycleHandler, ReservationFence, ReservationUpdate, ReserveGroupSpec,
+};
 use crowdb_chunkdb::metrics::{ChunkdbMetrics, LifecycleMetrics};
 use crowdb_chunkdb::repair::{decode_payload as decode_repair_payload, RepairCoordinator};
 use crowdb_chunkdb::routing::{default_binding_table, BindingCache};
@@ -28,7 +30,9 @@ use crowdb_common::metrics::MetricsRegistry;
 use crowdb_protocol::chunk_task::{
     ChunkTaskState, ChunkTaskValue, CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_MIRROR_TO_EC, TASK_KIND_REPAIR_STRIP,
 };
-use crowdb_protocol::chunkdb::rpc::{ChunkState, ChunkType, Strip, StripType};
+use crowdb_protocol::chunkdb::rpc::{
+    ChunkState, ChunkType, Strip, StripReservationAction, StripReservationState, StripType,
+};
 use crowdb_protocol::common::ChunkId;
 
 fn task_value() -> ChunkTaskValue {
@@ -855,6 +859,246 @@ async fn chunkdb_cache_hit_on_second_query() {
         );
     }
     eprintln!("cache hit on second query verified");
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn reserved_strips_stay_hidden_until_idempotent_confirmation() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    let hw = cluster.make_hardware_client();
+    seed_hardware(&hw).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let writer_epoch = 71;
+    let chunk = harness
+        .handler
+        .allocate_chunk(
+            None,
+            1,
+            1,
+            StripType::Mirror,
+            0,
+            0,
+            3,
+            ChunkType::Repo,
+            writer_epoch,
+            30_000,
+        )
+        .await
+        .expect("allocate chunk");
+    let chunk_id = chunk.id.expect("chunk id");
+    let group_id = ChunkId { high: 91, low: 92 };
+    let mut fence = ReservationFence {
+        expected_modify_ts: chunk.modify_ts,
+        writer_epoch,
+        lease_generation: 1,
+        lease_ms: 30_000,
+    };
+    let reserved = harness
+        .handler
+        .reserve_strip_group(
+            &chunk_id,
+            &group_id,
+            fence,
+            ReserveGroupSpec {
+                strip_size: 1,
+                strip_count: 2,
+                copy_count: 3,
+                conversion_data_num: 0,
+                conversion_code_num: 0,
+            },
+        )
+        .await
+        .expect("reserve strips");
+    let group = reserved.group.expect("reservation group");
+    fence.expected_modify_ts = reserved.chunk.modify_ts;
+    assert_eq!(reserved.chunk.strips.len(), 1);
+    assert_eq!(group.strips.len(), 2);
+    assert!(group
+        .states
+        .iter()
+        .all(|state| *state == StripReservationState::Reserved as i32));
+    let first = &group.strips[0];
+    let consumed = harness
+        .handler
+        .mutate_strip_reservation(
+            &chunk_id,
+            &group_id,
+            fence,
+            ReservationUpdate {
+                strip_sequence: first.strip_sequence,
+                action: StripReservationAction::Consume,
+                acknowledged_cursor: 0,
+                closed_strip_sequence: None,
+            },
+        )
+        .await
+        .expect("consume reservation");
+    assert_eq!(consumed.chunk.strips.len(), 1, "consume must remain invisible");
+    let cursor = u64::from(first.chunk_offset + first.capacity) * 1024;
+    let update = ReservationUpdate {
+        strip_sequence: first.strip_sequence,
+        action: StripReservationAction::Confirm,
+        acknowledged_cursor: cursor,
+        closed_strip_sequence: Some(first.strip_sequence),
+    };
+    let confirmed = harness
+        .handler
+        .mutate_strip_reservation(&chunk_id, &group_id, fence, update)
+        .await
+        .expect("confirm reservation");
+    assert_eq!(confirmed.chunk.strips.len(), 2);
+    let repeated = harness
+        .handler
+        .mutate_strip_reservation(&chunk_id, &group_id, fence, update)
+        .await
+        .expect("repeat confirmation");
+    assert_eq!(
+        repeated.chunk.strips.len(),
+        2,
+        "retry must not duplicate the strip"
+    );
+
+    let cancel = ReservationUpdate {
+        strip_sequence: group.strips[1].strip_sequence,
+        action: StripReservationAction::Cancel,
+        acknowledged_cursor: cursor,
+        closed_strip_sequence: None,
+    };
+    harness
+        .handler
+        .mutate_strip_reservation(&chunk_id, &group_id, fence, cancel)
+        .await
+        .expect("cancel reservation");
+    harness
+        .handler
+        .mutate_strip_reservation(&chunk_id, &group_id, fence, cancel)
+        .await
+        .expect("repeat cancellation");
+    harness
+        .handler
+        .seal_chunk(&chunk_id, confirmed.chunk.capacity)
+        .await
+        .expect("seal and remove terminal reservations");
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn conversion_reservation_allocates_joint_plan_and_cleans_every_early_tail() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    let hw = cluster.make_hardware_client();
+    seed_hardware(&hw).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    for tail in 1_u32..=7 {
+        let writer_epoch = 100 + u64::from(tail);
+        let chunk = harness
+            .handler
+            .allocate_chunk(
+                None,
+                1024,
+                0,
+                StripType::Mirror,
+                0,
+                0,
+                3,
+                ChunkType::Repo,
+                writer_epoch,
+                30_000,
+            )
+            .await
+            .expect("allocate empty chunk");
+        let chunk_id = chunk.id.expect("chunk id");
+        let group_id = ChunkId {
+            high: 200,
+            low: u64::from(tail),
+        };
+        let mut fence = ReservationFence {
+            expected_modify_ts: chunk.modify_ts,
+            writer_epoch,
+            lease_generation: 1,
+            lease_ms: 30_000,
+        };
+        let reserved = harness
+            .handler
+            .reserve_strip_group(
+                &chunk_id,
+                &group_id,
+                fence,
+                ReserveGroupSpec {
+                    strip_size: 1,
+                    strip_count: 8,
+                    copy_count: 3,
+                    conversion_data_num: 8,
+                    conversion_code_num: 4,
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("reserve conversion group for tail {tail}: {error}"));
+        let group = reserved.group.expect("conversion group");
+        fence.expected_modify_ts = reserved.chunk.modify_ts;
+        assert!(reserved.chunk.strips.is_empty());
+        assert_eq!(group.strips.len(), 8);
+        assert_eq!(group.parity_segments.len(), 4);
+        assert_eq!(group.preferred_survivors.len(), 8);
+        assert!(group.strips.iter().all(|strip| match strip.strip.as_ref() {
+            Some(Strip::MirrorStrip(mirror)) => mirror.segments.len() == 3,
+            _ => false,
+        }));
+        let mut cursor = 0;
+        for strip in group.strips.iter().take(tail as usize) {
+            harness
+                .handler
+                .mutate_strip_reservation(
+                    &chunk_id,
+                    &group_id,
+                    fence,
+                    ReservationUpdate {
+                        strip_sequence: strip.strip_sequence,
+                        action: StripReservationAction::Consume,
+                        acknowledged_cursor: cursor,
+                        closed_strip_sequence: None,
+                    },
+                )
+                .await
+                .expect("consume tail strip");
+            cursor = u64::from(strip.chunk_offset + strip.capacity) * 1024;
+            let confirmed = harness
+                .handler
+                .mutate_strip_reservation(
+                    &chunk_id,
+                    &group_id,
+                    fence,
+                    ReservationUpdate {
+                        strip_sequence: strip.strip_sequence,
+                        action: StripReservationAction::Confirm,
+                        acknowledged_cursor: cursor,
+                        closed_strip_sequence: Some(strip.strip_sequence),
+                    },
+                )
+                .await
+                .expect("confirm tail strip");
+            fence.expected_modify_ts = confirmed.chunk.modify_ts;
+        }
+        let sealed = harness
+            .handler
+            .seal_chunk(&chunk_id, u32::try_from(cursor / 1024).unwrap())
+            .await
+            .expect("seal early conversion tail");
+        assert_eq!(sealed.strips.len(), tail as usize);
+        assert!(sealed
+            .strips
+            .iter()
+            .all(|strip| matches!(strip.strip, Some(Strip::MirrorStrip(_)))));
+    }
 }
 
 #[tokio::test]

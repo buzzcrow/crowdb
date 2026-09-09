@@ -63,14 +63,14 @@ pub(crate) struct PipelineRoute {
 }
 
 impl PipelineRoute {
-    pub fn new(sender: mpsc::Sender<PendingObject>, now_ms: u64) -> Self {
+    pub fn new(sender: mpsc::Sender<PendingObject>, now_ms: u64, conversion_active: Arc<AtomicBool>) -> Self {
         Self {
             sender,
             queued_bytes: AtomicU64::new(0),
             queued_objects: AtomicU64::new(0),
             last_active_ms: AtomicU64::new(now_ms),
             busy: AtomicBool::new(false),
-            conversion_active: Arc::new(AtomicBool::new(false)),
+            conversion_active,
         }
     }
 
@@ -102,6 +102,8 @@ pub(crate) struct SmallPoolRuntime {
     pub manager_tx: mpsc::UnboundedSender<ManagerCommand>,
     pub failed_disks: Arc<FailedDiskList>,
     pub(crate) budget: Arc<Semaphore>,
+    pub(crate) conversion_budget: Arc<Semaphore>,
+    pub(crate) conversion_active: Arc<AtomicBool>,
 }
 
 impl SmallPoolRuntime {

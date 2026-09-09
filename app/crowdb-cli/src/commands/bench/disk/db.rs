@@ -356,6 +356,7 @@ async fn allocate_any_group(
                 high: u64::try_from(task_id).unwrap_or(u64::MAX),
                 low: sequence,
             }),
+            allow_disk_reuse: false,
         };
         match context.client.allocate_blocks(request).await {
             Ok(response) => return Ok(Some(response)),

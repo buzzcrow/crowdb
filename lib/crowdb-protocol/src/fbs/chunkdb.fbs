@@ -180,6 +180,91 @@ table FBAppendChunkResponse {
     chunk:FBChunk;
 }
 
+// ── Reserved Strip Groups ──────────────────────────────────────
+
+enum FBStripReservationState : ubyte {
+    Reserved = 0,
+    Consumed = 1,
+    Confirmed = 2,
+    Cancelled = 3,
+}
+
+enum FBStripReservationAction : ubyte {
+    Consume = 0,
+    Confirm = 1,
+    Cancel = 2,
+    Renew = 3,
+    Publish = 4,
+}
+
+table FBStripReservationGroup {
+    group_id:crowdb.rpc.proto.FBInt128;
+    chunk_id:crowdb.rpc.proto.FBInt128;
+    writer_epoch:uint64;
+    lease_generation:uint64;
+    lease_deadline_ms:uint64;
+    placement_epoch:uint64;
+    strips:[FBChunkStrip];
+    states:[FBStripReservationState];
+    parity_segments:[crowdb.diskdb.proto.FBSegment];
+    preferred_survivors:[uint32];
+    data_num:uint32;
+    code_num:uint32;
+}
+
+table FBReserveStripGroupRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    chunk_id:crowdb.rpc.proto.FBInt128;
+    expected_modify_ts:uint64;
+    group_id:crowdb.rpc.proto.FBInt128;
+    writer_epoch:uint64;
+    lease_generation:uint64;
+    lease_ms:uint64;
+    strip_size:uint32;
+    strip_count:uint32;
+    copy_count:uint32;
+    conversion_data_num:uint32;
+    conversion_code_num:uint32;
+}
+
+table FBReserveStripGroupResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    ret_code:FBChunkdbRetCode;
+    error_msg:string;
+    range_start:uint32;
+    range_end:uint32;
+    chunk:FBChunk;
+    group:FBStripReservationGroup;
+}
+
+table FBMutateStripReservationRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    chunk_id:crowdb.rpc.proto.FBInt128;
+    expected_modify_ts:uint64;
+    group_id:crowdb.rpc.proto.FBInt128;
+    writer_epoch:uint64;
+    lease_generation:uint64;
+    strip_sequence:uint32;
+    action:FBStripReservationAction;
+    acknowledged_cursor:uint64;
+    closed_strip_sequence:uint32 = 4294967295;
+    lease_ms:uint64;
+}
+
+table FBMutateStripReservationResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    ret_code:FBChunkdbRetCode;
+    error_msg:string;
+    range_start:uint32;
+    range_end:uint32;
+    chunk:FBChunk;
+    group:FBStripReservationGroup;
+}
+
 // ── AdvanceChunkWrite ────────────────────────────────────────────
 
 table FBAdvanceChunkWriteRequest {

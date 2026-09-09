@@ -233,6 +233,7 @@ pub async fn run_concurrent_benchmark(client: &Arc<DiskdbClient>) {
                     count: 1,
                     exclude_disk_ids: vec![],
                     owner_chunk: Some(owner),
+                    allow_disk_reuse: false,
                 };
                 let alloc_resp = match client.allocate_blocks(alloc_req).await {
                     Ok(r) => r,

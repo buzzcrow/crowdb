@@ -3,6 +3,7 @@
 
 //! Single-owner shared chunk worker and whole-object batch commit barrier.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -11,12 +12,14 @@ use bytes::{Bytes, BytesMut};
 use crowdb_common::ec::{EcScheme, IncrementalParity};
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AllocateChunkRequest, AllocateReplacementSegmentRequest, AppendChunkRequest,
-    Chunk, ChunkState, ChunkType, CompleteMirrorToEcConversionRequest, DeleteChunkRequest,
-    DiscardReplacementSegmentRequest, Location, PrepareMirrorToEcConversionRequest, QueryChunkRequest,
-    ReplaceChunkStripRangeRequest, SealChunkRequest, Strip, StripType,
+    Chunk, ChunkState, ChunkStrip, ChunkType, DeleteChunkRequest, DiscardReplacementSegmentRequest, Location,
+    MutateStripReservationRequest, PrepareMirrorToEcConversionRequest, QueryChunkRequest,
+    ReplaceChunkStripRangeRequest, ReserveStripGroupRequest, SealChunkRequest, Strip, StripReservationAction,
+    StripType,
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_protocol::{generate_chunk_id, CHUNK_TYPE_REPO};
 use tokio::sync::{mpsc, Notify, OwnedSemaphorePermit};
 
 use crate::config::SmallWritePolicy;
@@ -37,7 +40,11 @@ pub(crate) struct ManagedPipeline {
 
 pub(crate) async fn spawn(runtime: Arc<SmallPoolRuntime>, _id: u64) -> Result<ManagedPipeline> {
     let (sender, receiver) = mpsc::channel(runtime.policy.queue_capacity);
-    let route = Arc::new(PipelineRoute::new(sender, runtime.now_ms()));
+    let route = Arc::new(PipelineRoute::new(
+        sender,
+        runtime.now_ms(),
+        Arc::clone(&runtime.conversion_active),
+    ));
     let owned = OwnedChunk::allocate(&runtime, Arc::clone(&route.conversion_active)).await?;
     let shadow_bytes =
         u32::try_from(u64::from(owned.current_strip()?.capacity).saturating_mul(1024)).unwrap_or(u32::MAX);
@@ -319,6 +326,269 @@ async fn advance_chunk(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn confirm_reserved_strip(
+    allocator: Arc<dyn ChunkAllocator>,
+    chunk_id: ChunkId,
+    group_id: ChunkId,
+    writer_epoch: u64,
+    lease_generation: u64,
+    mut modify_ts: u64,
+    strip_sequence: u32,
+    cursor: u64,
+    closed_strip_sequence: Option<u32>,
+    writer_lease_ms: u64,
+) -> Result<Chunk> {
+    for attempt in 0..8 {
+        let response = allocator
+            .mutate_strip_reservation(MutateStripReservationRequest {
+                chunk_id: Some(chunk_id),
+                expected_modify_ts: modify_ts,
+                group_id: Some(group_id),
+                writer_epoch,
+                lease_generation,
+                strip_sequence,
+                action: StripReservationAction::Confirm as i32,
+                acknowledged_cursor: cursor,
+                closed_strip_sequence,
+                lease_ms: writer_lease_ms,
+            })
+            .await;
+        match response {
+            Ok(response) => {
+                return response.chunk.ok_or_else(|| {
+                    IoError::MetadataConflict("reservation confirmation returned no chunk".into())
+                });
+            }
+            Err(IoError::MetadataConflict(_)) if attempt < 7 => {
+                let response = allocator
+                    .query_chunk(QueryChunkRequest {
+                        chunk_id: Some(chunk_id),
+                    })
+                    .await?;
+                let refreshed = response.chunk.ok_or_else(|| {
+                    IoError::MetadataConflict("reserved chunk disappeared during confirmation".into())
+                })?;
+                if refreshed
+                    .strips
+                    .iter()
+                    .any(|strip| strip.strip_sequence == strip_sequence)
+                    && refreshed.acknowledged_cursor >= cursor
+                {
+                    return Ok(refreshed);
+                }
+                if refreshed.state != ChunkState::Active as i32 || refreshed.writer_epoch != writer_epoch {
+                    return Err(IoError::MetadataConflict(
+                        "reserved chunk ownership changed during confirmation".into(),
+                    ));
+                }
+                modify_ts = refreshed.modify_ts;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(IoError::MetadataConflict(
+        "reserved chunk metadata kept changing during confirmation".into(),
+    ))
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn publish_reserved_conversion(
+    allocator: Arc<dyn ChunkAllocator>,
+    disk_writer: Arc<dyn DiskWriter>,
+    pending_confirm: Option<tokio::task::JoinHandle<Result<Chunk>>>,
+    group: PendingEcGroup,
+    writer_epoch: u64,
+    lease_generation: u64,
+    writer_lease_ms: u64,
+    cursor: u64,
+) -> Result<Chunk> {
+    let chunk = pending_confirm
+        .ok_or_else(|| IoError::MetadataConflict("conversion has no final confirmation".into()))?
+        .await
+        .map_err(|join_error| {
+            IoError::WriteFailed(format!("background confirmation task panicked: {join_error}"))
+        })??;
+    let group_id = group
+        .reservation_group_id
+        .ok_or_else(|| IoError::MetadataConflict("conversion reservation id is missing".into()))?;
+    let first_sequence = group
+        .old_strips
+        .first()
+        .map(|strip| strip.strip_sequence)
+        .ok_or_else(|| IoError::Internal("conversion group is empty".into()))?;
+    let closed_sequence = group.old_strips.last().map(|strip| strip.strip_sequence);
+    let parity = group
+        .parity
+        .finish()
+        .map_err(|error| IoError::EcEncodeFailed(error.to_string()))?;
+    if group.parity_segments.len() != parity.len() {
+        return Err(IoError::AllocationFailed(format!(
+            "conversion reserved {} parity segments for {} shards",
+            group.parity_segments.len(),
+            parity.len()
+        )));
+    }
+    let unit_bytes = u64::from(group.old_strips[0].unit_kb) * 1024;
+    let mut parity_io_error = None;
+    let mut parity_writes = tokio::task::JoinSet::new();
+    for (segment, shard) in group.parity_segments.iter().zip(parity) {
+        let disk_writer = Arc::clone(&disk_writer);
+        let segment = *segment;
+        let shard = Bytes::from(shard);
+        parity_writes.spawn(async move {
+            for (index, part) in shard.chunks(64 * 1024).enumerate() {
+                let offset = u64::try_from(index).unwrap_or(u64::MAX).saturating_mul(64 * 1024);
+                disk_writer
+                    .write_priority_at_byte_offset(&segment, unit_bytes, offset, Bytes::copy_from_slice(part))
+                    .await?;
+            }
+            Ok::<_, IoError>(())
+        });
+    }
+    while let Some(result) = parity_writes.join_next().await {
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::warn!(%error, "reserved parity write failed");
+                parity_io_error.get_or_insert_with(|| error.to_string());
+            }
+            Err(join_error) => {
+                parity_io_error.get_or_insert_with(|| format!("parity writer failed: {join_error}"));
+            }
+        }
+    }
+    let chunk_id = chunk
+        .id
+        .ok_or_else(|| IoError::MetadataConflict("conversion chunk id is missing".into()))?;
+    let current_old_strips = group
+        .old_strips
+        .iter()
+        .map(|old| {
+            chunk
+                .strips
+                .iter()
+                .find(|current| current.strip_sequence == old.strip_sequence)
+                .cloned()
+                .ok_or_else(|| IoError::MetadataConflict("conversion source disappeared".into()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if parity_io_error.is_none() {
+        let mut parity_fsyncs = tokio::task::JoinSet::new();
+        for segment in &group.parity_segments {
+            let disk_writer = Arc::clone(&disk_writer);
+            let segment = *segment;
+            parity_fsyncs.spawn(async move { disk_writer.fsync_priority(&segment).await });
+        }
+        while let Some(result) = parity_fsyncs.join_next().await {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => parity_io_error = Some(error.to_string()),
+                Err(join_error) => {
+                    parity_io_error = Some(format!("parity fsync failed: {join_error}"));
+                }
+            }
+        }
+    }
+    if parity_io_error.is_some() {
+        tracing::warn!(
+            ?chunk_id,
+            "admitting conversion fallback after parity I/O failure"
+        );
+        admit_conversion_fallback(
+            &allocator,
+            &chunk,
+            &current_old_strips,
+            writer_epoch,
+            writer_lease_ms,
+        )
+        .await?;
+        return Ok(chunk);
+    }
+    let response = allocator
+        .mutate_strip_reservation(MutateStripReservationRequest {
+            chunk_id: Some(chunk_id),
+            expected_modify_ts: chunk.modify_ts,
+            group_id: Some(group_id),
+            writer_epoch,
+            lease_generation,
+            strip_sequence: first_sequence,
+            action: StripReservationAction::Publish as i32,
+            acknowledged_cursor: cursor,
+            closed_strip_sequence: closed_sequence,
+            lease_ms: writer_lease_ms,
+        })
+        .await;
+    match response {
+        Ok(response) => response
+            .chunk
+            .ok_or_else(|| IoError::MetadataConflict("conversion publication returned no chunk".into())),
+        Err(publish_error) => {
+            let start_index = chunk
+                .strips
+                .iter()
+                .position(|strip| strip.strip_sequence == first_sequence)
+                .and_then(|index| u32::try_from(index).ok())
+                .ok_or_else(|| IoError::MetadataConflict("conversion source disappeared".into()))?;
+            let data_num = u32::try_from(current_old_strips.len()).unwrap_or(u32::MAX);
+            let code_num = u32::try_from(group.parity_segments.len()).unwrap_or(u32::MAX);
+            allocator
+                .prepare_mirror_to_ec_conversion(PrepareMirrorToEcConversionRequest {
+                    chunk_id: Some(chunk_id),
+                    expected_modify_ts: chunk.modify_ts,
+                    start_index,
+                    old_strips: current_old_strips,
+                    data_num,
+                    code_num,
+                    client_owner: writer_epoch,
+                    claim_lease_ms: writer_lease_ms,
+                })
+                .await
+                .map_err(|task_error| {
+                    IoError::MetadataConflict(format!(
+                        "optimal conversion publication failed ({publish_error}); durable fallback failed ({task_error})"
+                    ))
+                })?;
+            Ok(chunk)
+        }
+    }
+}
+
+async fn admit_conversion_fallback(
+    allocator: &Arc<dyn ChunkAllocator>,
+    chunk: &Chunk,
+    old_strips: &[ChunkStrip],
+    writer_epoch: u64,
+    writer_lease_ms: u64,
+) -> Result<()> {
+    let chunk_id = chunk
+        .id
+        .ok_or_else(|| IoError::MetadataConflict("conversion chunk id is missing".into()))?;
+    let first_sequence = old_strips
+        .first()
+        .map(|strip| strip.strip_sequence)
+        .ok_or_else(|| IoError::MetadataConflict("conversion source is empty".into()))?;
+    let start_index = chunk
+        .strips
+        .iter()
+        .position(|strip| strip.strip_sequence == first_sequence)
+        .and_then(|index| u32::try_from(index).ok())
+        .ok_or_else(|| IoError::MetadataConflict("conversion source disappeared".into()))?;
+    allocator
+        .prepare_mirror_to_ec_conversion(PrepareMirrorToEcConversionRequest {
+            chunk_id: Some(chunk_id),
+            expected_modify_ts: chunk.modify_ts,
+            start_index,
+            old_strips: old_strips.to_vec(),
+            data_num: u32::try_from(old_strips.len()).unwrap_or(u32::MAX),
+            code_num: 4,
+            client_owner: writer_epoch,
+            claim_lease_ms: writer_lease_ms,
+        })
+        .await?;
+    Ok(())
+}
+
 async fn append_mirror_strips(
     allocator: &dyn ChunkAllocator,
     mut chunk: Chunk,
@@ -328,11 +598,9 @@ async fn append_mirror_strips(
     let chunk_id = chunk
         .id
         .ok_or_else(|| IoError::AllocationFailed("shared chunk missing id".into()))?;
-    let last = chunk
-        .strips
-        .last()
-        .ok_or_else(|| IoError::AllocationFailed("shared chunk has no initial strip".into()))?;
-    let unit_count = last.capacity.checked_div(last.unit_kb).unwrap_or(0).max(1);
+    let unit_count = chunk.strips.last().map_or(1, |last| {
+        last.capacity.checked_div(last.unit_kb).unwrap_or(0).max(1)
+    });
     for _ in 0..8 {
         let response = allocator
             .append_chunk(AppendChunkRequest {
@@ -441,13 +709,24 @@ struct OwnedChunk {
     budget: Arc<tokio::sync::Semaphore>,
     conversion_active: Arc<AtomicBool>,
     conversion_group: Option<PendingEcGroup>,
+    pending_conversion_update: Option<tokio::task::JoinHandle<Result<PendingEcGroup>>>,
     pending_advance: Option<tokio::task::JoinHandle<Result<Chunk>>>,
+    reservation_mode: bool,
+    reservation_group_id: Option<ChunkId>,
+    reservation_generation: u64,
+    reserved_strips: VecDeque<ChunkStrip>,
+    active_reservation: Option<(ChunkId, u64, u32)>,
+    staged_reservation: Option<(ChunkId, u64, u32)>,
+    reservation_first_sequence: Option<u32>,
+    reservation_parity_segments: Vec<Segment>,
+    owns_conversion_gate: bool,
 }
 
 struct PendingEcGroup {
     old_strips: Vec<crowdb_protocol::chunkdb::rpc::ChunkStrip>,
-    data_shards: Vec<Bytes>,
     parity: IncrementalParity,
+    reservation_group_id: Option<ChunkId>,
+    parity_segments: Vec<Segment>,
     _budget: OwnedSemaphorePermit,
 }
 
@@ -461,14 +740,7 @@ impl OwnedChunk {
     async fn allocate(runtime: &SmallPoolRuntime, conversion_active: Arc<AtomicBool>) -> Result<Self> {
         let writer_epoch = next_writer_epoch();
         let lease_ms = u64::try_from(runtime.policy.writer_lease.as_millis()).unwrap_or(u64::MAX);
-        let initial_strip_count = runtime.policy.small_strip_prefetch_count.min(
-            u32::try_from(
-                runtime.policy.chunk_capacity
-                    / u64::try_from(runtime.policy.object_limit).unwrap_or(u64::MAX),
-            )
-            .unwrap_or(u32::MAX)
-            .max(1),
-        );
+        let initial_strip_count = u32::from(!runtime.policy.conversion_enabled);
         let response = runtime
             .allocator
             .allocate_chunk(AllocateChunkRequest {
@@ -487,7 +759,7 @@ impl OwnedChunk {
         let chunk = response
             .chunk
             .ok_or_else(|| IoError::AllocationFailed("shared chunk allocation returned no chunk".into()))?;
-        Ok(Self {
+        let mut owned = Self {
             allocator: Arc::clone(&runtime.allocator),
             disk_writer: Arc::clone(&runtime.disk_writer),
             policy: Arc::clone(&runtime.policy),
@@ -497,11 +769,42 @@ impl OwnedChunk {
             shadow: None,
             failed_disks: Arc::clone(&runtime.failed_disks),
             metrics: Arc::clone(&runtime.metrics),
-            budget: Arc::clone(&runtime.budget),
+            budget: Arc::clone(&runtime.conversion_budget),
             conversion_active,
             conversion_group: None,
+            pending_conversion_update: None,
             pending_advance: None,
-        })
+            reservation_mode: true,
+            reservation_group_id: None,
+            reservation_generation: 1,
+            reserved_strips: VecDeque::new(),
+            active_reservation: None,
+            staged_reservation: None,
+            reservation_first_sequence: None,
+            reservation_parity_segments: Vec::new(),
+            owns_conversion_gate: false,
+        };
+        if let Err(error) = owned.reserve_more().await {
+            tracing::warn!(%error, "reserved-strip prefetch unavailable; using attached strips");
+            owned.reservation_mode = false;
+            let desired = runtime
+                .policy
+                .small_strip_prefetch_count
+                .saturating_sub(initial_strip_count);
+            if desired > 0 {
+                owned.chunk = append_mirror_strips(
+                    &*owned.allocator,
+                    owned.chunk,
+                    desired,
+                    runtime.policy.mirror_copies,
+                )
+                .await?;
+            }
+        }
+        if owned.current_strip().is_err() {
+            owned.stage_reserved_strip()?;
+        }
+        Ok(owned)
     }
 
     fn remaining_in_chunk(&self) -> u64 {
@@ -543,9 +846,172 @@ impl OwnedChunk {
         if self.current_strip().is_ok() {
             return Ok(());
         }
+        if self.reservation_mode {
+            if self.reserved_strips.is_empty() {
+                self.reserve_more().await?;
+            }
+            self.stage_reserved_strip()?;
+            return Ok(());
+        }
         Err(IoError::AllocationFailed(
             "strip prefetch did not stay ahead of the write cursor".into(),
         ))
+    }
+
+    fn stage_reserved_strip(&mut self) -> Result<()> {
+        let strip = self
+            .reserved_strips
+            .pop_front()
+            .ok_or_else(|| IoError::AllocationFailed("reservation prefetch returned no strips".into()))?;
+        let group_id = self
+            .reservation_group_id
+            .ok_or_else(|| IoError::Internal("reservation group id is missing".into()))?;
+        self.staged_reservation = Some((group_id, self.reservation_generation, strip.strip_sequence));
+        self.chunk.strips.push(strip);
+        Ok(())
+    }
+
+    async fn consume_staged_reservation(&mut self) -> Result<()> {
+        let Some((group_id, generation, sequence)) = self.staged_reservation.take() else {
+            return Ok(());
+        };
+        self.mutate_reservation(
+            group_id,
+            generation,
+            sequence,
+            StripReservationAction::Consume,
+            self.chunk.acknowledged_cursor,
+            None,
+        )
+        .await?;
+        self.active_reservation = Some((group_id, generation, sequence));
+        Ok(())
+    }
+
+    async fn reserve_more(&mut self) -> Result<()> {
+        if !self.reserved_strips.is_empty()
+            || self.active_reservation.is_some()
+            || self.staged_reservation.is_some()
+        {
+            return Ok(());
+        }
+        let last = self.chunk.strips.last();
+        let strip_kb = u64::from(last.map_or(1024, |strip| match strip.strip.as_ref() {
+            Some(Strip::EcStrip(ec)) => strip.capacity.checked_div(ec.data_num).unwrap_or(0),
+            Some(Strip::MirrorStrip(_)) | None => strip.capacity,
+        }));
+        let remaining_kb = self
+            .policy
+            .chunk_capacity
+            .saturating_sub(u64::from(self.chunk.capacity) * 1024)
+            / 1024;
+        let ordinary_count = self
+            .policy
+            .small_strip_prefetch_count
+            .min(u32::try_from(remaining_kb / strip_kb).unwrap_or(u32::MAX));
+        let conversion_width = u32::try_from(self.policy.conversion_data_num).unwrap_or(u32::MAX);
+        let conversion_fits = u64::from(conversion_width).saturating_mul(strip_kb) <= remaining_kb;
+        let acquired_conversion_gate = self.policy.conversion_enabled
+            && conversion_fits
+            && !self.owns_conversion_gate
+            && self
+                .conversion_active
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok();
+        self.owns_conversion_gate |= acquired_conversion_gate;
+        let conversion_group = self.policy.conversion_enabled && conversion_fits && self.owns_conversion_gate;
+        let strip_count = if conversion_group {
+            conversion_width
+        } else {
+            ordinary_count
+        };
+        if strip_count == 0 {
+            return Ok(());
+        }
+        let chunk_id = self
+            .chunk
+            .id
+            .ok_or_else(|| IoError::AllocationFailed("shared chunk missing id".into()))?;
+        let group_id = generate_chunk_id(CHUNK_TYPE_REPO).to_proto();
+        let unit_count = last.map_or(1, |strip| {
+            u32::try_from(strip_kb)
+                .unwrap_or(u32::MAX)
+                .checked_div(strip.unit_kb)
+                .unwrap_or(0)
+                .max(1)
+        });
+        let response = self
+            .allocator
+            .reserve_strip_group(ReserveStripGroupRequest {
+                chunk_id: Some(chunk_id),
+                expected_modify_ts: self.chunk.modify_ts,
+                group_id: Some(group_id),
+                writer_epoch: self.writer_epoch,
+                lease_generation: self.reservation_generation,
+                lease_ms: u64::try_from(self.policy.writer_lease.as_millis()).unwrap_or(u64::MAX),
+                strip_size: unit_count,
+                strip_count,
+                copy_count: self.policy.mirror_copies,
+                conversion_data_num: if conversion_group { conversion_width } else { 0 },
+                conversion_code_num: if conversion_group {
+                    u32::try_from(self.policy.conversion_code_num).unwrap_or(u32::MAX)
+                } else {
+                    0
+                },
+            })
+            .await;
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                if acquired_conversion_gate {
+                    self.owns_conversion_gate = false;
+                    self.conversion_active.store(false, Ordering::Release);
+                }
+                return Err(error);
+            }
+        };
+        self.chunk = response
+            .chunk
+            .ok_or_else(|| IoError::AllocationFailed("reservation response missing chunk".into()))?;
+        let group = response
+            .group
+            .ok_or_else(|| IoError::AllocationFailed("reservation response missing group".into()))?;
+        self.reservation_group_id = Some(group_id);
+        self.reservation_first_sequence = group.strips.first().map(|strip| strip.strip_sequence);
+        self.reservation_parity_segments = group.parity_segments;
+        self.reserved_strips = group.strips.into();
+        Ok(())
+    }
+
+    async fn mutate_reservation(
+        &self,
+        group_id: ChunkId,
+        generation: u64,
+        strip_sequence: u32,
+        action: StripReservationAction,
+        cursor: u64,
+        closed_strip_sequence: Option<u32>,
+    ) -> Result<Option<Chunk>> {
+        let chunk_id = self
+            .chunk
+            .id
+            .ok_or_else(|| IoError::AllocationFailed("shared chunk missing id".into()))?;
+        let response = self
+            .allocator
+            .mutate_strip_reservation(MutateStripReservationRequest {
+                chunk_id: Some(chunk_id),
+                expected_modify_ts: self.chunk.modify_ts,
+                group_id: Some(group_id),
+                writer_epoch: self.writer_epoch,
+                lease_generation: generation,
+                strip_sequence,
+                action: action as i32,
+                acknowledged_cursor: cursor,
+                closed_strip_sequence,
+                lease_ms: u64::try_from(self.policy.writer_lease.as_millis()).unwrap_or(u64::MAX),
+            })
+            .await?;
+        Ok(response.chunk)
     }
 
     async fn close_strip(&mut self, metrics: &SmallWriteMetrics) -> Result<()> {
@@ -563,10 +1029,10 @@ impl OwnedChunk {
             .find(|current| current.strip_sequence == strip.strip_sequence)
             .cloned()
             .ok_or_else(|| IoError::MetadataConflict("closed mirror strip disappeared".into()))?;
+        self.schedule_closed_advance(strip_end, strip.strip_sequence);
         if let Err(error) = self.retain_closed_strip(closed).await {
             tracing::warn!(%error, "mirror-to-EC fast path deferred to chunkdb");
         }
-        self.schedule_closed_advance(strip_end, strip.strip_sequence);
         Ok(())
     }
 
@@ -594,6 +1060,7 @@ impl OwnedChunk {
         batch: &[PendingObject],
         metrics: &SmallWriteMetrics,
     ) -> Result<Vec<Location>> {
+        self.consume_staged_reservation().await?;
         let strip = self.current_strip()?.clone();
         let unit_bytes = u64::from(strip.unit_kb) * 1024;
         let (logical_bytes, buffer_count) = batch_shape(batch);
@@ -677,10 +1144,10 @@ impl OwnedChunk {
                 .find(|current| current.strip_sequence == sequence)
                 .cloned()
                 .ok_or_else(|| IoError::MetadataConflict("closed mirror strip disappeared".into()))?;
+            self.schedule_closed_advance(end, sequence);
             if let Err(error) = self.retain_closed_strip(closed_strip).await {
                 tracing::warn!(%error, "mirror-to-EC fast path deferred to chunkdb");
             }
-            self.schedule_closed_advance(end, sequence);
         } else {
             self.refresh_pending_advance().await?;
             self.start_pending_advance(end)?;
@@ -720,6 +1187,7 @@ impl OwnedChunk {
         shadow
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn retain_closed_strip(&mut self, strip: crowdb_protocol::chunkdb::rpc::ChunkStrip) -> Result<()> {
         let mut shadow = self
             .shadow
@@ -747,152 +1215,117 @@ impl OwnedChunk {
                 "closed mirror strip has an empty retained image".into(),
             ));
         }
+        self.resolve_conversion_update().await?;
         if self.conversion_group.is_none() {
-            let scheme = EcScheme::new(self.policy.conversion_data_num, self.policy.conversion_code_num);
-            let remaining_shards = self.remaining_in_chunk() / image.len() as u64;
-            if 1_u64.saturating_add(remaining_shards) < scheme.data_num as u64 {
+            let Some(first_sequence) = self.reservation_first_sequence else {
+                return Ok(());
+            };
+            if strip.strip_sequence != first_sequence || self.reservation_parity_segments.is_empty() {
                 return Ok(());
             }
+            let scheme = EcScheme::new(self.policy.conversion_data_num, self.policy.conversion_code_num);
             let bytes = scheme
-                .total_blocks()
+                .code_num
                 .checked_mul(image.len())
                 .ok_or(IoError::MemoryBudgetExhausted)?;
             let permits = u32::try_from(bytes).map_err(|_| IoError::MemoryBudgetExhausted)?;
+            if bytes > self.policy.memory_budget / 2 {
+                tracing::warn!(
+                    parity_bytes = bytes,
+                    strip_bytes = image.len(),
+                    memory_budget = self.policy.memory_budget,
+                    "conversion group exceeds reserved memory"
+                );
+                return Err(IoError::MemoryBudgetExhausted);
+            }
             let budget = Arc::clone(&self.budget)
-                .try_acquire_many_owned(permits)
+                .acquire_many_owned(permits)
+                .await
                 .map_err(|_| IoError::MemoryBudgetExhausted)?;
             self.conversion_group = Some(PendingEcGroup {
                 old_strips: Vec::with_capacity(scheme.data_num),
-                data_shards: Vec::with_capacity(scheme.data_num),
                 parity: IncrementalParity::new(scheme)
                     .map_err(|error| IoError::EcEncodeFailed(error.to_string()))?,
+                reservation_group_id: self.reservation_group_id,
+                parity_segments: self.reservation_parity_segments.clone(),
                 _budget: budget,
             });
-            self.conversion_active.store(true, Ordering::Release);
         }
-        let group = self
+        let mut group = self
             .conversion_group
-            .as_mut()
+            .take()
             .unwrap_or_else(|| unreachable!("conversion group initialized"));
-        group
-            .parity
-            .push(&image)
-            .map_err(|error| IoError::EcEncodeFailed(error.to_string()))?;
-        group.old_strips.push(strip);
-        group.data_shards.push(image);
-        if group.parity.is_complete() {
-            let closed_strip_sequence = group
-                .old_strips
-                .last()
-                .map(|strip| strip.strip_sequence)
-                .ok_or_else(|| IoError::Internal("conversion group is empty".into()))?;
-            self.flush_pending_advance().await?;
-            self.advance(self.cursor, Some(closed_strip_sequence)).await?;
-            if let Some(group) = self.conversion_group.as_mut() {
-                for old in &mut group.old_strips {
-                    *old = self
-                        .chunk
-                        .strips
-                        .iter()
-                        .find(|current| current.strip_sequence == old.strip_sequence)
-                        .cloned()
-                        .ok_or_else(|| IoError::MetadataConflict("conversion source disappeared".into()))?;
+        let completes_group = group.old_strips.len().saturating_add(1) == self.policy.conversion_data_num;
+        let update = tokio::task::spawn_blocking(move || -> Result<PendingEcGroup> {
+            group
+                .parity
+                .push(&image)
+                .map_err(|error| IoError::EcEncodeFailed(error.to_string()))?;
+            group.old_strips.push(strip);
+            Ok(group)
+        });
+        if completes_group {
+            let pending_confirm = self.pending_advance.take();
+            let allocator = Arc::clone(&self.allocator);
+            let disk_writer = Arc::clone(&self.disk_writer);
+            let conversion_active = Arc::clone(&self.conversion_active);
+            let writer_epoch = self.writer_epoch;
+            let lease_generation = self.reservation_generation;
+            let writer_lease_ms = u64::try_from(self.policy.writer_lease.as_millis()).unwrap_or(u64::MAX);
+            let cursor = self.cursor;
+            self.pending_advance = Some(tokio::spawn(async move {
+                let result = async {
+                    let group = update.await.map_err(|join_error| {
+                        IoError::EcEncodeFailed(format!("parity worker failed: {join_error}"))
+                    })??;
+                    publish_reserved_conversion(
+                        allocator,
+                        disk_writer,
+                        pending_confirm,
+                        group,
+                        writer_epoch,
+                        lease_generation,
+                        writer_lease_ms,
+                        cursor,
+                    )
+                    .await
                 }
-            }
-            let result = self.convert_retained_group().await;
-            self.conversion_active.store(false, Ordering::Release);
-            return result;
+                .await;
+                conversion_active.store(false, Ordering::Release);
+                result
+            }));
+            self.owns_conversion_gate = false;
+            self.reservation_group_id = None;
+            self.reservation_first_sequence = None;
+            self.reservation_parity_segments.clear();
+        } else {
+            self.pending_conversion_update = Some(update);
         }
         Ok(())
     }
 
-    async fn convert_retained_group(&mut self) -> Result<()> {
-        let group = self
-            .conversion_group
-            .take()
-            .unwrap_or_else(|| unreachable!("complete conversion group exists"));
-        let chunk_id = self
-            .chunk
-            .id
-            .ok_or_else(|| IoError::MetadataConflict("shared chunk has no id".into()))?;
-        let first_sequence = group
-            .old_strips
-            .first()
-            .map(|strip| strip.strip_sequence)
-            .ok_or_else(|| IoError::Internal("conversion group is empty".into()))?;
-        let start_index = self
-            .chunk
-            .strips
-            .iter()
-            .position(|strip| strip.strip_sequence == first_sequence)
-            .ok_or_else(|| IoError::MetadataConflict("conversion source disappeared".into()))?;
-        let prepared = self
-            .allocator
-            .prepare_mirror_to_ec_conversion(PrepareMirrorToEcConversionRequest {
-                chunk_id: Some(chunk_id),
-                expected_modify_ts: self.chunk.modify_ts,
-                start_index: u32::try_from(start_index).unwrap_or(u32::MAX),
-                old_strips: group.old_strips,
-                data_num: u32::try_from(self.policy.conversion_data_num).unwrap_or(u32::MAX),
-                code_num: u32::try_from(self.policy.conversion_code_num).unwrap_or(u32::MAX),
-                client_owner: self.writer_epoch,
-                claim_lease_ms: u64::try_from(self.policy.writer_lease.as_millis()).unwrap_or(u64::MAX),
-            })
-            .await?;
-        let task_id = prepared
-            .task_id
-            .ok_or_else(|| IoError::AllocationFailed("conversion preparation returned no task id".into()))?;
-        let replacement = prepared.replacement_strip.ok_or_else(|| {
-            IoError::AllocationFailed("conversion preparation returned no replacement".into())
-        })?;
-        let Some(Strip::EcStrip(ec)) = &replacement.strip else {
-            return Err(IoError::AllocationFailed(
-                "conversion preparation returned a non-EC strip".into(),
-            ));
+    async fn resolve_conversion_update(&mut self) -> Result<()> {
+        let Some(update) = self.pending_conversion_update.take() else {
+            return Ok(());
         };
-        let parity = group
-            .parity
-            .finish()
-            .map_err(|error| IoError::EcEncodeFailed(error.to_string()))?;
-        let mut shards = group.data_shards;
-        shards.extend(parity.into_iter().map(Bytes::from));
-        if ec.segments.len() != shards.len() {
-            return Err(IoError::AllocationFailed(format!(
-                "conversion returned {} segments for {} shards",
-                ec.segments.len(),
-                shards.len()
-            )));
+        match update.await {
+            Ok(Ok(group)) => {
+                self.conversion_group = Some(group);
+                Ok(())
+            }
+            Ok(Err(error)) => {
+                self.owns_conversion_gate = false;
+                self.conversion_active.store(false, Ordering::Release);
+                Err(error)
+            }
+            Err(join_error) => {
+                self.owns_conversion_gate = false;
+                self.conversion_active.store(false, Ordering::Release);
+                Err(IoError::EcEncodeFailed(format!(
+                    "parity worker failed: {join_error}"
+                )))
+            }
         }
-        let unit_bytes = u64::from(replacement.unit_kb) * 1024;
-        let mut writes = tokio::task::JoinSet::new();
-        for (segment, shard) in ec.segments.iter().copied().zip(shards) {
-            let disk_writer = Arc::clone(&self.disk_writer);
-            writes.spawn(async move { disk_writer.write_at(&segment, unit_bytes, 0, shard).await });
-        }
-        while let Some(result) = writes.join_next().await {
-            result.map_err(|error| IoError::WriteFailed(format!("EC writer task failed: {error}")))??;
-        }
-        let mut syncs = tokio::task::JoinSet::new();
-        for segment in &ec.segments {
-            let segment = *segment;
-            let disk_writer = Arc::clone(&self.disk_writer);
-            syncs.spawn(async move { disk_writer.fsync(&segment).await });
-        }
-        while let Some(result) = syncs.join_next().await {
-            result.map_err(|error| IoError::WriteFailed(format!("EC fsync task failed: {error}")))??;
-        }
-        let response = self
-            .allocator
-            .complete_mirror_to_ec_conversion(CompleteMirrorToEcConversionRequest {
-                chunk_id: Some(chunk_id),
-                task_id: Some(task_id),
-                client_owner: self.writer_epoch,
-            })
-            .await?;
-        self.chunk = response
-            .chunk
-            .ok_or_else(|| IoError::MetadataConflict("conversion completion returned no chunk".into()))?;
-        Ok(())
     }
 
     async fn write_mirrors_with_repair(
@@ -975,6 +1408,7 @@ impl OwnedChunk {
             .await
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn try_repair_replica(
         &mut self,
         strip_sequence: u32,
@@ -988,6 +1422,7 @@ impl OwnedChunk {
             .disk_id
             .ok_or_else(|| IoError::Internal("failed mirror segment has no disk id".into()))?;
         self.failed_disks.insert(failed_disk);
+        let mut last_error = "no replacement attempt completed".to_string();
         for _ in 0..self.policy.repair_attempts_per_replica {
             self.metrics.repair_attempts.fetch_add(1, Ordering::Relaxed);
             let strip_index = self
@@ -1021,18 +1456,23 @@ impl OwnedChunk {
                     exclude_disk_ids: excluded,
                 })
                 .await;
-            let Ok(response) = response else {
-                continue;
+            let response = match response {
+                Ok(response) => response,
+                Err(error) => {
+                    last_error = error.to_string();
+                    continue;
+                }
             };
             let Some(replacement) = response.segment else {
+                last_error = "replacement allocation returned no segment".into();
                 continue;
             };
-            if self
+            if let Err(error) = self
                 .disk_writer
                 .write_at_byte_offset(&replacement, unit_bytes, block_offset, image.clone())
                 .await
-                .is_err()
             {
+                last_error = error.to_string();
                 if let Some(disk) = replacement.disk_id {
                     self.failed_disks.insert(disk);
                 }
@@ -1057,12 +1497,23 @@ impl OwnedChunk {
                 expected_modify_ts: self.chunk.modify_ts,
                 start_index: u32::try_from(strip_index).unwrap_or(u32::MAX),
                 old_strips: vec![old_strip],
-                replacement_strips: vec![new_strip],
+                replacement_strips: vec![new_strip.clone()],
                 operation_id: Some(operation_id),
             };
             match self.install_replacement(request, replacement).await {
                 Ok(chunk) => {
-                    self.chunk = chunk;
+                    if chunk
+                        .strips
+                        .iter()
+                        .any(|strip| strip.strip_sequence == strip_sequence)
+                    {
+                        self.chunk = chunk;
+                    } else {
+                        self.chunk.strips[strip_index] = new_strip;
+                        self.chunk.modify_ts = chunk.modify_ts;
+                        self.chunk.cleanup_intents = chunk.cleanup_intents;
+                        self.chunk.last_strip_replacement = chunk.last_strip_replacement;
+                    }
                     self.metrics.repaired_replicas.fetch_add(1, Ordering::Relaxed);
                     self.metrics
                         .repairs_avoiding_rotation
@@ -1078,7 +1529,9 @@ impl OwnedChunk {
         }
         self.metrics.exhausted_repairs.fetch_add(1, Ordering::Relaxed);
         self.mark_replica_unavailable(strip_sequence, failed).await?;
-        Err(IoError::WriteFailed("mirror replica repair exhausted".into()))
+        Err(IoError::WriteFailed(format!(
+            "mirror replica repair exhausted: {last_error}"
+        )))
     }
 
     async fn install_replacement(
@@ -1247,45 +1700,171 @@ impl OwnedChunk {
             .id
             .ok_or_else(|| IoError::AllocationFailed("shared chunk missing id".into()))?;
         let writer_lease_ms = u64::try_from(self.policy.writer_lease.as_millis()).unwrap_or(u64::MAX);
-        self.pending_advance = Some(tokio::spawn(advance_chunk(
-            Arc::clone(&self.allocator),
-            chunk_id,
-            self.writer_epoch,
-            self.chunk.modify_ts,
-            cursor,
-            None,
-            writer_lease_ms,
-        )));
+        self.pending_advance = Some(
+            if let Some((group_id, generation, sequence)) = self.active_reservation.take() {
+                tokio::spawn(confirm_reserved_strip(
+                    Arc::clone(&self.allocator),
+                    chunk_id,
+                    group_id,
+                    self.writer_epoch,
+                    generation,
+                    self.chunk.modify_ts,
+                    sequence,
+                    cursor,
+                    None,
+                    writer_lease_ms,
+                ))
+            } else {
+                tokio::spawn(advance_chunk(
+                    Arc::clone(&self.allocator),
+                    chunk_id,
+                    self.writer_epoch,
+                    self.chunk.modify_ts,
+                    cursor,
+                    None,
+                    writer_lease_ms,
+                ))
+            },
+        );
         Ok(())
     }
 
     fn schedule_closed_advance(&mut self, cursor: u64, closed_strip_sequence: u32) {
         let writer_lease_ms = u64::try_from(self.policy.writer_lease.as_millis()).unwrap_or(u64::MAX);
-        let pending = self.pending_advance.take();
-        self.pending_advance = Some(tokio::spawn(close_and_prefetch(
-            Arc::clone(&self.allocator),
-            pending,
-            self.chunk.clone(),
-            self.writer_epoch,
-            cursor,
-            closed_strip_sequence,
-            writer_lease_ms,
-            self.policy.small_strip_prefetch_count,
-            self.policy.mirror_copies,
-            self.policy.chunk_capacity,
-        )));
+        if let Some((group_id, generation, sequence)) = self.active_reservation.take() {
+            let allocator = Arc::clone(&self.allocator);
+            let chunk_id = self.chunk.id.unwrap_or_default();
+            let modify_ts = self.chunk.modify_ts;
+            let writer_epoch = self.writer_epoch;
+            let pending = self.pending_advance.take();
+            self.pending_advance = Some(tokio::spawn(async move {
+                let chunk = if let Some(pending) = pending {
+                    pending.await.map_err(|join_error| {
+                        IoError::WriteFailed(format!("background metadata task panicked: {join_error}"))
+                    })??
+                } else {
+                    return confirm_reserved_strip(
+                        allocator,
+                        chunk_id,
+                        group_id,
+                        writer_epoch,
+                        generation,
+                        modify_ts,
+                        sequence,
+                        cursor,
+                        Some(closed_strip_sequence),
+                        writer_lease_ms,
+                    )
+                    .await;
+                };
+                confirm_reserved_strip(
+                    allocator,
+                    chunk_id,
+                    group_id,
+                    writer_epoch,
+                    generation,
+                    chunk.modify_ts,
+                    sequence,
+                    cursor,
+                    Some(closed_strip_sequence),
+                    writer_lease_ms,
+                )
+                .await
+            }));
+        } else {
+            let pending = self.pending_advance.take();
+            if self.reservation_mode {
+                let allocator = Arc::clone(&self.allocator);
+                let chunk_id = self.chunk.id.unwrap_or_default();
+                let writer_epoch = self.writer_epoch;
+                let modify_ts = self.chunk.modify_ts;
+                self.pending_advance = Some(tokio::spawn(async move {
+                    let modify_ts = if let Some(pending) = pending {
+                        pending
+                            .await
+                            .map_err(|join_error| {
+                                IoError::WriteFailed(format!(
+                                    "background metadata task panicked: {join_error}"
+                                ))
+                            })??
+                            .modify_ts
+                    } else {
+                        modify_ts
+                    };
+                    advance_chunk(
+                        allocator,
+                        chunk_id,
+                        writer_epoch,
+                        modify_ts,
+                        cursor,
+                        Some(closed_strip_sequence),
+                        writer_lease_ms,
+                    )
+                    .await
+                }));
+            } else {
+                self.pending_advance = Some(tokio::spawn(close_and_prefetch(
+                    Arc::clone(&self.allocator),
+                    pending,
+                    self.chunk.clone(),
+                    self.writer_epoch,
+                    cursor,
+                    closed_strip_sequence,
+                    writer_lease_ms,
+                    self.policy.small_strip_prefetch_count,
+                    self.policy.mirror_copies,
+                    self.policy.chunk_capacity,
+                )));
+            }
+        }
     }
 
     async fn finish(&mut self) -> Result<()> {
+        if let Err(error) = self.resolve_conversion_update().await {
+            tracing::warn!(%error, "incomplete foreground conversion left mirrored");
+        }
         if let Err(error) = self.flush_pending_advance().await {
             if self.accept_external_seal().await? {
                 self.release_local_state();
                 return Ok(());
             }
-            return Err(error);
+            return Err(IoError::MetadataConflict(format!(
+                "flush reserved metadata failed: {error}"
+            )));
         }
         if self.chunk.acknowledged_cursor < self.cursor {
-            self.advance(self.cursor, None).await?;
+            self.advance(self.cursor, None).await.map_err(|error| {
+                IoError::MetadataConflict(format!("final reserved cursor advance failed: {error}"))
+            })?;
+        }
+        if let Some(group_id) = self.reservation_group_id {
+            if let Some((_, _, sequence)) = self.staged_reservation.take() {
+                if let Some(index) = self
+                    .chunk
+                    .strips
+                    .iter()
+                    .position(|strip| strip.strip_sequence == sequence)
+                {
+                    self.reserved_strips.push_front(self.chunk.strips.remove(index));
+                }
+            }
+            while let Some(strip) = self.reserved_strips.pop_front() {
+                self.mutate_reservation(
+                    group_id,
+                    self.reservation_generation,
+                    strip.strip_sequence,
+                    StripReservationAction::Cancel,
+                    self.chunk.acknowledged_cursor,
+                    None,
+                )
+                .await
+                .map_err(|error| {
+                    IoError::MetadataConflict(format!(
+                        "cancel surplus reservation {} failed: {error}",
+                        strip.strip_sequence
+                    ))
+                })?;
+            }
         }
         let Some(chunk_id) = self.chunk.id else {
             return Ok(());
@@ -1304,7 +1883,8 @@ impl OwnedChunk {
                     chunk_id: Some(chunk_id),
                     seal_length,
                 })
-                .await?;
+                .await
+                .map_err(|error| IoError::MetadataConflict(format!("seal reserved chunk failed: {error}")))?;
         }
         Ok(())
     }
@@ -1332,7 +1912,11 @@ impl OwnedChunk {
     fn release_local_state(&mut self) {
         self.clear_shadow();
         self.conversion_group = None;
-        self.conversion_active.store(false, Ordering::Release);
+        self.pending_conversion_update = None;
+        if self.owns_conversion_gate {
+            self.conversion_active.store(false, Ordering::Release);
+        }
+        self.owns_conversion_gate = false;
     }
 
     fn clear_shadow(&mut self) {

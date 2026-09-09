@@ -23,10 +23,12 @@ use crowdb_protocol::chunkdb::rpc::{
     AppendChunkResponse, CompleteMirrorToEcConversionRequest, CompleteMirrorToEcConversionResponse,
     DeleteChunkRangeRequest, DeleteChunkRangeResponse, DeleteChunkRequest, DeleteChunkResponse,
     DiscardReplacementSegmentRequest, DiscardReplacementSegmentResponse, ListChunksRequest,
-    ListChunksResponse, PrepareMirrorToEcConversionRequest, PrepareMirrorToEcConversionResponse,
-    QueryChunkRequest, QueryChunkResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse,
-    SealChunkRequest, SealChunkResponse, TriggerConversionBatchRequest, TriggerConversionBatchResponse,
-    TriggerConversionRequest, TriggerConversionResponse, UpdateChunkStripRequest, UpdateChunkStripResponse,
+    ListChunksResponse, MutateStripReservationRequest, MutateStripReservationResponse,
+    PrepareMirrorToEcConversionRequest, PrepareMirrorToEcConversionResponse, QueryChunkRequest,
+    QueryChunkResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse,
+    ReserveStripGroupRequest, ReserveStripGroupResponse, SealChunkRequest, SealChunkResponse,
+    TriggerConversionBatchRequest, TriggerConversionBatchResponse, TriggerConversionRequest,
+    TriggerConversionResponse, UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::InstanceId;
@@ -250,6 +252,32 @@ impl ChunkdbClient {
         self.with_rpc_retry(chunk_id.as_ref(), |t, ep| {
             let req = req.clone();
             async move { t.send_append_chunk(&ep, &req).await }
+        })
+        .await
+    }
+
+    /// Durably reserve a fenced group of strips without exposing them in the chunk.
+    pub async fn reserve_strip_group(
+        &self,
+        req: ReserveStripGroupRequest,
+    ) -> Result<ReserveStripGroupResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move { transport.send_reserve_strip_group(&endpoint, &req).await }
+        })
+        .await
+    }
+
+    /// Apply a fenced state transition to one strip in a reservation group.
+    pub async fn mutate_strip_reservation(
+        &self,
+        req: MutateStripReservationRequest,
+    ) -> Result<MutateStripReservationResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move { transport.send_mutate_strip_reservation(&endpoint, &req).await }
         })
         .await
     }

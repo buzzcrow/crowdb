@@ -82,6 +82,42 @@ pub enum ChunkType {
 }
 impl_enum_conversions!(ChunkType, Repo = 0, Wal = 1, BtreePage = 2, PageIndex = 3);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[repr(i32)]
+pub enum StripReservationState {
+    #[default]
+    Reserved = 0,
+    Consumed = 1,
+    Confirmed = 2,
+    Cancelled = 3,
+}
+impl_enum_conversions!(
+    StripReservationState,
+    Reserved = 0,
+    Consumed = 1,
+    Confirmed = 2,
+    Cancelled = 3
+);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[repr(i32)]
+pub enum StripReservationAction {
+    #[default]
+    Consume = 0,
+    Confirm = 1,
+    Cancel = 2,
+    Renew = 3,
+    Publish = 4,
+}
+impl_enum_conversions!(
+    StripReservationAction,
+    Consume = 0,
+    Confirm = 1,
+    Cancel = 2,
+    Renew = 3,
+    Publish = 4
+);
+
 // ── Strip types ─────────────────────────────────────────────────
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -219,6 +255,63 @@ pub struct AppendChunkResponse {
     pub strips: Vec<ChunkStrip>,
     /// Complete current chunk when the request revision was stale.
     pub chunk: Option<Chunk>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct StripReservationGroup {
+    pub group_id: Option<ChunkId>,
+    pub chunk_id: Option<ChunkId>,
+    pub writer_epoch: u64,
+    pub lease_generation: u64,
+    pub lease_deadline_ms: u64,
+    pub placement_epoch: u64,
+    pub strips: Vec<ChunkStrip>,
+    pub states: Vec<i32>,
+    pub parity_segments: Vec<Segment>,
+    pub preferred_survivors: Vec<u32>,
+    pub data_num: u32,
+    pub code_num: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct ReserveStripGroupRequest {
+    pub chunk_id: Option<ChunkId>,
+    pub expected_modify_ts: u64,
+    pub group_id: Option<ChunkId>,
+    pub writer_epoch: u64,
+    pub lease_generation: u64,
+    pub lease_ms: u64,
+    pub strip_size: u32,
+    pub strip_count: u32,
+    pub copy_count: u32,
+    pub conversion_data_num: u32,
+    pub conversion_code_num: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct ReserveStripGroupResponse {
+    pub chunk: Option<Chunk>,
+    pub group: Option<StripReservationGroup>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct MutateStripReservationRequest {
+    pub chunk_id: Option<ChunkId>,
+    pub expected_modify_ts: u64,
+    pub group_id: Option<ChunkId>,
+    pub writer_epoch: u64,
+    pub lease_generation: u64,
+    pub strip_sequence: u32,
+    pub action: i32,
+    pub acknowledged_cursor: u64,
+    pub closed_strip_sequence: Option<u32>,
+    pub lease_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct MutateStripReservationResponse {
+    pub chunk: Option<Chunk>,
+    pub group: Option<StripReservationGroup>,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]

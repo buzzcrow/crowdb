@@ -125,30 +125,31 @@ unavailable.
 
 ## 3. Foreground Conversion
 
-Each small-write pipeline retains an immutable image after a mirror strip is
-closed and synchronously updates four persistent parity buffers. The eighth
-update completes parity without rereading the preceding seven mirrors.
+Each small-write pipeline owns one special reservation group containing eight
+three-copy mirror candidate sets and four parity segments. The group is chosen
+from one placement snapshot and is hidden from `Chunk.strips` until individual
+mirrors are confirmed. A group is not started when the current chunk cannot
+contain eight remaining full strips.
 
-The data and parity buffers reserve one complete EC group's memory atomically.
-Reservation is nonblocking because conversion is an optimization after mirror
-durability: if the group cannot fit, the client releases the image and lets the
-chunkdb scanner convert later. A group is not started when the current chunk
-cannot contain enough remaining full strips to finish it.
+After a mirror strip is durable, its existing one-MiB shadow updates four
+persistent parity accumulators and is released. The eighth update completes
+parity without rereading mirrors and without retaining eight data images.
 
 A pipeline holding a partial group is not a scale-in candidate. Scale-in first
 requires every queue to be empty and every pipeline to be non-busy, then removes
 an individual pipeline that does not own partial conversion state. Queue bytes
 and object count remain the only scale-out inputs.
 
-After shard eight, the client:
+After shard eight, the client writes and fsyncs only the four parity segments,
+then requests fenced publication. ChunkDB re-evaluates every healthy survivor
+combination against current topology, selects the minimum-concentration safe
+8+4 layout, atomically replaces the eight mirrors, and records the sixteen
+redundant replicas for grace-period cleanup. A fast-path parity or publication
+error does not revoke acknowledged mirrors; it admits the existing durable
+`MirrorToEc` task for takeover.
 
-1. prepares a durable `MirrorToEc` task and tentative EC placement;
-2. writes the retained eight data shards and four parity shards in parallel;
-3. fsyncs every target segment;
-4. completes the task through fenced range replacement.
-
-A fast-path error does not revoke acknowledged mirror writes. The durable task
-remains available for takeover after its client claim expires.
+An early one-through-seven-strip tail cancels unused mirror reservations and
+all parity segments while retaining every confirmed mirror strip.
 
 ## 4. Background Conversion
 
@@ -170,9 +171,14 @@ the `/convert_chunk` and `/convert_all` HTTP endpoints.
 
 ## 5. Publication and Cleanup
 
-`allocate_conversion_strip` creates a tentative EC strip with the first
-mirror's offset and sequence and the old range's total capacity and sealed
-length. No task phase makes that strip readable.
+The special reservation allocator creates all twenty-eight blocks with
+all-or-rollback semantics. DiskDB requests are aggregated per DiskDB group and
+use one persisted request per group. Conversion requests permit repeated
+anti-affinity passes: every pass visits distinct disks before any disk is reused,
+while the first twelve EC roles are validated to fit on distinct disks. This
+avoids both one RPC per block and an oversized request failing solely because
+the mirror candidates outnumber disks. No reservation record makes a block
+readable.
 
 `replace_chunk_strip_range` validates the expected revision and exact old
 range. Its KV transaction commits replacement segments, publishes the EC strip,
@@ -238,6 +244,11 @@ decode, active-prefix append, client-I/O failure takeover, manual and automatic
 triggers, multiple groups plus mirror tail, bounded task dispatch, cleanup
 reconciliation, and process crash/restart recovery. Mock-based tests remain
 auxiliary for deterministic error injection and unit-level queue behavior.
+
+Reservation coverage verifies hidden reserve/consume state, idempotent
+confirmation and cancellation, eight joint mirror candidate sets plus parity,
+every early tail from one through seven, and reconstruction from the published
+survivor/parity layout.
 
 Read-repair coverage additionally verifies same-offset partial EC recovery,
 minimum surviving-shard reads, mirror fallback and total loss, exact partial

@@ -250,8 +250,22 @@ async fn eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread()
     assert!(locations
         .iter()
         .all(|location| location.chunk_id == locations[0].chunk_id));
-    let chunk = stack.query_chunk(&locations[0]).await;
-    assert_eq!(chunk.strips.len(), 5);
+    let chunk = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let chunk = stack.query_chunk(&locations[0]).await;
+            if chunk
+                .strips
+                .first()
+                .is_some_and(|strip| matches!(strip.strip, Some(Strip::EcStrip(_))))
+            {
+                break chunk;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("background parity publication");
+    assert_eq!(chunk.strips.len(), 1);
     let strip = &chunk.strips[0];
     let Some(Strip::EcStrip(ec)) = &strip.strip else {
         panic!("expected converted EC strip");
@@ -259,9 +273,6 @@ async fn eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread()
     assert_eq!((ec.data_num, ec.code_num), (8, 4));
     assert_eq!(ec.ec_state, crowdb_protocol::chunkdb::rpc::EcState::Parity as i32);
     assert_eq!(ec.segments.len(), 12);
-    assert!(chunk.strips[1..]
-        .iter()
-        .all(|strip| matches!(strip.strip, Some(Strip::MirrorStrip(_)))));
     let unit_bytes = u64::from(strip.unit_kb) * KIB as u64;
     for (segment, expected) in ec.segments[..8].iter().zip(&data) {
         let actual = stack
@@ -306,6 +317,38 @@ async fn eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread()
 }
 
 #[tokio::test]
+async fn consecutive_conversion_groups_keep_one_mibibyte_shard_geometry() {
+    if !all_binaries_available() {
+        return;
+    }
+    let mut configured = policy();
+    configured.chunk_capacity = 16 * MIB as u64;
+    let stack = E2eStack::start(configured).await;
+    let mut locations = Vec::new();
+    for value in 0_u8..16 {
+        locations.push(write_object(&stack.client, Bytes::from(vec![value; MIB])).await);
+    }
+    let chunk = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let chunk = stack.query_chunk(&locations[0]).await;
+            if chunk.strips.len() == 2
+                && chunk
+                    .strips
+                    .iter()
+                    .all(|strip| matches!(strip.strip, Some(Strip::EcStrip(_))) && strip.capacity == 8 * 1024)
+            {
+                break chunk;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("two fixed-geometry conversion groups");
+    assert_eq!(chunk.capacity, 16 * 1024);
+    stack.client.shutdown_small_writes().await.unwrap();
+}
+
+#[tokio::test]
 async fn chunkdb_takes_over_durable_conversion_task_after_client_io_failure() {
     if !all_binaries_available() {
         return;
@@ -327,13 +370,13 @@ async fn chunkdb_takes_over_durable_conversion_task_after_client_io_failure() {
     }
     let location = locations[0].clone();
     let failed_fast_path = stack.query_chunk(&location).await;
-    assert_eq!(failed_fast_path.strips.len(), 12);
+    assert_eq!(failed_fast_path.strips.len(), 8);
     assert!(failed_fast_path
         .strips
         .iter()
         .all(|strip| matches!(strip.strip, Some(Strip::MirrorStrip(_)))));
     assert_eq!(client.small_write_metrics().failed, 0);
-    let converted = tokio::time::timeout(Duration::from_secs(15), async {
+    let converted = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let chunk = stack.query_chunk(&location).await;
             if matches!(chunk.strips.first(), Some(strip) if matches!(strip.strip, Some(Strip::EcStrip(_)))) {
@@ -369,6 +412,7 @@ async fn chunkdb_takes_over_durable_conversion_task_after_client_io_failure() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
     if !all_binaries_available() {
         return;
@@ -398,7 +442,7 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
     .expect("background close checkpoint did not reach strip 7");
     assert_eq!(before.state, ChunkState::Active as i32);
     assert_eq!(before.closed_strip_sequence, Some(7));
-    assert_eq!(before.strips.len(), 12);
+    assert_eq!(before.strips.len(), 8);
     assert!(before
         .strips
         .iter()
@@ -448,8 +492,18 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
     let appended = write_object(&stack.client, appended_data.clone()).await;
     assert_eq!(appended.chunk_id, location.chunk_id);
     assert_eq!(appended.offset, 8 * MIB as u64);
-    let after_append = stack.query_chunk(&appended).await;
-    assert_eq!(after_append.strips.len(), 5);
+    let after_append = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let chunk = stack.query_chunk(&appended).await;
+            if chunk.strips.len() == 2 {
+                break chunk;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("reserved append confirmation");
+    assert_eq!(after_append.strips.len(), 2);
     assert!(matches!(after_append.strips[0].strip, Some(Strip::EcStrip(_))));
     assert_mirror_data(&stack, &after_append, &appended, &appended_data).await;
     for (location, expected) in locations.iter().zip(&data) {
@@ -665,6 +719,7 @@ async fn small_write_repairs_failed_replica_through_real_chunkdb_and_diskio() {
     let data = Bytes::from(vec![0x5a; 96 * KIB]);
     let location = write_object(&client, data.clone()).await;
     let failed_disk = fault.failed_disk.lock().unwrap().expect("injected disk identity");
+    client.shutdown_small_writes().await.unwrap();
     let chunk = stack.query_chunk(&location).await;
     let Some(Strip::MirrorStrip(mirror)) = &chunk.strips[0].strip else {
         panic!("expected repaired mirror strip");
@@ -681,7 +736,6 @@ async fn small_write_repairs_failed_replica_through_real_chunkdb_and_diskio() {
     assert!(metrics.repair_latency_ns > 0);
     assert!(metrics.max_repair_latency_ns > 0);
     assert_eq!(metrics.repairs_avoiding_rotation, 1);
-    client.shutdown_small_writes().await.unwrap();
     assert_eq!(client.small_write_metrics().shadow_bytes, 0);
 }
 

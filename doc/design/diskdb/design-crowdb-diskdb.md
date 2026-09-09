@@ -134,8 +134,10 @@ as the allocation routing unit. Allocate is scoped to one disk-group;
 multi-block uses one `batch_write` on that group's bound paxos data
 group; atomic within the group. No cross-group multi-block allocate in
 v1. The caller issues separate `AllocateBlocks` calls per group if
-needed. The caller (or a future placement service) picks the
-disk-group.
+needed. A joint placement caller may set `allow_disk_reuse` to execute
+multiple distinct-disk passes in one atomic per-group request. The caller is
+responsible for validating that roles requiring mutual anti-affinity fit in
+the first pass. The caller (or a future placement service) picks the disk-group.
 
 ### 3.3 No CAS needed; exclusive ownership
 

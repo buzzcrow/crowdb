@@ -204,6 +204,8 @@ table FBAllocateBlocksRequest {
     count:uint32;
     exclude_disk_ids:[crowdb.rpc.proto.FBInt128];
     owner_chunk:crowdb.rpc.proto.FBInt128;
+    // Reset request-local disk anti-affinity after each complete disk pass.
+    allow_disk_reuse:bool = false;
 }
 
 table FBAllocateResponse {

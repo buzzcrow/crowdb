@@ -21,6 +21,7 @@ use crate::{DiskWriter, IoError, Result};
 struct Route {
     endpoint: Arc<str>,
     connections: Arc<[Connection]>,
+    priority_connection: Connection,
     next_connection: Arc<AtomicUsize>,
 }
 
@@ -147,11 +148,16 @@ impl RoutedDiskWriter {
                     client.attach(&connection);
                     connections.push(connection);
                 }
+                let priority_connection = server.connect(host, port).map_err(|error| {
+                    IoError::Topology(format!("connect priority DiskIO {endpoint}: {error}"))
+                })?;
+                client.attach(&priority_connection);
                 endpoint_routes.insert(
                     endpoint.clone(),
                     Route {
                         endpoint: Arc::from(endpoint.as_str()),
                         connections: connections.into(),
+                        priority_connection,
                         next_connection: Arc::new(AtomicUsize::new(0)),
                     },
                 );
@@ -214,6 +220,47 @@ impl DiskWriter for RoutedDiskWriter {
         Ok(())
     }
 
+    async fn write_priority_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        super::disk_writer::validate_segment_byte_write(seg, unit_bytes, byte_offset, data.len())?;
+        let id = seg
+            .disk_id
+            .map(|id| DiskId::new(id.high, id.low))
+            .ok_or_else(|| IoError::WriteFailed("segment missing disk_id".into()))?;
+        let route = self.route(id)?;
+        let zone_offset = seg
+            .unit_offset
+            .checked_mul(unit_bytes)
+            .and_then(|offset| offset.checked_add(byte_offset))
+            .ok_or_else(|| IoError::WriteFailed("disk write offset overflow".into()))?;
+        let future = self
+            .client
+            .write_bytes(
+                &self.server,
+                &route.priority_connection,
+                id,
+                seg.zone_index,
+                zone_offset,
+                data,
+            )
+            .map_err(|error| IoError::WriteFailed(format!("{}: {error}", route.endpoint)))?;
+        let code = DiskioClient::await_write_response(future)
+            .await
+            .map_err(|error| IoError::WriteFailed(format!("{}: {error}", route.endpoint)))?;
+        if code != DiskIoRetCode::Success {
+            return Err(IoError::WriteFailed(format!(
+                "{} returned {code:?}",
+                route.endpoint
+            )));
+        }
+        Ok(())
+    }
+
     async fn write_at_byte_offset(
         &self,
         seg: &Segment,
@@ -259,6 +306,28 @@ impl DiskWriter for RoutedDiskWriter {
         let future = self
             .client
             .fsync(&self.server, &connection, id)
+            .map_err(|error| IoError::WriteFailed(format!("{}: {error}", route.endpoint)))?;
+        let code = DiskioClient::await_fsync_response(future)
+            .await
+            .map_err(|error| IoError::WriteFailed(format!("{}: {error}", route.endpoint)))?;
+        if code != DiskIoRetCode::Success {
+            return Err(IoError::WriteFailed(format!(
+                "{} returned {code:?}",
+                route.endpoint
+            )));
+        }
+        Ok(())
+    }
+
+    async fn fsync_priority(&self, seg: &Segment) -> Result<()> {
+        let id = seg
+            .disk_id
+            .map(|id| DiskId::new(id.high, id.low))
+            .ok_or_else(|| IoError::WriteFailed("segment missing disk_id".into()))?;
+        let route = self.route(id)?;
+        let future = self
+            .client
+            .fsync(&self.server, &route.priority_connection, id)
             .map_err(|error| IoError::WriteFailed(format!("{}: {error}", route.endpoint)))?;
         let code = DiskioClient::await_fsync_response(future)
             .await

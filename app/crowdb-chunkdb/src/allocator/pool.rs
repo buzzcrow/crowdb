@@ -147,10 +147,32 @@ impl DiskdbClientPool {
             count,
             exclude_disk_ids,
             owner_chunk: Some(*owner_chunk),
+            allow_disk_reuse: false,
         };
 
         let endpoint = self.endpoint_for_dg(dg_id).await.map_err(|e| {
             DiskdbClientError::Unreachable(format!("no endpoint for disk_group {dg_id}: {e}"))
+        })?;
+        self.transport.allocate_blocks(&endpoint, &req).await
+    }
+
+    pub async fn allocate_blocks_reusing_disks(
+        &self,
+        dg_id: u64,
+        count: u32,
+        unit_count: u32,
+        owner_chunk: &ChunkId,
+    ) -> Result<AllocateResponse, DiskdbClientError> {
+        let req = AllocateBlocksRequest {
+            disk_group_id: dg_id,
+            unit_count,
+            count,
+            exclude_disk_ids: Vec::new(),
+            owner_chunk: Some(*owner_chunk),
+            allow_disk_reuse: true,
+        };
+        let endpoint = self.endpoint_for_dg(dg_id).await.map_err(|error| {
+            DiskdbClientError::Unreachable(format!("no endpoint for disk_group {dg_id}: {error}"))
         })?;
         self.transport.allocate_blocks(&endpoint, &req).await
     }

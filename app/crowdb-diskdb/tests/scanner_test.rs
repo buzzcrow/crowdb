@@ -326,6 +326,7 @@ async fn scan_ghosts_detects_and_corrects_ghost_busy() {
         1,
         1,
         &[],
+        false,
         &owner_chunk,
         UNIT_SIZE_BYTES,
         &alloc_kv,

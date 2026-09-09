@@ -376,6 +376,20 @@ impl ChunkAllocator for MetricsChunkAllocator {
         result
     }
 
+    async fn reserve_strip_group(
+        &self,
+        req: crowdb_protocol::chunkdb::rpc::ReserveStripGroupRequest,
+    ) -> Result<crowdb_protocol::chunkdb::rpc::ReserveStripGroupResponse> {
+        self.inner.reserve_strip_group(req).await
+    }
+
+    async fn mutate_strip_reservation(
+        &self,
+        req: crowdb_protocol::chunkdb::rpc::MutateStripReservationRequest,
+    ) -> Result<crowdb_protocol::chunkdb::rpc::MutateStripReservationResponse> {
+        self.inner.mutate_strip_reservation(req).await
+    }
+
     async fn advance_chunk_write(&self, req: AdvanceChunkWriteRequest) -> Result<AdvanceChunkWriteResponse> {
         self.inner.advance_chunk_write(req).await
     }
@@ -453,6 +467,30 @@ impl DiskWriter for MetricsDiskWriter {
 
     async fn fsync(&self, seg: &Segment) -> Result<()> {
         self.inner.fsync(seg).await
+    }
+
+    async fn write_priority_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        let bytes = u64::try_from(data.len()).unwrap_or(u64::MAX);
+        let mut operation = self.metrics.diskio_write.start();
+        let result = self
+            .inner
+            .write_priority_at_byte_offset(seg, unit_bytes, byte_offset, data)
+            .await;
+        if result.is_ok() {
+            self.metrics.diskio_write_bytes.observe(bytes);
+            operation.mark_success();
+        }
+        result
+    }
+
+    async fn fsync_priority(&self, seg: &Segment) -> Result<()> {
+        self.inner.fsync_priority(seg).await
     }
 
     async fn read(&self, seg: &Segment, unit_bytes: u64, segment_offset: u64, length: u32) -> Result<Bytes> {

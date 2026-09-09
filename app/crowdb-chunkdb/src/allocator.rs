@@ -60,6 +60,12 @@ pub struct StripBatchSpec {
     pub strip_count: u32,
 }
 
+pub struct ConversionGroupAllocation {
+    pub mirrors: Vec<ChunkStrip>,
+    pub parity_segments: Vec<Segment>,
+    pub preferred_survivors: Vec<u32>,
+}
+
 /// Chunk allocator — orchestrates placement + parallel diskdb calls.
 pub struct ChunkAllocator {
     pool: Arc<DiskdbClientPool>,
@@ -67,6 +73,86 @@ pub struct ChunkAllocator {
 }
 
 impl ChunkAllocator {
+    #[allow(clippy::too_many_arguments)]
+    pub async fn allocate_conversion_group(
+        &self,
+        snap: &TopologySnapshot,
+        owner_chunk: &ChunkId,
+        unit_count: u32,
+        start_sequence: u32,
+        data_num: usize,
+        code_num: usize,
+        copy_count: usize,
+        constraints: &PlacementConstraints,
+    ) -> Result<ConversionGroupAllocation, AllocError> {
+        if copy_count < 1 {
+            return Err(crate::selector::PlacementError::InvalidShape(
+                "conversion mirror copy count must be nonzero".into(),
+            )
+            .into());
+        }
+        self.pool.update_disk_id_lookup(&snap.disk_groups());
+        let ec_plan = EcPlacement::select(snap, data_num, code_num, constraints)?;
+        let mut ec_blocks_by_group = HashMap::<u64, usize>::new();
+        for entry in &ec_plan.entries {
+            *ec_blocks_by_group.entry(entry.disk_group_id).or_default() += entry.block_count as usize;
+        }
+        if ec_blocks_by_group.into_iter().any(|(dg_id, block_count)| {
+            snap.disk_group(dg_id)
+                .map_or(true, |entry| entry.value.disk_ids.len() < block_count)
+        }) {
+            return Err(crate::selector::PlacementError::InsufficientCapacity.into());
+        }
+        let mut entries = ec_plan.entries.clone();
+        if copy_count > 1 {
+            for survivor in ec_plan.entries.iter().take(data_num) {
+                let mut mirror_constraints = constraints.clone();
+                mirror_constraints.exclude_nodes.push(survivor.node_id);
+                let extras = MirrorPlacement::select(snap, copy_count - 1, &mirror_constraints)?;
+                entries.extend(extras.entries);
+            }
+        }
+        let plan = PlacementPlan {
+            entries,
+            safe_mode: ec_plan.safe_mode,
+        };
+        let mut blocks_by_group = HashMap::<u64, usize>::new();
+        for entry in &plan.entries {
+            *blocks_by_group.entry(entry.disk_group_id).or_default() += 1;
+        }
+        let requires_reuse = blocks_by_group.into_iter().any(|(dg_id, block_count)| {
+            snap.disk_group(dg_id)
+                .map_or(true, |entry| entry.value.disk_ids.len() < block_count)
+        });
+        let segments = if requires_reuse {
+            self.allocate_blocks_in_plan_order_reusing_disks(owner_chunk, &plan, unit_count)
+                .await?
+        } else {
+            self.allocate_blocks_in_plan_order(owner_chunk, &plan, unit_count)
+                .await?
+        };
+        let mut mirrors = Vec::with_capacity(data_num);
+        let extras_start = data_num + code_num;
+        for index in 0..data_num {
+            let mut mirror_segments = Vec::with_capacity(copy_count);
+            mirror_segments.push(segments[index]);
+            let start = extras_start + index * (copy_count - 1);
+            mirror_segments.extend_from_slice(&segments[start..start + copy_count - 1]);
+            mirrors.push(assemble_strip(
+                &mirror_segments,
+                StripAllocType::Mirror { copy_count },
+                start_sequence.saturating_add(u32::try_from(index).unwrap_or(u32::MAX)),
+                unit_count,
+                (snap.unit_size_bytes() / 1024).max(1),
+            ));
+        }
+        Ok(ConversionGroupAllocation {
+            mirrors,
+            parity_segments: segments[data_num..data_num + code_num].to_vec(),
+            preferred_survivors: vec![0; data_num],
+        })
+    }
+
     #[must_use]
     pub fn new(pool: Arc<DiskdbClientPool>) -> Self {
         Self { pool, metrics: None }
@@ -181,7 +267,21 @@ impl ChunkAllocator {
         exclude_disk_ids: Vec<DiskId>,
     ) -> Result<Segment, AllocError> {
         self.pool.update_disk_id_lookup(&snap.disk_groups());
-        let plan = MirrorPlacement::select(snap, 1, constraints)?;
+        let mut constraints = constraints.clone();
+        constraints.exclude_disk_groups.extend(
+            snap.disk_groups()
+                .into_iter()
+                .filter(|disk_group| {
+                    disk_group.value.disk_ids.is_empty()
+                        || disk_group
+                            .value
+                            .disk_ids
+                            .iter()
+                            .all(|disk_id| exclude_disk_ids.contains(disk_id))
+                })
+                .map(|disk_group| disk_group.dg_id),
+        );
+        let plan = MirrorPlacement::select(snap, 1, &constraints)?;
         let entry = plan
             .entries
             .first()
@@ -337,6 +437,158 @@ impl ChunkAllocator {
 
         info!(segment_count = all_segments.len(), "strip allocated");
         Ok(all_segments)
+    }
+
+    async fn allocate_blocks_in_plan_order(
+        &self,
+        owner_chunk: &ChunkId,
+        plan: &PlacementPlan,
+        unit_count: u32,
+    ) -> Result<Vec<Segment>, AllocError> {
+        let mut grouped = HashMap::<u64, Vec<usize>>::new();
+        for (index, entry) in plan.entries.iter().enumerate() {
+            grouped.entry(entry.disk_group_id).or_default().push(index);
+        }
+        let requests = grouped.iter().map(|(dg_id, indexes)| {
+            let pool = Arc::clone(&self.pool);
+            let owner = *owner_chunk;
+            let dg_id = *dg_id;
+            let count = u32::try_from(indexes.len()).unwrap_or(u32::MAX);
+            async move {
+                pool.allocate_blocks(dg_id, count, unit_count, &owner)
+                    .await
+                    .map_err(|error| AllocError::AllocateFailed {
+                        dg_id,
+                        error: error.to_string(),
+                    })
+            }
+        });
+        let results = join_all(requests).await;
+        let mut ordered = vec![None; plan.entries.len()];
+        let mut allocated = Vec::with_capacity(plan.entries.len());
+        let mut error = None;
+        for (result, (dg_id, indexes)) in results.into_iter().zip(&grouped) {
+            match result {
+                Ok(response) => {
+                    let got = response.segments.len();
+                    allocated.extend_from_slice(&response.segments);
+                    if got != indexes.len() {
+                        error = Some(AllocError::PartialAllocation {
+                            requested: u32::try_from(indexes.len()).unwrap_or(u32::MAX),
+                            got: u32::try_from(got).unwrap_or(u32::MAX),
+                        });
+                        continue;
+                    }
+                    for (index, segment) in indexes.iter().copied().zip(response.segments) {
+                        if let Some(reason) = self.validate_segment(&segment, *dg_id, owner_chunk, unit_count)
+                        {
+                            error = Some(AllocError::InvalidResponse {
+                                dg_id: *dg_id,
+                                reason,
+                            });
+                        }
+                        ordered[index] = Some(segment);
+                    }
+                }
+                Err(current) if error.is_none() => error = Some(current),
+                Err(_) => {}
+            }
+        }
+        self.finish_ordered_allocation(plan, ordered, allocated, error)
+            .await
+    }
+
+    async fn allocate_blocks_in_plan_order_reusing_disks(
+        &self,
+        owner_chunk: &ChunkId,
+        plan: &PlacementPlan,
+        unit_count: u32,
+    ) -> Result<Vec<Segment>, AllocError> {
+        let mut grouped = HashMap::<u64, Vec<usize>>::new();
+        for (index, entry) in plan.entries.iter().enumerate() {
+            grouped.entry(entry.disk_group_id).or_default().push(index);
+        }
+        let requests = grouped.iter().map(|(dg_id, indexes)| {
+            let pool = Arc::clone(&self.pool);
+            let owner = *owner_chunk;
+            let dg_id = *dg_id;
+            let count = u32::try_from(indexes.len()).unwrap_or(u32::MAX);
+            async move {
+                pool.allocate_blocks_reusing_disks(dg_id, count, unit_count, &owner)
+                    .await
+                    .map_err(|error| AllocError::AllocateFailed {
+                        dg_id,
+                        error: error.to_string(),
+                    })
+            }
+        });
+        let results = join_all(requests).await;
+        let mut ordered = vec![None; plan.entries.len()];
+        let mut allocated = Vec::with_capacity(plan.entries.len());
+        let mut error = None;
+        for (result, (dg_id, indexes)) in results.into_iter().zip(&grouped) {
+            match result {
+                Ok(response) => {
+                    let got = response.segments.len();
+                    allocated.extend_from_slice(&response.segments);
+                    if got != indexes.len() {
+                        error = Some(AllocError::PartialAllocation {
+                            requested: u32::try_from(indexes.len()).unwrap_or(u32::MAX),
+                            got: u32::try_from(got).unwrap_or(u32::MAX),
+                        });
+                        continue;
+                    }
+                    for (index, segment) in indexes.iter().copied().zip(response.segments) {
+                        if let Some(reason) = self.validate_segment(&segment, *dg_id, owner_chunk, unit_count)
+                        {
+                            error = Some(AllocError::InvalidResponse {
+                                dg_id: *dg_id,
+                                reason,
+                            });
+                        }
+                        ordered[index] = Some(segment);
+                    }
+                }
+                Err(current) if error.is_none() => error = Some(current),
+                Err(_) => {}
+            }
+        }
+        self.finish_ordered_allocation(plan, ordered, allocated, error)
+            .await
+    }
+
+    async fn finish_ordered_allocation(
+        &self,
+        plan: &PlacementPlan,
+        ordered: Vec<Option<Segment>>,
+        allocated: Vec<Segment>,
+        error: Option<AllocError>,
+    ) -> Result<Vec<Segment>, AllocError> {
+        if let Some(error) = error {
+            return self.rollback_or_error(&allocated, error).await;
+        }
+        if let Some(ordered) = ordered.into_iter().collect::<Option<Vec<_>>>() {
+            return Ok(ordered);
+        }
+        self.rollback_or_error(
+            &allocated,
+            AllocError::PartialAllocation {
+                requested: u32::try_from(plan.entries.len()).unwrap_or(u32::MAX),
+                got: u32::try_from(allocated.len()).unwrap_or(u32::MAX),
+            },
+        )
+        .await?;
+        unreachable!("rollback_or_error always returns Err")
+    }
+
+    pub async fn rollback_conversion_group(
+        &self,
+        mirrors: &[ChunkStrip],
+        parity_segments: &[Segment],
+    ) -> Result<(), AllocError> {
+        let mut segments: Vec<_> = mirrors.iter().flat_map(extract_segments).collect();
+        segments.extend_from_slice(parity_segments);
+        self.free_all(&segments).await
     }
 
     fn record_diskdb_retry(&self) {

@@ -35,9 +35,10 @@ mirror strips and may own one empty prepared replacement. A pipeline batches
 whole objects, writes the physical range to every mirror, durably advances the
 chunk cursor, then returns an independent `Location` to each caller.
 
-The shared path does not perform erasure coding or reclaim abandoned object
-ranges. Mirror-to-EC conversion and in-chunk reclamation consume its durable
-strip and cursor metadata as later background work.
+The shared path can incrementally form 8+4 EC groups while writing mirrors.
+It retains one open-strip image and four parity accumulators, but never retains
+eight completed data images. Incomplete or failed groups remain mirrored and
+can be completed by later background conversion.
 
 ## 2. Admission and Object Handles
 
@@ -93,14 +94,30 @@ recovers the unique mutable shadow after completion without another
 steady-state copy.
 Each returned location covers only its object's exact bytes.
 
-Chunk allocation attaches a bounded batch of mirror strips. At a low-water
-mark, the background metadata chain closes the completed strip and appends the
-next batch with one `append_chunk(strip_count=N)` call. The write path consumes
-an already attached strip and never performs synchronous allocation. If the
-prefetch runway is unexpectedly exhausted, the pipeline fails and retires
-instead of allocating on the object path. Seal removes and releases attached
-strips beyond the written length. Objects and batches never straddle a strip or
-chunk.
+Chunk allocation reserves a bounded group of hidden strips. A reserved strip
+becomes `Consumed` immediately before its first DiskIO and is confirmed into
+the readable layout only after its mirror write succeeds. Confirmation and
+refill run on the background metadata chain; reserve failures fall back to a
+bounded batch of already attached mirror strips. Seal cancels never-consumed
+reservations and removes attached strips beyond the written length. Objects
+and batches never straddle a strip or chunk.
+
+When automatic conversion is enabled and at least eight strips remain, one
+special reservation allocates eight three-copy mirror sets and four parity
+segments from a joint placement plan. Each completed strip updates the four
+incremental parity accumulators and releases its input image. After strip eight,
+the client writes and fsyncs only the parity segments. ChunkDB then reselects
+one healthy survivor per mirror set against current topology and atomically
+publishes the 8+4 EC strip. If optimal publication is unavailable, mirrors stay
+authoritative and the ordinary durable conversion task is admitted.
+
+The pool divides its 96 MiB memory ceiling evenly between ordinary object and
+shadow admission and conversion parity. One pool-global atomic gate admits at
+most one foreground conversion group. A new group waits only for the previous
+group's parity permits to be returned; a group larger than the reserved half is
+left mirrored for background conversion. Published EC capacity is divided by
+its data width when deriving the next reservation, so consecutive groups keep
+the same per-shard geometry.
 
 ## 5. Durable Cursor and Completion
 
@@ -123,7 +140,7 @@ The response barrier is:
 1. Append the object bytes to the open-strip shadow and write that byte range
    concurrently to every mirror.
 2. Repair each failed replica from that shadow and fence the new segment into
-   chunk metadata.
+   chunk metadata or, while it remains hidden, into its durable reservation.
 3. Publish all object-specific locations together.
 4. Coalesce cursor progress in the background metadata chain. Strip close and
    batched append execute there in revision order.
@@ -149,9 +166,11 @@ route, and retires its chunks.
 
 Chunkdb periodically scans Active shared chunks. When a persisted writer lease
 has expired, it acquires the normal lifecycle guard, rechecks the record, seals
-at the persisted cursor, closes only acknowledged strips, persists, and
-refreshes the cache. The old writer can no longer renew or advance the sealed
-chunk.
+at the persisted cursor, cancels and frees never-consumed reservations, closes
+only acknowledged strips, persists, and refreshes the cache. A consumed
+reservation is retained because current DiskIO addressing has no allocation
+generation fence and a delayed write must never reach a recycled extent. The
+old writer can no longer renew or advance the sealed chunk.
 
 ## 7. Elasticity, Failure, and Shutdown
 
@@ -190,6 +209,10 @@ budget covering one 1 MiB shadow per maximum pipeline plus one admitted
 maximum-size object. The retained `scale_in_delay` and `cooldown` fields are
 configuration-compatible but do not participate in scale decisions.
 
+Foreground parity writes use a dedicated connection per DiskIO endpoint and
+64 KiB byte-range requests, followed by a parity-only fsync barrier. Ordinary
+mirror traffic retains its configured connection pool and request sizing.
+
 Atomic metrics cover submitted, completed, and failed objects; reserved bytes;
 batch sizes and fill; queue delay; active and draining pipelines; scale changes;
 strip-tail waste; and batch-watchdog expirations. The watchdog reports a batch
@@ -224,3 +247,8 @@ maxima. Snapshots compute aggregates without locking submission.
   published.
 - **SW-I9 — Queue-only elasticity.** Pipeline membership changes are driven by
   queued bytes, queued objects, and empty/non-busy state, never elapsed time.
+- **SW-I10 — Hidden reservation.** A reserved or consumed strip is never
+  readable through `Chunk.strips`; only fenced confirmation publishes it.
+- **SW-I11 — EC publication.** Mirror replicas remain authoritative until four
+  parity segments are durable and one current-topology survivor from every
+  mirror set is atomically published.

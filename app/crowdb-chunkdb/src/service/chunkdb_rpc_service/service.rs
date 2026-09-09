@@ -43,10 +43,13 @@ use crowdb_protocol::chunkdb_fb::{
     FBDiscardReplacementSegmentRequest, FBDiscardReplacementSegmentResponse,
     FBDiscardReplacementSegmentResponseArgs, FBEcState, FBEcStrip, FBEcStripArgs, FBInt128,
     FBListChunksRequest, FBListChunksResponse, FBListChunksResponseArgs, FBMirrorStrip, FBMirrorStripArgs,
+    FBMutateStripReservationRequest, FBMutateStripReservationResponse, FBMutateStripReservationResponseArgs,
     FBPrepareMirrorToEcConversionRequest, FBPrepareMirrorToEcConversionResponse,
     FBPrepareMirrorToEcConversionResponseArgs, FBQueryChunkRequest, FBQueryChunkResponse,
-    FBQueryChunkResponseArgs, FBReplaceChunkStripRangeRequest, FBSealChunkRequest, FBSegment, FBStripBody,
-    FBStripCleanupIntent, FBStripCleanupIntentArgs, FBStripType, FBTriggerConversionBatchRequest,
+    FBQueryChunkResponseArgs, FBReplaceChunkStripRangeRequest, FBReserveStripGroupRequest,
+    FBReserveStripGroupResponse, FBReserveStripGroupResponseArgs, FBSealChunkRequest, FBSegment, FBStripBody,
+    FBStripCleanupIntent, FBStripCleanupIntentArgs, FBStripReservationAction, FBStripReservationGroup,
+    FBStripReservationGroupArgs, FBStripReservationState, FBStripType, FBTriggerConversionBatchRequest,
     FBTriggerConversionBatchResponse, FBTriggerConversionBatchResponseArgs, FBTriggerConversionRequest,
     FBTriggerConversionResponse, FBTriggerConversionResponseArgs, FBUpdateChunkStripRequest,
 };
@@ -89,6 +92,7 @@ impl ChunkdbRpcService {
     }
 
     /// Register all chunkdb request handlers into the `RpcServer`.
+    #[allow(clippy::too_many_lines)]
     pub fn register_handlers(self: &Arc<Self>, server: &Arc<RpcServer>) {
         server.register_handler(
             FBMsgType::EAllocateChunkRequest.0 as u16,
@@ -115,6 +119,24 @@ impl ChunkdbRpcService {
                 Arc::clone(server),
                 RequestKind::AdvanceChunkWrite,
                 Self::handle_advance_write,
+            ),
+        );
+        server.register_handler(
+            FBMsgType::EReserveStripGroupRequest.0 as u16,
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::ReserveStripGroup,
+                Self::handle_reserve_strip_group,
+            ),
+        );
+        server.register_handler(
+            FBMsgType::EMutateStripReservationRequest.0 as u16,
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::MutateStripReservation,
+                Self::handle_mutate_strip_reservation,
             ),
         );
         server.register_handler(
@@ -262,6 +284,8 @@ impl ChunkdbRpcService {
 mod mutations;
 #[path = "queries.rs"]
 mod queries;
+#[path = "reservations.rs"]
+mod reservations;
 #[path = "wire.rs"]
 mod wire;
 
@@ -270,5 +294,5 @@ use wire::{
     build_query_response, map_error, parse_fb_chunk_strip, parse_fb_segment, parse_fb_segments,
     proto_chunk_type, proto_strip_type, submit_append_result, submit_chunk_result,
     submit_conversion_chunk_result, submit_conversion_count_result, submit_error, submit_fb_response,
-    submit_prepared_conversion_result, submit_segment_result,
+    submit_prepared_conversion_result, submit_reservation_result, submit_segment_result,
 };

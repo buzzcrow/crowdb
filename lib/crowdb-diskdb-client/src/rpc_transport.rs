@@ -392,6 +392,7 @@ fn build_allocate_request(req_id: u64, req: &crowdb_protocol::diskdb::rpc::Alloc
             count: req.count,
             owner_chunk: Some(&owner),
             exclude_disk_ids: Some(exclude_off),
+            allow_disk_reuse: req.allow_disk_reuse,
         },
     );
     fbb.finish(off, None);

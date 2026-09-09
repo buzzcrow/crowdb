@@ -24,10 +24,11 @@ use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteResponse, AllocateChunkResponse, AllocateReplacementSegmentResponse,
     AppendChunkResponse, Chunk, ChunkState as ProtoChunkState, ChunkStrip, ChunkType as ProtoChunkType,
     CompleteMirrorToEcConversionResponse, DeleteChunkRangeResponse, DeleteChunkResponse,
-    DiscardReplacementSegmentResponse, ListChunksResponse, PrepareMirrorToEcConversionResponse,
-    QueryChunkResponse, ReplaceChunkStripRangeResponse, SealChunkResponse, StripCleanupIntent,
-    StripType as ProtoStripType, TriggerConversionBatchResponse, TriggerConversionResponse,
-    UpdateChunkStripResponse,
+    DiscardReplacementSegmentResponse, ListChunksResponse, MutateStripReservationResponse,
+    PrepareMirrorToEcConversionResponse, QueryChunkResponse, ReplaceChunkStripRangeResponse,
+    ReserveStripGroupResponse, SealChunkResponse, StripCleanupIntent, StripReservationAction,
+    StripReservationGroup, StripReservationState, StripType as ProtoStripType,
+    TriggerConversionBatchResponse, TriggerConversionResponse, UpdateChunkStripResponse,
 };
 use crowdb_protocol::chunkdb::rpc::{EcState as ProtoEcState, EcStrip, MirrorStrip, Strip as ProtoStrip};
 use crowdb_protocol::chunkdb_fb::{
@@ -38,13 +39,16 @@ use crowdb_protocol::chunkdb_fb::{
     FBCompleteMirrorToEcConversionRequestArgs, FBDeleteChunkRangeRequest, FBDeleteChunkRangeRequestArgs,
     FBDeleteChunkRequest, FBDeleteChunkRequestArgs, FBDiscardReplacementSegmentRequest,
     FBDiscardReplacementSegmentRequestArgs, FBDiscardReplacementSegmentResponse, FBInt128,
-    FBListChunksRequest, FBListChunksRequestArgs, FBPrepareMirrorToEcConversionRequest,
-    FBPrepareMirrorToEcConversionRequestArgs, FBPrepareMirrorToEcConversionResponse, FBQueryChunkRequest,
-    FBQueryChunkRequestArgs, FBReplaceChunkStripRangeRequest, FBReplaceChunkStripRangeRequestArgs,
-    FBSealChunkRequest, FBSealChunkRequestArgs, FBSegment, FBStripBody, FBStripType,
-    FBTriggerConversionBatchRequest, FBTriggerConversionBatchRequestArgs, FBTriggerConversionBatchResponse,
-    FBTriggerConversionRequest, FBTriggerConversionRequestArgs, FBTriggerConversionResponse,
-    FBUpdateChunkStripRequest, FBUpdateChunkStripRequestArgs,
+    FBListChunksRequest, FBListChunksRequestArgs, FBMutateStripReservationRequest,
+    FBMutateStripReservationRequestArgs, FBMutateStripReservationResponse,
+    FBPrepareMirrorToEcConversionRequest, FBPrepareMirrorToEcConversionRequestArgs,
+    FBPrepareMirrorToEcConversionResponse, FBQueryChunkRequest, FBQueryChunkRequestArgs,
+    FBReplaceChunkStripRangeRequest, FBReplaceChunkStripRangeRequestArgs, FBReserveStripGroupRequest,
+    FBReserveStripGroupRequestArgs, FBReserveStripGroupResponse, FBSealChunkRequest, FBSealChunkRequestArgs,
+    FBSegment, FBStripBody, FBStripReservationAction, FBStripReservationGroup, FBStripReservationState,
+    FBStripType, FBTriggerConversionBatchRequest, FBTriggerConversionBatchRequestArgs,
+    FBTriggerConversionBatchResponse, FBTriggerConversionRequest, FBTriggerConversionRequestArgs,
+    FBTriggerConversionResponse, FBUpdateChunkStripRequest, FBUpdateChunkStripRequestArgs,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::fb::FBMsgType;
@@ -298,6 +302,113 @@ impl ChunkdbRpcTransport {
                 .map(|strips| strips.iter().map(|strip| parse_fb_chunk_strip(&strip)).collect())
                 .unwrap_or_default(),
             chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)),
+        })
+    }
+
+    pub async fn send_reserve_strip_group(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::ReserveStripGroupRequest,
+    ) -> Result<ReserveStripGroupResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let chunk_id = req.chunk_id.map(|id| FBInt128::new(id.high, id.low));
+        let group_id = req.group_id.map(|id| FBInt128::new(id.high, id.low));
+        let request = FBReserveStripGroupRequest::create(
+            &mut builder,
+            &FBReserveStripGroupRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                chunk_id: chunk_id.as_ref(),
+                expected_modify_ts: req.expected_modify_ts,
+                group_id: group_id.as_ref(),
+                writer_epoch: req.writer_epoch,
+                lease_generation: req.lease_generation,
+                lease_ms: req.lease_ms,
+                strip_size: req.strip_size,
+                strip_count: req.strip_count,
+                copy_count: req.copy_count,
+                conversion_data_num: req.conversion_data_num,
+                conversion_code_num: req.conversion_code_num,
+            },
+        );
+        builder.finish(request, None);
+        let response = call_rpc(
+            &self.rpc,
+            &self.server,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::EReserveStripGroupRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = flatbuffers::root::<FBReserveStripGroupResponse>(response.bytes())
+            .map_err(|_| ChunkdbClientError::Rpc("reserve strip group response malformed".into()))?;
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        Ok(ReserveStripGroupResponse {
+            chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)),
+            group: response.group().map(|group| parse_reservation_group(&group)),
+        })
+    }
+
+    pub async fn send_mutate_strip_reservation(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::MutateStripReservationRequest,
+    ) -> Result<MutateStripReservationResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let chunk_id = req.chunk_id.map(|id| FBInt128::new(id.high, id.low));
+        let group_id = req.group_id.map(|id| FBInt128::new(id.high, id.low));
+        let action = match StripReservationAction::try_from(req.action) {
+            Ok(StripReservationAction::Confirm) => FBStripReservationAction::Confirm,
+            Ok(StripReservationAction::Cancel) => FBStripReservationAction::Cancel,
+            Ok(StripReservationAction::Renew) => FBStripReservationAction::Renew,
+            Ok(StripReservationAction::Publish) => FBStripReservationAction::Publish,
+            Ok(StripReservationAction::Consume) => FBStripReservationAction::Consume,
+            Err(()) => {
+                return Err(ChunkdbClientError::InvalidArgument(
+                    "invalid reservation action".into(),
+                ));
+            }
+        };
+        let request = FBMutateStripReservationRequest::create(
+            &mut builder,
+            &FBMutateStripReservationRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                chunk_id: chunk_id.as_ref(),
+                expected_modify_ts: req.expected_modify_ts,
+                group_id: group_id.as_ref(),
+                writer_epoch: req.writer_epoch,
+                lease_generation: req.lease_generation,
+                strip_sequence: req.strip_sequence,
+                action,
+                acknowledged_cursor: req.acknowledged_cursor,
+                closed_strip_sequence: req.closed_strip_sequence.unwrap_or(u32::MAX),
+                lease_ms: req.lease_ms,
+            },
+        );
+        builder.finish(request, None);
+        let response = call_rpc(
+            &self.rpc,
+            &self.server,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::EMutateStripReservationRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = flatbuffers::root::<FBMutateStripReservationResponse>(response.bytes())
+            .map_err(|_| ChunkdbClientError::Rpc("mutate strip reservation response malformed".into()))?;
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        Ok(MutateStripReservationResponse {
+            chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)),
+            group: response.group().map(|group| parse_reservation_group(&group)),
         })
     }
 
@@ -985,6 +1096,48 @@ fn parse_fb_chunk(fb: &crowdb_protocol::chunkdb_fb::FBChunk<'_>) -> Chunk {
             high: id.high(),
             low: id.low(),
         }),
+    }
+}
+
+fn parse_reservation_group(fb: &FBStripReservationGroup<'_>) -> StripReservationGroup {
+    StripReservationGroup {
+        group_id: fb.group_id().map(|id| ChunkId {
+            high: id.high(),
+            low: id.low(),
+        }),
+        chunk_id: fb.chunk_id().map(|id| ChunkId {
+            high: id.high(),
+            low: id.low(),
+        }),
+        writer_epoch: fb.writer_epoch(),
+        lease_generation: fb.lease_generation(),
+        lease_deadline_ms: fb.lease_deadline_ms(),
+        placement_epoch: fb.placement_epoch(),
+        strips: fb
+            .strips()
+            .map(|strips| strips.iter().map(|strip| parse_fb_chunk_strip(&strip)).collect())
+            .unwrap_or_default(),
+        states: fb
+            .states()
+            .map(|states| {
+                states
+                    .iter()
+                    .map(|state| match state {
+                        FBStripReservationState::Consumed => StripReservationState::Consumed as i32,
+                        FBStripReservationState::Confirmed => StripReservationState::Confirmed as i32,
+                        FBStripReservationState::Cancelled => StripReservationState::Cancelled as i32,
+                        _ => StripReservationState::Reserved as i32,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        parity_segments: parse_fb_segments(fb.parity_segments()),
+        preferred_survivors: fb
+            .preferred_survivors()
+            .map(|values| values.iter().collect())
+            .unwrap_or_default(),
+        data_num: fb.data_num(),
+        code_num: fb.code_num(),
     }
 }
 

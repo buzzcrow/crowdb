@@ -122,4 +122,8 @@ enum FBMsgType : int16 {
     EPrepareMirrorToEcConversionResponse = 3329,
     ECompleteMirrorToEcConversionRequest = 3330,
     ECompleteMirrorToEcConversionResponse = 3331,
+    EReserveStripGroupRequest = 3332,
+    EReserveStripGroupResponse = 3333,
+    EMutateStripReservationRequest = 3334,
+    EMutateStripReservationResponse = 3335,
 }

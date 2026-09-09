@@ -19,6 +19,11 @@ pub(crate) enum ManagerCommand {
 }
 
 pub(crate) async fn start(pool: Arc<SmallWritePool>) -> Result<Arc<SmallPoolRuntime>> {
+    let conversion_budget = if pool.policy.conversion_enabled {
+        pool.policy.memory_budget / 2
+    } else {
+        0
+    };
     let (manager_tx, manager_rx) = mpsc::unbounded_channel();
     let runtime = Arc::new(SmallPoolRuntime {
         policy: Arc::clone(&pool.policy),
@@ -31,7 +36,11 @@ pub(crate) async fn start(pool: Arc<SmallWritePool>) -> Result<Arc<SmallPoolRunt
         route_nonce: std::sync::atomic::AtomicU64::new(0),
         manager_tx,
         failed_disks: Arc::clone(&pool.failed_disks),
-        budget: Arc::new(Semaphore::new(pool.policy.memory_budget)),
+        budget: Arc::new(Semaphore::new(
+            pool.policy.memory_budget.saturating_sub(conversion_budget),
+        )),
+        conversion_budget: Arc::new(Semaphore::new(conversion_budget)),
+        conversion_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
     let mut pipelines = Vec::with_capacity(pool.policy.min_pipelines);
     for id in 0..pool.policy.min_pipelines {

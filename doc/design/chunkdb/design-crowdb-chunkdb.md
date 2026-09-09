@@ -875,6 +875,13 @@ mutating RPC acquires the per-chunk lock before its RMW cycle:
 - `discard_replacement_segment`: under the lifecycle guard, free a tentative
   segment only when it belongs to the chunk and current metadata does not
   reference it.
+- `reserve_strip_group`: allocate ordinary hidden strips or one special 8+4
+  conversion group, persist its writer/lease/placement fences separately from
+  `Chunk.strips`, and leave chunk capacity unchanged until confirmation.
+- `mutate_strip_reservation`: durably consume before DiskIO, confirm one strip
+  in sequence, cancel or renew idempotently, or publish a complete special
+  group after current-topology survivor selection. Publication commits one EC
+  strip and the redundant-replica cleanup intent atomically.
 - `query_chunk` / `list_chunks` — unchanged (no lock, no cache).
 
 `query_chunk` advertises `layout_validity_ms`. Retired segments remain allocated

@@ -27,10 +27,27 @@ pub trait DiskWriter: Send + Sync {
     /// `unit_bytes` converts `seg.unit_offset` to a byte offset.
     async fn write(&self, seg: &Segment, unit_bytes: u64, data: Bytes) -> Result<()>;
 
+    /// Write a conversion-data range without queueing behind ordinary writes.
+    async fn write_priority_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        self.write_at_byte_offset(seg, unit_bytes, byte_offset, data)
+            .await
+    }
+
     /// Flush the disk containing `seg`. Implementations whose writes are
     /// already durably synchronous may keep the default no-op.
     async fn fsync(&self, _seg: &Segment) -> Result<()> {
         Ok(())
+    }
+
+    /// Flush conversion data on its dedicated transport when available.
+    async fn fsync_priority(&self, seg: &Segment) -> Result<()> {
+        self.fsync(seg).await
     }
 
     /// Read an arbitrary byte range relative to the start of `seg`.

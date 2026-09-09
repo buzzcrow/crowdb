@@ -32,44 +32,47 @@ small-write performance evidence and no data-path regression.
 
 ## Phase 2: Implement R136
 
-- [~] **Reservation protocol and values**: add record/state and reserve, consume,
+- [x] **Reservation protocol and values**: add record/state and reserve, consume,
   confirm, cancel, renew messages through generated and owned APIs. Files:
   `lib/crowdb-protocol/`, `lib/crowdb-chunkdb-client/`.
-- [ ] **ChunkDB reservation lifecycle**: implement fencing, idempotence, ordered
+- [x] **ChunkDB reservation lifecycle**: implement fencing, idempotence, ordered
   confirmation, cleanup intents, and recovery admission. Files:
   `app/crowdb-chunkdb/src/lifecycle/`, `service/`, `task/`.
-- [ ] **Client reservation prefetch**: consume a bounded ready queue, run confirm
+- [x] **Client reservation prefetch**: consume a bounded ready queue, run confirm
   and refill on the metadata chain, and retain attached fallback. Files:
   `lib/crowdb-chunk-client/src/writer/`.
-- [ ] **R136 recovery and E2E tests**: cover retries, stale lease, writer/service
+- [x] **R136 recovery and E2E tests**: cover retries, stale lease, writer/service
   death, seal, and zero leaks. Files: affected crate `tests/`.
-- [ ] **R136 perf**: compare the four endpoints and disable/fix the new default on
+- [x] **R136 perf**: compare the four endpoints and disable/fix the new default on
   material TPS/p99 regression before committing. Files: `bench-log/`.
 
 ## Phase 3: Implement R137
 
-- [ ] **Special group selector/allocation**: atomically allocate eight mirror
+- [x] **Special group selector/allocation**: atomically allocate eight mirror
   triples plus parity and persist candidate metadata. Files:
   `app/crowdb-chunkdb/src/selector/`, `allocator.rs`, protocol types.
-- [ ] **Incremental parity lifetime**: retain only four parity accumulators and
+- [x] **Incremental parity lifetime**: retain only four parity accumulators and
   write only parity after the eighth input. Files:
   `lib/crowdb-chunk-client/src/writer/small_conversion.rs`.
-- [ ] **Optimal publication and task fallback**: reselect survivors, fence EC
+- [x] **Optimal publication and task fallback**: reselect survivors, fence EC
   publication/cleanup, and retain a retryable task when not optimal. Files:
   `app/crowdb-chunkdb/src/lifecycle/`, `task/`, `conversion.rs`.
-- [ ] **R137 failure and E2E tests**: cover early tails, topology changes,
+- [x] **R137 failure and E2E tests**: cover early tails, topology changes,
   restart, memory bounds, payload accounting, and reconstruction. Files:
   affected crate `tests/`.
-- [ ] **R137 perf**: compare four endpoints, then run the complete ten-case
-  small-write regression matrix. Files: `bench-log/`.
+- [x] **R137 perf**: compare four endpoints, then run the complete ten-case
+  small-write regression matrix. All cases completed with zero errors,
+  incomplete objects, and watchdog expirations; endpoint throughput was
+  2,662.00/347,090.75 TPS for 1 KiB at 1/256 threads and
+  1,989.17/48,507.89 TPS for 8 KiB. Files: `bench-log/`.
 
 ## Phase 4: Review, Formal Design, and Cleanup
 
-- [ ] **Affected gates**: run every affected test task separately, format,
+- [x] **Affected gates**: run every affected test task separately, format,
   clippy, C++ gates if changed, and full `test-suite`.
-- [ ] **Review**: run `/review`, fix correctness and hot-path findings, and rerun
+- [x] **Review**: run `/review`, fix correctness and hot-path findings, and rerun
   affected gates.
-- [ ] **Formal design**: fold final behavior and benchmark evidence into indexed
+- [x] **Formal design**: fold final behavior and benchmark evidence into indexed
   ChunkIO/ChunkDB/DiskDB design documents; delete this draft.
 - [ ] **Requirement cleanup**: delete R113/R136/R137 and backlog entries, delete
   the completed plan, and commit cleanup separately.

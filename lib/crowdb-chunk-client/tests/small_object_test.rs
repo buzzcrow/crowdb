@@ -15,9 +15,12 @@ use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
     AllocateReplacementSegmentRequest, AllocateReplacementSegmentResponse, AppendChunkRequest,
     AppendChunkResponse, Chunk, ChunkState, ChunkStrip, ChunkType, DeleteChunkRequest, DeleteChunkResponse,
-    DiscardReplacementSegmentRequest, DiscardReplacementSegmentResponse, MirrorStrip, QueryChunkRequest,
-    QueryChunkResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse, SealChunkRequest,
-    SealChunkResponse, Strip, StripType, UpdateChunkStripRequest, UpdateChunkStripResponse,
+    DiscardReplacementSegmentRequest, DiscardReplacementSegmentResponse, MirrorStrip,
+    MutateStripReservationRequest, MutateStripReservationResponse, QueryChunkRequest, QueryChunkResponse,
+    ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse, ReserveStripGroupRequest,
+    ReserveStripGroupResponse, SealChunkRequest, SealChunkResponse, Strip, StripReservationAction,
+    StripReservationGroup, StripReservationState, StripType, UpdateChunkStripRequest,
+    UpdateChunkStripResponse,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
@@ -34,6 +37,7 @@ struct MockState {
     replacements: usize,
     discards: usize,
     replacement_exclusions: Vec<Vec<DiskId>>,
+    reservations: HashMap<(u64, u64), StripReservationGroup>,
 }
 
 #[derive(Default)]
@@ -134,6 +138,104 @@ impl ChunkAllocator for MockAllocator {
             modify_ts: chunk.modify_ts,
             strips,
             chunk: None,
+        })
+    }
+
+    async fn reserve_strip_group(&self, req: ReserveStripGroupRequest) -> Result<ReserveStripGroupResponse> {
+        let chunk_id = req.chunk_id.unwrap();
+        let group_id = req.group_id.unwrap();
+        let mut state = self.state.lock().unwrap();
+        if let Some(group) = state.reservations.get(&(group_id.high, group_id.low)) {
+            return Ok(ReserveStripGroupResponse {
+                chunk: state.chunks.get(&(chunk_id.high, chunk_id.low)).cloned(),
+                group: Some(group.clone()),
+            });
+        }
+        let chunk = state.chunks.get_mut(&(chunk_id.high, chunk_id.low)).unwrap();
+        if chunk.modify_ts != req.expected_modify_ts {
+            return Err(IoError::MetadataConflict("stale reservation revision".into()));
+        }
+        let start_sequence = chunk.next_strip_sequence;
+        let mut strips: Vec<_> = (0..req.strip_count)
+            .map(|offset| make_strip(chunk_id, start_sequence + offset, req.copy_count.max(1)))
+            .collect();
+        let mut chunk_offset = chunk.capacity;
+        for strip in &mut strips {
+            strip.chunk_offset = chunk_offset;
+            chunk_offset += strip.capacity;
+        }
+        chunk.next_strip_sequence += req.strip_count;
+        chunk.modify_ts += 1;
+        let chunk = chunk.clone();
+        let group = StripReservationGroup {
+            group_id: Some(group_id),
+            chunk_id: Some(chunk_id),
+            writer_epoch: req.writer_epoch,
+            lease_generation: req.lease_generation,
+            lease_deadline_ms: req.lease_ms,
+            placement_epoch: 1,
+            states: vec![StripReservationState::Reserved as i32; strips.len()],
+            strips,
+            parity_segments: vec![],
+            preferred_survivors: vec![],
+            data_num: 0,
+            code_num: 0,
+        };
+        state
+            .reservations
+            .insert((group_id.high, group_id.low), group.clone());
+        Ok(ReserveStripGroupResponse {
+            chunk: Some(chunk),
+            group: Some(group),
+        })
+    }
+
+    async fn mutate_strip_reservation(
+        &self,
+        req: MutateStripReservationRequest,
+    ) -> Result<MutateStripReservationResponse> {
+        let chunk_id = req.chunk_id.unwrap();
+        let group_id = req.group_id.unwrap();
+        let mut state = self.state.lock().unwrap();
+        let mut group = state
+            .reservations
+            .remove(&(group_id.high, group_id.low))
+            .ok_or_else(|| IoError::MetadataConflict("reservation missing".into()))?;
+        let index = group
+            .strips
+            .iter()
+            .position(|strip| strip.strip_sequence == req.strip_sequence)
+            .ok_or_else(|| IoError::MetadataConflict("reservation strip missing".into()))?;
+        let action = StripReservationAction::try_from(req.action).unwrap();
+        let current = StripReservationState::try_from(group.states[index]).unwrap();
+        let chunk = state.chunks.get_mut(&(chunk_id.high, chunk_id.low)).unwrap();
+        match action {
+            StripReservationAction::Consume if current == StripReservationState::Reserved => {
+                group.states[index] = StripReservationState::Consumed as i32;
+            }
+            StripReservationAction::Confirm if current == StripReservationState::Consumed => {
+                chunk.strips.push(group.strips[index].clone());
+                chunk.capacity += group.strips[index].capacity;
+                chunk.modify_ts += 1;
+                chunk.acknowledged_cursor = req.acknowledged_cursor;
+                chunk.closed_strip_sequence = req.closed_strip_sequence;
+                group.states[index] = StripReservationState::Confirmed as i32;
+            }
+            StripReservationAction::Cancel if current == StripReservationState::Reserved => {
+                group.states[index] = StripReservationState::Cancelled as i32;
+            }
+            StripReservationAction::Consume if current == StripReservationState::Consumed => {}
+            StripReservationAction::Confirm if current == StripReservationState::Confirmed => {}
+            StripReservationAction::Cancel if current == StripReservationState::Cancelled => {}
+            _ => return Err(IoError::MetadataConflict("invalid reservation transition".into())),
+        }
+        let chunk = chunk.clone();
+        state
+            .reservations
+            .insert((group_id.high, group_id.low), group.clone());
+        Ok(MutateStripReservationResponse {
+            chunk: Some(chunk),
+            group: Some(group),
         })
     }
 
