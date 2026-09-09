@@ -35,6 +35,8 @@ pub struct SmallWritePolicy {
     /// Compatibility setting retained for callers; it is not a scaling signal.
     pub cooldown: Duration,
     pub chunk_capacity: u64,
+    /// Mirror strips attached per allocation/prefetch RPC. Default 4.
+    pub small_strip_prefetch_count: u32,
     pub mirror_copies: u32,
     pub conversion_enabled: bool,
     pub conversion_data_num: usize,
@@ -62,6 +64,7 @@ impl Default for SmallWritePolicy {
             control_interval: Duration::from_millis(10),
             cooldown: Duration::from_millis(100),
             chunk_capacity: 1024 * 1024 * 1024,
+            small_strip_prefetch_count: 4,
             mirror_copies: 3,
             conversion_enabled: true,
             conversion_data_num: 8,
@@ -115,6 +118,7 @@ impl SmallWritePolicy {
             || self.scale_out_queue_objects == 0
             || self.scale_out_queue_objects > self.queue_capacity
             || self.chunk_capacity < self.object_limit as u64
+            || self.small_strip_prefetch_count == 0
             || self.mirror_copies == 0
             || self.conversion_data_num == 0
             || self.conversion_code_num == 0

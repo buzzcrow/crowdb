@@ -1,12 +1,16 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-### R113: chunkio — Batch strip allocation + deferred chunkdb confirm
+### R113: chunkio — Batched attached-strip prefetch
+
+**Status:** The shared small-write compatibility path is implemented with batched
+attached-strip prefetch. The reserved/unconfirmed extension belongs to this
+work as follow-up R136; it is intentionally not part of R113 implementation.
 
 ## Problem
 
-**Current behavior + impact:** The large-object write path
-(`crowdb-chunk-client`, R94) allocates strips one at a time. Each strip
+**Current behavior + impact:** The historical large-object and shared
+small-object write paths allocated strips one at a time. Each strip
 triggers an `append_chunk` RPC to chunkdb with `strip_count=1`, which
 internally calls diskdb to allocate `data_num + code_num` blocks,
 persists the updated chunk metadata to KV, and returns the full
@@ -40,6 +44,9 @@ large objects.
 
 **Use scenarios:**
 
+The last two scenarios describe the dependent R136 flow; R113 itself never
+exposes unconfirmed strips to the writer.
+
 - **Large object write, high throughput.** A 1 TB object upload at
   1 GB/s. The write path needs 250K strips allocated. With
   per-strip `append_chunk`, the prefetch task must sustain 250
@@ -69,16 +76,15 @@ large objects.
 
 ## Solution
 
-**No clear solution yet — deferred to design.** Two candidate
-approaches, with the chunk allocate confirm flow as the key design
-tension. The design draft must resolve which approach (or hybrid) is
-viable.
+**Chosen solution:** use batched `append_chunk(strip_count=N)` so prefetched
+strips are already attached to the Active chunk. Unused attached tail strips
+are removed and released when the chunk seals. The more aggressive reserved/
+unconfirmed flow is the dependent follow-up [R136](R136-chunkio-reserve-confirm-strip-flow.md).
 
-**One-line summary:** Batch strip allocation to reduce `append_chunk`
-RPC count, with safe handling of the `TENTATIVE` → `COMMITTED`
-confirm flow for crash safety.
+**One-line summary:** Batch attached-strip allocation to reduce `append_chunk`
+RPC count and keep allocation off the normal write response path.
 
-### Candidate approaches
+### Implemented foundation and dependent follow-up
 
 1. **Batch `append_chunk` (simple, chunkdb-orchestrated).** Send
    `append_chunk(strip_count=N)` instead of N calls with
@@ -100,13 +106,11 @@ confirm flow for crash safety.
      escape to the client. Same crash safety as current per-strip
      flow.
 
-2. **Direct diskdb allocation + deferred chunkdb confirm
-   (aggressive, client-orchestrated).** The client calls diskdb
-   directly to batch-allocate blocks (using the EC scheme to know
-   `data_num + code_num` per strip), locally assembles strips into
-   the `ChunkInfo`, starts writing immediately, and batch-confirms
-   to chunkdb later (one `append_chunk` or a new `confirm_strips`
-   RPC). This overlaps allocation + write + confirm.
+2. **Historical direct-diskdb candidate (superseded by R136).** An earlier
+   draft had the client allocate blocks directly, assemble local strips, and
+   confirm them later. R136 keeps ChunkDB as placement authority and defines
+   leased reserve/consume/confirm/cancel semantics instead. The notes below
+   retain the rejected candidate trade-offs for context.
    - **Pro:** Lowest latency for the first strip — the client
      writes as soon as diskdb allocates the first block, without
      waiting for chunkdb's KV persist. Maximum overlap of
@@ -130,7 +134,7 @@ confirm flow for crash safety.
      chunkdb RPC that takes pre-allocated segments (not
      allocating new ones) and persists them.
 
-### Work items (approach-dependent, refined in design)
+### Work items (items 1-2 are R113; items 3-5 belong to R136)
 
 1. **Batch `append_chunk` in `ChunkWriter` strip prefetch** —
    `lib/crowdb-chunk-client/src/chunk/chunk_writer.rs`. The internal
@@ -192,7 +196,7 @@ confirm flow for crash safety.
                     └──────────────────────┘
 ```
 
-### Flow diagram (approach 2 — direct diskdb + deferred confirm)
+### R136 flow sketch — reserved strips + deferred confirm
 
 ```
   ┌────────────┐     allocate blocks      ┌──────────┐
@@ -285,7 +289,7 @@ confirm flow for crash safety.
   unchanged. Set to 50, verify 50 strips per `append_chunk`. Unit
   test.
 
-**Direct diskdb + deferred confirm (approach 2, if pursued):**
+**R136 acceptance summary (see R136 for the authoritative scope):**
 
 - Client calls diskdb directly to allocate `data_num + code_num`
   blocks → receives segments with `commit_state = TENTATIVE`.
@@ -319,7 +323,7 @@ confirm flow for crash safety.
 - `pixi run cargo fmt --all -- --check` +
   `pixi run cargo clippy --all-targets -- -D warnings`.
 
-## Open Questions
+## Follow-up Questions (owned by R136 unless marked R113)
 
 - **Approach 1 vs 2 vs hybrid.** Approach 1 (batch `append_chunk`)
   is simple and safe but doesn't overlap allocation with write.

@@ -634,11 +634,30 @@ impl LifecycleHandler {
         }
 
         let now_ms = unix_time_ms();
+        let first_unused = chunk
+            .strips
+            .iter()
+            .position(|strip| strip.chunk_offset >= seal_length)
+            .unwrap_or(chunk.strips.len());
+        let unused_strips = chunk.strips.split_off(first_unused);
+        let unused_segments: Vec<_> = unused_strips.iter().flat_map(extract_segments).collect();
+        let cleanup_operation = (!unused_segments.is_empty()).then_some(ChunkId {
+            high: chunk_id.high ^ chunk.modify_ts,
+            low: chunk_id.low ^ u64::from(seal_length),
+        });
 
         chunk.state = ProtoChunkState::Sealed as i32;
         chunk.modify_ts = chunk.modify_ts.saturating_add(1);
         chunk.sealed_length = seal_length;
         chunk.sealed_ts_ms = now_ms;
+        chunk.capacity = chunk.strips.iter().map(|strip| strip.capacity).sum();
+        if let Some(operation_id) = cleanup_operation {
+            chunk.cleanup_intents.push(StripCleanupIntent {
+                operation_id: Some(operation_id),
+                retired_segments: unused_segments.clone(),
+                not_before_ms: now_ms,
+            });
+        }
         seal_written_ec_strips(&mut chunk, seal_length, now_ms);
         close_acknowledged_strips(&mut chunk, now_ms);
 
@@ -646,6 +665,20 @@ impl LifecycleHandler {
 
         if let Some(ref mut g) = guard {
             g.refresh(chunk.clone());
+        }
+        if let Some(operation_id) = cleanup_operation {
+            self.allocator
+                .pool()
+                .free_blocks(unused_segments)
+                .await
+                .map_err(LifecycleError::Cleanup)?;
+            chunk
+                .cleanup_intents
+                .retain(|intent| intent.operation_id != Some(operation_id));
+            self.store.put_chunk(&chunk).await?;
+            if let Some(ref mut g) = guard {
+                g.refresh(chunk.clone());
+            }
         }
         info!(chunk_id = ?chunk_id, seal_length, "chunk sealed");
         Ok(chunk)

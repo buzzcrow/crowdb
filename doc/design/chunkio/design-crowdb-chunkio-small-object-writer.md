@@ -83,20 +83,24 @@ naturally accumulates behind the in-flight batch and is aggregated on the next
 completion-driven drain. An object larger than the normal batch target is
 written alone as long as it is within the object limit.
 
-Each pipeline reserves and retains one zero-filled 1 MiB shadow for its open
+Each pipeline reserves and retains one uninitialized-capacity 1 MiB shadow for its open
 mirror strip. Object fragments are packed contiguously at exact logical
-offsets. Each physical update writes the complete shadow to every mirror, so
-the image always contains the acknowledged prefix, current patch, and
-deterministic zero tail without reading a healthy replica. `Bytes` clones
-shared by concurrent writes are reference-counted; the worker recovers the
-unique mutable shadow after completion without another steady-state copy.
+offsets. Each physical update sends only the newly written byte range to every
+mirror; DiskIO aligns partial physical blocks and preserves their prior bytes.
+The retained prefix remains available for repair and mirror-to-EC conversion.
+`Bytes` clones shared by concurrent writes are reference-counted; the worker
+recovers the unique mutable shadow after completion without another
+steady-state copy.
 Each returned location covers only its object's exact bytes.
 
-If the next object does not fit the strip, the worker zero-fills the tail,
-durably closes the strip, and appends or enters the next strip. If it does not
-fit the chunk, the worker seals the current chunk and switches to its prepared
-replacement, or allocates one on demand. Objects and batches never straddle a
-strip or chunk.
+Chunk allocation attaches a bounded batch of mirror strips. At a low-water
+mark, the background metadata chain closes the completed strip and appends the
+next batch with one `append_chunk(strip_count=N)` call. The write path consumes
+an already attached strip and never performs synchronous allocation. If the
+prefetch runway is unexpectedly exhausted, the pipeline fails and retires
+instead of allocating on the object path. Seal removes and releases attached
+strips beyond the written length. Objects and batches never straddle a strip or
+chunk.
 
 ## 5. Durable Cursor and Completion
 
@@ -114,26 +118,28 @@ The operation updates the cursor and marker, renews the lease from server time,
 increments the revision, persists the record, and refreshes the cache. Stale
 epochs or revisions conflict; backward or out-of-range cursors are invalid.
 
-The batch commit barrier is:
+The response barrier is:
 
-1. Patch the complete open-strip shadow and write it concurrently to every
-   mirror.
+1. Append the object bytes to the open-strip shadow and write that byte range
+   concurrently to every mirror.
 2. Repair each failed replica from that shadow and fence the new segment into
    chunk metadata.
-3. Advance the fenced chunk cursor, including a newly closed strip when needed.
-4. Replace the worker's local chunk revision and cursor from the response.
-5. Publish all object-specific locations together.
+3. Publish all object-specific locations together.
+4. Coalesce cursor progress in the background metadata chain. Strip close and
+   batched append execute there in revision order.
 
-No location is visible before its complete physical range and durable metadata
-prefix exist on every configured mirror.
+No location is visible before its complete physical range exists on every
+configured mirror. Cursor persistence is an asynchronous availability and
+orphan-recovery checkpoint; readers can transiently report `NotYetAvailable`
+until it catches up.
 
 ## 6. Chunk Lifecycle and Recovery
 
-A pipeline allocates its first chunk before publication. The worker alone owns
-the chunk value, epoch, revision, and cursor. It appends mirror strips as the
-cursor advances. When remaining capacity falls below the object limit, it
-prepares at most one replacement so ordinary rotation does not wait for
-allocation.
+A pipeline allocates its first chunk and its initial strip batch before
+publication. The worker owns the write cursor while one background metadata
+chain owns revision-ordered cursor commits and batched strip appends. When
+remaining chunk capacity falls below the object limit, it prepares at most one
+replacement so ordinary rotation does not wait for allocation.
 
 Closing a strip releases its shadow immediately. Retirement seals a non-empty
 current chunk at its acknowledged cursor and deletes an empty current or
@@ -207,8 +213,8 @@ maxima. Snapshots compute aggregates without locking submission.
   a shared chunk.
 - **SW-I4 — Whole placement.** No object or batch crosses a strip or chunk
   boundary.
-- **SW-I5 — Durable acknowledgement.** Object locations are published only
-  after every mirror write and the fenced cursor commit succeed.
+- **SW-I5 — Physical completion.** Object locations are published only after
+  every mirror write succeeds; metadata availability advances asynchronously.
 - **SW-I6 — Monotonic prefix.** The acknowledged cursor moves strictly forward,
   and recovery seals only at that persisted prefix.
 - **SW-I7 — Terminal completion.** Every accepted object completes or fails

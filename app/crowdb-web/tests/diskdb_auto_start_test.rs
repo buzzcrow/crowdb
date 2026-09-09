@@ -51,12 +51,15 @@ async fn diskdb_auto_starts_on_console_restart() {
     std::fs::create_dir_all(&dir).unwrap();
 
     let node_id: u64 = 7777;
-    // Allocate independent ports for the diskdb's listen, http, and
-    // rpc listeners. The auto-start path derives listen/http from
-    // rpc_port, so we only store rpc_port + http in the config.
-    let _listen_port = port_alloc::alloc_test_port(ServicePort::DiskdbListen);
-    let http_port = port_alloc::alloc_test_port(ServicePort::DiskdbHttp);
-    let rpc_port = port_alloc::alloc_test_port(ServicePort::DiskdbRpc);
+    // The auto-start path (`ensure_diskdb_running`) derives all three
+    // diskdb listener ports from a single base: listen = base,
+    // http = base+1, rpc = base+2. Allocate a consecutive range so all
+    // three are claimed and bind-probed free (individual allocations
+    // would leave base+1/base+2 unclaimed and vulnerable to collisions
+    // with leftover processes from prior runs).
+    let ports = port_alloc::alloc_test_port_range(ServicePort::DiskdbRpc, 3);
+    let http_port = ports[1];
+    let rpc_port = ports[0];
 
     let mut cfg = ConsoleConfig::default();
     cfg.add_rack(RackEntry {

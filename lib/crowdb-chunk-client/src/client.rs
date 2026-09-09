@@ -466,6 +466,26 @@ impl DiskWriter for MetricsDiskWriter {
         }
         result
     }
+
+    async fn write_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        let bytes = u64::try_from(data.len()).unwrap_or(u64::MAX);
+        let mut operation = self.metrics.diskio_write.start();
+        let result = self
+            .inner
+            .write_at_byte_offset(seg, unit_bytes, byte_offset, data)
+            .await;
+        if result.is_ok() {
+            self.metrics.diskio_write_bytes.observe(bytes);
+            operation.mark_success();
+        }
+        result
+    }
 }
 
 async fn discover_current_range_bindings(

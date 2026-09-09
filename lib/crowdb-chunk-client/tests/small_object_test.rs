@@ -83,22 +83,24 @@ impl ChunkAllocator for MockAllocator {
             return Err(IoError::AllocationFailed("injected allocation failure".into()));
         }
         let chunk_id = req.chunk_id.unwrap_or(ChunkId { high: 7, low });
-        let strip = make_strip(chunk_id, 0, req.copy_count.max(1));
+        let strips: Vec<_> = (0..req.strip_count.max(1))
+            .map(|sequence| make_strip(chunk_id, sequence, req.copy_count.max(1)))
+            .collect();
         let chunk = Chunk {
             id: Some(chunk_id),
             modify_ts: 1,
             state: ChunkState::Active as i32,
             create_ts_ms: 0,
             sealed_ts_ms: 0,
-            capacity: strip.capacity,
+            capacity: strips.iter().map(|strip| strip.capacity).sum(),
             sealed_length: 0,
-            strips: vec![strip],
+            strips,
             chunk_type: ChunkType::Repo as i32,
             writer_epoch: req.writer_epoch,
             acknowledged_cursor: 0,
             closed_strip_sequence: None,
             writer_lease_deadline_ms: req.writer_lease_ms,
-            next_strip_sequence: 1,
+            next_strip_sequence: req.strip_count.max(1),
             cleanup_intents: vec![],
             last_strip_replacement: None,
         };
@@ -121,13 +123,16 @@ impl ChunkAllocator for MockAllocator {
             });
         }
         let sequence = u32::try_from(chunk.strips.len()).unwrap();
-        let strip = make_strip(id, sequence, req.copy_count.max(1));
-        chunk.capacity += strip.capacity;
+        let strips: Vec<_> = (0..req.strip_count.max(1))
+            .map(|offset| make_strip(id, sequence + offset, req.copy_count.max(1)))
+            .collect();
+        chunk.capacity += strips.iter().map(|strip| strip.capacity).sum::<u32>();
         chunk.modify_ts += 1;
-        chunk.strips.push(strip.clone());
+        chunk.strips.extend(strips.iter().cloned());
+        chunk.next_strip_sequence = sequence + req.strip_count.max(1);
         Ok(AppendChunkResponse {
             modify_ts: chunk.modify_ts,
-            strips: vec![strip],
+            strips,
             chunk: None,
         })
     }
@@ -330,6 +335,21 @@ impl DiskWriter for RecordingDiskWriter {
             .push((disk, seg.unit_offset * unit_bytes, data));
         Ok(())
     }
+
+    async fn write_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        if byte_offset % unit_bytes == 0 {
+            return self.write_at(seg, unit_bytes, byte_offset, data).await;
+        }
+        Err(IoError::WriteFailed(
+            "byte-offset writes not supported by this writer".into(),
+        ))
+    }
 }
 
 struct SelectiveFailureDiskWriter {
@@ -346,6 +366,21 @@ impl DiskWriter for SelectiveFailureDiskWriter {
         }
         self.writes.lock().unwrap().push((disk, data));
         Ok(())
+    }
+
+    async fn write_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        if byte_offset % unit_bytes == 0 {
+            return self.write_at(seg, unit_bytes, byte_offset, data).await;
+        }
+        Err(IoError::WriteFailed(
+            "byte-offset writes not supported by this writer".into(),
+        ))
     }
 }
 
@@ -365,6 +400,7 @@ fn policy() -> SmallWritePolicy {
         control_interval: Duration::from_millis(10),
         cooldown: Duration::from_millis(10),
         chunk_capacity: 1024 * 1024 * 1024,
+        small_strip_prefetch_count: 4,
         mirror_copies: 3,
         conversion_enabled: false,
         conversion_data_num: 8,
@@ -596,7 +632,7 @@ async fn small_object_repairs_two_failed_replicas_from_the_same_shadow() {
             .collect()
     };
     assert_eq!(replacement_images.len(), 2);
-    assert_eq!(replacement_images[0].len(), 1024 * 1024);
+    assert_eq!(replacement_images[0].len(), 12 * 1024);
     assert_eq!(replacement_images[0], replacement_images[1]);
     assert_eq!(&replacement_images[0][..12 * 1024], vec![0x5a; 12 * 1024]);
     assert_eq!(chunks[0].state, ChunkState::Active as i32);
@@ -674,7 +710,7 @@ fn small_object_policy_rejects_unreachable_limits() {
 }
 
 #[tokio::test]
-async fn small_object_appends_strip_after_exact_physical_boundary() {
+async fn small_object_uses_prefetched_strip_after_exact_physical_boundary() {
     let (client, allocator, _) = client(policy());
     let mut first = client.prepare_small_write(1024 * 1024).await.unwrap();
     first.on_data(Bytes::from(vec![1; 1024 * 1024])).await.unwrap();
@@ -684,7 +720,7 @@ async fn small_object_appends_strip_after_exact_physical_boundary() {
     let second = second.on_finish().await.unwrap().remove(0);
     assert_eq!(first.chunk_id, second.chunk_id);
     assert_eq!(second.offset, 1024 * 1024);
-    assert_eq!(allocator.snapshot().1, 1);
+    assert_eq!(allocator.snapshot().1, 0);
     client.shutdown_small_writes().await.unwrap();
 }
 
@@ -724,17 +760,40 @@ async fn small_object_batch_stops_at_configured_chunk_boundary() {
 }
 
 #[tokio::test]
-async fn small_object_completion_waits_for_cursor_commit() {
+async fn small_object_completion_does_not_wait_for_cursor_commit() {
     let (client, allocator, _) = client(policy());
     allocator.advance_delay_ms.store(50, Ordering::Relaxed);
     let mut writer = client.prepare_small_write(16 * 1024).await.unwrap();
     writer.on_data(Bytes::from(vec![1; 16 * 1024])).await.unwrap();
     let completion = tokio::spawn(async move { writer.on_finish().await });
     tokio::time::sleep(Duration::from_millis(30)).await;
-    assert!(!completion.is_finished());
+    assert!(
+        completion.is_finished(),
+        "completion must return after disk writes without waiting for metadata advance"
+    );
     let locations = completion.await.unwrap().unwrap();
     assert_eq!(locations[0].length, 16 * 1024);
     client.shutdown_small_writes().await.unwrap();
+    assert_eq!(allocator.snapshot().2, 1);
+}
+
+#[tokio::test]
+async fn consecutive_small_objects_do_not_wait_for_previous_cursor_commit() {
+    let (client, allocator, _) = client(policy());
+    allocator.advance_delay_ms.store(50, Ordering::Relaxed);
+
+    for value in [1, 2] {
+        let mut writer = client.prepare_small_write(16 * 1024).await.unwrap();
+        writer.on_data(Bytes::from(vec![value; 16 * 1024])).await.unwrap();
+        let locations = tokio::time::timeout(Duration::from_millis(30), writer.on_finish())
+            .await
+            .expect("a preceding metadata advance must not block the next disk write")
+            .unwrap();
+        assert_eq!(locations[0].length, 16 * 1024);
+    }
+
+    client.shutdown_small_writes().await.unwrap();
+    assert_eq!(allocator.snapshot().2, 2);
 }
 
 #[tokio::test]

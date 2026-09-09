@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R136** — Bump this line in the same commit when adding a new item.
+**Next R number: R138** — Bump this line in the same commit when adding a new item.
 
 ### High Priority
 
@@ -92,23 +92,27 @@ end-to-end Chunk IO performance workloads are landed. The RPC migration items
 (R115, R116, R117) are in a separate area (see RPC Migration section below);
 R32 depends on R115.
 
-- **[R113](R113-chunkio-batch-strip-allocation.md)** — Batch strip
-  allocation + deferred chunkdb confirm — Area: chunkio / chunkdb /
-  diskdb — Optimize the large-write strip allocation path (R94) to
-  reduce `append_chunk` RPC count. Current flow: one `append_chunk`
-  per strip (250K RPCs for a 1 TB object). Two candidate approaches:
-  (1) batch `append_chunk(strip_count=N)` — chunkdb allocates N
-  strips in parallel, persists once, returns `Chunk` with N strips.
-  Simple, safe, but first strip waits for all N. (2) Direct diskdb
-  allocation + deferred chunkdb confirm — client allocates blocks
-  from diskdb directly (TENTATIVE), writes immediately, batch-
-  confirms to chunkdb later. Maximum overlap but requires client-
-  side placement, a new confirm RPC, and a TENTATIVE block reaper.
-  Key design tension: the chunk allocate confirm flow
-  (`BusyBlockValue.commit_state: TENTATIVE → COMMITTED`) must
-  guarantee crash safety — TENTATIVE blocks with written data that
-  are never confirmed must be reclaimable. Blocked on the chunk-
-  layer refactor (`doc/working/design-chunk-layer-refactor.md`).
+- **[R113](R113-chunkio-batch-strip-allocation.md)** — Batched attached-strip
+  prefetch — Area: chunkio / chunkdb — The shared small-write path allocates
+  and attaches several strips to an Active chunk per request, refills them on
+  the background metadata line, and releases unused tail strips at seal. This
+  is the compatibility foundation; extending the same batch path to the large
+  writer remains under R113.
+- **[R136](R136-chunkio-reserve-confirm-strip-flow.md)** — Reserved strip
+  prefetch with deferred confirm — Area: chunkio / chunkdb / diskdb — Follow-up
+  flow belonging to R113: prefetch multiple leased strip reservations without
+  attaching them to the chunk, consume a reservation for DiskIO, and confirm it
+  asynchronously only when the chunk needs it. Requires new reserve/confirm/
+  cancel protocol, expiry fencing, and crash recovery; not part of the current
+  implementation.
+- **[R137](R137-chunkio-incremental-ec-conversion.md)** — Incremental
+  small-write EC conversion — Area: chunkio / chunkdb — Allocate one special
+  28-block group containing eight three-replica mirrors plus four parity blocks
+  while allowing early seal with only 1-7 used mirror strips. Select one replica
+  per mirror for an optimal 8+4 layout, feed the same post-DiskIO 1 MiB view into
+  incremental parity, and write only four parity blocks. Revalidate placement
+  before retiring replicas; if no optimal selection remains, preserve mirrors
+  and track relocation with a persistent conversion task.
 
 ### Medium Priority
 

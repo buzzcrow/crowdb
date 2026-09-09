@@ -15,6 +15,7 @@ use crowdb_protocol::chunkdb::rpc::{
     DiscardReplacementSegmentRequest, Location, PrepareMirrorToEcConversionRequest, QueryChunkRequest,
     ReplaceChunkStripRangeRequest, SealChunkRequest, Strip, StripType,
 };
+use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::diskdb::rpc::Segment;
 use tokio::sync::{mpsc, Notify, OwnedSemaphorePermit};
 
@@ -257,6 +258,176 @@ fn fail_one(object: PendingObject, message: &str, metrics: &SmallWriteMetrics) {
         .send(Err(IoError::WriteFailed(message.to_string())));
 }
 
+/// Background advance RPC: sends `AdvanceChunkWriteRequest` and retries on
+/// `MetadataConflict`. Returns the refreshed `Chunk` so the caller can apply
+/// it when the future is awaited.
+async fn advance_chunk(
+    allocator: Arc<dyn ChunkAllocator>,
+    chunk_id: ChunkId,
+    writer_epoch: u64,
+    mut modify_ts: u64,
+    cursor: u64,
+    closed_strip_sequence: Option<u32>,
+    writer_lease_ms: u64,
+) -> Result<Chunk> {
+    for attempt in 0..8 {
+        let response = allocator
+            .advance_chunk_write(AdvanceChunkWriteRequest {
+                chunk_id: Some(chunk_id),
+                writer_epoch,
+                expected_modify_ts: modify_ts,
+                acknowledged_cursor: cursor,
+                closed_strip_sequence,
+                writer_lease_ms,
+            })
+            .await;
+        match response {
+            Ok(response) => {
+                return response
+                    .chunk
+                    .ok_or_else(|| IoError::AllocationFailed("cursor advance returned no chunk".into()));
+            }
+            Err(IoError::MetadataConflict(_)) if attempt < 7 => {
+                let response = allocator
+                    .query_chunk(QueryChunkRequest {
+                        chunk_id: Some(chunk_id),
+                    })
+                    .await?;
+                let refreshed = response.chunk.ok_or_else(|| {
+                    IoError::MetadataConflict("shared chunk disappeared during advance".into())
+                })?;
+                if refreshed.state != ChunkState::Active as i32 || refreshed.writer_epoch != writer_epoch {
+                    return Err(IoError::MetadataConflict(
+                        "shared chunk ownership changed during advance".into(),
+                    ));
+                }
+                let strip_already_closed = closed_strip_sequence.map_or(true, |requested| {
+                    refreshed
+                        .closed_strip_sequence
+                        .is_some_and(|actual| actual >= requested)
+                });
+                if refreshed.acknowledged_cursor >= cursor && strip_already_closed {
+                    return Ok(refreshed);
+                }
+                modify_ts = refreshed.modify_ts;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(IoError::MetadataConflict(
+        "shared chunk metadata kept changing during advance".into(),
+    ))
+}
+
+async fn append_mirror_strips(
+    allocator: &dyn ChunkAllocator,
+    mut chunk: Chunk,
+    strip_count: u32,
+    copy_count: u32,
+) -> Result<Chunk> {
+    let chunk_id = chunk
+        .id
+        .ok_or_else(|| IoError::AllocationFailed("shared chunk missing id".into()))?;
+    let last = chunk
+        .strips
+        .last()
+        .ok_or_else(|| IoError::AllocationFailed("shared chunk has no initial strip".into()))?;
+    let unit_count = last.capacity.checked_div(last.unit_kb).unwrap_or(0).max(1);
+    for _ in 0..8 {
+        let response = allocator
+            .append_chunk(AppendChunkRequest {
+                chunk_id: Some(chunk_id),
+                modify_ts: chunk.modify_ts,
+                strip_size: unit_count,
+                strip_count,
+                strip_type: StripType::Mirror as i32,
+                data_num: 0,
+                code_num: 0,
+                copy_count,
+            })
+            .await?;
+        if let Some(refreshed) = response.chunk {
+            if refreshed.id != Some(chunk_id) {
+                return Err(IoError::AllocationFailed(
+                    "append_chunk refresh returned a different shared chunk".into(),
+                ));
+            }
+            chunk = refreshed;
+            continue;
+        }
+        if response.strips.is_empty() {
+            return Err(IoError::AllocationFailed(
+                "append_chunk response missing prefetched mirror strips".into(),
+            ));
+        }
+        chunk.modify_ts = response.modify_ts;
+        chunk.capacity = chunk
+            .capacity
+            .saturating_add(response.strips.iter().map(|strip| strip.capacity).sum::<u32>());
+        chunk.strips.extend(response.strips);
+        return Ok(chunk);
+    }
+    Err(IoError::MetadataConflict(
+        "shared chunk metadata kept changing during strip prefetch".into(),
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn close_and_prefetch(
+    allocator: Arc<dyn ChunkAllocator>,
+    pending: Option<tokio::task::JoinHandle<Result<Chunk>>>,
+    mut chunk: Chunk,
+    writer_epoch: u64,
+    cursor: u64,
+    closed_strip_sequence: u32,
+    writer_lease_ms: u64,
+    prefetch_count: u32,
+    copy_count: u32,
+    chunk_capacity: u64,
+) -> Result<Chunk> {
+    if let Some(pending) = pending {
+        chunk = pending.await.map_err(|join_error| {
+            IoError::WriteFailed(format!("background advance task panicked: {join_error}"))
+        })??;
+    }
+    let chunk_id = chunk
+        .id
+        .ok_or_else(|| IoError::AllocationFailed("shared chunk missing id".into()))?;
+    let already_closed = chunk.acknowledged_cursor >= cursor
+        && chunk
+            .closed_strip_sequence
+            .is_some_and(|sequence| sequence >= closed_strip_sequence);
+    if !already_closed {
+        chunk = advance_chunk(
+            Arc::clone(&allocator),
+            chunk_id,
+            writer_epoch,
+            chunk.modify_ts,
+            cursor,
+            Some(closed_strip_sequence),
+            writer_lease_ms,
+        )
+        .await?;
+    }
+    let strip_bytes = chunk
+        .strips
+        .last()
+        .map_or(0, |strip| u64::from(strip.capacity) * 1024);
+    if strip_bytes == 0 {
+        return Err(IoError::AllocationFailed(
+            "prefetched strip has zero capacity".into(),
+        ));
+    }
+    let attached_bytes = u64::from(chunk.capacity) * 1024;
+    let strips_ahead = attached_bytes.saturating_sub(cursor) / strip_bytes;
+    let available_slots = chunk_capacity.saturating_sub(attached_bytes) / strip_bytes;
+    if strips_ahead > u64::from(prefetch_count / 2) || available_slots == 0 {
+        return Ok(chunk);
+    }
+    let strip_count = prefetch_count.min(u32::try_from(available_slots).unwrap_or(u32::MAX));
+    append_mirror_strips(&*allocator, chunk, strip_count, copy_count).await
+}
+
 struct OwnedChunk {
     allocator: Arc<dyn ChunkAllocator>,
     disk_writer: Arc<dyn DiskWriter>,
@@ -270,6 +441,7 @@ struct OwnedChunk {
     budget: Arc<tokio::sync::Semaphore>,
     conversion_active: Arc<AtomicBool>,
     conversion_group: Option<PendingEcGroup>,
+    pending_advance: Option<tokio::task::JoinHandle<Result<Chunk>>>,
 }
 
 struct PendingEcGroup {
@@ -279,16 +451,30 @@ struct PendingEcGroup {
     _budget: OwnedSemaphorePermit,
 }
 
+struct MirrorBatchStats {
+    object_count: usize,
+    buffer_count: usize,
+    logical_bytes: usize,
+}
+
 impl OwnedChunk {
     async fn allocate(runtime: &SmallPoolRuntime, conversion_active: Arc<AtomicBool>) -> Result<Self> {
         let writer_epoch = next_writer_epoch();
         let lease_ms = u64::try_from(runtime.policy.writer_lease.as_millis()).unwrap_or(u64::MAX);
+        let initial_strip_count = runtime.policy.small_strip_prefetch_count.min(
+            u32::try_from(
+                runtime.policy.chunk_capacity
+                    / u64::try_from(runtime.policy.object_limit).unwrap_or(u64::MAX),
+            )
+            .unwrap_or(u32::MAX)
+            .max(1),
+        );
         let response = runtime
             .allocator
             .allocate_chunk(AllocateChunkRequest {
                 chunk_id: None,
                 write_granularity: 1024,
-                strip_count: 1,
+                strip_count: initial_strip_count,
                 strip_type: StripType::Mirror as i32,
                 data_num: 0,
                 code_num: 0,
@@ -314,6 +500,7 @@ impl OwnedChunk {
             budget: Arc::clone(&runtime.budget),
             conversion_active,
             conversion_group: None,
+            pending_advance: None,
         })
     }
 
@@ -348,61 +535,17 @@ impl OwnedChunk {
     }
 
     async fn ensure_strip(&mut self) -> Result<()> {
+        self.refresh_pending_advance().await?;
         if self.current_strip().is_ok() {
             return Ok(());
         }
-        let last = self
-            .chunk
-            .strips
-            .last()
-            .ok_or_else(|| IoError::AllocationFailed("shared chunk has no initial strip".into()))?;
-        let unit_count = last.capacity.checked_div(last.unit_kb).unwrap_or(0).max(1);
-        let chunk_id = self
-            .chunk
-            .id
-            .ok_or_else(|| IoError::AllocationFailed("shared chunk missing id".into()))?;
-        for attempt in 0..2 {
-            let response = self
-                .allocator
-                .append_chunk(AppendChunkRequest {
-                    chunk_id: Some(chunk_id),
-                    modify_ts: self.chunk.modify_ts,
-                    strip_size: unit_count,
-                    strip_count: 1,
-                    strip_type: StripType::Mirror as i32,
-                    data_num: 0,
-                    code_num: 0,
-                    copy_count: self.policy.mirror_copies,
-                })
-                .await?;
-            if let Some(chunk) = response.chunk {
-                if chunk.id != Some(chunk_id) {
-                    return Err(IoError::AllocationFailed(
-                        "append_chunk refresh returned a different shared chunk".into(),
-                    ));
-                }
-                self.chunk = chunk;
-                if attempt == 0 {
-                    continue;
-                }
-                return Err(IoError::AllocationFailed(
-                    "shared chunk revision changed twice while appending a strip".into(),
-                ));
-            }
-            if response.strips.is_empty() {
-                return Err(IoError::AllocationFailed(
-                    "append_chunk response missing appended mirror strip".into(),
-                ));
-            }
-            self.chunk.modify_ts = response.modify_ts;
-            self.chunk.capacity = self
-                .chunk
-                .capacity
-                .saturating_add(response.strips.iter().map(|strip| strip.capacity).sum::<u32>());
-            self.chunk.strips.extend(response.strips);
+        self.flush_pending_advance().await?;
+        if self.current_strip().is_ok() {
             return Ok(());
         }
-        unreachable!("append retry loop always returns")
+        Err(IoError::AllocationFailed(
+            "strip prefetch did not stay ahead of the write cursor".into(),
+        ))
     }
 
     async fn close_strip(&mut self, metrics: &SmallWriteMetrics) -> Result<()> {
@@ -412,7 +555,7 @@ impl OwnedChunk {
         if tail > 0 {
             metrics.tail_waste_bytes.fetch_add(tail, Ordering::Relaxed);
         }
-        self.advance(strip_end, Some(strip.strip_sequence)).await?;
+        self.cursor = strip_end;
         let closed = self
             .chunk
             .strips
@@ -423,6 +566,7 @@ impl OwnedChunk {
         if let Err(error) = self.retain_closed_strip(closed).await {
             tracing::warn!(%error, "mirror-to-EC fast path deferred to chunkdb");
         }
+        self.schedule_closed_advance(strip_end, strip.strip_sequence);
         Ok(())
     }
 
@@ -465,28 +609,24 @@ impl OwnedChunk {
             .unwrap_or(usize::MAX)
             .saturating_mul(1024);
         let strip_start = u64::from(strip.chunk_offset) * 1024;
-        let block_offset = usize::try_from(start.saturating_sub(strip_start)).unwrap_or(usize::MAX);
-        if self.shadow.is_none() {
-            self.shadow = Some(BytesMut::zeroed(strip_bytes));
-            self.metrics
-                .shadow_bytes
-                .fetch_add(strip_bytes as u64, Ordering::Relaxed);
-        }
-        let shadow = self
-            .shadow
-            .as_mut()
-            .unwrap_or_else(|| unreachable!("shadow initialized"));
-        let mut copied = 0;
-        let mut locations = Vec::with_capacity(batch.len());
+        let block_offset = start.saturating_sub(strip_start);
+        let block_offset_us = usize::try_from(block_offset).unwrap_or(usize::MAX);
+
+        // Single shadow buffer: allocated once with full strip capacity, no
+        // zeroing. Fragments are copied in sequentially; each batch sends a
+        // view (slice) of the written portion, not the whole buffer.
+        let mut shadow = self.take_shadow(strip_bytes, block_offset_us);
+
         let chunk_id = self
             .chunk
             .id
             .ok_or_else(|| IoError::AllocationFailed("shared chunk missing id".into()))?;
+        let mut copied = 0usize;
+        let mut locations = Vec::with_capacity(batch.len());
         for object in batch {
             let object_start = copied;
             for fragment in &object.fragments {
-                let destination = block_offset + copied;
-                shadow[destination..destination + fragment.len()].copy_from_slice(fragment);
+                shadow.extend_from_slice(fragment);
                 copied += fragment.len();
             }
             locations.push(Location {
@@ -497,23 +637,30 @@ impl OwnedChunk {
                 logical_length: object.len as u64,
             });
         }
-        let image = self
-            .shadow
-            .take()
-            .unwrap_or_else(|| unreachable!("shadow initialized"))
-            .freeze();
-        let (image, write_result) = self
+        let written_end = block_offset_us + logical_bytes;
+        debug_assert_eq!(shadow.len(), written_end);
+
+        // Freeze the buffer, take a view of the written portion, and send
+        // views to mirrors. After all mirrors complete, reclaim the buffer.
+        let frozen = shadow.freeze();
+        let view = frozen.slice(block_offset_us..written_end);
+        let full_image = frozen.slice(0..written_end);
+        let (_, write_result) = self
             .write_mirrors_with_repair(
                 &strip,
-                image,
+                view,
+                full_image,
                 unit_bytes,
-                batch.len(),
-                buffer_count,
-                logical_bytes,
+                block_offset,
+                MirrorBatchStats {
+                    object_count: batch.len(),
+                    buffer_count,
+                    logical_bytes,
+                },
             )
             .await;
         self.shadow = Some(
-            image
+            frozen
                 .try_into_mut()
                 .unwrap_or_else(|shared| BytesMut::from(shared.as_ref())),
         );
@@ -521,7 +668,7 @@ impl OwnedChunk {
         let end = start + logical_bytes as u64;
         let strip_end = u64::from(strip.chunk_offset.saturating_add(strip.capacity)) * 1024;
         let closed = (end == strip_end).then_some(strip.strip_sequence);
-        self.advance(end, closed).await?;
+        self.cursor = end;
         if let Some(sequence) = closed {
             let closed_strip = self
                 .chunk
@@ -533,6 +680,10 @@ impl OwnedChunk {
             if let Err(error) = self.retain_closed_strip(closed_strip).await {
                 tracing::warn!(%error, "mirror-to-EC fast path deferred to chunkdb");
             }
+            self.schedule_closed_advance(end, sequence);
+        } else {
+            self.refresh_pending_advance().await?;
+            self.start_pending_advance(end)?;
         }
         metrics.batches.fetch_add(1, Ordering::Relaxed);
         metrics
@@ -550,18 +701,47 @@ impl OwnedChunk {
         Ok(locations)
     }
 
+    fn take_shadow(&mut self, strip_bytes: usize, block_offset: usize) -> BytesMut {
+        let mut shadow = if let Some(shadow) = self.shadow.take() {
+            shadow
+        } else {
+            self.metrics
+                .shadow_bytes
+                .fetch_add(strip_bytes as u64, Ordering::Relaxed);
+            BytesMut::with_capacity(strip_bytes)
+        };
+        if shadow.len() < block_offset {
+            let previous = shadow.len();
+            shadow.resize(block_offset, 0);
+            self.metrics
+                .shadow_bytes
+                .fetch_add((block_offset - previous) as u64, Ordering::Relaxed);
+        }
+        shadow
+    }
+
     async fn retain_closed_strip(&mut self, strip: crowdb_protocol::chunkdb::rpc::ChunkStrip) -> Result<()> {
-        let image = self
+        let mut shadow = self
             .shadow
             .take()
-            .ok_or_else(|| IoError::Internal("closed mirror strip has no retained image".into()))?
-            .freeze();
+            .ok_or_else(|| IoError::Internal("closed mirror strip has no retained image".into()))?;
         self.metrics
             .shadow_bytes
-            .fetch_sub(image.len() as u64, Ordering::Relaxed);
+            .fetch_sub(shadow.capacity() as u64, Ordering::Relaxed);
         if !self.policy.conversion_enabled {
             return Ok(());
         }
+        let strip_bytes = usize::try_from(strip.capacity)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(1024);
+        if shadow.len() > strip_bytes {
+            return Err(IoError::Internal(
+                "retained mirror image exceeds strip capacity".into(),
+            ));
+        }
+        shadow.resize(strip_bytes, 0);
+        let image = shadow.freeze();
+
         if image.is_empty() {
             return Err(IoError::Internal(
                 "closed mirror strip has an empty retained image".into(),
@@ -601,6 +781,24 @@ impl OwnedChunk {
         group.old_strips.push(strip);
         group.data_shards.push(image);
         if group.parity.is_complete() {
+            let closed_strip_sequence = group
+                .old_strips
+                .last()
+                .map(|strip| strip.strip_sequence)
+                .ok_or_else(|| IoError::Internal("conversion group is empty".into()))?;
+            self.flush_pending_advance().await?;
+            self.advance(self.cursor, Some(closed_strip_sequence)).await?;
+            if let Some(group) = self.conversion_group.as_mut() {
+                for old in &mut group.old_strips {
+                    *old = self
+                        .chunk
+                        .strips
+                        .iter()
+                        .find(|current| current.strip_sequence == old.strip_sequence)
+                        .cloned()
+                        .ok_or_else(|| IoError::MetadataConflict("conversion source disappeared".into()))?;
+                }
+            }
             let result = self.convert_retained_group().await;
             self.conversion_active.store(false, Ordering::Release);
             return result;
@@ -701,10 +899,10 @@ impl OwnedChunk {
         &mut self,
         strip: &crowdb_protocol::chunkdb::rpc::ChunkStrip,
         data: Bytes,
+        full_image: Bytes,
         unit_bytes: u64,
-        object_count: usize,
-        buffer_count: usize,
-        logical_bytes: usize,
+        block_offset: u64,
+        stats: MirrorBatchStats,
     ) -> (Bytes, Result<()>) {
         let Some(Strip::MirrorStrip(mirror)) = &strip.strip else {
             return (
@@ -715,9 +913,9 @@ impl OwnedChunk {
         let request_count = mirror.segments.len() as u64;
         self.metrics.record_aggregate_write(
             request_count,
-            object_count,
-            buffer_count,
-            logical_bytes,
+            stats.object_count,
+            stats.buffer_count,
+            stats.logical_bytes,
             data.len(),
         );
         let mut write_tasks = tokio::task::JoinSet::new();
@@ -725,8 +923,14 @@ impl OwnedChunk {
             let segment = *segment;
             let disk_writer = Arc::clone(&self.disk_writer);
             let data = data.clone();
-            write_tasks
-                .spawn(async move { (segment, disk_writer.write_at(&segment, unit_bytes, 0, data).await) });
+            write_tasks.spawn(async move {
+                (
+                    segment,
+                    disk_writer
+                        .write_at_byte_offset(&segment, unit_bytes, block_offset, data)
+                        .await,
+                )
+            });
         }
         let mut failed = Vec::new();
         while let Some(result) = write_tasks.join_next().await {
@@ -746,8 +950,10 @@ impl OwnedChunk {
             }
         }
         for segment in failed {
+            // Repair writes the full shadow image (offset 0 to written_end)
+            // to the replacement segment, starting at offset 0.
             if let Err(error) = self
-                .repair_replica(strip.strip_sequence, segment, data.clone(), unit_bytes)
+                .repair_replica(strip.strip_sequence, segment, full_image.clone(), unit_bytes, 0)
                 .await
             {
                 return (data, Err(error));
@@ -762,9 +968,10 @@ impl OwnedChunk {
         failed: Segment,
         image: Bytes,
         unit_bytes: u64,
+        block_offset: u64,
     ) -> Result<()> {
         let _repair = RepairMetricGuard::new(Arc::clone(&self.metrics));
-        self.try_repair_replica(strip_sequence, failed, image, unit_bytes)
+        self.try_repair_replica(strip_sequence, failed, image, unit_bytes, block_offset)
             .await
     }
 
@@ -774,7 +981,9 @@ impl OwnedChunk {
         failed: Segment,
         image: Bytes,
         unit_bytes: u64,
+        block_offset: u64,
     ) -> Result<()> {
+        self.flush_pending_advance().await?;
         let failed_disk = failed
             .disk_id
             .ok_or_else(|| IoError::Internal("failed mirror segment has no disk id".into()))?;
@@ -820,7 +1029,7 @@ impl OwnedChunk {
             };
             if self
                 .disk_writer
-                .write_at(&replacement, unit_bytes, 0, image.clone())
+                .write_at_byte_offset(&replacement, unit_bytes, block_offset, image.clone())
                 .await
                 .is_err()
             {
@@ -1008,7 +1217,70 @@ impl OwnedChunk {
         ))
     }
 
+    /// Resolve any pending background advance and apply the result.
+    async fn flush_pending_advance(&mut self) -> Result<()> {
+        if let Some(pending) = self.pending_advance.take() {
+            self.chunk = pending.await.map_err(|join_error| {
+                IoError::WriteFailed(format!("background advance task panicked: {join_error}"))
+            })??;
+        }
+        Ok(())
+    }
+
+    async fn refresh_pending_advance(&mut self) -> Result<()> {
+        if self
+            .pending_advance
+            .as_ref()
+            .is_some_and(tokio::task::JoinHandle::is_finished)
+        {
+            self.flush_pending_advance().await?;
+        }
+        Ok(())
+    }
+
+    fn start_pending_advance(&mut self, cursor: u64) -> Result<()> {
+        if self.pending_advance.is_some() {
+            return Ok(());
+        }
+        let chunk_id = self
+            .chunk
+            .id
+            .ok_or_else(|| IoError::AllocationFailed("shared chunk missing id".into()))?;
+        let writer_lease_ms = u64::try_from(self.policy.writer_lease.as_millis()).unwrap_or(u64::MAX);
+        self.pending_advance = Some(tokio::spawn(advance_chunk(
+            Arc::clone(&self.allocator),
+            chunk_id,
+            self.writer_epoch,
+            self.chunk.modify_ts,
+            cursor,
+            None,
+            writer_lease_ms,
+        )));
+        Ok(())
+    }
+
+    fn schedule_closed_advance(&mut self, cursor: u64, closed_strip_sequence: u32) {
+        let writer_lease_ms = u64::try_from(self.policy.writer_lease.as_millis()).unwrap_or(u64::MAX);
+        let pending = self.pending_advance.take();
+        self.pending_advance = Some(tokio::spawn(close_and_prefetch(
+            Arc::clone(&self.allocator),
+            pending,
+            self.chunk.clone(),
+            self.writer_epoch,
+            cursor,
+            closed_strip_sequence,
+            writer_lease_ms,
+            self.policy.small_strip_prefetch_count,
+            self.policy.mirror_copies,
+            self.policy.chunk_capacity,
+        )));
+    }
+
     async fn finish(&mut self) -> Result<()> {
+        self.flush_pending_advance().await?;
+        if self.chunk.acknowledged_cursor < self.cursor {
+            self.advance(self.cursor, None).await?;
+        }
         let Some(chunk_id) = self.chunk.id else {
             return Ok(());
         };
@@ -1037,7 +1309,7 @@ impl OwnedChunk {
         if let Some(shadow) = self.shadow.take() {
             self.metrics
                 .shadow_bytes
-                .fetch_sub(shadow.len() as u64, Ordering::Relaxed);
+                .fetch_sub(shadow.capacity() as u64, Ordering::Relaxed);
         }
     }
 }

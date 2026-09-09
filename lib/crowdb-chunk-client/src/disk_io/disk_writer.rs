@@ -63,6 +63,44 @@ pub trait DiskWriter: Send + Sync {
             .ok_or_else(|| IoError::WriteFailed("segment-relative offset exceeds segment".into()))?;
         self.write(&adjusted, unit_bytes, data).await
     }
+
+    /// Write `data` at an arbitrary byte offset within the segment, bypassing
+    /// unit alignment.
+    async fn write_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()>;
+}
+
+pub(super) fn validate_segment_byte_write(
+    seg: &Segment,
+    unit_bytes: u64,
+    byte_offset: u64,
+    length: usize,
+) -> Result<()> {
+    if unit_bytes == 0 {
+        return Err(IoError::WriteFailed("unit_bytes must be nonzero".into()));
+    }
+    if length == 0 {
+        return Err(IoError::WriteFailed("write length must be nonzero".into()));
+    }
+    let capacity = u64::from(seg.unit_count)
+        .checked_mul(unit_bytes)
+        .ok_or_else(|| IoError::WriteFailed("segment byte capacity overflow".into()))?;
+    let length =
+        u64::try_from(length).map_err(|_| IoError::WriteFailed("disk write length exceeds u64".into()))?;
+    let end = byte_offset
+        .checked_add(length)
+        .ok_or_else(|| IoError::WriteFailed("disk write range overflow".into()))?;
+    if end > capacity {
+        return Err(IoError::WriteFailed(
+            "segment-relative byte write exceeds segment".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_segment_read(seg: &Segment, unit_bytes: u64, segment_offset: u64, length: u32) -> Result<()> {
@@ -139,6 +177,44 @@ impl DiskWriter for DiskioBlockWriter {
             .ok_or_else(|| IoError::WriteFailed("segment missing disk_id".into()))?;
         let disk_id = DiskId::new(disk_id.high, disk_id.low);
         let zone_offset = seg.unit_offset * unit_bytes;
+        let fut = self
+            .client
+            .write_bytes(
+                &self.server,
+                &self.conn,
+                disk_id,
+                seg.zone_index,
+                zone_offset,
+                data,
+            )
+            .map_err(|e| IoError::WriteFailed(e.to_string()))?;
+        let code = DiskioClient::await_write_response(fut)
+            .await
+            .map_err(|e| IoError::WriteFailed(e.to_string()))?;
+        if code != DiskIoRetCode::Success {
+            return Err(IoError::WriteFailed(format!("disk write returned {code:?}")));
+        }
+        Ok(())
+    }
+
+    async fn write_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        validate_segment_byte_write(seg, unit_bytes, byte_offset, data.len())?;
+        let disk_id = seg
+            .disk_id
+            .as_ref()
+            .ok_or_else(|| IoError::WriteFailed("segment missing disk_id".into()))?;
+        let disk_id = DiskId::new(disk_id.high, disk_id.low);
+        let zone_offset = seg
+            .unit_offset
+            .checked_mul(unit_bytes)
+            .and_then(|offset| offset.checked_add(byte_offset))
+            .ok_or_else(|| IoError::WriteFailed("disk write offset overflow".into()))?;
         let fut = self
             .client
             .write_bytes(

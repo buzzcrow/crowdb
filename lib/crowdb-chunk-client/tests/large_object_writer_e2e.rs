@@ -46,6 +46,21 @@ impl DiskWriter for FailWriteCall {
         self.inner.write(segment, unit_bytes, data).await
     }
 
+    async fn write_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        if byte_offset % unit_bytes == 0 {
+            return self.write_at(seg, unit_bytes, byte_offset, data).await;
+        }
+        Err(IoError::WriteFailed(
+            "byte-offset writes not supported by this writer".into(),
+        ))
+    }
+
     async fn read(
         &self,
         segment: &Segment,

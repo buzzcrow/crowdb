@@ -53,6 +53,22 @@ impl DiskWriter for FailSelectedDiskWrite {
         }
         self.inner.write(segment, unit_bytes, data).await
     }
+
+    async fn write_at_byte_offset(
+        &self,
+        segment: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        if self.calls.fetch_add(1, Ordering::AcqRel) + 1 == self.fail_on {
+            *self.failed_disk.lock().unwrap() = segment.disk_id;
+            return Err(IoError::WriteFailed("injected first replica failure".into()));
+        }
+        self.inner
+            .write_at_byte_offset(segment, unit_bytes, byte_offset, data)
+            .await
+    }
 }
 
 #[async_trait]
@@ -62,6 +78,21 @@ impl DiskWriter for FailWritesFromCall {
             return Err(IoError::WriteFailed("injected persistent disk failure".into()));
         }
         self.inner.write(segment, unit_bytes, data).await
+    }
+
+    async fn write_at_byte_offset(
+        &self,
+        segment: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        if self.calls.fetch_add(1, Ordering::AcqRel) + 1 >= self.first_failed_call {
+            return Err(IoError::WriteFailed("injected persistent disk failure".into()));
+        }
+        self.inner
+            .write_at_byte_offset(segment, unit_bytes, byte_offset, data)
+            .await
     }
 }
 
@@ -186,6 +217,7 @@ async fn small_write_batches_concurrent_objects_and_reads_them_back() {
     assert_eq!(metrics.failed, 0);
     assert!(metrics.batches < metrics.completed);
     assert!(metrics.max_batch_objects > 1);
+    stack.client.shutdown_small_writes().await.unwrap();
     for (data, location) in completed {
         assert_eq!(
             stack
@@ -198,7 +230,6 @@ async fn small_write_batches_concurrent_objects_and_reads_them_back() {
         let chunk = stack.query_chunk(&location).await;
         assert_mirror_data(&stack, &chunk, &location, &data).await;
     }
-    stack.client.shutdown_small_writes().await.unwrap();
 }
 
 #[tokio::test]
@@ -220,7 +251,7 @@ async fn eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread()
         .iter()
         .all(|location| location.chunk_id == locations[0].chunk_id));
     let chunk = stack.query_chunk(&locations[0]).await;
-    assert_eq!(chunk.strips.len(), 1);
+    assert_eq!(chunk.strips.len(), 5);
     let strip = &chunk.strips[0];
     let Some(Strip::EcStrip(ec)) = &strip.strip else {
         panic!("expected converted EC strip");
@@ -228,6 +259,9 @@ async fn eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread()
     assert_eq!((ec.data_num, ec.code_num), (8, 4));
     assert_eq!(ec.ec_state, crowdb_protocol::chunkdb::rpc::EcState::Parity as i32);
     assert_eq!(ec.segments.len(), 12);
+    assert!(chunk.strips[1..]
+        .iter()
+        .all(|strip| matches!(strip.strip, Some(Strip::MirrorStrip(_)))));
     let unit_bytes = u64::from(strip.unit_kb) * KIB as u64;
     for (segment, expected) in ec.segments[..8].iter().zip(&data) {
         let actual = stack
@@ -265,6 +299,10 @@ async fn eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread()
         );
     }
     stack.client.shutdown_small_writes().await.unwrap();
+    let sealed = stack.query_chunk(&locations[0]).await;
+    assert_eq!(sealed.state, ChunkState::Sealed as i32);
+    assert_eq!(sealed.strips.len(), 1);
+    assert_eq!(sealed.capacity, 8 * 1024);
 }
 
 #[tokio::test]
@@ -289,7 +327,7 @@ async fn chunkdb_takes_over_durable_conversion_task_after_client_io_failure() {
     }
     let location = locations[0].clone();
     let failed_fast_path = stack.query_chunk(&location).await;
-    assert_eq!(failed_fast_path.strips.len(), 8);
+    assert_eq!(failed_fast_path.strips.len(), 12);
     assert!(failed_fast_path
         .strips
         .iter()
@@ -298,7 +336,7 @@ async fn chunkdb_takes_over_durable_conversion_task_after_client_io_failure() {
     let converted = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let chunk = stack.query_chunk(&location).await;
-            if matches!(chunk.strips.as_slice(), [strip] if matches!(strip.strip, Some(Strip::EcStrip(_)))) {
+            if matches!(chunk.strips.first(), Some(strip) if matches!(strip.strip, Some(Strip::EcStrip(_)))) {
                 break chunk;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -347,10 +385,20 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
         data.push(shard);
     }
     let location = &locations[0];
-    let before = stack.query_chunk(location).await;
+    let before = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let chunk = stack.query_chunk(location).await;
+            if chunk.closed_strip_sequence == Some(7) {
+                break chunk;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("background close checkpoint did not reach strip 7");
     assert_eq!(before.state, ChunkState::Active as i32);
     assert_eq!(before.closed_strip_sequence, Some(7));
-    assert_eq!(before.strips.len(), 8);
+    assert_eq!(before.strips.len(), 12);
     assert!(before
         .strips
         .iter()
@@ -368,7 +416,7 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
     let converted = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let chunk = stack.query_chunk(location).await;
-            if matches!(chunk.strips.as_slice(), [strip] if matches!(strip.strip, Some(Strip::EcStrip(_)))) {
+            if matches!(chunk.strips.first(), Some(strip) if matches!(strip.strip, Some(Strip::EcStrip(_)))) {
                 break chunk;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -401,7 +449,7 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
     assert_eq!(appended.chunk_id, location.chunk_id);
     assert_eq!(appended.offset, 8 * MIB as u64);
     let after_append = stack.query_chunk(&appended).await;
-    assert_eq!(after_append.strips.len(), 2);
+    assert_eq!(after_append.strips.len(), 5);
     assert!(matches!(after_append.strips[0].strip, Some(Strip::EcStrip(_))));
     assert_mirror_data(&stack, &after_append, &appended, &appended_data).await;
     for (location, expected) in locations.iter().zip(&data) {

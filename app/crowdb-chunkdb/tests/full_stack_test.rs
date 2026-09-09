@@ -261,13 +261,14 @@ async fn chunkdb_full_stack_allocate_seal_delete() {
     let harness = ChunkdbHarness::start(&cluster).await;
     eprintln!("chunkdb harness ready");
 
-    // 5. Allocate a chunk (1 unit = 1 MB per strip, 3 mirror copies).
+    // 5. Allocate a chunk with three prefetched strips (1 MiB each,
+    // 3 mirror copies).
     let chunk = harness
         .handler
         .allocate_chunk(
             None,
             1, // 1 unit per strip
-            1, // 1 strip
+            3, // 3 strips
             StripType::Mirror,
             0,
             0,
@@ -297,6 +298,9 @@ async fn chunkdb_full_stack_allocate_seal_delete() {
         .expect("seal_chunk");
     assert_eq!(sealed.state, ChunkState::Sealed as i32);
     assert_eq!(sealed.sealed_length, 100);
+    assert_eq!(sealed.strips.len(), 1);
+    assert_eq!(sealed.capacity, 1024);
+    assert!(sealed.cleanup_intents.is_empty());
     eprintln!("chunk sealed");
 
     // 8. Delete the chunk.
