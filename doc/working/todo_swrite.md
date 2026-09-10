@@ -245,7 +245,7 @@ after the full conversion completes.
 - Use views/slices rather than copies.
 - Preserve correctness for strip-close metadata and location updates.
 
-### 5.3 Resolved Direction (tracked by R137)
+### 5.3 Resolved Direction
 
 1. EC operates one 1 MiB disk block at a time. For shared chunks, hand the
    existing buffer view to EC only after mirror DiskIO and any repair succeed;

@@ -92,28 +92,6 @@ end-to-end Chunk IO performance workloads are landed. The RPC migration items
 (R115, R116, R117) are in a separate area (see RPC Migration section below);
 R32 depends on R115.
 
-- **[R113](R113-chunkio-batch-strip-allocation.md)** — Batched attached-strip
-  prefetch — Area: chunkio / chunkdb — The shared small-write path allocates
-  and attaches several strips to an Active chunk per request, refills them on
-  the background metadata line, and releases unused tail strips at seal. This
-  is the compatibility foundation; extending the same batch path to the large
-  writer remains under R113.
-- **[R136](R136-chunkio-reserve-confirm-strip-flow.md)** — Reserved strip
-  prefetch with deferred confirm — Area: chunkio / chunkdb / diskdb — Follow-up
-  flow belonging to R113: prefetch multiple leased strip reservations without
-  attaching them to the chunk, consume a reservation for DiskIO, and confirm it
-  asynchronously only when the chunk needs it. Requires new reserve/confirm/
-  cancel protocol, expiry fencing, and crash recovery; not part of the current
-  implementation.
-- **[R137](R137-chunkio-incremental-ec-conversion.md)** — Incremental
-  small-write EC conversion — Area: chunkio / chunkdb — Allocate one special
-  28-block group containing eight three-replica mirrors plus four parity blocks
-  while allowing early seal with only 1-7 used mirror strips. Select one replica
-  per mirror for an optimal 8+4 layout, feed the same post-DiskIO 1 MiB view into
-  incremental parity, and write only four parity blocks. Revalidate placement
-  before retiring replicas; if no optimal selection remains, preserve mirrors
-  and track relocation with a persistent conversion task.
-
 ### Medium Priority
 
 - **[R83](R83-chunkdb-complete-recovery-flow.md)** — chunkdb
