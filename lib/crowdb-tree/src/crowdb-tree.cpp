@@ -3387,7 +3387,7 @@ Status Crowdbtree::install_snapshot(std::vector<leaf_entry> sorted_entries, uint
 }
 
 Status Crowdbtree::collect_native_frames(std::vector<NativeFrame> *out, uint64_t *out_root_page_id,
-                                         uint64_t *out_at_slot)
+                                         uint64_t *out_at_slot, uint64_t *out_next_page_id)
 {
     std::lock_guard<std::mutex> lk(write_mutex_);
     uint64_t                    gc = gc_floor_.load();
@@ -3484,10 +3484,14 @@ Status Crowdbtree::collect_native_frames(std::vector<NativeFrame> *out, uint64_t
     if (out_at_slot != nullptr) {
         *out_at_slot = last_applied_slot_.load();
     }
+    if (out_next_page_id != nullptr) {
+        *out_next_page_id = mapping_.next_page_id();
+    }
     return Status::Ok();
 }
 
-Status Crowdbtree::install_snapshot_native(std::vector<NativeFrame> frames, uint64_t root_page_id, uint64_t at_slot)
+Status Crowdbtree::install_snapshot_native(std::vector<NativeFrame> frames, uint64_t root_page_id, uint64_t at_slot,
+                                           uint64_t next_page_id)
 {
     std::lock_guard<std::mutex> lk(write_mutex_);
     for (const NativeFrame &frame : frames) {
@@ -3542,7 +3546,7 @@ Status Crowdbtree::install_snapshot_native(std::vector<NativeFrame> frames, uint
         // snapshot(), same as any other freshly built page.
         mapping_.store(f.page_id, page);
     }
-    mapping_.set_next_page_id(max_page_id + 1);
+    mapping_.set_next_page_id(std::max(max_page_id + 1, next_page_id));
     root_page_id_.store(root_page_id);
     leaf_count_.store(leaves, std::memory_order_relaxed);
     inner_count_.store(inners, std::memory_order_relaxed);

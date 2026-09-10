@@ -219,10 +219,10 @@ Status build_inner_frames(uint32_t frame_bytes, uint32_t inner_max_keys, uint64_
 }
 
 Status build_filtered_frames(const std::vector<NativeFrame> &source_frames, const KeyRange &range,
-                             const Options &destination_options, std::vector<NativeFrame> *output,
-                             uint64_t *root_page_id, RangeRebuildStats *stats)
+                             const Options &destination_options, uint64_t source_next_page_id,
+                             std::vector<NativeFrame> *output, uint64_t *root_page_id, RangeRebuildStats *stats)
 {
-    uint64_t                 next_page_id = 0;
+    uint64_t                 next_page_id = source_next_page_id;
     std::vector<RebuildLeaf> leaves;
     collect_rebuild_leaves(source_frames, range, &next_page_id, &leaves, stats);
 
@@ -263,9 +263,10 @@ Status rebuild_range(Crowdbtree &source, const KeyRange &range, Options destinat
 
     RangeRebuildStats        local;
     std::vector<NativeFrame> source_frames;
-    uint64_t                 source_root   = kInvalidPageId;
-    uint64_t                 at_slot       = 0;
-    Status                   native_status = source.collect_native_frames(&source_frames, &source_root, &at_slot);
+    uint64_t                 source_root  = kInvalidPageId;
+    uint64_t                 at_slot      = 0;
+    uint64_t                 next_page_id = 0;
+    Status native_status = source.collect_native_frames(&source_frames, &source_root, &at_slot, &next_page_id);
     if (!native_status.ok()) {
         return native_status;
     }
@@ -303,15 +304,15 @@ Status rebuild_range(Crowdbtree &source, const KeyRange &range, Options destinat
         output_frames         = std::move(source_frames);
     }
     else {
-        local = {};
-        native_status =
-            build_filtered_frames(source_frames, range, destination_options, &output_frames, &output_root, &local);
+        local         = {};
+        native_status = build_filtered_frames(source_frames, range, destination_options, next_page_id, &output_frames,
+                                              &output_root, &local);
         if (!native_status.ok()) {
             return native_status;
         }
     }
 
-    native_status = destination->install_snapshot_native(std::move(output_frames), output_root, at_slot);
+    native_status = destination->install_snapshot_native(std::move(output_frames), output_root, at_slot, next_page_id);
     if (!native_status.ok()) {
         return native_status;
     }

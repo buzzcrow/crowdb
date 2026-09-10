@@ -669,9 +669,13 @@ class Crowdbtree
     // no entry-by-entry tree rebuild. Both intended for crowdb-tree-to-crowdb-tree
     // transfer (Raft InstallSnapshot); `install_snapshot`/`snapshot_view`'s
     // portable tuple format remains available for cross-engine scenarios
-    // and testing (comparable against a non-crowdb-tree oracle).
-    Status collect_native_frames(std::vector<NativeFrame> *out, uint64_t *out_root_page_id, uint64_t *out_at_slot);
-    Status install_snapshot_native(std::vector<NativeFrame> frames, uint64_t root_page_id, uint64_t at_slot);
+    // and testing (comparable against a non-crowdb-tree oracle). The optional
+    // next-PID high-water output lets range rebuilds allocate rewritten pages
+    // beyond every PID ever issued by the selected source lineage.
+    Status collect_native_frames(std::vector<NativeFrame> *out, uint64_t *out_root_page_id, uint64_t *out_at_slot,
+                                 uint64_t *out_next_page_id = nullptr);
+    Status install_snapshot_native(std::vector<NativeFrame> frames, uint64_t root_page_id, uint64_t at_slot,
+                                   uint64_t next_page_id = 0);
 
     // Wipe every key/value and reset watermarks back to a fresh, empty tree
     // (the same wipe `install_snapshot` performs on the live tree before

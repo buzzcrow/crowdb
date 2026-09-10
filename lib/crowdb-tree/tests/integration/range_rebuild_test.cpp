@@ -174,6 +174,39 @@ TEST(RangeRebuild, CopiesOnlyOverflowChainsReferencedByTheChildRange)
     EXPECT_EQ(live_entries(source).size(), 3U);
 }
 
+TEST(RangeRebuild, RewrittenRootAllocatesAboveSourcePageIdHighWater)
+{
+    MemPageStore source_store(1);
+    Options      options;
+    options.page_store       = &source_store;
+    options.frame_bytes      = 4096;
+    options.leaf_split_bytes = 256;
+    Crowdbtree source(options);
+    for (uint64_t index = 0; index < 80; ++index) {
+        ASSERT_TRUE(source.put(Slice("k" + std::to_string(index + 1000)), Slice("value")).ok());
+    }
+    ASSERT_TRUE(source.flush().ok());
+
+    std::vector<NativeFrame> source_frames;
+    uint64_t                 source_root      = kInvalidPageId;
+    uint64_t                 source_slot      = 0;
+    uint64_t                 source_highwater = 0;
+    ASSERT_TRUE(source.collect_native_frames(&source_frames, &source_root, &source_slot, &source_highwater).ok());
+
+    MemPageStore destination_store(1);
+    options.page_store = &destination_store;
+    std::unique_ptr<Crowdbtree> destination;
+    ASSERT_TRUE(
+        rebuild_range(source, KeyRange::bounded(std::string("k1021"), std::string("k1063")), options, &destination)
+            .ok());
+
+    std::vector<NativeFrame> destination_frames;
+    uint64_t                 destination_root = kInvalidPageId;
+    ASSERT_TRUE(destination->collect_native_frames(&destination_frames, &destination_root, nullptr).ok());
+    EXPECT_GE(destination_root, source_highwater);
+    EXPECT_EQ(source_root < source_highwater, true);
+}
+
 TEST(RangeRebuild, LazyRecoveryRejectsAResolvedPageOutsideTheTreeRange)
 {
     MemPageStore store(1);
