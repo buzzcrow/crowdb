@@ -193,10 +193,6 @@ R32 KV consensus, R117 KV client-facing, R116 chunkdb) are DONE.
 - **[R5](R5-rdma-alloc.md)** — RDMA-pinned allocation — Blocked by: RDMA backend — Area: crowdbtree
   engine — `buffer::allocate` seam is designed for RDMA-pinned memory but no
   RDMA backend exists yet; placeholder only.
-- **[R138](R138-service-rpc-workers-config-file.md)** — Unified
-  file-backed configuration — Area: ops / config — Unify startup
-  precedence across KV, diskdb, chunkdb, and diskio; add each server's
-  `rpc_workers` to TOML and give diskio a complete config file.
 - **[R139](R139-group0-service-config.md)** — Group-0 distributed service
   configuration — Area: config / control plane — Publish versioned,
   scoped config through group 0; each service validates revisions, applies
