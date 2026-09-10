@@ -56,9 +56,9 @@ and structurally safe range rebuild while preserving local tree behavior.
   including siblings and overflow chains. Files:
   `include/crowdb-tree/frame_page.h`, `src/frame_page.cpp`,
   `src/page_codec.cpp`.
-- [~] **Implement range rebuild**: add bounded native iteration, subtree reuse,
-  filtered boundary rebuilding, independent manifests, high-water allocation,
-  and concurrent workers. Files: `include/crowdb-tree/chunk_page_store.h`,
+- [~] **Implement range rebuild**: add bounded native iteration, leaf-frame
+  reuse, filtered boundary/sibling rebuilding, independent roots, high-water
+  allocation, and concurrent workers. Files: `include/crowdb-tree/chunk_page_store.h`,
   `src/range_rebuild.cpp`, `include/crowdb-tree/c_api.h`, `src/c_api.cpp`.
 - [~] **Verify structural isolation**: cover split union/intersection, disjoint
   skip, mixed leaves, crossing paths/siblings, shared immutable metadata,
@@ -124,8 +124,10 @@ and structurally safe range rebuild while preserving local tree behavior.
 - The production `crowdb-rpc`/FlatBuffers transport, genuinely delayed chunk
   completions, read coalescing, and stdexec mirror fan-in remain to be wired to
   the in-memory-tested storage contract.
-- Persisted page fence keys, immutable mapping-image sharing, contained-subtree
-  reference reuse, and bounded child materialization/repack remain incomplete.
+- Persisted page fence keys, immutable mapping-image/reference sharing,
+  disjoint-subtree read skipping, and bounded child materialization/repack
+  remain incomplete. The current rebuild reuses verified native leaf and
+  overflow frames but copies their bytes into the child store.
 - Production-hardware benchmark results and the final bounded tuning values are
   intentionally left open for the next update.
 - R143 owns the production group-0 catalog adapter; R140 uses the injected

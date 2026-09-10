@@ -55,9 +55,14 @@ TEST(RangeRebuild, AdjacentChildrenHaveExactUnionAndEmptyIntersection)
     right_options.page_store   = &right_store;
     std::unique_ptr<Crowdbtree> left;
     std::unique_ptr<Crowdbtree> right;
-    ASSERT_TRUE(rebuild_range(source, KeyRange::bounded(std::nullopt, std::string("k1050")), left_options, &left).ok());
+    RangeRebuildStats           left_stats;
+    RangeRebuildStats           right_stats;
     ASSERT_TRUE(
-        rebuild_range(source, KeyRange::bounded(std::string("k1050"), std::nullopt), right_options, &right).ok());
+        rebuild_range(source, KeyRange::bounded(std::nullopt, std::string("k1050")), left_options, &left, &left_stats)
+            .ok());
+    ASSERT_TRUE(rebuild_range(source, KeyRange::bounded(std::string("k1050"), std::nullopt), right_options, &right,
+                              &right_stats)
+                    .ok());
 
     auto left_entries  = live_entries(*left);
     auto right_entries = live_entries(*right);
@@ -68,6 +73,10 @@ TEST(RangeRebuild, AdjacentChildrenHaveExactUnionAndEmptyIntersection)
     EXPECT_EQ(left_entries, expected);
     EXPECT_EQ(left->get(Slice("k1050"), nullptr, nullptr), false);
     EXPECT_EQ(right->get(Slice("k1049"), nullptr, nullptr), false);
+    EXPECT_GT(left_stats.pages_reused, 0U);
+    EXPECT_GT(left_stats.pages_rebuilt, 0U);
+    EXPECT_GT(right_stats.pages_reused, 0U);
+    EXPECT_GT(right_stats.pages_rebuilt, 0U);
 }
 
 TEST(RangeRebuild, ConcurrentWorkersPublishIndependentTrees)
@@ -102,6 +111,67 @@ TEST(RangeRebuild, ConcurrentWorkersPublishIndependentTrees)
     EXPECT_FALSE(live_entries(*low.second).empty());
     EXPECT_FALSE(live_entries(*high.second).empty());
     EXPECT_EQ(live_entries(source).size(), 20U);
+}
+
+TEST(RangeRebuild, WhollyContainedTreeReusesNativePageFrames)
+{
+    MemPageStore source_store(1);
+    Options      options;
+    options.page_store       = &source_store;
+    options.frame_bytes      = 4096;
+    options.leaf_split_bytes = 256;
+    Crowdbtree source(options);
+    for (uint64_t i = 0; i < 40; ++i) {
+        ASSERT_TRUE(source.put(Slice("k" + std::to_string(i + 100)), Slice("value")).ok());
+    }
+    ASSERT_TRUE(source.flush().ok());
+    ASSERT_TRUE(source.snapshot().ok());
+
+    MemPageStore destination_store(1);
+    options.page_store = &destination_store;
+    std::unique_ptr<Crowdbtree> destination;
+    RangeRebuildStats           stats;
+    ASSERT_TRUE(rebuild_range(source, KeyRange::bounded(std::string("k100"), std::string("k999")), options,
+                              &destination, &stats)
+                    .ok());
+    EXPECT_GT(stats.pages_reused, 0U);
+    EXPECT_EQ(stats.pages_rebuilt, 0U);
+    EXPECT_EQ(stats.entries_emitted, 40U);
+    EXPECT_EQ(live_entries(*destination), live_entries(source));
+}
+
+TEST(RangeRebuild, CopiesOnlyOverflowChainsReferencedByTheChildRange)
+{
+    MemPageStore source_store(1);
+    Options      options;
+    options.page_store       = &source_store;
+    options.frame_bytes      = 4096;
+    options.max_inline_value = 32;
+    Crowdbtree        source(options);
+    const std::string low_value(6000, 'l');
+    const std::string kept_value(7000, 'k');
+    const std::string high_value(8000, 'h');
+    ASSERT_TRUE(source.put(Slice("a"), Slice(low_value)).ok());
+    ASSERT_TRUE(source.put(Slice("m"), Slice(kept_value)).ok());
+    ASSERT_TRUE(source.put(Slice("z"), Slice(high_value)).ok());
+    ASSERT_TRUE(source.flush().ok());
+    ASSERT_TRUE(source.snapshot().ok());
+
+    MemPageStore destination_store(1);
+    options.page_store = &destination_store;
+    std::unique_ptr<Crowdbtree> destination;
+    RangeRebuildStats           stats;
+    ASSERT_TRUE(
+        rebuild_range(source, KeyRange::bounded(std::string("m"), std::string("n")), options, &destination, &stats)
+            .ok());
+
+    const auto rebuilt = live_entries(*destination);
+    ASSERT_EQ(rebuilt.size(), 1U);
+    EXPECT_EQ(rebuilt.at("m"), kept_value);
+    EXPECT_EQ(stats.entries_examined, 3U);
+    EXPECT_EQ(stats.entries_emitted, 1U);
+    EXPECT_EQ(stats.entries_filtered, 2U);
+    EXPECT_EQ(live_entries(source).size(), 3U);
 }
 
 TEST(RangeRebuild, LazyRecoveryRejectsAResolvedPageOutsideTheTreeRange)
