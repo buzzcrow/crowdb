@@ -10,7 +10,7 @@
 
 use thiserror::Error;
 
-use crate::ec_isal::{isal_decode, isal_encode};
+use crate::ec_isal::{isal_decode, isal_encode, isal_encode_update};
 
 /// EC error.
 #[derive(Debug, Error)]
@@ -35,6 +35,90 @@ pub type Result<T> = std::result::Result<T, EcError>;
 pub struct EcScheme {
     pub data_num: usize,
     pub code_num: usize,
+}
+
+/// Incremental parity state for one EC stripe.
+///
+/// Each data shard is consumed once and immediately folded into the parity
+/// buffers. Finalization therefore performs no reread or full-stripe encode.
+pub struct IncrementalParity {
+    scheme: EcScheme,
+    shard_size: Option<usize>,
+    shards_received: usize,
+    parity: Vec<Vec<u8>>,
+}
+
+impl IncrementalParity {
+    pub fn new(scheme: EcScheme) -> Result<Self> {
+        validate_scheme(scheme)?;
+        Ok(Self {
+            scheme,
+            shard_size: None,
+            shards_received: 0,
+            parity: Vec::new(),
+        })
+    }
+
+    pub fn push(&mut self, shard: &[u8]) -> Result<()> {
+        if self.shards_received >= self.scheme.data_num {
+            return Err(EcError::Backend(
+                "incremental encoder already has every data shard".into(),
+            ));
+        }
+        if shard.is_empty() {
+            return Err(EcError::Backend("incremental shard must be non-empty".into()));
+        }
+        match self.shard_size {
+            None => {
+                self.shard_size = Some(shard.len());
+                self.parity = (0..self.scheme.code_num).map(|_| vec![0; shard.len()]).collect();
+            }
+            Some(size) if size != shard.len() => {
+                return Err(EcError::Backend(format!(
+                    "incremental shard length {} differs from {size}",
+                    shard.len()
+                )));
+            }
+            Some(_) => {}
+        }
+        isal_encode_update(
+            shard,
+            self.shards_received,
+            &mut self.parity,
+            self.scheme.data_num,
+            self.scheme.code_num,
+        );
+        self.shards_received += 1;
+        Ok(())
+    }
+
+    pub fn is_complete(&self) -> bool {
+        self.shards_received == self.scheme.data_num
+    }
+
+    pub fn shards_received(&self) -> usize {
+        self.shards_received
+    }
+
+    pub fn finish(self) -> Result<Vec<Vec<u8>>> {
+        if !self.is_complete() {
+            return Err(EcError::Backend(format!(
+                "incremental encoder has {} of {} data shards",
+                self.shards_received, self.scheme.data_num
+            )));
+        }
+        Ok(self.parity)
+    }
+}
+
+fn validate_scheme(scheme: EcScheme) -> Result<()> {
+    if scheme.data_num == 0 || scheme.code_num == 0 {
+        return Err(EcError::InvalidScheme {
+            data_num: scheme.data_num,
+            code_num: scheme.code_num,
+        });
+    }
+    Ok(())
 }
 
 impl EcScheme {

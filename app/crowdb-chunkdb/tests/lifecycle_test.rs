@@ -31,6 +31,13 @@ fn make_chunk(id: ChunkId, state: i32) -> Chunk {
         sealed_length: 0,
         strips: vec![],
         chunk_type: 0,
+        writer_epoch: 0,
+        acknowledged_cursor: 0,
+        closed_strip_sequence: None,
+        writer_lease_deadline_ms: 0,
+        next_strip_sequence: 0,
+        cleanup_intents: vec![],
+        last_strip_replacement: None,
     }
 }
 

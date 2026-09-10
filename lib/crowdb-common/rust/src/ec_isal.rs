@@ -24,6 +24,15 @@ extern "C" {
     fn gf_invert_matrix(input: UcPtr, output: UcPtr, n: i32);
     fn ec_init_tables(k: i32, rows: i32, a: UcPtr, gftbls: UcPtr);
     fn ec_encode_data(len: i32, k: i32, rows: i32, gftbls: UcPtr, data: *const UcPtr, coding: *const UcPtr);
+    fn ec_encode_data_update(
+        len: i32,
+        k: i32,
+        rows: i32,
+        vec_i: i32,
+        gftbls: UcPtr,
+        data: UcPtr,
+        coding: *const UcPtr,
+    );
 }
 
 // ── GF(2^8) arithmetic ──────────────────────────────────────────
@@ -105,6 +114,44 @@ pub fn isal_encode(data: &mut [&mut [u8]], data_num: usize, code_num: usize) -> 
     }
 
     parity
+}
+
+/// XOR one data shard's contribution into preallocated parity shards.
+pub fn isal_encode_update(
+    data: &[u8],
+    data_index: usize,
+    parity: &mut [Vec<u8>],
+    data_num: usize,
+    code_num: usize,
+) {
+    let k = data_num as i32;
+    let rows = code_num as i32;
+    let m = k + rows;
+    let mut matrix = vec![0u8; (data_num + code_num) * data_num];
+    unsafe {
+        gf_gen_rs_matrix(matrix.as_mut_ptr(), m, k);
+    }
+    let mut gftbls = vec![0u8; 32 * data_num * code_num];
+    unsafe {
+        ec_init_tables(
+            k,
+            rows,
+            matrix.as_mut_ptr().add(data_num * data_num),
+            gftbls.as_mut_ptr(),
+        );
+    }
+    let parity_ptrs: Vec<UcPtr> = parity.iter_mut().map(Vec::as_mut_ptr).collect();
+    unsafe {
+        ec_encode_data_update(
+            data.len() as i32,
+            k,
+            rows,
+            data_index as i32,
+            gftbls.as_mut_ptr(),
+            data.as_ptr().cast_mut(),
+            parity_ptrs.as_ptr(),
+        );
+    }
 }
 
 /// Reconstruct lost shards.

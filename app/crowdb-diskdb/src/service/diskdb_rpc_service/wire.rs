@@ -20,6 +20,7 @@ pub(super) struct AllocateParams {
     pub(super) unit_count: u32,
     pub(super) count: u32,
     pub(super) exclude_disks: Vec<DiskId>,
+    pub(super) allow_disk_reuse: bool,
     pub(super) owner_chunk: ChunkId,
     pub(super) unit_size: u32,
     pub(super) cas_retry_limit: u32,

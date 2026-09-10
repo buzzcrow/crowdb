@@ -58,9 +58,9 @@ struct Cli {
     #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
     rpc_port: Option<u16>,
 
-    /// Number of crowdb-rpc I/O worker threads. Default: 2.
-    #[arg(long, default_value_t = 2)]
-    rpc_workers: u32,
+    /// Number of crowdb-rpc I/O worker threads. Overrides config.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+    rpc_workers: Option<u32>,
 
     /// KV client connections kept per endpoint. Zero uses config.
     #[arg(long, default_value_t = 0)]
@@ -299,7 +299,8 @@ async fn main() {
         Arc::new(metrics.clone()),
         rpc_rt_handle,
     ));
-    let rpc_server = Arc::new(crowdb_rpc_ffi::RpcServer::with_engines(None, 1, args.rpc_workers));
+    let rpc_workers = config.load().server.rpc_workers;
+    let rpc_server = Arc::new(crowdb_rpc_ffi::RpcServer::with_engines(None, 1, rpc_workers));
     rpc_server
         .listen(
             rpc_listen_addr.ip().to_string().as_str(),
@@ -571,6 +572,12 @@ fn load_config(args: &Cli) -> DdbConfig {
     if args.kv_client_rpc_workers > 0 {
         config.server.kv_rpc_workers = args.kv_client_rpc_workers;
     }
+    if let Some(rpc_workers) = args.rpc_workers {
+        config.server.rpc_workers = rpc_workers;
+    }
+
+    crowdb_common::config::BaseConfig::validate(&config)
+        .unwrap_or_else(|e| panic!("invalid config after CLI overrides: {e}"));
 
     config
 }

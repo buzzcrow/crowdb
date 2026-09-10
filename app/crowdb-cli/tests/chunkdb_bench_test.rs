@@ -52,6 +52,7 @@ fn chunkio_write_exposes_large_write_controls() {
         "--objects",
         "--object-size",
         "--concurrency",
+        "--diskio-connections",
         "--block-size",
         "--chunk-size",
         "--data-num",
@@ -62,5 +63,63 @@ fn chunkio_write_exposes_large_write_controls() {
         "--direct-buffers",
     ] {
         assert!(stdout.contains(option), "missing {option}");
+    }
+}
+
+#[test]
+fn chunkio_exposes_small_write_and_read_workloads() {
+    for (workload, options) in [
+        (
+            "write-small",
+            &[
+                "--objects",
+                "--object-size",
+                "--concurrency",
+                "--diskio-connections",
+                "--max-pipelines",
+                "--scale-out-queue-bytes",
+                "--scale-out-queue-objects",
+            ][..],
+        ),
+        (
+            "read-small",
+            &[
+                "--requests",
+                "--dataset-objects",
+                "--small-object-size",
+                "--concurrency",
+                "--diskio-connections",
+            ][..],
+        ),
+        (
+            "read-large",
+            &[
+                "--requests",
+                "--dataset-objects",
+                "--large-object-size",
+                "--block-size",
+                "--data-num",
+                "--code-num",
+            ][..],
+        ),
+        (
+            "read-mix",
+            &[
+                "--requests",
+                "--small-object-size",
+                "--large-object-size",
+                "--mixed-large-percent",
+            ][..],
+        ),
+    ] {
+        let output = Command::new(crowdb_cli_bin())
+            .args(["bench", "chunkio", workload, "--help"])
+            .output()
+            .expect("run crowdb-cli chunk IO workload help");
+        assert!(output.status.success(), "{workload} help must succeed");
+        let stdout = String::from_utf8(output.stdout).expect("help is UTF-8");
+        for option in options {
+            assert!(stdout.contains(option), "{workload} missing {option}");
+        }
     }
 }

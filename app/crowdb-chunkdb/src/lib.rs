@@ -13,12 +13,15 @@
 
 pub mod allocator;
 pub mod chunkdb_config;
+pub mod conversion;
 pub mod lifecycle;
 pub mod metrics;
 pub mod migration;
 pub mod range_guard;
+pub mod repair;
 pub mod routing;
 pub mod selector;
 pub mod service;
 pub mod storage;
+pub mod task;
 pub mod topology;

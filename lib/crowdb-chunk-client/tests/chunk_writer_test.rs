@@ -20,7 +20,7 @@ use crowdb_test_harness::test_dirs;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use crowdb_chunk_client::{ChunkAllocator, ChunkClientConfig, ChunkWriter, DiskWriter, Result};
+use crowdb_chunk_client::{ChunkAllocator, ChunkClientConfig, ChunkWriter, DiskWriter, IoError, Result};
 use crowdb_common::ec::EcScheme;
 use crowdb_protocol::chunkdb::rpc::Strip as StripOneof;
 use crowdb_protocol::chunkdb::rpc::{
@@ -58,6 +58,21 @@ impl DiskWriter for ConcurrentDiskWriter {
         self.inflight.fetch_sub(1, Ordering::Relaxed);
         Ok(())
     }
+
+    async fn write_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        if byte_offset % unit_bytes == 0 {
+            return self.write_at(seg, unit_bytes, byte_offset, data).await;
+        }
+        Err(IoError::WriteFailed(
+            "byte-offset writes not supported by this writer".into(),
+        ))
+    }
 }
 
 impl OrderingDiskWriter {
@@ -90,6 +105,21 @@ impl DiskWriter for OrderingDiskWriter {
             .push(format!("write:{}", disk_id.high));
         Ok(())
     }
+
+    async fn write_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        if byte_offset % unit_bytes == 0 {
+            return self.write_at(seg, unit_bytes, byte_offset, data).await;
+        }
+        Err(IoError::WriteFailed(
+            "byte-offset writes not supported by this writer".into(),
+        ))
+    }
 }
 
 // ── Mock ChunkAllocator (cumulative chunks) ──────────────────────
@@ -105,6 +135,7 @@ struct MockChunkState {
     next_segment_offset: u64,
     allocate_calls: usize,
     append_calls: usize,
+    append_strip_counts: Vec<u32>,
     seal_calls: usize,
     delete_calls: usize,
 }
@@ -155,6 +186,7 @@ fn make_strip(strip_seq: u32, data_num: u32, code_num: u32, segments: Vec<Segmen
             segments,
         })),
         usage_bitmap: Vec::new(),
+        unavailable_segments: Vec::new(),
     }
 }
 
@@ -168,27 +200,38 @@ impl ChunkAllocator for MockChunkAllocator {
         let code_num = req.code_num as usize;
         let total = data_num + code_num;
 
-        let segments = make_segments(chunk_id, total, &mut st.next_segment_offset);
-        let strip = make_strip(0, req.data_num, req.code_num, segments);
+        let mut strips = Vec::with_capacity(req.strip_count as usize);
+        for sequence in 0..req.strip_count {
+            let segments = make_segments(chunk_id, total, &mut st.next_segment_offset);
+            strips.push(make_strip(sequence, req.data_num, req.code_num, segments));
+        }
         let chunk = Chunk {
             id: Some(chunk_id),
             modify_ts: 1,
             state: 1,
             create_ts_ms: 0,
             sealed_ts_ms: 0,
-            capacity: data_num as u32,
+            capacity: strips.iter().map(|strip| strip.capacity).sum(),
             sealed_length: 0,
-            strips: vec![strip.clone()],
+            strips: strips.clone(),
             chunk_type: ChunkType::Repo as i32,
+            writer_epoch: req.writer_epoch,
+            acknowledged_cursor: 0,
+            closed_strip_sequence: None,
+            writer_lease_deadline_ms: 0,
+            next_strip_sequence: req.strip_count,
+            cleanup_intents: vec![],
+            last_strip_replacement: None,
         };
         st.chunks
-            .insert((chunk_id.high, chunk_id.low), (vec![strip], 0, false));
+            .insert((chunk_id.high, chunk_id.low), (strips, 0, false));
         Ok(AllocateChunkResponse { chunk: Some(chunk) })
     }
 
     async fn append_chunk(&self, req: AppendChunkRequest) -> Result<AppendChunkResponse> {
         let mut st = self.state.lock().unwrap();
         st.append_calls += 1;
+        st.append_strip_counts.push(req.strip_count);
         let chunk_id = req.chunk_id.unwrap_or_default();
         let data_num = req.data_num as usize;
         let code_num = req.code_num as usize;
@@ -199,17 +242,25 @@ impl ChunkAllocator for MockChunkAllocator {
             .get(&(chunk_id.high, chunk_id.low))
             .map_or(0, |e| e.0.len() as u32);
 
-        let segments = make_segments(chunk_id, total, &mut st.next_segment_offset);
-        let strip = make_strip(strip_seq, req.data_num, req.code_num, segments);
+        let mut strips = Vec::with_capacity(req.strip_count as usize);
+        for index in 0..req.strip_count {
+            let segments = make_segments(chunk_id, total, &mut st.next_segment_offset);
+            strips.push(make_strip(
+                strip_seq.saturating_add(index),
+                req.data_num,
+                req.code_num,
+                segments,
+            ));
+        }
 
         let entry = st
             .chunks
             .get_mut(&(chunk_id.high, chunk_id.low))
             .expect("append to unknown chunk");
-        entry.0.push(strip.clone());
+        entry.0.extend(strips.iter().cloned());
         Ok(AppendChunkResponse {
-            modify_ts: u64::from(strip_seq) + 1,
-            strips: vec![strip],
+            modify_ts: u64::from(strip_seq.saturating_add(req.strip_count)),
+            strips,
             chunk: None,
         })
     }
@@ -243,7 +294,10 @@ impl ChunkAllocator for MockChunkAllocator {
     }
 
     async fn query_chunk(&self, _req: QueryChunkRequest) -> Result<QueryChunkResponse> {
-        Ok(QueryChunkResponse { chunk: None })
+        Ok(QueryChunkResponse {
+            chunk: None,
+            layout_validity_ms: 0,
+        })
     }
 }
 
@@ -255,6 +309,7 @@ fn test_config(max_chunk_size: u64) -> Arc<ChunkClientConfig> {
         prefetch_strips_per_chunk: 2,
         parity_depth: 2,
         chunk_preparation_depth: 1,
+        large_write_repair_attempts: 3,
         read_buffer_size: 4096,
         max_cached_buffer: 8 * 4096,
         memory_budget: 0,
@@ -335,15 +390,17 @@ async fn chunk_writer_on_demand_append() {
     };
     cw.open(chunk, None).unwrap();
 
-    // Push data_num * 2 blocks (2 strips — second strip needs append).
-    for i in 0..(DATA_NUM * 2) as u8 {
+    // Push four strips. The initial chunk owns two; the bounded prefetcher may
+    // keep one additional two-strip batch ahead of the batch being consumed.
+    for i in 0..(DATA_NUM * 4) as u8 {
         cw.push(block(i, UNIT_BYTES as usize)).await.unwrap();
     }
 
     // Verify append_chunk was called (at least once — prefetch may
     // have appended more).
     let st = chunkdb.snapshot();
-    assert!(st.append_calls >= 1, "append_calls = {}", st.append_calls);
+    assert_eq!(st.append_calls, 2, "append_calls = {}", st.append_calls);
+    assert_eq!(st.append_strip_counts, vec![2, 2]);
 }
 
 #[tokio::test]

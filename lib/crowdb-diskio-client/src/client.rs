@@ -36,6 +36,16 @@ impl DiskId {
     }
 }
 
+/// Physical write address plus the containing allocation incarnation.
+#[derive(Debug, Clone, Copy)]
+pub struct SegmentWriteTarget {
+    pub disk_id: DiskId,
+    pub zone_index: u32,
+    pub zone_offset: u64,
+    pub allocation_ts: u64,
+    pub allocation_zone_offset: u64,
+}
+
 /// Disk I/O return codes (mirrors `FBDiskIoRetCode`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i16)]
@@ -47,6 +57,7 @@ pub enum DiskIoRetCode {
     PartialWrite = 4,
     InvalidAlignment = 5,
     ConnectionError = 6,
+    StaleAllocation = 7,
 }
 
 #[derive(Clone, Copy)]
@@ -55,6 +66,8 @@ struct WriteTarget {
     zone_index: u32,
     zone_offset: u64,
     size: u32,
+    allocation_ts: u64,
+    allocation_zone_offset: u64,
 }
 
 impl From<i16> for DiskIoRetCode {
@@ -66,6 +79,7 @@ impl From<i16> for DiskIoRetCode {
             4 => Self::PartialWrite,
             5 => Self::InvalidAlignment,
             6 => Self::ConnectionError,
+            7 => Self::StaleAllocation,
             _ => Self::IoError,
         }
     }
@@ -148,6 +162,8 @@ impl DiskioClient {
                 zone_index,
                 zone_offset,
                 size,
+                allocation_ts: 0,
+                allocation_zone_offset: zone_offset,
             },
             Buffer::from_vec(data),
         )
@@ -177,6 +193,41 @@ impl DiskioClient {
                 zone_index,
                 zone_offset,
                 size,
+                allocation_ts: 0,
+                allocation_zone_offset: zone_offset,
+            },
+            Buffer::from_owned_bytes(data),
+        )
+    }
+
+    /// Send a write fenced by the allocation incarnation of its containing
+    /// segment. `DiskIO` orders writes for one physical allocation and rejects
+    /// an older incarnation after a reused extent has received a newer write.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DiskioError::Rpc` if the data is too large or the send fails.
+    pub fn write_segment_bytes(
+        &self,
+        server: &RpcServer,
+        conn: &Connection,
+        target: SegmentWriteTarget,
+        data: bytes::Bytes,
+    ) -> Result<CallFuture, DiskioError> {
+        if target.allocation_ts == 0 {
+            return Err(DiskioError::Rpc("allocation timestamp must be nonzero".into()));
+        }
+        let size = u32::try_from(data.len()).map_err(|_| DiskioError::Rpc("data too large".into()))?;
+        self.write_buffer(
+            server,
+            conn,
+            WriteTarget {
+                disk_id: target.disk_id,
+                zone_index: target.zone_index,
+                zone_offset: target.zone_offset,
+                size,
+                allocation_ts: target.allocation_ts,
+                allocation_zone_offset: target.allocation_zone_offset,
             },
             Buffer::from_owned_bytes(data),
         )
@@ -201,6 +252,8 @@ impl DiskioClient {
                 zone_index: target.zone_index,
                 zone_offset: target.zone_offset,
                 size: target.size,
+                allocation_ts: target.allocation_ts,
+                allocation_zone_offset: target.allocation_zone_offset,
             },
         );
         fbb.finish(off, None);

@@ -87,15 +87,16 @@ DiskIOUring::DiskIOUring(Topology topo)
             CRB_LOG_ERROR("DiskIOUring: poll thread {} epoll_create1 failed: {}", i, std::strerror(errno));
             return;
         }
-        // Register each pipeline's eventfd with this thread's epoll set.
-        for (size_t pi : pt->pipelines) {
-            struct epoll_event ev{};
-            ev.events   = EPOLLIN;
-            ev.data.u64 = pi;
-            if (::epoll_ctl(pt->epoll_fd, EPOLL_CTL_ADD, pipelines_[pi]->eventfd, &ev) < 0) {
-                CRB_LOG_ERROR("DiskIOUring: epoll_ctl add pipeline {} eventfd failed: {}", pi, std::strerror(errno));
-                return;
-            }
+        pt->wake_fd = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+        if (pt->wake_fd < 0) {
+            CRB_LOG_ERROR("DiskIOUring: poll thread {} eventfd failed: {}", i, std::strerror(errno));
+            return;
+        }
+        struct epoll_event ev{};
+        ev.events = EPOLLIN;
+        if (::epoll_ctl(pt->epoll_fd, EPOLL_CTL_ADD, pt->wake_fd, &ev) < 0) {
+            CRB_LOG_ERROR("DiskIOUring: epoll_ctl add poll thread {} wake fd failed: {}", i, std::strerror(errno));
+            return;
         }
         poll_threads_.push_back(std::move(pt));
     }
@@ -124,6 +125,9 @@ DiskIOUring::~DiskIOUring()
         }
         if (pt->epoll_fd >= 0) {
             ::close(pt->epoll_fd);
+        }
+        if (pt->wake_fd >= 0) {
+            ::close(pt->wake_fd);
         }
     }
 
@@ -439,17 +443,27 @@ void DiskIOUring::poll_thread_run(PollThread &pt)
             }
         }
         else {
-            // Event-wait phase: epoll_wait on all pipeline eventfds.
+            // Event-wait phase: wait for a new submission on the poll
+            // thread's private wake fd. Completion eventfds are consumed by
+            // external reactors and must not feed back into this loop.
             pt.thread_sleeping.store(true, std::memory_order_release);
             struct epoll_event events[16];
             int                n = ::epoll_wait(pt.epoll_fd, events, 16, 50); // 50ms timeout
             pt.thread_sleeping.store(false, std::memory_order_release);
 
             if (n > 0) {
-                for (int i = 0; i < n; ++i) {
-                    int      efd = pipelines_[static_cast<size_t>(events[i].data.u64)]->eventfd;
-                    uint64_t val;
-                    (void)::read(efd, &val, sizeof(val));
+                uint64_t val;
+                (void)::read(pt.wake_fd, &val, sizeof(val));
+            }
+            // A producer can enqueue after the publish pass at the top of
+            // this iteration while this thread is inside epoll_wait, or just
+            // after epoll_wait times out. Publish that work before waiting
+            // for its CQE; otherwise wait_cqe_timeout can sleep for 50ms on
+            // an empty ring and only the next iteration submits the request.
+            for (size_t pi : pt.pipelines) {
+                auto &p = *pipelines_[pi];
+                if (p.valid && p.pending_submit.exchange(false, std::memory_order_acq_rel)) {
+                    publish_ready_sqes(p);
                 }
             }
             // Drain CQEs from all pipelines.
@@ -558,11 +572,9 @@ void DiskIOUring::drain_cqes(Pipeline &p)
 
 void DiskIOUring::wake_poll_thread(PollThread &pt)
 {
-    for (size_t pi : pt.pipelines) {
-        if (pipelines_[pi]->valid) {
-            uint64_t one = 1;
-            (void)::write(pipelines_[pi]->eventfd, &one, sizeof(one));
-        }
+    if (pt.wake_fd >= 0) {
+        uint64_t one = 1;
+        (void)::write(pt.wake_fd, &one, sizeof(one));
     }
 }
 

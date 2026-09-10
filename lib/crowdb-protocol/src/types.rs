@@ -4,6 +4,7 @@
 //! Hand-written Rust types replacing the former prost-generated proto types.
 //! API-compatible — same field names, types, and derives. No `prost::Message`.
 
+pub mod chunk_task;
 pub mod chunkdb;
 pub mod common;
 pub mod diskdb;

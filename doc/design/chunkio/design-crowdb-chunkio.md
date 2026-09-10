@@ -4,7 +4,7 @@
 # CROWDB - Design: Chunk IO Data Path (Overview)
 
 The chunk IO data path is the client-side layer that writes and reads
-object data as EC-encoded strips across diskio servers, using chunkdb
+large-object data as EC-encoded strips across diskio servers, using chunkdb
 for chunk lifecycle management (allocate, append, seal, delete). It
 lives in the `crowdb-chunk-client` crate and is consumed by object store
 layers and application upload handlers. The chunkdb server design
@@ -15,7 +15,9 @@ the diskio block IO engine is in
 This doc does not repeat their architecture — it covers the data path
 that sits between them: the write pipeline, its backpressure and memory
 model, and the design choices that make a 1 TB upload cost the same
-~15 MB of RAM as a 50 MB one.
+~15 MB of RAM as a 50 MB one. The shared mirrored path for small objects is
+specified in the
+[small-object writer design](design-crowdb-chunkio-small-object-writer.md).
 
 ## Table of Contents
 
@@ -33,16 +35,12 @@ model, and the design choices that make a 1 TB upload cost the same
 
 ## 1. Non-Goals
 
-- **No small-object writer.** Shared-chunk packing for many small
-  objects is a separate component. The `ChunkIoWriter` trait and
-  `ProtoLocation` type are designed for reuse, but the packing policy
-  is not part of this design.
-- **No reader.** The read path (location resolution, strip fetch, EC
-  decode, range reads) is a separate component.
-- **No single-block replacement on write failure.** The error path
-  retries whole strips and frees failed segments; in-place single-block
-  repair is a future refinement and an integration point, not a v1
-  behavior.
+- **No small-object writer details.** Shared-chunk packing is a separate
+  component specified by the
+  [small-object writer design](design-crowdb-chunkio-small-object-writer.md).
+- **Reader is a separate component.** Location resolution, mirror/EC fetch,
+  partial decode, range reads, and bounded streaming are specified in
+  [Chunk Object Reader](design-crowdb-chunkio-reader.md).
 - **No GC of leaked partial chunks.** Best-effort cleanup on abort
   leaves Active chunks for a future reaper; this doc does not specify
   the reaper.
@@ -80,23 +78,24 @@ model, and the design choices that make a 1 TB upload cost the same
   just to feed `crowdb_common::ec::encode` would copy 4 MB per strip for
   no benefit. `encode_parity_from_shards` takes pre-split shards
   directly and reuses the existing isa-l FFI path — no new C++ code.
-- **Whole-strip retry, not single-block retry.** On a diskio write
-  failure for any block of a strip, the writer retries the whole strip
-  at a fresh placement. This keeps the strip's data/parity placement
-  atomic and avoids degraded-strip bookkeeping in v1; single-block
-  replacement is left as a future integration point.
+- **Repair one failed shard, not the strip.** A durable data or parity write
+  failure keeps every successful shard and retries only the failed segment
+  through ChunkDB placement and fenced publication. Exhaustion aborts the
+  unpublished object; reduced redundancy is never reported as success.
 - **Memory budget per pool, not per object.** A `WriterPool` tracks a
   total `memory_budget` and an atomic `in_use` counter; `try_acquire`
   rejects with `MemoryBudgetExhausted` when full, enabling backpressure
   up the call stack. Per-writer footprint is constant (~15 MB peak for
   4+1 EC, 1 MB blocks, defaults), so `max_concurrent = budget /
   per-writer-footprint` — a 1 TiB and a 50 MiB upload cost the same RAM.
-- **Two trait seams for testability.** `LargeObjectWriter` is generic
-  over one chunk-lifecycle seam (`ChunkAllocator`) and one block-IO
-  seam (`DiskWriter`), so integration tests inject mock impls without
-  real servers; E2E tests use real clients. The seams are not a runtime
-  polymorphism optimization — they exist so the pipeline can be tested
-  in isolation.
+- **Real-process E2E is the primary write-flow coverage.** Large- and
+  small-object E2E tests run the client against KV, DiskDB, DiskIO, and
+  ChunkDB processes, query committed chunk metadata, and read payloads back
+  from their allocated segments. Large-write coverage also verifies stored EC
+  parity. The `ChunkAllocator` and `DiskWriter` seams support focused tests for
+  fault injection, backpressure, cancellation, accounting, and exact boundary
+  conditions that a real cluster cannot trigger deterministically; they are
+  auxiliary coverage rather than substitutes for the end-to-end flow.
 - **Drive loop in `ChunkWriter`, not the object layer.** The
   strip-level drive loop (push block → write to disk → auto-rotate
   strips when full → spawn parity) lives inside `ChunkWriter::push`.
@@ -315,16 +314,27 @@ must return already-sealed `ProtoLocation`s for caller cleanup.
   parity handles, `seal_chunk` RPC, return `ProtoLocation`. If the
   chunk is empty (0 bytes written), `delete_chunk` instead of
   `seal_chunk`.
-- **Error / abort** (`on_error`) — cancel in-flight pipeline
-  tasks, `ChunkWriter::abort()`: stop strip prefetch, abort current
-  strip, drop parity handles, `delete_chunk` on the partial chunk,
-  return `ProtoLocation`s of already-sealed chunks.
-- **Whole-strip retry** — on a diskio write failure for any block of a
-  strip, retry the whole strip: `append_chunk` a new strip with a fresh
-  placement, re-write all data + parity, free the failed strip's
-  segments. Up to 3 retries; on exhaustion, `IoError::WriteFailed` with
-  the partial `ProtoLocation` array. The abort/cleanup paths are
-  integration points for future single-block replacement.
+- **Error / abort** (`on_error`) — stop strip and chunk prefetch, retain and
+  drain every submitted write completion, then `delete_chunk` on the partial
+  chunk. Draining before deletion prevents a late write from hitting reused
+  storage. The public prepared-write API returns an error rather than a
+  partially successful object.
+- **Single-segment replacement** — a failed data or parity completion retains
+  its `Bytes`, inserts the failed disk into the client-wide lock-free negative
+  list, and queries current chunk metadata. ChunkDB allocates one tentative
+  placement excluding every existing strip disk and nodes already at the
+  strip's failure-domain limit. The client writes that segment and publishes a
+  geometry-identical strip through exact revision-and-range replacement.
+  Successful shards are untouched.
+- **Fencing and retry** — publication uses a deterministic operation ID.
+  Ambiguous results retry the identical request. A definite revision conflict
+  discards the tentative segment, re-queries, and retries only while the exact
+  failed identity remains. Repeated disk failures extend their exclusion TTL.
+  Attempts are bounded by `large_write_repair_attempts`, three by default.
+- **Repair exhaustion** — `ChunkWriter::seal` returns the failure before
+  `seal_chunk`; its owner drains remaining completions and deletes the active
+  chunk. It never seals a strip with missing parity or publishes degraded
+  large-object locations.
 - **Dropped writer** — dropping does not perform async metadata cleanup.
   Applications call `on_error` when abandoning a started push-mode write;
   an Active partial chunk left by process loss remains for future lifecycle
@@ -335,9 +345,9 @@ Edge cases:
 - `on_data` after `on_finish` / `on_error` → `IoError::Finished`.
 - `on_finish` twice → `IoError::Finished`.
 - `on_error` with no sealed chunks → `Ok(vec![])`.
-- EC encode failure → pipeline aborts immediately (no retry — EC encode
-  is a CPU/isal error, not a placement issue). A future refinement may
-  mark the strip degraded or retry with a fallback encoder.
+- EC encode failure → pipeline aborts immediately. EC encode is a CPU/ISA-L
+  failure rather than a disk placement failure and cannot use segment
+  replacement.
 - `delete_chunk` fails during cleanup → log + continue (best-effort;
   the partial chunk stays Active and is reaped by a future GC task).
 
@@ -388,12 +398,14 @@ consumes one. Queue depth is an application admission setting; the benchmark
 defaults to ten through `--prefetch-chunks`. Unused sessions are explicitly
 aborted so their Active chunks are deleted.
 
-The write hot path reads an immutable disk-ID route snapshot through
-`ArcSwap`. Refresh constructs a complete replacement off-path and publishes it
-atomically. Missing ownership and duplicate owners are topology errors; the
-client never chooses an arbitrary DiskIO endpoint. Connections are reused per
-endpoint. The application and CLI do not construct allocators, RPC servers,
-connections, chunks, strips, or parity workers.
+The write and read hot paths read an immutable disk-ID route snapshot through
+`ArcSwap`. Every endpoint owns a fixed connection pool configured by
+`ChunkIoClientConfig::diskio_connections_per_endpoint`; an atomic counter
+selects the next connection without a route lock. Refresh constructs complete
+replacement pools off-path and publishes them atomically. Missing ownership
+and duplicate owners are topology errors; the client never chooses an
+arbitrary DiskIO endpoint. The application and CLI do not construct
+allocators, RPC servers, connections, chunks, strips, or parity workers.
 
 Topology refresh follows server ownership. `refresh_chunkdb_routes` refreshes
 ChunkDB endpoints and range bindings; `refresh_diskio_routes` refreshes
@@ -402,13 +414,28 @@ narrow seams and do not own scheduling or discovery.
 
 ## 11. Performance Workload
 
-`run_large_write_benchmark` is a library-owned, deterministic, bounded-source
-workload. Before its timer starts, it prepares the configured number of write
-sessions and distributes them across workers. Each worker starts a replacement
-allocation when it consumes a session. The result separates preparation time
-from timed load and includes aggregate throughput, latency, error, and
-preparation-stall fields. `crowdb-cli bench chunkio write` only maps arguments,
-starts the standard process metrics collector, and formats the result.
+Chunk IO performance workloads live in `crowdb-chunk-client`; CLI commands
+only map arguments, start the standard process metrics collector, and format
+results.
+
+- `run_large_write_benchmark` retains the deterministic bounded-source writer.
+  Before its timer starts, it prepares write sessions and distributes them
+  across workers. Each worker starts a replacement allocation when consuming a
+  session.
+- `run_small_write_benchmark` uses `prepare_small_write`, awaits each real
+  Location, drains the shared pool, and reports batch fill, queue delay,
+  active/draining pipeline gauges, queue-driven scale-out/scale-in, throughput,
+  latency, and exact object accounting.
+- `run_read_benchmark` prepares a bounded reusable dataset through the real
+  small- and/or large-write APIs before timing. Small, large, and deterministic
+  mixed request modes call `read_object`; mixed ratio is by request count.
+  Successful reads validate logical length. Under NullDisk they deliberately
+  do not compare payload contents.
+
+The CLI commands are `bench chunkio write`, `write-small`, `read-small`,
+`read-large`, and `read-mix`. Results separate preparation from timed load and
+include aggregate throughput, latency, errors, stop reason, and exact admitted
+versus completed accounting.
 
 The CLI workload admits objects until a shared duration deadline (20 seconds by
 default). A worker checks the deadline before admitting its next object; an
@@ -419,7 +446,10 @@ not the normal regression stopping condition.
 
 The regression fixture starts three co-located logical nodes in one rack:
 three KV servers, three DiskDB, three ChunkDB, and three DiskIO processes
-backed by `NullDisk`. An 8+4 strip in this intentionally compact local topology
+backed by `NullDisk`. KV state and WAL use `mem-block` with fsync disabled, so
+benchmark metadata also avoids real media. Read preparation still writes real
+ChunkDB/DiskDB/KV metadata and writer-produced Locations; only payload storage
+is synthetic. An 8+4 strip in this intentionally compact local topology
 requires the local-test-only unsafe EC placement option; disk ownership and
 routing remain strict. Unsafe placement still balances blocks across the
 available nodes within a rack; it relaxes the failure-domain limit without

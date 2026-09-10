@@ -586,9 +586,17 @@ pub async fn restart_storage_services(ctx: &OpContext) -> Result<u64> {
         let (pid, _) = &launches[&server.id];
         lifecycle::stop_pid_with_timeout(*pid, std::time::Duration::from_secs(15))?;
     }
+    let restart_epoch_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        });
     services.sort_by_key(|server| match server.service_type {
-        ServiceType::Diskdb => 0,
-        ServiceType::Diskio => 1,
+        // DiskDB loads DiskIO ownership while entering Up. Start DiskIO first
+        // so a freshly restarted DiskDB never advertises readiness with an
+        // empty/stale data-plane topology.
+        ServiceType::Diskio => 0,
+        ServiceType::Diskdb => 1,
         ServiceType::Chunkdb => 2,
         _ => 3,
     });
@@ -604,6 +612,10 @@ pub async fn restart_storage_services(ctx: &OpContext) -> Result<u64> {
             entry.pid = Some(pid);
         }
     }
+    let diskio_count = services
+        .iter()
+        .filter(|server| server.service_type == ServiceType::Diskio)
+        .count();
     let diskdb_count = services
         .iter()
         .filter(|server| server.service_type == ServiceType::Diskdb)
@@ -612,14 +624,49 @@ pub async fn restart_storage_services(ctx: &OpContext) -> Result<u64> {
         .iter()
         .filter(|server| server.service_type == ServiceType::Chunkdb)
         .count();
+    if diskio_count > 0 {
+        wait_for_fresh_service_registrations(ctx, "diskio", diskio_count, restart_epoch_ms).await?;
+    }
     if diskdb_count > 0 {
+        wait_for_fresh_service_registrations(ctx, "diskdb", diskdb_count, restart_epoch_ms).await?;
         wait_for_diskdb_registration(ctx, diskdb_count).await?;
     }
     if chunkdb_count > 0 {
+        wait_for_fresh_service_registrations(ctx, "chunkdb", chunkdb_count, restart_epoch_ms).await?;
         wait_for_chunkdb_registration(ctx, chunkdb_count).await?;
         wait_for_chunkdb_bindings(ctx, chunkdb_count).await?;
     }
     Ok(u64::try_from(services.len()).unwrap_or(u64::MAX))
+}
+
+async fn wait_for_fresh_service_registrations(
+    ctx: &OpContext,
+    service: &'static str,
+    expected: usize,
+    after_ms: u64,
+) -> Result<()> {
+    let discovery = ctx.discovery_or_error()?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        discovery.invalidate(Some(service));
+        if discovery.discover_all(service).await.is_ok_and(|instances| {
+            instances.len() >= expected
+                && instances
+                    .iter()
+                    .all(|(_, instance)| instance.last_heartbeat_ms >= after_ms)
+        }) {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::UpstreamRpc {
+                node_id: "group0-service-registry".into(),
+                status: format!(
+                    "expected {expected} fresh {service} registrations after restart before timeout"
+                ),
+            });
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 /// Poll `/topology` on every server until a leader for the target
@@ -708,6 +755,7 @@ pub struct LocalChunkdbDeployConfig {
     pub instance_count: usize,
     pub allow_unsafe_ec: bool,
     pub rpc_workers: Option<u32>,
+    pub diskio_rpc_workers: Option<u32>,
     pub kv_connections: Option<usize>,
     pub kv_client_rpc_workers: Option<u32>,
     pub diskdb_connections: Option<usize>,
@@ -741,7 +789,8 @@ pub async fn local_deploy_combined(
         crate::ops::kv_logical::add_group(ctx, 0, *group_id, 100 + *group_id, &[1, 2, 3]).await?;
     }
     let diskdb = local_deploy_diskdb(ctx, workspace, disk).await?;
-    let diskio = local_deploy_diskio(ctx, workspace, chunk.metrics_interval).await?;
+    let diskio =
+        local_deploy_diskio(ctx, workspace, chunk.diskio_rpc_workers, chunk.metrics_interval).await?;
     let chunkdb = local_deploy_chunkdb(ctx, workspace, chunk).await?;
     Ok(LocalCombinedDeploySummary {
         kv_nodes: 3,
@@ -755,6 +804,7 @@ pub async fn local_deploy_combined(
 async fn local_deploy_diskio(
     ctx: &OpContext,
     workspace: &std::path::Path,
+    rpc_workers: Option<u32>,
     metrics_interval: Option<u64>,
 ) -> Result<usize> {
     let mut nodes = ctx.config().nodes.clone();
@@ -796,6 +846,7 @@ async fn local_deploy_diskio(
                 node_id: node.id,
                 disk_group_id: node.id * 100 + 1,
                 kv_server_mgmt_seeds: vec![leader_seed.clone()],
+                rpc_workers,
                 metrics_interval,
             },
             node,
@@ -980,13 +1031,65 @@ async fn wait_for_chunkdb_bindings(ctx: &OpContext, expected_instances: usize) -
                 next_bucket = u32::from(binding.range_end) + 1;
             }
             if next_bucket == u32::from(u16::MAX) + 1 && instance_ids.len() == expected_instances {
-                return Ok(());
+                return wait_for_chunkdb_server_readiness(ctx, expected_instances).await;
             }
         }
         if std::time::Instant::now() >= deadline {
             return Err(Error::UpstreamRpc {
                 node_id: "group0-chunkdb-bindings".into(),
                 status: "complete chunkdb bucket ownership was not published before timeout".into(),
+            });
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+async fn wait_for_chunkdb_server_readiness(ctx: &OpContext, expected_instances: usize) -> Result<()> {
+    let urls = {
+        let config = ctx.config();
+        config
+            .servers
+            .iter()
+            .filter(|server| server.service_type == ServiceType::Chunkdb)
+            .filter_map(|server| {
+                let port = server.rest_port?;
+                let node_id = server.node_id?;
+                let host = config.nodes.iter().find(|node| node.id == node_id)?.host.as_str();
+                Some(format!("http://{host}:{port}/ready"))
+            })
+            .collect::<Vec<_>>()
+    };
+    if urls.len() < expected_instances {
+        return Err(Error::UpstreamRpc {
+            node_id: "chunkdb-readiness".into(),
+            status: format!(
+                "expected {expected_instances} ChunkDB readiness URLs, found {}",
+                urls.len()
+            ),
+        });
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .map_err(|error| Error::UpstreamRpc {
+            node_id: "chunkdb-readiness".into(),
+            status: format!("HTTP client build failed: {error}"),
+        })?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(35);
+    loop {
+        let responses = futures::future::join_all(urls.iter().map(|url| client.get(url).send())).await;
+        if responses.iter().all(|response| {
+            response
+                .as_ref()
+                .is_ok_and(|response| response.status().is_success())
+        }) {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(Error::UpstreamRpc {
+                node_id: "chunkdb-readiness".into(),
+                status: "published range ownership was not loaded by every ChunkDB instance before timeout"
+                    .into(),
             });
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;

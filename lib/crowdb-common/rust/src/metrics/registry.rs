@@ -460,8 +460,10 @@ mod tests {
         bw.observe(100);
         bw.observe(300);
         let h = reg.register_histogram("s.1.kv.get.lh");
-        h.observe(1_000);
-        h.observe(2_000);
+        // Values must be ≥ LVD (65_536 ns) to land in regular HDR buckets.
+        // 100_000 ns → bucket upper bound 100_352 ns.
+        h.observe(100_000);
+        h.observe(100_000);
         let s = reg.register_summary("s.1.kv.scan.l");
         s.observe(5_000);
         s.observe(15_000);
@@ -513,7 +515,7 @@ mod tests {
         });
         assert_eq!(
             histogram,
-            Some((2, 1_000, 1_000, 2)),
+            Some((2, 100_352, 100_352, 2)),
             "histogram count/p50/p99/total"
         );
 

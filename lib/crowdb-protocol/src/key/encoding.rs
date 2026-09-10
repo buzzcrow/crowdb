@@ -6,7 +6,7 @@
 //! Defines [`BinaryKey`], [`TextKey`], [`KeyError`], and the
 //! encode/decode helpers shared by all key kinds.
 
-use crate::common::DiskId;
+use crate::common::{ChunkId, DiskId};
 use std::fmt::Write;
 
 /// Magic byte prefix for every CROWDB binary key.
@@ -115,6 +115,22 @@ pub(super) fn encode_u32(out: &mut Vec<u8>, v: u32) {
     out.extend_from_slice(&v.to_be_bytes());
 }
 
+/// Write `u16` big-endian.
+pub(super) fn encode_u16(out: &mut Vec<u8>, v: u16) {
+    out.extend_from_slice(&v.to_be_bytes());
+}
+
+/// Write `u8`.
+pub(super) fn encode_u8(out: &mut Vec<u8>, v: u8) {
+    out.push(v);
+}
+
+/// Write `ChunkId` as 16 bytes (`high BE | low BE`).
+pub(super) fn encode_chunk_id(out: &mut Vec<u8>, id: &ChunkId) {
+    encode_u64(out, id.high);
+    encode_u64(out, id.low);
+}
+
 /// Write `DiskId` as 16 bytes (`high BE | low BE`).
 pub(super) fn encode_disk_id(out: &mut Vec<u8>, id: &DiskId) {
     encode_u64(out, id.high);
@@ -137,6 +153,28 @@ pub(super) fn decode_u32(buf: &[u8], offset: usize) -> Result<(u32, usize), KeyE
     }
     let v = u32::from_be_bytes(buf[offset..offset + 4].try_into().expect("4 bytes"));
     Ok((v, offset + 4))
+}
+
+/// Read `u16` big-endian at `offset`, returning `(value, new_offset)`.
+pub(super) fn decode_u16(buf: &[u8], offset: usize) -> Result<(u16, usize), KeyError> {
+    if offset + 2 > buf.len() {
+        return Err(KeyError::ShortInput);
+    }
+    let v = u16::from_be_bytes(buf[offset..offset + 2].try_into().expect("2 bytes"));
+    Ok((v, offset + 2))
+}
+
+/// Read `u8` at `offset`, returning `(value, new_offset)`.
+pub(super) fn decode_u8(buf: &[u8], offset: usize) -> Result<(u8, usize), KeyError> {
+    let value = *buf.get(offset).ok_or(KeyError::ShortInput)?;
+    Ok((value, offset + 1))
+}
+
+/// Read `ChunkId` (16 bytes) at `offset`, returning `(id, new_offset)`.
+pub(super) fn decode_chunk_id(buf: &[u8], offset: usize) -> Result<(ChunkId, usize), KeyError> {
+    let (high, o) = decode_u64(buf, offset)?;
+    let (low, o) = decode_u64(buf, o)?;
+    Ok((ChunkId { high, low }, o))
 }
 
 /// Read `DiskId` (16 bytes) at `offset`, returning `(id, new_offset)`.

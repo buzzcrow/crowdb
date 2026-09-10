@@ -270,6 +270,13 @@ is applied within the named disk-group. Multi-block uses one
 `batch_write` on the disk-group's bound paxos data group; atomic within
 the group. No cross-group multi-block allocate in v1.
 
+`allow_disk_reuse` is reserved for a caller that already validated a joint
+placement plan, such as ChunkDB's mirror-to-EC reservation. When enabled,
+allocation resets the per-request used-disk set only after a full
+anti-affinity pass, so each pass still spreads across distinct disks. The
+complete set of claims is persisted in the same single `batch_write` and is
+rolled back together on allocation or persistence failure.
+
 ### Two-phase async allocation
 
 1. **Phase 1 (sync)**: bitmap-scan allocate (nanoseconds). Bits are set

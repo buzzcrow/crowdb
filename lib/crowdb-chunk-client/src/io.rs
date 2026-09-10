@@ -35,8 +35,9 @@ pub enum BackpressurePolicy {
 /// Push-based chunk IO writer trait.
 ///
 /// Contract:
-/// - `on_data` **always stores the buffer** (awaits until internal
-///   capacity is available — never rejects). Returns `Continue` if the
+/// - `on_data` **always stores the buffer** after it returns `Ok` (awaits until
+///   internal capacity is available). A terminal validation error may reject
+///   the offending buffer. Returns `Continue` if the
 ///   next push would not block, `Pause` if the writer is now at
 ///   capacity.
 /// - `require_data` is a cheap non-async hint: `true` if `on_data`
@@ -53,7 +54,7 @@ pub enum BackpressurePolicy {
 ///   off (yield / return 503).
 #[async_trait::async_trait]
 pub trait ChunkIoWriter: Send {
-    /// Push a data buffer. Always stores (awaits capacity if needed).
+    /// Push a data buffer. An `Ok` result always means the buffer was stored.
     async fn on_data(&mut self, buffer: Bytes) -> Result<FeedStatus>;
     /// End of input: flush, seal, return the `Location` array.
     async fn on_finish(&mut self) -> Result<Vec<ProtoLocation>>;

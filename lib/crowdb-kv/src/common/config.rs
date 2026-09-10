@@ -67,7 +67,11 @@ impl Default for PaxosConfig {
 
 /// Server-level configuration (all fields static — bind at startup).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
 pub struct ServerConfig {
+    /// static: number of crowdb-rpc I/O worker threads serving this process.
+    #[serde(default = "default_rpc_workers")]
+    pub rpc_workers: u32,
     /// static: per-layer graceful-shutdown timeout in milliseconds.
     /// Shutdowns that take longer almost always indicate a stuck task and are
     /// better force-cleaned than waited on.
@@ -109,6 +113,7 @@ pub struct ServerConfig {
 
 impl ServerConfig {
     pub const DEFAULT: Self = Self {
+        rpc_workers: 2,
         shutdown_timeout_ms: 10_000,
         scan_byte_budget: 3 * 1024 * 1024 + 512 * 1024, // 3.5 MiB
         peer_pool_size: 2,
@@ -123,6 +128,10 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self::DEFAULT
     }
+}
+
+const fn default_rpc_workers() -> u32 {
+    ServerConfig::DEFAULT.rpc_workers
 }
 
 /// WAL configuration for a single consensus group.
@@ -495,11 +504,20 @@ pub struct CrowDBConfig {
 
 impl BaseConfig for CrowDBConfig {
     fn validate(&self) -> Result<(), String> {
+        if self.server.rpc_workers == 0 {
+            return Err("server.rpc_workers must be > 0".to_string());
+        }
         if self.server.shutdown_timeout_ms == 0 {
             return Err("server.shutdown_timeout_ms must be > 0".to_string());
         }
         if self.server.scan_byte_budget == 0 {
             return Err("server.scan_byte_budget must be > 0".to_string());
+        }
+        if self.server.peer_pool_size == 0 {
+            return Err("server.peer_pool_size must be > 0".to_string());
+        }
+        if self.server.send_queue_capacity == 0 {
+            return Err("server.send_queue_capacity must be > 0".to_string());
         }
         if self.paxos.max_inflight_proposals == 0 {
             return Err("paxos.max_inflight_proposals must be > 0".to_string());
@@ -648,6 +666,34 @@ mod tests {
             config.paxos.max_inflight_proposals,
             PaxosConfig::DEFAULT.max_inflight_proposals
         );
+        assert_eq!(config.server.rpc_workers, 2);
+    }
+
+    #[test]
+    fn crowdb_kv_config_rejects_zero_rpc_workers() {
+        let mut config = CrowDBConfig::default();
+        config.server.rpc_workers = 0;
+        assert_eq!(
+            config.validate(),
+            Err("server.rpc_workers must be > 0".to_string())
+        );
+    }
+
+    #[test]
+    fn crowdb_kv_config_rejects_zero_transport_capacity() {
+        let mut config = CrowDBConfig::default();
+        config.server.peer_pool_size = 0;
+        assert_eq!(
+            config.validate(),
+            Err("server.peer_pool_size must be > 0".to_string())
+        );
+
+        config.server.peer_pool_size = 1;
+        config.server.send_queue_capacity = 0;
+        assert_eq!(
+            config.validate(),
+            Err("server.send_queue_capacity must be > 0".to_string())
+        );
     }
 
     /// The tracked `app/crowdb-kv-server/conf/crowdb_kv_server_config.toml`
@@ -669,6 +715,7 @@ mod tests {
         }
         let config = CrowDBConfig::load_from_file(&config_path).expect("load tracked config");
         assert_eq!(config.server.shutdown_timeout_ms, 10_000);
+        assert_eq!(config.server.rpc_workers, 2);
         assert!(config.wal_early_ack);
         assert!(config.async_engine_apply);
     }

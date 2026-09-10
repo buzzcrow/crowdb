@@ -5,18 +5,22 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use crowdb_chunkdb::allocator::{ChunkAllocator, DiskdbClientPool};
 use crowdb_chunkdb::chunkdb_config::ChunkdbConfig;
+use crowdb_chunkdb::conversion::io::ConversionDiskIo;
+use crowdb_chunkdb::conversion::{ConversionCoordinator, MirrorToEcTaskHandler};
 use crowdb_chunkdb::lifecycle::{ChunkLockMap, LifecycleHandler};
 use crowdb_chunkdb::metrics::ChunkdbMetrics;
 use crowdb_chunkdb::metrics::LifecycleMetrics;
 use crowdb_chunkdb::range_guard::RangeGuard;
+use crowdb_chunkdb::repair::{RepairCoordinator, RepairStripTaskHandler};
 use crowdb_chunkdb::routing::{default_binding_table, BindingCache};
 use crowdb_chunkdb::service::ChunkdbRpcService;
 use crowdb_chunkdb::storage::ChunkStore;
+use crowdb_chunkdb::task::{TaskExecutor, TaskHandler, TaskManager, TaskScanner, TaskStore};
 use crowdb_chunkdb::topology::{
     build_snapshot, notify::NotifyHandler, refresh::run_refresh_loop, TopologyCache,
 };
@@ -51,9 +55,9 @@ struct Cli {
     #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
     rpc_port: Option<u16>,
 
-    /// Number of crowdb-rpc I/O worker threads. Default: 2.
-    #[arg(long, default_value_t = 2)]
-    rpc_workers: u32,
+    /// Number of crowdb-rpc I/O worker threads. Overrides config.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+    rpc_workers: Option<u32>,
 
     /// Log directory. Default: "log" (relative to CWD).
     #[arg(long)]
@@ -195,7 +199,8 @@ async fn main() {
     // Binding cache + chunk store.
     let bindings = BindingCache::new();
     bindings.replace(default_binding_table(0, 0));
-    let store = Arc::new(ChunkStore::new(Arc::clone(&kv), bindings));
+    let store = Arc::new(ChunkStore::new(Arc::clone(&kv), bindings.clone()));
+    let task_store = Arc::new(TaskStore::new(Arc::clone(&kv), bindings));
 
     // Range guard (R99): load chunkdb instance binding from group-0.
     // Falls back to allow-all when no binding table exists (v1 compat).
@@ -277,6 +282,7 @@ async fn main() {
         error!(%error, "initial diskdb discovery failed; refusing readiness");
         return;
     }
+    pool.update_disk_id_lookup(&cache.snapshot().disk_groups());
     let allocator =
         Arc::new(ChunkAllocator::new(Arc::clone(&pool)).with_metrics(Arc::clone(&workflow_metrics)));
 
@@ -297,14 +303,26 @@ async fn main() {
         stop_rx.clone(),
     ));
 
+    let reservation_blocks = range_guard.quota_share(config.reservation.max_blocks);
+    let reservation_bytes = range_guard.quota_share(config.reservation.max_bytes);
+
     // Lifecycle handler.
     let handler = Arc::new(
         LifecycleHandler::new(Arc::clone(&store), allocator, cache)
             .with_range_guard(Arc::clone(&range_guard))
             .with_locks(Arc::clone(&lock_map))
             .with_metrics(Arc::clone(&workflow_metrics))
-            .with_allow_unsafe_ec(config.placement.allow_unsafe_ec),
+            .with_reservation_limits(reservation_blocks, reservation_bytes)
+            .with_allow_unsafe_ec(config.placement.allow_unsafe_ec)
+            .with_layout_validity(Duration::from_millis(config.lifecycle.layout_validity_ms)),
     );
+    match handler.rebuild_reservation_admission().await {
+        Ok((blocks, bytes)) => info!(blocks, bytes, "reservation admission rebuilt"),
+        Err(error) => {
+            error!(%error, "reservation admission rebuild failed");
+            return;
+        }
+    }
     match handler.reconcile_pending_chunks().await {
         Ok(count) => info!(count, "pending chunk allocations reconciled"),
         Err(error) => {
@@ -312,16 +330,229 @@ async fn main() {
             return;
         }
     }
+    let writer_lease_sweep_handle = tokio::spawn(run_writer_lease_sweep_loop(
+        Arc::clone(&handler),
+        sweep_interval,
+        stop_rx.clone(),
+    ));
 
     // Build the crowdb-rpc server. The RpcServer listens on the RPC
     // port and dispatches to ChunkdbRpcService handlers.
     let rpc_rt_handle = tokio::runtime::Handle::current();
-    let rpc_service = Arc::new(ChunkdbRpcService::new(
-        Arc::clone(&handler),
-        Arc::clone(&workflow_metrics),
-        rpc_rt_handle,
+    let task_manager = Arc::new(TaskManager::new(
+        Arc::clone(&task_store),
+        config
+            .server
+            .instance_id
+            .as_ref()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1),
+        config.conversion.task_lease_secs.saturating_mul(1_000),
     ));
-    let rpc_server = Arc::new(crowdb_rpc_ffi::RpcServer::with_engines(None, 1, args.rpc_workers));
+    let conversion = Arc::new(
+        ConversionCoordinator::new(Arc::clone(&handler), Arc::clone(&task_store))
+            .with_wake(task_manager.wake_handle())
+            .with_policy(
+                config.conversion.data_num,
+                config.conversion.code_num,
+                config.conversion.min_mirror_strips,
+                config.conversion.min_seal_age_secs.saturating_mul(1_000),
+            ),
+    );
+    let reservation_reconcile_handle = {
+        let conversion = Arc::clone(&conversion);
+        let mut stop = stop_rx.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(1));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        match conversion.reconcile_reservations(256, unix_time_ms()).await {
+                            Ok(reconciled) if reconciled > 0 => {
+                                info!(reconciled, "expired strip reservations reconciled");
+                            }
+                            Ok(_) => {}
+                            Err(error) => warn!(%error, "strip reservation reconciliation failed"),
+                        }
+                    }
+                    changed = stop.changed() => {
+                        if changed.is_err() || *stop.borrow() {
+                            return;
+                        }
+                    }
+                }
+            }
+        })
+    };
+    let reservation_admission_handle = {
+        let handler = Arc::clone(&handler);
+        let range_guard = Arc::clone(&range_guard);
+        let mut stop = stop_rx.clone();
+        let interval = Duration::from_secs(config.reservation.scan_interval_secs);
+        let max_blocks = config.reservation.max_blocks;
+        let max_bytes = config.reservation.max_bytes;
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        handler.update_reservation_limits(
+                            range_guard.quota_share(max_blocks),
+                            range_guard.quota_share(max_bytes),
+                        );
+                    }
+                    changed = stop.changed() => {
+                        if changed.is_err() || *stop.borrow() {
+                            return;
+                        }
+                    }
+                }
+            }
+        })
+    };
+    let conversion_scan_handle = config.conversion.enabled.then(|| {
+        let conversion = Arc::clone(&conversion);
+        let mut stop = stop_rx.clone();
+        let interval = Duration::from_secs(config.conversion.scan_interval_secs);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        match conversion.trigger_configured_batch(false, 256, unix_time_ms()).await {
+                            Ok(accepted_chunks) if accepted_chunks > 0 => {
+                                info!(accepted_chunks, "automatic mirror-to-EC scan admitted chunks");
+                            }
+                            Ok(_) => {}
+                            Err(error) => warn!(%error, "automatic mirror-to-EC scan failed"),
+                        }
+                    }
+                    changed = stop.changed() => {
+                        if changed.is_err() || *stop.borrow() {
+                            return;
+                        }
+                    }
+                }
+            }
+        })
+    });
+    let repair = Arc::new(
+        RepairCoordinator::new(Arc::clone(&handler), Arc::clone(&task_store))
+            .with_wake(task_manager.wake_handle())
+            .with_metrics(Arc::clone(&workflow_metrics.repair)),
+    );
+    let repair_scan_handle = config.repair.enabled.then(|| {
+        let repair = Arc::clone(&repair);
+        let mut stop = stop_rx.clone();
+        let interval = Duration::from_secs(config.repair.scan_interval_secs);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        match repair.scan_batch(256, unix_time_ms()).await {
+                            Ok(accepted) if accepted > 0 => {
+                                info!(accepted, "read-repair scan admitted tasks");
+                            }
+                            Ok(_) => {}
+                            Err(error) => warn!(%error, "read-repair scan failed"),
+                        }
+                    }
+                    changed = stop.changed() => {
+                        if changed.is_err() || *stop.borrow() {
+                            return;
+                        }
+                    }
+                }
+            }
+        })
+    });
+    let (task_scanner_handle, conversion_route_refresh_handle) = match ConversionDiskIo::connect(
+        &ServiceRegistryClient::from_shared(Arc::clone(&kv)),
+        &HardwareClient::from_shared(Arc::clone(&kv)),
+    )
+    .await
+    {
+        Ok(io) => {
+            let io = Arc::new(io);
+            let conversion_task_handler = Arc::new(MirrorToEcTaskHandler::new(
+                Arc::clone(&handler),
+                Arc::clone(&task_store),
+                Arc::clone(&io),
+                Arc::clone(&workflow_metrics.conversion),
+                config.conversion.max_bandwidth_mbps,
+                config.conversion.max_concurrency,
+            ));
+            let repair_task_handler = Arc::new(RepairStripTaskHandler::new(
+                Arc::clone(&handler),
+                Arc::clone(&io),
+                config.repair.memory_bytes,
+                config.repair.max_concurrency,
+                config.repair.allow_unsafe_placement,
+                Arc::clone(&workflow_metrics.repair),
+            ));
+            let task_handlers: Vec<Arc<dyn TaskHandler>> = vec![conversion_task_handler, repair_task_handler];
+            let executor = Arc::new(
+                TaskExecutor::new(
+                    Arc::clone(&task_manager),
+                    config
+                        .conversion
+                        .max_concurrency
+                        .saturating_add(config.repair.max_concurrency),
+                    task_handlers,
+                )
+                .expect("unique conversion task handler"),
+            );
+            let scanner = TaskScanner::new(
+                Arc::clone(&task_store),
+                Arc::clone(&task_manager),
+                executor,
+                256,
+                Duration::from_secs(1),
+            );
+            let scanner_stop = stop_rx.clone();
+            let scanner_handle = tokio::spawn(async move { scanner.run(scanner_stop).await });
+            let service = ServiceRegistryClient::from_shared(Arc::clone(&kv));
+            let hardware = HardwareClient::from_shared(Arc::clone(&kv));
+            let mut refresh_stop = stop_rx.clone();
+            let refresh_interval = Duration::from_secs(u64::from(config.topology.refresh_interval_secs));
+            let refresh_handle = tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(refresh_interval);
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        _ = ticker.tick() => {
+                            if let Err(error) = io.refresh(&service, &hardware).await {
+                                warn!(%error, "background conversion DiskIO route refresh failed");
+                            }
+                        }
+                        changed = refresh_stop.changed() => {
+                            if changed.is_err() || *refresh_stop.borrow() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            });
+            (Some(scanner_handle), Some(refresh_handle))
+        }
+        Err(error) => {
+            warn!(%error, "background conversion DiskIO is unavailable; client fast path remains enabled");
+            (None, None)
+        }
+    };
+    let rpc_service = Arc::new(
+        ChunkdbRpcService::new(Arc::clone(&handler), Arc::clone(&workflow_metrics), rpc_rt_handle)
+            .with_conversion(Arc::clone(&conversion)),
+    );
+    let rpc_server = Arc::new(crowdb_rpc_ffi::RpcServer::with_engines(
+        None,
+        1,
+        config.server.rpc_workers,
+    ));
     rpc_server
         .listen(
             rpc_listen_addr.ip().to_string().as_str(),
@@ -333,7 +564,23 @@ async fn main() {
     info!(%rpc_listen_addr, "crowdb-rpc server listening (R116 migration)");
 
     // Start HTTP health + metrics + cache invalidation server.
-    let http_handle = tokio::spawn(run_http_server(http_listen_addr, Arc::clone(&lock_map)));
+    let readiness = HttpReadiness {
+        range_guard: Arc::clone(&range_guard),
+        kv: Arc::clone(&kv),
+        instance_id: config
+            .server
+            .instance_id
+            .as_ref()
+            .and_then(|value| value.parse().ok()),
+    };
+    let http_handle = tokio::spawn(run_http_server(
+        http_listen_addr,
+        readiness,
+        Arc::clone(&lock_map),
+        Arc::clone(&workflow_metrics.conversion),
+        Arc::clone(&workflow_metrics.repair),
+        Arc::clone(&conversion),
+    ));
 
     let rpc_server_stop = Arc::clone(&rpc_server);
     let _ = tokio::signal::ctrl_c().await;
@@ -343,6 +590,21 @@ async fn main() {
     let _ = http_handle.await;
     let _ = refresh_handle.await;
     let _ = notify_handle.await;
+    let _ = writer_lease_sweep_handle.await;
+    let _ = reservation_reconcile_handle.await;
+    let _ = reservation_admission_handle.await;
+    if let Some(handle) = task_scanner_handle {
+        let _ = handle.await;
+    }
+    if let Some(handle) = conversion_route_refresh_handle {
+        let _ = handle.await;
+    }
+    if let Some(handle) = conversion_scan_handle {
+        let _ = handle.await;
+    }
+    if let Some(handle) = repair_scan_handle {
+        let _ = handle.await;
+    }
     let _ = range_refresh_handle.await;
     let _ = sweep_handle.await;
     if let Some(h) = keepalive_handle {
@@ -413,6 +675,32 @@ async fn run_sweep_loop(
     }
 }
 
+async fn run_writer_lease_sweep_loop(
+    handler: Arc<LifecycleHandler>,
+    interval: Duration,
+    mut stop: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut ticker = tokio::time::interval(interval);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = ticker.tick() => {
+                if let Err(error) = handler.seal_expired_writer_chunks().await {
+                    warn!(%error, "shared writer lease sweep failed");
+                }
+                if let Err(error) = handler.reconcile_pending_chunks().await {
+                    warn!(%error, "chunk cleanup reconciliation failed");
+                }
+            }
+            changed = stop.changed() => {
+                if changed.is_ok() && *stop.borrow() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
 /// Spawn a chunkdb service-registry keep-alive loop. Registers the
 /// instance under `/srv/chunkdb/<instance_id>` and heartbeats every
 /// `interval`. Stops on the `stop` signal, unregistering on clean
@@ -459,10 +747,30 @@ fn spawn_chunkdb_keepalive(
     Some(handle)
 }
 
+struct HttpReadiness {
+    range_guard: Arc<RangeGuard>,
+    kv: Arc<CrowdbKvClient>,
+    instance_id: Option<u64>,
+}
+
 /// HTTP server — health, metrics, cache invalidation endpoints.
-async fn run_http_server(addr: SocketAddr, locks: Arc<ChunkLockMap>) {
+async fn run_http_server(
+    addr: SocketAddr,
+    readiness: HttpReadiness,
+    locks: Arc<ChunkLockMap>,
+    conversion_metrics: Arc<crowdb_chunkdb::metrics::ConversionMetrics>,
+    repair_metrics: Arc<crowdb_chunkdb::metrics::RepairMetrics>,
+    conversion: Arc<ConversionCoordinator>,
+) {
     let app = axum::Router::new()
-        .route("/ready", axum::routing::get(|| async { "ok" }))
+        .route(
+            "/ready",
+            axum::routing::get(move || {
+                let range_guard = Arc::clone(&readiness.range_guard);
+                let kv = Arc::clone(&readiness.kv);
+                async move { ready_response(&range_guard, &kv, readiness.instance_id).await }
+            }),
+        )
         .route("/health", axum::routing::get(|| async { "ok" }))
         .route(
             "/metrics",
@@ -471,6 +779,57 @@ async fn run_http_server(addr: SocketAddr, locks: Arc<ChunkLockMap>) {
                 move || async move {
                     let snap = locks.metrics_snapshot();
                     axum::Json(snap)
+                }
+            }),
+        )
+        .route(
+            "/conversion_metrics",
+            axum::routing::get(move || {
+                let metrics = Arc::clone(&conversion_metrics);
+                async move { axum::Json(metrics.snapshot()) }
+            }),
+        )
+        .route(
+            "/repair_metrics",
+            axum::routing::get(move || {
+                let metrics = Arc::clone(&repair_metrics);
+                async move { axum::Json(metrics.snapshot()) }
+            }),
+        )
+        .route(
+            "/convert_chunk",
+            axum::routing::post({
+                let conversion = Arc::clone(&conversion);
+                move |axum::Json(body): axum::Json<ConvertChunkBody>| {
+                    let conversion = Arc::clone(&conversion);
+                    async move {
+                        match conversion
+                            .trigger_configured_chunk(body.chunk_id, unix_time_ms())
+                            .await
+                        {
+                            Ok(accepted_groups) => axum::Json(serde_json::json!({
+                                "accepted_groups": accepted_groups
+                            })),
+                            Err(error) => axum::Json(serde_json::json!({ "error": error.to_string() })),
+                        }
+                    }
+                }
+            }),
+        )
+        .route(
+            "/convert_all",
+            axum::routing::post(move |axum::Json(body): axum::Json<ConvertAllBody>| {
+                let conversion = Arc::clone(&conversion);
+                async move {
+                    match conversion
+                        .trigger_configured_batch(body.sealed_only, body.max_chunks, unix_time_ms())
+                        .await
+                    {
+                        Ok(accepted_chunks) => axum::Json(serde_json::json!({
+                            "accepted_chunks": accepted_chunks
+                        })),
+                        Err(error) => axum::Json(serde_json::json!({ "error": error.to_string() })),
+                    }
                 }
             }),
         )
@@ -503,6 +862,29 @@ async fn run_http_server(addr: SocketAddr, locks: Arc<ChunkLockMap>) {
     axum::serve(listener, app).await.expect("HTTP server error");
 }
 
+async fn ready_response(
+    range_guard: &RangeGuard,
+    kv: &CrowdbKvClient,
+    instance_id: Option<u64>,
+) -> (axum::http::StatusCode, &'static str) {
+    if let Some(instance_id) = instance_id {
+        if range_guard.load_from_group0(kv, instance_id).await.is_err() {
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "range ownership refresh failed",
+            );
+        }
+    }
+    if range_guard.is_ready() {
+        (axum::http::StatusCode::OK, "ok")
+    } else {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "range ownership pending",
+        )
+    }
+}
+
 fn load_config(args: &Cli) -> ChunkdbConfig {
     let config_path = &args.config;
     let mut config =
@@ -521,6 +903,12 @@ fn load_config(args: &Cli) -> ChunkdbConfig {
     if let Some(port) = args.rpc_port {
         config.server.rpc_listen_addr = replace_port(&config.server.rpc_listen_addr, port);
     }
+    if let Some(rpc_workers) = args.rpc_workers {
+        config.server.rpc_workers = rpc_workers;
+    }
+
+    crowdb_common::config::BaseConfig::validate(&config)
+        .unwrap_or_else(|e| panic!("invalid config after CLI overrides: {e}"));
 
     config
 }
@@ -534,6 +922,15 @@ fn replace_port(addr: &str, port: u16) -> String {
     }
 }
 
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
 /// Request body for `POST /invalidate_chunk`.
 #[derive(serde::Deserialize)]
 struct InvalidateChunkBody {
@@ -545,4 +942,17 @@ struct InvalidateChunkBody {
 struct InvalidateRangeBody {
     bucket_start: u16,
     bucket_end: u16,
+}
+
+#[derive(serde::Deserialize)]
+struct ConvertChunkBody {
+    chunk_id: crowdb_protocol::common::ChunkId,
+}
+
+#[derive(serde::Deserialize)]
+struct ConvertAllBody {
+    #[serde(default)]
+    sealed_only: bool,
+    #[serde(default)]
+    max_chunks: u32,
 }

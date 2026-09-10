@@ -14,6 +14,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
 use dashmap::DashMap;
 
+use crowdb_common::RequestIdGen;
 use crowdb_kv::rpc::{KvBatchItem, ReadMode};
 
 use crate::config::{ClientConfig, ReadEndpointPolicy, RetryConfig};
@@ -164,6 +165,7 @@ pub struct CrowdbKvClient {
     pub(crate) retry: RetryConfig,
     client_id: u64,
     next_seq: AtomicU64,
+    request_ids: RequestIdGen,
     pub(crate) metrics: Arc<ClientMetrics>,
     /// Per-`(store_id, group_id)` high-watermark of the last write's
     /// paxos slot, auto-attached as `min_slot` on `MinSlot` reads.
@@ -251,6 +253,7 @@ impl CrowdbKvClient {
             retry: config.retry,
             client_id: new_client_id(),
             next_seq: AtomicU64::new(1),
+            request_ids: RequestIdGen::new(),
             metrics: Arc::new(ClientMetrics::default()),
             write_slot_highwater,
             read_endpoint_policy: config.read_endpoint_policy,
@@ -608,7 +611,7 @@ impl CrowdbKvClient {
         let mut attempts = 0u32;
         let mut backoff = self.retry.backoff_base;
         loop {
-            let request_id = next_request_id();
+            let request_id = self.request_ids.next().as_u64();
             let request_create_ms = now_ms();
             let t0 = Instant::now();
             let send_result: std::result::Result<crowdb_kv::rpc::KvResponse, String> = t
@@ -690,7 +693,7 @@ impl CrowdbKvClient {
         let mut attempts = 0u32;
         let mut backoff = self.retry.backoff_base;
         loop {
-            let request_id = next_request_id();
+            let request_id = self.request_ids.next().as_u64();
             let request_create_ms = now_ms();
             let t0 = Instant::now();
             let _in_flight = self.incr_in_flight(&endpoint);
@@ -813,7 +816,7 @@ impl CrowdbKvClient {
         let mut attempts = 0u32;
         let mut backoff = self.retry.backoff_base;
         loop {
-            let request_id = next_request_id();
+            let request_id = self.request_ids.next().as_u64();
             let request_create_ms = now_ms();
             let t0 = Instant::now();
             let send_result: std::result::Result<crowdb_kv::rpc::KvResponse, String> = t
@@ -916,7 +919,7 @@ impl CrowdbKvClient {
         let mut attempts = 0u32;
         let mut backoff = self.retry.backoff_base;
         loop {
-            let request_id = next_request_id();
+            let request_id = self.request_ids.next().as_u64();
             let request_create_ms = now_ms();
             let t0 = Instant::now();
             let send_result: std::result::Result<crowdb_kv::rpc::KvResponse, String> = t
@@ -1139,7 +1142,7 @@ impl CrowdbKvClient {
             } else {
                 limit.saturating_sub(u32::try_from(all_items.len()).unwrap_or(u32::MAX))
             };
-            let request_id = next_request_id();
+            let request_id = self.request_ids.next().as_u64();
             let request_create_ms = now_ms();
             let t0 = Instant::now();
             let _in_flight = self.incr_in_flight(&endpoint);
@@ -1338,7 +1341,7 @@ impl CrowdbKvClient {
         let mut attempts = 0u32;
         let mut backoff = self.retry.backoff_base;
         loop {
-            let request_id = next_request_id();
+            let request_id = self.request_ids.next().as_u64();
             let request_create_ms = now_ms();
             let t0 = Instant::now();
             let _in_flight = self.incr_in_flight(&endpoint);
@@ -1450,7 +1453,7 @@ impl CrowdbKvClient {
         let mut page1_read_slot: Option<u64> = None;
         loop {
             let remaining_page_limit = if page_limit == 0 { 0 } else { page_limit };
-            let request_id = next_request_id();
+            let request_id = self.request_ids.next().as_u64();
             let request_create_ms = now_ms();
             let t0 = Instant::now();
             let _in_flight = self.incr_in_flight(&endpoint);
@@ -1580,7 +1583,7 @@ fn now_ms() -> u64 {
         .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
-fn next_request_id() -> u64 {
+fn process_time_nonce() -> u64 {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
@@ -1592,5 +1595,5 @@ fn next_request_id() -> u64 {
 /// process start time in nanoseconds; not a cryptographic identifier.
 #[must_use]
 pub fn new_client_id() -> u64 {
-    next_request_id()
+    process_time_nonce()
 }

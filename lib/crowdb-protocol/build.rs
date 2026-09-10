@@ -23,6 +23,7 @@ fn main() {
         "src/fbs/kv_consensus.fbs",
         "src/fbs/kv_client.fbs",
         "src/fbs/chunkdb.fbs",
+        "src/fbs/chunk_task.fbs",
     ];
     for f in &fbs_files {
         println!("cargo:rerun-if-changed={f}");
@@ -112,6 +113,19 @@ fn main() {
         .status()
         .unwrap_or_else(|e| panic!("failed to run flatc at {}: {e}", flatc.display()));
     assert!(status.success(), "flatc --rust --gen-all failed for chunkdb.fbs");
+
+    let status = Command::new(&flatc)
+        .arg("--rust")
+        .arg("--gen-all")
+        .arg("-o")
+        .arg(&out_dir)
+        .arg("src/fbs/chunk_task.fbs")
+        .status()
+        .unwrap_or_else(|e| panic!("failed to run flatc at {}: {e}", flatc.display()));
+    assert!(
+        status.success(),
+        "flatc --rust --gen-all failed for chunk_task.fbs"
+    );
 }
 
 /// Locate the `flatc` schema compiler. Pixi puts it in `$CONDA_PREFIX/bin`;

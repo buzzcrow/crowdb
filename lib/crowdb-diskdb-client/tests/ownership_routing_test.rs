@@ -59,6 +59,7 @@ async fn compaction_rejects_mismatched_free_facts() {
             count: 1,
             exclude_disk_ids: vec![],
             owner_chunk: Some(owner_a),
+            allow_disk_reuse: false,
         })
         .await
         .expect("allocate 1 block");

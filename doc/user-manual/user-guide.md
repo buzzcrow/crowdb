@@ -63,6 +63,25 @@ Before following the steps below:
   single-machine deployment (all nodes on localhost). For a real
   multi-node cluster, use each machine's reachable hostname or IP.
 
+### Server configuration files
+
+KV server, diskdb, chunkdb, and diskio use TOML startup configuration. Valid
+templates are shipped in each server's `conf/` directory. Values resolve in
+this order: compiled defaults, then file values, then CLI options that were
+explicitly supplied. A CLI option you omit does not erase its file value.
+
+KV server and diskio make `--config` optional; diskdb and chunkdb require a
+config path. A malformed, unreadable, or invalid named file stops startup
+instead of silently falling back to defaults. `server.rpc_workers` controls
+the inbound RPC worker count (default 2 for the Rust servers and 4 for diskio),
+must be positive, and takes effect only after restart. File watchers may report
+static changes before restart, but the active listener does not change.
+
+Console local deployment generates node-specific config files and reuses the
+same paths when restarting services. Keep manually managed files with the
+server's data and deployment records; group 0 currently stores topology, not
+process configuration.
+
 ---
 
 ## 1. Quick Start: Bootstrap a 3-Node Cluster

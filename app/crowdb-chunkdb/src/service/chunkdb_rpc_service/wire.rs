@@ -1,12 +1,22 @@
 use super::{
     AppendChunkOutcome, Buffer, Chunk, ChunkId, ChunkStrip, DiskId, FBAllocateChunkResponse,
-    FBAllocateChunkResponseArgs, FBAppendChunkResponse, FBAppendChunkResponseArgs, FBChunk, FBChunkArgs,
-    FBChunkState, FBChunkStrip, FBChunkStripArgs, FBChunkType, FBChunkdbRetCode, FBDeleteChunkRangeResponse,
-    FBDeleteChunkRangeResponseArgs, FBEcState, FBEcStrip, FBEcStripArgs, FBInt128, FBListChunksResponse,
-    FBListChunksResponseArgs, FBMirrorStrip, FBMirrorStripArgs, FBSegment, FBStripBody, FBStripType,
+    FBAllocateChunkResponseArgs, FBAllocateReplacementSegmentResponse,
+    FBAllocateReplacementSegmentResponseArgs, FBAppendChunkResponse, FBAppendChunkResponseArgs, FBChunk,
+    FBChunkArgs, FBChunkState, FBChunkStrip, FBChunkStripArgs, FBChunkType, FBChunkdbRetCode,
+    FBDeleteChunkRangeResponse, FBDeleteChunkRangeResponseArgs, FBDiscardReplacementSegmentResponse,
+    FBDiscardReplacementSegmentResponseArgs, FBEcState, FBEcStrip, FBEcStripArgs, FBInt128,
+    FBListChunksResponse, FBListChunksResponseArgs, FBMirrorStrip, FBMirrorStripArgs,
+    FBMutateStripReservationResponse, FBMutateStripReservationResponseArgs,
+    FBPrepareMirrorToEcConversionResponse, FBPrepareMirrorToEcConversionResponseArgs, FBQueryChunkResponse,
+    FBQueryChunkResponseArgs, FBReserveStripGroupResponse, FBReserveStripGroupResponseArgs, FBSegment,
+    FBStripBody, FBStripCleanupIntent, FBStripCleanupIntentArgs, FBStripReservationGroup,
+    FBStripReservationGroupArgs, FBStripReservationState, FBStripType, FBTriggerConversionBatchResponse,
+    FBTriggerConversionBatchResponseArgs, FBTriggerConversionResponse, FBTriggerConversionResponseArgs,
     FlatBufferBuilder, LifecycleError, ProtoChunkState, ProtoChunkType, ProtoEcState, ProtoStrip,
     ProtoStripType, RpcServer,
 };
+use crate::conversion::{ConversionError, PreparedConversion};
+use crate::lifecycle::ReservationMutation;
 
 // ── Error mapping + submission helpers ────────────────────────────
 
@@ -28,7 +38,7 @@ pub(super) fn map_error(e: &LifecycleError) -> (FBChunkdbRetCode, String, u32, u
         }
         LifecycleError::Storage(_) => (FBChunkdbRetCode::Internal, e.to_string(), 0, 0),
         LifecycleError::InvalidRequest(_) => (FBChunkdbRetCode::InvalidArgument, e.to_string(), 0, 0),
-        LifecycleError::LockBusy | LifecycleError::LockTimeout => {
+        LifecycleError::LockBusy | LifecycleError::LockTimeout | LifecycleError::ReservationLimit => {
             (FBChunkdbRetCode::Unavailable, e.to_string(), 0, 0)
         }
         LifecycleError::StripIndexOutOfRange { .. } => {
@@ -131,6 +141,64 @@ pub(super) fn submit_append_result(
     submit_fb_response(server, conn_handle, fbb.collapse(), msg_type, req_id);
 }
 
+pub(super) fn submit_reservation_result(
+    server: &RpcServer,
+    conn_handle: *mut std::ffi::c_void,
+    req_id: u64,
+    create_nano: u64,
+    msg_type: u16,
+    result: Result<ReservationMutation, LifecycleError>,
+) {
+    let mut fbb = FlatBufferBuilder::new();
+    let (code, message, range_start, range_end, mutation) = match result {
+        Ok(mutation) => (FBChunkdbRetCode::Success, None, 0, 0, Some(mutation)),
+        Err(error) => {
+            let (code, message, start, end) = map_error(&error);
+            (code, Some(message), start, end, None)
+        }
+    };
+    let error_msg = message.as_deref().map(|value| fbb.create_string(value));
+    let chunk = mutation
+        .as_ref()
+        .map(|value| build_chunk_offset(&mut fbb, &value.chunk));
+    let group = mutation
+        .as_ref()
+        .and_then(|value| value.group.as_ref())
+        .map(|value| build_reservation_group_offset(&mut fbb, value));
+    if msg_type == crowdb_protocol::fb::FBMsgType::EReserveStripGroupResponse.0 as u16 {
+        let response = FBReserveStripGroupResponse::create(
+            &mut fbb,
+            &FBReserveStripGroupResponseArgs {
+                id: req_id,
+                rpc_create_nano: create_nano,
+                ret_code: code,
+                error_msg,
+                range_start,
+                range_end,
+                chunk,
+                group,
+            },
+        );
+        fbb.finish(response, None);
+    } else {
+        let response = FBMutateStripReservationResponse::create(
+            &mut fbb,
+            &FBMutateStripReservationResponseArgs {
+                id: req_id,
+                rpc_create_nano: create_nano,
+                ret_code: code,
+                error_msg,
+                range_start,
+                range_end,
+                chunk,
+                group,
+            },
+        );
+        fbb.finish(response, None);
+    }
+    submit_fb_response(server, conn_handle, fbb.collapse(), msg_type, req_id);
+}
+
 /// Submit a synchronous error response (from the dispatch thread).
 pub(super) fn submit_error(
     server: &RpcServer,
@@ -218,6 +286,7 @@ pub(super) fn parse_fb_chunk_strip(fb: &FBChunkStrip<'_>) -> Option<ChunkStrip> 
             .usage_bitmap()
             .map(|v| v.iter().collect::<Vec<u8>>())
             .unwrap_or_default(),
+        unavailable_segments: parse_fb_segments(fb.unavailable_segments()),
     })
 }
 
@@ -229,22 +298,196 @@ where
     let Some(vec) = fb_segs else {
         return Vec::new();
     };
-    vec.into_iter()
-        .map(|s| crowdb_protocol::diskdb::rpc::Segment {
-            disk_id: Some(DiskId {
-                high: s.disk_id().high(),
-                low: s.disk_id().low(),
-            }),
-            owner_chunk: Some(ChunkId {
-                high: s.owner_chunk().high(),
-                low: s.owner_chunk().low(),
-            }),
-            unit_offset: s.unit_offset(),
-            zone_index: s.zone_index(),
-            unit_count: s.unit_count(),
-            allocation_ts: s.allocation_ts(),
-        })
-        .collect()
+    vec.into_iter().map(parse_fb_segment).collect()
+}
+
+pub(super) fn parse_fb_segment(s: &FBSegment) -> crowdb_protocol::diskdb::rpc::Segment {
+    crowdb_protocol::diskdb::rpc::Segment {
+        disk_id: Some(DiskId {
+            high: s.disk_id().high(),
+            low: s.disk_id().low(),
+        }),
+        owner_chunk: Some(ChunkId {
+            high: s.owner_chunk().high(),
+            low: s.owner_chunk().low(),
+        }),
+        unit_offset: s.unit_offset(),
+        zone_index: s.zone_index(),
+        unit_count: s.unit_count(),
+        allocation_ts: s.allocation_ts(),
+    }
+}
+
+pub(super) fn submit_segment_result(
+    server: &RpcServer,
+    conn_handle: *mut std::ffi::c_void,
+    req_id: u64,
+    create_nano: u64,
+    msg_type: u16,
+    result: Result<crowdb_protocol::diskdb::rpc::Segment, LifecycleError>,
+) {
+    let mut fbb = FlatBufferBuilder::new();
+    let (code, message, range_start, range_end, segment) = match result {
+        Ok(segment) => (FBChunkdbRetCode::Success, None, 0, 0, Some(segment)),
+        Err(error) => {
+            let (code, message, range_start, range_end) = map_error(&error);
+            (code, Some(message), range_start, range_end, None)
+        }
+    };
+    let error_msg = message.as_deref().map(|value| fbb.create_string(value));
+    let segment = segment.map(|segment| {
+        let disk = segment.disk_id.unwrap_or_default();
+        let owner = segment.owner_chunk.unwrap_or_default();
+        FBSegment::new(
+            &FBInt128::new(disk.high, disk.low),
+            &FBInt128::new(owner.high, owner.low),
+            segment.unit_offset,
+            segment.allocation_ts,
+            segment.zone_index,
+            segment.unit_count,
+        )
+    });
+    let response = FBAllocateReplacementSegmentResponse::create(
+        &mut fbb,
+        &FBAllocateReplacementSegmentResponseArgs {
+            id: req_id,
+            rpc_create_nano: create_nano,
+            ret_code: code,
+            error_msg,
+            range_start,
+            range_end,
+            segment: segment.as_ref(),
+        },
+    );
+    fbb.finish(response, None);
+    submit_fb_response(server, conn_handle, fbb.collapse(), msg_type, req_id);
+}
+
+pub(super) fn submit_prepared_conversion_result(
+    server: &RpcServer,
+    conn_handle: *mut std::ffi::c_void,
+    req_id: u64,
+    create_nano: u64,
+    msg_type: u16,
+    result: Result<PreparedConversion, ConversionError>,
+) {
+    let mut fbb = FlatBufferBuilder::new();
+    let (code, message, prepared) = match result {
+        Ok(prepared) => (FBChunkdbRetCode::Success, None, Some(prepared)),
+        Err(error) => {
+            let (code, message) = map_conversion_error(&error);
+            (code, Some(message), None)
+        }
+    };
+    let error_msg = message.as_deref().map(|value| fbb.create_string(value));
+    let task_id = prepared
+        .as_ref()
+        .map(|value| FBInt128::new(value.task_id.high, value.task_id.low));
+    let operation_id = prepared
+        .as_ref()
+        .map(|value| FBInt128::new(value.operation_id.high, value.operation_id.low));
+    let replacement_strip = prepared
+        .as_ref()
+        .map(|value| build_chunk_strip_offset(&mut fbb, &value.replacement_strip));
+    let response = FBPrepareMirrorToEcConversionResponse::create(
+        &mut fbb,
+        &FBPrepareMirrorToEcConversionResponseArgs {
+            id: req_id,
+            rpc_create_nano: create_nano,
+            ret_code: code,
+            error_msg,
+            range_start: 0,
+            range_end: 0,
+            task_id: task_id.as_ref(),
+            operation_id: operation_id.as_ref(),
+            replacement_strip,
+        },
+    );
+    fbb.finish(response, None);
+    submit_fb_response(server, conn_handle, fbb.collapse(), msg_type, req_id);
+}
+
+pub(super) fn submit_conversion_chunk_result(
+    server: &RpcServer,
+    conn_handle: *mut std::ffi::c_void,
+    req_id: u64,
+    create_nano: u64,
+    msg_type: u16,
+    result: Result<Chunk, ConversionError>,
+) {
+    let (code, message, chunk) = match result {
+        Ok(chunk) => (FBChunkdbRetCode::Success, None, chunk),
+        Err(error) => {
+            let (code, message) = map_conversion_error(&error);
+            (code, Some(message), Chunk::default())
+        }
+    };
+    let response = build_chunk_response(req_id, create_nano, code, message.as_deref(), 0, 0, &chunk);
+    submit_fb_response(server, conn_handle, response, msg_type, req_id);
+}
+
+fn map_conversion_error(error: &ConversionError) -> (FBChunkdbRetCode, String) {
+    match error {
+        ConversionError::Lifecycle(error) => {
+            let (code, message, _, _) = map_error(error);
+            (code, message)
+        }
+        ConversionError::Conflict => (FBChunkdbRetCode::Aborted, error.to_string()),
+        ConversionError::StaleClaim => (FBChunkdbRetCode::FailedPrecondition, error.to_string()),
+        ConversionError::TaskStore(_) | ConversionError::Payload(_) => {
+            (FBChunkdbRetCode::Internal, error.to_string())
+        }
+    }
+}
+
+pub(super) fn submit_conversion_count_result(
+    server: &RpcServer,
+    conn_handle: *mut std::ffi::c_void,
+    req_id: u64,
+    create_nano: u64,
+    msg_type: u16,
+    batch: bool,
+    result: Result<u64, ConversionError>,
+) {
+    let mut fbb = FlatBufferBuilder::new();
+    let (code, message, count) = match result {
+        Ok(count) => (FBChunkdbRetCode::Success, None, count),
+        Err(error) => {
+            let (code, message) = map_conversion_error(&error);
+            (code, Some(message), 0)
+        }
+    };
+    let error_msg = message.as_deref().map(|value| fbb.create_string(value));
+    if batch {
+        let response = FBTriggerConversionBatchResponse::create(
+            &mut fbb,
+            &FBTriggerConversionBatchResponseArgs {
+                id: req_id,
+                rpc_create_nano: create_nano,
+                ret_code: code,
+                error_msg,
+                range_start: 0,
+                range_end: 0,
+                accepted_chunks: count,
+            },
+        );
+        fbb.finish(response, None);
+    } else {
+        let response = FBTriggerConversionResponse::create(
+            &mut fbb,
+            &FBTriggerConversionResponseArgs {
+                id: req_id,
+                rpc_create_nano: create_nano,
+                ret_code: code,
+                error_msg,
+                range_start: 0,
+                range_end: 0,
+                accepted_groups: count,
+            },
+        );
+        fbb.finish(response, None);
+    }
+    submit_fb_response(server, conn_handle, fbb.collapse(), msg_type, req_id);
 }
 
 // ── Response builders ─────────────────────────────────────────────
@@ -290,6 +533,31 @@ pub(super) fn build_chunk_response(
     fbb.collapse()
 }
 
+pub(super) fn build_query_response(
+    req_id: u64,
+    create_nano: u64,
+    chunk: &Chunk,
+    layout_validity_ms: u64,
+) -> (Vec<u8>, usize) {
+    let mut fbb = FlatBufferBuilder::new();
+    let chunk = build_chunk_offset(&mut fbb, chunk);
+    let response = FBQueryChunkResponse::create(
+        &mut fbb,
+        &FBQueryChunkResponseArgs {
+            id: req_id,
+            rpc_create_nano: create_nano,
+            ret_code: FBChunkdbRetCode::Success,
+            error_msg: None,
+            range_start: 0,
+            range_end: 0,
+            chunk: Some(chunk),
+            layout_validity_ms,
+        },
+    );
+    fbb.finish(response, None);
+    fbb.collapse()
+}
+
 /// Build a `FBDeleteChunkRangeResponse` (no chunk field).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_delete_range_response(
@@ -314,6 +582,31 @@ pub(super) fn build_delete_range_response(
         },
     );
     fbb.finish(off, None);
+    fbb.collapse()
+}
+
+pub(super) fn build_discard_replacement_response(
+    req_id: u64,
+    create_nano: u64,
+    code: FBChunkdbRetCode,
+    message: Option<&str>,
+    range_start: u32,
+    range_end: u32,
+) -> (Vec<u8>, usize) {
+    let mut fbb = FlatBufferBuilder::new();
+    let error_msg = message.map(|value| fbb.create_string(value));
+    let response = FBDiscardReplacementSegmentResponse::create(
+        &mut fbb,
+        &FBDiscardReplacementSegmentResponseArgs {
+            id: req_id,
+            rpc_create_nano: create_nano,
+            ret_code: code,
+            error_msg,
+            range_start,
+            range_end,
+        },
+    );
+    fbb.finish(response, None);
     fbb.collapse()
 }
 
@@ -375,6 +668,42 @@ pub(super) fn build_chunk_offset<'a>(
     } else {
         Some(fbb.create_vector(&strip_offs))
     };
+    let cleanup_offs: Vec<_> = chunk
+        .cleanup_intents
+        .iter()
+        .map(|intent| {
+            let operation = intent.operation_id.map(|id| FBInt128::new(id.high, id.low));
+            let retired: Vec<_> = intent
+                .retired_segments
+                .iter()
+                .map(|segment| {
+                    let disk = segment.disk_id.unwrap_or_default();
+                    let owner = segment.owner_chunk.unwrap_or_default();
+                    FBSegment::new(
+                        &FBInt128::new(disk.high, disk.low),
+                        &FBInt128::new(owner.high, owner.low),
+                        segment.unit_offset,
+                        segment.allocation_ts,
+                        segment.zone_index,
+                        segment.unit_count,
+                    )
+                })
+                .collect();
+            let retired = fbb.create_vector(&retired);
+            FBStripCleanupIntent::create(
+                fbb,
+                &FBStripCleanupIntentArgs {
+                    operation_id: operation.as_ref(),
+                    retired_segments: Some(retired),
+                    not_before_ms: intent.not_before_ms,
+                },
+            )
+        })
+        .collect();
+    let cleanup_intents = (!cleanup_offs.is_empty()).then(|| fbb.create_vector(&cleanup_offs));
+    let last_strip_replacement = chunk
+        .last_strip_replacement
+        .map(|id| FBInt128::new(id.high, id.low));
     let state = ProtoChunkState::try_from(chunk.state).unwrap_or(ProtoChunkState::Init);
     let chunk_type = ProtoChunkType::try_from(chunk.chunk_type).unwrap_or(ProtoChunkType::Repo);
     FBChunk::create(
@@ -389,6 +718,88 @@ pub(super) fn build_chunk_offset<'a>(
             sealed_length: chunk.sealed_length,
             strips: strips_vec,
             chunk_type: fb_chunk_type(chunk_type),
+            writer_epoch: chunk.writer_epoch,
+            acknowledged_cursor: chunk.acknowledged_cursor,
+            closed_strip_sequence: chunk.closed_strip_sequence.unwrap_or(u32::MAX),
+            writer_lease_deadline_ms: chunk.writer_lease_deadline_ms,
+            next_strip_sequence: chunk.next_strip_sequence,
+            cleanup_intents,
+            last_strip_replacement: last_strip_replacement.as_ref(),
+        },
+    )
+}
+
+pub(super) fn build_reservation_group_offset<'a>(
+    fbb: &mut FlatBufferBuilder<'a>,
+    group: &crowdb_protocol::chunkdb::rpc::StripReservationGroup,
+) -> flatbuffers::WIPOffset<FBStripReservationGroup<'a>> {
+    let group_id = group.group_id.unwrap_or_default();
+    let chunk_id = group.chunk_id.unwrap_or_default();
+    let strips: Vec<_> = group
+        .strips
+        .iter()
+        .map(|strip| build_chunk_strip_offset(fbb, strip))
+        .collect();
+    let strips = (!strips.is_empty()).then(|| fbb.create_vector(&strips));
+    let states: Vec<_> = group
+        .states
+        .iter()
+        .map(
+            |state| match crowdb_protocol::chunkdb::rpc::StripReservationState::try_from(*state) {
+                Ok(crowdb_protocol::chunkdb::rpc::StripReservationState::Consumed) => {
+                    FBStripReservationState::Consumed
+                }
+                Ok(crowdb_protocol::chunkdb::rpc::StripReservationState::Confirmed) => {
+                    FBStripReservationState::Confirmed
+                }
+                Ok(crowdb_protocol::chunkdb::rpc::StripReservationState::Cancelled) => {
+                    FBStripReservationState::Cancelled
+                }
+                _ => FBStripReservationState::Reserved,
+            },
+        )
+        .collect();
+    let states = (!states.is_empty()).then(|| fbb.create_vector(&states));
+    let parity: Vec<_> = group
+        .parity_segments
+        .iter()
+        .map(|segment| {
+            let disk = segment.disk_id.unwrap_or_default();
+            let owner = segment.owner_chunk.unwrap_or_default();
+            FBSegment::new(
+                &FBInt128::new(disk.high, disk.low),
+                &FBInt128::new(owner.high, owner.low),
+                segment.unit_offset,
+                segment.allocation_ts,
+                segment.zone_index,
+                segment.unit_count,
+            )
+        })
+        .collect();
+    let parity_segments = (!parity.is_empty()).then(|| fbb.create_vector(&parity));
+    let preferred_survivors =
+        (!group.preferred_survivors.is_empty()).then(|| fbb.create_vector(&group.preferred_survivors));
+    let planned_cursors =
+        (!group.planned_cursors.is_empty()).then(|| fbb.create_vector(&group.planned_cursors));
+    let planned_closed_sequences = (!group.planned_closed_sequences.is_empty())
+        .then(|| fbb.create_vector(&group.planned_closed_sequences));
+    FBStripReservationGroup::create(
+        fbb,
+        &FBStripReservationGroupArgs {
+            group_id: Some(&FBInt128::new(group_id.high, group_id.low)),
+            chunk_id: Some(&FBInt128::new(chunk_id.high, chunk_id.low)),
+            writer_epoch: group.writer_epoch,
+            lease_generation: group.lease_generation,
+            lease_deadline_ms: group.lease_deadline_ms,
+            placement_epoch: group.placement_epoch,
+            strips,
+            states,
+            parity_segments,
+            preferred_survivors,
+            data_num: group.data_num,
+            code_num: group.code_num,
+            planned_cursors,
+            planned_closed_sequences,
         },
     )
 }
@@ -405,6 +816,24 @@ pub(super) fn build_chunk_strip_offset<'a>(
     } else {
         Some(fbb.create_vector(&strip.usage_bitmap))
     };
+    let unavailable_values: Vec<_> = strip
+        .unavailable_segments
+        .iter()
+        .map(|segment| {
+            let disk = segment.disk_id.unwrap_or_default();
+            let owner = segment.owner_chunk.unwrap_or_default();
+            FBSegment::new(
+                &FBInt128::new(disk.high, disk.low),
+                &FBInt128::new(owner.high, owner.low),
+                segment.unit_offset,
+                segment.allocation_ts,
+                segment.zone_index,
+                segment.unit_count,
+            )
+        })
+        .collect();
+    let unavailable_segments =
+        (!unavailable_values.is_empty()).then(|| fbb.create_vector(&unavailable_values));
     FBChunkStrip::create(
         fbb,
         &FBChunkStripArgs {
@@ -419,6 +848,7 @@ pub(super) fn build_chunk_strip_offset<'a>(
             strip_body_type: body_type,
             strip_body: body_off,
             usage_bitmap: usage_bitmap_off,
+            unavailable_segments,
         },
     )
 }

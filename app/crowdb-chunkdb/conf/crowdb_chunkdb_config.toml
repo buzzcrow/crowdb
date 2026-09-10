@@ -1,0 +1,5 @@
+# Canonical crowdb-chunkdb startup configuration.
+# Omitted fields use the typed defaults documented in chunkdb_config.rs.
+
+[server]
+rpc_workers = 2

@@ -11,6 +11,7 @@
 //! Implements `ChunkIoWriter` for push mode.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use tokio::sync::mpsc;
@@ -21,6 +22,8 @@ use crate::chunk::chunk_writer::ChunkWriter;
 use crate::config::ChunkClientConfig;
 use crate::disk_io::DiskWriter;
 use crate::io::{ChunkIoWriter, FeedStatus};
+use crate::metrics::LargeWriteRepairMetrics;
+use crate::negative_list::FailedDiskList;
 use crate::traits::ChunkAllocator;
 use crate::{IoError, Result};
 use crowdb_common::ec::EcScheme;
@@ -40,6 +43,8 @@ pub struct LargeObjectWriter {
     pub(crate) logical_offset: u64,
     pub(crate) object_size: Option<u64>,
     pub(crate) finished: bool,
+    pub(crate) failed_disks: Arc<FailedDiskList>,
+    pub(crate) repair_metrics: Arc<LargeWriteRepairMetrics>,
 }
 
 impl LargeObjectWriter {
@@ -49,6 +54,24 @@ impl LargeObjectWriter {
         disk_writer: Arc<dyn DiskWriter>,
         ec_scheme: EcScheme,
         config: Arc<ChunkClientConfig>,
+    ) -> Self {
+        Self::new_with_repair(
+            allocator,
+            disk_writer,
+            ec_scheme,
+            config,
+            Arc::new(FailedDiskList::new(Duration::from_secs(60))),
+            Arc::new(LargeWriteRepairMetrics::default()),
+        )
+    }
+
+    pub(crate) fn new_with_repair(
+        allocator: Arc<dyn ChunkAllocator>,
+        disk_writer: Arc<dyn DiskWriter>,
+        ec_scheme: EcScheme,
+        config: Arc<ChunkClientConfig>,
+        failed_disks: Arc<FailedDiskList>,
+        repair_metrics: Arc<LargeWriteRepairMetrics>,
     ) -> Self {
         Self {
             allocator,
@@ -62,6 +85,8 @@ impl LargeObjectWriter {
             logical_offset: 0,
             object_size: None,
             finished: false,
+            failed_disks,
+            repair_metrics,
         }
     }
 
@@ -117,11 +142,13 @@ impl LargeObjectWriter {
             .next_chunk()
             .await?
             .ok_or_else(|| IoError::Internal("no chunk available".into()))?;
-        let mut cw = ChunkWriter::new(
+        let mut cw = ChunkWriter::new_with_repair(
             self.allocator.clone(),
             self.disk_writer.clone(),
             self.ec_scheme,
             self.config.clone(),
+            Arc::clone(&self.failed_disks),
+            Arc::clone(&self.repair_metrics),
         );
         cw.open(chunk, self.object_size)?;
         self.chunk_writer = Some(cw);
@@ -132,7 +159,13 @@ impl LargeObjectWriter {
     /// new `ChunkWriter`.
     pub(crate) async fn rotate_chunk(&mut self) -> Result<()> {
         if let Some(mut cw) = self.chunk_writer.take() {
-            let location = cw.seal().await?;
+            let location = match cw.seal().await {
+                Ok(location) => location,
+                Err(error) => {
+                    let _ = cw.abort().await;
+                    return Err(error);
+                }
+            };
             let bytes = location.length;
             if bytes > 0 {
                 self.locations.push(ProtoLocation {
@@ -149,7 +182,13 @@ impl LargeObjectWriter {
     /// Finish: seal the current chunk, return all Locations.
     pub(crate) async fn finish_pipeline(&mut self) -> Result<Vec<ProtoLocation>> {
         if let Some(mut cw) = self.chunk_writer.take() {
-            let location = cw.seal().await?;
+            let location = match cw.seal().await {
+                Ok(location) => location,
+                Err(error) => {
+                    let _ = cw.abort().await;
+                    return Err(error);
+                }
+            };
             let bytes = location.length;
             if bytes > 0 {
                 self.locations.push(ProtoLocation {

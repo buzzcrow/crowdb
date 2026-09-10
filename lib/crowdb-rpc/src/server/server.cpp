@@ -186,9 +186,8 @@ void RpcServer::handle_accept(int listen_fd)
 
 void RpcServer::dispatch(Frame *frame, Connection *conn)
 {
-    uint16_t msg_type          = frame->header.msg_type;
-    bool     is_one_way        = (frame->header.flags & FLAG_ONE_WAY) != 0;
-    uint64_t frame_parsed_nano = now_nanos();
+    uint16_t msg_type   = frame->header.msg_type;
+    bool     is_one_way = (frame->header.flags & FLAG_ONE_WAY) != 0;
 
     // Try request dispatch first — if a handler is registered for
     // this msg_type, dispatch as a request. This ensures request
@@ -202,7 +201,6 @@ void RpcServer::dispatch(Frame *frame, Connection *conn)
         OutFrame *response = handler(frame, conn);
         if (response != nullptr) {
             // Inline path: handler returned response immediately (sync).
-            hist_response_inline().observe(now_nanos() - frame_parsed_nano);
             transport_->submit_inline(conn, response);
         }
         // Async path: handler returned nullptr, will call submit_response
@@ -225,7 +223,6 @@ void RpcServer::dispatch(Frame *frame, Connection *conn)
         handler            = handle_unknown;
         OutFrame *response = handler(frame, conn);
         if (response != nullptr) {
-            hist_response_inline().observe(now_nanos() - frame_parsed_nano);
             transport_->submit_inline(conn, response);
         }
     }

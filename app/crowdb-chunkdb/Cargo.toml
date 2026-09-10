@@ -28,6 +28,7 @@ workspace = true
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
 crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
 crowdb-diskdb-client = { path = "../../lib/crowdb-diskdb-client" }
+crowdb-diskio-client = { path = "../../lib/crowdb-diskio-client" }
 crowdb-common = { path = "../../lib/crowdb-common/rust" }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
 flatbuffers = { workspace = true }

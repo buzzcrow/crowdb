@@ -204,6 +204,7 @@ class DiskIOUring
     {
         std::vector<size_t> pipelines; // indices into pipelines_
         int                 epoll_fd{-1};
+        int                 wake_fd{-1};
         std::atomic<bool>   thread_sleeping{false};
         unsigned            busy_poll_count{0};
         std::atomic<bool>   stopped{false};
@@ -230,7 +231,8 @@ class DiskIOUring
     // Drain all ready CQEs for one pipeline and dispatch callbacks.
     void drain_cqes(Pipeline &p);
 
-    // Wake a sleeping poll thread via eventfd write (coalesced).
+    // Wake a sleeping poll thread through its private eventfd. Pipeline
+    // eventfds are reserved for external completion consumers.
     void wake_poll_thread(PollThread &pt);
 
     // Publish the idle-to-pending transition and wake the owning poll thread.

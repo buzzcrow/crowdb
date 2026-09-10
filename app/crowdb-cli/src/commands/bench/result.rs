@@ -72,7 +72,7 @@ impl From<HistogramSnapshot> for OpStats {
         // LatencyHistogram records in ns; convert to µs for the JSON report.
         Self {
             latency_us: LatencyUs {
-                avg: s.avg / 1000,
+                avg: s.avg / 1000.0,
                 p50: s.p50 / 1000,
                 p99: s.p99 / 1000,
             },
@@ -86,7 +86,7 @@ impl From<HistogramSnapshot> for OpStats {
 #[derive(Debug, Serialize)]
 pub struct LatencyUs {
     #[serde(rename = "avg_us")]
-    pub avg: u64,
+    pub avg: f64,
     #[serde(rename = "p50_us")]
     pub p50: u64,
     #[serde(rename = "p99_us")]
@@ -122,16 +122,16 @@ pub struct ServerMetrics {
 #[derive(Debug, Default, Serialize)]
 #[allow(clippy::struct_field_names)]
 pub struct ServerRpcLatency {
-    pub put_avg_us: u64,
+    pub put_avg_us: f64,
     pub put_p50_us: u64,
     pub put_p99_us: u64,
-    pub get_avg_us: u64,
+    pub get_avg_us: f64,
     pub get_p50_us: u64,
     pub get_p99_us: u64,
-    pub scan_avg_us: u64,
+    pub scan_avg_us: f64,
     pub scan_p50_us: u64,
     pub scan_p99_us: u64,
-    pub delete_avg_us: u64,
+    pub delete_avg_us: f64,
     pub delete_p50_us: u64,
     pub delete_p99_us: u64,
 }

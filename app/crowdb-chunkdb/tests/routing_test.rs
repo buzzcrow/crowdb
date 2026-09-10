@@ -5,6 +5,7 @@
 
 #![allow(clippy::cast_possible_truncation)]
 
+use crowdb_chunkdb::range_guard::{OwnedRange, RangeGuard};
 use crowdb_chunkdb::routing::{self, BindingCache, BindingTable, BucketBinding, MigrationState, RouteError};
 use crowdb_protocol::common::ChunkId;
 
@@ -160,4 +161,26 @@ fn binding_cache_route_bucket_directly() {
     assert_eq!(r2.kv_group_id, 20);
 
     assert_eq!(cache.route_bucket(u16::MAX).unwrap().kv_group_id, 20);
+}
+
+#[test]
+fn range_owner_quota_shares_are_cluster_bounded() {
+    let left = RangeGuard::new(false);
+    left.replace(vec![OwnedRange {
+        start: 0,
+        end: 32_767,
+        sub_range_index: 0,
+    }]);
+    let right = RangeGuard::new(false);
+    right.replace(vec![OwnedRange {
+        start: 32_768,
+        end: u16::MAX,
+        sub_range_index: 1,
+    }]);
+
+    assert_eq!(left.owned_bucket_count(), 32_768);
+    assert_eq!(right.owned_bucket_count(), 32_768);
+    assert_eq!(left.quota_share(101) + right.quota_share(101), 100);
+    assert_eq!(RangeGuard::allow_all().quota_share(101), 101);
+    assert_eq!(RangeGuard::new(false).quota_share(101), 0);
 }

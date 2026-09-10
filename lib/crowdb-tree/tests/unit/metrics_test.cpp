@@ -73,10 +73,65 @@ TEST(MetricsHistogram, P50P99WithKnownDistribution)
     }
     auto snap = h.flush();
     EXPECT_EQ(snap.count, 100u);
-    auto p50 = LatencyHistogram::percentile(snap, 50.0);
-    auto p99 = LatencyHistogram::percentile(snap, 99.0);
-    EXPECT_EQ(p50, 500'000u);
-    EXPECT_EQ(p99, 500'000u);
+    // HDR bucket upper bound for 500us is 501'760ns (≤0.78% error).
+    EXPECT_EQ(snap.p50, 501'760u);
+    EXPECT_EQ(snap.p99, 501'760u);
+    EXPECT_EQ(snap.max, 501'760u);
+    // avg is exact (f64).
+    EXPECT_DOUBLE_EQ(snap.avg, 500'000.0);
+}
+
+TEST(MetricsHistogram, MixedDistribution)
+{
+    LatencyHistogram h("test.lh");
+    // 80 fast (200us), 20 slow (10ms) — both above LVD (65.5us).
+    for (int i = 0; i < 80; ++i) {
+        h.observe(200'000);
+    }
+    for (int i = 0; i < 20; ++i) {
+        h.observe(10'000'000);
+    }
+    auto snap = h.flush();
+    EXPECT_EQ(snap.count, 100u);
+    // p50 falls in the 200us bucket (upper bound 200'704ns).
+    EXPECT_EQ(snap.p50, 200'704u);
+    // p99 falls in the 10ms bucket (upper bound 10'027'008ns).
+    EXPECT_EQ(snap.p99, 10'027'008u);
+    EXPECT_EQ(snap.max, 10'027'008u);
+}
+
+TEST(MetricsHistogram, UnderflowAndOverflow)
+{
+    LatencyHistogram h("test.lh");
+    // Below LVD (65.5us) → underflow bucket.
+    h.observe(1'000);
+    h.observe(65'535);
+    // In-range values (majority so p50 falls in-range).
+    h.observe(100'000);
+    h.observe(100'000);
+    h.observe(100'000);
+    h.observe(500'000);
+    auto snap = h.flush();
+    EXPECT_EQ(snap.count, 6u);
+    // p50 (target=3) falls in the 100us bucket (upper bound 100'352ns).
+    EXPECT_EQ(snap.p50, 100'352u);
+    // max falls in the 500us bucket (upper bound 501'760ns).
+    EXPECT_EQ(snap.max, 501'760u);
+}
+
+TEST(MetricsHistogram, WindowResetsAfterFlush)
+{
+    LatencyHistogram h("test.lh");
+    h.observe(100'000);
+    h.observe(200'000);
+    auto s1 = h.flush();
+    EXPECT_EQ(s1.count, 2u);
+    EXPECT_EQ(s1.total_count, 2u);
+
+    auto s2 = h.flush();
+    EXPECT_EQ(s2.count, 0u);
+    EXPECT_EQ(s2.p50, 0u);
+    EXPECT_EQ(s2.total_count, 2u); // total accumulates
 }
 
 TEST(MetricsSummary, AvgAndMax)

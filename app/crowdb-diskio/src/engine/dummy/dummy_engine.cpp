@@ -129,12 +129,13 @@ void DummyDiskEngine::submit_read(Disk *disk, off_t phys_offset, uint8_t *buf, s
     }
     DiskId   did        = (disk != nullptr) ? disk->id() : DiskId{};
     uint32_t latency_ms = draw_latency();
-    auto     wrapped    = [this, did, test_pattern_offset, buf, latency_ms, cb = std::move(on_complete)](int res) {
+    auto     wrapped = [this, did, test_pattern_offset, buf, size, latency_ms, cb = std::move(on_complete)](int res) {
         if (latency_ms > 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(latency_ms));
         }
-        if (res > 0 && hack_reads_) {
-            fill_pattern(did, test_pattern_offset, buf, static_cast<size_t>(res));
+        if (res >= 0 && hack_reads_) {
+            fill_pattern(did, test_pattern_offset, buf, size);
+            res = static_cast<int>(size);
         }
         if (cb) {
             cb(res);

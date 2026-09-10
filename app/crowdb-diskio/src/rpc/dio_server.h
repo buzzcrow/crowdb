@@ -14,10 +14,12 @@
 #include "crowdb-rpc/transport.h"
 #include "disk/disk_set.h"
 #include "disk/types.h"
+#include "engine/aligned_writer.h"
 #include "engine/io_engine.h"
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 namespace crowdb::diskio
 {
@@ -31,7 +33,8 @@ namespace crowdb::diskio
 class DiskioServer
 {
   public:
-    DiskioServer(std::shared_ptr<DiskSet> disk_set, crowdb::rpc::SocketTransport *transport);
+    DiskioServer(std::shared_ptr<DiskSet> disk_set, crowdb::rpc::SocketTransport *transport,
+                 std::string generation_journal_path = {});
 
     // Handler functions (registered with RpcServer::register_handler).
     // Each parses the flatbuffer control from the Frame, looks up the
@@ -45,14 +48,15 @@ class DiskioServer
     void register_handlers(crowdb::rpc::RpcServer &server);
 
   private:
-    std::shared_ptr<DiskSet>    disk_set_;
+    std::shared_ptr<DiskSet>      disk_set_;
     crowdb::rpc::SocketTransport *transport_;
+    AlignedWriter                 aligned_writer_;
 
     // Build a response control buffer for a diskio response msg_type.
     // ret_code is a proto::FBDiskIoRetCode value (int16_t to avoid
     // pulling the generated header into this .h).
-    crowdb::rpc::Buffer *build_response_ctrl(crowdb::rpc::BufferPool *pool, uint64_t request_id, uint64_t rpc_create_nano,
-                                           int16_t ret_code, uint16_t msg_type);
+    crowdb::rpc::Buffer *build_response_ctrl(crowdb::rpc::BufferPool *pool, uint64_t request_id,
+                                             uint64_t rpc_create_nano, int16_t ret_code, uint16_t msg_type);
 
     // Send an error response synchronously (disk not found, parse error).
     void send_error_response(crowdb::rpc::Connection *conn, uint64_t request_id, uint64_t rpc_create_nano,

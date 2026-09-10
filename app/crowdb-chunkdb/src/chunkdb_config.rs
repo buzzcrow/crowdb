@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 /// Top-level configuration for a chunkdb instance.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChunkdbConfig {
+    #[serde(default)]
     pub server: ServerConfig,
+    #[serde(default)]
     pub topology: TopologyConfig,
     #[serde(default)]
     pub range_guard: RangeGuardConfig,
@@ -20,6 +22,12 @@ pub struct ChunkdbConfig {
     pub lifecycle: LifecycleConfig,
     #[serde(default)]
     pub placement: PlacementConfig,
+    #[serde(default)]
+    pub conversion: ConversionConfig,
+    #[serde(default)]
+    pub repair: RepairConfig,
+    #[serde(default)]
+    pub reservation: ReservationConfig,
 }
 
 /// Placement safety policy.
@@ -31,6 +39,9 @@ pub struct PlacementConfig {
 
 impl BaseConfig for ChunkdbConfig {
     fn validate(&self) -> Result<(), String> {
+        if self.server.rpc_workers == 0 {
+            return Err("server.rpc_workers must be > 0".into());
+        }
         if self.server.kv_server_mgmt_seeds.is_empty() {
             return Err("server.kv_server_mgmt_seeds must not be empty".into());
         }
@@ -57,6 +68,138 @@ impl BaseConfig for ChunkdbConfig {
             return Err("server client pool sizes and RPC workers must be > 0".into());
         }
         self.lifecycle.validate()?;
+        self.conversion.validate()?;
+        self.repair.validate()?;
+        self.reservation.validate()?;
+        Ok(())
+    }
+}
+
+/// Cluster-wide reservation capacity divided deterministically among live
+/// ChunkDB instances. The sum of instance shares never exceeds either limit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReservationConfig {
+    pub max_blocks: u64,
+    pub max_bytes: u64,
+    pub scan_interval_secs: u64,
+}
+
+impl Default for ReservationConfig {
+    fn default() -> Self {
+        Self {
+            max_blocks: 1_048_576,
+            max_bytes: 1_u64 << 40,
+            scan_interval_secs: 1,
+        }
+    }
+}
+
+impl ReservationConfig {
+    fn validate(&self) -> Result<(), String> {
+        if self.max_blocks == 0 || self.max_bytes == 0 {
+            return Err("reservation max_blocks and max_bytes must be > 0".into());
+        }
+        if self.scan_interval_secs == 0 {
+            return Err("reservation.scan_interval_secs must be > 0".into());
+        }
+        Ok(())
+    }
+}
+
+/// Background repair policy for strips marked unavailable by readers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepairConfig {
+    pub enabled: bool,
+    /// Test/development escape hatch for clusters without a spare failure domain.
+    pub allow_unsafe_placement: bool,
+    pub max_concurrency: usize,
+    pub memory_bytes: usize,
+    pub scan_interval_secs: u64,
+}
+
+impl Default for RepairConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allow_unsafe_placement: false,
+            max_concurrency: 4,
+            memory_bytes: 64 * 1024 * 1024,
+            scan_interval_secs: 1,
+        }
+    }
+}
+
+impl RepairConfig {
+    fn validate(&self) -> Result<(), String> {
+        if self.max_concurrency == 0 {
+            return Err("repair.max_concurrency must be > 0".into());
+        }
+        if self.memory_bytes == 0 || self.memory_bytes > u32::MAX as usize {
+            return Err("repair.memory_bytes must be in 1..=u32::MAX".into());
+        }
+        if self.scan_interval_secs == 0 {
+            return Err("repair.scan_interval_secs must be > 0".into());
+        }
+        Ok(())
+    }
+}
+
+/// Background mirror-to-EC conversion policy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversionConfig {
+    /// Run automatic conversion scans. Manual triggers remain available.
+    pub enabled: bool,
+    pub data_num: u32,
+    pub code_num: u32,
+    pub min_seal_age_secs: u64,
+    pub min_mirror_strips: u32,
+    pub max_concurrency: usize,
+    pub max_bandwidth_mbps: u64,
+    pub scan_interval_secs: u64,
+    #[serde(default = "default_conversion_task_lease_secs")]
+    pub task_lease_secs: u64,
+}
+
+const fn default_conversion_task_lease_secs() -> u64 {
+    30
+}
+
+impl Default for ConversionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            data_num: 8,
+            code_num: 4,
+            min_seal_age_secs: 3_600,
+            min_mirror_strips: 8,
+            max_concurrency: 4,
+            max_bandwidth_mbps: 50,
+            scan_interval_secs: 30,
+            task_lease_secs: 30,
+        }
+    }
+}
+
+impl ConversionConfig {
+    fn validate(&self) -> Result<(), String> {
+        if self.data_num == 0 || self.code_num == 0 {
+            return Err("conversion data_num and code_num must be > 0".into());
+        }
+        if self.min_mirror_strips < self.data_num {
+            return Err("conversion.min_mirror_strips must be >= data_num".into());
+        }
+        if self.max_concurrency == 0 {
+            return Err("conversion.max_concurrency must be > 0".into());
+        }
+        if self.max_bandwidth_mbps == 0 {
+            return Err("conversion.max_bandwidth_mbps must be > 0".into());
+        }
+        if self.scan_interval_secs == 0 {
+            return Err("conversion.scan_interval_secs must be > 0".into());
+        }
+        if self.task_lease_secs == 0 {
+            return Err("conversion.task_lease_secs must be > 0".into());
+        }
         Ok(())
     }
 }
@@ -81,7 +224,11 @@ impl Default for RangeGuardConfig {
 
 /// HTTP + crowdb-rpc listen addresses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ServerConfig {
+    /// crowdb-rpc I/O workers serving this process.
+    #[serde(default = "default_rpc_workers")]
+    pub rpc_workers: u32,
     pub http_listen_addr: String,
     /// crowdb-rpc listen address (R116 migration — runs alongside the
     /// HTTP listener).
@@ -112,6 +259,10 @@ const fn default_client_pool_size() -> usize {
     1
 }
 
+const fn default_rpc_workers() -> u32 {
+    2
+}
+
 const fn default_client_rpc_workers() -> u32 {
     2
 }
@@ -127,6 +278,7 @@ fn default_rpc_listen_addr() -> String {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
+            rpc_workers: default_rpc_workers(),
             http_listen_addr: format!("0.0.0.0:{CHUNKDB_HTTP_BASE}"),
             rpc_listen_addr: default_rpc_listen_addr(),
             instance_id: None,
@@ -163,6 +315,13 @@ pub struct LifecycleConfig {
     pub sweep_chunk_lock_interval_secs: u32,
     /// Warn if a chunk lock is held longer than N milliseconds.
     pub lock_hold_warn_threshold_ms: u64,
+    /// Minimum lifetime of a retired strip layout before block reuse.
+    #[serde(default = "default_layout_validity_ms")]
+    pub layout_validity_ms: u64,
+}
+
+const fn default_layout_validity_ms() -> u64 {
+    30_000
 }
 
 impl Default for LifecycleConfig {
@@ -171,6 +330,7 @@ impl Default for LifecycleConfig {
             cache_capacity: 10_000,
             sweep_chunk_lock_interval_secs: 60,
             lock_hold_warn_threshold_ms: 1000,
+            layout_validity_ms: default_layout_validity_ms(),
         }
     }
 }
@@ -182,6 +342,9 @@ impl LifecycleConfig {
         }
         if self.sweep_chunk_lock_interval_secs == 0 {
             return Err("lifecycle.sweep_chunk_lock_interval_secs must be > 0".into());
+        }
+        if self.layout_validity_ms == 0 {
+            return Err("lifecycle.layout_validity_ms must be > 0".into());
         }
         Ok(())
     }

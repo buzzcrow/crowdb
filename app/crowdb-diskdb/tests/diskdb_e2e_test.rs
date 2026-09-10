@@ -290,6 +290,7 @@ async fn diskdb_e2e_allocate_free() {
         1,   // unit_count
         3,   // count
         &[], // exclude_disks
+        false,
         &owner_chunk,
         UNIT_SIZE_BYTES,
         &alloc_kv2,
@@ -577,6 +578,7 @@ async fn diskdb_e2e_allocate_all_free_all() {
         8, // unit_count
         3, // count
         &[],
+        false,
         &owner_chunk,
         UNIT_SIZE_BYTES,
         &alloc_kv,

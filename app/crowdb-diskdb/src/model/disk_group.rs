@@ -298,6 +298,52 @@ impl DdbDiskGroup {
         }
     }
 
+    /// Allocate a batch while allowing disks to be reused after every
+    /// anti-affinity pass. The first pass remains spread across distinct
+    /// disks, and all claims are rolled back if the complete batch cannot be
+    /// satisfied.
+    pub fn allocate_blocks_reusing_disks(
+        &self,
+        unit_count: u32,
+        count: u32,
+        exclude_disks: &[DiskId],
+        cas_retry_limit: u32,
+        zone_rotate_count: u32,
+    ) -> Result<Vec<AllocClaim>, AllocError> {
+        let mut results = Vec::with_capacity(count as usize);
+        let mut used_disks = exclude_disks.to_vec();
+
+        while results.len() < count as usize {
+            match self.allocate_block(unit_count, &used_disks, cas_retry_limit, zone_rotate_count) {
+                Ok((disk, zone, range)) => {
+                    used_disks.push(disk.disk_id);
+                    results.push((disk, zone, range));
+                }
+                Err(AllocError::NoSpace) if used_disks.len() > exclude_disks.len() => {
+                    used_disks.truncate(exclude_disks.len());
+                }
+                Err(AllocError::NoSpace) => break,
+                Err(error @ AllocError::Persistence) => return Err(error),
+            }
+        }
+
+        if results.len() == count as usize {
+            return Ok(results);
+        }
+        for (_, zone, range) in &results {
+            if !zone.rollback_allocate(range.unit_offset, range.unit_count) {
+                tracing::error!(
+                    disk_group_id = self.disk_group_id,
+                    zone_index = zone.zone_index,
+                    unit_offset = range.unit_offset,
+                    unit_count = range.unit_count,
+                    "partial allocation rollback failed; range remains conservatively busy"
+                );
+            }
+        }
+        Err(AllocError::NoSpace)
+    }
+
     /// Free a block by `(disk_id, zone_index, unit_offset, unit_count)`.
     pub fn free_block(&self, disk_id: &DiskId, zone_index: u32, unit_offset: u64, unit_count: u32) -> bool {
         let disk = self

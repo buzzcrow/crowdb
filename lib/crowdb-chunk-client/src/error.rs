@@ -12,6 +12,14 @@ pub enum IoError {
     AllocationFailed(String),
     #[error("disk write failed: {0}")]
     WriteFailed(String),
+    #[error("disk read failed: {0}")]
+    ReadFailed(String),
+    #[error("transient disk read failed: {0}")]
+    TransientRead(String),
+    #[error("chunk not found: {0}")]
+    ChunkNotFound(String),
+    #[error("chunk metadata conflict: {0}")]
+    MetadataConflict(String),
     #[error("source read failed: {0}")]
     SourceRead(String),
     #[error("invalid disk IO topology: {0}")]
@@ -20,18 +28,66 @@ pub enum IoError {
     EcEncodeFailed(String),
     #[error("memory budget exhausted")]
     MemoryBudgetExhausted,
+    #[error("object size {size} exceeds small-object limit {limit}")]
+    ObjectTooLarge { size: usize, limit: usize },
+    #[error("object size mismatch: declared {declared} bytes, received {actual}")]
+    ObjectSizeMismatch { declared: usize, actual: usize },
     #[error("writer already finished")]
     Finished,
     #[error("internal error: {0}")]
     Internal(String),
 }
 
+impl IoError {
+    /// Whether a read failure is evidence that the segment itself is unavailable.
+    #[must_use]
+    pub(crate) fn is_durable_read_failure(&self) -> bool {
+        matches!(self, Self::ReadFailed(_))
+    }
+}
+
+/// Error returned by object and range reads.
+#[derive(Debug, Error)]
+pub enum ReadError {
+    #[error("invalid object locations: {0}")]
+    InvalidLocations(String),
+    #[error("invalid logical range [{start}, {end}) for object length {object_length}")]
+    InvalidRange {
+        start: u64,
+        end: u64,
+        object_length: u64,
+    },
+    #[error("chunk was deleted: {0}")]
+    ChunkDeleted(String),
+    #[error("requested bytes are not yet durably available: {0}")]
+    NotYetAvailable(String),
+    #[error("chunk layout expired before its reads completed")]
+    LayoutExpired,
+    #[error("unrecoverable strip data: {0}")]
+    DataLoss(String),
+    #[error("chunk metadata read failed: {0}")]
+    Metadata(String),
+    #[error("disk read failed: {0}")]
+    DiskIo(String),
+    #[error("EC reconstruction failed: {0}")]
+    EcDecode(String),
+    #[error("object bytes [{start}, {end}) could not be read: {message}")]
+    FailedRange { start: u64, end: u64, message: String },
+}
+
+/// Result alias for object and range reads.
+pub type ReadResult<T> = std::result::Result<T, ReadError>;
+
 /// Result alias.
 pub type Result<T> = std::result::Result<T, IoError>;
 
 impl From<crowdb_chunkdb_client::ChunkdbClientError> for IoError {
     fn from(e: crowdb_chunkdb_client::ChunkdbClientError) -> Self {
-        Self::AllocationFailed(e.to_string())
+        match e {
+            crowdb_chunkdb_client::ChunkdbClientError::NotFound(message) => Self::ChunkNotFound(message),
+            crowdb_chunkdb_client::ChunkdbClientError::Aborted(message) => Self::MetadataConflict(message),
+            other => Self::AllocationFailed(other.to_string()),
+        }
     }
 }
 

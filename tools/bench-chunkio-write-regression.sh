@@ -118,7 +118,7 @@ run_case() {
         pixi run -- ./target/release/crowdb-cli --log-root "$CURRENT_LOG_ROOT" --config "$CURRENT_CONFIG" \
         bench chunkio write --objects "$objects" --duration-secs "$duration_secs" \
         --object-size "$object_size" \
-        --concurrency "$concurrency" --data-num 8 --code-num 4 \
+        --concurrency "$concurrency" --diskio-connections 8 --data-num 8 --code-num 4 \
         --block-size 1048576 --chunk-size 1073741824 --seed 1 \
         --prefetch-chunks "$PREFETCH_CHUNKS" --prefetch-strips-per-chunk 2 \
         "${input_args[@]}" \
@@ -144,18 +144,18 @@ run_case() {
         total_max=unsupported
     fi
     if [ -z "$line" ]; then
-        printf '%s\t%s\t%s\t%s\t%s\t0\t1\t%s\tfailed\t0\t0\t0\t0\t0\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        printf '%s\t%s\t%s\t%s\t%s\t0\t1\t%s\tfailed\t0\t0\t0\t0\t0\t0\t%s\t%s\t%s\t%s\t%s\t%s\n' \
             "$label" 0 "$object_size" "$((object_size / 1048576))" \
             "$concurrency" "$objects" "$read_avg" "$read_max" "$write_avg" "$write_max" \
             "$total_avg" "$total_max" >>"$RESULTS_FILE"
     else
-        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
             "$label" "$(field "$line" requested)" "$object_size" "$((object_size / 1048576))" "$concurrency" \
             "$(field "$line" objects)" "$(field "$line" errors)" \
             "$(field "$line" incomplete)" "$(field "$line" stop)" \
             "$(field "$line" objects_s)" "$(field "$line" logical_mib_s)" \
             "$(field "$line" physical_mib_s)" \
-            "$(field "$line" p50_us)" "$(field "$line" p99_us)" \
+            "$(field "$line" avg_us)" "$(field "$line" p50_us)" "$(field "$line" p99_us)" \
             "$read_avg" "$read_max" "$write_avg" "$write_max" \
             "$total_avg" "$total_max" >>"$RESULTS_FILE"
     fi
@@ -187,9 +187,10 @@ pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-di
 pixi run build-cpp
 mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"
 regression_init
-printf 'case\trequested\tsize_bytes\tsize_mib\tconcurrency\tcompleted\terrors\tincomplete\tstop\tobjects_s\tlogical_mib_s\tphysical_mib_s\tp50_us\tp99_us\tmem_read_avg_mib\tmem_read_max_mib\tmem_write_avg_mib\tmem_write_max_mib\tmem_total_avg_mib\tmem_total_max_mib\n' >"$RESULTS_FILE"
+printf 'case\trequested\tsize_bytes\tsize_mib\tconcurrency\tcompleted\terrors\tincomplete\tstop\tobjects_s\tlogical_mib_s\tphysical_mib_s\tavg_us\tp50_us\tp99_us\tmem_read_avg_mib\tmem_read_max_mib\tmem_write_avg_mib\tmem_write_max_mib\tmem_total_avg_mib\tmem_total_max_mib\n' >"$RESULTS_FILE"
 
-cli cluster local-deploy -t combined --metrics-interval 1 --allow-unsafe-ec
+cli cluster local-deploy -t combined --metrics-interval 1 --allow-unsafe-ec \
+    --kv-backend mem-block --wal-backend mem-block --no-fsync
 
 run_case stream_1t 16777216 1 stream
 run_case direct_1t 16777216 1 direct

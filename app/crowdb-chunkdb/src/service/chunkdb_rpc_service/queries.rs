@@ -1,5 +1,5 @@
 use super::{
-    build_list_response, map_error, submit_chunk_result, submit_error, submit_fb_response, Arc, ChunkId,
+    build_list_response, build_query_response, map_error, submit_error, submit_fb_response, Arc, ChunkId,
     ChunkdbRpcService, FBChunkdbRetCode, FBListChunksRequest, FBMsgType, FBQueryChunkRequest, RequestGuard,
     RpcServer, ServerRequest,
 };
@@ -50,18 +50,32 @@ impl ChunkdbRpcService {
                 return;
             };
 
-            let result = handler.query_chunk(&chunk_id).await;
-            if result.is_ok() {
-                request.mark_success();
+            match handler.query_chunk(&chunk_id).await {
+                Ok(chunk) => {
+                    request.mark_success();
+                    let response =
+                        build_query_response(req_id, create_nano, &chunk, handler.layout_validity_ms());
+                    submit_fb_response(
+                        &server,
+                        conn_handle_usize as *mut std::ffi::c_void,
+                        response,
+                        msg_type,
+                        req_id,
+                    );
+                }
+                Err(error) => {
+                    let (code, message, _, _) = map_error(&error);
+                    submit_error(
+                        &server,
+                        conn_handle_usize as *mut std::ffi::c_void,
+                        req_id,
+                        create_nano,
+                        msg_type,
+                        code,
+                        &message,
+                    );
+                }
             }
-            submit_chunk_result(
-                &server,
-                conn_handle_usize as *mut std::ffi::c_void,
-                req_id,
-                create_nano,
-                msg_type,
-                result,
-            );
         });
     }
 

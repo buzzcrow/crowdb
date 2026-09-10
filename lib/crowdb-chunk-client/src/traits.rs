@@ -10,8 +10,14 @@
 
 use async_trait::async_trait;
 use crowdb_protocol::chunkdb::rpc::{
-    AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse, DeleteChunkRequest,
-    DeleteChunkResponse, QueryChunkRequest, QueryChunkResponse, SealChunkRequest, SealChunkResponse,
+    AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
+    AllocateReplacementSegmentRequest, AllocateReplacementSegmentResponse, AppendChunkRequest,
+    AppendChunkResponse, CompleteMirrorToEcConversionRequest, CompleteMirrorToEcConversionResponse,
+    DeleteChunkRequest, DeleteChunkResponse, DiscardReplacementSegmentRequest,
+    DiscardReplacementSegmentResponse, MutateStripReservationRequest, MutateStripReservationResponse,
+    PrepareMirrorToEcConversionRequest, PrepareMirrorToEcConversionResponse, QueryChunkRequest,
+    QueryChunkResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse,
+    ReserveStripGroupRequest, ReserveStripGroupResponse, SealChunkRequest, SealChunkResponse,
     UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use std::sync::Arc;
@@ -24,10 +30,68 @@ use crate::Result;
 pub trait ChunkAllocator: Send + Sync {
     async fn allocate_chunk(&self, req: AllocateChunkRequest) -> Result<AllocateChunkResponse>;
     async fn append_chunk(&self, req: AppendChunkRequest) -> Result<AppendChunkResponse>;
+    async fn reserve_strip_group(&self, _req: ReserveStripGroupRequest) -> Result<ReserveStripGroupResponse> {
+        Err(crate::IoError::AllocationFailed(
+            "strip reservation is unsupported by this allocator".into(),
+        ))
+    }
+    async fn mutate_strip_reservation(
+        &self,
+        _req: MutateStripReservationRequest,
+    ) -> Result<MutateStripReservationResponse> {
+        Err(crate::IoError::MetadataConflict(
+            "strip reservation mutation is unsupported by this allocator".into(),
+        ))
+    }
+    async fn advance_chunk_write(&self, _req: AdvanceChunkWriteRequest) -> Result<AdvanceChunkWriteResponse> {
+        Err(crate::IoError::Internal(
+            "advance_chunk_write is unsupported by this allocator".into(),
+        ))
+    }
     async fn seal_chunk(&self, req: SealChunkRequest) -> Result<SealChunkResponse>;
     async fn delete_chunk(&self, req: DeleteChunkRequest) -> Result<DeleteChunkResponse>;
     async fn update_chunk_strip(&self, req: UpdateChunkStripRequest) -> Result<UpdateChunkStripResponse>;
     async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse>;
+    async fn allocate_replacement_segment(
+        &self,
+        _req: AllocateReplacementSegmentRequest,
+    ) -> Result<AllocateReplacementSegmentResponse> {
+        Err(crate::IoError::AllocationFailed(
+            "replacement allocation is unsupported by this allocator".into(),
+        ))
+    }
+    async fn replace_chunk_strip_range(
+        &self,
+        _req: ReplaceChunkStripRangeRequest,
+    ) -> Result<ReplaceChunkStripRangeResponse> {
+        Err(crate::IoError::MetadataConflict(
+            "strip range replacement is unsupported by this allocator".into(),
+        ))
+    }
+    async fn discard_replacement_segment(
+        &self,
+        _req: DiscardReplacementSegmentRequest,
+    ) -> Result<DiscardReplacementSegmentResponse> {
+        Err(crate::IoError::AllocationFailed(
+            "replacement cleanup is unsupported by this allocator".into(),
+        ))
+    }
+    async fn prepare_mirror_to_ec_conversion(
+        &self,
+        _req: PrepareMirrorToEcConversionRequest,
+    ) -> Result<PrepareMirrorToEcConversionResponse> {
+        Err(crate::IoError::AllocationFailed(
+            "mirror-to-EC preparation is unsupported by this allocator".into(),
+        ))
+    }
+    async fn complete_mirror_to_ec_conversion(
+        &self,
+        _req: CompleteMirrorToEcConversionRequest,
+    ) -> Result<CompleteMirrorToEcConversionResponse> {
+        Err(crate::IoError::MetadataConflict(
+            "mirror-to-EC completion is unsupported by this allocator".into(),
+        ))
+    }
 }
 
 // Blanket impl so the pipeline can hold `Arc<dyn ChunkAllocator>` and
@@ -39,6 +103,18 @@ impl<T: ChunkAllocator + ?Sized> ChunkAllocator for Arc<T> {
     }
     async fn append_chunk(&self, req: AppendChunkRequest) -> Result<AppendChunkResponse> {
         (**self).append_chunk(req).await
+    }
+    async fn reserve_strip_group(&self, req: ReserveStripGroupRequest) -> Result<ReserveStripGroupResponse> {
+        (**self).reserve_strip_group(req).await
+    }
+    async fn mutate_strip_reservation(
+        &self,
+        req: MutateStripReservationRequest,
+    ) -> Result<MutateStripReservationResponse> {
+        (**self).mutate_strip_reservation(req).await
+    }
+    async fn advance_chunk_write(&self, req: AdvanceChunkWriteRequest) -> Result<AdvanceChunkWriteResponse> {
+        (**self).advance_chunk_write(req).await
     }
     async fn seal_chunk(&self, req: SealChunkRequest) -> Result<SealChunkResponse> {
         (**self).seal_chunk(req).await
@@ -52,6 +128,36 @@ impl<T: ChunkAllocator + ?Sized> ChunkAllocator for Arc<T> {
     async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse> {
         (**self).query_chunk(req).await
     }
+    async fn allocate_replacement_segment(
+        &self,
+        req: AllocateReplacementSegmentRequest,
+    ) -> Result<AllocateReplacementSegmentResponse> {
+        (**self).allocate_replacement_segment(req).await
+    }
+    async fn replace_chunk_strip_range(
+        &self,
+        req: ReplaceChunkStripRangeRequest,
+    ) -> Result<ReplaceChunkStripRangeResponse> {
+        (**self).replace_chunk_strip_range(req).await
+    }
+    async fn discard_replacement_segment(
+        &self,
+        req: DiscardReplacementSegmentRequest,
+    ) -> Result<DiscardReplacementSegmentResponse> {
+        (**self).discard_replacement_segment(req).await
+    }
+    async fn prepare_mirror_to_ec_conversion(
+        &self,
+        req: PrepareMirrorToEcConversionRequest,
+    ) -> Result<PrepareMirrorToEcConversionResponse> {
+        (**self).prepare_mirror_to_ec_conversion(req).await
+    }
+    async fn complete_mirror_to_ec_conversion(
+        &self,
+        req: CompleteMirrorToEcConversionRequest,
+    ) -> Result<CompleteMirrorToEcConversionResponse> {
+        (**self).complete_mirror_to_ec_conversion(req).await
+    }
 }
 
 // ── Concrete impl for ChunkdbClient ──────────────────────────────
@@ -64,6 +170,18 @@ impl ChunkAllocator for crowdb_chunkdb_client::ChunkdbClient {
     async fn append_chunk(&self, req: AppendChunkRequest) -> Result<AppendChunkResponse> {
         Ok(crowdb_chunkdb_client::ChunkdbClient::append_chunk(self, req).await?)
     }
+    async fn reserve_strip_group(&self, req: ReserveStripGroupRequest) -> Result<ReserveStripGroupResponse> {
+        Ok(crowdb_chunkdb_client::ChunkdbClient::reserve_strip_group(self, req).await?)
+    }
+    async fn mutate_strip_reservation(
+        &self,
+        req: MutateStripReservationRequest,
+    ) -> Result<MutateStripReservationResponse> {
+        Ok(crowdb_chunkdb_client::ChunkdbClient::mutate_strip_reservation(self, req).await?)
+    }
+    async fn advance_chunk_write(&self, req: AdvanceChunkWriteRequest) -> Result<AdvanceChunkWriteResponse> {
+        Ok(crowdb_chunkdb_client::ChunkdbClient::advance_chunk_write(self, req).await?)
+    }
     async fn seal_chunk(&self, req: SealChunkRequest) -> Result<SealChunkResponse> {
         Ok(crowdb_chunkdb_client::ChunkdbClient::seal_chunk(self, req).await?)
     }
@@ -75,5 +193,35 @@ impl ChunkAllocator for crowdb_chunkdb_client::ChunkdbClient {
     }
     async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse> {
         Ok(crowdb_chunkdb_client::ChunkdbClient::query_chunk(self, req).await?)
+    }
+    async fn allocate_replacement_segment(
+        &self,
+        req: AllocateReplacementSegmentRequest,
+    ) -> Result<AllocateReplacementSegmentResponse> {
+        Ok(crowdb_chunkdb_client::ChunkdbClient::allocate_replacement_segment(self, req).await?)
+    }
+    async fn replace_chunk_strip_range(
+        &self,
+        req: ReplaceChunkStripRangeRequest,
+    ) -> Result<ReplaceChunkStripRangeResponse> {
+        Ok(crowdb_chunkdb_client::ChunkdbClient::replace_chunk_strip_range(self, req).await?)
+    }
+    async fn discard_replacement_segment(
+        &self,
+        req: DiscardReplacementSegmentRequest,
+    ) -> Result<DiscardReplacementSegmentResponse> {
+        Ok(crowdb_chunkdb_client::ChunkdbClient::discard_replacement_segment(self, req).await?)
+    }
+    async fn prepare_mirror_to_ec_conversion(
+        &self,
+        req: PrepareMirrorToEcConversionRequest,
+    ) -> Result<PrepareMirrorToEcConversionResponse> {
+        Ok(crowdb_chunkdb_client::ChunkdbClient::prepare_mirror_to_ec_conversion(self, req).await?)
+    }
+    async fn complete_mirror_to_ec_conversion(
+        &self,
+        req: CompleteMirrorToEcConversionRequest,
+    ) -> Result<CompleteMirrorToEcConversionResponse> {
+        Ok(crowdb_chunkdb_client::ChunkdbClient::complete_mirror_to_ec_conversion(self, req).await?)
     }
 }

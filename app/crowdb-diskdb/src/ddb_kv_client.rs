@@ -144,7 +144,6 @@ impl DdbKvClient {
             });
         }
         let (store_id, group_id) = bind;
-        let started = std::time::Instant::now();
         if let Some(metrics) = &self.metrics {
             metrics.kv_client_inflight.inc();
             metrics
@@ -154,9 +153,6 @@ impl DdbKvClient {
         let result = self.kv.batch_write(store_id, group_id, &ops).await.map(|_| ());
         if let Some(metrics) = &self.metrics {
             metrics.kv_client_inflight.dec();
-            metrics
-                .kv_client_batch_write_latency
-                .observe(started.elapsed().as_nanos().try_into().unwrap_or(u64::MAX));
             if result.is_err() {
                 metrics.kv_client_errors.inc();
             }

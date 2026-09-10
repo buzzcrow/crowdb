@@ -6,18 +6,69 @@
 //! false`.
 
 use crowdb_protocol::chunkdb_fb::{
-    FBAllocateChunkResponse, FBAllocateChunkResponseArgs, FBChunk, FBChunkArgs, FBChunkState, FBChunkStrip,
-    FBChunkStripArgs, FBChunkType, FBChunkdbRetCode, FBDeleteChunkRangeResponse,
-    FBDeleteChunkRangeResponseArgs, FBEcState, FBEcStrip, FBEcStripArgs, FBInt128, FBListChunksResponse,
-    FBListChunksResponseArgs, FBMirrorStrip, FBMirrorStripArgs, FBSegment, FBStripBody, FBStripType,
+    FBAdvanceChunkWriteResponse, FBAdvanceChunkWriteResponseArgs, FBAllocateChunkResponse,
+    FBAllocateChunkResponseArgs, FBChunk, FBChunkArgs, FBChunkState, FBChunkStrip, FBChunkStripArgs,
+    FBChunkType, FBChunkdbRetCode, FBDeleteChunkRangeResponse, FBDeleteChunkRangeResponseArgs, FBEcState,
+    FBEcStrip, FBEcStripArgs, FBInt128, FBListChunksResponse, FBListChunksResponseArgs, FBMirrorStrip,
+    FBMirrorStripArgs, FBSegment, FBStripBody, FBStripType,
 };
 use crowdb_protocol::fb_wrappers::chunkdb::{
-    FBAllocateChunkResponseRef, FBDeleteChunkRangeResponseRef, FBListChunksResponseRef,
+    FBAdvanceChunkWriteResponseRef, FBAllocateChunkResponseRef, FBDeleteChunkRangeResponseRef,
+    FBListChunksResponseRef,
 };
 use flatbuffers::FlatBufferBuilder;
 
 fn make_chunk_id(high: u64, low: u64) -> FBInt128 {
     FBInt128::new(high, low)
+}
+
+#[test]
+fn chunkdb_advance_write_response_exposes_fenced_cursor_metadata() {
+    let mut fbb = FlatBufferBuilder::new();
+    let id = make_chunk_id(9, 8);
+    let chunk = FBChunk::create(
+        &mut fbb,
+        &FBChunkArgs {
+            id: Some(&id),
+            modify_ts: 4,
+            state: FBChunkState::Active,
+            create_ts_ms: 1,
+            sealed_ts_ms: 0,
+            capacity: 1024,
+            sealed_length: 0,
+            strips: None,
+            chunk_type: FBChunkType::Repo,
+            writer_epoch: 77,
+            acknowledged_cursor: 4096,
+            closed_strip_sequence: 0,
+            writer_lease_deadline_ms: 1234,
+            next_strip_sequence: 1,
+            cleanup_intents: None,
+            last_strip_replacement: None,
+        },
+    );
+    let response = FBAdvanceChunkWriteResponse::create(
+        &mut fbb,
+        &FBAdvanceChunkWriteResponseArgs {
+            id: 55,
+            rpc_create_nano: 0,
+            ret_code: FBChunkdbRetCode::Success,
+            error_msg: None,
+            range_start: 0,
+            range_end: 0,
+            chunk: Some(chunk),
+        },
+    );
+    fbb.finish(response, None);
+    let view = FBAdvanceChunkWriteResponseRef::new(fbb.finished_data());
+    assert!(view.valid());
+    assert!(view.ok());
+    assert_eq!(view.request_id(), Some(55));
+    let chunk = view.chunk().unwrap();
+    assert_eq!(chunk.writer_epoch(), 77);
+    assert_eq!(chunk.acknowledged_cursor(), 4096);
+    assert_eq!(chunk.closed_strip_sequence(), 0);
+    assert_eq!(chunk.writer_lease_deadline_ms(), 1234);
 }
 
 /// Build a mirror strip with one segment, wrapped in a chunk.
@@ -44,6 +95,7 @@ macro_rules! build_mirror_chunk {
                 strip_body_type: FBStripBody::FBMirrorStrip,
                 strip_body: Some(mirror.as_union_value()),
                 usage_bitmap: None,
+                unavailable_segments: None,
             },
         );
         let strips = $fbb.create_vector(&[strip]);
@@ -59,6 +111,13 @@ macro_rules! build_mirror_chunk {
                 sealed_length: 0,
                 strips: Some(strips),
                 chunk_type: $ctype,
+                writer_epoch: 0,
+                acknowledged_cursor: 0,
+                closed_strip_sequence: u32::MAX,
+                writer_lease_deadline_ms: 0,
+                next_strip_sequence: 1,
+                cleanup_intents: None,
+                last_strip_replacement: None,
             },
         )
     }};
@@ -207,6 +266,7 @@ fn ec_strip_union_variant() {
             strip_body_type: FBStripBody::FBEcStrip,
             strip_body: Some(ec.as_union_value()),
             usage_bitmap: None,
+            unavailable_segments: None,
         },
     );
     let strips = fbb.create_vector(&[strip]);
@@ -223,6 +283,13 @@ fn ec_strip_union_variant() {
             sealed_length: 0,
             strips: Some(strips),
             chunk_type: FBChunkType::Wal,
+            writer_epoch: 0,
+            acknowledged_cursor: 0,
+            closed_strip_sequence: u32::MAX,
+            writer_lease_deadline_ms: 0,
+            next_strip_sequence: 2,
+            cleanup_intents: None,
+            last_strip_replacement: None,
         },
     );
     let resp = FBAllocateChunkResponse::create(

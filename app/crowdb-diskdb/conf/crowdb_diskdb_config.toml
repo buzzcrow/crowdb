@@ -4,6 +4,7 @@
 # any non-`[server]` section is also valid (serde fills from `Default`).
 
 [server]
+rpc_workers = 2
 listen_addr = "0.0.0.0:11000"
 http_listen_addr = "0.0.0.0:11100"
 rpc_listen_addr = "0.0.0.0:11200"

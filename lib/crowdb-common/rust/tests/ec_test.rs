@@ -8,6 +8,7 @@
 
 use crowdb_common::ec::{
     decode, decode_data, encode, encode_parity, encode_parity_from_shards, EcError, EcScheme,
+    IncrementalParity,
 };
 
 /// Convert shards to Option-wrapped blocks (all present).
@@ -263,4 +264,34 @@ fn encode_parity_from_shards_invalid() {
 
     // Invalid scheme.
     assert!(encode_parity_from_shards(EcScheme::new(0, 1), &[&s]).is_err());
+}
+
+#[test]
+fn incremental_parity_matches_full_encode_after_each_shard_is_consumed_once() {
+    let scheme = EcScheme::new(8, 4);
+    let shards: Vec<Vec<u8>> = (0_usize..8)
+        .map(|index| {
+            (0_usize..4096)
+                .map(|offset| u8::try_from((index * 31 + offset * 17) % 251).unwrap())
+                .collect()
+        })
+        .collect();
+    let refs: Vec<&[u8]> = shards.iter().map(Vec::as_slice).collect();
+    let expected = encode_parity_from_shards(scheme, &refs).unwrap();
+    let mut incremental = IncrementalParity::new(scheme).unwrap();
+    for (index, shard) in shards.iter().enumerate() {
+        incremental.push(shard).unwrap();
+        assert_eq!(incremental.shards_received(), index + 1);
+        assert_eq!(incremental.is_complete(), index == 7);
+    }
+    assert_eq!(incremental.finish().unwrap(), expected);
+}
+
+#[test]
+fn incremental_parity_rejects_incomplete_or_mismatched_groups() {
+    assert!(IncrementalParity::new(EcScheme::new(0, 4)).is_err());
+    let mut incremental = IncrementalParity::new(EcScheme::new(2, 1)).unwrap();
+    incremental.push(&[1, 2, 3]).unwrap();
+    assert!(incremental.push(&[1, 2]).is_err());
+    assert!(incremental.finish().is_err());
 }

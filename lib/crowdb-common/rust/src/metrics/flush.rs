@@ -110,11 +110,11 @@ pub(super) fn flush_histograms<W: Write>(
         let name_w = e.name.len().max(width);
         let _ = writeln!(
             writer,
-            "{:<name_w$}  {:>count_w$}  {:>tps_w$}  {:>8}  {:>8}  {:>8}  {:>8}",
+            "{:<name_w$}  {:>count_w$}  {:>tps_w$}  {:>8.1}  {:>8}  {:>8}  {:>8}",
             e.name,
             snap.count,
             tps(snap.count, window_secs),
-            snap.avg / 1000,
+            snap.avg / 1000.0,
             snap.p50 / 1000,
             snap.p99 / 1000,
             snap.max / 1000,

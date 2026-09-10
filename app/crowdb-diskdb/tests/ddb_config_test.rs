@@ -76,11 +76,22 @@ fn config_validate_rejects_zero_cas_retry_limit() {
 #[test]
 fn config_defaults_match_design() {
     let config = DdbConfig::default();
+    assert_eq!(config.server.rpc_workers, 2);
     assert_eq!(config.server.kv_pool_size, 1);
     assert_eq!(config.server.kv_rpc_workers, 2);
     assert_eq!(config.storage.cas_retry_limit, 100);
     assert!(!config.persistence.free_batch_enabled);
     assert_eq!(config.persistence.free_flush_max_batch, 256);
+}
+
+#[test]
+fn config_rejects_zero_server_rpc_workers() {
+    let mut config = DdbConfig::default();
+    config.server.rpc_workers = 0;
+    assert_eq!(
+        validate(&config),
+        Err("server.rpc_workers must be > 0".to_string())
+    );
 }
 
 #[test]
@@ -124,4 +135,14 @@ fn minimal_server_only_config_uses_section_defaults() {
     assert_eq!(config.heartbeat.interval_secs, 10);
     assert!(config.scanner.ghost.detect);
     assert_eq!(config.sync.sync_interval_secs, 10);
+    assert_eq!(config.server.rpc_workers, 2);
+}
+
+#[test]
+fn tracked_config_file_loads_and_validates() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("conf")
+        .join("crowdb_diskdb_config.toml");
+    let config = crowdb_common::config::load_from_file::<DdbConfig>(&path).expect("load tracked config");
+    assert_eq!(config.server.rpc_workers, 2);
 }

@@ -454,10 +454,11 @@ and `crowdb-kv-server` restores its stores/groups from local disk on
 restart with group 0 as the verification and fallback source for
 remote-replica wiring (see
 [`design-crowdb-kv-server.md`](design-crowdb-kv-server.md) §2.2). The
-toml is bootstrap-only: `--root` is required on every start, `--config`
-is optional (first-boot tunables only), and once group 0 exists the
-operator can delete the toml — restart with `--root` alone rebuilds
-every local store/group from WAL and rejoins the cluster. The node
+topology content in TOML is bootstrap-only: `--root` is required on every
+start, and restart with `--root` alone rebuilds every local store/group from
+WAL and rejoins the cluster. An optional `--config` remains the local authority
+for process tunables in both modes; deleting it intentionally restores typed
+defaults. Group 0 does not publish process configuration. The node
 root is persisted to group 0 via `KvServerExtra.data_root` on each
 keep-alive tick so the cluster/console knows each node's data
 location.

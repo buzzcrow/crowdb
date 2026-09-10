@@ -24,6 +24,8 @@ use crate::chunk::chunk_writer::ChunkWriter;
 use crate::config::ChunkClientConfig;
 use crate::disk_io::DiskWriter;
 use crate::io::{ChunkIoWriter, FeedStatus};
+use crate::metrics::LargeWriteRepairMetrics;
+use crate::negative_list::FailedDiskList;
 use crate::traits::ChunkAllocator;
 use crate::writer::fetch::run_fetch_stage;
 use crate::{IoError, Result};
@@ -54,6 +56,8 @@ pub struct LargeAsyncObjectWriter {
     pub(crate) assembly_copy_time: Duration,
     pub(crate) ec_encode_time: Duration,
     pub(crate) completion_wait_time: Duration,
+    pub(crate) failed_disks: Arc<FailedDiskList>,
+    pub(crate) repair_metrics: Arc<LargeWriteRepairMetrics>,
 }
 
 impl LargeAsyncObjectWriter {
@@ -63,6 +67,24 @@ impl LargeAsyncObjectWriter {
         disk_writer: Arc<dyn DiskWriter>,
         ec_scheme: EcScheme,
         config: Arc<ChunkClientConfig>,
+    ) -> Self {
+        Self::new_with_repair(
+            allocator,
+            disk_writer,
+            ec_scheme,
+            config,
+            Arc::new(FailedDiskList::new(Duration::from_secs(60))),
+            Arc::new(LargeWriteRepairMetrics::default()),
+        )
+    }
+
+    pub(crate) fn new_with_repair(
+        allocator: Arc<dyn ChunkAllocator>,
+        disk_writer: Arc<dyn DiskWriter>,
+        ec_scheme: EcScheme,
+        config: Arc<ChunkClientConfig>,
+        failed_disks: Arc<FailedDiskList>,
+        repair_metrics: Arc<LargeWriteRepairMetrics>,
     ) -> Self {
         Self {
             allocator,
@@ -86,6 +108,8 @@ impl LargeAsyncObjectWriter {
             assembly_copy_time: Duration::ZERO,
             ec_encode_time: Duration::ZERO,
             completion_wait_time: Duration::ZERO,
+            failed_disks,
+            repair_metrics,
         }
     }
 
@@ -144,7 +168,13 @@ impl LargeAsyncObjectWriter {
     /// Seal the current chunk (if any) and record its ProtoLocation.
     pub(crate) async fn seal_current(&mut self) -> Result<()> {
         if let Some(mut cw) = self.chunk_writer.take() {
-            let location = cw.seal().await?;
+            let location = match cw.seal().await {
+                Ok(location) => location,
+                Err(error) => {
+                    let _ = cw.abort().await;
+                    return Err(error);
+                }
+            };
             let (stalls, stall_time) = cw.preparation_metrics();
             self.preparation_stalls += stalls;
             self.preparation_stall_time += stall_time;
@@ -215,11 +245,13 @@ impl LargeAsyncObjectWriter {
             .next_chunk()
             .await?
             .ok_or_else(|| IoError::Internal("no chunk available".into()))?;
-        let mut cw = ChunkWriter::new(
+        let mut cw = ChunkWriter::new_with_repair(
             self.allocator.clone(),
             self.disk_writer.clone(),
             self.ec_scheme,
             self.config.clone(),
+            Arc::clone(&self.failed_disks),
+            Arc::clone(&self.repair_metrics),
         );
         cw.open(chunk, self.object_size)?;
         self.chunk_writer = Some(cw);

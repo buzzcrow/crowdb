@@ -305,7 +305,7 @@ impl RpcLatencyHandles {
             get: reg.register_histogram(format!("{prefix}.get.lh")),
             scan: reg.register_histogram(format!("{prefix}.scan.lh")),
             delete: reg.register_histogram(format!("{prefix}.delete.lh")),
-            batch_write: reg.register_histogram(format!("{prefix}.batch_write.lh")),
+            batch_write: reg.register_histogram(format!("{prefix}.batch.lh")),
         }
     }
 }

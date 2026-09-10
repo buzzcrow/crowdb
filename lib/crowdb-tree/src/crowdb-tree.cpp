@@ -1211,8 +1211,8 @@ Status Crowdbtree::flush()
     for (size_t iter = 0; iter < opt_.max_memtable_count; ++iter) {
         std::deque<std::shared_ptr<MemTable>> to_drain;
         {
-            std::unique_lock<std::shared_mutex> mlk(memtable_mutex_);
-            to_drain.swap(frozen_);
+            std::shared_lock<std::shared_mutex> mlk(memtable_mutex_);
+            to_drain = frozen_;
         }
         if (to_drain.empty()) {
             break;
@@ -1225,6 +1225,17 @@ Status Crowdbtree::flush()
         total_tables += to_drain.size();
         if (drain_all_frozen_locked(to_drain, active, cs)) {
             wrote_any = true;
+        }
+        // Keep the draining tables in frozen_ until every published entry is
+        // visible in L1. Readers snapshot frozen_ without taking write_mutex_;
+        // removing these tables before Phase 2 completes creates a transient
+        // false miss between L0 removal and L1 publication.
+        {
+            std::unique_lock<std::shared_mutex> mlk(memtable_mutex_);
+            for (size_t i = 0; i < to_drain.size(); ++i) {
+                assert(!frozen_.empty() && frozen_.front() == to_drain[i]);
+                frozen_.pop_front();
+            }
         }
         active->set_durable_floor(cs);
         last_applied_slot_.store(cs);

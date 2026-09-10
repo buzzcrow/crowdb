@@ -15,7 +15,7 @@ pub mod reporting;
 
 use std::sync::Arc;
 
-use crowdb_common::metrics::{Counter, Gauge, LatencyHistogram, LatencySummary, MetricsRegistry};
+use crowdb_common::metrics::{Counter, Gauge, LatencySummary, MetricsRegistry};
 
 pub use disk::{DiskMetrics, PeriodSnapshot};
 pub use recalc::{DiskGroupRecalcResult, FallbackReason, RecalcEngine, RecalcResult};
@@ -74,12 +74,11 @@ impl RequestKind {
 }
 
 struct RequestMetric {
-    latency: Arc<LatencyHistogram>,
     inflight: Arc<Gauge>,
     errors: Arc<Counter>,
 }
 
-/// Uniform latency/count, inflight, and error metrics for all `DiskDB` RPCs.
+/// Uniform count, inflight, and error metrics for all `DiskDB` RPCs.
 pub struct RequestMetrics {
     methods: [RequestMetric; 11],
 }
@@ -89,7 +88,6 @@ impl RequestMetrics {
         let methods = RequestKind::ALL.map(|kind| {
             let prefix = format!("request.{}", kind.name());
             RequestMetric {
-                latency: registry.register_histogram(format!("{prefix}.lh")),
                 inflight: registry.register_gauge(format!("{prefix}.inflight.g")),
                 errors: registry.register_counter(format!("{prefix}.errors.c")),
             }
@@ -104,10 +102,8 @@ impl RequestMetrics {
         let metric = &self.methods[kind.index()];
         metric.inflight.inc();
         RequestGuard {
-            latency: Arc::clone(&metric.latency),
             inflight: Arc::clone(&metric.inflight),
             errors: Arc::clone(&metric.errors),
-            started: std::time::Instant::now(),
             success: false,
         }
     }
@@ -115,10 +111,8 @@ impl RequestMetrics {
 
 /// Completes request accounting on every sync or async exit path.
 pub struct RequestGuard {
-    latency: Arc<LatencyHistogram>,
     inflight: Arc<Gauge>,
     errors: Arc<Counter>,
-    started: std::time::Instant,
     success: bool,
 }
 
@@ -134,8 +128,6 @@ impl Drop for RequestGuard {
         if !self.success {
             self.errors.inc();
         }
-        self.latency
-            .observe(self.started.elapsed().as_nanos().try_into().unwrap_or(u64::MAX));
         self.inflight.dec();
     }
 }
@@ -180,17 +172,10 @@ pub struct DiskdbMetrics {
     pub sync_failure_total: Arc<Counter>,
     pub compaction_records_deleted_total: Arc<Counter>,
 
-    // ── R74 §11 latency histograms (hot paths) ────────────────────
-    pub allocate_bitmap_scan_latency: Arc<LatencyHistogram>,
-    pub allocate_record_build_latency: Arc<LatencyHistogram>,
-    pub allocate_kv_persist_latency: Arc<LatencyHistogram>,
-    pub allocate_response_build_latency: Arc<LatencyHistogram>,
-    pub kv_client_batch_write_latency: Arc<LatencyHistogram>,
+    // ── R74 §11 kv-client metrics ────────────────────────────────
     pub kv_client_batch_write_ops: Arc<Counter>,
     pub kv_client_inflight: Arc<Gauge>,
     pub kv_client_errors: Arc<Counter>,
-    pub free_persist_latency: Arc<LatencyHistogram>,
-    pub free_kv_persist_latency: Arc<LatencyHistogram>,
 
     // ── R74 §11 latency summaries (cold paths) ───────────────────
     pub allocate_zone_rotate_latency: Arc<LatencySummary>,
@@ -246,18 +231,10 @@ impl DiskdbMetrics {
             sync_success_total: registry.register_counter("sync.success.total"),
             sync_failure_total: registry.register_counter("sync.failure.total"),
             compaction_records_deleted_total: registry.register_counter("compaction.records_deleted.total"),
-            // R74 latency histograms (hot paths).
-            allocate_bitmap_scan_latency: registry.register_histogram("allocate.bitmap_scan.latency_us"),
-            allocate_record_build_latency: registry.register_histogram("allocate.record_build.latency_us"),
-            allocate_kv_persist_latency: registry.register_histogram("allocate.kv_persist.latency_us"),
-            allocate_response_build_latency: registry
-                .register_histogram("allocate.response_build.latency_us"),
-            kv_client_batch_write_latency: registry.register_histogram("kv_client.batch_write.e2e.lh"),
+            // R74 kv-client metrics.
             kv_client_batch_write_ops: registry.register_counter("kv_client.batch_write.ops.c"),
             kv_client_inflight: registry.register_gauge("kv_client.inflight.g"),
             kv_client_errors: registry.register_counter("kv_client.errors.c"),
-            free_persist_latency: registry.register_histogram("free.persist.latency_us"),
-            free_kv_persist_latency: registry.register_histogram("free.kv_persist.latency_us"),
             // R74 latency summaries (cold paths).
             allocate_zone_rotate_latency: registry.register_summary("allocate.zone_rotate.latency_us"),
             sync_latency: registry.register_summary("sync.latency_us"),

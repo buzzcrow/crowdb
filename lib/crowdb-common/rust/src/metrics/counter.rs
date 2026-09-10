@@ -94,12 +94,26 @@ impl Gauge {
         self.value.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Increment the gauge by `delta` atomically.
+    pub fn inc_by(&self, delta: u64) {
+        self.value.fetch_add(delta, Ordering::Relaxed);
+    }
+
     /// Decrement the gauge atomically without wrapping below zero.
     pub fn dec(&self) {
         let _ = self
             .value
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 Some(value.saturating_sub(1))
+            });
+    }
+
+    /// Decrement the gauge by `delta` atomically without wrapping below zero.
+    pub fn dec_by(&self, delta: u64) {
+        let _ = self
+            .value
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                Some(value.saturating_sub(delta))
             });
     }
 

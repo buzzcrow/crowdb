@@ -208,6 +208,8 @@ TEST(DoubleBuffer, ConcurrentReadersDuringFrequentFreezeAndDrainNoCorruption)
     std::atomic<bool> bad{false};
     std::atomic<long> reads{0};
 
+    ASSERT_TRUE(t.apply(1, put_one("zz-sentinel", "always-visible")).ok());
+
     std::vector<std::thread> readers;
     readers.reserve(4);
     for (int r = 0; r < 4; ++r) {
@@ -216,10 +218,14 @@ TEST(DoubleBuffer, ConcurrentReadersDuringFrequentFreezeAndDrainNoCorruption)
             std::string  v;
             uint64_t     s;
             while (!stop.load(std::memory_order_relaxed) && !bad.load(std::memory_order_relaxed)) {
+                if (!t.get(Slice("zz-sentinel"), &s, &v) || v != "always-visible") {
+                    bad.store(true);
+                    return;
+                }
                 for (int g = 0; g < 8; ++g) {
-                    // No correctness oracle check here (the writer below applies
-                    // concurrently) -- this is purely a liveness/no-crash/no-UAF
-                    // check against TSan/ASan while active_/frozen_ churn.
+                    // Random keys have no stable value oracle because the writer
+                    // mutates them concurrently. The sentinel above separately
+                    // proves an immutable key never disappears during a drain.
                     (void)t.get(Slice(make_key(static_cast<int>(rng() % K))), &s, &v);
                 }
                 std::vector<scan_entry> out;
@@ -241,8 +247,9 @@ TEST(DoubleBuffer, ConcurrentReadersDuringFrequentFreezeAndDrainNoCorruption)
     }
 
     std::map<std::string, std::string> oracle;
-    std::mt19937                       rng(77);
-    uint64_t                           slot = 0;
+    oracle.emplace("zz-sentinel", "always-visible");
+    std::mt19937 rng(77);
+    uint64_t     slot = 1;
     for (int step = 0; step < 4000; ++step) {
         ++slot;
         std::string key = make_key(static_cast<int>(rng() % K));

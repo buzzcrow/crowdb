@@ -10,4 +10,4 @@
 
 mod client;
 
-pub use client::{DiskId, DiskIoRetCode, DiskioClient, DiskioError, DiskioResult};
+pub use client::{DiskId, DiskIoRetCode, DiskioClient, DiskioError, DiskioResult, SegmentWriteTarget};

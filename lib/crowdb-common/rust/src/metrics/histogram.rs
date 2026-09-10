@@ -5,41 +5,37 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::MetricName;
 
-/// Common 1-2-5 latency bucket boundaries in nanoseconds. An observation is placed in the first bucket
-/// whose upper bound is >= the value.
-const BUCKET_BOUNDS_NS: [u64; 22] = [
-    1_000,         // 1µs
-    2_000,         // 2µs
-    5_000,         // 5µs
-    10_000,        // 10µs
-    20_000,        // 20µs
-    50_000,        // 50µs
-    100_000,       // 100µs
-    200_000,       // 200µs
-    500_000,       // 500µs
-    1_000_000,     // 1ms
-    2_000_000,     // 2ms
-    5_000_000,     // 5ms
-    10_000_000,    // 10ms
-    20_000_000,    // 20ms
-    50_000_000,    // 50ms
-    100_000_000,   // 100ms
-    200_000_000,   // 200ms
-    500_000_000,   // 500ms
-    1_000_000_000, // 1s
-    2_000_000_000, // 2s
-    5_000_000_000, // 5s
-    u64::MAX,      // infinity (catch-all)
-];
+// ── HDR bucket parameters ────────────────────────────────────────
+//
+// HDR-style logarithmic buckets: each power-of-2 magnitude is divided
+// into `SUB_BUCKET_COUNT` equal sub-buckets, giving a bounded relative
+// error of ≤ 1 / SUB_BUCKET_COUNT ≈ 0.78% everywhere.
+//
+// Configuration tuned for the crowdb latency range:
+//   - LVD (lowest discernible value) = 2^UNIT_MAGNITUDE ≈ 65.5µs.
+//     Values below this go into a single underflow bucket (index 0).
+//     The user's workload starts at ~100µs, so sub-65µs granularity is
+//     irrelevant.
+//   - Max magnitude covers 2^(UNIT_MAGNITUDE + NUM_MAGNITUDES) = 2^34
+//     ≈ 17.2s. Values above go into the overflow bucket (last index).
+//   - 2 significant figures → SUB_BUCKET_COUNT = 128 (2^7).
 
-const NUM_BUCKETS: usize = BUCKET_BOUNDS_NS.len();
+const UNIT_MAGNITUDE: u32 = 16; // floor(log2(100_000)) → LVD ≈ 65.5µs
+const SUB_BUCKET_COUNT: usize = 128; // 2^7 → ≤0.78% relative error
+const SUB_BUCKET_BITS: u32 = 7; // log2(SUB_BUCKET_COUNT)
+const SUB_BUCKET_MASK: u64 = (SUB_BUCKET_COUNT as u64) - 1; // 127
+const NUM_MAGNITUDES: usize = 18; // magnitudes 0..17 → up to 2^34 ≈ 17.2s
+/// 1 underflow + `NUM_MAGNITUDES` * `SUB_BUCKET_COUNT` regular + 1 overflow.
+const NUM_BUCKETS: usize = 1 + NUM_MAGNITUDES * SUB_BUCKET_COUNT + 1;
+const UNDERFLOW: usize = 0;
+const OVERFLOW: usize = NUM_BUCKETS - 1;
 
-/// Fixed-bucket latency histogram with window + cumulative tracking.
+/// Fixed-bucket HDR latency histogram with window + cumulative tracking.
 ///
-/// Each `observe(ns)` does a binary search on `BUCKET_BOUNDS_NS` to find
-/// the bucket, then `fetch_add(1)` on both the window and cumulative
-/// bucket arrays, and on `count`/`total_count` + `sum`/`total_sum`.
-/// No allocation, no locks.
+/// Each `observe(ns)` does O(1) bit manipulation to find the bucket,
+/// then `fetch_add(1)` on both the window and cumulative bucket arrays,
+/// and on `count`/`total_count` + `sum`/`total_sum`. No allocation, no
+/// locks. Relative error ≤ ~0.78% for values in [65.5µs, 17.2s].
 ///
 /// `flush()` resets window state (buckets, count, sum) but keeps
 /// cumulative state (`total_buckets`, `total_count`, `total_sum`) — so
@@ -90,7 +86,7 @@ impl LatencyHistogram {
     /// (all in nanoseconds), and `total_count`. Cumulative state is
     /// preserved for `snapshot_total()`.
     pub fn flush(&self) -> HistogramSnapshot {
-        let mut bucket_counts = [0u64; NUM_BUCKETS];
+        let mut bucket_counts = vec![0u64; NUM_BUCKETS];
         for (i, b) in self.buckets.iter().enumerate() {
             bucket_counts[i] = b.swap(0, Ordering::Relaxed);
         }
@@ -101,7 +97,7 @@ impl LatencyHistogram {
         let p50 = percentile(&bucket_counts, count, 50);
         let p99 = percentile(&bucket_counts, count, 99);
         let max = max_latency(&bucket_counts);
-        let avg = sum.checked_div(count).unwrap_or(0);
+        let avg = compute_avg(sum, count);
 
         HistogramSnapshot {
             count,
@@ -115,7 +111,7 @@ impl LatencyHistogram {
 
     /// Current window values without resetting.
     pub fn snapshot(&self) -> HistogramSnapshot {
-        let mut bucket_counts = [0u64; NUM_BUCKETS];
+        let mut bucket_counts = vec![0u64; NUM_BUCKETS];
         for (i, b) in self.buckets.iter().enumerate() {
             bucket_counts[i] = b.load(Ordering::Relaxed);
         }
@@ -126,7 +122,7 @@ impl LatencyHistogram {
         let p50 = percentile(&bucket_counts, count, 50);
         let p99 = percentile(&bucket_counts, count, 99);
         let max = max_latency(&bucket_counts);
-        let avg = sum.checked_div(count).unwrap_or(0);
+        let avg = compute_avg(sum, count);
 
         HistogramSnapshot {
             count,
@@ -142,7 +138,7 @@ impl LatencyHistogram {
     /// `flush()`). Use for a final report after periodic flushes.
     #[must_use]
     pub fn snapshot_total(&self) -> HistogramSnapshot {
-        let mut bucket_counts = [0u64; NUM_BUCKETS];
+        let mut bucket_counts = vec![0u64; NUM_BUCKETS];
         for (i, b) in self.total_buckets.iter().enumerate() {
             bucket_counts[i] = b.load(Ordering::Relaxed);
         }
@@ -152,7 +148,7 @@ impl LatencyHistogram {
         let p50 = percentile(&bucket_counts, count, 50);
         let p99 = percentile(&bucket_counts, count, 99);
         let max = max_latency(&bucket_counts);
-        let avg = sum.checked_div(count).unwrap_or(0);
+        let avg = compute_avg(sum, count);
 
         HistogramSnapshot {
             count,
@@ -169,21 +165,50 @@ impl LatencyHistogram {
     }
 }
 
-/// Binary search for the bucket index whose upper bound >= ns.
+// ── HDR index / boundary math ─────────────────────────────────────
+
+/// Map a value to its HDR bucket index via O(1) bit manipulation.
+/// Values < LVD go to the underflow bucket (0); values > max go to
+/// the overflow bucket (`NUM_BUCKETS` - 1).
 #[allow(dead_code)]
-fn bucket_index(ns: u64) -> usize {
-    BUCKET_BOUNDS_NS
-        .partition_point(|&bound| bound < ns)
-        .min(NUM_BUCKETS - 1)
+fn bucket_index(v: u64) -> usize {
+    if v < (1u64 << UNIT_MAGNITUDE) {
+        return UNDERFLOW;
+    }
+    let highest_bit = v.ilog2();
+    let magnitude = highest_bit - UNIT_MAGNITUDE;
+    if magnitude as usize >= NUM_MAGNITUDES {
+        return OVERFLOW;
+    }
+    let sub_bucket = ((v >> (highest_bit - SUB_BUCKET_BITS)) & SUB_BUCKET_MASK) as usize;
+    1 + magnitude as usize * SUB_BUCKET_COUNT + sub_bucket
 }
 
-/// Compute the p-th percentile from bucket counts. Returns the bucket
-/// boundary (in ns) that contains the p-th percentile value. The
-/// infinity bucket is capped at the second-to-last boundary to avoid
-/// reporting `u64::MAX` (which overflows µs conversion in the flush
-/// formatter).
+/// Upper bound (exclusive) of the bucket at `index`, in nanoseconds.
+/// The underflow bucket returns the LVD; the overflow bucket returns
+/// the max trackable value (`2^(UNIT_MAGNITUDE + NUM_MAGNITUDES)`).
+#[allow(dead_code, clippy::cast_possible_truncation)]
+fn bucket_upper_bound(index: usize) -> u64 {
+    if index == UNDERFLOW {
+        return 1u64 << UNIT_MAGNITUDE;
+    }
+    if index == OVERFLOW {
+        return 1u64 << (UNIT_MAGNITUDE + NUM_MAGNITUDES as u32);
+    }
+    let linear = index - 1;
+    let magnitude = linear / SUB_BUCKET_COUNT;
+    let sub_bucket = linear % SUB_BUCKET_COUNT;
+    let magnitude_base = 1u64 << (UNIT_MAGNITUDE + magnitude as u32);
+    let sub_bucket_width = 1u64 << (UNIT_MAGNITUDE + magnitude as u32 - SUB_BUCKET_BITS);
+    magnitude_base + (sub_bucket as u64 + 1) * sub_bucket_width
+}
+
+/// Compute the p-th percentile from bucket counts. Returns the upper
+/// bound of the bucket that contains the p-th percentile value. The
+/// overflow bucket is capped at the last regular bucket's upper bound
+/// to avoid reporting the max-trackable sentinel.
 #[allow(dead_code)]
-fn percentile(bucket_counts: &[u64; NUM_BUCKETS], count: u64, p: u64) -> u64 {
+fn percentile(bucket_counts: &[u64], count: u64, p: u64) -> u64 {
     if count == 0 {
         return 0;
     }
@@ -192,29 +217,41 @@ fn percentile(bucket_counts: &[u64; NUM_BUCKETS], count: u64, p: u64) -> u64 {
     for (i, &bc) in bucket_counts.iter().enumerate() {
         cumulative += bc;
         if cumulative >= target {
-            return BUCKET_BOUNDS_NS[i.min(NUM_BUCKETS - 2)];
+            let capped = i.min(OVERFLOW - 1);
+            return bucket_upper_bound(capped);
         }
     }
-    BUCKET_BOUNDS_NS[NUM_BUCKETS - 2]
+    bucket_upper_bound(OVERFLOW - 1)
 }
 
-/// Find the highest non-empty bucket's upper bound. The infinity
-/// bucket is capped at the second-to-last boundary (1s) to avoid
-/// reporting `u64::MAX`.
+/// Find the highest non-empty bucket's upper bound. The overflow
+/// bucket is capped at the last regular bucket's upper bound.
 #[allow(dead_code)]
-fn max_latency(bucket_counts: &[u64; NUM_BUCKETS]) -> u64 {
+fn max_latency(bucket_counts: &[u64]) -> u64 {
     for (i, &bc) in bucket_counts.iter().enumerate().rev() {
         if bc > 0 {
-            return BUCKET_BOUNDS_NS[i.min(NUM_BUCKETS - 2)];
+            let capped = i.min(OVERFLOW - 1);
+            return bucket_upper_bound(capped);
         }
     }
     0
 }
 
+/// Arithmetic mean of `sum` / `count` as `f64`. Returns `0.0` if `count`
+/// is zero (avoids division by zero).
+#[allow(clippy::cast_precision_loss)]
+fn compute_avg(sum: u64, count: u64) -> f64 {
+    if count > 0 {
+        sum as f64 / count as f64
+    } else {
+        0.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HistogramSnapshot {
     pub count: u64,
-    pub avg: u64,
+    pub avg: f64,
     pub p50: u64,
     pub p99: u64,
     pub max: u64,
@@ -225,46 +262,55 @@ pub struct HistogramSnapshot {
 mod tests {
     use super::*;
 
+    /// `500_000` ns → magnitude 2, sub-bucket 116, upper bound `501_760`.
+    const BOUND_500K: u64 = 501_760;
+    /// `200_000` ns → magnitude 1, sub-bucket 67, upper bound `200_704`.
+    const BOUND_200K: u64 = 200_704;
+    /// `10_000_000` ns → magnitude 7, sub-bucket 24, upper bound `10_027_008`.
+    const BOUND_10MS: u64 = 10_027_008;
+
     #[test]
+    #[allow(clippy::float_cmp)]
     fn histogram_p50_p99_with_known_distribution() {
         let h = LatencyHistogram::new(MetricName::Static("test.lh"));
-        // 100 observations at ~500µs (500_000 ns) → bucket index 3 (bound 500_000)
         for _ in 0..100 {
             h.observe(500_000);
         }
         let s = h.flush();
         assert_eq!(s.count, 100);
         assert_eq!(s.total_count, 100);
-        // p50 and p99 should be in the 500µs bucket
-        assert_eq!(s.p50, 500_000);
-        assert_eq!(s.p99, 500_000);
-        assert_eq!(s.max, 500_000);
+        // p50 and p99 fall in the HDR bucket containing 500µs.
+        assert_eq!(s.p50, BOUND_500K);
+        assert_eq!(s.p99, BOUND_500K);
+        assert_eq!(s.max, BOUND_500K);
+        // avg is exact (f64).
+        assert_eq!(s.avg, 500_000.0);
     }
 
     #[test]
     fn histogram_mixed_distribution() {
         let h = LatencyHistogram::new(MetricName::Static("test.lh"));
-        // 80 fast (1µs), 20 slow (10ms)
+        // 80 fast (200µs), 20 slow (10ms) — both above LVD.
         for _ in 0..80 {
-            h.observe(1_000);
+            h.observe(200_000);
         }
         for _ in 0..20 {
             h.observe(10_000_000);
         }
         let s = h.flush();
         assert_eq!(s.count, 100);
-        // p50 should fall in the 1µs bucket (first 80 are at 1µs)
-        assert_eq!(s.p50, 1_000);
-        // p99 should fall in the 10ms bucket (cumulative at 1µs = 80, target = 99)
-        assert_eq!(s.p99, 10_000_000);
-        assert_eq!(s.max, 10_000_000);
+        // p50 should fall in the 200µs bucket (first 80 are at 200µs).
+        assert_eq!(s.p50, BOUND_200K);
+        // p99 should fall in the 10ms bucket (cumulative at 200µs = 80, target = 99).
+        assert_eq!(s.p99, BOUND_10MS);
+        assert_eq!(s.max, BOUND_10MS);
     }
 
     #[test]
     fn histogram_window_resets_after_flush() {
         let h = LatencyHistogram::new(MetricName::Static("test.lh"));
-        h.observe(1_000);
-        h.observe(2_000);
+        h.observe(100_000);
+        h.observe(200_000);
         let s1 = h.flush();
         assert_eq!(s1.count, 2);
         assert_eq!(s1.total_count, 2);
@@ -287,11 +333,37 @@ mod tests {
 
     #[test]
     fn bucket_index_correctness() {
-        assert_eq!(bucket_index(0), 0);
-        assert_eq!(bucket_index(1_000), 0);
-        assert_eq!(bucket_index(1_001), 1);
-        assert_eq!(bucket_index(10_000), 3);
-        assert_eq!(bucket_index(10_001), 4);
-        assert_eq!(bucket_index(u64::MAX), 21);
+        // Underflow: below LVD (2^16 = 65536).
+        assert_eq!(bucket_index(0), UNDERFLOW);
+        assert_eq!(bucket_index(65_535), UNDERFLOW);
+        // First regular bucket: exactly LVD.
+        assert_eq!(bucket_index(65_536), 1);
+        // 100µs → magnitude 0, sub-bucket 67.
+        assert_eq!(bucket_index(100_000), 1 + 67);
+        // 500µs → magnitude 2, sub-bucket 116.
+        assert_eq!(bucket_index(500_000), 1 + 2 * 128 + 116);
+        // Overflow: beyond max trackable (2^34).
+        assert_eq!(bucket_index(1u64 << 34), OVERFLOW);
+        assert_eq!(bucket_index(u64::MAX), OVERFLOW);
+    }
+
+    #[test]
+    #[allow(clippy::cast_precision_loss)]
+    fn hdr_relative_error_within_one_percent() {
+        // Verify the HDR guarantee: for any value in range, the bucket
+        // upper bound is within 1% of the value.
+        for v in [
+            100_000u64,
+            500_000,
+            1_000_000,
+            10_000_000,
+            100_000_000,
+            1_000_000_000,
+        ] {
+            let idx = bucket_index(v);
+            let bound = bucket_upper_bound(idx);
+            let error = ((bound as f64 - v as f64) / v as f64 * 100.0).abs();
+            assert!(error < 1.0, "v={v} bound={bound} error={error:.3}% exceeds 1%");
+        }
     }
 }

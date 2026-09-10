@@ -73,10 +73,9 @@ and manages chunk state transitions (allocate → seal → delete). All
 state changes are durably persisted to CROWDB KV before being acknowledged
 to callers.
 
-chunkdb **manages chunk metadata**; it does **not** perform data I/O.
-Callers (a future object store, chunkio service) write to the
-allocated disk blocks themselves and tell chunkdb when chunks are sealed
-or deleted.
+chunkdb manages chunk metadata and orchestrates background maintenance I/O
+through DiskIO clients. Foreground callers write allocated blocks themselves
+and tell chunkdb when chunks are sealed or deleted.
 
 **Language:** Rust. **Runtime:** tokio (async everywhere).
 
@@ -100,17 +99,14 @@ lifecycle management, placement policy, and EC coordination, nothing more.
 
 ## 2. Non-Goals (Design Envelope)
 
-- **No data I/O.** chunkdb allocates blocks and manages chunk metadata; it
-  does not read/write block contents. A future diskio-like component does
-  data I/O.
+- **No local block engine.** chunkdb does not own devices or implement block
+  reads and writes. Maintenance handlers route I/O through DiskIO services.
 - **No local WAL.** CROWDB KV's WAL is the sole durability mechanism.
 - **No consensus code.** chunkdb is a client of crowdb-kv; all interaction
   uses the existing crowdb-kv API.
 - **No GC operations in v1.** Garbage collection (reclaim, collapse, merge)
   is deferred to a future requirement. Chunks are allocated and deleted as
   whole units in v1.
-- **No mirror-to-EC conversion in v1.** Background conversion of mirror
-  strips to EC strips (for shared chunks) is deferred to a future requirement.
 - **No EC strip type restrictions.** Chunk type (repo/WAL/btree-page/page-index)
   is independent of strip type (mirror/EC). Any chunk can use either strip type
   based on configuration. v1 supports both mirror and EC strips for all chunk types.
@@ -334,11 +330,20 @@ Each strip tracks:
 A **chunk** is a container for strips. Chunk properties:
 - **128-bit ID**: Chunk type (8 bits) + Timestamp (48 bits) + Randomness (72 bits).
 - **State**: `Init` → `Active` → `Sealed` → `Deleted`.
-- **Type**: Metadata, Shared, Specific.
+- **Type**: Repo, WAL, B-tree page, or page index. Shared versus
+  dedicated is a client-side packing and ownership policy for Repo
+  chunks, not a wire-level chunk type.
 - **Capacity**: Total data capacity across all strips.
 - **Write granularity**: Minimum write alignment (e.g., 4 KB).
 - **Strips**: Ordered list of strips (mirror or EC).
+- **Next strip sequence**: Monotonic identity consumed by append and never
+  derived from the current vector length.
+- **Cleanup intents**: Retired segment sets and their earliest safe reuse time.
+- **Last strip replacement**: Stable operation identity for idempotent retry.
 - **Logical-to-physical mapping**: Encoded offset arrays for GC (deferred).
+
+Each strip may also identify replicas known unavailable. Readers can avoid
+those segment identities while background recovery is pending.
 
 Chunk size is variable, determined by the total size of its constituent
 strips (1 MB – 4 GB range).
@@ -852,10 +857,52 @@ mutating RPC acquires the per-chunk lock before its RMW cycle:
 - `delete_chunk_range`: `check_range` → `acquire` → validate a nonzero,
   nonoverflowing range → persist the retained strips → free the removed
   strips' segments → `guard.refresh(chunk)`.
-- `update_chunk_strip`: `check_range` → `acquire` → validate state, shape,
-  sequence, capacity, and owner → commit the replacement segments → publish
-  metadata → free the old strip → `guard.refresh(chunk)`.
+- `update_chunk_strip`: compatibility wrapper over the one-strip form of
+  `replace_chunk_strip_range`.
+- `replace_chunk_strip_range`: `check_range` → `acquire` → validate Active or
+  Sealed state, expected revision, exact old range, contiguous capacity,
+  monotonic sequences, segment ownership, and mirror/EC geometry → commit only
+  new-only segments → atomically publish the replacement plus an old-only
+  cleanup intent → `guard.refresh(chunk)`. An identical operation retry at the
+  successor revision returns the installed chunk. Any other revision or range
+  is a conflict.
+- `allocate_replacement_segment`: inspect the current owning strip and return
+  one geometry-compatible tentative segment. Mirror replacement excludes
+  survivor nodes. EC replacement excludes nodes already at the strip's
+  per-node failure-domain limit; explicitly unsafe layouts retain their
+  balanced per-node ceiling. Every old and surviving strip disk is excluded,
+  so no two shards share one disk.
+- `discard_replacement_segment`: under the lifecycle guard, free a tentative
+  segment only when it belongs to the chunk and current metadata does not
+  reference it.
+- `reserve_strip_group`: allocate ordinary hidden strips or one special 8+4
+  conversion group, persist its writer/lease/placement fences separately from
+  `Chunk.strips`, and leave chunk capacity unchanged until confirmation. A
+  lock-free atomic admission gate checks the instance's proportional share of
+  the configured cluster-wide reserved-block and reserved-byte limits before
+  allocation. Startup rebuilds usage from durable reservation records.
+- `mutate_strip_reservation`: durably consume before DiskIO, confirm one strip
+  in sequence, cancel or renew idempotently, or publish a complete special
+  group after current-topology survivor selection. Publication commits one EC
+  strip and the redundant-replica cleanup intent atomically.
 - `query_chunk` / `list_chunks` — unchanged (no lock, no cache).
+
+`query_chunk` advertises `layout_validity_ms`. Retired segments remain allocated
+until that reader-layout window expires. Startup and the periodic lifecycle
+scan resume cleanup intents, recheck that retired identities are absent from
+the current layout, ask DiskDB to perform its ownership-qualified free, and
+only then clear the intent. Metadata publication therefore remains committed
+even if post-commit reclamation is temporarily unavailable.
+
+Reservation reconciliation scans reservation records in bounded rotating
+pages, so an old prefix cannot starve later records. It deterministically
+admits a completed special group to the normal conversion task path. An
+expired incomplete group is cancelled and reclaimed when its consumed strips
+carry persisted planned cursors, because those writes use the DiskIO allocation
+generation fence. Legacy consumed records without planned cursors remain
+allocated fail-safe. Terminal reservation records release their quota only
+after the durable record has been removed; ambiguous persistence retains the
+permit unless a linearizable read proves that no record exists.
 
 ### 10.7 Error variants + service mapping
 
@@ -890,6 +937,10 @@ latency. Counters (all `AtomicU64`, `Relaxed` ordering):
 - `reap_idle_entries_removed` — entries removed per `reap_idle`.
 - `invalidate_count` — incremented on `invalidate_chunk`/
   `invalidate_range`.
+- `reservation.blocks.g` and `reservation.bytes.g` — current durable hidden
+  reservation usage rebuilt at startup and updated on admission/release.
+- `reservation.rejections.c` — reservation requests rejected by either atomic
+  quota limit.
 
 `snapshot() -> LifecycleMetricsSnapshot` drains counters, reads
 histograms, returns a serializable struct (JSON).
@@ -906,6 +957,13 @@ HTTP endpoints (`main.rs` HTTP server, alongside `/ready` +
   `{ "invalidated_count": u32 }`.
 
 All internal (no auth, same as `/ready` and `/health`).
+
+For strict range-guard deployments, `/ready` returns success only after the
+process has loaded at least one owned bucket range. This is stronger than the
+group-0 binding table being complete: operators cannot admit routed requests
+during the interval between binding publication and the process's periodic
+guard refresh. Compatibility deployments with `allow_all_when_empty=true`
+remain ready with an empty guard.
 
 ### 10.9 Edge cases
 
@@ -1023,20 +1081,24 @@ deadlocks with `.await`. Parallel allocation minimizes latency.
 
 Key configuration parameters:
 
-| Parameter                  | Default | Description                          |
-|----------------------------|---------|--------------------------------------|
-| disk_block_size            | 1 MB    | Size of disk blocks from diskdb       |
-| mirror_copy_count          | 3       | Number of replicas for mirror strips  |
-| default_ec_scheme          | 6+3     | Default EC scheme (data+parity)       |
-| topology_refresh_interval  | 30 s    | Topology cache refresh interval       |
-| placement.allow_unsafe_ec  | false   | Permit explicit degraded EC placement |
-| max_allocation_parallelism | 10      | Max parallel strip allocations        |
-| lifecycle.cache_capacity   | 10_000  | Per-chunk payload cache capacity (§10) |
-| lifecycle.sweep_chunk_lock_interval_secs | 60 | Idle lock reap interval (§10) |
-| lifecycle.lock_hold_warn_threshold_ms   | 1000 | Lock hold warn threshold (§10) |
-| server.keepalive_interval_secs          | 10   | Service-registry heartbeat interval |
+| Parameter                                | Default | Description                                             |
+|------------------------------------------|---------|---------------------------------------------------------|
+| disk_block_size                          | 1 MB    | Size of disk blocks from diskdb                         |
+| mirror_copy_count                        | 3       | Number of replicas for mirror strips                    |
+| default_ec_scheme                        | 6+3     | Default EC scheme (data+parity)                         |
+| topology_refresh_interval                | 30 s    | Topology cache refresh interval                         |
+| placement.allow_unsafe_ec                | false   | Permit explicit degraded EC placement                   |
+| max_allocation_parallelism               | 10      | Max parallel strip allocations                          |
+| lifecycle.cache_capacity                 | 10_000  | Per-chunk payload cache capacity (§10)                   |
+| lifecycle.sweep_chunk_lock_interval_secs | 60      | Idle lock reap interval (§10)                           |
+| lifecycle.lock_hold_warn_threshold_ms    | 1000    | Lock hold warn threshold (§10)                          |
+| lifecycle.layout_validity_ms             | 30_000  | Minimum retired-layout lifetime before segment reuse    |
+| server.keepalive_interval_secs           | 10      | Service-registry heartbeat interval                     |
+| server.rpc_workers                       | 2       | Inbound RPC workers; static and must be positive        |
 
-Configuration is loaded from CLI args or config file at startup.
+chunkdb requires a typed TOML file at startup. Omitted fields use typed
+defaults, and explicitly supplied CLI fields override file values according to
+the shared [`service configuration design`](../config/design-crowdb-config.md).
 
 ## 15. Full-Stack Deployment and Benchmark
 
@@ -1066,6 +1128,7 @@ nonzero aggregate status.
 **v1 (R85)**:
 - Basic chunkdb server and client
 - Mirror and EC strip allocation
+- Synchronous and background mirror-to-EC conversion through persistent tasks
 - Rack/node-aware placement
 - Topology cache with group-0 integration and watch/notify for real-time updates
 - Basic chunk lifecycle (allocate/seal/delete)
@@ -1076,8 +1139,7 @@ nonzero aggregate status.
 
 **Future work** (separate requirements):
 - In-chunk GC operations (reclaim, collapse, merge)
-- Mirror-to-EC conversion for shared chunks
-- Specific chunk type (direct EC write for large objects)
+- Shared and dedicated Repo-chunk write policies in the client data path
 - Recovery flow (disk failure handling, EC rebuild)
 - Metrics and observability
 - Console/CLI integration

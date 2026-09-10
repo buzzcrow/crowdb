@@ -21,24 +21,40 @@ use dashmap::DashMap;
 use flatbuffers::FlatBufferBuilder;
 
 use crowdb_protocol::chunkdb::rpc::{
-    AllocateChunkResponse, AppendChunkResponse, Chunk, ChunkState as ProtoChunkState, ChunkStrip,
-    ChunkType as ProtoChunkType, DeleteChunkRangeResponse, DeleteChunkResponse, ListChunksResponse,
-    QueryChunkResponse, SealChunkResponse, StripType as ProtoStripType, UpdateChunkStripResponse,
+    AdvanceChunkWriteResponse, AllocateChunkResponse, AllocateReplacementSegmentResponse,
+    AppendChunkResponse, Chunk, ChunkState as ProtoChunkState, ChunkStrip, ChunkType as ProtoChunkType,
+    CompleteMirrorToEcConversionResponse, DeleteChunkRangeResponse, DeleteChunkResponse,
+    DiscardReplacementSegmentResponse, ListChunksResponse, MutateStripReservationResponse,
+    PrepareMirrorToEcConversionResponse, QueryChunkResponse, ReplaceChunkStripRangeResponse,
+    ReserveStripGroupResponse, SealChunkResponse, StripCleanupIntent, StripReservationAction,
+    StripReservationGroup, StripReservationState, StripType as ProtoStripType,
+    TriggerConversionBatchResponse, TriggerConversionResponse, UpdateChunkStripResponse,
 };
 use crowdb_protocol::chunkdb::rpc::{EcState as ProtoEcState, EcStrip, MirrorStrip, Strip as ProtoStrip};
 use crowdb_protocol::chunkdb_fb::{
-    FBAllocateChunkRequest, FBAllocateChunkRequestArgs, FBAppendChunkRequest, FBAppendChunkRequestArgs,
-    FBChunkState, FBChunkStrip, FBChunkType, FBChunkdbRetCode, FBDeleteChunkRangeRequest,
-    FBDeleteChunkRangeRequestArgs, FBDeleteChunkRequest, FBDeleteChunkRequestArgs, FBInt128,
-    FBListChunksRequest, FBListChunksRequestArgs, FBQueryChunkRequest, FBQueryChunkRequestArgs,
-    FBSealChunkRequest, FBSealChunkRequestArgs, FBStripBody, FBStripType, FBUpdateChunkStripRequest,
-    FBUpdateChunkStripRequestArgs,
+    FBAdvanceChunkWriteRequest, FBAdvanceChunkWriteRequestArgs, FBAllocateChunkRequest,
+    FBAllocateChunkRequestArgs, FBAllocateReplacementSegmentRequest, FBAllocateReplacementSegmentRequestArgs,
+    FBAllocateReplacementSegmentResponse, FBAppendChunkRequest, FBAppendChunkRequestArgs, FBChunkState,
+    FBChunkStrip, FBChunkType, FBChunkdbRetCode, FBCompleteMirrorToEcConversionRequest,
+    FBCompleteMirrorToEcConversionRequestArgs, FBDeleteChunkRangeRequest, FBDeleteChunkRangeRequestArgs,
+    FBDeleteChunkRequest, FBDeleteChunkRequestArgs, FBDiscardReplacementSegmentRequest,
+    FBDiscardReplacementSegmentRequestArgs, FBDiscardReplacementSegmentResponse, FBInt128,
+    FBListChunksRequest, FBListChunksRequestArgs, FBMutateStripReservationRequest,
+    FBMutateStripReservationRequestArgs, FBMutateStripReservationResponse,
+    FBPrepareMirrorToEcConversionRequest, FBPrepareMirrorToEcConversionRequestArgs,
+    FBPrepareMirrorToEcConversionResponse, FBQueryChunkRequest, FBQueryChunkRequestArgs,
+    FBReplaceChunkStripRangeRequest, FBReplaceChunkStripRangeRequestArgs, FBReserveStripGroupRequest,
+    FBReserveStripGroupRequestArgs, FBReserveStripGroupResponse, FBSealChunkRequest, FBSealChunkRequestArgs,
+    FBSegment, FBStripBody, FBStripReservationAction, FBStripReservationGroup, FBStripReservationState,
+    FBStripType, FBTriggerConversionBatchRequest, FBTriggerConversionBatchRequestArgs,
+    FBTriggerConversionBatchResponse, FBTriggerConversionRequest, FBTriggerConversionRequestArgs,
+    FBTriggerConversionResponse, FBUpdateChunkStripRequest, FBUpdateChunkStripRequestArgs,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::fb::FBMsgType;
 use crowdb_protocol::fb_wrappers::chunkdb::{
-    FBAllocateChunkResponseRef, FBAppendChunkResponseRef, FBDeleteChunkRangeResponseRef,
-    FBListChunksResponseRef,
+    FBAdvanceChunkWriteResponseRef, FBAllocateChunkResponseRef, FBAppendChunkResponseRef,
+    FBDeleteChunkRangeResponseRef, FBListChunksResponseRef, FBQueryChunkResponseRef,
 };
 use crowdb_rpc_ffi::{Buffer, Connection, RpcClient, RpcError, RpcServer};
 
@@ -159,6 +175,8 @@ impl ChunkdbRpcTransport {
             chunk_type: chunk_type_to_fb(
                 ProtoChunkType::try_from(req.chunk_type).unwrap_or(ProtoChunkType::Repo),
             ),
+            writer_epoch: req.writer_epoch,
+            writer_lease_ms: req.writer_lease_ms,
         };
         let fb_req = FBAllocateChunkRequest::create(&mut builder, &args);
         builder.finish(fb_req, None);
@@ -183,6 +201,52 @@ impl ChunkdbRpcTransport {
         check_ret_code(r.ret_code(), r.error_msg())?;
         Ok(AllocateChunkResponse {
             chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)),
+        })
+    }
+
+    /// Durably advance a shared chunk's fenced physical cursor.
+    pub async fn send_advance_chunk_write(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::AdvanceChunkWriteRequest,
+    ) -> Result<AdvanceChunkWriteResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let chunk_id = req.chunk_id.as_ref().map(|id| FBInt128::new(id.high, id.low));
+        let fb_req = FBAdvanceChunkWriteRequest::create(
+            &mut builder,
+            &FBAdvanceChunkWriteRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                chunk_id: chunk_id.as_ref(),
+                writer_epoch: req.writer_epoch,
+                expected_modify_ts: req.expected_modify_ts,
+                acknowledged_cursor: req.acknowledged_cursor,
+                closed_strip_sequence: req.closed_strip_sequence.unwrap_or(u32::MAX),
+                writer_lease_ms: req.writer_lease_ms,
+            },
+        );
+        builder.finish(fb_req, None);
+        let response = call_rpc(
+            &self.rpc,
+            &self.server,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::EAdvanceChunkWriteRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = FBAdvanceChunkWriteResponseRef::new(response.bytes());
+        if !response.valid() {
+            return Err(ChunkdbClientError::Rpc(
+                "advance_chunk_write response malformed".into(),
+            ));
+        }
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        Ok(AdvanceChunkWriteResponse {
+            chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)),
         })
     }
 
@@ -241,6 +305,113 @@ impl ChunkdbRpcTransport {
         })
     }
 
+    pub async fn send_reserve_strip_group(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::ReserveStripGroupRequest,
+    ) -> Result<ReserveStripGroupResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let chunk_id = req.chunk_id.map(|id| FBInt128::new(id.high, id.low));
+        let group_id = req.group_id.map(|id| FBInt128::new(id.high, id.low));
+        let request = FBReserveStripGroupRequest::create(
+            &mut builder,
+            &FBReserveStripGroupRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                chunk_id: chunk_id.as_ref(),
+                expected_modify_ts: req.expected_modify_ts,
+                group_id: group_id.as_ref(),
+                writer_epoch: req.writer_epoch,
+                lease_generation: req.lease_generation,
+                lease_ms: req.lease_ms,
+                strip_size: req.strip_size,
+                strip_count: req.strip_count,
+                copy_count: req.copy_count,
+                conversion_data_num: req.conversion_data_num,
+                conversion_code_num: req.conversion_code_num,
+            },
+        );
+        builder.finish(request, None);
+        let response = call_rpc(
+            &self.rpc,
+            &self.server,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::EReserveStripGroupRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = flatbuffers::root::<FBReserveStripGroupResponse>(response.bytes())
+            .map_err(|_| ChunkdbClientError::Rpc("reserve strip group response malformed".into()))?;
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        Ok(ReserveStripGroupResponse {
+            chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)),
+            group: response.group().map(|group| parse_reservation_group(&group)),
+        })
+    }
+
+    pub async fn send_mutate_strip_reservation(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::MutateStripReservationRequest,
+    ) -> Result<MutateStripReservationResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let chunk_id = req.chunk_id.map(|id| FBInt128::new(id.high, id.low));
+        let group_id = req.group_id.map(|id| FBInt128::new(id.high, id.low));
+        let action = match StripReservationAction::try_from(req.action) {
+            Ok(StripReservationAction::Confirm) => FBStripReservationAction::Confirm,
+            Ok(StripReservationAction::Cancel) => FBStripReservationAction::Cancel,
+            Ok(StripReservationAction::Renew) => FBStripReservationAction::Renew,
+            Ok(StripReservationAction::Publish) => FBStripReservationAction::Publish,
+            Ok(StripReservationAction::Consume) => FBStripReservationAction::Consume,
+            Err(()) => {
+                return Err(ChunkdbClientError::InvalidArgument(
+                    "invalid reservation action".into(),
+                ));
+            }
+        };
+        let request = FBMutateStripReservationRequest::create(
+            &mut builder,
+            &FBMutateStripReservationRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                chunk_id: chunk_id.as_ref(),
+                expected_modify_ts: req.expected_modify_ts,
+                group_id: group_id.as_ref(),
+                writer_epoch: req.writer_epoch,
+                lease_generation: req.lease_generation,
+                strip_sequence: req.strip_sequence,
+                action,
+                acknowledged_cursor: req.acknowledged_cursor,
+                closed_strip_sequence: req.closed_strip_sequence.unwrap_or(u32::MAX),
+                lease_ms: req.lease_ms,
+            },
+        );
+        builder.finish(request, None);
+        let response = call_rpc(
+            &self.rpc,
+            &self.server,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::EMutateStripReservationRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = flatbuffers::root::<FBMutateStripReservationResponse>(response.bytes())
+            .map_err(|_| ChunkdbClientError::Rpc("mutate strip reservation response malformed".into()))?;
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        Ok(MutateStripReservationResponse {
+            chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)),
+            group: response.group().map(|group| parse_reservation_group(&group)),
+        })
+    }
+
     // ── QueryChunk ────────────────────────────────────────────────
 
     /// Send a `QueryChunk` request via crowdb-rpc.
@@ -272,13 +443,14 @@ impl ChunkdbRpcTransport {
             rpc_endpoint,
         )
         .await?;
-        let r = FBAllocateChunkResponseRef::new(resp.bytes());
+        let r = FBQueryChunkResponseRef::new(resp.bytes());
         if !r.valid() {
             return Err(ChunkdbClientError::Rpc("query_chunk response malformed".into()));
         }
         check_ret_code(r.ret_code(), r.error_msg())?;
         Ok(QueryChunkResponse {
             chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)),
+            layout_validity_ms: r.layout_validity_ms(),
         })
     }
 
@@ -457,6 +629,320 @@ impl ChunkdbRpcTransport {
         })
     }
 
+    pub async fn send_allocate_replacement_segment(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::AllocateReplacementSegmentRequest,
+    ) -> Result<AllocateReplacementSegmentResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let chunk_id = req.chunk_id.map(|id| FBInt128::new(id.high, id.low));
+        let old_segment = req.old_segment.as_ref().map(build_fb_segment);
+        let surviving_values: Vec<_> = req.surviving_segments.iter().map(build_fb_segment).collect();
+        let surviving = builder.create_vector(&surviving_values);
+        let excluded_values: Vec<_> = req
+            .exclude_disk_ids
+            .iter()
+            .map(|id| FBInt128::new(id.high, id.low))
+            .collect();
+        let excluded = builder.create_vector(&excluded_values);
+        let request = FBAllocateReplacementSegmentRequest::create(
+            &mut builder,
+            &FBAllocateReplacementSegmentRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                chunk_id: chunk_id.as_ref(),
+                old_segment: old_segment.as_ref(),
+                surviving_segments: Some(surviving),
+                exclude_disk_ids: Some(excluded),
+            },
+        );
+        builder.finish(request, None);
+        let response = call_rpc(
+            &self.rpc,
+            &self.server,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::EAllocateReplacementSegmentRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = flatbuffers::root::<FBAllocateReplacementSegmentResponse>(response.bytes())
+            .map_err(|_| ChunkdbClientError::Rpc("replacement allocation response malformed".into()))?;
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        Ok(AllocateReplacementSegmentResponse {
+            segment: response.segment().map(parse_fb_segment),
+        })
+    }
+
+    pub async fn send_discard_replacement_segment(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::DiscardReplacementSegmentRequest,
+    ) -> Result<DiscardReplacementSegmentResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let chunk_id = req.chunk_id.map(|id| FBInt128::new(id.high, id.low));
+        let segment = req.segment.as_ref().map(build_fb_segment);
+        let request = FBDiscardReplacementSegmentRequest::create(
+            &mut builder,
+            &FBDiscardReplacementSegmentRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                chunk_id: chunk_id.as_ref(),
+                segment: segment.as_ref(),
+            },
+        );
+        builder.finish(request, None);
+        let response = call_rpc(
+            &self.rpc,
+            &self.server,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::EDiscardReplacementSegmentRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = flatbuffers::root::<FBDiscardReplacementSegmentResponse>(response.bytes())
+            .map_err(|_| ChunkdbClientError::Rpc("discard replacement response malformed".into()))?;
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        Ok(DiscardReplacementSegmentResponse {})
+    }
+
+    pub async fn send_replace_chunk_strip_range(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::ReplaceChunkStripRangeRequest,
+    ) -> Result<ReplaceChunkStripRangeResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let chunk_id = req.chunk_id.map(|id| FBInt128::new(id.high, id.low));
+        let operation_id = req.operation_id.map(|id| FBInt128::new(id.high, id.low));
+        let old_values: Vec<_> = req
+            .old_strips
+            .iter()
+            .map(|strip| build_chunk_strip_offset(&mut builder, strip))
+            .collect();
+        let old = builder.create_vector(&old_values);
+        let replacement_values: Vec<_> = req
+            .replacement_strips
+            .iter()
+            .map(|strip| build_chunk_strip_offset(&mut builder, strip))
+            .collect();
+        let replacement = builder.create_vector(&replacement_values);
+        let request = FBReplaceChunkStripRangeRequest::create(
+            &mut builder,
+            &FBReplaceChunkStripRangeRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                chunk_id: chunk_id.as_ref(),
+                expected_modify_ts: req.expected_modify_ts,
+                start_index: req.start_index,
+                old_strips: Some(old),
+                replacement_strips: Some(replacement),
+                operation_id: operation_id.as_ref(),
+            },
+        );
+        builder.finish(request, None);
+        let response = call_rpc(
+            &self.rpc,
+            &self.server,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::EReplaceChunkStripRangeRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = FBAllocateChunkResponseRef::new(response.bytes());
+        if !response.valid() {
+            return Err(ChunkdbClientError::Rpc("strip range response malformed".into()));
+        }
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        Ok(ReplaceChunkStripRangeResponse {
+            chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)),
+        })
+    }
+
+    pub async fn send_prepare_mirror_to_ec_conversion(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::PrepareMirrorToEcConversionRequest,
+    ) -> Result<PrepareMirrorToEcConversionResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let chunk_id = req.chunk_id.map(|id| FBInt128::new(id.high, id.low));
+        let old_values: Vec<_> = req
+            .old_strips
+            .iter()
+            .map(|strip| build_chunk_strip_offset(&mut builder, strip))
+            .collect();
+        let old_strips = builder.create_vector(&old_values);
+        let request = FBPrepareMirrorToEcConversionRequest::create(
+            &mut builder,
+            &FBPrepareMirrorToEcConversionRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                chunk_id: chunk_id.as_ref(),
+                expected_modify_ts: req.expected_modify_ts,
+                start_index: req.start_index,
+                old_strips: Some(old_strips),
+                data_num: req.data_num,
+                code_num: req.code_num,
+                client_owner: req.client_owner,
+                claim_lease_ms: req.claim_lease_ms,
+            },
+        );
+        builder.finish(request, None);
+        let response = call_rpc(
+            &self.rpc,
+            &self.server,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::EPrepareMirrorToEcConversionRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = flatbuffers::root::<FBPrepareMirrorToEcConversionResponse>(response.bytes())
+            .map_err(|_| ChunkdbClientError::Rpc("prepare conversion response malformed".into()))?;
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        Ok(PrepareMirrorToEcConversionResponse {
+            task_id: response.task_id().map(|id| ChunkId {
+                high: id.high(),
+                low: id.low(),
+            }),
+            operation_id: response.operation_id().map(|id| ChunkId {
+                high: id.high(),
+                low: id.low(),
+            }),
+            replacement_strip: response
+                .replacement_strip()
+                .map(|strip| parse_fb_chunk_strip(&strip)),
+        })
+    }
+
+    pub async fn send_complete_mirror_to_ec_conversion(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::CompleteMirrorToEcConversionRequest,
+    ) -> Result<CompleteMirrorToEcConversionResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let chunk_id = req.chunk_id.map(|id| FBInt128::new(id.high, id.low));
+        let task_id = req.task_id.map(|id| FBInt128::new(id.high, id.low));
+        let request = FBCompleteMirrorToEcConversionRequest::create(
+            &mut builder,
+            &FBCompleteMirrorToEcConversionRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                chunk_id: chunk_id.as_ref(),
+                task_id: task_id.as_ref(),
+                client_owner: req.client_owner,
+            },
+        );
+        builder.finish(request, None);
+        let response = call_rpc(
+            &self.rpc,
+            &self.server,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::ECompleteMirrorToEcConversionRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = FBAllocateChunkResponseRef::new(response.bytes());
+        if !response.valid() {
+            return Err(ChunkdbClientError::Rpc(
+                "complete conversion response malformed".into(),
+            ));
+        }
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        Ok(CompleteMirrorToEcConversionResponse {
+            chunk: response.chunk().map(|chunk| parse_fb_chunk(&chunk)),
+        })
+    }
+
+    pub async fn send_trigger_conversion(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::TriggerConversionRequest,
+    ) -> Result<TriggerConversionResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let chunk_id = req.chunk_id.map(|id| FBInt128::new(id.high, id.low));
+        let request = FBTriggerConversionRequest::create(
+            &mut builder,
+            &FBTriggerConversionRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                chunk_id: chunk_id.as_ref(),
+            },
+        );
+        builder.finish(request, None);
+        let response = call_rpc(
+            &self.rpc,
+            &self.server,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::ETriggerConversionRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = flatbuffers::root::<FBTriggerConversionResponse>(response.bytes())
+            .map_err(|_| ChunkdbClientError::Rpc("conversion trigger response malformed".into()))?;
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        Ok(TriggerConversionResponse {
+            accepted_groups: response.accepted_groups(),
+        })
+    }
+
+    pub async fn send_trigger_conversion_batch(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::TriggerConversionBatchRequest,
+    ) -> Result<TriggerConversionBatchResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let request = FBTriggerConversionBatchRequest::create(
+            &mut builder,
+            &FBTriggerConversionBatchRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                sealed_only: req.filter.sealed_only,
+                max_chunks: req.filter.max_chunks,
+            },
+        );
+        builder.finish(request, None);
+        let response = call_rpc(
+            &self.rpc,
+            &self.server,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::ETriggerConversionBatchRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = flatbuffers::root::<FBTriggerConversionBatchResponse>(response.bytes())
+            .map_err(|_| ChunkdbClientError::Rpc("batch conversion response malformed".into()))?;
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        Ok(TriggerConversionBatchResponse {
+            accepted_chunks: response.accepted_chunks(),
+        })
+    }
+
     // ── ListChunks ────────────────────────────────────────────────
 
     /// Send a `ListChunks` request via crowdb-rpc.
@@ -574,6 +1060,22 @@ fn parse_fb_chunk(fb: &crowdb_protocol::chunkdb_fb::FBChunk<'_>) -> Chunk {
         .strips()
         .map(|v| v.iter().map(|s| parse_fb_chunk_strip(&s)).collect())
         .unwrap_or_default();
+    let cleanup_intents = fb
+        .cleanup_intents()
+        .map(|values| {
+            values
+                .iter()
+                .map(|intent| StripCleanupIntent {
+                    operation_id: intent.operation_id().map(|id| ChunkId {
+                        high: id.high(),
+                        low: id.low(),
+                    }),
+                    retired_segments: parse_fb_segments(intent.retired_segments()),
+                    not_before_ms: intent.not_before_ms(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Chunk {
         id,
         modify_ts: fb.modify_ts(),
@@ -584,6 +1086,66 @@ fn parse_fb_chunk(fb: &crowdb_protocol::chunkdb_fb::FBChunk<'_>) -> Chunk {
         sealed_length: fb.sealed_length(),
         strips,
         chunk_type: chunk_type as i32,
+        writer_epoch: fb.writer_epoch(),
+        acknowledged_cursor: fb.acknowledged_cursor(),
+        closed_strip_sequence: (fb.closed_strip_sequence() != u32::MAX).then(|| fb.closed_strip_sequence()),
+        writer_lease_deadline_ms: fb.writer_lease_deadline_ms(),
+        next_strip_sequence: fb.next_strip_sequence(),
+        cleanup_intents,
+        last_strip_replacement: fb.last_strip_replacement().map(|id| ChunkId {
+            high: id.high(),
+            low: id.low(),
+        }),
+    }
+}
+
+fn parse_reservation_group(fb: &FBStripReservationGroup<'_>) -> StripReservationGroup {
+    StripReservationGroup {
+        group_id: fb.group_id().map(|id| ChunkId {
+            high: id.high(),
+            low: id.low(),
+        }),
+        chunk_id: fb.chunk_id().map(|id| ChunkId {
+            high: id.high(),
+            low: id.low(),
+        }),
+        writer_epoch: fb.writer_epoch(),
+        lease_generation: fb.lease_generation(),
+        lease_deadline_ms: fb.lease_deadline_ms(),
+        placement_epoch: fb.placement_epoch(),
+        strips: fb
+            .strips()
+            .map(|strips| strips.iter().map(|strip| parse_fb_chunk_strip(&strip)).collect())
+            .unwrap_or_default(),
+        states: fb
+            .states()
+            .map(|states| {
+                states
+                    .iter()
+                    .map(|state| match state {
+                        FBStripReservationState::Consumed => StripReservationState::Consumed as i32,
+                        FBStripReservationState::Confirmed => StripReservationState::Confirmed as i32,
+                        FBStripReservationState::Cancelled => StripReservationState::Cancelled as i32,
+                        _ => StripReservationState::Reserved as i32,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        parity_segments: parse_fb_segments(fb.parity_segments()),
+        preferred_survivors: fb
+            .preferred_survivors()
+            .map(|values| values.iter().collect())
+            .unwrap_or_default(),
+        data_num: fb.data_num(),
+        code_num: fb.code_num(),
+        planned_cursors: fb
+            .planned_cursors()
+            .map(|values| values.iter().collect())
+            .unwrap_or_default(),
+        planned_closed_sequences: fb
+            .planned_closed_sequences()
+            .map(|values| values.iter().collect())
+            .unwrap_or_default(),
     }
 }
 
@@ -631,6 +1193,7 @@ fn parse_fb_chunk_strip(fb: &FBChunkStrip<'_>) -> ChunkStrip {
         strip_type: strip_type as i32,
         strip,
         usage_bitmap,
+        unavailable_segments: parse_fb_segments(fb.unavailable_segments()),
     }
 }
 
@@ -660,6 +1223,36 @@ where
         .collect()
 }
 
+fn parse_fb_segment(segment: &FBSegment) -> crowdb_protocol::diskdb::rpc::Segment {
+    crowdb_protocol::diskdb::rpc::Segment {
+        disk_id: Some(DiskId {
+            high: segment.disk_id().high(),
+            low: segment.disk_id().low(),
+        }),
+        owner_chunk: Some(ChunkId {
+            high: segment.owner_chunk().high(),
+            low: segment.owner_chunk().low(),
+        }),
+        unit_offset: segment.unit_offset(),
+        zone_index: segment.zone_index(),
+        unit_count: segment.unit_count(),
+        allocation_ts: segment.allocation_ts(),
+    }
+}
+
+fn build_fb_segment(segment: &crowdb_protocol::diskdb::rpc::Segment) -> FBSegment {
+    let disk = segment.disk_id.unwrap_or_default();
+    let owner = segment.owner_chunk.unwrap_or_default();
+    FBSegment::new(
+        &FBInt128::new(disk.high, disk.low),
+        &FBInt128::new(owner.high, owner.low),
+        segment.unit_offset,
+        segment.allocation_ts,
+        segment.zone_index,
+        segment.unit_count,
+    )
+}
+
 // ── Request building: ChunkStrip offset ───────────────────────────
 
 /// Build a `FBChunkStrip` `WIPOffset` from a proto `ChunkStrip` for
@@ -677,6 +1270,9 @@ fn build_chunk_strip_offset<'a>(
     } else {
         Some(fbb.create_vector(&strip.usage_bitmap))
     };
+    let unavailable_values: Vec<_> = strip.unavailable_segments.iter().map(build_fb_segment).collect();
+    let unavailable_segments =
+        (!unavailable_values.is_empty()).then(|| fbb.create_vector(&unavailable_values));
     FBChunkStrip::create(
         fbb,
         &FBChunkStripArgs {
@@ -691,6 +1287,7 @@ fn build_chunk_strip_offset<'a>(
             strip_body_type: body_type,
             strip_body: body_off,
             usage_bitmap: usage_bitmap_off,
+            unavailable_segments,
         },
     )
 }

@@ -47,8 +47,8 @@ pub struct KvStoreRegistry {
     port_pool: Mutex<Vec<u16>>,
     /// Metrics registry shared by all stores. `None` when metrics disabled.
     pub metrics_registry: Option<Arc<Mutex<MetricsRegistry>>>,
-    /// crowdb-rpc I/O worker count (from `--rpc-workers` CLI). Applied to
-    /// each `PxKvStore` at construction. Default: 2.
+    /// crowdb-rpc I/O worker count from the merged server config. Applied to
+    /// each `PxKvStore` at construction.
     pub rpc_workers: u32,
 }
 
@@ -68,6 +68,7 @@ impl KvStoreRegistry {
     pub fn with_config(config: CrowDBConfig) -> Self {
         let wal_backend = Arc::new(parse_wal_backend(&config.wal_backend));
         let crowtree_backend = parse_crowtree_backend(&config.crowtree_backend);
+        let rpc_workers = config.server.rpc_workers;
         Self {
             stores: DashMap::new(),
             wal_backend,
@@ -75,7 +76,7 @@ impl KvStoreRegistry {
             config,
             port_pool: Mutex::new(Vec::new()),
             metrics_registry: None,
-            rpc_workers: 2,
+            rpc_workers,
         }
     }
 

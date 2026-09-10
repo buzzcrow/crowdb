@@ -223,6 +223,8 @@ pub struct AllocateBlocksRequest {
     pub count: u32,
     pub exclude_disk_ids: Vec<DiskId>,
     pub owner_chunk: Option<ChunkId>,
+    /// Permit repeated distinct-disk passes within this atomic batch.
+    pub allow_disk_reuse: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]

@@ -150,7 +150,7 @@ run_case() {
     printf '%s\n' "$output"
     line=$(sed -n '/^chunkdb bench /p' <<<"$output" | tail -n 1)
     if [ -z "$line" ]; then
-        printf 'allocate\t3\t%s\t1\t8+4\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\t0\t0\t0\t%ss\t1\tunknown\tunknown\n' \
+        printf 'allocate\t3\t%s\t1\t8+4\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\t0\t0\t0\t0\t%ss\t1\tunknown\tunknown\n' \
             "$concurrency" "$connections" "$connections" "$connections" "$connections" \
             "$workers" "$KV_INFLIGHT" "$KV_COALESCE" "$DURATION" >>"$RESULTS_FILE"
     else
@@ -160,12 +160,12 @@ run_case() {
         if [ -n "$busy" ] && [ "$busy" = "$expected" ]; then
             space=exact
         fi
-        printf 'allocate\t3\t%s\t1\t8+4\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%ss\t%s\t%s\t%s\n' \
+        printf 'allocate\t3\t%s\t1\t8+4\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%ss\t%s\t%s\t%s\n' \
             "$concurrency" "$connections" "$connections" "$connections" "$connections" \
             "$workers" "$KV_INFLIGHT" "$KV_COALESCE" "$(field "$line" ops_per_sec)" \
-            "$(field "$line" block_allocs_per_sec)" "$(field "$line" p50_us)" \
-            "$(field "$line" p99_us)" "$DURATION" "$(field "$line" errors)" \
-            "$(field "$line" stop)" "$space" >>"$RESULTS_FILE"
+            "$(field "$line" block_allocs_per_sec)" "$(field "$line" avg_us)" \
+            "$(field "$line" p50_us)" "$(field "$line" p99_us)" "$DURATION" \
+            "$(field "$line" errors)" "$(field "$line" stop)" "$space" >>"$RESULTS_FILE"
     fi
     if ! verify_logs "$label"; then
         FAILURES=$((FAILURES + 1))
@@ -180,7 +180,7 @@ echo "=== building release binaries ==="
 pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
 mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"
 regression_init
-printf 'Wl\tGrp\tThr\tStrip\tEC\tCli\tCdb\tDdb\tKv\tWkr\tWin\tCoal\tchunk/s\tblock/s\tp50\tp99\tDur\tErr\tStop\tSpc\n' >"$RESULTS_FILE"
+printf 'Wl\tGrp\tThr\tStrip\tEC\tCli\tCdb\tDdb\tKv\tWkr\tWin\tCoal\tchunk/s\tblock/s\tavg\tp50\tp99\tDur\tErr\tStop\tSpc\n' >"$RESULTS_FILE"
 
 if any_case_selected allocate_ec8_4_1t allocate_ec8_4_16t; then
     deploy_group "${CONNECTIONS_OVERRIDE:-2}" "${RPC_WORKERS_OVERRIDE:-2}"

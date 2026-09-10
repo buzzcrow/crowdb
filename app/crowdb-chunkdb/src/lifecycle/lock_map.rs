@@ -1,7 +1,8 @@
 use super::{
-    hash_to_bucket, warn, Arc, Cache, CacheHint, Chunk, ChunkId, ChunkStore, DashMap, Duration, Instant,
+    hash_to_bucket, warn, Arc, Cache, CacheHint, Chunk, ChunkId, ChunkStore, DashMap, Duration,
     LifecycleError, LifecycleMetrics, LockPolicy, Mutex, OwnedMutexGuard, StoreError,
 };
+use std::time::Instant;
 
 /// Per-chunk lock map + payload cache.
 pub struct ChunkLockMap {
