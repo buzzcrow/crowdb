@@ -77,6 +77,7 @@ Plan files live under `doc/working/`; flow analyses live under `doc/design/{kv,c
 | `doc/design/kv/design-crowdb-kv-observability.md` | Metrics module: five metric types, registry and collector concurrency, instrumentation points, log format. |
 | `doc/design/kv/design-crowdb-chunk-kv.md` | Chunk-backed range KV: epoch-fenced sequencing, WAL recovery, transfer, split proofs, and failure containment. |
 | `doc/design/kv/design-crowdb-chunk-kv-server.md` | Chunk KV service: immutable range catalog, domain monitor, aggregate serving grants, direct request fencing, transfer, balance, and lifecycle. |
+| `doc/design/kv/design-crowdb-chunk-kv-client.md` | Routed chunk KV client: catalog cache, stable request identity, direct operations, bounded composition, and topology-safe scans. |
 | `doc/design/tree/design-crowdb-tree.md` | crowdb-tree overview, `KVEngine`/`EngineView`, out-of-order apply + two-GC model, FFI boundary. |
 | `doc/design/tree/design-crowdb-tree-engine.md` | In-memory engine: slot cell, pages/delta, write path, versioned root, lock-free epoch reclamation, io_uring FFI, metrics. |
 | `doc/design/tree/design-crowdb-tree-storage.md` | Durable storage: `PageStore` backends, slotted frame format, buffer-pool I/O reservations, snapshot/recovery, mapping table, GC. |

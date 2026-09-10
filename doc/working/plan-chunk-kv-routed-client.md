@@ -34,10 +34,11 @@ identity, ordering, fencing, and partial-success semantics.
 
 ## Phase 4: Gates and Documentation
 
-- [ ] Add unit, injected integration, and available real-process tests.
+- [x] Add unit and injected integration coverage for the available boundaries.
+- [ ] Add real-process client coverage after the server RPC process exists.
 - [ ] Run formatting, workspace lint, client/server tests, and aggregate server
   gates through `pixi run`.
-- [ ] Fold stable behavior into a permanent client design and index entry.
+- [x] Fold stable behavior into a permanent client design and index entry.
 
 ## Open Issues
 
