@@ -88,6 +88,40 @@ pub struct ChunkdbProcess {
     pub log_path: std::path::PathBuf,
 }
 
+#[derive(Clone, Copy, Debug)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct ChunkdbStartOptions {
+    pub allow_unsafe_ec: bool,
+    pub conversion_enabled: bool,
+    pub conversion_min_seal_age_secs: u64,
+    pub conversion_scan_interval_secs: u64,
+    pub conversion_max_bandwidth_mbps: u64,
+    pub conversion_task_lease_secs: u64,
+    pub repair_enabled: bool,
+    pub repair_allow_unsafe_placement: bool,
+    pub repair_scan_interval_secs: u64,
+    pub repair_max_concurrency: usize,
+    pub repair_memory_bytes: usize,
+}
+
+impl Default for ChunkdbStartOptions {
+    fn default() -> Self {
+        Self {
+            allow_unsafe_ec: false,
+            conversion_enabled: false,
+            conversion_min_seal_age_secs: 3_600,
+            conversion_scan_interval_secs: 30,
+            conversion_max_bandwidth_mbps: 50,
+            conversion_task_lease_secs: 30,
+            repair_enabled: true,
+            repair_allow_unsafe_placement: false,
+            repair_scan_interval_secs: 1,
+            repair_max_concurrency: 4,
+            repair_memory_bytes: 64 * 1024 * 1024,
+        }
+    }
+}
+
 impl ChunkdbProcess {
     pub fn log_content(&self) -> String {
         std::fs::read_to_string(&self.log_path).unwrap_or_default()
@@ -96,11 +130,21 @@ impl ChunkdbProcess {
     /// Start crowdb-chunkdb with a generated config pointing at the
     /// kv-server management seeds.
     pub fn start(kv_seeds: &[String]) -> Self {
-        Self::start_with_unsafe_ec(kv_seeds, false)
+        Self::start_with_options(kv_seeds, ChunkdbStartOptions::default())
     }
 
     /// Start crowdb-chunkdb and optionally permit single-rack EC placement.
     pub fn start_with_unsafe_ec(kv_seeds: &[String], allow_unsafe_ec: bool) -> Self {
+        Self::start_with_options(
+            kv_seeds,
+            ChunkdbStartOptions {
+                allow_unsafe_ec,
+                ..ChunkdbStartOptions::default()
+            },
+        )
+    }
+
+    pub fn start_with_options(kv_seeds: &[String], options: ChunkdbStartOptions) -> Self {
         let bin = crowdb_chunkdb_bin().unwrap_or_else(|| {
             panic!("crowdb-chunkdb binary not found; set CROWDB_CHUNKDB_BIN or build app/crowdb-chunkdb")
         });
@@ -118,6 +162,7 @@ impl ChunkdbProcess {
 
         let config_content = format!(
             r#"[server]
+rpc_workers = 2
 listen_addr = "127.0.0.1:{listen_port}"
 rpc_listen_addr = "127.0.0.1:{rpc_port}"
 http_listen_addr = "127.0.0.1:{http_port}"
@@ -134,11 +179,40 @@ allow_all_when_empty = true
 [placement]
 allow_unsafe_ec = {allow_unsafe_ec}
 
+[conversion]
+enabled = {conversion_enabled}
+data_num = 8
+code_num = 4
+min_seal_age_secs = {conversion_min_seal_age_secs}
+min_mirror_strips = 8
+max_concurrency = 4
+max_bandwidth_mbps = {conversion_max_bandwidth_mbps}
+scan_interval_secs = {conversion_scan_interval_secs}
+task_lease_secs = {conversion_task_lease_secs}
+
+[repair]
+enabled = {repair_enabled}
+allow_unsafe_placement = {repair_allow_unsafe_placement}
+scan_interval_secs = {repair_scan_interval_secs}
+max_concurrency = {repair_max_concurrency}
+memory_bytes = {repair_memory_bytes}
+
 [lifecycle]
 cache_capacity = 1000
 sweep_chunk_lock_interval_secs = 10
 lock_hold_warn_threshold_ms = 1000
 "#,
+            allow_unsafe_ec = options.allow_unsafe_ec,
+            conversion_enabled = options.conversion_enabled,
+            conversion_min_seal_age_secs = options.conversion_min_seal_age_secs,
+            conversion_scan_interval_secs = options.conversion_scan_interval_secs,
+            conversion_max_bandwidth_mbps = options.conversion_max_bandwidth_mbps,
+            conversion_task_lease_secs = options.conversion_task_lease_secs,
+            repair_enabled = options.repair_enabled,
+            repair_allow_unsafe_placement = options.repair_allow_unsafe_placement,
+            repair_scan_interval_secs = options.repair_scan_interval_secs,
+            repair_max_concurrency = options.repair_max_concurrency,
+            repair_memory_bytes = options.repair_memory_bytes,
             seeds = kv_seeds
                 .iter()
                 .map(|s| format!("\"{s}\""))
@@ -194,6 +268,37 @@ lock_hold_warn_threshold_ms = 1000
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    pub async fn conversion_metrics(&self) -> serde_json::Value {
+        reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{}/conversion_metrics", self.http_port))
+            .send()
+            .await
+            .expect("fetch conversion metrics")
+            .error_for_status()
+            .expect("conversion metrics status")
+            .json()
+            .await
+            .expect("decode conversion metrics")
+    }
+
+    pub async fn repair_metrics(&self) -> serde_json::Value {
+        reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{}/repair_metrics", self.http_port))
+            .send()
+            .await
+            .expect("fetch repair metrics")
+            .error_for_status()
+            .expect("repair metrics status")
+            .json()
+            .await
+            .expect("decode repair metrics")
+    }
+
+    pub fn crash(&mut self) {
+        self.child.kill().expect("kill chunkdb process");
+        self.child.wait().expect("reap chunkdb process");
     }
 }
 

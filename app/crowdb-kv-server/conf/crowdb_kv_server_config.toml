@@ -1,0 +1,8 @@
+# Canonical crowdb-kv-server startup tunables.
+# Runtime paths are derived from --root and are not file settings.
+
+wal_early_ack = true
+async_engine_apply = true
+
+[server]
+rpc_workers = 2

@@ -18,10 +18,17 @@ use arc_swap::ArcSwap;
 use crowdb_kv_client::{RangeBindingClient, ServiceRegistryClient};
 use crowdb_protocol::chunk_id::ChunkIdParts;
 use crowdb_protocol::chunkdb::rpc::{
-    AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse,
+    AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
+    AllocateReplacementSegmentRequest, AllocateReplacementSegmentResponse, AppendChunkRequest,
+    AppendChunkResponse, CompleteMirrorToEcConversionRequest, CompleteMirrorToEcConversionResponse,
     DeleteChunkRangeRequest, DeleteChunkRangeResponse, DeleteChunkRequest, DeleteChunkResponse,
-    ListChunksRequest, ListChunksResponse, QueryChunkRequest, QueryChunkResponse, SealChunkRequest,
-    SealChunkResponse, UpdateChunkStripRequest, UpdateChunkStripResponse,
+    DiscardReplacementSegmentRequest, DiscardReplacementSegmentResponse, ListChunksRequest,
+    ListChunksResponse, MutateStripReservationRequest, MutateStripReservationResponse,
+    PrepareMirrorToEcConversionRequest, PrepareMirrorToEcConversionResponse, QueryChunkRequest,
+    QueryChunkResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse,
+    ReserveStripGroupRequest, ReserveStripGroupResponse, SealChunkRequest, SealChunkResponse,
+    TriggerConversionBatchRequest, TriggerConversionBatchResponse, TriggerConversionRequest,
+    TriggerConversionResponse, UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::InstanceId;
@@ -249,6 +256,45 @@ impl ChunkdbClient {
         .await
     }
 
+    /// Durably reserve a fenced group of strips without exposing them in the chunk.
+    pub async fn reserve_strip_group(
+        &self,
+        req: ReserveStripGroupRequest,
+    ) -> Result<ReserveStripGroupResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move { transport.send_reserve_strip_group(&endpoint, &req).await }
+        })
+        .await
+    }
+
+    /// Apply a fenced state transition to one strip in a reservation group.
+    pub async fn mutate_strip_reservation(
+        &self,
+        req: MutateStripReservationRequest,
+    ) -> Result<MutateStripReservationResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move { transport.send_mutate_strip_reservation(&endpoint, &req).await }
+        })
+        .await
+    }
+
+    /// Durably advance a shared chunk's fenced write cursor.
+    pub async fn advance_chunk_write(
+        &self,
+        req: AdvanceChunkWriteRequest,
+    ) -> Result<AdvanceChunkWriteResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move { transport.send_advance_chunk_write(&endpoint, &req).await }
+        })
+        .await
+    }
+
     /// Query a chunk by ID.
     pub async fn query_chunk(&self, req: QueryChunkRequest) -> Result<QueryChunkResponse> {
         let chunk_id = req.chunk_id;
@@ -295,6 +341,97 @@ impl ChunkdbClient {
         self.with_rpc_retry(chunk_id.as_ref(), |t, ep| {
             let req = req.clone();
             async move { t.send_update_chunk_strip(&ep, &req).await }
+        })
+        .await
+    }
+
+    pub async fn allocate_replacement_segment(
+        &self,
+        req: AllocateReplacementSegmentRequest,
+    ) -> Result<AllocateReplacementSegmentResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move { transport.send_allocate_replacement_segment(&endpoint, &req).await }
+        })
+        .await
+    }
+
+    pub async fn discard_replacement_segment(
+        &self,
+        req: DiscardReplacementSegmentRequest,
+    ) -> Result<DiscardReplacementSegmentResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move { transport.send_discard_replacement_segment(&endpoint, &req).await }
+        })
+        .await
+    }
+
+    pub async fn replace_chunk_strip_range(
+        &self,
+        req: ReplaceChunkStripRangeRequest,
+    ) -> Result<ReplaceChunkStripRangeResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move { transport.send_replace_chunk_strip_range(&endpoint, &req).await }
+        })
+        .await
+    }
+
+    pub async fn prepare_mirror_to_ec_conversion(
+        &self,
+        req: PrepareMirrorToEcConversionRequest,
+    ) -> Result<PrepareMirrorToEcConversionResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move {
+                transport
+                    .send_prepare_mirror_to_ec_conversion(&endpoint, &req)
+                    .await
+            }
+        })
+        .await
+    }
+
+    pub async fn complete_mirror_to_ec_conversion(
+        &self,
+        req: CompleteMirrorToEcConversionRequest,
+    ) -> Result<CompleteMirrorToEcConversionResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move {
+                transport
+                    .send_complete_mirror_to_ec_conversion(&endpoint, &req)
+                    .await
+            }
+        })
+        .await
+    }
+
+    pub async fn trigger_conversion(
+        &self,
+        req: TriggerConversionRequest,
+    ) -> Result<TriggerConversionResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move { transport.send_trigger_conversion(&endpoint, &req).await }
+        })
+        .await
+    }
+
+    pub async fn trigger_conversion_batch(
+        &self,
+        req: TriggerConversionBatchRequest,
+    ) -> Result<TriggerConversionBatchResponse> {
+        self.with_rpc_retry(None, |transport, endpoint| {
+            let req = req.clone();
+            async move { transport.send_trigger_conversion_batch(&endpoint, &req).await }
         })
         .await
     }

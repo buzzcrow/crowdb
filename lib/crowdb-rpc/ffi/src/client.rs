@@ -428,12 +428,7 @@ impl std::future::Future for CallFuture {
     ) -> std::task::Poll<Self::Output> {
         std::pin::Pin::new(&mut self.rx)
             .poll(cx)
-            .map_ok(|(result, io_thread_ts)| {
-                // response_schedule: I/O thread → tokio task resume.
-                let schedule_ns = io_thread_ts.elapsed().as_nanos() as u64;
-                response_schedule_histogram().observe(schedule_ns);
-                result
-            })
+            .map_ok(|(result, _io_thread_ts)| result)
             .map(|r| r.unwrap_or(Err(RpcError::ConnectionClosed)))
     }
 }
@@ -500,13 +495,6 @@ fn standalone_buffer(handle: sys::crowdb_rpc_buffer_t) -> Option<Buffer> {
 
 // Rust-side histograms (registered with the Rust MetricsRegistry::global(),
 // flushed in the rust section).
-fn response_schedule_histogram() -> std::sync::Arc<metrics::LatencyHistogram> {
-    use std::sync::OnceLock;
-    static H: OnceLock<std::sync::Arc<metrics::LatencyHistogram>> = OnceLock::new();
-    H.get_or_init(|| metrics::global_histogram("rpc.request.response_schedule"))
-        .clone()
-}
-
 fn e2e_histogram() -> std::sync::Arc<metrics::LatencyHistogram> {
     use std::sync::OnceLock;
     static H: OnceLock<std::sync::Arc<metrics::LatencyHistogram>> = OnceLock::new();

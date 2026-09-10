@@ -135,6 +135,8 @@ pub(crate) async fn allocate_new_chunk(
         code_num: ec_scheme.code_num as u32,
         copy_count: 0,
         chunk_type: ChunkType::Repo as i32,
+        writer_epoch: 0,
+        writer_lease_ms: 0,
     };
     let resp = chunkdb.allocate_chunk(req).await?;
     resp.chunk

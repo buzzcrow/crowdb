@@ -7,7 +7,10 @@ pub mod fetch;
 pub mod large_async_object;
 pub mod large_object;
 pub mod pool;
+pub(crate) mod small_manager;
 pub mod small_object;
+pub(crate) mod small_pipeline;
+pub(crate) mod small_pool;
 
 pub use large_async_object::LargeAsyncObjectWriter;
 pub use large_object::LargeObjectWriter;

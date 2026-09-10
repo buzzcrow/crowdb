@@ -15,7 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::common::ChunkId;
+use crate::common::{ChunkId, DiskId};
 use crate::diskdb::rpc::Segment;
 
 /// Implement `From<Enum> for i32` and `TryFrom<i32> for Enum`.
@@ -82,6 +82,42 @@ pub enum ChunkType {
 }
 impl_enum_conversions!(ChunkType, Repo = 0, Wal = 1, BtreePage = 2, PageIndex = 3);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[repr(i32)]
+pub enum StripReservationState {
+    #[default]
+    Reserved = 0,
+    Consumed = 1,
+    Confirmed = 2,
+    Cancelled = 3,
+}
+impl_enum_conversions!(
+    StripReservationState,
+    Reserved = 0,
+    Consumed = 1,
+    Confirmed = 2,
+    Cancelled = 3
+);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[repr(i32)]
+pub enum StripReservationAction {
+    #[default]
+    Consume = 0,
+    Confirm = 1,
+    Cancel = 2,
+    Renew = 3,
+    Publish = 4,
+}
+impl_enum_conversions!(
+    StripReservationAction,
+    Consume = 0,
+    Confirm = 1,
+    Cancel = 2,
+    Renew = 3,
+    Publish = 4
+);
+
 // ── Strip types ─────────────────────────────────────────────────
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -116,6 +152,8 @@ pub struct ChunkStrip {
     pub strip_type: i32,
     pub strip: Option<Strip>,
     pub usage_bitmap: Vec<u8>,
+    /// Replica identities known unavailable until background recovery.
+    pub unavailable_segments: Vec<Segment>,
 }
 
 // ── Chunk ───────────────────────────────────────────────────────
@@ -132,6 +170,27 @@ pub struct Chunk {
     pub sealed_length: u32,
     pub strips: Vec<ChunkStrip>,
     pub chunk_type: i32,
+    /// Nonzero epoch that exclusively owns shared-chunk advances.
+    pub writer_epoch: u64,
+    /// Durable physical byte cursor acknowledged to readers.
+    pub acknowledged_cursor: u64,
+    /// Highest mirror strip durably closed by the writer.
+    pub closed_strip_sequence: Option<u32>,
+    /// Server-clock deadline after which an Active shared chunk is orphaned.
+    pub writer_lease_deadline_ms: u64,
+    /// Next identity assigned by append; never decreases after range splices.
+    pub next_strip_sequence: u32,
+    /// Retired segment sets awaiting the reader layout-validity grace.
+    pub cleanup_intents: Vec<StripCleanupIntent>,
+    /// Most recently committed fenced replacement operation.
+    pub last_strip_replacement: Option<ChunkId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct StripCleanupIntent {
+    pub operation_id: Option<ChunkId>,
+    pub retired_segments: Vec<Segment>,
+    pub not_before_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -164,6 +223,10 @@ pub struct AllocateChunkRequest {
     pub code_num: u32,
     pub copy_count: u32,
     pub chunk_type: i32,
+    /// Optional shared-writer epoch. Zero keeps dedicated-chunk semantics.
+    pub writer_epoch: u64,
+    /// Lease duration installed for a nonzero writer epoch.
+    pub writer_lease_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -195,6 +258,82 @@ pub struct AppendChunkResponse {
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct StripReservationGroup {
+    pub group_id: Option<ChunkId>,
+    pub chunk_id: Option<ChunkId>,
+    pub writer_epoch: u64,
+    pub lease_generation: u64,
+    pub lease_deadline_ms: u64,
+    pub placement_epoch: u64,
+    pub strips: Vec<ChunkStrip>,
+    pub states: Vec<i32>,
+    pub parity_segments: Vec<Segment>,
+    pub preferred_survivors: Vec<u32>,
+    pub data_num: u32,
+    pub code_num: u32,
+    #[serde(default)]
+    pub planned_cursors: Vec<u64>,
+    #[serde(default)]
+    pub planned_closed_sequences: Vec<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct ReserveStripGroupRequest {
+    pub chunk_id: Option<ChunkId>,
+    pub expected_modify_ts: u64,
+    pub group_id: Option<ChunkId>,
+    pub writer_epoch: u64,
+    pub lease_generation: u64,
+    pub lease_ms: u64,
+    pub strip_size: u32,
+    pub strip_count: u32,
+    pub copy_count: u32,
+    pub conversion_data_num: u32,
+    pub conversion_code_num: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct ReserveStripGroupResponse {
+    pub chunk: Option<Chunk>,
+    pub group: Option<StripReservationGroup>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct MutateStripReservationRequest {
+    pub chunk_id: Option<ChunkId>,
+    pub expected_modify_ts: u64,
+    pub group_id: Option<ChunkId>,
+    pub writer_epoch: u64,
+    pub lease_generation: u64,
+    pub strip_sequence: u32,
+    pub action: i32,
+    pub acknowledged_cursor: u64,
+    pub closed_strip_sequence: Option<u32>,
+    pub lease_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct MutateStripReservationResponse {
+    pub chunk: Option<Chunk>,
+    pub group: Option<StripReservationGroup>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct AdvanceChunkWriteRequest {
+    pub chunk_id: Option<ChunkId>,
+    pub writer_epoch: u64,
+    pub expected_modify_ts: u64,
+    pub acknowledged_cursor: u64,
+    pub closed_strip_sequence: Option<u32>,
+    pub writer_lease_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct AdvanceChunkWriteResponse {
+    pub chunk: Option<Chunk>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct QueryChunkRequest {
     pub chunk_id: Option<ChunkId>,
 }
@@ -202,6 +341,8 @@ pub struct QueryChunkRequest {
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct QueryChunkResponse {
     pub chunk: Option<Chunk>,
+    /// Maximum time a caller may continue using the returned layout.
+    pub layout_validity_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -248,6 +389,43 @@ pub struct UpdateChunkStripResponse {
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct AllocateReplacementSegmentRequest {
+    pub chunk_id: Option<ChunkId>,
+    pub old_segment: Option<Segment>,
+    pub surviving_segments: Vec<Segment>,
+    pub exclude_disk_ids: Vec<DiskId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct AllocateReplacementSegmentResponse {
+    pub segment: Option<Segment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct DiscardReplacementSegmentRequest {
+    pub chunk_id: Option<ChunkId>,
+    pub segment: Option<Segment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct DiscardReplacementSegmentResponse {}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct ReplaceChunkStripRangeRequest {
+    pub chunk_id: Option<ChunkId>,
+    pub expected_modify_ts: u64,
+    pub start_index: u32,
+    pub old_strips: Vec<ChunkStrip>,
+    pub replacement_strips: Vec<ChunkStrip>,
+    pub operation_id: Option<ChunkId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct ReplaceChunkStripRangeResponse {
+    pub chunk: Option<Chunk>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct ListChunksRequest {
     pub start_token: Option<ChunkId>,
     pub partition: u32,
@@ -258,4 +436,66 @@ pub struct ListChunksRequest {
 pub struct ListChunksResponse {
     pub chunks: Vec<Chunk>,
     pub next_token: Option<ChunkId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct TriggerConversionRequest {
+    pub chunk_id: Option<ChunkId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct TriggerConversionResponse {
+    pub accepted_groups: u64,
+}
+
+/// Server-local batch conversion filter.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ConversionFilter {
+    /// Restrict the scan to sealed chunks.
+    pub sealed_only: bool,
+    /// Stop after this many candidate chunks. Zero uses the server page bound.
+    pub max_chunks: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct TriggerConversionBatchRequest {
+    pub filter: ConversionFilter,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct TriggerConversionBatchResponse {
+    pub accepted_chunks: u64,
+}
+
+/// Begin the foreground no-reread conversion path for one exact mirror range.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct PrepareMirrorToEcConversionRequest {
+    pub chunk_id: Option<ChunkId>,
+    pub expected_modify_ts: u64,
+    pub start_index: u32,
+    pub old_strips: Vec<ChunkStrip>,
+    pub data_num: u32,
+    pub code_num: u32,
+    pub client_owner: u64,
+    pub claim_lease_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct PrepareMirrorToEcConversionResponse {
+    pub task_id: Option<ChunkId>,
+    pub operation_id: Option<ChunkId>,
+    pub replacement_strip: Option<ChunkStrip>,
+}
+
+/// Publish a prepared conversion after every replacement shard is durable.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct CompleteMirrorToEcConversionRequest {
+    pub chunk_id: Option<ChunkId>,
+    pub task_id: Option<ChunkId>,
+    pub client_owner: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct CompleteMirrorToEcConversionResponse {
+    pub chunk: Option<Chunk>,
 }

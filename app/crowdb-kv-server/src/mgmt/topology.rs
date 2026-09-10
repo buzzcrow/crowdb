@@ -102,7 +102,7 @@ fn metric_point_to_dto(p: &crowdb_kv::metrics::MetricPoint) -> MetricPoint {
             ..
         } => vec![
             ("count", *count as f64),
-            ("avg_ns", *avg_ns as f64),
+            ("avg_ns", *avg_ns),
             ("p50_ns", *p50_ns as f64),
             ("p99_ns", *p99_ns as f64),
             ("max_ns", *max_ns as f64),

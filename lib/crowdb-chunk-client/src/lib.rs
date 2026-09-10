@@ -28,20 +28,32 @@ pub mod disk_io;
 pub mod error;
 pub mod io;
 pub mod metrics;
+mod negative_list;
 pub mod traits;
 pub mod worker;
 pub mod writer;
 
-pub use benchmark::{run_large_write_benchmark, LargeWriteBenchmarkConfig, LargeWriteBenchmarkResult};
-pub use chunk::{ChunkPrefetch, ChunkWriter, EcStripWriter, MirrorStripWriter, StripResult, StripWriter};
+pub use benchmark::{
+    run_large_write_benchmark, run_read_benchmark, run_small_write_benchmark, LargeWriteBenchmarkConfig,
+    LargeWriteBenchmarkResult, ReadBenchmarkConfig, ReadBenchmarkResult, ReadBenchmarkWorkload,
+    SmallWriteBenchmarkConfig, SmallWriteBenchmarkResult,
+};
+pub use chunk::{
+    ChunkPrefetch, ChunkReadPolicy, ChunkReadStream, ChunkReader, ChunkWriter, EcStripWriter,
+    FailedReadRange, MirrorStripWriter, PartialReadResult, ReadRangeData, StripReader, StripResult,
+    StripWriter,
+};
 pub use client::{
     ChunkIoClient, ChunkIoClientConfig, LargeWritePolicy, LargeWriteResult, PreparedLargeWrite,
 };
-pub use config::ChunkClientConfig;
+pub use config::{ChunkClientConfig, SmallWritePolicy};
 pub use disk_io::{DiskWriter, DiskioBlockWriter, RoutedDiskWriter};
-pub use error::{IoError, Result};
+pub use error::{IoError, ReadError, ReadResult, Result};
 pub use io::{BackpressurePolicy, ChunkIoWriter, FeedStatus};
-pub use metrics::ChunkClientMetrics;
+pub use metrics::{ChunkClientMetrics, LargeWriteRepairMetricsSnapshot, SmallWriteMetricsSnapshot};
+#[cfg(feature = "test-util")]
+#[doc(hidden)]
+pub use negative_list::FailedDiskList;
 pub use traits::ChunkAllocator;
 pub use worker::{EcWorker, HashWorker};
 pub use writer::{LargeAsyncObjectWriter, LargeObjectWriter, PooledWriter, SmallObjectWriter, WriterPool};

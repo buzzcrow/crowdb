@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R136** — Bump this line in the same commit when adding a new item.
+**Next R number: R140** — Bump this line in the same commit when adding a new item.
 
 ### High Priority
 
@@ -87,120 +87,10 @@ complexity, and dependency. Before implementation, follow the
 
 ### Data Path (diskio + chunk object writers + read flow)
 
-Dependency order: R93 → R106, R107 → R110, R111, R112
-(R110/R112 reuse R110's negative list; R111 reuses R110's negative
-list + degraded-strip tracking). The RPC migration items (R115,
-R116, R117) are in a separate area (see RPC Migration section
-below); R32 depends on R115.
-
-- **[R135](R135-chunkio-end-to-end-performance.md)** — Chunk IO write-flow
-  review and end-to-end performance — Area: chunkio / chunkdb / diskdb /
-  diskio / kv — Extend the three-node combined fixture to deploy three
-  DiskIO instances backed by `NullDisk`, add disk-ID-to-DiskIO routing to
-  the chunk client, and benchmark large-object writes through a library-owned
-  prepare-and-stream API. Keep allocation off the steady-state data path;
-  measure fetch, EC, block writes, fsync, and chunk seal. Review and reduce
-  memory copies, passively collect host DRAM bandwidth when hardware counters
-  support it, and record logical/physical bandwidth, loopback traffic, object
-  latency, errors, exact accounting, and service logs. Keep shared fixture and
-  result plumbing reusable for later small-write and read workloads.
-
-- **[R93](R93-chunkdb-mirror-to-ec-conversion.md)** — Mirror-to-EC
-  conversion — Area: chunkdb — Background conversion of mirror strips
-  to EC strips in shared chunks. Reads mirror data via diskio (R105),
-  EC-encodes via isa-l, allocates EC strip blocks, writes via diskio,
-  and atomically swaps via `update_chunk_strip`. Reclaims 3×→1.5×
-  storage (8+4 EC) on shared chunks. Configurable policy (seal age,
-  strip count, manual trigger) + bandwidth throttling. Foundation
-  for R106's mirror-first write strategy.
-- **[R106](R106-chunkdb-small-object-writer.md)** — Small object
-  shared chunk writer — Area: chunkdb — Shared 256 MB chunks for
-  small objects (< EC strip threshold). Dynamic pool of write
-  pipelines, each with a worker task that fetches queued buffers and
-  writes batches to shared chunks (aggregation for max TPS). Write
-  to 3 mirror strips first → return success → background mirror→EC
-  conversion (R93). Dynamic pipeline scale in/out based on queue
-  depth for max BW + aggregation. Implements `ChunkIoWriter` (R94).
-  Reference: the reference's `SharedObjWriter` + `Write2M1ECChunkHandler`.
-- **[R107](R107-chunkdb-chunk-read-flow.md)** — Chunk object read
-  flow — Area: chunkdb — Reconstructs object bytes from a `Location`
-  array (R94). Queries chunk strip layout via `query_chunk`, maps
-  offsets to strips, reads blocks via diskio (R105). Handles EC
-  decode (for missing blocks, ≤ `code_num`) and mirror fallback (for
-  failed replicas). Multi-chunk assembly in `logical_offset` order.
-  Partial range reads (`read_range`). Streaming read for large
-  objects (memory-bounded `ChunkReadStream`). Transparent across
-  mirror→EC conversion (R93).
-
-- **[R110](R110-chunkdb-chunkio-error-handling.md)** — Large-write
-  IO error handling (write path) — Area: chunkdb / diskdb / diskio
-  — In-line error handler for the large-write data path (R94),
-  spanning three services: chunkdb (strip metadata,
-  `update_chunk_strip`), diskdb (block allocation with disk
-  exclusion), diskio (write/fsync error detection). Single-block
-  replacement on write failure (not whole-strip retry): keep
-  successful blocks, re-allocate the failed block on a healthy
-  disk via diskdb, `update_chunk_strip` to replace the segment in
-  chunkdb. Negative list (TTL-based) temporarily blocks bad disks
-  from new allocations across diskdb — shared with R111 (read) and
-  R112 (small-write). Degraded strip tracking (parity missing,
-  data durable). Escalation to R83 recovery when inline retries
-  are exhausted. Read-path error handling is a separate requirement
-  (R111); R110 defines the negative list and degraded-strip
-  tracking that R111 and R112 reuse.
-- **[R111](R111-chunkdb-read-io-error-handling.md)** — Chunk read
-  IO error handling (unified read path) — Area: chunkdb / diskdb /
-  diskio — In-line error handler for the read path (R107), which
-  is unified across large objects (EC strips, R94) and small
-  objects (mirror strips, R106, before R93 conversion). EC decode
-  fallback for failed EC blocks (read surviving data + parity,
-  isa-l decode the missing block, within `code_num` tolerance);
-  mirror replica fallback for failed mirror strips (read next
-  replica). Background rebuild + replace after a successful
-  fallback (allocate new block via diskdb, write reconstructed
-  data via diskio, `update_chunk_strip` to repair the strip so
-  future reads don't pay the fallback cost). Degraded strip read
-  tolerance (parity missing — readable for full-data, partial
-  result + R83 escalation on data block failure). Partial read
-  results with explicit failed byte ranges (no silent corruption —
-  applies to both `read_range` and `ChunkReadStream`). Escalation
-  to R83 when inline fallback is unrecoverable. Reuses R110's
-  negative list and degraded-strip tracking.
-- **[R112](R112-chunkdb-small-write-io-error-handling.md)** —
-  Small-write IO error handling (multi-service cooperation) — Area:
-  chunkdb / diskdb / diskio — In-line error handler for the
-  small-write data path (R106), spanning the same three services
-  as R110. Reuses R110's negative list and escalation reporting,
-  but adds batch-aware per-object retry (a single diskio write
-  carries a batch of N small objects — a partial failure must
-  track which objects were written and retry only the unwritten
-  ones) and mirror-replica replacement specific to the shared-
-  chunk writer (R106 writes 3 mirror replicas first, then R93
-  converts to EC in the background — a single replica failure is
-  tolerated but must be re-allocated + `update_chunk_strip` to
-  restore 3-replica durability). Shared chunk rotation safety
-  (mid-rotation failure must not corrupt the sealed portion or
-  span a corrupted boundary). Clear boundary with R93's mirror→EC
-  conversion (R112 handles write-path failures; R93 handles
-  conversion-path failures). Escalation to R83 when inline retries
-  are exhausted.
-- **[R113](R113-chunkio-batch-strip-allocation.md)** — Batch strip
-  allocation + deferred chunkdb confirm — Area: chunkio / chunkdb /
-  diskdb — Optimize the large-write strip allocation path (R94) to
-  reduce `append_chunk` RPC count. Current flow: one `append_chunk`
-  per strip (250K RPCs for a 1 TB object). Two candidate approaches:
-  (1) batch `append_chunk(strip_count=N)` — chunkdb allocates N
-  strips in parallel, persists once, returns `Chunk` with N strips.
-  Simple, safe, but first strip waits for all N. (2) Direct diskdb
-  allocation + deferred chunkdb confirm — client allocates blocks
-  from diskdb directly (TENTATIVE), writes immediately, batch-
-  confirms to chunkdb later. Maximum overlap but requires client-
-  side placement, a new confirm RPC, and a TENTATIVE block reaper.
-  Key design tension: the chunk allocate confirm flow
-  (`BusyBlockValue.commit_state: TENTATIVE → COMMITTED`) must
-  guarantee crash safety — TENTATIVE blocks with written data that
-  are never confirmed must be reclaimable. Blocked on the chunk-
-  layer refactor (`doc/working/design-chunk-layer-refactor.md`).
+Chunk reads, read repair, mirror-to-EC conversion, write error handling, and
+end-to-end Chunk IO performance workloads are landed. The RPC migration items
+(R115, R116, R117) are in a separate area (see RPC Migration section below);
+R32 depends on R115.
 
 ### Medium Priority
 
@@ -303,6 +193,10 @@ R32 KV consensus, R117 KV client-facing, R116 chunkdb) are DONE.
 - **[R5](R5-rdma-alloc.md)** — RDMA-pinned allocation — Blocked by: RDMA backend — Area: crowdbtree
   engine — `buffer::allocate` seam is designed for RDMA-pinned memory but no
   RDMA backend exists yet; placeholder only.
+- **[R139](R139-group0-service-config.md)** — Group-0 distributed service
+  configuration — Area: config / control plane — Publish versioned,
+  scoped config through group 0; each service validates revisions, applies
+  dynamic fields atomically, and reports fields that require restart.
 
 **Complexity — Medium:**
 - **[R4](R4-bounded-mempool.md)** — Bounded memory pool — Area: crowdbtree engine — `buffer::allocate` uses

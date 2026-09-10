@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 // DioConfig: configuration for the crowdb-diskio server.
-// Parsed from CLI args; validated before startup.
+// Loaded from TOML and overlaid by CLI args; validated before startup.
 #pragma once
 
 #include "disk/disk_properties.h"
@@ -37,6 +37,7 @@ struct DioConfig
     // lib/crowdb-protocol/src/ports.rs — keep in sync.
     std::string bind_address = "127.0.0.1";
     int         listen_port  = 13000;
+    uint32_t    rpc_workers  = 4;
 
     // Node identity (64-bit; each diskio service manages one node).
     uint64_t node_id = 0;
@@ -68,11 +69,15 @@ struct DioConfig
 
     // Metrics logging. When metrics_interval_secs > 0, system metrics
     // (CPU, RSS, TCP, DRAM BW) are flushed to a log file every interval.
-    std::string metrics_log_dir = "log"; // directory for metrics log files
-    uint32_t    metrics_interval_secs = 5; // 0 disables metrics logging
+    std::string metrics_log_dir       = "log"; // directory for metrics log files
+    uint32_t    metrics_interval_secs = 5;     // 0 disables metrics logging
 
     // Parse CLI args. Returns true on success, false on error (msg in err).
     static bool parse_args(int argc, char *argv[], DioConfig &out, std::string &err);
+
+    // Overlay a TOML file on compiled defaults. Assignment to out is
+    // transactional: failures leave the caller's value unchanged.
+    static bool load_file(const std::string &path, DioConfig &out, std::string &err);
 
     // Validate the parsed config. Returns true on success.
     bool validate(std::string &err) const;

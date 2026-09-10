@@ -7,6 +7,8 @@
 //! routed KV group. Serialization uses prost (no Rust type duplication,
 //! design §3.8). The chunk ID (24 bytes) is the KV key.
 
+pub mod reservation;
+
 use std::sync::Arc;
 
 use tracing::warn;
@@ -37,8 +39,8 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 
 /// Chunk metadata store — persists `Chunk` records to CROWDB KV.
 pub struct ChunkStore {
-    kv: Arc<CrowdbKvClient>,
-    bindings: BindingCache,
+    pub(super) kv: Arc<CrowdbKvClient>,
+    pub(super) bindings: BindingCache,
 }
 
 impl ChunkStore {
@@ -167,6 +169,9 @@ impl ChunkStore {
                 }
             }
         }
+        chunks.sort_unstable_by_key(|chunk| chunk.id.map(|id| (id.high, id.low)));
+        chunks.dedup_by_key(|chunk| chunk.id);
+        chunks.truncate(usize::try_from(max_keys).unwrap_or(usize::MAX));
         Ok(chunks)
     }
 
@@ -188,7 +193,7 @@ impl ChunkStore {
 }
 
 /// Build the KV key for a chunk ID: `/chunk/<16-byte-id>`.
-fn chunk_key(id: &ChunkId) -> Vec<u8> {
+pub(super) fn chunk_key(id: &ChunkId) -> Vec<u8> {
     let mut key = Vec::with_capacity(23);
     key.extend_from_slice(b"/chunk/");
     key.extend_from_slice(&id.high.to_be_bytes());
@@ -197,7 +202,7 @@ fn chunk_key(id: &ChunkId) -> Vec<u8> {
 }
 
 /// Encode a `Chunk` to bytes (bincode).
-fn encode_chunk(chunk: &Chunk) -> Vec<u8> {
+pub(super) fn encode_chunk(chunk: &Chunk) -> Vec<u8> {
     bincode::serialize(chunk).expect("Chunk serialization")
 }
 

@@ -29,10 +29,11 @@ wrapper that also serves the crowdb-tree btree page store. It lives in
   - [3.6 Shared DiskIOUring in crowdb-common](#36-shared-diskiouring-in-crowdb-common)
 - [4. Architecture Overview](#4-architecture-overview)
 - [5. IoEngine Abstraction](#5-ioengine-abstraction)
-  - [5.1 UringEngine](#51-uringengine)
-  - [5.2 BlockingEngine](#52-blockingengine)
-  - [5.3 DummyDiskEngine](#53-dummydiskengine)
-  - [5.4 NullDisk and MemDisk](#54-nulldisk-and-memdisk)
+  - [5.1 AlignedWriter](#51-alignedwriter)
+  - [5.2 UringEngine](#52-uringengine)
+  - [5.3 BlockingEngine](#53-blockingengine)
+  - [5.4 DummyDiskEngine](#54-dummydiskengine)
+  - [5.5 NullDisk and MemDisk](#55-nulldisk-and-memdisk)
 - [6. Disk Model](#6-disk-model)
 - [7. DiskIOUring](#7-diskiouring)
   - [7.1 Architecture](#71-architecture)
@@ -259,7 +260,39 @@ class IoEngine {
 transferred, `<0` negative `-errno`. The RPC handler's callback
 resolves the request and calls `crowdb_rpc_server_submit_response`.
 
-### 5.1 UringEngine
+### 5.1 AlignedWriter
+
+`AlignedWriter` is the server-owned stage between the write RPC handler and a
+disk's `IoEngine`. Every write traverses it. `NullDisk` and `MemDisk` use a
+block size of one, so the same path delegates their writes without padding.
+
+For disks with larger blocks, the stage aligns the physical range and owns an
+aligned buffer until the backend completion callback runs. An aligned start
+with a partial tail copies the request bytes into a zero-initialized block and
+writes the padded range immediately. The zero source is a process-lifetime,
+pre-prepared buffer. The RPC completion reports the logical byte count only
+after the padded backend write completes in full.
+
+The stage caches the last partial physical block by disk and block offset.
+A sequential write beginning inside that block merges into the cached image.
+When the entry is absent, `AlignedWriter` warns, reads the physical block,
+merges the request, and writes it back. Failed and completed full-block writes
+invalidate affected partial entries. The bounded cache may evict an entry;
+the read-merge path preserves correctness after eviction or process restart.
+
+Writes are assigned to 64 shards by disk. Each shard has a bounded lock-free
+MPSC queue and one active consumer. This preserves submission and completion
+order for every overlapping range on one disk without a mutex. Different disks
+remain independently executable apart from hash collisions, which only
+serialize them. Queue saturation fails the request with `-EAGAIN`; it never
+drops a write silently.
+
+Concurrent overlapping writes are not a supported caller contract. As with
+raw `pwrite`, their final contents would otherwise depend on completion order.
+The chunk writers submit sequential updates to a segment and wait for each
+response before issuing the next overlapping update.
+
+### 5.2 UringEngine
 
 Linux only (`CROWDB_HAVE_LIBURING`). Owns a `crowdb::common::DiskIOUring`
 instance (one engine per diskio server). `O_DIRECT` aligned writes
@@ -273,7 +306,7 @@ calls `DiskIOUring::cancel_fd` — one SQE cancels all in-flight I/O on
 that fd via `IORING_ASYNC_CANCEL_FD` (kernel 6.0+). No per-disk
 in-flight tracking map; the kernel does the cancel lookup. See §7.6.
 
-### 5.2 BlockingEngine
+### 5.3 BlockingEngine
 
 macOS + non-liburing Linux. A dedicated C++ thread pool (configurable
 size, default 4 threads per disk) with `pwrite`/`pread` and
@@ -283,7 +316,7 @@ the completion callback. Correct semantics, lower performance (thread
 hop per I/O). Also used for `BlockDisk` without `O_DIRECT` (pwrite to
 a block device at an offset).
 
-### 5.3 DummyDiskEngine
+### 5.4 DummyDiskEngine
 
 The dummy-disk wrapper. `DummyDiskEngine` wraps a real `IoEngine`
 (`UringEngine` or `BlockingEngine`) and provides two features:
@@ -303,7 +336,7 @@ The dummy-disk wrapper. `DummyDiskEngine` wraps a real `IoEngine`
   Merged from the former `SimulatedEngine` — no separate wrapper
   engine needed.
 
-### 5.4 NullDisk and MemDisk
+### 5.5 NullDisk and MemDisk
 
 Two dummy disk types use different memory semantics:
 
@@ -591,21 +624,33 @@ handle three message types. Message type IDs are in the diskio range
 
 Each request's control message is a flatbuffer with
 `{disk_id, zone_index, zone_offset, size}` (read also has
-`test_pattern_offset`); the write request also carries a raw data
-payload of `size` bytes. The handler:
+`test_pattern_offset`); the write request additionally carries
+`allocation_ts` and `allocation_zone_offset`, plus a raw data payload of
+`size` bytes. The handler:
 1. Resolves `disk_id` to a `Disk` via `DiskSet`.
 2. Computes the physical offset: `zone.base_offset + zone_offset`.
-3. Calls `IoEngine::write`/`read`/`fsync` with the disk handle,
-   physical offset, buffer, and a completion callback.
+3. Calls `AlignedWriter::submit` for writes or `IoEngine::read`/`fsync` for
+   the other operations, with the disk handle, physical offset, buffer, and a
+   completion callback.
 4. The completion callback builds the response and calls
    `crowdb_rpc_server_submit_response`.
 
-The data payload is passed from the crowdb-rpc frame decoder directly to
-`IoEngine::write` — no copy between RPC receive and I/O submit. The
-read response includes the raw data payload.
+The data payload is passed from the crowdb-rpc frame decoder to
+`AlignedWriter`. Block-size-one writes remain zero-copy on the server; padded
+writes use one aligned server buffer. The read response includes the raw data
+payload.
+
+Fenced writes are serialized by allocation base within `AlignedWriter`. Before
+the first write for a newer nonzero `allocation_ts`, DiskIO drains earlier
+writes for that base, appends the new generation to its journal, and syncs the
+journal before submitting data. Any later request carrying an older generation
+returns `ESTALE`. The journal is replayed at startup, so an old delayed writer
+cannot overwrite a recycled extent after a DiskIO restart. A zero generation
+retains the legacy unfenced behavior for mixed-version compatibility.
 
 Flatbuffer schemas (`diskio.fbs`):
-- `DiskWriteRequest { disk_id, zone_index, zone_offset, size }`
+- `DiskWriteRequest { disk_id, zone_index, zone_offset, size, allocation_ts,
+  allocation_zone_offset }`
 - `DiskWriteResponse { ret_code }`
 - `DiskReadRequest { disk_id, zone_index, zone_offset, size, test_pattern_offset }`
   (`test_pattern_offset` used by NullDisk for deterministic content;
@@ -634,9 +679,10 @@ from the write path and publishes it atomically.
 
 `DiskioClient::write_bytes` retains the caller's owned `Bytes` allocation in
 the RPC buffer until completion. This avoids a client-side `Bytes` to `Vec`
-payload copy. On the server, the decoded payload continues directly into
-`IoEngine::write`, so no additional copy is introduced between RPC receive and
-I/O submission.
+payload copy. On the server, block-size-one and already aligned payloads can
+continue directly into `IoEngine::write`. Other writes are copied once into
+the server-owned aligned buffer that supplies padding and satisfies the
+`O_DIRECT` address-alignment requirement.
 
 A connection drop during a write is similar to a timeout: the client
 does not know the result (the I/O may still complete on the server —
@@ -670,33 +716,39 @@ the same data.
 - **I7 (partial write is error)**: A short write returns
   `IoError::PartialWrite` immediately. No internal retry. The caller
   decides the next action.
+- **I8 (partial-block preservation)**: Sequential writes to the same physical
+  block complete in submission order. An unaligned continuation merges with
+  the cached acknowledged block image. A cache miss reads and merges the
+  physical block before writing. A partial tail from an aligned start is
+  zero-padded and cached for the next continuation.
+- **I9 (backend alignment)**: Every backend write to a disk with block size
+  greater than one has aligned address, offset, and length.
+- **I10 (allocation incarnation)**: Once DiskIO durably installs generation
+  `g` for an allocation base, a write carrying a generation below `g` cannot
+  reach the backend, including after process restart.
 
 ## 11. Configuration
 
-- **node_id** — the node's ID (from group-0 sysdata).
-- **bind_address** — crowdb-rpc listen address + port.
-- **disk_list** — explicit disk list, or auto-discover from group-0
-  via `HardwareClient`. Disks with an empty `device_path` are dummy
-  disks (`NullDisk` or `MemDisk`).
-- **dummy_disk_type** — `null` (default, drop-write + pattern read)
-  or `mem` (store + read-back). Used when `device_path` is empty.
-- **engine** — auto-detected: `UringEngine` on Linux with liburing,
-  `BlockingEngine` otherwise. No user-configurable engine selection.
-- **thread_pool_size** — blocking engine thread count (default 4).
-- **o_direct** — toggle `O_DIRECT` for `BlockDisk` (default on).
-- **polling_mode** — pipeline polling mode: `classic`, `hybrid`,
-  `sqpoll` (default `hybrid` for `UringEngine`).
-- **busy_poll_budget** — consecutive empty peeks before transitioning
-  to event-wait in `Hybrid` mode.
-- **sq_thread_idle** — idle timeout for `Sqpoll` mode.
-- **sq_entries** — SQ ring size (default 256; 1024+ for high-IOPS SSD
-  pipelines; 2048+ for shared HDD pipelines).
-- **attach_wq** — share kernel io-wq across pipelines (default
-  `false`; opt-in when ≥2 NVMe or ≥2 SATA pipelines).
-- **fault_latency** — `min_ms:max_ms` latency injection for dummy
-  disks (testing only).
-- **fault_error_rate** — `0.0..1.0` error injection rate for dummy
-  disks (testing only).
+diskio accepts an optional typed TOML file through `--config`; explicit CLI
+options override file values according to the shared
+[`service configuration design`](../config/design-crowdb-config.md). Its
+sections are:
+
+- **`[server]`** — bind address, listen port, inbound RPC workers (default 4),
+  node ID, dummy-disk type, `O_DIRECT`, and optional fault injection. Worker
+  count must be positive and changes require restart.
+- **`[engine]`** — blocking thread-pool size and io_uring SQ entry count. The
+  backend remains auto-detected: `UringEngine` when available and
+  `BlockingEngine` otherwise.
+- **`[group0]`** — KV management seeds, instance/rack/disk-group identity,
+  synchronization interval, and disk auto-discovery.
+- **`[metrics]`** — log directory and collection interval.
+- **`[[disk]]`** — ordered disk ID, path, and single-zone capacity entries.
+  An empty path selects a `NullDisk` or `MemDisk`.
+
+Fault latency requires both minimum and maximum values with minimum not above
+maximum. Fault error rate is in `0.0..1.0`. Loading is transactional and the
+complete candidate is validated before the RPC listener or I/O engine starts.
 
 The server registers with the group-0 service registry on startup,
 reporting the diskio service is alive. Other services use this for

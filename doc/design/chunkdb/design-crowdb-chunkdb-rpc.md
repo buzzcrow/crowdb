@@ -6,8 +6,9 @@
 Depends on: [`design-crowdb-rpc.md`](../rpc/design-crowdb-rpc.md) §4.4, §5, §6; [`design-crowdb-chunkdb.md`](design-crowdb-chunkdb.md) §4
 Satisfies: [`design-crowdb-chunkdb.md`](design-crowdb-chunkdb.md) §4 (RPC layer)
 
-The chunkdb service (Allocate/Append/Query/Seal/Delete/DeleteRange/
-UpdateStrip/ListChunks) uses the **crowdb-rpc flatbuffer transport** — the
+The chunkdb service (Allocate/Append/AdvanceWrite/Query/Seal/Delete/DeleteRange/
+UpdateStrip/ListChunks plus replacement allocate/swap/discard) uses the
+**crowdb-rpc flatbuffer transport** — the
 same engine as the KV consensus hot path, on a dedicated port with a
 dedicated schema (`chunkdb.fbs`). The transport is selected
 programmatically (`ChunkdbClient::with_rpc_transport`). Architecture
@@ -65,14 +66,16 @@ namespace).
 - `FBStripBody` union — None, Mirror, Ec (the strip body union)
 - `FBChunkStrip` — `chunk_offset`, `strip_sequence`, `unit_kb`,
   `capacity`, `create_ts_ms`, `sealed_ts_ms`, `sealed_length`,
-  `strip_type`, `strip_body:FBStripBody`, `usage_bitmap:[ubyte]`
+  `strip_type`, `strip_body:FBStripBody`, `usage_bitmap:[ubyte]`, and
+  unavailable segment identities
 - `FBChunk` — `id:FBInt128`, `state`, `create_ts_ms`, `sealed_ts_ms`,
-  `capacity`, `sealed_length`, `strips:[FBChunkStrip]`, `chunk_type`
+  `capacity`, `sealed_length`, `strips:[FBChunkStrip]`, `chunk_type`,
+  monotonic next sequence, cleanup intents, and last replacement operation
 
 **Request/response tables:**
 
-All 8 request types follow the same shape: `id` + `rpc_create_nano`
-first, then the schema fields. All 8 response types carry `id` +
+All 12 request types follow the same shape: `id` + `rpc_create_nano`
+first, then the schema fields. All 12 response types carry `id` +
 `rpc_create_nano` + `ret_code` + `error_msg` + `range_start` +
 `range_end` (diagnostic for `NotMyRange`) + the response data.
 
@@ -82,11 +85,17 @@ separate `NotMyRangeHint` message.
 
 `UpdateChunkStripRequest` embeds a `FBChunkStrip` (the `strip` field).
 `ListChunksResponse` carries `chunks:[FBChunk]` +
-`next_token:FBInt128`.
+`next_token:FBInt128`. `QueryChunkResponse` also advertises the reader layout
+validity duration. Replacement requests carry tentative segment geometry,
+failed-disk exclusions, exact old/new strip ranges, expected revision, and a
+stable operation identity.
 
-**Message type IDs** (3300-3315 range):
+**Message type IDs** (3300-3323 range):
 
 - `EAllocateChunkRequest = 3300` … `EListChunksResponse = 3315`
+- `EAdvanceChunkWriteRequest = 3316` … `EAdvanceChunkWriteResponse = 3317`
+- `EAllocateReplacementSegmentRequest = 3318` …
+  `EDiscardReplacementSegmentResponse = 3323`
 
 **Build + re-exports:**
 
@@ -99,7 +108,7 @@ module + `chunkdb_fb` public re-export module.
 
 File: `lib/crowdb-protocol/src/fb_wrappers/chunkdb.rs`
 
-One `Ref` wrapper per response type (8 total). Each follows the
+Frequently accessed responses use a zero-copy `Ref` wrapper. Each follows the
 zero-copy pattern: parse the root pointer once, read fields through it
 without copying.
 
@@ -123,7 +132,7 @@ File: `app/crowdb-chunkdb/src/service/chunkdb_rpc_service.rs`
 
 The `ChunkdbRpcService` struct holds `Arc<LifecycleHandler>` + a
 `tokio::runtime::Handle`. The handler delegates to `LifecycleHandler`
-for all 8 RPCs — same logic as the crowdb-rpc `ChunkdbService`, different
+for all 12 RPCs — same lifecycle logic, different
 wire format. No transparent forwarding (chunkdb has no leader — range
 routing is client-side via `RangeBindingClient`).
 
@@ -169,7 +178,7 @@ The `RpcServer` is the client-side transport — it does not listen but
 establishes connections to remote endpoints. `conn_for(endpoint)`
 normalizes the endpoint, connects, and caches the `Connection`.
 
-8 `send_*` methods (one per RPC): build request flatbuffer →
+12 `send_*` methods (one per RPC): build request flatbuffer →
 `rpc.call(&server, &conn, req_id, control, None, msg_type)` →
 `fut.await` → parse response via `Ref` wrapper → map to the response
 type → return.

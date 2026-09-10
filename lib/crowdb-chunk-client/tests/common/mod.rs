@@ -95,4 +95,19 @@ impl DiskWriter for LocalFileDiskWriter {
         self.write_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
+
+    async fn write_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        if byte_offset % unit_bytes == 0 {
+            return self.write_at(seg, unit_bytes, byte_offset, data).await;
+        }
+        Err(IoError::WriteFailed(
+            "byte-offset writes not supported by this writer".into(),
+        ))
+    }
 }

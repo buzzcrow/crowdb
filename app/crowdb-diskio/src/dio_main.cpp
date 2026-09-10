@@ -205,7 +205,7 @@ int main(int argc, char *argv[])
     }
 
     // Create + start the RPC server.
-    crowdb::rpc::RpcServer server;
+    crowdb::rpc::RpcServer server(nullptr, 1, cfg.rpc_workers);
     if (!server.listen(cfg.bind_address, cfg.listen_port)) {
         std::fprintf(stderr, "error: failed to listen on %s:%d\n", cfg.bind_address.c_str(), cfg.listen_port);
         return 1;
@@ -215,8 +215,17 @@ int main(int argc, char *argv[])
                 disk_set->size());
     std::fflush(stdout);
 
+    std::error_code journal_dir_error;
+    std::filesystem::create_directories(cfg.metrics_log_dir, journal_dir_error);
+    if (journal_dir_error) {
+        std::fprintf(stderr, "error: failed to create DiskIO state directory %s: %s\n", cfg.metrics_log_dir.c_str(),
+                     journal_dir_error.message().c_str());
+        return 1;
+    }
+    std::string generation_journal =
+        cfg.metrics_log_dir + "/allocation-fence-" + std::to_string(cfg.instance_id) + ".journal";
     auto *transport  = server.transport();
-    auto  dio_server = std::make_unique<DiskioServer>(disk_set, transport);
+    auto  dio_server = std::make_unique<DiskioServer>(disk_set, transport, generation_journal);
     dio_server->register_handlers(server);
 
     server.start();

@@ -346,6 +346,21 @@ PORT=9920           # crowdb-web service port</code></pre>
 </ul>
 <p>  single-machine deployment (all nodes on localhost). For a real</p>
 <p>  multi-node cluster, use each machine's reachable hostname or IP.</p>
+<h3 id="server-configuration-files">Server configuration files</h3>
+<p>KV server, diskdb, chunkdb, and diskio use TOML startup configuration. Valid</p>
+<p>templates are shipped in each server's <code>conf/</code> directory. Values resolve in</p>
+<p>this order: compiled defaults, then file values, then CLI options that were</p>
+<p>explicitly supplied. A CLI option you omit does not erase its file value.</p>
+<p>KV server and diskio make <code>--config</code> optional; diskdb and chunkdb require a</p>
+<p>config path. A malformed, unreadable, or invalid named file stops startup</p>
+<p>instead of silently falling back to defaults. <code>server.rpc_workers</code> controls</p>
+<p>the inbound RPC worker count (default 2 for the Rust servers and 4 for diskio),</p>
+<p>must be positive, and takes effect only after restart. File watchers may report</p>
+<p>static changes before restart, but the active listener does not change.</p>
+<p>Console local deployment generates node-specific config files and reuses the</p>
+<p>same paths when restarting services. Keep manually managed files with the</p>
+<p>server's data and deployment records; group 0 currently stores topology, not</p>
+<p>process configuration.</p>
 <hr>
 <h2 id="1-quick-start-bootstrap-a-3-node-cluster">1. Quick Start: Bootstrap a 3-Node Cluster</h2>
 <h3 id="11-register-the-physical-topology">1.1 Register the physical topology</h3>

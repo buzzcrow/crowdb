@@ -18,7 +18,7 @@ use tracing::{debug, info, warn};
 use crowdb_kv::cluster::kv_server::KvServer;
 use crowdb_kv::cluster::local_replica::PxLocalReplicaRole;
 use crowdb_kv::cluster::px_kv_store::PxKvStore;
-use crowdb_kv::common::config::{CrowDBConfig, PxElectionConfig, ServerConfig};
+use crowdb_kv::common::config::{CrowDBConfig, ServerConfig};
 use crowdb_kv::metrics::MetricsRunner;
 
 use crowdb_kv_server::cli::{parse_id_list, parse_port_list, Cli};
@@ -105,23 +105,23 @@ async fn main() {
     info!("  ports               {:?}", args.ports.as_deref());
     info!("  management_addr     {}", args.management_addr);
     info!("  management_port     {}", args.management_port);
-    info!("  election_profile    {}", args.election_profile);
+    info!("  election_profile    {:?}", args.election_profile);
     info!("  kv_backend          {}", args.kv_backend);
     info!("  wal_backend         {}", args.wal_backend);
-    info!("  max_inflight        {}", args.max_inflight);
+    info!("  max_inflight        {:?}", args.max_inflight);
     info!("  coalesce_max_keys   {:?}", args.coalesce_max_keys);
-    info!("  peer_pool_size      {}", args.peer_pool_size);
+    info!("  peer_pool_size      {:?}", args.peer_pool_size);
     info!("  event_write         {}", args.event_write);
     info!("  enable_nagle        {}", args.enable_nagle);
     info!("  quickack            {}", args.quickack);
-    info!("  send_queue_capacity {}", args.send_queue_capacity);
-    info!("  rpc_workers         {}", args.rpc_workers);
+    info!("  send_queue_capacity {:?}", args.send_queue_capacity);
+    info!("  rpc_workers         {:?}", args.rpc_workers);
     info!("  no_fsync            {}", args.no_fsync);
 
     let bootstrap = parse_and_validate_cli_args(&args);
 
-    // Load config: from --config file (optional, first-boot tunables
-    // only). When omitted, use defaults. Paths are always derived from
+    // Load config: from --config file (optional startup tunables). When
+    // omitted, use defaults. Paths are always derived from
     // --root via apply_root (fixed on-disk layout).
     let mut config = match args.config.as_ref() {
         Some(path) => CrowDBConfig::load_from_file(path)
@@ -131,31 +131,19 @@ async fn main() {
     config.apply_root(&args.root);
 
     // CLI tunable overrides.
-    config.election = match args.election_profile.as_str() {
-        "test" => PxElectionConfig::for_tests(),
-        "e2e" => PxElectionConfig::for_e2e(),
-        _ => PxElectionConfig::DEFAULT,
-    };
     config.wal_backend = args.wal_backend.clone();
     config.crowtree_backend = args.kv_backend.clone();
     config.wal_skip_fsync = args.no_fsync;
-    config.paxos.max_inflight_proposals = args.max_inflight;
-    if let Some(max_keys) = args.coalesce_max_keys {
-        config.paxos.coalesce_max_keys = max_keys;
-    }
-    config.server.peer_pool_size = args.peer_pool_size;
-    config.server.enable_nagle = args.enable_nagle;
-    config.server.quickack = args.quickack;
-    config.server.event_write = args.event_write;
-    config.server.send_queue_capacity = args.send_queue_capacity;
+    args.apply_config_overrides(&mut config)
+        .unwrap_or_else(|e| panic!("invalid config after CLI overrides: {e}"));
 
     let registry = Arc::new(
-        KvStoreRegistry::with_config(config.clone())
-            .with_rpc_workers(args.rpc_workers)
-            .with_metrics_registry(metrics_runner.as_ref().map_or_else(
+        KvStoreRegistry::with_config(config.clone()).with_metrics_registry(
+            metrics_runner.as_ref().map_or_else(
                 || Arc::new(std::sync::Mutex::new(crowdb_kv::metrics::MetricsRegistry::new())),
                 |r| r.registry().clone(),
-            )),
+            ),
+        ),
     );
 
     // Spawn a config file watcher for diff logging. Only when --config is

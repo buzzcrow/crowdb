@@ -216,7 +216,7 @@ fn report(total: &mut TaskResult, input: &ReportInput<'_>) -> ExitCode {
         .unwrap_or(0);
     let stop_reason = if total.exhausted { "exhausted" } else { "deadline" };
     println!(
-        "diskdb bench mode={:?} workload={} stop={} elapsed={:.3}s ops={} ops_per_sec={} allocated={} freed={} live={} errors={} p50_us={} p99_us={} busy_delta={} expected_delta={}",
+        "diskdb bench mode={:?} workload={} stop={} elapsed={:.3}s ops={} ops_per_sec={} allocated={} freed={} live={} errors={} avg_us={} p50_us={} p99_us={} busy_delta={} expected_delta={}",
         input.args.mode,
         if input.mixed { "mix-70-30" } else { "allocate" },
         stop_reason,
@@ -227,6 +227,11 @@ fn report(total: &mut TaskResult, input: &ReportInput<'_>) -> ExitCode {
         total.freed,
         input.live.len(),
         total.errors,
+        if total.latency_ns.is_empty() {
+            0
+        } else {
+            total.latency_ns.iter().sum::<u64>() / total.latency_ns.len() as u64 / 1_000
+        },
         percentile(&total.latency_ns, 50) / 1_000,
         percentile(&total.latency_ns, 99) / 1_000,
         actual_delta,
@@ -356,6 +361,7 @@ async fn allocate_any_group(
                 high: u64::try_from(task_id).unwrap_or(u64::MAX),
                 low: sequence,
             }),
+            allow_disk_reuse: false,
         };
         match context.client.allocate_blocks(request).await {
             Ok(response) => return Ok(Some(response)),

@@ -23,9 +23,8 @@ pub struct Cli {
     #[arg(long)]
     pub root: std::path::PathBuf,
 
-    /// Optional TOML config for first-boot tunable overrides. Ignored in
-    /// restore mode (group 0 present on disk). When omitted, tunables use
-    /// `CrowDBConfig::default()`.
+    /// Optional TOML config for startup tunables in first-boot and restore modes.
+    /// When omitted, tunables use `CrowDBConfig::default()`.
     #[arg(long)]
     pub config: Option<std::path::PathBuf>,
 
@@ -69,8 +68,9 @@ pub struct Cli {
     #[arg(long)]
     pub log_stderr: Option<String>,
 
-    #[arg(long, default_value = "default", value_parser = ["default", "test", "e2e"])]
-    pub election_profile: String,
+    /// Named election preset. Overrides the complete `[election]` section.
+    #[arg(long, value_parser = ["default", "test", "e2e"])]
+    pub election_profile: Option<String>,
 
     /// Durable backend for the crowdb-tree engine. `file` (default) is the
     /// file-based page store (no alignment); `block` opens `data_root`'s
@@ -109,9 +109,10 @@ pub struct Cli {
 
     /// Maximum in-flight (allocated-but-not-chosen) proposals per group.
     /// Each proposal acquires one permit from the admission semaphore;
-    /// a full window fails fast with `Busy` instead of queuing. Default: 32.
-    #[arg(long, default_value_t = 32)]
-    pub max_inflight: usize,
+    /// a full window fails fast with `Busy` instead of queuing.
+    /// Overrides `paxos.max_inflight_proposals`.
+    #[arg(long)]
+    pub max_inflight: Option<usize>,
 
     /// R45 max ops per coalesced batch (capped at 65535). The leader
     /// event-batches concurrent single-key proposes into one multi-key
@@ -121,31 +122,31 @@ pub struct Cli {
 
     /// Number of crowdb-rpc connections per peer endpoint for inter-server
     /// consensus RPCs. Round-robined to distribute send-queue pressure.
-    /// Default: 2. Raise to 4 for high-concurrency benchmarks.
-    #[arg(long, default_value_t = 2)]
-    pub peer_pool_size: usize,
+    /// Overrides `server.peer_pool_size`.
+    #[arg(long)]
+    pub peer_pool_size: Option<usize>,
 
     /// Enable Nagle's algorithm (disable `TCP_NODELAY`) on RPC connections.
     /// Default: false (Nagle off). Nagle degrades Paxos latency.
-    #[arg(long, default_value_t = false)]
+    #[arg(long)]
     pub enable_nagle: bool,
 
     /// Enable `TCP_QUICKACK` on RPC connections (Linux only). Breaks the
     /// Nagle + delayed-ACK deadlock when Nagle is enabled. Default: false.
-    #[arg(long, default_value_t = false)]
+    #[arg(long)]
     pub quickack: bool,
 
     /// Event-write mode: `submit()` enqueues to the I/O worker instead of
     /// calling `writev()` directly. Coalesces multiple frames into one
     /// writev at the cost of ~20-40us epoll wake latency. Default: false.
     /// Enable for high-concurrency write workloads.
-    #[arg(long, default_value_t = false)]
+    #[arg(long)]
     pub event_write: bool,
 
-    /// Per-connection send queue capacity (backpressure bound). Default:
-    /// 4096. Raise if `enqueue_send` failures appear under load.
-    #[arg(long, default_value_t = 4096)]
-    pub send_queue_capacity: u32,
+    /// Per-connection send queue capacity (backpressure bound).
+    /// Overrides `server.send_queue_capacity`.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+    pub send_queue_capacity: Option<u32>,
 
     /// Instance ID for service-registry keep-alive. If omitted, a
     /// unique ID is generated at startup.
@@ -164,11 +165,58 @@ pub struct Cli {
     #[arg(long, default_value_t = 30)]
     pub binding_monitor_interval: u64,
 
-    /// Number of crowdb-rpc I/O worker threads. Default: 2. Lower values
+    /// Number of crowdb-rpc I/O worker threads. Overrides
+    /// `server.rpc_workers` from the config file. Lower values
     /// reduce scheduler contention under low-concurrency workloads (e.g.
     /// the management console driving a single-node test cluster).
-    #[arg(long, default_value_t = 2)]
-    pub rpc_workers: u32,
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+    pub rpc_workers: Option<u32>,
+}
+
+impl Cli {
+    /// Apply only explicitly supplied CLI values that overlap the TOML schema.
+    ///
+    /// # Errors
+    /// Returns the first complete-config validation error.
+    pub fn apply_config_overrides(
+        &self,
+        config: &mut crowdb_kv::common::config::CrowDBConfig,
+    ) -> Result<(), String> {
+        use crowdb_kv::common::config::PxElectionConfig;
+
+        if let Some(profile) = self.election_profile.as_deref() {
+            config.election = match profile {
+                "test" => PxElectionConfig::for_tests(),
+                "e2e" => PxElectionConfig::for_e2e(),
+                _ => PxElectionConfig::DEFAULT,
+            };
+        }
+        if let Some(max_inflight) = self.max_inflight {
+            config.paxos.max_inflight_proposals = max_inflight;
+        }
+        if let Some(max_keys) = self.coalesce_max_keys {
+            config.paxos.coalesce_max_keys = max_keys;
+        }
+        if let Some(peer_pool_size) = self.peer_pool_size {
+            config.server.peer_pool_size = peer_pool_size;
+        }
+        if self.enable_nagle {
+            config.server.enable_nagle = true;
+        }
+        if self.quickack {
+            config.server.quickack = true;
+        }
+        if self.event_write {
+            config.server.event_write = true;
+        }
+        if let Some(send_queue_capacity) = self.send_queue_capacity {
+            config.server.send_queue_capacity = send_queue_capacity;
+        }
+        if let Some(rpc_workers) = self.rpc_workers {
+            config.server.rpc_workers = rpc_workers;
+        }
+        crowdb_common::config::BaseConfig::validate(config)
+    }
 }
 
 /// Parse a comma-separated list of numbers and ranges into a `Vec<u64>`.

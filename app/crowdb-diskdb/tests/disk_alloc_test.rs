@@ -250,6 +250,16 @@ fn dg_allocate_blocks_no_space_when_count_exceeds_disks() {
 }
 
 #[test]
+fn dg_allocate_blocks_can_reuse_disks_between_affinity_passes() {
+    let dg = make_dg_with_disks(&[(1, 1, 128), (2, 1, 128)]);
+    let results = dg
+        .allocate_blocks_reusing_disks(1, 5, &[], CAS_RETRY, ZONE_ROTATE)
+        .expect("allocate 5");
+    assert_eq!(results.len(), 5);
+    assert_ne!(results[0].0.disk_id, results[1].0.disk_id);
+}
+
+#[test]
 fn dg_allocate_blocks_no_space_rolls_back_partial_claims() {
     let dg = make_dg_with_disks(&[(1, 1, 128), (2, 1, 128)]);
     let usage_before = dg.aggregate_usage();

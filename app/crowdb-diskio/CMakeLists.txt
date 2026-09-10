@@ -58,7 +58,8 @@ target_include_directories(crowdb-diskio-lib
   PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/crowdb-rpc-build/generated
 )
 find_package(Threads REQUIRED)
-target_link_libraries(crowdb-diskio-lib PUBLIC Threads::Threads crowdbcommon crowdb-rpc)
+find_package(tomlplusplus CONFIG REQUIRED)
+target_link_libraries(crowdb-diskio-lib PUBLIC Threads::Threads crowdbcommon crowdb-rpc tomlplusplus::tomlplusplus)
 
 # ── Binary ────────────────────────────────────────────────────────
 add_executable(crowdb-diskio ${CMAKE_CURRENT_SOURCE_DIR}/src/dio_main.cpp)

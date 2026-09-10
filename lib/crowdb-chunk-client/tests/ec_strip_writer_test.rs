@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use crowdb_chunk_client::{DiskWriter, EcStripWriter, Result};
+use crowdb_chunk_client::{DiskWriter, EcStripWriter, IoError, Result};
 use crowdb_common::ec::EcScheme;
 use crowdb_protocol::chunkdb::rpc::Strip as StripOneof;
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkStrip, ChunkType, EcStrip, StripType};
@@ -22,6 +22,21 @@ struct NoopDiskWriter;
 impl DiskWriter for NoopDiskWriter {
     async fn write(&self, _seg: &Segment, _unit_bytes: u64, _data: Bytes) -> Result<()> {
         Ok(())
+    }
+
+    async fn write_at_byte_offset(
+        &self,
+        seg: &Segment,
+        unit_bytes: u64,
+        byte_offset: u64,
+        data: Bytes,
+    ) -> Result<()> {
+        if byte_offset % unit_bytes == 0 {
+            return self.write_at(seg, unit_bytes, byte_offset, data).await;
+        }
+        Err(IoError::WriteFailed(
+            "byte-offset writes not supported by this writer".into(),
+        ))
     }
 }
 
@@ -56,6 +71,7 @@ fn make_chunk(unit_kb: u32, num_segments: usize) -> Arc<Chunk> {
             segments,
         })),
         usage_bitmap: Vec::new(),
+        unavailable_segments: Vec::new(),
     };
     Arc::new(Chunk {
         id: Some(ChunkId { high: 1, low: 1 }),
@@ -67,6 +83,13 @@ fn make_chunk(unit_kb: u32, num_segments: usize) -> Arc<Chunk> {
         sealed_length: 0,
         strips: vec![strip],
         chunk_type: ChunkType::Repo as i32,
+        writer_epoch: 0,
+        acknowledged_cursor: 0,
+        closed_strip_sequence: None,
+        writer_lease_deadline_ms: 0,
+        next_strip_sequence: 1,
+        cleanup_intents: vec![],
+        last_strip_replacement: None,
     })
 }
 

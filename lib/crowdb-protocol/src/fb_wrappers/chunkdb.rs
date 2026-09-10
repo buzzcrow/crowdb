@@ -11,9 +11,9 @@
 //! intermediate struct.
 
 use crate::chunkdb_fb::{
-    FBAllocateChunkResponse, FBAppendChunkResponse, FBChunk, FBChunkdbRetCode, FBDeleteChunkRangeResponse,
-    FBDeleteChunkResponse, FBListChunksResponse, FBQueryChunkResponse, FBSealChunkResponse,
-    FBUpdateChunkStripResponse,
+    FBAdvanceChunkWriteResponse, FBAllocateChunkResponse, FBAppendChunkResponse, FBChunk, FBChunkdbRetCode,
+    FBDeleteChunkRangeResponse, FBDeleteChunkResponse, FBListChunksResponse, FBQueryChunkResponse,
+    FBSealChunkResponse, FBUpdateChunkStripResponse,
 };
 use flatbuffers::Vector;
 
@@ -24,6 +24,45 @@ use super::parse_root;
 /// Check if `ret_code` is `Success`.
 fn is_ok(code: FBChunkdbRetCode) -> bool {
     code == FBChunkdbRetCode::Success
+}
+
+// ── FBAdvanceChunkWriteResponseRef ──────────────────────────────
+
+/// Zero-copy view over an `FBAdvanceChunkWriteResponse` control buffer.
+pub struct FBAdvanceChunkWriteResponseRef<'a> {
+    root: Option<FBAdvanceChunkWriteResponse<'a>>,
+}
+
+impl<'a> FBAdvanceChunkWriteResponseRef<'a> {
+    pub fn new(buf: &'a [u8]) -> Self {
+        Self {
+            root: parse_root::<FBAdvanceChunkWriteResponse>(buf),
+        }
+    }
+    pub fn valid(&self) -> bool {
+        self.root.is_some()
+    }
+    pub fn ret_code(&self) -> FBChunkdbRetCode {
+        self.root.map_or(FBChunkdbRetCode::Internal, |r| r.ret_code())
+    }
+    pub fn error_msg(&self) -> Option<&'a str> {
+        self.root.and_then(|r| r.error_msg())
+    }
+    pub fn request_id(&self) -> Option<u64> {
+        self.root.map(|r| r.id())
+    }
+    pub fn ok(&self) -> bool {
+        self.root.is_some_and(|r| is_ok(r.ret_code()))
+    }
+    pub fn range_start(&self) -> u32 {
+        self.root.map_or(0, |r| r.range_start())
+    }
+    pub fn range_end(&self) -> u32 {
+        self.root.map_or(0, |r| r.range_end())
+    }
+    pub fn chunk(&self) -> Option<FBChunk<'a>> {
+        self.root.and_then(|r| r.chunk())
+    }
 }
 
 // ── FBAllocateChunkResponseRef ───────────────────────────────────
@@ -148,6 +187,9 @@ impl<'a> FBQueryChunkResponseRef<'a> {
     }
     pub fn chunk(&self) -> Option<FBChunk<'a>> {
         self.root.and_then(|r| r.chunk())
+    }
+    pub fn layout_validity_ms(&self) -> u64 {
+        self.root.map_or(0, |r| r.layout_validity_ms())
     }
 }
 

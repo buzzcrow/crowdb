@@ -19,15 +19,14 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bytes::Bytes;
-use tokio::task::JoinHandle;
-
 use crate::chunk::parity_writer::spawn_parity_writes;
+use crate::chunk::segment_writer::{spawn_segment_write, SegmentWriteHandle};
 use crate::chunk::strip::StripResult;
 use crate::disk_io::DiskWriter;
 use crate::io::FeedStatus;
 use crate::worker::EcWorker;
 use crate::{IoError, Result};
+use bytes::Bytes;
 use crowdb_common::ec::EcScheme;
 use crowdb_diskio_client::DiskId;
 use crowdb_protocol::chunkdb::rpc::Strip as StripOneof;
@@ -46,7 +45,7 @@ pub struct EcStripWriter {
     pub(crate) bytes_written: u64,
     pub(crate) partial: bool,
     pub(crate) finished: bool,
-    pub(crate) data_handles: Vec<JoinHandle<Result<()>>>,
+    pub(crate) data_handles: Vec<SegmentWriteHandle>,
 }
 
 impl EcStripWriter {
@@ -162,11 +161,15 @@ impl EcStripWriter {
 
         // Submit the independent durable write without serializing the next
         // shard on its completion. A strip owns at most data_num handles.
+        let strip_sequence = self.strip()?.strip_sequence;
         let seg = *self.segment(self.next_block)?;
-        let disk_writer = self.disk_writer.clone();
-        self.data_handles.push(tokio::spawn(async move {
-            disk_writer.write(&seg, unit_bytes, buffer).await
-        }));
+        self.data_handles.push(spawn_segment_write(
+            self.disk_writer.clone(),
+            strip_sequence,
+            seg,
+            unit_bytes,
+            buffer,
+        ));
 
         self.next_block += 1;
         self.data_blocks_written += 1;

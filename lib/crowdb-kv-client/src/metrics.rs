@@ -377,7 +377,7 @@ impl ClientMetrics {
             ("client.get.lh", &snap.get),
             ("client.delete.lh", &snap.delete),
             ("client.scan.lh", &snap.scan),
-            ("client.batch_write.lh", &snap.batch_write),
+            ("client.batch.lh", &snap.batch_write),
         ];
         let active: Vec<(&str, &PreciseHistogram)> =
             entries.iter().filter(|(_, h)| !h.is_empty()).copied().collect();

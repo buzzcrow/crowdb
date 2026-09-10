@@ -18,10 +18,13 @@ use tokio::task::JoinHandle;
 use tracing::warn;
 
 use crate::chunk::ec_strip_writer::EcStripWriter;
+use crate::chunk::segment_writer::{FailedSegmentWrite, SegmentRepair};
 use crate::chunk::strip::{StripResult, StripWriter};
 use crate::config::ChunkClientConfig;
 use crate::disk_io::DiskWriter;
 use crate::io::FeedStatus;
+use crate::metrics::LargeWriteRepairMetrics;
+use crate::negative_list::FailedDiskList;
 use crate::traits::ChunkAllocator;
 use crate::{IoError, Result};
 use crowdb_common::ec::EcScheme;
@@ -47,13 +50,15 @@ pub struct ChunkWriter {
     pub(crate) object_size: Option<u64>,
     pub(crate) strips_remaining: Option<usize>,
     pub(crate) current_strip: Option<StripWriter>,
-    pub(crate) completion_handles: VecDeque<JoinHandle<Result<()>>>,
+    pub(crate) completion_handles: VecDeque<JoinHandle<Result<Vec<FailedSegmentWrite>>>>,
     pub(crate) prefetch_handle: Option<JoinHandle<()>>,
     pub(crate) prefetch_rx: Option<mpsc::Receiver<Result<Chunk>>>,
     pub(crate) preparation_stalls: u64,
     pub(crate) preparation_stall_time: Duration,
     pub(crate) ec_encode_time: Duration,
     pub(crate) completion_wait_time: Duration,
+    pub(crate) failed_disks: Arc<FailedDiskList>,
+    pub(crate) repair_metrics: Arc<LargeWriteRepairMetrics>,
 }
 
 impl ChunkWriter {
@@ -63,6 +68,24 @@ impl ChunkWriter {
         disk_writer: Arc<dyn DiskWriter>,
         ec_scheme: EcScheme,
         config: Arc<ChunkClientConfig>,
+    ) -> Self {
+        Self::new_with_repair(
+            allocator,
+            disk_writer,
+            ec_scheme,
+            config,
+            Arc::new(FailedDiskList::new(Duration::from_secs(60))),
+            Arc::new(LargeWriteRepairMetrics::default()),
+        )
+    }
+
+    pub(crate) fn new_with_repair(
+        allocator: Arc<dyn ChunkAllocator>,
+        disk_writer: Arc<dyn DiskWriter>,
+        ec_scheme: EcScheme,
+        config: Arc<ChunkClientConfig>,
+        failed_disks: Arc<FailedDiskList>,
+        repair_metrics: Arc<LargeWriteRepairMetrics>,
     ) -> Self {
         Self {
             allocator,
@@ -82,6 +105,8 @@ impl ChunkWriter {
             preparation_stall_time: Duration::ZERO,
             ec_encode_time: Duration::ZERO,
             completion_wait_time: Duration::ZERO,
+            failed_disks,
+            repair_metrics,
         }
     }
 
@@ -306,14 +331,22 @@ impl ChunkWriter {
                 let Ok(permit) = tx.reserve().await else {
                     break;
                 };
-                let result = append_strip(&*allocator, chunk, ec_scheme).await;
+                let runway = strips_per_chunk.saturating_sub(next_strip_index);
+                let requested = u32::try_from(config.prefetch_strips_per_chunk).unwrap_or(u32::MAX);
+                let remaining =
+                    strips_remaining.map_or(u32::MAX, |value| u32::try_from(value).unwrap_or(u32::MAX));
+                let strip_count = requested.min(runway).min(remaining);
+                if strip_count == 0 {
+                    break;
+                }
+                let result = append_strips(&*allocator, chunk, ec_scheme, strip_count).await;
                 match result {
                     Ok(new_chunk) => {
                         chunk = new_chunk.clone();
                         permit.send(Ok(new_chunk));
-                        next_strip_index += 1;
+                        next_strip_index = next_strip_index.saturating_add(strip_count);
                         if let Some(remaining) = strips_remaining.as_mut() {
-                            *remaining = remaining.saturating_sub(1);
+                            *remaining = remaining.saturating_sub(strip_count as usize);
                         }
                     }
                     Err(e) => {
@@ -343,12 +376,16 @@ impl ChunkWriter {
         let handles = std::mem::take(&mut strip_result.completion_handles);
         if !handles.is_empty() {
             self.completion_handles.push_back(tokio::spawn(async move {
+                let mut failures = Vec::new();
                 for handle in handles {
-                    handle.await.map_err(|error| {
-                        IoError::Internal(format!("strip write task panicked: {error}"))
-                    })??;
+                    if let Some(failure) = handle
+                        .await
+                        .map_err(|error| IoError::Internal(format!("strip write task panicked: {error}")))?
+                    {
+                        failures.push(failure);
+                    }
                 }
-                Ok(())
+                Ok(failures)
             }));
         }
         Ok(strip_result)
@@ -362,9 +399,7 @@ impl ChunkWriter {
                 .completion_handles
                 .pop_front()
                 .ok_or_else(|| IoError::Internal("missing write completion".into()))?;
-            handle
-                .await
-                .map_err(|error| IoError::Internal(format!("strip completion task panicked: {error}")))??;
+            self.finish_completion(handle).await?;
             self.completion_wait_time += started.elapsed();
         }
         Ok(())
@@ -398,7 +433,7 @@ impl ChunkWriter {
             .as_deref()
             .cloned()
             .ok_or_else(|| IoError::Internal("append_strip with no open chunk".into()))?;
-        append_strip(&*self.allocator, chunk, self.ec_scheme).await
+        append_strips(&*self.allocator, chunk, self.ec_scheme, 1).await
     }
 
     /// Seal the chunk: finish the current strip (if open with data),
@@ -423,20 +458,16 @@ impl ChunkWriter {
         let location = match chunk_id {
             Some(cid) if bytes_in_chunk > 0 => {
                 // Join all in-flight writes before sealing.
-                let handles = std::mem::take(&mut self.completion_handles);
                 let wait_started = Instant::now();
-                for handle in handles {
-                    handle
-                        .await
-                        .map_err(|e| IoError::Internal(format!("parity task panicked: {e}")))??;
+                while let Some(handle) = self.completion_handles.pop_front() {
+                    self.finish_completion(handle).await?;
                 }
                 self.completion_wait_time += wait_started.elapsed();
-                let unit_bytes = u64::from((self.config.read_buffer_size / 1024) as u32) * 1024;
-                let sealed_length_units = (bytes_in_chunk / unit_bytes) as u32;
+                let sealed_length_kb = bytes_in_chunk.div_ceil(1024) as u32;
                 self.allocator
                     .seal_chunk(SealChunkRequest {
                         chunk_id: Some(cid),
-                        seal_length: sealed_length_units,
+                        seal_length: sealed_length_kb,
                     })
                     .await?;
                 ProtoLocation {
@@ -467,6 +498,28 @@ impl ChunkWriter {
         };
 
         Ok(location)
+    }
+
+    async fn finish_completion(&mut self, handle: JoinHandle<Result<Vec<FailedSegmentWrite>>>) -> Result<()> {
+        let failures = handle
+            .await
+            .map_err(|error| IoError::Internal(format!("strip completion task panicked: {error}")))??;
+        let Some(chunk_id) = self.current_chunk_id() else {
+            return Err(IoError::Internal(
+                "segment write failed without an active chunk".into(),
+            ));
+        };
+        for failure in failures {
+            let repair = SegmentRepair {
+                allocator: &self.allocator,
+                disk_writer: &self.disk_writer,
+                failed_disks: &self.failed_disks,
+                metrics: &self.repair_metrics,
+                attempts: self.config.large_write_repair_attempts,
+            };
+            self.chunk = Some(Arc::new(repair.repair(chunk_id, failure).await?));
+        }
+        Ok(())
     }
 
     /// Abort: cancel in-flight parity writes, stop the strip-prefetch
@@ -548,17 +601,35 @@ fn compute_strips_remaining(
 /// Append one strip and merge the incremental response into the local chunk.
 /// A stale revision response carries the current full chunk; retry once with
 /// that revision so concurrent metadata changes do not duplicate an append.
-async fn append_strip(chunkdb: &dyn ChunkAllocator, mut chunk: Chunk, ec_scheme: EcScheme) -> Result<Chunk> {
+async fn append_strips(
+    chunkdb: &dyn ChunkAllocator,
+    mut chunk: Chunk,
+    ec_scheme: EcScheme,
+    strip_count: u32,
+) -> Result<Chunk> {
     let chunk_id = chunk
         .id
         .ok_or_else(|| IoError::AllocationFailed("append_chunk: chunk missing id".into()))?;
+    let unit_count = chunk
+        .strips
+        .first()
+        .and_then(|strip| match strip.strip.as_ref() {
+            Some(crowdb_protocol::chunkdb::rpc::Strip::EcStrip(ec)) => ec.segments.first(),
+            Some(crowdb_protocol::chunkdb::rpc::Strip::MirrorStrip(mirror)) => mirror.segments.first(),
+            None => None,
+        })
+        .map(|segment| segment.unit_count)
+        .filter(|count| *count > 0)
+        .ok_or_else(|| {
+            IoError::AllocationFailed("append_chunk: existing strip has no segment geometry".into())
+        })?;
     for attempt in 0..2 {
         let resp = chunkdb
             .append_chunk(AppendChunkRequest {
                 chunk_id: Some(chunk_id),
                 modify_ts: chunk.modify_ts,
-                strip_size: ec_scheme.data_num as u32,
-                strip_count: 1,
+                strip_size: unit_count,
+                strip_count,
                 strip_type: StripType::Ec as i32,
                 data_num: ec_scheme.data_num as u32,
                 code_num: ec_scheme.code_num as u32,

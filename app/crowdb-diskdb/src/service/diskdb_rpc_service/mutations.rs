@@ -1,5 +1,5 @@
 use super::{
-    alloc, build_allocate_response, build_commit_response, build_free_response, elapsed_ns, map_free_error,
+    alloc, build_allocate_response, build_commit_response, build_free_response, map_free_error,
     mutation_gate, parse_segments, submit_error, submit_fb_response, AllocError, AllocateParams, Arc,
     ChunkId, DiskId, DiskdbRpcService, FBAllocateBlocksRequest, FBCommitBlocksRequest, FBDiskdbRetCode,
     FBFreeBlocksRequest, FBMsgType, RequestGuard, RpcServer, ServerRequest, MAX_ALLOCATE_COUNT,
@@ -33,6 +33,7 @@ impl DiskdbRpcService {
                 params.unit_count,
                 params.count,
                 &params.exclude_disks,
+                params.allow_disk_reuse,
                 &params.owner_chunk,
                 params.unit_size,
                 &kv,
@@ -46,7 +47,6 @@ impl DiskdbRpcService {
                 Ok(segments) => {
                     request.mark_success();
                     metrics.allocate_total.inc();
-                    let response_start = std::time::Instant::now();
                     let ctrl = build_allocate_response(
                         req_id,
                         create_nano,
@@ -54,9 +54,6 @@ impl DiskdbRpcService {
                         None,
                         &segments,
                     );
-                    metrics
-                        .allocate_response_build_latency
-                        .observe(elapsed_ns(response_start));
                     submit_fb_response(&server, conn_handle, ctrl, msg_type, req_id);
                 }
                 Err(AllocError::NoSpace) => {
@@ -138,6 +135,7 @@ impl DiskdbRpcService {
             unit_count,
             count,
             exclude_disks,
+            allow_disk_reuse: fb_req.allow_disk_reuse(),
             owner_chunk,
             unit_size: self.storage.block_size_bytes,
             cas_retry_limit: self.storage.cas_retry_limit,

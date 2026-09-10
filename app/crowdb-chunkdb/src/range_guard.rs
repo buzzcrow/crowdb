@@ -168,10 +168,39 @@ impl RangeGuard {
         (**self.owned.load()).clone()
     }
 
+    /// Number of owned buckets. Empty allow-all mode represents the complete
+    /// 16-bit space; empty fail-closed mode owns none.
+    #[must_use]
+    pub fn owned_bucket_count(&self) -> u64 {
+        let ranges = self.owned.load();
+        if ranges.is_empty() {
+            return if self.allow_all_when_empty { 65_536 } else { 0 };
+        }
+        ranges
+            .iter()
+            .map(|range| u64::from(range.end) - u64::from(range.start) + 1)
+            .sum::<u64>()
+            .min(65_536)
+    }
+
+    /// Deterministic share of a cluster-wide quantity proportional to owned
+    /// hash buckets. Disjoint range owners' shares sum to at most `total`.
+    #[must_use]
+    pub fn quota_share(&self, total: u64) -> u64 {
+        let scaled = u128::from(total).saturating_mul(u128::from(self.owned_bucket_count())) / 65_536;
+        u64::try_from(scaled).unwrap_or(u64::MAX)
+    }
+
     /// Check if the guard has any owned ranges loaded.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.owned.load().is_empty()
+    }
+
+    /// Whether mutating RPCs can be admitted under the current policy.
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        self.allow_all_when_empty || !self.is_empty()
     }
 }
 
@@ -274,7 +303,10 @@ mod tests {
     fn is_empty_true_then_false_after_replace() {
         let guard = RangeGuard::new(false);
         assert!(guard.is_empty());
+        assert!(!guard.is_ready());
         guard.replace(vec![owned(0, 100)]);
         assert!(!guard.is_empty());
+        assert!(guard.is_ready());
+        assert!(RangeGuard::allow_all().is_ready());
     }
 }

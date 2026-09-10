@@ -73,6 +73,7 @@ async fn allocate_commit_and_free_through_client() {
                         count: 1,
                         exclude_disk_ids: vec![],
                         owner_chunk: Some(make_chunk_id(1, task_id)),
+                        allow_disk_reuse: false,
                     })
                     .await
                     .expect("concurrent route-cache allocation");
@@ -101,6 +102,7 @@ async fn allocate_commit_and_free_through_client() {
         count: 3,
         exclude_disk_ids: vec![],
         owner_chunk: Some(owner),
+        allow_disk_reuse: false,
     };
     let alloc_resp = client
         .allocate_blocks(alloc_req)
@@ -300,6 +302,7 @@ async fn allocate_commit_and_free_through_client() {
         count: 3,
         exclude_disk_ids: vec![],
         owner_chunk: Some(reclaim_owner),
+        allow_disk_reuse: false,
     };
     let reclaim_resp = client
         .allocate_blocks(reclaim_req)

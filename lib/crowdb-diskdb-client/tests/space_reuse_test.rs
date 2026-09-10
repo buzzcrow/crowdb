@@ -136,6 +136,7 @@ fn request(count: u32, sequence: u64) -> AllocateBlocksRequest {
         count,
         exclude_disk_ids: Vec::new(),
         owner_chunk: Some(make_chunk_id(1, sequence)),
+        allow_disk_reuse: false,
     }
 }
 

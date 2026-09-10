@@ -91,7 +91,7 @@ run_bench() {
     config_file=$(cat "$LOG_ROOT/${deploy}.cfgpath" 2>/dev/null || echo "")
     if [ -z "$config_file" ] || [ ! -f "$config_file" ]; then
         echo "    ERROR: no config for deploy '$deploy'"
-        echo -e "$label\t0\t0\t0\t0\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0" >> "$RESULTS_FILE"
+        echo -e "$label\t0\t0\t0\t0\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0" >> "$RESULTS_FILE"
         return
     fi
     # RSS before clean (measures leftover from prior sub-test).
@@ -103,7 +103,7 @@ run_bench() {
     local clean_json; clean_json=$(echo "$clean_out" | sed -n '/^{/,/^}/p')
     if [ -z "$clean_json" ] || ! echo "$clean_json" | jq -e '.new_leader' >/dev/null 2>&1; then
         echo "    ERROR: clean failed"; echo "$clean_out" | tail -5
-        echo -e "$label\t0\t0\t0\t0\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0" >> "$RESULTS_FILE"
+        echo -e "$label\t0\t0\t0\t0\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0" >> "$RESULTS_FILE"
         return
     fi
     # RSS after clean (measures how much memory clean actually freed).
@@ -120,16 +120,17 @@ run_bench() {
     local json; json=$(echo "$output" | sed -n '/^{/,/^}/p')
     if [ -z "$json" ]; then
         echo "    ERROR: no JSON output"; echo "$output" | tail -5
-        echo -e "$label\t0\t0\t0\t0\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0" >> "$RESULTS_FILE"
+        echo -e "$label\t0\t0\t0\t0\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0" >> "$RESULTS_FILE"
         return
     fi
     # RSS after workload (measures how much the workload grew RSS).
     local rss_post_bench; rss_post_bench=$(sample_rss "$config_file" "post-bench")
     local bench_delta=$((rss_post_bench - rss_post_clean))
     echo "    rss bench delta: +${bench_delta}MB (post-bench - post-clean)"
-    local ops_s p50_us p99_us errors wal total_ops
+    local ops_s avg_us p50_us p99_us errors wal total_ops
     total_ops=$(echo "$json" | jq -r '.total_ops')
     ops_s=$(echo "$json" | jq -r '.total_ops * 1000 / .duration_ms' | awk '{printf "%.0f", $1}')
+    avg_us=$(echo "$json" | jq -r '.by_op.write.latency_us.avg_us')
     p50_us=$(echo "$json" | jq -r '.by_op.write.latency_us.p50_us')
     p99_us=$(echo "$json" | jq -r '.by_op.write.latency_us.p99_us')
     errors=$(echo "$json" | jq -r '.total_errors')
@@ -156,11 +157,11 @@ run_bench() {
     inflight_wait=$(echo "$json" | jq -r '.server_metrics.inflight_wait_avg_us // 0')
     local co_factor
     co_factor=$(awk "BEGIN { if ($wal_per_node > 0) printf \"%.1f\", $total_ops / $wal_per_node }")
-    echo "    ops/s=$ops_s wal/node=$wal_per_node co=${co_factor}/${COALESCE} p50=${p50_us}us p99=${p99_us}us err=$errors"
+    echo "    ops/s=$ops_s wal/node=$wal_per_node co=${co_factor}/${COALESCE} avg=${avg_us}us p50=${p50_us}us p99=${p99_us}us err=$errors"
     echo "    rpc_agg: srv sagg=${srv_sa} ragg=${srv_ra} s2w=${srv_s2w}us | cli sagg=${cli_sa} ragg=${cli_ra} s2w=${cli_s2w}us"
     echo "    replica: r2=${r2_avg}us/${r2_tps}tps r3=${r3_avg}us/${r3_tps}tps"
     echo "    inflight: enq=${inflight_enq} wait_avg=${inflight_wait}us"
-    echo -e "$label\t$WIN\t$COALESCE\t${RPC_WORKERS:-2}\t$ops_s\t$wal_per_node\t$p50_us\t$p99_us\t$errors\t$srv_sa\t$srv_ra\t$cli_sa\t$cli_ra\t$r2_avg\t$r2_tps\t$r3_avg\t$r3_tps\t$inflight_enq\t$inflight_wait" >> "$RESULTS_FILE"
+    echo -e "$label\t$WIN\t$COALESCE\t${RPC_WORKERS:-2}\t$ops_s\t$wal_per_node\t$avg_us\t$p50_us\t$p99_us\t$errors\t$srv_sa\t$srv_ra\t$cli_sa\t$cli_ra\t$r2_avg\t$r2_tps\t$r3_avg\t$r3_tps\t$inflight_enq\t$inflight_wait" >> "$RESULTS_FILE"
 }
 
 # deploy_group <name> <win> <coalesce> <rpc_workers>
@@ -277,7 +278,7 @@ teardown_group() {
 echo "=== building release (CROWDB_ASAN unset) ==="
 pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server 2>&1 | tail -3
 
-echo -e "label\twin\tcoalesce\tworkers\tops_s\twal_per_node\tp50_us\tp99_us\terrors\tsrv_sagg\tsrv_ragg\tcli_sagg\tcli_ragg\tr2_avg\tr2_tps\tr3_avg\tr3_tps\tinflight_enq\tinflight_wait_us" > "$RESULTS_FILE"
+echo -e "label\twin\tcoalesce\tworkers\tops_s\twal_per_node\tavg_us\tp50_us\tp99_us\terrors\tsrv_sagg\tsrv_ragg\tcli_sagg\tcli_ragg\tr2_avg\tr2_tps\tr3_avg\tr3_tps\tinflight_enq\tinflight_wait_us" > "$RESULTS_FILE"
 
 # Group A: win=32, coalesce=16 (5 sub-tests, workers=2 except 128T+)
 if [ -z "$CASES" ] || [[ "$CASES" == *"win32_coales16"* ]]; then

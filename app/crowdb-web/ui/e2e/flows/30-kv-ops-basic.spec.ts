@@ -3,7 +3,7 @@
 // Baseline: 1.2s (2026-08-16)
 
 import { test, expect, consoleBaseURL } from '../fixtures/realBackend';
-import { addGroup, createStore, deployNodeServer, freePort, seedRackAndNode, stopNodeServer, waitForLeader } from '../fixtures/consoleSetup';
+import { addGroup, createStore, deployNodeServer, freePort, resetAll, seedRackAndNode, stopNodeServer, waitForLeader } from '../fixtures/consoleSetup';
 import { step } from '../fixtures/stepTimer';
 
 // One rack/node/server/store/group shared by every test in this file
@@ -30,8 +30,10 @@ async function putKey(page: any, key: string, value: string) {
 
 test.describe('kv ops · put/get/scan/delete', () => {
   test.beforeAll(async () => {
-    // Stop any leftover server from a prior run, then deploy fresh.
-    await step('kv: stop leftover server', () => stopNodeServer(apiBase, 9));
+    // Reset the cluster so a re-run (e.g. worker restart) deploys fresh:
+    // stopNodeServer alone keeps the config entry, which makes the next
+    // deployNodeServer fail with 409 "already hosts a deployed server".
+    await step('kv: resetAll', () => resetAll(apiBase));
     try {
       await step('kv: seed rack/node', () => seedRackAndNode(apiBase, 9, 9));
     } catch (err) {
