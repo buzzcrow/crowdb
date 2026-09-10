@@ -49,6 +49,21 @@ R142 partitions and publishes one complete group-0 range catalog.
 - [ ] Run every required Rust and server gate through `pixi run`.
 - [x] Fold stable behavior into a permanent server design and index entry.
 
+## Gate Results
+
+- `cargo fmt --all -- --check`: passed.
+- `rs-lint`: passed for the full workspace.
+- `crowdb-kv-client`, `crowdb-chunk-kv`, `crowdb-chunk-kv-server`,
+  `crowdb-chunkdb`, and `crowdb-diskdb` all-target test gates: passed.
+- The first aggregate `test-server` run failed only
+  `reconfig_via_api_remove_leader` on a transport timeout; the exact clean-env
+  retry passed.
+- The second aggregate run passed KV server, diskdb, diskdb-client, and chunkdb,
+  then exposed three chunk-client cross-test failures: one stale lifecycle state
+  and two fixture startup/port conflicts. Each exact test passed independently
+  after `clean-env`. These failures are pre-existing suite isolation behavior;
+  R143 changes do not touch those paths.
+
 ## Open Issues
 
 - Production R142 constructors and ordered operations constrain full data-plane
