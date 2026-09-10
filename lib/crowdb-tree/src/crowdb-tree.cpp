@@ -19,6 +19,7 @@
 #include <map>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace crowdb::tree
@@ -35,6 +36,134 @@ buffer cell_of(Slice s)
         std::memcpy(b.data(), s.data(), s.size());
     }
     return b;
+}
+
+Status validate_native_snapshot_graph(const std::vector<NativeFrame> &frames, uint64_t root_page_id)
+{
+    std::unordered_map<uint64_t, const NativeFrame *> by_id;
+    by_id.reserve(frames.size());
+    for (const NativeFrame &frame : frames) {
+        const uint64_t stored_page_id =
+            frame.frame.empty() ? kInvalidPageId : frame_u64(frame.frame.data(), fh::kSelfpage_id);
+        if (frame.page_id == kInvalidPageId || frame.frame.empty() ||
+            (stored_page_id != kInvalidPageId && stored_page_id != frame.page_id) ||
+            !by_id.emplace(frame.page_id, &frame).second) {
+            return Status::corruption("native snapshot: duplicate, invalid, or mismatched page ID");
+        }
+    }
+    const auto root = by_id.find(root_page_id);
+    if (root == by_id.end() || frame_page_type(root->second->frame.data()) == page_type::kOverflowFrame) {
+        return Status::corruption("native snapshot: root page is missing or has an invalid type");
+    }
+
+    struct Bounds
+    {
+        std::optional<std::string> lower;
+        std::optional<std::string> upper;
+    };
+
+    std::unordered_set<uint64_t>              reached;
+    std::unordered_set<uint64_t>              active;
+    std::unordered_set<uint64_t>              overflow_reached;
+    std::vector<const NativeFrame *>          leaves;
+    std::function<Status(uint64_t, Bounds *)> walk = [&](uint64_t page_id, Bounds *bounds) -> Status {
+        if (active.contains(page_id) || reached.contains(page_id)) {
+            return Status::corruption("native snapshot: cyclic or multiply referenced tree page");
+        }
+        const auto found = by_id.find(page_id);
+        if (found == by_id.end()) {
+            return Status::corruption("native snapshot: missing child page");
+        }
+        const NativeFrame &frame = *found->second;
+        const page_type    type  = frame_page_type(frame.frame.data());
+        if (type == page_type::kOverflowFrame) {
+            return Status::corruption("native snapshot: overflow page used as a tree child");
+        }
+        active.insert(page_id);
+        reached.insert(page_id);
+
+        if (type == page_type::kLeafBase) {
+            LeafFrameView leaf(frame.frame.data(), static_cast<uint32_t>(frame.frame.size()));
+            leaves.push_back(&frame);
+            if (!leaf.empty()) {
+                bounds->lower = leaf.key(0).to_string();
+                bounds->upper = leaf.key(leaf.count() - 1).to_string();
+            }
+            for (uint32_t index = 0; index < leaf.count(); ++index) {
+                Slice    raw_cell = leaf.cell(index);
+                CellView cell{raw_cell};
+                if (!cell.valid() || (cell.is_overflow() && raw_cell.size() != kOverflowCellSize)) {
+                    return Status::corruption("native snapshot: invalid leaf cell");
+                }
+                if (!cell.is_overflow()) {
+                    continue;
+                }
+                std::unordered_set<uint64_t> chain;
+                uint64_t                     overflow_id = cell.overflow_head();
+                while (overflow_id != kInvalidPageId) {
+                    if (!chain.insert(overflow_id).second) {
+                        return Status::corruption("native snapshot: cyclic overflow chain");
+                    }
+                    const auto overflow = by_id.find(overflow_id);
+                    if (overflow == by_id.end() ||
+                        frame_page_type(overflow->second->frame.data()) != page_type::kOverflowFrame) {
+                        return Status::corruption("native snapshot: missing overflow page");
+                    }
+                    if (!overflow_reached.insert(overflow_id).second) {
+                        break;
+                    }
+                    OverflowFrameView view(overflow->second->frame.data(),
+                                           static_cast<uint32_t>(overflow->second->frame.size()));
+                    overflow_id = view.next_page_id();
+                }
+            }
+            active.erase(page_id);
+            return Status::Ok();
+        }
+
+        InnerFrameView inner(frame.frame.data(), static_cast<uint32_t>(frame.frame.size()));
+        Bounds         prior;
+        for (uint32_t index = 0; index < inner.num_children(); ++index) {
+            Bounds child;
+            Status child_status = walk(inner.child_at(index), &child);
+            if (!child_status.ok()) {
+                return child_status;
+            }
+            if (index == 0) {
+                bounds->lower = child.lower;
+            }
+            else {
+                Slice separator = inner.separator_at(index - 1);
+                if ((prior.upper.has_value() && Slice(*prior.upper).compare(separator) >= 0) ||
+                    (child.lower.has_value() && separator.compare(Slice(*child.lower)) > 0)) {
+                    return Status::corruption("native snapshot: separator does not bound adjacent children");
+                }
+            }
+            if (child.upper.has_value()) {
+                bounds->upper = child.upper;
+            }
+            prior = std::move(child);
+        }
+        active.erase(page_id);
+        return Status::Ok();
+    };
+
+    Bounds root_bounds;
+    Status graph_status = walk(root_page_id, &root_bounds);
+    if (!graph_status.ok()) {
+        return graph_status;
+    }
+    for (size_t index = 0; index < leaves.size(); ++index) {
+        LeafFrameView  leaf(leaves[index]->frame.data(), static_cast<uint32_t>(leaves[index]->frame.size()));
+        const uint64_t expected = index + 1 < leaves.size() ? leaves[index + 1]->page_id : kInvalidPageId;
+        if (leaf.right_sibling() != expected) {
+            return Status::corruption("native snapshot: leaf sibling escapes tree order");
+        }
+    }
+    if (reached.size() + overflow_reached.size() != frames.size()) {
+        return Status::corruption("native snapshot: unreachable page frame");
+    }
+    return Status::Ok();
 }
 
 // Resolve a leaf chain (head -> ... -> LeafBase) to key-sorted entries by
@@ -3499,6 +3628,10 @@ Status Crowdbtree::install_snapshot_native(std::vector<NativeFrame> frames, uint
             !frame_validate_key_range(frame.frame.data(), static_cast<uint32_t>(frame.frame.size()), opt_.key_range)) {
             return Status::corruption("native snapshot: frame CRC, structure, or range invalid");
         }
+    }
+    Status graph_status = validate_native_snapshot_graph(frames, root_page_id);
+    if (!graph_status.ok()) {
+        return graph_status;
     }
     // Replace L1 exactly like install_snapshot (portable) does: drop the
     // live tree (epoch-retire, not free -- #13) and reset L0/watermarks.

@@ -268,6 +268,56 @@ TEST(RangeRebuild, ChildMutationDoesNotChangeTheSourceTree)
     EXPECT_EQ(live_entries(source).at("z"), "outside");
 }
 
+TEST(RangeRebuild, NativeInstallRejectsCrossingSiblingAndMissingChildReferences)
+{
+    MemPageStore source_store(1);
+    Options      options;
+    options.page_store       = &source_store;
+    options.frame_bytes      = 4096;
+    options.leaf_split_bytes = 256;
+    Crowdbtree source(options);
+    for (uint64_t index = 0; index < 80; ++index) {
+        ASSERT_TRUE(source.put(Slice("k" + std::to_string(index + 1000)), Slice("value")).ok());
+    }
+    ASSERT_TRUE(source.flush().ok());
+
+    std::vector<NativeFrame> frames;
+    uint64_t                 root      = kInvalidPageId;
+    uint64_t                 slot      = 0;
+    uint64_t                 highwater = 0;
+    ASSERT_TRUE(source.collect_native_frames(&frames, &root, &slot, &highwater).ok());
+
+    auto broken_sibling = frames;
+    auto leaf           = std::find_if(broken_sibling.begin(), broken_sibling.end(), [](const NativeFrame &frame) {
+        return frame_page_type(frame.frame.data()) == page_type::kLeafBase &&
+               LeafFrameView(frame.frame.data(), static_cast<uint32_t>(frame.frame.size())).right_sibling() !=
+                   kInvalidPageId;
+    });
+    ASSERT_NE(leaf, broken_sibling.end());
+    frame_put_u64(leaf->frame.data(), fh::kRightSibling, kInvalidPageId);
+    frame_restamp_crc(leaf->frame.data(), static_cast<uint32_t>(leaf->frame.size()));
+
+    MemPageStore sibling_store(1);
+    options.page_store = &sibling_store;
+    Crowdbtree sibling_destination(options);
+    EXPECT_EQ(sibling_destination.install_snapshot_native(std::move(broken_sibling), root, slot, highwater).code(),
+              Code::kCorruption);
+
+    auto broken_child = frames;
+    auto inner        = std::find_if(broken_child.begin(), broken_child.end(), [](const NativeFrame &frame) {
+        return frame_page_type(frame.frame.data()) == page_type::kInnerBase;
+    });
+    ASSERT_NE(inner, broken_child.end());
+    frame_put_u64(inner->frame.data(), kFrameHeaderSize, highwater + 100);
+    frame_restamp_crc(inner->frame.data(), static_cast<uint32_t>(inner->frame.size()));
+
+    MemPageStore child_store(1);
+    options.page_store = &child_store;
+    Crowdbtree child_destination(options);
+    EXPECT_EQ(child_destination.install_snapshot_native(std::move(broken_child), root, slot, highwater).code(),
+              Code::kCorruption);
+}
+
 TEST(RangeRebuild, LazyRecoveryRejectsAResolvedPageOutsideTheTreeRange)
 {
     MemPageStore store(1);

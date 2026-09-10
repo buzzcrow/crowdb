@@ -53,7 +53,9 @@ and structurally safe range rebuild while preserving local tree behavior.
   `include/crowdb-tree/key_range.h`, `src/key_range.cpp`,
   `include/crowdb-tree/options.h`, `src/crowdb-tree.cpp`, `src/persist.cpp`.
 - [~] **Persist page fences**: encode and verify leaf/inner reachability bounds
-  including siblings and overflow chains. Files:
+  including siblings and overflow chains. Native installation now verifies the
+  complete child graph, separator bounds, leaf order, and overflow reachability;
+  serialized lower/upper fence keys remain open. Files:
   `include/crowdb-tree/frame_page.h`, `src/frame_page.cpp`,
   `src/page_codec.cpp`.
 - [~] **Implement range rebuild**: add bounded native iteration, leaf-frame
