@@ -2,8 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_protocol::chunk_kv::{Id128, KeyRange};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BalanceConfig {
     pub target_partitions_per_owner: usize,
     pub target_partition_bytes: u64,

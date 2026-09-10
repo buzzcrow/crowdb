@@ -16,8 +16,10 @@ async-trait = "0.1"
 crowdb-chunk-kv = { path = "../../lib/crowdb-chunk-kv" }
 crowdb-chunk-stream = { path = "../../lib/crowdb-chunk-stream" }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
+serde = { version = "1", features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+toml = "0.8"
 
 [dev-dependencies]
 crowdb-chunk-kv = { path = "../../lib/crowdb-chunk-kv", features = ["test-util"] }

@@ -6,8 +6,9 @@
 
 use crowdb_protocol::ports::ServicePort;
 use crowdb_protocol::{
-    CHUNKDB_HTTP_BASE, CHUNKDB_LISTEN_BASE, CHUNKDB_RPC_BASE, DISKDB_HTTP_BASE, DISKDB_LISTEN_BASE,
-    DISKDB_RPC_BASE, DISKIO_RPC_BASE, KV_SERVER_LISTEN_BASE, KV_SERVER_MGMT_BASE, WEB_BASE,
+    CHUNKDB_HTTP_BASE, CHUNKDB_LISTEN_BASE, CHUNKDB_RPC_BASE, CHUNK_KV_HTTP_BASE, CHUNK_KV_RPC_BASE,
+    DISKDB_HTTP_BASE, DISKDB_LISTEN_BASE, DISKDB_RPC_BASE, DISKIO_RPC_BASE, KV_SERVER_LISTEN_BASE,
+    KV_SERVER_MGMT_BASE, WEB_BASE,
 };
 
 // ── base constants match enum ──────────────────────────────────
@@ -24,6 +25,8 @@ fn base_constants_match_enum_base() {
     assert_eq!(ServicePort::ChunkdbRpc.base(), CHUNKDB_RPC_BASE);
     assert_eq!(ServicePort::DiskioRpc.base(), DISKIO_RPC_BASE);
     assert_eq!(ServicePort::Web.base(), WEB_BASE);
+    assert_eq!(ServicePort::ChunkKvHttp.base(), CHUNK_KV_HTTP_BASE);
+    assert_eq!(ServicePort::ChunkKvRpc.base(), CHUNK_KV_RPC_BASE);
 }
 
 // ── known defaults (new port map, all >10000) ──────────────────
@@ -40,6 +43,8 @@ fn known_base_ports() {
     assert_eq!(CHUNKDB_RPC_BASE, 12200);
     assert_eq!(DISKIO_RPC_BASE, 13000);
     assert_eq!(WEB_BASE, 14000);
+    assert_eq!(CHUNK_KV_HTTP_BASE, 15100);
+    assert_eq!(CHUNK_KV_RPC_BASE, 15200);
 }
 
 // ── stride (all stride 1 — no paired-port logic) ───────────────
@@ -57,6 +62,8 @@ fn all_services_have_stride_one() {
         ServicePort::ChunkdbRpc,
         ServicePort::DiskioRpc,
         ServicePort::Web,
+        ServicePort::ChunkKvHttp,
+        ServicePort::ChunkKvRpc,
     ] {
         assert_eq!(svc.stride(), 1, "{svc:?} must have stride 1");
     }
@@ -77,6 +84,8 @@ fn port_instance_zero_is_base() {
         ServicePort::ChunkdbRpc,
         ServicePort::DiskioRpc,
         ServicePort::Web,
+        ServicePort::ChunkKvHttp,
+        ServicePort::ChunkKvRpc,
     ] {
         assert_eq!(svc.port(0), svc.base());
     }
@@ -117,6 +126,8 @@ fn port_ranges_do_not_overlap() {
         ServicePort::ChunkdbRpc,
         ServicePort::DiskioRpc,
         ServicePort::Web,
+        ServicePort::ChunkKvHttp,
+        ServicePort::ChunkKvRpc,
     ];
 
     let mut seen: std::collections::HashSet<u16> = std::collections::HashSet::new();
@@ -145,6 +156,8 @@ fn range_size_is_500_for_all_services() {
         ServicePort::ChunkdbRpc,
         ServicePort::DiskioRpc,
         ServicePort::Web,
+        ServicePort::ChunkKvHttp,
+        ServicePort::ChunkKvRpc,
     ] {
         assert_eq!(svc.range_size(), 500, "{svc:?} range_size must be 500");
     }

@@ -28,7 +28,7 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 ## Phase 3: Server and RPC
 
-- [ ] Add `crowdb-chunk-kv-server` config, logging, metrics, health,
+- [~] Add `crowdb-chunk-kv-server` config, logging, metrics, health,
   management, graceful shutdown, and zero/many partition hosting.
 - [~] Add direct RPC types and handlers for R142 operations, typed errors,
   request identity, journal positions, deadlines, and stale-owner redirects.
@@ -47,7 +47,7 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 - [~] Add protocol, catalog, lease, monitor, RPC, lifecycle, and fixture tests.
 - [ ] Run every required Rust and server gate through `pixi run`.
-- [ ] Fold stable behavior into a permanent server design and index entry.
+- [x] Fold stable behavior into a permanent server design and index entry.
 
 ## Open Issues
 
@@ -63,3 +63,7 @@ R142 partitions and publishes one complete group-0 range catalog.
 - Transfer records and the reducer preserve no-copy artifact identity and old-
   owner exclusion, but the group-0 transition store, target recovery worker,
   split orchestration, and catalog cutover adapter remain.
+- Config defaults, reserved ports, lock-free counters, health snapshots, and
+  drain-time admission closure are implemented; process logging, HTTP
+  management, heartbeat publication, RPC listener startup, and bounded
+  checkpoint drain remain.

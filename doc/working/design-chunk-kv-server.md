@@ -88,10 +88,17 @@ partition snapshots. One process may host zero or many independent ranges.
 
 - R142 does not yet expose production tree/stream construction, prepared-child
   activation, online split building, or native ordered cursor operations.
-- Existing group-0 storage has blind puts; the immutable page/head adapter and
-  ambiguous-write reread protocol still need implementation.
-- The generic monitor supervisor must be introduced without hard-coding
-  chunk-KV, chunkdb, or diskdb into the KV server.
-- Production RPC schemas and a `crowdb-rpc` server transport are not yet wired.
-- Lease timing and balance thresholds require fake-clock tests and deployment
-  evidence before operators should rely on automatic failover.
+- Existing group-0 storage has blind puts; the injected immutable page/head
+  publisher implements page-first ordering and ambiguous reread, but its
+  production KV adapter and retained-generation reclamation remain.
+- The generic monitor registration and leader-gated staged tick boundaries are
+  implemented. Durable group-0 descriptor storage, task restart/backoff, leader
+  change wiring, and chunkdb/diskdb startup migration remain.
+- Point-operation protocol models and an in-process R142 handler are complete.
+  Production FlatBuffers schemas, `crowdb-rpc` transport, and native ordered
+  seek/scan execution remain.
+- The persisted transfer record/reducer and pure balance policy are complete.
+  Group-0 transition CAS, target recovery workers, split orchestration, and
+  catalog cutover wiring remain.
+- Lease timing and balance policy have deterministic boundary tests; deployment
+  sizing, metrics export, and real-process failure evidence remain.

@@ -5,7 +5,9 @@
 
 pub mod balance;
 pub mod catalog;
+pub mod config;
 pub mod lease;
+pub mod metrics;
 pub mod monitor;
 pub mod scan;
 pub mod server;
@@ -16,11 +18,13 @@ pub use balance::{
     SplitProposal, TransferProposal,
 };
 pub use catalog::{CatalogError, CatalogPublisher, CatalogStore, HeadWriteOutcome, MemoryCatalogStore};
+pub use config::{ChunkKvServerConfig, ConfigError};
 pub use lease::{classify_instance, replacement_may_activate, AuthorityError, ServingAuthority};
+pub use metrics::{ServerMetrics, ServerMetricsSnapshot};
 pub use monitor::{
     DomainMonitorDriver, DomainMonitorRegistry, MonitorDescriptorStore, MonitorError, MonitorTick,
     PreparedMonitor,
 };
 pub use scan::{validate_and_clip_scan, ClippedScan, ScanValidationError};
-pub use server::ChunkKvService;
+pub use server::{ChunkKvService, HostedPartitionHealth, ServerHealth, ServerLifecycle};
 pub use transfer::{TransferAction, TransferStateMachine};

@@ -8,7 +8,7 @@ use crowdb_chunk_kv::{
     Partition, PartitionConfig, PartitionId, PartitionJournal, PartitionRange, PartitionTree,
     StreamPartitionJournal,
 };
-use crowdb_chunk_kv_server::ChunkKvService;
+use crowdb_chunk_kv_server::{ChunkKvService, ServerLifecycle};
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
     ChunkStream, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig, StreamMetadataStore,
@@ -190,6 +190,7 @@ async fn direct_put_get_preserves_object_metadata_and_position() {
 #[tokio::test]
 async fn stale_route_and_expired_deadline_append_nothing() {
     let (service, partition) = fixture().await;
+    assert_eq!(service.health(50_100).lifecycle, ServerLifecycle::Serving);
     let before = partition.snapshot().journal_durable_seq;
     let mut stale = routing(1);
     stale.owner_epoch -= 1;
@@ -249,4 +250,29 @@ async fn local_self_fence_rejects_before_wal_admission() {
         ChunkKvRpcErrorCode::LeaseExpired
     );
     assert_eq!(partition.snapshot().journal_durable_seq, before);
+    assert_eq!(service.metrics().snapshot().lease_rejections, 1);
+}
+
+#[tokio::test]
+async fn drain_closes_admission_and_relinquishes_authority() {
+    let (service, partition) = fixture().await;
+    let before = partition.snapshot().journal_durable_seq;
+    service.begin_drain();
+    assert_eq!(service.health(50_100).lifecycle, ServerLifecycle::Draining);
+    let response = service
+        .handle_point(
+            PointRequest {
+                routing: routing(1),
+                operation: PointOperation::Put {
+                    key: b"object".to_vec(),
+                    value: b"metadata".to_vec(),
+                },
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    assert_eq!(response.result.unwrap_err().code, ChunkKvRpcErrorCode::Recovering);
+    assert_eq!(partition.snapshot().journal_durable_seq, before);
+    assert_eq!(service.metrics().snapshot().requests, 1);
 }

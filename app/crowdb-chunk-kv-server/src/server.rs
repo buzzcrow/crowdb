@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -15,12 +16,36 @@ use crowdb_protocol::chunk_kv::{
     RpcJournalPosition, RpcValue,
 };
 
-use crate::{AuthorityError, CatalogError, ServingAuthority};
+use crate::{AuthorityError, CatalogError, ServerMetrics, ServingAuthority};
 
 #[derive(Clone, Debug, Default)]
 struct CatalogSnapshot {
     generation: u64,
     entries: Vec<CatalogEntry>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerLifecycle {
+    Prepared,
+    Serving,
+    Draining,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostedPartitionHealth {
+    pub partition_id: Id128,
+    pub owner_epoch: u64,
+    pub lifecycle: crowdb_chunk_kv::PartitionLifecycle,
+    pub durable_seq: u64,
+    pub applied_seq: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerHealth {
+    pub instance_id: u64,
+    pub lifecycle: ServerLifecycle,
+    pub catalog_generation: u64,
+    pub partitions: Vec<HostedPartitionHealth>,
 }
 
 impl CatalogSnapshot {
@@ -51,6 +76,8 @@ pub struct ChunkKvService {
     catalog: ArcSwap<CatalogSnapshot>,
     partitions: ArcSwap<HashMap<Id128, Partition>>,
     max_partitions: usize,
+    admitting: AtomicBool,
+    metrics: ServerMetrics,
 }
 
 impl ChunkKvService {
@@ -71,12 +98,63 @@ impl ChunkKvService {
             catalog: ArcSwap::from_pointee(CatalogSnapshot::default()),
             partitions: ArcSwap::from_pointee(HashMap::new()),
             max_partitions,
+            admitting: AtomicBool::new(true),
+            metrics: ServerMetrics::default(),
         })
     }
 
     #[must_use]
     pub fn authority(&self) -> &Arc<ServingAuthority> {
         &self.authority
+    }
+
+    #[must_use]
+    pub fn metrics(&self) -> &ServerMetrics {
+        &self.metrics
+    }
+
+    /// Stops new admission and clears serving authority. Operations already
+    /// admitted to an R142 sequencer retain their partition handle and finish.
+    pub fn begin_drain(&self) {
+        self.admitting.store(false, Ordering::Release);
+        self.authority.clear();
+    }
+
+    #[must_use]
+    pub fn health(&self, now_monotonic_ms: u64) -> ServerHealth {
+        let catalog_generation = self.catalog.load().generation;
+        let mut partitions: Vec<HostedPartitionHealth> = self
+            .partitions
+            .load()
+            .values()
+            .map(|partition| {
+                let snapshot = partition.snapshot();
+                HostedPartitionHealth {
+                    partition_id: Id128 {
+                        high: snapshot.partition_id.high,
+                        low: snapshot.partition_id.low,
+                    },
+                    owner_epoch: snapshot.ownership_epoch,
+                    lifecycle: snapshot.lifecycle,
+                    durable_seq: snapshot.journal_durable_seq,
+                    applied_seq: snapshot.applied_seq,
+                }
+            })
+            .collect();
+        partitions.sort_unstable_by_key(|partition| partition.partition_id);
+        let lifecycle = if !self.admitting.load(Ordering::Acquire) {
+            ServerLifecycle::Draining
+        } else if catalog_generation != 0 && self.authority.has_live_grant(now_monotonic_ms) {
+            ServerLifecycle::Serving
+        } else {
+            ServerLifecycle::Prepared
+        };
+        ServerHealth {
+            instance_id: self.instance_id,
+            lifecycle,
+            catalog_generation,
+            partitions,
+        }
     }
 
     /// Validates and atomically activates a newer complete catalog snapshot.
@@ -146,7 +224,28 @@ impl ChunkKvService {
         now_wall_ms: u64,
         now_monotonic_ms: u64,
     ) -> ChunkKvResponse {
+        self.metrics.request();
+        let response = self
+            .handle_point_inner(request, now_wall_ms, now_monotonic_ms)
+            .await;
+        self.metrics.response(&response);
+        response
+    }
+
+    async fn handle_point_inner(
+        &self,
+        request: PointRequest,
+        now_wall_ms: u64,
+        now_monotonic_ms: u64,
+    ) -> ChunkKvResponse {
         let catalog = self.catalog.load_full();
+        if !self.admitting.load(Ordering::Acquire) {
+            return failure(
+                catalog.generation,
+                ChunkKvRpcErrorCode::Recovering,
+                "server is draining".into(),
+            );
+        }
         if let Err(error) = request.routing.validate() {
             return failure(
                 catalog.generation,

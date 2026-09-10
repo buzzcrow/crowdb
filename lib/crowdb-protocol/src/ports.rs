@@ -38,6 +38,10 @@
 //! - `14000`–`14999` — crowdb-web (prefix 14)
 //!   - `14000`–`14499` — HTTP service (stride 1)
 //!   - `14500`–`14999` — spare
+//! - `15000`–`15999` — crowdb-chunk-kv-server (prefix 15)
+//!   - `15100`–`15599` — HTTP management API (stride 1)
+//!   - `15200`–`15699` — crowdb-rpc listener (stride 1)
+//!   - `15700`–`15999` — spare
 //!
 //! The group-0 kv-server mgmt port (`10000`) is the famous bootstrap
 //! discovery port — any client can contact group-0 to read the service
@@ -82,6 +86,12 @@ pub const DISKIO_RPC_BASE: u16 = 13000;
 /// crowdb-web HTTP service — base port.
 pub const WEB_BASE: u16 = 14000;
 
+/// crowdb-chunk-kv-server HTTP management API — base port.
+pub const CHUNK_KV_HTTP_BASE: u16 = 15100;
+
+/// crowdb-chunk-kv-server crowdb-rpc listener — base port.
+pub const CHUNK_KV_RPC_BASE: u16 = 15200;
+
 /// CROWDB service type for default port allocation.
 ///
 /// Use [`ServicePort::port`] to compute the listen port for the
@@ -111,6 +121,10 @@ pub enum ServicePort {
     DiskioRpc,
     /// crowdb-web HTTP service.
     Web,
+    /// crowdb-chunk-kv-server HTTP management API.
+    ChunkKvHttp,
+    /// crowdb-chunk-kv-server crowdb-rpc listener.
+    ChunkKvRpc,
 }
 
 impl ServicePort {
@@ -128,6 +142,8 @@ impl ServicePort {
             Self::ChunkdbRpc => CHUNKDB_RPC_BASE,
             Self::DiskioRpc => DISKIO_RPC_BASE,
             Self::Web => WEB_BASE,
+            Self::ChunkKvHttp => CHUNK_KV_HTTP_BASE,
+            Self::ChunkKvRpc => CHUNK_KV_RPC_BASE,
         }
     }
 

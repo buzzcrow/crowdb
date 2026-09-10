@@ -631,8 +631,10 @@ dependencies = [
  "crowdb-chunk-kv",
  "crowdb-chunk-stream",
  "crowdb-protocol",
+ "serde",
  "thiserror 2.0.18",
  "tokio",
+ "toml",
 ]
 
 [[package]]

@@ -145,6 +145,14 @@ impl ServingAuthority {
     pub fn clear(&self) {
         self.snapshot.store(None);
     }
+
+    #[must_use]
+    pub fn has_live_grant(&self, now_monotonic_ms: u64) -> bool {
+        self.snapshot
+            .load()
+            .as_ref()
+            .is_some_and(|snapshot| now_monotonic_ms < snapshot.local_deadline_ms)
+    }
 }
 
 #[must_use]
