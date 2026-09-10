@@ -196,6 +196,14 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
   const handleScanRef = useRef(handleScan);
   useEffect(() => { handleScanRef.current = handleScan; }, [handleScan]);
 
+  // Mirror `autoScan` into a ref so delayed auto-scan timers (scheduled by
+  // `handlePut`/`handleDeleteKey` via setTimeout) can re-check the current
+  // value when they fire. Without this, a stale closure that captured
+  // `autoScan=true` can schedule a timer that fires after the user turned
+  // auto-scan off, overwriting a manual prefix scan with an unfiltered one.
+  const autoScanRef = useRef(autoScan);
+  useEffect(() => { autoScanRef.current = autoScan; }, [autoScan]);
+
   useEffect(() => {
     if (storeId && groupId && autoScan && !autoScanned && !scanLoading && scanRows.length === 0) {
       setAutoScanned(true);
@@ -275,7 +283,10 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
       setPutValue('');
       if (autoScan) {
         setGroupId(targetGid);
-        setTimeout(() => handleScanRef.current(), 100);
+        setTimeout(() => {
+          if (!autoScanRef.current) return;
+          handleScanRef.current();
+        }, 100);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Put failed';
@@ -296,7 +307,10 @@ export function KvOperatorPanel({ stores, selectedEntity, readonly, backendError
         log({ action: 'KV Delete', target: `${storeId}/${groupId}`, status: 'Success', message: `key: "${deleteKey}"` });
         success(`Key deleted: "${deleteKey}"`);
         setDeleteKey('');
-        if (autoScan) setTimeout(() => handleScanRef.current(), 100);
+        if (autoScan) setTimeout(() => {
+          if (!autoScanRef.current) return;
+          handleScanRef.current();
+        }, 100);
       } catch (err) {
         const msg = err instanceof Error ? err.message : 'Delete failed';
         setErrorMsg(msg);
