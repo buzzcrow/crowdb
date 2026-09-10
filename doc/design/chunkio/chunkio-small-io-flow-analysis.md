@@ -26,8 +26,11 @@ The sentinels use a co-located three-node cluster with three instances each of
 KV, DiskDB, ChunkDB, and DiskIO. KV data and WAL use `mem-block`; fsync is
 disabled. DiskIO uses `NullDisk`, so requests traverse client routing,
 crowdb-rpc, the DiskIO request handler, and io_uring without retaining payload
-data. Read preparation performs real writes before the measurement window and
-retains the resulting locations.
+data. Each small-write matrix case starts a fresh combined deployment. Process
+exit releases the in-memory KV and WAL contents before the next case, bounding
+RSS independently of allocator behavior and detached task completion. Read
+preparation performs real writes before the measurement window and retains the
+resulting locations.
 
 | Parameter            | Value                                      |
 | -------------------- | ------------------------------------------ |

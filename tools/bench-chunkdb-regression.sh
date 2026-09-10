@@ -77,7 +77,7 @@ cli() {
 
 destroy_cluster() {
     if [ -n "$CURRENT_CONFIG" ] && [ -f "$CURRENT_CONFIG" ]; then
-        cli cluster destroy || true
+        regression_destroy
     fi
     CURRENT_CONFIG=""
 }

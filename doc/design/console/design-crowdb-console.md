@@ -651,7 +651,10 @@ ChunkDB with the same identities, endpoints, working directories, and launch
 arguments. It waits for health, service registration, and ChunkDB range
 bindings before returning. KV processes remain running so group 0 and hardware
 topology survive. Suites with multiple data groups clean every group and request
-the service restart on the final clean.
+the service restart on the final clean. A high-volume `mem-block` suite may use
+`cluster destroy` followed by a fresh combined deployment for each case. This
+process boundary releases the complete in-memory working set and prevents RSS
+from accumulating across independent benchmark cases.
 
 Local auxiliary launch commands are retained in the run-root `console.toml`.
 They are diagnostic lifecycle state, are removed with their server entry, and

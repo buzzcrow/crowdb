@@ -25,7 +25,7 @@ regression_cli() {
 regression_destroy() {
     if [ -f "$REGRESSION_CONFIG" ]; then
         timeout 30 pixi run -- "$REGRESSION_CLI" --log-root "$REGRESSION_LOG_ROOT" \
-            --config "$REGRESSION_CONFIG" cluster destroy || true
+            --config "$REGRESSION_CONFIG" cluster destroy
     fi
 }
 

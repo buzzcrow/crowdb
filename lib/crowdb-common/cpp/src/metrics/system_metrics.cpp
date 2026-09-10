@@ -513,7 +513,10 @@ SystemCollector::SystemCollector()
 #endif
 }
 
-SystemCollector::~SystemCollector() = default;
+SystemCollector::~SystemCollector()
+{
+    delete dram_bw_;
+}
 
 SystemCollector::SystemCollector(SystemCollector &&other) noexcept
     : prev_cpu_user_us_(other.prev_cpu_user_us_),

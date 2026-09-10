@@ -92,10 +92,12 @@ LIBASAN="$(cd "$(dirname "$0")/.." && pixi run -- pwd)/.pixi/envs/default/lib/li
 
 # Clean up stale ASan logs from previous runs.
 rm -f /tmp/asan-sanitize-*.* 2>/dev/null || true
+rm -f /tmp/sanitize-unexpected-asan-sanitize-* 2>/dev/null || true
 
 # --- Phase 1: Build with ASan + LSan enabled ---
 echo "=== building with CROWDB_ASAN=1 (debug) ==="
-CROWDB_ASAN=1 pixi run -- cargo build -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb 2>&1 | tail -3
+CROWDB_ASAN=1 pixi run -- cargo build -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
+pixi run -- cmake --build app/crowdb-diskio/build -j
 
 # Verify the binary exists.
 if [ ! -x "$CROWDB_CLI" ]; then
@@ -142,6 +144,15 @@ check_asan_logs() {
     done
     rm -f "${prefix}."* 2>/dev/null || true
     return 1
+}
+
+# The short-lived deploy CLI leaves Tokio's child-process pidfd registration
+# set allocated during runtime teardown. Accept that external-runtime signature
+# only when the report contains no CrowDB C++ or repository-source frame.
+is_known_tokio_deploy_noise() {
+    local log="$1"
+    grep -q 'tokio7runtime2io16registration_set' "$log" \
+        && ! grep -Eq 'crowdb::|/nv/cpp/crowdb/(app|lib)/[^ ]+\.(rs|cpp|h):[0-9]+' "$log"
 }
 
 # bench_status <current_status> <exit_code> <errors> <ops_per_second>
@@ -201,7 +212,7 @@ run_bench() {
     fi
     local total_ops ops_s errors
     total_ops=$(echo "$json" | jq -r '.total_ops')
-    ops_s=$(echo "$json" | jq -r '.total_ops * 1000 / .duration_ms' | awk '{printf "%.0f", $1}')
+    ops_s=$(echo "$json" | jq -r '.total_ops * 1000 / .duration_ms' | awk '{printf "%.2f", $1}')
     errors=$(echo "$json" | jq -r '.total_errors')
     # Check for ASan leak logs from the client process.
     local leak_status="PASS"
@@ -248,11 +259,13 @@ run_prepare() {
     if [ "$rc" -ne 0 ]; then
         GATE_FAILED=1
     fi
-    local json errors
-    json=$(echo "$output" | sed -n '/^{/,/^}/p')
-    errors=$(echo "$json" | jq -r '.total_errors // empty' 2>/dev/null || true)
-    if [ -z "$json" ] || [[ ! "$errors" =~ ^[0-9]+$ ]] || [ "$errors" -ne 0 ]; then
-        echo "    ERROR: prepare produced invalid output or errors=$errors"
+    local line written errors
+    line=$(echo "$output" | sed -n '/^bench kv prepare:/p' | tail -n 1)
+    written=$(echo "$line" | sed -n 's/^bench kv prepare: \([0-9][0-9]*\) keys written.*/\1/p')
+    errors=$(echo "$line" | sed -n 's/.*written, \([0-9][0-9]*\) errors.*/\1/p')
+    if [[ ! "$written" =~ ^[0-9]+$ ]] || [ "$written" -ne "$PREPARE_KEYS" ] \
+        || [[ ! "$errors" =~ ^[0-9]+$ ]] || [ "$errors" -ne 0 ]; then
+        echo "    ERROR: prepare produced invalid output (written=$written errors=$errors)"
         GATE_FAILED=1
     fi
     if ! check_asan_logs "$log_prefix" "$label"; then
@@ -282,14 +295,15 @@ deploy_cluster() {
             local summary bytes
             summary=$(grep "SUMMARY:" "$log" 2>/dev/null || echo "(no summary)")
             bytes=$(echo "$summary" | grep -oP '\d+(?= byte)' | head -1 || echo "?")
-            if [ "$bytes" = "97368" ]; then
-                echo "    deploy process: known tokio noise ($bytes bytes) — OK"
+            if is_known_tokio_deploy_noise "$log"; then
+                echo "    deploy process: known tokio child-process noise ($bytes bytes) — OK"
+                rm -f "$log"
             else
                 echo "    deploy process: UNEXPECTED leak — $summary"
+                mv "$log" "/tmp/sanitize-unexpected-$(basename "$log")"
                 GATE_FAILED=1
             fi
         done
-        rm -f "${log_prefix}."* 2>/dev/null || true
     fi
 }
 
@@ -305,10 +319,13 @@ teardown_cluster() {
         rm -f "${log_prefix}."* 2>/dev/null || true
         asan_cli "$log_prefix" --config "$config_file" \
             cluster destroy 2>&1 | tail -2 || true
-        # Check for server leak logs. Servers are killed during destroy;
-        # if they shut down cleanly (SIGTERM → graceful shutdown), no
-        # ASan logs are emitted. Any logs here indicate server leaks.
-        if ! check_asan_logs "$log_prefix" "server-shutdown"; then
+        if ! check_asan_logs "$log_prefix" "destroy-process"; then
+            GATE_FAILED=1
+        fi
+        # Services inherit the deployment ASan log prefix. Their reports are
+        # emitted only when cluster destroy terminates them.
+        local service_log_prefix="/tmp/asan-sanitize-deploy-${name}"
+        if ! check_asan_logs "$service_log_prefix" "service-shutdown"; then
             GATE_FAILED=1
         fi
         rm -f "$config_file" "/tmp/sanitize-reg-${name}.cfgpath"
@@ -343,14 +360,15 @@ deploy_combined_cluster() {
             local summary bytes
             summary=$(grep "SUMMARY:" "$log" 2>/dev/null || echo "(no summary)")
             bytes=$(echo "$summary" | grep -oP '\d+(?= byte)' | head -1 || echo "?")
-            if [ "$bytes" = "97368" ]; then
-                echo "    deploy process: known tokio noise ($bytes bytes) — OK"
+            if is_known_tokio_deploy_noise "$log"; then
+                echo "    deploy process: known tokio child-process noise ($bytes bytes) — OK"
+                rm -f "$log"
             else
                 echo "    deploy process: UNEXPECTED leak — $summary"
+                mv "$log" "/tmp/sanitize-unexpected-$(basename "$log")"
                 GATE_FAILED=1
             fi
         done
-        rm -f "${log_prefix}."* 2>/dev/null || true
     fi
 }
 
@@ -531,14 +549,15 @@ deploy_rpc_server() {
             local summary bytes
             summary=$(grep "SUMMARY:" "$log" 2>/dev/null || echo "(no summary)")
             bytes=$(echo "$summary" | grep -oP '\d+(?= byte)' | head -1 || echo "?")
-            if [ "$bytes" = "97368" ]; then
-                echo "    deploy process: known tokio noise ($bytes bytes) — OK"
+            if is_known_tokio_deploy_noise "$log"; then
+                echo "    deploy process: known tokio child-process noise ($bytes bytes) — OK"
+                rm -f "$log"
             else
                 echo "    deploy process: UNEXPECTED leak — $summary"
+                mv "$log" "/tmp/sanitize-unexpected-$(basename "$log")"
                 GATE_FAILED=1
             fi
         done
-        rm -f "${log_prefix}."* 2>/dev/null || true
     fi
 }
 
@@ -553,7 +572,11 @@ teardown_rpc_server() {
         rm -f "${log_prefix}."* 2>/dev/null || true
         asan_cli "$log_prefix" --config "$config_file" \
             cluster destroy 2>&1 | tail -2 || true
-        if ! check_asan_logs "$log_prefix" "rpc-server-shutdown"; then
+        if ! check_asan_logs "$log_prefix" "destroy-process"; then
+            GATE_FAILED=1
+        fi
+        local service_log_prefix="/tmp/asan-sanitize-deploy-${name}"
+        if ! check_asan_logs "$service_log_prefix" "rpc-server-shutdown"; then
             GATE_FAILED=1
         fi
         rm -f "$config_file" "/tmp/sanitize-reg-${name}.cfgpath" \
@@ -676,8 +699,7 @@ run_chunkio_small_write_bench() {
     if output=$(asan_cli "$log_prefix" --config "$config_file" \
         bench chunkio write-small --duration-secs "$DURATION" \
         --object-size 1024 --concurrency "$concurrency" \
-        --data-num 8 --code-num 4 --block-size 1048576 \
-        --chunk-size 16777216 --seed 1 --metrics-interval 1 2>&1); then
+        --seed 1 --metrics-interval 1 2>&1); then
         rc=0
     else
         rc=$?
@@ -843,7 +865,7 @@ column -t -s$'\t' "$RESULTS_FILE"
 
 # --- Phase 3: Rebuild WITHOUT ASan to restore the default debug binary ---
 echo "=== rebuilding without CROWDB_ASAN (restore default debug binary) ==="
-pixi run -- cargo build -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb 2>&1 | tail -3
+pixi run -- cargo build -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb
 
 # Final summary: check for any FAIL in the results.
 if [ "$GATE_FAILED" -ne 0 ] || grep -q "FAIL" "$RESULTS_FILE"; then

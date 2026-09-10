@@ -389,14 +389,8 @@ pub async fn topology(ctx: &OpContext, node_id: u64) -> Result<Vec<crate::snapsh
 pub async fn destroy(ctx: &OpContext) -> Result<()> {
     let cfg = ctx.config().clone();
 
-    // Phase 1: stop all running servers (Kv, Diskdb, Rpc).
-    for server in &cfg.servers {
-        if let Some(pid) = server.pid {
-            let _ = crate::lifecycle::stop_pid(pid);
-        }
-    }
-
-    // Phase 2: remove all non-system groups from each KV node.
+    // Phase 1: remove all non-system groups while the KV management APIs are
+    // still reachable.
     for server in &cfg.servers {
         if server.service_type != crate::config::ServiceType::Kv {
             continue;
@@ -411,17 +405,39 @@ pub async fn destroy(ctx: &OpContext) -> Result<()> {
                         let _ = client.remove_store(s.store_id).await;
                     }
                 }
-                // Remove group 0 last.
+            }
+        }
+    }
+
+    // Phase 2: clear sysdata, then remove group 0 last (best-effort).
+    let sysmd = ctx.sysmd();
+    let stores = sysmd.list_stores().await.unwrap_or_default();
+    for s in &stores {
+        let _ = sysmd.remove_store(s.store_id).await;
+    }
+    for server in &cfg.servers {
+        if server.service_type != crate::config::ServiceType::Kv {
+            continue;
+        }
+        if let Some(node_id) = server.node_id {
+            if let Ok(client) = server_client(ctx, node_id) {
                 let _ = client.remove_group(0, 0).await;
             }
         }
     }
 
-    // Phase 3: clear sysdata (best-effort).
-    let sysmd = ctx.sysmd();
-    let stores = sysmd.list_stores().await.unwrap_or_default();
-    for s in &stores {
-        let _ = sysmd.remove_store(s.store_id).await;
+    // Phase 3: stop all running services concurrently. A graceful stop may
+    // consume the full per-process timeout, so serial waits can exceed the
+    // CLI lifecycle bound and leave the persisted config pointing at dead
+    // processes.
+    let mut stop_handles = Vec::with_capacity(cfg.servers.len());
+    for pid in cfg.servers.iter().filter_map(|server| server.pid) {
+        stop_handles.push(tokio::task::spawn_blocking(move || {
+            let _ = crate::lifecycle::stop_pid(pid);
+        }));
+    }
+    for handle in stop_handles {
+        let _ = handle.await;
     }
 
     // Phase 4: clear local config.
