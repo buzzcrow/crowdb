@@ -10,6 +10,10 @@ pub struct ct_tree {
     _private: [u8; 0],
 }
 #[repr(C)]
+pub struct ct_page_store {
+    _private: [u8; 0],
+}
+#[repr(C)]
 pub struct ct_view {
     _private: [u8; 0],
 }
@@ -115,6 +119,7 @@ pub struct ct_stats {
 
 #[repr(C)]
 pub struct ct_options {
+    pub page_store: *mut ct_page_store,
     pub path: *const c_char,
     pub iu_size: u32,
     pub frame_bytes: u32,
@@ -135,6 +140,8 @@ pub struct ct_options {
 
 extern "C" {
     pub fn ct_free_buf(buf: *mut ct_buf);
+    pub fn ct_page_store_open_mem(iu_size: u32, out: *mut *mut ct_page_store) -> c_int;
+    pub fn ct_page_store_free(store: *mut ct_page_store);
     pub fn ct_open(opt: *const ct_options, out: *mut *mut ct_tree) -> c_int;
     pub fn ct_close(t: *mut ct_tree);
     pub fn ct_init_logging(

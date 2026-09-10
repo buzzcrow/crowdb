@@ -1,6 +1,51 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use std::ptr::NonNull;
+use std::sync::Arc;
+
+use crate::error::{check, CtError};
+use crate::sys;
+
+/// Owning handle for a backend injected into [`Options`]. The C++ tree retains
+/// the underlying backend independently when opened, so this handle may be
+/// dropped immediately after `Crowdbtree::open` returns.
+pub struct PageStore {
+    ptr: NonNull<sys::ct_page_store>,
+}
+
+impl PageStore {
+    /// Create an in-memory injected backend. Chunk-backed construction is
+    /// provided by the chunk-KV integration crate so local binaries do not
+    /// reference its archive member.
+    pub fn open_mem(iu_size: u32) -> Result<Self, CtError> {
+        let mut out = std::ptr::null_mut();
+        check(unsafe { sys::ct_page_store_open_mem(iu_size, &mut out) })?;
+        Ok(Self {
+            ptr: NonNull::new(out).ok_or(CtError::Internal)?,
+        })
+    }
+
+    pub(crate) fn as_ptr(&self) -> *mut sys::ct_page_store {
+        self.ptr.as_ptr()
+    }
+}
+
+impl std::fmt::Debug for PageStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PageStore").finish_non_exhaustive()
+    }
+}
+
+unsafe impl Send for PageStore {}
+unsafe impl Sync for PageStore {}
+
+impl Drop for PageStore {
+    fn drop(&mut self) {
+        unsafe { sys::ct_page_store_free(self.ptr.as_ptr()) };
+    }
+}
+
 /// Compression selector.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Compression {
@@ -47,6 +92,9 @@ impl SyncMode {
 /// Engine configuration. `path = None` selects an in-memory store.
 #[derive(Debug, Clone, Default)]
 pub struct Options {
+    /// Optional injected durable backend. When set, `path` and `backend` are
+    /// ignored by the C++ constructor.
+    pub page_store: Option<Arc<PageStore>>,
     pub path: Option<String>,
     pub iu_size: u32,
     pub frame_bytes: u32,

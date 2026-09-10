@@ -3,7 +3,8 @@
 
 // PT8.5: C ABI / Rust integration tests through the safe adapter.
 use crowdb_tree_ffi::{
-    AsyncCrowdbtree, BatchOp, Crowdbtree, CtError, ExtOp, Options, PageStoreBackend, PinnedGetOutcome,
+    AsyncCrowdbtree, BatchOp, Crowdbtree, CtError, ExtOp, Options, PageStore, PageStoreBackend,
+    PinnedGetOutcome,
 };
 
 fn key(i: usize) -> Vec<u8> {
@@ -33,6 +34,22 @@ fn mem_apply_get_scan() {
     assert!(!truncated);
     assert_eq!(entries.len(), 39); // 40 puts - 1 delete
     assert!(entries.windows(2).all(|w| w[0].key < w[1].key)); // key-sorted
+}
+
+#[test]
+fn injected_mem_store_survives_caller_handle_drop() {
+    let store = std::sync::Arc::new(PageStore::open_mem(1).unwrap());
+    let t = Crowdbtree::open(&Options {
+        page_store: Some(store.clone()),
+        frame_bytes: 4096,
+        ..Default::default()
+    })
+    .unwrap();
+    drop(store);
+
+    t.apply_put(1, b"key", b"value").unwrap();
+    t.flush().unwrap();
+    assert_eq!(t.get(b"key").unwrap(), Some((1, b"value".to_vec())));
 }
 
 #[test]

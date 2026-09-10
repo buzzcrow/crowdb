@@ -15,6 +15,10 @@
 #include <string>
 #include <vector>
 
+#ifdef __linux__
+#    include <unistd.h>
+#endif
+
 namespace
 {
 std::string make_key(int i)
@@ -73,6 +77,45 @@ TEST(CApi, MemOpenApplyGetScan)
     EXPECT_EQ(count, 29U); // 30 puts - 1 delete
     ct_free_buf(&entries);
 
+    ct_close(t);
+}
+
+TEST(CApi, InjectedStoreRetainedAndFutureSignalsCompletionFd)
+{
+    ct_page_store *store = nullptr;
+    ASSERT_EQ(ct_page_store_open_mem(1, &store), 0);
+    ASSERT_NE(store, nullptr);
+
+    ct_options opt  = {};
+    opt.page_store  = store;
+    opt.frame_bytes = 4096;
+    ct_tree *t      = nullptr;
+    ASSERT_EQ(ct_open(&opt, &t), 0);
+    ct_page_store_free(store);
+
+    ASSERT_EQ(put_flush(t, 1, "key", "value"), 0);
+    ct_future *future = ct_get_async(t, reinterpret_cast<const uint8_t *>("key"), 3);
+    ASSERT_NE(future, nullptr);
+
+#ifdef __linux__
+    int32_t fd = -1;
+    ASSERT_GE(ct_uring_eventfds(t, &fd, 1), 1U);
+    ASSERT_GE(fd, 0);
+    uint64_t completions = 0;
+    ASSERT_EQ(::read(fd, &completions, sizeof(completions)), static_cast<ssize_t>(sizeof(completions)));
+    EXPECT_EQ(completions, 1U);
+#endif
+
+    int32_t  done  = 0;
+    int32_t  found = 0;
+    uint64_t slot  = 0;
+    ct_buf   value = {};
+    ASSERT_EQ(ct_future_poll(future, &done, &found, &slot, &value), 0);
+    ASSERT_EQ(done, 1);
+    ASSERT_EQ(found, 1);
+    EXPECT_EQ(slot, 1U);
+    EXPECT_EQ(std::string(reinterpret_cast<char *>(value.data), value.len), "value");
+    ct_future_free(future);
     ct_close(t);
 }
 

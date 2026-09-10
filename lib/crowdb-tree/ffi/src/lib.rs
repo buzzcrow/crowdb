@@ -29,7 +29,7 @@ pub use batch::{BatchOp, ExtOp};
 pub use cpp_global_metrics::{cpp_global_metrics_max_name_len, flush_cpp_global_metrics};
 pub use crc::{crc32c, crc32c_update};
 pub use error::CtError;
-pub use options::{Compression, Options, PageStoreBackend, SyncMode};
+pub use options::{Compression, Options, PageStore, PageStoreBackend, SyncMode};
 pub use reactor::PinnedValue;
 pub use scan::{ScanEntry, ViewEntry};
 pub use stats::{MergeGcStats, Stats};

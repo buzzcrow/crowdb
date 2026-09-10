@@ -23,12 +23,18 @@
 #endif
 
 #include <atomic>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
+
+#ifdef __linux__
+#    include <sys/eventfd.h>
+#    include <unistd.h>
+#endif
 
 using namespace crowdb::tree;
 
@@ -111,10 +117,61 @@ bool read_u32(const uint8_t *buf, size_t len, size_t *pos, uint32_t *v)
 
 // ── Handle structs ────────────────────────────────────────────────
 
+struct PageStoreBundle
+{
+    std::unique_ptr<PageStore>      store;
+    std::unique_ptr<AsyncPageStore> async_store;
+#ifdef CROWDB_HAVE_LIBURING
+    std::unique_ptr<crowdb::common::DiskIOUring> uring;
+#endif
+    std::string backend_label;
+};
+
+struct CompletionSignal
+{
+    CompletionSignal()
+    {
+#ifdef __linux__
+        fd = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+#endif
+    }
+
+    ~CompletionSignal()
+    {
+#ifdef __linux__
+        if (fd >= 0) {
+            ::close(fd);
+        }
+#endif
+    }
+
+    void notify() const
+    {
+#ifdef __linux__
+        if (fd >= 0) {
+            uint64_t one = 1;
+            ssize_t  n;
+            do {
+                n = ::write(fd, &one, sizeof(one));
+            } while (n < 0 && errno == EINTR);
+        }
+#endif
+    }
+
+    int fd = -1;
+};
+
+struct ct_page_store
+{
+    std::shared_ptr<PageStoreBundle> bundle;
+};
+
 struct ct_tree
 {
-    std::unique_ptr<PageStore>  store; // null for pure in-memory engine
-    std::unique_ptr<Crowdbtree> tree;
+    std::unique_ptr<PageStore>        store; // null for pure in-memory engine
+    std::unique_ptr<Crowdbtree>       tree;
+    std::shared_ptr<PageStoreBundle>  injected_store;
+    std::shared_ptr<CompletionSignal> completion = std::make_shared<CompletionSignal>();
 #ifdef CROWDB_HAVE_LIBURING
     // Both null for an in-memory tree, or if opening the async twin failed
     // (see ct_open) -- get_async/flush_async/snapshot_async then fall back
@@ -213,6 +270,24 @@ void ct_free_buf(ct_buf *buf)
 
 // ── Lifecycle ─────────────────────────────────────────────────────
 
+ct_status ct_page_store_open_mem(uint32_t iu_size, ct_page_store **out)
+{
+    if (out == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    auto handle                   = std::make_unique<ct_page_store>();
+    handle->bundle                = std::make_shared<PageStoreBundle>();
+    handle->bundle->store         = std::make_unique<MemPageStore>(iu_size == 0 ? 1 : iu_size);
+    handle->bundle->backend_label = "mem";
+    *out                          = handle.release();
+    return static_cast<ct_status>(Code::kOk);
+}
+
+void ct_page_store_free(ct_page_store *store)
+{
+    delete store;
+}
+
 ct_status ct_open(const ct_options *opt, ct_tree **out)
 {
     if (opt == nullptr || out == nullptr) {
@@ -264,7 +339,25 @@ ct_status ct_open(const ct_options *opt, ct_tree **out)
     }
 
     const bool durable = opt->path != nullptr && opt->path[0] != '\0';
-    if (!durable) {
+    if (opt->page_store != nullptr) {
+        if (opt->page_store->bundle == nullptr || opt->page_store->bundle->store == nullptr) {
+            return static_cast<ct_status>(Code::kInvalidArgument);
+        }
+        h->injected_store  = opt->page_store->bundle;
+        o.page_store       = h->injected_store->store.get();
+        o.async_page_store = h->injected_store->async_store.get();
+        o.backend_label    = h->injected_store->backend_label;
+#ifdef CROWDB_HAVE_LIBURING
+        o.async_uring = h->injected_store->uring.get();
+#endif
+        std::unique_ptr<Crowdbtree> t;
+        Status                      os = Crowdbtree::open(o, &t);
+        if (!os.ok()) {
+            return to_status(os);
+        }
+        h->tree = std::move(t);
+    }
+    else if (!durable) {
         // In-memory: BlockPageStore::open_mem with IU=1
         std::unique_ptr<BlockPageStore> bs;
         Status                          s = BlockPageStore::open_mem(opt->iu_size == 0 ? 1 : opt->iu_size, &bs);
@@ -776,11 +869,13 @@ ct_future *ct_get_async(ct_tree *t, const uint8_t *key, size_t klen)
     if (t == nullptr) {
         return nullptr;
     }
-    auto impl  = std::make_shared<ct_future_impl>();
-    impl->kind = ct_future_impl::Kind::kGet;
-    t->tree->get_async(Slice(reinterpret_cast<const char *>(key), klen), [impl](GetView view) {
+    auto impl   = std::make_shared<ct_future_impl>();
+    impl->kind  = ct_future_impl::Kind::kGet;
+    auto signal = t->completion;
+    t->tree->get_async(Slice(reinterpret_cast<const char *>(key), klen), [impl, signal](GetView view) {
         impl->get_result = std::move(view);
         impl->done.store(true, std::memory_order_release);
+        signal->notify();
     });
     return reinterpret_cast<ct_future *>(new ct_future_handle(std::move(impl)));
 }
@@ -790,11 +885,13 @@ ct_future *ct_flush_async(ct_tree *t)
     if (t == nullptr) {
         return nullptr;
     }
-    auto impl  = std::make_shared<ct_future_impl>();
-    impl->kind = ct_future_impl::Kind::kFlush;
-    t->tree->flush_async([impl](const Status &st) {
+    auto impl   = std::make_shared<ct_future_impl>();
+    impl->kind  = ct_future_impl::Kind::kFlush;
+    auto signal = t->completion;
+    t->tree->flush_async([impl, signal](const Status &st) {
         impl->status = to_status(st);
         impl->done.store(true, std::memory_order_release);
+        signal->notify();
     });
     return reinterpret_cast<ct_future *>(new ct_future_handle(std::move(impl)));
 }
@@ -804,12 +901,14 @@ ct_future *ct_snapshot_async(ct_tree *t)
     if (t == nullptr) {
         return nullptr;
     }
-    auto impl  = std::make_shared<ct_future_impl>();
-    impl->kind = ct_future_impl::Kind::kSnapshot;
-    t->tree->snapshot_async([impl](const Status &st, uint64_t last_applied) {
+    auto impl   = std::make_shared<ct_future_impl>();
+    impl->kind  = ct_future_impl::Kind::kSnapshot;
+    auto signal = t->completion;
+    t->tree->snapshot_async([impl, signal](const Status &st, uint64_t last_applied) {
         impl->status = to_status(st);
         impl->slot   = last_applied;
         impl->done.store(true, std::memory_order_release);
+        signal->notify();
     });
     return reinterpret_cast<ct_future *>(new ct_future_handle(std::move(impl)));
 }
@@ -823,18 +922,19 @@ ct_future *ct_scan_async(ct_tree *t, const uint8_t *prefix, size_t plen, const u
     }
     auto impl  = std::make_shared<ct_future_impl>();
     impl->kind = ct_future_impl::Kind::kScan;
-    t->tree->scan_async(Slice(reinterpret_cast<const char *>(prefix), plen),
-                        Slice(reinterpret_cast<const char *>(start_after), salen),
-                        Slice(reinterpret_cast<const char *>(end_key), elen), limit, byte_budget, keys_only != 0,
-                        deadline_ms, [impl](const Status &st, ScanPackedBuf packed, bool truncated) {
-                            impl->status = to_status(st);
-                            if (st.ok()) {
-                                impl->scan_count     = count_packed_entries(packed.data(), packed.size());
-                                impl->scan_packed    = std::move(packed);
-                                impl->scan_truncated = truncated;
-                            }
-                            impl->done.store(true, std::memory_order_release);
-                        });
+    t->tree->scan_async(
+        Slice(reinterpret_cast<const char *>(prefix), plen), Slice(reinterpret_cast<const char *>(start_after), salen),
+        Slice(reinterpret_cast<const char *>(end_key), elen), limit, byte_budget, keys_only != 0, deadline_ms,
+        [impl, signal = t->completion](const Status &st, ScanPackedBuf packed, bool truncated) {
+            impl->status = to_status(st);
+            if (st.ok()) {
+                impl->scan_count     = count_packed_entries(packed.data(), packed.size());
+                impl->scan_packed    = std::move(packed);
+                impl->scan_truncated = truncated;
+            }
+            impl->done.store(true, std::memory_order_release);
+            signal->notify();
+        });
     return reinterpret_cast<ct_future *>(new ct_future_handle(std::move(impl)));
 }
 
@@ -918,16 +1018,25 @@ void ct_future_free(ct_future *f)
 
 size_t ct_uring_eventfds(const ct_tree *t, int32_t *out_fds, size_t max_fds)
 {
-#ifdef CROWDB_HAVE_LIBURING
-    if (t != nullptr && t->uring != nullptr) {
-        return t->uring->eventfds(out_fds, max_fds);
+    if (t == nullptr) {
+        return 0;
     }
-#else
-    (void)t;
-    (void)out_fds;
-    (void)max_fds;
+    size_t total = t->completion != nullptr && t->completion->fd >= 0 ? 1 : 0;
+    if (out_fds != nullptr && max_fds > 0 && total != 0) {
+        out_fds[0] = t->completion->fd;
+    }
+#ifdef CROWDB_HAVE_LIBURING
+    auto *uring = t->uring.get();
+    if (uring == nullptr && t->injected_store != nullptr) {
+        uring = t->injected_store->uring.get();
+    }
+    if (uring != nullptr) {
+        const size_t room  = max_fds > total ? max_fds - total : 0;
+        const size_t count = uring->eventfds(out_fds == nullptr ? nullptr : out_fds + total, room);
+        return total + count;
+    }
 #endif
-    return 0;
+    return total;
 }
 
 ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_after, size_t salen,

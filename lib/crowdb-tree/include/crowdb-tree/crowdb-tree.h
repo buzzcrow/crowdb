@@ -43,10 +43,7 @@ using crowdb::common::metrics::Gauge;
 using crowdb::common::metrics::LatencySummary;
 using crowdb::common::metrics::MetricsRegistry;
 
-#ifdef CROWDB_HAVE_LIBURING
-using crowdb::common::DiskIOUring;
 class AsyncPageStore;
-#endif
 
 // One mutation in a batch. All ops in a batch share the batch's slot.
 struct batch_op
@@ -409,8 +406,8 @@ class Crowdbtree
     Status snapshot(uint64_t *out_last_applied = nullptr);
 
     // Async twin of snapshot(). Always genuinely
-    // async from *this* caller's perspective when Options::async_uring/
-    // async_page_store are wired (flush/snapshot are
+    // async from *this* caller's perspective when Options::async_page_store is
+    // wired (flush/snapshot are
     // *always* slow-path, unlike get/scan): snapshot_async() returns
     // immediately after kicking off the walk + first I/O submission, and
     // on_done fires later from the Reactor thread with the same result
@@ -566,8 +563,8 @@ class Crowdbtree
     [[nodiscard]] GetView get_view(Slice key) const;
 
     // Async twin of get(). Fast path (every page needed to resolve `key` is already
-    // resident, or no async backend is wired -- see Options::async_uring/
-    // async_page_store) invokes on_done synchronously, before this call
+    // resident, or no async backend is wired -- see
+    // Options::async_page_store) invokes on_done synchronously, before this call
     // returns, exactly like get(). A genuine miss on the L1 descent (some
     // base page along the root->leaf path is tagged unloaded) submits
     // exactly one page load via the reactor and resumes automatically; on

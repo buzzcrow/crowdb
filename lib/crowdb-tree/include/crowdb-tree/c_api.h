@@ -24,6 +24,7 @@ using ct_status = int32_t; // 0 = ok; negative mirrors crowdb::tree::Code
 
 // Opaque handles.
 using ct_tree         = struct ct_tree;
+using ct_page_store   = struct ct_page_store;
 using ct_view         = struct ct_view;
 using ct_iter         = struct ct_iter;
 using ct_export       = struct ct_export;
@@ -98,6 +99,10 @@ enum ct_sync_mode : uint8_t {
 // store. Zero numeric fields take engine defaults.
 using ct_options = struct
 {
+    // Optional injected backend. The tree retains shared ownership; callers
+    // may release their handle after ct_open returns. When non-null, path and
+    // backend are ignored.
+    ct_page_store    *page_store;
     const char       *path;              // durable file path; null/empty => in-memory
     uint32_t          iu_size;           // 0 => default (1 for mem, 4096 for file)
     uint32_t          frame_bytes;       // 0 => default
@@ -117,6 +122,8 @@ using ct_options = struct
 };
 
 // ── Lifecycle + durability ────────────────────────────────────────
+ct_status ct_page_store_open_mem(uint32_t iu_size, ct_page_store **out);
+void      ct_page_store_free(ct_page_store *store);
 ct_status ct_open(const ct_options *opt, ct_tree **out);
 void      ct_close(ct_tree *t);
 
@@ -386,15 +393,10 @@ ct_status ct_future_poll(ct_future *f, int32_t *done, int32_t *out_found, uint64
 // this after a resolved poll, never before).
 void ct_future_free(ct_future *f);
 
-// The tree's DiskIOUring eventfds, for the Rust side to register with
-// tokio::io::AsyncFd: each becomes readable after the poll thread
-// dispatches a batch of completions on its pipeline, so re-polling every
-// pending future at that point will observe any that just finished.
-// Fills `out_fds` (caller-allocated, up to `max_fds`) and returns the
-// count. Returns 0 if this tree has no DiskIOUring wired (in-memory tree,
-// or a build without liburing) -- ct_*_async calls still work in that
-// case, they just always complete synchronously (nothing to wait on).
-// DiskIOUring-owned; do not close the fds.
+// Completion descriptors for all async backends. The backend-independent
+// future eventfd comes first; local DiskIOUring pipeline eventfds follow it.
+// Fills `out_fds` up to `max_fds` and returns the total count. Tree-owned;
+// callers must not close the descriptors.
 size_t ct_uring_eventfds(const ct_tree *t, int32_t *out_fds, size_t max_fds);
 
 // Range scan over `prefix` (empty = whole keyspace), up to `limit` (0 = all).

@@ -1088,8 +1088,7 @@ void Crowdbtree::snapshot_async(
         on_done(Status::invalid_argument("snapshot: no page_store"), 0);
         return;
     }
-#ifdef CROWDB_HAVE_LIBURING
-    if (opt_.async_uring != nullptr && opt_.async_page_store != nullptr) {
+    if (opt_.async_page_store != nullptr) {
         acquire_snapshot_slot();
         auto   prepared = std::make_shared<PreparedSnapshot>();
         Status ps;
@@ -1105,7 +1104,6 @@ void Crowdbtree::snapshot_async(
         snapshot_write_next_async(std::move(prepared), 0, std::move(on_done));
         return;
     }
-#endif
     // No async backend wired -- run the synchronous path in
     // this stack frame; still correct, just not genuinely async.
     uint64_t last_applied = 0;
@@ -1117,15 +1115,6 @@ void Crowdbtree::snapshot_write_next_async(                    // NOLINT(readabi
     std::shared_ptr<PreparedSnapshot> prepared,                // NOLINT(performance-unnecessary-value-param)
     size_t idx, std::function<void(Status, uint64_t)> on_done) // NOLINT(performance-unnecessary-value-param)
 {
-#ifndef CROWDB_HAVE_LIBURING
-    // Unreachable: snapshot_async()'s only call site for this helper is
-    // itself #ifdef CROWDB_HAVE_LIBURING-gated. Kept defined (rather than
-    // #ifdef-ing the whole function out) so the declaration in crowdb-tree.h
-    // stays unconditional, matching get_async_attempt's style.
-    (void)prepared;
-    (void)idx;
-    (void)on_done;
-#else
     // snapshot_inflight_ (acquired by snapshot_async() before
     // prepare_snapshot_locked()) stays held across this entire async chain
     // -- see snapshot_async's doc comment on crowdb-tree.h for why an atomic
@@ -1211,7 +1200,6 @@ void Crowdbtree::snapshot_write_next_async(                    // NOLINT(readabi
                 on_done(fs1, 0);
             }
         });
-#endif
 }
 
 Status Crowdbtree::prefetch_sparse_pages(std::vector<PrefetchedPage> *out, std::set<uint32_t> *selected_blocks)

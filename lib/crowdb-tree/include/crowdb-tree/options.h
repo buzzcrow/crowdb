@@ -19,9 +19,7 @@ namespace crowdb::tree
 {
 
 class PageStore;
-#ifdef CROWDB_HAVE_LIBURING
 class AsyncPageStore;
-#endif
 
 struct Options
 {
@@ -119,19 +117,16 @@ struct Options
     // state and open() recovers it.
     PageStore *page_store = nullptr;
 
-#ifdef CROWDB_HAVE_LIBURING
     // ── Async I/O ──
-    // Both non-owning; the caller (c_api.cpp's ct_open) owns and outlives
-    // the Crowdbtree. Either left null (e.g. a MemPageStore-backed tree, or
-    // any tree that never calls the *_async methods) means get_async's
-    // genuine-miss case and flush_async/snapshot_async fall back to
-    // completing synchronously in the caller's stack frame instead of
-    // touching a uring -- no MemAsyncPageStore needed
-    // (see Crowdbtree::get_async's doc comment). One DiskIOUring per Crowdbtree
-    // instance; async_page_store must be backed by the
-    // *same* durable store as `page_store` (see BlockAsyncPageStore).
-    ::crowdb::common::DiskIOUring *async_uring      = nullptr;
-    AsyncPageStore                *async_page_store = nullptr;
+    // Non-owning; the caller owns and outlives the Crowdbtree. When null,
+    // async entry points complete synchronous storage work in the caller's
+    // stack frame. The store must address the same durable image as
+    // `page_store`. This contract is independent of io_uring so RPC-backed
+    // stores work on builds without liburing.
+    AsyncPageStore *async_page_store = nullptr;
+#ifdef CROWDB_HAVE_LIBURING
+    // Optional local reactor used only by BlockAsyncPageStore.
+    ::crowdb::common::DiskIOUring *async_uring = nullptr;
 #endif
 
     // ── Buffer pool ──

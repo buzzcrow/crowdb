@@ -4,15 +4,12 @@
 #include "crowdb-tree/crowdb-tree.h"
 
 #include "crowdb-common/log.h"
+#include "crowdb-tree/async_page_store.h"
 #include "crowdb-tree/compressor.h"
 #include "crowdb-tree/delta.h"
 #include "crowdb-tree/descent.h"
 #include "crowdb-tree/leaf_cursor.h"
 #include "crowdb-tree/mapping_slot.h"
-#ifdef CROWDB_HAVE_LIBURING
-#    include "crowdb-common/diskio_uring.h"
-#    include "crowdb-tree/async_page_store.h"
-#endif
 
 #include <algorithm>
 #include <chrono>
@@ -2048,8 +2045,7 @@ void Crowdbtree::get_async_attempt(std::shared_ptr<std::string> key_owned, std::
         return;
     }
 
-#ifdef CROWDB_HAVE_LIBURING
-    if (opt_.async_uring != nullptr && opt_.async_page_store != nullptr) {
+    if (opt_.async_page_store != nullptr) {
         // Re-verify under load_mutex_ before unpacking the unloaded
         // descriptor from the slot word (see try_get_view_no_load's doc
         // comment on crowdb-tree.h): the word may be concurrently replaced by
@@ -2112,7 +2108,6 @@ void Crowdbtree::get_async_attempt(std::shared_ptr<std::string> key_owned, std::
             });
         return;
     }
-#endif
     // No async backend wired (e.g. a MemPageStore-backed tree -- design
     // §6.3: no MemAsyncPageStore, nothing is genuinely pending there) --
     // fall back to the existing synchronous demand-load and retry, still
@@ -3175,8 +3170,7 @@ void Crowdbtree::scan_async_attempt(std::shared_ptr<std::string>        prefix_o
     // final result respects the caller's limit.
     size_t remaining_limit = (limit > accumulated_count) ? (limit - accumulated_count) : 0;
 
-#ifdef CROWDB_HAVE_LIBURING
-    if (opt_.async_uring != nullptr && opt_.async_page_store != nullptr) {
+    if (opt_.async_page_store != nullptr) {
         uint64_t addr           = 0;
         uint32_t plen           = 0;
         bool     still_unloaded = false;
@@ -3243,7 +3237,6 @@ void Crowdbtree::scan_async_attempt(std::shared_ptr<std::string>        prefix_o
             });
         return;
     }
-#endif
     // No async backend wired -- fall back to the existing synchronous
     // demand-load and retry, still on this same thread.
     if (metrics_.scan_retry_c != nullptr) {

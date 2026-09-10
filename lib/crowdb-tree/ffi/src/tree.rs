@@ -64,6 +64,10 @@ impl Crowdbtree {
             Some(CString::new(opt.log_file_prefix.as_str()).map_err(|_| CtError::InvalidArgument)?)
         };
         let copt = sys::ct_options {
+            page_store: opt
+                .page_store
+                .as_ref()
+                .map_or(std::ptr::null_mut(), |store| store.as_ptr()),
             path: cpath.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
             iu_size: opt.iu_size,
             frame_bytes: opt.frame_bytes,
