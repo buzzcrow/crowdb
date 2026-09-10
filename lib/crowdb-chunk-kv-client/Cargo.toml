@@ -1,0 +1,22 @@
+[package]
+name = "crowdb-chunk-kv-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Catalog-routed client for the chunk-backed KV service."
+
+[lints]
+workspace = true
+
+[dependencies]
+arc-swap = "1.9"
+async-trait = "0.1"
+crowdb-protocol = { path = "../crowdb-protocol" }
+rand = "0.8"
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "test-util"] }

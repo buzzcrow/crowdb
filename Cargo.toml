@@ -19,6 +19,7 @@ members = [
     "lib/crowdb-chunk-client",
     "lib/crowdb-chunk-stream",
     "lib/crowdb-chunk-kv",
+    "lib/crowdb-chunk-kv-client",
     "lib/crowdb-test-harness",
     "app/crowdb-port-alloc",
     "app/crowdb-chunk-kv-server",
