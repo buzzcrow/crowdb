@@ -147,12 +147,6 @@ void Worker::run_loop()
             int n = engine_->wait(events, MAX_EVENTS, 1000); // 1s timeout
             closed_fds.clear();
 
-            // Round timing: skip empty wakes (n == 0 = timeout, no work done).
-            uint64_t round_start = 0;
-            if (n > 0) {
-                round_start = now_nanos();
-            }
-
             for (int i = 0; i < n; i++) {
                 const auto &ev = events[i];
                 switch (ev.type) {
@@ -184,9 +178,7 @@ void Worker::run_loop()
                     break;
                 case SocketEvent::Readable:
                     if (ev.conn != nullptr && ev.conn->is_open()) {
-                        uint64_t rh_start = now_nanos();
                         on_readable_impl(ev.conn, ev.fd, recv_buf_.data(), recv_buf_.size(), pending_write_conns_);
-                        hist_read_handle().observe(now_nanos() - rh_start);
                         if (!ev.conn->is_open()) {
                             // Connection closed (EOF or fatal read error).
                             // Remove from epoll and close the fd to stop
@@ -215,9 +207,7 @@ void Worker::run_loop()
                 case SocketEvent::Writable:
                     if (ev.conn != nullptr && ev.conn->is_open()) {
                         // ev.fd is the write fd (dup'd). try_send uses it.
-                        uint64_t wh_start = now_nanos();
-                        bool     all_sent = on_writable_impl(ev.conn, ev.fd, stats_);
-                        hist_write_handle().observe(now_nanos() - wh_start);
+                        bool all_sent = on_writable_impl(ev.conn, ev.fd, stats_);
                         if (!ev.conn->is_open()) {
                             // Connection closed during write (hard error).
                             CRB_LOG_INFO("rpc transport: connection closed (write) fd={} conn_id={} peer={}", ev.fd,
@@ -308,11 +298,6 @@ void Worker::run_loop()
                     connections_.erase(fd);
                 }
             }
-
-            // Round latency: epoll wake → round complete (skip empty wakes).
-            if (round_start > 0) {
-                hist_epoll_run().observe(now_nanos() - round_start);
-            }
         }
         CRB_LOG_INFO("worker {} event loop exited", id_);
     }
@@ -330,13 +315,8 @@ void Worker::run_loop()
 static void on_readable_impl(Connection *conn, int fd, uint8_t *recv_buf, size_t recv_buf_size,
                              std::vector<Connection *> &pending_writes)
 {
-    auto    &parser          = conn->parser();
-    uint64_t read_entry_nano = now_nanos();
-    auto     on_frame_cb     = [conn, read_entry_nano](Frame *frame) {
-        // read_to_parse: epoll wake → frame parsed (read() syscall + parse).
-        hist_read_to_parse().observe(now_nanos() - read_entry_nano);
-        conn->on_frame(frame);
-    };
+    auto &parser      = conn->parser();
+    auto  on_frame_cb = [conn](Frame *frame) { conn->on_frame(frame); };
 
     // Process bytes from recv_buf starting at offset `pos`, up to `end`.
     // Handles header+control (via feed_data) and data (direct copy to

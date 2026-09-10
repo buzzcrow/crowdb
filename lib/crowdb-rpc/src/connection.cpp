@@ -233,7 +233,6 @@ retry:
                 if (batch[i]->create_nano > 0) {
                     uint64_t delta = now - batch[i]->create_nano;
                     stats->submit_to_writev.record(delta);
-                    hist_submit_to_writev().observe(delta);
                 }
                 // Request payload bandwidth: data bytes per frame (no header).
                 uint64_t payload = 0;
@@ -254,10 +253,7 @@ retry:
             break;
         }
 
-        uint64_t writev_start = now_nanos();
-        ssize_t  written      = ::writev(fd, iovs, iov_count);
-        uint64_t writev_end   = now_nanos();
-        hist_writev().observe(writev_end - writev_start);
+        ssize_t written = ::writev(fd, iovs, iov_count);
         if (written > 0) {
             bw_writev().observe(static_cast<uint64_t>(written));
         }

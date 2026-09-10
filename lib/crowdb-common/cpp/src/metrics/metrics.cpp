@@ -193,22 +193,19 @@ void MetricsRegistry::flush_to(FILE *fp, double window_secs, const char * /*time
             }
         }
         if (!active.empty()) {
-            std::fprintf(fp, "%-*s  %*s  %*s  %7s  %7s  %7s  %7s  %8s\n", static_cast<int>(name_w), "",
-                         static_cast<int>(cw), "count", static_cast<int>(tw), "tps(/s)", "avg(us)", "p50", "p99", "max",
-                         "total");
+            std::fprintf(fp, "%-*s  %*s  %*s  %8s  %8s  %8s  %8s  %8s\n", static_cast<int>(name_w), "",
+                         static_cast<int>(cw), "count", static_cast<int>(tw), "tps(/s)", "avg(us)", "p50(us)",
+                         "p99(us)", "max(us)", "total");
             for (const auto &[i, snap] : active) {
-                uint64_t p50   = LatencyHistogram::percentile(snap, 50.0);
-                uint64_t p99   = LatencyHistogram::percentile(snap, 99.0);
-                uint64_t avg   = snap.count > 0 ? snap.sum / snap.count : 0;
-                double   tps_d = static_cast<double>(snap.count) / window_secs;
-                auto     tps   = static_cast<uint64_t>(tps_d);
-                std::fprintf(fp, "%-*s  %*llu  %*llu  %7llu  %7llu  %7llu  %7llu  %8llu\n", static_cast<int>(name_w),
-                             histograms_[i]->name().c_str(), static_cast<int>(cw),
-                             static_cast<unsigned long long>(snap.count), static_cast<int>(tw),
-                             static_cast<unsigned long long>(tps), static_cast<unsigned long long>(avg / 1000),
-                             static_cast<unsigned long long>(p50 / 1000), static_cast<unsigned long long>(p99 / 1000),
-                             static_cast<unsigned long long>(snap.sum / snap.count),
-                             static_cast<unsigned long long>(snap.total_count));
+                double tps_d = static_cast<double>(snap.count) / window_secs;
+                auto   tps   = static_cast<uint64_t>(tps_d);
+                std::fprintf(
+                    fp, "%-*s  %*llu  %*llu  %8.1f  %8llu  %8llu  %8llu  %8llu\n", static_cast<int>(name_w),
+                    histograms_[i]->name().c_str(), static_cast<int>(cw), static_cast<unsigned long long>(snap.count),
+                    static_cast<int>(tw), static_cast<unsigned long long>(tps), snap.avg / 1000.0,
+                    static_cast<unsigned long long>(snap.p50 / 1000), static_cast<unsigned long long>(snap.p99 / 1000),
+                    static_cast<unsigned long long>(snap.max / 1000),
+                    static_cast<unsigned long long>(snap.total_count));
             }
         }
     }

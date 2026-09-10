@@ -225,7 +225,7 @@ run_case() {
     printf '%s\n' "$output"
     line=$(sed -n '/^diskdb bench /p' <<<"$output" | tail -n 1)
     if [ -z "$line" ]; then
-        printf '%s/%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\t0\t0\t%ss\t1\tunknown\n' \
+        printf '%s/%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\t0\t0\t0\t%ss\t1\tunknown\n' \
             "$workload" "$mode" "$DATA_GROUP_COUNT" "$concurrency" "$blocks" \
             "$DDB_CONNECTIONS" "$KV_CONNECTIONS" "$KV_PEER_POOL" "$epoll_workers" \
             "$KV_INFLIGHT" "$KV_COALESCE" "$DURATION" >>"$RESULTS_FILE"
@@ -237,11 +237,12 @@ run_case() {
         if [ -n "$busy_delta" ] && [ "$busy_delta" = "$expected_delta" ]; then
             space=exact
         fi
-        printf '%s/%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%ss\t%s\t%s\n' \
+        printf '%s/%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%ss\t%s\t%s\n' \
             "$workload" "$mode" "$DATA_GROUP_COUNT" "$concurrency" "$blocks" \
             "$DDB_CONNECTIONS" "$KV_CONNECTIONS" "$KV_PEER_POOL" "$epoll_workers" \
             "$KV_INFLIGHT" "$KV_COALESCE" "$(field "$line" ops_per_sec)" \
-            "$(field "$line" p50_us)" "$(field "$line" p99_us)" "$DURATION" \
+            "$(field "$line" avg_us)" "$(field "$line" p50_us)" \
+            "$(field "$line" p99_us)" "$DURATION" \
             "$(field "$line" errors)" "$space" >>"$RESULTS_FILE"
     fi
     if ! verify_logs "$label"; then
@@ -256,7 +257,7 @@ run_case() {
 echo "=== building release binaries ==="
 pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb
 mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"
-printf 'Wl\tGrp\tThr\tBlk\tCli\tDdb\tKv\tWkr\tWin\tCoal\tops/s\tp50\tp99\tDur\tErr\tSpc\n' >"$RESULTS_FILE"
+printf 'Wl\tGrp\tThr\tBlk\tCli\tDdb\tKv\tWkr\tWin\tCoal\tops/s\tavg\tp50\tp99\tDur\tErr\tSpc\n' >"$RESULTS_FILE"
 
 for mode in $MODES; do
     if any_case_selected "allocate_${mode}_1t" "allocate_${mode}_16t" "mix_${mode}_1t" "mix_${mode}_16t"; then

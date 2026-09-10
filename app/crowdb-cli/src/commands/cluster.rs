@@ -51,7 +51,7 @@ pub enum ClusterVerb {
         /// [kv] `--rpc-workers` for the spawned server. 0 = server default (2).
         #[arg(long, default_value_t = 0)]
         rpc_workers: u32,
-        /// [diskio] RPC I/O worker threads. 0 = server default (1).
+        /// [diskio] RPC I/O worker threads. 0 = server default (4).
         #[arg(long, default_value_t = 0)]
         diskio_rpc_workers: u32,
         /// [kv] `--peer-pool-size` for the spawned server. 0 = server default (2).

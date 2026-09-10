@@ -309,7 +309,7 @@ rm -rf /tmp/crowdb-common-diskio-uring-tests \
 rm -rf /tmp/crowtree_log_* /tmp/crowtree_metrics_test_*
 # Bench script temp files (config, cfgpath, output, logs)
 rm -f /tmp/bench-write-reg-* /tmp/bench-read-regression-* /tmp/bench-scan-regression-* \
-      /tmp/bench-rpc-regression-* /tmp/bench-compare-128t-*
+      /tmp/bench-rpc-regression-*
 echo "[clean] done"
 '
 ''' }

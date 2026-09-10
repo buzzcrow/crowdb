@@ -59,7 +59,7 @@ pub struct ChunkioArgs {
     #[arg(long, default_value_t = 4)]
     pub diskio_connections: usize,
     /// RPC I/O workers serving `DiskIO` responses in this client.
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 4)]
     pub diskio_rpc_workers: u32,
     #[arg(long, default_value_t = 1024 * 1024)]
     pub block_size: usize,
@@ -101,7 +101,7 @@ pub struct ChunkioSmallWriteArgs {
     #[arg(long, default_value_t = 4)]
     pub diskio_connections: usize,
     /// RPC I/O workers serving `DiskIO` responses in this client.
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 4)]
     pub diskio_rpc_workers: u32,
     /// Maximum queue-driven pipelines; hard limit is 32.
     #[arg(long, default_value_t = 32)]
@@ -120,9 +120,6 @@ pub struct ChunkioSmallWriteArgs {
     pub seed: u8,
     #[arg(long, default_value_t = 1)]
     pub metrics_interval: u64,
-    /// Disable foreground mirror-to-EC conversion for an A/B baseline.
-    #[arg(long, default_value_t = false)]
-    pub mirror_only: bool,
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -142,7 +139,7 @@ pub struct ChunkioReadArgs {
     #[arg(long, default_value_t = 4)]
     pub diskio_connections: usize,
     /// RPC I/O workers serving `DiskIO` responses in this client.
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = 4)]
     pub diskio_rpc_workers: u32,
     #[arg(long, default_value_t = 8 * 1024)]
     pub small_object_size: usize,

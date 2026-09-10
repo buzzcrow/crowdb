@@ -336,11 +336,19 @@ fn get_u64(map: &std::collections::HashMap<&str, f64>, key: &str) -> u64 {
         })
 }
 
+fn get_f64(map: &std::collections::HashMap<&str, f64>, key: &str) -> f64 {
+    // avg_ns is now a true f64; preserve fractional precision. The
+    // filter guards against NaN/negative.
+    map.get(key)
+        .filter(|v| v.is_finite() && **v >= 0.0)
+        .map_or(0.0, |v| *v)
+}
+
 /// Accumulator for one op-type's RPC latency across nodes. Histograms
 /// report `avg_ns`/`p50_ns`/`p99_ns`; we sum and divide by node count.
 #[derive(Default)]
 struct RpcLatencyAccOp {
-    avg_ns: u64,
+    avg_ns: f64,
     p50_ns: u64,
     p99_ns: u64,
     count: u64,
@@ -351,15 +359,18 @@ impl RpcLatencyAccOp {
         if get_u64(fields, "count") == 0 {
             return;
         }
-        self.avg_ns += get_u64(fields, "avg_ns");
+        self.avg_ns += get_f64(fields, "avg_ns");
         self.p50_ns += get_u64(fields, "p50_ns");
         self.p99_ns += get_u64(fields, "p99_ns");
         self.count += 1;
     }
-    fn finalize_us(&self) -> (u64, u64, u64) {
+    fn finalize_us(&self) -> (f64, u64, u64) {
         let n = self.count.max(1);
         (
-            self.avg_ns / n / 1000,
+            #[allow(clippy::cast_precision_loss)]
+            {
+                self.avg_ns / n as f64 / 1000.0
+            },
             self.p50_ns / n / 1000,
             self.p99_ns / n / 1000,
         )

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crowdb_common::metrics::PreciseHistogram;
-use crowdb_common::metrics::{Counter, Gauge, LatencyHistogram, MetricsRegistry};
+use crowdb_common::metrics::{Counter, Gauge, MetricsRegistry};
 use serde::{Deserialize, Serialize};
 
 /// Registered `ChunkDB` RPC methods, used as stable request-metric indices.
@@ -65,12 +65,11 @@ impl RequestKind {
 }
 
 struct RequestMetric {
-    latency: Arc<LatencyHistogram>,
     inflight: Arc<Gauge>,
     errors: Arc<Counter>,
 }
 
-/// Uniform completed-request latency/count, inflight, and error metrics.
+/// Uniform completed-request count, inflight, and error metrics.
 pub struct RequestMetrics {
     methods: [RequestMetric; 11],
 }
@@ -80,7 +79,6 @@ impl RequestMetrics {
         let methods = RequestKind::ALL.map(|kind| {
             let prefix = format!("request.{}", kind.name());
             RequestMetric {
-                latency: registry.register_histogram(format!("{prefix}.lh")),
                 inflight: registry.register_gauge(format!("{prefix}.inflight.g")),
                 errors: registry.register_counter(format!("{prefix}.errors.c")),
             }
@@ -94,10 +92,8 @@ impl RequestMetrics {
         let metric = &self.methods[kind.index()];
         metric.inflight.inc();
         RequestGuard {
-            latency: Arc::clone(&metric.latency),
             inflight: Arc::clone(&metric.inflight),
             errors: Arc::clone(&metric.errors),
-            started: std::time::Instant::now(),
             success: false,
         }
     }
@@ -105,10 +101,8 @@ impl RequestMetrics {
 
 /// Completes request accounting on every synchronous or asynchronous exit.
 pub struct RequestGuard {
-    latency: Arc<LatencyHistogram>,
     inflight: Arc<Gauge>,
     errors: Arc<Counter>,
-    started: std::time::Instant,
     success: bool,
 }
 
@@ -124,8 +118,6 @@ impl Drop for RequestGuard {
         if !self.success {
             self.errors.inc();
         }
-        self.latency
-            .observe(self.started.elapsed().as_nanos().try_into().unwrap_or(u64::MAX));
         self.inflight.dec();
     }
 }
@@ -139,16 +131,10 @@ pub struct ChunkdbMetrics {
     pub allocate_inflight: Arc<Gauge>,
     pub allocate_strips: Arc<Counter>,
     pub allocate_blocks: Arc<Counter>,
-    pub allocate_placement: Arc<LatencyHistogram>,
-    pub allocate_diskdb_round: Arc<LatencyHistogram>,
     pub allocate_diskdb_calls: Arc<Counter>,
     pub allocate_diskdb_retries: Arc<Counter>,
-    pub allocate_commit: Arc<LatencyHistogram>,
     pub allocate_commit_blocks: Arc<Counter>,
     pub allocate_commit_errors: Arc<Counter>,
-    pub allocate_record_build: Arc<LatencyHistogram>,
-    pub allocate_kv_persist: Arc<LatencyHistogram>,
-    pub allocate_rollback: Arc<LatencyHistogram>,
     pub allocate_rollback_blocks: Arc<Counter>,
     pub allocate_errors: Arc<Counter>,
     pub reservation_blocks: Arc<Gauge>,
@@ -166,16 +152,10 @@ impl ChunkdbMetrics {
             allocate_inflight: registry.register_gauge("allocate.inflight.g"),
             allocate_strips: registry.register_counter("allocate.strips.c"),
             allocate_blocks: registry.register_counter("allocate.blocks.c"),
-            allocate_placement: registry.register_histogram("allocate.placement.lh"),
-            allocate_diskdb_round: registry.register_histogram("allocate.diskdb_round.lh"),
             allocate_diskdb_calls: registry.register_counter("allocate.diskdb_calls.c"),
             allocate_diskdb_retries: registry.register_counter("allocate.diskdb_retries.c"),
-            allocate_commit: registry.register_histogram("allocate.commit.lh"),
             allocate_commit_blocks: registry.register_counter("allocate.commit_blocks.c"),
             allocate_commit_errors: registry.register_counter("allocate.commit_errors.c"),
-            allocate_record_build: registry.register_histogram("allocate.record_build.lh"),
-            allocate_kv_persist: registry.register_histogram("allocate.kv_persist.lh"),
-            allocate_rollback: registry.register_histogram("allocate.rollback.lh"),
             allocate_rollback_blocks: registry.register_counter("allocate.rollback_blocks.c"),
             allocate_errors: registry.register_counter("allocate.errors.c"),
             reservation_blocks: registry.register_gauge("reservation.blocks.g"),

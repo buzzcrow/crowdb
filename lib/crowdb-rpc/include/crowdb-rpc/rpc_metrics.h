@@ -1,21 +1,13 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-// RPC latency hierarchy metrics. All metrics are registered with
+// RPC latency metrics. All metrics are registered with
 // MetricsRegistry::global() via function-local statics (thread-safe,
 // zero-init overhead after first call). See
 // doc/working/design-rpc-latency-hierarchy.md for the full design.
 //
 // Latency histograms (count + avg/p50/p99/max):
-//   rpc.submit_to_writev  — queue wait (client + server)
-//   rpc.read_to_parse     — epoll wake → frame parsed
-//   rpc.read_handle       — full read event handling
-//   rpc.write_handle      — full write event handling
-//   rpc.epoll.run          — epoll wake → round complete
-//   rpc.writev            — writev syscall
-//   rpc.request.e2e                 — full round trip (client clock)
-//   rpc.request.response_schedule   — I/O thread → tokio task resume
-//   rpc.response.inline             — frame_parsed → response_built (sync)
+//   rpc.request.e2e — full round trip (client clock)
 //
 // Bandwidth (count + avg_size + max + rate):
 //   rpc.socket.read.bw           — bytes per read() syscall
@@ -42,66 +34,10 @@ namespace crowdb::rpc
 
 // ── Latency histograms ───────────────────────────────────────────
 
-inline crowdb::common::metrics::LatencyHistogram &hist_submit_to_writev()
-{
-    static crowdb::common::metrics::LatencyHistogram *h =
-        crowdb::common::metrics::MetricsRegistry::global().register_histogram("rpc.submit_to_writev");
-    return *h;
-}
-
-inline crowdb::common::metrics::LatencyHistogram &hist_read_to_parse()
-{
-    static crowdb::common::metrics::LatencyHistogram *h =
-        crowdb::common::metrics::MetricsRegistry::global().register_histogram("rpc.read_to_parse");
-    return *h;
-}
-
-inline crowdb::common::metrics::LatencyHistogram &hist_read_handle()
-{
-    static crowdb::common::metrics::LatencyHistogram *h =
-        crowdb::common::metrics::MetricsRegistry::global().register_histogram("rpc.read_handle");
-    return *h;
-}
-
-inline crowdb::common::metrics::LatencyHistogram &hist_write_handle()
-{
-    static crowdb::common::metrics::LatencyHistogram *h =
-        crowdb::common::metrics::MetricsRegistry::global().register_histogram("rpc.write_handle");
-    return *h;
-}
-
-inline crowdb::common::metrics::LatencyHistogram &hist_epoll_run()
-{
-    static crowdb::common::metrics::LatencyHistogram *h =
-        crowdb::common::metrics::MetricsRegistry::global().register_histogram("rpc.epoll.run");
-    return *h;
-}
-
-inline crowdb::common::metrics::LatencyHistogram &hist_writev()
-{
-    static crowdb::common::metrics::LatencyHistogram *h =
-        crowdb::common::metrics::MetricsRegistry::global().register_histogram("rpc.writev");
-    return *h;
-}
-
 inline crowdb::common::metrics::LatencyHistogram &hist_e2e()
 {
     static crowdb::common::metrics::LatencyHistogram *h =
         crowdb::common::metrics::MetricsRegistry::global().register_histogram("rpc.request.e2e");
-    return *h;
-}
-
-inline crowdb::common::metrics::LatencyHistogram &hist_response_schedule()
-{
-    static crowdb::common::metrics::LatencyHistogram *h =
-        crowdb::common::metrics::MetricsRegistry::global().register_histogram("rpc.request.response_schedule");
-    return *h;
-}
-
-inline crowdb::common::metrics::LatencyHistogram &hist_response_inline()
-{
-    static crowdb::common::metrics::LatencyHistogram *h =
-        crowdb::common::metrics::MetricsRegistry::global().register_histogram("rpc.response.inline");
     return *h;
 }
 

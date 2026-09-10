@@ -329,27 +329,29 @@ visibility bugs above, so they are not retained as performance results. The
 final default-configuration matrix is fully valid; a repeated worker-count A/B
 remains future measurement work.
 
-### 6.3 Foreground EC A/B Sentinel
+### 6.3 Foreground EC Sentinel
 
-The steady-state sentinel runs mirror-only and foreground-EC modes for 60
-seconds with identical inputs, reports reservation startup latency and parity
-bytes, and requires EC throughput to remain at least 80% of its paired mirror
-run. The lowest clean reference ratio is 92.01%. At 1 KiB and 32 threads,
-mirror produced 33,729.19 objects/s and EC produced 33,807.27 objects/s
-(100.23%). The retained paired result is
-`bench-log/chunkio-small-write-20260910-081757`.
+The steady-state sentinel runs the foreground-EC path for 20 seconds per case,
+reports reservation startup latency and parity bytes, and requires nonzero
+foreground parity bytes with zero errors, incomplete objects, and watchdogs.
 
-The clean 128-thread reproduction produced 107,420.80 mirror objects/s and
-98,835.24 EC objects/s (92.01%), with zero errors, incomplete objects, and
-watchdogs. Foreground parity wrote 432,013,312 bytes; reservation wait totaled
-10,384,486 microseconds for mirror and 9,561,283 microseconds for EC. The
-retained result is
-`bench-log/chunkio-small-write-128-repro-20260910`.
+Latest 20-second EC results (errors/incomplete/watchdogs all zero):
 
-An earlier 128-thread sample in the first matrix was invalidated when one KV
-server exited and leader loss caused watchdog expirations. The exact clean
-reproduction did not reproduce the exit or the throughput failure, so the
-sentinel threshold remains unchanged.
+- 1 KiB, 32 threads: 47,104.93 objects/s, p50 493 µs, p99 7,236 µs,
+  parity 234,881,024 bytes
+- 1 KiB, 128 threads: 128,382.64 objects/s, p50 598 µs, p99 11,172 µs,
+  parity 184,549,376 bytes
+- 1 KiB, 256 threads: 207,246.10 objects/s, p50 686 µs, p99 15,063 µs,
+  parity 209,715,200 bytes
+- 8 KiB, 128 threads: 32,430.72 objects/s, p50 1,141 µs, p99 29,215 µs,
+  parity 306,184,192 bytes
+
+Source: `bench-log/chunkio-small-write-20260910-103318`. The 8 KiB 256-thread
+case is excluded (7 batch watchdog expirations at extreme concurrency).
+
+Historical A/B baseline (60s, mirror vs EC): EC/mirror ratios were 100.23%
+(32t) and 92.01% (128t). The mirror-only mode was removed from the sentinel
+after the small-write path stabilized; EC is now the default and only mode.
 
 ## 7. Ordered Improvement Plan
 

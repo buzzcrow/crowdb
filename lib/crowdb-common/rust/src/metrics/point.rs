@@ -26,7 +26,7 @@ pub enum MetricPoint {
     Histogram {
         name: String,
         count: u64,
-        avg_ns: u64,
+        avg_ns: f64,
         p50_ns: u64,
         p99_ns: u64,
         max_ns: u64,
@@ -98,7 +98,7 @@ mod tests {
         let p = MetricPoint::Histogram {
             name: "x.lh".into(),
             count: 1,
-            avg_ns: 1,
+            avg_ns: 1.0,
             p50_ns: 1,
             p99_ns: 1,
             max_ns: 1,

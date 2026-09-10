@@ -9,14 +9,13 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use dashmap::DashMap;
 use quick_cache::sync::Cache;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tracing::{info, warn};
 
-use crowdb_common::metrics::LatencyHistogram;
 use crowdb_protocol::chunkdb::rpc::{
     Chunk, ChunkState as ProtoChunkState, ChunkStrip, ChunkType, Strip, StripCleanupIntent,
     StripReservationState, StripType as ProtoStripType,
@@ -339,7 +338,6 @@ impl LifecycleHandler {
             .await?;
         assign_strip_offsets(&mut strips, 0);
 
-        let record_started = std::time::Instant::now();
         let now_ms = unix_time_ms();
         if writer_epoch != 0 && writer_lease_ms == 0 {
             self.allocator.rollback_strips(&strips).await?;
@@ -366,10 +364,6 @@ impl LifecycleHandler {
             cleanup_intents: Vec::new(),
             last_strip_replacement: None,
         };
-        if let Some(metrics) = &self.metrics {
-            observe_elapsed(&metrics.allocate_record_build, record_started);
-        }
-
         self.persist_active_chunk(&chunk).await?;
         self.commit_strip_segments_background(chunk.strips.clone());
 
@@ -494,7 +488,6 @@ impl LifecycleHandler {
     }
 
     async fn persist_active_chunk(&self, chunk: &Chunk) -> Result<(), LifecycleError> {
-        let persist_started = std::time::Instant::now();
         for attempt in 0..100_u32 {
             match self.store.put_chunk(chunk).await {
                 Ok(()) => break,
@@ -509,9 +502,6 @@ impl LifecycleHandler {
                 }
             }
         }
-        if let Some(metrics) = &self.metrics {
-            observe_elapsed(&metrics.allocate_kv_persist, persist_started);
-        }
         Ok(())
     }
 
@@ -519,12 +509,10 @@ impl LifecycleHandler {
         let allocator = Arc::clone(&self.allocator);
         let metrics = self.metrics.clone();
         tokio::spawn(async move {
-            let started = std::time::Instant::now();
             let segments: Vec<_> = strips.iter().flat_map(extract_segments).collect();
             let block_count = u64::try_from(segments.len()).unwrap_or(u64::MAX);
             let result = allocator.pool().commit_blocks(segments).await;
             if let Some(metrics) = metrics {
-                observe_elapsed(&metrics.allocate_commit, started);
                 if result.is_ok() {
                     metrics.allocate_commit_blocks.inc_by(block_count);
                 } else {
@@ -1718,10 +1706,6 @@ fn validate_replacement_sequences(
                     LifecycleError::InvalidRequest("replacement strip sequence space exhausted".into())
                 })
         })
-}
-
-fn observe_elapsed(metric: &LatencyHistogram, started: std::time::Instant) {
-    metric.observe(started.elapsed().as_nanos().try_into().unwrap_or(u64::MAX));
 }
 
 fn assign_strip_offsets(strips: &mut [ChunkStrip], mut chunk_offset: u32) {

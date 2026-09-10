@@ -152,7 +152,6 @@ async fn run_small_write(cli: &Cli, args: ChunkioSmallWriteArgs) -> ExitCode {
         scale_out_queue_objects: args.scale_out_queue_objects,
         max_batch_bytes: args.max_batch_bytes,
         max_batch_objects: args.max_batch_objects,
-        conversion_enabled: !args.mirror_only,
         ..SmallWritePolicy::default()
     };
     if let Err(error) = small_write.validate() {
@@ -271,11 +270,11 @@ fn dram(value: Option<f64>) -> String {
 
 fn print_large_write(args: &ChunkioArgs, result: &LargeWriteBenchmarkResult) {
     println!(
-        "chunkio write: requested={} object_size={} prefetch_chunks={} prepare_s={:.3} objects={} errors={} incomplete={} stop={} objects_s={:.2} logical_mib_s={:.1} physical_mib_s={:.1} p50_us={} p99_us={} prep_stalls={} prep_stall_us={} dram_read_mib_s={} dram_write_mib_s={} dram_total_mib_s={}",
+        "chunkio write: requested={} object_size={} prefetch_chunks={} prepare_s={:.3} objects={} errors={} incomplete={} stop={} objects_s={:.2} logical_mib_s={:.1} physical_mib_s={:.1} avg_us={} p50_us={} p99_us={} prep_stalls={} prep_stall_us={} dram_read_mib_s={} dram_write_mib_s={} dram_total_mib_s={}",
         result.requested_objects, args.object_size, args.prefetch_chunks, result.preparation_secs,
         result.objects, result.errors, result.incomplete_objects, result.stop_reason,
         result.objects_per_sec, result.logical_mib_per_sec, result.physical_mib_per_sec,
-        result.latency_p50_us, result.latency_p99_us, result.preparation_stalls,
+        result.latency_avg_us, result.latency_p50_us, result.latency_p99_us, result.preparation_stalls,
         result.preparation_stall_us, dram(result.dram_read_mib_s),
         dram(result.dram_write_mib_s), dram(result.dram_total_mib_s),
     );
@@ -290,10 +289,10 @@ fn print_large_write(args: &ChunkioArgs, result: &LargeWriteBenchmarkResult) {
 
 fn print_small_write(args: &ChunkioSmallWriteArgs, result: &SmallWriteBenchmarkResult) {
     println!(
-        "chunkio write-small: requested={} object_size={} objects={} errors={} incomplete={} stop={} objects_s={:.2} logical_mib_s={:.1} p50_us={} p90_us={} p95_us={} p99_us={} max_us={} batches={} max_batch_objects={} max_batch_bytes={} batch_watchdog_expirations={} aggregate_write_requests={} aggregate_write_objects={} aggregate_write_buffers={} aggregate_write_logical_bytes={} aggregate_write_payload_bytes={} max_objects_per_write_request={} max_buffers_per_write_request={} avg_batch_fill_ppm={} max_queue_delay_us={} active_pipelines={} max_active_pipelines={} draining_pipelines={} scale_out={} scale_in={} tail_waste_bytes={} foreground_parity_bytes={} reservation_requests={} reservation_wait_us={} first_reservation_us={} dram_read_mib_s={} dram_write_mib_s={} dram_total_mib_s={}",
+        "chunkio write-small: requested={} object_size={} objects={} errors={} incomplete={} stop={} objects_s={:.2} logical_mib_s={:.1} avg_us={} p50_us={} p90_us={} p95_us={} p99_us={} max_us={} batches={} max_batch_objects={} max_batch_bytes={} batch_watchdog_expirations={} aggregate_write_requests={} aggregate_write_objects={} aggregate_write_buffers={} aggregate_write_logical_bytes={} aggregate_write_payload_bytes={} max_objects_per_write_request={} max_buffers_per_write_request={} avg_batch_fill_ppm={} max_queue_delay_us={} active_pipelines={} max_active_pipelines={} draining_pipelines={} scale_out={} scale_in={} tail_waste_bytes={} foreground_parity_bytes={} reservation_requests={} reservation_wait_us={} first_reservation_us={} dram_read_mib_s={} dram_write_mib_s={} dram_total_mib_s={}",
         result.requested_objects, args.object_size, result.objects, result.errors,
         result.incomplete_objects, result.stop_reason, result.objects_per_sec,
-        result.logical_mib_per_sec, result.latency_p50_us, result.latency_p90_us,
+        result.logical_mib_per_sec, result.latency_avg_us, result.latency_p50_us, result.latency_p90_us,
         result.latency_p95_us, result.latency_p99_us, result.latency_max_us,
         result.batches, result.max_batch_objects, result.max_batch_bytes,
         result.batch_watchdog_expirations,
@@ -319,11 +318,11 @@ fn print_read(workload: ReadBenchmarkWorkload, args: &ChunkioReadArgs, result: &
         ReadBenchmarkWorkload::Mixed => "read-mix",
     };
     println!(
-        "chunkio {name}: requested={} dataset_objects={} prepare_s={:.3} reads={} small_reads={} large_reads={} errors={} incomplete={} stop={} reads_s={:.2} logical_mib_s={:.1} logical_bytes={} p50_us={} p99_us={} dram_read_mib_s={} dram_write_mib_s={} dram_total_mib_s={}",
+        "chunkio {name}: requested={} dataset_objects={} prepare_s={:.3} reads={} small_reads={} large_reads={} errors={} incomplete={} stop={} reads_s={:.2} logical_mib_s={:.1} logical_bytes={} avg_us={} p50_us={} p99_us={} dram_read_mib_s={} dram_write_mib_s={} dram_total_mib_s={}",
         result.requested_reads, args.dataset_objects, result.preparation_secs, result.reads,
         result.small_reads, result.large_reads, result.errors, result.incomplete_reads,
         result.stop_reason, result.reads_per_sec, result.logical_mib_per_sec,
-        result.logical_bytes, result.latency_p50_us, result.latency_p99_us,
+        result.logical_bytes, result.latency_avg_us, result.latency_p50_us, result.latency_p99_us,
         dram(result.dram_read_mib_s), dram(result.dram_write_mib_s),
         dram(result.dram_total_mib_s),
     );

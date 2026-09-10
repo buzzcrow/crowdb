@@ -59,7 +59,7 @@ use crate::recovery::compaction::compact_zone;
 use crate::recovery::{unit_capacity_for_zone, ZoneLoader};
 use crate::scanner::{ScanState, ScanSummary};
 
-use crate::service::diskdb_service::{elapsed_ns, ALL_ZONES, MAX_ALLOCATE_COUNT};
+use crate::service::diskdb_service::{ALL_ZONES, MAX_ALLOCATE_COUNT};
 use crate::service::mutation_gate;
 
 /// Disk-group + usage + `disk_ids` + disks tuple for query responses.

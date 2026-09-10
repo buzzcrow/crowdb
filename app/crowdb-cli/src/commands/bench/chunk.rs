@@ -362,7 +362,7 @@ async fn verify_and_report(
     .saturating_mul(u128::from(args.strip_count));
     let block_allocs_per_sec = throughput.saturating_mul(blocks_per_chunk);
     println!(
-        "chunkdb bench workload={} strip_type={:?} stop={} elapsed={:.3}s ops={} ops_per_sec={} block_allocs_per_sec={} live={} errors={} p50_us={} p99_us={} busy_delta={} expected_busy_delta={}",
+        "chunkdb bench workload={} strip_type={:?} stop={} elapsed={:.3}s ops={} ops_per_sec={} block_allocs_per_sec={} live={} errors={} avg_us={} p50_us={} p99_us={} busy_delta={} expected_busy_delta={}",
         if mixed { "mix" } else { "allocate" },
         args.strip_type,
         if result.exhausted { "exhausted" } else { "deadline" },
@@ -372,6 +372,11 @@ async fn verify_and_report(
         block_allocs_per_sec,
         result.live.len(),
         result.errors,
+        if result.latencies.is_empty() {
+            0
+        } else {
+            result.latencies.iter().sum::<u64>() / result.latencies.len() as u64
+        },
         percentile(&result.latencies, 50),
         percentile(&result.latencies, 99),
         actual_busy,

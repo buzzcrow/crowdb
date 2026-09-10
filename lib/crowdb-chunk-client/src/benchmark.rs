@@ -45,6 +45,7 @@ pub struct LargeWriteBenchmarkResult {
     pub logical_mib_per_sec: f64,
     pub physical_mib_per_sec: f64,
     pub objects_per_sec: f64,
+    pub latency_avg_us: u64,
     pub latency_p50_us: u64,
     pub latency_p99_us: u64,
     pub preparation_stalls: u64,
@@ -91,6 +92,7 @@ pub struct SmallWriteBenchmarkResult {
     pub logical_bytes: u64,
     pub logical_mib_per_sec: f64,
     pub objects_per_sec: f64,
+    pub latency_avg_us: u64,
     pub latency_p50_us: u64,
     pub latency_p90_us: u64,
     pub latency_p95_us: u64,
@@ -166,6 +168,7 @@ pub struct ReadBenchmarkResult {
     pub logical_bytes: u64,
     pub logical_mib_per_sec: f64,
     pub reads_per_sec: f64,
+    pub latency_avg_us: u64,
     pub latency_p50_us: u64,
     pub latency_p99_us: u64,
     pub dram_read_mib_s: Option<f64>,
@@ -268,6 +271,11 @@ pub async fn run_large_write_benchmark(
         logical_mib_per_sec: u64_as_f64(total.logical_bytes) / 1_048_576.0 / elapsed_secs,
         physical_mib_per_sec: u64_as_f64(total.physical_bytes) / 1_048_576.0 / elapsed_secs,
         objects_per_sec: u64_as_f64(total.objects) / elapsed_secs,
+        latency_avg_us: if total.latencies.is_empty() {
+            0
+        } else {
+            total.latencies.iter().sum::<u64>() / total.latencies.len() as u64
+        },
         latency_p50_us: percentile(&total.latencies, 50),
         latency_p99_us: percentile(&total.latencies, 99),
         preparation_stalls: total.preparation_stalls,
@@ -317,6 +325,7 @@ fn failed_before_load(config: &LargeWriteBenchmarkConfig, message: String) -> La
         logical_mib_per_sec: 0.0,
         physical_mib_per_sec: 0.0,
         objects_per_sec: 0.0,
+        latency_avg_us: 0,
         latency_p50_us: 0,
         latency_p99_us: 0,
         preparation_stalls: 0,
@@ -572,6 +581,11 @@ fn finalize_small_result(
         logical_bytes: total.logical_bytes,
         logical_mib_per_sec: u64_as_f64(total.logical_bytes) / 1_048_576.0 / elapsed_secs,
         objects_per_sec: u64_as_f64(total.objects) / elapsed_secs,
+        latency_avg_us: if total.latencies.is_empty() {
+            0
+        } else {
+            total.latencies.iter().sum::<u64>() / total.latencies.len() as u64
+        },
         latency_p50_us: percentile(&total.latencies, 50),
         latency_p90_us: percentile(&total.latencies, 90),
         latency_p95_us: percentile(&total.latencies, 95),
@@ -618,6 +632,7 @@ fn failed_small_before_load(config: &SmallWriteBenchmarkConfig, message: &str) -
         logical_bytes: 0,
         logical_mib_per_sec: 0.0,
         objects_per_sec: 0.0,
+        latency_avg_us: 0,
         latency_p50_us: 0,
         latency_p90_us: 0,
         latency_p95_us: 0,
@@ -841,6 +856,11 @@ fn finalize_read_result(
         logical_bytes: total.logical_bytes,
         logical_mib_per_sec: u64_as_f64(total.logical_bytes) / 1_048_576.0 / elapsed_secs,
         reads_per_sec: u64_as_f64(total.reads) / elapsed_secs,
+        latency_avg_us: if total.latencies.is_empty() {
+            0
+        } else {
+            total.latencies.iter().sum::<u64>() / total.latencies.len() as u64
+        },
         latency_p50_us: percentile(&total.latencies, 50),
         latency_p99_us: percentile(&total.latencies, 99),
         dram_read_mib_s: dram.0,
@@ -909,6 +929,7 @@ fn failed_read_before_load(config: &ReadBenchmarkConfig, message: &str) -> ReadB
         logical_bytes: 0,
         logical_mib_per_sec: 0.0,
         reads_per_sec: 0.0,
+        latency_avg_us: 0,
         latency_p50_us: 0,
         latency_p99_us: 0,
         dram_read_mib_s: None,

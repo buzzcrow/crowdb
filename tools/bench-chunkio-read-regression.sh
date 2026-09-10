@@ -104,11 +104,11 @@ run_case() {
     errors=$(field "$line" errors)
     incomplete=$(field "$line" incomplete)
     stop=$(field "$line" stop)
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$label" "$verb" "$concurrency" "$requested" "$reads" \
         "$small_reads" "$large_reads" "$errors" "$incomplete" "$stop" \
         "$(field "$line" reads_s)" "$(field "$line" logical_mib_s)" \
-        "$(field "$line" p50_us)" "$(field "$line" p99_us)" \
+        "$(field "$line" avg_us)" "$(field "$line" p50_us)" "$(field "$line" p99_us)" \
         "$(field "$line" prepare_s)" >>"$RESULTS_FILE"
     local mix_valid=1
     if [ "$verb" = read-mix ] \
@@ -131,7 +131,7 @@ if [ "$SKIP_BUILD" != 1 ]; then
 fi
 mkdir -p "$LOG_ROOT"
 regression_init
-printf 'case\tverb\tconcurrency\trequested\treads\tsmall_reads\tlarge_reads\terrors\tincomplete\tstop\treads_s\tlogical_mib_s\tp50_us\tp99_us\tprepare_s\n' >"$RESULTS_FILE"
+printf 'case\tverb\tconcurrency\trequested\treads\tsmall_reads\tlarge_reads\terrors\tincomplete\tstop\treads_s\tlogical_mib_s\tavg_us\tp50_us\tp99_us\tprepare_s\n' >"$RESULTS_FILE"
 
 deploy_args=(cluster local-deploy -t combined --metrics-interval 1 --allow-unsafe-ec \
     --kv-backend mem-block --wal-backend mem-block --no-fsync)
