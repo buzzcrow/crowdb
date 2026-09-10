@@ -497,6 +497,8 @@ class Crowdbtree
     Status del(Slice key);
     Status batch_put(const Batch &batch);
 
+    [[nodiscard]] Status validate_key(Slice key) const;
+
     // Logical retention GC watermark:
     // stores both slots and computes gc_floor_ = min(snapshot_slot, safe_slot).
     // Tombstones with slot <= gc_floor_ may be dropped during snapshot

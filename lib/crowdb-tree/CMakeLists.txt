@@ -47,6 +47,7 @@ if(NOT (LIBURING_INCLUDE_DIR AND LIBURING_LIB))
 endif()
 add_library(crowdb-tree STATIC ${CROWDB_TREE_SRC})
 target_include_directories(crowdb-tree PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(crowdb-tree SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../third-party/stdexec/include)
 find_package(Threads REQUIRED)
 target_link_libraries(crowdb-tree PUBLIC Threads::Threads crowdbcommon)
 
@@ -95,7 +96,8 @@ if(NOT (LIBURING_INCLUDE_DIR AND LIBURING_LIB))
 endif()
 list(APPEND CROWDB_TREE_TEST_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../crowdb-common/cpp/tests/test_main.cpp)
 add_executable(crowdb_tree_tests ${CROWDB_TREE_TEST_SRC})
-target_include_directories(crowdb_tree_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+target_include_directories(crowdb_tree_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(crowdb_tree_tests SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../third-party/stdexec/include)
 target_link_libraries(crowdb_tree_tests PRIVATE crowdb-tree GTest::gtest)
 # GCC 13 -Warray-bounds/-Wstringop-overflow false positives: buffer::alloc
 # returns heap memory, but GCC thinks b.data() points into the stack object b.

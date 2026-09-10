@@ -89,12 +89,25 @@ impl SyncMode {
     }
 }
 
+/// Immutable half-open key policy selected when a tree is created. `None`
+/// endpoints are explicitly unbounded; `Some(Vec::new())` is the empty key.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum KeyRange {
+    #[default]
+    Unbounded,
+    Bounded {
+        start: Option<Vec<u8>>,
+        end: Option<Vec<u8>>,
+    },
+}
+
 /// Engine configuration. `path = None` selects an in-memory store.
 #[derive(Debug, Clone, Default)]
 pub struct Options {
     /// Optional injected durable backend. When set, `path` and `backend` are
     /// ignored by the C++ constructor.
     pub page_store: Option<Arc<PageStore>>,
+    pub key_range: KeyRange,
     pub path: Option<String>,
     pub iu_size: u32,
     pub frame_bytes: u32,

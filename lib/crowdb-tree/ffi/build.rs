@@ -45,6 +45,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .join("cpp");
     let common_src = common.join("src");
     let common_include = common.join("include");
+    let stdexec_include = engine
+        .parent()
+        .and_then(|p| p.parent())
+        .ok_or("crowdb-tree must be under the repository lib directory")?
+        .join("third-party")
+        .join("stdexec")
+        .join("include");
 
     let mut files = Vec::new();
     collect_cc(&src, &mut files)?;
@@ -62,6 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .flag("-g1")
         .include(&include)
         .include(&common_include)
+        .flag(format!("-isystem{}", stdexec_include.display()))
         .warnings(false);
 
     // The engine now includes Abseil headers (absl::btree_map in the MemTable,
@@ -214,6 +222,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}");
     }
     println!("cargo:rerun-if-changed={}", include.display());
+    println!("cargo:rerun-if-changed={}", stdexec_include.display());
     println!("cargo:rerun-if-env-changed=CROWDB_TREE_LZ4_LIB");
     println!("cargo:rerun-if-env-changed=CONDA_PREFIX");
     Ok(())

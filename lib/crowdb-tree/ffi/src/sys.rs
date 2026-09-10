@@ -120,6 +120,11 @@ pub struct ct_stats {
 #[repr(C)]
 pub struct ct_options {
     pub page_store: *mut ct_page_store,
+    pub range_bounded: u8,
+    pub range_start: *const u8,
+    pub range_start_len: usize,
+    pub range_end: *const u8,
+    pub range_end_len: usize,
     pub path: *const c_char,
     pub iu_size: u32,
     pub frame_bytes: u32,

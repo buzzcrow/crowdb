@@ -25,6 +25,7 @@ using ct_status = int32_t; // 0 = ok; negative mirrors crowdb::tree::Code
 // Opaque handles.
 using ct_tree         = struct ct_tree;
 using ct_page_store   = struct ct_page_store;
+using ct_root_catalog = struct ct_root_catalog;
 using ct_view         = struct ct_view;
 using ct_iter         = struct ct_iter;
 using ct_export       = struct ct_export;
@@ -103,6 +104,11 @@ using ct_options = struct
     // may release their handle after ct_open returns. When non-null, path and
     // backend are ignored.
     ct_page_store    *page_store;
+    uint8_t           range_bounded; // 0 = unbounded; 1 = use endpoints below
+    const uint8_t    *range_start;   // null = minimum-unbounded; non-null empty is an empty key
+    size_t            range_start_len;
+    const uint8_t    *range_end; // null = maximum-unbounded; exclusive when present
+    size_t            range_end_len;
     const char       *path;              // durable file path; null/empty => in-memory
     uint32_t          iu_size;           // 0 => default (1 for mem, 4096 for file)
     uint32_t          frame_bytes;       // 0 => default
@@ -124,6 +130,19 @@ using ct_options = struct
 // ── Lifecycle + durability ────────────────────────────────────────
 ct_status ct_page_store_open_mem(uint32_t iu_size, ct_page_store **out);
 void      ct_page_store_free(ct_page_store *store);
+
+using ct_chunk_page_store_options = struct
+{
+    uint64_t tree_id;
+    uint64_t owner_epoch;
+    size_t   pack_bytes;
+    uint32_t iu_size;
+};
+
+ct_status ct_memory_root_catalog_open(uint64_t owner_epoch, ct_root_catalog **out);
+void      ct_root_catalog_free(ct_root_catalog *catalog);
+ct_status ct_chunk_page_store_open(const ct_chunk_page_store_options *options, ct_root_catalog *catalog,
+                                   ct_page_store **out);
 ct_status ct_open(const ct_options *opt, ct_tree **out);
 void      ct_close(ct_tree *t);
 

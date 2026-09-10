@@ -804,6 +804,10 @@ Status Crowdbtree::apply(uint64_t slot, const Batch &batch)
     // all-or-nothing.
     const size_t key_limit = max_key_size();
     for (const auto &op : batch.ops) {
+        Status range_status = validate_key(Slice(op.key));
+        if (!range_status.ok()) {
+            return range_status;
+        }
         if (op.key.size() > key_limit) {
             return Status::invalid_argument("key exceeds max_key_size (" + std::to_string(op.key.size()) + " > " +
                                             std::to_string(key_limit) + ")");
@@ -820,6 +824,10 @@ Status Crowdbtree::apply_encoded(uint64_t slot, std::vector<encoded_op> ops)
     // state is mutated.
     const size_t key_limit = max_key_size();
     for (const encoded_op &op : ops) {
+        Status range_status = validate_key(Slice(op.key));
+        if (!range_status.ok()) {
+            return range_status;
+        }
         if (op.key.size() > key_limit) {
             return Status::invalid_argument("key exceeds max_key_size (" + std::to_string(op.key.size()) + " > " +
                                             std::to_string(key_limit) + ")");
@@ -850,6 +858,10 @@ Status Crowdbtree::apply_external(uint64_t slot, std::vector<external_op> ops)
     // Same guard as apply_encoded: validate every key before any state mutation.
     const size_t key_limit = max_key_size();
     for (const external_op &op : ops) {
+        Status range_status = validate_key(Slice(op.key));
+        if (!range_status.ok()) {
+            return range_status;
+        }
         if (op.key.size() > key_limit) {
             return Status::invalid_argument("key exceeds max_key_size (" + std::to_string(op.key.size()) + " > " +
                                             std::to_string(key_limit) + ")");
@@ -916,6 +928,14 @@ Status Crowdbtree::del(Slice key)
 Status Crowdbtree::batch_put(const Batch &batch)
 {
     return apply(auto_slot_.fetch_add(1) + 1, batch);
+}
+
+Status Crowdbtree::validate_key(Slice key) const
+{
+    if (!opt_.key_range.contains(key)) {
+        return Status::invalid_argument("key is outside the tree range");
+    }
+    return Status::Ok();
 }
 
 std::shared_ptr<MemTable> Crowdbtree::current_active() const
@@ -1778,6 +1798,9 @@ void Crowdbtree::try_merge_inner_locked(uint64_t inner_page_id, std::vector<uint
 GetView Crowdbtree::get_view(Slice key) const
 {
     GetView result;
+    if (!opt_.key_range.contains(key)) {
+        return result;
+    }
     result.guard_ = epoch_.enter();
 
     // L0: check every live MemTable (active_ + any not-yet-drained frozen_
@@ -2266,6 +2289,12 @@ Crowdbtree::scan(Slice prefix, Slice start_after, Slice end_key, size_t limit, s
 
     size_t accumulated_bytes = 0;
     auto   consider          = [&](Slice key, Slice cell) -> bool {
+        if (opt_.key_range.before(key)) {
+            return true;
+        }
+        if (opt_.key_range.at_or_after_end(key)) {
+            return false;
+        }
         if (!start_after.empty() && key.compare(start_after) <= 0) {
             return true; // cursor: skip keys <= start_after (exclusive lower bound)
         }
@@ -2734,6 +2763,12 @@ bool Crowdbtree::try_scan_no_load(
 
     size_t accumulated_bytes = 0;
     auto   consider          = [&](Slice key, Slice cell) -> bool {
+        if (opt_.key_range.before(key)) {
+            return true;
+        }
+        if (opt_.key_range.at_or_after_end(key)) {
+            return false;
+        }
         if (!start_after.empty() && key.compare(start_after) <= 0) {
             return true; // cursor: skip keys <= start_after (exclusive lower bound)
         }

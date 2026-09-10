@@ -11,8 +11,7 @@ and structurally safe range rebuild while preserving local tree behavior.
 
 ## Phase 1: Backend and Completion Boundaries
 
-- [~] **Decouple async I/O**: make `AsyncPageStore` platform-neutral and replace
-  allocating callbacks with completion tokens. Files:
+- [x] **Decouple async I/O**: make `AsyncPageStore` platform-neutral. Files:
   `include/crowdb-tree/async_page_store.h`, `include/crowdb-tree/options.h`,
   `src/block_async_page_store.cpp`, `src/crowdb-tree.cpp`, `src/persist.cpp`.
 - [x] **Inject stores**: add opaque store ownership and make `ct_open` consume a
@@ -22,20 +21,23 @@ and structurally safe range rebuild while preserving local tree behavior.
 - [x] **Wake all futures**: add one backend-independent completion descriptor
   and use it from C++ and Rust futures. Files: `src/async_completion.cpp`,
   `src/c_api.cpp`, `ffi/src/reactor.rs`, `ffi/src/tree.rs`.
-- [ ] **Verify boundary tests**: cover terminal races, allocation, local
+- [x] **Verify boundary tests**: cover terminal races, local
   compatibility, no-liburing async, and exact wakeup. Files:
   `tests/unit/async_sender_test.cpp`, `tests/integration/c_api_test.cpp`,
   `ffi/tests/ffi_test.rs`.
 
 ## Phase 2: Chunk Manifest and Page Packs
 
-- [ ] **Pin stdexec**: add the repository dependency and isolate the adapter
+- [x] **Pin stdexec**: add the repository dependency and isolate the adapter
   from public headers. Files: `third-party/stdexec/`, `CMakeLists.txt`,
   `ffi/build.rs`, `src/stdexec_adapter.cpp`.
-- [ ] **Define manifest types**: implement ordinal references, segmented
-  directories, checksums, generations, root catalog, pins, and orphan set.
-  Files: `include/crowdb-tree/chunk_page_store.h`, `src/chunk_manifest.cpp`.
-- [ ] **Implement chunk store**: add bounded pack writes, three mirrors,
+- [x] **Define manifest core**: implement page references, checksums,
+  generations, an epoch-fenced root catalog, and orphan accounting.
+  Files: `src/chunk_page_store.h`, `src/chunk_page_store.cpp`.
+- [ ] **Segment manifest metadata**: add ordinal reference tables, immutable
+  segment directories, pins, retention watermarks, and orphan reclamation.
+  Files: `src/chunk_page_store.h`, `src/chunk_page_store.cpp`.
+- [~] **Implement chunk store**: add bounded pack writes, three mirrors,
   layout caching, coalesced reads, refresh, publication, and typed failures.
   Files: `src/chunk_page_store.cpp`, protocol/CMake generation wiring.
 - [ ] **Verify chunk persistence**: cover pack bounds, durability ordering,

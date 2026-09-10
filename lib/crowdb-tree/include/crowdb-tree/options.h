@@ -6,6 +6,7 @@
 #pragma once
 
 #include "crowdb-tree/compressor.h"
+#include "crowdb-tree/key_range.h"
 
 #ifdef CROWDB_HAVE_LIBURING
 #    include "crowdb-common/diskio_uring.h"
@@ -162,6 +163,10 @@ struct Options
     // Set by the caller before open(); included in the init_metrics prefix
     // so C++ metrics are tagged with their storage backend.
     std::string backend_label;
+
+    // Immutable public key policy. Chunk-KV partitions use a bounded range;
+    // ordinary KV trees retain the unbounded default.
+    KeyRange key_range = KeyRange::unbounded();
 
     // ── Block compaction (R129) ──
     // Cadence-driven merge GC reclaims sparse array-of-blocks source blocks

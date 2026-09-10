@@ -11,7 +11,7 @@ use std::sync::Once;
 use tokio::io::unix::AsyncFd;
 
 use crate::error::{check, take_buf, CtError};
-use crate::options::{Options, PageStoreBackend};
+use crate::options::{KeyRange, Options, PageStoreBackend};
 use crate::reactor::{drain_eventfd, EventfdPump, RawFdView};
 use crate::sys;
 
@@ -63,11 +63,20 @@ impl Crowdbtree {
         } else {
             Some(CString::new(opt.log_file_prefix.as_str()).map_err(|_| CtError::InvalidArgument)?)
         };
+        let (range_bounded, range_start, range_end) = match &opt.key_range {
+            KeyRange::Unbounded => (0, None, None),
+            KeyRange::Bounded { start, end } => (1, start.as_deref(), end.as_deref()),
+        };
         let copt = sys::ct_options {
             page_store: opt
                 .page_store
                 .as_ref()
                 .map_or(std::ptr::null_mut(), |store| store.as_ptr()),
+            range_bounded,
+            range_start: range_start.map_or(std::ptr::null(), <[u8]>::as_ptr),
+            range_start_len: range_start.map_or(0, <[u8]>::len),
+            range_end: range_end.map_or(std::ptr::null(), <[u8]>::as_ptr),
+            range_end_len: range_end.map_or(0, <[u8]>::len),
             path: cpath.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
             iu_size: opt.iu_size,
             frame_bytes: opt.frame_bytes,

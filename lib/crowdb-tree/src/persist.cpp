@@ -1372,6 +1372,10 @@ Status Crowdbtree::compact_sparse_blocks(MergeGcStats *out_stats)
 
 Status Crowdbtree::open(const Options &opt, std::unique_ptr<Crowdbtree> *out)
 {
+    Status range_status = opt.key_range.validate();
+    if (!range_status.ok()) {
+        return range_status;
+    }
     if (opt.page_store == nullptr) {
         return Status::invalid_argument("open: no page_store");
     }

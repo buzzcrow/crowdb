@@ -3,7 +3,7 @@
 
 // PT8.5: C ABI / Rust integration tests through the safe adapter.
 use crowdb_tree_ffi::{
-    AsyncCrowdbtree, BatchOp, Crowdbtree, CtError, ExtOp, Options, PageStore, PageStoreBackend,
+    AsyncCrowdbtree, BatchOp, Crowdbtree, CtError, ExtOp, KeyRange, Options, PageStore, PageStoreBackend,
     PinnedGetOutcome,
 };
 
@@ -50,6 +50,28 @@ fn injected_mem_store_survives_caller_handle_drop() {
     t.apply_put(1, b"key", b"value").unwrap();
     t.flush().unwrap();
     assert_eq!(t.get(b"key").unwrap(), Some((1, b"value".to_vec())));
+}
+
+#[test]
+fn bounded_tree_rejects_foreign_keys_and_filters_scans() {
+    let t = Crowdbtree::open(&Options {
+        key_range: KeyRange::Bounded {
+            start: Some(b"b".to_vec()),
+            end: Some(b"d".to_vec()),
+        },
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(t.apply_put(1, b"a", b"outside"), Err(CtError::InvalidArgument));
+    t.apply_put(1, b"b", b"left").unwrap();
+    t.apply_put(2, b"c", b"right").unwrap();
+    assert_eq!(t.get(b"d"), Err(CtError::InvalidArgument));
+    let (entries, truncated) = t.scan(b"", b"", b"", 0, 0, false, 0, false).unwrap();
+    assert!(!truncated);
+    assert_eq!(
+        entries.iter().map(|entry| entry.key.as_ref()).collect::<Vec<_>>(),
+        vec![b"b".as_slice(), b"c".as_slice()]
+    );
 }
 
 #[test]

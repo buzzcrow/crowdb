@@ -10,6 +10,7 @@
 // hand them back to ct_free_buf regardless of allocator details.
 #include "crowdb-tree/c_api.h"
 
+#include "c_api_internal.h"
 #include "crowdb-common/log.h"
 #include "crowdb-tree/async_page_store.h"
 #include "crowdb-tree/block_page_store.h"
@@ -27,6 +28,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -117,16 +119,6 @@ bool read_u32(const uint8_t *buf, size_t len, size_t *pos, uint32_t *v)
 
 // ── Handle structs ────────────────────────────────────────────────
 
-struct PageStoreBundle
-{
-    std::unique_ptr<PageStore>      store;
-    std::unique_ptr<AsyncPageStore> async_store;
-#ifdef CROWDB_HAVE_LIBURING
-    std::unique_ptr<crowdb::common::DiskIOUring> uring;
-#endif
-    std::string backend_label;
-};
-
 struct CompletionSignal
 {
     CompletionSignal()
@@ -159,11 +151,6 @@ struct CompletionSignal
     }
 
     int fd = -1;
-};
-
-struct ct_page_store
-{
-    std::shared_ptr<PageStoreBundle> bundle;
 };
 
 struct ct_tree
@@ -309,6 +296,17 @@ ct_status ct_open(const ct_options *opt, ct_tree **out)
     o.store_id    = opt->store_id;
     o.group_id    = opt->group_id;
     o.name        = "s" + std::to_string(opt->store_id) + ".g" + std::to_string(opt->group_id);
+    if (opt->range_bounded != 0) {
+        std::optional<std::string> start;
+        std::optional<std::string> end;
+        if (opt->range_start != nullptr) {
+            start.emplace(reinterpret_cast<const char *>(opt->range_start), opt->range_start_len);
+        }
+        if (opt->range_end != nullptr) {
+            end.emplace(reinterpret_cast<const char *>(opt->range_end), opt->range_end_len);
+        }
+        o.key_range = KeyRange::bounded(std::move(start), std::move(end));
+    }
 
     // Set backend label for metric names
     {
@@ -844,6 +842,10 @@ ct_status ct_get(ct_tree *t, const uint8_t *key, size_t klen, int32_t *found, ui
     if (t == nullptr || found == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
+    Status range_status = t->tree->validate_key(Slice(reinterpret_cast<const char *>(key), klen));
+    if (!range_status.ok()) {
+        return to_status(range_status);
+    }
     std::string v;
     uint64_t    s  = 0;
     bool        ok = t->tree->get(Slice(reinterpret_cast<const char *>(key), klen), &s, &v);
@@ -869,9 +871,16 @@ ct_future *ct_get_async(ct_tree *t, const uint8_t *key, size_t klen)
     if (t == nullptr) {
         return nullptr;
     }
-    auto impl   = std::make_shared<ct_future_impl>();
-    impl->kind  = ct_future_impl::Kind::kGet;
-    auto signal = t->completion;
+    auto impl           = std::make_shared<ct_future_impl>();
+    impl->kind          = ct_future_impl::Kind::kGet;
+    auto   signal       = t->completion;
+    Status range_status = t->tree->validate_key(Slice(reinterpret_cast<const char *>(key), klen));
+    if (!range_status.ok()) {
+        impl->status = to_status(range_status);
+        impl->done.store(true, std::memory_order_release);
+        signal->notify();
+        return reinterpret_cast<ct_future *>(new ct_future_handle(std::move(impl)));
+    }
     t->tree->get_async(Slice(reinterpret_cast<const char *>(key), klen), [impl, signal](GetView view) {
         impl->get_result = std::move(view);
         impl->done.store(true, std::memory_order_release);
