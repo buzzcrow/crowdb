@@ -10,6 +10,7 @@
 
 mod types;
 
+pub mod chunk_kv;
 pub mod chunk_stream;
 
 pub mod common {
