@@ -23,13 +23,13 @@ identity, ordering, fencing, and partial-success semantics.
 - [x] Route point and conditional operations directly to owners.
 - [x] Preserve typed results, journal positions, minimum-position reads, and
   identity across bounded refresh/transport retries under one deadline.
-- [ ] Wrap seek and single-partition directional scan without semantic emulation.
+- [x] Wrap seek and single-partition directional scan without semantic emulation.
 
 ## Phase 3: Bounded Composition
 
-- [ ] Implement duplicate-preserving, input-ordered, partial-success multi-get.
-- [ ] Implement per-operation-ID, partition-ordered, non-transactional batch.
-- [ ] Implement globally bounded forward/reverse multi-partition scan and exact
+- [x] Implement duplicate-preserving, input-ordered, partial-success multi-get.
+- [x] Implement per-operation-ID, partition-ordered, non-transactional batch.
+- [x] Implement globally bounded forward/reverse multi-partition scan and exact
   topology-safe continuation/replanning.
 
 ## Phase 4: Gates and Documentation

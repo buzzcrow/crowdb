@@ -629,6 +629,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "crowdb-protocol",
+ "futures",
  "rand 0.8.6",
  "thiserror 2.0.18",
  "tokio",

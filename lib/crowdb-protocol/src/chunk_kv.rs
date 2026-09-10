@@ -533,6 +533,103 @@ pub struct PointRequest {
     pub operation: PointOperation,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MultiGetRequest {
+    pub routing: RequestRouting,
+    pub keys: Vec<Vec<u8>>,
+}
+
+impl MultiGetRequest {
+    /// Validates the complete group before any read executes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when routing is invalid, the group is empty, or any
+    /// key falls outside the declared partition range.
+    pub fn validate_for_range(&self, range: &KeyRange) -> Result<(), ChunkKvProtocolError> {
+        self.routing.validate()?;
+        if self.keys.is_empty() || self.keys.iter().any(|key| !range.contains(key)) {
+            return Err(ChunkKvProtocolError::InvalidRpcRequest);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MultiGetResponse {
+    pub map_revision: u64,
+    pub result: Result<Vec<Option<RpcValue>>, RpcFailure>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartitionRouting {
+    pub map_revision: u64,
+    pub partition_id: Id128,
+    pub owner_epoch: u64,
+    pub deadline_ms: Option<u64>,
+}
+
+impl PartitionRouting {
+    /// Validates authority shared by a partition-local operation group.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the catalog, partition, or owner epoch is absent.
+    pub fn validate(&self) -> Result<(), ChunkKvProtocolError> {
+        if self.map_revision == 0 || self.partition_id == Id128::default() || self.owner_epoch == 0 {
+            return Err(ChunkKvProtocolError::InvalidRpcRequest);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchMutationItem {
+    pub request_id: ClientRequestId,
+    pub operation: PointOperation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchMutationRequest {
+    pub routing: PartitionRouting,
+    pub operations: Vec<BatchMutationItem>,
+}
+
+impl BatchMutationRequest {
+    /// Validates the complete group before any operation reaches WAL admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid authority, an empty group, a read operation,
+    /// invalid request identity, or any key outside the declared partition.
+    pub fn validate_for_range(&self, range: &KeyRange) -> Result<(), ChunkKvProtocolError> {
+        self.routing.validate()?;
+        if self.operations.is_empty()
+            || self.operations.iter().any(|item| {
+                item.request_id.validate().is_err()
+                    || !item.operation.is_mutation()
+                    || !range.contains(item.operation.key())
+            })
+        {
+            return Err(ChunkKvProtocolError::InvalidRpcRequest);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchMutationResult {
+    pub request_id: ClientRequestId,
+    pub journal_position: Option<RpcJournalPosition>,
+    pub result: Result<OperationResult, RpcFailure>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BatchMutationResponse {
+    pub map_revision: u64,
+    pub result: Result<Vec<BatchMutationResult>, RpcFailure>,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SeekKind {
     #[default]

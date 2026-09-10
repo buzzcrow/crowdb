@@ -2,9 +2,10 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_protocol::chunk_kv::{
-    ChunkKvProtocolError, ChunkKvResponse, ChunkKvRpcErrorCode, ClientRequestId, Id128, OwnerHint,
-    PointOperation, PointRequest, RequestRouting, RpcCompareCondition, RpcFailure, ScanContinuation,
-    ScanDirection, ScanRequest,
+    BatchMutationItem, BatchMutationRequest, ChunkKvProtocolError, ChunkKvResponse, ChunkKvRpcErrorCode,
+    ClientRequestId, Id128, KeyRange, MultiGetRequest, OwnerHint, PartitionRouting, PointOperation,
+    PointRequest, RequestRouting, RpcCompareCondition, RpcFailure, ScanContinuation, ScanDirection,
+    ScanRequest,
 };
 
 fn routing() -> RequestRouting {
@@ -94,4 +95,50 @@ fn typed_fence_outcome_survives_round_trip() {
     let encoded = bincode::serialize(&response).unwrap();
     let decoded: ChunkKvResponse = bincode::deserialize(&encoded).unwrap();
     assert_eq!(decoded, response);
+}
+
+#[test]
+fn grouped_requests_reject_cross_range_items_before_execution() {
+    let range = KeyRange {
+        start: b"a".to_vec(),
+        end: Some(b"m".to_vec()),
+    };
+    let mut reads = MultiGetRequest {
+        routing: routing(),
+        keys: vec![b"b".to_vec(), b"l".to_vec()],
+    };
+    reads.validate_for_range(&range).unwrap();
+    reads.keys.push(b"m".to_vec());
+    assert_eq!(
+        reads.validate_for_range(&range),
+        Err(ChunkKvProtocolError::InvalidRpcRequest)
+    );
+
+    let mut writes = BatchMutationRequest {
+        routing: PartitionRouting {
+            map_revision: 10,
+            partition_id: Id128 { high: 11, low: 12 },
+            owner_epoch: 13,
+            deadline_ms: Some(14),
+        },
+        operations: vec![BatchMutationItem {
+            request_id: routing().request_id,
+            operation: PointOperation::Put {
+                key: b"b".to_vec(),
+                value: b"value".to_vec(),
+            },
+        }],
+    };
+    writes.validate_for_range(&range).unwrap();
+    writes.operations.push(BatchMutationItem {
+        request_id: ClientRequestId {
+            client_sequence: 10,
+            ..routing().request_id
+        },
+        operation: PointOperation::Delete { key: b"z".to_vec() },
+    });
+    assert_eq!(
+        writes.validate_for_range(&range),
+        Err(ChunkKvProtocolError::InvalidRpcRequest)
+    );
 }

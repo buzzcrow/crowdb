@@ -15,11 +15,11 @@ use crate::{
 };
 
 pub struct ChunkKvClient {
-    config: ClientConfig,
+    pub(crate) config: ClientConfig,
     catalog_source: Arc<dyn CatalogSource>,
-    transport: Arc<dyn ChunkKvTransport>,
-    cache: Arc<CatalogCache>,
-    identities: RequestIdentityAllocator,
+    pub(crate) transport: Arc<dyn ChunkKvTransport>,
+    pub(crate) cache: Arc<CatalogCache>,
+    pub(crate) identities: RequestIdentityAllocator,
 }
 
 impl ChunkKvClient {
@@ -211,6 +211,7 @@ impl ChunkKvClient {
                         matches!(
                             failure.code,
                             ChunkKvRpcErrorCode::NotMyRange
+                                | ChunkKvRpcErrorCode::RefreshRequired
                                 | ChunkKvRpcErrorCode::Overloaded
                                 | ChunkKvRpcErrorCode::WriteStalled
                                 | ChunkKvRpcErrorCode::Recovering
@@ -223,7 +224,9 @@ impl ChunkKvClient {
                     let refresh_route = response.result.as_ref().err().is_some_and(|failure| {
                         matches!(
                             failure.code,
-                            ChunkKvRpcErrorCode::NotMyRange | ChunkKvRpcErrorCode::LeaseExpired
+                            ChunkKvRpcErrorCode::NotMyRange
+                                | ChunkKvRpcErrorCode::RefreshRequired
+                                | ChunkKvRpcErrorCode::LeaseExpired
                         )
                     });
                     last_response = Some(response);
@@ -253,7 +256,7 @@ impl ChunkKvClient {
         self.execute_with_identity(operation, None, request_id).await
     }
 
-    async fn refresh_with_deadline(&self, deadline: Instant) -> Result<Arc<CatalogMap>> {
+    pub(crate) async fn refresh_with_deadline(&self, deadline: Instant) -> Result<Arc<CatalogMap>> {
         let remaining = deadline
             .checked_duration_since(Instant::now())
             .ok_or(ClientError::Deadline)?;
@@ -263,7 +266,7 @@ impl ChunkKvClient {
     }
 }
 
-fn wall_now_ms() -> u64 {
+pub(crate) fn wall_now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| {
