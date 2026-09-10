@@ -593,7 +593,7 @@ class Crowdbtree
     // crosses to the Reactor thread instead (a genuine miss) materializes
     // an owned copy and releases its guard before calling on_done -- see
     // get_async_attempt's `same_thread` parameter and `materialize_owned`.
-    void get_async(Slice key, std::function<void(GetView)> on_done) const;
+    void get_async(Slice key, std::function<void(Status, GetView)> on_done) const;
 
     // Batched point read.
     [[nodiscard]] std::vector<get_result> multi_get(const std::vector<Slice> &keys) const;
@@ -1051,7 +1051,7 @@ class Crowdbtree
     // deferred (zero-copy) or must be released immediately via
     // materialize_owned() -- see EpochManager::Guard's "do not move across
     // threads" contract.
-    void get_async_attempt(std::shared_ptr<std::string> key_owned, std::function<void(GetView)> on_done,
+    void get_async_attempt(std::shared_ptr<std::string> key_owned, std::function<void(Status, GetView)> on_done,
                            bool same_thread) const;
 
     // Converts a resolved GetView into a fully-owned copy with its epoch

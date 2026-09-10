@@ -156,8 +156,8 @@ struct CompletionSignal
 struct ct_tree
 {
     std::unique_ptr<PageStore>        store; // null for pure in-memory engine
-    std::unique_ptr<Crowdbtree>       tree;
     std::shared_ptr<PageStoreBundle>  injected_store;
+    std::unique_ptr<Crowdbtree>       tree;
     std::shared_ptr<CompletionSignal> completion = std::make_shared<CompletionSignal>();
 #ifdef CROWDB_HAVE_LIBURING
     // Both null for an in-memory tree, or if opening the async twin failed
@@ -343,7 +343,8 @@ ct_status ct_open(const ct_options *opt, ct_tree **out)
         }
         h->injected_store  = opt->page_store->bundle;
         o.page_store       = h->injected_store->store.get();
-        o.async_page_store = h->injected_store->async_store.get();
+        o.async_page_store = h->injected_store->async_store_view != nullptr ? h->injected_store->async_store_view
+                                                                            : h->injected_store->async_store.get();
         o.backend_label    = h->injected_store->backend_label;
 #ifdef CROWDB_HAVE_LIBURING
         o.async_uring = h->injected_store->uring.get();
@@ -881,7 +882,8 @@ ct_future *ct_get_async(ct_tree *t, const uint8_t *key, size_t klen)
         signal->notify();
         return reinterpret_cast<ct_future *>(new ct_future_handle(std::move(impl)));
     }
-    t->tree->get_async(Slice(reinterpret_cast<const char *>(key), klen), [impl, signal](GetView view) {
+    t->tree->get_async(Slice(reinterpret_cast<const char *>(key), klen), [impl, signal](Status status, GetView view) {
+        impl->status     = to_status(status);
         impl->get_result = std::move(view);
         impl->done.store(true, std::memory_order_release);
         signal->notify();

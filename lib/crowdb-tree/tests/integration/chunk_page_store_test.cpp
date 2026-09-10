@@ -7,6 +7,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <iterator>
 #include <memory>
 #include <string>
 
@@ -20,6 +22,14 @@ Batch put(uint64_t, std::string key, std::string value)
     Batch batch;
     batch.ops.push_back({.key = std::move(key), .kind = OpKind::kPut, .value = std::move(value)});
     return batch;
+}
+
+void publish_raw_generation(ChunkPageStore *store, uint8_t value)
+{
+    ASSERT_TRUE(store->write_at(8192, &value, 1).ok());
+    ASSERT_TRUE(store->sync().ok());
+    ASSERT_TRUE(store->write_at(0, &value, 1).ok());
+    ASSERT_TRUE(store->sync().ok());
 }
 
 TEST(ChunkPageStore, SnapshotPublishesBoundedChecksummedPacksAndReopens)
@@ -41,10 +51,15 @@ TEST(ChunkPageStore, SnapshotPublishesBoundedChecksummedPacksAndReopens)
         auto manifest = catalog->load(42);
         ASSERT_NE(manifest, nullptr);
         ASSERT_GT(manifest->packs.size(), 1U);
+        ASSERT_FALSE(manifest->reference_segments.empty());
         for (const auto &pack : manifest->packs) {
-            EXPECT_LE(pack.bytes.size(), 4096U);
+            EXPECT_LE(pack.mirrors[0].size(), 4096U);
+            EXPECT_EQ(pack.mirrors[0], pack.mirrors[1]);
+            EXPECT_EQ(pack.mirrors[1], pack.mirrors[2]);
         }
+        EXPECT_EQ(manifest->reference_segments[0].refs.size(), manifest->packs.size());
         EXPECT_EQ(store.stats().generations_published, 1U);
+        EXPECT_EQ(store.stats().mirror_write_attempts, manifest->packs.size() * 3U);
     }
 
     ChunkPageStore reopened_store(config, catalog);
@@ -102,7 +117,115 @@ TEST(ChunkPageStore, AvailabilityAndCorruptionRemainDistinct)
     EXPECT_EQ(store.read_at(8192, out, sizeof(out)).code(), Code::kUnavailable);
     store.inject_unavailable(false);
     catalog->corrupt_active_pack(2, 0);
-    EXPECT_EQ(store.read_at(8192, out, sizeof(out)).code(), Code::kCorruption);
+    ChunkPageStore corrupted({.tree_id = 5, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    EXPECT_EQ(corrupted.read_at(8192, out, sizeof(out)).code(), Code::kCorruption);
+}
+
+TEST(ChunkPageStore, MirrorRetryRequiresEveryReplicaAndHealthyFallbackReads)
+{
+    auto           catalog = std::make_shared<MemoryRootCatalog>(1);
+    ChunkPageStore store({.tree_id = 6, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    const uint8_t  bytes[] = {5, 6, 7, 8};
+    ASSERT_TRUE(store.write_at(8192, bytes, sizeof(bytes)).ok());
+    ASSERT_TRUE(store.sync().ok());
+    ASSERT_TRUE(store.write_at(0, bytes, sizeof(bytes)).ok());
+    store.inject_mirror_write_failures(1U << 1U);
+    EXPECT_EQ(store.sync().code(), Code::kUnavailable);
+    EXPECT_EQ(catalog->load(6), nullptr);
+    EXPECT_EQ(store.stats().mirror_write_failures, 3U);
+    EXPECT_GT(store.stats().orphan_bytes, 0U);
+    EXPECT_GT(store.reclaim_orphans(), 0U);
+    EXPECT_EQ(store.stats().orphan_bytes, 0U);
+
+    store.inject_mirror_write_failures(0);
+    ASSERT_TRUE(store.sync().ok());
+    catalog->corrupt_active_mirror(2, 0, 0);
+    ChunkPageStore reopened({.tree_id = 6, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    uint8_t        out[4] = {};
+    ASSERT_TRUE(reopened.read_at(8192, out, sizeof(out)).ok());
+    EXPECT_TRUE(std::equal(std::begin(bytes), std::end(bytes), std::begin(out)));
+}
+
+TEST(ChunkPageStore, ManifestPinsDelayReclamationButKeepOnlyFallback)
+{
+    auto           catalog = std::make_shared<MemoryRootCatalog>(1);
+    ChunkPageStore store({.tree_id = 12, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    publish_raw_generation(&store, 1);
+    auto pinned = catalog->load_generation(12, 1);
+    ASSERT_NE(pinned, nullptr);
+    publish_raw_generation(&store, 2);
+    publish_raw_generation(&store, 3);
+    EXPECT_EQ(catalog->retained_manifest_count(12), 3U);
+    EXPECT_EQ(catalog->pinned_bytes(12), pinned->logical_size);
+    EXPECT_EQ(catalog->reclaim_before(12, 4), 0U);
+    EXPECT_EQ(catalog->retained_manifest_count(12), 3U);
+
+    pinned.reset();
+    EXPECT_GT(catalog->reclaim_before(12, 4), 0U);
+    EXPECT_EQ(catalog->retained_manifest_count(12), 2U);
+    EXPECT_NE(catalog->load_generation(12, 2), nullptr);
+    EXPECT_NE(catalog->load_generation(12, 3), nullptr);
+}
+
+TEST(ChunkPageStore, LayoutCacheRefreshesAtValidityBoundary)
+{
+    auto           catalog = std::make_shared<MemoryRootCatalog>(1);
+    ChunkPageStore writer({.tree_id = 8, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    const uint8_t  bytes[] = {1, 3, 5, 7};
+    ASSERT_TRUE(writer.write_at(8192, bytes, sizeof(bytes)).ok());
+    ASSERT_TRUE(writer.sync().ok());
+    ASSERT_TRUE(writer.write_at(0, bytes, sizeof(bytes)).ok());
+    ASSERT_TRUE(writer.sync().ok());
+
+    ChunkPageStore cached({.tree_id = 8, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    uint8_t        out[4] = {};
+    ASSERT_TRUE(cached.read_at(8192, out, sizeof(out)).ok());
+    ASSERT_TRUE(cached.read_at(8192, out, sizeof(out)).ok());
+    EXPECT_EQ(cached.stats().layout_queries, 1U);
+    EXPECT_EQ(cached.stats().cache_hits, 1U);
+
+    ChunkPageStore uncached({.tree_id = 8, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1, .layout_validity_ms = 0},
+                            catalog);
+    ASSERT_TRUE(uncached.read_at(8192, out, sizeof(out)).ok());
+    ASSERT_TRUE(uncached.read_at(8192, out, sizeof(out)).ok());
+    EXPECT_EQ(uncached.stats().layout_queries, 2U);
+    EXPECT_EQ(uncached.stats().cache_hits, 0U);
+}
+
+TEST(ChunkPageStore, AsyncUnavailableRemainsTypedAndDoesNotLatchCorruption)
+{
+    auto           catalog = std::make_shared<MemoryRootCatalog>(1);
+    ChunkPageStore store({.tree_id = 15, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    Options        options;
+    options.page_store       = &store;
+    options.async_page_store = &store;
+    options.frame_bytes      = 4096;
+    Crowdbtree tree(options);
+    ASSERT_TRUE(tree.apply(1, put(1, "key", "value")).ok());
+    ASSERT_TRUE(tree.flush().ok());
+    ASSERT_TRUE(tree.snapshot().ok());
+    ASSERT_GT(tree.evict_clean_leaves(0), 0U);
+
+    store.inject_unavailable(true);
+    Status  unavailable;
+    GetView missing;
+    tree.get_async(Slice("key"), [&](Status status, GetView result) {
+        unavailable = std::move(status);
+        missing     = std::move(result);
+    });
+    EXPECT_EQ(unavailable.code(), Code::kUnavailable);
+    EXPECT_FALSE(missing.found());
+    EXPECT_FALSE(tree.io_failed());
+
+    store.inject_unavailable(false);
+    Status  recovered;
+    GetView found;
+    tree.get_async(Slice("key"), [&](Status status, GetView result) {
+        recovered = std::move(status);
+        found     = std::move(result);
+    });
+    EXPECT_TRUE(recovered.ok()) << recovered.to_string();
+    EXPECT_TRUE(found.found());
 }
 
 TEST(ChunkPageStore, CApiFactoryInjectsBackendWithoutChangingOpen)
@@ -117,7 +240,6 @@ TEST(ChunkPageStore, CApiFactoryInjectsBackendWithoutChangingOpen)
     options.frame_bytes = 4096;
     ct_tree *tree       = nullptr;
     ASSERT_EQ(ct_open(&options, &tree), 0);
-    ct_page_store_free(store);
     ASSERT_EQ(ct_apply_put(tree, 1, reinterpret_cast<const uint8_t *>("key"), 3,
                            reinterpret_cast<const uint8_t *>("value"), 5),
               0);
@@ -125,6 +247,23 @@ TEST(ChunkPageStore, CApiFactoryInjectsBackendWithoutChangingOpen)
     uint64_t slot = 0;
     ASSERT_EQ(ct_snapshot(tree, &slot), 0);
     EXPECT_EQ(slot, 1U);
+    ASSERT_GT(ct_evict_clean_leaves(tree, 0), 0U);
+    ct_future *future = ct_get_async(tree, reinterpret_cast<const uint8_t *>("key"), 3);
+    ASSERT_NE(future, nullptr);
+    int32_t done  = 0;
+    int32_t found = 0;
+    ct_buf  value = {};
+    ASSERT_EQ(ct_future_poll(future, &done, &found, &slot, &value), 0);
+    EXPECT_EQ(done, 1);
+    EXPECT_EQ(found, 1);
+    EXPECT_EQ(std::string(reinterpret_cast<char *>(value.data), value.len), "value");
+    ct_future_free(future);
+    ct_chunk_page_store_stats stats = {};
+    ASSERT_EQ(ct_chunk_page_store_get_stats(store, &stats), 0);
+    EXPECT_EQ(stats.generations_published, 1U);
+    EXPECT_GT(stats.packs_written, 0U);
+    EXPECT_EQ(stats.mirror_write_attempts, stats.packs_written * 3U);
+    ct_page_store_free(store);
     ct_close(tree);
     ct_root_catalog_free(catalog);
 }

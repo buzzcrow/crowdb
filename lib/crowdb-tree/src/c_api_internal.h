@@ -18,6 +18,7 @@ struct PageStoreBundle
 {
     std::unique_ptr<crowdb::tree::PageStore>      store;
     std::unique_ptr<crowdb::tree::AsyncPageStore> async_store;
+    crowdb::tree::AsyncPageStore                 *async_store_view = nullptr;
 #ifdef CROWDB_HAVE_LIBURING
     std::unique_ptr<crowdb::common::DiskIOUring> uring;
 #endif

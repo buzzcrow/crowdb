@@ -1,12 +1,15 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#include "crowdb-tree/cell.h"
+#include "crowdb-tree/frame_page.h"
 #include "crowdb-tree/key_range.h"
 
 #include <gtest/gtest.h>
 
 #include <optional>
 #include <string>
+#include <vector>
 
 using namespace crowdb::tree;
 
@@ -39,4 +42,19 @@ TEST(KeyRange, EmptyAndInvalidRangesAreDistinct)
 
     KeyRange invalid = KeyRange::bounded(std::string("z"), std::string("a"));
     EXPECT_EQ(invalid.validate().code(), Code::kInvalidArgument);
+}
+
+TEST(KeyRange, ChecksummedFramesMustFitTheConfiguredRange)
+{
+    std::vector<uint8_t> frame(4096);
+    LeafFrameBuilder     leaf(frame.data(), frame.size());
+    buffer               inside  = encode_cell_buf(1, OpKind::kPut, Slice("v"));
+    buffer               outside = encode_cell_buf(2, OpKind::kPut, Slice("v"));
+    ASSERT_TRUE(leaf.try_append_sorted(Slice("b"), inside.slice()));
+    ASSERT_TRUE(leaf.try_append_sorted(Slice("z"), outside.slice()));
+    leaf.finish(1, kInvalidPageId);
+    ASSERT_TRUE(frame_validate(frame.data(), frame.size()));
+    EXPECT_FALSE(
+        frame_validate_key_range(frame.data(), frame.size(), KeyRange::bounded(std::string("a"), std::string("m"))));
+    EXPECT_TRUE(frame_validate_key_range(frame.data(), frame.size(), KeyRange::unbounded()));
 }

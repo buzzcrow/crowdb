@@ -62,7 +62,8 @@ TEST(R6, GetAsyncSlowPathReturnsBorrowedSlice)
     std::atomic<bool> borrowed{false};
     std::atomic<bool> found{false};
 
-    t.get_async(Slice(k), [&](GetView v) {
+    t.get_async(Slice(k), [&](Status status, GetView v) {
+        EXPECT_TRUE(status.ok()) << status.to_string();
         found.store(v.found(), std::memory_order_relaxed);
         // frame_base() != nullptr iff the value is borrowed from a frame
         // (not an owned copy). The slow path must return a borrowed value.

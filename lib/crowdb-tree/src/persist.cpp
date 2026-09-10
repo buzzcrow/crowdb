@@ -32,6 +32,7 @@
 // Key work: segment-scan-driven dirty-page/segment discovery, crash-safe
 // free-space reuse, page/segment-image/directory framing, anchor A/B
 // commit, best-anchor recovery, lazy mapping-table rebuild.
+#include "async_completion_adapter.h"
 #include "crowdb-common/crc32c.h"
 #include "crowdb-common/log.h"
 #include "crowdb-tree/async_page_store.h"
@@ -1126,34 +1127,37 @@ void Crowdbtree::snapshot_write_next_async(                    // NOLINT(readabi
     if (idx < prepared->page_writes.size()) {
         const PreparedPageWrite &w = prepared->page_writes[idx];
         opt_.async_page_store->submit_write(
-            w.addr, w.blob.data(), w.blob.size(), [this, prepared, idx, on_done](const Status &st) mutable {
+            w.addr, w.blob.data(), w.blob.size(),
+            detail::own_async_completion([this, prepared, idx, on_done](const Status &st) mutable {
                 if (!st.ok()) {
                     release_snapshot_slot();
                     on_done(st, 0);
                     return;
                 }
                 snapshot_write_next_async(std::move(prepared), idx + 1, std::move(on_done));
-            });
+            }));
         return;
     }
     size_t seg_idx_in_list = idx - prepared->page_writes.size();
     if (seg_idx_in_list < prepared->segment_writes.size()) {
         const PreparedSegmentWrite &sw = prepared->segment_writes[seg_idx_in_list];
         opt_.async_page_store->submit_write(
-            sw.addr, sw.blob.data(), sw.blob.size(), [this, prepared, idx, on_done](const Status &st) mutable {
+            sw.addr, sw.blob.data(), sw.blob.size(),
+            detail::own_async_completion([this, prepared, idx, on_done](const Status &st) mutable {
                 if (!st.ok()) {
                     release_snapshot_slot();
                     on_done(st, 0);
                     return;
                 }
                 snapshot_write_next_async(std::move(prepared), idx + 1, std::move(on_done));
-            });
+            }));
         return;
     }
 
     const PreparedSnapshotWrite &dw = prepared->directory_write;
     opt_.async_page_store->submit_write(
-        dw.addr, dw.blob.data(), dw.blob.size(), [this, prepared, on_done](const Status &st) mutable {
+        dw.addr, dw.blob.data(), dw.blob.size(),
+        detail::own_async_completion([this, prepared, on_done](const Status &st) mutable {
             if (!st.ok()) {
                 release_snapshot_slot();
                 on_done(st, 0);
@@ -1161,45 +1165,47 @@ void Crowdbtree::snapshot_write_next_async(                    // NOLINT(readabi
             }
             // Barrier: pages + segment images + directory durable before the anchor
             // that references them.
-            Status fs1 = opt_.async_page_store->submit_fsync([this, prepared, on_done](const Status &st2) mutable {
-                if (!st2.ok()) {
-                    release_snapshot_slot();
-                    on_done(st2, 0);
-                    return;
-                }
-                const PreparedSnapshotWrite &aw = prepared->anchor_write;
-                opt_.async_page_store->submit_write(
-                    aw.addr, aw.blob.data(), aw.blob.size(), [this, prepared, on_done](const Status &st3) mutable {
-                        if (!st3.ok()) {
-                            release_snapshot_slot();
-                            on_done(st3, 0);
-                            return;
-                        }
-                        Status fs2 =
-                            opt_.async_page_store->submit_fsync([this, prepared, on_done](const Status &st4) mutable {
-                                if (!st4.ok()) {
-                                    commit_prepared_snapshot(*prepared);
-                                    release_snapshot_slot();
-                                    on_done(st4, 0);
-                                    return;
-                                }
-                                finalize_prepared_snapshot(*prepared);
-                                uint64_t last_applied = prepared->last_applied_slot;
+            Status fs1 = opt_.async_page_store->submit_fsync(
+                detail::own_async_completion([this, prepared, on_done](const Status &st2) mutable {
+                    if (!st2.ok()) {
+                        release_snapshot_slot();
+                        on_done(st2, 0);
+                        return;
+                    }
+                    const PreparedSnapshotWrite &aw = prepared->anchor_write;
+                    opt_.async_page_store->submit_write(
+                        aw.addr, aw.blob.data(), aw.blob.size(),
+                        detail::own_async_completion([this, prepared, on_done](const Status &st3) mutable {
+                            if (!st3.ok()) {
                                 release_snapshot_slot();
-                                on_done(Status::Ok(), last_applied);
-                            });
-                        if (!fs2.ok()) {
-                            commit_prepared_snapshot(*prepared);
-                            release_snapshot_slot();
-                            on_done(fs2, 0);
-                        }
-                    });
-            });
+                                on_done(st3, 0);
+                                return;
+                            }
+                            Status fs2 = opt_.async_page_store->submit_fsync(
+                                detail::own_async_completion([this, prepared, on_done](const Status &st4) mutable {
+                                    if (!st4.ok()) {
+                                        commit_prepared_snapshot(*prepared);
+                                        release_snapshot_slot();
+                                        on_done(st4, 0);
+                                        return;
+                                    }
+                                    finalize_prepared_snapshot(*prepared);
+                                    uint64_t last_applied = prepared->last_applied_slot;
+                                    release_snapshot_slot();
+                                    on_done(Status::Ok(), last_applied);
+                                }));
+                            if (!fs2.ok()) {
+                                commit_prepared_snapshot(*prepared);
+                                release_snapshot_slot();
+                                on_done(fs2, 0);
+                            }
+                        }));
+                }));
             if (!fs1.ok()) {
                 release_snapshot_slot();
                 on_done(fs1, 0);
             }
-        });
+        }));
 }
 
 Status Crowdbtree::prefetch_sparse_pages(std::vector<PrefetchedPage> *out, std::set<uint32_t> *selected_blocks)

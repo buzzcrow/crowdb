@@ -103,5 +103,25 @@ TEST(RangeRebuild, ConcurrentWorkersPublishIndependentTrees)
     EXPECT_EQ(live_entries(source).size(), 20U);
 }
 
+TEST(RangeRebuild, LazyRecoveryRejectsAResolvedPageOutsideTheTreeRange)
+{
+    MemPageStore store(1);
+    Options      options;
+    options.page_store = &store;
+    {
+        Crowdbtree source(options);
+        ASSERT_TRUE(source.put(Slice("b"), Slice("inside")).ok());
+        ASSERT_TRUE(source.put(Slice("z"), Slice("outside")).ok());
+        ASSERT_TRUE(source.flush().ok());
+        ASSERT_TRUE(source.snapshot().ok());
+    }
+
+    options.key_range = KeyRange::bounded(std::string("a"), std::string("m"));
+    std::unique_ptr<Crowdbtree> bounded;
+    ASSERT_TRUE(Crowdbtree::open(options, &bounded).ok());
+    EXPECT_FALSE(bounded->get(Slice("b"), nullptr, nullptr));
+    EXPECT_TRUE(bounded->io_failed());
+}
+
 } // namespace
 } // namespace crowdb::tree

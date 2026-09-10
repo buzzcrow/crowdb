@@ -4,6 +4,7 @@
 // plan-tree #11: DiskIOUring (io_uring event loop) + BlockAsyncPageStore.
 // Only built when CMake found liburing (see CMakeLists.txt's
 // CROWDB_HAVE_LIBURING gate) -- io_uring is Linux-only.
+#include "async_completion_adapter.h"
 #include "crowdb-common/diskio_uring.h"
 #include "crowdb-tree/async_page_store.h"
 #include "crowdb-tree/block_page_store.h"
@@ -200,20 +201,20 @@ TEST(BlockAsyncPageStore, WriteThenReadRoundTrips)
     }
     std::atomic<bool> write_done{false};
     Status            write_status;
-    s.submit_write(0, in.data(), in.size(), [&](Status st) {
-        write_status = std::move(st);
-        write_done.store(true, std::memory_order_release);
-    });
+    s.submit_write(0, in.data(), in.size(), crowdb::tree::detail::own_async_completion([&](Status st) {
+                       write_status = std::move(st);
+                       write_done.store(true, std::memory_order_release);
+                   }));
     ASSERT_TRUE(wait_for([&] { return write_done.load(std::memory_order_acquire); }));
     EXPECT_TRUE(write_status.ok()) << write_status.to_string();
 
     std::vector<uint8_t> out(in.size(), 0);
     std::atomic<bool>    read_done{false};
     Status               read_status;
-    s.submit_read(0, out.data(), out.size(), [&](Status st) {
-        read_status = std::move(st);
-        read_done.store(true, std::memory_order_release);
-    });
+    s.submit_read(0, out.data(), out.size(), crowdb::tree::detail::own_async_completion([&](Status st) {
+                      read_status = std::move(st);
+                      read_done.store(true, std::memory_order_release);
+                  }));
     ASSERT_TRUE(wait_for([&] { return read_done.load(std::memory_order_acquire); }));
     EXPECT_TRUE(read_status.ok()) << read_status.to_string();
     EXPECT_EQ(out, in);
@@ -237,10 +238,10 @@ TEST(BlockAsyncPageStore, ReadPastEndSurfacesAsError)
     std::vector<uint8_t> out(4096, 0);
     std::atomic<bool>    done{false};
     Status               status;
-    s.submit_read(1 << 20, out.data(), out.size(), [&](Status st) {
-        status = std::move(st);
-        done.store(true, std::memory_order_release);
-    });
+    s.submit_read(1 << 20, out.data(), out.size(), crowdb::tree::detail::own_async_completion([&](Status st) {
+                      status = std::move(st);
+                      done.store(true, std::memory_order_release);
+                  }));
     ASSERT_TRUE(wait_for([&] { return done.load(std::memory_order_acquire); }));
     EXPECT_FALSE(status.ok());
 
@@ -261,15 +262,17 @@ TEST(BlockAsyncPageStore, FsyncCompletes)
     // Write something first so the single-medium fd is dirty
     std::vector<uint8_t> in(4096, 0xAB);
     std::atomic<bool>    write_done{false};
-    s.submit_write(0, in.data(), in.size(), [&](Status) { write_done.store(true, std::memory_order_release); });
+    s.submit_write(0, in.data(), in.size(), crowdb::tree::detail::own_async_completion([&](Status) {
+                       write_done.store(true, std::memory_order_release);
+                   }));
     ASSERT_TRUE(wait_for([&] { return write_done.load(std::memory_order_acquire); }));
 
     std::atomic<bool> done{false};
     Status            status;
-    Status            submit_status = s.submit_fsync([&](Status st) {
+    Status            submit_status = s.submit_fsync(crowdb::tree::detail::own_async_completion([&](Status st) {
         status = std::move(st);
         done.store(true, std::memory_order_release);
-    });
+    }));
     ASSERT_TRUE(submit_status.ok());
     ASSERT_TRUE(wait_for([&] { return done.load(std::memory_order_acquire); }));
     EXPECT_TRUE(status.ok()) << status.to_string();

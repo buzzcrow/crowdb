@@ -21,11 +21,31 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <memory>
+#include <utility>
 
 namespace crowdb::tree
 {
+
+using AsyncCompleteFn = void (*)(void *, Status);
+
+struct AsyncCompletion
+{
+    void           *context     = nullptr;
+    AsyncCompleteFn complete_fn = nullptr;
+
+    void complete(Status status) const
+    {
+        if (complete_fn != nullptr) {
+            complete_fn(context, std::move(status));
+        }
+    }
+
+    [[nodiscard]] explicit operator bool() const
+    {
+        return complete_fn != nullptr;
+    }
+};
 
 class AsyncPageStore
 {
@@ -37,14 +57,13 @@ class AsyncPageStore
     // `on_complete` fires exactly once, from the poll thread, with the
     // outcome. Returns an opaque op id (always 0 — cancel is via cancel_fd
     // at the DiskIOUring level, not per-op).
-    virtual uint64_t submit_read(PageAddr addr, void *buf, size_t len, std::function<void(Status)> on_complete) = 0;
-    virtual uint64_t submit_write(PageAddr addr, const void *buf, size_t len,
-                                  std::function<void(Status)> on_complete)                                      = 0;
+    virtual uint64_t submit_read(PageAddr addr, void *buf, size_t len, AsyncCompletion on_complete)        = 0;
+    virtual uint64_t submit_write(PageAddr addr, const void *buf, size_t len, AsyncCompletion on_complete) = 0;
 
     // Durability barrier, submitted async. Returns the *submission* status
     // (e.g. invalid_argument if the store has no backing fd); the barrier's
     // own completion status arrives via `on_complete`, same as read/write.
-    virtual Status submit_fsync(std::function<void(Status)> on_complete) = 0;
+    virtual Status submit_fsync(AsyncCompletion on_complete) = 0;
 
     // No-op (kept for ABI compatibility). Per-op cancel is removed — use
     // DiskIOUring::cancel_fd for fd-level cancellation.
@@ -68,9 +87,9 @@ class BlockAsyncPageStore : public AsyncPageStore
     // for at least as long as this object.
     BlockAsyncPageStore(BlockPageStore *store, ::crowdb::common::DiskIOUring *uring);
 
-    uint64_t submit_read(PageAddr addr, void *buf, size_t len, std::function<void(Status)> on_complete) override;
-    uint64_t submit_write(PageAddr addr, const void *buf, size_t len, std::function<void(Status)> on_complete) override;
-    Status   submit_fsync(std::function<void(Status)> on_complete) override;
+    uint64_t submit_read(PageAddr addr, void *buf, size_t len, AsyncCompletion on_complete) override;
+    uint64_t submit_write(PageAddr addr, const void *buf, size_t len, AsyncCompletion on_complete) override;
+    Status   submit_fsync(AsyncCompletion on_complete) override;
     void     cancel(uint64_t op_id) override;
 
   private:

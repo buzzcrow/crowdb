@@ -139,10 +139,29 @@ using ct_chunk_page_store_options = struct
     uint32_t iu_size;
 };
 
+using ct_chunk_page_store_stats = struct
+{
+    uint64_t generations_published;
+    uint64_t packs_written;
+    uint64_t pack_bytes_written;
+    uint64_t pack_reads;
+    uint64_t cache_hits;
+    uint64_t layout_queries;
+    uint64_t mirror_write_attempts;
+    uint64_t mirror_write_failures;
+    uint64_t retained_manifests;
+    uint64_t pinned_bytes;
+    uint64_t oldest_pin_age_ms;
+    uint64_t orphan_bytes;
+};
+
 ct_status ct_memory_root_catalog_open(uint64_t owner_epoch, ct_root_catalog **out);
 void      ct_root_catalog_free(ct_root_catalog *catalog);
 ct_status ct_chunk_page_store_open(const ct_chunk_page_store_options *options, ct_root_catalog *catalog,
                                    ct_page_store **out);
+ct_status ct_chunk_page_store_get_stats(const ct_page_store *store, ct_chunk_page_store_stats *out);
+uint64_t  ct_chunk_page_store_reclaim_orphans(ct_page_store *store);
+uint64_t  ct_root_catalog_reclaim_before(ct_root_catalog *catalog, uint64_t tree_id, uint64_t generation);
 ct_status ct_open(const ct_options *opt, ct_tree **out);
 void      ct_close(ct_tree *t);
 

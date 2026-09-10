@@ -53,12 +53,107 @@ bool frame_validate(const uint8_t *f, uint32_t page_bytes)
     else {
         return false;
     }
+    if (f[fh::kFormatVersion] != kFrameVersion) {
+        return false;
+    }
     uint32_t body = page_bytes - static_cast<uint32_t>(kFrameTrailerSize);
     if (frame_u32(f, body) != page_bytes) {
         return false; // logical_len cross-check
     }
     uint32_t stored = frame_u32(f, body + 4);
-    return crowdb::common::crc32c(f, body) == stored;
+    if (crowdb::common::crc32c(f, body) != stored) {
+        return false;
+    }
+
+    const uint32_t count   = frame_u32(f, fh::kSlotCount);
+    const uint32_t free_lo = frame_u32(f, fh::kFreeLo);
+    const uint32_t free_hi = frame_u32(f, fh::kFreeHi);
+    if (t == page_type::kOverflowFrame) {
+        return count <= body - kFrameHeaderSize;
+    }
+    if (free_lo < kFrameHeaderSize || free_hi < free_lo || free_hi > body) {
+        return false;
+    }
+
+    auto valid_record = [f, free_hi, body](const uint8_t *slot, bool has_cell) {
+        const uint32_t off   = frame_u32(slot, 0);
+        const uint32_t klen  = frame_u32(slot, 4);
+        const uint32_t extra = has_cell ? frame_u32(slot, 8) : 0;
+        return off >= free_hi && off <= body && klen <= body - off && extra <= body - off - klen;
+    };
+    if (t == page_type::kLeafBase) {
+        if (count > (body - kFrameHeaderSize) / kLeafSlotSize || kFrameHeaderSize + (count * kLeafSlotSize) > free_lo) {
+            return false;
+        }
+        LeafFrameView view(f, page_bytes);
+        for (uint32_t i = 0; i < count; ++i) {
+            if (!valid_record(f + kFrameHeaderSize + (i * kLeafSlotSize), true) ||
+                (i > 0 && view.key(i - 1).compare(view.key(i)) >= 0)) {
+                return false;
+            }
+        }
+        const uint32_t delta_count = view.delta_count();
+        if (delta_count > (free_hi - free_lo) / kLeafSlotSize) {
+            return false;
+        }
+        for (uint32_t i = 0; i < delta_count; ++i) {
+            if (!valid_record(f + free_lo + (i * kLeafSlotSize), true)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    if (count == ~uint32_t{0}) {
+        return false;
+    }
+    const uint32_t children = count + 1;
+    if (children > (body - kFrameHeaderSize) / sizeof(uint64_t)) {
+        return false;
+    }
+    const uint32_t slots = kFrameHeaderSize + (children * sizeof(uint64_t));
+    if (count > (body - slots) / kInnerSlotSize || slots + (count * kInnerSlotSize) > free_lo) {
+        return false;
+    }
+    InnerFrameView view(f, page_bytes);
+    for (uint32_t i = 0; i < count; ++i) {
+        if (!valid_record(f + slots + (i * kInnerSlotSize), false) ||
+            (i > 0 && view.separator_at(i - 1).compare(view.separator_at(i)) >= 0)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool frame_validate_key_range(const uint8_t *f, uint32_t page_bytes, const KeyRange &range)
+{
+    const bool valid = frame_validate(f, page_bytes);
+    if (!valid || !range.is_bounded()) {
+        return valid;
+    }
+    const page_type type = frame_page_type(f);
+    if (type == page_type::kLeafBase) {
+        LeafFrameView view(f, page_bytes);
+        for (uint32_t i = 0; i < view.count(); ++i) {
+            if (!range.contains(view.key(i))) {
+                return false;
+            }
+        }
+        for (uint32_t i = 0; i < view.delta_count(); ++i) {
+            if (!range.contains(view.delta_key(i))) {
+                return false;
+            }
+        }
+    }
+    else if (type == page_type::kInnerBase) {
+        InnerFrameView view(f, page_bytes);
+        for (uint32_t i = 0; i < view.num_separators(); ++i) {
+            if (!range.contains(view.separator_at(i))) {
+                return false;
+            }
+        }
+    }
+    return true;
 }
 
 // ── LeafFrameBuilder ──────────────────────────────────────────────

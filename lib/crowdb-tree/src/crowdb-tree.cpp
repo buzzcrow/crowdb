@@ -3,6 +3,7 @@
 
 #include "crowdb-tree/crowdb-tree.h"
 
+#include "async_completion_adapter.h"
 #include "crowdb-common/log.h"
 #include "crowdb-tree/async_page_store.h"
 #include "crowdb-tree/compressor.h"
@@ -399,8 +400,8 @@ PageBase *Crowdbtree::install_loaded_page(uint64_t page_id, uint64_t addr, uint3
         io_failed_.store(true);
         return nullptr;
     }
-    if (!frame_validate(frame.data(), raw_len)) {
-        CRB_LOG_ERROR("[{}] demand-load frame validation failed: pid={} addr={}", name_, page_id, addr);
+    if (!frame_validate_key_range(frame.data(), raw_len, opt_.key_range)) {
+        CRB_LOG_ERROR("[{}] demand-load frame or range validation failed: pid={} addr={}", name_, page_id, addr);
         io_failed_.store(true);
         return nullptr;
     }
@@ -2045,7 +2046,7 @@ GetView Crowdbtree::materialize_owned(GetView &&v)
     return std::move(v);
 }
 
-void Crowdbtree::get_async(Slice key, std::function<void(GetView)> on_done) const
+void Crowdbtree::get_async(Slice key, std::function<void(Status, GetView)> on_done) const
 {
     // Copy the key upfront: unlike get_view()'s Slice (borrowed, valid only
     // for this one synchronous call), get_async's key must survive across
@@ -2054,7 +2055,7 @@ void Crowdbtree::get_async(Slice key, std::function<void(GetView)> on_done) cons
     get_async_attempt(std::make_shared<std::string>(key.to_string()), std::move(on_done), /*same_thread=*/true);
 }
 
-void Crowdbtree::get_async_attempt(std::shared_ptr<std::string> key_owned, std::function<void(GetView)> on_done,
+void Crowdbtree::get_async_attempt(std::shared_ptr<std::string> key_owned, std::function<void(Status, GetView)> on_done,
                                    bool same_thread) const
 {
     GetView  result;
@@ -2064,7 +2065,7 @@ void Crowdbtree::get_async_attempt(std::shared_ptr<std::string> key_owned, std::
         // Otherwise this resolved on (or after being handed off from) the
         // Reactor thread, so materialize_owned() releases the guard here,
         // on the thread that entered it, before on_done can cross back out.
-        on_done(same_thread ? std::move(result) : materialize_owned(std::move(result)));
+        on_done(Status::Ok(), same_thread ? std::move(result) : materialize_owned(std::move(result)));
         return;
     }
 
@@ -2100,35 +2101,39 @@ void Crowdbtree::get_async_attempt(std::shared_ptr<std::string> key_owned, std::
         demand_load_total_.fetch_add(1, std::memory_order_relaxed);
         opt_.async_page_store->submit_read(
             addr, blob->data(), blob->size(),
-            [this, page_id = pending_page_id, addr, plen, blob, key_owned, on_done](Status st) mutable {
-                if (!st.ok()) {
-                    CRB_LOG_ERROR("[{}] get_async: demand-load I/O fault: pid={} addr={} len={} status={}", name_,
-                                  page_id, addr, plen, st.to_string());
-                    io_failed_.store(true);
-                    on_done(GetView()); // not found; no guard was ever entered
-                    return;
-                }
-                bool installed_ok = true;
-                {
-                    std::lock_guard<std::mutex> lk(load_mutex_);
-                    uint64_t                    w = mapping_.get_word(page_id);
-                    if (slot_word::is_unloaded(w)) {
-                        installed_ok = install_loaded_page(page_id, addr, plen, *blob) != nullptr;
+            detail::own_async_completion(
+                [this, page_id = pending_page_id, addr, plen, blob, key_owned, on_done](Status st) mutable {
+                    if (!st.ok()) {
+                        CRB_LOG_ERROR("[{}] get_async: demand-load I/O fault: pid={} addr={} len={} status={}", name_,
+                                      page_id, addr, plen, st.to_string());
+                        if (st.code() != Code::kUnavailable && st.code() != Code::kResourceExhausted) {
+                            io_failed_.store(true);
+                        }
+                        on_done(std::move(st), GetView());
+                        return;
                     }
-                    // else: another loader already installed it -- retry below.
-                }
-                if (!installed_ok) {
-                    // Decode/CRC/validation failure -- io_failed_ already
-                    // latched by install_loaded_page; matches resident()'s
-                    // own "degrades to a miss" contract.
-                    on_done(GetView()); // not found; no guard was ever entered
-                    return;
-                }
-                // This callback runs on the Reactor's own thread (design's
-                // thread model table) -- everything from here on is *not*
-                // same_thread relative to the original caller.
-                get_async_attempt(std::move(key_owned), std::move(on_done), /*same_thread=*/false);
-            });
+                    bool installed_ok = true;
+                    {
+                        std::lock_guard<std::mutex> lk(load_mutex_);
+                        uint64_t                    w = mapping_.get_word(page_id);
+                        if (slot_word::is_unloaded(w)) {
+                            installed_ok = install_loaded_page(page_id, addr, plen, *blob) != nullptr;
+                        }
+                        // else: another loader already installed it -- retry below.
+                    }
+                    if (!installed_ok) {
+                        // Decode/CRC/validation failure -- io_failed_ already
+                        // latched by install_loaded_page; matches resident()'s
+                        // own "degrades to a miss" contract.
+                        on_done(Status::corruption("get_async: demand-load decode, structure, or range failure"),
+                                GetView());
+                        return;
+                    }
+                    // This callback runs on the Reactor's own thread (design's
+                    // thread model table) -- everything from here on is *not*
+                    // same_thread relative to the original caller.
+                    get_async_attempt(std::move(key_owned), std::move(on_done), /*same_thread=*/false);
+                }));
         return;
     }
     // No async backend wired (e.g. a MemPageStore-backed tree -- design
@@ -3238,9 +3243,10 @@ void Crowdbtree::scan_async_attempt(std::shared_ptr<std::string>        prefix_o
         demand_load_total_.fetch_add(1, std::memory_order_relaxed);
         opt_.async_page_store->submit_read(
             addr, blob->data(), blob->size(),
-            [this, page_id = pending_page_id, addr, plen, blob, prefix_owned, start_after_owned, end_key_owned,
-             remaining_limit, byte_budget, keys_only, deadline_ms, accumulated, last_key, accumulated_count,
-             on_done](Status st) mutable {
+            detail::own_async_completion([this, page_id = pending_page_id, addr, plen, blob, prefix_owned,
+                                          start_after_owned, end_key_owned, remaining_limit, byte_budget, keys_only,
+                                          deadline_ms, accumulated, last_key, accumulated_count,
+                                          on_done](Status st) mutable {
                 if (!st.ok()) {
                     CRB_LOG_ERROR("[{}] scan_async: demand-load I/O fault: pid={} addr={} len={} status={}", name_,
                                   page_id, addr, plen, st.to_string());
@@ -3269,7 +3275,7 @@ void Crowdbtree::scan_async_attempt(std::shared_ptr<std::string>        prefix_o
                 scan_async_attempt(std::move(prefix_owned), resume_after, end_key_owned, remaining_limit, byte_budget,
                                    keys_only, deadline_ms, std::move(accumulated), std::move(last_key),
                                    accumulated_count, std::move(on_done));
-            });
+            }));
         return;
     }
     // No async backend wired -- fall back to the existing synchronous
@@ -3484,6 +3490,12 @@ Status Crowdbtree::collect_native_frames(std::vector<NativeFrame> *out, uint64_t
 Status Crowdbtree::install_snapshot_native(std::vector<NativeFrame> frames, uint64_t root_page_id, uint64_t at_slot)
 {
     std::lock_guard<std::mutex> lk(write_mutex_);
+    for (const NativeFrame &frame : frames) {
+        if (frame.page_id == kInvalidPageId || frame.frame.empty() ||
+            !frame_validate_key_range(frame.frame.data(), static_cast<uint32_t>(frame.frame.size()), opt_.key_range)) {
+            return Status::corruption("native snapshot: frame CRC, structure, or range invalid");
+        }
+    }
     // Replace L1 exactly like install_snapshot (portable) does: drop the
     // live tree (epoch-retire, not free -- #13) and reset L0/watermarks.
     // One continuous critical section (unlike install_snapshot, which

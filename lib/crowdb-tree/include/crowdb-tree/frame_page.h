@@ -19,6 +19,7 @@
 #pragma once
 
 #include "crowdb-tree/cell.h"
+#include "crowdb-tree/key_range.h"
 #include "crowdb-tree/page_types.h" // page_type, kInvalidPageId, leaf_entry
 #include "crowdb-tree/slice.h"
 
@@ -106,6 +107,10 @@ inline void frame_put_u64(uint8_t *f, size_t off, uint64_t v)
 // Validate a frame's CRC32C trailer (and magic/type). `page_bytes` is the frame
 // size. Returns true if intact.
 [[nodiscard]] bool frame_validate(const uint8_t *f, uint32_t page_bytes);
+
+// Validate the decoded key-bearing content against one immutable tree range.
+// This is called before a recovered frame is installed into the mapping table.
+[[nodiscard]] bool frame_validate_key_range(const uint8_t *f, uint32_t page_bytes, const KeyRange &range);
 
 // Recompute the {logical_len, crc32c} trailer after an in-place header edit.
 void frame_restamp_crc(uint8_t *f, uint32_t page_bytes);

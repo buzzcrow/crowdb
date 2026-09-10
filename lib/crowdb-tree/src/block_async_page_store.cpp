@@ -88,33 +88,32 @@ BlockAsyncPageStore::BlockAsyncPageStore(BlockPageStore *store, ::crowdb::common
 {
 }
 
-uint64_t BlockAsyncPageStore::submit_read(PageAddr addr, void *buf, size_t len, std::function<void(Status)> on_complete)
+uint64_t BlockAsyncPageStore::submit_read(PageAddr addr, void *buf, size_t len, AsyncCompletion on_complete)
 {
     uint64_t local = 0;
     int      fd    = store_->fd_for_offset(addr, &local);
     if (fd < 0) {
         if (on_complete) {
-            on_complete(Status::io_error("BlockAsyncPageStore: no fd for offset"));
+            on_complete.complete(Status::io_error("BlockAsyncPageStore: no fd for offset"));
         }
         return 0;
     }
-    uring_->submit_read(fd, buf, len, static_cast<off_t>(local), [len, cb = std::move(on_complete)](int res) {
+    uring_->submit_read(fd, buf, len, static_cast<off_t>(local), [len, cb = on_complete](int res) {
         if (cb) {
-            cb(result_to_status(res, len, "read"));
+            cb.complete(result_to_status(res, len, "read"));
         }
     });
     return 0;
 }
 
-uint64_t BlockAsyncPageStore::submit_write(PageAddr addr, const void *buf, size_t len,
-                                           std::function<void(Status)> on_complete)
+uint64_t BlockAsyncPageStore::submit_write(PageAddr addr, const void *buf, size_t len, AsyncCompletion on_complete)
 {
     // Ensure block files exist for this address range (mirrors sync
     // write_at_extents' allocation loop).
     Status es = store_->ensure_extents(addr, len);
     if (!es.ok()) {
         if (on_complete) {
-            on_complete(es);
+            on_complete.complete(es);
         }
         return 0;
     }
@@ -146,14 +145,14 @@ uint64_t BlockAsyncPageStore::submit_write(PageAddr addr, const void *buf, size_
             // completions share a WriteState; the last one invokes on_complete.
             struct WriteState
             {
-                std::function<void(Status)>                cb;
+                AsyncCompletion                            cb;
                 Status                                     first_error;
                 int                                        pending;
                 std::vector<std::shared_ptr<AlignedIoBuf>> align_bufs; // keep alive until all CQEs fire
             };
 
             auto state     = std::make_shared<WriteState>();
-            state->cb      = std::move(on_complete);
+            state->cb      = on_complete;
             state->pending = 0;
 
             uint64_t cur  = addr;
@@ -163,8 +162,8 @@ uint64_t BlockAsyncPageStore::submit_write(PageAddr addr, const void *buf, size_
                 int      fd    = store_->fd_for_offset(cur, &local);
                 if (fd < 0) {
                     if (state->cb) {
-                        state->cb(Status::io_error("BlockAsyncPageStore: no fd for offset"));
-                        state->cb = nullptr;
+                        state->cb.complete(Status::io_error("BlockAsyncPageStore: no fd for offset"));
+                        state->cb = {};
                     }
                     return 0;
                 }
@@ -175,8 +174,8 @@ uint64_t BlockAsyncPageStore::submit_write(PageAddr addr, const void *buf, size_
                 auto        ab        = maybe_align(write_buf, chunk);
                 if (iu > 1 && ab == nullptr && reinterpret_cast<uintptr_t>(write_buf) % 4096 != 0) {
                     if (state->cb) {
-                        state->cb(Status::io_error("BlockAsyncPageStore: aligned buffer alloc failed"));
-                        state->cb = nullptr;
+                        state->cb.complete(Status::io_error("BlockAsyncPageStore: aligned buffer alloc failed"));
+                        state->cb = {};
                     }
                     return 0;
                 }
@@ -195,7 +194,7 @@ uint64_t BlockAsyncPageStore::submit_write(PageAddr addr, const void *buf, size_
                     }
                     state->pending--;
                     if (state->pending == 0 && state->cb) {
-                        state->cb(state->first_error);
+                        state->cb.complete(state->first_error);
                     }
                 });
                 cur += chunk;
@@ -210,7 +209,7 @@ uint64_t BlockAsyncPageStore::submit_write(PageAddr addr, const void *buf, size_
     int      fd    = store_->fd_for_offset(addr, &local);
     if (fd < 0) {
         if (on_complete) {
-            on_complete(Status::io_error("BlockAsyncPageStore: no fd for offset"));
+            on_complete.complete(Status::io_error("BlockAsyncPageStore: no fd for offset"));
         }
         return 0;
     }
@@ -218,7 +217,7 @@ uint64_t BlockAsyncPageStore::submit_write(PageAddr addr, const void *buf, size_
     auto        ab        = maybe_align(buf, len);
     if (iu > 1 && ab == nullptr && reinterpret_cast<uintptr_t>(buf) % 4096 != 0) {
         if (on_complete) {
-            on_complete(Status::io_error("BlockAsyncPageStore: aligned buffer alloc failed"));
+            on_complete.complete(Status::io_error("BlockAsyncPageStore: aligned buffer alloc failed"));
         }
         return 0;
     }
@@ -227,21 +226,20 @@ uint64_t BlockAsyncPageStore::submit_write(PageAddr addr, const void *buf, size_
     }
     // Capture ab in the callback lambda to keep the aligned buffer alive
     // until the io_uring completion fires.
-    uring_->submit_write(fd, write_buf, len, static_cast<off_t>(local),
-                         [len, cb = std::move(on_complete), ab](int res) {
-                             if (cb) {
-                                 cb(result_to_status(res, len, "write"));
-                             }
-                         });
+    uring_->submit_write(fd, write_buf, len, static_cast<off_t>(local), [len, cb = on_complete, ab](int res) {
+        if (cb) {
+            cb.complete(result_to_status(res, len, "write"));
+        }
+    });
     return 0;
 }
 
-Status BlockAsyncPageStore::submit_fsync(std::function<void(Status)> on_complete)
+Status BlockAsyncPageStore::submit_fsync(AsyncCompletion on_complete)
 {
     std::vector<int> fds = store_->dirty_fds();
     if (fds.empty()) {
         if (on_complete) {
-            on_complete(Status::Ok());
+            on_complete.complete(Status::Ok());
         }
         return Status::Ok();
     }
@@ -251,20 +249,20 @@ Status BlockAsyncPageStore::submit_fsync(std::function<void(Status)> on_complete
     // across the async chain (completions run on the poll thread).
     struct FsyncState
     {
-        std::vector<int>            fds;
-        size_t                      idx = 0;
-        std::function<void(Status)> cb;
+        std::vector<int> fds;
+        size_t           idx = 0;
+        AsyncCompletion  cb;
     };
 
     auto state = std::make_shared<FsyncState>();
     state->fds = std::move(fds);
-    state->cb  = std::move(on_complete);
+    state->cb  = on_complete;
 
     auto chain = std::make_shared<std::function<void()>>();
     *chain     = [this, state, chain]() {
         if (state->idx >= state->fds.size()) {
             if (state->cb) {
-                state->cb(Status::Ok());
+                state->cb.complete(Status::Ok());
             }
             return;
         }
@@ -272,8 +270,8 @@ Status BlockAsyncPageStore::submit_fsync(std::function<void(Status)> on_complete
         uring_->submit_fsync(fd, [this, state, chain](int res) {
             if (res < 0) {
                 if (state->cb) {
-                    state->cb(Status::io_error(std::string("fsync: ") + std::strerror(-res)));
-                    state->cb = nullptr;
+                    state->cb.complete(Status::io_error(std::string("fsync: ") + std::strerror(-res)));
+                    state->cb = {};
                 }
                 return;
             }
