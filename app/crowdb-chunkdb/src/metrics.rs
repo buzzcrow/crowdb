@@ -151,6 +151,9 @@ pub struct ChunkdbMetrics {
     pub allocate_rollback: Arc<LatencyHistogram>,
     pub allocate_rollback_blocks: Arc<Counter>,
     pub allocate_errors: Arc<Counter>,
+    pub reservation_blocks: Arc<Gauge>,
+    pub reservation_bytes: Arc<Gauge>,
+    pub reservation_rejections: Arc<Counter>,
 }
 
 impl ChunkdbMetrics {
@@ -175,6 +178,9 @@ impl ChunkdbMetrics {
             allocate_rollback: registry.register_histogram("allocate.rollback.lh"),
             allocate_rollback_blocks: registry.register_counter("allocate.rollback_blocks.c"),
             allocate_errors: registry.register_counter("allocate.errors.c"),
+            reservation_blocks: registry.register_gauge("reservation.blocks.g"),
+            reservation_bytes: registry.register_gauge("reservation.bytes.g"),
+            reservation_rejections: registry.register_counter("reservation.rejections.c"),
         }
     }
 }

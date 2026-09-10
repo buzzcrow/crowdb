@@ -11,6 +11,7 @@ enum FBDiskIoRetCode : int16 {
     PartialWrite = 4,
     InvalidAlignment = 5,
     ConnectionError = 6,
+    StaleAllocation = 7,
 }
 
 // All diskio control messages carry id + rpc_create_nano as their first
@@ -26,6 +27,8 @@ table FBDiskWriteRequest {
     zone_index:uint32;
     zone_offset:uint64;
     size:uint32;
+    allocation_ts:uint64;
+    allocation_zone_offset:uint64;
 }
 
 table FBDiskWriteResponse {

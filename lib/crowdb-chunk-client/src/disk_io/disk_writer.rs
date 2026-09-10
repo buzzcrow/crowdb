@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use crowdb_diskio_client::{DiskId, DiskIoRetCode, DiskioClient};
+use crowdb_diskio_client::{DiskId, DiskIoRetCode, DiskioClient, SegmentWriteTarget};
 use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_rpc_ffi::{Connection, RpcServer};
 
@@ -196,12 +196,16 @@ impl DiskWriter for DiskioBlockWriter {
         let zone_offset = seg.unit_offset * unit_bytes;
         let fut = self
             .client
-            .write_bytes(
+            .write_segment_bytes(
                 &self.server,
                 &self.conn,
-                disk_id,
-                seg.zone_index,
-                zone_offset,
+                SegmentWriteTarget {
+                    disk_id,
+                    zone_index: seg.zone_index,
+                    zone_offset,
+                    allocation_ts: seg.allocation_ts,
+                    allocation_zone_offset: seg.unit_offset * unit_bytes,
+                },
                 data,
             )
             .map_err(|e| IoError::WriteFailed(e.to_string()))?;
@@ -234,12 +238,16 @@ impl DiskWriter for DiskioBlockWriter {
             .ok_or_else(|| IoError::WriteFailed("disk write offset overflow".into()))?;
         let fut = self
             .client
-            .write_bytes(
+            .write_segment_bytes(
                 &self.server,
                 &self.conn,
-                disk_id,
-                seg.zone_index,
-                zone_offset,
+                SegmentWriteTarget {
+                    disk_id,
+                    zone_index: seg.zone_index,
+                    zone_offset,
+                    allocation_ts: seg.allocation_ts,
+                    allocation_zone_offset: seg.unit_offset * unit_bytes,
+                },
                 data,
             )
             .map_err(|e| IoError::WriteFailed(e.to_string()))?;
@@ -290,9 +298,10 @@ fn read_response(code: DiskIoRetCode, data: Option<Vec<u8>>, expected: u32) -> R
     if code != DiskIoRetCode::Success {
         let message = format!("disk read returned {code:?}");
         return Err(match code {
-            DiskIoRetCode::DiskNotExist | DiskIoRetCode::ZoneNotExist | DiskIoRetCode::IoError => {
-                IoError::ReadFailed(message)
-            }
+            DiskIoRetCode::DiskNotExist
+            | DiskIoRetCode::ZoneNotExist
+            | DiskIoRetCode::IoError
+            | DiskIoRetCode::StaleAllocation => IoError::ReadFailed(message),
             DiskIoRetCode::Success => unreachable!(),
             DiskIoRetCode::PartialWrite
             | DiskIoRetCode::InvalidAlignment

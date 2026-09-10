@@ -3,34 +3,46 @@
 
 # EC Implementation Follow-ups
 
-This file records issues discovered while implementing R113, R136, and R137.
-Resolved items are removed; any remaining item includes its observed impact,
-current safe behavior, and the work needed to close it.
+Status: complete. No open implementation item remains from this list.
 
-## Active
+## Resolved
 
-- **Consumed-reservation recycling fence:** current DiskIO requests carry only
-  physical addressing, not `allocation_ts`. Until end-to-end generation fencing
-  exists, lease expiry may reclaim only never-consumed reservations. A consumed
-  reservation must be confirmed or remain persistently tracked; it must never
-  be recycled merely due to elapsed time.
-- **Completed-group crash takeover:** parity failure in a live writer admits the
-  existing durable conversion task, but a process crash after the eighth mirror
-  confirmation and before that admission can leave a complete reservation
-  group for the generic metadata scanner to discover later. Add a reservation
-  scanner that directly converts complete groups into deterministic tasks and
-  cancels stale incomplete groups after applying the consumed-block fence.
-- **Global reservation admission bound:** each writer has a bounded one-group
-  prefetch and pipeline count is bounded, but ChunkDB has no independent
-  cluster-wide reserved-block/byte quota. Add atomic admission accounting and
-  gauges so many clients cannot collectively exhaust tentative capacity.
-- **Benchmark reset readiness:** `cluster clean` can report a KV leader before
-  every ChunkDB range owner has republished its binding. A benchmark started in
-  that window fails an initial allocation with `chunk bucket not in owned
-  ranges`. Add a range-ownership readiness barrier to the local cluster tool.
-- **Foreground EC throughput attribution:** the complete 20-second real-EC
-  matrix passes correctness/accounting sentinels, but the higher-concurrency
-  cases run below the R113 mirror-only checkpoint because they include parity
-  CPU, parity DiskIO, and initial 28-block reservation latency. Retain a longer
-  steady-state A/B with parity byte counters and separate startup timing before
-  setting a strict EC-enabled TPS threshold.
+- **Consumed-reservation recycling fence:** DiskIO writes now carry the segment
+  allocation generation and allocation base. DiskIO serializes writes per base,
+  durably journals a newer generation before data submission, and rejects stale
+  generations across restart. New reservation records persist planned cursors,
+  so expired consumed reservations can be cancelled and reclaimed safely.
+  Legacy consumed records without that proof remain allocated fail-safe.
+- **Completed-group crash takeover:** a bounded rotating reservation scanner
+  directly admits complete special groups with deterministic task identities.
+  It also cancels expired incomplete groups under the generation-fence rule, so
+  an old key prefix cannot starve later records.
+- **Global reservation admission bound:** ChunkDB enforces lock-free atomic
+  block and byte quotas. The configured cluster limits are divided by owned
+  range share, rebuilt from durable records at startup, refreshed when range
+  ownership changes, and exported through usage gauges and a rejection counter.
+- **Benchmark reset readiness:** strict-range ChunkDB `/ready` now succeeds only
+  after the process has loaded an owned bucket range. Cluster reset therefore
+  waits for usable range ownership, not only registry publication.
+- **Foreground EC throughput attribution:** the 60-second A/B sentinel reports
+  parity bytes, reservation wait, watchdogs, and paired EC/mirror throughput.
+  It rejects errors, incomplete objects, watchdogs, and an EC/mirror ratio below
+  70%.
+
+## Verification
+
+- 1 KiB/32 threads: mirror 33,729.19 objects/s, EC 33,807.27 objects/s
+  (100.23%), zero errors, incomplete objects, and watchdogs. Result:
+  `bench-log/chunkio-small-write-20260910-081757`.
+- Clean 1 KiB/128-thread reproduction: mirror 107,420.80 objects/s, EC
+  98,835.24 objects/s (92.01%), zero errors, incomplete objects, and watchdogs.
+  Foreground parity wrote 432,013,312 bytes. Result:
+  `bench-log/chunkio-small-write-128-repro-20260910`.
+- One earlier 128-thread sample was invalid after a KV server exited and the
+  resulting leader loss triggered watchdogs. The exact clean reproduction did
+  not reproduce either failure, so it is not an open EC implementation issue.
+- Rust format, full clippy, workspace test build, unit tests, server suites,
+  DiskIO client tests, and 114 DiskIO C++ tests pass. The two unrelated
+  crowdb-tree GC snapshot tests still fail in the unchanged tree code; tree lint
+  is unavailable because the environment's clang sysroot lacks standard and
+  third-party headers. Changed DiskIO C++ files pass clang-format.

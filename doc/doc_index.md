@@ -13,8 +13,8 @@ when a task touches a topic in its row.
 | `doc/design/kv/design-crowdb-kv.md` | Root KV design — read first for any KV design or architecture question. |
 | `doc/design/protocol/design-crowdb-protocol.md` | Root protocol design — read first for protocol or key encoding questions. |
 | `doc/design/diskdb/design-crowdb-diskdb.md` | Root diskdb design — read first for any diskdb design or architecture question. |
-| `doc/design/diskio/design-crowdb-diskio.md` | Root diskio design — per-node data I/O engine (io_uring + pwrite/pread fallback), IoEngine abstraction, DiskIOUring multi-pipeline topology, bad-disk cancel-by-fd, RPC service + Rust client. |
-| `doc/design/chunkdb/design-crowdb-chunkdb.md` | Root chunkdb design — read first for any chunkdb design or architecture question. |
+| `doc/design/diskio/design-crowdb-diskio.md` | Root diskio design — per-node data I/O engine, allocation-generation write fence and journal, io_uring + pwrite/pread fallback, bad-disk cancel-by-fd, RPC service + Rust client. |
+| `doc/design/chunkdb/design-crowdb-chunkdb.md` | Root chunkdb design — read first for lifecycle, placement, reservation admission/reconciliation, and architecture questions. |
 | `doc/design/chunkio/design-crowdb-chunkio.md` | Root chunk IO data path design — large-object EC write pipeline, backpressure, memory budget, and chunk rotation. |
 | `doc/design/tree/design-crowdb-tree.md` | Root tree design — read first for storage-engine work. |
 | `doc/design/rpc/design-crowdb-rpc.md` | Root RPC design — read first for `crowdb-rpc` engine, FFI, or transport questions. |
@@ -39,7 +39,7 @@ Plan files live under `doc/working/`; flow analyses live under `doc/design/{kv,c
 | `doc/design/kv/kv-scan-flow-analysis.md` | KV scan flow trace, benchmarks, open issues. |
 | `doc/design/kv/kv-write-flow-analysis.md` | KV write path trace and optimization opportunities. |
 | `doc/design/chunkio/chunkio-write-flow-analysis.md` | Chunk IO large-write flow trace, benchmark results, and bottleneck analysis. |
-| `doc/design/chunkio/chunkio-small-io-flow-analysis.md` | Chunk IO small-write and read benchmark results, correctness limits, bottleneck analysis, and ordered optimization plan. |
+| `doc/design/chunkio/chunkio-small-io-flow-analysis.md` | Chunk IO small-write and read benchmark results, foreground-EC A/B sentinel, correctness limits, bottleneck analysis, and ordered optimization plan. |
 | `doc/design/rpc/rpc-flow-analysis.md` | RPC transport flow trace, benchmarks, and performance history. |
 
 ## Dev Environment (`doc/dev/`)
@@ -89,7 +89,7 @@ Plan files live under `doc/working/`; flow analyses live under `doc/design/{kv,c
 | `doc/design/chunkdb/design-crowdb-chunkdb-rpc.md` | chunkdb RPC: crowdb-rpc flatbuffer transport for ChunkdbService (12 unary RPCs), `CHUNKDB_RPC_BASE = 9961` port allocation, `chunkdb.fbs` schema (enums + nested types + `FBStripBody` union), zero-copy `Ref` wrappers, replacement RPCs, `ChunkdbRpcService` server handler, `ChunkdbRpcTransport` client transport, `ChunkdbClient::with_rpc_transport` selection, `rpc_listen_addr` config, error model (`LifecycleError` → `FBChunkdbRetCode` → `ChunkdbClientError`). |
 | `doc/design/chunkdb/chunkdb-allocate-flow-analysis.md` | chunkdb EC 8+4 allocation benchmark: three-node co-located fixture, connection/worker matrix, workflow metrics, clean results, and commit-stage bottleneck. |
 | `doc/design/chunkio/design-crowdb-chunkio.md` | chunk IO data path root: `crowdb-chunk-client` crate write pipeline — block-granularity EC flow (fetch → main write → parity hand-off), backpressure + per-writer memory budget + `WriterPool`, shard-based partial EC encode, chunk rotation + `Location`, abort cleanup, real-process E2E coverage, and fault-injection seams. |
-| `doc/design/chunkio/design-crowdb-chunkio-small-object-writer.md` | Small-object shared-chunk writer: whole-object admission, lock-free routing, complete open-strip shadow, in-place replica repair, fenced durable cursor, queue-driven pipeline elasticity, and orphan sealing. |
+| `doc/design/chunkio/design-crowdb-chunkio-small-object-writer.md` | Small-object shared-chunk writer: whole-object admission, lock-free routing, reserved mirror/EC groups, generation-fenced recovery, queue-driven pipeline elasticity, and orphan sealing. |
 | `doc/design/chunkio/design-crowdb-chunkio-reader.md` | Unified full, range, partial, and bounded-stream reads over mirror and EC layouts; same-offset EC recovery, durable failure marking, layout fencing, and repair handoff. |
 | `doc/design/chunkio/chunkio-small-io-flow-analysis.md` | Full-stack small-write and small/large/mixed-read baselines, first-failure trace, bottlenecks, and ordered improvement plan. |
 | `doc/design/diskdb/design-crowdb-diskdb.md` | diskdb root: architecture, group-0 sysdata, disk status management, space metrics, background scanner, crate layout, concurrency. |

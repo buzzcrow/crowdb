@@ -15,6 +15,7 @@ use tracing::warn;
 
 use crate::allocator::{StripAllocType, StripBatchSpec};
 
+use super::admission::ReservationPermit;
 use super::{
     assign_strip_offsets, writer_lease_deadline, CacheHint, ChunkState, LifecycleError, LifecycleHandler,
     LockPolicy,
@@ -51,7 +52,211 @@ pub struct ReservationUpdate {
     pub closed_strip_sequence: Option<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReservationRecovery {
+    Active,
+    Reconciled,
+    CompleteConversion { chunk_id: ChunkId },
+}
+
+struct PendingReservation {
+    chunk: Chunk,
+    group: StripReservationGroup,
+    permit: ReservationPermit,
+}
+
 impl LifecycleHandler {
+    pub(super) fn release_reserved_strip_usage(&self, strips: &[ChunkStrip]) {
+        for strip in strips {
+            let usage = strip_usage(strip);
+            self.reservation_admission.release(usage.0, usage.1);
+        }
+    }
+
+    pub(super) fn release_reservation_parity_usage(&self, group: &StripReservationGroup) {
+        let usage = parity_usage(group);
+        self.reservation_admission.release(usage.0, usage.1);
+    }
+
+    pub(super) async fn rollback_reserved_resources(
+        &self,
+        strips: &[ChunkStrip],
+        parity: Vec<Segment>,
+        parity_groups: &[StripReservationGroup],
+    ) -> Result<(), LifecycleError> {
+        if !strips.is_empty() {
+            self.allocator.rollback_strips(strips).await?;
+            self.release_reserved_strip_usage(strips);
+        }
+        if !parity.is_empty() {
+            self.allocator
+                .pool()
+                .free_blocks(parity)
+                .await
+                .map_err(LifecycleError::Cleanup)?;
+            for group in parity_groups {
+                self.release_reservation_parity_usage(group);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn update_reservation_limits(&self, max_blocks: u64, max_bytes: u64) {
+        self.reservation_admission.update_limits(max_blocks, max_bytes);
+    }
+
+    pub async fn rebuild_reservation_admission(&self) -> Result<(u64, u64), LifecycleError> {
+        let mut blocks = 0_u64;
+        let mut bytes = 0_u64;
+        for group in self.store.scan_reservation_groups(u32::MAX).await? {
+            let Some(chunk_id) = group.chunk_id else {
+                continue;
+            };
+            if self.check_range(&chunk_id).is_err() {
+                continue;
+            }
+            validate_group_shape(&group)?;
+            let usage = outstanding_group_usage(&group);
+            blocks = blocks.saturating_add(usage.0);
+            bytes = bytes.saturating_add(usage.1);
+        }
+        self.reservation_admission.rebuild(blocks, bytes);
+        Ok((blocks, bytes))
+    }
+
+    pub async fn scan_reservation_groups(
+        &self,
+        max_keys: u32,
+    ) -> Result<Vec<StripReservationGroup>, LifecycleError> {
+        self.store
+            .scan_reservation_groups(max_keys)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn scan_reservation_groups_after(
+        &self,
+        max_keys: u32,
+        start_after: Option<(&ChunkId, &ChunkId)>,
+    ) -> Result<Vec<StripReservationGroup>, LifecycleError> {
+        self.store
+            .scan_reservation_groups_after(max_keys, start_after)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn recover_expired_reservation_group(
+        &self,
+        chunk_id: &ChunkId,
+        group_id: &ChunkId,
+        now_ms: u64,
+    ) -> Result<ReservationRecovery, LifecycleError> {
+        self.check_range(chunk_id)?;
+        let mut guard = self.acquire_reservation_guard(chunk_id).await?;
+        let chunk = guard
+            .chunk()
+            .unwrap_or_else(|| unreachable!("acquire guarantees chunk on Ok"))
+            .clone();
+        let Some(mut group) = self.store.get_reservation_group(chunk_id, group_id).await? else {
+            return Ok(ReservationRecovery::Reconciled);
+        };
+        validate_group_shape(&group)?;
+        if group.lease_deadline_ms > now_ms {
+            return Ok(ReservationRecovery::Active);
+        }
+
+        let mut rollback = Vec::new();
+        for index in 0..group.strips.len() {
+            let state = StripReservationState::try_from(group.states[index])
+                .map_err(|()| LifecycleError::InvalidRequest("invalid reservation state".into()))?;
+            match state {
+                StripReservationState::Reserved => {
+                    group.states[index] = StripReservationState::Cancelled as i32;
+                    rollback.push(group.strips[index].clone());
+                }
+                StripReservationState::Consumed => {
+                    if group.planned_cursors[index] != 0 {
+                        // Consume is durable before data I/O, so a crashed
+                        // writer cannot prove the mirrors reached stable
+                        // storage. New reservations carry a planned cursor and
+                        // use the DiskIO allocation-incarnation fence, making
+                        // reclamation safe against a late old write.
+                        group.states[index] = StripReservationState::Cancelled as i32;
+                        rollback.push(group.strips[index].clone());
+                    }
+                }
+                StripReservationState::Confirmed | StripReservationState::Cancelled => {}
+            }
+        }
+        self.store.put_chunk_and_reservation(&chunk, &group).await?;
+        guard.refresh(chunk.clone());
+        if !rollback.is_empty() {
+            self.allocator.rollback_strips(&rollback).await?;
+            for strip in &rollback {
+                let usage = strip_usage(strip);
+                self.reservation_admission.release(usage.0, usage.1);
+            }
+        }
+        // Legacy consumed reservations have no allocation-incarnation fence.
+        // Retain them fail-safe instead of reusing blocks that may receive a
+        // delayed write from the old owner.
+        if group.states.contains(&(StripReservationState::Consumed as i32)) {
+            return Ok(ReservationRecovery::Reconciled);
+        }
+        let complete_conversion = group.data_num != 0
+            && group.code_num != 0
+            && group
+                .states
+                .iter()
+                .all(|state| *state == StripReservationState::Confirmed as i32);
+        if complete_conversion {
+            return Ok(ReservationRecovery::CompleteConversion { chunk_id: *chunk_id });
+        }
+        self.finish_reservation_group(chunk_id, group_id, &group).await?;
+        Ok(ReservationRecovery::Reconciled)
+    }
+
+    pub async fn finish_reconciled_conversion_group(
+        &self,
+        chunk_id: &ChunkId,
+        group_id: &ChunkId,
+    ) -> Result<(), LifecycleError> {
+        let _guard = self.acquire_reservation_guard(chunk_id).await?;
+        let Some(group) = self.store.get_reservation_group(chunk_id, group_id).await? else {
+            return Ok(());
+        };
+        validate_group_shape(&group)?;
+        if group.data_num == 0
+            || group.code_num == 0
+            || !group
+                .states
+                .iter()
+                .all(|state| *state == StripReservationState::Confirmed as i32)
+        {
+            return Err(LifecycleError::StateConflict);
+        }
+        self.finish_reservation_group(chunk_id, group_id, &group).await
+    }
+
+    async fn finish_reservation_group(
+        &self,
+        chunk_id: &ChunkId,
+        group_id: &ChunkId,
+        group: &StripReservationGroup,
+    ) -> Result<(), LifecycleError> {
+        if !group.parity_segments.is_empty() {
+            self.allocator
+                .pool()
+                .free_blocks(group.parity_segments.clone())
+                .await
+                .map_err(LifecycleError::Cleanup)?;
+            let usage = parity_usage(group);
+            self.reservation_admission.release(usage.0, usage.1);
+        }
+        self.store.delete_reservation_group(chunk_id, group_id).await?;
+        Ok(())
+    }
+
     pub(super) async fn reclaim_unconsumed_reservations(
         &self,
         chunk_id: &ChunkId,
@@ -61,10 +266,12 @@ impl LifecycleHandler {
         for mut group in groups {
             validate_group_shape(&group)?;
             let mut rollback = Vec::new();
+            let mut newly_cancelled = Vec::new();
             for (index, state) in group.states.iter_mut().enumerate() {
                 if *state == StripReservationState::Reserved as i32 {
                     *state = StripReservationState::Cancelled as i32;
                     rollback.push(group.strips[index].clone());
+                    newly_cancelled.push(group.strips[index].clone());
                 } else if *state == StripReservationState::Cancelled as i32 {
                     rollback.push(group.strips[index].clone());
                 }
@@ -72,6 +279,10 @@ impl LifecycleHandler {
             if !rollback.is_empty() {
                 self.store.put_reservation_group(&group).await?;
                 self.allocator.rollback_strips(&rollback).await?;
+                for strip in &newly_cancelled {
+                    let usage = strip_usage(strip);
+                    self.reservation_admission.release(usage.0, usage.1);
+                }
                 reclaimed = reclaimed.saturating_add(rollback.len() as u64);
             }
             let has_consumed = group.states.contains(&(StripReservationState::Consumed as i32));
@@ -87,6 +298,8 @@ impl LifecycleHandler {
                         .free_blocks(group.parity_segments.clone())
                         .await
                         .map_err(LifecycleError::Cleanup)?;
+                    let usage = parity_usage(&group);
+                    self.reservation_admission.release(usage.0, usage.1);
                 }
                 if let Some(group_id) = group.group_id {
                     self.store.delete_reservation_group(chunk_id, &group_id).await?;
@@ -94,6 +307,63 @@ impl LifecycleHandler {
             }
         }
         Ok(reclaimed)
+    }
+
+    async fn allocate_reservation_resources(
+        &self,
+        chunk_id: &ChunkId,
+        start_sequence: u32,
+        spec: ReserveGroupSpec,
+    ) -> Result<(Vec<ChunkStrip>, Vec<Segment>, Vec<u32>, ReservationPermit), LifecycleError> {
+        let snap = self.topology.snapshot();
+        let usage = reservation_usage(spec, snap.unit_size_bytes());
+        let permit = self
+            .reservation_admission
+            .try_acquire(usage.0, usage.1)
+            .ok_or(LifecycleError::ReservationLimit)?;
+        if spec.conversion_data_num != 0 || spec.conversion_code_num != 0 {
+            if spec.strip_count != spec.conversion_data_num || spec.conversion_code_num == 0 {
+                return Err(LifecycleError::InvalidRequest(
+                    "conversion reservation geometry must match its data width".into(),
+                ));
+            }
+            let allocation = self
+                .allocator
+                .allocate_conversion_group(
+                    &snap,
+                    chunk_id,
+                    spec.strip_size,
+                    start_sequence,
+                    spec.conversion_data_num as usize,
+                    spec.conversion_code_num as usize,
+                    spec.copy_count as usize,
+                    &self.placement_constraints(),
+                )
+                .await?;
+            return Ok((
+                allocation.mirrors,
+                allocation.parity_segments,
+                allocation.preferred_survivors,
+                permit,
+            ));
+        }
+        let strips = self
+            .allocator
+            .allocate_strips(
+                &snap,
+                chunk_id,
+                StripBatchSpec {
+                    strip_type: StripAllocType::Mirror {
+                        copy_count: spec.copy_count as usize,
+                    },
+                    unit_count: spec.strip_size,
+                    start_sequence,
+                    strip_count: spec.strip_count,
+                },
+                &self.placement_constraints(),
+            )
+            .await?;
+        Ok((strips, Vec::new(), Vec::new(), permit))
     }
 
     pub async fn reserve_strip_group(
@@ -120,55 +390,10 @@ impl LifecycleHandler {
             });
         }
         validate_chunk_fence(&chunk, fence)?;
-        let snap = self.topology.snapshot();
-        let unit_count = spec.strip_size;
         let start_sequence = chunk.next_strip_sequence;
-        let (mut strips, parity_segments, preferred_survivors) =
-            if spec.conversion_data_num != 0 || spec.conversion_code_num != 0 {
-                if spec.strip_count != spec.conversion_data_num || spec.conversion_code_num == 0 {
-                    return Err(LifecycleError::InvalidRequest(
-                        "conversion reservation geometry must match its data width".into(),
-                    ));
-                }
-                let allocation = self
-                    .allocator
-                    .allocate_conversion_group(
-                        &snap,
-                        chunk_id,
-                        unit_count,
-                        start_sequence,
-                        spec.conversion_data_num as usize,
-                        spec.conversion_code_num as usize,
-                        spec.copy_count as usize,
-                        &self.placement_constraints(),
-                    )
-                    .await?;
-                (
-                    allocation.mirrors,
-                    allocation.parity_segments,
-                    allocation.preferred_survivors,
-                )
-            } else {
-                (
-                    self.allocator
-                        .allocate_strips(
-                            &snap,
-                            chunk_id,
-                            StripBatchSpec {
-                                strip_type: StripAllocType::Mirror {
-                                    copy_count: spec.copy_count as usize,
-                                },
-                                unit_count,
-                                start_sequence,
-                                strip_count: spec.strip_count,
-                            },
-                            &self.placement_constraints(),
-                        )
-                        .await?,
-                    Vec::new(),
-                    Vec::new(),
-                )
-            };
+        let (mut strips, parity_segments, preferred_survivors, permit) = self
+            .allocate_reservation_resources(chunk_id, start_sequence, spec)
+            .await?;
         assign_strip_offsets(&mut strips, chunk.capacity);
         let now_ms = super::unix_time_ms();
         let group = StripReservationGroup {
@@ -184,6 +409,8 @@ impl LifecycleHandler {
             preferred_survivors,
             data_num: spec.conversion_data_num,
             code_num: spec.conversion_code_num,
+            planned_cursors: vec![0; spec.strip_count as usize],
+            planned_closed_sequences: vec![u32::MAX; spec.strip_count as usize],
         };
         chunk.next_strip_sequence = start_sequence
             .checked_add(spec.strip_count)
@@ -191,7 +418,13 @@ impl LifecycleHandler {
         chunk.modify_ts = chunk.modify_ts.saturating_add(1);
         chunk.writer_lease_deadline_ms = group.lease_deadline_ms;
         let mutation = self
-            .persist_new_reservation(chunk_id, group_id, fence, spec, chunk, group)
+            .persist_new_reservation(
+                chunk_id,
+                group_id,
+                fence,
+                spec,
+                PendingReservation { chunk, group, permit },
+            )
             .await?;
         guard.refresh(mutation.chunk.clone());
         Ok(mutation)
@@ -243,7 +476,14 @@ impl LifecycleHandler {
         match update.action {
             StripReservationAction::Consume => {
                 if state == StripReservationState::Reserved {
+                    if update.acknowledged_cursor <= chunk.acknowledged_cursor {
+                        return Err(LifecycleError::InvalidRequest(
+                            "reservation consume must record forward progress".into(),
+                        ));
+                    }
                     group.states[index] = StripReservationState::Consumed as i32;
+                    group.planned_cursors[index] = update.acknowledged_cursor;
+                    group.planned_closed_sequences[index] = update.closed_strip_sequence.unwrap_or(u32::MAX);
                     self.store.put_reservation_group(&group).await?;
                 } else if state != StripReservationState::Consumed {
                     return Err(LifecycleError::StateConflict);
@@ -255,9 +495,16 @@ impl LifecycleHandler {
                         return Err(LifecycleError::StateConflict);
                     }
                     Self::confirm_reserved_strip(&mut chunk, &mut group, index, update)?;
+                    let terminal = group.states.iter().all(|state| {
+                        *state == StripReservationState::Confirmed as i32
+                            || *state == StripReservationState::Cancelled as i32
+                    });
+                    let retain_group = group.data_num != 0 || group.code_num != 0 || !terminal;
                     self.store
-                        .put_chunk_and_finish_reservation(&chunk, Some(&group), group_id)
+                        .put_chunk_and_finish_reservation(&chunk, retain_group.then_some(&group), group_id)
                         .await?;
+                    let usage = strip_usage(&group.strips[index]);
+                    self.reservation_admission.release(usage.0, usage.1);
                     self.commit_strip_segments_background(vec![group.strips[index].clone()]);
                     guard.refresh(chunk.clone());
                     return Ok(ReservationMutation {
@@ -281,6 +528,8 @@ impl LifecycleHandler {
                     self.allocator
                         .rollback_strips(&[group.strips[index].clone()])
                         .await?;
+                    let usage = strip_usage(&group.strips[index]);
+                    self.reservation_admission.release(usage.0, usage.1);
                     return Ok(ReservationMutation {
                         chunk,
                         group: Some(group),
@@ -314,6 +563,8 @@ impl LifecycleHandler {
                 self.store
                     .put_chunk_and_finish_reservation(&published, None, group_id)
                     .await?;
+                let usage = parity_usage(&group);
+                self.reservation_admission.release(usage.0, usage.1);
                 guard.refresh(published.clone());
                 return Ok(ReservationMutation {
                     chunk: published,
@@ -440,15 +691,16 @@ impl LifecycleHandler {
         group_id: &ChunkId,
         fence: ReservationFence,
         spec: ReserveGroupSpec,
-        chunk: Chunk,
-        group: StripReservationGroup,
+        pending: PendingReservation,
     ) -> Result<ReservationMutation, LifecycleError> {
+        let PendingReservation { chunk, group, permit } = pending;
         if let Err(error) = self.store.put_chunk_and_reservation(&chunk, &group).await {
             // A failed response can be ambiguous after KV commit. Never make
             // those extents reusable until a linearizable read proves the
             // reservation record is absent.
             match self.store.get_reservation_group(chunk_id, group_id).await {
                 Ok(Some(existing)) => {
+                    permit.retain();
                     validate_existing_group(&existing, chunk_id, group_id, fence, spec)?;
                     return Ok(ReservationMutation {
                         chunk: self.store.get_chunk(chunk_id).await?,
@@ -462,10 +714,12 @@ impl LifecycleHandler {
                 }
                 Err(read_error) => {
                     warn!(%read_error, "reservation commit outcome remains ambiguous; retaining tentative blocks");
+                    permit.retain();
                 }
             }
             return Err(error.into());
         }
+        permit.retain();
         Ok(ReservationMutation {
             chunk,
             group: Some(group),
@@ -499,6 +753,16 @@ impl LifecycleHandler {
         group.states[index] = StripReservationState::Confirmed as i32;
         Ok(())
     }
+}
+
+fn reservation_usage(spec: ReserveGroupSpec, unit_size_bytes: u32) -> (u64, u64) {
+    let blocks = u64::from(spec.strip_count)
+        .saturating_mul(u64::from(spec.copy_count))
+        .saturating_add(u64::from(spec.conversion_code_num));
+    let bytes = blocks
+        .saturating_mul(u64::from(spec.strip_size))
+        .saturating_mul(u64::from(unit_size_bytes.max(1)));
+    (blocks, bytes)
 }
 
 fn validate_reserve_spec(fence: ReservationFence, spec: ReserveGroupSpec) -> Result<(), LifecycleError> {
@@ -542,7 +806,10 @@ fn validate_group_fence(
 }
 
 pub(super) fn validate_group_shape(group: &StripReservationGroup) -> Result<(), LifecycleError> {
-    if group.states.len() != group.strips.len() {
+    if group.states.len() != group.strips.len()
+        || group.planned_cursors.len() != group.strips.len()
+        || group.planned_closed_sequences.len() != group.strips.len()
+    {
         return Err(LifecycleError::InvalidRequest(
             "reservation state and strip counts differ".into(),
         ));
@@ -563,6 +830,8 @@ fn validate_existing_group(
         || group.lease_generation != fence.lease_generation
         || group.strips.len() != spec.strip_count as usize
         || group.states.len() != group.strips.len()
+        || group.planned_cursors.len() != group.strips.len()
+        || group.planned_closed_sequences.len() != group.strips.len()
         || group.data_num != spec.conversion_data_num
         || group.code_num != spec.conversion_code_num
         || group.strips.iter().any(|strip| {
@@ -580,6 +849,39 @@ fn mirror_segments(strip: &ChunkStrip) -> Vec<Segment> {
         Some(Strip::MirrorStrip(mirror)) => mirror.segments.clone(),
         _ => Vec::new(),
     }
+}
+
+pub(super) fn outstanding_group_usage(group: &StripReservationGroup) -> (u64, u64) {
+    let mut blocks = 0_u64;
+    let mut bytes = 0_u64;
+    for (index, strip) in group.strips.iter().enumerate() {
+        if group.states.get(index).is_some_and(|state| {
+            *state == StripReservationState::Reserved as i32
+                || *state == StripReservationState::Consumed as i32
+        }) {
+            let usage = strip_usage(strip);
+            blocks = blocks.saturating_add(usage.0);
+            bytes = bytes.saturating_add(usage.1);
+        }
+    }
+    let parity = parity_usage(group);
+    (blocks.saturating_add(parity.0), bytes.saturating_add(parity.1))
+}
+
+fn strip_usage(strip: &ChunkStrip) -> (u64, u64) {
+    let blocks = u64::try_from(mirror_segments(strip).len()).unwrap_or(u64::MAX);
+    (
+        blocks,
+        blocks
+            .saturating_mul(u64::from(strip.capacity))
+            .saturating_mul(1024),
+    )
+}
+
+fn parity_usage(group: &StripReservationGroup) -> (u64, u64) {
+    let blocks = u64::try_from(group.parity_segments.len()).unwrap_or(u64::MAX);
+    let strip_kb = group.strips.first().map_or(0, |strip| u64::from(strip.capacity));
+    (blocks, blocks.saturating_mul(strip_kb).saturating_mul(1024))
 }
 
 fn same_reserved_layout(current: &ChunkStrip, reserved: &ChunkStrip) -> bool {

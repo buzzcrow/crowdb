@@ -44,9 +44,9 @@ retains the resulting locations.
 | Write batch limit    | 1 MiB or 1,024 objects                     |
 
 A result is valid only when every admitted operation is accounted for,
-`errors=0`, and `incomplete=0`. Throughput after the first error is diagnostic
-only because immediate failures can increase the request counter without doing
-IO.
+`errors=0`, `incomplete=0`, and the watchdog count is zero. Throughput after the
+first error is diagnostic only because immediate failures can increase the
+request counter without doing IO.
 
 ## 2. Small-Write Flow
 
@@ -328,6 +328,27 @@ The initial read A/B attempts exposed the ownership-readiness and memtable
 visibility bugs above, so they are not retained as performance results. The
 final default-configuration matrix is fully valid; a repeated worker-count A/B
 remains future measurement work.
+
+### 6.3 Foreground EC A/B Sentinel
+
+The steady-state sentinel runs mirror-only and foreground-EC modes for 60
+seconds with identical inputs, reports reservation startup latency and parity
+bytes, and requires EC throughput to remain at least 70% of its paired mirror
+run. At 1 KiB and 32 threads, mirror produced 33,729.19 objects/s and EC
+produced 33,807.27 objects/s (100.23%). The retained paired result is
+`bench-log/chunkio-small-write-20260910-081757`.
+
+The clean 128-thread reproduction produced 107,420.80 mirror objects/s and
+98,835.24 EC objects/s (92.01%), with zero errors, incomplete objects, and
+watchdogs. Foreground parity wrote 432,013,312 bytes; reservation wait totaled
+10,384,486 microseconds for mirror and 9,561,283 microseconds for EC. The
+retained result is
+`bench-log/chunkio-small-write-128-repro-20260910`.
+
+An earlier 128-thread sample in the first matrix was invalidated when one KV
+server exited and leader loss caused watchdog expirations. The exact clean
+reproduction did not reproduce the exit or the throughput failure, so the
+sentinel threshold remains unchanged.
 
 ## 7. Ordered Improvement Plan
 

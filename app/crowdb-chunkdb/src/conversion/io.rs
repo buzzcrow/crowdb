@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
-use crowdb_diskio_client::{DiskId, DiskIoRetCode, DiskioClient};
+use crowdb_diskio_client::{DiskId, DiskIoRetCode, DiskioClient, SegmentWriteTarget};
 use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_rpc_ffi::{Connection, RpcServer};
@@ -112,12 +112,16 @@ impl ConversionDiskIo {
         let (id, route) = self.route(segment)?;
         let future = self
             .client
-            .write_bytes(
+            .write_segment_bytes(
                 &self.server,
                 &route.connection,
-                id,
-                segment.zone_index,
-                segment.unit_offset.saturating_mul(unit_bytes),
+                SegmentWriteTarget {
+                    disk_id: id,
+                    zone_index: segment.zone_index,
+                    zone_offset: segment.unit_offset.saturating_mul(unit_bytes),
+                    allocation_ts: segment.allocation_ts,
+                    allocation_zone_offset: segment.unit_offset.saturating_mul(unit_bytes),
+                },
                 data,
             )
             .map_err(|error| ConversionIoError::Io(format!("{}: {error}", route.endpoint)))?;

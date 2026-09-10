@@ -180,6 +180,8 @@ impl ChunkAllocator for MockAllocator {
             preferred_survivors: vec![],
             data_num: 0,
             code_num: 0,
+            planned_cursors: vec![0; req.strip_count as usize],
+            planned_closed_sequences: vec![u32::MAX; req.strip_count as usize],
         };
         state
             .reservations

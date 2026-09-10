@@ -169,6 +169,13 @@ Automatic scans leave incomplete tails mirrored and continue across task
 failures. Manual single and batch triggers are available through crowdb-rpc and
 the `/convert_chunk` and `/convert_all` HTTP endpoints.
 
+A separate bounded, rotating reservation scan closes the crash window before a
+completed foreground group has admitted its task. Complete groups enter the
+same deterministic task identity, making repeated scans idempotent. Expired
+incomplete groups are cancelled; consumed blocks are reclaimed only when the
+reservation persisted the planned write cursors that prove generation-fenced
+DiskIO addressing. Legacy records without that proof remain allocated.
+
 ## 5. Publication and Cleanup
 
 The special reservation allocator creates all twenty-eight blocks with

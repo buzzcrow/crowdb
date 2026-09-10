@@ -3,10 +3,14 @@
 
 //! Durable strip-reservation values co-located with their owning chunk.
 
+use std::collections::HashMap;
+
 use bytes::Bytes;
 use crowdb_kv_client::{BatchOp, GetOutcome, ReadMode, ScanOutcome};
-use crowdb_protocol::chunkdb::rpc::{Chunk, StripReservationGroup};
+use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkStrip, StripReservationGroup};
 use crowdb_protocol::common::ChunkId;
+use crowdb_protocol::diskdb::rpc::Segment;
+use serde::Deserialize;
 use tracing::warn;
 
 use crate::routing::{route, MigrationState, Route};
@@ -14,6 +18,58 @@ use crate::routing::{route, MigrationState, Route};
 use super::{chunk_key, encode_chunk, ChunkStore, Result, StoreError};
 
 impl ChunkStore {
+    pub async fn scan_reservation_groups(&self, max_keys: u32) -> Result<Vec<StripReservationGroup>> {
+        self.scan_reservation_groups_after(max_keys, None).await
+    }
+
+    pub async fn scan_reservation_groups_after(
+        &self,
+        max_keys: u32,
+        start_after: Option<(&ChunkId, &ChunkId)>,
+    ) -> Result<Vec<StripReservationGroup>> {
+        let table = self.bindings.snapshot();
+        if table.is_empty() {
+            return Err(crate::routing::RouteError::NoBinding.into());
+        }
+        let prefix = b"/reservation/";
+        let start_after = start_after.map_or_else(Vec::new, |(chunk_id, group_id)| {
+            reservation_key(chunk_id, group_id)
+        });
+        let mut groups = HashMap::new();
+        for binding in table.bindings() {
+            let outcome: ScanOutcome = self
+                .kv
+                .scan(
+                    binding.kv_store_id,
+                    binding.kv_group_id,
+                    prefix,
+                    &start_after,
+                    &[],
+                    max_keys,
+                    ReadMode::Linearizable,
+                    None,
+                    false,
+                    None,
+                )
+                .await
+                .map_err(|error| StoreError::Kv(error.to_string()))?;
+            for (_, value) in outcome.items {
+                let group = decode_group(&value)?;
+                if let (Some(chunk_id), Some(group_id)) = (group.chunk_id, group.group_id) {
+                    groups.insert((chunk_id, group_id), group);
+                }
+            }
+        }
+        let mut groups = groups.into_values().collect::<Vec<_>>();
+        groups.sort_unstable_by_key(|group| {
+            let chunk = group.chunk_id.unwrap_or_default();
+            let id = group.group_id.unwrap_or_default();
+            (chunk.high, chunk.low, id.high, id.low)
+        });
+        groups.truncate(usize::try_from(max_keys).unwrap_or(usize::MAX));
+        Ok(groups)
+    }
+
     pub async fn list_reservation_groups(&self, chunk_id: &ChunkId) -> Result<Vec<StripReservationGroup>> {
         let reservation_route = route(&self.bindings, chunk_id)?;
         let prefix = reservation_prefix(chunk_id);
@@ -217,5 +273,63 @@ fn encode_group(group: &StripReservationGroup) -> Result<Vec<u8>> {
 }
 
 fn decode_group(bytes: &[u8]) -> Result<StripReservationGroup> {
-    bincode::deserialize(bytes).map_err(|error| StoreError::Serde(error.to_string()))
+    let mut group: StripReservationGroup = match bincode::deserialize(bytes) {
+        Ok(group) => group,
+        Err(current_error) => {
+            let legacy: LegacyStripReservationGroup =
+                bincode::deserialize(bytes).map_err(|legacy_error| {
+                    StoreError::Serde(format!(
+                        "reservation decode failed: current={current_error}; legacy={legacy_error}"
+                    ))
+                })?;
+            legacy.into()
+        }
+    };
+    if group.planned_cursors.is_empty() {
+        group.planned_cursors.resize(group.strips.len(), 0);
+    }
+    if group.planned_closed_sequences.is_empty() {
+        group
+            .planned_closed_sequences
+            .resize(group.strips.len(), u32::MAX);
+    }
+    Ok(group)
+}
+
+#[derive(Deserialize)]
+struct LegacyStripReservationGroup {
+    group_id: Option<ChunkId>,
+    chunk_id: Option<ChunkId>,
+    writer_epoch: u64,
+    lease_generation: u64,
+    lease_deadline_ms: u64,
+    placement_epoch: u64,
+    strips: Vec<ChunkStrip>,
+    states: Vec<i32>,
+    parity_segments: Vec<Segment>,
+    preferred_survivors: Vec<u32>,
+    data_num: u32,
+    code_num: u32,
+}
+
+impl From<LegacyStripReservationGroup> for StripReservationGroup {
+    fn from(legacy: LegacyStripReservationGroup) -> Self {
+        let strip_count = legacy.strips.len();
+        Self {
+            group_id: legacy.group_id,
+            chunk_id: legacy.chunk_id,
+            writer_epoch: legacy.writer_epoch,
+            lease_generation: legacy.lease_generation,
+            lease_deadline_ms: legacy.lease_deadline_ms,
+            placement_epoch: legacy.placement_epoch,
+            strips: legacy.strips,
+            states: legacy.states,
+            parity_segments: legacy.parity_segments,
+            preferred_survivors: legacy.preferred_survivors,
+            data_num: legacy.data_num,
+            code_num: legacy.code_num,
+            planned_cursors: vec![0; strip_count],
+            planned_closed_sequences: vec![u32::MAX; strip_count],
+        }
+    }
 }

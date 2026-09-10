@@ -77,6 +77,32 @@ small-write performance evidence and no data-path regression.
 - [ ] **Requirement cleanup**: delete R113/R136/R137 and backlog entries, delete
   the completed plan, and commit cleanup separately.
 
+## Phase 5: Close Recovery, Admission, and Release Gaps
+
+- [x] **Allocation-incarnation I/O fence**: carry `allocation_ts` through
+  DiskIO requests and install an authoritative extent incarnation before an
+  allocation can be reused, draining older writes before acknowledging the
+  fence. Files: `lib/crowdb-protocol/src/fbs/diskio.fbs`,
+  `lib/crowdb-diskio-client/`, `app/crowdb-diskio/`, DiskDB allocation flow.
+- [x] **Reservation reconciliation scanner**: scan reservation records,
+  deterministically admit complete conversion groups, and reclaim expired
+  incomplete groups only after the I/O incarnation fence. Files:
+  `app/crowdb-chunkdb/src/storage/`, `lifecycle/`, runtime wiring and tests.
+- [x] **Global reservation quota**: enforce configured per-instance block and
+  byte limits with lock-free accounting rebuilt from durable records; publish
+  usage/rejection gauges. Files: ChunkDB config, allocator/lifecycle, metrics,
+  tests and deployment config.
+- [x] **Cluster readiness barrier**: make local reset wait for every registered
+  ChunkDB instance to own its assigned ranges before returning. Files:
+  `app/crowdb-cli/src/commands/cluster/`, local-cluster tests.
+- [x] **Steady-state performance attribution**: run mirror-only and EC-enabled
+  warmup/measurement A/B with parity bytes and allocation startup separated;
+  set and validate the EC regression threshold. Files: `tools/`, `bench-log/`,
+  permanent design.
+- [x] **Final gates and cleanup**: run affected tests, C++ gates, fmt, lint,
+  complete test-suite and small-write sentinel; fold design, remove completed
+  working/backlog artifacts, and commit cleanup separately.
+
 ## Consolidated Files
 
 - Protocol: `lib/crowdb-protocol/src/fbs/`, `lib/crowdb-protocol/src/types/`.

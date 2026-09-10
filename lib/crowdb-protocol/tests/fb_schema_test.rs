@@ -92,6 +92,7 @@ fn disk_io_ret_code_values() {
     assert_eq!(FBDiskIoRetCode::PartialWrite.0, 4);
     assert_eq!(FBDiskIoRetCode::InvalidAlignment.0, 5);
     assert_eq!(FBDiskIoRetCode::ConnectionError.0, 6);
+    assert_eq!(FBDiskIoRetCode::StaleAllocation.0, 7);
 }
 
 #[test]
@@ -110,6 +111,8 @@ fn disk_write_request_round_trip() {
             zone_index: 2,
             zone_offset: 4096,
             size: 4096,
+            allocation_ts: 77,
+            allocation_zone_offset: 2048,
         },
     );
     fbb.finish(req, None);
@@ -122,6 +125,8 @@ fn disk_write_request_round_trip() {
     assert_eq!(parsed.zone_index(), 2);
     assert_eq!(parsed.zone_offset(), 4096);
     assert_eq!(parsed.size(), 4096);
+    assert_eq!(parsed.allocation_ts(), 77);
+    assert_eq!(parsed.allocation_zone_offset(), 2048);
 }
 
 #[test]

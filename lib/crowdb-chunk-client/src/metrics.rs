@@ -203,6 +203,10 @@ pub struct SmallWriteMetrics {
     pub(crate) pipeline_replacements: AtomicU64,
     pub(crate) repairs_avoiding_rotation: AtomicU64,
     pub(crate) shadow_bytes: AtomicU64,
+    pub(crate) foreground_parity_bytes: AtomicU64,
+    pub(crate) reservation_requests: AtomicU64,
+    pub(crate) reservation_wait_ns: AtomicU64,
+    pub(crate) first_reservation_ns: AtomicU64,
 }
 
 impl Default for SmallWriteMetrics {
@@ -243,6 +247,10 @@ impl Default for SmallWriteMetrics {
             pipeline_replacements: AtomicU64::new(0),
             repairs_avoiding_rotation: AtomicU64::new(0),
             shadow_bytes: AtomicU64::new(0),
+            foreground_parity_bytes: AtomicU64::new(0),
+            reservation_requests: AtomicU64::new(0),
+            reservation_wait_ns: AtomicU64::new(0),
+            first_reservation_ns: AtomicU64::new(0),
         }
     }
 }
@@ -285,9 +293,37 @@ pub struct SmallWriteMetricsSnapshot {
     pub pipeline_replacements: u64,
     pub repairs_avoiding_rotation: u64,
     pub shadow_bytes: u64,
+    pub foreground_parity_bytes: u64,
+    pub reservation_requests: u64,
+    pub reservation_wait_ns: u64,
+    pub first_reservation_ns: u64,
 }
 
 impl SmallWriteMetrics {
+    pub(crate) fn record_reservation_wait(&self, elapsed: std::time::Duration) {
+        let elapsed_ns = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
+        self.reservation_requests.fetch_add(1, Ordering::Relaxed);
+        self.reservation_wait_ns.fetch_add(elapsed_ns, Ordering::Relaxed);
+        let _ = self.first_reservation_ns.compare_exchange(
+            0,
+            elapsed_ns.max(1),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    }
+
+    pub(crate) fn record_batch(&self, object_count: usize, logical_bytes: usize) {
+        self.batches.fetch_add(1, Ordering::Relaxed);
+        self.batch_objects
+            .fetch_add(object_count as u64, Ordering::Relaxed);
+        self.max_batch_objects
+            .fetch_max(object_count as u64, Ordering::Relaxed);
+        self.batch_bytes
+            .fetch_add(logical_bytes as u64, Ordering::Relaxed);
+        self.max_batch_bytes
+            .fetch_max(logical_bytes as u64, Ordering::Relaxed);
+    }
+
     pub(crate) fn record_aggregate_write(
         &self,
         request_count: u64,
@@ -369,6 +405,10 @@ impl SmallWriteMetrics {
             pipeline_replacements: self.pipeline_replacements.load(Ordering::Relaxed),
             repairs_avoiding_rotation: self.repairs_avoiding_rotation.load(Ordering::Relaxed),
             shadow_bytes: self.shadow_bytes.load(Ordering::Relaxed),
+            foreground_parity_bytes: self.foreground_parity_bytes.load(Ordering::Relaxed),
+            reservation_requests: self.reservation_requests.load(Ordering::Relaxed),
+            reservation_wait_ns: self.reservation_wait_ns.load(Ordering::Relaxed),
+            first_reservation_ns: self.first_reservation_ns.load(Ordering::Relaxed),
         }
     }
 }

@@ -877,7 +877,10 @@ mutating RPC acquires the per-chunk lock before its RMW cycle:
   reference it.
 - `reserve_strip_group`: allocate ordinary hidden strips or one special 8+4
   conversion group, persist its writer/lease/placement fences separately from
-  `Chunk.strips`, and leave chunk capacity unchanged until confirmation.
+  `Chunk.strips`, and leave chunk capacity unchanged until confirmation. A
+  lock-free atomic admission gate checks the instance's proportional share of
+  the configured cluster-wide reserved-block and reserved-byte limits before
+  allocation. Startup rebuilds usage from durable reservation records.
 - `mutate_strip_reservation`: durably consume before DiskIO, confirm one strip
   in sequence, cancel or renew idempotently, or publish a complete special
   group after current-topology survivor selection. Publication commits one EC
@@ -890,6 +893,16 @@ scan resume cleanup intents, recheck that retired identities are absent from
 the current layout, ask DiskDB to perform its ownership-qualified free, and
 only then clear the intent. Metadata publication therefore remains committed
 even if post-commit reclamation is temporarily unavailable.
+
+Reservation reconciliation scans reservation records in bounded rotating
+pages, so an old prefix cannot starve later records. It deterministically
+admits a completed special group to the normal conversion task path. An
+expired incomplete group is cancelled and reclaimed when its consumed strips
+carry persisted planned cursors, because those writes use the DiskIO allocation
+generation fence. Legacy consumed records without planned cursors remain
+allocated fail-safe. Terminal reservation records release their quota only
+after the durable record has been removed; ambiguous persistence retains the
+permit unless a linearizable read proves that no record exists.
 
 ### 10.7 Error variants + service mapping
 
@@ -924,6 +937,10 @@ latency. Counters (all `AtomicU64`, `Relaxed` ordering):
 - `reap_idle_entries_removed` — entries removed per `reap_idle`.
 - `invalidate_count` — incremented on `invalidate_chunk`/
   `invalidate_range`.
+- `reservation.blocks.g` and `reservation.bytes.g` — current durable hidden
+  reservation usage rebuilt at startup and updated on admission/release.
+- `reservation.rejections.c` — reservation requests rejected by either atomic
+  quota limit.
 
 `snapshot() -> LifecycleMetricsSnapshot` drains counters, reads
 histograms, returns a serializable struct (JSON).

@@ -402,6 +402,7 @@ async fn publish_reserved_conversion(
     lease_generation: u64,
     writer_lease_ms: u64,
     cursor: u64,
+    metrics: Arc<SmallWriteMetrics>,
 ) -> Result<Chunk> {
     let chunk = pending_confirm
         .ok_or_else(|| IoError::MetadataConflict("conversion has no final confirmation".into()))?
@@ -505,6 +506,10 @@ async fn publish_reserved_conversion(
         .await?;
         return Ok(chunk);
     }
+    metrics.foreground_parity_bytes.fetch_add(
+        unit_bytes.saturating_mul(u64::try_from(group.parity_segments.len()).unwrap_or(u64::MAX)),
+        Ordering::Relaxed,
+    );
     let response = allocator
         .mutate_strip_reservation(MutateStripReservationRequest {
             chunk_id: Some(chunk_id),
@@ -871,7 +876,7 @@ impl OwnedChunk {
         Ok(())
     }
 
-    async fn consume_staged_reservation(&mut self) -> Result<()> {
+    async fn consume_staged_reservation(&mut self, planned_cursor: u64) -> Result<()> {
         let Some((group_id, generation, sequence)) = self.staged_reservation.take() else {
             return Ok(());
         };
@@ -880,7 +885,7 @@ impl OwnedChunk {
             generation,
             sequence,
             StripReservationAction::Consume,
-            self.chunk.acknowledged_cursor,
+            planned_cursor,
             None,
         )
         .await?;
@@ -940,6 +945,7 @@ impl OwnedChunk {
                 .unwrap_or(0)
                 .max(1)
         });
+        let reservation_started = Instant::now();
         let response = self
             .allocator
             .reserve_strip_group(ReserveStripGroupRequest {
@@ -960,6 +966,8 @@ impl OwnedChunk {
                 },
             })
             .await;
+        self.metrics
+            .record_reservation_wait(reservation_started.elapsed());
         let response = match response {
             Ok(response) => response,
             Err(error) => {
@@ -1060,10 +1068,11 @@ impl OwnedChunk {
         batch: &[PendingObject],
         metrics: &SmallWriteMetrics,
     ) -> Result<Vec<Location>> {
-        self.consume_staged_reservation().await?;
+        let (logical_bytes, buffer_count) = batch_shape(batch);
+        let planned_cursor = self.cursor.saturating_add(logical_bytes as u64);
+        self.consume_staged_reservation(planned_cursor).await?;
         let strip = self.current_strip()?.clone();
         let unit_bytes = u64::from(strip.unit_kb) * 1024;
-        let (logical_bytes, buffer_count) = batch_shape(batch);
         if logical_bytes as u64 > self.remaining_in_strip()
             || logical_bytes as u64 > self.remaining_in_chunk()
         {
@@ -1152,19 +1161,7 @@ impl OwnedChunk {
             self.refresh_pending_advance().await?;
             self.start_pending_advance(end)?;
         }
-        metrics.batches.fetch_add(1, Ordering::Relaxed);
-        metrics
-            .batch_objects
-            .fetch_add(batch.len() as u64, Ordering::Relaxed);
-        metrics
-            .max_batch_objects
-            .fetch_max(batch.len() as u64, Ordering::Relaxed);
-        metrics
-            .batch_bytes
-            .fetch_add(logical_bytes as u64, Ordering::Relaxed);
-        metrics
-            .max_batch_bytes
-            .fetch_max(logical_bytes as u64, Ordering::Relaxed);
+        metrics.record_batch(batch.len(), logical_bytes);
         Ok(locations)
     }
 
@@ -1273,6 +1270,7 @@ impl OwnedChunk {
             let lease_generation = self.reservation_generation;
             let writer_lease_ms = u64::try_from(self.policy.writer_lease.as_millis()).unwrap_or(u64::MAX);
             let cursor = self.cursor;
+            let metrics = Arc::clone(&self.metrics);
             self.pending_advance = Some(tokio::spawn(async move {
                 let result = async {
                     let group = update.await.map_err(|join_error| {
@@ -1287,6 +1285,7 @@ impl OwnedChunk {
                         lease_generation,
                         writer_lease_ms,
                         cursor,
+                        metrics,
                     )
                     .await
                 }

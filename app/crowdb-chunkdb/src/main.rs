@@ -303,15 +303,26 @@ async fn main() {
         stop_rx.clone(),
     ));
 
+    let reservation_blocks = range_guard.quota_share(config.reservation.max_blocks);
+    let reservation_bytes = range_guard.quota_share(config.reservation.max_bytes);
+
     // Lifecycle handler.
     let handler = Arc::new(
         LifecycleHandler::new(Arc::clone(&store), allocator, cache)
             .with_range_guard(Arc::clone(&range_guard))
             .with_locks(Arc::clone(&lock_map))
             .with_metrics(Arc::clone(&workflow_metrics))
+            .with_reservation_limits(reservation_blocks, reservation_bytes)
             .with_allow_unsafe_ec(config.placement.allow_unsafe_ec)
             .with_layout_validity(Duration::from_millis(config.lifecycle.layout_validity_ms)),
     );
+    match handler.rebuild_reservation_admission().await {
+        Ok((blocks, bytes)) => info!(blocks, bytes, "reservation admission rebuilt"),
+        Err(error) => {
+            error!(%error, "reservation admission rebuild failed");
+            return;
+        }
+    }
     match handler.reconcile_pending_chunks().await {
         Ok(count) => info!(count, "pending chunk allocations reconciled"),
         Err(error) => {
@@ -348,6 +359,59 @@ async fn main() {
                 config.conversion.min_seal_age_secs.saturating_mul(1_000),
             ),
     );
+    let reservation_reconcile_handle = {
+        let conversion = Arc::clone(&conversion);
+        let mut stop = stop_rx.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(1));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        match conversion.reconcile_reservations(256, unix_time_ms()).await {
+                            Ok(reconciled) if reconciled > 0 => {
+                                info!(reconciled, "expired strip reservations reconciled");
+                            }
+                            Ok(_) => {}
+                            Err(error) => warn!(%error, "strip reservation reconciliation failed"),
+                        }
+                    }
+                    changed = stop.changed() => {
+                        if changed.is_err() || *stop.borrow() {
+                            return;
+                        }
+                    }
+                }
+            }
+        })
+    };
+    let reservation_admission_handle = {
+        let handler = Arc::clone(&handler);
+        let range_guard = Arc::clone(&range_guard);
+        let mut stop = stop_rx.clone();
+        let interval = Duration::from_secs(config.reservation.scan_interval_secs);
+        let max_blocks = config.reservation.max_blocks;
+        let max_bytes = config.reservation.max_bytes;
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        handler.update_reservation_limits(
+                            range_guard.quota_share(max_blocks),
+                            range_guard.quota_share(max_bytes),
+                        );
+                    }
+                    changed = stop.changed() => {
+                        if changed.is_err() || *stop.borrow() {
+                            return;
+                        }
+                    }
+                }
+            }
+        })
+    };
     let conversion_scan_handle = config.conversion.enabled.then(|| {
         let conversion = Arc::clone(&conversion);
         let mut stop = stop_rx.clone();
@@ -523,6 +587,8 @@ async fn main() {
     let _ = refresh_handle.await;
     let _ = notify_handle.await;
     let _ = writer_lease_sweep_handle.await;
+    let _ = reservation_reconcile_handle.await;
+    let _ = reservation_admission_handle.await;
     if let Some(handle) = task_scanner_handle {
         let _ = handle.await;
     }

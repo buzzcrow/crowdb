@@ -1138,6 +1138,14 @@ fn parse_reservation_group(fb: &FBStripReservationGroup<'_>) -> StripReservation
             .unwrap_or_default(),
         data_num: fb.data_num(),
         code_num: fb.code_num(),
+        planned_cursors: fb
+            .planned_cursors()
+            .map(|values| values.iter().collect())
+            .unwrap_or_default(),
+        planned_closed_sequences: fb
+            .planned_closed_sequences()
+            .map(|values| values.iter().collect())
+            .unwrap_or_default(),
     }
 }
 

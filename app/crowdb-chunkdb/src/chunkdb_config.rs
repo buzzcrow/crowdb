@@ -24,6 +24,8 @@ pub struct ChunkdbConfig {
     pub conversion: ConversionConfig,
     #[serde(default)]
     pub repair: RepairConfig,
+    #[serde(default)]
+    pub reservation: ReservationConfig,
 }
 
 /// Placement safety policy.
@@ -63,6 +65,38 @@ impl BaseConfig for ChunkdbConfig {
         self.lifecycle.validate()?;
         self.conversion.validate()?;
         self.repair.validate()?;
+        self.reservation.validate()?;
+        Ok(())
+    }
+}
+
+/// Cluster-wide reservation capacity divided deterministically among live
+/// ChunkDB instances. The sum of instance shares never exceeds either limit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReservationConfig {
+    pub max_blocks: u64,
+    pub max_bytes: u64,
+    pub scan_interval_secs: u64,
+}
+
+impl Default for ReservationConfig {
+    fn default() -> Self {
+        Self {
+            max_blocks: 1_048_576,
+            max_bytes: 1_u64 << 40,
+            scan_interval_secs: 1,
+        }
+    }
+}
+
+impl ReservationConfig {
+    fn validate(&self) -> Result<(), String> {
+        if self.max_blocks == 0 || self.max_bytes == 0 {
+            return Err("reservation max_blocks and max_bytes must be > 0".into());
+        }
+        if self.scan_interval_secs == 0 {
+            return Err("reservation.scan_interval_secs must be > 0".into());
+        }
         Ok(())
     }
 }

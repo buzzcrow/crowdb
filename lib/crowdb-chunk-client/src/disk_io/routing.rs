@@ -10,7 +10,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use async_trait::async_trait;
 use bytes::Bytes;
-use crowdb_diskio_client::{DiskId, DiskIoRetCode, DiskioClient};
+use crowdb_diskio_client::{DiskId, DiskIoRetCode, DiskioClient, SegmentWriteTarget};
 use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_rpc_ffi::{Connection, RpcServer};
@@ -199,12 +199,16 @@ impl DiskWriter for RoutedDiskWriter {
         let connection = route.connection();
         let future = self
             .client
-            .write_bytes(
+            .write_segment_bytes(
                 &self.server,
                 &connection,
-                id,
-                seg.zone_index,
-                seg.unit_offset * unit_bytes,
+                SegmentWriteTarget {
+                    disk_id: id,
+                    zone_index: seg.zone_index,
+                    zone_offset: seg.unit_offset * unit_bytes,
+                    allocation_ts: seg.allocation_ts,
+                    allocation_zone_offset: seg.unit_offset * unit_bytes,
+                },
                 data,
             )
             .map_err(|error| IoError::WriteFailed(format!("{}: {error}", route.endpoint)))?;
@@ -240,12 +244,16 @@ impl DiskWriter for RoutedDiskWriter {
             .ok_or_else(|| IoError::WriteFailed("disk write offset overflow".into()))?;
         let future = self
             .client
-            .write_bytes(
+            .write_segment_bytes(
                 &self.server,
                 &route.priority_connection,
-                id,
-                seg.zone_index,
-                zone_offset,
+                SegmentWriteTarget {
+                    disk_id: id,
+                    zone_index: seg.zone_index,
+                    zone_offset,
+                    allocation_ts: seg.allocation_ts,
+                    allocation_zone_offset: seg.unit_offset * unit_bytes,
+                },
                 data,
             )
             .map_err(|error| IoError::WriteFailed(format!("{}: {error}", route.endpoint)))?;
@@ -282,7 +290,18 @@ impl DiskWriter for RoutedDiskWriter {
             .ok_or_else(|| IoError::WriteFailed("disk write offset overflow".into()))?;
         let future = self
             .client
-            .write_bytes(&self.server, &connection, id, seg.zone_index, zone_offset, data)
+            .write_segment_bytes(
+                &self.server,
+                &connection,
+                SegmentWriteTarget {
+                    disk_id: id,
+                    zone_index: seg.zone_index,
+                    zone_offset,
+                    allocation_ts: seg.allocation_ts,
+                    allocation_zone_offset: seg.unit_offset * unit_bytes,
+                },
+                data,
+            )
             .map_err(|error| IoError::WriteFailed(format!("{}: {error}", route.endpoint)))?;
         let code = DiskioClient::await_write_response(future)
             .await
@@ -383,9 +402,10 @@ impl DiskWriter for RoutedDiskWriter {
         if code != DiskIoRetCode::Success {
             let message = format!("{} returned {code:?}", route.endpoint);
             return Err(match code {
-                DiskIoRetCode::DiskNotExist | DiskIoRetCode::ZoneNotExist | DiskIoRetCode::IoError => {
-                    IoError::ReadFailed(message)
-                }
+                DiskIoRetCode::DiskNotExist
+                | DiskIoRetCode::ZoneNotExist
+                | DiskIoRetCode::IoError
+                | DiskIoRetCode::StaleAllocation => IoError::ReadFailed(message),
                 DiskIoRetCode::Success => unreachable!(),
                 DiskIoRetCode::PartialWrite
                 | DiskIoRetCode::InvalidAlignment

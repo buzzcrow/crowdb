@@ -210,6 +210,8 @@ table FBStripReservationGroup {
     preferred_survivors:[uint32];
     data_num:uint32;
     code_num:uint32;
+    planned_cursors:[uint64];
+    planned_closed_sequences:[uint32];
 }
 
 table FBReserveStripGroupRequest {

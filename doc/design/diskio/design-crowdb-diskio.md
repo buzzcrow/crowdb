@@ -624,8 +624,9 @@ handle three message types. Message type IDs are in the diskio range
 
 Each request's control message is a flatbuffer with
 `{disk_id, zone_index, zone_offset, size}` (read also has
-`test_pattern_offset`); the write request also carries a raw data
-payload of `size` bytes. The handler:
+`test_pattern_offset`); the write request additionally carries
+`allocation_ts` and `allocation_zone_offset`, plus a raw data payload of
+`size` bytes. The handler:
 1. Resolves `disk_id` to a `Disk` via `DiskSet`.
 2. Computes the physical offset: `zone.base_offset + zone_offset`.
 3. Calls `AlignedWriter::submit` for writes or `IoEngine::read`/`fsync` for
@@ -639,8 +640,17 @@ The data payload is passed from the crowdb-rpc frame decoder to
 writes use one aligned server buffer. The read response includes the raw data
 payload.
 
+Fenced writes are serialized by allocation base within `AlignedWriter`. Before
+the first write for a newer nonzero `allocation_ts`, DiskIO drains earlier
+writes for that base, appends the new generation to its journal, and syncs the
+journal before submitting data. Any later request carrying an older generation
+returns `ESTALE`. The journal is replayed at startup, so an old delayed writer
+cannot overwrite a recycled extent after a DiskIO restart. A zero generation
+retains the legacy unfenced behavior for mixed-version compatibility.
+
 Flatbuffer schemas (`diskio.fbs`):
-- `DiskWriteRequest { disk_id, zone_index, zone_offset, size }`
+- `DiskWriteRequest { disk_id, zone_index, zone_offset, size, allocation_ts,
+  allocation_zone_offset }`
 - `DiskWriteResponse { ret_code }`
 - `DiskReadRequest { disk_id, zone_index, zone_offset, size, test_pattern_offset }`
   (`test_pattern_offset` used by NullDisk for deterministic content;
@@ -713,6 +723,9 @@ the same data.
   zero-padded and cached for the next continuation.
 - **I9 (backend alignment)**: Every backend write to a disk with block size
   greater than one has aligned address, offset, and length.
+- **I10 (allocation incarnation)**: Once DiskIO durably installs generation
+  `g` for an allocation base, a write carrying a generation below `g` cannot
+  reach the backend, including after process restart.
 
 ## 11. Configuration
 

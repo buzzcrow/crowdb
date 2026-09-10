@@ -8,6 +8,6 @@ pub mod state;
 
 pub use handler::{
     AppendChunkOutcome, CacheHint, ChunkGuard, ChunkLockMap, LifecycleError, LifecycleHandler, LockPolicy,
-    ReservationFence, ReservationMutation, ReservationUpdate, ReserveGroupSpec,
+    ReservationFence, ReservationMutation, ReservationRecovery, ReservationUpdate, ReserveGroupSpec,
 };
 pub use state::{ChunkState, StateTransitionError};

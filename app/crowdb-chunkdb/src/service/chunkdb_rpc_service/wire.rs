@@ -38,7 +38,7 @@ pub(super) fn map_error(e: &LifecycleError) -> (FBChunkdbRetCode, String, u32, u
         }
         LifecycleError::Storage(_) => (FBChunkdbRetCode::Internal, e.to_string(), 0, 0),
         LifecycleError::InvalidRequest(_) => (FBChunkdbRetCode::InvalidArgument, e.to_string(), 0, 0),
-        LifecycleError::LockBusy | LifecycleError::LockTimeout => {
+        LifecycleError::LockBusy | LifecycleError::LockTimeout | LifecycleError::ReservationLimit => {
             (FBChunkdbRetCode::Unavailable, e.to_string(), 0, 0)
         }
         LifecycleError::StripIndexOutOfRange { .. } => {
@@ -779,6 +779,10 @@ pub(super) fn build_reservation_group_offset<'a>(
     let parity_segments = (!parity.is_empty()).then(|| fbb.create_vector(&parity));
     let preferred_survivors =
         (!group.preferred_survivors.is_empty()).then(|| fbb.create_vector(&group.preferred_survivors));
+    let planned_cursors =
+        (!group.planned_cursors.is_empty()).then(|| fbb.create_vector(&group.planned_cursors));
+    let planned_closed_sequences = (!group.planned_closed_sequences.is_empty())
+        .then(|| fbb.create_vector(&group.planned_closed_sequences));
     FBStripReservationGroup::create(
         fbb,
         &FBStripReservationGroupArgs {
@@ -794,6 +798,8 @@ pub(super) fn build_reservation_group_offset<'a>(
             preferred_survivors,
             data_num: group.data_num,
             code_num: group.code_num,
+            planned_cursors,
+            planned_closed_sequences,
         },
     )
 }

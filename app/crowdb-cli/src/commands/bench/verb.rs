@@ -120,6 +120,9 @@ pub struct ChunkioSmallWriteArgs {
     pub seed: u8,
     #[arg(long, default_value_t = 1)]
     pub metrics_interval: u64,
+    /// Disable foreground mirror-to-EC conversion for an A/B baseline.
+    #[arg(long, default_value_t = false)]
+    pub mirror_only: bool,
 }
 
 #[derive(clap::Args, Debug, Clone)]

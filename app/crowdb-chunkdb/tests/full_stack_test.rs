@@ -17,11 +17,13 @@ use crowdb_chunkdb::allocator::StripAllocType;
 use crowdb_chunkdb::conversion::io::ConversionDiskIo;
 use crowdb_chunkdb::conversion::{decode_payload, ConversionCoordinator, MirrorToEcTaskHandler};
 use crowdb_chunkdb::lifecycle::{
-    ChunkLockMap, LifecycleError, LifecycleHandler, ReservationFence, ReservationUpdate, ReserveGroupSpec,
+    ChunkLockMap, LifecycleError, LifecycleHandler, ReservationFence, ReservationRecovery, ReservationUpdate,
+    ReserveGroupSpec,
 };
 use crowdb_chunkdb::metrics::{ChunkdbMetrics, LifecycleMetrics};
+use crowdb_chunkdb::range_guard::{OwnedRange, RangeGuard};
 use crowdb_chunkdb::repair::{decode_payload as decode_repair_payload, RepairCoordinator};
-use crowdb_chunkdb::routing::{default_binding_table, BindingCache};
+use crowdb_chunkdb::routing::{default_binding_table, hash_to_bucket, BindingCache};
 use crowdb_chunkdb::selector::PlacementConstraints;
 use crowdb_chunkdb::task::{
     TaskAdmission, TaskClaim, TaskExecutor, TaskHandler, TaskManager, TaskOutcome, TaskScanner, TaskStore,
@@ -923,6 +925,7 @@ async fn reserved_strips_stay_hidden_until_idempotent_confirmation() {
         .iter()
         .all(|state| *state == StripReservationState::Reserved as i32));
     let first = &group.strips[0];
+    let cursor = u64::from(first.chunk_offset + first.capacity) * 1024;
     let consumed = harness
         .handler
         .mutate_strip_reservation(
@@ -932,14 +935,13 @@ async fn reserved_strips_stay_hidden_until_idempotent_confirmation() {
             ReservationUpdate {
                 strip_sequence: first.strip_sequence,
                 action: StripReservationAction::Consume,
-                acknowledged_cursor: 0,
+                acknowledged_cursor: cursor,
                 closed_strip_sequence: None,
             },
         )
         .await
         .expect("consume reservation");
     assert_eq!(consumed.chunk.strips.len(), 1, "consume must remain invisible");
-    let cursor = u64::from(first.chunk_offset + first.capacity) * 1024;
     let update = ReservationUpdate {
         strip_sequence: first.strip_sequence,
         action: StripReservationAction::Confirm,
@@ -984,6 +986,334 @@ async fn reserved_strips_stay_hidden_until_idempotent_confirmation() {
         .seal_chunk(&chunk_id, confirmed.chunk.capacity)
         .await
         .expect("seal and remove terminal reservations");
+}
+
+async fn assert_legacy_consumed_reservation_is_retained(
+    harness: &ChunkdbHarness,
+    chunk_id: &ChunkId,
+    group_id: &ChunkId,
+    planned_cursor: u64,
+) {
+    let mut legacy = harness
+        .store
+        .get_reservation_group(chunk_id, group_id)
+        .await
+        .unwrap()
+        .unwrap();
+    legacy.planned_cursors[0] = 0;
+    harness.store.put_reservation_group(&legacy).await.unwrap();
+    let outcome = harness
+        .handler
+        .recover_expired_reservation_group(chunk_id, group_id, u64::MAX)
+        .await
+        .unwrap();
+    assert_eq!(outcome, ReservationRecovery::Reconciled);
+    let mut retained = harness
+        .store
+        .get_reservation_group(chunk_id, group_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.states[0], StripReservationState::Consumed as i32);
+    retained.planned_cursors[0] = planned_cursor;
+    harness.store.put_reservation_group(&retained).await.unwrap();
+}
+
+#[tokio::test]
+async fn expired_consumed_reservation_only_reclaims_generation_fenced_blocks() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    let hw = cluster.make_hardware_client();
+    seed_hardware(&hw).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let writer_epoch = 72;
+    let chunk = harness
+        .handler
+        .allocate_chunk(
+            None,
+            1,
+            1,
+            StripType::Mirror,
+            0,
+            0,
+            3,
+            ChunkType::Repo,
+            writer_epoch,
+            30_000,
+        )
+        .await
+        .unwrap();
+    let chunk_id = chunk.id.unwrap();
+    let group_id = ChunkId { high: 93, low: 94 };
+    let fence = ReservationFence {
+        expected_modify_ts: chunk.modify_ts,
+        writer_epoch,
+        lease_generation: 1,
+        lease_ms: 30_000,
+    };
+    let reserved = harness
+        .handler
+        .reserve_strip_group(
+            &chunk_id,
+            &group_id,
+            fence,
+            ReserveGroupSpec {
+                strip_size: 1,
+                strip_count: 2,
+                copy_count: 3,
+                conversion_data_num: 0,
+                conversion_code_num: 0,
+            },
+        )
+        .await
+        .unwrap();
+    let group = reserved.group.unwrap();
+    let first = group.strips[0].clone();
+    let planned_cursor = u64::from(first.chunk_offset + first.capacity) * 1024;
+    harness
+        .handler
+        .mutate_strip_reservation(
+            &chunk_id,
+            &group_id,
+            ReservationFence {
+                expected_modify_ts: reserved.chunk.modify_ts,
+                ..fence
+            },
+            ReservationUpdate {
+                strip_sequence: first.strip_sequence,
+                action: StripReservationAction::Consume,
+                acknowledged_cursor: planned_cursor,
+                closed_strip_sequence: Some(first.strip_sequence),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_legacy_consumed_reservation_is_retained(&harness, &chunk_id, &group_id, planned_cursor).await;
+
+    let outcome = harness
+        .handler
+        .recover_expired_reservation_group(&chunk_id, &group_id, u64::MAX)
+        .await
+        .unwrap();
+    assert_eq!(outcome, ReservationRecovery::Reconciled);
+    let recovered = harness.handler.query_chunk(&chunk_id).await.unwrap();
+    assert_eq!(recovered.acknowledged_cursor, 0);
+    assert_eq!(recovered.strips.len(), 1);
+    assert!(harness
+        .handler
+        .scan_reservation_groups(16)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn reservation_admission_rejects_overcommit_and_rebuilds_durable_usage() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    let hw = cluster.make_hardware_client();
+    seed_hardware(&hw).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let writer_epoch = 73;
+    let chunk = harness
+        .handler
+        .allocate_chunk(
+            None,
+            1,
+            1,
+            StripType::Mirror,
+            0,
+            0,
+            3,
+            ChunkType::Repo,
+            writer_epoch,
+            30_000,
+        )
+        .await
+        .unwrap();
+    let chunk_id = chunk.id.unwrap();
+    let fence = ReservationFence {
+        expected_modify_ts: chunk.modify_ts,
+        writer_epoch,
+        lease_generation: 1,
+        lease_ms: 30_000,
+    };
+    let spec = ReserveGroupSpec {
+        strip_size: 1,
+        strip_count: 2,
+        copy_count: 3,
+        conversion_data_num: 0,
+        conversion_code_num: 0,
+    };
+
+    harness.handler.update_reservation_limits(5, u64::MAX);
+    let error = harness
+        .handler
+        .reserve_strip_group(&chunk_id, &ChunkId { high: 95, low: 1 }, fence, spec)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, LifecycleError::ReservationLimit));
+    assert_eq!(
+        harness.handler.rebuild_reservation_admission().await.unwrap(),
+        (0, 0)
+    );
+
+    harness.handler.update_reservation_limits(6, u64::MAX);
+    harness
+        .handler
+        .reserve_strip_group(&chunk_id, &ChunkId { high: 95, low: 2 }, fence, spec)
+        .await
+        .unwrap();
+    let (blocks, bytes) = harness.handler.rebuild_reservation_admission().await.unwrap();
+    assert_eq!(blocks, 6);
+    assert!(bytes > 0);
+}
+
+#[tokio::test]
+async fn completed_conversion_reservation_is_taken_over_as_a_durable_task() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    let hw = cluster.make_hardware_client();
+    seed_hardware(&hw).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let writer_epoch = 74;
+    let chunk = harness
+        .handler
+        .allocate_chunk(
+            None,
+            1024,
+            0,
+            StripType::Mirror,
+            0,
+            0,
+            3,
+            ChunkType::Repo,
+            writer_epoch,
+            30_000,
+        )
+        .await
+        .unwrap();
+    let chunk_id = chunk.id.unwrap();
+    let group_id = ChunkId { high: 96, low: 1 };
+    let mut fence = ReservationFence {
+        expected_modify_ts: chunk.modify_ts,
+        writer_epoch,
+        lease_generation: 1,
+        lease_ms: 30_000,
+    };
+    let reserved = harness
+        .handler
+        .reserve_strip_group(
+            &chunk_id,
+            &group_id,
+            fence,
+            ReserveGroupSpec {
+                strip_size: 1,
+                strip_count: 8,
+                copy_count: 3,
+                conversion_data_num: 8,
+                conversion_code_num: 4,
+            },
+        )
+        .await
+        .unwrap();
+    fence.expected_modify_ts = reserved.chunk.modify_ts;
+    for strip in &reserved.group.unwrap().strips {
+        let cursor = u64::from(strip.chunk_offset + strip.capacity) * 1024;
+        harness
+            .handler
+            .mutate_strip_reservation(
+                &chunk_id,
+                &group_id,
+                fence,
+                ReservationUpdate {
+                    strip_sequence: strip.strip_sequence,
+                    action: StripReservationAction::Consume,
+                    acknowledged_cursor: cursor,
+                    closed_strip_sequence: Some(strip.strip_sequence),
+                },
+            )
+            .await
+            .unwrap();
+        let confirmed = harness
+            .handler
+            .mutate_strip_reservation(
+                &chunk_id,
+                &group_id,
+                fence,
+                ReservationUpdate {
+                    strip_sequence: strip.strip_sequence,
+                    action: StripReservationAction::Confirm,
+                    acknowledged_cursor: cursor,
+                    closed_strip_sequence: Some(strip.strip_sequence),
+                },
+            )
+            .await
+            .unwrap();
+        fence.expected_modify_ts = confirmed.chunk.modify_ts;
+    }
+
+    let bindings = BindingCache::new();
+    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
+    let coordinator = ConversionCoordinator::new(Arc::clone(&harness.handler), Arc::clone(&tasks));
+    assert_eq!(coordinator.reconcile_reservations(16, u64::MAX).await.unwrap(), 1);
+    assert!(harness
+        .handler
+        .scan_reservation_groups(16)
+        .await
+        .unwrap()
+        .is_empty());
+    let ready = tasks.scan_ready(u64::MAX, 16).await.unwrap();
+    assert_eq!(ready.len(), 1);
+    assert_eq!(ready[0].kind, TASK_KIND_MIRROR_TO_EC);
+    assert_eq!(ready[0].partition_id, chunk_id);
+}
+
+#[tokio::test]
+async fn generated_chunk_ids_stay_with_the_serving_range_owner() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    let hw = cluster.make_hardware_client();
+    seed_hardware(&hw).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let range_guard = Arc::new(RangeGuard::new(false));
+    range_guard.replace(vec![OwnedRange {
+        start: 0,
+        end: 32_767,
+        sub_range_index: 0,
+    }]);
+    let handler = LifecycleHandler::new(
+        Arc::clone(&harness.store),
+        Arc::clone(&harness.allocator),
+        harness.topology.clone(),
+    )
+    .with_range_guard(range_guard);
+
+    for _ in 0..16 {
+        let chunk = handler
+            .allocate_chunk(None, 1, 0, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+            .await
+            .unwrap();
+        assert!(hash_to_bucket(&chunk.id.unwrap()) <= 32_767);
+    }
 }
 
 #[tokio::test]
@@ -1055,6 +1385,7 @@ async fn conversion_reservation_allocates_joint_plan_and_cleans_every_early_tail
         }));
         let mut cursor = 0;
         for strip in group.strips.iter().take(tail as usize) {
+            let planned_cursor = u64::from(strip.chunk_offset + strip.capacity) * 1024;
             harness
                 .handler
                 .mutate_strip_reservation(
@@ -1064,13 +1395,13 @@ async fn conversion_reservation_allocates_joint_plan_and_cleans_every_early_tail
                     ReservationUpdate {
                         strip_sequence: strip.strip_sequence,
                         action: StripReservationAction::Consume,
-                        acknowledged_cursor: cursor,
+                        acknowledged_cursor: planned_cursor,
                         closed_strip_sequence: None,
                     },
                 )
                 .await
                 .expect("consume tail strip");
-            cursor = u64::from(strip.chunk_offset + strip.capacity) * 1024;
+            cursor = planned_cursor;
             let confirmed = harness
                 .handler
                 .mutate_strip_reservation(

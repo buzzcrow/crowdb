@@ -19,6 +19,7 @@ use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, ChunkStrip, EcState, Stri
 use crowdb_protocol::common::ChunkId;
 use serde::{Deserialize, Serialize};
 
+use crate::lifecycle::ReservationRecovery;
 use crate::lifecycle::{LifecycleError, LifecycleHandler};
 use crate::metrics::ConversionMetrics;
 use crate::task::executor::TaskFuture;
@@ -79,6 +80,7 @@ pub struct ConversionCoordinator {
     min_mirror_strips: u32,
     min_age_ms: u64,
     scan_cursor: ArcSwapOption<ChunkId>,
+    reservation_scan_cursor: ArcSwapOption<(ChunkId, ChunkId)>,
 }
 
 pub struct MirrorToEcTaskHandler {
@@ -457,6 +459,7 @@ impl ConversionCoordinator {
             min_mirror_strips: 8,
             min_age_ms: 3_600_000,
             scan_cursor: ArcSwapOption::empty(),
+            reservation_scan_cursor: ArcSwapOption::empty(),
         }
     }
 
@@ -479,6 +482,53 @@ impl ConversionCoordinator {
         self.min_mirror_strips = min_mirror_strips;
         self.min_age_ms = min_age_ms;
         self
+    }
+
+    pub async fn reconcile_reservations(&self, max_groups: u32, now_ms: u64) -> Result<u64, ConversionError> {
+        let cursor = self.reservation_scan_cursor.load_full();
+        let groups = self
+            .lifecycle
+            .scan_reservation_groups_after(
+                max_groups.max(1),
+                cursor.as_deref().map(|(chunk_id, group_id)| (chunk_id, group_id)),
+            )
+            .await?;
+        if let Some(group) = groups.last() {
+            if let (Some(chunk_id), Some(group_id)) = (group.chunk_id, group.group_id) {
+                self.reservation_scan_cursor
+                    .store(Some(Arc::new((chunk_id, group_id))));
+            }
+        } else {
+            self.reservation_scan_cursor.store(None);
+        }
+        let mut reconciled = 0_u64;
+        for group in groups {
+            if group.lease_deadline_ms > now_ms {
+                continue;
+            }
+            let (Some(chunk_id), Some(group_id)) = (group.chunk_id, group.group_id) else {
+                continue;
+            };
+            match self
+                .lifecycle
+                .recover_expired_reservation_group(&chunk_id, &group_id, now_ms)
+                .await?
+            {
+                ReservationRecovery::Active => {}
+                ReservationRecovery::Reconciled => {
+                    reconciled = reconciled.saturating_add(1);
+                }
+                ReservationRecovery::CompleteConversion { chunk_id } => {
+                    self.trigger_chunk(chunk_id, group.data_num, group.code_num, now_ms)
+                        .await?;
+                    self.lifecycle
+                        .finish_reconciled_conversion_group(&chunk_id, &group_id)
+                        .await?;
+                    reconciled = reconciled.saturating_add(1);
+                }
+            }
+        }
+        Ok(reconciled)
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -64,3 +64,26 @@ fn repair_policy_has_bounded_defaults_and_rejects_zero_limits() {
     config.repair.scan_interval_secs = 0;
     assert!(config.validate().unwrap_err().contains("scan_interval_secs"));
 }
+
+#[test]
+fn reservation_policy_has_cluster_bounds_and_rejects_zero_limits() {
+    let config = ChunkdbConfig::default();
+    assert_eq!(config.reservation.max_blocks, 1_048_576);
+    assert_eq!(config.reservation.max_bytes, 1_u64 << 40);
+    assert_eq!(config.reservation.scan_interval_secs, 1);
+
+    let mut config = ChunkdbConfig::default();
+    config.reservation.max_blocks = 0;
+    assert!(config.validate().unwrap_err().contains("reservation max_blocks"));
+
+    let mut config = ChunkdbConfig::default();
+    config.reservation.max_bytes = 0;
+    assert!(config.validate().unwrap_err().contains("reservation max_blocks"));
+
+    let mut config = ChunkdbConfig::default();
+    config.reservation.scan_interval_secs = 0;
+    assert!(config
+        .validate()
+        .unwrap_err()
+        .contains("reservation.scan_interval_secs"));
+}

@@ -23,15 +23,17 @@ namespace crowdb::diskio
 namespace dproto = crowdb::diskio::proto;
 namespace rproto = crowdb::rpc::proto;
 
-DiskioServer::DiskioServer(std::shared_ptr<DiskSet> disk_set, crowdb::rpc::SocketTransport *transport)
+DiskioServer::DiskioServer(std::shared_ptr<DiskSet> disk_set, crowdb::rpc::SocketTransport *transport,
+                           std::string generation_journal_path)
     : disk_set_(std::move(disk_set)),
-      transport_(transport)
+      transport_(transport),
+      aligned_writer_(std::move(generation_journal_path))
 {
 }
 
 // Build a diskio response control buffer (flatbuffer).
 crowdb::rpc::Buffer *DiskioServer::build_response_ctrl(crowdb::rpc::BufferPool *pool, uint64_t request_id,
-                                                     uint64_t rpc_create_nano, int16_t ret_code, uint16_t msg_type)
+                                                       uint64_t rpc_create_nano, int16_t ret_code, uint16_t msg_type)
 {
     auto                           fb_ret = static_cast<dproto::FBDiskIoRetCode>(ret_code);
     flatbuffers::FlatBufferBuilder fbb(64);
@@ -87,10 +89,12 @@ crowdb::rpc::OutFrame *DiskioServer::handle_write(crowdb::rpc::Frame *request, c
         send_error_response(conn, req_id, create_nano, msg_type, static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError));
         return nullptr;
     }
-    DiskId   did         = parse_disk_id(fb_req->disk_id());
-    uint32_t zone_index  = fb_req->zone_index();
-    uint64_t zone_offset = fb_req->zone_offset();
-    uint32_t size        = fb_req->size();
+    DiskId   did                    = parse_disk_id(fb_req->disk_id());
+    uint32_t zone_index             = fb_req->zone_index();
+    uint64_t zone_offset            = fb_req->zone_offset();
+    uint32_t size                   = fb_req->size();
+    uint64_t allocation_ts          = fb_req->allocation_ts();
+    uint64_t allocation_zone_offset = fb_req->allocation_zone_offset();
 
     auto disk = disk_set_->find_disk(did);
     if (disk == nullptr) {
@@ -120,13 +124,14 @@ crowdb::rpc::OutFrame *DiskioServer::handle_write(crowdb::rpc::Frame *request, c
         return nullptr;
     }
 
-    Disk *disk_ptr = disk.get();
-    disk_ptr->engine()->submit_write(
-        disk_ptr, phys_offset, data_buf ? data_buf->data : nullptr, size,
+    uint64_t allocation_phys_offset = zone->base_offset + allocation_zone_offset;
+    aligned_writer_.submit_fenced(
+        disk, phys_offset, data_buf ? data_buf->data : nullptr, size, allocation_ts, allocation_phys_offset,
         [this, conn, req_id, create_nano, msg_type, data_buf, size](int res) {
             int16_t ret_code = static_cast<int16_t>(dproto::FBDiskIoRetCode_Success);
             if (res < 0) {
-                ret_code = static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError);
+                ret_code = static_cast<int16_t>(res == -ESTALE ? dproto::FBDiskIoRetCode_StaleAllocation
+                                                               : dproto::FBDiskIoRetCode_IoError);
             }
             else if (static_cast<uint32_t>(res) < size) {
                 ret_code = static_cast<int16_t>(dproto::FBDiskIoRetCode_PartialWrite);
@@ -192,7 +197,7 @@ crowdb::rpc::OutFrame *DiskioServer::handle_read(crowdb::rpc::Frame *request, cr
     Disk *disk_ptr = disk.get();
     disk_ptr->engine()->submit_read(disk_ptr, phys_offset, read_buf->data, size, test_pattern_offset,
                                     [this, conn, req_id, create_nano, msg_type, read_buf, size](int res) {
-                                        int16_t ret_code        = static_cast<int16_t>(dproto::FBDiskIoRetCode_Success);
+                                        int16_t ret_code = static_cast<int16_t>(dproto::FBDiskIoRetCode_Success);
                                         crowdb::rpc::Buffer *data = nullptr;
                                         if (res < 0) {
                                             ret_code = static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError);

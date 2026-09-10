@@ -220,10 +220,11 @@ pad and align before submitting to the kernel.
   object path does not fall back to synchronous allocation.
 - ChunkDB seal removes unused attached strips, persists a cleanup intent,
   releases their blocks, and clears the intent.
-- The more aggressive tentative `reserve → consume → confirm` protocol remains
-  tracked in `doc/backlog/R136-chunkio-reserve-confirm-strip-flow.md`.
+- The tentative `reserve → consume → confirm` protocol supersedes attached
+  prefetch when available; attached strips remain its bounded compatibility
+  fallback.
 
-## 5. Phase 3: Incremental EC (Pending)
+## 5. Phase 3: Incremental EC (Complete)
 
 ### 5.1 Current Behavior
 
@@ -268,8 +269,8 @@ after the full conversion completes.
    persisted cursor covers all eight. Conversion never blocks the response path;
    failure leaves mirrors authoritative.
 
-Detailed design and acceptance are in
-`doc/backlog/R137-chunkio-incremental-ec-conversion.md`.
+The permanent design is in
+`doc/design/chunkdb/design-crowdb-chunkdb-mirror-to-ec.md`.
 
 ## 6. Verification
 
@@ -305,7 +306,7 @@ CHUNKIO_SMALL_BENCH_CASES="small_1k_1t" CHUNKIO_SMALL_BENCH_DURATION=5 \
   errors, and exact 1 KiB payloads per mirror.
 - [x] DiskIO applies alignment/padding at the server (Phase 2).
 - [x] NullDisk/MemDisk traverse the same padding path (Phase 2).
-- [ ] EC conversion is incremental (Phase 3, tracked by R137).
+- [x] EC conversion is incremental (Phase 3).
 - [x] The 1 KiB case sends exactly 1 KiB per mirror without client staging.
 - [x] Metadata advancement stays off the response critical path.
 - [x] Mirror strips are attached in bounded batches and replenished in the

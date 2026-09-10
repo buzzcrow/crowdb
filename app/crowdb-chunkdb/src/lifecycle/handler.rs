@@ -70,6 +70,8 @@ pub enum LifecycleError {
     Commit(String),
     #[error("diskdb cleanup failed after metadata publication: {0}")]
     Cleanup(String),
+    #[error("cluster reservation capacity is exhausted")]
+    ReservationLimit,
 }
 
 #[derive(Debug)]
@@ -104,12 +106,15 @@ pub enum CacheHint {
     NoCache,
 }
 
+mod admission;
 #[path = "lock_map.rs"]
 mod lock_map;
 mod reservation;
 
 pub use lock_map::{ChunkGuard, ChunkLockMap};
-pub use reservation::{ReservationFence, ReservationMutation, ReservationUpdate, ReserveGroupSpec};
+pub use reservation::{
+    ReservationFence, ReservationMutation, ReservationRecovery, ReservationUpdate, ReserveGroupSpec,
+};
 
 /// Lifecycle handler — orchestrates allocate/append/seal/delete/query/list.
 pub struct LifecycleHandler {
@@ -126,6 +131,7 @@ pub struct LifecycleHandler {
     allow_unsafe_ec: bool,
     metrics: Option<Arc<ChunkdbMetrics>>,
     layout_validity_ms: u64,
+    reservation_admission: Arc<admission::ReservationAdmission>,
 }
 
 struct AllocationMetricGuard {
@@ -176,6 +182,7 @@ impl LifecycleHandler {
             allow_unsafe_ec: false,
             metrics: None,
             layout_validity_ms: DEFAULT_LAYOUT_VALIDITY_MS,
+            reservation_admission: Arc::new(admission::ReservationAdmission::new(u64::MAX, u64::MAX, None)),
         }
     }
 
@@ -209,7 +216,27 @@ impl LifecycleHandler {
     /// Attach allocation workflow metrics.
     #[must_use]
     pub fn with_metrics(mut self, metrics: Arc<ChunkdbMetrics>) -> Self {
+        let (blocks, bytes) = self.reservation_admission.usage();
+        self.reservation_admission = Arc::new(admission::ReservationAdmission::new(
+            u64::MAX,
+            u64::MAX,
+            Some(Arc::clone(&metrics)),
+        ));
+        self.reservation_admission.rebuild(blocks, bytes);
         self.metrics = Some(metrics);
+        self
+    }
+
+    #[must_use]
+    pub fn with_reservation_limits(mut self, max_blocks: u64, max_bytes: u64) -> Self {
+        let admission = Arc::new(admission::ReservationAdmission::new(
+            max_blocks,
+            max_bytes,
+            self.metrics.clone(),
+        ));
+        let (blocks, bytes) = self.reservation_admission.usage();
+        admission.rebuild(blocks, bytes);
+        self.reservation_admission = admission;
         self
     }
 
@@ -245,10 +272,10 @@ impl LifecycleHandler {
         writer_epoch: u64,
         writer_lease_ms: u64,
     ) -> Result<Chunk, LifecycleError> {
-        let id = chunk_id.unwrap_or_else(|| {
-            let parts = generate_chunk_id(chunk_type as u8);
-            parts.to_proto()
-        });
+        let id = match chunk_id {
+            Some(id) => id,
+            None => self.generate_owned_chunk_id(chunk_type)?,
+        };
         self.check_range(&id)?;
         let mut allocation_guard = AllocationMetricGuard::new(self.metrics.clone());
 
@@ -358,6 +385,25 @@ impl LifecycleHandler {
         info!(chunk_id = ?id, strips = strip_count, "chunk allocated");
         allocation_guard.mark_success();
         Ok(chunk)
+    }
+
+    fn generate_owned_chunk_id(&self, chunk_type: ChunkType) -> Result<ChunkId, LifecycleError> {
+        let Some(range_guard) = &self.range_guard else {
+            return Ok(generate_chunk_id(chunk_type as u8).to_proto());
+        };
+        if !range_guard.is_ready() {
+            let candidate = generate_chunk_id(chunk_type as u8).to_proto();
+            return self.check_range(&candidate).map(|()| candidate);
+        }
+        for _ in 0..1_000_000 {
+            let candidate = generate_chunk_id(chunk_type as u8).to_proto();
+            if range_guard.check(&candidate).is_ok() {
+                return Ok(candidate);
+            }
+        }
+        Err(LifecycleError::InvalidRequest(
+            "failed to generate a chunk id in the owned range".into(),
+        ))
     }
 
     /// Advance the durable cursor of an exclusively owned shared chunk.
@@ -640,6 +686,7 @@ impl LifecycleHandler {
         }
         let mut reserved_strips = Vec::new();
         let mut reserved_parity = Vec::new();
+        let mut reserved_parity_groups = Vec::new();
         for mut group in reservation_groups {
             reservation::validate_group_shape(&group)?;
             reserved_parity.extend_from_slice(&group.parity_segments);
@@ -652,6 +699,7 @@ impl LifecycleHandler {
                 }
             }
             self.store.put_reservation_group(&group).await?;
+            reserved_parity_groups.push(group);
         }
 
         let now_ms = unix_time_ms();
@@ -679,16 +727,8 @@ impl LifecycleHandler {
                 not_before_ms: now_ms,
             });
         }
-        if !reserved_strips.is_empty() {
-            self.allocator.rollback_strips(&reserved_strips).await?;
-        }
-        if !reserved_parity.is_empty() {
-            self.allocator
-                .pool()
-                .free_blocks(reserved_parity)
-                .await
-                .map_err(LifecycleError::Cleanup)?;
-        }
+        self.rollback_reserved_resources(&reserved_strips, reserved_parity, &reserved_parity_groups)
+            .await?;
         for group in self.store.list_reservation_groups(chunk_id).await? {
             if let Some(group_id) = group.group_id {
                 self.store.delete_reservation_group(chunk_id, &group_id).await?;
@@ -775,6 +815,7 @@ impl LifecycleHandler {
         }
         let mut reserved_strips = Vec::new();
         let mut reserved_parity = Vec::new();
+        let mut reserved_parity_groups = Vec::new();
         for mut group in reservation_groups {
             reservation::validate_group_shape(&group)?;
             reserved_parity.extend_from_slice(&group.parity_segments);
@@ -787,17 +828,10 @@ impl LifecycleHandler {
                 }
             }
             self.store.put_reservation_group(&group).await?;
+            reserved_parity_groups.push(group);
         }
-        if !reserved_strips.is_empty() {
-            self.allocator.rollback_strips(&reserved_strips).await?;
-        }
-        if !reserved_parity.is_empty() {
-            self.allocator
-                .pool()
-                .free_blocks(reserved_parity)
-                .await
-                .map_err(LifecycleError::Cleanup)?;
-        }
+        self.rollback_reserved_resources(&reserved_strips, reserved_parity, &reserved_parity_groups)
+            .await?;
         for group in self.store.list_reservation_groups(chunk_id).await? {
             if let Some(group_id) = group.group_id {
                 self.store.delete_reservation_group(chunk_id, &group_id).await?;

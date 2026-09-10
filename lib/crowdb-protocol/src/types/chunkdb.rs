@@ -271,6 +271,10 @@ pub struct StripReservationGroup {
     pub preferred_survivors: Vec<u32>,
     pub data_num: u32,
     pub code_num: u32,
+    #[serde(default)]
+    pub planned_cursors: Vec<u64>,
+    #[serde(default)]
+    pub planned_closed_sequences: Vec<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]

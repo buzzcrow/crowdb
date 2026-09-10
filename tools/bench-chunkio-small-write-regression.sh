@@ -31,6 +31,7 @@ cd "$(dirname "$0")/.."
 
 unset CROWDB_ASAN
 CASES="${CHUNKIO_SMALL_BENCH_CASES:-}"
+MODE="${CHUNKIO_SMALL_BENCH_MODE:-ec}"
 DURATION="${CHUNKIO_SMALL_BENCH_DURATION:-20}"
 TIMEOUT_SECS="${CHUNKIO_SMALL_BENCH_TIMEOUT:-120}"
 MAX_PIPELINES="${CHUNKIO_SMALL_BENCH_MAX_PIPELINES:-32}"
@@ -40,6 +41,7 @@ SKIP_BUILD="${CHUNKIO_SMALL_BENCH_SKIP_BUILD:-0}"
 DISKIO_CONNECTIONS="${CHUNKIO_SMALL_BENCH_DISKIO_CONNECTIONS:-8}"
 DISKIO_RPC_WORKERS="${CHUNKIO_SMALL_BENCH_DISKIO_RPC_WORKERS:-1}"
 SERVER_RPC_WORKERS="${CHUNKIO_SMALL_BENCH_SERVER_RPC_WORKERS:-}"
+MIN_EC_MIRROR_RATIO_PCT="${CHUNKIO_SMALL_BENCH_MIN_EC_MIRROR_RATIO_PCT:-70}"
 RUN_STAMP=$(date +%Y%m%d-%H%M%S)
 LOG_ROOT="${CHUNKIO_SMALL_BENCH_LOG_ROOT:-$(pwd)/bench-log/chunkio-small-write-$RUN_STAMP}"
 RESULTS_FILE="${CHUNKIO_SMALL_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
@@ -48,13 +50,19 @@ source tools/bench-regression-common.sh
 CURRENT_CONFIG="$REGRESSION_CONFIG"
 FAILURES=0
 CASE_NUMBER=0
+declare -A MIRROR_TPS
 
+if [[ "$MODE" != ec && "$MODE" != mirror && "$MODE" != ab ]]; then
+    echo "ERROR: CHUNKIO_SMALL_BENCH_MODE must be ec, mirror, or ab" >&2
+    exit 2
+fi
 if ! [[ "$DURATION" =~ ^[1-9][0-9]*$ && "$TIMEOUT_SECS" =~ ^[1-9][0-9]*$ \
     && "$MAX_PIPELINES" =~ ^[1-9][0-9]*$ && "$SCALE_OUT_QUEUE_BYTES" =~ ^[1-9][0-9]*$ \
     && "$DISKIO_CONNECTIONS" =~ ^[1-9][0-9]*$ \
     && "$DISKIO_RPC_WORKERS" =~ ^[1-9][0-9]*$ ]] \
     || { [ -n "$SCALE_OUT_QUEUE_OBJECTS" ] \
         && ! [[ "$SCALE_OUT_QUEUE_OBJECTS" =~ ^[1-9][0-9]*$ ]]; } \
+    || ! [[ "$MIN_EC_MIRROR_RATIO_PCT" =~ ^[1-9][0-9]*$ ]] \
     || { [ -n "$SERVER_RPC_WORKERS" ] && ! [[ "$SERVER_RPC_WORKERS" =~ ^[1-9][0-9]*$ ]]; }; then
     echo "ERROR: durations and pipeline queue settings must be positive integers" >&2
     exit 2
@@ -74,8 +82,9 @@ field() {
 }
 
 run_case() {
-    local label="$1" size="$2" concurrency="$3" queue_objects="$4"
-    if [ -n "$CASES" ] && [[ " $CASES " != *" $label "* ]]; then
+    local base_label="$1" size="$2" concurrency="$3" queue_objects="$4" mode="$5"
+    local label="${base_label}_${mode}"
+    if [ -n "$CASES" ] && [[ " $CASES " != *" $base_label "* && " $CASES " != *" $label "* ]]; then
         return
     fi
     if [ -n "$SCALE_OUT_QUEUE_OBJECTS" ]; then
@@ -85,8 +94,12 @@ run_case() {
         regression_reset_stack 1
     fi
     CASE_NUMBER=$((CASE_NUMBER + 1))
-    echo ">>> $label (size=$size concurrency=$concurrency)"
-    local output status line requested completed errors incomplete stop scale_out
+    echo ">>> $label (size=$size concurrency=$concurrency mode=$mode)"
+    local output status line requested completed errors incomplete stop scale_out parity_bytes first_reservation_us objects_s
+    local mode_args=()
+    if [ "$mode" = mirror ]; then
+        mode_args+=(--mirror-only)
+    fi
     set +e
     output=$(timeout --signal=INT --kill-after=10 "$TIMEOUT_SECS" \
         pixi run -- ./target/release/crowdb-cli --log-root "$LOG_ROOT" \
@@ -96,6 +109,7 @@ run_case() {
         --diskio-connections "$DISKIO_CONNECTIONS" --diskio-rpc-workers "$DISKIO_RPC_WORKERS" \
         --max-pipelines "$MAX_PIPELINES" \
         --scale-out-queue-bytes "$SCALE_OUT_QUEUE_BYTES" --scale-out-queue-objects "$queue_objects" \
+        "${mode_args[@]}" \
         --metrics-interval 1 2>&1)
     status=$?
     set -e
@@ -107,8 +121,11 @@ run_case() {
     incomplete=$(field "$line" incomplete)
     stop=$(field "$line" stop)
     scale_out=$(field "$line" scale_out)
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$label" "$size" "$concurrency" "$requested" "$completed" \
+    parity_bytes=$(field "$line" foreground_parity_bytes)
+    first_reservation_us=$(field "$line" first_reservation_us)
+    objects_s=$(field "$line" objects_s)
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$label" "$mode" "$size" "$concurrency" "$requested" "$completed" \
         "$errors" "$incomplete" "$stop" "$(field "$line" objects_s)" \
         "$(field "$line" logical_mib_s)" "$(field "$line" p50_us)" \
         "$(field "$line" p90_us)" "$(field "$line" p95_us)" \
@@ -121,18 +138,48 @@ run_case() {
         "$(field "$line" max_objects_per_write_request)" \
         "$(field "$line" max_buffers_per_write_request)" \
         "$(field "$line" max_active_pipelines)" "$scale_out" "$(field "$line" scale_in)" \
+        "$parity_bytes" "$(field "$line" reservation_wait_us)" "$first_reservation_us" \
         >>"$RESULTS_FILE"
     if [ "$status" -ne 0 ] || [ -z "$line" ] || [ -z "$requested" ] || [ -z "$completed" ] \
         || [ "$completed" -eq 0 ] || [ "$completed" != "$requested" ] \
         || [ "$errors" != 0 ] || [ "$incomplete" != 0 ] \
         || [ "$stop" != complete ] || [ -z "$(field "$line" batches)" ] \
         || [ "$(field "$line" batch_watchdog_expirations)" != 0 ] \
-        || [ -z "$(field "$line" aggregate_write_requests)" ]; then
+        || [ -z "$(field "$line" aggregate_write_requests)" ] \
+        || [ -z "$first_reservation_us" ] || [ "$first_reservation_us" -eq 0 ]; then
         echo "ERROR: $label failed accounting" >&2
+        FAILURES=$((FAILURES + 1))
+    elif [ "$mode" = ec ] && { [ -z "$parity_bytes" ] || [ "$parity_bytes" -eq 0 ]; }; then
+        echo "ERROR: $label completed no foreground parity bytes" >&2
+        FAILURES=$((FAILURES + 1))
+    elif [ "$mode" = mirror ] && [ "${parity_bytes:-0}" -ne 0 ]; then
+        echo "ERROR: $label unexpectedly completed foreground parity bytes" >&2
         FAILURES=$((FAILURES + 1))
     elif [ "$concurrency" -ge 32 ] && [ "${scale_out:-0}" -eq 0 ]; then
         echo "ERROR: $label did not exercise queue-driven scale-out" >&2
         FAILURES=$((FAILURES + 1))
+    fi
+    if [ "$mode" = mirror ]; then
+        MIRROR_TPS[$base_label]="$objects_s"
+    elif [ "$MODE" = ab ] && [ -n "${MIRROR_TPS[$base_label]:-}" ]; then
+        local ratio
+        ratio=$(awk -v ec="$objects_s" -v mirror="${MIRROR_TPS[$base_label]}" \
+            'BEGIN { if (mirror == 0) print 0; else printf "%.2f", ec * 100 / mirror }')
+        echo ">>> $base_label EC/mirror throughput ratio: ${ratio}% (minimum ${MIN_EC_MIRROR_RATIO_PCT}%)"
+        if ! awk -v ratio="$ratio" -v minimum="$MIN_EC_MIRROR_RATIO_PCT" \
+            'BEGIN { exit !(ratio >= minimum) }'; then
+            echo "ERROR: $base_label EC throughput ratio regressed" >&2
+            FAILURES=$((FAILURES + 1))
+        fi
+    fi
+}
+
+run_selected_case() {
+    if [ "$MODE" = ab ]; then
+        run_case "$1" "$2" "$3" "$4" mirror
+        run_case "$1" "$2" "$3" "$4" ec
+    else
+        run_case "$1" "$2" "$3" "$4" "$MODE"
     fi
 }
 
@@ -143,7 +190,7 @@ if [ "$SKIP_BUILD" != 1 ]; then
 fi
 mkdir -p "$LOG_ROOT"
 regression_init
-printf 'case\tsize_bytes\tconcurrency\trequested\tcompleted\terrors\tincomplete\tstop\tobjects_s\tlogical_mib_s\tp50_us\tp90_us\tp95_us\tp99_us\tmax_us\tbatches\tbatch_watchdog_expirations\tmax_batch_objects\taggregate_write_requests\taggregate_write_objects\taggregate_write_buffers\taggregate_write_payload_bytes\tmax_objects_per_write_request\tmax_buffers_per_write_request\tmax_active_pipelines\tscale_out\tscale_in\n' >"$RESULTS_FILE"
+printf 'case\tmode\tsize_bytes\tconcurrency\trequested\tcompleted\terrors\tincomplete\tstop\tobjects_s\tlogical_mib_s\tp50_us\tp90_us\tp95_us\tp99_us\tmax_us\tbatches\tbatch_watchdog_expirations\tmax_batch_objects\taggregate_write_requests\taggregate_write_objects\taggregate_write_buffers\taggregate_write_payload_bytes\tmax_objects_per_write_request\tmax_buffers_per_write_request\tmax_active_pipelines\tscale_out\tscale_in\tforeground_parity_bytes\treservation_wait_us\tfirst_reservation_us\n' >"$RESULTS_FILE"
 
 deploy_args=(cluster local-deploy -t combined --metrics-interval 1 --allow-unsafe-ec \
     --kv-backend mem-block --wal-backend mem-block --no-fsync)
@@ -151,16 +198,16 @@ if [ -n "$SERVER_RPC_WORKERS" ]; then
     deploy_args+=(--diskio-rpc-workers "$SERVER_RPC_WORKERS")
 fi
 regression_cli "${deploy_args[@]}"
-run_case small_1k_1t 1024 1 128
-run_case small_1k_4t 1024 4 128
-run_case small_1k_32t 1024 32 16
-run_case small_1k_128t 1024 128 16
-run_case small_1k_256t 1024 256 16
-run_case small_8k_1t 8192 1 128
-run_case small_8k_4t 8192 4 128
-run_case small_8k_32t 8192 32 16
-run_case small_8k_128t 8192 128 16
-run_case small_8k_256t 8192 256 16
+run_selected_case small_1k_1t 1024 1 128
+run_selected_case small_1k_4t 1024 4 128
+run_selected_case small_1k_32t 1024 32 16
+run_selected_case small_1k_128t 1024 128 16
+run_selected_case small_1k_256t 1024 256 16
+run_selected_case small_8k_1t 8192 1 128
+run_selected_case small_8k_4t 8192 4 128
+run_selected_case small_8k_32t 8192 32 16
+run_selected_case small_8k_128t 8192 128 16
+run_selected_case small_8k_256t 8192 256 16
 destroy_cluster
 
 echo "=== DONE ==="
