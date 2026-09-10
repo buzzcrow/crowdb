@@ -11,23 +11,23 @@ whose ordered journal is R141 and whose durable tree is R140.
 
 ## Phase 1: Types, Framing, and Injected Contracts
 
-- [ ] Add `crowdb-chunk-kv` to the workspace with partition/range/epoch,
+- [x] Add `crowdb-chunk-kv` to the workspace with partition/range/epoch,
   request identity, mutation/condition/result, journal position, lifecycle,
   checkpoint, split plan/artifact/proof, and typed error models.
-- [ ] Implement canonical operation digests and checksummed bounded WAL frame
+- [x] Implement canonical operation digests and checksummed bounded WAL frame
   encode/decode with corruption and incomplete-tail handling.
-- [ ] Add private journal and tree contracts plus in-memory `test-util`
+- [x] Add private journal and tree contracts plus in-memory `test-util`
   implementations; do not expose a raw R141 stream from the partition API.
 
 ## Phase 2: Partition Sequencer and Reads
 
-- [ ] Implement lock-free bounded request/frame admission and one ordered MPSC
+- [x] Implement lock-free bounded request/frame admission and one ordered MPSC
   sequencer with staged-overlay conditional evaluation.
-- [ ] Journal resolved success/failure, apply only after durability, retain
+- [x] Journal resolved success/failure, apply only after durability, retain
   request results/digests, and publish durable/applied frontiers.
 - [ ] Implement range-checked point reads, min-position waits, bounded scans,
   and forward seek; add real C++ reverse cursor support for reverse operations.
-- [ ] Cover multi-partition independence, retries/conflicts/expiry, concurrent
+- [~] Cover multi-partition independence, retries/conflicts/expiry, concurrent
   conditions, pending-read visibility, stalls, and apply uncertainty.
 
 ## Phase 3: Checkpoint, Replay, and Transfer

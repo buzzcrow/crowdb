@@ -606,6 +606,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "crowdb-chunk-kv"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bincode",
+ "bytes",
+ "crowdb-chunk-kv",
+ "crowdb-chunk-stream",
+ "crowdb-tree-ffi",
+ "serde",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "crowdb-chunk-stream"
 version = "0.1.0"
 dependencies = [

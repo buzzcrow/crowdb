@@ -1,0 +1,32 @@
+[package]
+name = "crowdb-chunk-kv"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Epoch-fenced range-partitioned KV over chunk-backed trees and streams."
+autobenches = false
+
+[lints]
+workspace = true
+
+[features]
+test-util = ["crowdb-chunk-stream/test-util"]
+
+[dependencies]
+async-trait = "0.1"
+bincode = "1"
+bytes = "1"
+crowdb-chunk-stream = { path = "../crowdb-chunk-stream" }
+crowdb-tree-ffi = { path = "../crowdb-tree/ffi" }
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+crowdb-chunk-kv = { path = ".", features = ["test-util"] }
+crowdb-chunk-stream = { path = "../crowdb-chunk-stream", features = ["test-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
