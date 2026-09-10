@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#include "crowdb-tree/c_api.h"
 #include "crowdb-tree/page_store.h"
 #include "crowdb-tree/range_rebuild.h"
 
@@ -121,6 +122,50 @@ TEST(RangeRebuild, LazyRecoveryRejectsAResolvedPageOutsideTheTreeRange)
     ASSERT_TRUE(Crowdbtree::open(options, &bounded).ok());
     EXPECT_FALSE(bounded->get(Slice("b"), nullptr, nullptr));
     EXPECT_TRUE(bounded->io_failed());
+}
+
+TEST(RangeRebuild, CApiBuildsAnIndependentTreeOnAnInjectedStore)
+{
+    ct_options source_options = {};
+    ct_tree   *source         = nullptr;
+    ASSERT_EQ(ct_open(&source_options, &source), 0);
+    for (uint64_t slot = 1; slot <= 4; ++slot) {
+        const char key = "abmz"[slot - 1];
+        ASSERT_EQ(ct_apply_put(source, slot, reinterpret_cast<const uint8_t *>(&key), 1,
+                               reinterpret_cast<const uint8_t *>("v"), 1),
+                  0);
+    }
+    ASSERT_EQ(ct_flush(source), 0);
+
+    ct_page_store *store = nullptr;
+    ASSERT_EQ(ct_page_store_open_mem(1, &store), 0);
+    const uint8_t start                 = 'b';
+    const uint8_t end                   = 'm';
+    ct_options    destination_options   = {};
+    destination_options.page_store      = store;
+    destination_options.range_bounded   = 1;
+    destination_options.range_start     = &start;
+    destination_options.range_start_len = 1;
+    destination_options.range_end       = &end;
+    destination_options.range_end_len   = 1;
+    ct_tree               *destination  = nullptr;
+    ct_range_rebuild_stats stats        = {};
+    ASSERT_EQ(ct_rebuild_range(source, &destination_options, &destination, &stats), 0);
+    ct_page_store_free(store);
+    EXPECT_EQ(stats.entries_examined, 4U);
+    EXPECT_EQ(stats.entries_emitted, 1U);
+    EXPECT_EQ(stats.entries_filtered, 3U);
+
+    int32_t  found = 0;
+    uint64_t slot  = 0;
+    ct_buf   value = {};
+    ASSERT_EQ(ct_get(destination, &start, 1, &found, &slot, &value), 0);
+    EXPECT_EQ(found, 1);
+    EXPECT_EQ(slot, 2U);
+    ct_free_buf(&value);
+
+    ct_close(destination);
+    ct_close(source);
 }
 
 } // namespace

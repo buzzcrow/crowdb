@@ -6,6 +6,7 @@ use crowdb_tree_ffi::{
     AsyncCrowdbtree, BatchOp, Crowdbtree, CtError, ExtOp, KeyRange, Options, PageStore, PageStoreBackend,
     PinnedGetOutcome,
 };
+use std::sync::Arc;
 
 fn key(i: usize) -> Vec<u8> {
     format!("key{i:05}").into_bytes()
@@ -34,6 +35,32 @@ fn mem_apply_get_scan() {
     assert!(!truncated);
     assert_eq!(entries.len(), 39); // 40 puts - 1 delete
     assert!(entries.windows(2).all(|w| w[0].key < w[1].key)); // key-sorted
+}
+
+#[test]
+fn range_rebuild_returns_independent_bounded_tree() {
+    let source = Crowdbtree::open(&Options::default()).unwrap();
+    for (slot, key) in [b"a", b"b", b"m", b"z"].into_iter().enumerate() {
+        source.apply_put(slot as u64 + 1, key, b"v").unwrap();
+    }
+    source.flush().unwrap();
+
+    let store = Arc::new(PageStore::open_mem(1).unwrap());
+    let (rebuilt, stats) = source
+        .rebuild_range(&Options {
+            page_store: Some(store),
+            key_range: KeyRange::Bounded {
+                start: Some(b"b".to_vec()),
+                end: Some(b"m".to_vec()),
+            },
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(stats.entries_examined, 4);
+    assert_eq!(stats.entries_emitted, 1);
+    assert_eq!(stats.entries_filtered, 3);
+    assert_eq!(rebuilt.get(b"b").unwrap(), Some((2, b"v".to_vec())));
+    assert_eq!(rebuilt.get(b"a"), Err(CtError::InvalidArgument));
 }
 
 #[test]

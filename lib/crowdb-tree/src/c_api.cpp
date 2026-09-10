@@ -17,6 +17,7 @@
 #include "crowdb-tree/cell.h"
 #include "crowdb-tree/crowdb-tree.h"
 #include "crowdb-tree/page_store.h"
+#include "crowdb-tree/range_rebuild.h"
 #include "crowdb-tree/snapshot_io.h"
 #include "crowdb-tree/text_page_store.h"
 #ifdef CROWDB_HAVE_LIBURING
@@ -452,6 +453,68 @@ ct_status ct_open(const ct_options *opt, ct_tree **out)
 void ct_close(ct_tree *t)
 {
     delete t;
+}
+
+ct_status ct_rebuild_range(ct_tree *source, const ct_options *destination_options, ct_tree **out,
+                           ct_range_rebuild_stats *stats)
+{
+    if (source == nullptr || destination_options == nullptr || out == nullptr ||
+        destination_options->page_store == nullptr || destination_options->page_store->bundle == nullptr ||
+        destination_options->page_store->bundle->store == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+
+    auto    handle = std::make_unique<ct_tree>();
+    Options options;
+    if (destination_options->frame_bytes != 0) {
+        options.frame_bytes = destination_options->frame_bytes;
+    }
+    if (destination_options->buffer_pool_bytes != 0) {
+        options.buffer_pool_bytes = destination_options->buffer_pool_bytes;
+    }
+    if (destination_options->max_inline_value != 0) {
+        options.max_inline_value = destination_options->max_inline_value;
+    }
+    options.compression = destination_options->compression == 1 ? compress_algo::kLz4 : compress_algo::kNone;
+    options.store_id    = destination_options->store_id;
+    options.group_id    = destination_options->group_id;
+    options.name =
+        "s" + std::to_string(destination_options->store_id) + ".g" + std::to_string(destination_options->group_id);
+
+    std::optional<std::string> start;
+    std::optional<std::string> end;
+    if (destination_options->range_bounded != 0) {
+        if (destination_options->range_start != nullptr) {
+            start.emplace(reinterpret_cast<const char *>(destination_options->range_start),
+                          destination_options->range_start_len);
+        }
+        if (destination_options->range_end != nullptr) {
+            end.emplace(reinterpret_cast<const char *>(destination_options->range_end),
+                        destination_options->range_end_len);
+        }
+        options.key_range = KeyRange::bounded(std::move(start), std::move(end));
+    }
+
+    handle->injected_store   = destination_options->page_store->bundle;
+    options.page_store       = handle->injected_store->store.get();
+    options.async_page_store = handle->injected_store->async_store_view != nullptr
+                                 ? handle->injected_store->async_store_view
+                                 : handle->injected_store->async_store.get();
+    options.backend_label    = handle->injected_store->backend_label;
+    RangeRebuildStats rebuilt;
+    Status            status = rebuild_range(*source->tree, options.key_range, options, &handle->tree, &rebuilt);
+    if (!status.ok()) {
+        return to_status(status);
+    }
+    if (stats != nullptr) {
+        *stats = {.entries_examined = rebuilt.entries_examined,
+                  .entries_emitted  = rebuilt.entries_emitted,
+                  .entries_filtered = rebuilt.entries_filtered,
+                  .pages_reused     = rebuilt.pages_reused,
+                  .pages_rebuilt    = rebuilt.pages_rebuilt};
+    }
+    *out = handle.release();
+    return static_cast<ct_status>(Code::kOk);
 }
 
 void ct_init_logging(const char *log_dir, const char *level, size_t max_file_mb, size_t max_files,

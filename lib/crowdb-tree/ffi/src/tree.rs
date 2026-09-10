@@ -13,6 +13,7 @@ use tokio::io::unix::AsyncFd;
 use crate::error::{check, take_buf, CtError};
 use crate::options::{KeyRange, Options, PageStoreBackend};
 use crate::reactor::{drain_eventfd, EventfdPump, RawFdView};
+use crate::stats::RangeRebuildStats;
 use crate::sys;
 
 /// Owning handle to a crowdb-tree engine. Send + Sync: the C++ engine serializes
@@ -108,6 +109,58 @@ impl Crowdbtree {
 
     pub(crate) fn as_ptr(&self) -> *mut sys::ct_tree {
         self.ptr.as_ptr()
+    }
+
+    /// Build an independently owned tree containing exactly `opt.key_range`.
+    /// The destination must use an injected store, whose ownership is retained
+    /// by the returned tree handle.
+    pub fn rebuild_range(&self, opt: &Options) -> Result<(Self, RangeRebuildStats), CtError> {
+        let store = opt.page_store.as_ref().ok_or(CtError::InvalidArgument)?;
+        let (range_bounded, range_start, range_end) = match &opt.key_range {
+            KeyRange::Unbounded => (0, None, None),
+            KeyRange::Bounded { start, end } => (1, start.as_deref(), end.as_deref()),
+        };
+        let copt = sys::ct_options {
+            page_store: store.as_ptr(),
+            range_bounded,
+            range_start: range_start.map_or(std::ptr::null(), <[u8]>::as_ptr),
+            range_start_len: range_start.map_or(0, <[u8]>::len),
+            range_end: range_end.map_or(std::ptr::null(), <[u8]>::as_ptr),
+            range_end_len: range_end.map_or(0, <[u8]>::len),
+            path: std::ptr::null(),
+            iu_size: opt.iu_size,
+            frame_bytes: opt.frame_bytes,
+            buffer_pool_bytes: opt.buffer_pool_bytes,
+            compression: u8::from(opt.compression_lz4),
+            max_inline_value: opt.max_inline_value,
+            backend: 0,
+            block_size: 0,
+            store_id: opt.store_id,
+            group_id: opt.group_id,
+            sync_mode: opt.sync_mode.as_u8(),
+            log_dir: std::ptr::null(),
+            log_level: std::ptr::null(),
+            log_file_prefix: std::ptr::null(),
+            log_max_file_mb: 0,
+            log_max_files: 0,
+        };
+        let mut out = std::ptr::null_mut();
+        let mut raw = sys::ct_range_rebuild_stats::default();
+        check(unsafe { sys::ct_rebuild_range(self.as_ptr(), &copt, &mut out, &mut raw) })?;
+        let tree = Self {
+            ptr: NonNull::new(out).ok_or(CtError::Internal)?,
+            eventfd_pumps: std::sync::OnceLock::new(),
+        };
+        Ok((
+            tree,
+            RangeRebuildStats {
+                entries_examined: raw.entries_examined,
+                entries_emitted: raw.entries_emitted,
+                entries_filtered: raw.entries_filtered,
+                pages_reused: raw.pages_reused,
+                pages_rebuilt: raw.pages_rebuilt,
+            },
+        ))
     }
 
     pub fn apply_put(&self, slot: u64, key: &[u8], value: &[u8]) -> Result<(), CtError> {

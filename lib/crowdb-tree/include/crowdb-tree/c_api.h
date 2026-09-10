@@ -51,6 +51,15 @@ using ct_merge_gc_stats = struct
     uint64_t blocks_deleted;
 };
 
+using ct_range_rebuild_stats = struct
+{
+    uint64_t entries_examined;
+    uint64_t entries_emitted;
+    uint64_t entries_filtered;
+    uint64_t pages_reused;
+    uint64_t pages_rebuilt;
+};
+
 // Batched diagnostics snapshot; mirrors crowdb::tree::EngineStats. Every field
 // is O(1) (an already-tracked atomic counter or BufferPool::stats()), so
 // ct_get_stats is safe to poll periodically (metrics scrape / console
@@ -163,6 +172,8 @@ ct_status ct_chunk_page_store_get_stats(const ct_page_store *store, ct_chunk_pag
 uint64_t  ct_chunk_page_store_reclaim_orphans(ct_page_store *store);
 uint64_t  ct_root_catalog_reclaim_before(ct_root_catalog *catalog, uint64_t tree_id, uint64_t generation);
 ct_status ct_open(const ct_options *opt, ct_tree **out);
+ct_status ct_rebuild_range(ct_tree *source, const ct_options *destination_options, ct_tree **out,
+                           ct_range_rebuild_stats *stats);
 void      ct_close(ct_tree *t);
 
 // Process-global logging control (not bound to any ct_tree instance).

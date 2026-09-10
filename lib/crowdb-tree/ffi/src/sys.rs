@@ -91,6 +91,16 @@ pub struct ct_merge_gc_stats {
 
 #[repr(C)]
 #[derive(Default)]
+pub struct ct_range_rebuild_stats {
+    pub entries_examined: u64,
+    pub entries_emitted: u64,
+    pub entries_filtered: u64,
+    pub pages_reused: u64,
+    pub pages_rebuilt: u64,
+}
+
+#[repr(C)]
+#[derive(Default)]
 pub struct ct_stats {
     pub last_applied_slot: u64,
     pub contiguous_slot: u64,
@@ -148,6 +158,12 @@ extern "C" {
     pub fn ct_page_store_open_mem(iu_size: u32, out: *mut *mut ct_page_store) -> c_int;
     pub fn ct_page_store_free(store: *mut ct_page_store);
     pub fn ct_open(opt: *const ct_options, out: *mut *mut ct_tree) -> c_int;
+    pub fn ct_rebuild_range(
+        source: *mut ct_tree,
+        destination_options: *const ct_options,
+        out: *mut *mut ct_tree,
+        stats: *mut ct_range_rebuild_stats,
+    ) -> c_int;
     pub fn ct_close(t: *mut ct_tree);
     pub fn ct_init_logging(
         log_dir: *const c_char,

@@ -32,7 +32,7 @@ pub use error::CtError;
 pub use options::{Compression, KeyRange, Options, PageStore, PageStoreBackend, SyncMode};
 pub use reactor::PinnedValue;
 pub use scan::{ScanEntry, ViewEntry};
-pub use stats::{MergeGcStats, Stats};
+pub use stats::{MergeGcStats, RangeRebuildStats, Stats};
 pub use tree::{
     ct_add_log_stderr, ct_flush_logging, ct_init_logging, ct_init_test_logging, ct_shutdown_logging,
     Crowdbtree,

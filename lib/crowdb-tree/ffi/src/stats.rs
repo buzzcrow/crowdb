@@ -17,6 +17,15 @@ pub struct MergeGcStats {
     pub blocks_deleted: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RangeRebuildStats {
+    pub entries_examined: u64,
+    pub entries_emitted: u64,
+    pub entries_filtered: u64,
+    pub pages_reused: u64,
+    pub pages_rebuilt: u64,
+}
+
 /// Point-in-time diagnostics snapshot; see [`Crowdbtree::stats`]. Every field
 /// is O(1) on the C++ side (an already-tracked atomic counter or
 /// `BufferPool::stats`), so this is safe to poll periodically.
