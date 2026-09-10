@@ -9,6 +9,7 @@ use crowdb_protocol::chunk_kv::{
 fn policy() -> DomainMonitorDescriptor {
     DomainMonitorDescriptor {
         domain: "chunk-kv".into(),
+        service_registry_name: "chunk-kv".into(),
         driver_version: 1,
         capability_version: 1,
         heartbeat_interval_ms: 2_000,
@@ -18,6 +19,7 @@ fn policy() -> DomainMonitorDescriptor {
         max_clock_skew_ms: 1_000,
         self_fence_margin_ms: 1_000,
         failure_policy: DomainFailurePolicy::AutomaticSharedStorage,
+        balance_policy: "count-first-v1".into(),
     }
 }
 

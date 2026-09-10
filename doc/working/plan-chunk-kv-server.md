@@ -20,9 +20,9 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 ## Phase 2: Monitor and Lease Authority
 
-- [ ] Implement idempotent domain-monitor registration and a supervised,
+- [~] Implement idempotent domain-monitor registration and a supervised,
   leader-fenced driver runtime with read-failure containment.
-- [~] Add raw expired-instance observation and fake-clock health transitions.
+- [x] Add raw expired-instance observation and fake-clock health transitions.
 - [x] Issue aggregate assignment-digest grants and enforce conservative local
   self-fencing and replacement exclusion deadlines.
 
@@ -30,7 +30,7 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 - [ ] Add `crowdb-chunk-kv-server` config, logging, metrics, health,
   management, graceful shutdown, and zero/many partition hosting.
-- [ ] Add direct RPC types and handlers for R142 operations, typed errors,
+- [~] Add direct RPC types and handlers for R142 operations, typed errors,
   request identity, journal positions, deadlines, and stale-owner redirects.
 - [ ] Bind scan continuation tokens to direction, partition, epoch, and map
   revision and return refresh-required after topology changes.
@@ -45,7 +45,7 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 ## Phase 5: Gates and Documentation
 
-- [ ] Add protocol, catalog, lease, monitor, RPC, lifecycle, and fixture tests.
+- [~] Add protocol, catalog, lease, monitor, RPC, lifecycle, and fixture tests.
 - [ ] Run every required Rust and server gate through `pixi run`.
 - [ ] Fold stable behavior into a permanent server design and index entry.
 
@@ -57,4 +57,6 @@ R142 partitions and publishes one complete group-0 range catalog.
   the existing KV client/server boundaries.
 - R145 owns routed multi-partition composition and end-to-end client coverage.
 - Data RPC request/response, transition-detail, and balance-policy wire models
-  remain after the catalog and serving-grant foundation.
+  now cover the point-operation foundation; crowdb-rpc FlatBuffers transport,
+  ordered seek/scan execution, continuation handling, and management endpoints
+  remain.

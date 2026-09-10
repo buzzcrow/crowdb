@@ -629,6 +629,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "crowdb-chunk-kv",
+ "crowdb-chunk-stream",
  "crowdb-protocol",
  "thiserror 2.0.18",
  "tokio",

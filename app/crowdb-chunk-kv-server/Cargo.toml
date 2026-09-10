@@ -14,9 +14,14 @@ workspace = true
 arc-swap = "1.7"
 async-trait = "0.1"
 crowdb-chunk-kv = { path = "../../lib/crowdb-chunk-kv" }
+crowdb-chunk-stream = { path = "../../lib/crowdb-chunk-stream" }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+
+[dev-dependencies]
+crowdb-chunk-kv = { path = "../../lib/crowdb-chunk-kv", features = ["test-util"] }
+crowdb-chunk-stream = { path = "../../lib/crowdb-chunk-stream", features = ["test-util"] }
 
 [[bin]]
 name = "crowdb-chunk-kv-server"

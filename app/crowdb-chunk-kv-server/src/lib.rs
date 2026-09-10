@@ -5,6 +5,13 @@
 
 pub mod catalog;
 pub mod lease;
+pub mod monitor;
+pub mod server;
 
 pub use catalog::{CatalogError, CatalogPublisher, CatalogStore, HeadWriteOutcome, MemoryCatalogStore};
 pub use lease::{classify_instance, replacement_may_activate, AuthorityError, ServingAuthority};
+pub use monitor::{
+    DomainMonitorDriver, DomainMonitorRegistry, MonitorDescriptorStore, MonitorError, MonitorTick,
+    PreparedMonitor,
+};
+pub use server::ChunkKvService;

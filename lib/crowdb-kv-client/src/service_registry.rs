@@ -156,8 +156,22 @@ impl ServiceRegistryClient {
         service: &str,
         ttl_ms: u64,
     ) -> Result<Vec<(InstanceId, InstanceValue)>> {
-        let prefix = InstanceKey::text_prefix_for_service(service);
+        let mut instances = self.read_all_instance_observations(service).await?;
         let cutoff = now_ms().saturating_sub(ttl_ms);
+        instances.retain(|(_, value)| value.last_heartbeat_ms >= cutoff);
+        Ok(instances)
+    }
+
+    /// Read raw service observations, including TTL-expired instances.
+    ///
+    /// Domain monitors use this view to distinguish a dead owner from an
+    /// absent control-plane record. Ordinary discovery must continue through
+    /// [`read_all_instances`](Self::read_all_instances), which filters expiry.
+    pub async fn read_all_instance_observations(
+        &self,
+        service: &str,
+    ) -> Result<Vec<(InstanceId, InstanceValue)>> {
+        let prefix = InstanceKey::text_prefix_for_service(service);
         let mut out: Vec<(InstanceId, InstanceValue)> = Vec::new();
         let mut start_after: Vec<u8> = Vec::new();
         loop {
@@ -185,9 +199,7 @@ impl ServiceRegistryClient {
                     key: path.to_string(),
                     reason: e.to_string(),
                 })?;
-                if val.last_heartbeat_ms >= cutoff {
-                    out.push((val.instance_id, val));
-                }
+                out.push((val.instance_id, val));
             }
             if !outcome.truncated || outcome.items.is_empty() {
                 break;

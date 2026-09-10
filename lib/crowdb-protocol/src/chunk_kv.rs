@@ -211,6 +211,7 @@ pub enum DomainFailurePolicy {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainMonitorDescriptor {
     pub domain: String,
+    pub service_registry_name: String,
     pub driver_version: u32,
     pub capability_version: u32,
     pub heartbeat_interval_ms: u64,
@@ -220,6 +221,7 @@ pub struct DomainMonitorDescriptor {
     pub max_clock_skew_ms: u64,
     pub self_fence_margin_ms: u64,
     pub failure_policy: DomainFailurePolicy,
+    pub balance_policy: String,
 }
 
 impl DomainMonitorDescriptor {
@@ -229,9 +231,11 @@ impl DomainMonitorDescriptor {
     ///
     /// Returns an error for missing identity/version or unsafe timing.
     pub fn validate(&self) -> Result<(), ChunkKvProtocolError> {
-        if self.domain.is_empty()
+        if !valid_name(&self.domain)
+            || !valid_name(&self.service_registry_name)
             || self.driver_version == 0
             || self.capability_version == 0
+            || self.balance_policy.is_empty()
             || self.heartbeat_interval_ms == 0
             || self.suspect_after_ms < self.heartbeat_interval_ms
             || self.dead_after_ms < self.suspect_after_ms
@@ -248,6 +252,19 @@ impl DomainMonitorDescriptor {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnsureDomainMonitorRequest {
+    pub descriptor: DomainMonitorDescriptor,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EnsureDomainMonitorOutcome {
+    Created,
+    AlreadyExists,
+    DescriptorConflict,
+    UnsupportedMonitorDomain,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -291,6 +308,215 @@ pub struct ServingGrant {
     pub expires_at_ms: u64,
     pub assignments: Vec<ServingAssignment>,
     pub assignment_digest: [u8; 32],
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ClientRequestId {
+    pub client_instance_id: Id128,
+    pub client_sequence: u64,
+}
+
+impl ClientRequestId {
+    /// Validates the stable logical request identity used across retries.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either identity component is zero.
+    pub fn validate(&self) -> Result<(), ChunkKvProtocolError> {
+        if self.client_instance_id == Id128::default() || self.client_sequence == 0 {
+            return Err(ChunkKvProtocolError::InvalidRpcRequest);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RpcJournalPosition {
+    pub stream_name: Id128,
+    pub offset: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestRouting {
+    pub request_id: ClientRequestId,
+    pub map_revision: u64,
+    pub partition_id: Id128,
+    pub owner_epoch: u64,
+    pub min_journal_position: Option<RpcJournalPosition>,
+    pub deadline_ms: Option<u64>,
+}
+
+impl RequestRouting {
+    /// Validates identity and routing fields before request admission.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a stable identity or authority field is absent.
+    pub fn validate(&self) -> Result<(), ChunkKvProtocolError> {
+        self.request_id.validate()?;
+        if self.map_revision == 0 || self.partition_id == Id128::default() || self.owner_epoch == 0 {
+            return Err(ChunkKvProtocolError::InvalidRpcRequest);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PointOperation {
+    Get {
+        key: Vec<u8>,
+    },
+    Put {
+        key: Vec<u8>,
+        value: Vec<u8>,
+    },
+    Delete {
+        key: Vec<u8>,
+    },
+    PutIfAbsent {
+        key: Vec<u8>,
+        value: Vec<u8>,
+    },
+    CompareExchange {
+        key: Vec<u8>,
+        condition: RpcCompareCondition,
+        value: Vec<u8>,
+    },
+    ConditionalDelete {
+        key: Vec<u8>,
+        condition: RpcCompareCondition,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RpcCompareCondition {
+    Revision(u64),
+    Value(Vec<u8>),
+}
+
+impl PointOperation {
+    #[must_use]
+    pub fn key(&self) -> &[u8] {
+        match self {
+            Self::Get { key }
+            | Self::Put { key, .. }
+            | Self::Delete { key }
+            | Self::PutIfAbsent { key, .. }
+            | Self::CompareExchange { key, .. }
+            | Self::ConditionalDelete { key, .. } => key,
+        }
+    }
+
+    #[must_use]
+    pub fn is_mutation(&self) -> bool {
+        !matches!(self, Self::Get { .. })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PointRequest {
+    pub routing: RequestRouting,
+    pub operation: PointOperation,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SeekKind {
+    #[default]
+    Ceiling,
+    Higher,
+    Floor,
+    Lower,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SeekRequest {
+    pub routing: RequestRouting,
+    pub key: Vec<u8>,
+    pub kind: SeekKind,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScanDirection {
+    #[default]
+    Forward,
+    Reverse,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanContinuation {
+    pub direction: ScanDirection,
+    pub last_key: Vec<u8>,
+    pub partition_id: Id128,
+    pub owner_epoch: u64,
+    pub map_revision: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScanRequest {
+    pub routing: RequestRouting,
+    pub start: Option<Vec<u8>>,
+    pub end: Option<Vec<u8>>,
+    pub direction: ScanDirection,
+    pub limit: u32,
+    pub continuation: Option<ScanContinuation>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RpcValue {
+    pub key: Vec<u8>,
+    pub value: Vec<u8>,
+    pub revision: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OperationResult {
+    Value(Option<RpcValue>),
+    Mutation {
+        applied: bool,
+        revision: Option<u64>,
+        observed: Option<RpcValue>,
+    },
+    Scan {
+        items: Vec<RpcValue>,
+        continuation: Option<ScanContinuation>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChunkKvRpcErrorCode {
+    Overloaded,
+    WriteStalled,
+    Recovering,
+    LeaseExpired,
+    RequestExpired,
+    RequestConflict,
+    NotMyRange,
+    RefreshRequired,
+    InvalidRequest,
+    Internal,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnerHint {
+    pub instance_id: u64,
+    pub rpc_endpoint: String,
+    pub owner_epoch: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RpcFailure {
+    pub code: ChunkKvRpcErrorCode,
+    pub message: String,
+    pub retry_after_ms: Option<u64>,
+    pub latest_map_revision: Option<u64>,
+    pub owner_hint: Option<OwnerHint>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChunkKvResponse {
+    pub map_revision: u64,
+    pub journal_position: Option<RpcJournalPosition>,
+    pub result: Result<OperationResult, RpcFailure>,
 }
 
 impl ServingGrant {
@@ -340,8 +566,17 @@ pub enum ChunkKvProtocolError {
     InvalidMonitorDescriptor,
     #[error("serving grant is invalid")]
     InvalidServingGrant,
+    #[error("chunk KV RPC request is invalid")]
+    InvalidRpcRequest,
     #[error("protocol record encoding failed")]
     Encoding,
+}
+
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 fn validate_entry(entry: &CatalogEntry) -> Result<(), ChunkKvProtocolError> {
