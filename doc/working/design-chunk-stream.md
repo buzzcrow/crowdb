@@ -77,10 +77,10 @@ but unpublished chunks and metadata are orphan work.
 ## 5. Reads and Trim
 
 Reads reject offsets below `trim_offset` and beyond the durable tail. They
-binary-search manifest fences and page offsets, coalesce adjacent physical
-ranges in one chunk, and submit at most `read_window_bytes`. Results remain in
-logical order even when storage completes out of order. Active reads are capped
-by the acknowledged cursor returned with the manifest view.
+binary-search manifest fences and page offsets, load only pages touched by the
+request, and submit at most `read_window_bytes` per sequential-reader pull.
+Results remain in logical order. Active reads are capped by the acknowledged
+cursor returned with the manifest view.
 
 `trim_prefix(g)` rejects regression and values above the durable tail. It first
 publishes a manifest containing the new logical trim point, then performs a
@@ -117,6 +117,10 @@ bytes, and orphans.
 - Production active-chunk writing needs a mirrored writer over the existing
   chunkdb cursor and DiskIO seams; the current object writer is EC-oriented and
   its mirror writer remains a placeholder.
+- Production chunk-reader integration still needs adjacent-range coalescing and
+  bounded out-of-order prefetch; the core currently issues ordered range reads.
+- Orphan enumeration and retained-generation cleanup need production metadata
+  watermarks; core reopen repairs sealed unpublished rollover state.
 - Benchmark-derived defaults and production watchdog intervals remain open
   until fixed workloads run on production-equivalent hardware.
 - Metadata-group rebinding, per-stream metadata sharding, and EC conversion are

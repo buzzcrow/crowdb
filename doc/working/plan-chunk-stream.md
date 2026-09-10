@@ -13,43 +13,46 @@ without placing rollover metadata on the append hot path.
 
 - [x] Add `crowdb-chunk-stream` to the workspace with typed errors, names,
   bindings, manifests, extent pages, active descriptors, and validation.
-- [~] Add injected registry, metadata, and chunk-storage async traits plus
+- [x] Add injected registry, metadata, and chunk-storage async traits plus
   in-memory `test-util` implementations.
 - [x] Add protocol registry/manifest/extent key and value types without WAL
   framing or partition-server dependencies.
 
 ## Phase 2: Ordered Append Worker
 
-- [ ] Implement bounded request/byte admission, one MPSC worker, immediate
+- [x] Implement bounded request/byte admission, one MPSC worker, immediate
   first-request submission, and bounded drain of already queued requests.
-- [ ] Implement vectored batch assembly, three-mirror durability, one cursor
+- [x] Implement vectored batch assembly, three-mirror durability, one cursor
   advance, exact per-request ranges, and typed batch failure.
-- [ ] Resolve ambiguous cursor publication by durable cursor plus checksum and
+- [x] Resolve ambiguous cursor publication by durable cursor plus checksum and
   stall the writer if neither commit nor absence can be proven.
 
 ## Phase 3: Rollover and Recovery
 
-- [ ] Allocate/prep one successor, prevent cross-chunk appends, seal the old
+- [x] Allocate/prep one successor, prevent cross-chunk appends, seal the old
   chunk, update one extent page, and generation-fence manifest publication.
-- [ ] Reopen the highest complete generation, derive the active tail, reject
-  stale epochs, and account unreachable prepared objects.
-- [ ] Cover crash points before and after manifest publication.
+- [~] Reopen the highest complete generation, derive the active tail, reject
+  stale epochs, and recover sealed-but-unpublished rollover state. Production
+  orphan reporting remains open.
+- [x] Cover the authoritative generation before publication and the complete
+  new generation after publication through generation-CAS tests.
 
 ## Phase 4: Read, Trim, and Observation
 
-- [ ] Implement logarithmic extent lookup, checked physical translation,
-  bounded ordered read windows, and within-chunk coalescing.
-- [ ] Publish logical trim before bounded idempotent strip cleanup and preserve
+- [~] Implement logarithmic target-page lookup, checked physical translation,
+  and bounded ordered read windows. Production multi-range prefetch/coalescing
+  remains open.
+- [x] Publish logical trim before bounded idempotent strip cleanup and preserve
   boundary strips.
-- [ ] Add watchdog observations and metrics without changing completion
+- [x] Add watchdog observations and metrics without changing completion
   ownership.
 
 ## Phase 5: Gates and Documentation
 
-- [ ] Run format, clippy, crate tests, chunk-client tests, and server tests
+- [x] Run format, clippy, crate tests, chunk-client tests, and server tests
   through `pixi run`.
-- [ ] Fold the working design into `doc/design/chunkio/`, update
-  `doc/doc_index.md`, and remove temporary documents after implementation.
+- [x] Fold the implemented contract into `doc/design/chunkio/` and update
+  `doc/doc_index.md`. Keep temporary documents while production issues remain.
 - [ ] Remove the completed backlog detail and row in a separate cleanup commit.
 
 ## Tests
@@ -66,4 +69,8 @@ without placing rollover metadata on the append hot path.
   open while the injected contracts and core stream state machine are built.
 - The chunk-client mirror writer is still a placeholder; production wiring must
   use the fenced cursor APIs without weakening the three-replica contract.
+- Production reader integration still needs adjacent-range coalescing and
+  bounded out-of-order prefetch over the chunk-reader implementation.
+- Orphan enumeration and retained-generation cleanup need production metadata
+  watermarks; core reopen already repairs sealed unpublished rollover state.
 - Hardware benchmark thresholds and metadata scale-out remain deferred.

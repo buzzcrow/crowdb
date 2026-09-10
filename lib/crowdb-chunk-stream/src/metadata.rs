@@ -13,6 +13,12 @@ pub struct ExtentLocation {
     pub available: u64,
 }
 
+/// Validates a complete manifest generation and returns its durable tail.
+///
+/// # Errors
+///
+/// Returns [`StreamError::Corruption`] for inconsistent identities, fences,
+/// arrays, coverage, cursors, or arithmetic overflow.
 pub fn validate_manifest(manifest: &StreamManifest, pages: &[StreamExtentPage]) -> Result<u64> {
     if manifest.trim_offset > manifest.sealed_tail {
         return Err(StreamError::Corruption("trim offset exceeds sealed tail".into()));
@@ -23,7 +29,15 @@ pub fn validate_manifest(manifest: &StreamManifest, pages: &[StreamExtentPage]) 
         ));
     }
 
-    let mut expected = 0;
+    let mut expected = manifest
+        .extent_pages
+        .first()
+        .map_or(manifest.sealed_tail, |fence| fence.first_logical);
+    if expected > manifest.trim_offset {
+        return Err(StreamError::Corruption(
+            "sealed extent coverage begins after the trim point".into(),
+        ));
+    }
     for (fence, page) in manifest.extent_pages.iter().zip(pages) {
         validate_extent_page(page)?;
         let first = *page
@@ -76,6 +90,12 @@ pub fn validate_manifest(manifest: &StreamManifest, pages: &[StreamExtentPage]) 
     Ok(tail)
 }
 
+/// Resolves one logical offset within a validated extent page.
+///
+/// # Errors
+///
+/// Returns an error if the page is malformed, the offset is outside it, or
+/// physical address arithmetic overflows.
 pub fn resolve_extent(page: &StreamExtentPage, logical_offset: u64) -> Result<ExtentLocation> {
     validate_extent_page(page)?;
     let index = page

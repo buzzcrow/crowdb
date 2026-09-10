@@ -609,12 +609,15 @@ dependencies = [
 name = "crowdb-chunk-stream"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "async-trait",
  "bytes",
+ "crc32fast",
  "crowdb-chunk-stream",
  "crowdb-protocol",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

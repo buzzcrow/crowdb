@@ -23,6 +23,13 @@ pub struct TrimmedChunk {
     pub reclaimed_bytes: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DurableCursor {
+    pub offset: u64,
+    pub last_advance_checksum: Option<u32>,
+    pub sealed: bool,
+}
+
 #[async_trait]
 pub trait StreamRegistry: Send + Sync {
     async fn load(&self, stream_name: StreamName) -> Result<Option<StreamBinding>>;
@@ -41,7 +48,7 @@ pub trait StreamMetadataStore: Send + Sync {
     ) -> Result<Option<StreamExtentPage>>;
     async fn publish(
         &self,
-        expected_generation: u64,
+        expected: Option<(u64, u64)>,
         manifest: StreamManifest,
         extent_pages: Vec<StreamExtentPage>,
     ) -> Result<()>;
@@ -71,7 +78,7 @@ pub trait StreamChunkStore: Send + Sync {
         new_cursor: u64,
         checksum: u32,
     ) -> Result<CursorAdvance>;
-    async fn durable_cursor(&self, chunk_id: ChunkId, writer_epoch: u64) -> Result<u64>;
+    async fn durable_cursor(&self, chunk_id: ChunkId, writer_epoch: u64) -> Result<DurableCursor>;
     async fn seal(&self, chunk_id: ChunkId, writer_epoch: u64, cursor: u64) -> Result<()>;
     async fn read(&self, chunk_id: ChunkId, physical_offset: u64, length: usize) -> Result<Bytes>;
     async fn release_trimmed(&self, chunk_id: ChunkId, logical_end: u64) -> Result<TrimmedChunk>;

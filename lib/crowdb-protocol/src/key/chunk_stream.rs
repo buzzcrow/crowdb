@@ -3,6 +3,8 @@
 
 //! Group-0 binding and metadata-group keys for chunk streams.
 
+use std::fmt::Write;
+
 use crate::chunk_stream::StreamName;
 
 use super::encoding::{
@@ -22,10 +24,7 @@ impl TextKey for StreamBindingKey {
     fn encode_to_path(&self, out: &mut String) {
         encode_path_header(out, Self::PATH_MAGIC, Self::PATH_TYPE);
         out.push('/');
-        out.push_str(&format!(
-            "{:016x}{:016x}",
-            self.stream_name.high, self.stream_name.low
-        ));
+        let _ = write!(out, "{:016x}{:016x}", self.stream_name.high, self.stream_name.low);
     }
 
     fn decode_path(parts: &[&str]) -> Result<Self, KeyError> {

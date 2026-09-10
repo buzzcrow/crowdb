@@ -5,11 +5,20 @@
 
 mod error;
 mod metadata;
+mod metrics;
 mod storage;
+mod stream;
+
+#[cfg(feature = "test-util")]
+pub mod memory;
 
 pub use error::{Result, StreamError};
 pub use metadata::{resolve_extent, validate_manifest, ExtentLocation};
-pub use storage::{CursorAdvance, StreamChunkStore, StreamMetadataStore, StreamRegistry, TrimmedChunk};
+pub use metrics::{StreamMetrics, StreamMetricsSnapshot};
+pub use storage::{
+    CursorAdvance, DurableCursor, StreamChunkStore, StreamMetadataStore, StreamRegistry, TrimmedChunk,
+};
+pub use stream::{AppendRange, ChunkStream, StreamConfig, StreamReader};
 
 pub use crowdb_protocol::chunk_stream::{
     ActiveChunkDescriptor, StreamBinding, StreamBindingState, StreamExtentPage, StreamExtentPageFence,
