@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R139** — Bump this line in the same commit when adding a new item.
+**Next R number: R140** — Bump this line in the same commit when adding a new item.
 
 ### High Priority
 
@@ -193,12 +193,14 @@ R32 KV consensus, R117 KV client-facing, R116 chunkdb) are DONE.
 - **[R5](R5-rdma-alloc.md)** — RDMA-pinned allocation — Blocked by: RDMA backend — Area: crowdbtree
   engine — `buffer::allocate` seam is designed for RDMA-pinned memory but no
   RDMA backend exists yet; placeholder only.
-- **[R138](R138-service-rpc-workers-config-file.md)** — Per-service
-  `rpc_workers` in config files — Area: ops / config — Each service's
-  own `rpc_workers` (server listener worker count) is CLI-only today;
-  add it to the TOML config schema for kv-server, diskdb, chunkdb, and
-  add a config file to diskio (which has none). Code defaults remain as
-  fallback; CLI overrides file; file overrides code default.
+- **[R138](R138-service-rpc-workers-config-file.md)** — Unified
+  file-backed configuration — Area: ops / config — Unify startup
+  precedence across KV, diskdb, chunkdb, and diskio; add each server's
+  `rpc_workers` to TOML and give diskio a complete config file.
+- **[R139](R139-group0-service-config.md)** — Group-0 distributed service
+  configuration — Area: config / control plane — Publish versioned,
+  scoped config through group 0; each service validates revisions, applies
+  dynamic fields atomically, and reports fields that require restart.
 
 **Complexity — Medium:**
 - **[R4](R4-bounded-mempool.md)** — Bounded memory pool — Area: crowdbtree engine — `buffer::allocate` uses
