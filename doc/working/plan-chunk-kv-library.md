@@ -29,6 +29,9 @@ whose ordered journal is R141 and whose durable tree is R140.
   and forward seek; add real C++ reverse cursor support for reverse operations.
 - [~] Cover multi-partition independence, retries/conflicts/expiry, concurrent
   conditions, pending-read visibility, stalls, and apply uncertainty.
+- [~] Expose per-partition lock-free counters for mutation outcomes, rejects,
+  admission, stalls, recovery, checkpoints, and split control; ordered-read,
+  maintenance, pin, and detailed split-work metrics remain open.
 
 ## Phase 3: Checkpoint, Replay, and Transfer
 
@@ -70,3 +73,5 @@ whose ordered journal is R141 and whose durable tree is R140.
   activation still need production R140 tree construction and manifest pins.
 - Hardware evidence is required before finalizing queue, replay, fence, and
   memory defaults.
+- Metrics still need scan/seek direction, page reuse/pins, replay duration,
+  maintenance degradation, and split base/catch-up/fenced-time observations.

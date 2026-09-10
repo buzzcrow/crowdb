@@ -12,8 +12,8 @@ use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 use crate::{
     canonical_operation_digest, decode_frame, encode_frame, Checkpoint, ChunkKvError, CompareCondition,
     FrameDecode, JournalPosition, MutationOperation, MutationResult, PartitionId, PartitionJournal,
-    PartitionLifecycle, PartitionRange, PartitionTree, RequestId, Result, SplitAbortProof, SplitArtifact,
-    SplitCommitProof, SplitPlan, TransitionId, ValueRevision, WalRecord,
+    PartitionLifecycle, PartitionMetrics, PartitionRange, PartitionTree, RequestId, Result, SplitAbortProof,
+    SplitArtifact, SplitCommitProof, SplitPlan, TransitionId, ValueRevision, WalRecord,
 };
 
 #[derive(Clone, Debug)]
@@ -103,6 +103,7 @@ pub struct Partition {
     applied_notify: Arc<Notify>,
     admission_notify: Arc<Notify>,
     split_transition: Arc<Mutex<Option<SplitTransition>>>,
+    metrics: Arc<PartitionMetrics>,
     config: Arc<PartitionConfig>,
 }
 
@@ -120,6 +121,7 @@ struct WorkerState {
     retry_replay_offset: Arc<AtomicU64>,
     applied_notify: Arc<Notify>,
     admission_notify: Arc<Notify>,
+    metrics: Arc<PartitionMetrics>,
     config: Arc<PartitionConfig>,
     next_seq: u64,
     results: HashMap<RequestId, RetainedResult>,
@@ -140,6 +142,7 @@ struct RecoverySeed {
     results: HashMap<RequestId, RetainedResult>,
     result_order: std::collections::VecDeque<RequestId>,
     expired_floor: HashMap<(u64, u64), u64>,
+    recovered: bool,
 }
 
 struct ReplayState {
@@ -201,6 +204,7 @@ impl Partition {
                 results: HashMap::new(),
                 result_order: std::collections::VecDeque::new(),
                 expired_floor: HashMap::new(),
+                recovered: false,
             },
         )
     }
@@ -268,6 +272,10 @@ impl Partition {
         let applied_notify = Arc::new(Notify::new());
         let admission_notify = Arc::new(Notify::new());
         let split_transition = Arc::new(Mutex::new(None));
+        let metrics = Arc::new(PartitionMetrics::default());
+        if seed.recovered {
+            metrics.recovery();
+        }
         let config = Arc::new(config);
         let state = WorkerState {
             partition_id,
@@ -283,6 +291,7 @@ impl Partition {
             retry_replay_offset: Arc::clone(&retry_replay_offset),
             applied_notify: Arc::clone(&applied_notify),
             admission_notify: Arc::clone(&admission_notify),
+            metrics: Arc::clone(&metrics),
             config: Arc::clone(&config),
             next_seq,
             results: seed.results,
@@ -307,6 +316,7 @@ impl Partition {
             applied_notify,
             admission_notify,
             split_transition,
+            metrics,
             config,
         })
     }
@@ -322,17 +332,22 @@ impl Partition {
         request_id: RequestId,
         operation: MutationOperation,
     ) -> Result<MutationResponse> {
+        self.metrics.mutation_request();
         self.validate_epoch(ownership_epoch)?;
         if !accepts_mutations(self.lifecycle()) {
             return Err(write_state_error(self.lifecycle()));
         }
         self.validate_operation(&operation)?;
         let reserved_bytes = estimated_request_bytes(&operation)?;
-        reserve_requests(&self.queued_requests, self.config.queue_requests)?;
+        if let Err(error) = reserve_requests(&self.queued_requests, self.config.queue_requests) {
+            self.metrics.admission_backpressure();
+            return Err(error);
+        }
         if let Err(error) = reserve_bytes(&self.queued_bytes, self.config.queue_bytes, reserved_bytes) {
             if self.queued_requests.fetch_sub(1, Ordering::AcqRel) == 1 {
                 self.admission_notify.notify_waiters();
             }
+            self.metrics.admission_backpressure();
             return Err(error);
         }
         if !accepts_mutations(self.lifecycle()) {
@@ -359,6 +374,7 @@ impl Partition {
                 &self.admission_notify,
                 reserved_bytes,
             );
+            self.metrics.admission_backpressure();
             return Err(ChunkKvError::Overloaded);
         }
         response.await.map_err(|_| ChunkKvError::WriteStalled)?
@@ -377,6 +393,7 @@ impl Partition {
     ) -> Result<Option<ValueRevision>> {
         self.validate_epoch(ownership_epoch)?;
         if !self.range.contains(key) {
+            self.metrics.range_reject();
             return Err(ChunkKvError::OutOfRange);
         }
         match self.lifecycle() {
@@ -408,6 +425,11 @@ impl Partition {
     #[must_use]
     pub fn lifecycle(&self) -> PartitionLifecycle {
         lifecycle_from_code(self.lifecycle.load(Ordering::Acquire))
+    }
+
+    #[must_use]
+    pub fn metrics(&self) -> &PartitionMetrics {
+        &self.metrics
     }
 
     /// Fences new mutations and waits for all previously admitted work.
@@ -464,6 +486,7 @@ impl Partition {
             )
             .map_err(|observed| write_state_error(lifecycle_from_code(observed)))?;
         *transition = Some(SplitTransition { plan, artifact: None });
+        self.metrics.split_begin();
         Ok(())
     }
 
@@ -492,6 +515,7 @@ impl Partition {
             Err(observed) => return Err(write_state_error(lifecycle_from_code(observed))),
         }
         self.wait_for_admitted_mutations().await;
+        self.metrics.split_fence();
         Ok(())
     }
 
@@ -546,6 +570,7 @@ impl Partition {
         }
         self.lifecycle
             .store(lifecycle_code(PartitionLifecycle::Retired), Ordering::Release);
+        self.metrics.split_commit();
         Ok(())
     }
 
@@ -577,6 +602,7 @@ impl Partition {
         *transition = None;
         self.lifecycle
             .store(lifecycle_code(PartitionLifecycle::Serving), Ordering::Release);
+        self.metrics.split_abort();
         Ok(())
     }
 
@@ -605,6 +631,7 @@ impl Partition {
         if self.tree.last_applied_seq() != applied_seq {
             return Err(ChunkKvError::ApplyStateUnknown);
         }
+        self.metrics.checkpoint();
         Ok(Checkpoint {
             tree_manifest,
             applied_seq,
@@ -637,6 +664,7 @@ impl Partition {
 
     fn validate_epoch(&self, ownership_epoch: u64) -> Result<()> {
         if ownership_epoch != self.ownership_epoch.load(Ordering::Acquire) {
+            self.metrics.stale_epoch();
             return Err(ChunkKvError::StaleEpoch);
         }
         Ok(())
@@ -644,6 +672,7 @@ impl Partition {
 
     fn validate_operation(&self, operation: &MutationOperation) -> Result<()> {
         if !self.range.contains(operation.key()) {
+            self.metrics.range_reject();
             return Err(ChunkKvError::OutOfRange);
         }
         if operation.key().len() > self.config.max_key_bytes {
@@ -779,6 +808,7 @@ impl ReplayState {
                 results: HashMap::new(),
                 result_order: std::collections::VecDeque::new(),
                 expired_floor: HashMap::new(),
+                recovered: true,
             },
             checkpoint_applied_seq: checkpoint.applied_seq,
             stream_name: checkpoint.stream_name,
@@ -1076,6 +1106,7 @@ async fn append_and_apply(state: &mut WorkerState, prepared: Vec<PreparedMutatio
                 lifecycle_code(PartitionLifecycle::WriteStalled),
                 Ordering::Release,
             );
+            state.metrics.write_stall();
             fail_prepared(state, prepared, &error);
             return;
         }
@@ -1100,6 +1131,7 @@ async fn append_and_apply(state: &mut WorkerState, prepared: Vec<PreparedMutatio
             state
                 .lifecycle
                 .store(lifecycle_code(PartitionLifecycle::Recovering), Ordering::Release);
+            state.metrics.apply_unknown();
             finish_request(state, entry.request, Err(ChunkKvError::ApplyStateUnknown));
             for follower in entry.followers {
                 finish_request(state, follower, Err(ChunkKvError::ApplyStateUnknown));
@@ -1117,6 +1149,7 @@ async fn append_and_apply(state: &mut WorkerState, prepared: Vec<PreparedMutatio
             .store(entry.record.mutation_seq, Ordering::Release);
         state.applied_position.store(position.offset, Ordering::Release);
         state.applied_notify.notify_waiters();
+        state.metrics.mutation_result(entry.response.result.applied());
         retain_result(
             state,
             entry.record.request_id,

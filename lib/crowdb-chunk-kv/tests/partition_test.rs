@@ -330,6 +330,10 @@ async fn range_and_epoch_reject_before_journaling() {
         Err(ChunkKvError::OutOfRange)
     );
     assert_eq!(store.chunk_write_count(), writes);
+    let metrics = partition.metrics().snapshot();
+    assert_eq!(metrics.mutation_requests, 2);
+    assert_eq!(metrics.stale_epochs, 1);
+    assert_eq!(metrics.range_rejects, 1);
 }
 
 #[tokio::test]
