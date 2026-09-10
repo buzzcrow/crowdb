@@ -89,9 +89,11 @@ and structurally safe range rebuild while preserving local tree behavior.
 
 ## Phase 5: Gates and Documentation
 
-- [ ] **Run affected tests separately**: `pixi run tree-fmt`,
+- [~] **Run affected tests separately**: `pixi run tree-fmt`,
   `pixi run tree-lint`, `pixi run test-tree-ct`, and
-  `pixi run test-tree-ffi`.
+  `pixi run test-tree-ffi`. Formatting, all 473 C++ tests, and all 34 Rust
+  FFI tests pass; tree-lint remains environment-blocked by missing compiler
+  system headers in its direct invocation.
 - [ ] **Fold permanent design**: create
   `doc/design/tree/design-crowdb-tree-chunk-storage.md`, update the tree root and
   `doc/doc_index.md`, then remove the working design.
