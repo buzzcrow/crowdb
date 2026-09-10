@@ -21,6 +21,7 @@ members = [
     "lib/crowdb-chunk-kv",
     "lib/crowdb-test-harness",
     "app/crowdb-port-alloc",
+    "app/crowdb-chunk-kv-server",
 ]
 # : crowdb-tree/ffi moved from `exclude` into `members` now that
 # crowdb-kv depends on it (CrowdbTreeEngine) -- building crowdb-kv already triggers

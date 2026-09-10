@@ -15,15 +15,15 @@ R142 partitions and publishes one complete group-0 range catalog.
   transition, range-page/head, serving-grant, and typed outcome models.
 - [x] Validate complete binary-keyspace coverage, page/head checksums,
   generation monotonicity, exact adjacency, and epoch non-regression.
-- [ ] Implement an injected immutable catalog store with page-before-head
+- [x] Implement an injected immutable catalog store with page-before-head
   publication and ambiguous-head reread resolution.
 
 ## Phase 2: Monitor and Lease Authority
 
 - [ ] Implement idempotent domain-monitor registration and a supervised,
   leader-fenced driver runtime with read-failure containment.
-- [ ] Add raw expired-instance observation and fake-clock health transitions.
-- [ ] Issue aggregate assignment-digest grants and enforce conservative local
+- [~] Add raw expired-instance observation and fake-clock health transitions.
+- [x] Issue aggregate assignment-digest grants and enforce conservative local
   self-fencing and replacement exclusion deadlines.
 
 ## Phase 3: Server and RPC

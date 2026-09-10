@@ -1,0 +1,23 @@
+[package]
+name = "crowdb-chunk-kv-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Range-partitioned chunk-backed KV service."
+
+[lints]
+workspace = true
+
+[dependencies]
+arc-swap = "1.7"
+async-trait = "0.1"
+crowdb-chunk-kv = { path = "../../lib/crowdb-chunk-kv" }
+crowdb-protocol = { path = "../../lib/crowdb-protocol" }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+
+[[bin]]
+name = "crowdb-chunk-kv-server"
+path = "src/main.rs"

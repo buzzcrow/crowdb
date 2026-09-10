@@ -623,6 +623,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "crowdb-chunk-kv-server"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "crowdb-chunk-kv",
+ "crowdb-protocol",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "crowdb-chunk-stream"
 version = "0.1.0"
 dependencies = [
