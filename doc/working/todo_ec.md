@@ -27,7 +27,7 @@ Status: complete. No open implementation item remains from this list.
 - **Foreground EC throughput attribution:** the 60-second A/B sentinel reports
   parity bytes, reservation wait, watchdogs, and paired EC/mirror throughput.
   It rejects errors, incomplete objects, watchdogs, and an EC/mirror ratio below
-  70%.
+  80%.
 
 ## Verification
 

@@ -3,6 +3,8 @@
 
 # Small-Write Path Design and Plan
 
+Status: complete. All phases and verification items are finished.
+
 ## 1. Problem Statement
 
 1 KiB single-thread write latency was ~2200 µs p50, far too high for the
@@ -32,7 +34,7 @@ The user's intended architecture:
 - EC conversion becomes incremental: as the shadow buffer fills,
   compute EC outputs and release memory progressively.
 
-## 2. Small-Write Flow (After Phase 2.5)
+## 2. Small-Write Flow
 
 ```
 Client                          DiskIO Server
@@ -54,8 +56,8 @@ SmallObjectWriter.on_data
                                                <- response
        5. Reclaim shadow buffer (try_into_mut)
        6. Return locations after mirror IO completes
-       7. Background chain: coalesce advance_chunk_write; on strip close,
-          append a bounded batch of prefetched mirror strips at low water
+       7. Background chain: coalesce advance_chunk_write, confirm consumed
+          strips, and refill the bounded hidden reservation group
   <- Location (offset, length)
 ```
 
@@ -77,9 +79,10 @@ Key points:
 - **Metadata off critical path**: normal cursor progress is coalesced in
   `pending_advance`; a later write polls a completed task but never waits for
   the preceding cursor RPC.
-- **Strip prefetch**: allocation attaches four strips initially. Closed-strip
-  metadata and `append_chunk(strip_count=N)` run in the background at a
-  low-water mark. Seal releases attached strips beyond the written length.
+- **Strip prefetch**: the normal path consumes hidden leased reservations and
+  confirms strips asynchronously. A bounded attached-strip batch remains the
+  compatibility fallback. Seal releases every unused reservation or attached
+  tail beyond the written length.
 
 ## 3. Phase 1 Changes (Complete)
 
@@ -226,12 +229,13 @@ pad and align before submitting to the kernel.
 
 ## 5. Phase 3: Incremental EC (Complete)
 
-### 5.1 Current Behavior
+### 5.1 Implemented Behavior
 
-EC conversion happens at strip close: the full shadow buffer is
-frozen, split into 8 data shards, 4 parity shards are computed, and
-all 12 shards are written to EC segments. Memory is released only
-after the full conversion completes.
+Each special reservation contains eight three-copy mirror candidates and four
+parity segments. After each mirror write becomes durable, its existing 1 MiB
+shadow updates four persistent parity accumulators and is released. The eighth
+update completes parity without retaining all data images; the client writes
+and fsyncs only the four parity segments before fenced 8+4 publication.
 
 ### 5.2 Design Requirements (from user)
 

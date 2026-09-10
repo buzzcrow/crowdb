@@ -333,9 +333,10 @@ remains future measurement work.
 
 The steady-state sentinel runs mirror-only and foreground-EC modes for 60
 seconds with identical inputs, reports reservation startup latency and parity
-bytes, and requires EC throughput to remain at least 70% of its paired mirror
-run. At 1 KiB and 32 threads, mirror produced 33,729.19 objects/s and EC
-produced 33,807.27 objects/s (100.23%). The retained paired result is
+bytes, and requires EC throughput to remain at least 80% of its paired mirror
+run. The lowest clean reference ratio is 92.01%. At 1 KiB and 32 threads,
+mirror produced 33,729.19 objects/s and EC produced 33,807.27 objects/s
+(100.23%). The retained paired result is
 `bench-log/chunkio-small-write-20260910-081757`.
 
 The clean 128-thread reproduction produced 107,420.80 mirror objects/s and

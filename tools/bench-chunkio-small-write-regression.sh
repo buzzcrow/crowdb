@@ -3,29 +3,26 @@
 # Usage: bash tools/bench-chunkio-small-write-regression.sh
 #
 # Real client/ChunkDB/DiskDB metadata flow with mem-block KV/WAL and NullDisk
-# data. Each case runs for 20 seconds; TPS is successful object responses only.
-# The report also records aggregate objects/buffers per DiskIO write request and
-# queue-driven pipeline scale-out/scale-in behavior (initial 1, maximum 32).
+# data. The regular matrix runs each case for 20 seconds; the A/B wrapper runs
+# the 32- and 128-thread cases for 60 seconds. TPS is successful object
+# responses only. The report also records aggregate objects/buffers per DiskIO
+# write request, reservation latency, foreground parity bytes, and queue-driven
+# pipeline scale-out/scale-in behavior (initial 1, maximum 32).
 #
 # Reference platform: Intel Core i9-7960X (16c/32t, x86_64, Linux).
 # Configuration: 8 DiskIO connections/endpoint, 1 client DiskIO RPC worker,
-# 4 MiB scale-out queue threshold, completion-driven batching, mem-block
-# metadata, NullDisk data (2026-09-09).
+# 4 MiB scale-out byte threshold, 16-object threshold at 32+ threads,
+# completion-driven batching, mem-block metadata, NullDisk data (2026-09-10).
 #
-# Reference results (all errors=0, incomplete=0, stop=complete):
-#   size    threads    success TPS    MiB/s    p50 us    p99 us
-#   1 KiB         1         424.42       0.4     2,309      3,532
-#   1 KiB         4         856.48       0.8     4,627      6,095
-#   1 KiB        32       6,275.96       6.1     5,032      9,448
-#   1 KiB       128      19,508.32      19.1     6,166     13,627
-#   1 KiB       256      31,313.08      30.6     7,549     19,388
-#   8 KiB         1         390.94       3.1     2,492      3,909
-#   8 KiB         4         675.29       5.3     5,323     10,882
-#   8 KiB        32       4,464.84      34.9     6,701     18,595
-#   8 KiB       128      13,461.05     105.2     8,791     23,066
-#   8 KiB       256      23,446.56     183.2     9,811     27,503
-# The 1 KiB/1-thread distribution rerun additionally measured p90=2,665 us,
-# p95=2,918 us, and max=26,575 us across 8,489 successful responses.
+# Latest valid 60-second A/B results (errors/incomplete/watchdogs all zero):
+#   size    threads    mode      objects/s    MiB/s    p50 us    p99 us    EC/mirror
+#   1 KiB        32    mirror     33,729.19      32.9       651     13,329           -
+#   1 KiB        32    EC         33,807.27      33.0       667     10,997     100.23%
+#   1 KiB       128    mirror    107,420.80     104.9       660     16,676           -
+#   1 KiB       128    EC         98,835.24      96.5       693     18,430      92.01%
+# Results: bench-log/chunkio-small-write-20260910-081757 and
+# bench-log/chunkio-small-write-128-repro-20260910. The 128-thread values use
+# the clean reproduction; an earlier sample with a KV server exit is excluded.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -41,7 +38,7 @@ SKIP_BUILD="${CHUNKIO_SMALL_BENCH_SKIP_BUILD:-0}"
 DISKIO_CONNECTIONS="${CHUNKIO_SMALL_BENCH_DISKIO_CONNECTIONS:-8}"
 DISKIO_RPC_WORKERS="${CHUNKIO_SMALL_BENCH_DISKIO_RPC_WORKERS:-1}"
 SERVER_RPC_WORKERS="${CHUNKIO_SMALL_BENCH_SERVER_RPC_WORKERS:-}"
-MIN_EC_MIRROR_RATIO_PCT="${CHUNKIO_SMALL_BENCH_MIN_EC_MIRROR_RATIO_PCT:-70}"
+MIN_EC_MIRROR_RATIO_PCT="${CHUNKIO_SMALL_BENCH_MIN_EC_MIRROR_RATIO_PCT:-80}"
 RUN_STAMP=$(date +%Y%m%d-%H%M%S)
 LOG_ROOT="${CHUNKIO_SMALL_BENCH_LOG_ROOT:-$(pwd)/bench-log/chunkio-small-write-$RUN_STAMP}"
 RESULTS_FILE="${CHUNKIO_SMALL_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
