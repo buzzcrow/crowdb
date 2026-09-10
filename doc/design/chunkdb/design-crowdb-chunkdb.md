@@ -898,11 +898,14 @@ Reservation reconciliation scans reservation records in bounded rotating
 pages, so an old prefix cannot starve later records. It deterministically
 admits a completed special group to the normal conversion task path. An
 expired incomplete group is cancelled and reclaimed when its consumed strips
-carry persisted planned cursors, because those writes use the DiskIO allocation
-generation fence. Legacy consumed records without planned cursors remain
-allocated fail-safe. Terminal reservation records release their quota only
-after the durable record has been removed; ambiguous persistence retains the
-permit unless a linearizable read proves that no record exists.
+carry persisted planned cursors and the writer lease deadline plus
+`lifecycle.layout_validity_ms` has elapsed. This reuse grace exceeds the data
+RPC retry window, so a delayed write finishes or times out before DiskDB can
+reallocate the extent. Consumed records without planned cursors remain allocated
+fail-safe. DiskIO does not validate allocation ownership. Terminal reservation
+records release their quota only after the durable record has been removed;
+ambiguous persistence retains the permit unless a linearizable read proves that
+no record exists.
 
 ### 10.7 Error variants + service mapping
 
@@ -1092,7 +1095,7 @@ Key configuration parameters:
 | lifecycle.cache_capacity                 | 10_000  | Per-chunk payload cache capacity (§10)                   |
 | lifecycle.sweep_chunk_lock_interval_secs | 60      | Idle lock reap interval (§10)                           |
 | lifecycle.lock_hold_warn_threshold_ms    | 1000    | Lock hold warn threshold (§10)                          |
-| lifecycle.layout_validity_ms             | 30_000  | Minimum retired-layout lifetime before segment reuse    |
+| lifecycle.layout_validity_ms             | 30_000  | Minimum retired-layout and expired-writer reuse grace   |
 | server.keepalive_interval_secs           | 10      | Service-registry heartbeat interval                     |
 | server.rpc_workers                       | 2       | Inbound RPC workers; static and must be positive        |
 

@@ -36,14 +36,13 @@ impl DiskId {
     }
 }
 
-/// Physical write address plus the containing allocation incarnation.
+/// Physical write address plus the base used to order related writes.
 #[derive(Debug, Clone, Copy)]
 pub struct SegmentWriteTarget {
     pub disk_id: DiskId,
     pub zone_index: u32,
     pub zone_offset: u64,
-    pub allocation_ts: u64,
-    pub allocation_zone_offset: u64,
+    pub ordering_zone_offset: u64,
 }
 
 /// Disk I/O return codes (mirrors `FBDiskIoRetCode`).
@@ -57,6 +56,7 @@ pub enum DiskIoRetCode {
     PartialWrite = 4,
     InvalidAlignment = 5,
     ConnectionError = 6,
+    /// Compatibility response from an older `DiskIO` server.
     StaleAllocation = 7,
 }
 
@@ -66,8 +66,7 @@ struct WriteTarget {
     zone_index: u32,
     zone_offset: u64,
     size: u32,
-    allocation_ts: u64,
-    allocation_zone_offset: u64,
+    ordering_zone_offset: u64,
 }
 
 impl From<i16> for DiskIoRetCode {
@@ -162,8 +161,7 @@ impl DiskioClient {
                 zone_index,
                 zone_offset,
                 size,
-                allocation_ts: 0,
-                allocation_zone_offset: zone_offset,
+                ordering_zone_offset: zone_offset,
             },
             Buffer::from_vec(data),
         )
@@ -193,16 +191,14 @@ impl DiskioClient {
                 zone_index,
                 zone_offset,
                 size,
-                allocation_ts: 0,
-                allocation_zone_offset: zone_offset,
+                ordering_zone_offset: zone_offset,
             },
             Buffer::from_owned_bytes(data),
         )
     }
 
-    /// Send a write fenced by the allocation incarnation of its containing
-    /// segment. `DiskIO` orders writes for one physical allocation and rejects
-    /// an older incarnation after a reused extent has received a newer write.
+    /// Send a segment write. `DiskIO` orders writes sharing the target's
+    /// ordering base so partial-block updates cannot race each other.
     ///
     /// # Errors
     ///
@@ -214,9 +210,6 @@ impl DiskioClient {
         target: SegmentWriteTarget,
         data: bytes::Bytes,
     ) -> Result<CallFuture, DiskioError> {
-        if target.allocation_ts == 0 {
-            return Err(DiskioError::Rpc("allocation timestamp must be nonzero".into()));
-        }
         let size = u32::try_from(data.len()).map_err(|_| DiskioError::Rpc("data too large".into()))?;
         self.write_buffer(
             server,
@@ -226,8 +219,7 @@ impl DiskioClient {
                 zone_index: target.zone_index,
                 zone_offset: target.zone_offset,
                 size,
-                allocation_ts: target.allocation_ts,
-                allocation_zone_offset: target.allocation_zone_offset,
+                ordering_zone_offset: target.ordering_zone_offset,
             },
             Buffer::from_owned_bytes(data),
         )
@@ -252,8 +244,7 @@ impl DiskioClient {
                 zone_index: target.zone_index,
                 zone_offset: target.zone_offset,
                 size: target.size,
-                allocation_ts: target.allocation_ts,
-                allocation_zone_offset: target.allocation_zone_offset,
+                ordering_zone_offset: target.ordering_zone_offset,
             },
         );
         fbb.finish(off, None);

@@ -206,8 +206,7 @@ impl DiskWriter for RoutedDiskWriter {
                     disk_id: id,
                     zone_index: seg.zone_index,
                     zone_offset: seg.unit_offset * unit_bytes,
-                    allocation_ts: seg.allocation_ts,
-                    allocation_zone_offset: seg.unit_offset * unit_bytes,
+                    ordering_zone_offset: seg.unit_offset * unit_bytes,
                 },
                 data,
             )
@@ -251,8 +250,7 @@ impl DiskWriter for RoutedDiskWriter {
                     disk_id: id,
                     zone_index: seg.zone_index,
                     zone_offset,
-                    allocation_ts: seg.allocation_ts,
-                    allocation_zone_offset: seg.unit_offset * unit_bytes,
+                    ordering_zone_offset: seg.unit_offset * unit_bytes,
                 },
                 data,
             )
@@ -297,8 +295,7 @@ impl DiskWriter for RoutedDiskWriter {
                     disk_id: id,
                     zone_index: seg.zone_index,
                     zone_offset,
-                    allocation_ts: seg.allocation_ts,
-                    allocation_zone_offset: seg.unit_offset * unit_bytes,
+                    ordering_zone_offset: seg.unit_offset * unit_bytes,
                 },
                 data,
             )

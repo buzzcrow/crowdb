@@ -23,11 +23,10 @@ namespace crowdb::diskio
 namespace dproto = crowdb::diskio::proto;
 namespace rproto = crowdb::rpc::proto;
 
-DiskioServer::DiskioServer(std::shared_ptr<DiskSet> disk_set, crowdb::rpc::SocketTransport *transport,
-                           std::string generation_journal_path)
+DiskioServer::DiskioServer(std::shared_ptr<DiskSet> disk_set, crowdb::rpc::SocketTransport *transport)
     : disk_set_(std::move(disk_set)),
       transport_(transport),
-      aligned_writer_(std::move(generation_journal_path))
+      aligned_writer_()
 {
 }
 
@@ -89,12 +88,11 @@ crowdb::rpc::OutFrame *DiskioServer::handle_write(crowdb::rpc::Frame *request, c
         send_error_response(conn, req_id, create_nano, msg_type, static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError));
         return nullptr;
     }
-    DiskId   did                    = parse_disk_id(fb_req->disk_id());
-    uint32_t zone_index             = fb_req->zone_index();
-    uint64_t zone_offset            = fb_req->zone_offset();
-    uint32_t size                   = fb_req->size();
-    uint64_t allocation_ts          = fb_req->allocation_ts();
-    uint64_t allocation_zone_offset = fb_req->allocation_zone_offset();
+    DiskId   did                  = parse_disk_id(fb_req->disk_id());
+    uint32_t zone_index           = fb_req->zone_index();
+    uint64_t zone_offset          = fb_req->zone_offset();
+    uint32_t size                 = fb_req->size();
+    uint64_t ordering_zone_offset = fb_req->ordering_zone_offset();
 
     auto disk = disk_set_->find_disk(did);
     if (disk == nullptr) {
@@ -124,27 +122,26 @@ crowdb::rpc::OutFrame *DiskioServer::handle_write(crowdb::rpc::Frame *request, c
         return nullptr;
     }
 
-    uint64_t allocation_phys_offset = zone->base_offset + allocation_zone_offset;
-    aligned_writer_.submit_fenced(
-        disk, phys_offset, data_buf ? data_buf->data : nullptr, size, allocation_ts, allocation_phys_offset,
-        [this, conn, req_id, create_nano, msg_type, data_buf, size](int res) {
-            int16_t ret_code = static_cast<int16_t>(dproto::FBDiskIoRetCode_Success);
-            if (res < 0) {
-                ret_code = static_cast<int16_t>(res == -ESTALE ? dproto::FBDiskIoRetCode_StaleAllocation
-                                                               : dproto::FBDiskIoRetCode_IoError);
-            }
-            else if (static_cast<uint32_t>(res) < size) {
-                ret_code = static_cast<int16_t>(dproto::FBDiskIoRetCode_PartialWrite);
-            }
-            auto *pool       = conn->pool();
-            auto *ctrl       = build_response_ctrl(pool, req_id, create_nano, ret_code, msg_type);
-            auto *out        = crowdb::rpc::build_out_frame(req_id, msg_type, ctrl, nullptr);
-            out->create_nano = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
-            transport_->submit(conn, out);
-            if (data_buf != nullptr) {
-                data_buf->release();
-            }
-        });
+    uint64_t ordering_phys_offset = zone->base_offset + ordering_zone_offset;
+    aligned_writer_.submit_ordered(disk, phys_offset, data_buf ? data_buf->data : nullptr, size, ordering_phys_offset,
+                                   [this, conn, req_id, create_nano, msg_type, data_buf, size](int res) {
+                                       int16_t ret_code = static_cast<int16_t>(dproto::FBDiskIoRetCode_Success);
+                                       if (res < 0) {
+                                           ret_code = static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError);
+                                       }
+                                       else if (static_cast<uint32_t>(res) < size) {
+                                           ret_code = static_cast<int16_t>(dproto::FBDiskIoRetCode_PartialWrite);
+                                       }
+                                       auto *pool = conn->pool();
+                                       auto *ctrl = build_response_ctrl(pool, req_id, create_nano, ret_code, msg_type);
+                                       auto *out  = crowdb::rpc::build_out_frame(req_id, msg_type, ctrl, nullptr);
+                                       out->create_nano = static_cast<uint64_t>(
+                                           std::chrono::steady_clock::now().time_since_epoch().count());
+                                       transport_->submit(conn, out);
+                                       if (data_buf != nullptr) {
+                                           data_buf->release();
+                                       }
+                                   });
 
     return nullptr;
 }

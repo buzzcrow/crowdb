@@ -64,6 +64,25 @@
 # lower than KV TPS. The 20-second DiskDB result is about 73% of that KV peak;
 # further tuning should close this overhead gap rather than expect 400K TPS
 # without raising KV throughput or changing the persistence model.
+#
+# Intel i9-7960X (2026-09-10, 16c/32t, Linux 6.11, x86_64):
+#   Same build/config as AMD 2026-09-05. Memory KV/WAL, 3 KV nodes, 3
+#   DiskDB instances, 12 x 4-TiB disks, 1 block/request, 20s window.
+#   Zero errors, exact space accounting across all configs. 1T ~79%
+#   slower (per-op overhead higher on Intel). 16T+ within 6-28%.
+#   Gaps > 30% documented in doc/working/regression-perf-review.md.
+#
+# Wl     Grp  Thr  Blk  Cli  Ddb  Kv  Wkr  Win  Coal    ops/s  avg   p50    p99  Dur  Err      Spc
+# alloc    3    1    1    2    2   2    2   32    32      522  1913  1949   2426  20s  0        exact
+# alloc    3   16    1    2    2   2    2   32    32   30,853   518   506    805  20s  0        exact
+# alloc    3  128    1    4    4   4    4   32    32  114,013  1121  1072   2109  20s  0        exact
+# alloc    3  256    1    4    4   4    4   32    32  136,932  1867  1758   4008  20s  0        exact
+# alloc    1  256    1    4    4   4    4   32    32  153,569  1665  1595   3172  20s  0        exact
+# mix      3    1    1    2    2   2    2   32    32      527  1894  1940   2390  20s  0        exact
+# mix      3   16    1    2    2   2    2   32    32   32,559   491   478    806  20s  0        exact
+# mix      3  128    1    4    4   4    4   32    32  110,366  1158  1095   2347  20s  0        exact
+# mix      3  256    1    4    4   4    4   32    32  144,787  1766  1687   3426  20s  0        exact
+# mix      1  256    1    4    4   4    4   32    32  153,493  1666  1603   3088  20s  0        exact
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

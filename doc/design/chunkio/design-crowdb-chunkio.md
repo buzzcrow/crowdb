@@ -64,7 +64,7 @@ specified in the
   `require_data` hint and return 503 instead of stalling.
 - **Bounded preparation, not eager allocation.** A 1 TB object does
   not allocate all 250K strips at once. Consumption-driven channels stay only
-  `prefetch_strips_per_chunk` strips (default 2) and
+  `prefetch_strips_per_chunk` strip results (default 1) and
   `chunk_preparation_depth` chunks (default 1) ahead,
   keeping allocation rate and KV metadata pressure bounded regardless
   of object size while keeping the cursor fed.
@@ -124,7 +124,7 @@ block channel. The `ChunkWriter` drive loop is identical in both modes.
                     ┌────────────────────┐
                     │  ChunkPrefetch     │  background, bounded:
                     │  1 chunk ahead     │  pre-allocates next Chunk
-                    │  (2 strips each)   │  for a 16 MiB 8+4 write
+                    │  (1 strip each)    │  for a 16 MiB 8+4 write
                     └─────────────┬──────────┘
                              │ pre-allocated Chunk
                              ▼
@@ -145,7 +145,7 @@ block channel. The `ChunkWriter` drive loop is identical in both modes.
                                           │
                                           │  internal strip prefetch:
                                           │   append_chunk ahead of cursor
-                                          │   (bounded: prefetch_strips_per_chunk=2)
+                                          │   (bounded: prefetch_strips_per_chunk=1)
 ```
 
 The flow, step by step:
@@ -180,7 +180,8 @@ The flow, step by step:
   strip N's parity completes.
 - **Strip prefetch (internal to ChunkWriter).** A background task
   appends strips to the current chunk via `append_chunk` ahead of the
-  write cursor, bounded by `prefetch_strips_per_chunk` (default 2). A normal
+  write cursor, bounded by `prefetch_strips_per_chunk` (default 1). Larger
+  known-size objects batch two strips per append when more than four remain. A normal
   `append_chunk` response contains only new strips plus `modify_ts`; the
   writer merges them locally. A stale revision response supplies the complete
   current chunk and is retried once. The result replaces `self.chunk` (Arc-swap — old Arc in
@@ -372,7 +373,7 @@ Edge cases:
 | Knob | Default | Role |
 | --- | --- | --- |
 | `max_chunk_size` | 1 GB | Chunk rotation threshold. |
-| `prefetch_strips_per_chunk` | 2 strips | Strip preparation ahead of write cursor. |
+| `prefetch_strips_per_chunk` | 1 result | Strip-preparation results buffered ahead of the write cursor. |
 | `parity_depth` | 2 strips | Completed-strip write groups allowed in flight. |
 | `chunk_preparation_depth` | 1 chunk | Chunk preparation ahead of rotation. |
 | fetch granularity | 1 MB | One data block per fetch call. |
@@ -499,7 +500,7 @@ strips, 16 data blocks, eight parity blocks, and therefore 24 full 1 MiB DiskIO
 RPCs. This is exactly 16 MiB logical and 24 MiB physical traffic: EC 8+4 gives
 the expected 1.5 physical/logical ratio. The run recorded zero preparation
 stalls and zero `append_chunk` calls: initial chunk allocation returned both
-strips requested by `prefetch_strips_per_chunk=2`.
+strips requested by an explicit `prefetch_strips_per_chunk=2` override.
 
 Stream mode has one application payload copy per block: socket/source into its
 final owned block. Direct-buffer mode has zero application payload copies;

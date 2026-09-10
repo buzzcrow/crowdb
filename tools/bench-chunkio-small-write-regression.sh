@@ -30,6 +30,28 @@
 # Historical A/B baseline (60s, mirror vs EC): EC/mirror ratios were 100.23%
 # (32t) and 92.01% (128t). Sources: bench-log/chunkio-small-write-20260910-081757
 # and bench-log/chunkio-small-write-128-repro-20260910.
+#
+# Intel i9-7960X (2026-09-10, same hw, rerun later same day):
+#   Same build/config as the 2026-09-10 reference. 1 KiB 128t and 256t
+#   failed with diskdb accounting mismatch (same issue as chunkdb
+#   regression — one node's disk usage not fully reported at high
+#   concurrency). 1 KiB 1t/4t 32-33% slower (borderline, may be
+#   run-to-run variance). 8 KiB all within 5-27%. 8 KiB 256t passed
+#   (was excluded in reference due to watchdog expirations). Not
+#   strictly better — reference NOT updated. Failures and gaps > 30%
+#   documented in doc/working/regression-perf-review.md.
+#
+#   size    threads    objects/s    MiB/s    avg us    p50 us    p99 us
+#   1 KiB        1     2,550.87      2.5      390       367       693
+#   1 KiB        4     5,174.66      5.1      771       724      1,308
+#   1 KiB       32    40,145.50     39.2      795       609      7,971
+#   1 KiB      128     FAILED (diskdb accounting mismatch)
+#   1 KiB      256     FAILED (diskdb accounting mismatch)
+#   8 KiB        1     2,059.96     16.1      484       407       837
+#   8 KiB        4     3,276.15     25.6    1,219       873     10,673
+#   8 KiB       32    11,844.00     92.5    2,694       919     25,918
+#   8 KiB      128    30,903.57    241.4    4,137     1,373     30,176
+#   8 KiB      256    40,907.76    319.6    6,246     2,051     39,397
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

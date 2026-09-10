@@ -11,7 +11,51 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R140** — Bump this line in the same commit when adding a new item.
+**Next R number: R146** — Bump this line in the same commit when adding a new item.
+
+### Next Milestone — Chunk-backed range KV
+
+Dependency order: R140 and R141 may proceed in parallel; R142 depends on both;
+R143 depends on R142; R145 depends on R143. R144 is a deferred follow-up after
+R145 and after split and transfer are proven. The milestone deliberately
+separates the embeddable KV library, server process, and routed client.
+
+- **[R140](R140-tree-chunk-page-store.md)** — crowdb-tree chunk page store and
+  range rebuild — Area: crowdb-tree / chunk IO — Add chunk-backed durable page
+  storage while retaining local file and block-device backends. Persist enough
+  immutable page and snapshot metadata to reopen a tree from shared chunks and
+  rebuild a child tree for a key range without copying chunks between KV
+  owners. Fully contained pages may be reused; boundary pages are filtered so
+  keys outside the child range cannot enter its root.
+- **[R141](R141-chunk-stream.md)** — chunk-stream mirrored logical byte stream — Area:
+  chunk IO / WAL — Compose finite chunks into a logically unbounded,
+  offset-addressed stream for WAL users. Group 0 registers which metadata KV
+  group owns each stream map; ordered logical/physical offset arrays in that
+  group map reads across three-way mirror chunks. The first version defers
+  metadata scale-out and reclaims complete strips below a durable logical
+  watermark.
+- **[R142](R142-chunk-kv-library.md)** — `crowdb-chunk-kv` range-partitioned KV
+  library — Area: KV / crowdb-tree / chunk-stream — Build an embeddable KV
+  component whose partition count is independent of node count, whose tree
+  pages live in chunk storage, and whose WAL uses chunk-stream. A node may host
+  multiple key ranges; split and ownership transfer publish new manifests and
+  epochs without migrating existing chunks.
+- **[R143](R143-chunk-kv-server.md)** — `crowdb-chunk-kv-server` service —
+  Area: KV / server / group 0 — Add the standalone process, protocol/server
+  surface, range router, lifecycle, owner leases, failover/balance, and
+  service-requested group-0 monitor supervision around `crowdb-chunk-kv`. It
+  supports object-name to object-metadata workloads while keeping the
+  underlying KV API generic and the KV server free of service-library
+  dependencies.
+- **[R144](R144-chunk-kv-partition-merge.md)** — adjacent partition merge —
+  Area: crowdb-tree / KV / server / group 0 — Deferred follow-up that composes
+  two adjacent chunk-backed trees, fences both owners, reconciles their WAL
+  sequences, and atomically replaces both parent ranges with one destination.
+- **[R145](R145-chunk-kv-routed-client.md)** — routed multi-partition
+  `crowdb-chunk-kv-client` — Area: KV / client / RPC / group 0 — Wrap the R143
+  RPC surface with catalog-aware point routing, durable client request
+  identities, multi-get, non-transactional batch mutation, multi-partition
+  forward/reverse scan, bounded retry, and client-facing E2E coverage.
 
 ### High Priority
 

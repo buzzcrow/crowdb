@@ -144,6 +144,30 @@ run_subtest() {
 #   minslot_32t      1000    32:32 24253    1285    5000     0    +0.2% throughput
 #
 # Analysis: doc/design/kv/kv-scan-flow-analysis.md § Latest Benchmark Results.
+#
+# Intel i9-7960X (2026-09-10, 16c/32t, Linux 6.11, x86_64):
+#   Same build/config as AMD 2026-09-02. mem-block backend, 20s, 100k
+#   pre-populated keys (group 1), 64B values unless noted, 3-node cluster.
+#   Zero errors across all configs. Low-concurrency (1T, 4T) 56-71% slower
+#   than AMD — per-scan overhead is much higher on Intel. 16T-32T within
+#   6-30%. p99 values are exact (not coarser 500us buckets like AMD).
+#   Gaps > 30% documented in doc/working/regression-perf-review.md.
+#
+#   label            limit   T:C   scans/s  avg_us  p50_us  p99_us   err  notes
+#   bounded_10       10      1:1   4283     231     166     692      0    O(limit) headline
+#   bounded_1k       1000    1:1   417      2273    2277    2883     0    typical scan
+#   bounded_10k      10000   1:1   59       15938   15073   21626    0    large bounded
+#   full_100k        100000  1:1   8        115054  114294  163577   0    pagination
+#   deep_pag_10      10      1:1   3664     270     178     716      0    O(limit) pushdown
+#   mixed_1k         1000    1:1   427      2213    2228    2850     0    64B:70%,1KiB:20%,16KiB:10%
+#   minslot_1k       1000    1:1   408      2325    2326    2932     0    MinSlot routing
+#   largeval_16k     1000    1:1   421      2234    2244    2818     0    16KiB values
+#   lin_4t           1000    4:4   1747     2173    2162    3014     0    max leader throughput
+#   minslot_4t       1000    4:4   1593     2389    2375    3162     0    -8.9% vs lin
+#   lin_16t          1000    16:16 16969    886     876     1351     0
+#   minslot_16t      1000    16:16 15382    979     962     1515     0    -9.3% vs lin
+#   lin_32t          1000    32:32 22820    1342    1327    2072     0
+#   minslot_32t      1000    32:32 22823    1341    1318    2088     0    +0.0% vs lin
 
 echo -e "label\tlimit\tprefix\tstart_after\tvalue_size\tread_mode\tT:C\tscans_s\tavg_us\tp50_us\tp99_us\tp999_us\terrors" > "$RESULTS_FILE"
 

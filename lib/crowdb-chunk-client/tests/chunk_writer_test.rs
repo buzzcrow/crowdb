@@ -390,8 +390,8 @@ async fn chunk_writer_on_demand_append() {
     };
     cw.open(chunk, None).unwrap();
 
-    // Push four strips. The initial chunk owns two; the bounded prefetcher may
-    // keep one additional two-strip batch ahead of the batch being consumed.
+    // Push four strips. The initial chunk owns two; unknown-size writes append
+    // one strip per request while the bounded prefetcher stays ahead.
     for i in 0..(DATA_NUM * 4) as u8 {
         cw.push(block(i, UNIT_BYTES as usize)).await.unwrap();
     }
@@ -400,7 +400,7 @@ async fn chunk_writer_on_demand_append() {
     // have appended more).
     let st = chunkdb.snapshot();
     assert_eq!(st.append_calls, 2, "append_calls = {}", st.append_calls);
-    assert_eq!(st.append_strip_counts, vec![2, 2]);
+    assert_eq!(st.append_strip_counts, vec![1, 1]);
 }
 
 #[tokio::test]

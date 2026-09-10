@@ -25,6 +25,23 @@
 # allocate  3   256 1     8+4 4   4   4   4  4   32  32   12685   152220  18427 49050 20s 0   deadline exact
 # allocate  3   512 1     8+4 4   4   4   4  4   32  32   12734   152808  37131 91641 20s 0   deadline exact
 # Clean artifacts: chunkdb-r98-final2-20260905-223329 (all rows).
+#
+# Intel i9-7960X (2026-09-10, 16c/32t, Linux 6.11, x86_64):
+#   Same build/config as AMD 2026-09-05. EC 8+4, 1 strip/request, 20s.
+#   1T 65% slower (per-op overhead higher on Intel). 16T 12% slower,
+#   256T equal. 128T and 512T consistently fail with diskdb accounting
+#   mismatch (expected ~2/3 of expected busy bytes — one node's disk
+#   usage not fully reported). Throughput is comparable (11900-13186
+#   chunk/s) but space accounting breaks at high concurrency on Intel.
+#   This is a pre-existing correctness issue, not a perf regression —
+#   documented in doc/working/regression-perf-review.md.
+#
+# Wl       Grp Thr Strip EC  Cli Cdb Ddb Kv Wkr Win Coal chunk/s block/s avg    p50    p99    Dur Err Stop      Spc
+# allocate  3   1   1     8+4 2   2   2   2  2   32  32   283     3396    3528   3562   4648   20s 0   deadline exact
+# allocate  3   16  1     8+4 2   2   2   2  2   32  32   7706    92472   2074   2003   3574   20s 0   deadline exact
+# allocate  3   128 1     8+4 4   4   4   4  4   32  32   11900   142800  10750  10168  21095  20s 1   deadline mismatch
+# allocate  3   256 1     8+4 4   4   4   4  4   32  32   12657   151884  20211  19456  37471  20s 0   deadline exact
+# allocate  3   512 1     8+4 4   4   4   4  4   32  32   13149   157788  38893  36401  84413  20s 1   deadline mismatch
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

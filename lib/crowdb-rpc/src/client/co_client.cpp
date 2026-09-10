@@ -222,16 +222,26 @@ static CoTask co_run(CoState *s)
 
         // 3. Submit via send(). user_data = s (CoState*).
         //    co_on_complete will fill s->resp_* and resume.
-        bool ok = s->client->send(s->transport, s->conn, req_id, (control != nullptr) ? control->buf : nullptr,
-                                  (data != nullptr) ? data->buf : nullptr, s->msg_type, co_on_complete, s);
+        //    Extract the inner Buffer* and free the wrapper struct —
+        //    send() takes ownership of the Buffer* (the frame holds the
+        //    only ref and release_frame frees it). The wrapper would
+        //    leak if kept, and releasing it after send would double-free
+        //    the inner Buffer (send already released it on failure).
+        Buffer *ctrl_buf = (control != nullptr) ? control->buf : nullptr;
+        Buffer *data_buf = (data != nullptr) ? data->buf : nullptr;
+        if (control != nullptr) {
+            control->buf = nullptr;
+            delete control;
+        }
+        if (data != nullptr) {
+            data->buf = nullptr;
+            delete data;
+        }
+        bool ok = s->client->send(s->transport, s->conn, req_id, ctrl_buf, data_buf, s->msg_type, co_on_complete, s);
 
         if (!ok) {
-            // Submit failed (send queue full) — release buffers, yield
-            // to let I/O workers drain, then retry.
-            if (control != nullptr)
-                crowdb_rpc_buffer_release(control);
-            if (data != nullptr)
-                crowdb_rpc_buffer_release(data);
+            // Submit failed (send queue full) — send() already released
+            // the inner Buffer* via release_frame. Just yield and retry.
             s->total_errors++;
             rpc_submit_retry().inc();
             // Yield this thread — suspend until resumed. We use a

@@ -165,6 +165,7 @@ impl LifecycleHandler {
             return Ok(ReservationRecovery::Active);
         }
 
+        let reuse_not_before_ms = group.lease_deadline_ms.saturating_add(self.layout_validity_ms);
         let mut rollback = Vec::new();
         for index in 0..group.strips.len() {
             let state = StripReservationState::try_from(group.states[index])
@@ -175,12 +176,11 @@ impl LifecycleHandler {
                     rollback.push(group.strips[index].clone());
                 }
                 StripReservationState::Consumed => {
-                    if group.planned_cursors[index] != 0 {
+                    if group.planned_cursors[index] != 0 && now_ms >= reuse_not_before_ms {
                         // Consume is durable before data I/O, so a crashed
                         // writer cannot prove the mirrors reached stable
-                        // storage. New reservations carry a planned cursor and
-                        // use the DiskIO allocation-incarnation fence, making
-                        // reclamation safe against a late old write.
+                        // storage. Keep its blocks allocated beyond the RPC
+                        // retry window before allowing physical reuse.
                         group.states[index] = StripReservationState::Cancelled as i32;
                         rollback.push(group.strips[index].clone());
                     }
@@ -197,9 +197,8 @@ impl LifecycleHandler {
                 self.reservation_admission.release(usage.0, usage.1);
             }
         }
-        // Legacy consumed reservations have no allocation-incarnation fence.
-        // Retain them fail-safe instead of reusing blocks that may receive a
-        // delayed write from the old owner.
+        // Retain legacy consumed reservations indefinitely and newer consumed
+        // reservations until their reuse grace period has elapsed.
         if group.states.contains(&(StripReservationState::Consumed as i32)) {
             return Ok(ReservationRecovery::Reconciled);
         }

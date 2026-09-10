@@ -119,8 +119,7 @@ impl ConversionDiskIo {
                     disk_id: id,
                     zone_index: segment.zone_index,
                     zone_offset: segment.unit_offset.saturating_mul(unit_bytes),
-                    allocation_ts: segment.allocation_ts,
-                    allocation_zone_offset: segment.unit_offset.saturating_mul(unit_bytes),
+                    ordering_zone_offset: segment.unit_offset.saturating_mul(unit_bytes),
                 },
                 data,
             )

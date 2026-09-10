@@ -256,6 +256,23 @@ teardown_group() {
 # (except 256T:8C on 2026-09-02 — pre-existing consensus instability).
 # See doc/design/kv/kv-write-flow-analysis.md for full analysis.
 #
+# Intel i9-7960X (2026-09-10, 16c/32t, Linux 6.11, x86_64):
+#   Same build/config as AMD 2026-09-02. mem-block backend, 20s, 512B
+#   values, 1M keyspace, 3-node cluster, event-write + peer-pool=4.
+#   High-concurrency (64T+) within 3-12% of AMD. 512T/1000T slightly
+#   faster (Intel has higher memory bandwidth at saturation). 1T and 16T
+#   are 88% and 74% slower — low-concurrency per-op overhead is much
+#   higher on Intel; documented in doc/working/regression-perf-review.md.
+#
+#   T    C    W    win  co        ops/s     avg     WAL/node  p50    p99     err   sagg  ragg  r2    r2tps    r3    r3tps    enq   wait
+#   1    1    2    32   1.0/16    755       1313    15,099    1343   1769    0     0     0     643   15,304   647   15,304   0     0
+#   16   2    2    32   5.3/16    17,095    926     64,200    880    1597    0     0     0     334   49,307   349   49,306   0     0
+#   64   4    2    32   10.9/16   123,376   511     226,178   481    925     0     0     0     194   177,494  197   177,494  0     0
+#   128  4    4    32   7.5/16    163,024   779     434,636   720    1548    0     0     0     269   257,979  286   257,978  0     0
+#   256  8    4    32   5.3/16    174,940   1457    657,040   1343   3129    0     0     0     408   400,109  353   400,107  0     0
+#   512  16   4    64   58.4/64   247,570   2060    84,819    1933   4325    0     0     0     4189  85,028   773   85,026   0     0
+#   1000 16   4    64   28.5/64   234,664   4250    164,771   3948   10551   0     0     0     1303  165,191  1142  165,189  0     0
+#
 # macOS M5 Pro (2026-08-19, legacy transport, pre-zero-copy):
 #   coalesce=32, max_inflight=128, same workload.
 #

@@ -33,8 +33,7 @@ namespace crowdb::diskio
 class DiskioServer
 {
   public:
-    DiskioServer(std::shared_ptr<DiskSet> disk_set, crowdb::rpc::SocketTransport *transport,
-                 std::string generation_journal_path = {});
+    DiskioServer(std::shared_ptr<DiskSet> disk_set, crowdb::rpc::SocketTransport *transport);
 
     // Handler functions (registered with RpcServer::register_handler).
     // Each parses the flatbuffer control from the Frame, looks up the

@@ -13,7 +13,7 @@ when a task touches a topic in its row.
 | `doc/design/kv/design-crowdb-kv.md` | Root KV design — read first for any KV design or architecture question. |
 | `doc/design/protocol/design-crowdb-protocol.md` | Root protocol design — read first for protocol or key encoding questions. |
 | `doc/design/diskdb/design-crowdb-diskdb.md` | Root diskdb design — read first for any diskdb design or architecture question. |
-| `doc/design/diskio/design-crowdb-diskio.md` | Root diskio design — per-node data I/O engine, allocation-generation write fence and journal, io_uring + pwrite/pread fallback, bad-disk cancel-by-fd, RPC service + Rust client. |
+| `doc/design/diskio/design-crowdb-diskio.md` | Root diskio design — per-node data I/O engine, aligned ordered writes, io_uring + pwrite/pread fallback, bad-disk cancel-by-fd, RPC service + Rust client. |
 | `doc/design/chunkdb/design-crowdb-chunkdb.md` | Root chunkdb design — read first for lifecycle, placement, reservation admission/reconciliation, and architecture questions. |
 | `doc/design/chunkio/design-crowdb-chunkio.md` | Root chunk IO data path design — large-object EC write pipeline, backpressure, memory budget, and chunk rotation. |
 | `doc/design/tree/design-crowdb-tree.md` | Root tree design — read first for storage-engine work. |

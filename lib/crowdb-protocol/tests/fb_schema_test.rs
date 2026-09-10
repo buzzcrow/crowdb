@@ -111,8 +111,7 @@ fn disk_write_request_round_trip() {
             zone_index: 2,
             zone_offset: 4096,
             size: 4096,
-            allocation_ts: 77,
-            allocation_zone_offset: 2048,
+            ordering_zone_offset: 2048,
         },
     );
     fbb.finish(req, None);
@@ -125,8 +124,7 @@ fn disk_write_request_round_trip() {
     assert_eq!(parsed.zone_index(), 2);
     assert_eq!(parsed.zone_offset(), 4096);
     assert_eq!(parsed.size(), 4096);
-    assert_eq!(parsed.allocation_ts(), 77);
-    assert_eq!(parsed.allocation_zone_offset(), 2048);
+    assert_eq!(parsed.ordering_zone_offset(), 2048);
 }
 
 #[test]

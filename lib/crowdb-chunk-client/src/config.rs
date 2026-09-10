@@ -146,7 +146,7 @@ pub struct ChunkClientConfig {
     // ── large write ─────────────────────────────────────────────
     /// Max chunk size before rotation (bytes). Default 1 GB.
     pub max_chunk_size: u64,
-    /// Strips allocated ahead of the write cursor. Default 2.
+    /// Strip-prefetch results buffered ahead of the write cursor. Default 1.
     pub prefetch_strips_per_chunk: usize,
     /// Maximum completed-strip parity/finalization tasks in flight. Default 2.
     pub parity_depth: usize,
@@ -169,7 +169,7 @@ impl Default for ChunkClientConfig {
             read_buffer_size: MB,
             max_cached_buffer: 4 * MB,
             max_chunk_size: GB as u64,
-            prefetch_strips_per_chunk: 2,
+            prefetch_strips_per_chunk: 1,
             parity_depth: 2,
             chunk_preparation_depth: 1,
             large_write_repair_attempts: 3,

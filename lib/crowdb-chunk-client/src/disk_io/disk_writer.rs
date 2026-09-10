@@ -203,8 +203,7 @@ impl DiskWriter for DiskioBlockWriter {
                     disk_id,
                     zone_index: seg.zone_index,
                     zone_offset,
-                    allocation_ts: seg.allocation_ts,
-                    allocation_zone_offset: seg.unit_offset * unit_bytes,
+                    ordering_zone_offset: seg.unit_offset * unit_bytes,
                 },
                 data,
             )
@@ -245,8 +244,7 @@ impl DiskWriter for DiskioBlockWriter {
                     disk_id,
                     zone_index: seg.zone_index,
                     zone_offset,
-                    allocation_ts: seg.allocation_ts,
-                    allocation_zone_offset: seg.unit_offset * unit_bytes,
+                    ordering_zone_offset: seg.unit_offset * unit_bytes,
                 },
                 data,
             )

@@ -29,6 +29,29 @@
 #   50/50 mix          1          24.30     194.9     40,443     94,923
 #   50/50 mix          4         135.18   1,082.4     28,849     82,793
 #   50/50 mix         32         352.08   2,818.1     36,473    236,431
+#
+# Intel i9-7960X (2026-09-10, same hw, 1 day after reference):
+#   Same build/config as 2026-09-09. All errors=0, incomplete=0,
+#   stop=complete. small 8t/128t/256t 35-38% slower (gap > 30% — may
+#   be run-to-run variance or a small regression). All other cases
+#   within 30%. large 32t and mix 32t slightly faster. Not strictly
+#   better — reference NOT updated. Gaps > 30% documented in
+#   doc/working/regression-perf-review.md.
+#
+#   workload    threads    success TPS    MiB/s     avg us    p50 us    p99 us
+#   small             1         596.79      4.7      1,673      1,681      2,736
+#   small             4       2,396.16     18.7      1,667      1,690      2,206
+#   small             8       5,447.63     42.6      1,466      1,522      2,198
+#   small            16      18,316.30    143.1        871        845      1,357
+#   small            32      27,180.15    212.3      1,174      1,169      1,782
+#   small           128      37,128.44    290.1      3,441      3,411      5,535
+#   small           256      35,284.01    275.7      7,242      7,312     10,707
+#   large             1         11.92     190.7     80,293     84,789    101,400
+#   large             4         65.62   1,049.9     60,781     59,863     91,529
+#   large            32        174.28   2,788.5    182,848    180,699    267,672
+#   50/50 mix          1         24.24     194.4     39,486     40,177     99,634
+#   50/50 mix          4        123.79     990.8     32,153      9,739     88,863
+#   50/50 mix         32        353.81   2,831.8     90,042     40,415    248,826
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

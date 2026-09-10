@@ -1019,8 +1019,40 @@ async fn assert_legacy_consumed_reservation_is_retained(
     harness.store.put_reservation_group(&retained).await.unwrap();
 }
 
+async fn assert_consumed_reservation_waits_for_reuse_grace(
+    harness: &ChunkdbHarness,
+    chunk_id: &ChunkId,
+    group_id: &ChunkId,
+) {
+    let retained = harness
+        .store
+        .get_reservation_group(chunk_id, group_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let outcome = harness
+        .handler
+        .recover_expired_reservation_group(
+            chunk_id,
+            group_id,
+            retained
+                .lease_deadline_ms
+                .saturating_add(harness.handler.layout_validity_ms().saturating_sub(1)),
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome, ReservationRecovery::Reconciled);
+    let retained = harness
+        .store
+        .get_reservation_group(chunk_id, group_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.states[0], StripReservationState::Consumed as i32);
+}
+
 #[tokio::test]
-async fn expired_consumed_reservation_only_reclaims_generation_fenced_blocks() {
+async fn expired_consumed_reservation_waits_for_reuse_grace() {
     if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
         eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
         return;
@@ -1094,6 +1126,8 @@ async fn expired_consumed_reservation_only_reclaims_generation_fenced_blocks() {
         .unwrap();
 
     assert_legacy_consumed_reservation_is_retained(&harness, &chunk_id, &group_id, planned_cursor).await;
+
+    assert_consumed_reservation_waits_for_reuse_grace(&harness, &chunk_id, &group_id).await;
 
     let outcome = harness
         .handler
