@@ -56,9 +56,11 @@ whose ordered journal is R141 and whose durable tree is R140.
 
 ## Phase 5: Gates and Documentation
 
-- [ ] Run C++ format/lint/tree tests, Rust format/lint, stream/chunk-KV tests,
-  and the server gate through `pixi run`.
-- [ ] Fold the stable design into `doc/design/kv/` and update the document
+- [~] Run C++ format/lint/tree tests, Rust format/lint, stream/chunk-KV tests,
+  and the server gate through `pixi run`. All source/test gates pass except
+  `tree-lint`, which is blocked by missing clang sysroot/dependency headers;
+  the aggregate server gate hit one cross-test hang that passes in isolation.
+- [x] Fold the stable design into `doc/design/kv/` and update the document
   index while preserving unresolved production items in the final section.
 - [ ] Remove completed backlog files only in a separate cleanup commit after
   every required production acceptance is satisfied.
@@ -75,3 +77,9 @@ whose ordered journal is R141 and whose durable tree is R140.
   memory defaults.
 - Metrics still need scan/seek direction, page reuse/pins, replay duration,
   maintenance degradation, and split base/catch-up/fenced-time observations.
+- The default 1024 file-descriptor limit is insufficient for two existing
+  sparse-block GC tests; the complete 473-test tree suite passes with 65536.
+- `tree-lint` cannot resolve the configured C/C++ sysroot and dependency
+  headers (`stddef.h`, spdlog, ISA-L, and liburing) in this environment.
+- The aggregate server gate stalled once in the chunk-client large-object E2E
+  suite; the named slow test passes in isolation after `clean-env`.
