@@ -807,6 +807,12 @@ work, just implementation:
 
 ## 14. Configuration
 
+diskdb requires a typed TOML file at startup. Omitted fields use typed
+defaults, and explicitly supplied CLI fields override file values according to
+the shared [`service configuration design`](../config/design-crowdb-config.md).
+`server.rpc_workers` controls inbound RPC concurrency, defaults to 2, must be
+positive, and requires restart when changed.
+
 All settings that control flow behavior live in a config class (no
 hardcoded tunables in business logic). Defaults:
 

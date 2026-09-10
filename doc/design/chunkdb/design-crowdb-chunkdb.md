@@ -1094,8 +1094,11 @@ Key configuration parameters:
 | lifecycle.lock_hold_warn_threshold_ms    | 1000    | Lock hold warn threshold (§10)                          |
 | lifecycle.layout_validity_ms             | 30_000  | Minimum retired-layout lifetime before segment reuse    |
 | server.keepalive_interval_secs           | 10      | Service-registry heartbeat interval                     |
+| server.rpc_workers                       | 2       | Inbound RPC workers; static and must be positive        |
 
-Configuration is loaded from CLI args or config file at startup.
+chunkdb requires a typed TOML file at startup. Omitted fields use typed
+defaults, and explicitly supplied CLI fields override file values according to
+the shared [`service configuration design`](../config/design-crowdb-config.md).
 
 ## 15. Full-Stack Deployment and Benchmark
 

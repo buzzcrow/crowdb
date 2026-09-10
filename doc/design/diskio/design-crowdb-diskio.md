@@ -729,30 +729,26 @@ the same data.
 
 ## 11. Configuration
 
-- **node_id** — the node's ID (from group-0 sysdata).
-- **bind_address** — crowdb-rpc listen address + port.
-- **disk_list** — explicit disk list, or auto-discover from group-0
-  via `HardwareClient`. Disks with an empty `device_path` are dummy
-  disks (`NullDisk` or `MemDisk`).
-- **dummy_disk_type** — `null` (default, drop-write + pattern read)
-  or `mem` (store + read-back). Used when `device_path` is empty.
-- **engine** — auto-detected: `UringEngine` on Linux with liburing,
-  `BlockingEngine` otherwise. No user-configurable engine selection.
-- **thread_pool_size** — blocking engine thread count (default 4).
-- **o_direct** — toggle `O_DIRECT` for `BlockDisk` (default on).
-- **polling_mode** — pipeline polling mode: `classic`, `hybrid`,
-  `sqpoll` (default `hybrid` for `UringEngine`).
-- **busy_poll_budget** — consecutive empty peeks before transitioning
-  to event-wait in `Hybrid` mode.
-- **sq_thread_idle** — idle timeout for `Sqpoll` mode.
-- **sq_entries** — SQ ring size (default 256; 1024+ for high-IOPS SSD
-  pipelines; 2048+ for shared HDD pipelines).
-- **attach_wq** — share kernel io-wq across pipelines (default
-  `false`; opt-in when ≥2 NVMe or ≥2 SATA pipelines).
-- **fault_latency** — `min_ms:max_ms` latency injection for dummy
-  disks (testing only).
-- **fault_error_rate** — `0.0..1.0` error injection rate for dummy
-  disks (testing only).
+diskio accepts an optional typed TOML file through `--config`; explicit CLI
+options override file values according to the shared
+[`service configuration design`](../config/design-crowdb-config.md). Its
+sections are:
+
+- **`[server]`** — bind address, listen port, inbound RPC workers (default 4),
+  node ID, dummy-disk type, `O_DIRECT`, and optional fault injection. Worker
+  count must be positive and changes require restart.
+- **`[engine]`** — blocking thread-pool size and io_uring SQ entry count. The
+  backend remains auto-detected: `UringEngine` when available and
+  `BlockingEngine` otherwise.
+- **`[group0]`** — KV management seeds, instance/rack/disk-group identity,
+  synchronization interval, and disk auto-discovery.
+- **`[metrics]`** — log directory and collection interval.
+- **`[[disk]]`** — ordered disk ID, path, and single-zone capacity entries.
+  An empty path selects a `NullDisk` or `MemDisk`.
+
+Fault latency requires both minimum and maximum values with minimum not above
+maximum. Fault error rate is in `0.0..1.0`. Loading is transactional and the
+complete candidate is validated before the RPC listener or I/O engine starts.
 
 The server registers with the group-0 service registry on startup,
 reporting the diskio service is alive. Other services use this for

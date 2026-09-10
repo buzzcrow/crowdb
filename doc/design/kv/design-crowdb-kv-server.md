@@ -56,9 +56,12 @@ start; it derives the four node paths via `CrowDBConfig::apply_root`:
 `wal_root = <root>/waldata`, `config_root = <root>/conf`,
 `data_root = <root>/ctdata`, `log_dir = <root>/log` (fixed subfolder
 names, the only supported layout). `--config <toml>` is optional and
-supplies first-boot tunable overrides only; when omitted, tunables
-come from `CrowDBConfig::default()`. The config-file watcher runs only
-when `--config` is passed.
+supplies startup tunables in both first-boot and restore modes; when omitted,
+tunables come from `CrowDBConfig::default()`. Explicit CLI settings override
+the file, as defined by the shared
+[`service configuration design`](../config/design-crowdb-config.md) §3. The
+config-file watcher runs only when `--config` is passed. Static settings such
+as `server.rpc_workers` take effect after restart.
 
 Boot has two modes, selected by whether group 0 is on disk
 (`restore::group0_exists` checks `<wal_root>/store0/group0`):

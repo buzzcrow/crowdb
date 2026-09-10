@@ -19,6 +19,7 @@ when a task touches a topic in its row.
 | `doc/design/tree/design-crowdb-tree.md` | Root tree design — read first for storage-engine work. |
 | `doc/design/rpc/design-crowdb-rpc.md` | Root RPC design — read first for `crowdb-rpc` engine, FFI, or transport questions. |
 | `doc/design/console/design-crowdb-console.md` | Root console design — read first for console work. |
+| `doc/design/config/design-crowdb-config.md` | Shared server configuration — ownership, TOML schema, precedence, validation, reload, and restart contract. |
 | `doc/user-manual/user-guide.md` | User guide: Web UI, CLI, REST API, quick start, cluster ops, upgrade. |
 
 ## Backlog (`doc/backlog/`)
