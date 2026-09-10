@@ -207,6 +207,67 @@ TEST(RangeRebuild, RewrittenRootAllocatesAboveSourcePageIdHighWater)
     EXPECT_EQ(source_root < source_highwater, true);
 }
 
+TEST(RangeRebuild, EmptyAndUnboundedEndpointsUseTheSameHalfOpenPredicate)
+{
+    MemPageStore source_store(1);
+    Options      options;
+    options.page_store = &source_store;
+    Crowdbtree                     source(options);
+    const std::vector<std::string> keys = {"", "a", "aa", "m", "z", std::string(1, static_cast<char>(0xff))};
+    for (const std::string &key : keys) {
+        ASSERT_TRUE(source.put(Slice(key), Slice("v")).ok());
+    }
+    ASSERT_TRUE(source.flush().ok());
+
+    auto rebuild_keys = [&source, &options](KeyRange range) {
+        MemPageStore destination_store(1);
+        Options      destination_options = options;
+        destination_options.page_store   = &destination_store;
+        std::unique_ptr<Crowdbtree> destination;
+        EXPECT_TRUE(rebuild_range(source, range, destination_options, &destination).ok());
+        std::vector<std::string> result;
+        if (destination != nullptr) {
+            for (const auto &[key, value] : live_entries(*destination)) {
+                (void)value;
+                result.push_back(key);
+            }
+        }
+        return result;
+    };
+
+    EXPECT_EQ(rebuild_keys(KeyRange::unbounded()), keys);
+    EXPECT_EQ(rebuild_keys(KeyRange::bounded(std::nullopt, std::string("m"))),
+              (std::vector<std::string>{"", "a", "aa"}));
+    EXPECT_EQ(rebuild_keys(KeyRange::bounded(std::string("m"), std::nullopt)),
+              (std::vector<std::string>{"m", "z", std::string(1, static_cast<char>(0xff))}));
+    EXPECT_TRUE(rebuild_keys(KeyRange::bounded(std::string("m"), std::string("m"))).empty());
+    EXPECT_EQ(rebuild_keys(KeyRange::bounded(std::string("a"), std::string("b"))),
+              (std::vector<std::string>{"a", "aa"}));
+}
+
+TEST(RangeRebuild, ChildMutationDoesNotChangeTheSourceTree)
+{
+    MemPageStore source_store(1);
+    Options      options;
+    options.page_store = &source_store;
+    Crowdbtree source(options);
+    ASSERT_TRUE(source.put(Slice("b"), Slice("source")).ok());
+    ASSERT_TRUE(source.put(Slice("z"), Slice("outside")).ok());
+    ASSERT_TRUE(source.flush().ok());
+
+    MemPageStore destination_store(1);
+    options.page_store = &destination_store;
+    std::unique_ptr<Crowdbtree> destination;
+    ASSERT_TRUE(
+        rebuild_range(source, KeyRange::bounded(std::string("a"), std::string("m")), options, &destination).ok());
+    ASSERT_TRUE(destination->put(Slice("b"), Slice("child")).ok());
+    ASSERT_TRUE(destination->flush().ok());
+
+    EXPECT_EQ(live_entries(*destination).at("b"), "child");
+    EXPECT_EQ(live_entries(source).at("b"), "source");
+    EXPECT_EQ(live_entries(source).at("z"), "outside");
+}
+
 TEST(RangeRebuild, LazyRecoveryRejectsAResolvedPageOutsideTheTreeRange)
 {
     MemPageStore store(1);
