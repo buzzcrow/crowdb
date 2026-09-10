@@ -7,12 +7,13 @@ use std::sync::Arc;
 
 use bytes::{Buf, Bytes, BytesMut};
 use crowdb_chunk_stream::StreamName;
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 
 use crate::{
     canonical_operation_digest, decode_frame, encode_frame, Checkpoint, ChunkKvError, CompareCondition,
     FrameDecode, JournalPosition, MutationOperation, MutationResult, PartitionId, PartitionJournal,
-    PartitionLifecycle, PartitionRange, PartitionTree, RequestId, Result, ValueRevision, WalRecord,
+    PartitionLifecycle, PartitionRange, PartitionTree, RequestId, Result, SplitAbortProof, SplitArtifact,
+    SplitCommitProof, SplitPlan, TransitionId, ValueRevision, WalRecord,
 };
 
 #[derive(Clone, Debug)]
@@ -101,6 +102,7 @@ pub struct Partition {
     retry_replay_offset: Arc<AtomicU64>,
     applied_notify: Arc<Notify>,
     admission_notify: Arc<Notify>,
+    split_transition: Arc<Mutex<Option<SplitTransition>>>,
     config: Arc<PartitionConfig>,
 }
 
@@ -147,6 +149,11 @@ struct ReplayState {
     retained_results: usize,
     replayed: HashMap<u64, WalRecord>,
     last_new_sequence: Option<u64>,
+}
+
+struct SplitTransition {
+    plan: SplitPlan,
+    artifact: Option<SplitArtifact>,
 }
 
 struct PreparedMutation {
@@ -260,6 +267,7 @@ impl Partition {
         let retry_replay_offset = Arc::new(AtomicU64::new(seed.retry_replay_offset));
         let applied_notify = Arc::new(Notify::new());
         let admission_notify = Arc::new(Notify::new());
+        let split_transition = Arc::new(Mutex::new(None));
         let config = Arc::new(config);
         let state = WorkerState {
             partition_id,
@@ -298,6 +306,7 @@ impl Partition {
             retry_replay_offset,
             applied_notify,
             admission_notify,
+            split_transition,
             config,
         })
     }
@@ -314,7 +323,7 @@ impl Partition {
         operation: MutationOperation,
     ) -> Result<MutationResponse> {
         self.validate_epoch(ownership_epoch)?;
-        if self.lifecycle() != PartitionLifecycle::Serving {
+        if !accepts_mutations(self.lifecycle()) {
             return Err(write_state_error(self.lifecycle()));
         }
         self.validate_operation(&operation)?;
@@ -326,7 +335,7 @@ impl Partition {
             }
             return Err(error);
         }
-        if self.lifecycle() != PartitionLifecycle::Serving {
+        if !accepts_mutations(self.lifecycle()) {
             release_admission(
                 &self.queued_requests,
                 &self.queued_bytes,
@@ -418,13 +427,157 @@ impl Partition {
             Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::SplitFenced => {}
             Err(observed) => return Err(write_state_error(lifecycle_from_code(observed))),
         }
-        loop {
-            let notified = self.admission_notify.notified();
-            if self.queued_requests.load(Ordering::Acquire) == 0 {
-                return Ok(());
-            }
-            notified.await;
+        self.wait_for_admitted_mutations().await;
+        Ok(())
+    }
+
+    /// Starts or idempotently resumes one exact split plan while writes continue.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a malformed/stale plan, a conflicting transition,
+    /// or a parent that is not serving.
+    pub async fn begin_split(&self, plan: SplitPlan) -> Result<()> {
+        plan.validate()?;
+        if plan.parent_id != self.id || plan.parent_range != self.range {
+            return Err(ChunkKvError::InvalidRequest(
+                "split plan does not identify this parent range".into(),
+            ));
         }
+        self.validate_epoch(plan.parent_epoch)?;
+        let mut transition = self.split_transition.lock().await;
+        if let Some(active) = transition.as_ref() {
+            return if active.plan == plan {
+                Ok(())
+            } else {
+                Err(ChunkKvError::SplitRetry(
+                    "another split transition is active".into(),
+                ))
+            };
+        }
+        self.lifecycle
+            .compare_exchange(
+                lifecycle_code(PartitionLifecycle::Serving),
+                lifecycle_code(PartitionLifecycle::SplitPreparing),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(|observed| write_state_error(lifecycle_from_code(observed)))?;
+        *transition = Some(SplitTransition { plan, artifact: None });
+        Ok(())
+    }
+
+    /// Fences and drains the parent after serving catch-up reaches its budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown transition or incompatible lifecycle.
+    pub async fn fence_split(&self, transition_id: TransitionId) -> Result<()> {
+        {
+            let transition = self.split_transition.lock().await;
+            if transition.as_ref().map(|active| active.plan.transition_id) != Some(transition_id) {
+                return Err(ChunkKvError::SplitRetry(
+                    "split transition identity does not match".into(),
+                ));
+            }
+        }
+        match self.lifecycle.compare_exchange(
+            lifecycle_code(PartitionLifecycle::SplitPreparing),
+            lifecycle_code(PartitionLifecycle::SplitFenced),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {}
+            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::SplitFenced => {}
+            Err(observed) => return Err(write_state_error(lifecycle_from_code(observed))),
+        }
+        self.wait_for_admitted_mutations().await;
+        Ok(())
+    }
+
+    /// Records the immutable child artifact produced at the drained cutover.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the artifact exactly matches the active plan
+    /// and current cutover frontier.
+    pub async fn record_split_artifact(&self, artifact: SplitArtifact) -> Result<()> {
+        if self.lifecycle() != PartitionLifecycle::SplitFenced
+            || self.queued_requests.load(Ordering::Acquire) != 0
+        {
+            return Err(ChunkKvError::SplitRetry(
+                "split artifact requires a drained parent fence".into(),
+            ));
+        }
+        let mut transition = self.split_transition.lock().await;
+        let active = transition
+            .as_mut()
+            .ok_or_else(|| ChunkKvError::SplitRetry("no split transition is active".into()))?;
+        validate_split_artifact(&active.plan, &artifact, self.applied_seq.load(Ordering::Acquire))?;
+        if let Some(previous) = active.artifact.as_ref() {
+            if previous != &artifact {
+                return Err(ChunkKvError::SplitRetry(
+                    "split artifact conflicts with the prepared cutover".into(),
+                ));
+            }
+        } else {
+            active.artifact = Some(artifact);
+        }
+        Ok(())
+    }
+
+    /// Retires the parent only for an exact durable catalog publication proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an absent, stale, or mismatched proof.
+    pub async fn commit_split(&self, proof: &SplitCommitProof) -> Result<()> {
+        if proof.catalog_revision == 0 || self.lifecycle() != PartitionLifecycle::SplitFenced {
+            return Err(ChunkKvError::SplitRetry(
+                "split commit proof is absent or parent is not fenced".into(),
+            ));
+        }
+        let transition = self.split_transition.lock().await;
+        let expected = transition.as_ref().and_then(|active| active.artifact.as_ref());
+        if expected != Some(&proof.artifact) {
+            return Err(ChunkKvError::SplitRetry(
+                "split commit proof does not match the prepared artifact".into(),
+            ));
+        }
+        self.lifecycle
+            .store(lifecycle_code(PartitionLifecycle::Retired), Ordering::Release);
+        Ok(())
+    }
+
+    /// Resumes the parent only after authoritative proof of non-publication.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an absent or mismatched proof.
+    pub async fn abort_split(&self, proof: &SplitAbortProof) -> Result<()> {
+        if proof.catalog_revision == 0 {
+            return Err(ChunkKvError::SplitRetry("split abort proof is absent".into()));
+        }
+        let mut transition = self.split_transition.lock().await;
+        let active = transition
+            .as_ref()
+            .ok_or_else(|| ChunkKvError::SplitRetry("no split transition is active".into()))?;
+        if proof.transition_id != active.plan.transition_id
+            || proof.parent_id != active.plan.parent_id
+            || proof.parent_epoch != active.plan.parent_epoch
+        {
+            return Err(ChunkKvError::SplitRetry(
+                "split abort proof does not match the active plan".into(),
+            ));
+        }
+        match self.lifecycle() {
+            PartitionLifecycle::SplitPreparing | PartitionLifecycle::SplitFenced => {}
+            state => return Err(write_state_error(state)),
+        }
+        *transition = None;
+        self.lifecycle
+            .store(lifecycle_code(PartitionLifecycle::Serving), Ordering::Release);
+        Ok(())
     }
 
     /// Creates an exact checkpoint while mutation admission is fenced.
@@ -527,6 +680,38 @@ impl Partition {
             }
         }
     }
+
+    async fn wait_for_admitted_mutations(&self) {
+        loop {
+            let notified = self.admission_notify.notified();
+            if self.queued_requests.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+fn validate_split_artifact(plan: &SplitPlan, artifact: &SplitArtifact, cutover_seq: u64) -> Result<()> {
+    if artifact.transition_id != plan.transition_id
+        || artifact.parent_id != plan.parent_id
+        || artifact.parent_epoch != plan.parent_epoch
+        || artifact.cutover_seq != cutover_seq
+        || artifact.left.partition_id != plan.left.partition_id
+        || artifact.left.range != plan.left.range
+        || artifact.left.ownership_epoch != plan.left.ownership_epoch
+        || artifact.right.partition_id != plan.right.partition_id
+        || artifact.right.range != plan.right.range
+        || artifact.right.ownership_epoch != plan.right.ownership_epoch
+        || artifact.left.applied_seq != cutover_seq
+        || artifact.right.applied_seq != cutover_seq
+        || artifact.left.stream_name == artifact.right.stream_name
+    {
+        return Err(ChunkKvError::SplitRetry(
+            "split artifact does not exactly match plan and cutover".into(),
+        ));
+    }
+    Ok(())
 }
 
 async fn replay_suffix(
@@ -740,7 +925,7 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<Mutatio
             },
         };
         let lifecycle = lifecycle_from_code(state.lifecycle.load(Ordering::Acquire));
-        if lifecycle != PartitionLifecycle::Serving && lifecycle != PartitionLifecycle::SplitFenced {
+        if !accepts_mutations(lifecycle) && lifecycle != PartitionLifecycle::SplitFenced {
             finish_request(&state, first, Err(write_state_error(lifecycle)));
             continue;
         }
@@ -1105,6 +1290,13 @@ fn lifecycle_code(state: PartitionLifecycle) -> u8 {
         PartitionLifecycle::Retired => 7,
         PartitionLifecycle::Faulted => 8,
     }
+}
+
+fn accepts_mutations(state: PartitionLifecycle) -> bool {
+    matches!(
+        state,
+        PartitionLifecycle::Serving | PartitionLifecycle::SplitPreparing
+    )
 }
 
 fn lifecycle_from_code(code: u8) -> PartitionLifecycle {

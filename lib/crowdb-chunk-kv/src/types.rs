@@ -191,6 +191,103 @@ pub struct Checkpoint {
     pub replay_offset: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TransitionId {
+    pub high: u64,
+    pub low: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SplitChild {
+    pub partition_id: PartitionId,
+    pub range: PartitionRange,
+    pub ownership_epoch: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SplitPlan {
+    pub transition_id: TransitionId,
+    pub parent_id: PartitionId,
+    pub parent_range: PartitionRange,
+    pub parent_epoch: u64,
+    pub split_key: Vec<u8>,
+    pub left: SplitChild,
+    pub right: SplitChild,
+}
+
+impl SplitPlan {
+    /// Validates exact child identity, epoch, and half-open range coverage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a zero identity/epoch, a non-interior split key,
+    /// duplicate partition IDs, or child ranges that do not exactly cover the
+    /// parent.
+    pub fn validate(&self) -> Result<()> {
+        self.parent_range.validate()?;
+        self.left.range.validate()?;
+        self.right.range.validate()?;
+        if self.transition_id == TransitionId::default()
+            || self.parent_epoch == 0
+            || self.left.ownership_epoch == 0
+            || self.right.ownership_epoch == 0
+        {
+            return Err(ChunkKvError::InvalidRequest(
+                "split identities and epochs must be nonzero".into(),
+            ));
+        }
+        if self.parent_id == self.left.partition_id
+            || self.parent_id == self.right.partition_id
+            || self.left.partition_id == self.right.partition_id
+        {
+            return Err(ChunkKvError::InvalidRequest(
+                "split partition identities must be distinct".into(),
+            ));
+        }
+        let (expected_left, expected_right) = self.parent_range.split(&self.split_key)?;
+        if self.left.range != expected_left || self.right.range != expected_right {
+            return Err(ChunkKvError::InvalidRequest(
+                "split child ranges must exactly cover the parent".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedChildArtifact {
+    pub partition_id: PartitionId,
+    pub range: PartitionRange,
+    pub ownership_epoch: u64,
+    pub tree_manifest: u64,
+    pub stream_name: StreamName,
+    pub applied_seq: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SplitArtifact {
+    pub transition_id: TransitionId,
+    pub parent_id: PartitionId,
+    pub parent_epoch: u64,
+    pub cutover_seq: u64,
+    pub left: PreparedChildArtifact,
+    pub right: PreparedChildArtifact,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SplitCommitProof {
+    pub catalog_revision: u64,
+    pub artifact: SplitArtifact,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SplitAbortProof {
+    pub catalog_revision: u64,
+    pub transition_id: TransitionId,
+    pub parent_id: PartitionId,
+    pub parent_epoch: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WalRecord {
     pub partition_id: PartitionId,

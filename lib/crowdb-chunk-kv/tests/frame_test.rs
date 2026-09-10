@@ -3,7 +3,7 @@
 
 use crowdb_chunk_kv::{
     canonical_operation_digest, decode_frame, encode_frame, CompareCondition, FrameDecode, MutationOperation,
-    MutationResult, PartitionId, RequestId, WalRecord,
+    MutationResult, PartitionId, PartitionRange, RequestId, SplitChild, SplitPlan, TransitionId, WalRecord,
 };
 
 fn record(operation: MutationOperation) -> WalRecord {
@@ -100,4 +100,43 @@ fn partition_ranges_are_half_open_and_split_exactly() {
     assert_eq!(left.end, right.start);
     assert!(range.split(b"a").is_err());
     assert!(range.split(b"z").is_err());
+}
+
+#[test]
+fn split_plan_requires_exact_distinct_children() {
+    let parent = PartitionRange {
+        start: Some(b"a".to_vec()),
+        end: Some(b"z".to_vec()),
+    };
+    let plan = SplitPlan {
+        transition_id: TransitionId { high: 8, low: 9 },
+        parent_id: PartitionId { high: 1, low: 1 },
+        parent_range: parent.clone(),
+        parent_epoch: 4,
+        split_key: b"m".to_vec(),
+        left: SplitChild {
+            partition_id: PartitionId { high: 2, low: 1 },
+            range: PartitionRange {
+                start: Some(b"a".to_vec()),
+                end: Some(b"m".to_vec()),
+            },
+            ownership_epoch: 5,
+        },
+        right: SplitChild {
+            partition_id: PartitionId { high: 2, low: 2 },
+            range: PartitionRange {
+                start: Some(b"m".to_vec()),
+                end: Some(b"z".to_vec()),
+            },
+            ownership_epoch: 6,
+        },
+    };
+    plan.validate().unwrap();
+
+    let mut changed = plan.clone();
+    changed.right.range.start = Some(b"n".to_vec());
+    assert!(changed.validate().is_err());
+    let mut duplicate = plan;
+    duplicate.right.partition_id = duplicate.left.partition_id;
+    assert!(duplicate.validate().is_err());
 }

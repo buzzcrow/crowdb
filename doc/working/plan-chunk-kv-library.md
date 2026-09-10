@@ -32,21 +32,24 @@ whose ordered journal is R141 and whose durable tree is R140.
 
 ## Phase 3: Checkpoint, Replay, and Transfer
 
-- [ ] Publish checkpoint tuples and enforce frontier/pin/trim invariants.
-- [ ] Decode and replay the durable suffix without reevaluating conditions;
+- [x] Publish checkpoint tuples and enforce frontier/result-retention/trim
+  invariants for the injected journal boundary.
+- [x] Decode and replay the durable suffix without reevaluating conditions;
   reject sequence/epoch/digest conflicts and recover one partition only.
-- [ ] Fence/drain a lower epoch and reopen the same tree and stream identities
+- [x] Fence/drain a lower epoch and reopen the same tree and stream identities
   at a higher epoch without data copy.
 
 ## Phase 4: Online Split
 
-- [ ] Validate and persist idempotent split preparation state and pin base `b`.
+- [~] Validate idempotent split preparation state and exact typed catalog
+  proofs; durable plan persistence and base pinning remain R143/production
+  adapter work.
 - [ ] Rebuild exact children from one R140 manifest and replay serving deltas
   with matching mutation/no-op sequence advancement.
 - [ ] Enforce lag limits, fence/drain the parent, checkpoint both children at
   cutover `c`, and return one immutable prepared artifact.
-- [ ] Resolve exact commit/abort proofs fail-closed and schedule bounded
-  post-commit materialization/repack.
+- [~] Resolve exact commit/abort proofs fail-closed; bounded post-commit
+  materialization/repack remains production adapter work.
 
 ## Phase 5: Gates and Documentation
 
@@ -63,5 +66,7 @@ whose ordered journal is R141 and whose durable tree is R140.
   yet simultaneously constructible from this library.
 - Reverse C++ cursors, durable catalog proofs, checkpoint retention, orphan
   reporting, and post-split physical separation remain implementation work.
+- Online child base rebuild, serving delta catch-up, and prepared-child
+  activation still need production R140 tree construction and manifest pins.
 - Hardware evidence is required before finalizing queue, replay, fence, and
   memory defaults.

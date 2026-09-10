@@ -22,5 +22,7 @@ pub use partition::{MutationResponse, Partition, PartitionConfig, PartitionSnaps
 pub use tree::{CrowdbPartitionTree, PartitionTree};
 pub use types::{
     canonical_operation_digest, Checkpoint, CompareCondition, JournalPosition, MutationOperation,
-    MutationResult, PartitionId, PartitionLifecycle, PartitionRange, RequestId, ValueRevision, WalRecord,
+    MutationResult, PartitionId, PartitionLifecycle, PartitionRange, PreparedChildArtifact, RequestId,
+    SplitAbortProof, SplitArtifact, SplitChild, SplitCommitProof, SplitPlan, TransitionId, ValueRevision,
+    WalRecord,
 };

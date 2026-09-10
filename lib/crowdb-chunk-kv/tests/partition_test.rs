@@ -7,7 +7,8 @@ use crowdb_chunk_kv::memory::MemoryPartitionTree;
 use crowdb_chunk_kv::{
     Checkpoint, ChunkKvError, CompareCondition, MutationOperation, MutationResult, Partition,
     PartitionConfig, PartitionId, PartitionJournal, PartitionManager, PartitionRange, PartitionTree,
-    RequestId, StreamPartitionJournal,
+    PreparedChildArtifact, RequestId, SplitAbortProof, SplitArtifact, SplitChild, SplitCommitProof,
+    SplitPlan, StreamPartitionJournal, TransitionId,
 };
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
@@ -20,6 +21,54 @@ fn request(sequence: u64) -> RequestId {
         client_high: 11,
         client_low: 12,
         client_sequence: sequence,
+    }
+}
+
+fn split_plan(parent_id: PartitionId, parent_epoch: u64) -> SplitPlan {
+    SplitPlan {
+        transition_id: TransitionId { high: 44, low: 55 },
+        parent_id,
+        parent_range: PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        parent_epoch,
+        split_key: b"g".to_vec(),
+        left: SplitChild {
+            partition_id: PartitionId { high: 21, low: 1 },
+            range: PartitionRange {
+                start: Some(b"a".to_vec()),
+                end: Some(b"g".to_vec()),
+            },
+            ownership_epoch: parent_epoch + 1,
+        },
+        right: SplitChild {
+            partition_id: PartitionId { high: 21, low: 2 },
+            range: PartitionRange {
+                start: Some(b"g".to_vec()),
+                end: Some(b"m".to_vec()),
+            },
+            ownership_epoch: parent_epoch + 1,
+        },
+    }
+}
+
+fn split_artifact(plan: &SplitPlan, cutover_seq: u64) -> SplitArtifact {
+    let child = |spec: &SplitChild, low| PreparedChildArtifact {
+        partition_id: spec.partition_id,
+        range: spec.range.clone(),
+        ownership_epoch: spec.ownership_epoch,
+        tree_manifest: cutover_seq + low,
+        stream_name: StreamName { high: 90, low },
+        applied_seq: cutover_seq,
+    };
+    SplitArtifact {
+        transition_id: plan.transition_id,
+        parent_id: plan.parent_id,
+        parent_epoch: plan.parent_epoch,
+        cutover_seq,
+        left: child(&plan.left, 1),
+        right: child(&plan.right, 2),
     }
 }
 
@@ -696,4 +745,115 @@ async fn transfer_reuses_tree_and_stream_under_higher_epoch() {
         .await,
         Err(ChunkKvError::NotServing("SplitFenced".into()))
     );
+}
+
+#[tokio::test]
+async fn split_control_is_idempotent_and_commits_only_an_exact_artifact() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let stream_name = StreamName { high: 12, low: 12 };
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        stream_name,
+        18,
+        PartitionConfig::default(),
+    )
+    .await;
+    let plan = split_plan(PartitionId { high: 12, low: 12 }, 18);
+    partition.begin_split(plan.clone()).await.unwrap();
+    partition.begin_split(plan.clone()).await.unwrap();
+    assert_eq!(
+        partition.lifecycle(),
+        crowdb_chunk_kv::PartitionLifecycle::SplitPreparing
+    );
+
+    partition
+        .mutate(
+            18,
+            request(110),
+            MutationOperation::Put {
+                key: b"key".to_vec(),
+                value: b"during-prepare".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    partition.fence_split(plan.transition_id).await.unwrap();
+    let artifact = split_artifact(&plan, 1);
+    partition.record_split_artifact(artifact.clone()).await.unwrap();
+
+    let mut wrong = artifact.clone();
+    wrong.right.tree_manifest += 1;
+    assert!(partition
+        .commit_split(&SplitCommitProof {
+            catalog_revision: 3,
+            artifact: wrong,
+        })
+        .await
+        .is_err());
+    assert_eq!(
+        partition.lifecycle(),
+        crowdb_chunk_kv::PartitionLifecycle::SplitFenced
+    );
+    partition
+        .commit_split(&SplitCommitProof {
+            catalog_revision: 4,
+            artifact,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        partition.lifecycle(),
+        crowdb_chunk_kv::PartitionLifecycle::Retired
+    );
+}
+
+#[tokio::test]
+async fn split_abort_requires_exact_nonpublication_proof_before_resuming() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        StreamName { high: 13, low: 13 },
+        19,
+        PartitionConfig::default(),
+    )
+    .await;
+    let plan = split_plan(PartitionId { high: 13, low: 13 }, 19);
+    partition.begin_split(plan.clone()).await.unwrap();
+    let mut wrong_transition = plan.transition_id;
+    wrong_transition.low += 1;
+    assert!(partition
+        .abort_split(&SplitAbortProof {
+            catalog_revision: 8,
+            transition_id: wrong_transition,
+            parent_id: plan.parent_id,
+            parent_epoch: plan.parent_epoch,
+        })
+        .await
+        .is_err());
+    partition
+        .abort_split(&SplitAbortProof {
+            catalog_revision: 9,
+            transition_id: plan.transition_id,
+            parent_id: plan.parent_id,
+            parent_epoch: plan.parent_epoch,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        partition.lifecycle(),
+        crowdb_chunk_kv::PartitionLifecycle::Serving
+    );
+    partition
+        .mutate(
+            19,
+            request(120),
+            MutationOperation::Put {
+                key: b"key".to_vec(),
+                value: b"resumed".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
 }
