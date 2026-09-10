@@ -36,9 +36,18 @@ identity, ordering, fencing, and partial-success semantics.
 
 - [x] Add unit and injected integration coverage for the available boundaries.
 - [ ] Add real-process client coverage after the server RPC process exists.
-- [ ] Run formatting, workspace lint, client/server tests, and aggregate server
+- [x] Run formatting, workspace lint, client/server tests, and aggregate server
   gates through `pixi run`.
 - [x] Fold stable behavior into a permanent client design and index entry.
+
+## Gate Results
+
+- `cargo fmt --all -- --check`: passed.
+- `rs-lint`: passed for the full workspace.
+- `crowdb-chunk-kv-client` all-target tests: 12 passed.
+- `crowdb-chunk-kv-server` all-target tests: 24 passed.
+- Clean aggregate `test-server`: passed KV server, diskdb, diskdb-client,
+  chunkdb, chunk-client, and diskio-client stages.
 
 ## Open Issues
 
