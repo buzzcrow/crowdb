@@ -5,14 +5,14 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes, BytesMut};
 use crowdb_chunk_stream::StreamName;
 use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::{
-    canonical_operation_digest, encode_frame, ChunkKvError, CompareCondition, JournalPosition,
-    MutationOperation, MutationResult, PartitionId, PartitionJournal, PartitionLifecycle, PartitionRange,
-    PartitionTree, RequestId, Result, ValueRevision, WalRecord,
+    canonical_operation_digest, decode_frame, encode_frame, Checkpoint, ChunkKvError, CompareCondition,
+    FrameDecode, JournalPosition, MutationOperation, MutationResult, PartitionId, PartitionJournal,
+    PartitionLifecycle, PartitionRange, PartitionTree, RequestId, Result, ValueRevision, WalRecord,
 };
 
 #[derive(Clone, Debug)]
@@ -98,7 +98,9 @@ pub struct Partition {
     journal_durable_seq: Arc<AtomicU64>,
     applied_seq: Arc<AtomicU64>,
     applied_position: Arc<AtomicU64>,
+    retry_replay_offset: Arc<AtomicU64>,
     applied_notify: Arc<Notify>,
+    admission_notify: Arc<Notify>,
     config: Arc<PartitionConfig>,
 }
 
@@ -113,7 +115,9 @@ struct WorkerState {
     journal_durable_seq: Arc<AtomicU64>,
     applied_seq: Arc<AtomicU64>,
     applied_position: Arc<AtomicU64>,
+    retry_replay_offset: Arc<AtomicU64>,
     applied_notify: Arc<Notify>,
+    admission_notify: Arc<Notify>,
     config: Arc<PartitionConfig>,
     next_seq: u64,
     results: HashMap<RequestId, RetainedResult>,
@@ -125,6 +129,24 @@ struct WorkerState {
 struct RetainedResult {
     digest: [u8; 32],
     response: MutationResponse,
+}
+
+struct RecoverySeed {
+    applied_seq: u64,
+    applied_position: u64,
+    retry_replay_offset: u64,
+    results: HashMap<RequestId, RetainedResult>,
+    result_order: std::collections::VecDeque<RequestId>,
+    expired_floor: HashMap<(u64, u64), u64>,
+}
+
+struct ReplayState {
+    seed: RecoverySeed,
+    checkpoint_applied_seq: u64,
+    stream_name: StreamName,
+    retained_results: usize,
+    replayed: HashMap<u64, WalRecord>,
+    last_new_sequence: Option<u64>,
 }
 
 struct PreparedMutation {
@@ -158,14 +180,86 @@ impl Partition {
             ));
         }
         let applied = tree.last_applied_seq();
+        Self::start(
+            partition_id,
+            range,
+            ownership_epoch,
+            config,
+            tree,
+            journal,
+            RecoverySeed {
+                applied_seq: applied,
+                applied_position: 0,
+                retry_replay_offset: 0,
+                results: HashMap::new(),
+                result_order: std::collections::VecDeque::new(),
+                expired_floor: HashMap::new(),
+            },
+        )
+    }
+
+    /// Replays the durable suffix after `checkpoint` before serving.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid checkpoint identity/frontiers, corrupt or
+    /// conflicting WAL frames, stale epochs, or failed tree apply.
+    pub async fn recover(
+        partition_id: PartitionId,
+        range: PartitionRange,
+        ownership_epoch: u64,
+        checkpoint: Checkpoint,
+        config: PartitionConfig,
+        tree: Arc<dyn PartitionTree>,
+        journal: Arc<dyn PartitionJournal>,
+    ) -> Result<Self> {
+        range.validate()?;
+        config.validate()?;
+        if ownership_epoch == 0 || checkpoint.stream_name != journal.stream_name() {
+            return Err(ChunkKvError::InvalidRequest(
+                "checkpoint identity or epoch is invalid".into(),
+            ));
+        }
+        if tree.last_applied_seq() != checkpoint.applied_seq {
+            return Err(ChunkKvError::TreeCorruption(
+                "tree frontier differs from checkpoint".into(),
+            ));
+        }
+        let seed = replay_suffix(
+            partition_id,
+            ownership_epoch,
+            &checkpoint,
+            config.retained_results,
+            tree.as_ref(),
+            journal.as_ref(),
+        )
+        .await?;
+        Self::start(partition_id, range, ownership_epoch, config, tree, journal, seed)
+    }
+
+    fn start(
+        partition_id: PartitionId,
+        range: PartitionRange,
+        ownership_epoch: u64,
+        config: PartitionConfig,
+        tree: Arc<dyn PartitionTree>,
+        journal: Arc<dyn PartitionJournal>,
+        seed: RecoverySeed,
+    ) -> Result<Self> {
+        let next_seq = seed
+            .applied_seq
+            .checked_add(1)
+            .ok_or_else(|| ChunkKvError::Faulted("mutation sequence exhausted".into()))?;
         let (sender, receiver) = mpsc::channel(config.queue_requests);
         let lifecycle = Arc::new(AtomicU8::new(lifecycle_code(PartitionLifecycle::Serving)));
         let queued_requests = Arc::new(AtomicUsize::new(0));
         let queued_bytes = Arc::new(AtomicU64::new(0));
-        let journal_durable_seq = Arc::new(AtomicU64::new(applied));
-        let applied_seq = Arc::new(AtomicU64::new(applied));
-        let applied_position = Arc::new(AtomicU64::new(0));
+        let journal_durable_seq = Arc::new(AtomicU64::new(seed.applied_seq));
+        let applied_seq = Arc::new(AtomicU64::new(seed.applied_seq));
+        let applied_position = Arc::new(AtomicU64::new(seed.applied_position));
+        let retry_replay_offset = Arc::new(AtomicU64::new(seed.retry_replay_offset));
         let applied_notify = Arc::new(Notify::new());
+        let admission_notify = Arc::new(Notify::new());
         let config = Arc::new(config);
         let state = WorkerState {
             partition_id,
@@ -178,12 +272,14 @@ impl Partition {
             journal_durable_seq: Arc::clone(&journal_durable_seq),
             applied_seq: Arc::clone(&applied_seq),
             applied_position: Arc::clone(&applied_position),
+            retry_replay_offset: Arc::clone(&retry_replay_offset),
             applied_notify: Arc::clone(&applied_notify),
+            admission_notify: Arc::clone(&admission_notify),
             config: Arc::clone(&config),
-            next_seq: applied.saturating_add(1),
-            results: HashMap::new(),
-            result_order: std::collections::VecDeque::new(),
-            expired_floor: HashMap::new(),
+            next_seq,
+            results: seed.results,
+            result_order: seed.result_order,
+            expired_floor: seed.expired_floor,
         };
         tokio::spawn(run_worker(state, receiver));
         Ok(Self {
@@ -199,7 +295,9 @@ impl Partition {
             journal_durable_seq,
             applied_seq,
             applied_position,
+            retry_replay_offset,
             applied_notify,
+            admission_notify,
             config,
         })
     }
@@ -223,8 +321,19 @@ impl Partition {
         let reserved_bytes = estimated_request_bytes(&operation)?;
         reserve_requests(&self.queued_requests, self.config.queue_requests)?;
         if let Err(error) = reserve_bytes(&self.queued_bytes, self.config.queue_bytes, reserved_bytes) {
-            self.queued_requests.fetch_sub(1, Ordering::AcqRel);
+            if self.queued_requests.fetch_sub(1, Ordering::AcqRel) == 1 {
+                self.admission_notify.notify_waiters();
+            }
             return Err(error);
+        }
+        if self.lifecycle() != PartitionLifecycle::Serving {
+            release_admission(
+                &self.queued_requests,
+                &self.queued_bytes,
+                &self.admission_notify,
+                reserved_bytes,
+            );
+            return Err(write_state_error(self.lifecycle()));
         }
         let (completion, response) = oneshot::channel();
         let request = MutationRequest {
@@ -235,7 +344,12 @@ impl Partition {
             completion,
         };
         if self.sender.try_send(request).is_err() {
-            release_admission(&self.queued_requests, &self.queued_bytes, reserved_bytes);
+            release_admission(
+                &self.queued_requests,
+                &self.queued_bytes,
+                &self.admission_notify,
+                reserved_bytes,
+            );
             return Err(ChunkKvError::Overloaded);
         }
         response.await.map_err(|_| ChunkKvError::WriteStalled)?
@@ -287,6 +401,87 @@ impl Partition {
         lifecycle_from_code(self.lifecycle.load(Ordering::Acquire))
     }
 
+    /// Fences new mutations and waits for all previously admitted work.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stale-epoch or incompatible-lifecycle error.
+    pub async fn fence_mutations(&self, ownership_epoch: u64) -> Result<()> {
+        self.validate_epoch(ownership_epoch)?;
+        match self.lifecycle.compare_exchange(
+            lifecycle_code(PartitionLifecycle::Serving),
+            lifecycle_code(PartitionLifecycle::SplitFenced),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {}
+            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::SplitFenced => {}
+            Err(observed) => return Err(write_state_error(lifecycle_from_code(observed))),
+        }
+        loop {
+            let notified = self.admission_notify.notified();
+            if self.queued_requests.load(Ordering::Acquire) == 0 {
+                return Ok(());
+            }
+            notified.await;
+        }
+    }
+
+    /// Creates an exact checkpoint while mutation admission is fenced.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the partition is drained and fenced, or if the
+    /// tree checkpoint fails.
+    pub async fn checkpoint_fenced(&self, ownership_epoch: u64) -> Result<Checkpoint> {
+        self.validate_epoch(ownership_epoch)?;
+        if self.lifecycle() != PartitionLifecycle::SplitFenced
+            || self.queued_requests.load(Ordering::Acquire) != 0
+        {
+            return Err(ChunkKvError::InvalidRequest(
+                "checkpoint requires a drained mutation fence".into(),
+            ));
+        }
+        let applied_seq = self.applied_seq.load(Ordering::Acquire);
+        if applied_seq != self.journal_durable_seq.load(Ordering::Acquire) {
+            return Err(ChunkKvError::Internal(
+                "checkpoint frontiers are not aligned".into(),
+            ));
+        }
+        let tree_manifest = self.tree.checkpoint().await?;
+        if self.tree.last_applied_seq() != applied_seq {
+            return Err(ChunkKvError::ApplyStateUnknown);
+        }
+        Ok(Checkpoint {
+            tree_manifest,
+            applied_seq,
+            stream_name: self.journal.stream_name(),
+            replay_offset: self.retry_replay_offset.load(Ordering::Acquire),
+        })
+    }
+
+    /// Trims WAL bytes only after the caller supplies the published checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale identity/frontiers or journal GC failure.
+    pub async fn trim_published_checkpoint(
+        &self,
+        ownership_epoch: u64,
+        checkpoint: &Checkpoint,
+    ) -> Result<u64> {
+        self.validate_epoch(ownership_epoch)?;
+        if checkpoint.stream_name != self.journal.stream_name()
+            || checkpoint.applied_seq > self.applied_seq.load(Ordering::Acquire)
+            || checkpoint.replay_offset > self.journal.tail()
+        {
+            return Err(ChunkKvError::InvalidRequest(
+                "checkpoint does not belong to this frontier".into(),
+            ));
+        }
+        self.journal.trim_prefix(checkpoint.replay_offset).await
+    }
+
     fn validate_epoch(&self, ownership_epoch: u64) -> Result<()> {
         if ownership_epoch != self.ownership_epoch.load(Ordering::Acquire) {
             return Err(ChunkKvError::StaleEpoch);
@@ -334,6 +529,206 @@ impl Partition {
     }
 }
 
+async fn replay_suffix(
+    partition_id: PartitionId,
+    ownership_epoch: u64,
+    checkpoint: &Checkpoint,
+    retained_results: usize,
+    tree: &dyn PartitionTree,
+    journal: &dyn PartitionJournal,
+) -> Result<RecoverySeed> {
+    const WINDOW_BYTES: usize = 1024 * 1024;
+    let tail = journal.tail();
+    if checkpoint.replay_offset > tail {
+        return Err(ChunkKvError::JournalCorruption(
+            "checkpoint replay offset exceeds journal tail".into(),
+        ));
+    }
+    let mut replay = ReplayState::new(checkpoint, retained_results);
+    let mut read_offset = checkpoint.replay_offset;
+    let mut frame_offset = read_offset;
+    let mut buffered = BytesMut::new();
+    while read_offset < tail {
+        let bytes = journal.read_window(read_offset, WINDOW_BYTES).await?;
+        if bytes.is_empty() {
+            return Err(ChunkKvError::JournalCorruption(
+                "journal returned no bytes before durable tail".into(),
+            ));
+        }
+        read_offset = read_offset
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| ChunkKvError::JournalCorruption("journal replay offset overflows".into()))?;
+        buffered.extend_from_slice(&bytes);
+        loop {
+            let decoded = decode_frame(&buffered)?;
+            let FrameDecode::Complete(decoded) = decoded else {
+                break;
+            };
+            validate_replay_record(partition_id, ownership_epoch, &decoded.record)?;
+            replay.process(tree, frame_offset, decoded.record).await?;
+            let consumed = decoded.bytes_consumed;
+            buffered.advance(consumed);
+            frame_offset = frame_offset
+                .checked_add(consumed as u64)
+                .ok_or_else(|| ChunkKvError::JournalCorruption("journal frame offset overflows".into()))?;
+        }
+        if buffered.len() > crate::MAX_FRAME_BYTES {
+            return Err(ChunkKvError::JournalCorruption(
+                "incomplete frame exceeds maximum size".into(),
+            ));
+        }
+    }
+    if !buffered.is_empty() {
+        return Err(ChunkKvError::IncompleteFrame);
+    }
+    Ok(replay.seed)
+}
+
+impl ReplayState {
+    fn new(checkpoint: &Checkpoint, retained_results: usize) -> Self {
+        Self {
+            seed: RecoverySeed {
+                applied_seq: checkpoint.applied_seq,
+                applied_position: checkpoint.replay_offset,
+                retry_replay_offset: checkpoint.replay_offset,
+                results: HashMap::new(),
+                result_order: std::collections::VecDeque::new(),
+                expired_floor: HashMap::new(),
+            },
+            checkpoint_applied_seq: checkpoint.applied_seq,
+            stream_name: checkpoint.stream_name,
+            retained_results,
+            replayed: HashMap::new(),
+            last_new_sequence: None,
+        }
+    }
+
+    async fn process(
+        &mut self,
+        tree: &dyn PartitionTree,
+        frame_offset: u64,
+        record: WalRecord,
+    ) -> Result<()> {
+        if let Some(previous) = self.replayed.get(&record.mutation_seq) {
+            if previous != &record {
+                return Err(ChunkKvError::JournalCorruption(
+                    "conflicting duplicate mutation sequence".into(),
+                ));
+            }
+            return Ok(());
+        }
+        if self
+            .last_new_sequence
+            .is_some_and(|last| last.checked_add(1) != Some(record.mutation_seq))
+        {
+            return Err(ChunkKvError::JournalCorruption(
+                "journal mutation sequence has a gap".into(),
+            ));
+        }
+        if record.mutation_seq > self.checkpoint_applied_seq {
+            let expected = self
+                .seed
+                .applied_seq
+                .checked_add(1)
+                .ok_or_else(|| ChunkKvError::JournalCorruption("mutation sequence overflows".into()))?;
+            if record.mutation_seq != expected {
+                return Err(ChunkKvError::JournalCorruption(
+                    "journal mutation sequence has a gap".into(),
+                ));
+            }
+            if record.result.applied() {
+                tree.apply(record.mutation_seq, &record.operation)
+                    .await
+                    .map_err(|_| ChunkKvError::ApplyStateUnknown)?;
+            } else {
+                tree.advance_noop(record.mutation_seq)
+                    .await
+                    .map_err(|_| ChunkKvError::ApplyStateUnknown)?;
+            }
+            self.seed.applied_seq = record.mutation_seq;
+        }
+        self.seed.applied_position = frame_offset;
+        let response = MutationResponse {
+            mutation_seq: record.mutation_seq,
+            result: record.result.clone(),
+            journal_position: JournalPosition {
+                stream_name: self.stream_name,
+                offset: frame_offset,
+            },
+        };
+        retain_recovered(
+            &mut self.seed,
+            self.retained_results,
+            record.request_id,
+            record.operation_digest,
+            response,
+        )?;
+        self.last_new_sequence = Some(record.mutation_seq);
+        self.replayed.insert(record.mutation_seq, record);
+        Ok(())
+    }
+}
+
+fn validate_replay_record(partition_id: PartitionId, ownership_epoch: u64, record: &WalRecord) -> Result<()> {
+    if record.partition_id != partition_id || record.ownership_epoch > ownership_epoch {
+        return Err(ChunkKvError::JournalCorruption(
+            "WAL record partition or epoch is invalid".into(),
+        ));
+    }
+    if record.operation_digest != canonical_operation_digest(&record.operation) {
+        return Err(ChunkKvError::JournalCorruption(
+            "WAL operation digest mismatch".into(),
+        ));
+    }
+    match record.result {
+        MutationResult::Applied { revision } if revision != record.mutation_seq => Err(
+            ChunkKvError::JournalCorruption("applied revision differs from mutation sequence".into()),
+        ),
+        _ => Ok(()),
+    }
+}
+
+fn retain_recovered(
+    seed: &mut RecoverySeed,
+    retained_results: usize,
+    request_id: RequestId,
+    digest: [u8; 32],
+    response: MutationResponse,
+) -> Result<()> {
+    let client = (request_id.client_high, request_id.client_low);
+    if seed.results.contains_key(&request_id)
+        || seed
+            .expired_floor
+            .get(&client)
+            .is_some_and(|floor| request_id.client_sequence <= *floor)
+    {
+        return Err(ChunkKvError::JournalCorruption(
+            "request identifier is reused by multiple mutations".into(),
+        ));
+    }
+    seed.results
+        .insert(request_id, RetainedResult { digest, response });
+    seed.result_order.push_back(request_id);
+    while seed.result_order.len() > retained_results {
+        let Some(expired) = seed.result_order.pop_front() else {
+            break;
+        };
+        seed.results.remove(&expired);
+        seed.expired_floor
+            .entry((expired.client_high, expired.client_low))
+            .and_modify(|floor| *floor = (*floor).max(expired.client_sequence))
+            .or_insert(expired.client_sequence);
+    }
+    if let Some(oldest) = seed
+        .result_order
+        .front()
+        .and_then(|request_id| seed.results.get(request_id))
+    {
+        seed.retry_replay_offset = oldest.response.journal_position.offset;
+    }
+    Ok(())
+}
+
 async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<MutationRequest>) {
     let mut pending = None;
     loop {
@@ -344,14 +739,9 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<Mutatio
                 None => break,
             },
         };
-        if lifecycle_from_code(state.lifecycle.load(Ordering::Acquire)) != PartitionLifecycle::Serving {
-            finish_request(
-                &state,
-                first,
-                Err(write_state_error(lifecycle_from_code(
-                    state.lifecycle.load(Ordering::Acquire),
-                ))),
-            );
+        let lifecycle = lifecycle_from_code(state.lifecycle.load(Ordering::Acquire));
+        if lifecycle != PartitionLifecycle::Serving && lifecycle != PartitionLifecycle::SplitFenced {
+            finish_request(&state, first, Err(write_state_error(lifecycle)));
             continue;
         }
         let mut requests = vec![first];
@@ -614,6 +1004,15 @@ fn retain_result(
             .and_modify(|floor| *floor = (*floor).max(expired.client_sequence))
             .or_insert(expired.client_sequence);
     }
+    if let Some(oldest) = state
+        .result_order
+        .front()
+        .and_then(|request_id| state.results.get(request_id))
+    {
+        state
+            .retry_replay_offset
+            .store(oldest.response.journal_position.offset, Ordering::Release);
+    }
 }
 
 fn fail_prepared(state: &WorkerState, prepared: Vec<PreparedMutation>, error: &ChunkKvError) {
@@ -629,6 +1028,7 @@ fn finish_request(state: &WorkerState, request: MutationRequest, result: Result<
     release_admission(
         &state.queued_requests,
         &state.queued_bytes,
+        &state.admission_notify,
         request.reserved_bytes,
     );
     let _ = request.completion.send(result);
@@ -686,8 +1086,10 @@ fn reserve_bytes(counter: &AtomicU64, limit: u64, bytes: u64) -> Result<()> {
     }
 }
 
-fn release_admission(requests: &AtomicUsize, bytes: &AtomicU64, reserved_bytes: u64) {
-    requests.fetch_sub(1, Ordering::AcqRel);
+fn release_admission(requests: &AtomicUsize, bytes: &AtomicU64, notify: &Notify, reserved_bytes: u64) {
+    if requests.fetch_sub(1, Ordering::AcqRel) == 1 {
+        notify.notify_waiters();
+    }
     bytes.fetch_sub(reserved_bytes, Ordering::AcqRel);
 }
 

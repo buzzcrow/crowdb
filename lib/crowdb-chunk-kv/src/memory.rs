@@ -4,7 +4,7 @@
 //! Test-only in-memory partition tree.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use tokio::sync::RwLock;
@@ -15,6 +15,13 @@ use crate::{MutationOperation, PartitionTree, Result, ValueRevision};
 pub struct MemoryPartitionTree {
     values: RwLock<BTreeMap<Vec<u8>, ValueRevision>>,
     last_applied: AtomicU64,
+    fail_next_apply: AtomicBool,
+}
+
+impl MemoryPartitionTree {
+    pub fn fail_next_apply(&self) {
+        self.fail_next_apply.store(true, Ordering::Release);
+    }
 }
 
 #[async_trait]
@@ -24,6 +31,9 @@ impl PartitionTree for MemoryPartitionTree {
     }
 
     async fn apply(&self, mutation_seq: u64, operation: &MutationOperation) -> Result<()> {
+        if self.fail_next_apply.swap(false, Ordering::AcqRel) {
+            return Err(crate::ChunkKvError::ApplyStateUnknown);
+        }
         let mut values = self.values.write().await;
         match operation.successful_value() {
             Some(value) => {
@@ -46,6 +56,10 @@ impl PartitionTree for MemoryPartitionTree {
     async fn advance_noop(&self, mutation_seq: u64) -> Result<()> {
         self.last_applied.store(mutation_seq, Ordering::Release);
         Ok(())
+    }
+
+    async fn checkpoint(&self) -> Result<u64> {
+        Ok(self.last_applied.load(Ordering::Acquire))
     }
 
     fn last_applied_seq(&self) -> u64 {

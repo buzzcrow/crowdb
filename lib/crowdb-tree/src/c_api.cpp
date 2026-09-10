@@ -716,10 +716,15 @@ ct_status ct_apply_put(ct_tree *t, uint64_t slot, const uint8_t *key, size_t kle
     if (t == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
-    std::vector<Crowdbtree::encoded_op> ops;
-    ops.push_back({std::string(reinterpret_cast<const char *>(key), klen),
-                   encode_cell_buf(slot, OpKind::kPut, Slice(reinterpret_cast<const char *>(val), vlen))});
-    return to_status(t->tree->apply_encoded(slot, std::move(ops)));
+    try {
+        std::vector<Crowdbtree::encoded_op> ops;
+        ops.push_back({std::string(reinterpret_cast<const char *>(key), klen),
+                       encode_cell_buf(slot, OpKind::kPut, Slice(reinterpret_cast<const char *>(val), vlen))});
+        return to_status(t->tree->apply_encoded(slot, std::move(ops)));
+    }
+    catch (...) {
+        return static_cast<ct_status>(Code::kInternal);
+    }
 }
 
 ct_status ct_apply_delete(ct_tree *t, uint64_t slot, const uint8_t *key, size_t klen)
@@ -727,9 +732,14 @@ ct_status ct_apply_delete(ct_tree *t, uint64_t slot, const uint8_t *key, size_t 
     if (t == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
-    std::vector<Crowdbtree::encoded_op> ops;
-    ops.push_back({std::string(reinterpret_cast<const char *>(key), klen), encode_cell_buf(slot, OpKind::kDelete)});
-    return to_status(t->tree->apply_encoded(slot, std::move(ops)));
+    try {
+        std::vector<Crowdbtree::encoded_op> ops;
+        ops.push_back({std::string(reinterpret_cast<const char *>(key), klen), encode_cell_buf(slot, OpKind::kDelete)});
+        return to_status(t->tree->apply_encoded(slot, std::move(ops)));
+    }
+    catch (...) {
+        return static_cast<ct_status>(Code::kInternal);
+    }
 }
 
 ct_status ct_apply_batch(ct_tree *t, uint64_t slot, const uint8_t *ops, size_t ops_len, uint64_t count)

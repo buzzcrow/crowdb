@@ -10,6 +10,7 @@ pub trait PartitionTree: Send + Sync {
     async fn get(&self, key: &[u8]) -> Result<Option<ValueRevision>>;
     async fn apply(&self, mutation_seq: u64, operation: &MutationOperation) -> Result<()>;
     async fn advance_noop(&self, mutation_seq: u64) -> Result<()>;
+    async fn checkpoint(&self) -> Result<u64>;
     fn last_applied_seq(&self) -> u64;
 }
 
@@ -44,6 +45,13 @@ impl PartitionTree for CrowdbPartitionTree {
     async fn advance_noop(&self, mutation_seq: u64) -> Result<()> {
         self.tree.force_advance_slot(mutation_seq);
         Ok(())
+    }
+
+    async fn checkpoint(&self) -> Result<u64> {
+        self.tree.snapshot().map_err(|error| match error {
+            crowdb_tree_ffi::CtError::Corruption => ChunkKvError::TreeCorruption(error.to_string()),
+            _ => ChunkKvError::MaintenanceDegraded(error.to_string()),
+        })
     }
 
     fn last_applied_seq(&self) -> u64 {

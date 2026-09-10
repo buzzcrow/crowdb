@@ -10,6 +10,9 @@ use crate::{ChunkKvError, JournalPosition, Result};
 #[async_trait]
 pub trait PartitionJournal: Send + Sync {
     async fn append_frames(&self, frames: &[Bytes]) -> Result<Vec<JournalPosition>>;
+    async fn read_window(&self, offset: u64, max_bytes: usize) -> Result<Bytes>;
+    async fn trim_prefix(&self, offset: u64) -> Result<u64>;
+    async fn close(&self) -> Result<()>;
     fn stream_name(&self) -> StreamName;
     fn tail(&self) -> u64;
 }
@@ -53,6 +56,28 @@ impl PartitionJournal for StreamPartitionJournal {
             ));
         }
         Ok(positions)
+    }
+
+    async fn read_window(&self, offset: u64, max_bytes: usize) -> Result<Bytes> {
+        let available =
+            self.stream.tail().checked_sub(offset).ok_or_else(|| {
+                ChunkKvError::InvalidRequest("journal read begins beyond durable tail".into())
+            })?;
+        let length = usize::try_from(available.min(max_bytes as u64)).map_err(|_| {
+            ChunkKvError::InvalidRequest("journal read window exceeds addressable range".into())
+        })?;
+        self.stream
+            .read_at(offset, length)
+            .await
+            .map_err(map_stream_error)
+    }
+
+    async fn trim_prefix(&self, offset: u64) -> Result<u64> {
+        self.stream.trim_prefix(offset).await.map_err(map_stream_error)
+    }
+
+    async fn close(&self) -> Result<()> {
+        self.stream.close().await.map_err(map_stream_error)
     }
 
     fn stream_name(&self) -> StreamName {

@@ -6,6 +6,7 @@
 mod error;
 mod frame;
 mod journal;
+mod manager;
 mod partition;
 mod tree;
 mod types;
@@ -16,6 +17,7 @@ pub mod memory;
 pub use error::{ChunkKvError, Result};
 pub use frame::{decode_frame, encode_frame, DecodedFrame, FrameDecode, MAX_FRAME_BYTES};
 pub use journal::{PartitionJournal, StreamPartitionJournal};
+pub use manager::PartitionManager;
 pub use partition::{MutationResponse, Partition, PartitionConfig, PartitionSnapshot};
 pub use tree::{CrowdbPartitionTree, PartitionTree};
 pub use types::{
