@@ -1,0 +1,26 @@
+[package]
+name = "crowdb-chunk-stream"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Fenced mirrored logical byte streams over CROWDB chunks."
+autobenches = false
+
+[lints]
+workspace = true
+
+[features]
+test-util = []
+
+[dependencies]
+async-trait = "0.1"
+bytes = "1"
+crowdb-protocol = { path = "../crowdb-protocol" }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
+
+[dev-dependencies]
+crowdb-chunk-stream = { path = ".", features = ["test-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }

@@ -17,6 +17,7 @@ members = [
     "lib/crowdb-rpc/ffi",
     "lib/crowdb-diskio-client",
     "lib/crowdb-chunk-client",
+    "lib/crowdb-chunk-stream",
     "lib/crowdb-test-harness",
     "app/crowdb-port-alloc",
 ]

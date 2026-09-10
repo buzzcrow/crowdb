@@ -10,6 +10,8 @@
 
 mod types;
 
+pub mod chunk_stream;
+
 pub mod common {
     pub use crate::types::common::*;
 }
