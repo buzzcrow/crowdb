@@ -32,15 +32,15 @@ R142 partitions and publishes one complete group-0 range catalog.
   management, graceful shutdown, and zero/many partition hosting.
 - [~] Add direct RPC types and handlers for R142 operations, typed errors,
   request identity, journal positions, deadlines, and stale-owner redirects.
-- [ ] Bind scan continuation tokens to direction, partition, epoch, and map
+- [~] Bind scan continuation tokens to direction, partition, epoch, and map
   revision and return refresh-required after topology changes.
 
 ## Phase 4: Transfer, Split, and Balance
 
-- [ ] Persist and resume idempotent transfer/split transitions with prepared
+- [~] Persist and resume idempotent transfer/split transitions with prepared
   target readiness and exact R142 proof resolution.
-- [ ] Implement dead-owner exclusion, graceful fencing, and no-copy transfer.
-- [ ] Add median split selection, count-first placement, weighted improvement,
+- [~] Implement dead-owner exclusion, graceful fencing, and no-copy transfer.
+- [x] Add median split selection, count-first placement, weighted improvement,
   cooldown, and transition concurrency limits.
 
 ## Phase 5: Gates and Documentation
@@ -58,5 +58,8 @@ R142 partitions and publishes one complete group-0 range catalog.
 - R145 owns routed multi-partition composition and end-to-end client coverage.
 - Data RPC request/response, transition-detail, and balance-policy wire models
   now cover the point-operation foundation; crowdb-rpc FlatBuffers transport,
-  ordered seek/scan execution, continuation handling, and management endpoints
-  remain.
+  ordered seek/scan execution, and management endpoints remain. Scan interval
+  clipping and topology-bound continuation validation are complete.
+- Transfer records and the reducer preserve no-copy artifact identity and old-
+  owner exclusion, but the group-0 transition store, target recovery worker,
+  split orchestration, and catalog cutover adapter remain.

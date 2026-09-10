@@ -293,6 +293,120 @@ pub struct ChunkKvInstanceObservation {
     pub hosted: Vec<HostedPartition>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TransferPhase {
+    #[default]
+    Planned,
+    AwaitingFence,
+    TargetPreparing,
+    TargetPrepared,
+    CatalogCommitted,
+    Aborted,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AuthorityReleaseProof {
+    ExplicitFence {
+        source_instance_id: u64,
+        source_epoch: u64,
+        durable_tail: u64,
+    },
+    LeaseExpired {
+        activation_not_before_ms: u64,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetReadinessProof {
+    pub target_instance_id: u64,
+    pub target_epoch: u64,
+    pub artifact: PartitionArtifact,
+    pub durable_tail: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferTransition {
+    pub transition_id: Id128,
+    pub partition_id: Id128,
+    pub range: KeyRange,
+    pub source: OwnerDescriptor,
+    pub source_epoch: u64,
+    pub target: OwnerDescriptor,
+    pub target_epoch: u64,
+    pub artifact: PartitionArtifact,
+    pub old_grant_expires_at_ms: u64,
+    pub phase: TransferPhase,
+    pub release_proof: Option<AuthorityReleaseProof>,
+    pub readiness_proof: Option<TargetReadinessProof>,
+    pub failure: Option<String>,
+}
+
+impl TransferTransition {
+    /// Validates a persisted no-copy ownership transfer record.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for missing identity, non-advancing authority, invalid
+    /// range/artifact, or proof fields inconsistent with the persisted phase.
+    pub fn validate(&self) -> Result<(), ChunkKvProtocolError> {
+        let valid_identity = self.transition_id != Id128::default()
+            && self.partition_id != Id128::default()
+            && self.source.instance_id != 0
+            && self.target.instance_id != 0
+            && self.source.instance_id != self.target.instance_id
+            && !self.source.rpc_endpoint.is_empty()
+            && !self.target.rpc_endpoint.is_empty()
+            && self.source_epoch != 0
+            && self.target_epoch > self.source_epoch
+            && self.artifact.stream_name != StreamName::default()
+            && self
+                .range
+                .end
+                .as_ref()
+                .map_or(true, |end| self.range.start < *end);
+        if !valid_identity {
+            return Err(ChunkKvProtocolError::InvalidTransferTransition);
+        }
+        if let Some(proof) = &self.release_proof {
+            match proof {
+                AuthorityReleaseProof::ExplicitFence {
+                    source_instance_id,
+                    source_epoch,
+                    durable_tail,
+                } if *source_instance_id == self.source.instance_id
+                    && *source_epoch == self.source_epoch
+                    && *durable_tail >= self.artifact.applied_seq => {}
+                AuthorityReleaseProof::LeaseExpired {
+                    activation_not_before_ms,
+                } if *activation_not_before_ms > self.old_grant_expires_at_ms => {}
+                _ => return Err(ChunkKvProtocolError::InvalidTransferTransition),
+            }
+        }
+        if let Some(proof) = &self.readiness_proof {
+            if proof.target_instance_id != self.target.instance_id
+                || proof.target_epoch != self.target_epoch
+                || proof.artifact != self.artifact
+                || proof.durable_tail < self.artifact.applied_seq
+            {
+                return Err(ChunkKvProtocolError::InvalidTransferTransition);
+            }
+        }
+        let fields_match_phase = match self.phase {
+            TransferPhase::Planned => self.release_proof.is_none() && self.readiness_proof.is_none(),
+            TransferPhase::AwaitingFence => self.readiness_proof.is_none(),
+            TransferPhase::TargetPreparing => self.release_proof.is_some() && self.readiness_proof.is_none(),
+            TransferPhase::TargetPrepared | TransferPhase::CatalogCommitted => {
+                self.release_proof.is_some() && self.readiness_proof.is_some()
+            }
+            TransferPhase::Aborted => self.failure.as_ref().is_some_and(|failure| !failure.is_empty()),
+        };
+        if !fields_match_phase {
+            return Err(ChunkKvProtocolError::InvalidTransferTransition);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ServingAssignment {
     pub partition_id: Id128,
@@ -461,6 +575,38 @@ pub struct ScanRequest {
     pub continuation: Option<ScanContinuation>,
 }
 
+impl ScanRequest {
+    /// Validates the bounded single-partition scan envelope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for missing routing identity, a zero limit, or an
+    /// empty/reversed requested interval.
+    pub fn validate(&self) -> Result<(), ChunkKvProtocolError> {
+        self.routing.validate()?;
+        if self.limit == 0
+            || self
+                .start
+                .as_ref()
+                .zip(self.end.as_ref())
+                .is_some_and(|(start, end)| start >= end)
+        {
+            return Err(ChunkKvProtocolError::InvalidRpcRequest);
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn continuation_matches_topology(&self) -> bool {
+        self.continuation.as_ref().map_or(true, |continuation| {
+            continuation.direction == self.direction
+                && continuation.partition_id == self.routing.partition_id
+                && continuation.owner_epoch == self.routing.owner_epoch
+                && continuation.map_revision == self.routing.map_revision
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RpcValue {
     pub key: Vec<u8>,
@@ -568,6 +714,8 @@ pub enum ChunkKvProtocolError {
     InvalidServingGrant,
     #[error("chunk KV RPC request is invalid")]
     InvalidRpcRequest,
+    #[error("chunk KV transfer transition is invalid")]
+    InvalidTransferTransition,
     #[error("protocol record encoding failed")]
     Encoding,
 }

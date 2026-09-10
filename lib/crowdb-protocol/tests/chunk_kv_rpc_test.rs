@@ -3,7 +3,8 @@
 
 use crowdb_protocol::chunk_kv::{
     ChunkKvProtocolError, ChunkKvResponse, ChunkKvRpcErrorCode, ClientRequestId, Id128, OwnerHint,
-    PointOperation, PointRequest, RequestRouting, RpcCompareCondition, RpcFailure,
+    PointOperation, PointRequest, RequestRouting, RpcCompareCondition, RpcFailure, ScanContinuation,
+    ScanDirection, ScanRequest,
 };
 
 fn routing() -> RequestRouting {
@@ -18,6 +19,31 @@ fn routing() -> RequestRouting {
         min_journal_position: None,
         deadline_ms: Some(14),
     }
+}
+
+#[test]
+fn scan_continuation_is_bound_to_direction_and_topology() {
+    let mut request = ScanRequest {
+        routing: routing(),
+        start: Some(b"a".to_vec()),
+        end: Some(b"z".to_vec()),
+        direction: ScanDirection::Forward,
+        limit: 10,
+        continuation: Some(ScanContinuation {
+            direction: ScanDirection::Forward,
+            last_key: b"m".to_vec(),
+            partition_id: routing().partition_id,
+            owner_epoch: routing().owner_epoch,
+            map_revision: routing().map_revision,
+        }),
+    };
+    request.validate().unwrap();
+    assert!(request.continuation_matches_topology());
+    request.routing.owner_epoch += 1;
+    assert!(!request.continuation_matches_topology());
+    request.routing.owner_epoch -= 1;
+    request.direction = ScanDirection::Reverse;
+    assert!(!request.continuation_matches_topology());
 }
 
 #[test]
