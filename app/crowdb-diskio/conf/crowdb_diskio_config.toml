@@ -1,0 +1,25 @@
+# Canonical crowdb-diskio startup configuration.
+
+[server]
+bind_address = "127.0.0.1"
+listen_port = 13000
+rpc_workers = 4
+node_id = 0
+dummy_disk_type = "null"
+o_direct = true
+
+[engine]
+thread_pool_size = 4
+sq_entries = 256
+
+[group0]
+kv_seeds = []
+instance_id = 0
+rack_id = 0
+disk_group_id = 0
+sync_interval_ms = 5000
+auto_discover_disks = false
+
+[metrics]
+log_dir = "log"
+interval_secs = 5

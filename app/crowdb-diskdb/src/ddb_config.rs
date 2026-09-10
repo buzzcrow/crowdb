@@ -38,7 +38,11 @@ impl BaseConfig for DdbConfig {
 
 /// main listener + HTTP + crowdb-rpc listen addresses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ServerConfig {
+    /// static: crowdb-rpc I/O workers serving this process.
+    #[serde(default = "default_rpc_workers")]
+    pub rpc_workers: u32,
     /// static: main listen address.
     pub listen_addr: String,
     /// static: HTTP management listen address.
@@ -67,6 +71,10 @@ const fn default_kv_pool_size() -> usize {
     1
 }
 
+const fn default_rpc_workers() -> u32 {
+    2
+}
+
 const fn default_kv_rpc_workers() -> u32 {
     2
 }
@@ -74,6 +82,7 @@ const fn default_kv_rpc_workers() -> u32 {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
+            rpc_workers: default_rpc_workers(),
             listen_addr: format!("0.0.0.0:{DISKDB_LISTEN_BASE}"),
             http_listen_addr: format!("0.0.0.0:{DISKDB_HTTP_BASE}"),
             rpc_listen_addr: format!("0.0.0.0:{DISKDB_RPC_BASE}"),
@@ -339,6 +348,9 @@ impl Default for CompactionConfig {
 /// # Errors
 /// Returns `Err(message)` on the first violation.
 pub fn validate(config: &DdbConfig) -> Result<(), String> {
+    if config.server.rpc_workers == 0 {
+        return Err("server.rpc_workers must be > 0".to_string());
+    }
     if config.server.kv_pool_size == 0 {
         return Err("server.kv_pool_size must be > 0".to_string());
     }

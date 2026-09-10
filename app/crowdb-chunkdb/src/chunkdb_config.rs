@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 /// Top-level configuration for a chunkdb instance.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChunkdbConfig {
+    #[serde(default)]
     pub server: ServerConfig,
+    #[serde(default)]
     pub topology: TopologyConfig,
     #[serde(default)]
     pub range_guard: RangeGuardConfig,
@@ -37,6 +39,9 @@ pub struct PlacementConfig {
 
 impl BaseConfig for ChunkdbConfig {
     fn validate(&self) -> Result<(), String> {
+        if self.server.rpc_workers == 0 {
+            return Err("server.rpc_workers must be > 0".into());
+        }
         if self.server.kv_server_mgmt_seeds.is_empty() {
             return Err("server.kv_server_mgmt_seeds must not be empty".into());
         }
@@ -219,7 +224,11 @@ impl Default for RangeGuardConfig {
 
 /// HTTP + crowdb-rpc listen addresses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ServerConfig {
+    /// crowdb-rpc I/O workers serving this process.
+    #[serde(default = "default_rpc_workers")]
+    pub rpc_workers: u32,
     pub http_listen_addr: String,
     /// crowdb-rpc listen address (R116 migration — runs alongside the
     /// HTTP listener).
@@ -250,6 +259,10 @@ const fn default_client_pool_size() -> usize {
     1
 }
 
+const fn default_rpc_workers() -> u32 {
+    2
+}
+
 const fn default_client_rpc_workers() -> u32 {
     2
 }
@@ -265,6 +278,7 @@ fn default_rpc_listen_addr() -> String {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
+            rpc_workers: default_rpc_workers(),
             http_listen_addr: format!("0.0.0.0:{CHUNKDB_HTTP_BASE}"),
             rpc_listen_addr: default_rpc_listen_addr(),
             instance_id: None,

@@ -120,6 +120,7 @@ impl DiskdbProcess {
         };
         let config_content = format!(
             r#"[server]
+rpc_workers = 2
 listen_addr = "127.0.0.1:{listen_port}"
 rpc_listen_addr = "127.0.0.1:{rpc_port}"
 http_listen_addr = "127.0.0.1:{http_port}"

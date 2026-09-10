@@ -55,9 +55,9 @@ struct Cli {
     #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
     rpc_port: Option<u16>,
 
-    /// Number of crowdb-rpc I/O worker threads. Default: 2.
-    #[arg(long, default_value_t = 2)]
-    rpc_workers: u32,
+    /// Number of crowdb-rpc I/O worker threads. Overrides config.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+    rpc_workers: Option<u32>,
 
     /// Log directory. Default: "log" (relative to CWD).
     #[arg(long)]
@@ -548,7 +548,11 @@ async fn main() {
         ChunkdbRpcService::new(Arc::clone(&handler), Arc::clone(&workflow_metrics), rpc_rt_handle)
             .with_conversion(Arc::clone(&conversion)),
     );
-    let rpc_server = Arc::new(crowdb_rpc_ffi::RpcServer::with_engines(None, 1, args.rpc_workers));
+    let rpc_server = Arc::new(crowdb_rpc_ffi::RpcServer::with_engines(
+        None,
+        1,
+        config.server.rpc_workers,
+    ));
     rpc_server
         .listen(
             rpc_listen_addr.ip().to_string().as_str(),
@@ -899,6 +903,12 @@ fn load_config(args: &Cli) -> ChunkdbConfig {
     if let Some(port) = args.rpc_port {
         config.server.rpc_listen_addr = replace_port(&config.server.rpc_listen_addr, port);
     }
+    if let Some(rpc_workers) = args.rpc_workers {
+        config.server.rpc_workers = rpc_workers;
+    }
+
+    crowdb_common::config::BaseConfig::validate(&config)
+        .unwrap_or_else(|e| panic!("invalid config after CLI overrides: {e}"));
 
     config
 }

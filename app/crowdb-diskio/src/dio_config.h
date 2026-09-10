@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 // DioConfig: configuration for the crowdb-diskio server.
-// Parsed from CLI args; validated before startup.
+// Loaded from TOML and overlaid by CLI args; validated before startup.
 #pragma once
 
 #include "disk/disk_properties.h"
@@ -74,6 +74,10 @@ struct DioConfig
 
     // Parse CLI args. Returns true on success, false on error (msg in err).
     static bool parse_args(int argc, char *argv[], DioConfig &out, std::string &err);
+
+    // Overlay a TOML file on compiled defaults. Assignment to out is
+    // transactional: failures leave the caller's value unchanged.
+    static bool load_file(const std::string &path, DioConfig &out, std::string &err);
 
     // Validate the parsed config. Returns true on success.
     bool validate(std::string &err) const;

@@ -854,11 +854,25 @@ fn resolve_diskdb_config_path(
     rpc_port: u16,
     instance_id: Option<u64>,
     kv_server_mgmt_seeds: &[String],
+    rpc_workers: Option<u32>,
 ) -> Result<PathBuf> {
     let conf = workspace_dir.join("conf");
     std::fs::create_dir_all(&conf).map_err(Error::Io)?;
     let path = conf.join("crowdb_diskdb_config.toml");
     if path.exists() && kv_server_mgmt_seeds.is_empty() {
+        if let Some(workers) = rpc_workers {
+            let content = std::fs::read_to_string(&path).map_err(Error::Io)?;
+            let mut config = toml::from_str::<toml::Value>(&content)
+                .map_err(|error| Error::Config(format!("failed to parse {}: {error}", path.display())))?;
+            let server = config
+                .get_mut("server")
+                .and_then(toml::Value::as_table_mut)
+                .ok_or_else(|| Error::Config(format!("{} has no [server] table", path.display())))?;
+            server.insert("rpc_workers".into(), toml::Value::Integer(i64::from(workers)));
+            let content = toml::to_string_pretty(&config)
+                .map_err(|error| Error::Config(format!("failed to serialize {}: {error}", path.display())))?;
+            std::fs::write(&path, content).map_err(Error::Io)?;
+        }
         return Ok(path);
     }
     let seeds = if kv_server_mgmt_seeds.is_empty() {
@@ -876,11 +890,13 @@ fn resolve_diskdb_config_path(
     let instance_id = instance_id.map_or_else(String::new, |id| format!("instance_id = \"{id}\"\n"));
     let config = format!(
         "[server]\n\
+         rpc_workers = {}\n\
          listen_addr = \"0.0.0.0:{listen_port}\"\n\
          http_listen_addr = \"0.0.0.0:{http_port}\"\n\
          rpc_listen_addr = \"0.0.0.0:{rpc_port}\"\n\
          {instance_id}\
          kv_server_mgmt_seeds = [{seeds}]\n",
+        rpc_workers.unwrap_or(2),
     );
     std::fs::write(&path, config).map_err(Error::Io)?;
     Ok(path)
@@ -1016,6 +1032,7 @@ pub async fn deploy_diskdb_local(
         req.rpc_port,
         req.instance_id,
         &req.kv_server_mgmt_seeds,
+        req.rpc_workers,
     )?;
     // The public endpoint is the crowdb-rpc listener. The main listener is
     // an internal compatibility endpoint and is not exposed as DiskDB identity.
@@ -1036,9 +1053,6 @@ pub async fn deploy_diskdb_local(
     cmd.arg("--log-dir").arg(workspace_dir.join("log"));
     if let Some(interval) = req.metrics_interval {
         cmd.arg("--metrics-interval").arg(interval.to_string());
-    }
-    if let Some(workers) = req.rpc_workers {
-        cmd.arg("--rpc-workers").arg(workers.to_string());
     }
     if let Some(connections) = req.kv_connections {
         cmd.arg("--kv-connections").arg(connections.to_string());
@@ -1105,9 +1119,6 @@ fn diskdb_launch_args(req: &DiskdbDeployRequest, config_path: &Path, workspace_d
     if let Some(value) = req.metrics_interval {
         args.extend(["--metrics-interval".into(), value.to_string()]);
     }
-    if let Some(value) = req.rpc_workers {
-        args.extend(["--rpc-workers".into(), value.to_string()]);
-    }
     if let Some(value) = req.kv_connections {
         args.extend(["--kv-connections".into(), value.to_string()]);
     }
@@ -1149,7 +1160,8 @@ pub async fn deploy_chunkdb_local(
         .collect::<Vec<_>>()
         .join(", ");
     let config = format!(
-        "[server]\nhttp_listen_addr = \"{}:{}\"\nrpc_listen_addr = \"{}:{}\"\ninstance_id = \"{}\"\nkv_server_mgmt_seeds = [{}]\nkeepalive_interval_secs = 1\nkv_pool_size = {}\nkv_rpc_workers = {}\ndiskdb_pool_size = {}\ndiskdb_rpc_workers = {}\n\n[topology]\nrefresh_interval_secs = 1\n\n[range_guard]\nallow_all_when_empty = false\n\n[lifecycle]\ncache_capacity = 10000\nsweep_chunk_lock_interval_secs = 60\nlock_hold_warn_threshold_ms = 1000\n\n[placement]\nallow_unsafe_ec = {}\n",
+        "[server]\nrpc_workers = {}\nhttp_listen_addr = \"{}:{}\"\nrpc_listen_addr = \"{}:{}\"\ninstance_id = \"{}\"\nkv_server_mgmt_seeds = [{}]\nkeepalive_interval_secs = 1\nkv_pool_size = {}\nkv_rpc_workers = {}\ndiskdb_pool_size = {}\ndiskdb_rpc_workers = {}\n\n[topology]\nrefresh_interval_secs = 1\n\n[range_guard]\nallow_all_when_empty = false\n\n[lifecycle]\ncache_capacity = 10000\nsweep_chunk_lock_interval_secs = 60\nlock_hold_warn_threshold_ms = 1000\n\n[placement]\nallow_unsafe_ec = {}\n",
+        req.rpc_workers.unwrap_or(2),
         node.host,
         req.http_port,
         node.host,
@@ -1181,9 +1193,6 @@ pub async fn deploy_chunkdb_local(
         .stdout(Stdio::from(output.try_clone()?))
         .stderr(Stdio::from(output))
         .kill_on_drop(false);
-    if let Some(workers) = req.rpc_workers {
-        command.arg("--rpc-workers").arg(workers.to_string());
-    }
     if let Some(interval) = req.metrics_interval {
         command.arg("--metrics-interval").arg(interval.to_string());
     }
@@ -1222,9 +1231,6 @@ fn chunkdb_launch_args(req: &ChunkdbDeployRequest, config_path: &Path, log_dir: 
         "--log-dir".into(),
         log_dir.to_string_lossy().into_owned(),
     ];
-    if let Some(value) = req.rpc_workers {
-        args.extend(["--rpc-workers".into(), value.to_string()]);
-    }
     if let Some(value) = req.metrics_interval {
         args.extend(["--metrics-interval".into(), value.to_string()]);
     }
@@ -1255,7 +1261,30 @@ pub async fn deploy_diskio_local(
     })?;
     let launch_binary = stage_server_binary(&binary, workspace_dir)?;
     let log_dir = workspace_dir.join("log");
+    let config_dir = workspace_dir.join("conf");
     std::fs::create_dir_all(&log_dir)?;
+    std::fs::create_dir_all(&config_dir)?;
+    let config_path = config_dir.join("crowdb_diskio_config.toml");
+    let seeds = req
+        .kv_server_mgmt_seeds
+        .iter()
+        .map(|seed| format!("{seed:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let config = format!(
+        "[server]\nbind_address = {:?}\nlisten_port = {}\nrpc_workers = {}\nnode_id = {}\ndummy_disk_type = \"null\"\no_direct = true\n\n[engine]\nthread_pool_size = 4\nsq_entries = 256\n\n[group0]\nkv_seeds = [{}]\ninstance_id = {}\nrack_id = {}\ndisk_group_id = {}\nsync_interval_ms = 1000\nauto_discover_disks = true\n\n[metrics]\nlog_dir = {:?}\ninterval_secs = {}\n",
+        node.host,
+        req.rpc_port,
+        req.rpc_workers.unwrap_or(4),
+        req.node_id,
+        seeds,
+        req.instance_id,
+        req.rack_id,
+        req.disk_group_id,
+        log_dir.to_string_lossy(),
+        req.metrics_interval.unwrap_or(5),
+    );
+    std::fs::write(&config_path, config)?;
     let output_path = log_dir.join("crowdb-diskio.stdout.log");
     let output = std::fs::OpenOptions::new()
         .create(true)
@@ -1264,35 +1293,12 @@ pub async fn deploy_diskio_local(
     let endpoint = format!("http://{}:{}", node.host, req.rpc_port);
     let mut command = Command::new(&launch_binary);
     command
-        .arg("--bind")
-        .arg(&node.host)
-        .arg("--port")
-        .arg(req.rpc_port.to_string())
-        .arg("--dummy-disk")
-        .arg("null")
-        .arg("--kv-seeds")
-        .arg(req.kv_server_mgmt_seeds.join(","))
-        .arg("--instance-id")
-        .arg(req.instance_id.to_string())
-        .arg("--rack-id")
-        .arg(req.rack_id.to_string())
-        .arg("--node-id")
-        .arg(req.node_id.to_string())
-        .arg("--dg-id")
-        .arg(req.disk_group_id.to_string())
-        .arg("--sync-interval-ms")
-        .arg("1000")
-        .arg("--auto-discover-disks")
+        .arg("--config")
+        .arg(&config_path)
         .current_dir(workspace_dir)
         .stdout(Stdio::from(output.try_clone()?))
         .stderr(Stdio::from(output))
         .kill_on_drop(false);
-    if let Some(interval) = req.metrics_interval {
-        command.arg("--metrics-interval").arg(interval.to_string());
-    }
-    if let Some(workers) = req.rpc_workers {
-        command.arg("--rpc-workers").arg(workers.to_string());
-    }
     if let Some(lib_dir) = diskio_ffi_lib_dir(workspace_dir) {
         command.env("LD_LIBRARY_PATH", lib_dir);
     }
@@ -1318,7 +1324,7 @@ pub async fn deploy_diskio_local(
         pid,
         launch: LocalLaunchSpec {
             program: launch_binary.to_string_lossy().into_owned(),
-            args: diskio_launch_args(req),
+            args: diskio_launch_args(&config_path),
             workdir: workspace_dir.to_string_lossy().into_owned(),
             env: diskio_ffi_lib_dir(workspace_dir)
                 .map(|path| {
@@ -1333,35 +1339,8 @@ pub async fn deploy_diskio_local(
     })
 }
 
-fn diskio_launch_args(req: &DiskioDeployRequest) -> Vec<String> {
-    let mut args = vec![
-        "--bind".into(),
-        "127.0.0.1".into(),
-        "--port".into(),
-        req.rpc_port.to_string(),
-        "--dummy-disk".into(),
-        "null".into(),
-        "--kv-seeds".into(),
-        req.kv_server_mgmt_seeds.join(","),
-        "--instance-id".into(),
-        req.instance_id.to_string(),
-        "--rack-id".into(),
-        req.rack_id.to_string(),
-        "--node-id".into(),
-        req.node_id.to_string(),
-        "--dg-id".into(),
-        req.disk_group_id.to_string(),
-        "--sync-interval-ms".into(),
-        "1000".into(),
-        "--auto-discover-disks".into(),
-    ];
-    if let Some(value) = req.metrics_interval {
-        args.extend(["--metrics-interval".into(), value.to_string()]);
-    }
-    if let Some(value) = req.rpc_workers {
-        args.extend(["--rpc-workers".into(), value.to_string()]);
-    }
-    args
+fn diskio_launch_args(config_path: &Path) -> Vec<String> {
+    vec!["--config".into(), config_path.to_string_lossy().into_owned()]
 }
 
 fn diskio_ffi_lib_dir(workspace_dir: &Path) -> Option<PathBuf> {

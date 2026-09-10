@@ -89,9 +89,32 @@ static bool parse_double(const char *s, double &out)
 
 bool DioConfig::parse_args(int argc, char *argv[], DioConfig &out, std::string &err)
 {
+    const char *config_path = nullptr;
+    for (int i = 1; i < argc; i++) {
+        if (std::string_view(argv[i]) == "--config") {
+            if (i + 1 >= argc) {
+                err = "--config requires a path";
+                return false;
+            }
+            if (config_path != nullptr) {
+                err = "--config may be specified only once";
+                return false;
+            }
+            config_path = argv[++i];
+        }
+    }
+    if (config_path != nullptr && !load_file(config_path, out, err)) {
+        return false;
+    }
+
+    bool cli_disks    = false;
+    bool cli_kv_seeds = false;
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
-        if (arg == "--bind" && i + 1 < argc) {
+        if (arg == "--config" && i + 1 < argc) {
+            ++i;
+        }
+        else if (arg == "--bind" && i + 1 < argc) {
             out.bind_address = argv[++i];
         }
         else if (arg == "--port" && i + 1 < argc) {
@@ -166,6 +189,10 @@ bool DioConfig::parse_args(int argc, char *argv[], DioConfig &out, std::string &
             out.o_direct = false;
         }
         else if (arg == "--disk" && i + 1 < argc) {
+            if (!cli_disks) {
+                out.disks.clear();
+                cli_disks = true;
+            }
             // Format: --disk <hex_id>:<path>[:<zone_capacity>]
             // hex_id is either "high:low" or just "low" (hex).
             // Multiple --disk args allowed. Empty path = dummy disk.
@@ -242,7 +269,11 @@ bool DioConfig::parse_args(int argc, char *argv[], DioConfig &out, std::string &
             // Comma-separated list of kv-server management endpoints.
             // e.g. --kv-seeds http://127.0.0.1:10000,http://127.0.0.1:10001
             std::string seeds = argv[++i];
-            size_t      pos   = 0;
+            if (!cli_kv_seeds) {
+                out.kv_seeds.clear();
+                cli_kv_seeds = true;
+            }
+            size_t pos = 0;
             while (pos < seeds.size()) {
                 size_t comma = seeds.find(',', pos);
                 if (comma == std::string::npos) {
@@ -280,7 +311,7 @@ bool DioConfig::parse_args(int argc, char *argv[], DioConfig &out, std::string &
             out.metrics_log_dir = argv[++i];
         }
         else if (arg == "--help" || arg == "-h") {
-            std::printf("usage: crowdb-diskio --port <port> [--bind <addr>] "
+            std::printf("usage: crowdb-diskio [--config <toml>] [--port <port>] [--bind <addr>] "
                         "[--dummy-disk null|mem] "
                         "[--rpc-workers N] [--threads N] [--sq-entries N] [--no-o-direct] "
                         "[--fault-latency <min_ms>:<max_ms>] "

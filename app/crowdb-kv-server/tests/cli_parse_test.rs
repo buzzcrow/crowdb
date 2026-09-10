@@ -6,6 +6,7 @@
 //! §3 ("integration tests only — do not add new inline test modules").
 
 use clap::Parser;
+use crowdb_kv::common::config::CrowDBConfig;
 use crowdb_kv_server::cli::{parse_id_list, parse_port_list, Cli};
 
 #[test]
@@ -85,4 +86,60 @@ fn parse_root_is_required() {
 fn management_port_rejects_zero() {
     let result = Cli::try_parse_from(["crowdb-kv-server", "--root", "/tmp/n1", "--management-port", "0"]);
     assert!(result.is_err());
+}
+
+#[test]
+fn rpc_workers_is_only_an_explicit_override() {
+    let defaults = Cli::parse_from(["crowdb-kv-server", "--root", "/tmp/n1"]);
+    assert_eq!(defaults.rpc_workers, None);
+    assert_eq!(defaults.election_profile, None);
+    assert_eq!(defaults.max_inflight, None);
+    assert_eq!(defaults.peer_pool_size, None);
+    assert_eq!(defaults.send_queue_capacity, None);
+
+    let overridden = Cli::parse_from(["crowdb-kv-server", "--root", "/tmp/n1", "--rpc-workers", "7"]);
+    assert_eq!(overridden.rpc_workers, Some(7));
+
+    let invalid = Cli::try_parse_from(["crowdb-kv-server", "--root", "/tmp/n1", "--rpc-workers", "0"]);
+    assert!(invalid.is_err());
+}
+
+#[test]
+fn config_values_survive_absent_cli_and_explicit_values_override() {
+    let defaults = Cli::parse_from(["crowdb-kv-server", "--root", "/tmp/n1"]);
+    let mut config = CrowDBConfig::default();
+    config.paxos.max_inflight_proposals = 19;
+    config.server.peer_pool_size = 7;
+    config.server.send_queue_capacity = 1234;
+    config.server.rpc_workers = 5;
+    config.server.enable_nagle = true;
+    config.server.quickack = true;
+    config.server.event_write = true;
+    defaults.apply_config_overrides(&mut config).unwrap();
+    assert_eq!(config.paxos.max_inflight_proposals, 19);
+    assert_eq!(config.server.peer_pool_size, 7);
+    assert_eq!(config.server.send_queue_capacity, 1234);
+    assert_eq!(config.server.rpc_workers, 5);
+    assert!(config.server.enable_nagle);
+    assert!(config.server.quickack);
+    assert!(config.server.event_write);
+
+    let overrides = Cli::parse_from([
+        "crowdb-kv-server",
+        "--root",
+        "/tmp/n1",
+        "--max-inflight",
+        "23",
+        "--peer-pool-size",
+        "3",
+        "--send-queue-capacity",
+        "2048",
+        "--rpc-workers",
+        "4",
+    ]);
+    overrides.apply_config_overrides(&mut config).unwrap();
+    assert_eq!(config.paxos.max_inflight_proposals, 23);
+    assert_eq!(config.server.peer_pool_size, 3);
+    assert_eq!(config.server.send_queue_capacity, 2048);
+    assert_eq!(config.server.rpc_workers, 4);
 }

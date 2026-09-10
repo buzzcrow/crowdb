@@ -27,6 +27,7 @@ isa-l = "*"
 # Flatbuffer schema compiler + runtime headers for crowdb-rpc (R104) and
 # crowdb-protocol's .fbs codegen. Provides `flatc` and flatbuffers/cpp headers.
 flatbuffers = "*"
+tomlplusplus = ">=3.3.0,<4"
 # Rust toolchain (crowdb-kv)
 rust = ">=1.96"
 openssl = "*"
