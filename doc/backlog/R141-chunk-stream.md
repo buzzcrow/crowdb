@@ -358,13 +358,15 @@ Required gates:
   nonzero-group immutable extent pages, and an R101 CAS manifest head. Server
   lifecycle wiring and a real-KV crash-order integration test remain with the
   production adapter work.
-- The seekable reader now supports finite/`ToEnd` hints and provenance, but it
-  reads one bounded window synchronously. Adjacent-range asynchronous prefetch,
-  cached-byte overlap, and its memory/concurrency benchmarks remain open.
-- Extent-page rebuild currently starts page indices at zero after trim. Logical
-  byte offsets remain stable, but retaining nonzero first page indices and
-  watermark-driven cleanup of superseded page generations still needs the
-  persistent page allocator/GC policy.
+- The seekable reader supports finite/`ToEnd` hints, keeps one bounded next
+  window in flight while the caller consumes the current window, and exact
+  reads expose provenance. Concurrent physical reads within one multi-extent
+  window, a provenance-yielding sequential-reader API, and memory/concurrency
+  benchmarks remain open.
+- Extent-page identities derive from their stable first logical offset, so a
+  trimmed generation retains a nonzero first page index without renumbering
+  logical bytes. Watermark-driven cleanup of superseded page generations still
+  needs the persistent metadata-GC policy.
 - Stream names are process-unique and time ordered and reopen always rotates
   the old active chunk. The backward-compatible chunk owner-key schema and
   reporting abandoned chunks to R146 remain open because the current `Chunk`

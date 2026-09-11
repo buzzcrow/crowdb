@@ -677,6 +677,7 @@ impl ChunkStream {
             stream: self.clone(),
             offset,
             end,
+            pending: None,
         })
     }
 
@@ -725,6 +726,7 @@ pub struct StreamReader {
     stream: ChunkStream,
     offset: u64,
     end: u64,
+    pending: Option<tokio::task::JoinHandle<Result<(u64, Bytes)>>>,
 }
 
 impl StreamReader {
@@ -740,6 +742,9 @@ impl StreamReader {
                 "seek is outside the reader range".into(),
             ));
         }
+        if let Some(pending) = self.pending.take() {
+            pending.abort();
+        }
         self.offset = offset;
         Ok(())
     }
@@ -753,12 +758,39 @@ impl StreamReader {
         if self.offset == self.end {
             return Ok(None);
         }
-        let length =
-            usize::try_from((self.end - self.offset).min(self.stream.config.read_window_bytes as u64))
-                .map_err(|_| StreamError::InvalidRequest("read window exceeds addressable range".into()))?;
-        let bytes = self.stream.read_at(self.offset, length).await?;
-        self.offset += length as u64;
+        self.start_prefetch()?;
+        let pending = self
+            .pending
+            .take()
+            .ok_or_else(|| StreamError::Internal("reader prefetch was not installed".into()))?;
+        let (offset, bytes) = pending
+            .await
+            .map_err(|error| StreamError::Internal(format!("reader prefetch task failed: {error}")))??;
+        if offset != self.offset {
+            return Err(StreamError::Internal(
+                "reader prefetch completed for a stale offset".into(),
+            ));
+        }
+        self.offset = self
+            .offset
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| StreamError::Corruption("reader offset overflows".into()))?;
+        self.start_prefetch()?;
         Ok(Some(bytes))
+    }
+
+    fn start_prefetch(&mut self) -> Result<()> {
+        if self.pending.is_some() || self.offset == self.end {
+            return Ok(());
+        }
+        let offset = self.offset;
+        let length = usize::try_from((self.end - offset).min(self.stream.config.read_window_bytes as u64))
+            .map_err(|_| StreamError::InvalidRequest("read window exceeds addressable range".into()))?;
+        let stream = self.stream.clone();
+        self.pending = Some(tokio::spawn(async move {
+            stream.read_at(offset, length).await.map(|bytes| (offset, bytes))
+        }));
+        Ok(())
     }
 }
 
@@ -1198,8 +1230,7 @@ fn build_extent_pages(
 ) -> Vec<StreamExtentPage> {
     extents
         .chunks(page_entries)
-        .enumerate()
-        .map(|(page_index, chunk)| {
+        .map(|chunk| {
             let mut logical_offsets = Vec::with_capacity(chunk.len() + 1);
             logical_offsets.push(chunk[0].logical_start);
             for extent in chunk {
@@ -1209,7 +1240,7 @@ fn build_extent_pages(
                 stream_name,
                 writer_epoch,
                 generation,
-                page_index: page_index as u64,
+                page_index: chunk[0].logical_start,
                 chunk_ids: chunk.iter().map(|extent| extent.chunk_id).collect(),
                 logical_offsets,
                 physical_offsets: chunk.iter().map(|extent| extent.physical_start).collect(),

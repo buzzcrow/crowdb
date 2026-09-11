@@ -85,6 +85,24 @@ async fn chunk_bound_append_adds_selected_chunk_identity_and_provenance() {
 }
 
 #[tokio::test]
+async fn sequential_reader_prefetches_bounded_ordered_windows() {
+    let store = Arc::new(MemoryStreamStore::new(16));
+    let config = StreamConfig {
+        read_window_bytes: 2,
+        ..StreamConfig::default()
+    };
+    let stream = create_stream(&store, 16, config).await;
+    stream.append(&[Bytes::from_static(b"abcde")]).await.unwrap();
+    let mut reader = stream.reader(0, ReadHint::ToEnd).unwrap();
+    assert_eq!(reader.next().await.unwrap(), Some(Bytes::from_static(b"ab")));
+    assert_eq!(reader.next().await.unwrap(), Some(Bytes::from_static(b"cd")));
+    reader.seek(1).unwrap();
+    assert_eq!(reader.next().await.unwrap(), Some(Bytes::from_static(b"bc")));
+    assert_eq!(reader.next().await.unwrap(), Some(Bytes::from_static(b"de")));
+    assert_eq!(reader.next().await.unwrap(), None);
+}
+
+#[tokio::test]
 async fn chunk_bound_batch_rolls_before_a_record_and_binds_each_chunk() {
     let store = Arc::new(MemoryStreamStore::new(20));
     let stream = create_stream(&store, 20, StreamConfig::default()).await;
@@ -271,6 +289,27 @@ async fn near_tail_seek_loads_only_the_target_extent_page() {
     let before = store.extent_page_load_count();
     assert_eq!(stream.read_at(3, 1).await.unwrap(), Bytes::from_static(b"d"));
     assert_eq!(store.extent_page_load_count() - before, 1);
+}
+
+#[tokio::test]
+async fn trim_keeps_nonzero_extent_page_identity() {
+    let store = Arc::new(MemoryStreamStore::new(1));
+    let config = StreamConfig {
+        extent_page_entries: 2,
+        ..StreamConfig::default()
+    };
+    let stream = create_stream(&store, 1, config).await;
+    for byte in *b"abcde" {
+        stream.append(&[Bytes::copy_from_slice(&[byte])]).await.unwrap();
+    }
+    stream.trim_prefix(2).await.unwrap();
+    let manifest = store
+        .load_current(StreamName { high: 1, low: 1 })
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(manifest.extent_pages[0].page_index, 2);
+    assert_eq!(stream.read_at(2, 3).await.unwrap(), Bytes::from_static(b"cde"));
 }
 
 #[tokio::test]
