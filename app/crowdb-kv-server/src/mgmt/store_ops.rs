@@ -190,7 +190,7 @@ pub(super) async fn remove_store(
     }
 
     // Delete the WAL store dir (cascades all group subdirs).
-    let wal_store_dir = crate::startup::store_wal_root(&state.config.wal_root, sid);
+    let wal_store_dir = crate::recovery::startup::store_wal_root(&state.config.wal_root, sid);
     if let Err(e) = tokio::fs::remove_dir_all(&wal_store_dir).await {
         if e.kind() != std::io::ErrorKind::NotFound {
             tracing::warn!(s = sid, error = %e, "failed to delete WAL store dir; continuing");

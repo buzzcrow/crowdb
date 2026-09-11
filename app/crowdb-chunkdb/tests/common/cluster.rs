@@ -35,7 +35,7 @@ use crowdb_diskdb_client::DiskdbRpcTransport;
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, RetryConfig, ServiceRegistryClient};
 use crowdb_protocol::common::{DiskId, HwStatus, NodeValue, RackValue};
 use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue};
-use crowdb_protocol::port_alloc;
+use crowdb_protocol::port::alloc as port_alloc;
 use crowdb_protocol::ServicePort;
 use serde_json::Value;
 

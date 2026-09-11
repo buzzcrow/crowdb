@@ -19,7 +19,7 @@ use crowdb_protocol::mgmt::{
 };
 
 use super::{err_json, ErrorResponse, RegistryArc};
-use crate::operation_registry::{Operation, OperationKind, OperationStatus, OperationTarget};
+use crate::mgmt::operation_registry::{Operation, OperationKind, OperationStatus, OperationTarget};
 
 /// Request body for [`join_group_via_snapshot`]: bootstrap a new/far-lagging
 /// group member by pulling a snapshot from an existing member instead of
@@ -239,7 +239,7 @@ pub(super) async fn add_group(
         AddGroupInitialRole::Leader => PxLocalReplicaRole::Leader,
         AddGroupInitialRole::Follower => PxLocalReplicaRole::Follower,
     };
-    let group = crate::startup::create_group_with_wal(
+    let group = crate::recovery::startup::create_group_with_wal(
         sid,
         req.group_id,
         req.replica_id,
@@ -365,7 +365,7 @@ pub(super) async fn join_group_via_snapshot(
         peer_endpoint = %req.peer_endpoint,
         "joining PxGroup via snapshot pull"
     );
-    let group = crate::startup::create_group_with_wal(
+    let group = crate::recovery::startup::create_group_with_wal(
         sid,
         gid,
         req.replica_id,
@@ -447,7 +447,7 @@ pub(super) async fn remove_group(
     }
 
     // Delete the engine dir for this group.
-    let engine_dir = crate::startup::store_crowdb_tree_path(&state.config.data_root, sid, gid);
+    let engine_dir = crate::recovery::startup::store_crowdb_tree_path(&state.config.data_root, sid, gid);
     if let Err(e) = tokio::fs::remove_dir_all(&engine_dir).await {
         if e.kind() != std::io::ErrorKind::NotFound {
             tracing::warn!(s = sid, g = gid, error = %e, "failed to delete engine dir; continuing");
@@ -456,7 +456,7 @@ pub(super) async fn remove_group(
 
     // Delete the WAL group dir.
     let wal_group_dir =
-        crate::startup::store_wal_root(&state.config.wal_root, sid).join(format!("group{gid}"));
+        crate::recovery::startup::store_wal_root(&state.config.wal_root, sid).join(format!("group{gid}"));
     if let Err(e) = tokio::fs::remove_dir_all(&wal_group_dir).await {
         if e.kind() != std::io::ErrorKind::NotFound {
             tracing::warn!(s = sid, g = gid, error = %e, "failed to delete WAL group dir; continuing");
@@ -808,7 +808,7 @@ pub(super) async fn wipe_user_data(
     // replays the now-empty WAL (→ slot 0), creates fresh WalEngine +
     // engine, and `maybe_apply_persisted_config` restores the remote
     // membership from node-config.json (which the wipe did not touch).
-    let new_group = crate::startup::create_group_with_wal(
+    let new_group = crate::recovery::startup::create_group_with_wal(
         sid,
         gid,
         replica_id,
@@ -878,7 +878,7 @@ async fn wipe_wal_and_engine_dirs(
     gid: u64,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     let wal_group_dir =
-        crate::startup::store_wal_root(&state.config.wal_root, sid).join(format!("group{gid}"));
+        crate::recovery::startup::store_wal_root(&state.config.wal_root, sid).join(format!("group{gid}"));
     if let Err(e) = state.wal_backend.remove_dir_all(&wal_group_dir).await {
         if e.kind() != std::io::ErrorKind::NotFound {
             return Err(err_json(
@@ -887,7 +887,7 @@ async fn wipe_wal_and_engine_dirs(
             ));
         }
     }
-    let engine_dir = crate::startup::store_crowdb_tree_path(&state.config.data_root, sid, gid);
+    let engine_dir = crate::recovery::startup::store_crowdb_tree_path(&state.config.data_root, sid, gid);
     if let Err(e) = tokio::fs::remove_dir_all(&engine_dir).await {
         if e.kind() != std::io::ErrorKind::NotFound {
             return Err(err_json(

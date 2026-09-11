@@ -9,7 +9,7 @@
 use crowdb_protocol::common::{ChunkdbRangeBindingValue, InstanceValue, RangeStatus};
 use crowdb_protocol::key::{ChunkdbRangeBindingKey, TextKey};
 
-use crate::binding_framework::BindingStrategy;
+use super::framework::BindingStrategy;
 use crate::{CrowdbKvClient, Error, ReadMode, Result};
 
 const G0_STORE: u64 = 0;

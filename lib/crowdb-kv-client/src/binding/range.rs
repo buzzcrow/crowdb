@@ -22,7 +22,7 @@ use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::common::{ChunkdbRangeBindingValue, RangeStatus};
 use crowdb_protocol::key::ChunkdbRangeBindingKey;
 
-use crate::watch_notify::WatchNotifyClient;
+use crate::WatchNotifyClient;
 use crate::{CrowdbKvClient, Error, ReadMode, Result};
 
 const G0_STORE: u64 = 0;

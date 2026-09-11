@@ -59,7 +59,7 @@ async fn ensure_is_idempotent_and_fails_closed_on_driver_conflict() {
     let store = Arc::new(TestDescriptorStore::default());
     let registry = DomainMonitorRegistry::new(
         store,
-        vec![crowdb_chunk_kv_server::monitor::SupportedMonitor {
+        vec![crowdb_chunk_kv_server::serving::monitor::SupportedMonitor {
             domain: "chunk-kv".into(),
             driver_version: 1,
             max_capability_version: 2,

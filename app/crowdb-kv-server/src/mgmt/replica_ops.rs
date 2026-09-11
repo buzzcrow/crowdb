@@ -13,7 +13,7 @@ use crowdb_kv::cluster::remote_replica::PxRemoteReplica;
 use crowdb_protocol::mgmt::{RemoteListResponse, RemoteReplicaInfo, TopologyResponse};
 
 use super::{err_json, ErrorResponse, RegistryArc};
-use crate::group_rebuild::{rebuild_group_with_new_remotes, rebuild_group_with_same_config};
+use crate::recovery::group_rebuild::{rebuild_group_with_new_remotes, rebuild_group_with_same_config};
 
 #[utoipa::path(
         get,

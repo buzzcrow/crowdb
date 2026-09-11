@@ -14,7 +14,7 @@ use crowdb_protocol::common::DiskGroupUsageSummary;
 use crowdb_protocol::key::{DiskGroupUsageKey, TextKey};
 use crowdb_protocol::{DiskGroupId, NodeId, RackId};
 
-use crate::hardware::{scan_prefix, HardwareClient};
+use super::hierarchy::{scan_prefix, HardwareClient};
 use crate::Result;
 
 /// Cluster-level capacity aggregation.

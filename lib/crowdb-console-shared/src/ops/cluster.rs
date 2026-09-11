@@ -15,7 +15,7 @@ use std::sync::Arc;
 use crowdb_kv_client::RangeBindingClient;
 use crowdb_protocol::common::{HwStatus, NodeValue, RackValue, ReplicaValue};
 use crowdb_protocol::mgmt::{RemoteReplicaInfo, SystemInitRequest};
-use crowdb_protocol::port_alloc::{self, PortAllocConfig};
+use crowdb_protocol::port::alloc::{self as port_alloc, PortAllocConfig};
 use crowdb_protocol::ServicePort;
 
 use crate::clients::http::ServerClient;

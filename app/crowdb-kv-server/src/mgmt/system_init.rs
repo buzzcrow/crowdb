@@ -149,7 +149,7 @@ pub(super) async fn system_init(
         ));
     }
 
-    let group = crate::startup::create_group_with_wal(
+    let group = crate::recovery::startup::create_group_with_wal(
         SYSTEM_STORE_ID,
         SYSTEM_GROUP_ID,
         req.replica_id,

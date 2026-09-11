@@ -5,7 +5,7 @@
 
 #include "crowdb-rpc/c_api.h"
 #include "crowdb-rpc/client/client.h"
-#include "crowdb-rpc/co_client.h"
+#include "crowdb-rpc/client/co_client.h"
 #include "crowdb-rpc/framing.h"
 #include "crowdb-rpc/server/server.h"
 

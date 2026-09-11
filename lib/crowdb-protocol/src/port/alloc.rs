@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
 
-use crate::ports::ServicePort;
+use super::ports::ServicePort;
 
 /// Default sub-directory name under the workspace root for the claim
 /// file.

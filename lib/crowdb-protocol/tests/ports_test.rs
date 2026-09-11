@@ -4,7 +4,7 @@
 //! Tests for `crowdb-protocol::ports` — default port allocation,
 //! stride rules, and non-overlap across service types.
 
-use crowdb_protocol::ports::ServicePort;
+use crowdb_protocol::ServicePort;
 use crowdb_protocol::{
     CHUNKDB_HTTP_BASE, CHUNKDB_LISTEN_BASE, CHUNKDB_RPC_BASE, CHUNK_KV_HTTP_BASE, CHUNK_KV_RPC_BASE,
     DISKDB_HTTP_BASE, DISKDB_LISTEN_BASE, DISKDB_RPC_BASE, DISKIO_RPC_BASE, KV_SERVER_LISTEN_BASE,

@@ -3,28 +3,22 @@
 
 //! Standalone control and serving surface for chunk-backed KV partitions.
 
-pub mod balance;
 pub mod catalog;
 pub mod config;
-pub mod lease;
 pub mod metrics;
-pub mod monitor;
-pub mod scan;
 pub mod server;
-pub mod transfer;
+pub mod serving;
 
-pub use balance::{
-    choose_split, choose_transfer, desired_partition_count, BalanceConfig, OwnerLoad, PartitionLoad,
-    SplitProposal, TransferProposal,
+pub use catalog::{
+    validate_and_clip_scan, CatalogError, CatalogPublisher, CatalogStore, ClippedScan, HeadWriteOutcome,
+    MemoryCatalogStore, ScanValidationError,
 };
-pub use catalog::{CatalogError, CatalogPublisher, CatalogStore, HeadWriteOutcome, MemoryCatalogStore};
 pub use config::{ChunkKvServerConfig, ConfigError};
-pub use lease::{classify_instance, replacement_may_activate, AuthorityError, ServingAuthority};
 pub use metrics::{ServerMetrics, ServerMetricsSnapshot};
-pub use monitor::{
-    DomainMonitorDriver, DomainMonitorRegistry, MonitorDescriptorStore, MonitorError, MonitorTick,
-    PreparedMonitor,
-};
-pub use scan::{validate_and_clip_scan, ClippedScan, ScanValidationError};
 pub use server::{ChunkKvService, HostedPartitionHealth, ServerHealth, ServerLifecycle};
-pub use transfer::{TransferAction, TransferStateMachine};
+pub use serving::{
+    choose_split, choose_transfer, classify_instance, desired_partition_count, replacement_may_activate,
+    AuthorityError, BalanceConfig, DomainMonitorDriver, DomainMonitorRegistry, MonitorDescriptorStore,
+    MonitorError, MonitorTick, OwnerLoad, PartitionLoad, PreparedMonitor, ServingAuthority, SplitProposal,
+    TransferAction, TransferProposal, TransferStateMachine,
+};

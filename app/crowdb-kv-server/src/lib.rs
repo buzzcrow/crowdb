@@ -8,14 +8,9 @@
 //! The binary entry (`main.rs`) imports from this lib via
 //! `use crowdb_kv_server::{cli, mgmt, startup, store_registry};`.
 
-pub mod binding_monitor_wiring;
+pub mod background;
 pub mod cli;
 pub mod engine_collector;
-pub(crate) mod group_rebuild;
-pub mod keepalive;
 pub mod mgmt;
-pub mod operation_registry;
-pub mod reconcile;
-pub mod restore;
-pub mod startup;
+pub mod recovery;
 pub mod store_registry;

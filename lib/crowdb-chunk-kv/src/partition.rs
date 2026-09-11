@@ -1,6 +1,18 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+//! Partition state machine: core lifecycle, mutations, and split/merge.
+//! Sub-modules: [`frame`] (wire codec), [`journal`] (durability),
+//! [`tree`] (ordered storage).
+
+mod frame;
+mod journal;
+mod tree;
+
+pub use frame::{decode_frame, encode_frame, DecodedFrame, FrameDecode, MAX_FRAME_BYTES};
+pub use journal::{PartitionJournal, StreamPartitionJournal};
+pub use tree::{CrowdbPartitionTree, PartitionTree};
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -10,10 +22,10 @@ use crowdb_chunk_stream::StreamName;
 use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 
 use crate::{
-    canonical_operation_digest, decode_frame, encode_frame, Checkpoint, ChunkKvError, CompareCondition,
-    FrameDecode, JournalPosition, MutationOperation, MutationResult, PartitionId, PartitionJournal,
-    PartitionLifecycle, PartitionMetrics, PartitionRange, PartitionTree, RequestId, Result, SplitAbortProof,
-    SplitArtifact, SplitCommitProof, SplitPlan, TransitionId, ValueRevision, WalRecord,
+    canonical_operation_digest, Checkpoint, ChunkKvError, CompareCondition, JournalPosition,
+    MutationOperation, MutationResult, PartitionId, PartitionLifecycle, PartitionMetrics, PartitionRange,
+    RequestId, Result, SplitAbortProof, SplitArtifact, SplitCommitProof, SplitPlan, TransitionId,
+    ValueRevision, WalRecord,
 };
 
 #[derive(Clone, Debug)]

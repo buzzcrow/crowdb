@@ -6,7 +6,7 @@
 //! Hosts hand-written Rust types (`common`, `diskdb.rpc`, `chunkdb.rpc`,
 //! `diskio.rpc`), the flatbuffer control-message schemas for crowdb-rpc
 //! (`fb`), and utility functions/extension traits for diskdb types
-//! (`diskdb_type_util`).
+//! (`types::diskdb_util`).
 
 mod types;
 
@@ -263,8 +263,7 @@ pub use chunk_task_value::{decode_chunk_task_value, encode_chunk_task_value, Chu
 /// pointer — no per-field copy, no owned intermediate struct.
 pub mod fb_wrappers;
 
-pub mod diskdb_type_util;
-pub use diskdb_type_util::{
+pub use crate::types::diskdb_util::{
     disk_id, effective_status, DiskIdExt, HwStatusExt, RecoveryScanProgressValueExt, ZoneAllocationStateExt,
     ZoneValueExt,
 };
@@ -300,12 +299,10 @@ pub use mgmt::{
 pub mod bitmap;
 pub use bitmap::{create_usage_bitmap, UsageBitmap};
 
-pub mod ports;
-pub use ports::{
+pub mod port;
+pub use port::alloc::{PortAllocConfig, PortAllocError};
+pub use port::ports::{
     ServicePort, CHUNKDB_HTTP_BASE, CHUNKDB_LISTEN_BASE, CHUNKDB_RPC_BASE, CHUNK_KV_HTTP_BASE,
     CHUNK_KV_RPC_BASE, DISKDB_HTTP_BASE, DISKDB_LISTEN_BASE, DISKDB_RPC_BASE, DISKIO_RPC_BASE,
     KV_SERVER_LISTEN_BASE, KV_SERVER_MGMT_BASE, WEB_BASE,
 };
-
-pub mod port_alloc;
-pub use port_alloc::{PortAllocConfig, PortAllocError};

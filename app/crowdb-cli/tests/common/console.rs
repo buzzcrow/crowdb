@@ -27,19 +27,19 @@ use crowdb_web::{router, AppState};
 /// Allocate a free mgmt port for a kv-server.
 #[must_use]
 pub fn pick_mgmt_port() -> u16 {
-    crowdb_protocol::port_alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerMgmt)
+    crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerMgmt)
 }
 
 /// Allocate a free listen port for a kv-server.
 #[must_use]
 pub fn pick_rpc_port() -> u16 {
-    crowdb_protocol::port_alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerListen)
+    crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerListen)
 }
 
 /// Allocate a free port for the web console.
 #[must_use]
 pub fn pick_web_port() -> u16 {
-    crowdb_protocol::port_alloc::alloc_test_port(crowdb_protocol::ServicePort::Web)
+    crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::Web)
 }
 
 /// Grab two distinct ephemeral TCP ports (mgmt + listen).
@@ -52,8 +52,10 @@ pub fn pick_two_distinct_free_ports() -> (u16, u16) {
 /// free. Uses the kv-server mgmt port range.
 #[must_use]
 pub fn pick_free_port_range(count: u16) -> u16 {
-    let ports =
-        crowdb_protocol::port_alloc::alloc_test_port_range(crowdb_protocol::ServicePort::KvServerMgmt, count);
+    let ports = crowdb_protocol::port::alloc::alloc_test_port_range(
+        crowdb_protocol::ServicePort::KvServerMgmt,
+        count,
+    );
     ports[0]
 }
 

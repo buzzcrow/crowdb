@@ -16,7 +16,7 @@ use serde_json::Value;
 
 #[cfg(feature = "kv-client")]
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, RetryConfig, ServiceRegistryClient};
-use crowdb_protocol::port_alloc;
+use crowdb_protocol::port::alloc as port_alloc;
 use crowdb_protocol::ServicePort;
 
 // ── process management ──────────────────────────────────────────

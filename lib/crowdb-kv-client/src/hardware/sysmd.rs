@@ -30,9 +30,9 @@ use crowdb_protocol::common_type::{DiskGroupId, GroupId, InstanceId, NodeId, Rac
 use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskValue};
 use crowdb_protocol::sysdata::{DiskGroupEntry, DiskdbOwnerEntry, KVGroupBindEntry};
 
-use crate::hardware::{DiskRecord, HardwareCapacitySummary, HardwareClient};
-use crate::kv_cluster::KVClusterMetaClient;
-use crate::service_registry::ServiceRegistryClient;
+use super::hierarchy::{DiskRecord, HardwareCapacitySummary, HardwareClient};
+use crate::KVClusterMetaClient;
+use crate::ServiceRegistryClient;
 use crate::{CrowdbKvClient, Result};
 
 /// Unified client for group-0 system metadata.

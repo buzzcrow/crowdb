@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
-use crowdb_protocol::port_alloc::{self, PortAllocConfig};
+use crowdb_protocol::port::alloc::{self as port_alloc, PortAllocConfig};
 use crowdb_protocol::ServicePort;
 
 #[derive(Debug, Clone, ValueEnum)]

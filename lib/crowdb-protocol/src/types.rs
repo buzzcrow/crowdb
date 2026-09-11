@@ -8,6 +8,7 @@ pub mod chunk_task;
 pub mod chunkdb;
 pub mod common;
 pub mod diskdb;
+pub mod diskdb_util;
 pub mod diskio;
 pub mod kv_client;
 pub mod kv_consensus;

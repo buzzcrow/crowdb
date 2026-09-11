@@ -8,15 +8,13 @@ mod client;
 mod compose;
 mod config;
 mod error;
-mod identity;
-mod ordered;
 mod transport;
 
-pub use catalog::{CatalogCache, CatalogMap, CatalogSource};
+pub use catalog::{CatalogCache, CatalogMap, CatalogSource, RequestIdentityAllocator};
 pub use client::ChunkKvClient;
-pub use compose::{BatchItem, ComposedItemError, MultiGetItemResult};
+pub use compose::{
+    BatchItem, ComposedItemError, MultiGetItemResult, MultiScanContinuation, MultiScanPage, MultiScanRequest,
+};
 pub use config::ClientConfig;
 pub use error::{ClientError, Result};
-pub use identity::RequestIdentityAllocator;
-pub use ordered::{MultiScanContinuation, MultiScanPage, MultiScanRequest};
 pub use transport::ChunkKvTransport;

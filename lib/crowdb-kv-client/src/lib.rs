@@ -17,33 +17,23 @@
 //! `crowdb-console` is expected to depend on this crate rather than rolling
 //! its own crowdb-rpc client.
 
-mod binding_framework;
-mod chunkdb_binding_strategy;
+mod binding;
 mod client;
-mod client_admin;
-mod client_retry;
 mod config;
 mod error;
 mod hardware;
-mod kv_cluster;
-mod kv_rpc_transport;
 mod metrics;
-mod range_binding;
-mod service_discovery;
-mod service_registry;
-mod space_usage;
-mod sysmd;
-mod topology;
-mod watch_notify;
+mod service;
+mod transport;
 
 // FFI module — only compiled with the `ffi` feature. Produces C ABI
 // exports for HardwareClient/ServiceRegistryClient (used by crowdb-diskio).
 #[cfg(feature = "ffi")]
 pub mod ffi;
 
-pub use binding_framework::{BindingMonitor, BindingStrategy, MonitorTickResult};
-pub use chunkdb_binding_strategy::{
-    compute_sub_range_assignment, ChunkdbRangeStrategy, DEFAULT_SUB_RANGE_COUNT,
+pub use binding::{
+    compute_sub_range_assignment, BindingMonitor, BindingStrategy, ChunkdbRangeBinding, ChunkdbRangeStrategy,
+    MonitorTickResult, RangeBindingClient, RangeRouteError, RouteWithFallback, DEFAULT_SUB_RANGE_COUNT,
 };
 pub use client::{
     new_client_id, BatchOp, CrowdbKvClient, GetOutcome, JournalOp, JournalScanOutcome, ScanOutcome,
@@ -52,18 +42,15 @@ pub use client::{
 pub use config::{ClientConfig, ReadEndpointPolicy, RetryConfig};
 pub use error::{Error, Result};
 pub use hardware::{
-    DiskCapacityEntry, DiskGroupCapacityEntry, DiskRecord, HardwareCapacitySummary, HardwareClient,
-    NodeCapacityEntry, RackCapacityEntry,
+    ClusterUsage, CrowdbSysmdClient, DiskCapacityEntry, DiskGroupCapacityEntry, DiskRecord,
+    HardwareCapacitySummary, HardwareClient, NodeCapacityEntry, NodeUsage, RackCapacityEntry, RackUsage,
+    SpaceUsageClient,
 };
-pub use kv_cluster::{KVClusterAdmin, KVClusterMetaClient};
-pub use kv_rpc_transport::KvRpcTransport;
 pub use metrics::{ClientMetrics, ClientMetricsSnapshot, LeaderChangeEpisode, WindowLatencySnapshot};
-pub use range_binding::{ChunkdbRangeBinding, RangeBindingClient, RangeRouteError, RouteWithFallback};
-pub use service_discovery::ServiceDiscoveryClient;
-pub use service_registry::ServiceRegistryClient;
-pub use space_usage::{ClusterUsage, NodeUsage, RackUsage, SpaceUsageClient};
-pub use sysmd::CrowdbSysmdClient;
-pub use watch_notify::{WatchNotify, WatchNotifyClient, WatchSubscription};
+pub use service::{
+    ServiceDiscoveryClient, ServiceRegistryClient, WatchNotify, WatchNotifyClient, WatchSubscription,
+};
+pub use transport::{KVClusterAdmin, KVClusterMetaClient, KvRpcTransport};
 
 /// Re-exported so callers don't need a direct `crowdb_kv` dependency just to
 /// pick a read mode or use snapshot DTOs.

@@ -26,7 +26,7 @@ use tracing::{info, warn};
 
 use crowdb_kv::cluster::kv_store::KvStore;
 
-use crate::group_rebuild::rebuild_group_with_new_remotes;
+use super::group_rebuild::rebuild_group_with_new_remotes;
 use crate::store_registry::KvStoreRegistry;
 
 /// Peers for one group, keyed by `(store_id, group_id)`.

@@ -6,13 +6,13 @@
 //! When group 0 is present on disk (`<wal_root>/store0/group0`), the
 //! server boots in restore mode: it scans `<wal_root>` for every
 //! `store{S}/group{G}` directory, loads each via
-//! [`crate::startup::create_group_with_wal`] (which replays the WAL,
+//! [`crate::recovery::startup::create_group_with_wal`] (which replays the WAL,
 //! opens the crowdb-tree engine, and applies the persisted membership
 //! from `node-config.json` — including remote-replica endpoints), and
 //! starts the stores. No `--stores`/`--groups` CLI args are needed;
 //! local disk is the source of truth for which stores/groups this node
 //! hosts. Group 0 is consulted afterward by
-//! [`crate::reconcile::reconcile_with_group0`] as verification and as
+//! [`crate::recovery::reconcile::reconcile_with_group0`] as verification and as
 //! the fallback when `node-config.json` is missing/stale for a group.
 
 use std::io;
@@ -27,8 +27,8 @@ use crowdb_kv::cluster::local_replica::PxLocalReplicaRole;
 use crowdb_kv::cluster::node_config::NodeConfigStore;
 use crowdb_kv::cluster::px_kv_store::PxKvStore;
 
+use super::startup::create_group_with_wal;
 use crate::mgmt::persisted_port_for_store;
-use crate::startup::create_group_with_wal;
 use crate::store_registry::KvStoreRegistry;
 
 /// A local `(store_id, group_id)` pair discovered by scanning `waldata`.

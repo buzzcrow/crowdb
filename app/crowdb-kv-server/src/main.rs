@@ -23,7 +23,7 @@ use crowdb_kv::metrics::MetricsRunner;
 
 use crowdb_kv_server::cli::{parse_id_list, parse_port_list, Cli};
 use crowdb_kv_server::mgmt::{self, persisted_port_for_store};
-use crowdb_kv_server::startup::create_group_with_wal;
+use crowdb_kv_server::recovery::startup::create_group_with_wal;
 use crowdb_kv_server::store_registry::KvStoreRegistry;
 
 #[tokio::main]
@@ -189,7 +189,7 @@ async fn main() {
             std::process::exit(1);
         });
 
-    let router = mgmt::router(crowdb_kv_server::operation_registry::AppState::new(
+    let router = mgmt::router(crowdb_kv_server::mgmt::operation_registry::AppState::new(
         registry.clone(),
     ));
     let listener = tokio::net::TcpListener::bind(mgmt_addr)
@@ -226,13 +226,13 @@ async fn main() {
     // - First-boot mode: no group 0 on disk. Use --stores/--groups CLI
     //   args (if given) to create stores; otherwise boot empty so the
     //   operator can call POST /system/init.
-    let local_groups = crowdb_kv_server::restore::scan_local_groups(&registry.config.wal_root)
+    let local_groups = crowdb_kv_server::recovery::restore::scan_local_groups(&registry.config.wal_root)
         .await
         .unwrap_or_else(|e| {
             warn!(error = %e, wal_root = %registry.config.wal_root.display(), "scan_local_groups failed; treating as empty");
             Vec::new()
         });
-    if crowdb_kv_server::restore::group0_exists(&registry.config.wal_root) {
+    if crowdb_kv_server::recovery::restore::group0_exists(&registry.config.wal_root) {
         info!(
             local_count = local_groups.len(),
             "restore mode: group 0 present on disk, loading local stores/groups"
@@ -240,8 +240,8 @@ async fn main() {
         if bootstrap.is_some() {
             warn!("restore mode: --stores/--groups ignored (local disk is the source of truth)");
         }
-        crowdb_kv_server::restore::load_local_groups(&local_groups, args.replica, &registry).await;
-        crowdb_kv_server::reconcile::reconcile_with_group0(&registry).await;
+        crowdb_kv_server::recovery::restore::load_local_groups(&local_groups, args.replica, &registry).await;
+        crowdb_kv_server::recovery::reconcile::reconcile_with_group0(&registry).await;
     } else {
         info!("first-boot mode: no group 0 on disk");
         if let Some(b) = bootstrap.as_ref() {
@@ -277,7 +277,7 @@ async fn main() {
             .and_then(|s| s.listen_addr().map(|a| a.to_string()))
             .or_else(|| registry.first_port().map(|p| format!("{display_ip}:{p}")))
             .unwrap_or_else(|| format!("http://{display_addr}"));
-        Some(crowdb_kv_server::keepalive::KeepAliveLoop::spawn(
+        Some(crowdb_kv_server::background::keepalive::KeepAliveLoop::spawn(
             registry.clone(),
             instance_id,
             mgmt_endpoint,
@@ -304,7 +304,7 @@ async fn main() {
             .or_else(|| registry.first_port().map(|p| format!("{display_ip}:{p}")))
             .unwrap_or_else(|| format!("http://{display_addr}"));
         Some(
-            crowdb_kv_server::binding_monitor_wiring::spawn_chunkdb_binding_monitor(
+            crowdb_kv_server::background::binding_monitor_wiring::spawn_chunkdb_binding_monitor(
                 &registry,
                 group0_ep,
                 format!("http://{display_addr}"),

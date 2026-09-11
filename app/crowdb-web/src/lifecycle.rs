@@ -3,7 +3,7 @@
 
 use crate::error::{err_500, err_502, map_config_err, map_persist_err, ErrorBody};
 use crate::expand::Recursive;
-use crate::physical_view::PhysicalBuilder;
+use crate::physical::PhysicalBuilder;
 use crate::state::AppState;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -1679,32 +1679,26 @@ pub async fn http_list_disks_in_group(
                         let cfg_ids: std::collections::HashSet<String> = cfg_disks
                             .iter()
                             .filter_map(|d| {
-                                <crowdb_protocol::common::DiskId as crowdb_protocol::diskdb_type_util::DiskIdExt>::from_display_string(&d.disk_id)
+                                <crowdb_protocol::common::DiskId as crowdb_protocol::DiskIdExt>::from_display_string(&d.disk_id)
                                     .ok()
                                     .map(|id| {
-                                        crowdb_protocol::diskdb_type_util::DiskIdExt::to_display_string(&id)
+                                        crowdb_protocol::DiskIdExt::to_display_string(&id)
                                     })
                             })
                             .collect();
                         let g0_ids: std::collections::HashSet<String> = g0_disks
                             .iter()
-                            .map(|(id, _)| {
-                                crowdb_protocol::diskdb_type_util::DiskIdExt::to_display_string(id)
-                            })
+                            .map(|(id, _)| crowdb_protocol::DiskIdExt::to_display_string(id))
                             .collect();
                         let mut entries: Vec<DiskEntry> = g0_disks
                             .into_iter()
                             .filter(|(id, _)| {
-                                cfg_ids.contains(
-                                    &crowdb_protocol::diskdb_type_util::DiskIdExt::to_display_string(id),
-                                )
+                                cfg_ids.contains(&crowdb_protocol::DiskIdExt::to_display_string(id))
                             })
                             .map(|(disk_id, val)| {
                                 let unit_size = u64::from(val.unit_size_bytes);
                                 DiskEntry {
-                                    disk_id: crowdb_protocol::diskdb_type_util::DiskIdExt::to_display_string(
-                                        &disk_id,
-                                    ),
+                                    disk_id: crowdb_protocol::DiskIdExt::to_display_string(&disk_id),
                                     disk_group_id: dg_id,
                                     rack_id,
                                     node_id,
@@ -1718,10 +1712,10 @@ pub async fn http_list_disks_in_group(
                             .collect();
                         entries.extend(cfg_disks.into_iter().filter_map(|mut d| {
                             let normalized =
-                                <crowdb_protocol::common::DiskId as crowdb_protocol::diskdb_type_util::DiskIdExt>::from_display_string(&d.disk_id)
+                                <crowdb_protocol::common::DiskId as crowdb_protocol::DiskIdExt>::from_display_string(&d.disk_id)
                                     .ok()
                                     .map(|id| {
-                                        crowdb_protocol::diskdb_type_util::DiskIdExt::to_display_string(&id)
+                                        crowdb_protocol::DiskIdExt::to_display_string(&id)
                                     });
                             if let Some(ref norm) = normalized {
                                 if g0_ids.contains(norm) {

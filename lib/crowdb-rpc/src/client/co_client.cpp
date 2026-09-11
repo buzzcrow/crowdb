@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-#include "crowdb-rpc/co_client.h"
+#include "crowdb-rpc/client/co_client.h"
 
 #include "crowdb-rpc/buffer.h"
 #include "crowdb-rpc/c_api.h"

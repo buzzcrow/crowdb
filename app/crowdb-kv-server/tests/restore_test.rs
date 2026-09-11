@@ -8,7 +8,7 @@ mod common;
 use std::path::Path;
 
 use common::process::{start_test_server, start_test_server_at};
-use crowdb_kv_server::restore::{group0_exists, scan_local_groups};
+use crowdb_kv_server::recovery::restore::{group0_exists, scan_local_groups};
 
 fn client() -> reqwest::Client {
     reqwest::Client::new()
@@ -44,15 +44,15 @@ async fn scan_local_groups_multi_store() {
     assert_eq!(
         groups,
         vec![
-            crowdb_kv_server::restore::LocalGroup {
+            crowdb_kv_server::recovery::restore::LocalGroup {
                 store_id: 0,
                 group_id: 0
             },
-            crowdb_kv_server::restore::LocalGroup {
+            crowdb_kv_server::recovery::restore::LocalGroup {
                 store_id: 1,
                 group_id: 1
             },
-            crowdb_kv_server::restore::LocalGroup {
+            crowdb_kv_server::recovery::restore::LocalGroup {
                 store_id: 1,
                 group_id: 2
             },
