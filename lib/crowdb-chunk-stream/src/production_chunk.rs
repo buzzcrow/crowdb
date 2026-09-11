@@ -240,6 +240,9 @@ impl StreamChunkStore for ProductionStreamChunkStore {
         let Some(chunk) = response.chunk else {
             return Ok(CursorAdvance::Ambiguous);
         };
+        if chunk.writer_epoch != writer_epoch {
+            return Err(StreamError::StaleWriter);
+        }
         state.modify_ts.store(chunk.modify_ts, Ordering::Release);
         state.cursor.store(chunk.acknowledged_cursor, Ordering::Release);
         if chunk.acknowledged_cursor == new_cursor {

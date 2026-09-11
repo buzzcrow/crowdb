@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -22,12 +23,14 @@ use crowdb_protocol::diskdb::rpc::Segment;
 
 struct Allocator {
     chunk: Mutex<Option<Chunk>>,
+    fail_advance_after_commit: AtomicBool,
 }
 
 impl Allocator {
     fn new() -> Self {
         Self {
             chunk: Mutex::new(None),
+            fail_advance_after_commit: AtomicBool::new(false),
         }
     }
 }
@@ -94,6 +97,9 @@ impl ChunkAllocator for Allocator {
         }
         chunk.modify_ts += 1;
         chunk.acknowledged_cursor = request.acknowledged_cursor;
+        if self.fail_advance_after_commit.swap(false, Ordering::AcqRel) {
+            return Err(IoError::AllocationFailed("injected post-commit timeout".into()));
+        }
         Ok(AdvanceChunkWriteResponse {
             chunk: Some(chunk.clone()),
         })
@@ -267,4 +273,28 @@ async fn chunk_stream_runs_end_to_end_over_the_production_chunk_adapter() {
     let bytes = stream.read_at(0, 21).await.unwrap();
     assert_eq!(&bytes[..5], b"frame");
     assert_eq!(range.chunk_id.unwrap().low, 8);
+}
+
+#[tokio::test]
+async fn production_store_reconciles_a_post_commit_cursor_timeout() {
+    let allocator = Arc::new(Allocator::new());
+    let disks: Arc<dyn DiskWriter> = Arc::new(Disks::default());
+    let allocator_trait: Arc<dyn ChunkAllocator> = allocator.clone();
+    let store =
+        ProductionStreamChunkStore::new(allocator_trait, disks, 30_000, ChunkReadPolicy::default()).unwrap();
+    let name = StreamName { high: 3, low: 4 };
+    let active = store.allocate_mirrored(name, 9).await.unwrap();
+    store
+        .write_mirrors(name, 9, active.chunk_id, 0, Bytes::from_static(b"once"))
+        .await
+        .unwrap();
+    allocator.fail_advance_after_commit.store(true, Ordering::Release);
+    assert_eq!(
+        store
+            .advance_cursor(name, 9, active.chunk_id, 0, 4, 19)
+            .await
+            .unwrap(),
+        CursorAdvance::Committed
+    );
+    assert_eq!(store.durable_cursor(active.chunk_id, 9).await.unwrap().offset, 4);
 }
