@@ -57,7 +57,11 @@ TEST(ChunkPageStore, SnapshotPublishesBoundedChecksummedPacksAndReopens)
             EXPECT_EQ(pack.mirrors[0], pack.mirrors[1]);
             EXPECT_EQ(pack.mirrors[1], pack.mirrors[2]);
         }
-        EXPECT_EQ(manifest->reference_segments[0].refs.size(), manifest->packs.size());
+        EXPECT_EQ(manifest->reference_segments[0].ref_count, manifest->packs.size());
+        auto segment = catalog->load_reference_segment(42, manifest->reference_segments[0].object_id);
+        ASSERT_NE(segment, nullptr);
+        EXPECT_EQ(segment->refs.size(), manifest->packs.size());
+        EXPECT_EQ(catalog->reference_segment_count(42), manifest->reference_segments.size());
         EXPECT_EQ(store.stats().generations_published, 1U);
         EXPECT_EQ(store.stats().mirror_write_attempts, manifest->packs.size() * 3U);
     }
@@ -96,10 +100,55 @@ TEST(ChunkPageStore, EpochFailureLeavesPriorRootAndAccountsOrphans)
     EXPECT_EQ(failed.code(), Code::kUnavailable);
     EXPECT_EQ(catalog->load(9)->generation, prior->generation);
     EXPECT_GT(store.stats().orphan_bytes, 0U);
+    EXPECT_GT(catalog->reference_segment_count(9), prior->reference_segments.size());
+    EXPECT_GT(store.reclaim_orphans(), 0U);
+    EXPECT_EQ(catalog->reference_segment_count(9), prior->reference_segments.size());
     std::string value;
     uint64_t    slot = 0;
     ASSERT_TRUE(tree.get(Slice("a"), &slot, &value));
     EXPECT_EQ(value, "new");
+}
+
+TEST(ChunkPageStore, CorruptPersistedReferenceSegmentRejectsRead)
+{
+    auto           catalog = std::make_shared<MemoryRootCatalog>(1);
+    ChunkPageStore store({.tree_id = 16, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    const uint8_t  bytes[] = {9, 8, 7, 6};
+    ASSERT_TRUE(store.write_at(8192, bytes, sizeof(bytes)).ok());
+    ASSERT_TRUE(store.sync().ok());
+    ASSERT_TRUE(store.write_at(0, bytes, sizeof(bytes)).ok());
+    ASSERT_TRUE(store.sync().ok());
+
+    catalog->corrupt_active_reference_segment(0, 0);
+    ChunkPageStore reopened({.tree_id = 16, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    uint8_t        out[4] = {};
+    EXPECT_EQ(reopened.read_at(8192, out, sizeof(out)).code(), Code::kCorruption);
+}
+
+TEST(ChunkPageStore, ResolvesOrdinalsAcrossPersistedSegmentBoundary)
+{
+    auto                 catalog = std::make_shared<MemoryRootCatalog>(1);
+    ChunkPageStore       store({.tree_id = 17, .owner_epoch = 1, .pack_bytes = 32, .iu_size = 1}, catalog);
+    std::vector<uint8_t> bytes(8200);
+    for (size_t index = 0; index < bytes.size(); ++index) {
+        bytes[index] = static_cast<uint8_t>(index);
+    }
+    ASSERT_TRUE(store.write_at(8192, bytes.data() + 8192, bytes.size() - 8192).ok());
+    ASSERT_TRUE(store.sync().ok());
+    ASSERT_TRUE(store.write_at(0, bytes.data(), 8192).ok());
+    ASSERT_TRUE(store.sync().ok());
+
+    auto manifest = catalog->load(17);
+    ASSERT_NE(manifest, nullptr);
+    ASSERT_EQ(manifest->packs.size(), 257U);
+    ASSERT_EQ(manifest->reference_segments.size(), 2U);
+    EXPECT_EQ(manifest->reference_segments[0].ref_count, 256U);
+    EXPECT_EQ(manifest->reference_segments[1].first_ordinal, 256U);
+    EXPECT_EQ(catalog->reference_segment_count(17), 2U);
+
+    std::array<uint8_t, 16> out{};
+    ASSERT_TRUE(store.read_at(8184, out.data(), out.size()).ok());
+    EXPECT_TRUE(std::equal(out.begin(), out.end(), bytes.begin() + 8184));
 }
 
 TEST(ChunkPageStore, AvailabilityAndCorruptionRemainDistinct)
@@ -163,6 +212,7 @@ TEST(ChunkPageStore, ManifestPinsDelayReclamationButKeepOnlyFallback)
     pinned.reset();
     EXPECT_GT(catalog->reclaim_before(12, 4), 0U);
     EXPECT_EQ(catalog->retained_manifest_count(12), 2U);
+    EXPECT_EQ(catalog->reference_segment_count(12), 2U);
     EXPECT_NE(catalog->load_generation(12, 2), nullptr);
     EXPECT_NE(catalog->load_generation(12, 3), nullptr);
 }

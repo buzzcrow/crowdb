@@ -39,11 +39,13 @@ and structurally safe range rebuild while preserving local tree behavior.
   `ffi/build.rs`, `src/stdexec_adapter.cpp`.
 - [x] **Define manifest core**: implement page references, checksums,
   generations, an epoch-fenced root catalog, and orphan accounting.
-  Files: `src/chunk_page_store.h`, `src/chunk_page_store.cpp`.
-- [~] **Segment manifest metadata**: add ordinal reference tables, immutable
+  Files: `src/backend/chunk/chunk_page_store.h`,
+  `src/backend/chunk/chunk_page_store.cpp`.
+- [x] **Segment manifest metadata**: add ordinal reference tables, immutable
   segment directories, pins, retention watermarks, and orphan reclamation.
-  Files: `src/chunk_page_store.h`, `src/chunk_page_store.cpp`.
-- [ ] **Implement native chunk transport**: add direct C++ ChunkDB allocation,
+  Files: `src/backend/chunk/chunk_page_store.h`,
+  `src/backend/chunk/chunk_page_store.cpp`.
+- [~] **Implement native chunk transport**: add direct C++ ChunkDB allocation,
   append, query, seal, and DiskIO mirror read/write RPC adapters with a bounded
   completion slab and immutable topology injection. Files:
   `src/backend/chunk/`, protocol/CMake generation wiring, `crowdb-chunk-kv`.

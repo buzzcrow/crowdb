@@ -36,8 +36,16 @@ struct ChunkPagePack
 
 struct ChunkReferenceSegment
 {
+    uint64_t object_id     = 0;
+    uint64_t first_ordinal = 0;
+    uint32_t ref_count     = 0;
+    uint32_t checksum      = 0;
+};
+
+struct ChunkReferenceSegmentImage
+{
+    uint64_t                  object_id     = 0;
     uint64_t                  first_ordinal = 0;
-    uint32_t                  checksum      = 0;
     std::vector<ChunkPageRef> refs;
 };
 
@@ -61,12 +69,17 @@ class RootCatalog
     [[nodiscard]] virtual std::shared_ptr<const ChunkManifest> load(uint64_t tree_id) const               = 0;
     [[nodiscard]] virtual std::shared_ptr<const ChunkManifest> load_generation(uint64_t tree_id,
                                                                                uint64_t generation) const = 0;
-    virtual Status                 publish(uint64_t tree_id, uint64_t expected_generation, uint64_t owner_epoch,
-                                           std::shared_ptr<const ChunkManifest> manifest)                 = 0;
-    virtual uint64_t               reclaim_before(uint64_t tree_id, uint64_t generation)                  = 0;
-    [[nodiscard]] virtual uint64_t retained_manifest_count(uint64_t tree_id) const                        = 0;
-    [[nodiscard]] virtual uint64_t pinned_bytes(uint64_t tree_id) const                                   = 0;
-    [[nodiscard]] virtual uint64_t oldest_pin_age_ms(uint64_t tree_id) const                              = 0;
+    virtual Status persist_reference_segment(uint64_t                                          tree_id,
+                                             std::shared_ptr<const ChunkReferenceSegmentImage> segment)   = 0;
+    [[nodiscard]] virtual std::shared_ptr<const ChunkReferenceSegmentImage>
+                     load_reference_segment(uint64_t tree_id, uint64_t object_id) const                    = 0;
+    virtual uint64_t discard_reference_segments(uint64_t tree_id, const std::vector<uint64_t> &object_ids) = 0;
+    virtual Status   publish(uint64_t tree_id, uint64_t expected_generation, uint64_t owner_epoch,
+                             std::shared_ptr<const ChunkManifest> manifest)                                = 0;
+    virtual uint64_t reclaim_before(uint64_t tree_id, uint64_t generation)                                 = 0;
+    [[nodiscard]] virtual uint64_t retained_manifest_count(uint64_t tree_id) const                         = 0;
+    [[nodiscard]] virtual uint64_t pinned_bytes(uint64_t tree_id) const                                    = 0;
+    [[nodiscard]] virtual uint64_t oldest_pin_age_ms(uint64_t tree_id) const                               = 0;
 };
 
 // Test and embeddable catalog implementation. Its read side is one atomic
@@ -98,12 +111,29 @@ class MemoryRootCatalog final : public RootCatalog
     [[nodiscard]] uint64_t                             retained_manifest_count(uint64_t tree_id) const override;
     [[nodiscard]] uint64_t                             pinned_bytes(uint64_t tree_id) const override;
     [[nodiscard]] uint64_t                             oldest_pin_age_ms(uint64_t tree_id) const override;
+    Status persist_reference_segment(uint64_t                                          tree_id,
+                                     std::shared_ptr<const ChunkReferenceSegmentImage> segment) override;
+    [[nodiscard]] std::shared_ptr<const ChunkReferenceSegmentImage>
+             load_reference_segment(uint64_t tree_id, uint64_t object_id) const override;
+    uint64_t discard_reference_segments(uint64_t tree_id, const std::vector<uint64_t> &object_ids) override;
+
+    [[nodiscard]] uint64_t reference_segment_count(uint64_t tree_id) const;
+    void                   corrupt_active_reference_segment(size_t segment_index, size_t ref_index);
 
   private:
     std::atomic<uint64_t>                             owner_epoch_;
     std::atomic<std::shared_ptr<const ChunkManifest>> current_;
     using ManifestHistory = std::vector<std::shared_ptr<const ChunkManifest>>;
     std::atomic<std::shared_ptr<const ManifestHistory>> history_;
+
+    struct StoredReferenceSegment
+    {
+        uint64_t                                          tree_id = 0;
+        std::shared_ptr<const ChunkReferenceSegmentImage> image;
+    };
+
+    using ReferenceSegmentStore = std::vector<StoredReferenceSegment>;
+    std::atomic<std::shared_ptr<const ReferenceSegmentStore>> reference_segment_store_;
 };
 
 struct ChunkPageStoreStats
@@ -168,9 +198,10 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     Status                               materialize_active(std::vector<uint8_t> *out) const;
     Status                               build_manifest(std::shared_ptr<ChunkManifest> *out);
     std::shared_ptr<const ChunkManifest> load_layout() const;
-    static const ChunkPageRef           *resolve_ordinal(const ChunkManifest &manifest, uint64_t ordinal);
-    static uint32_t                      reference_segment_checksum(const ChunkReferenceSegment &segment);
-    static uint32_t                      manifest_checksum(const ChunkManifest &manifest);
+    Status          resolve_ordinal(const ChunkManifest &manifest, uint64_t ordinal, ChunkPageRef *out) const;
+    static uint32_t reference_segment_checksum(const ChunkReferenceSegmentImage &segment);
+    static uint32_t manifest_checksum(const ChunkManifest &manifest);
+    static std::vector<uint64_t> reference_segment_ids(const ChunkManifest &manifest);
 
     Config                                                    config_;
     std::shared_ptr<RootCatalog>                              catalog_;
@@ -191,6 +222,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     std::atomic<uint64_t>                                     mirror_write_attempts_{0};
     std::atomic<uint64_t>                                     mirror_write_failures_{0};
     std::atomic<uint64_t>                                     orphan_bytes_{0};
+    std::vector<uint64_t>                                     orphan_reference_segments_;
 };
 
 } // namespace crowdb::tree::detail
