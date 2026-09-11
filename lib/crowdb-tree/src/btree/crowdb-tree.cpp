@@ -40,11 +40,52 @@ buffer cell_of(Slice s)
     return b;
 }
 
-Status validate_native_snapshot_graph(const std::vector<NativeFrame> &frames, uint64_t root_page_id)
+struct NativeBounds
 {
-    std::unordered_map<uint64_t, const NativeFrame *> by_id;
-    by_id.reserve(frames.size());
-    for (const NativeFrame &frame : frames) {
+    std::optional<std::string> lower;
+    std::optional<std::string> upper;
+    uint64_t                   lower_leaf_page_id = kInvalidPageId;
+    uint64_t                   upper_leaf_page_id = kInvalidPageId;
+};
+
+bool set_native_frame_fences(NativeFrame *frame, const NativeBounds &bounds)
+{
+    uint8_t       *bytes      = frame->frame.data();
+    const uint32_t page_bytes = static_cast<uint32_t>(frame->frame.size());
+    if (!bounds.lower.has_value()) {
+        return frame_set_fences(bytes, page_bytes, nullptr, nullptr);
+    }
+    Slice lower(*bounds.lower);
+    Slice upper(*bounds.upper);
+    if (frame_page_type(bytes) == page_type::kLeafBase) {
+        LeafFrameView leaf(bytes, page_bytes);
+        for (uint32_t index = 0; index < leaf.count(); ++index) {
+            if (leaf.key(index).compare(lower) == 0) {
+                lower = leaf.key(index);
+            }
+            if (leaf.key(index).compare(upper) == 0) {
+                upper = leaf.key(index);
+            }
+        }
+        for (uint32_t index = 0; index < leaf.delta_count(); ++index) {
+            if (leaf.delta_key(index).compare(lower) == 0) {
+                lower = leaf.delta_key(index);
+            }
+            if (leaf.delta_key(index).compare(upper) == 0) {
+                upper = leaf.delta_key(index);
+            }
+        }
+        return frame_set_fences(bytes, page_bytes, &lower, &upper);
+    }
+    frame_set_inner_fence_pages(bytes, page_bytes, bounds.lower_leaf_page_id, bounds.upper_leaf_page_id);
+    return true;
+}
+
+Status validate_native_snapshot_graph(std::vector<NativeFrame> *frames, uint64_t root_page_id)
+{
+    std::unordered_map<uint64_t, NativeFrame *> by_id;
+    by_id.reserve(frames->size());
+    for (NativeFrame &frame : *frames) {
         const uint64_t stored_page_id =
             frame.frame.empty() ? kInvalidPageId : frame_u64(frame.frame.data(), fh::kSelfpage_id);
         if (frame.page_id == kInvalidPageId || frame.frame.empty() ||
@@ -58,19 +99,35 @@ Status validate_native_snapshot_graph(const std::vector<NativeFrame> &frames, ui
         return Status::corruption("native snapshot: root page is missing or has an invalid type");
     }
 
-    struct Bounds
-    {
-        std::optional<std::string> lower;
-        std::optional<std::string> upper;
+    auto validate_fences = [](NativeFrame *frame, const NativeBounds &bounds) {
+        const uint8_t *bytes = frame->frame.data();
+        if (!frame_has_lower_fence(bytes) && bounds.lower.has_value() && !set_native_frame_fences(frame, bounds)) {
+            return false;
+        }
+        bytes = frame->frame.data();
+        if (frame_has_lower_fence(bytes) != bounds.lower.has_value() ||
+            frame_has_upper_fence(bytes) != bounds.upper.has_value()) {
+            return false;
+        }
+        if (!bounds.lower.has_value()) {
+            return true;
+        }
+        if (frame_fences_are_page_ids(bytes)) {
+            return frame_lower_fence_page_id(bytes) == bounds.lower_leaf_page_id &&
+                   frame_upper_fence_page_id(bytes) == bounds.upper_leaf_page_id;
+        }
+        return frame_lower_fence(bytes).compare(Slice(*bounds.lower)) == 0 &&
+               frame_upper_fence(bytes).compare(Slice(*bounds.upper)) == 0;
     };
 
     std::unordered_set<uint64_t>     reached;
     std::unordered_set<uint64_t>     active;
     std::unordered_set<uint64_t>     overflow_reached;
     std::vector<const NativeFrame *> leaves;
-    std::function<Status(uint64_t, const std::optional<std::string> &, const std::optional<std::string> &, Bounds *)>
+    std::function<Status(uint64_t, const std::optional<std::string> &, const std::optional<std::string> &,
+                         NativeBounds *)>
         walk = [&](uint64_t page_id, const std::optional<std::string> &expected_lower,
-                   const std::optional<std::string> &expected_upper, Bounds *bounds) -> Status {
+                   const std::optional<std::string> &expected_upper, NativeBounds *bounds) -> Status {
         if (active.contains(page_id) || reached.contains(page_id)) {
             return Status::corruption("native snapshot: cyclic or multiply referenced tree page");
         }
@@ -78,8 +135,8 @@ Status validate_native_snapshot_graph(const std::vector<NativeFrame> &frames, ui
         if (found == by_id.end()) {
             return Status::corruption("native snapshot: missing child page");
         }
-        const NativeFrame &frame = *found->second;
-        const page_type    type  = frame_page_type(frame.frame.data());
+        NativeFrame    &frame = *found->second;
+        const page_type type  = frame_page_type(frame.frame.data());
         if (type == page_type::kOverflowFrame) {
             return Status::corruption("native snapshot: overflow page used as a tree child");
         }
@@ -89,22 +146,35 @@ Status validate_native_snapshot_graph(const std::vector<NativeFrame> &frames, ui
         if (type == page_type::kLeafBase) {
             LeafFrameView leaf(frame.frame.data(), static_cast<uint32_t>(frame.frame.size()));
             leaves.push_back(&frame);
-            if (!leaf.empty()) {
-                bounds->lower = leaf.key(0).to_string();
-                bounds->upper = leaf.key(leaf.count() - 1).to_string();
-                if ((expected_lower.has_value() && leaf.key(0).compare(Slice(*expected_lower)) < 0) ||
-                    (expected_upper.has_value() && leaf.key(leaf.count() - 1).compare(Slice(*expected_upper)) >= 0)) {
-                    return Status::corruption("native snapshot: leaf escapes its routed bounds");
+            bounds->lower_leaf_page_id = page_id;
+            bounds->upper_leaf_page_id = page_id;
+            auto remember_key          = [bounds](Slice key) {
+                if (!bounds->lower.has_value() || key.compare(Slice(*bounds->lower)) < 0) {
+                    bounds->lower = key.to_string();
                 }
-            }
+                if (!bounds->upper.has_value() || key.compare(Slice(*bounds->upper)) > 0) {
+                    bounds->upper = key.to_string();
+                }
+            };
             for (uint32_t index = 0; index < leaf.count(); ++index) {
-                Slice    raw_cell = leaf.cell(index);
+                remember_key(leaf.key(index));
+            }
+            for (uint32_t index = 0; index < leaf.delta_count(); ++index) {
+                remember_key(leaf.delta_key(index));
+            }
+            if ((expected_lower.has_value() && bounds->lower.has_value() &&
+                 Slice(*bounds->lower).compare(Slice(*expected_lower)) < 0) ||
+                (expected_upper.has_value() && bounds->upper.has_value() &&
+                 Slice(*bounds->upper).compare(Slice(*expected_upper)) >= 0)) {
+                return Status::corruption("native snapshot: leaf escapes its routed bounds");
+            }
+            auto validate_cell = [&](Slice raw_cell) -> Status {
                 CellView cell{raw_cell};
                 if (!cell.valid() || (cell.is_overflow() && raw_cell.size() != kOverflowCellSize)) {
                     return Status::corruption("native snapshot: invalid leaf cell");
                 }
                 if (!cell.is_overflow()) {
-                    continue;
+                    return Status::Ok();
                 }
                 std::unordered_set<uint64_t> chain;
                 uint64_t                     overflow_id = cell.overflow_head();
@@ -124,6 +194,22 @@ Status validate_native_snapshot_graph(const std::vector<NativeFrame> &frames, ui
                                            static_cast<uint32_t>(overflow->second->frame.size()));
                     overflow_id = view.next_page_id();
                 }
+                return Status::Ok();
+            };
+            for (uint32_t index = 0; index < leaf.count(); ++index) {
+                Status status = validate_cell(leaf.cell(index));
+                if (!status.ok()) {
+                    return status;
+                }
+            }
+            for (uint32_t index = 0; index < leaf.delta_count(); ++index) {
+                Status status = validate_cell(leaf.delta_cell(index));
+                if (!status.ok()) {
+                    return status;
+                }
+            }
+            if (!validate_fences(&frame, *bounds)) {
+                return Status::corruption("native snapshot: leaf fences are missing or inconsistent");
             }
             active.erase(page_id);
             return Status::Ok();
@@ -142,24 +228,29 @@ Status validate_native_snapshot_graph(const std::vector<NativeFrame> &frames, ui
                  Slice(*child_upper).compare(Slice(*expected_upper)) > 0)) {
                 return Status::corruption("native snapshot: inner separator escapes its routed bounds");
             }
-            Bounds child;
-            Status child_status = walk(inner.child_at(index), child_lower, child_upper, &child);
+            NativeBounds child;
+            Status       child_status = walk(inner.child_at(index), child_lower, child_upper, &child);
             if (!child_status.ok()) {
                 return child_status;
             }
             if (!bounds->lower.has_value() && child.lower.has_value()) {
-                bounds->lower = child.lower;
+                bounds->lower              = child.lower;
+                bounds->lower_leaf_page_id = child.lower_leaf_page_id;
             }
             if (child.upper.has_value()) {
-                bounds->upper = child.upper;
+                bounds->upper              = child.upper;
+                bounds->upper_leaf_page_id = child.upper_leaf_page_id;
             }
+        }
+        if (!validate_fences(&frame, *bounds)) {
+            return Status::corruption("native snapshot: inner fences are missing or inconsistent");
         }
         active.erase(page_id);
         return Status::Ok();
     };
 
-    Bounds root_bounds;
-    Status graph_status = walk(root_page_id, std::nullopt, std::nullopt, &root_bounds);
+    NativeBounds root_bounds;
+    Status       graph_status = walk(root_page_id, std::nullopt, std::nullopt, &root_bounds);
     if (!graph_status.ok()) {
         return graph_status;
     }
@@ -170,7 +261,7 @@ Status validate_native_snapshot_graph(const std::vector<NativeFrame> &frames, ui
             return Status::corruption("native snapshot: leaf sibling escapes tree order");
         }
     }
-    if (reached.size() + overflow_reached.size() != frames.size()) {
+    if (reached.size() + overflow_reached.size() != frames->size()) {
         return Status::corruption("native snapshot: unreachable page frame");
     }
     return Status::Ok();
@@ -3555,10 +3646,11 @@ Status Crowdbtree::collect_native_frames(std::vector<NativeFrame> *out, uint64_t
                                  Slice(*upper).compare(Slice(*effective_filter->start())) > 0;
         return below_end && above_start;
     };
-    uint64_t                                                                                      skipped = 0;
-    std::function<Status(uint64_t, std::optional<std::string>, std::optional<std::string>, bool)> walk =
-        [&](uint64_t page_id, std::optional<std::string> lower, std::optional<std::string> upper,
-            bool is_root) -> Status {
+
+    uint64_t skipped = 0;
+    std::function<Status(uint64_t, std::optional<std::string>, std::optional<std::string>, bool, NativeBounds *)> walk =
+        [&](uint64_t page_id, std::optional<std::string> lower, std::optional<std::string> upper, bool is_root,
+            NativeBounds *bounds) -> Status {
         if (!is_root && !intersects(lower, upper)) {
             ++skipped;
             return Status::Ok();
@@ -3567,7 +3659,9 @@ Status Crowdbtree::collect_native_frames(std::vector<NativeFrame> *out, uint64_t
         if (head == nullptr) {
             return Status::internal_error("native snapshot: null page in walk");
         }
-        if (head->type == page_type::kBatchDelta) {
+        const bool has_inframe_deltas =
+            head->type == page_type::kLeafBase && static_cast<LeafBase *>(head)->view().delta_count() != 0;
+        if (head->type == page_type::kBatchDelta || has_inframe_deltas) {
             PageBase *b = head;
             while (b != nullptr && b->type == page_type::kBatchDelta) {
                 b = b->next;
@@ -3605,6 +3699,7 @@ Status Crowdbtree::collect_native_frames(std::vector<NativeFrame> *out, uint64_t
         else {
             return Status::internal_error("native snapshot: unexpected base type");
         }
+        const size_t output_index = out->size();
         out->push_back(NativeFrame{.page_id = page_id, .frame = std::vector<uint8_t>(frame, frame + plen)});
 
         if (base->type == page_type::kInnerBase) {
@@ -3615,14 +3710,38 @@ Status Crowdbtree::collect_native_frames(std::vector<NativeFrame> *out, uint64_t
                 std::optional<std::string> child_upper =
                     index == inner.num_separators() ? upper
                                                     : std::optional<std::string>(inner.separator_at(index).to_string());
-                Status cs = walk(inner.child_at(index), std::move(child_lower), std::move(child_upper), false);
+                NativeBounds child_bounds;
+                Status       cs =
+                    walk(inner.child_at(index), std::move(child_lower), std::move(child_upper), false, &child_bounds);
                 if (!cs.ok()) {
                     return cs;
                 }
+                if (!bounds->lower.has_value() && child_bounds.lower.has_value()) {
+                    bounds->lower              = child_bounds.lower;
+                    bounds->lower_leaf_page_id = child_bounds.lower_leaf_page_id;
+                }
+                if (child_bounds.upper.has_value()) {
+                    bounds->upper              = child_bounds.upper;
+                    bounds->upper_leaf_page_id = child_bounds.upper_leaf_page_id;
+                }
+            }
+            NativeFrame &output_frame = (*out)[output_index];
+            if (!set_native_frame_fences(&output_frame, *bounds)) {
+                return Status::resource_exhausted("native snapshot: cannot persist inner fences");
             }
         }
         else { // leaf: dump its overflow chains too (reachable via cells, PT11)
             LeafFrameView v = static_cast<LeafBase *>(base)->view();
+            if (!v.empty()) {
+                bounds->lower              = v.key(0).to_string();
+                bounds->upper              = v.key(v.count() - 1).to_string();
+                bounds->lower_leaf_page_id = page_id;
+                bounds->upper_leaf_page_id = page_id;
+            }
+            NativeFrame &output_frame = (*out)[output_index];
+            if (!set_native_frame_fences(&output_frame, *bounds)) {
+                return Status::resource_exhausted("native snapshot: leaf fence keys do not fit frame");
+            }
             for (uint32_t i = 0; i < v.count(); ++i) {
                 CellView c{v.cell(i)};
                 if (!c.is_overflow()) {
@@ -3645,12 +3764,13 @@ Status Crowdbtree::collect_native_frames(std::vector<NativeFrame> *out, uint64_t
     };
 
     out->clear();
-    Status ws = walk(root_page_id_.load(), std::nullopt, std::nullopt, true);
+    NativeBounds root_bounds;
+    Status       ws = walk(root_page_id_.load(), std::nullopt, std::nullopt, true, &root_bounds);
     if (!ws.ok()) {
         return ws;
     }
     if (filter != nullptr && !can_prune) {
-        Status graph_status = validate_native_snapshot_graph(*out, root_page_id_.load());
+        Status graph_status = validate_native_snapshot_graph(out, root_page_id_.load());
         if (!graph_status.ok()) {
             return graph_status;
         }
@@ -3681,7 +3801,7 @@ Status Crowdbtree::install_snapshot_native(std::vector<NativeFrame> frames, uint
             return Status::corruption("native snapshot: frame CRC, structure, or range invalid");
         }
     }
-    Status graph_status = validate_native_snapshot_graph(frames, root_page_id);
+    Status graph_status = validate_native_snapshot_graph(&frames, root_page_id);
     if (!graph_status.ok()) {
         return graph_status;
     }

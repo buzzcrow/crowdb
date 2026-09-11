@@ -34,6 +34,9 @@ inline constexpr uint32_t kFrameMagicLeaf     = 0x464C5443; // 'CTLF'
 inline constexpr uint32_t kFrameMagicInner    = 0x494E5443; // 'CTNI'
 inline constexpr uint32_t kFrameMagicOverflow = 0x564F5443; // 'CTOV'
 inline constexpr uint32_t kFrameVersion       = 1;
+inline constexpr uint8_t  kFrameHasLowerFence = 1U << 0U;
+inline constexpr uint8_t  kFrameHasUpperFence = 1U << 1U;
+inline constexpr uint8_t  kFrameFencePageIds  = 1U << 2U;
 
 inline constexpr size_t kFrameHeaderSize  = 64;
 inline constexpr size_t kFrameTrailerSize = 8;  // logical_len u32 + crc32c u32
@@ -53,6 +56,10 @@ inline constexpr size_t kFreeHi        = 16; // u32 (lowest used record offset)
 inline constexpr size_t kDeltaCount    = 20; // u32 (leaf: in-frame delta count, PT12)
 inline constexpr size_t kSelfpage_id   = 24; // u64
 inline constexpr size_t kRightSibling  = 32; // u64 (leaf only)
+inline constexpr size_t kLowerFenceOff = 40; // u32
+inline constexpr size_t kLowerFenceLen = 44; // u32
+inline constexpr size_t kUpperFenceOff = 48; // u32
+inline constexpr size_t kUpperFenceLen = 52; // u32
 } // namespace fh
 
 // ── little-endian frame accessors ─────────────────────────────────
@@ -114,6 +121,22 @@ inline void frame_put_u64(uint8_t *f, size_t off, uint64_t v)
 
 // Recompute the {logical_len, crc32c} trailer after an in-place header edit.
 void frame_restamp_crc(uint8_t *f, uint32_t page_bytes);
+
+// Persist the inclusive minimum/maximum keys in a leaf frame. A fence may
+// reference key bytes already in this frame; otherwise it is copied into free
+// record space. Inner frames instead persist the page IDs of the leftmost and
+// rightmost reachable leaves, whose own fences hold the exact boundary keys.
+// Empty subtrees carry neither representation.
+[[nodiscard]] bool     frame_set_fences(uint8_t *f, uint32_t page_bytes, const Slice *lower, const Slice *upper);
+[[nodiscard]] bool     frame_has_lower_fence(const uint8_t *f);
+[[nodiscard]] bool     frame_has_upper_fence(const uint8_t *f);
+[[nodiscard]] Slice    frame_lower_fence(const uint8_t *f);
+[[nodiscard]] Slice    frame_upper_fence(const uint8_t *f);
+[[nodiscard]] bool     frame_fences_are_page_ids(const uint8_t *f);
+[[nodiscard]] uint64_t frame_lower_fence_page_id(const uint8_t *f);
+[[nodiscard]] uint64_t frame_upper_fence_page_id(const uint8_t *f);
+void                   frame_set_inner_fence_pages(uint8_t *f, uint32_t page_bytes, uint64_t lower_leaf_page_id,
+                                                   uint64_t upper_leaf_page_id);
 
 // ── Leaf view (zero-copy) ─────────────────────────────────────────
 class LeafFrameView

@@ -59,6 +59,10 @@ TEST(FramePage, LeafBuildViewRoundTrip)
     EXPECT_EQ(v.key(2).to_string(), "c");
     EXPECT_EQ(CellView{v.cell(1)}.value().to_string(), "BB");
     EXPECT_TRUE(CellView{v.cell(2)}.is_tombstone());
+    ASSERT_TRUE(frame_has_lower_fence(frame.data()));
+    ASSERT_TRUE(frame_has_upper_fence(frame.data()));
+    EXPECT_EQ(frame_lower_fence(frame.data()).to_string(), "a");
+    EXPECT_EQ(frame_upper_fence(frame.data()).to_string(), "c");
 }
 
 TEST(FramePage, LeafFindAndLowerBound)
@@ -160,6 +164,47 @@ TEST(FramePage, InnerBuildRejectsOversize)
     std::string           big(200, 'x');
     std::vector<Slice>    seps = {Slice(big)};
     EXPECT_FALSE(inner_frame_build(frame.data(), pb, 1, children, seps));
+}
+
+TEST(FramePage, InnerReachabilityFencesAreChecksummedAndBoundsChecked)
+{
+    const uint32_t        pb = 4096;
+    std::vector<uint8_t>  frame(pb);
+    std::vector<uint64_t> children   = {10, 11};
+    std::string           separator  = "m";
+    std::vector<Slice>    separators = {Slice(separator)};
+    ASSERT_TRUE(inner_frame_build(frame.data(), pb, 3, children, separators));
+    Slice lower("a");
+    Slice upper("z");
+    ASSERT_TRUE(frame_set_fences(frame.data(), pb, &lower, &upper));
+    ASSERT_TRUE(frame_validate(frame.data(), pb));
+    EXPECT_EQ(frame_lower_fence(frame.data()).to_string(), "a");
+    EXPECT_EQ(frame_upper_fence(frame.data()).to_string(), "z");
+
+    frame_put_u32(frame.data(), fh::kLowerFenceOff, pb);
+    frame_restamp_crc(frame.data(), pb);
+    EXPECT_FALSE(frame_validate(frame.data(), pb));
+}
+
+TEST(FramePage, InnerLeafPageFencesAreChecksummedAndFixedSize)
+{
+    const uint32_t        pb = 4096;
+    std::vector<uint8_t>  frame(pb);
+    std::vector<uint64_t> children   = {10, 11};
+    std::string           separator  = "m";
+    std::vector<Slice>    separators = {Slice(separator)};
+    ASSERT_TRUE(inner_frame_build(frame.data(), pb, 3, children, separators));
+
+    frame_set_inner_fence_pages(frame.data(), pb, 20, 29);
+    ASSERT_TRUE(frame_validate(frame.data(), pb));
+    EXPECT_EQ(frame.size(), pb);
+    EXPECT_TRUE(frame_fences_are_page_ids(frame.data()));
+    EXPECT_EQ(frame_lower_fence_page_id(frame.data()), 20U);
+    EXPECT_EQ(frame_upper_fence_page_id(frame.data()), 29U);
+
+    frame_put_u64(frame.data(), fh::kUpperFenceOff, kInvalidPageId);
+    frame_restamp_crc(frame.data(), pb);
+    EXPECT_FALSE(frame_validate(frame.data(), pb));
 }
 
 TEST(FramePage, OverflowBuildViewRoundTrip)

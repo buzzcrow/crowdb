@@ -7,6 +7,8 @@
 
 #include "crowdb-common/crc32c.h"
 
+#include <limits>
+
 namespace crowdb::tree
 {
 
@@ -28,6 +30,139 @@ void stamp_trailer(uint8_t *f, uint32_t page_bytes)
 void frame_restamp_crc(uint8_t *f, uint32_t page_bytes)
 {
     stamp_trailer(f, page_bytes);
+}
+
+bool frame_has_lower_fence(const uint8_t *f)
+{
+    return (f[fh::kFlags] & kFrameHasLowerFence) != 0;
+}
+
+bool frame_has_upper_fence(const uint8_t *f)
+{
+    return (f[fh::kFlags] & kFrameHasUpperFence) != 0;
+}
+
+Slice frame_lower_fence(const uint8_t *f)
+{
+    return {reinterpret_cast<const char *>(f + frame_u32(f, fh::kLowerFenceOff)), frame_u32(f, fh::kLowerFenceLen)};
+}
+
+Slice frame_upper_fence(const uint8_t *f)
+{
+    return {reinterpret_cast<const char *>(f + frame_u32(f, fh::kUpperFenceOff)), frame_u32(f, fh::kUpperFenceLen)};
+}
+
+bool frame_fences_are_page_ids(const uint8_t *f)
+{
+    return (f[fh::kFlags] & kFrameFencePageIds) != 0;
+}
+
+uint64_t frame_lower_fence_page_id(const uint8_t *f)
+{
+    return frame_u64(f, fh::kLowerFenceOff);
+}
+
+uint64_t frame_upper_fence_page_id(const uint8_t *f)
+{
+    return frame_u64(f, fh::kUpperFenceOff);
+}
+
+void frame_set_inner_fence_pages(uint8_t *f, uint32_t page_bytes, uint64_t lower_leaf_page_id,
+                                 uint64_t upper_leaf_page_id)
+{
+    f[fh::kFlags] &= static_cast<uint8_t>(~(kFrameHasLowerFence | kFrameHasUpperFence | kFrameFencePageIds));
+    if (lower_leaf_page_id != kInvalidPageId && upper_leaf_page_id != kInvalidPageId) {
+        f[fh::kFlags] |= kFrameHasLowerFence | kFrameHasUpperFence | kFrameFencePageIds;
+        frame_put_u64(f, fh::kLowerFenceOff, lower_leaf_page_id);
+        frame_put_u64(f, fh::kUpperFenceOff, upper_leaf_page_id);
+    }
+    else {
+        frame_put_u64(f, fh::kLowerFenceOff, 0);
+        frame_put_u64(f, fh::kUpperFenceOff, 0);
+    }
+    stamp_trailer(f, page_bytes);
+}
+
+bool frame_set_fences(uint8_t *f, uint32_t page_bytes, const Slice *lower, const Slice *upper)
+{
+    if (f == nullptr || page_bytes <= kFrameHeaderSize + kFrameTrailerSize) {
+        return false;
+    }
+    if (frame_page_type(f) == page_type::kOverflowFrame || (lower == nullptr) != (upper == nullptr)) {
+        return lower == nullptr && upper == nullptr;
+    }
+    uint32_t free_lo = frame_u32(f, fh::kFreeLo);
+    uint32_t free_hi = frame_u32(f, fh::kFreeHi);
+    uint32_t body    = page_bytes - static_cast<uint32_t>(kFrameTrailerSize);
+    if (free_hi < free_lo || free_hi > body) {
+        return false;
+    }
+    auto internal_offset = [f, body](Slice key, uint32_t *offset) {
+        const uintptr_t begin = reinterpret_cast<uintptr_t>(f);
+        const uintptr_t end   = begin + body;
+        const uintptr_t data  = reinterpret_cast<uintptr_t>(key.data());
+        if (data < begin || data > end || key.size() > end - data) {
+            return false;
+        }
+        *offset = static_cast<uint32_t>(data - begin);
+        return true;
+    };
+
+    uint32_t   lower_off      = 0;
+    uint32_t   upper_off      = 0;
+    const bool lower_internal = lower != nullptr && internal_offset(*lower, &lower_off);
+    const bool upper_internal = upper != nullptr && internal_offset(*upper, &upper_off);
+    const bool reuse_lower    = lower != nullptr && !lower_internal && frame_has_lower_fence(f) &&
+                                !frame_fences_are_page_ids(f) && lower->size() <= frame_u32(f, fh::kLowerFenceLen);
+    const bool reuse_upper    = upper != nullptr && !upper_internal && frame_has_upper_fence(f) &&
+                                !frame_fences_are_page_ids(f) && upper->size() <= frame_u32(f, fh::kUpperFenceLen);
+    size_t     copy_bytes     = lower != nullptr && !lower_internal && !reuse_lower ? lower->size() : 0;
+    copy_bytes += upper != nullptr && !upper_internal && !reuse_upper ? upper->size() : 0;
+    if (copy_bytes > free_hi - free_lo || (lower != nullptr && lower->size() > std::numeric_limits<uint32_t>::max()) ||
+        (upper != nullptr && upper->size() > std::numeric_limits<uint32_t>::max())) {
+        return false;
+    }
+    if (lower != nullptr && !lower_internal) {
+        if (reuse_lower) {
+            lower_off = frame_u32(f, fh::kLowerFenceOff);
+        }
+        else {
+            free_hi -= static_cast<uint32_t>(lower->size());
+            lower_off = free_hi;
+        }
+        if (!lower->empty()) {
+            std::memcpy(f + lower_off, lower->data(), lower->size());
+        }
+    }
+    if (upper != nullptr && !upper_internal) {
+        if (reuse_upper) {
+            upper_off = frame_u32(f, fh::kUpperFenceOff);
+        }
+        else {
+            free_hi -= static_cast<uint32_t>(upper->size());
+            upper_off = free_hi;
+        }
+        if (!upper->empty()) {
+            std::memcpy(f + upper_off, upper->data(), upper->size());
+        }
+    }
+    f[fh::kFlags] &= static_cast<uint8_t>(~(kFrameHasLowerFence | kFrameHasUpperFence | kFrameFencePageIds));
+    if (lower != nullptr) {
+        f[fh::kFlags] |= kFrameHasLowerFence | kFrameHasUpperFence;
+        frame_put_u32(f, fh::kLowerFenceOff, lower_off);
+        frame_put_u32(f, fh::kLowerFenceLen, static_cast<uint32_t>(lower->size()));
+        frame_put_u32(f, fh::kUpperFenceOff, upper_off);
+        frame_put_u32(f, fh::kUpperFenceLen, static_cast<uint32_t>(upper->size()));
+        frame_put_u32(f, fh::kFreeHi, free_hi);
+    }
+    else {
+        frame_put_u32(f, fh::kLowerFenceOff, 0);
+        frame_put_u32(f, fh::kLowerFenceLen, 0);
+        frame_put_u32(f, fh::kUpperFenceOff, 0);
+        frame_put_u32(f, fh::kUpperFenceLen, 0);
+    }
+    stamp_trailer(f, page_bytes);
+    return true;
 }
 
 bool frame_validate(const uint8_t *f, uint32_t page_bytes)
@@ -71,9 +206,28 @@ bool frame_validate(const uint8_t *f, uint32_t page_bytes)
     const uint32_t free_lo = frame_u32(f, fh::kFreeLo);
     const uint32_t free_hi = frame_u32(f, fh::kFreeHi);
     if (t == page_type::kOverflowFrame) {
-        return count <= body - kFrameHeaderSize;
+        return f[fh::kFlags] == 0 && count <= body - kFrameHeaderSize;
     }
     if (free_lo < kFrameHeaderSize || free_hi < free_lo || free_hi > body) {
+        return false;
+    }
+    if ((f[fh::kFlags] & ~(kFrameHasLowerFence | kFrameHasUpperFence | kFrameFencePageIds)) != 0 ||
+        frame_has_lower_fence(f) != frame_has_upper_fence(f)) {
+        return false;
+    }
+    if (frame_fences_are_page_ids(f) &&
+        (t != page_type::kInnerBase || !frame_has_lower_fence(f) || frame_lower_fence_page_id(f) == kInvalidPageId ||
+         frame_upper_fence_page_id(f) == kInvalidPageId)) {
+        return false;
+    }
+    auto valid_fence = [f, free_hi, body](size_t offset_field, size_t length_field) {
+        const uint32_t offset = frame_u32(f, offset_field);
+        const uint32_t length = frame_u32(f, length_field);
+        return offset >= free_hi && offset <= body && length <= body - offset;
+    };
+    if (frame_has_lower_fence(f) && !frame_fences_are_page_ids(f) &&
+        (!valid_fence(fh::kLowerFenceOff, fh::kLowerFenceLen) || !valid_fence(fh::kUpperFenceOff, fh::kUpperFenceLen) ||
+         frame_lower_fence(f).compare(frame_upper_fence(f)) > 0)) {
         return false;
     }
 
@@ -100,6 +254,25 @@ bool frame_validate(const uint8_t *f, uint32_t page_bytes)
         }
         for (uint32_t i = 0; i < delta_count; ++i) {
             if (!valid_record(f + free_lo + (i * kLeafSlotSize), true)) {
+                return false;
+            }
+        }
+        if (frame_has_lower_fence(f)) {
+            if (view.empty()) {
+                return false;
+            }
+            Slice lower = count == 0 ? view.delta_key(0) : view.key(0);
+            Slice upper = count == 0 ? view.delta_key(0) : view.key(count - 1);
+            for (uint32_t i = 0; i < delta_count; ++i) {
+                Slice key = view.delta_key(i);
+                if (key.compare(lower) < 0) {
+                    lower = key;
+                }
+                if (key.compare(upper) > 0) {
+                    upper = key;
+                }
+            }
+            if (frame_lower_fence(f).compare(lower) != 0 || frame_upper_fence(f).compare(upper) != 0) {
                 return false;
             }
         }
@@ -198,7 +371,15 @@ void LeafFrameBuilder::finish(uint64_t self_page_id, uint64_t right_sibling)
     frame_put_u32(f_, fh::kFreeHi, free_hi_);
     frame_put_u64(f_, fh::kSelfpage_id, self_page_id);
     frame_put_u64(f_, fh::kRightSibling, right_sibling);
-    stamp_trailer(f_, page_bytes_);
+    if (count_ != 0) {
+        LeafFrameView view(f_, page_bytes_);
+        Slice         lower = view.key(0);
+        Slice         upper = view.key(count_ - 1);
+        (void)frame_set_fences(f_, page_bytes_, &lower, &upper);
+    }
+    else {
+        stamp_trailer(f_, page_bytes_);
+    }
 }
 
 // ── inner_frame_build ───────────────────────────────────────────────
@@ -291,7 +472,19 @@ bool leaf_frame_append_deltas(const uint8_t *src, uint32_t page_bytes, const std
     }
     frame_put_u32(out, fh::kFreeHi, cur_hi);
     frame_put_u32(out, fh::kDeltaCount, delta_count + static_cast<uint32_t>(entries.size()));
-    stamp_trailer(out, page_bytes);
+    LeafFrameView view(out, page_bytes);
+    Slice         lower = view.count() == 0 ? view.delta_key(0) : view.key(0);
+    Slice         upper = view.count() == 0 ? view.delta_key(0) : view.key(view.count() - 1);
+    for (uint32_t index = 0; index < view.delta_count(); ++index) {
+        Slice key = view.delta_key(index);
+        if (key.compare(lower) < 0) {
+            lower = key;
+        }
+        if (key.compare(upper) > 0) {
+            upper = key;
+        }
+    }
+    (void)frame_set_fences(out, page_bytes, &lower, &upper);
     return true;
 }
 

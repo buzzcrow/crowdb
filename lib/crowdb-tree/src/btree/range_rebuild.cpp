@@ -40,6 +40,9 @@ struct RebuildNode
 {
     uint64_t    page_id = kInvalidPageId;
     std::string first_key;
+    std::string last_key;
+    uint64_t    first_leaf_page_id = kInvalidPageId;
+    uint64_t    last_leaf_page_id  = kInvalidPageId;
 };
 
 using FrameMap = std::unordered_map<uint64_t, const NativeFrame *>;
@@ -123,7 +126,7 @@ Status build_leaf_frames(const std::vector<NativeFrame> &source_frames, uint32_t
         LeafFrameBuilder builder(frame.frame.data(), frame_bytes);
         builder.finish(page_id, kInvalidPageId);
         output->push_back(std::move(frame));
-        level->push_back({.page_id = page_id, .first_key = {}});
+        level->push_back({.page_id = page_id, .first_key = {}, .last_key = {}});
         ++stats->pages_rebuilt;
         return Status::Ok();
     }
@@ -168,7 +171,11 @@ Status build_leaf_frames(const std::vector<NativeFrame> &source_frames, uint32_t
                 return copy_status;
             }
         }
-        level->push_back({.page_id = leaf.page_id, .first_key = leaf.entries.front().key});
+        level->push_back({.page_id            = leaf.page_id,
+                          .first_key          = leaf.entries.front().key,
+                          .last_key           = leaf.entries.back().key,
+                          .first_leaf_page_id = leaf.page_id,
+                          .last_leaf_page_id  = leaf.page_id});
     }
     return Status::Ok();
 }
@@ -203,6 +210,8 @@ Status build_inner_frames(uint32_t frame_bytes, uint32_t inner_max_keys, uint64_
                     }
                 }
                 if (inner_frame_build(frame.frame.data(), frame_bytes, frame.page_id, children, separators)) {
+                    frame_set_inner_fence_pages(frame.frame.data(), frame_bytes, (*level)[begin].first_leaf_page_id,
+                                                (*level)[begin + count - 1].last_leaf_page_id);
                     built = true;
                     break;
                 }
@@ -211,7 +220,11 @@ Status build_inner_frames(uint32_t frame_bytes, uint32_t inner_max_keys, uint64_
             if (!built) {
                 return Status::resource_exhausted("range rebuild: inner separator does not fit destination frame");
             }
-            parents.push_back({.page_id = frame.page_id, .first_key = (*level)[begin].first_key});
+            parents.push_back({.page_id            = frame.page_id,
+                               .first_key          = (*level)[begin].first_key,
+                               .last_key           = (*level)[begin + count - 1].last_key,
+                               .first_leaf_page_id = (*level)[begin].first_leaf_page_id,
+                               .last_leaf_page_id  = (*level)[begin + count - 1].last_leaf_page_id});
             output->push_back(std::move(frame));
             ++stats->pages_rebuilt;
             begin += count;

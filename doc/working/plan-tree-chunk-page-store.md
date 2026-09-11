@@ -89,10 +89,11 @@ and structurally safe range rebuild while preserving local tree behavior.
   `include/crowdb-tree/btree/key_range.h`, `src/btree/key_range.cpp`,
   `include/crowdb-tree/config.h`, `src/btree/crowdb-tree.cpp`,
   `src/snapshot/persist.cpp`.
-- [ ] **Persist page fences**: encode and verify leaf/inner reachability bounds
-  including siblings and overflow chains. Native installation now verifies the
-  complete child graph, separator bounds, leaf order, and overflow reachability;
-  serialized lower/upper fence keys remain open. Files:
+- [x] **Persist page fences**: encode and verify checksummed leaf/inner
+  reachability bounds including siblings and overflow chains. Legacy native
+  frames without fences are structurally validated and upgraded during import;
+  fixed-size inner frames identify their leftmost and rightmost reachable leaf
+  pages, whose exact key fences remain in those leaf frames. Files:
   `include/crowdb-tree/maptable/frame_page.h`, `src/maptable/frame_page.cpp`,
   `src/maptable/page_codec.cpp`.
 - [~] **Complete range rebuild**: replace whole-snapshot collection with
@@ -101,7 +102,7 @@ and structurally safe range rebuild while preserving local tree behavior.
   sibling rebuild, independent roots, high-water allocation, and concurrent
   workers. Files: `include/crowdb-tree/btree/range_rebuild.h`,
   `src/btree/range_rebuild.cpp`, `include/crowdb-tree/c_api.h`, `src/c_api.cpp`.
-- [ ] **Verify structural isolation**: cover split union/intersection, disjoint
+- [x] **Verify structural isolation**: cover split union/intersection, disjoint
   skip, mixed leaves, crossing paths/siblings, shared immutable metadata,
   endpoint forms, concurrent workers, and corrupt fences. Files:
   `tests/unit/range_rebuild_test.cpp`,
@@ -180,10 +181,12 @@ and structurally safe range rebuild while preserving local tree behavior.
   cursor advancement and manifest publication on the ordered tree worker.
 - Reference segments are immutable directory-addressed images, but mapping
   slots still hold local byte addresses instead of chunk-reference ordinals.
-- Page fences are reconstructed during native snapshot validation rather than
-  persisted. Range rebuild now uses separator-guided bounded native traversal,
-  skips disjoint subtrees before demand load, filters boundary leaves, preserves
-  high-water page allocation, and supports concurrent independent workers.
+- Checksummed page fences are persisted and verified against each native graph;
+  legacy frames are upgraded after structural validation. Range rebuild now uses
+  separator-guided bounded native traversal, folds in-frame overlays before
+  export, skips disjoint subtrees before demand load, filters boundary leaves,
+  preserves high-water page allocation, and supports concurrent independent
+  workers.
   Child chunk manifests now inherit byte-verified immutable source packs and
   later checkpoints COW only changed logical packs. Immutable mapping/reference
   directory-image sharing and unreachable-slot materialization remain open.

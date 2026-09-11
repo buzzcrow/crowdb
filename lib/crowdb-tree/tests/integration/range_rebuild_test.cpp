@@ -261,8 +261,8 @@ TEST(RangeRebuild, RewrittenRootAllocatesAboveSourcePageIdHighWater)
     options.frame_bytes      = 4096;
     options.leaf_split_bytes = 256;
     Crowdbtree source(options);
-    for (uint64_t index = 0; index < 80; ++index) {
-        ASSERT_TRUE(source.put(Slice("k" + std::to_string(index + 1000)), Slice("value")).ok());
+    for (uint64_t index = 0; index < 400; ++index) {
+        ASSERT_TRUE(source.put(Slice("k" + std::to_string(index + 1000)), Slice(std::string(32, 'v'))).ok());
     }
     ASSERT_TRUE(source.flush().ok());
 
@@ -349,6 +349,44 @@ TEST(RangeRebuild, EmptyRangeSkipsEveryRootChildWithoutExaminingLeaves)
     EXPECT_TRUE(live_entries(*destination).empty());
 }
 
+TEST(RangeRebuild, InFrameDeltaKeysTombstonesAndOverflowValuesSurviveFiltering)
+{
+    MemPageStore source_store(1);
+    Config       options;
+    options.page_store        = &source_store;
+    options.frame_bytes       = 4096;
+    options.inframe_delta     = true;
+    options.max_inframe_delta = 16;
+    options.max_inline_value  = 64;
+    Crowdbtree source(options);
+    Batch      seed;
+    seed.ops.push_back({.key = "a", .kind = OpKind::kPut, .value = "old-a"});
+    seed.ops.push_back({.key = "b", .kind = OpKind::kPut, .value = "old-b"});
+    seed.ops.push_back({.key = "z", .kind = OpKind::kPut, .value = "outside"});
+    ASSERT_TRUE(source.apply(1, seed).ok());
+    ASSERT_TRUE(source.flush().ok());
+
+    const std::string large_value(5000, 'x');
+    Batch             delta;
+    delta.ops.push_back({.key = "a", .kind = OpKind::kPut, .value = "new-a"});
+    delta.ops.push_back({.key = "b", .kind = OpKind::kDelete, .value = {}});
+    delta.ops.push_back({.key = "c", .kind = OpKind::kPut, .value = large_value});
+    ASSERT_TRUE(source.apply(2, delta).ok());
+    ASSERT_TRUE(source.flush().ok());
+
+    MemPageStore destination_store(1);
+    options.page_store = &destination_store;
+    std::unique_ptr<Crowdbtree> destination;
+    ASSERT_TRUE(
+        rebuild_range(source, KeyRange::bounded(std::string("a"), std::string("m")), options, &destination).ok());
+    const auto entries = live_entries(*destination);
+    ASSERT_EQ(entries.size(), 2U);
+    EXPECT_EQ(entries.at("a"), "new-a");
+    EXPECT_EQ(entries.at("c"), large_value);
+    EXPECT_FALSE(entries.contains("b"));
+    EXPECT_EQ(live_entries(source).at("z"), "outside");
+}
+
 TEST(RangeRebuild, ChildMutationDoesNotChangeTheSourceTree)
 {
     MemPageStore source_store(1);
@@ -422,6 +460,40 @@ TEST(RangeRebuild, NativeInstallRejectsCrossingSiblingAndMissingChildReferences)
               Code::kCorruption);
 }
 
+TEST(RangeRebuild, NativeInstallRejectsSelfConsistentButFalseFenceKeys)
+{
+    MemPageStore source_store(1);
+    Config       options;
+    options.page_store       = &source_store;
+    options.frame_bytes      = 4096;
+    options.leaf_split_bytes = 256;
+    Crowdbtree source(options);
+    for (uint64_t index = 0; index < 80; ++index) {
+        ASSERT_TRUE(source.put(Slice("k" + std::to_string(index + 1000)), Slice("value")).ok());
+    }
+    ASSERT_TRUE(source.flush().ok());
+
+    std::vector<NativeFrame> frames;
+    uint64_t                 root      = kInvalidPageId;
+    uint64_t                 slot      = 0;
+    uint64_t                 highwater = 0;
+    ASSERT_TRUE(source.collect_native_frames(&frames, &root, &slot, &highwater).ok());
+    auto inner = std::find_if(frames.begin(), frames.end(), [](const NativeFrame &frame) {
+        return frame_page_type(frame.frame.data()) == page_type::kInnerBase &&
+               frame_fences_are_page_ids(frame.frame.data()) &&
+               frame_lower_fence_page_id(frame.frame.data()) != frame_upper_fence_page_id(frame.frame.data());
+    });
+    ASSERT_NE(inner, frames.end());
+    frame_put_u64(inner->frame.data(), fh::kLowerFenceOff, frame_upper_fence_page_id(inner->frame.data()));
+    frame_restamp_crc(inner->frame.data(), static_cast<uint32_t>(inner->frame.size()));
+    ASSERT_TRUE(frame_validate(inner->frame.data(), static_cast<uint32_t>(inner->frame.size())));
+
+    MemPageStore destination_store(1);
+    options.page_store = &destination_store;
+    Crowdbtree destination(options);
+    EXPECT_EQ(destination.install_snapshot_native(std::move(frames), root, slot, highwater).code(), Code::kCorruption);
+}
+
 TEST(RangeRebuild, NativeInstallRejectsKeyHiddenBehindEmptyFirstChild)
 {
     // Root routes its right subtree to [m, +inf). That subtree starts with an
@@ -446,6 +518,29 @@ TEST(RangeRebuild, NativeInstallRejectsKeyHiddenBehindEmptyFirstChild)
     options.frame_bytes = 4096;
     Crowdbtree destination(options);
     EXPECT_EQ(destination.install_snapshot_native(std::move(frames), 1, 1, 6).code(), Code::kCorruption);
+}
+
+TEST(RangeRebuild, NativeInstallUpgradesLegacyInnerFramesWithoutFences)
+{
+    std::vector<NativeFrame> frames;
+    frames.push_back(make_inner_frame(1, {2, 3}, {"m"}));
+    frames.push_back(make_leaf_frame(2, 3,
+                                     {
+                                         {"a", "left"}
+    }));
+    frames.push_back(make_leaf_frame(3, kInvalidPageId,
+                                     {
+                                         {"m", "right"}
+    }));
+    ASSERT_FALSE(frame_has_lower_fence(frames.front().frame.data()));
+
+    MemPageStore store(1);
+    Config       options;
+    options.page_store  = &store;
+    options.frame_bytes = 4096;
+    Crowdbtree destination(options);
+    ASSERT_TRUE(destination.install_snapshot_native(std::move(frames), 1, 1, 4).ok());
+    EXPECT_EQ(live_entries(destination).size(), 2U);
 }
 
 TEST(RangeRebuild, RecoveredTreeValidatesBeforeEnablingSubtreePruning)
