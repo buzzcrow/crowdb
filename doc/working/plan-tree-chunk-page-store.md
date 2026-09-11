@@ -50,7 +50,7 @@ and structurally safe range rebuild while preserving local tree behavior.
   append, query, seal, and DiskIO mirror read/write RPC adapters with a bounded
   completion slab and immutable topology injection. Files:
   `src/backend/chunk/`, protocol/CMake generation wiring, `crowdb-chunk-kv`.
-- [ ] **Implement chunk rotation and page framing**: use mirror strips, pad page
+- [x] **Implement chunk rotation and page framing**: use mirror strips, pad page
   tails to 64 KiB, rotate whole packs at 256 MiB, allocate a fresh chunk after
   reopen, and emit logical reclaim candidates. Files:
   `src/backend/chunk/`, chunk backend tests.

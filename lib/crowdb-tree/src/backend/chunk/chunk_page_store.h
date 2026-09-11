@@ -158,6 +158,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
         uint64_t owner_epoch        = 0;
         size_t   pack_bytes         = 4U * 1024U * 1024U;
         uint64_t max_chunk_bytes    = 256U * 1024U * 1024U;
+        uint32_t page_alignment     = 64U * 1024U;
         uint32_t iu_size            = 64U * 1024U;
         uint32_t mirror_retry_limit = 2;
         uint64_t layout_validity_ms = 30'000;
@@ -222,8 +223,9 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     std::atomic<uint64_t>                                     mirror_write_failures_{0};
     std::atomic<uint64_t>                                     orphan_bytes_{0};
     std::vector<uint64_t>                                     orphan_reference_segments_;
-    uint64_t                                                  active_chunk_id_    = 0;
-    uint64_t                                                  active_chunk_bytes_ = 0;
+    uint64_t                                                  active_chunk_id_     = 0;
+    uint64_t                                                  active_chunk_bytes_  = 0;
+    uint64_t                                                  active_chunk_cursor_ = 0;
 };
 
 } // namespace crowdb::tree::detail

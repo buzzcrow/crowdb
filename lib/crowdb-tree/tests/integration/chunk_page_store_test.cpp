@@ -140,7 +140,8 @@ TEST(ChunkPageStore, ResolvesOrdinalsAcrossPersistedSegmentBoundary)
 {
     auto                 catalog   = std::make_shared<MemoryRootCatalog>(1);
     auto                 transport = std::make_shared<MemoryChunkTransport>();
-    ChunkPageStore       store({.tree_id = 17, .owner_epoch = 1, .pack_bytes = 32, .iu_size = 1}, catalog, transport);
+    ChunkPageStore       store({.tree_id = 17, .owner_epoch = 1, .pack_bytes = 32, .page_alignment = 1, .iu_size = 1},
+                               catalog, transport);
     std::vector<uint8_t> bytes(8200);
     for (size_t index = 0; index < bytes.size(); ++index) {
         bytes[index] = static_cast<uint8_t>(index);
@@ -195,7 +196,7 @@ TEST(ChunkPageStore, RotatesWholePacksAndReopenAllocatesFreshChunk)
     auto                   catalog   = std::make_shared<MemoryRootCatalog>(1);
     auto                   transport = std::make_shared<MemoryChunkTransport>();
     ChunkPageStore::Config config{
-        .tree_id = 18, .owner_epoch = 1, .pack_bytes = 64, .max_chunk_bytes = 128, .iu_size = 1};
+        .tree_id = 18, .owner_epoch = 1, .pack_bytes = 64, .max_chunk_bytes = 128, .page_alignment = 1, .iu_size = 1};
     ChunkPageStore       store(config, catalog, transport);
     std::vector<uint8_t> bytes(8196, 3);
     ASSERT_TRUE(store.write_at(8192, bytes.data() + 8192, 4).ok());
@@ -232,6 +233,38 @@ TEST(ChunkPageStore, RotatesWholePacksAndReopenAllocatesFreshChunk)
                     ->read_mirror(abandoned_chunk_id, 0, first->packs.back().ref.offset, old_bytes.data(),
                                   first->packs.back().ref.length)
                     .ok());
+}
+
+TEST(ChunkPageStore, PadsPackTailWithoutChangingLogicalChecksum)
+{
+    auto                 catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto                 transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore       store({.tree_id         = 19,
+                                .owner_epoch     = 1,
+                                .pack_bytes      = 16U * 1024U,
+                                .max_chunk_bytes = 64U * 1024U,
+                                .page_alignment  = 64U * 1024U,
+                                .iu_size         = 64U * 1024U},
+                               catalog, transport);
+    std::vector<uint8_t> bytes(8196, 4);
+    ASSERT_TRUE(store.write_at(8192, bytes.data() + 8192, 4).ok());
+    ASSERT_TRUE(store.sync().ok());
+    ASSERT_TRUE(store.write_at(0, bytes.data(), 8192).ok());
+    ASSERT_TRUE(store.sync().ok());
+
+    auto first = catalog->load(19);
+    ASSERT_NE(first, nullptr);
+    ASSERT_EQ(first->packs.size(), 1U);
+    EXPECT_EQ(first->packs[0].ref.offset, 0U);
+    EXPECT_EQ(first->packs[0].ref.length, bytes.size());
+    ChunkLayout layout;
+    ASSERT_TRUE(transport->query_chunk(first->packs[0].ref.chunk_id, &layout).ok());
+    EXPECT_EQ(layout.acknowledged_bytes, 64U * 1024U);
+
+    transport->corrupt_mirror(first->packs[0].ref.chunk_id, 0, first->packs[0].ref.length);
+    std::array<uint8_t, 4> out{};
+    ASSERT_TRUE(store.read_at(8192, out.data(), out.size()).ok());
+    EXPECT_TRUE(std::all_of(out.begin(), out.end(), [](uint8_t value) { return value == 4; }));
 }
 
 TEST(ChunkPageStore, MirrorRetryRequiresEveryReplicaAndHealthyFallbackReads)

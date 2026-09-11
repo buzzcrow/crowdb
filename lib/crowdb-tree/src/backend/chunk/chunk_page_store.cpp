@@ -294,6 +294,9 @@ ChunkPageStore::ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catal
     if (config_.max_chunk_bytes == 0) {
         config_.max_chunk_bytes = 256U * 1024U * 1024U;
     }
+    if (config_.page_alignment == 0) {
+        config_.page_alignment = 64U * 1024U;
+    }
     if (transport_ == nullptr) {
         transport_ = std::make_shared<MemoryChunkTransport>();
     }
@@ -533,34 +536,43 @@ Status ChunkPageStore::build_manifest(std::shared_ptr<ChunkManifest> *out)
     while (offset < staged_.size()) {
         const size_t length = std::min(config_.pack_bytes, staged_.size() - static_cast<size_t>(offset));
         if (active_chunk_id_ != 0 && length > config_.max_chunk_bytes - active_chunk_bytes_) {
-            Status seal_status = transport_->seal_chunk(active_chunk_id_, config_.owner_epoch, active_chunk_bytes_);
+            Status seal_status = transport_->seal_chunk(active_chunk_id_, config_.owner_epoch, active_chunk_cursor_);
             if (!seal_status.ok()) {
                 return seal_status;
             }
-            active_chunk_id_    = 0;
-            active_chunk_bytes_ = 0;
+            active_chunk_id_     = 0;
+            active_chunk_bytes_  = 0;
+            active_chunk_cursor_ = 0;
         }
         if (active_chunk_id_ == 0) {
-            Status allocate_status =
-                transport_->allocate_mirror_chunk(config_.max_chunk_bytes, config_.owner_epoch, &active_chunk_id_);
+            const uint64_t packs_per_chunk = (config_.max_chunk_bytes + config_.pack_bytes - 1) / config_.pack_bytes;
+            const uint64_t physical_pack_bytes = round_up_to_iu(config_.pack_bytes, config_.page_alignment);
+            if (packs_per_chunk > std::numeric_limits<uint64_t>::max() / physical_pack_bytes) {
+                return Status::resource_exhausted("chunk page framing exceeds address space");
+            }
+            Status allocate_status = transport_->allocate_mirror_chunk(packs_per_chunk * physical_pack_bytes,
+                                                                       config_.owner_epoch, &active_chunk_id_);
             if (!allocate_status.ok()) {
                 return allocate_status;
             }
         }
         ChunkPagePack pack;
-        pack.ordinal        = manifest->packs.size();
-        pack.logical_offset = offset;
-        pack.ref.chunk_id   = active_chunk_id_;
-        pack.ref.offset     = active_chunk_bytes_;
-        pack.ref.length     = static_cast<uint32_t>(length);
-        pack.ref.checksum   = crowdb::common::crc32c(staged_.data() + offset, length);
+        pack.ordinal                         = manifest->packs.size();
+        pack.logical_offset                  = offset;
+        pack.ref.chunk_id                    = active_chunk_id_;
+        pack.ref.offset                      = active_chunk_cursor_;
+        pack.ref.length                      = static_cast<uint32_t>(length);
+        pack.ref.checksum                    = crowdb::common::crc32c(staged_.data() + offset, length);
+        const size_t         physical_length = round_up_to_iu(length, config_.page_alignment);
+        std::vector<uint8_t> framed(physical_length, 0);
+        std::memcpy(framed.data(), staged_.data() + offset, length);
         for (uint32_t mirror = 0; mirror < 3; ++mirror) {
             bool written = false;
             for (uint32_t attempt = 0; attempt <= config_.mirror_retry_limit; ++attempt) {
                 mirror_write_attempts_.fetch_add(1, std::memory_order_relaxed);
                 if ((mirror_write_failure_mask_.load(std::memory_order_acquire) & (1U << mirror)) == 0) {
-                    Status write_status = transport_->write_mirror(active_chunk_id_, mirror, active_chunk_bytes_,
-                                                                   staged_.data() + offset, length);
+                    Status write_status = transport_->write_mirror(active_chunk_id_, mirror, active_chunk_cursor_,
+                                                                   framed.data(), framed.size());
                     if (write_status.ok()) {
                         written = true;
                         break;
@@ -573,11 +585,12 @@ Status ChunkPageStore::build_manifest(std::shared_ptr<ChunkManifest> *out)
             }
         }
         Status advance_status =
-            transport_->advance_write(active_chunk_id_, active_chunk_bytes_, active_chunk_bytes_ + length);
+            transport_->advance_write(active_chunk_id_, active_chunk_cursor_, active_chunk_cursor_ + physical_length);
         if (!advance_status.ok()) {
             return advance_status;
         }
         active_chunk_bytes_ += length;
+        active_chunk_cursor_ += physical_length;
         manifest->packs.push_back(std::move(pack));
         offset += length;
     }
