@@ -7,6 +7,7 @@ mod error;
 mod kv;
 mod metadata;
 mod metrics;
+mod production_chunk;
 mod storage;
 mod stream;
 
@@ -17,6 +18,7 @@ pub use error::{Result, StreamError};
 pub use kv::{KvStreamMetadataStore, KvStreamRegistry};
 pub use metadata::{resolve_extent, validate_manifest, ExtentLocation};
 pub use metrics::{StreamMetrics, StreamMetricsSnapshot};
+pub use production_chunk::ProductionStreamChunkStore;
 pub use storage::{
     CursorAdvance, DurableCursor, StreamChunkStore, StreamMetadataStore, StreamRegistry, TrimmedChunk,
 };

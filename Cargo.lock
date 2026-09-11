@@ -659,6 +659,8 @@ dependencies = [
  "bincode",
  "bytes",
  "crc32fast",
+ "crossbeam-skiplist",
+ "crowdb-chunk-client",
  "crowdb-chunk-stream",
  "crowdb-kv-client",
  "crowdb-protocol",

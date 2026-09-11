@@ -348,11 +348,12 @@ Required gates:
 
 ## Open Issues
 
-- Production chunk IO is not yet wired: `MirrorStripWriter` remains a
-  placeholder, and no `StreamChunkStore` adapter currently connects direct
-  mirror writes, fenced cursor updates, `ChunkReader`, sealing, and strip
-  release. The in-memory contract is complete, but the server cannot use R141
-  durably until this adapter lands.
+- `MirrorChunkWriter` provides the one-chunk, owned-buffer, three-copy direct
+  path without EC. `ProductionStreamChunkStore` connects it to fenced cursor
+  reconciliation, `ChunkReader`, sealing, and whole-chunk trim release using
+  an atomic per-chunk view rather than an append-path lock. Chunk-KV server
+  construction and a real chunkdb/diskio restart test remain open production
+  lifecycle wiring.
 - `KvStreamRegistry` and `KvStreamMetadataStore` now provide group-0 binding,
   nonzero-group immutable extent pages, and an R101 CAS manifest head. Server
   lifecycle wiring and a real-KV crash-order integration test remain with the

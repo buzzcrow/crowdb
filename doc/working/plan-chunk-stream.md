@@ -57,12 +57,12 @@ without placing rollover metadata on the append hot path.
 
 ## Phase 6: Production Chunk IO and Placement
 
-- [~] **Add the direct mirror chunk writer**: implement a one-chunk
+- [x] **Add the direct mirror chunk writer**: implement a one-chunk
   `MirrorChunkWriter` in `crowdb-chunk-client` that consumes owned `Bytes`,
   appends mirror strips asynchronously, advances the fenced acknowledged
   cursor, and never constructs the EC pipeline. Files:
   `lib/crowdb-chunk-client/src/chunk/`, `lib/crowdb-chunk-client/tests/`.
-- [ ] **Wire stream chunk storage**: implement the production
+- [x] **Wire stream chunk storage**: implement the production
   `StreamChunkStore` adapter over `MirrorChunkWriter` and `ChunkReader`, enforce
   the 256-MiB hard chunk limit, and allocate a fresh chunk on every writer
   reopen. Files: `lib/crowdb-chunk-stream/src/`,

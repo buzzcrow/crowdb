@@ -40,8 +40,8 @@ pub use benchmark::{
 };
 pub use chunk::{
     ChunkPrefetch, ChunkReadPolicy, ChunkReadStream, ChunkReader, ChunkWriter, EcStripWriter,
-    FailedReadRange, MirrorStripWriter, PartialReadResult, ReadRangeData, StripReader, StripResult,
-    StripWriter,
+    FailedReadRange, MirrorChunkWriter, MirrorStripWriter, PartialReadResult, ReadRangeData, StripReader,
+    StripResult, StripWriter, STREAM_CHUNK_BYTES,
 };
 pub use client::{
     ChunkIoClient, ChunkIoClientConfig, LargeWritePolicy, LargeWriteResult, PreparedLargeWrite,
