@@ -3,7 +3,7 @@
 
 // #5 B2a: buffer-based cell encoders are byte-identical to the std::string ones,
 // and decode correctly through CellView.
-#include "crowdb-tree/cell.h"
+#include "crowdb-tree/btree/cell.h"
 
 #include <gtest/gtest.h>
 

@@ -3,10 +3,10 @@
 
 // Mapping-table page-buffer service.
 
-#include "crowdb-tree/mtable/buffer_pool.h"
+#include "crowdb-tree/maptable/buffer_pool.h"
 
 #include "crowdb-common/metrics/metrics.h"
-#include "crowdb-tree/mtable/frame_page.h"
+#include "crowdb-tree/maptable/frame_page.h"
 
 #include <algorithm>
 #include <cstring>

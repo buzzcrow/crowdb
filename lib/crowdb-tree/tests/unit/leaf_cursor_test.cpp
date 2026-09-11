@@ -5,11 +5,11 @@
 // BatchDeltas / base / in-frame deltas, equal-slot tie-breaks in each rank
 // position, tombstone GC drop, seek, and equivalence with a reference fold of
 // the whole chain (the eager algorithm the cursor replaced).
-#include "crowdb-tree/cell.h"
-#include "crowdb-tree/delta.h"
-#include "crowdb-tree/leaf_cursor.h"
-#include "crowdb-tree/mtable/frame_page.h"
-#include "crowdb-tree/mtable/page.h"
+#include "crowdb-tree/btree/cell.h"
+#include "crowdb-tree/btree/delta.h"
+#include "crowdb-tree/btree/leaf_cursor.h"
+#include "crowdb-tree/maptable/frame_page.h"
+#include "crowdb-tree/maptable/page.h"
 
 #include <gtest/gtest.h>
 

@@ -16,10 +16,10 @@
 #include "crowdb-tree/backend/block_page_store.h"
 #include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/backend/text_page_store.h"
+#include "crowdb-tree/btree/cell.h"
 #include "crowdb-tree/btree/range_rebuild.h"
-#include "crowdb-tree/cell.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/snapshot_io.h"
+#include "crowdb-tree/snapshot/snapshot_io.h"
 #ifdef CROWDB_HAVE_LIBURING
 #    include "crowdb-common/diskio_uring.h"
 #endif
@@ -165,7 +165,7 @@ struct ct_tree
     // (see ct_open) -- get_async/flush_async/snapshot_async then fall back
     // to completing synchronously. Declared so `uring`
     // outlives `async_store` (async_store is non-owning re: uring,
-    // mirroring Options' own comment) and both outlive `tree`, which is
+    // mirroring Config' own comment) and both outlive `tree`, which is
     // what actually calls into them.
     std::unique_ptr<crowdb::common::DiskIOUring> uring;
     std::unique_ptr<AsyncPageStore>              async_store;
@@ -283,7 +283,7 @@ ct_status ct_open(const ct_options *opt, ct_tree **out)
     }
     auto h = std::make_unique<ct_tree>();
 
-    Options o;
+    Config o;
     if (opt->frame_bytes != 0) {
         o.frame_bytes = opt->frame_bytes;
     }
@@ -464,8 +464,8 @@ ct_status ct_rebuild_range(ct_tree *source, const ct_options *destination_option
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
 
-    auto    handle = std::make_unique<ct_tree>();
-    Options options;
+    auto   handle = std::make_unique<ct_tree>();
+    Config options;
     if (destination_options->frame_bytes != 0) {
         options.frame_bytes = destination_options->frame_bytes;
     }

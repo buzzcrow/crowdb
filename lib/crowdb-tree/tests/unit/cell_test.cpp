@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 // CT2: slot-aware value cell encode/decode tests.
-#include "crowdb-tree/cell.h"
+#include "crowdb-tree/btree/cell.h"
 
 #include <gtest/gtest.h>
 

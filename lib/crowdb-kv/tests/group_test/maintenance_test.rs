@@ -18,7 +18,7 @@ use crowdb_kv::cluster::group::PxGroup;
 use crowdb_kv::cluster::group_election::LeaderElection;
 use crowdb_kv::cluster::local_replica::{PxLocalReplica, PxLocalReplicaRole};
 use crowdb_kv::common::config::PxElectionConfig;
-use crowdb_kv::kv::{CrowdbTreeEngine, CrowdbTreeOptions, KVEngine};
+use crowdb_kv::kv::{CrowdbTreeConfig, CrowdbTreeEngine, KVEngine};
 use crowdb_kv::paxos::roles::{Learner, PxBallot, PxLogEntry};
 use crowdb_kv::wal::record::WALRecord;
 use crowdb_kv::wal::replay::replay_group;
@@ -36,7 +36,7 @@ fn sim_backend() -> Arc<IoBackend> {
 fn open_file_engine(dir: &std::path::Path) -> CrowdbTreeEngine {
     let path = dir.join("data");
     std::fs::create_dir_all(&path).unwrap();
-    CrowdbTreeEngine::open(&CrowdbTreeOptions {
+    CrowdbTreeEngine::open(&CrowdbTreeConfig {
         path: Some(path.display().to_string()),
         ..Default::default()
     })
@@ -297,7 +297,7 @@ async fn shutdown_persists_engine_snapshot() {
         .await
         .unwrap();
 
-    let engine = CrowdbTreeEngine::open(&CrowdbTreeOptions {
+    let engine = CrowdbTreeEngine::open(&CrowdbTreeConfig {
         path: Some(engine_path.display().to_string()),
         ..Default::default()
     })
@@ -326,7 +326,7 @@ async fn shutdown_persists_engine_snapshot() {
 
     // Reopen the engine from the same directory. The snapshot persisted
     // by shutdown should make resume_from_slot non-zero.
-    let reopened = CrowdbTreeEngine::open(&CrowdbTreeOptions {
+    let reopened = CrowdbTreeEngine::open(&CrowdbTreeConfig {
         path: Some(engine_path.display().to_string()),
         ..Default::default()
     })

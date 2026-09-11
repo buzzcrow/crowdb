@@ -3,9 +3,9 @@
 
 // PT6b: buffer pool manager tests.
 #include "crowdb-tree/backend/page_store.h"
-#include "crowdb-tree/cell.h"
-#include "crowdb-tree/mtable/buffer_pool.h"
-#include "crowdb-tree/mtable/frame_page.h"
+#include "crowdb-tree/btree/cell.h"
+#include "crowdb-tree/maptable/buffer_pool.h"
+#include "crowdb-tree/maptable/frame_page.h"
 
 #include <gtest/gtest.h>
 

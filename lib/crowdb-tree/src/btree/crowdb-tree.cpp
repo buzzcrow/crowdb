@@ -8,11 +8,11 @@
 #include "async_completion_adapter.h"
 #include "crowdb-common/log.h"
 #include "crowdb-tree/backend/async_page_store.h"
-#include "crowdb-tree/delta.h"
-#include "crowdb-tree/descent.h"
-#include "crowdb-tree/leaf_cursor.h"
-#include "crowdb-tree/mtable/compressor.h"
-#include "crowdb-tree/mtable/mapping_slot.h"
+#include "crowdb-tree/btree/delta.h"
+#include "crowdb-tree/btree/descent.h"
+#include "crowdb-tree/btree/leaf_cursor.h"
+#include "crowdb-tree/maptable/compressor.h"
+#include "crowdb-tree/maptable/mapping_slot.h"
 
 #include <algorithm>
 #include <chrono>
@@ -397,7 +397,7 @@ class LoserTree
 
 } // namespace
 
-Crowdbtree::Crowdbtree(Options opt) : opt_(std::move(opt)), name_(opt_.name)
+Crowdbtree::Crowdbtree(Config opt) : opt_(std::move(opt)), name_(opt_.name)
 {
     pool_ = std::make_shared<BufferPool>(opt_.buffer_pool_bytes, opt_.frame_bytes, opt_.page_store);
     // Segment recycling (#14b) hands emptied segments to the tree-owned epoch
@@ -1105,7 +1105,7 @@ bool Crowdbtree::maybe_freeze_active(bool force)
             // At capacity: no free buffer slot. Let active_ keep growing past
             // its threshold rather than stall the writer -- an explicit
             // flush()/the background thread is expected to drain a slot free
-            // (documented in Options::max_memtable_count).
+            // (documented in Config::max_memtable_count).
             size_t frozen_entries = 0;
             size_t frozen_bytes   = 0;
             for (const auto &mt : frozen_) {
@@ -1422,7 +1422,7 @@ Status Crowdbtree::flush()
 
 void Crowdbtree::flush_async(std::function<void(Status)> on_done) // NOLINT(performance-unnecessary-value-param)
 {
-    // flush() never touches Options::page_store (only snapshot() writes
+    // flush() never touches Config::page_store (only snapshot() writes
     // durable bytes -- see this method's doc comment on crowdb-tree.h), so
     // there is no I/O to submit here; always synchronous.
     on_done(flush());

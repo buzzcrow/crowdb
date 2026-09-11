@@ -2,8 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 // #14c: segment image + segment directory on-disk format encode/decode.
-#include "crowdb-tree/mtable/mapping_persist.h"
-#include "crowdb-tree/mtable/mapping_slot.h"
+#include "crowdb-tree/maptable/mapping_persist.h"
+#include "crowdb-tree/maptable/mapping_slot.h"
 
 #include <gtest/gtest.h>
 

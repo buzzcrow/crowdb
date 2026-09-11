@@ -7,14 +7,14 @@
 #pragma once
 
 #include "crowdb-common/metrics/metrics.h"
-#include "crowdb-tree/cell.h"
+#include "crowdb-tree/btree/cell.h"
+#include "crowdb-tree/btree/scan_packed.h"
+#include "crowdb-tree/config.h"
 #include "crowdb-tree/epoch.h"
-#include "crowdb-tree/memtable.h"
-#include "crowdb-tree/mtable/mapping_table.h"
-#include "crowdb-tree/mtable/page.h"
-#include "crowdb-tree/options.h"
-#include "crowdb-tree/scan_packed.h"
-#include "crowdb-tree/snapshot.h"
+#include "crowdb-tree/maptable/mapping_table.h"
+#include "crowdb-tree/maptable/page.h"
+#include "crowdb-tree/memtable/memtable.h"
+#include "crowdb-tree/snapshot/snapshot.h"
 #include "crowdb-tree/status.h"
 
 #include <atomic>
@@ -388,7 +388,7 @@ struct NativeFrame
 class Crowdbtree
 {
   public:
-    explicit Crowdbtree(Options opt = Options());
+    explicit Crowdbtree(Config opt = Config());
     ~Crowdbtree();
 
     Crowdbtree(const Crowdbtree &)            = delete;
@@ -396,7 +396,7 @@ class Crowdbtree
 
     // open a tree, recovering durable state from opt.page_store if a valid
     // snapshot exists; otherwise start empty. Requires opt.page_store != null.
-    static Status open(const Options &opt, std::unique_ptr<Crowdbtree> *out);
+    static Status open(const Config &opt, std::unique_ptr<Crowdbtree> *out);
 
     // Persist the materialized L1 state durably. Folds delta chains, writes
     // dirty base pages plus a fresh image for each dirty mapping-table
@@ -406,7 +406,7 @@ class Crowdbtree
     Status snapshot(uint64_t *out_last_applied = nullptr);
 
     // Async twin of snapshot(). Always genuinely
-    // async from *this* caller's perspective when Options::async_page_store is
+    // async from *this* caller's perspective when Config::async_page_store is
     // wired (flush/snapshot are
     // *always* slow-path, unlike get/scan): snapshot_async() returns
     // immediately after kicking off the walk + first I/O submission, and
@@ -547,7 +547,7 @@ class Crowdbtree
 
     // Async twin of flush(). flush() only drains
     // L0 (MemTable) into L1 (in-memory B+tree) -- it never touches
-    // Options::page_store (only snapshot() writes durable bytes), so unlike
+    // Config::page_store (only snapshot() writes durable bytes), so unlike
     // snapshot_async() there is no genuine I/O to submit to the reactor
     // here: this always invokes on_done synchronously with flush()'s result
     // before returning. Exists so C API callers have a uniform
@@ -566,7 +566,7 @@ class Crowdbtree
 
     // Async twin of get(). Fast path (every page needed to resolve `key` is already
     // resident, or no async backend is wired -- see
-    // Options::async_page_store) invokes on_done synchronously, before this call
+    // Config::async_page_store) invokes on_done synchronously, before this call
     // returns, exactly like get(). A genuine miss on the L1 descent (some
     // base page along the root->leaf path is tagged unloaded) submits
     // exactly one page load via the reactor and resumes automatically; on
@@ -1166,7 +1166,7 @@ class Crowdbtree
     void snapshot_write_next_async(std::shared_ptr<PreparedSnapshot> prepared, size_t idx,
                                    std::function<void(Status, uint64_t last_applied)> on_done);
 
-    Options opt_;
+    Config opt_;
     // Human-readable engine label for CT_LOG context (e.g. "s1.g1").
     // Copied from opt_.name at construction; empty means "[unnamed]".
     std::string name_;

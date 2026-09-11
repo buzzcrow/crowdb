@@ -27,7 +27,7 @@ Batch put_one(const std::string &k, const std::string &v)
 TEST(ExplicitFlush, NoAutoFlushWithoutExplicitCall)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store = &store;
 
     std::unique_ptr<Crowdbtree> t;
@@ -41,7 +41,7 @@ TEST(ExplicitFlush, NoAutoFlushWithoutExplicitCall)
 TEST(ExplicitFlush, FlushDrainsMemTable)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store = &store;
 
     std::unique_ptr<Crowdbtree> t;
@@ -65,7 +65,7 @@ TEST(ExplicitFlush, SafeAcrossOpenRecovery)
     // any external access, and the recovered state must be correct.
     MemPageStore store(1);
     {
-        Options opt;
+        Config opt;
         opt.page_store = &store;
         std::unique_ptr<Crowdbtree> t;
         ASSERT_TRUE(Crowdbtree::open(opt, &t).ok());
@@ -75,7 +75,7 @@ TEST(ExplicitFlush, SafeAcrossOpenRecovery)
     }
 
     for (int i = 0; i < 20; ++i) {
-        Options opt;
+        Config opt;
         opt.page_store = &store;
         std::unique_ptr<Crowdbtree> t;
         ASSERT_TRUE(Crowdbtree::open(opt, &t).ok());

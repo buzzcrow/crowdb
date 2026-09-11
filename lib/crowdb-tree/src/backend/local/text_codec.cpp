@@ -3,7 +3,7 @@
 
 // Local text-backend codec implementation.
 
-#include "crowdb-tree/text_codec.h"
+#include "crowdb-tree/backend/text_codec.h"
 
 #include <cstdio>
 #include <cstring>

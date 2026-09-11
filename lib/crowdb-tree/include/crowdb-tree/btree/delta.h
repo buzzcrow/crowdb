@@ -9,8 +9,8 @@
 // via PageBase::next. The chain is resolved newest-first / highest-slot-wins.
 #pragma once
 
-#include "crowdb-tree/cell.h"
-#include "crowdb-tree/mtable/page.h"
+#include "crowdb-tree/btree/cell.h"
+#include "crowdb-tree/maptable/page.h"
 #include "crowdb-tree/slice.h"
 
 #include <vector>

@@ -3,7 +3,7 @@
 
 // R6: per-page refcount state machine tests. Verifies the no-double-free
 // protocol between pin() / unpin() / retire_with_pins() on PageBase.
-#include "crowdb-tree/mtable/page_types.h"
+#include "crowdb-tree/maptable/page_types.h"
 
 #include <gtest/gtest.h>
 

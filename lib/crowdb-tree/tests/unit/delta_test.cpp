@@ -2,9 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 // CT8: delta record tests (build, find_key, chain resolve, tombstone shadow).
-#include "crowdb-tree/cell.h"
-#include "crowdb-tree/delta.h"
-#include "crowdb-tree/mtable/page.h"
+#include "crowdb-tree/btree/cell.h"
+#include "crowdb-tree/btree/delta.h"
+#include "crowdb-tree/maptable/page.h"
 
 #include <gtest/gtest.h>
 

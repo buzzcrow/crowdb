@@ -3,12 +3,12 @@
 
 // B+tree snapshot stream implementation.
 
-#include "crowdb-tree/snapshot_io.h"
+#include "crowdb-tree/snapshot/snapshot_io.h"
 
 #include "crowdb-common/crc32c.h"
-#include "crowdb-tree/cell.h"
+#include "crowdb-tree/btree/cell.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/mtable/page_types.h"
+#include "crowdb-tree/maptable/page_types.h"
 
 #include <array>
 #include <cstring>

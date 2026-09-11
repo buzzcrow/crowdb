@@ -3,7 +3,7 @@
 
 // PT7: snapshot export / import (portable stream + file wrappers).
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/snapshot_io.h"
+#include "crowdb-tree/snapshot/snapshot_io.h"
 #include "test_tmp.h"
 
 #include <gtest/gtest.h>
@@ -84,7 +84,7 @@ void transfer(Crowdbtree &a, Crowdbtree &b, size_t chunk_bytes, uint64_t *at_slo
 
 TEST(SnapshotExport, ExportImportCompareEmpty)
 {
-    Options                            opt; // pure in-memory engines
+    Config                             opt; // pure in-memory engines
     Crowdbtree                         a(opt);
     std::map<std::string, std::string> live;
     build_source(&a, &live);
@@ -104,7 +104,7 @@ TEST(SnapshotExport, ExportImportCompareEmpty)
 
 TEST(SnapshotExport, CrossEngineParityVsOracle)
 {
-    Options                            opt;
+    Config                             opt;
     Crowdbtree                         a(opt);
     std::map<std::string, std::string> live;
     build_source(&a, &live);
@@ -131,7 +131,7 @@ TEST(SnapshotExport, CrossEngineParityVsOracle)
 // A UAF in free_subtree would trip ASan/TSan here.
 TEST(SnapshotExport, ConcurrentReadersDuringImportNoUAF)
 {
-    Options                            opt;
+    Config                             opt;
     Crowdbtree                         a(opt);
     std::map<std::string, std::string> live;
     build_source(&a, &live);
@@ -180,7 +180,7 @@ TEST(SnapshotExport, ConcurrentReadersDuringImportNoUAF)
 
 TEST(SnapshotExport, FileDumpLoadRoundTrip)
 {
-    Options                            opt;
+    Config                             opt;
     Crowdbtree                         a(opt);
     std::map<std::string, std::string> live;
     build_source(&a, &live);
@@ -203,7 +203,7 @@ TEST(SnapshotExport, FileDumpLoadRoundTrip)
 
 TEST(SnapshotExport, ChunkBoundaryDeterminism)
 {
-    Options                            opt;
+    Config                             opt;
     Crowdbtree                         a(opt);
     std::map<std::string, std::string> live;
     build_source(&a, &live);
@@ -235,7 +235,7 @@ TEST(SnapshotExport, ChunkBoundaryDeterminism)
 
 TEST(SnapshotExport, CrcTamperRejected)
 {
-    Options                            opt;
+    Config                             opt;
     Crowdbtree                         a(opt);
     std::map<std::string, std::string> live;
     build_source(&a, &live);
@@ -263,7 +263,7 @@ TEST(SnapshotExport, CrcTamperRejected)
 // same structural compare via snapshot_view().
 TEST(SnapshotExport, NativeExportImportRoundTrip)
 {
-    Options                            opt;
+    Config                             opt;
     Crowdbtree                         a(opt);
     std::map<std::string, std::string> live;
     build_source(&a, &live);
@@ -295,7 +295,7 @@ TEST(SnapshotExport, NativeExportImportRoundTrip)
 // even though the wire bytes differ entirely.
 TEST(SnapshotExport, NativeEquivalentToPortable)
 {
-    Options                            opt;
+    Config                             opt;
     Crowdbtree                         a(opt);
     std::map<std::string, std::string> live;
     build_source(&a, &live);
@@ -318,7 +318,7 @@ TEST(SnapshotExport, NativeEquivalentToPortable)
 // (the common new-member-install shape) with no residual state.
 TEST(SnapshotExport, NativeEmptyTreeRoundTrip)
 {
-    Options    opt;
+    Config     opt;
     Crowdbtree a(opt); // never written to -- exports just the empty root leaf
     Crowdbtree b(opt);
     uint64_t   at = 123; // sentinel to prove it gets overwritten to 0
@@ -331,7 +331,7 @@ TEST(SnapshotExport, NativeEmptyTreeRoundTrip)
 
 TEST(SnapshotExport, NativeCrcTamperRejected)
 {
-    Options                            opt;
+    Config                             opt;
     Crowdbtree                         a(opt);
     std::map<std::string, std::string> live;
     build_source(&a, &live);

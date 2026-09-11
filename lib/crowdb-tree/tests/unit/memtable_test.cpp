@@ -2,9 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 // CT7: MemTable (L0) tests — R50 epoch-protected skip-list version.
-#include "crowdb-tree/cell.h"
+#include "crowdb-tree/btree/cell.h"
 #include "crowdb-tree/epoch.h"
-#include "crowdb-tree/memtable.h"
+#include "crowdb-tree/memtable/memtable.h"
 
 #include <gtest/gtest.h>
 

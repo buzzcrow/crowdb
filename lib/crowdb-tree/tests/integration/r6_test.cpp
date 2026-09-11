@@ -7,7 +7,7 @@
 // (3) stale-root pages are freed when the last pin drops (refcount GC).
 #include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/snapshot.h"
+#include "crowdb-tree/snapshot/snapshot.h"
 
 #include <gtest/gtest.h>
 
@@ -41,7 +41,7 @@ std::string make_key(int i)
 TEST(R6, GetAsyncSlowPathReturnsBorrowedSlice)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.leaf_split_bytes = 160;
     opt.frame_bytes      = 4096;
@@ -86,7 +86,7 @@ TEST(R6, GetAsyncSlowPathReturnsBorrowedSlice)
 TEST(R6, PinnedSnapshotStaysConsistentAcrossInstallSnapshot)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.leaf_split_bytes = 160;
     opt.frame_bytes      = 4096;
@@ -139,7 +139,7 @@ TEST(R6, PinnedSnapshotStaysConsistentAcrossInstallSnapshot)
 TEST(R6, ConcurrentReadersAndInstallSnapshotNoUAF)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.leaf_split_bytes = 160;
     opt.frame_bytes      = 4096;

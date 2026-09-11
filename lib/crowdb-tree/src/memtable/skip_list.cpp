@@ -3,7 +3,7 @@
 
 // B+tree skip-list implementation.
 
-#include "crowdb-tree/skip_list.h"
+#include "crowdb-tree/memtable/skip_list.h"
 
 #include <algorithm>
 #include <array>

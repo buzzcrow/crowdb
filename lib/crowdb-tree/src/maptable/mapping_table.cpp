@@ -3,7 +3,7 @@
 
 // Mapping-table implementation.
 
-#include "crowdb-tree/mtable/mapping_table.h"
+#include "crowdb-tree/maptable/mapping_table.h"
 
 #include "crowdb-tree/backend/page_store.h" // round_up_to_iu
 

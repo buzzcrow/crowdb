@@ -19,8 +19,8 @@
 // instance covering both L0 nodes and L1 pages.
 #pragma once
 
+#include "crowdb-tree/btree/cell.h"
 #include "crowdb-tree/buffer.h"
-#include "crowdb-tree/cell.h"
 #include "crowdb-tree/slice.h"
 
 #include <atomic>

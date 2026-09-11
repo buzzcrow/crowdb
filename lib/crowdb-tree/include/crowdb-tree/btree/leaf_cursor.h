@@ -16,9 +16,9 @@
 // on the read paths, direct ownership on a write path).
 #pragma once
 
-#include "crowdb-tree/cell.h"
-#include "crowdb-tree/delta.h"
-#include "crowdb-tree/mtable/page.h"
+#include "crowdb-tree/btree/cell.h"
+#include "crowdb-tree/btree/delta.h"
+#include "crowdb-tree/maptable/page.h"
 #include "crowdb-tree/slice.h"
 
 #include <algorithm>
@@ -203,7 +203,7 @@ class LeafChainCursor
     // unsorted -- and the only key-duplicating -- input. Sort its indices by
     // key (ties keeping append order) and keep one winner per key, matching the
     // fold's rule: highest slot, equal slot resolved by the lower index.
-    // Bounded by Options::max_inframe_delta (default 8).
+    // Bounded by Config::max_inframe_delta (default 8).
     void sort_inframe(const LeafFrameView &v)
     {
         size_t   begin = inframe_order_.size();

@@ -37,9 +37,9 @@ std::string make_key(int i)
     return b.data();
 }
 
-Options tall_tree_opts(PageStore *s)
+Config tall_tree_opts(PageStore *s)
 {
-    Options o;
+    Config o;
     o.page_store       = s;
     o.frame_bytes      = 4096;
     o.max_delta_len    = 1;   // consolidate every flush
@@ -54,7 +54,7 @@ Options tall_tree_opts(PageStore *s)
 TEST(InnerMerge, DeleteHeavyCollapsesTreeAndReopens)
 {
     MemPageStore store(1);
-    Options      opt = tall_tree_opts(&store);
+    Config       opt = tall_tree_opts(&store);
 
     const int                          N = 600;
     std::map<std::string, std::string> oracle;
@@ -122,7 +122,7 @@ TEST(InnerMerge, DeleteHeavyCollapsesTreeAndReopens)
 
 TEST(InnerMerge, RandomizedInsertDeleteParity)
 {
-    Options opt; // pure in-memory
+    Config opt; // pure in-memory
     opt.frame_bytes      = 4096;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 200;

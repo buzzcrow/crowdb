@@ -2,9 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 // CT4: inner base page + tree descent tests.
-#include "crowdb-tree/descent.h"
-#include "crowdb-tree/mtable/mapping_table.h"
-#include "crowdb-tree/mtable/page.h"
+#include "crowdb-tree/btree/descent.h"
+#include "crowdb-tree/maptable/mapping_table.h"
+#include "crowdb-tree/maptable/page.h"
 
 #include <gtest/gtest.h>
 

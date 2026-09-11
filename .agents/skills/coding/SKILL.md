@@ -46,7 +46,16 @@ object methods so fields propagate. Defaults remain file=`debug`, console=`info`
 - Build a domain hierarchy, not a flat source directory. Keep crate/library
   roots for entry points and top-level domain modules; place implementation
   below the owning domain. `crowdb-kv/src/{cluster,paxos,wal}/` and
-  `crowdb-tree/src/{btree,mtable,backend}/` are the reference shape.
+  `crowdb-tree/src/{btree,maptable,memtable,snapshot,backend}/` are the
+  reference shape.
+- At the start of work in a crate or library, inspect its source and public
+  include roots. Classify touched files by domain owner and perform cohesive
+  moves needed to make that ownership visible; do not wait for the user to name
+  every related file. A file being public is not a reason to leave it flat.
+- Keep roots small. Root files are entry points, facades, ABI boundaries,
+  configuration, or primitives genuinely shared across domains. Move a family
+  of related algorithms, state, codecs, or services into a descriptive domain
+  folder and update every caller to the canonical path.
 - Before adding a file to a crowded directory, find its owning domain. Use an
   existing subfolder or create a named domain module when the new concept has
   multiple files or will grow independently. Group by product responsibility,
@@ -59,6 +68,9 @@ object methods so fields propagate. Defaults remain file=`debug`, console=`info`
   under `src/`. Use one intentional root umbrella header when useful; do not add
   forwarding headers solely to preserve a flat include path unless compatibility
   is an explicit requirement.
+- Prefer clear domain names over unexplained abbreviations. Use the established
+  project term exactly, such as `maptable`, `memtable`, and `snapshot`; keep the
+  same spelling across source, include, build, tests, and documentation paths.
 - When an edited area is already flat, leave it better structured if the move
   is cohesive with the task. Do not turn a focused change into an unrelated
   repository-wide relocation.

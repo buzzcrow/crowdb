@@ -41,8 +41,8 @@
 #include "crowdb-tree/backend/block_page_store.h"
 #include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/mtable/compressor.h"
-#include "crowdb-tree/mtable/mapping_persist.h"
+#include "crowdb-tree/maptable/compressor.h"
+#include "crowdb-tree/maptable/mapping_persist.h"
 
 #include <algorithm>
 #include <chrono>
@@ -73,7 +73,7 @@ constexpr uint64_t kAnchorBytes = 4096;
 // leaf_count,inner_count,anchor_crc.
 constexpr size_t kAnchorFixedFields = 4 + 4 + (8 * 4) + 4 + 8 + 4 + 4 + 4 + 8 + 8 + 4;
 
-std::string make_metrics_prefix(const Options &opt)
+std::string make_metrics_prefix(const Config &opt)
 {
     return "s." + std::to_string(opt.store_id) + ".g." + std::to_string(opt.group_id) + ".tree";
 }
@@ -1378,7 +1378,7 @@ Status Crowdbtree::compact_sparse_blocks(MergeGcStats *out_stats)
     return Status::Ok();
 }
 
-Status Crowdbtree::open(const Options &opt, std::unique_ptr<Crowdbtree> *out)
+Status Crowdbtree::open(const Config &opt, std::unique_ptr<Crowdbtree> *out)
 {
     Status range_status = opt.key_range.validate();
     if (!range_status.ok()) {

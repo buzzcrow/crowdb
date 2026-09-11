@@ -3,10 +3,10 @@
 
 // B+tree debug-codec implementation.
 
-#include "crowdb-tree/debug_codec.h"
+#include "crowdb-tree/btree/debug_codec.h"
 
-#include "crowdb-tree/cell.h"
-#include "crowdb-tree/mtable/frame_page.h"
+#include "crowdb-tree/btree/cell.h"
+#include "crowdb-tree/maptable/frame_page.h"
 
 #include <array>
 #include <cctype>

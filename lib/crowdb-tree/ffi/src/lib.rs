@@ -13,10 +13,10 @@
 pub mod async_tree;
 pub mod batch;
 pub mod chunk;
+pub mod config;
 pub mod cpp_global_metrics;
 pub mod crc;
 pub mod error;
-pub mod options;
 pub mod reactor;
 pub mod scan;
 pub mod snapshot;
@@ -31,10 +31,10 @@ pub use chunk::{
     ChunkPageStoreOptions, ChunkPageStoreStats, ChunkRootCatalog, ChunkRpcDiskRoute, ChunkRpcRoute,
     ChunkRpcTransportOptions, ChunkTransport,
 };
+pub use config::{Compression, Config, KeyRange, PageStore, PageStoreBackend, SyncMode};
 pub use cpp_global_metrics::{cpp_global_metrics_max_name_len, flush_cpp_global_metrics};
 pub use crc::{crc32c, crc32c_update};
 pub use error::CtError;
-pub use options::{Compression, KeyRange, Options, PageStore, PageStoreBackend, SyncMode};
 pub use reactor::PinnedValue;
 pub use scan::{ScanEntry, ViewEntry};
 pub use stats::{MergeGcStats, RangeRebuildStats, Stats};

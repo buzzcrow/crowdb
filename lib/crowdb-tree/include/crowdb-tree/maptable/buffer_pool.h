@@ -18,7 +18,7 @@
 
 #include "crowdb-common/metrics/metrics.h"
 #include "crowdb-tree/backend/page_store.h"
-#include "crowdb-tree/mtable/page_types.h" // kInvalidPageId
+#include "crowdb-tree/maptable/page_types.h" // kInvalidPageId
 #include "crowdb-tree/status.h"
 
 #include <condition_variable>
@@ -47,12 +47,6 @@ using crowdb::common::metrics::Bandwidth;
 using crowdb::common::metrics::Counter;
 using crowdb::common::metrics::Gauge;
 using crowdb::common::metrics::LatencySummary;
-
-using PageAddr = uint64_t;
-
-// Sentinel addr for an anonymous (not-yet-durable) frame: a freshly built page
-// that no snapshot has assigned a durable location to yet.
-inline constexpr PageAddr kNoAddr = ~0ULL;
 
 class BufferPool;
 

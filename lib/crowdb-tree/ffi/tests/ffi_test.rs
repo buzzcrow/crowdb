@@ -3,8 +3,8 @@
 
 // PT8.5: C ABI / Rust integration tests through the safe adapter.
 use crowdb_tree_ffi::{
-    AsyncCrowdbtree, BatchOp, ChunkPageStoreOptions, ChunkRootCatalog, Crowdbtree, CtError, ExtOp, KeyRange,
-    Options, PageStore, PageStoreBackend, PinnedGetOutcome,
+    AsyncCrowdbtree, BatchOp, ChunkPageStoreOptions, ChunkRootCatalog, Config, Crowdbtree, CtError, ExtOp,
+    KeyRange, PageStore, PageStoreBackend, PinnedGetOutcome,
 };
 use std::sync::Arc;
 
@@ -14,7 +14,7 @@ fn key(i: usize) -> Vec<u8> {
 
 #[test]
 fn mem_apply_get_scan() {
-    let t = Crowdbtree::open(&Options::default()).unwrap();
+    let t = Crowdbtree::open(&Config::default()).unwrap();
     for i in 0..40usize {
         let v = format!("v{i}").into_bytes();
         t.apply_put((i + 1) as u64, &key(i), &v).unwrap();
@@ -53,9 +53,9 @@ fn injected_chunk_store_round_trip_and_stats() {
         )
         .unwrap(),
     );
-    let tree = Crowdbtree::open(&Options {
+    let tree = Crowdbtree::open(&Config {
         page_store: Some(Arc::clone(&store)),
-        ..Options::default()
+        ..Config::default()
     })
     .unwrap();
     tree.apply_put(1, b"chunk-key", b"chunk-value").unwrap();
@@ -71,7 +71,7 @@ fn injected_chunk_store_round_trip_and_stats() {
 
 #[test]
 fn range_rebuild_returns_independent_bounded_tree() {
-    let source = Crowdbtree::open(&Options::default()).unwrap();
+    let source = Crowdbtree::open(&Config::default()).unwrap();
     for (slot, key) in [b"a", b"b", b"m", b"z"].into_iter().enumerate() {
         source.apply_put(slot as u64 + 1, key, b"v").unwrap();
     }
@@ -79,7 +79,7 @@ fn range_rebuild_returns_independent_bounded_tree() {
 
     let store = Arc::new(PageStore::open_mem(1).unwrap());
     let (rebuilt, stats) = source
-        .rebuild_range(&Options {
+        .rebuild_range(&Config {
             page_store: Some(store),
             key_range: KeyRange::Bounded {
                 start: Some(b"b".to_vec()),
@@ -98,7 +98,7 @@ fn range_rebuild_returns_independent_bounded_tree() {
 #[test]
 fn injected_mem_store_survives_caller_handle_drop() {
     let store = std::sync::Arc::new(PageStore::open_mem(1).unwrap());
-    let t = Crowdbtree::open(&Options {
+    let t = Crowdbtree::open(&Config {
         page_store: Some(store.clone()),
         frame_bytes: 4096,
         ..Default::default()
@@ -113,7 +113,7 @@ fn injected_mem_store_survives_caller_handle_drop() {
 
 #[test]
 fn bounded_tree_rejects_foreign_keys_and_filters_scans() {
-    let t = Crowdbtree::open(&Options {
+    let t = Crowdbtree::open(&Config {
         key_range: KeyRange::Bounded {
             start: Some(b"b".to_vec()),
             end: Some(b"d".to_vec()),
@@ -135,7 +135,7 @@ fn bounded_tree_rejects_foreign_keys_and_filters_scans() {
 
 #[test]
 fn mem_gc_watermark_and_snapshot_folding() {
-    let t = Crowdbtree::open(&Options::default()).unwrap();
+    let t = Crowdbtree::open(&Config::default()).unwrap();
     t.apply_put(1, b"a", b"A").unwrap();
     t.apply_delete(2, b"a").unwrap();
     t.flush().unwrap();
@@ -165,7 +165,7 @@ fn mem_gc_watermark_and_snapshot_folding() {
 
 #[test]
 fn mem_compact_sparse_blocks_noop_on_mem_store() {
-    let t = Crowdbtree::open(&Options::default()).unwrap();
+    let t = Crowdbtree::open(&Config::default()).unwrap();
     t.apply_put(1, b"a", b"A").unwrap();
     t.flush().unwrap();
     t.snapshot().unwrap();
@@ -177,7 +177,7 @@ fn mem_compact_sparse_blocks_noop_on_mem_store() {
 
 #[test]
 fn mem_apply_batch_multi_key_and_dup_last_wins() {
-    let t = Crowdbtree::open(&Options::default()).unwrap();
+    let t = Crowdbtree::open(&Config::default()).unwrap();
     t.apply_batch(
         1,
         &[
@@ -223,7 +223,7 @@ fn mem_apply_batch_multi_key_and_dup_last_wins() {
 #[test]
 fn file_snapshot_reopen_smoke() {
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-ffi");
-    let opt = Options {
+    let opt = Config {
         path: Some(dir.path().to_string_lossy().into_owned()),
         iu_size: 1,
         frame_bytes: 4096,
@@ -251,14 +251,14 @@ fn file_snapshot_reopen_smoke() {
     }
 }
 
-// : Options::backend = PageStoreBackend::Block selects
+// : Config::backend = PageStoreBackend::Block selects
 // BlockPageStore instead of the default file-based page store -- same
 // round-trip as file_snapshot_reopen_smoke above, just through the
 // block-device backend.
 #[test]
 fn block_device_snapshot_reopen_smoke() {
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-ffi");
-    let opt = Options {
+    let opt = Config {
         path: Some(dir.path().to_string_lossy().into_owned()),
         iu_size: 4096,
         frame_bytes: 4096,
@@ -289,7 +289,7 @@ fn block_device_snapshot_reopen_smoke() {
 
 #[test]
 fn snapshot_export_import_round_trip() {
-    let a = Crowdbtree::open(&Options::default()).unwrap();
+    let a = Crowdbtree::open(&Config::default()).unwrap();
     for i in 0..30usize {
         a.apply_put((i + 1) as u64, &key(i), format!("v{i}").as_bytes())
             .unwrap();
@@ -298,7 +298,7 @@ fn snapshot_export_import_round_trip() {
     let stream = a.snapshot_export().unwrap();
     assert!(!stream.is_empty());
 
-    let b = Crowdbtree::open(&Options::default()).unwrap();
+    let b = Crowdbtree::open(&Config::default()).unwrap();
     let at = b.snapshot_import(&stream).unwrap();
     assert_eq!(at, 30);
     for i in 0..30usize {
@@ -317,7 +317,7 @@ fn snapshot_export_import_round_trip() {
 
 #[test]
 fn io_failed_clean_on_healthy_engine() {
-    let t = Crowdbtree::open(&Options::default()).unwrap();
+    let t = Crowdbtree::open(&Config::default()).unwrap();
     for i in 0..10usize {
         t.apply_put((i + 1) as u64, &key(i), b"v").unwrap();
         t.flush().unwrap();
@@ -332,7 +332,7 @@ fn io_failed_clean_on_healthy_engine() {
 
 #[test]
 fn open_rejects_path_with_nul() {
-    let opt = Options {
+    let opt = Config {
         path: Some("bad\0path".to_string()),
         ..Default::default()
     };
@@ -342,7 +342,7 @@ fn open_rejects_path_with_nul() {
 #[tokio::test]
 async fn async_bridge_apply_get_snapshot() {
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-ffi");
-    let opt = Options {
+    let opt = Config {
         path: Some(dir.path().to_string_lossy().into_owned()),
         iu_size: 1,
         frame_bytes: 4096,
@@ -374,7 +374,7 @@ async fn async_get_fast_path_completes_on_first_poll() {
     use std::task::{Context, Poll, Waker};
 
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-ffi");
-    let opt = Options {
+    let opt = Config {
         path: Some(dir.path().to_string_lossy().into_owned()),
         iu_size: 1,
         frame_bytes: 4096,
@@ -398,7 +398,7 @@ async fn async_get_fast_path_completes_on_first_poll() {
 #[tokio::test]
 async fn async_get_slow_path_completes_after_eviction() {
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-ffi");
-    let opt = Options {
+    let opt = Config {
         path: Some(dir.path().to_string_lossy().into_owned()),
         iu_size: 1,
         frame_bytes: 4096,
@@ -419,7 +419,7 @@ async fn async_get_slow_path_completes_after_eviction() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_async_gets_all_resolve_correctly() {
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-ffi");
-    let opt = Options {
+    let opt = Config {
         path: Some(dir.path().to_string_lossy().into_owned()),
         iu_size: 1,
         frame_bytes: 4096,
@@ -459,7 +459,7 @@ async fn async_scan_fast_path_completes_on_first_poll() {
     use std::task::{Context, Poll, Waker};
 
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-ffi");
-    let opt = Options {
+    let opt = Config {
         path: Some(dir.path().to_string_lossy().into_owned()),
         iu_size: 1,
         frame_bytes: 4096,
@@ -492,7 +492,7 @@ async fn async_scan_fast_path_completes_on_first_poll() {
 #[tokio::test]
 async fn async_scan_slow_path_completes_after_eviction() {
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-ffi");
-    let opt = Options {
+    let opt = Config {
         path: Some(dir.path().to_string_lossy().into_owned()),
         iu_size: 1,
         frame_bytes: 4096,
@@ -529,7 +529,7 @@ async fn async_scan_slow_path_completes_after_eviction() {
 #[tokio::test]
 async fn async_scan_respects_limit_and_truncated_flag() {
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-ffi");
-    let opt = Options {
+    let opt = Config {
         path: Some(dir.path().to_string_lossy().into_owned()),
         iu_size: 1,
         frame_bytes: 4096,
@@ -557,7 +557,7 @@ async fn async_scan_respects_limit_and_truncated_flag() {
 #[tokio::test]
 async fn async_scan_keys_only_skips_values() {
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-ffi");
-    let opt = Options {
+    let opt = Config {
         path: Some(dir.path().to_string_lossy().into_owned()),
         iu_size: 1,
         frame_bytes: 4096,
@@ -598,7 +598,7 @@ async fn async_scan_keys_only_skips_values() {
 #[tokio::test]
 async fn try_get_pinned_fast_path_returns_borrowed_value() {
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-ffi");
-    let opt = Options {
+    let opt = Config {
         path: Some(dir.path().to_string_lossy().into_owned()),
         iu_size: 1,
         frame_bytes: 4096,
@@ -626,7 +626,7 @@ async fn try_get_pinned_fast_path_returns_borrowed_value() {
 #[tokio::test]
 async fn try_get_pinned_slow_path_resolves_after_eviction() {
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-ffi");
-    let opt = Options {
+    let opt = Config {
         path: Some(dir.path().to_string_lossy().into_owned()),
         iu_size: 1,
         frame_bytes: 4096,
@@ -657,7 +657,7 @@ async fn try_get_pinned_slow_path_resolves_after_eviction() {
 #[tokio::test]
 async fn try_get_pinned_fast_path_with_large_value() {
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-ffi");
-    let opt = Options {
+    let opt = Config {
         path: Some(dir.path().to_string_lossy().into_owned()),
         iu_size: 1,
         frame_bytes: 4096,
@@ -679,7 +679,7 @@ async fn try_get_pinned_fast_path_with_large_value() {
 
 #[test]
 fn zero_copy_alloc_apply_round_trip() {
-    let t = Crowdbtree::open(&Options::default()).unwrap();
+    let t = Crowdbtree::open(&Config::default()).unwrap();
     let mut h = t.alloc_put(3, 5).unwrap();
     h.key_mut().copy_from_slice(b"abc");
     h.value_mut().copy_from_slice(b"hello");
@@ -691,7 +691,7 @@ fn zero_copy_alloc_apply_round_trip() {
 
 #[test]
 fn zero_copy_large_value_round_trip() {
-    let t = Crowdbtree::open(&Options::default()).unwrap();
+    let t = Crowdbtree::open(&Config::default()).unwrap();
     let big: Vec<u8> = (0..8192u32).map(|i| u8::try_from(i % 256).unwrap()).collect();
     let mut h = t.alloc_put(4, big.len()).unwrap();
     h.key_mut().copy_from_slice(b"bigk");
@@ -704,7 +704,7 @@ fn zero_copy_large_value_round_trip() {
 
 #[test]
 fn zero_copy_empty_value_round_trip() {
-    let t = Crowdbtree::open(&Options::default()).unwrap();
+    let t = Crowdbtree::open(&Config::default()).unwrap();
     let mut h = t.alloc_put(2, 0).unwrap();
     h.key_mut().copy_from_slice(b"ev");
     assert!(h.value_mut().is_empty());
@@ -716,7 +716,7 @@ fn zero_copy_empty_value_round_trip() {
 
 #[test]
 fn zero_copy_handle_drop_without_apply_no_leak() {
-    let t = Crowdbtree::open(&Options::default()).unwrap();
+    let t = Crowdbtree::open(&Config::default()).unwrap();
     let mut h = t.alloc_put(10, 4096).unwrap();
     h.key_mut().fill(0xAB);
     h.value_mut().fill(0xCD);
@@ -725,7 +725,7 @@ fn zero_copy_handle_drop_without_apply_no_leak() {
 
 #[test]
 fn zero_copy_oversized_key_rejected() {
-    let opt = Options {
+    let opt = Config {
         frame_bytes: 4096,
         ..Default::default()
     };
@@ -738,7 +738,7 @@ fn zero_copy_oversized_key_rejected() {
 
 #[test]
 fn apply_batch_external_round_trip_before_flush() {
-    let t = Crowdbtree::open(&Options::default()).unwrap();
+    let t = Crowdbtree::open(&Config::default()).unwrap();
     let big = bytes::Bytes::from(vec![0xF0; 4096]);
     let ops = vec![
         ExtOp::Put {
@@ -757,7 +757,7 @@ fn apply_batch_external_round_trip_before_flush() {
 
 #[test]
 fn apply_batch_external_round_trip_after_flush() {
-    let t = Crowdbtree::open(&Options::default()).unwrap();
+    let t = Crowdbtree::open(&Config::default()).unwrap();
     let big = bytes::Bytes::from(vec![0xE1; 8192]);
     let ops = vec![ExtOp::Put {
         key: bytes::Bytes::from_static(b"k2"),
@@ -770,7 +770,7 @@ fn apply_batch_external_round_trip_after_flush() {
 
 #[test]
 fn apply_batch_external_multi_key_atomicity() {
-    let t = Crowdbtree::open(&Options::default()).unwrap();
+    let t = Crowdbtree::open(&Config::default()).unwrap();
     let ops = vec![
         ExtOp::Put {
             key: bytes::Bytes::from_static(b"a"),
@@ -793,7 +793,7 @@ fn apply_batch_external_multi_key_atomicity() {
 
 #[test]
 fn apply_batch_external_intra_batch_last_key_wins() {
-    let t = Crowdbtree::open(&Options::default()).unwrap();
+    let t = Crowdbtree::open(&Config::default()).unwrap();
     let ops = vec![
         ExtOp::Put {
             key: bytes::Bytes::from_static(b"k"),
@@ -810,7 +810,7 @@ fn apply_batch_external_intra_batch_last_key_wins() {
 
 #[test]
 fn apply_batch_external_large_value_round_trip() {
-    let t = Crowdbtree::open(&Options::default()).unwrap();
+    let t = Crowdbtree::open(&Config::default()).unwrap();
     // 64 KiB values — the workload R30 targets (eliminate the apply-path copy).
     let v1 = bytes::Bytes::from(vec![0x11; 65536]);
     let v2 = bytes::Bytes::from(vec![0x22; 65536]);
@@ -842,7 +842,7 @@ fn apply_batch_external_bytes_kept_alive_until_drain() {
     // it must not be freed until the MemTable drains (flush). This test
     // verifies the ref handle lifecycle: the Bytes stays valid through apply
     // and flush, and the drop callback fires at drain (not before).
-    let t = Crowdbtree::open(&Options::default()).unwrap();
+    let t = Crowdbtree::open(&Config::default()).unwrap();
     let payload = bytes::Bytes::from(vec![0xAB; 1024]);
     let ops = vec![ExtOp::Put {
         key: bytes::Bytes::from_static(b"k"),

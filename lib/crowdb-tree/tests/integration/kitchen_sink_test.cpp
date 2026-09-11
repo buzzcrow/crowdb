@@ -53,7 +53,7 @@ std::string make_val(size_t n, uint32_t seed)
 TEST(KitchenSink, AllFeaturesRandomizedReopen)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store        = &store;
     opt.compression       = compress_algo::kLz4;
     opt.frame_bytes       = 4096;
@@ -127,7 +127,7 @@ TEST(KitchenSink, AllFeaturesRandomizedReopen)
 TEST(KitchenSink, OverwriteEvictedOverflowChainNoLeak)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.frame_bytes      = 4096;
     opt.max_inline_value = 64;

@@ -10,8 +10,8 @@ use std::sync::Once;
 
 use tokio::io::unix::AsyncFd;
 
+use crate::config::{Config, KeyRange, PageStoreBackend};
 use crate::error::{check, take_buf, CtError};
-use crate::options::{KeyRange, Options, PageStoreBackend};
 use crate::reactor::{drain_eventfd, EventfdPump, RawFdView};
 use crate::stats::RangeRebuildStats;
 use crate::sys;
@@ -40,7 +40,7 @@ impl std::fmt::Debug for Crowdbtree {
 
 impl Crowdbtree {
     /// Open (recovering durable state when `path` is set, else fresh in-memory).
-    pub fn open(opt: &Options) -> Result<Self, CtError> {
+    pub fn open(opt: &Config) -> Result<Self, CtError> {
         #[cfg(feature = "test-util")]
         ct_init_test_logging();
 
@@ -114,7 +114,7 @@ impl Crowdbtree {
     /// Build an independently owned tree containing exactly `opt.key_range`.
     /// The destination must use an injected store, whose ownership is retained
     /// by the returned tree handle.
-    pub fn rebuild_range(&self, opt: &Options) -> Result<(Self, RangeRebuildStats), CtError> {
+    pub fn rebuild_range(&self, opt: &Config) -> Result<(Self, RangeRebuildStats), CtError> {
         let store = opt.page_store.as_ref().ok_or(CtError::InvalidArgument)?;
         let (range_bounded, range_start, range_end) = match &opt.key_range {
             KeyRange::Unbounded => (0, None, None),

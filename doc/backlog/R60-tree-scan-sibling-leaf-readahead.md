@@ -43,13 +43,13 @@ the current leaf's merge work.
   memory bounded; the bench can sweep it.
 
 **Scope**:
-- `lib/crowdb-tree/src/crowdb-tree.cpp` — `scan` / `try_scan_no_load`:
+- `lib/crowdb-tree/src/btree/crowdb-tree.cpp` — `scan` / `try_scan_no_load`:
   after `page_id = base->right_sibling()`, issue a prefetch. The
   prefetch seam must already exist or be added to the page cache
   (check `PageCache::resolve` / `Reactor` for an async-resolve or
   `posix_fadvise`/`readahead` hook). If no seam exists, this is blocked
   on adding one (small).
-- `lib/crowdb-tree/src/crowdb-tree.cpp` — `scan_async_attempt`: batch the
+- `lib/crowdb-tree/src/btree/crowdb-tree.cpp` — `scan_async_attempt`: batch the
   right-sibling read with the current leaf's read in the reactor
   submission.
 - Tests: `test-tree-ct` scan tests must pass unchanged (readahead is

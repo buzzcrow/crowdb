@@ -18,10 +18,10 @@
 // in-flight reader guard — the same EBR scheme L1 pages already use.
 #pragma once
 
+#include "crowdb-tree/btree/cell.h"
 #include "crowdb-tree/buffer.h"
-#include "crowdb-tree/cell.h"
 #include "crowdb-tree/epoch.h"
-#include "crowdb-tree/skip_list.h"
+#include "crowdb-tree/memtable/skip_list.h"
 #include "crowdb-tree/slice.h"
 
 #include <atomic>

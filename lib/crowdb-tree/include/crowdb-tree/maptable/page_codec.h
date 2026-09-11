@@ -16,7 +16,7 @@
 // decode into freshly-allocated pages.
 #pragma once
 
-#include "crowdb-tree/mtable/page.h"
+#include "crowdb-tree/maptable/page.h"
 #include "crowdb-tree/status.h"
 
 #include <cstdint>

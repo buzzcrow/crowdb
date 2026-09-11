@@ -4,7 +4,7 @@
 // CT10: consolidation tests (fold by highest slot, triggers, tombstone keep,
 // old-chain retirement via the epoch manager).
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/mtable/page.h"
+#include "crowdb-tree/maptable/page.h"
 
 #include <gtest/gtest.h>
 
@@ -27,7 +27,7 @@ page_type head_type(Crowdbtree &t)
 
 TEST(Consolidation, FoldsChainAtDeltaLenThreshold)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len = 4;
     Crowdbtree t(opt);
     // Each flush adds one delta to the single root leaf.
@@ -51,7 +51,7 @@ TEST(Consolidation, FoldsChainAtDeltaLenThreshold)
 
 TEST(Consolidation, FoldKeepsHighestSlotPerKey)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len = 3;
     Crowdbtree t(opt);
     for (uint64_t s = 1; s <= 10; ++s) {
@@ -67,7 +67,7 @@ TEST(Consolidation, FoldKeepsHighestSlotPerKey)
 
 TEST(Consolidation, TombstonePreservedThroughFold)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len = 2;
     Crowdbtree t(opt);
     ASSERT_TRUE(t.apply(1, put_one("a", "A")).ok());
@@ -88,7 +88,7 @@ TEST(Consolidation, TombstonePreservedThroughFold)
 
 TEST(Consolidation, OldChainRetiredViaEpoch)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len = 3;
     Crowdbtree t(opt);
     for (uint64_t s = 1; s <= 3; ++s) {
@@ -112,7 +112,7 @@ TEST(Consolidation, OldChainRetiredViaEpoch)
 // guard is released and try_reclaim() runs.
 TEST(Consolidation, RetiredCountAfterFold)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len = 2;
     Crowdbtree t(opt);
     // Build a small tree with a few flushes so the delta chain grows.

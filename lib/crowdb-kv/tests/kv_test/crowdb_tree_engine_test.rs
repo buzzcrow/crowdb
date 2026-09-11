@@ -6,12 +6,12 @@
 //! `InMemKV` satisfy the identical `KVEngine` contract.
 
 use crate::test_util::{compare_dyn, iter_all_dyn};
-use crowdb_kv::kv::{CrowdbTreeEngine, CrowdbTreeOptions};
+use crowdb_kv::kv::{CrowdbTreeConfig, CrowdbTreeEngine};
 
 use super::conformance;
 
 fn open() -> CrowdbTreeEngine {
-    CrowdbTreeEngine::open(&CrowdbTreeOptions::default()).unwrap()
+    CrowdbTreeEngine::open(&CrowdbTreeConfig::default()).unwrap()
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn is_healthy_is_true_on_a_freshly_opened_engine() {
 
 /// Regression guard: an in-memory
 /// `CrowdbTreeEngine` (`opt.path: None`, no page store, no reactor -- see
-/// `CrowdbTreeOptions::default`) has no I/O path *at all*, so `get`/`scan`/
+/// `CrowdbTreeConfig::default`) has no I/O path *at all*, so `get`/`scan`/
 /// `apply` must always resolve `Ready` -- proves the "fast path stays fast"
 /// property holds for the durable engine's in-memory mode too, not just
 /// `InMemKV`.
@@ -123,7 +123,7 @@ async fn get_constructs_pending_for_genuine_demand_load_miss() {
     use crowdb_kv::kv::{KVEngine, KVFuture};
 
     let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("crowdb-tree-engine");
-    let e = CrowdbTreeEngine::open(&CrowdbTreeOptions {
+    let e = CrowdbTreeEngine::open(&CrowdbTreeConfig {
         path: Some(tmp.path().to_string_lossy().into_owned()),
         ..Default::default()
     })
@@ -168,7 +168,7 @@ async fn scan_constructs_pending_for_genuine_demand_load_miss() {
     use crowdb_kv::kv::{KVEngine, KVFuture};
 
     let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("crowdb-tree-engine");
-    let e = CrowdbTreeEngine::open(&CrowdbTreeOptions {
+    let e = CrowdbTreeEngine::open(&CrowdbTreeConfig {
         path: Some(tmp.path().to_string_lossy().into_owned()),
         ..Default::default()
     })
@@ -259,7 +259,7 @@ async fn clear_then_persist_survives_reopen() {
     use crowdb_kv::kv::KVEngine;
 
     let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("crowdb-tree-engine");
-    let opt = CrowdbTreeOptions {
+    let opt = CrowdbTreeConfig {
         path: Some(tmp.path().to_string_lossy().into_owned()),
         ..Default::default()
     };
@@ -435,7 +435,7 @@ async fn noop_slot_does_not_block_contiguous_slot_advancement() {
     use crowdb_kv::kv::KVEngine;
 
     let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("crowdb-tree-engine");
-    let opt = CrowdbTreeOptions {
+    let opt = CrowdbTreeConfig {
         path: Some(tmp.path().to_string_lossy().into_owned()),
         ..Default::default()
     };

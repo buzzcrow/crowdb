@@ -43,10 +43,16 @@ Review directory ownership as part of module cohesion:
 - Flag large flat directories that the change expands instead of grouping the
   touched files by domain responsibility. Recommend a concrete destination,
   using `crowdb-kv/src/{cluster,paxos,wal}/` and
-  `crowdb-tree/src/{btree,mtable,backend}/` as reference shapes.
+  `crowdb-tree/src/{btree,maptable,memtable,snapshot,backend}/` as reference
+  shapes.
+- Audit the changed crate/library root as a whole. Flag related touched files
+  left behind when the patch creates or extends their owning domain folder;
+  public headers still need visible subsystem ownership.
 - Verify Rust module roots use `foo.rs` + `foo/` with deliberate re-exports;
   verify C++ public include paths and private source paths express the same
   subsystem ownership where applicable.
+- Flag unclear or inconsistent domain abbreviations and source/include folder
+  names that do not match.
 - Flag catch-all folders and redundant forwarding headers that obscure the
   canonical owner. Accept a root umbrella or compatibility shim only when its
   public purpose is explicit.

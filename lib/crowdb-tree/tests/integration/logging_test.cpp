@@ -63,7 +63,7 @@ TEST(Logging, WritesFormattedFileOnOpenAndSnapshot)
 {
     TempDir      dir;
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store = &store;
 
     // Logging is process-global: init before any open().
@@ -109,7 +109,7 @@ TEST(Logging, StderrWhenNoLogDir)
     init_logging("", "info", 30, 5, "crowdb-tree");
     EXPECT_TRUE(logging_enabled());
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store = &store;
     std::unique_ptr<Crowdbtree> t;
     ASSERT_TRUE(Crowdbtree::open(opt, &t).ok());

@@ -55,7 +55,7 @@ TEST(Gc, SetWatermarkTakesMinAndIsMonotonic)
 TEST(Gc, SnapshotFoldingBelowWatermarkPreservesTombstone)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store = &store;
     Crowdbtree t(opt);
     ASSERT_TRUE(t.apply(1, put_one("a", "A")).ok());
@@ -87,7 +87,7 @@ TEST(Gc, SnapshotFoldingBelowWatermarkPreservesTombstone)
 TEST(Gc, SnapshotFoldsEligibleTombstoneInCleanLeaf)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store    = &store;
     opt.max_delta_len = 4;
     Crowdbtree t(opt);
@@ -123,7 +123,7 @@ TEST(Gc, SnapshotFoldsEligibleTombstoneInCleanLeaf)
 TEST(Gc, SnapshotFoldingReclaimsTombstoneAfterOpen)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store    = &store;
     opt.max_delta_len = 4;
 
@@ -154,7 +154,7 @@ TEST(Gc, SnapshotFoldingReclaimsTombstoneAfterOpen)
 TEST(Gc, CompactSparseBlocksNoOpOnMemStore)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store = &store;
     Crowdbtree t(opt);
     ASSERT_TRUE(t.apply(1, put_one("a", "1")).ok());
@@ -176,7 +176,7 @@ TEST(Gc, NormalSnapshotDoesNotRelocateSparseBlocks)
     std::unique_ptr<BlockPageStore> store;
     ASSERT_TRUE(BlockPageStore::open_blocks(tmp.path, 0, 0, 8 * 1024, 1, &store).ok());
     store->set_sync_mode(SyncMode::kSkip);
-    Options opt;
+    Config opt;
     opt.page_store                    = store.get();
     opt.merge_gc_block_free_threshold = 0.01;
     opt.merge_gc_max_relocation_bytes = 8 * 1024 * 1024;
@@ -200,7 +200,7 @@ TEST(Gc, CompactSparseBlocksProtectsAnchorBlock)
     constexpr uint64_t              blk = 8 * 1024;
     std::unique_ptr<BlockPageStore> store;
     ASSERT_TRUE(BlockPageStore::open_blocks(tmp.path, 0, 0, blk, 1, &store).ok());
-    Options opt;
+    Config opt;
     opt.page_store                    = store.get();
     opt.leaf_split_bytes              = 256;
     opt.merge_gc_max_relocation_bytes = 8 * 1024 * 1024;
@@ -234,7 +234,7 @@ TEST(Gc, CompactSparseBlocksProtectsAnchorBlock)
     // Reopen — anchor must be intact.
     std::unique_ptr<BlockPageStore> store2;
     ASSERT_TRUE(BlockPageStore::open_blocks(tmp.path, 0, 0, blk, 1, &store2).ok());
-    Options opt2;
+    Config opt2;
     opt2.page_store       = store2.get();
     opt2.leaf_split_bytes = 256;
     std::unique_ptr<Crowdbtree> t2;
@@ -259,7 +259,7 @@ TEST(Gc, CompactSparseBlocksRespectsByteBudget)
     std::unique_ptr<BlockPageStore> store;
     ASSERT_TRUE(BlockPageStore::open_blocks(tmp.path, 0, 0, blk, 1, &store).ok());
     store->set_sync_mode(SyncMode::kSkip);
-    Options opt;
+    Config opt;
     opt.page_store                    = store.get();
     opt.leaf_split_bytes              = 256;
     opt.merge_gc_block_free_threshold = 0.01;
@@ -313,7 +313,7 @@ TEST(Gc, CompactSparseBlocksMaintainsDataIntegrity)
     std::unique_ptr<BlockPageStore> store;
     ASSERT_TRUE(BlockPageStore::open_blocks(tmp.path, 0, 0, blk, 1, &store).ok());
     store->set_sync_mode(SyncMode::kSkip);
-    Options opt;
+    Config opt;
     opt.page_store                    = store.get();
     opt.leaf_split_bytes              = 256;
     opt.merge_gc_block_free_threshold = 0.30;

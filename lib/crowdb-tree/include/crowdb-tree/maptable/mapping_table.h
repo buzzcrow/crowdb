@@ -20,9 +20,9 @@
 
 #include "crowdb-common/metrics/metrics.h"
 #include "crowdb-tree/epoch.h"
-#include "crowdb-tree/mtable/mapping_segment.h"
-#include "crowdb-tree/mtable/mapping_slot.h"
-#include "crowdb-tree/mtable/page.h"
+#include "crowdb-tree/maptable/mapping_segment.h"
+#include "crowdb-tree/maptable/mapping_slot.h"
+#include "crowdb-tree/maptable/page.h"
 
 #include <atomic>
 #include <cstdint>
@@ -124,7 +124,7 @@ class MappingTable
     // bookkeeping directly (no live_count/write_seq transition logic --
     // recovery has no concurrent readers yet). `words.size()` must equal
     // kSegmentSize (the only slot count this table currently supports; see
-    // Options::mapping_segment_slots's TODO).
+    // Config::mapping_segment_slots's TODO).
     void install_recovered_segment(uint64_t seg_idx, uint64_t generation, uint32_t live_count,
                                    const std::vector<uint64_t> &words, uint64_t image_addr, uint32_t image_len,
                                    uint32_t image_crc);

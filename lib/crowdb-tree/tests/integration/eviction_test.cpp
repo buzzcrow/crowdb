@@ -67,7 +67,7 @@ class CountingPageStore : public MemPageStore
 TEST(Eviction, EvictedLeavesFreeMemoryAndReloadCorrectly)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 160;
@@ -99,7 +99,7 @@ TEST(Eviction, EvictedLeavesFreeMemoryAndReloadCorrectly)
 TEST(Eviction, EvictIsIdempotentAndSkipsDirty)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 160;
@@ -129,7 +129,7 @@ TEST(Eviction, EvictIsIdempotentAndSkipsDirty)
 TEST(Eviction, ConcurrentReadersWhileEvicting)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 160;
@@ -178,7 +178,7 @@ TEST(Eviction, ConcurrentReadersWhileEvicting)
 TEST(Eviction, RecentlyTouchedLeafSurvivesEvictionOverColderOnes)
 {
     CountingPageStore store(1);
-    Options           opt;
+    Config            opt;
     opt.page_store       = &store;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 160;
@@ -218,7 +218,7 @@ TEST(Eviction, RecentlyTouchedLeafSurvivesEvictionOverColderOnes)
 TEST(Eviction, EvictCleanInnerNeverTouchesLeaves)
 {
     CountingPageStore store(1);
-    Options           opt;
+    Config            opt;
     opt.page_store       = &store;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 80; // tiny leaves -> many of them
@@ -277,7 +277,7 @@ TEST(Eviction, EvictCleanInnerNeverTouchesLeaves)
 TEST(Eviction, RecentlyTouchedAncestorChainSurvivesInnerEvictionOverColderOnes)
 {
     CountingPageStore store(1);
-    Options           opt;
+    Config            opt;
     opt.page_store       = &store;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 80;
@@ -345,7 +345,7 @@ TEST(Eviction, RecentlyTouchedAncestorChainSurvivesInnerEvictionOverColderOnes)
 TEST(Eviction, InstallSnapshotReclaimsResidentLeavesEvenWhenInnerAncestorWasEvicted)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 80;

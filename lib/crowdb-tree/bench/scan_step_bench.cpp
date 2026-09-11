@@ -67,7 +67,7 @@ Setup build_tree(int n, int value_size, bool flush, bool flush_only = false, int
 {
     Setup s;
     s.store = std::make_shared<MemPageStore>(1);
-    Options opt;
+    Config opt;
     opt.page_store       = s.store.get();
     opt.frame_bytes      = 64 * 1024;
     opt.leaf_split_bytes = 64 * 1024;
@@ -147,7 +147,7 @@ void run_concurrent(const char *label, int n_prepop, int value_size, size_t limi
 {
     Setup s;
     s.store = std::make_shared<MemPageStore>(1);
-    Options opt;
+    Config opt;
     opt.page_store         = s.store.get();
     opt.frame_bytes        = 64 * 1024;
     opt.leaf_split_bytes   = 64 * 1024;

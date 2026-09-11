@@ -70,7 +70,7 @@ TEST(ReadPath, GetViewL0HitIsCorrect)
 TEST(ReadPath, GetViewL1HitBorrowsFrameSurvivingConcurrentEviction)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 160;
@@ -96,7 +96,7 @@ TEST(ReadPath, GetViewL1HitBorrowsFrameSurvivingConcurrentEviction)
 
 TEST(ReadPath, GetViewOverflowValueIsMaterialized)
 {
-    Options opt;
+    Config opt;
     opt.max_inline_value = 8; // force any value above 8 bytes to spill to overflow
     Crowdbtree  t(opt);
     std::string big(500, 'z');
@@ -143,7 +143,7 @@ TEST(ReadPath, L0TombstoneHidesL1)
 
 TEST(ReadPath, ScanOrderLimitTruncatedAcrossLeaves)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 120; // force multiple leaves
     Crowdbtree t(opt);
@@ -196,7 +196,7 @@ TEST(ReadPath, ScanPrefix)
 // AsyncScan.StartAfterCursorSkipsEarlierEntries.
 TEST(ReadPath, ScanStartAfterCursorSkipsEarlierEntries)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 120; // force multiple leaves
     Crowdbtree t(opt);

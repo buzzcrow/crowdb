@@ -12,7 +12,7 @@
 // frame (no uring, no I/O) needs no dedicated type.
 #pragma once
 
-#include "crowdb-tree/mtable/buffer_pool.h" // PageAddr
+#include "crowdb-tree/maptable/page_types.h" // PageAddr
 #include "crowdb-tree/status.h"
 
 #ifdef CROWDB_HAVE_LIBURING

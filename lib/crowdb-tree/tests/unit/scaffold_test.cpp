@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-// CT1: scaffold smoke tests for Slice, Status, Options.
+// CT1: scaffold smoke tests for Slice, Status, Config.
 #include "crowdb-tree/crowdb-tree.h"
 
 #include <gtest/gtest.h>
@@ -49,9 +49,9 @@ TEST(Status, Codes)
     EXPECT_NE(Status::corruption().to_string().find("-3"), std::string::npos);
 }
 
-TEST(Options, Defaults)
+TEST(Config, Defaults)
 {
-    Options o;
+    Config o;
     EXPECT_EQ(o.max_delta_len, 64U);
     EXPECT_EQ(o.max_delta_bytes, 512U * 1024U);
     EXPECT_GT(o.leaf_split_bytes, o.leaf_merge_bytes);

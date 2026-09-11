@@ -9,7 +9,7 @@
 //! covers that layer). This is the test the design doc's §6 explicitly
 //! deferred adding until `PxLearner` actually had an `async fn` to test.
 
-use crowdb_kv::kv::{CrowdbTreeEngine, CrowdbTreeOptions};
+use crowdb_kv::kv::{CrowdbTreeConfig, CrowdbTreeEngine};
 use crowdb_kv::paxos::learner::PxLearner;
 use crowdb_kv::paxos::roles::{Learner, PxBallot, PxLogEntry};
 
@@ -33,7 +33,7 @@ fn encode_put_payload(key: &[u8], value: &[u8]) -> Vec<u8> {
 #[tokio::test]
 async fn engine_get_resolves_correctly_across_both_ready_and_pending() {
     let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("learner-async");
-    let engine = CrowdbTreeEngine::open(&CrowdbTreeOptions {
+    let engine = CrowdbTreeEngine::open(&CrowdbTreeConfig {
         path: Some(tmp.path().to_string_lossy().into_owned()),
         ..Default::default()
     })

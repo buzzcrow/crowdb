@@ -2,9 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 // PT10: page compression (LZ4 default, identity fallback).
-#include "crowdb-tree/cell.h"
-#include "crowdb-tree/mtable/compressor.h"
-#include "crowdb-tree/mtable/frame_page.h"
+#include "crowdb-tree/btree/cell.h"
+#include "crowdb-tree/maptable/compressor.h"
+#include "crowdb-tree/maptable/frame_page.h"
 
 #include <gtest/gtest.h>
 

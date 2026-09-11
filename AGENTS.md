@@ -35,6 +35,8 @@ and transport exposed through FFI.
 
 ## Skill dispatch
 
+- Repository skills live only under `.agents/skills/`; do not create legacy
+  aliases or compatibility symlinks such as `.devin`.
 - Code: `/coding`; visible UI or Playwright: also `/console-ui-e2e`.
 - Test failure: `/debug-test`.
 - Documentation: `/doc`, then its matched document-type guide.

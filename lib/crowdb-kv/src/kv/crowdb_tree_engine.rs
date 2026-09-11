@@ -13,7 +13,7 @@ use crowdb_tree_ffi::{
 };
 use std::sync::Arc;
 
-pub use crowdb_tree_ffi::Options as CrowdbTreeOptions;
+pub use crowdb_tree_ffi::Config as CrowdbTreeConfig;
 pub use crowdb_tree_ffi::PageStoreBackend as CrowdbTreeBackend;
 pub use crowdb_tree_ffi::Stats as CrowdbTreeStats;
 
@@ -46,7 +46,7 @@ impl CrowdbTreeEngine {
     /// # Errors
     /// Returns the underlying [`CtError`] if the engine fails to open (e.g. a
     /// corrupt or unreadable durable file).
-    pub fn open(opt: &CrowdbTreeOptions) -> Result<Self, CtError> {
+    pub fn open(opt: &CrowdbTreeConfig) -> Result<Self, CtError> {
         Ok(Self {
             inner: AsyncCrowdbtree::open(opt)?,
         })
@@ -417,7 +417,7 @@ fn decode_scan(result: Result<(Vec<crowdb_tree_ffi::ScanEntry>, bool), CtError>)
 /// ([`crowdb_tree_ffi::Crowdbtree::last_applied_slot`]) that could race a
 /// concurrent `apply`/`flush` between the two calls.
 ///
-/// Portable header layout (`crowdb-tree/src/snapshot_io.cpp`'s `kSnapHeader`,
+/// Portable header layout (`crowdb-tree/src/snapshot/snapshot_io.cpp`'s `kSnapHeader`,
 /// little-endian): `[magic:u32][version:u32][format:u8][at_slot:u64]
 /// [entry_count:u64]`. `ct_snapshot_export_begin` always uses
 /// `snapshot_format::kPortable` (`crowdb-tree/src/c_api.cpp`) -- crowdb-tree's C

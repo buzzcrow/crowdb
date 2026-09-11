@@ -2,8 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 // #14a: standalone mapping-table segment struct.
-#include "crowdb-tree/mtable/mapping_segment.h"
-#include "crowdb-tree/mtable/mapping_slot.h"
+#include "crowdb-tree/maptable/mapping_segment.h"
+#include "crowdb-tree/maptable/mapping_slot.h"
 
 #include <gtest/gtest.h>
 
@@ -54,7 +54,7 @@ TEST(MappingSegment, GenerationBumpsIndependentlyOfSlots)
 
 TEST(MappingSegment, DefaultSizeMatchesOptionsDefault)
 {
-    // Options.mapping_segment_slots default is 1024.
+    // Config.mapping_segment_slots default is 1024.
     MappingSegment seg(1024);
     EXPECT_EQ(seg.slot_count, 1024U);
 }

@@ -15,7 +15,7 @@
 use crowdb_kv::cluster::group::PxGroup;
 use crowdb_kv::cluster::kv_store::KvStore;
 use crowdb_kv::cluster::{PxKvStore, PxLocalReplica, PxLocalReplicaRole};
-use crowdb_kv::kv::{CrowdbTreeEngine, CrowdbTreeOptions};
+use crowdb_kv::kv::{CrowdbTreeConfig, CrowdbTreeEngine};
 use crowdb_kv::rpc::ReadMode;
 use crowdb_kv::wal::io_backend::IoBackend;
 use crowdb_kv::wal::replay::replay_group;
@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 async fn crowdb_tree_store() -> PxKvStore {
     let store = PxKvStore::new(0, "127.0.0.1:0".parse().unwrap());
-    let engine = CrowdbTreeEngine::open(&CrowdbTreeOptions::default()).expect("open crowdb-tree engine");
+    let engine = CrowdbTreeEngine::open(&CrowdbTreeConfig::default()).expect("open crowdb-tree engine");
     // Empty replay (no WAL segments) — gives a fresh replica with the
     // caller-supplied engine wired in.
     let backend = Arc::new(IoBackend::mem_block());

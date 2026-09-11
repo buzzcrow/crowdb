@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 // R50: ConcurrentSkipList unit tests.
-#include "crowdb-tree/skip_list.h"
+#include "crowdb-tree/memtable/skip_list.h"
 
 #include <gtest/gtest.h>
 

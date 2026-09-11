@@ -4,10 +4,10 @@
 // R30: zero-copy apply path tests — kExternal buffer mode, split-cell
 // MemTable, and Crowdbtree::apply_external round-trip + flush + read.
 #include "crowdb-tree/backend/page_store.h"
+#include "crowdb-tree/btree/cell.h"
 #include "crowdb-tree/buffer.h"
-#include "crowdb-tree/cell.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/memtable.h"
+#include "crowdb-tree/memtable/memtable.h"
 
 #include <gtest/gtest.h>
 
@@ -28,7 +28,7 @@ void count_drop(void *ctx)
 
 std::unique_ptr<Crowdbtree> open_tree(MemPageStore &store)
 {
-    Options opt;
+    Config opt;
     opt.page_store = &store;
     std::unique_ptr<Crowdbtree> t;
     EXPECT_TRUE(Crowdbtree::open(opt, &t).ok());

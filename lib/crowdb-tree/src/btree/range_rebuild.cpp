@@ -5,8 +5,8 @@
 
 #include "crowdb-tree/btree/range_rebuild.h"
 
-#include "crowdb-tree/cell.h"
-#include "crowdb-tree/mtable/frame_page.h"
+#include "crowdb-tree/btree/cell.h"
+#include "crowdb-tree/maptable/frame_page.h"
 
 #include <algorithm>
 #include <string>
@@ -221,7 +221,7 @@ Status build_inner_frames(uint32_t frame_bytes, uint32_t inner_max_keys, uint64_
 }
 
 Status build_filtered_frames(const std::vector<NativeFrame> &source_frames, const KeyRange &range,
-                             const Options &destination_options, uint64_t source_next_page_id,
+                             const Config &destination_options, uint64_t source_next_page_id,
                              std::vector<NativeFrame> *output, uint64_t *root_page_id, RangeRebuildStats *stats)
 {
     uint64_t                 next_page_id = source_next_page_id;
@@ -245,7 +245,7 @@ Status build_filtered_frames(const std::vector<NativeFrame> &source_frames, cons
 
 } // namespace
 
-Status rebuild_range(Crowdbtree &source, const KeyRange &range, Options destination_options,
+Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destination_options,
                      std::unique_ptr<Crowdbtree> *out, RangeRebuildStats *stats)
 {
     if (out == nullptr || destination_options.page_store == nullptr) {

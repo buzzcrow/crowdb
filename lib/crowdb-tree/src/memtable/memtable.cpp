@@ -3,7 +3,7 @@
 
 // B+tree memtable implementation.
 
-#include "crowdb-tree/memtable.h"
+#include "crowdb-tree/memtable/memtable.h"
 
 #include <algorithm>
 #include <cstring>

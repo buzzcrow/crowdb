@@ -36,7 +36,7 @@ std::string make_key(int i)
 
 TEST(SplitMerge, SplitGrowsMultiLevelTree)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len    = 1;   // consolidate aggressively
     opt.leaf_split_bytes = 200; // small leaves -> force splits
     Crowdbtree t(opt);
@@ -69,7 +69,7 @@ TEST(SplitMerge, SplitGrowsMultiLevelTree)
 
 TEST(SplitMerge, MergeAndRootCollapse)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len    = 0; // consolidate (and check merge) on every flush
     opt.leaf_split_bytes = 200;
     opt.leaf_merge_bytes = 60;
@@ -120,7 +120,7 @@ TEST(SplitMerge, MergeAndRootCollapse)
 TEST(SplitMerge, SnapshotSucceedsAfterHeavyMergeAndRootCollapse)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.max_delta_len    = 0; // consolidate (and check merge) on every flush
     opt.leaf_split_bytes = 200;
@@ -164,7 +164,7 @@ TEST(SplitMerge, LargeFlushSpanningLeavesSplitsMidFlush)
     // triggers splits mid-flush. Each per-leaf group must be routed against the
     // CURRENT tree (after prior groups' SMOs), not a routing snapshot captured
     // before the flush began. Otherwise later keys land in a just-split leaf.
-    Options opt;
+    Config opt;
     opt.max_delta_len    = 0;   // consolidate on every flush
     opt.leaf_split_bytes = 200; // small leaves -> splits during the big flush
     opt.leaf_merge_bytes = 40;
@@ -226,7 +226,7 @@ TEST(SplitMerge, LargeFlushSpanningLeavesSplitsMidFlush)
 
 TEST(SplitMerge, ParityWithOracleUnderSplits)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len    = 2;
     opt.leaf_split_bytes = 150;
     opt.leaf_merge_bytes = 40;
@@ -278,7 +278,7 @@ TEST(SplitMerge, ParityWithOracleUnderSplits)
 // consolidated leaf is > 2x the split threshold.
 TEST(SplitMerge, ConsolidationSplitsIterativelyToThreshold)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len    = 0;   // consolidate on every flush
     opt.leaf_split_bytes = 200; // small threshold so many splits are needed
     opt.leaf_merge_bytes = 50;  // well below split to avoid merge-after-split
@@ -351,7 +351,7 @@ static size_t inner_count_walk(Crowdbtree &t)
 // O(1) atomic leaf/inner counters must match the tree walk after splits.
 TEST(SplitMerge, LeafInnerCountParityAfterSplits)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len      = 1;   // consolidate aggressively
     opt.leaf_split_bytes   = 200; // small leaves -> force splits
     opt.max_memtable_count = 6;
@@ -375,7 +375,7 @@ TEST(SplitMerge, LeafInnerCountParityAfterSplits)
 // and root collapse.
 TEST(SplitMerge, LeafInnerCountParityAfterMerges)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len      = 1;
     opt.leaf_split_bytes   = 200;
     opt.leaf_merge_bytes   = 40;

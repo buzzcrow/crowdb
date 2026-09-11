@@ -11,7 +11,7 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use tokio::sync::Notify;
 
-use crate::kv::{Batch, CrowdbTreeBackend, CrowdbTreeEngine, CrowdbTreeOptions, KVEngine};
+use crate::kv::{Batch, CrowdbTreeBackend, CrowdbTreeConfig, CrowdbTreeEngine, KVEngine};
 use crate::paxos::roles::{DedupTag, Learner, PxLogEntry, SlotIndex};
 use crate::paxos::PxTerm;
 
@@ -144,7 +144,7 @@ pub struct PxLearner {
 
 impl Default for PxLearner {
     fn default() -> Self {
-        let opt = CrowdbTreeOptions {
+        let opt = CrowdbTreeConfig {
             backend: CrowdbTreeBackend::MemBlock,
             ..Default::default()
         };

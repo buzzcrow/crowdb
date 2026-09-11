@@ -2,8 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 // PT6a: zero-copy slotted frame format + views.
-#include "crowdb-tree/cell.h"
-#include "crowdb-tree/mtable/frame_page.h"
+#include "crowdb-tree/btree/cell.h"
+#include "crowdb-tree/maptable/frame_page.h"
 
 #include <gtest/gtest.h>
 

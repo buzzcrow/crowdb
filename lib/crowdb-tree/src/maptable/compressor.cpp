@@ -3,7 +3,7 @@
 
 // Mapping-table page-compression implementation.
 
-#include "crowdb-tree/mtable/compressor.h"
+#include "crowdb-tree/maptable/compressor.h"
 
 #include "crowdb-common/crc32c.h"
 

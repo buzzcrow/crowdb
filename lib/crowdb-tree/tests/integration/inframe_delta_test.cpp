@@ -43,7 +43,7 @@ std::string make_key(int i)
 TEST(InFrameDelta, ReadOverlayAndFoldReopen)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store        = &store;
     opt.frame_bytes       = 4096;
     opt.inframe_delta     = true;
@@ -106,7 +106,7 @@ TEST(InFrameDelta, ParityWithDefaultMode)
     // The same op stream must produce identical state with in-frame deltas on and
     // off (in-frame deltas are a pure performance variant).
     auto run = [](bool inframe) {
-        Options opt;
+        Config opt;
         opt.frame_bytes       = 4096;
         opt.inframe_delta     = inframe;
         opt.max_inframe_delta = 6;
@@ -141,7 +141,7 @@ TEST(InFrameDelta, MicrobenchVsCowRebuild)
     // Tiny single-key flushes: in-frame deltas avoid a full sorted rebuild each
     // time. We assert both modes agree and report timings (not a hard perf gate).
     auto bench = [](bool inframe) {
-        Options opt;
+        Config opt;
         opt.frame_bytes       = 8192;
         opt.inframe_delta     = inframe;
         opt.max_inframe_delta = 16;

@@ -2,9 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 // PT9.4: readable debug codec exact round-trip.
-#include "crowdb-tree/cell.h"
-#include "crowdb-tree/debug_codec.h"
-#include "crowdb-tree/mtable/frame_page.h"
+#include "crowdb-tree/btree/cell.h"
+#include "crowdb-tree/btree/debug_codec.h"
+#include "crowdb-tree/maptable/frame_page.h"
 
 #include <gtest/gtest.h>
 

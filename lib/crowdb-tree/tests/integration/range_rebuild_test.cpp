@@ -34,7 +34,7 @@ std::map<std::string, std::string> live_entries(Crowdbtree &tree)
 TEST(RangeRebuild, AdjacentChildrenHaveExactUnionAndEmptyIntersection)
 {
     MemPageStore source_store(1);
-    Options      source_options;
+    Config       source_options;
     source_options.page_store       = &source_store;
     source_options.frame_bytes      = 4096;
     source_options.leaf_split_bytes = 256;
@@ -49,8 +49,8 @@ TEST(RangeRebuild, AdjacentChildrenHaveExactUnionAndEmptyIntersection)
 
     MemPageStore left_store(1);
     MemPageStore right_store(1);
-    Options      left_options  = source_options;
-    Options      right_options = source_options;
+    Config       left_options  = source_options;
+    Config       right_options = source_options;
     left_options.page_store    = &left_store;
     right_options.page_store   = &right_store;
     std::unique_ptr<Crowdbtree> left;
@@ -82,7 +82,7 @@ TEST(RangeRebuild, AdjacentChildrenHaveExactUnionAndEmptyIntersection)
 TEST(RangeRebuild, ConcurrentWorkersPublishIndependentTrees)
 {
     MemPageStore source_store(1);
-    Options      source_options;
+    Config       source_options;
     source_options.page_store = &source_store;
     Crowdbtree source(source_options);
     for (uint64_t i = 0; i < 20; ++i) {
@@ -94,7 +94,7 @@ TEST(RangeRebuild, ConcurrentWorkersPublishIndependentTrees)
     MemPageStore low_store(1);
     MemPageStore high_store(1);
     auto         worker = [&source, &source_options](MemPageStore *store, KeyRange range) {
-        Options options    = source_options;
+        Config options     = source_options;
         options.page_store = store;
         std::unique_ptr<Crowdbtree> result;
         Status                      status = rebuild_range(source, range, options, &result);
@@ -116,7 +116,7 @@ TEST(RangeRebuild, ConcurrentWorkersPublishIndependentTrees)
 TEST(RangeRebuild, WhollyContainedTreeReusesNativePageFrames)
 {
     MemPageStore source_store(1);
-    Options      options;
+    Config       options;
     options.page_store       = &source_store;
     options.frame_bytes      = 4096;
     options.leaf_split_bytes = 256;
@@ -143,7 +143,7 @@ TEST(RangeRebuild, WhollyContainedTreeReusesNativePageFrames)
 TEST(RangeRebuild, CopiesOnlyOverflowChainsReferencedByTheChildRange)
 {
     MemPageStore source_store(1);
-    Options      options;
+    Config       options;
     options.page_store       = &source_store;
     options.frame_bytes      = 4096;
     options.max_inline_value = 32;
@@ -177,7 +177,7 @@ TEST(RangeRebuild, CopiesOnlyOverflowChainsReferencedByTheChildRange)
 TEST(RangeRebuild, RewrittenRootAllocatesAboveSourcePageIdHighWater)
 {
     MemPageStore source_store(1);
-    Options      options;
+    Config       options;
     options.page_store       = &source_store;
     options.frame_bytes      = 4096;
     options.leaf_split_bytes = 256;
@@ -210,7 +210,7 @@ TEST(RangeRebuild, RewrittenRootAllocatesAboveSourcePageIdHighWater)
 TEST(RangeRebuild, EmptyAndUnboundedEndpointsUseTheSameHalfOpenPredicate)
 {
     MemPageStore source_store(1);
-    Options      options;
+    Config       options;
     options.page_store = &source_store;
     Crowdbtree                     source(options);
     const std::vector<std::string> keys = {"", "a", "aa", "m", "z", std::string(1, static_cast<char>(0xff))};
@@ -221,7 +221,7 @@ TEST(RangeRebuild, EmptyAndUnboundedEndpointsUseTheSameHalfOpenPredicate)
 
     auto rebuild_keys = [&source, &options](KeyRange range) {
         MemPageStore destination_store(1);
-        Options      destination_options = options;
+        Config       destination_options = options;
         destination_options.page_store   = &destination_store;
         std::unique_ptr<Crowdbtree> destination;
         EXPECT_TRUE(rebuild_range(source, range, destination_options, &destination).ok());
@@ -248,7 +248,7 @@ TEST(RangeRebuild, EmptyAndUnboundedEndpointsUseTheSameHalfOpenPredicate)
 TEST(RangeRebuild, ChildMutationDoesNotChangeTheSourceTree)
 {
     MemPageStore source_store(1);
-    Options      options;
+    Config       options;
     options.page_store = &source_store;
     Crowdbtree source(options);
     ASSERT_TRUE(source.put(Slice("b"), Slice("source")).ok());
@@ -271,7 +271,7 @@ TEST(RangeRebuild, ChildMutationDoesNotChangeTheSourceTree)
 TEST(RangeRebuild, NativeInstallRejectsCrossingSiblingAndMissingChildReferences)
 {
     MemPageStore source_store(1);
-    Options      options;
+    Config       options;
     options.page_store       = &source_store;
     options.frame_bytes      = 4096;
     options.leaf_split_bytes = 256;
@@ -321,7 +321,7 @@ TEST(RangeRebuild, NativeInstallRejectsCrossingSiblingAndMissingChildReferences)
 TEST(RangeRebuild, LazyRecoveryRejectsAResolvedPageOutsideTheTreeRange)
 {
     MemPageStore store(1);
-    Options      options;
+    Config       options;
     options.page_store = &store;
     {
         Crowdbtree source(options);

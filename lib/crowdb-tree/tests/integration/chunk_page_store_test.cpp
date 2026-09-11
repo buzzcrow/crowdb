@@ -39,7 +39,7 @@ TEST(ChunkPageStore, SnapshotPublishesBoundedChecksummedPacksAndReopens)
     ChunkPageStore::Config config{.tree_id = 42, .owner_epoch = 7, .pack_bytes = 4096, .iu_size = 1};
     {
         ChunkPageStore store(config, catalog, transport);
-        Options        options;
+        Config         options;
         options.page_store       = &store;
         options.frame_bytes      = 4096;
         options.leaf_split_bytes = 512;
@@ -75,7 +75,7 @@ TEST(ChunkPageStore, SnapshotPublishesBoundedChecksummedPacksAndReopens)
     }
 
     ChunkPageStore reopened_store(config, catalog, transport);
-    Options        reopened_options;
+    Config         reopened_options;
     reopened_options.page_store       = &reopened_store;
     reopened_options.frame_bytes      = 4096;
     reopened_options.leaf_split_bytes = 512;
@@ -93,7 +93,7 @@ TEST(ChunkPageStore, EpochFailureLeavesPriorRootAndAccountsOrphans)
     auto           catalog   = std::make_shared<MemoryRootCatalog>(3);
     auto           transport = std::make_shared<MemoryChunkTransport>();
     ChunkPageStore store({.tree_id = 9, .owner_epoch = 3, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
-    Options        options;
+    Config         options;
     options.page_store = &store;
     Crowdbtree tree(options);
     ASSERT_TRUE(tree.apply(1, put(1, "a", "old")).ok());
@@ -350,7 +350,7 @@ TEST(ChunkPageStore, AsyncUnavailableRemainsTypedAndDoesNotLatchCorruption)
     auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
     auto           transport = std::make_shared<MemoryChunkTransport>();
     ChunkPageStore store({.tree_id = 15, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
-    Options        options;
+    Config         options;
     options.page_store       = &store;
     options.async_page_store = &store;
     options.frame_bytes      = 4096;

@@ -2,8 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 // CT3: leaf base page tests (build, search, bloom, iteration, boundaries).
-#include "crowdb-tree/cell.h"
-#include "crowdb-tree/mtable/page.h"
+#include "crowdb-tree/btree/cell.h"
+#include "crowdb-tree/maptable/page.h"
 
 #include <gtest/gtest.h>
 

@@ -12,22 +12,25 @@ and structurally safe range rebuild while preserving local tree behavior.
 ## Phase 1: Backend and Completion Boundaries
 
 - [x] **Reorganize sources and headers**: group B+tree, mapping-table page
-  service, and backend implementations under `src/btree/`, `src/mtable/`, and
+  service, memory-table, snapshot, and backend implementations under
+  `src/{btree,maptable,memtable,snapshot}/` and
   `src/backend/{local,chunk}/`; group canonical headers under matching public
-  subfolders and provide an umbrella header. Files:
+  subfolders, keep only shared interfaces at the root, and provide an umbrella
+  header. Files:
   `lib/crowdb-tree/{include,src,CMakeLists.txt}`, `ffi/build.rs`.
 - [x] **Remove forwarding headers**: switch internal and test includes to the
-  canonical `btree/`, `mtable/`, and `backend/` paths, then delete redundant
-  root forwarding headers. Files: `lib/crowdb-tree/include/crowdb-tree/`,
+  canonical subsystem paths, then delete redundant root forwarding headers.
+  Files: `lib/crowdb-tree/include/crowdb-tree/`,
   `lib/crowdb-tree/{src,tests}/`.
 
 - [x] **Decouple async I/O**: make `AsyncPageStore` platform-neutral. Files:
-  `include/crowdb-tree/backend/async_page_store.h`, `include/crowdb-tree/options.h`,
-  `src/block_async_page_store.cpp`, `src/crowdb-tree.cpp`, `src/persist.cpp`.
+  `include/crowdb-tree/backend/async_page_store.h`, `include/crowdb-tree/config.h`,
+  `src/backend/local/block_async_page_store.cpp`, `src/btree/crowdb-tree.cpp`,
+  `src/snapshot/persist.cpp`.
 - [x] **Inject stores**: add opaque store ownership and make `ct_open` consume a
   supplied handle without naming chunk construction. Files:
   `include/crowdb-tree/c_api.h`, `src/c_api.cpp`, `ffi/src/sys.rs`,
-  `ffi/src/options.rs`, `ffi/src/tree.rs`.
+  `ffi/src/config.rs`, `ffi/src/tree.rs`.
 - [x] **Wake all futures**: add one backend-independent completion descriptor
   and use it from C++ and Rust futures. Files: `src/async_completion.cpp`,
   `src/c_api.cpp`, `ffi/src/reactor.rs`, `ffi/src/tree.rs`.
@@ -72,14 +75,15 @@ and structurally safe range rebuild while preserving local tree behavior.
 
 - [x] **Centralize range policy**: validate public operations, recovery, and
   installed pages against immutable bounds. Files:
-  `include/crowdb-tree/btree/key_range.h`, `src/key_range.cpp`,
-  `include/crowdb-tree/options.h`, `src/crowdb-tree.cpp`, `src/persist.cpp`.
+  `include/crowdb-tree/btree/key_range.h`, `src/btree/key_range.cpp`,
+  `include/crowdb-tree/config.h`, `src/btree/crowdb-tree.cpp`,
+  `src/snapshot/persist.cpp`.
 - [ ] **Persist page fences**: encode and verify leaf/inner reachability bounds
   including siblings and overflow chains. Native installation now verifies the
   complete child graph, separator bounds, leaf order, and overflow reachability;
   serialized lower/upper fence keys remain open. Files:
-  `include/crowdb-tree/mtable/frame_page.h`, `src/frame_page.cpp`,
-  `src/page_codec.cpp`.
+  `include/crowdb-tree/maptable/frame_page.h`, `src/maptable/frame_page.cpp`,
+  `src/maptable/page_codec.cpp`.
 - [ ] **Complete range rebuild**: replace whole-snapshot collection with
   bounded native iteration and disjoint-subtree skipping, then reuse immutable
   mapping/reference images while retaining the landed filtered boundary and
@@ -96,11 +100,11 @@ and structurally safe range rebuild while preserving local tree behavior.
 
 - [ ] **Materialize child ownership**: mark reachability, COW shared segments,
   repack shared pages, generation-fence publication, and retry stale work.
-  Files: `src/range_rebuild.cpp`, `src/chunk_manifest.cpp`.
+  Files: `src/btree/range_rebuild.cpp`, `src/backend/chunk/chunk_page_store.cpp`.
 - [ ] **Add observability**: register chunk latency, layout, coalescing, pack,
   rebuild, sharing, retention, publication, recovery, and orphan metrics.
-  Files: `include/crowdb-tree/crowdb-tree.h`, `src/crowdb-tree.cpp`,
-  `src/chunk_page_store.cpp`, `src/range_rebuild.cpp`.
+  Files: `include/crowdb-tree/crowdb-tree.h`, `src/btree/crowdb-tree.cpp`,
+  `src/backend/chunk/chunk_page_store.cpp`, `src/btree/range_rebuild.cpp`.
 - [ ] **Verify retention and races**: cover historical pins, current-lineage
   cleanup, mixed packs, failure retry, stale materialization, reclamation
   watermark, and metric counts. Files:

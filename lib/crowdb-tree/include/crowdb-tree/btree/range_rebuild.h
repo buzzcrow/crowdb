@@ -24,7 +24,7 @@ struct RangeRebuildStats
 // Build an independently mutable tree whose physical structure contains only
 // keys in `range`. The source snapshot is pinned for the iterator lifetime and
 // the destination publishes only after its own complete snapshot succeeds.
-Status rebuild_range(Crowdbtree &source, const KeyRange &range, Options destination_options,
+Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destination_options,
                      std::unique_ptr<Crowdbtree> *out, RangeRebuildStats *stats = nullptr);
 
 } // namespace crowdb::tree

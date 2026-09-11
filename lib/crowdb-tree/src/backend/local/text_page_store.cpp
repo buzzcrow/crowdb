@@ -5,8 +5,8 @@
 
 #include "crowdb-tree/backend/text_page_store.h"
 
-#include "crowdb-tree/debug_codec.h"
-#include "crowdb-tree/text_codec.h"
+#include "crowdb-tree/backend/text_codec.h"
+#include "crowdb-tree/btree/debug_codec.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>

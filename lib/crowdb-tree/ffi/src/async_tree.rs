@@ -12,7 +12,7 @@ use crate::reactor::{
 use crate::scan::{decode_scan, ScanEntry};
 use crate::sys;
 use crate::tree::Crowdbtree;
-use crate::Options;
+use crate::Config;
 
 /// Async facade. `get`/`flush`/`snapshot`/`scan` drive the engine's io_uring
 /// reactor directly via [`drive_ct_future`] -- no thread pool hop. The
@@ -25,7 +25,7 @@ pub struct AsyncCrowdbtree {
 }
 
 impl AsyncCrowdbtree {
-    pub fn open(opt: &Options) -> Result<Self, CtError> {
+    pub fn open(opt: &Config) -> Result<Self, CtError> {
         Ok(Self {
             inner: Arc::new(Crowdbtree::open(opt)?),
         })

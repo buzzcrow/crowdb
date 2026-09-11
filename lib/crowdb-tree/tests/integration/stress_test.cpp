@@ -37,7 +37,7 @@ std::string make_key(int i)
 TEST(Stress, ConcurrentDemandLoadAfterRecovery)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 160;
@@ -86,7 +86,7 @@ TEST(Stress, ConcurrentDemandLoadAfterRecovery)
 
 TEST(Stress, ConcurrentReadersSingleWriter)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len    = 2;
     opt.leaf_split_bytes = 160;
     opt.leaf_merge_bytes = 50;
@@ -184,7 +184,7 @@ TEST(Stress, ConcurrentReadersSingleWriter)
 // (run under TSan/ASan).
 TEST(Stress, ConcurrentScanDuringChurnNoCorruption)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len    = 2;
     opt.leaf_split_bytes = 160;
     opt.leaf_merge_bytes = 50;
@@ -270,7 +270,7 @@ TEST(Stress, ConcurrentScanDuringChurnNoCorruption)
 // that couldn't have existed at any real point in time).
 TEST(Stress, ConcurrentSnapshotViewDuringChurnNoCorruption)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len    = 2;
     opt.leaf_split_bytes = 160;
     opt.leaf_merge_bytes = 50;

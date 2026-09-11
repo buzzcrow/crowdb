@@ -16,6 +16,11 @@
 namespace crowdb::tree
 {
 
+using PageAddr = uint64_t;
+
+// Sentinel address for a page that has not been assigned durable storage.
+inline constexpr PageAddr kNoAddr = ~0ULL;
+
 inline constexpr uint64_t kInvalidPageId = ~0ULL;
 
 enum class page_type : uint8_t {
@@ -54,7 +59,7 @@ struct PageBase
     uint64_t parent_page_id = kInvalidPageId;
 
     // Durable backing of THIS base page's current frame bytes (PT6d). `~0ull`
-    // (== kNoAddr in buffer_pool.h) means dirty/anonymous: the live frame is not
+    // (== kNoAddr above) means dirty/anonymous: the live frame is not
     // yet durable. Set on demand-load (clean) and by snapshot after a write;
     // a freshly built page leaves it dirty. A page is snapshot-clean (and thus
     // evictable) iff it is a base, has no deltas above it, and

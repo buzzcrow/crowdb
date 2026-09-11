@@ -3,8 +3,8 @@
 
 // PT9: IU block alignment (9.1-9.3) + debug store/codec on real frames (9.5).
 #include "crowdb-tree/backend/page_store.h"
+#include "crowdb-tree/btree/debug_codec.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/debug_codec.h"
 
 #include <gtest/gtest.h>
 
@@ -44,7 +44,7 @@ void fill_buf(Crowdbtree *t, int K, std::map<std::string, std::string> *oracle)
 TEST(Alignment, Iu4096CheckpointReopenEquals)
 {
     MemPageStore store(4096); // aligned block device
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.frame_bytes      = 4096; // frame_bytes % iu == 0
     opt.max_delta_len    = 1;
@@ -74,7 +74,7 @@ TEST(Alignment, Iu4096CheckpointReopenEquals)
 TEST(Alignment, Iu4096AllocatorReuseStaysAligned)
 {
     MemPageStore store(4096);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.frame_bytes      = 4096;
     opt.max_delta_len    = 1;
@@ -106,7 +106,7 @@ TEST(Alignment, RejectsFrameNotIuAligned)
     // The only geometry constraint now is frame_bytes % iu == 0 (the superblock
     // slot is IU-rounded, so any IU is supported).
     MemPageStore store(512);
-    Options      opt;
+    Config       opt;
     opt.page_store  = &store;
     opt.frame_bytes = 4097; // not a multiple of 512
     std::unique_ptr<Crowdbtree> t;
@@ -118,7 +118,7 @@ TEST(Alignment, RejectsFrameNotIuAligned)
 TEST(Alignment, LargeIu16KCheckpointReopen)
 {
     MemPageStore store(16384);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.frame_bytes      = 16384; // frame_bytes % iu == 0
     opt.max_delta_len    = 1;
@@ -149,7 +149,7 @@ TEST(Alignment, LargeIu16KCheckpointReopen)
 TEST(Alignment, NonPowerOfTwoIuRoundTrip)
 {
     MemPageStore store(5000);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.frame_bytes      = 10000; // 10000 % 5000 == 0
     opt.max_delta_len    = 1;
@@ -175,7 +175,7 @@ TEST(Alignment, DebugStoreTransparentRoundTrip)
 {
     MemPageStore   inner(1);
     DebugPageStore dbg(&inner);
-    Options        opt;
+    Config         opt;
     opt.page_store       = &dbg;
     opt.frame_bytes      = 4096;
     opt.max_delta_len    = 1;

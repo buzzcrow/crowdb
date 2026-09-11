@@ -46,7 +46,7 @@ void fill(Crowdbtree *t, int K, std::map<std::string, std::string> *oracle)
 TEST(IncrementalCheckpoint, SecondCheckpointWithoutChangesWritesNothing)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 160;
@@ -68,7 +68,7 @@ TEST(IncrementalCheckpoint, SecondCheckpointWithoutChangesWritesNothing)
 TEST(IncrementalCheckpoint, SingleKeyEditRewritesOnlyItsPath)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 160;
@@ -103,7 +103,7 @@ TEST(IncrementalCheckpoint, SingleKeyEditRewritesOnlyItsPath)
 TEST(IncrementalCheckpoint, OnlyDirtySegmentsAreRewritten)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 160;
@@ -139,7 +139,7 @@ TEST(IncrementalCheckpoint, OnlyDirtySegmentsAreRewritten)
 TEST(IncrementalCheckpoint, MultiSegmentTreeOnlyRewritesTouchedSegment)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 160;
@@ -165,7 +165,7 @@ TEST(IncrementalCheckpoint, MultiSegmentTreeOnlyRewritesTouchedSegment)
 TEST(IncrementalCheckpoint, SpaceIsReusedAcrossManyCheckpoints)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 160;
@@ -217,7 +217,7 @@ TEST(IncrementalCheckpoint, SpaceIsReusedAcrossManyCheckpoints)
 TEST(IncrementalCheckpoint, ReopenAfterIncrementalSeesAllValues)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 160;
@@ -257,7 +257,7 @@ TEST(IncrementalCheckpoint, ReopenAfterIncrementalSeesAllValues)
 TEST(IncrementalCheckpoint, SnapshotPagesTotalAccumulates)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 160;

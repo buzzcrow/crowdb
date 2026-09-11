@@ -1,12 +1,12 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-// Options: tunables for consolidation, flush triggers, and page split/merge.
+// Config: tunables for consolidation, flush triggers, and page split/merge.
 // Defaults follow the core engine design.
 #pragma once
 
 #include "crowdb-tree/btree/key_range.h"
-#include "crowdb-tree/mtable/compressor.h"
+#include "crowdb-tree/maptable/compressor.h"
 
 #ifdef CROWDB_HAVE_LIBURING
 #    include "crowdb-common/diskio_uring.h"
@@ -22,7 +22,7 @@ namespace crowdb::tree
 class PageStore;
 class AsyncPageStore;
 
-struct Options
+struct Config
 {
     // ── Consolidation (core doc §7) ──
     // Fold a leaf's delta chain into a fresh base when either threshold trips.

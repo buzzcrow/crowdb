@@ -15,7 +15,7 @@ namespace crowdb::tree
 {
 // Metrics core moved to crowdb-common::metrics (R12); bring the moved types
 // into `crowdb-tree` so the test's unqualified `Counter`/`Gauge`/... references
-// resolve. `Crowdbtree`/`Options`/`Batch`/`MemPageStore` stay in `crowdb-tree`.
+// resolve. `Crowdbtree`/`Config`/`Batch`/`MemPageStore` stay in `crowdb-tree`.
 using namespace crowdb::common::metrics;
 
 namespace
@@ -230,7 +230,7 @@ TEST(MetricsRegistry, FlushFormat)
 TEST(MetricsRegistry, FlushMetricsStrFormat)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store = &store;
     Crowdbtree t(opt);
     t.init_metrics("s.0.g.0", "mem");

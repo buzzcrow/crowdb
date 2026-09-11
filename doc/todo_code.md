@@ -23,8 +23,8 @@ when adding or resolving a tracked item.
 
 ## crowdb-tree
 
-- **`lib/crowdb-tree/include/crowdb-tree/mtable/mapping_table.h:120`** —
-  `Options::mapping_segment_slots` is fixed at `kSegmentSize`; needs
+- **`lib/crowdb-tree/include/crowdb-tree/maptable/mapping_table.h:120`** —
+  `Config::mapping_segment_slots` is fixed at `kSegmentSize`; needs
   parameterization for variable segment slot counts.
 ## crowdb-chunk-client
 

@@ -55,7 +55,7 @@ TEST(CrashRecovery, FaultInjectedWriteFailureLeavesPreviousGenerationIntact)
 {
     MemPageStore    mem(1);
     FaultyPageStore store(&mem);
-    Options         opt;
+    Config          opt;
     opt.page_store = &store;
 
     std::unique_ptr<Crowdbtree> t;
@@ -102,7 +102,7 @@ TEST(CrashRecovery, DroppedSegmentImageFailsReopenEvenThoughAnchorCommitted)
 {
     MemPageStore    mem(1);
     FaultyPageStore store(&mem);
-    Options         opt;
+    Config          opt;
     opt.page_store = &store;
 
     std::unique_ptr<Crowdbtree> t;
@@ -138,7 +138,7 @@ TEST(CrashRecovery, DroppedSegmentImageFailsReopenEvenThoughAnchorCommitted)
 TEST(CrashRecovery, TwoGenerationFallbackWithOverflowAndCompression)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.compression      = compress_algo::kLz4;
     opt.frame_bytes      = 4096;
@@ -188,7 +188,7 @@ TEST(CrashRecovery, TwoGenerationFallbackWithOverflowAndCompression)
 TEST(CrashRecovery, AlignedTwoGenerationFallback)
 {
     MemPageStore store(4096);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.frame_bytes      = 4096;
     opt.max_delta_len    = 1;
@@ -231,7 +231,7 @@ TEST(CrashRecovery, AlignedTwoGenerationFallback)
 TEST(CrashRecovery, DemandLoadCorruptionLatched)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.frame_bytes      = 4096;
     opt.max_delta_len    = 1;
@@ -281,7 +281,7 @@ TEST(CrashRecovery, FileTornSuperblockFallsBack)
     {
         std::unique_ptr<BlockPageStore> store;
         ASSERT_TRUE(BlockPageStore::open_blocks(path, 0, 0, 8 * 1024 * 1024, 1, &store).ok());
-        Options opt;
+        Config opt;
         opt.page_store       = store.get();
         opt.frame_bytes      = 4096;
         opt.compression      = compress_algo::kLz4;
@@ -314,7 +314,7 @@ TEST(CrashRecovery, FileTornSuperblockFallsBack)
     {
         std::unique_ptr<BlockPageStore> store;
         ASSERT_TRUE(BlockPageStore::open_blocks(path, 0, 0, 8 * 1024 * 1024, 1, &store).ok());
-        Options opt;
+        Config opt;
         opt.page_store  = store.get();
         opt.frame_bytes = 4096;
         opt.compression = compress_algo::kLz4;

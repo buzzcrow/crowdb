@@ -7,7 +7,7 @@ use std::sync::Arc;
 use crate::error::{check, CtError};
 use crate::sys;
 
-/// Owning handle for a backend injected into [`Options`]. The C++ tree retains
+/// Owning handle for a backend injected into [`Config`]. The C++ tree retains
 /// the underlying backend independently when opened, so this handle may be
 /// dropped immediately after `Crowdbtree::open` returns.
 pub struct PageStore {
@@ -54,7 +54,7 @@ pub enum Compression {
 }
 
 /// Durable backend selection, mirrors `ct_options::backend`.
-/// Ignored when `Options::path` is `None` (in-memory).
+/// Ignored when `Config::path` is `None` (in-memory).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PageStoreBackend {
     /// File-based page store, no alignment.
@@ -103,7 +103,7 @@ pub enum KeyRange {
 
 /// Engine configuration. `path = None` selects an in-memory store.
 #[derive(Debug, Clone, Default)]
-pub struct Options {
+pub struct Config {
     /// Optional injected durable backend. When set, `path` and `backend` are
     /// ignored by the C++ constructor.
     pub page_store: Option<Arc<PageStore>>,

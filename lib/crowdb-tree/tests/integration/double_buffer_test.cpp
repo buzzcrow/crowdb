@@ -50,7 +50,7 @@ std::string make_key(int i)
 // by the swap itself -- only an actual flush() drains anything.
 TEST(DoubleBuffer, ThresholdSwapKeepsAllEntriesReadable)
 {
-    Options opt;
+    Config opt;
     opt.memtable_flush_entries = 2; // force a freeze every couple of applies
     Crowdbtree t(opt);
 
@@ -86,7 +86,7 @@ TEST(DoubleBuffer, ThresholdSwapKeepsAllEntriesReadable)
 // single-table case).
 TEST(DoubleBuffer, NonContiguousLeftoverSurvivesAcrossFreezeGenerations)
 {
-    Options opt;
+    Config opt;
     opt.memtable_flush_entries = 1; // freeze after every single apply
     Crowdbtree t(opt);
 
@@ -128,7 +128,7 @@ TEST(DoubleBuffer, NonContiguousLeftoverSurvivesAcrossFreezeGenerations)
 // with no user-visible behavior difference besides that).
 TEST(DoubleBuffer, SupportsMoreThanTwoBuffersAndFlushesAllOfThemCorrectly)
 {
-    Options opt;
+    Config opt;
     opt.max_memtable_count     = 4; // active_ + up to 3 queued frozen_ buffers
     opt.memtable_flush_entries = 1; // freeze after every single apply
     Crowdbtree t(opt);
@@ -164,7 +164,7 @@ TEST(DoubleBuffer, SupportsMoreThanTwoBuffersAndFlushesAllOfThemCorrectly)
 // active_/frozen_ member comment's "Read-side correctness" paragraph.
 TEST(DoubleBuffer, GetAndScanResolveHighestSlotAcrossOutOfOrderFreezeBoundary)
 {
-    Options opt;
+    Config opt;
     opt.memtable_flush_entries = 1; // freeze after every single apply
     Crowdbtree t(opt);
 
@@ -198,7 +198,7 @@ TEST(DoubleBuffer, GetAndScanResolveHighestSlotAcrossOutOfOrderFreezeBoundary)
 // TSan/ASan to catch races/UAF in the active_/frozen_ swap + drain path.
 TEST(DoubleBuffer, ConcurrentReadersDuringFrequentFreezeAndDrainNoCorruption)
 {
-    Options opt;
+    Config opt;
     opt.memtable_flush_entries = 4; // freeze/drain every few applies
     opt.max_memtable_count     = 3;
     Crowdbtree t(opt);
@@ -293,7 +293,7 @@ TEST(DoubleBuffer, ConcurrentReadersDuringFrequentFreezeAndDrainNoCorruption)
 // SupportsMoreThanTwoBuffersAndFlushesAllOfThemCorrectly above.
 TEST(DoubleBuffer, ScanMergeLoserTreeWithMultipleFrozenMemtables)
 {
-    Options opt;
+    Config opt;
     opt.max_memtable_count     = 6; // active_ + up to 5 queued frozen_ buffers
     opt.memtable_flush_entries = 1; // freeze after every single apply
     Crowdbtree t(opt);
@@ -343,7 +343,7 @@ TEST(DoubleBuffer, ScanMergeLoserTreeWithMultipleFrozenMemtables)
 // keys (no collisions, just k-way interleaving).
 TEST(DoubleBuffer, ScanMergeLoserTreeDistinctKeysAcrossFrozenMemtables)
 {
-    Options opt;
+    Config opt;
     opt.max_memtable_count     = 6;
     opt.memtable_flush_entries = 1;
     Crowdbtree t(opt);
@@ -377,7 +377,7 @@ TEST(DoubleBuffer, ScanMergeLoserTreeDistinctKeysAcrossFrozenMemtables)
 // resolve to highest-slot-wins after flush, with no duplicates or missing keys.
 TEST(DoubleBuffer, MergedDrainDedupAcrossFrozenMemtables)
 {
-    Options opt;
+    Config opt;
     opt.max_memtable_count     = 6;
     opt.memtable_flush_entries = 1; // freeze after every single apply
     Crowdbtree t(opt);
@@ -441,7 +441,7 @@ TEST(DoubleBuffer, MergedDrainDedupAcrossFrozenMemtables)
 // key is readable and the scan is strictly ordered with no duplicates.
 TEST(DoubleBuffer, SortAwareDescentAcrossLeafBoundariesWithSplits)
 {
-    Options opt;
+    Config opt;
     opt.max_memtable_count     = 6;
     opt.memtable_flush_entries = 50;  // freeze after 50 entries
     opt.leaf_split_bytes       = 512; // small leaves → many splits during flush
@@ -494,7 +494,7 @@ TEST(DoubleBuffer, SortAwareDescentAcrossLeafBoundariesWithSplits)
 // behavior documented in the maybe_freeze_active error log path.
 TEST(DoubleBuffer, FrozenQueueFullActiveKeepsGrowingEntriesReadable)
 {
-    Options opt;
+    Config opt;
     opt.max_memtable_count     = 2; // 1 active + 1 frozen slot
     opt.memtable_flush_entries = 3;
     Crowdbtree t(opt);
@@ -529,7 +529,7 @@ TEST(DoubleBuffer, FrozenQueueFullActiveKeepsGrowingEntriesReadable)
 // thresholds, even a modest number of keys creates a multi-level tree.
 TEST(DoubleBuffer, ParentPointersCorrectAfterSplitsAndMerges)
 {
-    Options opt;
+    Config opt;
     opt.leaf_split_bytes   = 256; // small leaves → many splits
     opt.max_delta_len      = 2;   // frequent consolidates → splits during drain
     opt.max_memtable_count = 6;
@@ -613,7 +613,7 @@ TEST(DoubleBuffer, ParentPointersCorrectAfterSplitsAndMerges)
 // catches any that freeze during the drain itself.
 TEST(DoubleBuffer, FlushDrainsAllFrozenMemtablesInOneCall)
 {
-    Options opt;
+    Config opt;
     opt.memtable_flush_entries = 5; // small threshold → frequent freezes
     opt.max_memtable_count     = 10;
     Crowdbtree t(opt);
@@ -641,7 +641,7 @@ TEST(DoubleBuffer, FlushDrainsAllFrozenMemtablesInOneCall)
 // No data loss — the next flush() drains the rest.
 TEST(DoubleBuffer, FlushIterationCapExitsCleanly)
 {
-    Options opt;
+    Config opt;
     opt.memtable_flush_entries = 3; // tiny threshold → many freezes
     opt.max_memtable_count     = 2; // 1 active + 1 frozen slot; cap = 2
     Crowdbtree t(opt);

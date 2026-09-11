@@ -50,12 +50,12 @@ wholly inside the target range.
    C++ `crowdb-rpc`; it is not a public C++ chunk client. Keep its source in an
    isolated translation unit inside the same static `libcrowdb-tree.a` as the
    local backends. Organize private implementation files by subsystem under
-   `src/btree/`, `src/mtable/`, and `src/backend/`, with concrete local and
+   `src/{btree,maptable,memtable,snapshot,backend}/`, with concrete local and
    chunk stores below `src/backend/local/` and `src/backend/chunk/`. Group
-   canonical public interfaces below
-   `include/crowdb-tree/{btree,mtable,backend}/`; do not retain redundant flat
-   forwarding headers. `include/crowdb-tree/crowdb-tree.h` is the umbrella C++
-   interface. Both
+   canonical public interfaces below matching subsystem directories; do not
+   retain redundant flat forwarding headers. Keep only the umbrella, ABI,
+   configuration, status, and shared primitives at the include root.
+   `include/crowdb-tree/crowdb-tree.h` is the umbrella C++ interface. Both
    CMake and `crowdb-tree-ffi/build.rs` continue discovering sources
    recursively. Add an opaque backend handle to the C ABI so the Rust caller
    selects and supplies the store when creating a tree. Do not use a Cargo
@@ -400,7 +400,7 @@ or second tree library.
   Chunk storage instead needs immutable page-pack references resolved through a
   manifest; it cannot faithfully implement the current byte-device contract.
 - `AsyncPageStore` already has callback-based read, write, and barrier methods,
-  but its use in `Options`, demand loading, and snapshot writing is gated by
+  but its use in `Config`, demand loading, and snapshot writing is gated by
   `CROWDB_HAVE_LIBURING`. `ct_open` constructs only
   `BlockAsyncPageStore`, paired with `DiskIOUring`.
 - Rust async tree futures currently wait only on fds returned by
@@ -422,10 +422,10 @@ or second tree library.
 
 The backend source lives in `lib/crowdb-tree/src/backend/chunk/` and remains
 private to the tree engine. Local stores live under `src/backend/local/`, while
-B+tree and mapping-table page-service implementation files live under
-`src/btree/` and `src/mtable/`. Public interfaces are grouped under matching
-subdirectories without flat forwarding headers; callers use the canonical
-subsystem path or the umbrella.
+B+tree, mapping-table, memory-table, and snapshot implementation files live
+under `src/btree/`, `src/maptable/`, `src/memtable/`, and `src/snapshot/`.
+Public interfaces are grouped under matching subdirectories without flat
+forwarding headers; callers use the canonical subsystem path or the umbrella.
 CMake and `crowdb-tree-ffi/build.rs` recursively compile the isolated backend
 object into the same static `libcrowdb-tree.a`; crowdb-tree is not a shared
 library and the backend is not loaded dynamically. Backend selection happens

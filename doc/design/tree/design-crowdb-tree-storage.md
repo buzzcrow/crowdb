@@ -347,8 +347,8 @@ the backend IU). All frames in a pool are the same size, so the buffer pool
 space spills to an **overflow chain**; the overflow policy is tiered:
 inline (≤ frame payload, zero-copy), small overflow (frame limit < v ≤ 1 MB,
 spill + warn), large overflow (1 MB < v ≤ 16 MB, spill + warn), rejected
-(> 16 MB, reject as a likely bug). Defaults: `Options.max_overflow_value` =
-1 MB, `Options.max_value_hard_limit` = 16 MB.
+(> 16 MB, reject as a likely bug). Defaults: `Config.max_overflow_value` =
+1 MB, `Config.max_value_hard_limit` = 16 MB.
 
 ### 3.2 Slotted layout
 
@@ -407,7 +407,7 @@ leaf mutation already produces a fresh frame anyway).
 
 ### 3.6 Compression details
 
-`Options.compression` defaults to `kNone`; LZ4 is opt-in (`kLz4`) so behavior
+`Config.compression` defaults to `kNone`; LZ4 is opt-in (`kLz4`) so behavior
 is deterministic across build environments rather than depending on what the
 build machine happens to have installed. The algorithm id is recorded per
 page, so mixed pages decode correctly regardless of the option in force when

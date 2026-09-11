@@ -13,7 +13,7 @@ use crowdb_kv::cluster::group_election::LeaderElection;
 use crowdb_kv::cluster::local_replica::{PxLocalReplica, PxLocalReplicaRole};
 use crowdb_kv::cluster::node_config::NodeConfigStore;
 use crowdb_kv::common::config::{CrowDBConfig, WalConfig};
-use crowdb_kv::kv::{CrowdbTreeBackend, CrowdbTreeEngine, CrowdbTreeOptions, KVEngine};
+use crowdb_kv::kv::{CrowdbTreeBackend, CrowdbTreeConfig, CrowdbTreeEngine, KVEngine};
 use crowdb_kv::wal::replay::replay_group;
 use crowdb_kv::wal::{IoBackend, WalEngine};
 
@@ -98,7 +98,7 @@ async fn open_crowdb_tree_engine(
         tokio::fs::create_dir_all(parent).await?;
     }
     tokio::fs::create_dir_all(&path).await?;
-    let opt = CrowdbTreeOptions {
+    let opt = CrowdbTreeConfig {
         path: Some(path.to_string_lossy().into_owned()),
         backend,
         store_id: u32::try_from(store_id).unwrap_or(0),

@@ -136,14 +136,19 @@ physical strip release.
 Private C++ implementation files are grouped by subsystem:
 
 - `src/btree/` contains tree algorithms, ranges, and rebuild;
-- `src/mtable/` contains mapping persistence, page frames, codecs, and the
-  mapping-table page service; and
+- `src/maptable/` contains mapping persistence, page frames, codecs, and the
+  mapping-table page service;
+- `src/memtable/` contains the in-memory write buffer and ordered index;
+- `src/snapshot/` contains snapshot encoding, export, recovery, and persistence;
+  and
 - `src/backend/` contains backend-neutral adapters, with concrete local and
   chunk implementations below `src/backend/local/` and
   `src/backend/chunk/`.
 
-Canonical public headers follow the same `btree/`, `mtable/`, and `backend/`
-grouping. `include/crowdb-tree/crowdb-tree.h` is the umbrella C++ interface;
+Canonical public headers follow the same `btree/`, `maptable/`, `memtable/`,
+`snapshot/`, and `backend/` grouping. The include root retains only the
+umbrella, C ABI, configuration, status, and genuinely cross-subsystem
+primitives. `include/crowdb-tree/crowdb-tree.h` is the umbrella C++ interface;
 callers needing a narrow interface include its canonical subsystem path. Flat
 forwarding headers are not retained. Implementation-only contracts remain
 below `src/`. CMake and the Rust FFI build recurse below `src/`, so directory
@@ -152,14 +157,15 @@ grouping does not change archive composition.
 ## Scope
 
 - `third-party/stdexec/`: repository-pinned sender implementation.
-- `lib/crowdb-tree/include/crowdb-tree/{backend,btree,mtable}/` and
-  `lib/crowdb-tree/include/crowdb-tree/{c_api,options,status}.h`:
-  canonical backend, tree, mapping-page, and typed interfaces.
-- `lib/crowdb-tree/src/{btree,mtable,backend}/`: grouped private tree,
-  mapping, local-backend, and chunk-backend implementation.
+- `lib/crowdb-tree/include/crowdb-tree/{backend,btree,maptable,memtable,snapshot}/`
+  and `lib/crowdb-tree/include/crowdb-tree/{c_api,config,status}.h`: canonical
+  backend, tree, mapping-page, memory-table, snapshot, and typed interfaces.
+- `lib/crowdb-tree/src/{btree,maptable,memtable,snapshot,backend}/`: grouped
+  private tree, mapping, memory-table, snapshot, local-backend, and
+  chunk-backend implementation.
 - `lib/crowdb-tree/src/{c_api,async_completion,stdexec_adapter}.*`: C ABI and
   cross-backend completion infrastructure.
-- `lib/crowdb-tree/ffi/{build.rs,src/options.rs,src/sys.rs,src/tree.rs,src/error.rs}`:
+- `lib/crowdb-tree/ffi/{build.rs,src/config.rs,src/sys.rs,src/tree.rs,src/error.rs}`:
   C ABI construction and completion integration.
 - `lib/crowdb-tree/{CMakeLists.txt,tests/unit,tests/integration}`: build wiring
   and acceptance coverage.
@@ -212,11 +218,15 @@ lib/crowdb-tree/
 ├── include/crowdb-tree/
 │   ├── crowdb-tree.h             umbrella C++ interface
 │   ├── btree/                    tree and range interfaces
-│   ├── mtable/                   mapping-table page service
+│   ├── maptable/                 mapping-table page service
+│   ├── memtable/                 in-memory write buffer
+│   ├── snapshot/                 snapshot and persistence interfaces
 │   └── backend/                  backend-neutral store interfaces
 ├── src/
-│   ├── btree/                    tree algorithms, frames, range rebuild
-│   ├── mtable/                   mapping and page services
+│   ├── btree/                    tree algorithms and range rebuild
+│   ├── maptable/                 mapping and page services
+│   ├── memtable/                 memory-table implementation
+│   ├── snapshot/                 snapshot encoding and persistence
 │   ├── backend/
 │   │   ├── local/                memory, text, and block stores
 │   │   └── chunk/                RPC backend, manifests, page packs

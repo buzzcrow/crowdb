@@ -36,7 +36,7 @@ std::string get_or(Crowdbtree &t, const std::string &k, const std::string &dflt)
 
 TEST(WritePath, BasePagesLiveInBufferPool)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len     = 1;    // consolidate into base frames quickly
     opt.leaf_split_bytes  = 200;  // small leaves -> multiple leaf + inner frames
     opt.frame_bytes       = 4096; // small frames so a few hold these tiny pages
@@ -80,7 +80,7 @@ TEST(WritePath, BasePagesLiveInBufferPool)
 // rather than adding a new one -- never needing a snapshot to bound it.
 TEST(WritePath, WriteStormToBoundedKeySetKeepsDirtyMemoryBounded)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len    = 1;    // consolidate into base frames every write
     opt.leaf_split_bytes = 4000; // generous -- this test wants zero splits, ever
     opt.frame_bytes      = 4096;
@@ -223,7 +223,7 @@ TEST(WritePath, DeleteTombstone)
 
 TEST(WritePath, ConsolidationOnLongChain)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len = 4; // force consolidation quickly
     Crowdbtree t(opt);
     for (uint64_t s = 1; s <= 20; ++s) {

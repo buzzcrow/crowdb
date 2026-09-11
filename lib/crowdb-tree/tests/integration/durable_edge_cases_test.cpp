@@ -23,9 +23,9 @@ Batch put_one(const std::string &k, const std::string &v)
     return Batch{{{.key = k, .kind = OpKind::kPut, .value = v}}};
 }
 
-Options edge_opts(PageStore *s)
+Config edge_opts(PageStore *s)
 {
-    Options o;
+    Config o;
     o.page_store       = s;
     o.compression      = compress_algo::kLz4;
     o.frame_bytes      = 4096;
@@ -49,7 +49,7 @@ void check_all(Crowdbtree *t, const std::map<std::string, std::string> &oracle)
 TEST(DurableEdgeCases, EmptyAndBinaryValuesReopen)
 {
     MemPageStore store(1);
-    Options      opt = edge_opts(&store);
+    Config       opt = edge_opts(&store);
 
     std::map<std::string, std::string> oracle;
     uint64_t                           slot = 0;
@@ -81,7 +81,7 @@ TEST(DurableEdgeCases, EmptyAndBinaryValuesReopen)
 TEST(DurableEdgeCases, OversizedKeyRejectedNormalKeysDurable)
 {
     MemPageStore store(1);
-    Options      opt = edge_opts(&store);
+    Config       opt = edge_opts(&store);
 
     // plan-tree #15: a key larger than max_key_size (default frame_bytes/2) is now
     // rejected at apply() as a caller bug, rather than heap-fell-back into an
@@ -113,7 +113,7 @@ TEST(DurableEdgeCases, OversizedKeyRejectedNormalKeysDurable)
 TEST(DurableEdgeCases, OverflowChunkBoundarySizes)
 {
     MemPageStore store(1);
-    Options      opt = edge_opts(&store);
+    Config       opt = edge_opts(&store);
 
     // Values exactly at, one below, and one above an overflow chunk boundary.
     const uint32_t                     cap = overflow_chunk_cap(opt.frame_bytes); // payload per frame

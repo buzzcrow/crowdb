@@ -52,9 +52,9 @@ std::string big_val(size_t n, uint32_t seed)
     return s;
 }
 
-Options overflow_opts(PageStore *store)
+Config overflow_opts(PageStore *store)
 {
-    Options opt;
+    Config opt;
     opt.page_store       = store;
     opt.frame_bytes      = 4096; // chunk cap ~4024 -> easy multi-frame chains
     opt.max_inline_value = 64;   // spill anything bigger than 64 bytes
@@ -67,7 +67,7 @@ Options overflow_opts(PageStore *store)
 TEST(Overflow, PutGetScanReopenMultiFrame)
 {
     MemPageStore store(1);
-    Options      opt = overflow_opts(&store);
+    Config       opt = overflow_opts(&store);
 
     // Sizes spanning chain boundaries: <1 chunk, exactly 1, just over 1, several,
     // and a multi-MiB value.
@@ -122,7 +122,7 @@ TEST(Overflow, PutGetScanReopenMultiFrame)
 TEST(Overflow, EvictionReload)
 {
     MemPageStore store(1);
-    Options      opt = overflow_opts(&store);
+    Config       opt = overflow_opts(&store);
     Crowdbtree   t(opt);
 
     std::map<std::string, std::string> oracle;
@@ -148,7 +148,7 @@ TEST(Overflow, EvictionReload)
 TEST(Overflow, OverwriteAndDeleteRetiresChains)
 {
     MemPageStore store(1);
-    Options      opt = overflow_opts(&store);
+    Config       opt = overflow_opts(&store);
     {
         Crowdbtree        t(opt);
         uint64_t          slot = 0;
@@ -207,7 +207,7 @@ TEST(Overflow, OverwriteAndDeleteRetiresChains)
 TEST(Overflow, ParityVsOracle)
 {
     // Pure in-memory engine; overflow chains live in the pool/heap.
-    Options opt;
+    Config opt;
     opt.frame_bytes      = 4096;
     opt.max_inline_value = 48;
     opt.max_delta_len    = 2;

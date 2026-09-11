@@ -17,9 +17,9 @@
 // until the PinnedSnapshot is dropped — on any thread.
 #pragma once
 
-#include "crowdb-tree/cell.h"
-#include "crowdb-tree/mtable/page.h"
-#include "crowdb-tree/mtable/page_types.h"
+#include "crowdb-tree/btree/cell.h"
+#include "crowdb-tree/maptable/page.h"
+#include "crowdb-tree/maptable/page_types.h"
 #include "crowdb-tree/slice.h"
 
 #include <cstdint>
