@@ -534,8 +534,25 @@ Required gates:
 - `pixi run -- cargo test -p crowdb-chunk-kv --all-targets`
 - `pixi run clean-env && pixi run test-server`
 
-## Open Questions
+## Open Issues
 
-None. The remaining work is implementation, integration, empirical tuning, or
-environment repair and is tracked in
-[`../working/plan-chunk-kv-library.md`](../working/plan-chunk-kv-library.md).
+- Production construction is not end-to-end until R141 has its production
+  `StreamChunkStore` and direct mirror writer. `CrowdbPartitionTree` and the
+  KV-backed R141 metadata adapters exist, but the chunk-KV server does not yet
+  assemble them into a durable partition handle.
+- Point get, min-position waiting, and bounded forward scan are implemented.
+  Ceiling/higher, floor/lower, and reverse scan remain open because the native
+  tree interface still lacks the required inclusive and reverse L0/L1 cursor;
+  they must not be emulated with a racy Rust get-plus-scan or full materialize
+  and sort.
+- Split currently validates plans, fences/drains admission, and resolves exact
+  typed commit/abort proofs, but the R140 range rebuild, serving delta replay,
+  child checkpoint/stream creation, base pins, lag budgets, and prepared-child
+  activation are not yet implemented.
+- Checkpoint replay and retry-retention frontiers are enforced, while durable
+  checkpoint catalog publication, pin-aware R141 trim watermarks, maintenance
+  retry policy, and orphan reporting still need production lifecycle wiring.
+- Existing counters cover mutation outcomes, range/epoch/admission rejects,
+  stalls, recovery, checkpoints, and split control. Ordered-operation,
+  maintenance, pin, detailed split-work, latency, and memory metrics plus
+  evidence-based benchmark thresholds remain open.

@@ -79,6 +79,18 @@ pub struct MutationResponse {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScanEntry {
+    pub key: Bytes,
+    pub value: ValueRevision,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScanPage {
+    pub entries: Vec<ScanEntry>,
+    pub truncated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PartitionSnapshot {
     pub partition_id: PartitionId,
     pub range: PartitionRange,
@@ -419,6 +431,93 @@ impl Partition {
             self.wait_applied(position).await?;
         }
         self.tree.get(key).await
+    }
+
+    /// Returns a bounded forward page clipped to this partition.
+    ///
+    /// `start_after` and `end_key` are exclusive. Bounds outside the
+    /// partition are clipped; a non-intersecting interval returns no entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed epoch, lifecycle, bound, or tree-read error.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn scan_forward(
+        &self,
+        ownership_epoch: u64,
+        start_after: Option<&[u8]>,
+        end_key: Option<&[u8]>,
+        limit: usize,
+        byte_budget: usize,
+        min_journal_position: Option<JournalPosition>,
+    ) -> Result<ScanPage> {
+        self.validate_epoch(ownership_epoch)?;
+        self.validate_read_lifecycle()?;
+        if limit == 0 || byte_budget == 0 {
+            return Err(ChunkKvError::InvalidRequest(
+                "scan count and byte bounds must be nonzero".into(),
+            ));
+        }
+        if start_after.is_some_and(|key| key.len() > self.config.max_key_bytes)
+            || end_key.is_some_and(|key| key.len() > self.config.max_key_bytes)
+        {
+            return Err(ChunkKvError::InvalidRequest(
+                "scan bound exceeds configured key limit".into(),
+            ));
+        }
+        if let (Some(start), Some(end)) = (start_after, end_key) {
+            if start >= end {
+                return Err(ChunkKvError::InvalidRequest(
+                    "scan interval is empty or reversed".into(),
+                ));
+            }
+        }
+        if let Some(position) = min_journal_position {
+            self.wait_applied(position).await?;
+        }
+        let partition_start = self.range.start.as_deref();
+        let partition_end = self.range.end.as_deref();
+        if start_after
+            .zip(partition_end)
+            .is_some_and(|(start, end)| start >= end)
+            || end_key
+                .zip(partition_start)
+                .is_some_and(|(end, start)| end <= start)
+        {
+            return Ok(ScanPage {
+                entries: Vec::new(),
+                truncated: false,
+            });
+        }
+        let clipped_start = match (start_after, partition_start) {
+            (Some(start), Some(partition_start)) if start < partition_start => None,
+            (start, _) => start,
+        };
+        let clipped_end = match (end_key, partition_end) {
+            (Some(end), Some(partition_end)) => Some(end.min(partition_end)),
+            (Some(end), None) => Some(end),
+            (None, end) => end,
+        };
+        let (entries, truncated) = self
+            .tree
+            .scan_forward(clipped_start, clipped_end, limit, byte_budget)
+            .await?;
+        if entries.iter().any(|entry| !self.range.contains(&entry.key)) {
+            return Err(ChunkKvError::TreeCorruption(
+                "tree scan returned a key outside the partition".into(),
+            ));
+        }
+        Ok(ScanPage { entries, truncated })
+    }
+
+    fn validate_read_lifecycle(&self) -> Result<()> {
+        match self.lifecycle() {
+            PartitionLifecycle::Serving
+            | PartitionLifecycle::WriteStalled
+            | PartitionLifecycle::SplitPreparing
+            | PartitionLifecycle::SplitFenced => Ok(()),
+            state => Err(read_state_error(state)),
+        }
     }
 
     #[must_use]
@@ -790,6 +889,9 @@ async fn replay_suffix(
             let FrameDecode::Complete(decoded) = decoded else {
                 break;
             };
+            journal
+                .validate_frame_source(frame_offset, decoded.bytes_consumed, decoded.chunk_id)
+                .await?;
             validate_replay_record(partition_id, ownership_epoch, &decoded.record)?;
             replay.process(tree, frame_offset, decoded.record).await?;
             let consumed = decoded.bytes_consumed;

@@ -5,6 +5,13 @@ use crowdb_chunk_kv::{
     canonical_operation_digest, decode_frame, encode_frame, CompareCondition, FrameDecode, MutationOperation,
     MutationResult, PartitionId, PartitionRange, RequestId, SplitChild, SplitPlan, TransitionId, WalRecord,
 };
+use crowdb_chunk_stream::ChunkId;
+
+fn bind_to_chunk(mut frame: Vec<u8>, chunk_id: ChunkId) -> Vec<u8> {
+    frame.extend_from_slice(&chunk_id.high.to_be_bytes());
+    frame.extend_from_slice(&chunk_id.low.to_be_bytes());
+    frame
+}
 
 fn record(operation: MutationOperation) -> WalRecord {
     WalRecord {
@@ -28,19 +35,24 @@ fn frame_round_trip_and_concatenation_boundary() {
         key: b"key".to_vec(),
         value: b"value".to_vec(),
     });
-    let frame = encode_frame(&record).unwrap();
+    let chunk_id = ChunkId { high: 11, low: 12 };
+    let frame = bind_to_chunk(encode_frame(&record).unwrap(), chunk_id);
     let mut joined = frame.clone();
     joined.extend_from_slice(b"next");
     let FrameDecode::Complete(decoded) = decode_frame(&joined).unwrap() else {
         panic!("complete frame expected");
     };
     assert_eq!(decoded.record, record);
+    assert_eq!(decoded.chunk_id, chunk_id);
     assert_eq!(decoded.bytes_consumed, frame.len());
 }
 
 #[test]
 fn incomplete_tail_reports_exact_required_size() {
-    let frame = encode_frame(&record(MutationOperation::Delete { key: b"k".to_vec() })).unwrap();
+    let frame = bind_to_chunk(
+        encode_frame(&record(MutationOperation::Delete { key: b"k".to_vec() })).unwrap(),
+        ChunkId { high: 1, low: 2 },
+    );
     for length in 0..frame.len() {
         let FrameDecode::Incomplete { required_bytes } = decode_frame(&frame[..length]).unwrap() else {
             panic!("truncated frame must remain incomplete");
@@ -51,13 +63,16 @@ fn incomplete_tail_reports_exact_required_size() {
 
 #[test]
 fn checksum_and_header_corruption_are_rejected() {
-    let mut frame = encode_frame(&record(MutationOperation::PutIfAbsent {
-        key: b"k".to_vec(),
-        value: b"v".to_vec(),
-    }))
-    .unwrap();
-    let last = frame.len() - 1;
-    frame[last] ^= 1;
+    let mut frame = bind_to_chunk(
+        encode_frame(&record(MutationOperation::PutIfAbsent {
+            key: b"k".to_vec(),
+            value: b"v".to_vec(),
+        }))
+        .unwrap(),
+        ChunkId { high: 1, low: 2 },
+    );
+    let checksum_byte = frame.len() - 17;
+    frame[checksum_byte] ^= 1;
     assert!(decode_frame(&frame).is_err());
 
     frame[0] ^= 1;

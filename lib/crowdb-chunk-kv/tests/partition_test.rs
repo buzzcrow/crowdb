@@ -12,7 +12,7 @@ use crowdb_chunk_kv::{
 };
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
-    ChunkStream, CursorAdvance, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig,
+    ChunkId, ChunkStream, CursorAdvance, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig,
     StreamMetadataStore, StreamName, StreamRegistry,
 };
 
@@ -245,6 +245,51 @@ async fn same_batch_conditions_observe_preceding_staged_mutations() {
 }
 
 #[tokio::test]
+async fn forward_scan_is_bounded_and_clipped_to_the_partition() {
+    let store = Arc::new(MemoryStreamStore::new(16_384));
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        StreamName { high: 2, low: 20 },
+        4,
+        PartitionConfig::default(),
+    )
+    .await;
+    for (sequence, key) in [(1, b"b".as_slice()), (2, b"c"), (3, b"d"), (4, b"e")] {
+        partition
+            .mutate(
+                4,
+                request(200 + sequence),
+                MutationOperation::Put {
+                    key: key.to_vec(),
+                    value: key.to_vec(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let page = partition
+        .scan_forward(4, Some(b"a"), Some(b"z"), 2, 1024, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        page.entries
+            .iter()
+            .map(|entry| entry.key.as_ref())
+            .collect::<Vec<_>>(),
+        vec![b"b".as_slice(), b"c".as_slice()]
+    );
+    assert!(page.truncated);
+
+    let empty = partition
+        .scan_forward(4, Some(b"z"), None, 10, 1024, None)
+        .await
+        .unwrap();
+    assert!(empty.entries.is_empty());
+    assert!(!empty.truncated);
+}
+
+#[tokio::test]
 async fn retry_returns_original_result_and_digest_conflict_does_no_io() {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let partition = partition(
@@ -457,6 +502,75 @@ async fn recovery_replays_recorded_results_and_restores_deduplication() {
         original
     );
     assert_eq!(store.chunk_write_count(), writes);
+}
+
+#[tokio::test]
+async fn recovery_rejects_a_frame_bound_to_another_physical_chunk() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let stream_name = StreamName { high: 60, low: 60 };
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        stream_name,
+        9,
+        PartitionConfig::default(),
+    )
+    .await;
+    partition
+        .mutate(
+            9,
+            request(500),
+            MutationOperation::Put {
+                key: b"key".to_vec(),
+                value: b"value".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(partition.snapshot().applied_seq, 1);
+    drop(partition);
+    tokio::task::yield_now().await;
+
+    let registry: Arc<dyn StreamRegistry> = store.clone();
+    let metadata: Arc<dyn StreamMetadataStore> = store.clone();
+    let chunks: Arc<dyn StreamChunkStore> = store.clone();
+    let stream = ChunkStream::open(
+        stream_name,
+        9,
+        StreamConfig::default(),
+        registry,
+        metadata,
+        chunks,
+    )
+    .await
+    .unwrap();
+    let durable_tail = stream.tail();
+    store
+        .flip_durable_byte(
+            ChunkId { high: 0, low: 1 },
+            usize::try_from(durable_tail - 1).unwrap(),
+        )
+        .await;
+    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
+    let result = Partition::recover(
+        PartitionId { high: 60, low: 60 },
+        PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        9,
+        Checkpoint {
+            tree_manifest: 0,
+            applied_seq: 0,
+            stream_name,
+            replay_offset: 0,
+        },
+        PartitionConfig::default(),
+        Arc::new(MemoryPartitionTree::default()),
+        journal,
+    )
+    .await;
+    assert!(matches!(result, Err(ChunkKvError::JournalCorruption(_))));
 }
 
 #[tokio::test]

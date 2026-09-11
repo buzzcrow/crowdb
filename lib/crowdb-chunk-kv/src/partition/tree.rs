@@ -3,11 +3,18 @@
 
 use async_trait::async_trait;
 
-use crate::{ChunkKvError, MutationOperation, Result, ValueRevision};
+use crate::{ChunkKvError, MutationOperation, Result, ScanEntry, ValueRevision};
 
 #[async_trait]
 pub trait PartitionTree: Send + Sync {
     async fn get(&self, key: &[u8]) -> Result<Option<ValueRevision>>;
+    async fn scan_forward(
+        &self,
+        start_after: Option<&[u8]>,
+        end_key: Option<&[u8]>,
+        limit: usize,
+        byte_budget: usize,
+    ) -> Result<(Vec<ScanEntry>, bool)>;
     async fn apply(&self, mutation_seq: u64, operation: &MutationOperation) -> Result<()>;
     async fn advance_noop(&self, mutation_seq: u64) -> Result<()>;
     async fn checkpoint(&self) -> Result<u64>;
@@ -32,6 +39,41 @@ impl PartitionTree for CrowdbPartitionTree {
             .get(key)
             .map(|value| value.map(|(revision, value)| ValueRevision { revision, value }))
             .map_err(map_tree_read_error)
+    }
+
+    async fn scan_forward(
+        &self,
+        start_after: Option<&[u8]>,
+        end_key: Option<&[u8]>,
+        limit: usize,
+        byte_budget: usize,
+    ) -> Result<(Vec<ScanEntry>, bool)> {
+        let (entries, truncated) = self
+            .tree
+            .scan(
+                b"",
+                start_after.unwrap_or_default(),
+                end_key.unwrap_or_default(),
+                limit,
+                byte_budget,
+                false,
+                0,
+                false,
+            )
+            .map_err(map_tree_read_error)?;
+        Ok((
+            entries
+                .into_iter()
+                .map(|entry| ScanEntry {
+                    key: entry.key,
+                    value: ValueRevision {
+                        revision: entry.slot,
+                        value: entry.value.to_vec(),
+                    },
+                })
+                .collect(),
+            truncated,
+        ))
     }
 
     async fn apply(&self, mutation_seq: u64, operation: &MutationOperation) -> Result<()> {

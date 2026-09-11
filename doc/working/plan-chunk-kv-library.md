@@ -16,7 +16,7 @@ whose ordered journal is R141 and whose durable tree is R140.
   checkpoint, split plan/artifact/proof, and typed error models.
 - [x] Implement canonical operation digests and checksummed bounded WAL frame
   encode/decode with corruption and incomplete-tail handling.
-- [~] Extend WAL framing with the physical `chunk_id` trailer: submit
+- [x] Extend WAL framing with the physical `chunk_id` trailer: submit
   header+body+CRC through R141 chunk-bound append, validate the trailer against
   read provenance, and keep the durable cursor as the recovery upper bound.
   Files: `lib/crowdb-chunk-kv/src/partition/`,
@@ -34,11 +34,11 @@ whose ordered journal is R141 and whose durable tree is R140.
   sequencer with staged-overlay conditional evaluation.
 - [x] Journal resolved success/failure, apply only after durability, retain
   request results/digests, and publish durable/applied frontiers.
-- [ ] Implement range-checked point reads, min-position waits, bounded scans,
+- [~] Implement range-checked point reads, min-position waits, bounded scans,
   and forward seek; add real C++ reverse cursor support for reverse operations.
-- [ ] Cover multi-partition independence, retries/conflicts/expiry, concurrent
+- [~] Cover multi-partition independence, retries/conflicts/expiry, concurrent
   conditions, pending-read visibility, stalls, and apply uncertainty.
-- [ ] Expose per-partition lock-free counters for mutation outcomes, rejects,
+- [~] Expose per-partition lock-free counters for mutation outcomes, rejects,
   admission, stalls, recovery, checkpoints, and split control; ordered-read,
   maintenance, pin, and detailed split-work metrics remain open.
 
@@ -81,7 +81,7 @@ whose ordered journal is R141 and whose durable tree is R140.
   hardware and commit evidence-backed defaults. Files:
   `lib/crowdb-chunk-kv/`, `tools/`.
 - [x] Fold the stable design into `doc/design/chunkds/`, update the document
-  index, and keep only unresolved human decisions in the backlog's final
-  `Open Questions` section.
+  index, and keep unresolved implementation gaps in the backlog's final
+  `Open Issues` section.
 - [ ] Remove completed backlog files only in a separate cleanup commit after
   every required production acceptance is satisfied.

@@ -17,8 +17,8 @@ pub use manager::PartitionManager;
 pub use metrics::{PartitionMetrics, PartitionMetricsSnapshot};
 pub use partition::{
     decode_frame, encode_frame, CrowdbPartitionTree, DecodedFrame, FrameDecode, MutationResponse, Partition,
-    PartitionConfig, PartitionJournal, PartitionSnapshot, PartitionTree, StreamPartitionJournal,
-    MAX_FRAME_BYTES,
+    PartitionConfig, PartitionJournal, PartitionSnapshot, PartitionTree, ScanEntry, ScanPage,
+    StreamPartitionJournal, MAX_FRAME_BYTES,
 };
 pub use types::{
     canonical_operation_digest, Checkpoint, CompareCondition, JournalPosition, MutationOperation,

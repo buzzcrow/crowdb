@@ -7,9 +7,10 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use tokio::sync::RwLock;
 
-use crate::{MutationOperation, PartitionTree, Result, ValueRevision};
+use crate::{MutationOperation, PartitionTree, Result, ScanEntry, ValueRevision};
 
 #[derive(Debug, Default)]
 pub struct MemoryPartitionTree {
@@ -28,6 +29,39 @@ impl MemoryPartitionTree {
 impl PartitionTree for MemoryPartitionTree {
     async fn get(&self, key: &[u8]) -> Result<Option<ValueRevision>> {
         Ok(self.values.read().await.get(key).cloned())
+    }
+
+    async fn scan_forward(
+        &self,
+        start_after: Option<&[u8]>,
+        end_key: Option<&[u8]>,
+        limit: usize,
+        byte_budget: usize,
+    ) -> Result<(Vec<ScanEntry>, bool)> {
+        let values = self.values.read().await;
+        let mut entries = Vec::new();
+        let mut bytes = 0_usize;
+        let mut truncated = false;
+        for (key, value) in values.iter() {
+            if start_after.is_some_and(|start| key.as_slice() <= start)
+                || end_key.is_some_and(|end| key.as_slice() >= end)
+            {
+                continue;
+            }
+            let entry_bytes = key.len().saturating_add(value.value.len());
+            if entries.len() == limit
+                || (!entries.is_empty() && bytes.saturating_add(entry_bytes) > byte_budget)
+            {
+                truncated = true;
+                break;
+            }
+            bytes = bytes.saturating_add(entry_bytes);
+            entries.push(ScanEntry {
+                key: Bytes::copy_from_slice(key),
+                value: value.clone(),
+            });
+        }
+        Ok((entries, truncated))
     }
 
     async fn apply(&self, mutation_seq: u64, operation: &MutationOperation) -> Result<()> {

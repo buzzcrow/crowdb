@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use crowdb_chunk_stream::{ChunkStream, StreamError, StreamName};
+use crowdb_chunk_stream::{ChunkId, ChunkStream, StreamError, StreamName};
 
 use crate::{ChunkKvError, JournalPosition, Result};
 
@@ -11,6 +11,9 @@ use crate::{ChunkKvError, JournalPosition, Result};
 pub trait PartitionJournal: Send + Sync {
     async fn append_frames(&self, frames: &[Bytes]) -> Result<Vec<JournalPosition>>;
     async fn read_window(&self, offset: u64, max_bytes: usize) -> Result<Bytes>;
+    async fn validate_frame_source(&self, _offset: u64, _length: usize, _chunk_id: ChunkId) -> Result<()> {
+        Ok(())
+    }
     async fn trim_prefix(&self, offset: u64) -> Result<u64>;
     async fn close(&self) -> Result<()>;
     fn stream_name(&self) -> StreamName;
@@ -35,25 +38,39 @@ impl PartitionJournal for StreamPartitionJournal {
         if frames.is_empty() {
             return Ok(Vec::new());
         }
-        let range = self.stream.append(frames).await.map_err(map_stream_error)?;
-        if range.stream_name != self.stream_name {
-            return Err(ChunkKvError::Internal("stream returned another identity".into()));
+        let ranges = self
+            .stream
+            .append_chunk_bound_batch(frames)
+            .await
+            .map_err(map_stream_error)?;
+        if ranges.len() != frames.len() {
+            return Err(ChunkKvError::Internal(
+                "stream returned wrong chunk-bound range count".into(),
+            ));
         }
-        let mut offset = range.begin;
-        let mut positions = Vec::with_capacity(frames.len());
-        for frame in frames {
+        let mut positions = Vec::with_capacity(ranges.len());
+        let mut previous_end = None;
+        for (frame, range) in frames.iter().zip(ranges) {
+            if range.stream_name != self.stream_name || range.chunk_id.is_none() {
+                return Err(ChunkKvError::Internal(
+                    "stream returned invalid chunk-bound range".into(),
+                ));
+            }
+            let expected_length = u64::try_from(frame.len())
+                .ok()
+                .and_then(|length| length.checked_add(16));
+            if range.end.checked_sub(range.begin) != expected_length
+                || previous_end.is_some_and(|end| end != range.begin)
+            {
+                return Err(ChunkKvError::Internal(
+                    "stream returned discontinuous chunk-bound ranges".into(),
+                ));
+            }
             positions.push(JournalPosition {
                 stream_name: self.stream_name,
-                offset,
+                offset: range.begin,
             });
-            offset = offset
-                .checked_add(frame.len() as u64)
-                .ok_or_else(|| ChunkKvError::Internal("journal position overflows".into()))?;
-        }
-        if offset != range.end {
-            return Err(ChunkKvError::Internal(
-                "stream append range length mismatch".into(),
-            ));
+            previous_end = Some(range.end);
         }
         Ok(positions)
     }
@@ -74,6 +91,20 @@ impl PartitionJournal for StreamPartitionJournal {
 
     async fn trim_prefix(&self, offset: u64) -> Result<u64> {
         self.stream.trim_prefix(offset).await.map_err(map_stream_error)
+    }
+
+    async fn validate_frame_source(&self, offset: u64, length: usize, chunk_id: ChunkId) -> Result<()> {
+        let segments = self
+            .stream
+            .read_at_with_provenance(offset, length)
+            .await
+            .map_err(map_stream_error)?;
+        if segments.len() != 1 || segments[0].chunk_id != chunk_id || segments[0].data.len() != length {
+            return Err(ChunkKvError::JournalCorruption(
+                "WAL frame chunk identity does not match read provenance".into(),
+            ));
+        }
+        Ok(())
     }
 
     async fn close(&self) -> Result<()> {
