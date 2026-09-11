@@ -255,7 +255,7 @@ TEST(Gc, CompactSparseBlocksRespectsByteBudget)
 {
     crowdb::tree_test::TempDir tmp("budget_");
     ASSERT_FALSE(tmp.path.empty());
-    constexpr uint64_t              blk = 8 * 1024;
+    constexpr uint64_t              blk = 64 * 1024;
     std::unique_ptr<BlockPageStore> store;
     ASSERT_TRUE(BlockPageStore::open_blocks(tmp.path, 0, 0, blk, 1, &store).ok());
     store->set_sync_mode(SyncMode::kSkip);
@@ -309,7 +309,7 @@ TEST(Gc, CompactSparseBlocksMaintainsDataIntegrity)
 {
     crowdb::tree_test::TempDir tmp("integ_");
     ASSERT_FALSE(tmp.path.empty());
-    constexpr uint64_t              blk = 8 * 1024;
+    constexpr uint64_t              blk = 64 * 1024;
     std::unique_ptr<BlockPageStore> store;
     ASSERT_TRUE(BlockPageStore::open_blocks(tmp.path, 0, 0, blk, 1, &store).ok());
     store->set_sync_mode(SyncMode::kSkip);
