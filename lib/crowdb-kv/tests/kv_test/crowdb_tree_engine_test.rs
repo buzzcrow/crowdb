@@ -95,7 +95,7 @@ fn is_healthy_is_true_on_a_freshly_opened_engine() {
 /// `InMemKV`.
 #[test]
 fn get_scan_apply_always_resolve_ready() {
-    use crowdb_kv::kv::{KVEngine, KVFuture};
+    use crowdb_kv::kv::KVEngine;
 
     let e = open();
     assert!(matches!(
@@ -109,18 +109,12 @@ fn get_scan_apply_always_resolve_ready() {
     ));
 }
 
-/// Regression guard : unlike the in-memory case
-/// above, a *durable* (file-backed) `CrowdbTreeEngine`'s `get` genuinely
-/// constructs `KVFuture::Pending` for a demand-load miss -- evict the
-/// key's leaf (forcing it unloaded) after a snapshot has made it clean,
-/// mirroring `async_get_test.cpp`'s `MissAfterEvictionCompletesViaReactor`
-/// one layer up. Awaiting that `Pending` future still resolves to the
-/// correct value either way (via the reactor on a liburing build, or a
-/// synchronous fallback otherwise), proving the `Pending`
-/// path is correct, not just that it exists.
+/// A durable engine reloads an evicted leaf and returns the correct value.
+/// The io_uring completion can race the first Rust poll, so either `Ready` or
+/// `Pending` is valid after the miss has submitted asynchronous I/O.
 #[tokio::test]
-async fn get_constructs_pending_for_genuine_demand_load_miss() {
-    use crowdb_kv::kv::{KVEngine, KVFuture};
+async fn get_reloads_an_evicted_leaf() {
+    use crowdb_kv::kv::KVEngine;
 
     let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("crowdb-tree-engine");
     let e = CrowdbTreeEngine::open(&CrowdbTreeConfig {
@@ -140,31 +134,13 @@ async fn get_constructs_pending_for_genuine_demand_load_miss() {
         "snapshot should have made the leaf clean and evictable"
     );
 
-    // On builds/platforms without the io_uring reactor (e.g. macOS, or Linux
-    // without liburing) ct_get_async completes synchronously, so there is no
-    // genuine Pending path to observe. Verify the value is still correct and
-    // skip the Pending-only assertion in that case.
-    if !e.handle().is_reactor_available() {
-        assert_eq!(e.get(b"k").into_ready(), Some((1, b"v".to_vec())));
-        return;
-    }
-
-    match e.get(b"k") {
-        KVFuture::Ready(_) => panic!("expected a genuine Pending after evicting the resident leaf"),
-        KVFuture::Pending(fut) => {
-            assert_eq!(fut.await, Some((1, b"v".to_vec())));
-        }
-    }
+    let value = e.get(b"k").await;
+    assert_eq!(value, Some((1, b"v".to_vec())));
 }
 
-/// Same regression guard as
-/// [`get_constructs_pending_for_genuine_demand_load_miss`], for `scan`:
-/// `CrowdbTreeEngine::scan` now goes through `AsyncCrowdbtree::try_scan`
-/// instead of the old always-synchronous
-/// `Crowdbtree::scan`, so a scan over an evicted leaf must genuinely
-/// construct `KVFuture::Pending` too, not just `get`.
+/// Same reload guard as [`get_reloads_an_evicted_leaf`], for `scan`.
 #[tokio::test]
-async fn scan_constructs_pending_for_genuine_demand_load_miss() {
+async fn scan_reloads_an_evicted_leaf() {
     use crowdb_kv::kv::{KVEngine, KVFuture};
 
     let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("crowdb-tree-engine");
@@ -185,29 +161,14 @@ async fn scan_constructs_pending_for_genuine_demand_load_miss() {
         "snapshot should have made the leaf clean and evictable"
     );
 
-    if !e.handle().is_reactor_available() {
-        let (items, truncated) = e.scan(b"", b"", b"", 0, 0, false, 0).into_ready().unwrap();
-        let items_vec: Vec<(Vec<u8>, u64, Vec<u8>)> = items
-            .into_iter()
-            .map(|(k, s, v)| (k.to_vec(), s, v.to_vec()))
-            .collect();
-        assert_eq!(items_vec, vec![(b"k".to_vec(), 1, b"v".to_vec())]);
-        assert!(!truncated);
-        return;
-    }
-
-    match e.scan(b"", b"", b"", 0, 0, false, 0) {
-        KVFuture::Ready(_) => panic!("expected a genuine Pending after evicting the resident leaf"),
-        KVFuture::Pending(fut) => {
-            let (items, truncated) = fut.await.unwrap();
-            let items_vec: Vec<(Vec<u8>, u64, Vec<u8>)> = items
-                .into_iter()
-                .map(|(k, s, v)| (k.to_vec(), s, v.to_vec()))
-                .collect();
-            assert_eq!(items_vec, vec![(b"k".to_vec(), 1, b"v".to_vec())]);
-            assert!(!truncated);
-        }
-    }
+    let result = e.scan(b"", b"", b"", 0, 0, false, 0).await;
+    let (items, truncated) = result.unwrap();
+    let items_vec: Vec<(Vec<u8>, u64, Vec<u8>)> = items
+        .into_iter()
+        .map(|(k, s, v)| (k.to_vec(), s, v.to_vec()))
+        .collect();
+    assert_eq!(items_vec, vec![(b"k".to_vec(), 1, b"v".to_vec())]);
+    assert!(!truncated);
 }
 
 /// `KVEngine::clear`: mirrors `mem_kv_test.rs`'s
