@@ -7,6 +7,7 @@
 // to identity (stored raw) and the build needs no system LZ4.
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn collect_cc(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in fs::read_dir(dir)? {
@@ -52,6 +53,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .join("third-party")
         .join("stdexec")
         .join("include");
+    let repository = engine
+        .parent()
+        .and_then(|path| path.parent())
+        .ok_or("crowdb-tree must be under the repository lib directory")?;
+    let rpc = repository.join("lib").join("crowdb-rpc");
+    let protocol_fbs = repository
+        .join("lib")
+        .join("crowdb-protocol")
+        .join("src")
+        .join("fbs");
+    let rpc_generated = PathBuf::from(std::env::var("OUT_DIR")?).join("crowdb-tree-rpc-generated");
+    fs::create_dir_all(&rpc_generated)?;
+    let schemas = [
+        "ret_code.fbs",
+        "msg_type.fbs",
+        "common_type.fbs",
+        "common_msg.fbs",
+        "diskdb.fbs",
+        "diskio.fbs",
+        "chunkdb.fbs",
+    ];
+    let mut flatc = Command::new("flatc");
+    flatc.arg("--cpp").arg("-o").arg(&rpc_generated);
+    for schema in schemas {
+        let path = protocol_fbs.join(schema);
+        flatc.arg(&path);
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    if !flatc.status()?.success() {
+        return Err("flatc --cpp failed for crowdb-tree chunk RPC schemas".into());
+    }
 
     let mut files = Vec::new();
     collect_cc(&src, &mut files)?;
@@ -70,6 +102,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .include(&include)
         .include(&src)
         .include(&common_include)
+        .include(rpc.join("include"))
+        .include(&rpc_generated)
         .flag(format!("-isystem{}", stdexec_include.display()))
         .warnings(false);
 

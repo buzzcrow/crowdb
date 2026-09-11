@@ -37,6 +37,7 @@ find_library(LIBURING_LIB NAMES uring HINTS ENV CONDA_PREFIX PATH_SUFFIXES lib)
 # links crowdbcommon PUBLIC because its public headers (frame_page.h,
 # page_codec.h, compressor.h, crowdb-tree.h) include crowdb-common headers.
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../crowdb-common/cpp crowdb-common-build)
+add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../crowdb-rpc crowdb-rpc-build EXCLUDE_FROM_ALL)
 
 # ── Library ───────────────────────────────────────────────────────
 file(GLOB_RECURSE CROWDB_TREE_SRC CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
@@ -48,9 +49,10 @@ endif()
 add_library(crowdb-tree STATIC ${CROWDB_TREE_SRC})
 target_include_directories(crowdb-tree PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(crowdb-tree PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(crowdb-tree PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/crowdb-rpc-build/generated)
 target_include_directories(crowdb-tree SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../third-party/stdexec/include)
 find_package(Threads REQUIRED)
-target_link_libraries(crowdb-tree PUBLIC Threads::Threads crowdbcommon)
+target_link_libraries(crowdb-tree PUBLIC Threads::Threads crowdbcommon PRIVATE crowdb-rpc)
 
 # ── Abseil (MemTable ordered map: absl::btree_map, plan-tree #9) ───
 find_package(absl REQUIRED)
@@ -98,6 +100,8 @@ endif()
 list(APPEND CROWDB_TREE_TEST_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../crowdb-common/cpp/tests/test_main.cpp)
 add_executable(crowdb_tree_tests ${CROWDB_TREE_TEST_SRC})
 target_include_directories(crowdb_tree_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(crowdb_tree_tests PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/crowdb-rpc-build/generated)
+target_include_directories(crowdb_tree_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../crowdb-rpc/include)
 target_include_directories(crowdb_tree_tests SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../third-party/stdexec/include)
 target_link_libraries(crowdb_tree_tests PRIVATE crowdb-tree GTest::gtest)
 # GCC 13 -Warray-bounds/-Wstringop-overflow false positives: buffer::alloc

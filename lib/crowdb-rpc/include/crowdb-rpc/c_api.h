@@ -168,6 +168,13 @@ crowdb_rpc_status crowdb_rpc_client_send(crowdb_rpc_client_t client, crowdb_rpc_
                                          uint64_t request_id, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data,
                                          uint16_t msg_type, crowdb_rpc_on_complete on_complete, void *user_data);
 
+// Strictly bounded callback call. Unlike crowdb_rpc_client_send, this never
+// falls back to the pending map when the indexed completion slot is occupied.
+crowdb_rpc_status crowdb_rpc_client_send_slab(crowdb_rpc_client_t client, crowdb_rpc_server_t server,
+                                              crowdb_rpc_conn_t conn, uint64_t request_id, crowdb_rpc_buffer_t control,
+                                              crowdb_rpc_buffer_t data, uint16_t msg_type,
+                                              crowdb_rpc_on_complete on_complete, void *user_data);
+
 // Variant for server-handler use: conn_handle is a raw Connection* (as
 // passed to the dispatch callback), NOT a crowdb_rpc_conn_t. Use this from
 // server handlers that need to send a request (server→client direction)

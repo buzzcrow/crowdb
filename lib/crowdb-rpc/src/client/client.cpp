@@ -72,6 +72,18 @@ OutFrame *RpcClient::build_frame(uint64_t request_id, Buffer *control, Buffer *d
 bool RpcClient::send(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control, Buffer *data,
                      uint16_t msg_type, crowdb_rpc_on_complete cb, void *user_data)
 {
+    return send_impl(transport, conn, request_id, control, data, msg_type, cb, user_data, false);
+}
+
+bool RpcClient::send_slab_only(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control,
+                               Buffer *data, uint16_t msg_type, crowdb_rpc_on_complete cb, void *user_data)
+{
+    return send_impl(transport, conn, request_id, control, data, msg_type, cb, user_data, true);
+}
+
+bool RpcClient::send_impl(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control, Buffer *data,
+                          uint16_t msg_type, crowdb_rpc_on_complete cb, void *user_data, bool slab_only)
+{
     try {
         uint64_t timeout  = default_timeout_ns_.load(std::memory_order_relaxed);
         uint64_t deadline = (timeout > 0) ? steady_now_ns() + timeout : 0;
@@ -81,6 +93,13 @@ bool RpcClient::send(Transport *transport, Connection *conn, uint64_t request_id
         // slab (e.g. when per-call heap alloc already makes the slab's
         // zero-alloc advantage marginal).
         if (completion_pool_ == nullptr) {
+            if (slab_only) {
+                if (control != nullptr)
+                    control->release();
+                if (data != nullptr)
+                    data->release();
+                return false;
+            }
             goto map_path;
         }
 
@@ -122,6 +141,14 @@ bool RpcClient::send(Transport *transport, Connection *conn, uint64_t request_id
                 // load and CAS. Fall through to map fallback.
             }
         } // end slab block
+
+        if (slab_only) {
+            if (control != nullptr)
+                control->release();
+            if (data != nullptr)
+                data->release();
+            return false;
+        }
 
     map_path:
         // Slab slot occupied (PENDING_CLAIMED/PENDING_READY/PROCESSING), rare

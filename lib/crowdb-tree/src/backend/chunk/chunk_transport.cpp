@@ -10,7 +10,7 @@
 namespace crowdb::tree::detail
 {
 
-template <typename Mutation> Status MemoryChunkTransport::mutate(uint64_t chunk_id, Mutation mutation)
+template <typename Mutation> Status MemoryChunkTransport::mutate(ChunkId chunk_id, Mutation mutation)
 {
     if (unavailable_.load(std::memory_order_acquire)) {
         return Status::unavailable("chunk transport is unavailable");
@@ -36,7 +36,7 @@ template <typename Mutation> Status MemoryChunkTransport::mutate(uint64_t chunk_
     }
 }
 
-Status MemoryChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint64_t owner_epoch, uint64_t *chunk_id)
+Status MemoryChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint64_t owner_epoch, ChunkId *chunk_id)
 {
     if (logical_capacity == 0 || chunk_id == nullptr) {
         return Status::invalid_argument("chunk allocation arguments are invalid");
@@ -44,8 +44,8 @@ Status MemoryChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, ui
     if (unavailable_.load(std::memory_order_acquire)) {
         return Status::unavailable("chunk transport is unavailable");
     }
-    const uint64_t allocated = next_chunk_id_.fetch_add(1, std::memory_order_relaxed);
-    auto           current   = chunks_.load(std::memory_order_acquire);
+    const ChunkId allocated(next_chunk_id_.fetch_add(1, std::memory_order_relaxed));
+    auto          current = chunks_.load(std::memory_order_acquire);
     for (;;) {
         auto next = current == nullptr ? std::make_shared<Chunks>() : std::make_shared<Chunks>(*current);
         next->push_back({
@@ -60,8 +60,8 @@ Status MemoryChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, ui
     }
 }
 
-Status MemoryChunkTransport::write_mirror(uint64_t chunk_id, uint32_t mirror_index, uint64_t offset,
-                                          const uint8_t *data, size_t length)
+Status MemoryChunkTransport::write_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset, const uint8_t *data,
+                                          size_t length)
 {
     if (mirror_index >= 3 || (data == nullptr && length != 0) || offset > std::numeric_limits<size_t>::max() ||
         length > std::numeric_limits<size_t>::max() - offset) {
@@ -86,7 +86,7 @@ Status MemoryChunkTransport::write_mirror(uint64_t chunk_id, uint32_t mirror_ind
     });
 }
 
-Status MemoryChunkTransport::advance_write(uint64_t chunk_id, uint64_t expected_bytes, uint64_t acknowledged_bytes)
+Status MemoryChunkTransport::advance_write(ChunkId chunk_id, uint64_t expected_bytes, uint64_t acknowledged_bytes)
 {
     return mutate(chunk_id, [expected_bytes, acknowledged_bytes](Chunk &chunk) {
         if (chunk.layout.sealed || chunk.layout.acknowledged_bytes != expected_bytes ||
@@ -98,7 +98,7 @@ Status MemoryChunkTransport::advance_write(uint64_t chunk_id, uint64_t expected_
     });
 }
 
-Status MemoryChunkTransport::read_mirror(uint64_t chunk_id, uint32_t mirror_index, uint64_t offset, uint8_t *data,
+Status MemoryChunkTransport::read_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset, uint8_t *data,
                                          size_t length) const
 {
     if (unavailable_.load(std::memory_order_acquire)) {
@@ -124,7 +124,7 @@ Status MemoryChunkTransport::read_mirror(uint64_t chunk_id, uint32_t mirror_inde
     return Status::Ok();
 }
 
-Status MemoryChunkTransport::query_chunk(uint64_t chunk_id, ChunkLayout *layout) const
+Status MemoryChunkTransport::query_chunk(ChunkId chunk_id, ChunkLayout *layout) const
 {
     if (layout == nullptr) {
         return Status::invalid_argument("chunk layout output is null");
@@ -145,7 +145,7 @@ Status MemoryChunkTransport::query_chunk(uint64_t chunk_id, ChunkLayout *layout)
     return Status::Ok();
 }
 
-Status MemoryChunkTransport::seal_chunk(uint64_t chunk_id, uint64_t owner_epoch, uint64_t acknowledged_bytes)
+Status MemoryChunkTransport::seal_chunk(ChunkId chunk_id, uint64_t owner_epoch, uint64_t acknowledged_bytes)
 {
     return mutate(chunk_id, [owner_epoch, acknowledged_bytes](Chunk &chunk) {
         if (chunk.owner_epoch != owner_epoch || chunk.layout.acknowledged_bytes != acknowledged_bytes) {
@@ -156,7 +156,7 @@ Status MemoryChunkTransport::seal_chunk(uint64_t chunk_id, uint64_t owner_epoch,
     });
 }
 
-void MemoryChunkTransport::corrupt_mirror(uint64_t chunk_id, uint32_t mirror_index, uint64_t offset)
+void MemoryChunkTransport::corrupt_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset)
 {
     if (mirror_index >= 3) {
         return;

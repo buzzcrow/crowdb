@@ -23,14 +23,15 @@ extern "C" {
 using ct_status = int32_t; // 0 = ok; negative mirrors crowdb::tree::Code
 
 // Opaque handles.
-using ct_tree         = struct ct_tree;
-using ct_page_store   = struct ct_page_store;
-using ct_root_catalog = struct ct_root_catalog;
-using ct_view         = struct ct_view;
-using ct_iter         = struct ct_iter;
-using ct_export       = struct ct_export;
-using ct_import       = struct ct_import;
-using ct_write_handle = struct ct_write_handle;
+using ct_tree            = struct ct_tree;
+using ct_page_store      = struct ct_page_store;
+using ct_root_catalog    = struct ct_root_catalog;
+using ct_chunk_transport = struct ct_chunk_transport;
+using ct_view            = struct ct_view;
+using ct_iter            = struct ct_iter;
+using ct_export          = struct ct_export;
+using ct_import          = struct ct_import;
+using ct_write_handle    = struct ct_write_handle;
 
 // Owned byte buffer handed back to the caller; free with ct_free_buf.
 using ct_buf = struct
@@ -164,10 +165,38 @@ using ct_chunk_page_store_stats = struct
     uint64_t orphan_bytes;
 };
 
+struct ct_chunk_rpc_route
+{
+    void *client;
+    void *server;
+    void *connection;
+};
+
+struct ct_chunk_rpc_disk_route
+{
+    uint64_t           disk_id_high;
+    uint64_t           disk_id_low;
+    ct_chunk_rpc_route route;
+};
+
+struct ct_chunk_rpc_transport_options
+{
+    ct_chunk_rpc_route             chunkdb;
+    const ct_chunk_rpc_disk_route *disk_routes;
+    size_t                         disk_route_count;
+    uint64_t                       writer_lease_ms;
+    uint64_t                       rpc_timeout_ms; // 0 => 30 seconds
+    uint32_t                       completion_capacity;
+};
+
 ct_status ct_memory_root_catalog_open(uint64_t owner_epoch, ct_root_catalog **out);
 void      ct_root_catalog_free(ct_root_catalog *catalog);
 ct_status ct_chunk_page_store_open(const ct_chunk_page_store_options *options, ct_root_catalog *catalog,
                                    ct_page_store **out);
+ct_status ct_chunk_page_store_open_with_transport(const ct_chunk_page_store_options *options, ct_root_catalog *catalog,
+                                                  ct_chunk_transport *transport, ct_page_store **out);
+ct_status ct_rpc_chunk_transport_open(const ct_chunk_rpc_transport_options *options, ct_chunk_transport **out);
+void      ct_chunk_transport_free(ct_chunk_transport *transport);
 ct_status ct_chunk_page_store_get_stats(const ct_page_store *store, ct_chunk_page_store_stats *out);
 uint64_t  ct_chunk_page_store_reclaim_orphans(ct_page_store *store);
 uint64_t  ct_root_catalog_reclaim_before(ct_root_catalog *catalog, uint64_t tree_id, uint64_t generation);

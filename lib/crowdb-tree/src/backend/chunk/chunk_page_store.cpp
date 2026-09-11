@@ -6,6 +6,7 @@
 #include "chunk_page_store.h"
 
 #include "c_api_internal.h"
+#include "chunk_c_api_internal.h"
 #include "crowdb-common/crc32c.h"
 
 #include <algorithm>
@@ -456,7 +457,8 @@ uint32_t ChunkPageStore::reference_segment_checksum(const ChunkReferenceSegmentI
     uint32_t crc = update_u64(0, segment.object_id);
     crc          = update_u64(crc, segment.first_ordinal);
     for (const ChunkPageRef &ref : segment.refs) {
-        crc = update_u64(crc, ref.chunk_id);
+        crc = update_u64(crc, ref.chunk_id.high);
+        crc = update_u64(crc, ref.chunk_id.low);
         crc = update_u64(crc, ref.offset);
         crc = crowdb::common::crc32c_update(crc, reinterpret_cast<const uint8_t *>(&ref.length), sizeof(ref.length));
         crc =
@@ -501,7 +503,8 @@ uint32_t ChunkPageStore::manifest_checksum(const ChunkManifest &manifest)
     for (const ChunkPagePack &pack : manifest.packs) {
         crc = update_u64(crc, pack.ordinal);
         crc = update_u64(crc, pack.logical_offset);
-        crc = update_u64(crc, pack.ref.chunk_id);
+        crc = update_u64(crc, pack.ref.chunk_id.high);
+        crc = update_u64(crc, pack.ref.chunk_id.low);
         crc = update_u64(crc, pack.ref.offset);
         crc = crowdb::common::crc32c_update(crc, reinterpret_cast<const uint8_t *>(&pack.ref.length),
                                             sizeof(pack.ref.length));
@@ -535,16 +538,16 @@ Status ChunkPageStore::build_manifest(std::shared_ptr<ChunkManifest> *out)
     uint64_t offset           = 0;
     while (offset < staged_.size()) {
         const size_t length = std::min(config_.pack_bytes, staged_.size() - static_cast<size_t>(offset));
-        if (active_chunk_id_ != 0 && length > config_.max_chunk_bytes - active_chunk_bytes_) {
+        if (!active_chunk_id_.empty() && length > config_.max_chunk_bytes - active_chunk_bytes_) {
             Status seal_status = transport_->seal_chunk(active_chunk_id_, config_.owner_epoch, active_chunk_cursor_);
             if (!seal_status.ok()) {
                 return seal_status;
             }
-            active_chunk_id_     = 0;
+            active_chunk_id_     = {};
             active_chunk_bytes_  = 0;
             active_chunk_cursor_ = 0;
         }
-        if (active_chunk_id_ == 0) {
+        if (active_chunk_id_.empty()) {
             const uint64_t packs_per_chunk = (config_.max_chunk_bytes + config_.pack_bytes - 1) / config_.pack_bytes;
             const uint64_t physical_pack_bytes = round_up_to_iu(config_.pack_bytes, config_.page_alignment);
             if (packs_per_chunk > std::numeric_limits<uint64_t>::max() / physical_pack_bytes) {
@@ -728,12 +731,6 @@ uint64_t ChunkPageStore::reclaim_orphans()
 
 } // namespace crowdb::tree::detail
 
-struct ct_root_catalog
-{
-    std::shared_ptr<crowdb::tree::detail::RootCatalog>    catalog;
-    std::shared_ptr<crowdb::tree::detail::ChunkTransport> transport;
-};
-
 ct_status ct_memory_root_catalog_open(uint64_t owner_epoch, ct_root_catalog **out)
 {
     if (out == nullptr) {
@@ -765,6 +762,28 @@ ct_status ct_chunk_page_store_open(const ct_chunk_page_store_options *options, c
                                                      .pack_bytes  = options->pack_bytes,
                                                      .iu_size     = options->iu_size},
         catalog->catalog, catalog->transport);
+    handle->bundle->async_store_view = store.get();
+    handle->bundle->store            = std::move(store);
+    handle->bundle->backend_label    = "chunk";
+    *out                             = handle.release();
+    return static_cast<ct_status>(crowdb::tree::Code::kOk);
+}
+
+ct_status ct_chunk_page_store_open_with_transport(const ct_chunk_page_store_options *options, ct_root_catalog *catalog,
+                                                  ct_chunk_transport *transport, ct_page_store **out)
+{
+    if (options == nullptr || catalog == nullptr || catalog->catalog == nullptr || transport == nullptr ||
+        transport->transport == nullptr || out == nullptr) {
+        return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
+    }
+    auto handle    = std::make_unique<ct_page_store>();
+    handle->bundle = std::make_shared<PageStoreBundle>();
+    auto store     = std::make_unique<crowdb::tree::detail::ChunkPageStore>(
+        crowdb::tree::detail::ChunkPageStore::Config{.tree_id     = options->tree_id,
+                                                     .owner_epoch = options->owner_epoch,
+                                                     .pack_bytes  = options->pack_bytes,
+                                                     .iu_size     = options->iu_size},
+        catalog->catalog, transport->transport);
     handle->bundle->async_store_view = store.get();
     handle->bundle->store            = std::move(store);
     handle->bundle->backend_label    = "chunk";

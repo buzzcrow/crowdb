@@ -11,7 +11,6 @@
 #include <iterator>
 #include <memory>
 #include <string>
-#include <unordered_set>
 
 namespace crowdb::tree::detail
 {
@@ -206,15 +205,17 @@ TEST(ChunkPageStore, RotatesWholePacksAndReopenAllocatesFreshChunk)
 
     auto first = catalog->load(18);
     ASSERT_NE(first, nullptr);
-    std::unordered_set<uint64_t> chunk_ids;
+    std::vector<ChunkId> chunk_ids;
     for (const ChunkPagePack &pack : first->packs) {
         EXPECT_LE(pack.ref.length, config.pack_bytes);
         EXPECT_LE(pack.ref.offset + pack.ref.length, config.max_chunk_bytes);
-        chunk_ids.insert(pack.ref.chunk_id);
+        if (std::find(chunk_ids.begin(), chunk_ids.end(), pack.ref.chunk_id) == chunk_ids.end()) {
+            chunk_ids.push_back(pack.ref.chunk_id);
+        }
     }
     ASSERT_GT(chunk_ids.size(), 1U);
-    const uint64_t abandoned_chunk_id = first->packs.back().ref.chunk_id;
-    ChunkLayout    abandoned;
+    const ChunkId abandoned_chunk_id = first->packs.back().ref.chunk_id;
+    ChunkLayout   abandoned;
     ASSERT_TRUE(transport->query_chunk(abandoned_chunk_id, &abandoned).ok());
     EXPECT_FALSE(abandoned.sealed);
 
@@ -383,6 +384,11 @@ TEST(ChunkPageStore, AsyncUnavailableRemainsTypedAndDoesNotLatchCorruption)
 
 TEST(ChunkPageStore, CApiFactoryInjectsBackendWithoutChangingOpen)
 {
+    ct_chunk_transport            *invalid_transport = nullptr;
+    ct_chunk_rpc_transport_options invalid_options   = {};
+    EXPECT_EQ(ct_rpc_chunk_transport_open(&invalid_options, &invalid_transport),
+              static_cast<ct_status>(Code::kInvalidArgument));
+
     ct_root_catalog *catalog = nullptr;
     ASSERT_EQ(ct_memory_root_catalog_open(11, &catalog), 0);
     ct_chunk_page_store_options store_options = {.tree_id = 77, .owner_epoch = 11, .pack_bytes = 4096, .iu_size = 1};

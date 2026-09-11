@@ -22,7 +22,7 @@ namespace crowdb::tree::detail
 
 struct ChunkPageRef
 {
-    uint64_t chunk_id = 0;
+    ChunkId  chunk_id;
     uint64_t offset   = 0;
     uint32_t length   = 0;
     uint32_t checksum = 0;
@@ -223,7 +223,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     std::atomic<uint64_t>                                     mirror_write_failures_{0};
     std::atomic<uint64_t>                                     orphan_bytes_{0};
     std::vector<uint64_t>                                     orphan_reference_segments_;
-    uint64_t                                                  active_chunk_id_     = 0;
+    ChunkId                                                   active_chunk_id_;
     uint64_t                                                  active_chunk_bytes_  = 0;
     uint64_t                                                  active_chunk_cursor_ = 0;
 };

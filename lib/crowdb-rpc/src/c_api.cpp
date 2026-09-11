@@ -615,6 +615,36 @@ crowdb_rpc_status crowdb_rpc_client_send(crowdb_rpc_client_t client, crowdb_rpc_
     }
 }
 
+crowdb_rpc_status crowdb_rpc_client_send_slab(crowdb_rpc_client_t client, crowdb_rpc_server_t server,
+                                              crowdb_rpc_conn_t conn, uint64_t request_id, crowdb_rpc_buffer_t control,
+                                              crowdb_rpc_buffer_t data, uint16_t msg_type,
+                                              crowdb_rpc_on_complete on_complete, void *user_data)
+{
+    try {
+        if (client == nullptr || server == nullptr || conn == nullptr || control == nullptr || on_complete == nullptr) {
+            return CROWDB_RPC_ERR_INVALID_ARG;
+        }
+
+        crowdb::rpc::Buffer *ctrl_buf = control->buf;
+        crowdb::rpc::Buffer *data_buf = (data != nullptr) ? data->buf : nullptr;
+        if (ctrl_buf != nullptr)
+            ctrl_buf->ref_clone();
+        if (data_buf != nullptr)
+            data_buf->ref_clone();
+
+        bool ok = client->client->send_slab_only(server->server->transport(), conn->conn.get(), request_id, ctrl_buf,
+                                                 data_buf, msg_type, on_complete, user_data);
+        crowdb_rpc_buffer_release(control);
+        if (data != nullptr) {
+            crowdb_rpc_buffer_release(data);
+        }
+        return ok ? CROWDB_RPC_OK : CROWDB_RPC_ERR_SEND_QUEUE;
+    }
+    catch (...) {
+        return CROWDB_RPC_ERR_CONN_ERROR;
+    }
+}
+
 // Variant of crowdb_rpc_client_send for server-handler use: conn_handle
 // is a raw Connection* (as passed to the dispatch callback), NOT a
 // crowdb_rpc_conn_s*. The handler's conn_handle is a Connection* obtained
