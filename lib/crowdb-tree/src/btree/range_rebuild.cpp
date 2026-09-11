@@ -282,40 +282,67 @@ Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destinati
         }
     }
 
-    RangeRebuildStats        local;
-    std::vector<NativeFrame> source_frames;
-    uint64_t                 source_root  = kInvalidPageId;
-    uint64_t                 at_slot      = 0;
-    uint64_t                 next_page_id = 0;
-    Status native_status = source.collect_native_frames(&source_frames, &source_root, &at_slot, &next_page_id,
-                                                        range.is_bounded() ? &range : nullptr, &local.subtrees_skipped);
+    RangeRebuildStats                    local;
+    std::unique_ptr<NativeFrameIterator> iterator;
+    Status native_status = source.open_native_frame_iterator(range.is_bounded() ? &range : nullptr, &iterator);
     if (!native_status.ok()) {
         return native_status;
     }
-    if (source_frames.empty()) {
-        return Status::corruption("range rebuild: source snapshot has no root");
-    }
-    const uint32_t source_frame_bytes = static_cast<uint32_t>(source_frames.front().frame.size());
-    if (source_frame_bytes != destination_options.frame_bytes ||
-        std::any_of(source_frames.begin(), source_frames.end(), [source_frame_bytes](const NativeFrame &frame) {
-            return frame.frame.size() != source_frame_bytes;
-        })) {
-        return Status::invalid_argument("range rebuild requires matching fixed frame sizes");
-    }
+    const uint64_t source_root  = iterator->root_page_id();
+    const uint64_t at_slot      = iterator->at_slot();
+    const uint64_t next_page_id = iterator->next_page_id();
 
-    bool all_contained = local.subtrees_skipped == 0;
-    for (const NativeFrame &frame : source_frames) {
-        if (frame_page_type(frame.frame.data()) != page_type::kLeafBase) {
-            continue;
+    constexpr size_t         kNativeBatchBytes = 4U * 1024U * 1024U;
+    const size_t             batch_frames      = std::max<size_t>(1, kNativeBatchBytes / source.opt_.frame_bytes);
+    std::vector<NativeFrame> source_frames;
+    bool                     iteration_complete = false;
+    bool                     all_contained      = local.subtrees_skipped == 0;
+    uint32_t                 source_frame_bytes = 0;
+    while (!iteration_complete) {
+        std::vector<NativeFrame> batch;
+        native_status = iterator->next(batch_frames, &batch, &iteration_complete);
+        if (!native_status.ok()) {
+            return native_status;
         }
-        LeafFrameView leaf(frame.frame.data(), source_frame_bytes);
-        for (uint32_t index = 0; index < leaf.count(); ++index) {
-            ++local.entries_examined;
-            if (!range.contains(leaf.key(index))) {
-                ++local.entries_filtered;
-                all_contained = false;
+        for (NativeFrame &frame : batch) {
+            if (source_frame_bytes == 0) {
+                source_frame_bytes = static_cast<uint32_t>(frame.frame.size());
+            }
+            if (frame.frame.size() != source_frame_bytes || source_frame_bytes != destination_options.frame_bytes) {
+                return Status::invalid_argument("range rebuild requires matching fixed frame sizes");
+            }
+            const page_type type = frame_page_type(frame.frame.data());
+            if (type == page_type::kLeafBase) {
+                LeafFrameView leaf(frame.frame.data(), source_frame_bytes);
+                for (uint32_t index = 0; index < leaf.count(); ++index) {
+                    ++local.entries_examined;
+                    if (!range.contains(leaf.key(index))) {
+                        ++local.entries_filtered;
+                        if (all_contained) {
+                            all_contained = false;
+                            std::erase_if(source_frames, [](const NativeFrame &prior) {
+                                const page_type prior_type = frame_page_type(prior.frame.data());
+                                return prior_type != page_type::kLeafBase && prior_type != page_type::kOverflowFrame;
+                            });
+                        }
+                    }
+                }
+            }
+            if (all_contained || type == page_type::kLeafBase || type == page_type::kOverflowFrame) {
+                source_frames.push_back(std::move(frame));
             }
         }
+    }
+    local.subtrees_skipped = iterator->subtrees_skipped();
+    if (local.subtrees_skipped != 0 && all_contained) {
+        all_contained = false;
+        std::erase_if(source_frames, [](const NativeFrame &frame) {
+            const page_type type = frame_page_type(frame.frame.data());
+            return type != page_type::kLeafBase && type != page_type::kOverflowFrame;
+        });
+    }
+    if (source_frame_bytes == 0) {
+        return Status::corruption("range rebuild: source snapshot has no root");
     }
 
     std::vector<NativeFrame> output_frames;

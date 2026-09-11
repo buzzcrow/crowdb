@@ -96,12 +96,16 @@ and structurally safe range rebuild while preserving local tree behavior.
   pages, whose exact key fences remain in those leaf frames. Files:
   `include/crowdb-tree/maptable/frame_page.h`, `src/maptable/frame_page.cpp`,
   `src/maptable/page_codec.cpp`.
-- [~] **Complete range rebuild**: replace whole-snapshot collection with
-  bounded native iteration and disjoint-subtree skipping, then reuse immutable
-  mapping images while retaining the landed reference-image sharing, filtered
-  boundary and sibling rebuild, independent roots, high-water allocation, and
-  concurrent workers. Files: `include/crowdb-tree/btree/range_rebuild.h`,
-  `src/btree/range_rebuild.cpp`, `include/crowdb-tree/c_api.h`, `src/c_api.cpp`.
+- [x] **Complete range rebuild**: replace whole-snapshot collection with a
+  resumable 4-MiB native-frame cursor and disjoint-subtree skipping. Preserve
+  overwritten source pages only while their cursor is active, release consumed
+  pins, reject post-generation PIDs, and fail retryably if concurrent mutation
+  exceeds the preservation budget. Retain the landed filtered boundary and
+  sibling rebuild, independent roots, high-water allocation, shared immutable
+  pack references, and concurrent workers. Files:
+  `include/crowdb-tree/btree/{tree.h,range_rebuild.h}`,
+  `src/btree/{crowdb-tree.cpp,range_rebuild.cpp}`,
+  `include/crowdb-tree/c_api.h`, `src/c_api.cpp`.
 - [x] **Verify structural isolation**: cover split union/intersection, disjoint
   skip, mixed leaves, crossing paths/siblings, shared immutable metadata,
   endpoint forms, concurrent workers, and corrupt fences. Files:
@@ -117,7 +121,7 @@ and structurally safe range rebuild while preserving local tree behavior.
   manifest compatibility and reject incompatible inherited storage geometry.
   Files: `include/crowdb-tree/{backend/page_store.h,btree/tree.h,c_api.h}`,
   `src/{backend/chunk,c_api.cpp,snapshot/persist.cpp}`, `ffi/`.
-- [ ] **Share and materialize mapping images**: make mapping slots reference
+- [~] **Share and materialize mapping images**: make mapping slots reference
   pack ordinals, share immutable mapping-directory images, mark reachable
   slots, and clear unreachable slots before exclusive publication. Files:
   `src/btree/range_rebuild.cpp`, `src/maptable/`,
@@ -189,10 +193,12 @@ and structurally safe range rebuild while preserving local tree behavior.
   slots still hold local byte addresses instead of chunk-reference ordinals.
 - Checksummed page fences are persisted and verified against each native graph;
   legacy frames are upgraded after structural validation. Range rebuild now uses
-  separator-guided bounded native traversal, folds in-frame overlays before
-  export, skips disjoint subtrees before demand load, filters boundary leaves,
-  preserves high-water page allocation, and supports concurrent independent
-  workers.
+  separator-guided resumable native traversal in 4-MiB batches, folds in-frame
+  overlays before export, skips disjoint subtrees before demand load, filters
+  boundary leaves, preserves high-water page allocation, and supports
+  concurrent independent workers. Overwritten source versions are pinned only
+  until consumed; concurrent mutation is bounded by a retryable preservation
+  budget.
   Child chunk manifests now inherit byte-verified immutable source packs and
   reference segments; later checkpoints COW only changed logical packs and
   their affected reference segments. Immutable mapping-directory sharing and

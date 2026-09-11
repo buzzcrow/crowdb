@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include <future>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <optional>
@@ -123,12 +124,146 @@ TEST(RangeRebuild, ResidentSourceWithoutPageStoreBuildsDurableChild)
     Config       destination_options = source_options;
     destination_options.page_store   = &destination_store;
     std::unique_ptr<Crowdbtree> destination;
-    ASSERT_TRUE(
-        rebuild_range(source, KeyRange::bounded(std::string("m"), std::string("z")), destination_options, &destination)
-            .ok());
+    Status                      rebuild_status =
+        rebuild_range(source, KeyRange::bounded(std::string("m"), std::string("z")), destination_options, &destination);
+    ASSERT_TRUE(rebuild_status.ok()) << rebuild_status.to_string();
     EXPECT_EQ(live_entries(*destination), (std::map<std::string, std::string>{
                                               {"m", "kept"}
     }));
+}
+
+TEST(RangeRebuild, NativeIteratorIsBoundedResumableAndPinned)
+{
+    Config options;
+    options.frame_bytes      = 4096;
+    options.leaf_split_bytes = 256;
+    Crowdbtree source(options);
+    for (uint64_t index = 0; index < 100; ++index) {
+        ASSERT_TRUE(source.put(Slice("k" + std::to_string(index + 1000)), Slice(std::string(32, 'v'))).ok());
+    }
+    ASSERT_TRUE(source.flush().ok());
+    const auto expected = live_entries(source);
+
+    std::unique_ptr<NativeFrameIterator> iterator;
+    ASSERT_TRUE(source.open_native_frame_iterator(nullptr, &iterator).ok());
+    ASSERT_NE(iterator, nullptr);
+    const uint64_t root_page_id = iterator->root_page_id();
+    const uint64_t at_slot      = iterator->at_slot();
+    const uint64_t next_page_id = iterator->next_page_id();
+
+    std::vector<NativeFrame> invalid_batch;
+    bool                     invalid_complete = false;
+    EXPECT_EQ(iterator->next(0, &invalid_batch, &invalid_complete).code(), Code::kInvalidArgument);
+
+    std::vector<NativeFrame> frames;
+    bool                     complete = false;
+    std::vector<NativeFrame> first_batch;
+    ASSERT_TRUE(iterator->next(1, &first_batch, &complete).ok());
+    ASSERT_FALSE(complete);
+    ASSERT_EQ(first_batch.size(), 1U);
+    frames.insert(frames.end(), std::make_move_iterator(first_batch.begin()),
+                  std::make_move_iterator(first_batch.end()));
+
+    ASSERT_TRUE(source.put(Slice("zz-new"), Slice("newer")).ok());
+    for (uint64_t index = 0; index < 80; ++index) {
+        ASSERT_TRUE(source.del(Slice("k" + std::to_string(index + 1000))).ok());
+    }
+    ASSERT_TRUE(source.flush().ok());
+
+    while (!complete) {
+        std::vector<NativeFrame> batch;
+        ASSERT_TRUE(iterator->next(2, &batch, &complete).ok());
+        EXPECT_LE(batch.size(), 2U);
+        frames.insert(frames.end(), std::make_move_iterator(batch.begin()), std::make_move_iterator(batch.end()));
+    }
+    std::vector<NativeFrame> empty_batch;
+    ASSERT_TRUE(iterator->next(2, &empty_batch, &complete).ok());
+    EXPECT_TRUE(complete);
+    EXPECT_TRUE(empty_batch.empty());
+
+    Crowdbtree restored(options);
+    ASSERT_TRUE(restored.install_snapshot_native(std::move(frames), root_page_id, at_slot, next_page_id).ok());
+    EXPECT_EQ(live_entries(restored), expected);
+    EXPECT_FALSE(live_entries(restored).contains("zz-new"));
+}
+
+TEST(RangeRebuild, NativeIteratorKeepsDisjointRootBeforeInRangeInsert)
+{
+    Config options;
+    options.frame_bytes = 4096;
+    Crowdbtree source(options);
+    ASSERT_TRUE(source.put(Slice("z"), Slice("old")).ok());
+    ASSERT_TRUE(source.flush().ok());
+
+    const KeyRange                       range = KeyRange::bounded(std::string("a"), std::string("b"));
+    std::unique_ptr<NativeFrameIterator> iterator;
+    ASSERT_TRUE(source.open_native_frame_iterator(&range, &iterator).ok());
+    ASSERT_TRUE(source.put(Slice("a"), Slice("new")).ok());
+    ASSERT_TRUE(source.flush().ok());
+
+    std::vector<NativeFrame> frames;
+    bool                     complete = false;
+    while (!complete) {
+        std::vector<NativeFrame> batch;
+        ASSERT_TRUE(iterator->next(1, &batch, &complete).ok());
+        frames.insert(frames.end(), std::make_move_iterator(batch.begin()), std::make_move_iterator(batch.end()));
+    }
+
+    Crowdbtree restored(options);
+    ASSERT_TRUE(restored
+                    .install_snapshot_native(std::move(frames), iterator->root_page_id(), iterator->at_slot(),
+                                             iterator->next_page_id())
+                    .ok());
+    EXPECT_EQ(live_entries(restored), (std::map<std::string, std::string>{
+                                          {"z", "old"}
+    }));
+}
+
+TEST(RangeRebuild, NativeIteratorKeepsPendingLeafAcrossSplit)
+{
+    Config options;
+    options.frame_bytes      = 4096;
+    options.leaf_split_bytes = 256;
+    Crowdbtree source(options);
+    for (uint64_t index = 0; index < 100; ++index) {
+        ASSERT_TRUE(source.put(Slice("k" + std::to_string(index + 1000)), Slice(std::string(32, 'v'))).ok());
+    }
+    ASSERT_TRUE(source.flush().ok());
+
+    const KeyRange           range = KeyRange::bounded(std::string("k1050"), std::string("k1060"));
+    std::vector<std::string> expected;
+    for (const auto &[key, value] : live_entries(source)) {
+        (void)value;
+        if (range.contains(Slice(key))) {
+            expected.push_back(key);
+        }
+    }
+    std::unique_ptr<NativeFrameIterator> iterator;
+    ASSERT_TRUE(source.open_native_frame_iterator(&range, &iterator).ok());
+    for (uint64_t index = 0; index < 20; ++index) {
+        ASSERT_TRUE(source.put(Slice("k1050-" + std::to_string(index + 100)), Slice(std::string(32, 'n'))).ok());
+    }
+    ASSERT_TRUE(source.flush().ok());
+
+    std::vector<std::string> actual;
+    bool                     complete = false;
+    while (!complete) {
+        std::vector<NativeFrame> batch;
+        ASSERT_TRUE(iterator->next(2, &batch, &complete).ok());
+        for (const NativeFrame &frame : batch) {
+            if (frame_page_type(frame.frame.data()) != page_type::kLeafBase) {
+                continue;
+            }
+            LeafFrameView leaf(frame.frame.data(), static_cast<uint32_t>(frame.frame.size()));
+            for (uint32_t index = 0; index < leaf.count(); ++index) {
+                if (range.contains(leaf.key(index))) {
+                    actual.push_back(leaf.key(index).to_string());
+                }
+            }
+        }
+    }
+    std::sort(actual.begin(), actual.end());
+    EXPECT_EQ(actual, expected);
 }
 
 TEST(RangeRebuild, ConcurrentWorkersPublishIndependentTrees)

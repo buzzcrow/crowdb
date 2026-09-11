@@ -387,6 +387,35 @@ struct NativeFrame
     std::vector<uint8_t> frame; // raw in-memory frame bytes (page_bytes() length)
 };
 
+// Resumable view over one native tree generation. Creation folds pending leaf
+// deltas, then pins only the root. Each next() call advances a bounded DFS
+// batch; concurrent writers preserve overwritten pre-generation pages under a
+// fixed pin budget, and consumed pins are released immediately. Different
+// cursors share no mutable traversal state.
+class NativeFrameIterator
+{
+  public:
+    ~NativeFrameIterator();
+
+    NativeFrameIterator(const NativeFrameIterator &)            = delete;
+    NativeFrameIterator &operator=(const NativeFrameIterator &) = delete;
+    NativeFrameIterator(NativeFrameIterator &&) noexcept;
+    NativeFrameIterator &operator=(NativeFrameIterator &&) noexcept;
+
+    Status                 next(size_t max_frames, std::vector<NativeFrame> *out, bool *complete);
+    [[nodiscard]] uint64_t root_page_id() const;
+    [[nodiscard]] uint64_t at_slot() const;
+    [[nodiscard]] uint64_t next_page_id() const;
+    [[nodiscard]] uint64_t subtrees_skipped() const;
+
+  private:
+    struct Impl;
+    explicit NativeFrameIterator(std::shared_ptr<Impl> impl);
+
+    std::shared_ptr<Impl> impl_;
+    friend class Crowdbtree;
+};
+
 class Crowdbtree
 {
   public:
@@ -681,6 +710,7 @@ class Crowdbtree
     Status collect_native_frames(std::vector<NativeFrame> *out, uint64_t *out_root_page_id, uint64_t *out_at_slot,
                                  uint64_t *out_next_page_id = nullptr, const KeyRange *filter = nullptr,
                                  uint64_t *out_subtrees_skipped = nullptr);
+    Status open_native_frame_iterator(const KeyRange *filter, std::unique_ptr<NativeFrameIterator> *out);
     Status install_snapshot_native(std::vector<NativeFrame> frames, uint64_t root_page_id, uint64_t at_slot,
                                    uint64_t next_page_id = 0);
 
@@ -840,6 +870,7 @@ class Crowdbtree
     }
 
   private:
+    friend class NativeFrameIterator;
     friend Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destination_options,
                                 std::unique_ptr<Crowdbtree> *out, RangeRebuildStats *stats);
     // apply a batch's ops into L0 at `slot` (intra-batch last-op-wins).
@@ -926,6 +957,7 @@ class Crowdbtree
     }
 
     void retire_page(PageBase *p);
+    void preserve_native_page_locked(uint64_t page_id, PageBase *page);
     // Retire a page that becomes entirely unreachable by new readers with no
     // replacement under its own PID (a merged-away leaf/inner, or a
     // root-collapse's old root) -- as opposed to retire_page()'s usual
@@ -1315,8 +1347,9 @@ class Crowdbtree
     // order" goal without that cost.
     mutable std::atomic<uint64_t> touch_tick_{0};
 
-    mutable std::mutex write_mutex_; // serializes flush / consolidate / split-merge
-    mutable std::mutex load_mutex_;  // serializes cold-path demand loads
+    mutable std::mutex                                    write_mutex_; // serializes flush / consolidate / split-merge
+    std::vector<std::weak_ptr<NativeFrameIterator::Impl>> native_frame_iterators_;
+    mutable std::mutex                                    load_mutex_; // serializes cold-path demand loads
     // Serializes snapshot(_async) generations against each other across
     // snapshot_async's async write phase, where write_mutex_ itself can't be
     // held (see acquire_snapshot_slot's doc comment and snapshot_async's).
