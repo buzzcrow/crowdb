@@ -109,6 +109,28 @@ TEST(RangeRebuild, AdjacentChildrenHaveExactUnionAndEmptyIntersection)
     EXPECT_GT(right_stats.subtrees_skipped, 0U);
 }
 
+TEST(RangeRebuild, ResidentSourceWithoutPageStoreBuildsDurableChild)
+{
+    Config source_options;
+    source_options.frame_bytes = 4096;
+    Crowdbtree source(source_options);
+    ASSERT_TRUE(source.put(Slice("a"), Slice("left")).ok());
+    ASSERT_TRUE(source.put(Slice("m"), Slice("kept")).ok());
+    ASSERT_TRUE(source.put(Slice("z"), Slice("right")).ok());
+    ASSERT_TRUE(source.flush().ok());
+
+    MemPageStore destination_store(1);
+    Config       destination_options = source_options;
+    destination_options.page_store   = &destination_store;
+    std::unique_ptr<Crowdbtree> destination;
+    ASSERT_TRUE(
+        rebuild_range(source, KeyRange::bounded(std::string("m"), std::string("z")), destination_options, &destination)
+            .ok());
+    EXPECT_EQ(live_entries(*destination), (std::map<std::string, std::string>{
+                                              {"m", "kept"}
+    }));
+}
+
 TEST(RangeRebuild, ConcurrentWorkersPublishIndependentTrees)
 {
     MemPageStore source_store(1);

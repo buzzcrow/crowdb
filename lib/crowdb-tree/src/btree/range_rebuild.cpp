@@ -275,9 +275,11 @@ Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destinati
     if (!open_status.ok()) {
         return open_status;
     }
-    Status inherit_status = destination_options.page_store->inherit_snapshot_from(*source.opt_.page_store);
-    if (!inherit_status.ok()) {
-        return inherit_status;
+    if (source.opt_.page_store != nullptr) {
+        Status inherit_status = destination_options.page_store->inherit_snapshot_from(*source.opt_.page_store);
+        if (!inherit_status.ok()) {
+            return inherit_status;
+        }
     }
 
     RangeRebuildStats        local;
