@@ -31,6 +31,8 @@
 namespace crowdb::tree
 {
 
+struct RangeRebuildStats;
+
 // The metrics core moved to crowdb-common::metrics (R12); bridge the moved types
 // into `crowdb-tree` with per-type using-declarations so existing
 // `Counter*`/`Gauge*`/`LatencySummary*`/`MetricsRegistry`/`Bandwidth`
@@ -834,6 +836,8 @@ class Crowdbtree
     }
 
   private:
+    friend Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destination_options,
+                                std::unique_ptr<Crowdbtree> *out, RangeRebuildStats *stats);
     // apply a batch's ops into L0 at `slot` (intra-batch last-op-wins).
     void apply_batch(uint64_t slot, const Batch &batch);
     // Shared apply()/apply_encoded() tail: slot bookkeeping (max_seen_slot_,

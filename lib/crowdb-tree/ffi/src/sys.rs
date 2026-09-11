@@ -61,6 +61,8 @@ pub struct ct_chunk_page_store_stats {
     pub generations_published: u64,
     pub packs_written: u64,
     pub pack_bytes_written: u64,
+    pub packs_reused: u64,
+    pub pack_bytes_reused: u64,
     pub pack_reads: u64,
     pub cache_hits: u64,
     pub layout_queries: u64,

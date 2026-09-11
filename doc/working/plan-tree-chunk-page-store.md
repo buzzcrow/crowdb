@@ -76,7 +76,7 @@ and structurally safe range rebuild while preserving local tree behavior.
   Preserve the landed layout refresh, bounded mirror retry, publication, and
   typed failures. Files: `src/backend/chunk/`, protocol/CMake generation
   wiring.
-- [ ] **Verify chunk persistence**: cover pack bounds, durability ordering,
+- [x] **Verify chunk persistence**: cover pack bounds, durability ordering,
   all-or-nothing recovery, maintenance failure, layout refresh, mirror retry,
   typed errors, retention, and metrics. Files:
   `tests/unit/chunk_page_store_test.cpp`,
@@ -109,12 +109,18 @@ and structurally safe range rebuild while preserving local tree behavior.
 
 ## Phase 4: Materialization, Metrics, and Link Isolation
 
-- [ ] **Materialize child ownership**: mark reachability, COW shared segments,
+- [~] **Materialize child ownership**: immutable source packs are inherited by
+  independent child manifests, byte-verified before reuse, retained across
+  source GC, and COW-replaced by changed logical packs. Mapping/reference
+  directory sharing, unreachable-slot clearing, and bounded exclusive repack
+  remain open. Implement mark reachability, COW shared segments,
   repack shared pages, generation-fence publication, and retry stale work.
   Files: `src/btree/range_rebuild.cpp`, `src/backend/chunk/chunk_page_store.cpp`.
-- [ ] **Add observability**: register chunk latency, layout, coalescing, pack,
-  rebuild, sharing, retention, publication, recovery, and orphan metrics.
-  Files: `include/crowdb-tree/crowdb-tree.h`, `src/btree/crowdb-tree.cpp`,
+- [~] **Add observability**: pack reuse/write bytes, cache/layout queries,
+  mirror attempts/failures, retention pins, and orphan bytes are exposed.
+  Register the remaining chunk latency, coalescing, rebuild, materialization,
+  publication, and recovery metrics. Files:
+  `include/crowdb-tree/crowdb-tree.h`, `src/btree/crowdb-tree.cpp`,
   `src/backend/chunk/chunk_page_store.cpp`, `src/btree/range_rebuild.cpp`.
 - [ ] **Verify retention and races**: cover historical pins, current-lineage
   cleanup, mixed packs, failure retry, stale materialization, reclamation
@@ -178,7 +184,9 @@ and structurally safe range rebuild while preserving local tree behavior.
   persisted. Range rebuild now uses separator-guided bounded native traversal,
   skips disjoint subtrees before demand load, filters boundary leaves, preserves
   high-water page allocation, and supports concurrent independent workers.
-  Immutable mapping/reference image sharing remains open.
+  Child chunk manifests now inherit byte-verified immutable source packs and
+  later checkpoints COW only changed logical packs. Immutable mapping/reference
+  directory-image sharing and unreachable-slot materialization remain open.
 - Basic chunk-store counters, retention pins, and logical orphan accounting
   exist. Child materialization/repack, the full metric set, archive extraction
   checks, and fixed-workload benchmark evidence remain absent.

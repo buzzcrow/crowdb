@@ -38,6 +38,7 @@ struct ChunkPagePack
     uint64_t     ordinal        = 0;
     uint64_t     logical_offset = 0;
     ChunkPageRef ref;
+    bool         reused = false;
 };
 
 struct ChunkReferenceSegment
@@ -57,12 +58,14 @@ struct ChunkReferenceSegmentImage
 
 struct ChunkManifest
 {
-    uint64_t                           tree_id         = 0;
-    uint64_t                           generation      = 0;
-    uint64_t                           owner_epoch     = 0;
-    uint64_t                           logical_size    = 0;
-    uint64_t                           published_at_ms = 0;
-    uint32_t                           checksum        = 0;
+    uint64_t                           tree_id           = 0;
+    uint64_t                           generation        = 0;
+    uint64_t                           owner_epoch       = 0;
+    uint64_t                           logical_size      = 0;
+    uint64_t                           published_at_ms   = 0;
+    uint64_t                           packs_reused      = 0;
+    uint64_t                           pack_bytes_reused = 0;
+    uint32_t                           checksum          = 0;
     std::vector<ChunkReferenceSegment> reference_segments;
     std::vector<ChunkPagePack>         packs;
 };
@@ -123,16 +126,25 @@ class MemoryRootCatalog final : public RootCatalog
 
     [[nodiscard]] uint64_t reference_segment_count(uint64_t tree_id) const;
     void                   corrupt_active_reference_segment(size_t segment_index, size_t ref_index);
+    void                   corrupt_active_pack_layout_for_tests(uint64_t tree_id);
     void                   block_next_publish_for_tests();
     void                   wait_for_blocked_publish_for_tests() const;
     void                   release_blocked_publish_for_tests();
 
   private:
-    std::atomic<uint64_t>                             owner_epoch_;
-    std::atomic<uint64_t>                             next_reference_segment_id_{1};
-    std::atomic<std::shared_ptr<const ChunkManifest>> current_;
-    using ManifestHistory = std::vector<std::shared_ptr<const ChunkManifest>>;
-    std::atomic<std::shared_ptr<const ManifestHistory>> history_;
+    std::atomic<uint64_t> owner_epoch_;
+    std::atomic<uint64_t> next_reference_segment_id_{1};
+    using ManifestDirectory = std::vector<std::shared_ptr<const ChunkManifest>>;
+    using ManifestHistory   = std::vector<std::shared_ptr<const ChunkManifest>>;
+
+    struct CatalogState
+    {
+        ManifestDirectory current;
+        ManifestHistory   history;
+        bool              reclaiming = false;
+    };
+
+    std::atomic<std::shared_ptr<const CatalogState>> state_;
 
     struct StoredReferenceSegment
     {
@@ -152,6 +164,8 @@ struct ChunkPageStoreStats
     uint64_t generations_published = 0;
     uint64_t packs_written         = 0;
     uint64_t pack_bytes_written    = 0;
+    uint64_t packs_reused          = 0;
+    uint64_t pack_bytes_reused     = 0;
     uint64_t pack_reads            = 0;
     uint64_t cache_hits            = 0;
     uint64_t layout_queries        = 0;
@@ -210,10 +224,16 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     [[nodiscard]] ChunkPageStoreStats stats() const;
     uint64_t                          reclaim_orphans();
 
+    // Seed an unpublished destination from one immutable source generation.
+    // Byte-identical packs are referenced directly by the next manifest;
+    // changed packs are written through the normal mirror pipeline.
+    Status inherit_snapshot_from(const ChunkPageStore &source);
+
   private:
     friend class ChunkAsyncExecutor;
     friend class ChunkPackPipeline;
     friend class ChunkPackPipelineImpl;
+    friend class MemoryRootCatalog;
 
     struct CachedPack
     {
@@ -222,7 +242,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     };
 
     Status materialize_active(std::vector<uint8_t> *out) const;
-    Status build_manifest(uint64_t expected_generation, std::shared_ptr<ChunkManifest> *out,
+    Status build_manifest(uint64_t expected_generation, std::shared_ptr<ChunkManifest> *out, uint64_t *new_pack_bytes,
                           ChunkCancellation cancellation = {});
     Status read_at_cancellable(uint64_t off, uint8_t *buf, size_t len, ChunkCancellation cancellation) const;
     Status sync_cancellable(ChunkCancellation cancellation);
@@ -231,11 +251,15 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
                                                   Status io_status);
     Status                read_pack(const ChunkPageRef &ref, std::shared_ptr<const std::vector<uint8_t>> *out,
                                     ChunkCancellation cancellation) const;
-    std::shared_ptr<const ChunkManifest> load_layout() const;
-    Status          resolve_ordinal(const ChunkManifest &manifest, uint64_t ordinal, ChunkPageRef *out) const;
-    static uint32_t reference_segment_checksum(const ChunkReferenceSegmentImage &segment);
-    static uint32_t manifest_checksum(const ChunkManifest &manifest);
-    static std::vector<uint64_t> reference_segment_ids(const ChunkManifest &manifest);
+    Status                load_layout(std::shared_ptr<const ChunkManifest> *out) const;
+    Status                validate_manifest(const ChunkManifest &manifest, const RootCatalog &catalog) const;
+    [[nodiscard]] std::shared_ptr<const ChunkManifest> reuse_base_manifest() const;
+    [[nodiscard]] const ChunkPagePack *find_reusable_pack(const ChunkManifest &base, uint64_t logical_offset,
+                                                          uint32_t length, uint32_t checksum,
+                                                          ChunkCancellation cancellation = {}) const;
+    static uint32_t                    reference_segment_checksum(const ChunkReferenceSegmentImage &segment);
+    static uint32_t                    manifest_checksum(const ChunkManifest &manifest);
+    static std::vector<uint64_t>       reference_segment_ids(const ChunkManifest &manifest);
 
     Config                                                    config_;
     std::shared_ptr<RootCatalog>                              catalog_;
@@ -252,6 +276,8 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     std::atomic<uint64_t>                                     generations_published_{0};
     std::atomic<uint64_t>                                     packs_written_{0};
     std::atomic<uint64_t>                                     pack_bytes_written_{0};
+    std::atomic<uint64_t>                                     packs_reused_{0};
+    std::atomic<uint64_t>                                     pack_bytes_reused_{0};
     mutable std::atomic<uint64_t>                             pack_reads_{0};
     mutable std::atomic<uint64_t>                             cache_hits_{0};
     mutable std::atomic<uint64_t>                             layout_queries_{0};
@@ -262,6 +288,8 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     ChunkId                                                   active_chunk_id_;
     uint64_t                                                  active_chunk_bytes_  = 0;
     uint64_t                                                  active_chunk_cursor_ = 0;
+    std::shared_ptr<const ChunkManifest>                      inherited_manifest_;
+    std::shared_ptr<RootCatalog>                              inherited_catalog_;
     std::unique_ptr<ChunkAsyncExecutor>                       async_executor_;
 };
 

@@ -156,6 +156,8 @@ using ct_chunk_page_store_stats = struct
     uint64_t generations_published;
     uint64_t packs_written;
     uint64_t pack_bytes_written;
+    uint64_t packs_reused;
+    uint64_t pack_bytes_reused;
     uint64_t pack_reads;
     uint64_t cache_hits;
     uint64_t layout_queries;

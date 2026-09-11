@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#include "backend/chunk/chunk_page_store.h"
 #include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/btree/range_rebuild.h"
 #include "crowdb-tree/c_api.h"
@@ -167,6 +168,55 @@ TEST(RangeRebuild, WhollyContainedTreeReusesNativePageFrames)
     EXPECT_EQ(stats.pages_rebuilt, 0U);
     EXPECT_EQ(stats.entries_emitted, 40U);
     EXPECT_EQ(live_entries(*destination), live_entries(source));
+}
+
+TEST(RangeRebuild, ChunkChildPublishesIndependentManifestWithSharedPacks)
+{
+    auto                   catalog   = std::make_shared<detail::MemoryRootCatalog>(1);
+    auto                   transport = std::make_shared<detail::MemoryChunkTransport>();
+    detail::ChunkPageStore source_store(
+        {.tree_id = 60, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
+    Config source_options;
+    source_options.page_store       = &source_store;
+    source_options.frame_bytes      = 4096;
+    source_options.leaf_split_bytes = 256;
+    Crowdbtree source(source_options);
+    for (uint64_t index = 0; index < 80; ++index) {
+        ASSERT_TRUE(source.put(Slice("k" + std::to_string(index + 1000)), Slice(std::string(128, 'v'))).ok());
+    }
+    ASSERT_TRUE(source.flush().ok());
+    ASSERT_TRUE(source.snapshot().ok());
+    auto source_manifest = catalog->load(60);
+    ASSERT_NE(source_manifest, nullptr);
+
+    detail::ChunkPageStore child_store(
+        {.tree_id = 61, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
+    Config child_options     = source_options;
+    child_options.page_store = &child_store;
+    std::unique_ptr<Crowdbtree> child;
+    ASSERT_TRUE(rebuild_range(source, KeyRange::unbounded(), child_options, &child).ok());
+
+    auto child_manifest = catalog->load(61);
+    ASSERT_NE(child_manifest, nullptr);
+    EXPECT_NE(child_manifest, source_manifest);
+    EXPECT_GT(child_manifest->packs_reused, 0U);
+    EXPECT_GT(child_store.stats().pack_bytes_reused, 0U);
+    bool shares_pack = false;
+    for (const detail::ChunkPagePack &child_pack : child_manifest->packs) {
+        shares_pack = shares_pack || std::any_of(source_manifest->packs.begin(), source_manifest->packs.end(),
+                                                 [&](const detail::ChunkPagePack &source_pack) {
+                                                     return child_pack.ref.chunk_id == source_pack.ref.chunk_id &&
+                                                            child_pack.ref.offset == source_pack.ref.offset;
+                                                 });
+    }
+    EXPECT_TRUE(shares_pack);
+
+    ASSERT_TRUE(child->put(Slice("new-key"), Slice("child-only")).ok());
+    ASSERT_TRUE(child->flush().ok());
+    ASSERT_TRUE(child->snapshot().ok());
+    EXPECT_EQ(live_entries(source).contains("new-key"), false);
+    EXPECT_EQ(live_entries(*child).at("new-key"), "child-only");
+    EXPECT_GT(child_store.stats().packs_reused, child_manifest->packs_reused);
 }
 
 TEST(RangeRebuild, CopiesOnlyOverflowChainsReferencedByTheChildRange)

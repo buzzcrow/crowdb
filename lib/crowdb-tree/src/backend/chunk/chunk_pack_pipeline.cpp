@@ -154,6 +154,16 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
         manifest->owner_epoch     = store->config_.owner_epoch;
         manifest->logical_size    = store->staged_.size();
         manifest->published_at_ms = monotonic_millis();
+        auto reuse_base           = store->reuse_base_manifest();
+        if (reuse_base != nullptr) {
+            const RootCatalog &reuse_catalog = reuse_base == store->inherited_manifest_ && store->inherited_catalog_
+                                                 ? *store->inherited_catalog_
+                                                 : *store->catalog_;
+            Status             status        = store->validate_manifest(*reuse_base, reuse_catalog);
+            if (!status.ok()) {
+                return status;
+            }
+        }
 
         ChunkId  chunk         = store->active_chunk_id_;
         uint64_t logical_bytes = store->active_chunk_bytes_;
@@ -165,6 +175,24 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             }
             const size_t length =
                 std::min(store->config_.pack_bytes, store->staged_.size() - static_cast<size_t>(offset));
+            const uint32_t checksum = crowdb::common::crc32c(store->staged_.data() + offset, length);
+            if (reuse_base != nullptr) {
+                const ChunkPagePack *reused = store->find_reusable_pack(
+                    *reuse_base, offset, static_cast<uint32_t>(length), checksum, cancellation);
+                if (cancellation.cancelled()) {
+                    return Status::unavailable("chunk manifest reuse verification cancelled");
+                }
+                if (reused != nullptr) {
+                    manifest->packs.push_back({.ordinal        = manifest->packs.size(),
+                                               .logical_offset = offset,
+                                               .ref            = reused->ref,
+                                               .reused         = true});
+                    ++manifest->packs_reused;
+                    manifest->pack_bytes_reused += length;
+                    offset += length;
+                    continue;
+                }
+            }
             if (!chunk.empty() && length > store->config_.max_chunk_bytes - logical_bytes) {
                 if (writes.empty()) {
                     initial_rotated_chunk  = chunk;
@@ -192,12 +220,10 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             auto job                 = std::make_unique<PackWrite>();
             job->pack.ordinal        = manifest->packs.size();
             job->pack.logical_offset = offset;
-            job->pack.ref            = {.chunk_id = chunk,
-                                        .offset   = cursor,
-                                        .length   = static_cast<uint32_t>(length),
-                                        .checksum = crowdb::common::crc32c(store->staged_.data() + offset, length)};
-            job->physical_length     = round_up_to_iu(length, store->config_.page_alignment);
-            job->source_offset       = offset;
+            job->pack.ref            = {
+                .chunk_id = chunk, .offset = cursor, .length = static_cast<uint32_t>(length), .checksum = checksum};
+            job->physical_length = round_up_to_iu(length, store->config_.page_alignment);
+            job->source_offset   = offset;
             manifest->packs.push_back(job->pack);
             logical_bytes += length;
             cursor += job->physical_length;
@@ -307,7 +333,12 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             }
             manifest->reference_segments.push_back(descriptor);
         }
-        manifest->checksum = ChunkPageStore::manifest_checksum(*manifest);
+        manifest->checksum       = ChunkPageStore::manifest_checksum(*manifest);
+        Status validation_status = store->validate_manifest(*manifest, *store->catalog_);
+        if (!validation_status.ok()) {
+            remember_orphan_segments();
+            return validation_status;
+        }
         if (finish_cancellation.cancelled()) {
             remember_orphan_segments();
             return Status::unavailable("chunk root publication cancelled");
@@ -319,13 +350,18 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             return status;
         }
         store->generations_published_.fetch_add(1, std::memory_order_relaxed);
-        store->packs_written_.fetch_add(manifest->packs.size(), std::memory_order_relaxed);
-        store->pack_bytes_written_.fetch_add(store->staged_.size(), std::memory_order_relaxed);
+        store->packs_written_.fetch_add(manifest->packs.size() - manifest->packs_reused, std::memory_order_relaxed);
+        store->pack_bytes_written_.fetch_add(manifest->logical_size - manifest->pack_bytes_reused,
+                                             std::memory_order_relaxed);
+        store->packs_reused_.fetch_add(manifest->packs_reused, std::memory_order_relaxed);
+        store->pack_bytes_reused_.fetch_add(manifest->pack_bytes_reused, std::memory_order_relaxed);
         store->cached_layout_.store(manifest, std::memory_order_release);
         store->layout_valid_until_ms_.store(monotonic_millis() + store->config_.layout_validity_ms,
                                             std::memory_order_release);
         store->staged_initialized_ = false;
         store->staged_.clear();
+        store->inherited_manifest_.reset();
+        store->inherited_catalog_.reset();
         store->data_durable_ = false;
         store->anchor_dirty_ = false;
         return Status::Ok();
@@ -335,6 +371,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
     void launch_one(size_t index)
     {
         auto &job = *writes[index];
+        orphan_pack_bytes.fetch_add(job.pack.ref.length, std::memory_order_relaxed);
         job.framed.assign(job.physical_length, 0);
         std::copy_n(store->staged_.data() + job.source_offset, job.pack.ref.length, job.framed.data());
         for (uint32_t mirror = 0; mirror < job.mirrors.size(); ++mirror) {
@@ -360,7 +397,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
 
     void remember_orphan_segments()
     {
-        store->orphan_bytes_.fetch_add(store->staged_.size(), std::memory_order_relaxed);
+        store->orphan_bytes_.fetch_add(manifest->logical_size - manifest->pack_bytes_reused, std::memory_order_relaxed);
         auto ids = ChunkPageStore::reference_segment_ids(*manifest);
         store->orphan_reference_segments_.insert(store->orphan_reference_segments_.end(), ids.begin(), ids.end());
     }
@@ -370,7 +407,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
         store->active_chunk_id_     = {};
         store->active_chunk_bytes_  = 0;
         store->active_chunk_cursor_ = 0;
-        store->orphan_bytes_.fetch_add(store->staged_.size(), std::memory_order_relaxed);
+        store->orphan_bytes_.fetch_add(orphan_pack_bytes.load(std::memory_order_relaxed), std::memory_order_relaxed);
         return status;
     }
 
@@ -389,6 +426,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
     std::atomic<size_t>                     active{0};
     std::atomic<bool>                       failed{false};
     std::atomic<bool>                       stop_requested{false};
+    std::atomic<uint64_t>                   orphan_pack_bytes{0};
     Status                                  first_error;
 };
 

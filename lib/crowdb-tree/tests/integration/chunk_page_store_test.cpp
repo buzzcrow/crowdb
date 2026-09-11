@@ -517,6 +517,187 @@ TEST(ChunkPageStore, SnapshotPublishesBoundedChecksummedPacksAndReopens)
     EXPECT_EQ(value, std::string(256, 'x'));
 }
 
+TEST(ChunkPageStore, CheckpointCowsOnlyChangedLogicalPacks)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore store({.tree_id = 35, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                         catalog, transport);
+    publish_raw_generation(&store, 1);
+    auto first = catalog->load(35);
+    ASSERT_NE(first, nullptr);
+    ASSERT_EQ(first->packs.size(), 3U);
+
+    const uint8_t changed = 2;
+    ASSERT_TRUE(store.write_at(8192, &changed, 1).ok());
+    ASSERT_TRUE(store.sync().ok());
+    ASSERT_TRUE(store.write_at(0, &changed, 1).ok());
+    ASSERT_TRUE(store.sync().ok());
+
+    auto second = catalog->load(35);
+    ASSERT_NE(second, nullptr);
+    ASSERT_EQ(second->packs.size(), 3U);
+    EXPECT_EQ(second->packs[1].ref.chunk_id, first->packs[1].ref.chunk_id);
+    EXPECT_EQ(second->packs[1].ref.offset, first->packs[1].ref.offset);
+    EXPECT_NE(second->packs[0].ref.checksum, first->packs[0].ref.checksum);
+    EXPECT_NE(second->packs[2].ref.checksum, first->packs[2].ref.checksum);
+    EXPECT_EQ(second->packs_reused, 1U);
+    EXPECT_EQ(second->pack_bytes_reused, 4096U);
+    EXPECT_EQ(store.stats().packs_reused, 1U);
+    EXPECT_EQ(store.stats().pack_bytes_reused, 4096U);
+}
+
+TEST(ChunkPageStore, CatalogPublishesIndependentTreeLineagesConcurrently)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore left({.tree_id = 36, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
+    ChunkPageStore right({.tree_id = 37, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
+
+    auto        publish = [](ChunkPageStore *store, uint8_t value) { publish_raw_generation(store, value); };
+    std::thread left_worker(publish, &left, 1);
+    std::thread right_worker(publish, &right, 2);
+    left_worker.join();
+    right_worker.join();
+
+    auto left_manifest  = catalog->load(36);
+    auto right_manifest = catalog->load(37);
+    ASSERT_NE(left_manifest, nullptr);
+    ASSERT_NE(right_manifest, nullptr);
+    EXPECT_EQ(left_manifest->tree_id, 36U);
+    EXPECT_EQ(right_manifest->tree_id, 37U);
+    EXPECT_EQ(left_manifest->generation, 1U);
+    EXPECT_EQ(right_manifest->generation, 1U);
+}
+
+TEST(ChunkPageStore, CatalogPublishAndReclaimPreserveConcurrentHistory)
+{
+    MemoryRootCatalog catalog(1);
+    auto              publish_generation = [&catalog](uint64_t tree_id, uint64_t generation) {
+        auto manifest             = std::make_shared<ChunkManifest>();
+        manifest->tree_id         = tree_id;
+        manifest->owner_epoch     = 1;
+        manifest->generation      = generation;
+        manifest->published_at_ms = generation;
+        ASSERT_TRUE(catalog.publish(tree_id, generation - 1, 1, std::move(manifest)).ok());
+    };
+    for (uint64_t generation = 1; generation <= 3; ++generation) {
+        publish_generation(41, generation);
+    }
+
+    std::atomic<bool> start{false};
+    std::thread       publisher([&] {
+        start.wait(false, std::memory_order_acquire);
+        for (uint64_t generation = 1; generation <= 100; ++generation) {
+            publish_generation(40, generation);
+        }
+    });
+    std::thread       cross_tree_reclaimer([&] {
+        start.wait(false, std::memory_order_acquire);
+        for (uint64_t iteration = 0; iteration < 100; ++iteration) {
+            catalog.reclaim_before(41, 4);
+        }
+    });
+    start.store(true, std::memory_order_release);
+    start.notify_all();
+    publisher.join();
+    cross_tree_reclaimer.join();
+    EXPECT_EQ(catalog.retained_manifest_count(40), 100U);
+    for (uint64_t generation = 1; generation <= 100; ++generation) {
+        EXPECT_NE(catalog.load_generation(40, generation), nullptr);
+    }
+
+    std::thread same_tree_publisher([&] {
+        for (uint64_t generation = 101; generation <= 200; ++generation) {
+            publish_generation(40, generation);
+        }
+    });
+    std::thread same_tree_reclaimer([&] {
+        for (uint64_t iteration = 0; iteration < 100; ++iteration) {
+            catalog.reclaim_before(40, 201);
+        }
+    });
+    same_tree_publisher.join();
+    same_tree_reclaimer.join();
+    catalog.reclaim_before(40, 201);
+    EXPECT_EQ(catalog.retained_manifest_count(40), 2U);
+    EXPECT_NE(catalog.load_generation(40, 199), nullptr);
+    EXPECT_NE(catalog.load_generation(40, 200), nullptr);
+}
+
+TEST(ChunkPageStore, SharedChildPacksAreNotReclaimedWithSourceHistory)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore source({.tree_id = 38, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
+    publish_raw_generation(&source, 1);
+    auto source_first = catalog->load(38);
+    ASSERT_NE(source_first, nullptr);
+
+    ChunkPageStore child({.tree_id = 39, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
+    ASSERT_TRUE(child.inherit_snapshot_from(source).ok());
+    publish_raw_generation(&child, 1);
+    auto child_first = catalog->load(39);
+    ASSERT_NE(child_first, nullptr);
+    ASSERT_EQ(child_first->packs_reused, source_first->packs.size());
+
+    publish_raw_generation(&source, 2);
+    publish_raw_generation(&source, 3);
+    uint64_t expected_metadata_bytes = 0;
+    for (const ChunkReferenceSegment &segment : source_first->reference_segments) {
+        expected_metadata_bytes += 16U + static_cast<uint64_t>(segment.ref_count) * sizeof(ChunkPageRef);
+    }
+    source_first.reset();
+    EXPECT_EQ(catalog->reclaim_before(38, 4), expected_metadata_bytes);
+
+    std::array<uint8_t, 1> child_value{};
+    ASSERT_TRUE(child.read_at(8192, child_value.data(), child_value.size()).ok());
+    EXPECT_EQ(child_value[0], 1U);
+}
+
+TEST(ChunkPageStore, InheritanceRejectsSelfConsistentManifestCoverageGap)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore source({.tree_id = 42, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1, .layout_validity_ms = 0},
+                          catalog, transport);
+    publish_raw_generation(&source, 1);
+    catalog->corrupt_active_pack_layout_for_tests(42);
+
+    ChunkPageStore child({.tree_id = 43, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
+    EXPECT_EQ(child.inherit_snapshot_from(source).code(), Code::kCorruption);
+    uint8_t value = 0;
+    EXPECT_EQ(source.read_at(8192, &value, 1).code(), Code::kCorruption);
+}
+
+TEST(ChunkPageStore, ShutdownCancelsBlockedAsyncReuseVerification)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<BlockingReadTransport>();
+    ChunkPageStore source({.tree_id = 44, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
+    publish_raw_generation(&source, 1);
+
+    auto child = std::make_unique<ChunkPageStore>(
+        ChunkPageStore::Config{.tree_id = 45, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
+    ASSERT_TRUE(child->inherit_snapshot_from(source).ok());
+    const uint8_t value = 1;
+    ASSERT_TRUE(child->write_at(8192, &value, 1).ok());
+    ASSERT_TRUE(child->sync().ok());
+    ASSERT_TRUE(child->write_at(0, &value, 1).ok());
+
+    transport->hold_reads();
+    CompletionState completed;
+    ASSERT_TRUE(child->submit_fsync({.context = &completed, .complete_fn = &record_completion}).ok());
+    transport->wait_for_read();
+    std::thread closer([&child] { child.reset(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    transport->release_reads();
+    closer.join();
+    EXPECT_TRUE(completed.done.load(std::memory_order_acquire));
+    EXPECT_EQ(completed.code.load(std::memory_order_relaxed), static_cast<int>(Code::kUnavailable));
+    EXPECT_EQ(catalog->load(45), nullptr);
+}
+
 TEST(ChunkPageStore, EpochFailureLeavesPriorRootAndAccountsOrphans)
 {
     auto           catalog   = std::make_shared<MemoryRootCatalog>(3);
@@ -545,6 +726,29 @@ TEST(ChunkPageStore, EpochFailureLeavesPriorRootAndAccountsOrphans)
     uint64_t    slot = 0;
     ASSERT_TRUE(tree.get(Slice("a"), &slot, &value));
     EXPECT_EQ(value, "new");
+}
+
+TEST(ChunkPageStore, FailedAllReusedPublicationDoesNotAccountSourceBytesAsOrphans)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore source({.tree_id = 46, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
+    publish_raw_generation(&source, 1);
+
+    ChunkPageStore child({.tree_id = 47, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
+    ASSERT_TRUE(child.inherit_snapshot_from(source).ok());
+    const uint8_t same = 1;
+    ASSERT_TRUE(child.write_at(8192, &same, 1).ok());
+    ASSERT_TRUE(child.sync().ok());
+    ASSERT_TRUE(child.write_at(0, &same, 1).ok());
+    catalog->set_owner_epoch(2);
+
+    EXPECT_EQ(child.sync().code(), Code::kUnavailable);
+    EXPECT_EQ(child.stats().orphan_bytes, 0U);
+    EXPECT_EQ(catalog->load(47), nullptr);
+    EXPECT_GT(catalog->reference_segment_count(47), 0U);
+    EXPECT_EQ(child.reclaim_orphans(), 0U);
+    EXPECT_EQ(catalog->reference_segment_count(47), 0U);
 }
 
 TEST(ChunkPageStore, CorruptPersistedReferenceSegmentRejectsRead)
