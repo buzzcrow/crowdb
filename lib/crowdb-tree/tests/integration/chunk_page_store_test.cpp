@@ -547,6 +547,103 @@ TEST(ChunkPageStore, CheckpointCowsOnlyChangedLogicalPacks)
     EXPECT_EQ(store.stats().pack_bytes_reused, 4096U);
 }
 
+TEST(ChunkPageStore, CheckpointReusesUnchangedReferenceSegmentImage)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore store({.tree_id = 48, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                         catalog, transport);
+    publish_raw_generation(&store, 1);
+    auto first = catalog->load(48);
+    ASSERT_NE(first, nullptr);
+    ASSERT_EQ(first->reference_segments.size(), 1U);
+    const uint64_t object_id = first->reference_segments[0].object_id;
+
+    publish_raw_generation(&store, 1);
+    auto second = catalog->load(48);
+    ASSERT_NE(second, nullptr);
+    ASSERT_EQ(second->reference_segments.size(), 1U);
+    EXPECT_EQ(second->reference_segments[0].owner_tree_id, 48U);
+    EXPECT_EQ(second->reference_segments[0].object_id, object_id);
+    EXPECT_TRUE(second->reference_segments[0].reused);
+    EXPECT_EQ(catalog->reference_segment_count(48), 1U);
+}
+
+TEST(ChunkPageStore, ChildSharesThenCowsImmutableReferenceSegmentImage)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore source({.tree_id = 49, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                          catalog, transport);
+    publish_raw_generation(&source, 1);
+    auto source_manifest = catalog->load(49);
+    ASSERT_NE(source_manifest, nullptr);
+    ASSERT_EQ(source_manifest->reference_segments.size(), 1U);
+
+    ChunkPageStore child({.tree_id = 50, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                         catalog, transport);
+    ASSERT_TRUE(child.inherit_snapshot_from(source).ok());
+    publish_raw_generation(&child, 1);
+    auto shared = catalog->load(50);
+    ASSERT_NE(shared, nullptr);
+    ASSERT_EQ(shared->reference_segments.size(), 1U);
+    EXPECT_EQ(shared->reference_segments[0].owner_tree_id, 49U);
+    EXPECT_EQ(shared->reference_segments[0].object_id, source_manifest->reference_segments[0].object_id);
+    EXPECT_TRUE(shared->reference_segments[0].reused);
+    EXPECT_EQ(catalog->reference_segment_count(50), 0U);
+
+    publish_raw_generation(&child, 2);
+    auto cow = catalog->load(50);
+    ASSERT_NE(cow, nullptr);
+    ASSERT_EQ(cow->reference_segments.size(), 1U);
+    EXPECT_EQ(cow->reference_segments[0].owner_tree_id, 50U);
+    EXPECT_NE(cow->reference_segments[0].object_id, shared->reference_segments[0].object_id);
+    EXPECT_FALSE(cow->reference_segments[0].reused);
+    EXPECT_EQ(catalog->reference_segment_count(50), 1U);
+
+    std::array<uint8_t, 1> source_value{};
+    ASSERT_TRUE(source.read_at(8192, source_value.data(), source_value.size()).ok());
+    EXPECT_EQ(source_value[0], 1U);
+}
+
+TEST(ChunkPageStore, TreeZeroCanShareReferenceSegmentsWithAnotherLineage)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore source({.tree_id = 0, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                          catalog, transport);
+    publish_raw_generation(&source, 4);
+
+    ChunkPageStore child({.tree_id = 51, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                         catalog, transport);
+    ASSERT_TRUE(child.inherit_snapshot_from(source).ok());
+    publish_raw_generation(&child, 4);
+    auto manifest = catalog->load(51);
+    ASSERT_NE(manifest, nullptr);
+    ASSERT_EQ(manifest->reference_segments.size(), 1U);
+    EXPECT_EQ(manifest->reference_segments[0].owner_tree_id, 0U);
+
+    std::array<uint8_t, 1> value{};
+    ASSERT_TRUE(child.read_at(8192, value.data(), value.size()).ok());
+    EXPECT_EQ(value[0], 4U);
+}
+
+TEST(ChunkPageStore, ReopensLegacyManifestChecksumWithoutOwnerFields)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore store({.tree_id = 52, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                         catalog, transport);
+    publish_raw_generation(&store, 6);
+    catalog->downgrade_active_manifest_for_tests(52);
+
+    ChunkPageStore reopened({.tree_id = 52, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                            catalog, transport);
+    std::array<uint8_t, 1> value{};
+    ASSERT_TRUE(reopened.read_at(8192, value.data(), value.size()).ok());
+    EXPECT_EQ(value[0], 6U);
+}
+
 TEST(ChunkPageStore, CatalogPublishesIndependentTreeLineagesConcurrently)
 {
     auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
@@ -643,12 +740,10 @@ TEST(ChunkPageStore, SharedChildPacksAreNotReclaimedWithSourceHistory)
 
     publish_raw_generation(&source, 2);
     publish_raw_generation(&source, 3);
-    uint64_t expected_metadata_bytes = 0;
-    for (const ChunkReferenceSegment &segment : source_first->reference_segments) {
-        expected_metadata_bytes += 16U + static_cast<uint64_t>(segment.ref_count) * sizeof(ChunkPageRef);
-    }
+    const uint64_t source_reference_segments = catalog->reference_segment_count(38);
     source_first.reset();
-    EXPECT_EQ(catalog->reclaim_before(38, 4), expected_metadata_bytes);
+    EXPECT_EQ(catalog->reclaim_before(38, 4), 0U);
+    EXPECT_EQ(catalog->reference_segment_count(38), source_reference_segments);
 
     std::array<uint8_t, 1> child_value{};
     ASSERT_TRUE(child.read_at(8192, child_value.data(), child_value.size()).ok());
@@ -746,7 +841,7 @@ TEST(ChunkPageStore, FailedAllReusedPublicationDoesNotAccountSourceBytesAsOrphan
     EXPECT_EQ(child.sync().code(), Code::kUnavailable);
     EXPECT_EQ(child.stats().orphan_bytes, 0U);
     EXPECT_EQ(catalog->load(47), nullptr);
-    EXPECT_GT(catalog->reference_segment_count(47), 0U);
+    EXPECT_EQ(catalog->reference_segment_count(47), 0U);
     EXPECT_EQ(child.reclaim_orphans(), 0U);
     EXPECT_EQ(catalog->reference_segment_count(47), 0U);
 }

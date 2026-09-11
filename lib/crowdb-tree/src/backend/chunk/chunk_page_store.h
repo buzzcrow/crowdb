@@ -21,6 +21,8 @@
 namespace crowdb::tree::detail
 {
 
+inline constexpr uint32_t kChunkManifestFormat = 1;
+
 class ChunkAsyncExecutor;
 class ChunkPackPipeline;
 class ChunkPackPipelineImpl;
@@ -43,10 +45,12 @@ struct ChunkPagePack
 
 struct ChunkReferenceSegment
 {
+    uint64_t owner_tree_id = 0;
     uint64_t object_id     = 0;
     uint64_t first_ordinal = 0;
     uint32_t ref_count     = 0;
     uint32_t checksum      = 0;
+    bool     reused        = false;
 };
 
 struct ChunkReferenceSegmentImage
@@ -58,6 +62,7 @@ struct ChunkReferenceSegmentImage
 
 struct ChunkManifest
 {
+    uint32_t                           format_version    = 0;
     uint64_t                           tree_id           = 0;
     uint64_t                           generation        = 0;
     uint64_t                           owner_epoch       = 0;
@@ -127,6 +132,7 @@ class MemoryRootCatalog final : public RootCatalog
     [[nodiscard]] uint64_t reference_segment_count(uint64_t tree_id) const;
     void                   corrupt_active_reference_segment(size_t segment_index, size_t ref_index);
     void                   corrupt_active_pack_layout_for_tests(uint64_t tree_id);
+    void                   downgrade_active_manifest_for_tests(uint64_t tree_id);
     void                   block_next_publish_for_tests();
     void                   wait_for_blocked_publish_for_tests() const;
     void                   release_blocked_publish_for_tests();
@@ -253,6 +259,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
                                     ChunkCancellation cancellation) const;
     Status                load_layout(std::shared_ptr<const ChunkManifest> *out) const;
     Status                validate_manifest(const ChunkManifest &manifest, const RootCatalog &catalog) const;
+    Status                persist_reference_segments(ChunkManifest *manifest, const ChunkManifest *reuse_base);
     [[nodiscard]] std::shared_ptr<const ChunkManifest> reuse_base_manifest() const;
     [[nodiscard]] const ChunkPagePack *find_reusable_pack(const ChunkManifest &base, uint64_t logical_offset,
                                                           uint32_t length, uint32_t checksum,

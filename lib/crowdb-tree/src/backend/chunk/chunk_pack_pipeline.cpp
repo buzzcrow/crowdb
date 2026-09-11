@@ -17,8 +17,6 @@
 namespace crowdb::tree::detail
 {
 
-constexpr size_t kReferencesPerSegment = 256;
-
 uint64_t monotonic_millis()
 {
     return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
@@ -149,6 +147,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             return Status::resource_exhausted("chunk manifest generation is exhausted");
         }
         manifest                  = std::make_shared<ChunkManifest>();
+        manifest->format_version  = kChunkManifestFormat;
         manifest->tree_id         = store->config_.tree_id;
         manifest->generation      = expected_generation + 1;
         manifest->owner_epoch     = store->config_.owner_epoch;
@@ -310,28 +309,11 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
         store->active_chunk_id_     = ending_chunk;
         store->active_chunk_bytes_  = ending_logical_bytes;
         store->active_chunk_cursor_ = ending_cursor;
-        for (size_t first = 0; first < manifest->packs.size(); first += kReferencesPerSegment) {
-            auto segment       = std::make_shared<ChunkReferenceSegmentImage>();
-            segment->object_id = store->catalog_->allocate_reference_segment_id(store->config_.tree_id);
-            if (segment->object_id == 0) {
-                remember_orphan_segments();
-                return Status::resource_exhausted("chunk reference segment identity is exhausted");
-            }
-            segment->first_ordinal = first;
-            const size_t end       = std::min(first + kReferencesPerSegment, manifest->packs.size());
-            for (size_t index = first; index < end; ++index) {
-                segment->refs.push_back(manifest->packs[index].ref);
-            }
-            ChunkReferenceSegment descriptor{.object_id     = segment->object_id,
-                                             .first_ordinal = segment->first_ordinal,
-                                             .ref_count     = static_cast<uint32_t>(segment->refs.size()),
-                                             .checksum      = ChunkPageStore::reference_segment_checksum(*segment)};
-            Status status = store->catalog_->persist_reference_segment(store->config_.tree_id, std::move(segment));
-            if (!status.ok()) {
-                remember_orphan_segments();
-                return status;
-            }
-            manifest->reference_segments.push_back(descriptor);
+        auto   reuse_base           = store->reuse_base_manifest();
+        Status segment_status       = store->persist_reference_segments(manifest.get(), reuse_base.get());
+        if (!segment_status.ok()) {
+            remember_orphan_segments();
+            return segment_status;
         }
         manifest->checksum       = ChunkPageStore::manifest_checksum(*manifest);
         Status validation_status = store->validate_manifest(*manifest, *store->catalog_);

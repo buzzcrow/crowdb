@@ -98,9 +98,9 @@ and structurally safe range rebuild while preserving local tree behavior.
   `src/maptable/page_codec.cpp`.
 - [~] **Complete range rebuild**: replace whole-snapshot collection with
   bounded native iteration and disjoint-subtree skipping, then reuse immutable
-  mapping/reference images while retaining the landed filtered boundary and
-  sibling rebuild, independent roots, high-water allocation, and concurrent
-  workers. Files: `include/crowdb-tree/btree/range_rebuild.h`,
+  mapping images while retaining the landed reference-image sharing, filtered
+  boundary and sibling rebuild, independent roots, high-water allocation, and
+  concurrent workers. Files: `include/crowdb-tree/btree/range_rebuild.h`,
   `src/btree/range_rebuild.cpp`, `include/crowdb-tree/c_api.h`, `src/c_api.cpp`.
 - [x] **Verify structural isolation**: cover split union/intersection, disjoint
   skip, mixed leaves, crossing paths/siblings, shared immutable metadata,
@@ -112,10 +112,12 @@ and structurally safe range rebuild while preserving local tree behavior.
 
 - [~] **Materialize child ownership**: immutable source packs are inherited by
   independent child manifests, byte-verified before reuse, retained across
-  source GC, and COW-replaced by changed logical packs. Mapping/reference
-  directory sharing, unreachable-slot clearing, and bounded exclusive repack
-  remain open. Implement mark reachability, COW shared segments,
-  repack shared pages, generation-fence publication, and retry stale work.
+  source GC, and COW-replaced by changed logical packs. Reference-table
+  segment images are shared by owner-qualified identity and COW-replaced as a
+  unit when any entry changes. Mapping-image sharing, unreachable-slot
+  clearing, and bounded exclusive repack remain open. Implement mark
+  reachability, repack shared pages, generation-fence publication, and retry
+  stale work.
   Files: `src/btree/range_rebuild.cpp`, `src/backend/chunk/chunk_page_store.cpp`.
 - [~] **Add observability**: pack reuse/write bytes, cache/layout queries,
   mirror attempts/failures, retention pins, and orphan bytes are exposed.
@@ -179,7 +181,8 @@ and structurally safe range rebuild while preserving local tree behavior.
   transports. Framing memory is bounded by the configured in-flight pack
   window; failures and close stop admission, drain late completions, and keep
   cursor advancement and manifest publication on the ordered tree worker.
-- Reference segments are immutable directory-addressed images, but mapping
+- Reference segments are immutable, owner-qualified directory images shared
+  across child lineages and COW-replaced when their entries change, but mapping
   slots still hold local byte addresses instead of chunk-reference ordinals.
 - Checksummed page fences are persisted and verified against each native graph;
   legacy frames are upgraded after structural validation. Range rebuild now uses
@@ -188,8 +191,9 @@ and structurally safe range rebuild while preserving local tree behavior.
   preserves high-water page allocation, and supports concurrent independent
   workers.
   Child chunk manifests now inherit byte-verified immutable source packs and
-  later checkpoints COW only changed logical packs. Immutable mapping/reference
-  directory-image sharing and unreachable-slot materialization remain open.
+  reference segments; later checkpoints COW only changed logical packs and
+  their affected reference segments. Immutable mapping-directory sharing and
+  unreachable-slot materialization remain open.
 - Basic chunk-store counters, retention pins, and logical orphan accounting
   exist. Child materialization/repack, the full metric set, archive extraction
   checks, and fixed-workload benchmark evidence remain absent.
