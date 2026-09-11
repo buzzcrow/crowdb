@@ -36,6 +36,23 @@ static void on_readable_impl(Connection *conn, int fd, uint8_t *recv_buf, size_t
                              std::vector<Connection *> &pending_writes);
 static bool on_writable_impl(Connection *conn, int fd, TransportStats *stats);
 
+static void close_connection_fds(SocketEngine *engine, Connection *conn)
+{
+    int read_fd  = static_cast<int>(conn->transport_handle);
+    int write_fd = conn->write_fd;
+    if (read_fd < 0) {
+        return;
+    }
+
+    engine->remove_connection(read_fd, write_fd);
+    conn->transport_handle = static_cast<uint64_t>(-1);
+    conn->write_fd         = -1;
+    ::close(read_fd);
+    if (write_fd >= 0 && write_fd != read_fd) {
+        ::close(write_fd);
+    }
+}
+
 static inline uint64_t now_nano()
 {
     return static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
@@ -61,13 +78,9 @@ void Worker::close_connections()
 {
     std::lock_guard<std::mutex> lock(conns_mu_);
     for (auto &[fd, conn] : connections_) {
+        (void)fd;
         conn->close();
-        engine_->remove_connection(fd, conn->write_fd);
-        ::close(fd);
-        if (conn->write_fd >= 0 && conn->write_fd != fd) {
-            ::close(conn->write_fd);
-        }
-        conn->write_fd = -1;
+        close_connection_fds(engine_, conn.get());
     }
     connections_.clear();
 }
@@ -191,13 +204,7 @@ void Worker::run_loop()
                             // flush to avoid dangling raw pointers.
                             CRB_LOG_INFO("rpc transport: connection closed (read) fd={} conn_id={} peer={}", ev.fd,
                                          static_cast<long long>(ev.conn->id()), ev.conn->name());
-                            int wfd = ev.conn->write_fd;
-                            engine_->remove_connection(ev.fd, wfd);
-                            ::close(ev.fd);
-                            if (wfd >= 0 && wfd != ev.fd) {
-                                ::close(wfd);
-                            }
-                            ev.conn->write_fd = -1;
+                            close_connection_fds(engine_, ev.conn);
                             closed_fds.push_back(ev.fd);
                         }
                         else if (engine_->oneshot()) {
@@ -217,12 +224,7 @@ void Worker::run_loop()
                             CRB_LOG_INFO("rpc transport: connection closed (write) fd={} conn_id={} peer={}", ev.fd,
                                          static_cast<long long>(ev.conn->id()), ev.conn->name());
                             int rfd = static_cast<int>(ev.conn->transport_handle);
-                            engine_->remove_connection(rfd, ev.fd);
-                            ::close(ev.fd);
-                            if (rfd != ev.fd) {
-                                // read fd will be closed by the map erase below
-                            }
-                            ev.conn->write_fd = -1;
+                            close_connection_fds(engine_, ev.conn);
                             closed_fds.push_back(rfd);
                         }
                         else if (all_sent) {
@@ -246,14 +248,8 @@ void Worker::run_loop()
                         CRB_LOG_WARN("worker: socket error event fd={} conn_id={} name={}", ev.fd,
                                      static_cast<long long>(ev.conn->id()), ev.conn->name());
                         int rfd = static_cast<int>(ev.conn->transport_handle);
-                        int wfd = ev.conn->write_fd;
                         ev.conn->close();
-                        engine_->remove_connection(rfd, wfd);
-                        ::close(ev.fd);
-                        if (wfd >= 0 && wfd != ev.fd && wfd != rfd) {
-                            ::close(wfd);
-                        }
-                        ev.conn->write_fd = -1;
+                        close_connection_fds(engine_, ev.conn);
                         closed_fds.push_back(rfd);
                     }
                     break;
@@ -282,12 +278,7 @@ void Worker::run_loop()
                         engine_->arm_write(wfd, conn);
                     }
                     if (!conn->is_open()) {
-                        engine_->remove_connection(rfd, wfd);
-                        ::close(rfd);
-                        if (wfd >= 0 && wfd != rfd) {
-                            ::close(wfd);
-                        }
-                        conn->write_fd = -1;
+                        close_connection_fds(engine_, conn);
                         closed_fds.push_back(rfd);
                     }
                 }
