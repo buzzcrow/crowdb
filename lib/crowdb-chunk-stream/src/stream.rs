@@ -28,6 +28,7 @@ pub struct StreamConfig {
     pub max_append_bytes: usize,
     pub extent_page_entries: usize,
     pub read_window_bytes: usize,
+    pub read_concurrency: usize,
     pub gc_bytes_per_pass: u64,
     pub watchdog_interval: Duration,
 }
@@ -42,6 +43,7 @@ impl Default for StreamConfig {
             max_append_bytes: 64 * 1024 * 1024,
             extent_page_entries: 1_024,
             read_window_bytes: 8 * 1024 * 1024,
+            read_concurrency: 8,
             gc_bytes_per_pass: 64 * 1024 * 1024,
             watchdog_interval: Duration::from_millis(500),
         }
@@ -57,6 +59,7 @@ impl StreamConfig {
             || self.max_append_bytes == 0
             || self.extent_page_entries == 0
             || self.read_window_bytes == 0
+            || self.read_concurrency == 0
             || self.gc_bytes_per_pass == 0
             || self.watchdog_interval.is_zero()
             || self.batch_bytes > self.max_append_bytes
@@ -83,6 +86,14 @@ pub struct ReadSegment {
     pub chunk_id: ChunkId,
     pub logical_start: u64,
     pub data: Bytes,
+}
+
+#[derive(Clone, Copy)]
+struct PhysicalRead {
+    chunk_id: ChunkId,
+    logical_start: u64,
+    physical_start: u64,
+    length: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -564,8 +575,7 @@ impl ChunkStream {
         }
         let mut pages = HashMap::new();
         let mut cursor = offset;
-        let mut output = Vec::new();
-        let mut output_len = 0_usize;
+        let mut reads = Vec::new();
         while cursor < end {
             if cursor >= manifest.sealed_tail {
                 let active = manifest
@@ -579,14 +589,11 @@ impl ChunkStream {
                 let available = usize::try_from(end - cursor).map_err(|_| {
                     StreamError::InvalidRequest("read length exceeds addressable range".into())
                 })?;
-                let data = self
-                    .read_chunk_with_watchdog(active.chunk_id, physical, available, cursor)
-                    .await?;
-                output_len = output_len.saturating_add(data.len());
-                output.push(ReadSegment {
+                reads.push(PhysicalRead {
                     chunk_id: active.chunk_id,
                     logical_start: cursor,
-                    data,
+                    physical_start: physical,
+                    length: available,
                 });
                 cursor = end;
                 continue;
@@ -623,17 +630,18 @@ impl ChunkStream {
             let location = resolve_extent(page, cursor)?;
             let read_len = usize::try_from(location.available.min(end - cursor))
                 .map_err(|_| StreamError::InvalidRequest("read length exceeds addressable range".into()))?;
-            let data = self
-                .read_chunk_with_watchdog(location.chunk_id, location.physical_offset, read_len, cursor)
-                .await?;
-            output_len = output_len.saturating_add(data.len());
-            output.push(ReadSegment {
+            reads.push(PhysicalRead {
                 chunk_id: location.chunk_id,
                 logical_start: cursor,
-                data,
+                physical_start: location.physical_offset,
+                length: read_len,
             });
             cursor += read_len as u64;
         }
+        let output = self.read_physical_ranges(&reads).await?;
+        let output_len = output
+            .iter()
+            .fold(0_usize, |total, segment| total.saturating_add(segment.data.len()));
         if output_len != length {
             return Err(StreamError::Corruption(
                 "chunk reads returned an unexpected length".into(),
@@ -643,6 +651,50 @@ impl ChunkStream {
             .read_bytes
             .fetch_add(length as u64, Ordering::Relaxed);
         Ok(output)
+    }
+
+    async fn read_physical_ranges(&self, reads: &[PhysicalRead]) -> Result<Vec<ReadSegment>> {
+        let mut output = vec![None; reads.len()];
+        let mut tasks = tokio::task::JoinSet::new();
+        let mut next = 0_usize;
+        while next < reads.len() || !tasks.is_empty() {
+            while next < reads.len() && tasks.len() < self.config.read_concurrency {
+                let index = next;
+                let read = reads[index];
+                let stream = self.clone();
+                tasks.spawn(async move {
+                    let data = stream
+                        .read_chunk_with_watchdog(
+                            read.chunk_id,
+                            read.physical_start,
+                            read.length,
+                            read.logical_start,
+                        )
+                        .await?;
+                    Ok::<_, StreamError>((
+                        index,
+                        ReadSegment {
+                            chunk_id: read.chunk_id,
+                            logical_start: read.logical_start,
+                            data,
+                        },
+                    ))
+                });
+                next += 1;
+            }
+            let completed = tasks
+                .join_next()
+                .await
+                .ok_or_else(|| StreamError::Internal("physical read task set ended early".into()))?
+                .map_err(|error| StreamError::Internal(format!("physical read task failed: {error}")))??;
+            output[completed.0] = Some(completed.1);
+        }
+        output
+            .into_iter()
+            .map(|segment| {
+                segment.ok_or_else(|| StreamError::Internal("physical read result is missing".into()))
+            })
+            .collect()
     }
 
     /// Creates a bounded sequential reader ending at the current durable tail.

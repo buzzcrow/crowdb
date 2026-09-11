@@ -72,10 +72,10 @@ without placing rollover metadata on the append hot path.
   keys and binary metadata keys, and let R143 drive group creation/activation.
   Files: `lib/crowdb-protocol/src/{chunk_stream.rs,key/chunk_stream.rs}`,
   `lib/crowdb-chunk-stream/src/`, `app/crowdb-chunk-kv-server/src/`.
-- [~] **Implement seekable prefetch readers**: add finite and `ToEnd` read
+- [x] **Implement seekable prefetch readers**: add finite and `ToEnd` read
   hints, an 8-MiB default retained buffer, cached-byte delivery concurrent with
-  bounded adjacent-range prefetch, ordered output, EOF, and a provenance-aware
-  form yielding the physical chunk for R142 validation. Files:
+  up to eight bounded physical reads, ordered output, EOF, and a
+  provenance-aware form yielding the physical chunk for R142 validation. Files:
   `lib/crowdb-chunk-stream/src/`, `lib/crowdb-chunk-stream/tests/`.
 - [x] **Add chunk-bound append**: accept R142 body+CRC bytes, append the chosen
   chunk's canonical ID per request after rollover selection, include trailer

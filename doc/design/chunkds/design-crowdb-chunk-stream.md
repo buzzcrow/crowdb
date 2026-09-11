@@ -167,8 +167,9 @@ finite byte hint or `ToEnd`. It captures the corresponding durable end, returns
 EOF there, and leaves EOF handling to its caller. Cached bytes are returned
 while adjacent physical ranges are prefetched out of order within one bounded
 window; delivery remains in logical order. The default retained window is 8
-MiB. Independent readers may run concurrently. Each physical read has an
-observation watchdog that never cancels or retries the underlying future.
+MiB and at most eight physical reads from that window run concurrently.
+Independent readers may run concurrently. Each physical read has an observation
+watchdog that never cancels or retries the underlying future.
 A provenance-aware reader also yields each logical segment's physical chunk
 identity. A journal compares that identity with its frame trailer. The durable
 acknowledged cursor remains the read and recovery upper bound; identity
@@ -191,8 +192,9 @@ point.
 
 Defaults bound the queue at 1,024 requests and 64 MiB, a batch at 64 requests
 and 1 MiB, one append at 64 MiB, one chunk at 256 MiB, an extent page at 1,024
-entries, a sequential read window at 8 MiB, and one GC pass at 64 MiB. All
-bounds are configurable and validated as nonzero.
+entries, a sequential read window at 8 MiB with eight concurrent physical
+reads, and one GC pass at 64 MiB. All bounds are configurable and validated as
+nonzero.
 
 Lock-free counters report submitted/completed/failed requests, logical and
 three-mirror physical bytes, batch/request counts, rollovers, read bytes,

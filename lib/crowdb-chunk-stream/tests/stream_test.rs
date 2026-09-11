@@ -186,6 +186,34 @@ async fn rollover_keeps_append_whole_and_reads_across_chunks() {
 }
 
 #[tokio::test]
+async fn cross_chunk_read_runs_with_bounded_concurrency_and_ordered_output() {
+    let store = Arc::new(MemoryStreamStore::new(2));
+    let config = StreamConfig {
+        read_concurrency: 2,
+        ..StreamConfig::default()
+    };
+    let stream = create_stream(&store, 2, config).await;
+    for bytes in [b"ab", b"cd", b"ef"] {
+        stream.append(&[Bytes::copy_from_slice(bytes)]).await.unwrap();
+    }
+
+    store.pause_reads();
+    let reader = stream.clone();
+    let pending = tokio::spawn(async move { reader.read_at(0, 6).await });
+    tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        store.wait_for_concurrent_reads(2),
+    )
+    .await
+    .expect("two physical reads should overlap");
+    assert_eq!(store.max_concurrent_reads(), 2);
+    store.resume_reads();
+
+    assert_eq!(pending.await.unwrap().unwrap(), Bytes::from_static(b"abcdef"));
+    assert_eq!(store.max_concurrent_reads(), 2);
+}
+
+#[tokio::test]
 async fn ambiguous_cursor_is_resolved_without_resubmission() {
     let committed_store = Arc::new(MemoryStreamStore::new(32));
     committed_store

@@ -359,9 +359,9 @@ Required gates:
   lifecycle wiring and a real-KV crash-order integration test remain with the
   production adapter work.
 - The seekable reader supports finite/`ToEnd` hints, keeps one bounded next
-  window in flight while the caller consumes the current window, and exact
-  and sequential reads expose provenance. Concurrent physical reads within one
-  multi-extent window and memory/concurrency benchmarks remain open.
+  window in flight while the caller consumes the current window, and runs a
+  configurable bounded number of physical reads concurrently without changing
+  logical delivery order. Memory and concurrency benchmarks remain open.
 - Extent-page identities derive from their stable first logical offset, so a
   trimmed generation retains a nonzero first page index without renumbering
   logical bytes. Watermark-driven cleanup of superseded page generations still

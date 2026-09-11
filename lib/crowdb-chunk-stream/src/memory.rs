@@ -4,7 +4,7 @@
 //! In-memory storage and deterministic fault controls for stream tests.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -23,6 +23,14 @@ use crate::{
 struct CursorFault {
     outcome: CursorAdvance,
     commit: bool,
+}
+
+struct ActiveRead<'a>(&'a AtomicUsize);
+
+impl Drop for ActiveRead<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 #[derive(Debug)]
@@ -56,9 +64,14 @@ pub struct MemoryStreamStore {
     chunk_writes: AtomicU64,
     cursor_advances: AtomicU64,
     pause_writes: AtomicBool,
+    pause_reads: AtomicBool,
+    active_reads: AtomicUsize,
+    max_active_reads: AtomicUsize,
     fail_next_publish: AtomicBool,
     write_started: Notify,
     resume_write: Notify,
+    read_started: Notify,
+    resume_reads: Notify,
 }
 
 impl MemoryStreamStore {
@@ -79,9 +92,14 @@ impl MemoryStreamStore {
             chunk_writes: AtomicU64::new(0),
             cursor_advances: AtomicU64::new(0),
             pause_writes: AtomicBool::new(false),
+            pause_reads: AtomicBool::new(false),
+            active_reads: AtomicUsize::new(0),
+            max_active_reads: AtomicUsize::new(0),
             fail_next_publish: AtomicBool::new(false),
             write_started: Notify::new(),
             resume_write: Notify::new(),
+            read_started: Notify::new(),
+            resume_reads: Notify::new(),
         }
     }
 
@@ -108,6 +126,30 @@ impl MemoryStreamStore {
     pub fn resume_writes(&self) {
         self.pause_writes.store(false, Ordering::Release);
         self.resume_write.notify_one();
+    }
+
+    pub fn pause_reads(&self) {
+        self.pause_reads.store(true, Ordering::Release);
+    }
+
+    pub async fn wait_for_concurrent_reads(&self, target: usize) {
+        loop {
+            let notified = self.read_started.notified();
+            if self.active_reads.load(Ordering::Acquire) >= target {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    pub fn resume_reads(&self) {
+        self.pause_reads.store(false, Ordering::Release);
+        self.resume_reads.notify_waiters();
+    }
+
+    #[must_use]
+    pub fn max_concurrent_reads(&self) -> usize {
+        self.max_active_reads.load(Ordering::Acquire)
     }
 
     #[must_use]
@@ -371,20 +413,30 @@ impl StreamChunkStore for MemoryStreamStore {
     }
 
     async fn read(&self, chunk_id: ChunkId, physical_offset: u64, length: usize) -> Result<Bytes> {
-        let start = usize::try_from(physical_offset)
-            .map_err(|_| StreamError::InvalidRequest("read offset exceeds addressable range".into()))?;
-        let end = start
-            .checked_add(length)
-            .ok_or_else(|| StreamError::InvalidRequest("read range overflows".into()))?;
-        let state = self.state.lock().await;
-        let chunk = state
-            .chunks
-            .get(&chunk_id)
-            .ok_or_else(|| StreamError::ReadUnavailable("chunk is missing".into()))?;
-        if chunk.released || u64::try_from(end).unwrap_or(u64::MAX) > chunk.cursor {
-            return Err(StreamError::ReadUnavailable("chunk range is not durable".into()));
+        let active = self.active_reads.fetch_add(1, Ordering::AcqRel) + 1;
+        let _active_read = ActiveRead(&self.active_reads);
+        self.max_active_reads.fetch_max(active, Ordering::AcqRel);
+        self.read_started.notify_waiters();
+        while self.pause_reads.load(Ordering::Acquire) {
+            self.resume_reads.notified().await;
         }
-        Ok(Bytes::copy_from_slice(&chunk.bytes[start..end]))
+        async {
+            let start = usize::try_from(physical_offset)
+                .map_err(|_| StreamError::InvalidRequest("read offset exceeds addressable range".into()))?;
+            let end = start
+                .checked_add(length)
+                .ok_or_else(|| StreamError::InvalidRequest("read range overflows".into()))?;
+            let state = self.state.lock().await;
+            let chunk = state
+                .chunks
+                .get(&chunk_id)
+                .ok_or_else(|| StreamError::ReadUnavailable("chunk is missing".into()))?;
+            if chunk.released || u64::try_from(end).unwrap_or(u64::MAX) > chunk.cursor {
+                return Err(StreamError::ReadUnavailable("chunk range is not durable".into()));
+            }
+            Ok(Bytes::copy_from_slice(&chunk.bytes[start..end]))
+        }
+        .await
     }
 
     async fn release_trimmed(&self, chunk_id: ChunkId, _logical_end: u64) -> Result<TrimmedChunk> {
