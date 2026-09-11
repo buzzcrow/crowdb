@@ -51,11 +51,11 @@ wholly inside the target range.
    isolated translation unit inside the same static `libcrowdb-tree.a` as the
    local backends. Organize private implementation files by subsystem under
    `src/btree/`, `src/mtable/`, and `src/backend/`, with concrete local and
-   chunk stores below `src/backend/local/` and `src/backend/chunk/`. Keep the
-   installed headers under `include/crowdb-tree/` source-compatible through
-   forwarding headers. Canonical public interfaces are grouped below
-   `include/crowdb-tree/{btree,mtable,backend}/`, and
-   `include/crowdb-tree/crowdb-tree.h` is the umbrella C++ interface. Both
+   chunk stores below `src/backend/local/` and `src/backend/chunk/`. Group
+   canonical public interfaces below
+   `include/crowdb-tree/{btree,mtable,backend}/`; do not retain redundant flat
+   forwarding headers. `include/crowdb-tree/crowdb-tree.h` is the umbrella C++
+   interface. Both
    CMake and `crowdb-tree-ffi/build.rs` continue discovering sources
    recursively. Add an opaque backend handle to the C ABI so the Rust caller
    selects and supplies the store when creating a tree. Do not use a Cargo
@@ -424,7 +424,8 @@ The backend source lives in `lib/crowdb-tree/src/backend/chunk/` and remains
 private to the tree engine. Local stores live under `src/backend/local/`, while
 B+tree and mapping-table page-service implementation files live under
 `src/btree/` and `src/mtable/`. Public interfaces are grouped under matching
-subdirectories, with root forwarding headers preserving existing includes.
+subdirectories without flat forwarding headers; callers use the canonical
+subsystem path or the umbrella.
 CMake and `crowdb-tree-ffi/build.rs` recursively compile the isolated backend
 object into the same static `libcrowdb-tree.a`; crowdb-tree is not a shared
 library and the backend is not loaded dynamically. Backend selection happens

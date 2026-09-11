@@ -7,9 +7,9 @@
 // the whole chain (the eager algorithm the cursor replaced).
 #include "crowdb-tree/cell.h"
 #include "crowdb-tree/delta.h"
-#include "crowdb-tree/frame_page.h"
 #include "crowdb-tree/leaf_cursor.h"
-#include "crowdb-tree/page.h"
+#include "crowdb-tree/mtable/frame_page.h"
+#include "crowdb-tree/mtable/page.h"
 
 #include <gtest/gtest.h>
 

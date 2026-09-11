@@ -2,8 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 #include "crowdb-common/metrics/metrics.h"
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
 
 #include <gtest/gtest.h>
 

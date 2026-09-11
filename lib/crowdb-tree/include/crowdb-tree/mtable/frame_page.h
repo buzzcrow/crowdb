@@ -18,9 +18,9 @@
 // child_index_for), leaf/inner builders, CRC validation.
 #pragma once
 
+#include "crowdb-tree/btree/key_range.h"
 #include "crowdb-tree/cell.h"
-#include "crowdb-tree/key_range.h"
-#include "crowdb-tree/page_types.h" // page_type, kInvalidPageId, leaf_entry
+#include "crowdb-tree/mtable/page_types.h" // page_type, kInvalidPageId, leaf_entry
 #include "crowdb-tree/slice.h"
 
 #include <cstdint>

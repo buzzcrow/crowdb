@@ -5,8 +5,8 @@
 // evicted leaf re-tags its mapping slot `unloaded` and epoch-retires the page;
 // the next access demand-loads it. Run under TSan for the eviction-vs-reader
 // race (epoch-deferred frame reuse).
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
 
 #include <gtest/gtest.h>
 

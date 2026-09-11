@@ -2,9 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 // PT3-PT5: snapshot + recovery + durable round-trip integration tests.
-#include "crowdb-tree/block_page_store.h"
+#include "crowdb-tree/backend/block_page_store.h"
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
 #include "test_tmp.h"
 
 #include <gtest/gtest.h>

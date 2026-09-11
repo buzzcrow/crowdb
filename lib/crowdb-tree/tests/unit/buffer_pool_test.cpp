@@ -2,10 +2,10 @@
 // Licensed under the Apache License, Version 2.0.
 
 // PT6b: buffer pool manager tests.
-#include "crowdb-tree/buffer_pool.h"
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/cell.h"
-#include "crowdb-tree/frame_page.h"
-#include "crowdb-tree/page_store.h"
+#include "crowdb-tree/mtable/buffer_pool.h"
+#include "crowdb-tree/mtable/frame_page.h"
 
 #include <gtest/gtest.h>
 

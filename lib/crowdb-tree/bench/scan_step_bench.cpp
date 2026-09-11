@@ -17,8 +17,8 @@
 //     -DCROWDB_TREE_BENCH=ON -DCMAKE_BUILD_TYPE=Release
 //   pixi run -- cmake --build lib/crowdb-tree/build-bench -j
 //   ./lib/crowdb-tree/build-bench/scan_step_profile
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
 
 #include <atomic>
 #include <chrono>

@@ -2,9 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 // Task 4: TextPageStore + text codec tests.
+#include "crowdb-tree/backend/text_page_store.h"
 #include "crowdb-tree/debug_codec.h"
 #include "crowdb-tree/text_codec.h"
-#include "crowdb-tree/text_page_store.h"
 #include "test_tmp.h"
 
 #include <gtest/gtest.h>

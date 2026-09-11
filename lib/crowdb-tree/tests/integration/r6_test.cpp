@@ -5,8 +5,8 @@
 // (1) get_async slow path returns a borrowed Slice (no copy),
 // (2) PinnedSnapshot stays consistent across install_snapshot,
 // (3) stale-root pages are freed when the last pin drops (refcount GC).
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
 #include "crowdb-tree/snapshot.h"
 
 #include <gtest/gtest.h>

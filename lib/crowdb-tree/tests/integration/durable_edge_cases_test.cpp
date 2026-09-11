@@ -4,8 +4,8 @@
 // Edge-case durability: empty values, binary keys/values with NULs, an oversized
 // key (heap fallback), and zero/boundary-sized overflow values — all through the
 // compression + overflow + snapshot + reopen path.
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
 
 #include <gtest/gtest.h>
 

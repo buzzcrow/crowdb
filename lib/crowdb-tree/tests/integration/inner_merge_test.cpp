@@ -4,8 +4,8 @@
 // Inner-node underflow merge: a delete-heavy workload must collapse the upper
 // tree (merge underfull inner pages, dropping height) while preserving data,
 // across reopen, and stay parity-correct vs an in-mem oracle.
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
 
 #include <gtest/gtest.h>
 

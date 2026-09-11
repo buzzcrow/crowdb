@@ -18,7 +18,7 @@
 
 #include "crowdb-tree/cell.h"
 #include "crowdb-tree/delta.h"
-#include "crowdb-tree/page.h"
+#include "crowdb-tree/mtable/page.h"
 #include "crowdb-tree/slice.h"
 
 #include <algorithm>

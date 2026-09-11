@@ -6,7 +6,7 @@
 #include "crowdb-tree/debug_codec.h"
 
 #include "crowdb-tree/cell.h"
-#include "crowdb-tree/frame_page.h"
+#include "crowdb-tree/mtable/frame_page.h"
 
 #include <array>
 #include <cctype>

@@ -3,7 +3,7 @@
 
 // CT3: leaf base page tests (build, search, bloom, iteration, boundaries).
 #include "crowdb-tree/cell.h"
-#include "crowdb-tree/page.h"
+#include "crowdb-tree/mtable/page.h"
 
 #include <gtest/gtest.h>
 

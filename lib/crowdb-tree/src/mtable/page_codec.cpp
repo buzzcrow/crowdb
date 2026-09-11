@@ -3,7 +3,7 @@
 
 // Mapping-table page-codec implementation.
 
-#include "crowdb-tree/page_codec.h"
+#include "crowdb-tree/mtable/page_codec.h"
 
 #include "crowdb-common/crc32c.h"
 

@@ -3,7 +3,7 @@
 
 // Local block-backend implementation.
 
-#include "crowdb-tree/block_page_store.h"
+#include "crowdb-tree/backend/block_page_store.h"
 
 #include <dirent.h>
 #include <fcntl.h>

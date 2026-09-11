@@ -4,9 +4,9 @@
 // PT10.3: end-to-end page compression. snapshot writes compressed durable
 // blobs; reopen/demand-load/eviction decode them transparently; a tampered
 // stored byte fails CRC on reload.
-#include "crowdb-tree/compressor.h"
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
+#include "crowdb-tree/mtable/compressor.h"
 
 #include <gtest/gtest.h>
 

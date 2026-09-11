@@ -2,9 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 // PT9: IU block alignment (9.1-9.3) + debug store/codec on real frames (9.5).
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
 #include "crowdb-tree/debug_codec.h"
-#include "crowdb-tree/page_store.h"
 
 #include <gtest/gtest.h>
 

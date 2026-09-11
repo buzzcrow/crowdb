@@ -20,9 +20,9 @@
 
 #include "crowdb-common/metrics/metrics.h"
 #include "crowdb-tree/epoch.h"
-#include "crowdb-tree/mapping_segment.h"
-#include "crowdb-tree/mapping_slot.h"
-#include "crowdb-tree/page.h"
+#include "crowdb-tree/mtable/mapping_segment.h"
+#include "crowdb-tree/mtable/mapping_slot.h"
+#include "crowdb-tree/mtable/page.h"
 
 #include <atomic>
 #include <cstdint>

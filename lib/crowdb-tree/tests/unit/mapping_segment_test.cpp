@@ -2,8 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 // #14a: standalone mapping-table segment struct.
-#include "crowdb-tree/mapping_segment.h"
-#include "crowdb-tree/mapping_slot.h"
+#include "crowdb-tree/mtable/mapping_segment.h"
+#include "crowdb-tree/mtable/mapping_slot.h"
 
 #include <gtest/gtest.h>
 

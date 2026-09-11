@@ -6,8 +6,8 @@
 // (deltas) are resolved by the caller; descent only follows base inner pages.
 #pragma once
 
-#include "crowdb-tree/mapping_table.h"
-#include "crowdb-tree/page.h"
+#include "crowdb-tree/mtable/mapping_table.h"
+#include "crowdb-tree/mtable/page.h"
 #include "crowdb-tree/slice.h"
 
 namespace crowdb::tree

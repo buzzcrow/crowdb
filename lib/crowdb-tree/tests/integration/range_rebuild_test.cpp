@@ -1,9 +1,9 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+#include "crowdb-tree/backend/page_store.h"
+#include "crowdb-tree/btree/range_rebuild.h"
 #include "crowdb-tree/c_api.h"
-#include "crowdb-tree/page_store.h"
-#include "crowdb-tree/range_rebuild.h"
 
 #include <gtest/gtest.h>
 

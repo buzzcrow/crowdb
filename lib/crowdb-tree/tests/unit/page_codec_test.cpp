@@ -3,8 +3,8 @@
 
 // PT2: PageCodec round-trip + CRC validation tests.
 #include "crowdb-tree/cell.h"
-#include "crowdb-tree/page.h"
-#include "crowdb-tree/page_codec.h"
+#include "crowdb-tree/mtable/page.h"
+#include "crowdb-tree/mtable/page_codec.h"
 
 #include <gtest/gtest.h>
 

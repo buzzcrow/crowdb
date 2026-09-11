@@ -38,11 +38,11 @@
 #include "crowdb-common/crc32c.h"
 #include "crowdb-common/log.h"
 #include "crowdb-tree/backend/async_page_store.h"
-#include "crowdb-tree/block_page_store.h"
-#include "crowdb-tree/compressor.h"
+#include "crowdb-tree/backend/block_page_store.h"
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/mapping_persist.h"
-#include "crowdb-tree/page_store.h"
+#include "crowdb-tree/mtable/compressor.h"
+#include "crowdb-tree/mtable/mapping_persist.h"
 
 #include <algorithm>
 #include <chrono>

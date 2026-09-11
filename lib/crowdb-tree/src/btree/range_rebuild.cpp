@@ -3,10 +3,10 @@
 
 // B+tree range-rebuild implementation.
 
-#include "crowdb-tree/range_rebuild.h"
+#include "crowdb-tree/btree/range_rebuild.h"
 
 #include "crowdb-tree/cell.h"
-#include "crowdb-tree/frame_page.h"
+#include "crowdb-tree/mtable/frame_page.h"
 
 #include <algorithm>
 #include <string>

@@ -17,8 +17,8 @@
 #pragma once
 
 #include "crowdb-common/metrics/metrics.h"
-#include "crowdb-tree/page_store.h"
-#include "crowdb-tree/page_types.h" // kInvalidPageId
+#include "crowdb-tree/backend/page_store.h"
+#include "crowdb-tree/mtable/page_types.h" // kInvalidPageId
 #include "crowdb-tree/status.h"
 
 #include <condition_variable>

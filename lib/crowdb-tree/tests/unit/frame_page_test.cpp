@@ -3,7 +3,7 @@
 
 // PT6a: zero-copy slotted frame format + views.
 #include "crowdb-tree/cell.h"
-#include "crowdb-tree/frame_page.h"
+#include "crowdb-tree/mtable/frame_page.h"
 
 #include <gtest/gtest.h>
 

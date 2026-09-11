@@ -4,7 +4,7 @@
 // CT10: consolidation tests (fold by highest slot, triggers, tombstone keep,
 // old-chain retirement via the epoch manager).
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page.h"
+#include "crowdb-tree/mtable/page.h"
 
 #include <gtest/gtest.h>
 

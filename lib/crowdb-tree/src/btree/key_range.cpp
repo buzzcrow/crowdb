@@ -3,7 +3,7 @@
 
 // B+tree key-range implementation.
 
-#include "crowdb-tree/key_range.h"
+#include "crowdb-tree/btree/key_range.h"
 
 namespace crowdb::tree
 {

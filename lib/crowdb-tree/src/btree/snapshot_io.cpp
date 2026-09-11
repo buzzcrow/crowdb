@@ -8,7 +8,7 @@
 #include "crowdb-common/crc32c.h"
 #include "crowdb-tree/cell.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_types.h"
+#include "crowdb-tree/mtable/page_types.h"
 
 #include <array>
 #include <cstring>

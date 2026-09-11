@@ -4,7 +4,7 @@
 // PT9.4: readable debug codec exact round-trip.
 #include "crowdb-tree/cell.h"
 #include "crowdb-tree/debug_codec.h"
-#include "crowdb-tree/frame_page.h"
+#include "crowdb-tree/mtable/frame_page.h"
 
 #include <gtest/gtest.h>
 

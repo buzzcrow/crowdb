@@ -3,8 +3,8 @@
 
 // CT4: inner base page + tree descent tests.
 #include "crowdb-tree/descent.h"
-#include "crowdb-tree/mapping_table.h"
-#include "crowdb-tree/page.h"
+#include "crowdb-tree/mtable/mapping_table.h"
+#include "crowdb-tree/mtable/page.h"
 
 #include <gtest/gtest.h>
 

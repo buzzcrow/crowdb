@@ -5,8 +5,8 @@
 // Defaults follow the core engine design.
 #pragma once
 
-#include "crowdb-tree/compressor.h"
-#include "crowdb-tree/key_range.h"
+#include "crowdb-tree/btree/key_range.h"
+#include "crowdb-tree/mtable/compressor.h"
 
 #ifdef CROWDB_HAVE_LIBURING
 #    include "crowdb-common/diskio_uring.h"

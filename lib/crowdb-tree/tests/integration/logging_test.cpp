@@ -6,8 +6,8 @@
 // after the engine is destroyed. These tests only exercise the spdlog-backed
 // CMake build.
 #include "crowdb-common/log.h"
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
 
 #include <gtest/gtest.h>
 

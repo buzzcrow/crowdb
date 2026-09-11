@@ -5,8 +5,8 @@
 // pool (forces eviction) + periodic snapshots, validated against an in-mem
 // oracle live and after reopen. Plus a focused test that an overflow chain whose
 // pages were evicted is still fully retired on overwrite (no leak; ASan covers).
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
 
 #include <gtest/gtest.h>
 

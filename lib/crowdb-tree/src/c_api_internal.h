@@ -4,8 +4,8 @@
 #pragma once
 
 #include "crowdb-tree/backend/async_page_store.h"
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/c_api.h"
-#include "crowdb-tree/page_store.h"
 
 #ifdef CROWDB_HAVE_LIBURING
 #    include "crowdb-common/diskio_uring.h"

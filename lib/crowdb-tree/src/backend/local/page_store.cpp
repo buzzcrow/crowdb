@@ -3,7 +3,7 @@
 
 // Backend-neutral in-memory page-store implementation.
 
-#include "crowdb-tree/page_store.h"
+#include "crowdb-tree/backend/page_store.h"
 
 #include <fcntl.h>
 #include <unistd.h>

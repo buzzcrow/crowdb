@@ -3,7 +3,7 @@
 
 // Mapping-table persistence implementation.
 
-#include "crowdb-tree/mapping_persist.h"
+#include "crowdb-tree/mtable/mapping_persist.h"
 
 #include "crowdb-common/crc32c.h"
 

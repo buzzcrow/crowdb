@@ -3,7 +3,7 @@
 
 // Mapping-table frame-page service.
 
-#include "crowdb-tree/frame_page.h"
+#include "crowdb-tree/mtable/frame_page.h"
 
 #include "crowdb-common/crc32c.h"
 

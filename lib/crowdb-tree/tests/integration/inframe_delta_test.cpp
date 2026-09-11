@@ -4,8 +4,8 @@
 // PT12: in-frame delta region (opt-in). Verifies correctness (reads overlay
 // in-frame deltas, fold at cap, reopen-equals, parity vs oracle) and a small
 // microbenchmark vs plain COW-rebuild (both must agree).
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
 
 #include <gtest/gtest.h>
 

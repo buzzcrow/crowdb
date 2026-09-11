@@ -3,9 +3,9 @@
 
 // CT5: mapping table tests (alloc/free/recycle, growth, atomic store/load).
 #include "crowdb-tree/epoch.h"
-#include "crowdb-tree/mapping_slot.h"
-#include "crowdb-tree/mapping_table.h"
-#include "crowdb-tree/page.h"
+#include "crowdb-tree/mtable/mapping_slot.h"
+#include "crowdb-tree/mtable/mapping_table.h"
+#include "crowdb-tree/mtable/page.h"
 
 #include <gtest/gtest.h>
 

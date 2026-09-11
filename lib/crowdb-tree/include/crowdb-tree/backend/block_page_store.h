@@ -14,7 +14,7 @@
 // Future ScmMedium will add SCM/PMEM support — same interface.
 #pragma once
 
-#include "crowdb-tree/page_store.h"
+#include "crowdb-tree/backend/page_store.h"
 
 #include <cstdint>
 #include <memory>

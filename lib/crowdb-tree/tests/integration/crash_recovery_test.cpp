@@ -5,9 +5,9 @@
 // IU alignment). Verifies two-generation fallback (a corrupted newest snapshot
 // falls back intact to the previous committed image) and that demand-load
 // corruption of the committed image is surfaced via the latched io_failed flag.
-#include "crowdb-tree/block_page_store.h"
+#include "crowdb-tree/backend/block_page_store.h"
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
 #include "test_tmp.h"
 
 #include <gtest/gtest.h>

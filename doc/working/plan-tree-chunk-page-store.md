@@ -16,7 +16,7 @@ and structurally safe range rebuild while preserving local tree behavior.
   `src/backend/{local,chunk}/`; group canonical headers under matching public
   subfolders and provide an umbrella header. Files:
   `lib/crowdb-tree/{include,src,CMakeLists.txt}`, `ffi/build.rs`.
-- [~] **Remove forwarding headers**: switch internal and test includes to the
+- [x] **Remove forwarding headers**: switch internal and test includes to the
   canonical `btree/`, `mtable/`, and `backend/` paths, then delete redundant
   root forwarding headers. Files: `lib/crowdb-tree/include/crowdb-tree/`,
   `lib/crowdb-tree/{src,tests}/`.
@@ -72,13 +72,13 @@ and structurally safe range rebuild while preserving local tree behavior.
 
 - [x] **Centralize range policy**: validate public operations, recovery, and
   installed pages against immutable bounds. Files:
-  `include/crowdb-tree/key_range.h`, `src/key_range.cpp`,
+  `include/crowdb-tree/btree/key_range.h`, `src/key_range.cpp`,
   `include/crowdb-tree/options.h`, `src/crowdb-tree.cpp`, `src/persist.cpp`.
 - [ ] **Persist page fences**: encode and verify leaf/inner reachability bounds
   including siblings and overflow chains. Native installation now verifies the
   complete child graph, separator bounds, leaf order, and overflow reachability;
   serialized lower/upper fence keys remain open. Files:
-  `include/crowdb-tree/frame_page.h`, `src/frame_page.cpp`,
+  `include/crowdb-tree/mtable/frame_page.h`, `src/frame_page.cpp`,
   `src/page_codec.cpp`.
 - [ ] **Complete range rebuild**: replace whole-snapshot collection with
   bounded native iteration and disjoint-subtree skipping, then reuse immutable

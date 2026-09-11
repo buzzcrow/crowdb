@@ -3,11 +3,11 @@
 
 // R30: zero-copy apply path tests — kExternal buffer mode, split-cell
 // MemTable, and Crowdbtree::apply_external round-trip + flush + read.
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/buffer.h"
 #include "crowdb-tree/cell.h"
 #include "crowdb-tree/crowdb-tree.h"
 #include "crowdb-tree/memtable.h"
-#include "crowdb-tree/page_store.h"
 
 #include <gtest/gtest.h>
 

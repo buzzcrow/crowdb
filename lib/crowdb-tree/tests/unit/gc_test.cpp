@@ -4,9 +4,9 @@
 // R129: tombstone folding is part of snapshot preparation; the standalone
 // resident-tree GC sweep is removed. These tests verify the watermark
 // contract and that snapshot folding drops eligible tombstones.
-#include "crowdb-tree/block_page_store.h"
+#include "crowdb-tree/backend/block_page_store.h"
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
 #include "test_tmp.h"
 
 #include <gtest/gtest.h>

@@ -11,8 +11,8 @@
 //     -DCMAKE_BUILD_TYPE=Release
 //   cmake --build crowdb-tree/build-bench -j
 //   ./crowdb-tree/build-bench/crowtree_bench --benchmark_filter=ReadPath
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
 
 #include <benchmark/benchmark.h>
 

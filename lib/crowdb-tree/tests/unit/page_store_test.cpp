@@ -2,8 +2,8 @@
 // Licensed under the Apache License, Version 2.0.
 
 // PT1: PageStore backend tests (MemPageStore + BlockPageStore).
-#include "crowdb-tree/block_page_store.h"
-#include "crowdb-tree/page_store.h"
+#include "crowdb-tree/backend/block_page_store.h"
+#include "crowdb-tree/backend/page_store.h"
 #include "test_tmp.h"
 
 #include <gtest/gtest.h>

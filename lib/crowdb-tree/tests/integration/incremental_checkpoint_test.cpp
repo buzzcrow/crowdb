@@ -3,8 +3,8 @@
 
 // PT6d: incremental snapshot writes only dirty pages, retains clean pages'
 // durable addrs, and reopens to identical state.
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
 
 #include <gtest/gtest.h>
 

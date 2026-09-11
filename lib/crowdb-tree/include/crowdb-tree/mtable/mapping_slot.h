@@ -18,7 +18,7 @@
 // unloaded descriptor. Adopted by the live `MappingTable` (mapping_table.h).
 #pragma once
 
-#include "crowdb-tree/page_types.h" // PageBase
+#include "crowdb-tree/mtable/page_types.h" // PageBase
 
 #include <cstdint>
 

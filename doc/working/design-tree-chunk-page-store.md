@@ -144,15 +144,17 @@ Private C++ implementation files are grouped by subsystem:
 
 Canonical public headers follow the same `btree/`, `mtable/`, and `backend/`
 grouping. `include/crowdb-tree/crowdb-tree.h` is the umbrella C++ interface;
-root forwarding headers preserve existing include paths. Implementation-only
-contracts remain below `src/`. CMake and the Rust FFI build recurse below
-`src/`, so directory grouping does not change archive composition.
+callers needing a narrow interface include its canonical subsystem path. Flat
+forwarding headers are not retained. Implementation-only contracts remain
+below `src/`. CMake and the Rust FFI build recurse below `src/`, so directory
+grouping does not change archive composition.
 
 ## Scope
 
 - `third-party/stdexec/`: repository-pinned sender implementation.
-- `lib/crowdb-tree/include/crowdb-tree/{async_page_store,chunk_page_store,key_range,c_api,options,status}.h`:
-  backend-neutral APIs and typed contracts.
+- `lib/crowdb-tree/include/crowdb-tree/{backend,btree,mtable}/` and
+  `lib/crowdb-tree/include/crowdb-tree/{c_api,options,status}.h`:
+  canonical backend, tree, mapping-page, and typed interfaces.
 - `lib/crowdb-tree/src/{btree,mtable,backend}/`: grouped private tree,
   mapping, local-backend, and chunk-backend implementation.
 - `lib/crowdb-tree/src/{c_api,async_completion,stdexec_adapter}.*`: C ABI and

@@ -4,8 +4,8 @@
 // Explicit flush() drains the MemTable into L1 without a background thread.
 // The upper-layer maintenance loop (run_pass) is responsible for calling
 // flush() periodically.
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
 
 #include <gtest/gtest.h>
 

@@ -4,7 +4,7 @@
 // CT8: delta record tests (build, find_key, chain resolve, tombstone shadow).
 #include "crowdb-tree/cell.h"
 #include "crowdb-tree/delta.h"
-#include "crowdb-tree/page.h"
+#include "crowdb-tree/mtable/page.h"
 
 #include <gtest/gtest.h>
 

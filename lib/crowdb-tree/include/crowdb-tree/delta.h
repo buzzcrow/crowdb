@@ -10,7 +10,7 @@
 #pragma once
 
 #include "crowdb-tree/cell.h"
-#include "crowdb-tree/page.h"
+#include "crowdb-tree/mtable/page.h"
 #include "crowdb-tree/slice.h"
 
 #include <vector>
