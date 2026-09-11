@@ -44,9 +44,10 @@ publishes one current manifest per tree. The production transport speaks the
 ChunkDB and DiskIO protocols directly; deterministic in-memory implementations
 exercise the same contracts in tests.
 
-The ordinary tree archive has no chunk or RPC dependency. Chunk implementation
-headers remain private, while the stable C ABI exposes construction, transport
-routes, statistics, and orphan accounting.
+The common static tree archive contains the chunk and RPC-backed implementation,
+but an ordinary local-tree link extracts neither archive member nor its RPC
+symbols. Chunk implementation headers remain private, while the stable C ABI
+exposes construction, transport routes, statistics, and orphan accounting.
 
 ## 2. Page Packs and Addressing
 
