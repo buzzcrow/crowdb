@@ -234,6 +234,9 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
         return config_.iu_size;
     }
 
+    Status encode_mapping_location(uint64_t addr, uint32_t logical_len, uint64_t *word) const override;
+    Status decode_mapping_location(uint64_t word, uint64_t *addr, uint32_t *physical_len) const override;
+
     void inject_unavailable(bool unavailable)
     {
         unavailable_.store(unavailable, std::memory_order_release);

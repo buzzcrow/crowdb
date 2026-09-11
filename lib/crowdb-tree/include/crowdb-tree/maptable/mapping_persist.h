@@ -13,8 +13,9 @@
 //
 // Segment image: a dirty MappingSegment's full packed-word array, verbatim
 // (crowdb::tree::slot_word encoding, mapping_slot.h) -- recovery installs the
-// words into slots[] with zero decode (design's point: the mapping table IS
-// the persistent structure).
+// words into slots[] with zero decode. Version 1 contains local byte
+// descriptors. Version 2 permits self-tagged immutable-store page references
+// alongside legacy descriptors for lazy migration.
 //
 // Segment directory: the list of every *live* segment's latest generation +
 // image location, rewritten in full whenever any segment's generation
@@ -33,10 +34,12 @@ namespace crowdb::tree
 
 struct SegmentImageHeader
 {
-    uint32_t seg_idx    = 0;
-    uint64_t generation = 0;
-    uint32_t slot_count = 0;
-    uint32_t live_count = 0;
+    uint16_t format_version = 0;
+    uint16_t flags          = 0;
+    uint32_t seg_idx        = 0;
+    uint64_t generation     = 0;
+    uint32_t slot_count     = 0;
+    uint32_t live_count     = 0;
     // Decode-only: the body CRC decode_segment_image already validated
     // internally, surfaced so a caller holding a DirEntry can additionally
     // cross-check DirEntry::image_crc against the image it actually read

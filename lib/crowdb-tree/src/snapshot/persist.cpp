@@ -294,8 +294,11 @@ bool collect_live_extents_from_directory(const PageStore &store, const CommitAnc
             if (!slot_word::is_unloaded(w)) {
                 continue; // empty, or (impossible on disk) resident
             }
-            uint64_t addr = slot_word::unloaded_iu_index(w) * iu;
-            uint32_t plen = slot_word::unloaded_iu_count(w) * iu; // already IU-rounded (store_unloaded's encoding)
+            uint64_t addr = 0;
+            uint32_t plen = 0;
+            if (!store.decode_mapping_location(w, &addr, &plen).ok()) {
+                return false;
+            }
             out->emplace_back(addr, plen);
         }
     }
@@ -718,24 +721,26 @@ Status Crowdbtree::prepare_snapshot_slot_locked(SnapshotPrepareContext &ctx, uin
         if (addr == kNoAddr) {
             return Status::internal_error("snapshot: dirty resident page missing pending write");
         }
-        uint64_t iu_index = addr / ctx.iu;
-        auto     iu_count = static_cast<uint32_t>(round_up_to_iu(len, ctx.iu) / ctx.iu);
-        if (!slot_word::fits_unloaded(iu_index, iu_count)) {
-            return Status::internal_error("snapshot: page addr/len too large for the unloaded descriptor");
+        Status encode_status = ctx.store->encode_mapping_location(addr, len, durable_word);
+        if (!encode_status.ok()) {
+            return encode_status;
         }
-        *durable_word = slot_word::pack_unloaded(iu_index, iu_count);
         ++*live_count;
         return Status::Ok();
     }
 
-    uint64_t old_addr = slot_word::unloaded_iu_index(word) * ctx.iu;
-    auto     block    = ctx.block_size == 0 ? 0U : static_cast<uint32_t>(old_addr / ctx.block_size);
+    uint64_t old_addr      = 0;
+    uint32_t padded_len    = 0;
+    Status   decode_status = ctx.store->decode_mapping_location(word, &old_addr, &padded_len);
+    if (!decode_status.ok()) {
+        return decode_status;
+    }
+    auto block = ctx.block_size == 0 ? 0U : static_cast<uint32_t>(old_addr / ctx.block_size);
     if (ctx.block_size == 0 || !ctx.relocation_blocks.contains(block)) {
         *durable_word = word;
         ++*live_count;
         return Status::Ok();
     }
-    uint32_t             padded_len = slot_word::unloaded_iu_count(word) * ctx.iu;
     std::vector<uint8_t> blob;
     auto                 prefetched = ctx.prefetch_by_page_id.find(page_id);
     if (prefetched != ctx.prefetch_by_page_id.end() && prefetched->second->old_word == word) {
@@ -754,13 +759,12 @@ Status Crowdbtree::prepare_snapshot_slot_locked(SnapshotPrepareContext &ctx, uin
         }
     }
 
-    uint64_t new_addr = ctx.alloc.alloc(padded_len);
-    uint64_t iu_index = new_addr / ctx.iu;
-    uint32_t iu_count = padded_len / ctx.iu;
-    if (!slot_word::fits_unloaded(iu_index, iu_count)) {
-        return Status::internal_error("snapshot: relocated page address too large");
+    uint64_t new_addr      = ctx.alloc.alloc(padded_len);
+    uint64_t new_word      = slot_word::kEmpty;
+    Status   encode_status = ctx.store->encode_mapping_location(new_addr, padded_len, &new_word);
+    if (!encode_status.ok()) {
+        return encode_status;
     }
-    uint64_t new_word = slot_word::pack_unloaded(iu_index, iu_count);
     ctx.out->page_writes.push_back(PreparedPageWrite{.page_id     = page_id,
                                                      .page        = nullptr,
                                                      .prior_addr  = old_addr,
@@ -1392,11 +1396,15 @@ Status Crowdbtree::prefetch_sparse_pages(std::vector<PrefetchedPage> *out, std::
             if (!slot_word::is_unloaded(word)) {
                 continue;
             }
-            uint64_t old_addr = slot_word::unloaded_iu_index(word) * iu;
+            uint64_t old_addr   = 0;
+            uint32_t padded_len = 0;
+            Status   decode     = opt_.page_store->decode_mapping_location(word, &old_addr, &padded_len);
+            if (!decode.ok()) {
+                continue;
+            }
             if (!selected_blocks->contains(static_cast<uint32_t>(old_addr / block_size))) {
                 continue;
             }
-            uint32_t             padded_len = slot_word::unloaded_iu_count(word) * iu;
             std::vector<uint8_t> blob(padded_len);
             Status               read = opt_.page_store->read_at(old_addr, blob.data(), blob.size());
             if (!read.ok()) {

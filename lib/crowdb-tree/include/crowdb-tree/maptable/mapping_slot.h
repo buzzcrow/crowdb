@@ -8,11 +8,15 @@
 // packed words and recovery installs them with zero decode:
 //
 //   word == 0                    -> empty (dead or never-allocated PID)
-//   (word & 1) == 0 (and != 0)   -> resident: PageBase* (8-byte aligned) [memory only]
-//   (word & 1) == 1              -> unloaded descriptor:
+//   (word & 7) == 0 (and != 0)   -> resident: PageBase* (8-byte aligned) [memory only]
+//   (word & 1) == 1              -> legacy/local unloaded descriptor:
 //                                     bits [63:24] iu_index  (durable PageAddr, in IUs)
 //                                     bits [23:1]  iu_count   (page length, in IUs)
 //                                     bit  [0]     tag = 1
+//   (word & 7) == 2              -> chunk page-reference descriptor:
+//                                     bits [63:24] reference ordinal
+//                                     bits [23:3]  IU count
+//                                     bits [2:0]   tag = 2
 //
 // Resident pointers are never persisted; on disk a slot is only `0` or a tagged
 // unloaded descriptor. Adopted by the live `MappingTable` (mapping_table.h).
@@ -28,17 +32,23 @@ namespace crowdb::tree::slot_word
 // Layout (see header comment). 40 + 23 + 1 = 64 bits, no overlap.
 inline constexpr uint64_t kEmpty       = 0;
 inline constexpr uint64_t kUnloadedTag = 1;
+inline constexpr uint64_t kPageRefTag  = 2;
+inline constexpr uint64_t kTagMask     = 7;
 
 inline constexpr int kIuCountBits  = 23;
 inline constexpr int kIuIndexBits  = 40;
 inline constexpr int kIuCountShift = 1;
 inline constexpr int kIuIndexShift = 24;
 
-inline constexpr uint64_t kMaxIuIndex = (uint64_t{1} << kIuIndexBits) - 1;
-inline constexpr uint32_t kMaxIuCount = (uint32_t{1} << kIuCountBits) - 1;
+inline constexpr uint64_t kMaxIuIndex        = (uint64_t{1} << kIuIndexBits) - 1;
+inline constexpr uint32_t kMaxIuCount        = (uint32_t{1} << kIuCountBits) - 1;
+inline constexpr int      kPageRefCountBits  = 21;
+inline constexpr int      kPageRefCountShift = 3;
+inline constexpr uint32_t kMaxPageRefIuCount = (uint32_t{1} << kPageRefCountBits) - 1;
 
 static_assert(kIuIndexShift == kIuCountShift + kIuCountBits, "iu_count/iu_index adjacent");
 static_assert(kIuIndexShift + kIuIndexBits == 64, "packed word is exactly 64 bits");
+static_assert(kIuIndexShift == kPageRefCountShift + kPageRefCountBits, "page-reference count/ordinal adjacent");
 
 // ── Classification ────────────────────────────────────────────────
 [[nodiscard]] constexpr bool is_empty(uint64_t w)
@@ -48,12 +58,22 @@ static_assert(kIuIndexShift + kIuIndexBits == 64, "packed word is exactly 64 bit
 
 [[nodiscard]] constexpr bool is_unloaded(uint64_t w)
 {
-    return (w & kUnloadedTag) != 0;
+    return (w & kUnloadedTag) != 0 || (w & kTagMask) == kPageRefTag;
 }
 
 [[nodiscard]] constexpr bool is_resident(uint64_t w)
 {
-    return w != kEmpty && (w & kUnloadedTag) == 0;
+    return w != kEmpty && (w & kTagMask) == 0;
+}
+
+[[nodiscard]] constexpr bool is_page_ref(uint64_t w)
+{
+    return (w & kTagMask) == kPageRefTag;
+}
+
+[[nodiscard]] constexpr bool is_byte_location(uint64_t w)
+{
+    return (w & kUnloadedTag) != 0;
 }
 
 // ── Unloaded descriptor ───────────────────────────────────────────
@@ -77,6 +97,26 @@ static_assert(kIuIndexShift + kIuIndexBits == 64, "packed word is exactly 64 bit
 [[nodiscard]] constexpr bool fits_unloaded(uint64_t iu_index, uint32_t iu_count)
 {
     return iu_index <= kMaxIuIndex && iu_count <= kMaxIuCount;
+}
+
+[[nodiscard]] constexpr uint64_t pack_page_ref(uint64_t ordinal, uint32_t iu_count)
+{
+    return (ordinal << kIuIndexShift) | (uint64_t{iu_count} << kPageRefCountShift) | kPageRefTag;
+}
+
+[[nodiscard]] constexpr uint64_t page_ref_ordinal(uint64_t w)
+{
+    return w >> kIuIndexShift;
+}
+
+[[nodiscard]] constexpr uint32_t page_ref_iu_count(uint64_t w)
+{
+    return static_cast<uint32_t>((w >> kPageRefCountShift) & kMaxPageRefIuCount);
+}
+
+[[nodiscard]] constexpr bool fits_page_ref(uint64_t ordinal, uint32_t iu_count)
+{
+    return ordinal <= kMaxIuIndex && iu_count <= kMaxPageRefIuCount;
 }
 
 // ── Resident pointer (in-memory only; never persisted) ────────────

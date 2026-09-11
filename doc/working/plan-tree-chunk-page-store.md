@@ -126,8 +126,10 @@ and structurally safe range rebuild while preserving local tree behavior.
   slots, and clear unreachable slots before exclusive publication. Immutable
   mapping images are now inherited by generation, changed pages COW their
   segment, and bounded reachability passes clear unrelated PIDs with stale
-  generation retry. Compact ordinal slot encoding and live-reference repack
-  remain. Files:
+  generation retry. Mapping images now distinguish legacy local byte locations
+  from chunk page-reference ordinals with a compatible tagged 64-bit word and
+  versioned mixed segment images. Immutable locator segments and live-reference
+  repack remain. Files:
   `src/btree/range_rebuild.cpp`, `src/maptable/`,
   `src/backend/chunk/chunk_page_store.cpp`.
 - [ ] **Complete observability**: pack reuse/write and materialization bytes,
@@ -196,8 +198,10 @@ and structurally safe range rebuild while preserving local tree behavior.
   across child lineages and COW-replaced when their entries change. Mapping
   materialization marks reachable PIDs in bounded passes, clears unrelated
   inherited slots, and restarts if a foreground flush changes the tree
-  generation. Mapping slots still hold local byte addresses instead of compact
-  chunk-reference ordinals.
+  generation. Chunk mapping slots use a compact reference-ordinal tag while
+  local and legacy images retain their byte-location encoding. The current
+  reference still resolves through the manifest's logical pack layout;
+  immutable locator-segment resolution remains to remove that dependency.
 - Checksummed page fences are persisted and verified against each native graph;
   legacy frames are upgraded after structural validation. Range rebuild now uses
   separator-guided resumable native traversal in 4-MiB batches, folds in-frame
@@ -213,7 +217,7 @@ and structurally safe range rebuild while preserving local tree behavior.
   descriptor still match, so unsnapshotted and concurrent source changes are
   copied into child-owned pages.
 - Basic chunk-store counters, retention pins, logical orphan accounting, and
-  bounded child pack materialization metrics exist. Compact ordinal mapping,
+  bounded child pack materialization metrics exist. Immutable locator segments,
   live-reference repack, the full metric set, and fixed-workload benchmark
   evidence remain absent. Link-map and symbol checks keep chunk and RPC archive
   members out of ordinary tree links, and GCC/Clang compile the public umbrella

@@ -11,8 +11,9 @@
 //
 // Slot word encoding: see mapping_slot.h (crowdb::tree::slot_word).
 //   word == 0                 -> empty (dead or never-allocated PID)
-//   (word & 1) == 0 (and !=0) -> resident: PageBase* (8-byte aligned)
-//   (word & 1) == 1           -> unloaded: iu_index/iu_count packed descriptor
+//   (word & 7) == 0 (and !=0) -> resident: PageBase* (8-byte aligned)
+//   (word & 1) == 1           -> unloaded local byte descriptor
+//   (word & 7) == 2           -> unloaded immutable-store page reference
 //
 // The unloaded descriptor is inline in the word (no heap allocation), unlike the
 // old tagged-pointer scheme that allocated an unloaded_page struct.

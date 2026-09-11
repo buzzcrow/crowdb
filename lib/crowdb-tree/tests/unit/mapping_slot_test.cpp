@@ -73,6 +73,20 @@ TEST(MappingSlot, FitsBoundaries)
     EXPECT_FALSE(fits_unloaded(0, kMaxIuCount + 1));
 }
 
+TEST(MappingSlot, PageReferenceRoundTripAndTagIsolation)
+{
+    ASSERT_TRUE(fits_page_ref(kMaxIuIndex, kMaxPageRefIuCount));
+    const uint64_t word = pack_page_ref(kMaxIuIndex, kMaxPageRefIuCount);
+    EXPECT_TRUE(is_unloaded(word));
+    EXPECT_TRUE(is_page_ref(word));
+    EXPECT_FALSE(is_byte_location(word));
+    EXPECT_FALSE(is_resident(word));
+    EXPECT_EQ(page_ref_ordinal(word), kMaxIuIndex);
+    EXPECT_EQ(page_ref_iu_count(word), kMaxPageRefIuCount);
+    EXPECT_FALSE(fits_page_ref(kMaxIuIndex + 1, 1));
+    EXPECT_FALSE(fits_page_ref(1, kMaxPageRefIuCount + 1));
+}
+
 TEST(MappingSlot, ResidentPointerRoundTrip)
 {
     struct alignas(8) Dummy

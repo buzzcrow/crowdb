@@ -564,6 +564,7 @@ TEST(ChunkPageStore, SnapshotPublishesBoundedChecksummedPacksAndReopens)
     reopened_options.leaf_split_bytes = 512;
     std::unique_ptr<Crowdbtree> reopened;
     ASSERT_TRUE(Crowdbtree::open(reopened_options, &reopened).ok());
+    EXPECT_TRUE(slot_word::is_page_ref(reopened->mapping().get_word(reopened->root_page_id())));
     std::string value;
     uint64_t    slot = 0;
     ASSERT_TRUE(reopened->get(Slice("key40"), &slot, &value));

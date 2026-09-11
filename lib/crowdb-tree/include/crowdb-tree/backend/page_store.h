@@ -15,6 +15,7 @@
 // geometry, durability barrier.
 #pragma once
 
+#include "crowdb-tree/maptable/mapping_slot.h"
 #include "crowdb-tree/status.h"
 
 #include <algorithm>
@@ -61,6 +62,34 @@ class PageStore
     // padded to a multiple of it so a page write cannot tear. 1 for byte-
     // addressable media (mem/SCM), a flash page for SSD.
     [[nodiscard]] virtual uint32_t iu_size() const = 0;
+
+    // Translate between the mapping table's one-word cold-page locator and
+    // this backend's durable namespace. Local stores retain the original byte
+    // address encoding. Immutable stores may use the distinct page-reference
+    // tag while keeping lookup to one atomic mapping-word load.
+    virtual Status encode_mapping_location(uint64_t addr, uint32_t logical_len, uint64_t *word) const
+    {
+        if (word == nullptr || addr % iu_size() != 0) {
+            return Status::invalid_argument("mapping location is null or unaligned");
+        }
+        const uint64_t iu_index = addr / iu_size();
+        const auto     iu_count = static_cast<uint32_t>(round_up_to_iu(logical_len, iu_size()) / iu_size());
+        if (!slot_word::fits_unloaded(iu_index, iu_count)) {
+            return Status::resource_exhausted("mapping byte location exceeds packed word");
+        }
+        *word = slot_word::pack_unloaded(iu_index, iu_count);
+        return Status::Ok();
+    }
+
+    virtual Status decode_mapping_location(uint64_t word, uint64_t *addr, uint32_t *physical_len) const
+    {
+        if (addr == nullptr || physical_len == nullptr || !slot_word::is_byte_location(word)) {
+            return Status::corruption("mapping byte location has an invalid tag");
+        }
+        *addr         = slot_word::unloaded_iu_index(word) * iu_size();
+        *physical_len = slot_word::unloaded_iu_count(word) * iu_size();
+        return Status::Ok();
+    }
 
     // Block size for array-of-blocks backends (BlockPageStore::open_blocks).
     // 0 for single-medium / TextPageStore — no block-level compaction.

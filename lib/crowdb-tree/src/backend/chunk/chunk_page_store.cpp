@@ -565,6 +565,36 @@ ChunkPageStore::ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catal
 
 ChunkPageStore::~ChunkPageStore() = default;
 
+Status ChunkPageStore::encode_mapping_location(uint64_t addr, uint32_t logical_len, uint64_t *word) const
+{
+    if (word == nullptr || addr % config_.iu_size != 0) {
+        return Status::invalid_argument("chunk mapping location is null or unaligned");
+    }
+    const uint64_t ordinal  = addr / config_.iu_size;
+    const auto     iu_count = static_cast<uint32_t>(round_up_to_iu(logical_len, config_.iu_size) / config_.iu_size);
+    if (!slot_word::fits_page_ref(ordinal, iu_count)) {
+        return Status::resource_exhausted("chunk page reference exceeds packed mapping word");
+    }
+    *word = slot_word::pack_page_ref(ordinal, iu_count);
+    return Status::Ok();
+}
+
+Status ChunkPageStore::decode_mapping_location(uint64_t word, uint64_t *addr, uint32_t *physical_len) const
+{
+    if (addr == nullptr || physical_len == nullptr) {
+        return Status::invalid_argument("chunk mapping location output is null");
+    }
+    if (slot_word::is_byte_location(word)) {
+        return PageStore::decode_mapping_location(word, addr, physical_len);
+    }
+    if (!slot_word::is_page_ref(word)) {
+        return Status::corruption("chunk mapping location has an invalid tag");
+    }
+    *addr         = slot_word::page_ref_ordinal(word) * config_.iu_size;
+    *physical_len = slot_word::page_ref_iu_count(word) * config_.iu_size;
+    return Status::Ok();
+}
+
 Status ChunkPageStore::inherit_snapshot_from(const PageStore &source_store)
 {
     const auto *source = dynamic_cast<const ChunkPageStore *>(&source_store);

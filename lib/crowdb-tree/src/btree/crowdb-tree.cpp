@@ -857,9 +857,13 @@ PageBase *Crowdbtree::resident(uint64_t page_id) const
         return slot_word::is_resident(w) ? slot_word::resident_ptr(w) : nullptr; // another loader won
     }
     demand_load_total_.fetch_add(1, std::memory_order_relaxed);
-    uint32_t iu       = opt_.page_store->iu_size();
-    uint64_t addr     = slot_word::unloaded_iu_index(w) * iu;
-    uint32_t phys_len = slot_word::unloaded_iu_count(w) * iu;
+    uint64_t addr     = 0;
+    uint32_t phys_len = 0;
+    Status   location = opt_.page_store->decode_mapping_location(w, &addr, &phys_len);
+    if (!location.ok()) {
+        io_failed_.store(true);
+        return nullptr;
+    }
     // phys_len is the IU-padded physical extent (PT9). The blob header records
     // the raw frame length so we size the decoded frame without other state.
     std::vector<uint8_t> blob(phys_len);
@@ -1137,7 +1141,12 @@ size_t Crowdbtree::evict_clean_leaves_locked(size_t max_resident_leaves)
         // Re-tag the slot unloaded, then epoch-retire the resident page. A reader
         // that already loaded `v` keeps using it under its guard (frame freed only
         // once that guard drains); a later reader sees the tag and demand-loads.
-        mapping_.store_unloaded(page_id, v->durable_addr, v->durable_plen, opt_.page_store->iu_size());
+        uint64_t unloaded = slot_word::kEmpty;
+        if (!opt_.page_store->encode_mapping_location(v->durable_addr, v->durable_plen, &unloaded).ok()) {
+            io_failed_.store(true);
+            continue;
+        }
+        mapping_.store_word(page_id, unloaded);
         retire_page(v);
         ++evicted;
     }
@@ -1220,7 +1229,12 @@ size_t Crowdbtree::evict_clean_inner_locked(size_t max_resident_inner)
         // Re-tag the slot unloaded, then epoch-retire the resident page -- same
         // mechanism as the leaf pass; a reader that already loaded `v` keeps
         // using it under its guard, a later reader demand-loads.
-        mapping_.store_unloaded(page_id, v->durable_addr, v->durable_plen, opt_.page_store->iu_size());
+        uint64_t unloaded = slot_word::kEmpty;
+        if (!opt_.page_store->encode_mapping_location(v->durable_addr, v->durable_plen, &unloaded).ok()) {
+            io_failed_.store(true);
+            continue;
+        }
+        mapping_.store_word(page_id, unloaded);
         retire_page(v);
         ++evicted;
     }
@@ -2587,15 +2601,19 @@ void Crowdbtree::get_async_attempt(std::shared_ptr<std::string> key_owned, std::
         uint64_t addr           = 0;
         uint32_t plen           = 0;
         bool     still_unloaded = false;
+        Status   location_status;
         {
             std::lock_guard<std::mutex> lk(load_mutex_);
             uint64_t                    w = mapping_.get_word(pending_page_id);
             if (slot_word::is_unloaded(w)) {
-                uint32_t iu    = opt_.page_store->iu_size();
-                addr           = slot_word::unloaded_iu_index(w) * iu;
-                plen           = slot_word::unloaded_iu_count(w) * iu;
-                still_unloaded = true;
+                location_status = opt_.page_store->decode_mapping_location(w, &addr, &plen);
+                still_unloaded  = location_status.ok();
             }
+        }
+        if (!location_status.ok()) {
+            io_failed_.store(true);
+            on_done(location_status, {});
+            return;
         }
         if (!still_unloaded) {
             // Another loader (sync resident() or a concurrent get_async)
@@ -3722,15 +3740,19 @@ void Crowdbtree::scan_async_attempt(std::shared_ptr<std::string>        prefix_o
         uint64_t addr           = 0;
         uint32_t plen           = 0;
         bool     still_unloaded = false;
+        Status   location_status;
         {
             std::lock_guard<std::mutex> lk(load_mutex_);
             uint64_t                    w = mapping_.get_word(pending_page_id);
             if (slot_word::is_unloaded(w)) {
-                uint32_t iu    = opt_.page_store->iu_size();
-                addr           = slot_word::unloaded_iu_index(w) * iu;
-                plen           = slot_word::unloaded_iu_count(w) * iu;
-                still_unloaded = true;
+                location_status = opt_.page_store->decode_mapping_location(w, &addr, &plen);
+                still_unloaded  = location_status.ok();
             }
+        }
+        if (!location_status.ok()) {
+            io_failed_.store(true);
+            on_done(location_status, ScanPackedBuf{}, false);
+            return;
         }
         if (!still_unloaded) {
             // Another loader already resolved this page_id between the
@@ -4214,14 +4236,11 @@ Status Crowdbtree::install_range_snapshot_native(std::vector<NativeFrame> frames
             ++inners;
         }
         if (mapping_inherited && f.inherited) {
-            const uint32_t iu = opt_.page_store->iu_size();
-            if (f.durable_addr != kNoAddr && f.durable_plen != 0 && f.durable_addr % iu == 0) {
-                const uint64_t iu_index = f.durable_addr / iu;
-                const auto     iu_count = static_cast<uint32_t>(round_up_to_iu(f.durable_plen, iu) / iu);
-                if (slot_word::fits_unloaded(iu_index, iu_count) &&
-                    mapping_.get_word(f.page_id) == slot_word::pack_unloaded(iu_index, iu_count)) {
-                    continue;
-                }
+            uint64_t expected_word = slot_word::kEmpty;
+            if (f.durable_addr != kNoAddr && f.durable_plen != 0 &&
+                opt_.page_store->encode_mapping_location(f.durable_addr, f.durable_plen, &expected_word).ok() &&
+                mapping_.get_word(f.page_id) == expected_word) {
+                continue;
             }
         }
         PageBase *page = nullptr;
@@ -4812,8 +4831,13 @@ void Crowdbtree::evict_overflow_chain_locked(uint64_t head_page_id)
         if (p->type != page_type::kOverflowFrame || p->durable_addr == kNoAddr) {
             break;
         }
-        uint64_t next = static_cast<OverflowBase *>(p)->next_page_id();
-        mapping_.store_unloaded(page_id, p->durable_addr, p->durable_plen, opt_.page_store->iu_size());
+        uint64_t next     = static_cast<OverflowBase *>(p)->next_page_id();
+        uint64_t unloaded = slot_word::kEmpty;
+        if (!opt_.page_store->encode_mapping_location(p->durable_addr, p->durable_plen, &unloaded).ok()) {
+            io_failed_.store(true);
+            break;
+        }
+        mapping_.store_word(page_id, unloaded);
         retire_page(p);
         page_id = next;
     }
