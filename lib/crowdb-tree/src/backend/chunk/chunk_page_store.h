@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include "chunk_transport.h"
 #include "crowdb-tree/async_page_store.h"
 #include "crowdb-tree/page_store.h"
 
@@ -29,9 +30,9 @@ struct ChunkPageRef
 
 struct ChunkPagePack
 {
-    uint64_t                            ordinal = 0;
-    ChunkPageRef                        ref;
-    std::array<std::vector<uint8_t>, 3> mirrors;
+    uint64_t     ordinal        = 0;
+    uint64_t     logical_offset = 0;
+    ChunkPageRef ref;
 };
 
 struct ChunkReferenceSegment
@@ -101,10 +102,6 @@ class MemoryRootCatalog final : public RootCatalog
         owner_epoch_.store(epoch, std::memory_order_release);
     }
 
-    // Storage-fault seam used by checksum tests.
-    void corrupt_active_pack(size_t pack_index, size_t byte_index);
-    void corrupt_active_mirror(size_t pack_index, size_t mirror_index, size_t byte_index);
-
     [[nodiscard]] std::shared_ptr<const ChunkManifest> load_generation(uint64_t tree_id,
                                                                        uint64_t generation) const override;
     uint64_t                                           reclaim_before(uint64_t tree_id, uint64_t generation) override;
@@ -160,12 +157,13 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
         uint64_t tree_id            = 0;
         uint64_t owner_epoch        = 0;
         size_t   pack_bytes         = 4U * 1024U * 1024U;
-        uint32_t iu_size            = 1;
+        uint64_t max_chunk_bytes    = 256U * 1024U * 1024U;
+        uint32_t iu_size            = 64U * 1024U;
         uint32_t mirror_retry_limit = 2;
         uint64_t layout_validity_ms = 30'000;
     };
 
-    ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catalog);
+    ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catalog, std::shared_ptr<ChunkTransport> transport);
 
     Status                 write_at(uint64_t off, const uint8_t *buf, size_t len) override;
     Status                 read_at(uint64_t off, uint8_t *buf, size_t len) const override;
@@ -205,6 +203,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
 
     Config                                                    config_;
     std::shared_ptr<RootCatalog>                              catalog_;
+    std::shared_ptr<ChunkTransport>                           transport_;
     std::vector<uint8_t>                                      staged_;
     bool                                                      staged_initialized_ = false;
     bool                                                      data_durable_       = false;
@@ -223,6 +222,8 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     std::atomic<uint64_t>                                     mirror_write_failures_{0};
     std::atomic<uint64_t>                                     orphan_bytes_{0};
     std::vector<uint64_t>                                     orphan_reference_segments_;
+    uint64_t                                                  active_chunk_id_    = 0;
+    uint64_t                                                  active_chunk_bytes_ = 0;
 };
 
 } // namespace crowdb::tree::detail

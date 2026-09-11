@@ -75,33 +75,6 @@ Status MemoryRootCatalog::publish(uint64_t tree_id, uint64_t expected_generation
     return Status::Ok();
 }
 
-void MemoryRootCatalog::corrupt_active_pack(size_t pack_index, size_t byte_index)
-{
-    auto current = current_.load(std::memory_order_acquire);
-    if (current == nullptr || pack_index >= current->packs.size() ||
-        byte_index >= current->packs[pack_index].mirrors[0].size()) {
-        return;
-    }
-    auto corrupt = std::make_shared<ChunkManifest>(*current);
-    for (auto &mirror : corrupt->packs[pack_index].mirrors) {
-        mirror[byte_index] ^= 0xffU;
-    }
-    current_.store(std::move(corrupt), std::memory_order_release);
-}
-
-void MemoryRootCatalog::corrupt_active_mirror(size_t pack_index, size_t mirror_index, size_t byte_index)
-{
-    auto current = current_.load(std::memory_order_acquire);
-    if (current == nullptr || pack_index >= current->packs.size() ||
-        mirror_index >= current->packs[pack_index].mirrors.size() ||
-        byte_index >= current->packs[pack_index].mirrors[mirror_index].size()) {
-        return;
-    }
-    auto corrupt = std::make_shared<ChunkManifest>(*current);
-    corrupt->packs[pack_index].mirrors[mirror_index][byte_index] ^= 0xffU;
-    current_.store(std::move(corrupt), std::memory_order_release);
-}
-
 std::shared_ptr<const ChunkManifest> MemoryRootCatalog::load_generation(uint64_t tree_id, uint64_t generation) const
 {
     auto history = history_.load(std::memory_order_acquire);
@@ -239,9 +212,7 @@ uint64_t MemoryRootCatalog::reclaim_before(uint64_t tree_id, uint64_t generation
             continue;
         }
         for (const ChunkPagePack &pack : manifest->packs) {
-            for (const auto &mirror : pack.mirrors) {
-                reclaimed += mirror.size();
-            }
+            reclaimed += static_cast<uint64_t>(pack.ref.length) * 3;
         }
         for (const ChunkReferenceSegment &segment : manifest->reference_segments) {
             candidate_segments.push_back(segment.object_id);
@@ -308,16 +279,25 @@ uint64_t MemoryRootCatalog::oldest_pin_age_ms(uint64_t tree_id) const
     return oldest == 0 ? 0 : monotonic_millis() - oldest;
 }
 
-ChunkPageStore::ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catalog)
+ChunkPageStore::ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catalog,
+                               std::shared_ptr<ChunkTransport> transport)
     : config_(config),
-      catalog_(std::move(catalog))
+      catalog_(std::move(catalog)),
+      transport_(std::move(transport))
 {
     if (config_.pack_bytes == 0) {
         config_.pack_bytes = 4U * 1024U * 1024U;
     }
     if (config_.iu_size == 0) {
-        config_.iu_size = 1;
+        config_.iu_size = 64U * 1024U;
     }
+    if (config_.max_chunk_bytes == 0) {
+        config_.max_chunk_bytes = 256U * 1024U * 1024U;
+    }
+    if (transport_ == nullptr) {
+        transport_ = std::make_shared<MemoryChunkTransport>();
+    }
+    config_.pack_bytes = std::min<uint64_t>(config_.pack_bytes, config_.max_chunk_bytes);
 }
 
 Status ChunkPageStore::materialize_active(std::vector<uint8_t> *out) const
@@ -335,21 +315,30 @@ Status ChunkPageStore::materialize_active(std::vector<uint8_t> *out) const
         ChunkPageRef ref;
         Status       resolve_status = resolve_ordinal(*manifest, pack.ordinal, &ref);
         if (!resolve_status.ok() || ref.chunk_id != pack.ref.chunk_id || ref.offset != pack.ref.offset ||
-            ref.length != pack.ref.length || ref.checksum != pack.ref.checksum || ref.offset > out->size() ||
-            ref.length > out->size() - ref.offset) {
+            ref.length != pack.ref.length || ref.checksum != pack.ref.checksum || pack.logical_offset > out->size() ||
+            ref.length > out->size() - pack.logical_offset) {
             return Status::corruption("chunk page pack checksum or bounds are invalid");
         }
-        const std::vector<uint8_t> *valid_mirror = nullptr;
-        for (const auto &mirror : pack.mirrors) {
-            if (mirror.size() == ref.length && ref.checksum == crowdb::common::crc32c(mirror.data(), mirror.size())) {
-                valid_mirror = &mirror;
+        std::vector<uint8_t> valid_mirror(ref.length);
+        bool                 found            = false;
+        bool                 mirror_responded = false;
+        for (uint32_t mirror = 0; mirror < 3; ++mirror) {
+            Status read_status =
+                transport_->read_mirror(ref.chunk_id, mirror, ref.offset, valid_mirror.data(), valid_mirror.size());
+            if (!read_status.ok()) {
+                continue;
+            }
+            mirror_responded = true;
+            if (ref.checksum == crowdb::common::crc32c(valid_mirror.data(), valid_mirror.size())) {
+                found = true;
                 break;
             }
         }
-        if (valid_mirror == nullptr) {
-            return Status::corruption("chunk page pack has no valid mirror");
+        if (!found) {
+            return mirror_responded ? Status::corruption("chunk page pack has no valid mirror")
+                                    : Status::unavailable("chunk page pack mirrors are unavailable");
         }
-        std::memcpy(out->data() + ref.offset, valid_mirror->data(), valid_mirror->size());
+        std::memcpy(out->data() + pack.logical_offset, valid_mirror.data(), valid_mirror.size());
     }
     return Status::Ok();
 }
@@ -408,25 +397,34 @@ Status ChunkPageStore::read_at(uint64_t off, uint8_t *buf, size_t len) const
             ref.length != pack.ref.length || ref.checksum != pack.ref.checksum) {
             return Status::corruption("chunk page reference segment is invalid");
         }
-        const uint64_t pack_end = ref.offset + ref.length;
+        const uint64_t pack_end = pack.logical_offset + ref.length;
         const uint64_t read_end = off + len;
-        if (pack_end <= off || ref.offset >= read_end) {
+        if (pack_end <= off || pack.logical_offset >= read_end) {
             continue;
         }
         pack_reads_.fetch_add(1, std::memory_order_relaxed);
-        const std::vector<uint8_t> *valid_mirror = nullptr;
-        for (const auto &mirror : pack.mirrors) {
-            if (mirror.size() == ref.length && ref.checksum == crowdb::common::crc32c(mirror.data(), mirror.size())) {
-                valid_mirror = &mirror;
+        std::vector<uint8_t> valid_mirror(ref.length);
+        bool                 found            = false;
+        bool                 mirror_responded = false;
+        for (uint32_t mirror = 0; mirror < 3; ++mirror) {
+            Status read_status =
+                transport_->read_mirror(ref.chunk_id, mirror, ref.offset, valid_mirror.data(), valid_mirror.size());
+            if (!read_status.ok()) {
+                continue;
+            }
+            mirror_responded = true;
+            if (ref.checksum == crowdb::common::crc32c(valid_mirror.data(), valid_mirror.size())) {
+                found = true;
                 break;
             }
         }
-        if (valid_mirror == nullptr) {
-            return Status::corruption("chunk page pack checksum mismatch on every mirror");
+        if (!found) {
+            return mirror_responded ? Status::corruption("chunk page pack checksum mismatch on every mirror")
+                                    : Status::unavailable("chunk page pack mirrors are unavailable");
         }
-        const uint64_t begin = std::max(off, ref.offset);
+        const uint64_t begin = std::max(off, pack.logical_offset);
         const uint64_t end   = std::min(read_end, pack_end);
-        std::memcpy(buf + (begin - off), valid_mirror->data() + (begin - ref.offset), end - begin);
+        std::memcpy(buf + (begin - off), valid_mirror.data() + (begin - pack.logical_offset), end - begin);
         copied += end - begin;
     }
     if (copied != len) {
@@ -497,6 +495,16 @@ uint32_t ChunkPageStore::manifest_checksum(const ChunkManifest &manifest)
     crc          = update_u64(crc, manifest.owner_epoch);
     crc          = update_u64(crc, manifest.logical_size);
     crc          = update_u64(crc, manifest.published_at_ms);
+    for (const ChunkPagePack &pack : manifest.packs) {
+        crc = update_u64(crc, pack.ordinal);
+        crc = update_u64(crc, pack.logical_offset);
+        crc = update_u64(crc, pack.ref.chunk_id);
+        crc = update_u64(crc, pack.ref.offset);
+        crc = crowdb::common::crc32c_update(crc, reinterpret_cast<const uint8_t *>(&pack.ref.length),
+                                            sizeof(pack.ref.length));
+        crc = crowdb::common::crc32c_update(crc, reinterpret_cast<const uint8_t *>(&pack.ref.checksum),
+                                            sizeof(pack.ref.checksum));
+    }
     for (const ChunkReferenceSegment &segment : manifest.reference_segments) {
         crc = update_u64(crc, segment.object_id);
         crc = update_u64(crc, segment.first_ordinal);
@@ -523,21 +531,40 @@ Status ChunkPageStore::build_manifest(std::shared_ptr<ChunkManifest> *out)
     manifest->published_at_ms = monotonic_millis();
     uint64_t offset           = 0;
     while (offset < staged_.size()) {
-        const size_t  length = std::min(config_.pack_bytes, staged_.size() - static_cast<size_t>(offset));
+        const size_t length = std::min(config_.pack_bytes, staged_.size() - static_cast<size_t>(offset));
+        if (active_chunk_id_ != 0 && length > config_.max_chunk_bytes - active_chunk_bytes_) {
+            Status seal_status = transport_->seal_chunk(active_chunk_id_, config_.owner_epoch, active_chunk_bytes_);
+            if (!seal_status.ok()) {
+                return seal_status;
+            }
+            active_chunk_id_    = 0;
+            active_chunk_bytes_ = 0;
+        }
+        if (active_chunk_id_ == 0) {
+            Status allocate_status =
+                transport_->allocate_mirror_chunk(config_.max_chunk_bytes, config_.owner_epoch, &active_chunk_id_);
+            if (!allocate_status.ok()) {
+                return allocate_status;
+            }
+        }
         ChunkPagePack pack;
-        pack.ordinal      = manifest->packs.size();
-        pack.ref.chunk_id = (manifest->generation << 32U) | manifest->packs.size();
-        pack.ref.offset   = offset;
-        pack.ref.length   = static_cast<uint32_t>(length);
-        pack.ref.checksum = crowdb::common::crc32c(staged_.data() + offset, length);
-        for (size_t mirror = 0; mirror < pack.mirrors.size(); ++mirror) {
+        pack.ordinal        = manifest->packs.size();
+        pack.logical_offset = offset;
+        pack.ref.chunk_id   = active_chunk_id_;
+        pack.ref.offset     = active_chunk_bytes_;
+        pack.ref.length     = static_cast<uint32_t>(length);
+        pack.ref.checksum   = crowdb::common::crc32c(staged_.data() + offset, length);
+        for (uint32_t mirror = 0; mirror < 3; ++mirror) {
             bool written = false;
             for (uint32_t attempt = 0; attempt <= config_.mirror_retry_limit; ++attempt) {
                 mirror_write_attempts_.fetch_add(1, std::memory_order_relaxed);
                 if ((mirror_write_failure_mask_.load(std::memory_order_acquire) & (1U << mirror)) == 0) {
-                    pack.mirrors[mirror].assign(staged_.begin() + offset, staged_.begin() + offset + length);
-                    written = true;
-                    break;
+                    Status write_status = transport_->write_mirror(active_chunk_id_, mirror, active_chunk_bytes_,
+                                                                   staged_.data() + offset, length);
+                    if (write_status.ok()) {
+                        written = true;
+                        break;
+                    }
                 }
                 mirror_write_failures_.fetch_add(1, std::memory_order_relaxed);
             }
@@ -545,6 +572,12 @@ Status ChunkPageStore::build_manifest(std::shared_ptr<ChunkManifest> *out)
                 return Status::unavailable("chunk mirror write unavailable after bounded retries");
             }
         }
+        Status advance_status =
+            transport_->advance_write(active_chunk_id_, active_chunk_bytes_, active_chunk_bytes_ + length);
+        if (!advance_status.ok()) {
+            return advance_status;
+        }
+        active_chunk_bytes_ += length;
         manifest->packs.push_back(std::move(pack));
         offset += length;
     }
@@ -684,7 +717,8 @@ uint64_t ChunkPageStore::reclaim_orphans()
 
 struct ct_root_catalog
 {
-    std::shared_ptr<crowdb::tree::detail::RootCatalog> catalog;
+    std::shared_ptr<crowdb::tree::detail::RootCatalog>    catalog;
+    std::shared_ptr<crowdb::tree::detail::ChunkTransport> transport;
 };
 
 ct_status ct_memory_root_catalog_open(uint64_t owner_epoch, ct_root_catalog **out)
@@ -692,9 +726,10 @@ ct_status ct_memory_root_catalog_open(uint64_t owner_epoch, ct_root_catalog **ou
     if (out == nullptr) {
         return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
     }
-    auto handle     = std::make_unique<ct_root_catalog>();
-    handle->catalog = std::make_shared<crowdb::tree::detail::MemoryRootCatalog>(owner_epoch);
-    *out            = handle.release();
+    auto handle       = std::make_unique<ct_root_catalog>();
+    handle->catalog   = std::make_shared<crowdb::tree::detail::MemoryRootCatalog>(owner_epoch);
+    handle->transport = std::make_shared<crowdb::tree::detail::MemoryChunkTransport>();
+    *out              = handle.release();
     return static_cast<ct_status>(crowdb::tree::Code::kOk);
 }
 
@@ -716,7 +751,7 @@ ct_status ct_chunk_page_store_open(const ct_chunk_page_store_options *options, c
                                                      .owner_epoch = options->owner_epoch,
                                                      .pack_bytes  = options->pack_bytes,
                                                      .iu_size     = options->iu_size},
-        catalog->catalog);
+        catalog->catalog, catalog->transport);
     handle->bundle->async_store_view = store.get();
     handle->bundle->store            = std::move(store);
     handle->bundle->backend_label    = "chunk";

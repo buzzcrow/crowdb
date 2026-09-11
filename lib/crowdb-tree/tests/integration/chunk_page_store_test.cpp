@@ -11,6 +11,7 @@
 #include <iterator>
 #include <memory>
 #include <string>
+#include <unordered_set>
 
 namespace crowdb::tree::detail
 {
@@ -34,10 +35,11 @@ void publish_raw_generation(ChunkPageStore *store, uint8_t value)
 
 TEST(ChunkPageStore, SnapshotPublishesBoundedChecksummedPacksAndReopens)
 {
-    auto                   catalog = std::make_shared<MemoryRootCatalog>(7);
+    auto                   catalog   = std::make_shared<MemoryRootCatalog>(7);
+    auto                   transport = std::make_shared<MemoryChunkTransport>();
     ChunkPageStore::Config config{.tree_id = 42, .owner_epoch = 7, .pack_bytes = 4096, .iu_size = 1};
     {
-        ChunkPageStore store(config, catalog);
+        ChunkPageStore store(config, catalog, transport);
         Options        options;
         options.page_store       = &store;
         options.frame_bytes      = 4096;
@@ -53,9 +55,16 @@ TEST(ChunkPageStore, SnapshotPublishesBoundedChecksummedPacksAndReopens)
         ASSERT_GT(manifest->packs.size(), 1U);
         ASSERT_FALSE(manifest->reference_segments.empty());
         for (const auto &pack : manifest->packs) {
-            EXPECT_LE(pack.mirrors[0].size(), 4096U);
-            EXPECT_EQ(pack.mirrors[0], pack.mirrors[1]);
-            EXPECT_EQ(pack.mirrors[1], pack.mirrors[2]);
+            EXPECT_LE(pack.ref.length, 4096U);
+            std::vector<uint8_t> first(pack.ref.length);
+            std::vector<uint8_t> second(pack.ref.length);
+            std::vector<uint8_t> third(pack.ref.length);
+            ASSERT_TRUE(transport->read_mirror(pack.ref.chunk_id, 0, pack.ref.offset, first.data(), first.size()).ok());
+            ASSERT_TRUE(
+                transport->read_mirror(pack.ref.chunk_id, 1, pack.ref.offset, second.data(), second.size()).ok());
+            ASSERT_TRUE(transport->read_mirror(pack.ref.chunk_id, 2, pack.ref.offset, third.data(), third.size()).ok());
+            EXPECT_EQ(first, second);
+            EXPECT_EQ(second, third);
         }
         EXPECT_EQ(manifest->reference_segments[0].ref_count, manifest->packs.size());
         auto segment = catalog->load_reference_segment(42, manifest->reference_segments[0].object_id);
@@ -66,7 +75,7 @@ TEST(ChunkPageStore, SnapshotPublishesBoundedChecksummedPacksAndReopens)
         EXPECT_EQ(store.stats().mirror_write_attempts, manifest->packs.size() * 3U);
     }
 
-    ChunkPageStore reopened_store(config, catalog);
+    ChunkPageStore reopened_store(config, catalog, transport);
     Options        reopened_options;
     reopened_options.page_store       = &reopened_store;
     reopened_options.frame_bytes      = 4096;
@@ -82,8 +91,9 @@ TEST(ChunkPageStore, SnapshotPublishesBoundedChecksummedPacksAndReopens)
 
 TEST(ChunkPageStore, EpochFailureLeavesPriorRootAndAccountsOrphans)
 {
-    auto           catalog = std::make_shared<MemoryRootCatalog>(3);
-    ChunkPageStore store({.tree_id = 9, .owner_epoch = 3, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(3);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore store({.tree_id = 9, .owner_epoch = 3, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
     Options        options;
     options.page_store = &store;
     Crowdbtree tree(options);
@@ -111,8 +121,9 @@ TEST(ChunkPageStore, EpochFailureLeavesPriorRootAndAccountsOrphans)
 
 TEST(ChunkPageStore, CorruptPersistedReferenceSegmentRejectsRead)
 {
-    auto           catalog = std::make_shared<MemoryRootCatalog>(1);
-    ChunkPageStore store({.tree_id = 16, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore store({.tree_id = 16, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
     const uint8_t  bytes[] = {9, 8, 7, 6};
     ASSERT_TRUE(store.write_at(8192, bytes, sizeof(bytes)).ok());
     ASSERT_TRUE(store.sync().ok());
@@ -120,15 +131,16 @@ TEST(ChunkPageStore, CorruptPersistedReferenceSegmentRejectsRead)
     ASSERT_TRUE(store.sync().ok());
 
     catalog->corrupt_active_reference_segment(0, 0);
-    ChunkPageStore reopened({.tree_id = 16, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    ChunkPageStore reopened({.tree_id = 16, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
     uint8_t        out[4] = {};
     EXPECT_EQ(reopened.read_at(8192, out, sizeof(out)).code(), Code::kCorruption);
 }
 
 TEST(ChunkPageStore, ResolvesOrdinalsAcrossPersistedSegmentBoundary)
 {
-    auto                 catalog = std::make_shared<MemoryRootCatalog>(1);
-    ChunkPageStore       store({.tree_id = 17, .owner_epoch = 1, .pack_bytes = 32, .iu_size = 1}, catalog);
+    auto                 catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto                 transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore       store({.tree_id = 17, .owner_epoch = 1, .pack_bytes = 32, .iu_size = 1}, catalog, transport);
     std::vector<uint8_t> bytes(8200);
     for (size_t index = 0; index < bytes.size(); ++index) {
         bytes[index] = static_cast<uint8_t>(index);
@@ -153,8 +165,9 @@ TEST(ChunkPageStore, ResolvesOrdinalsAcrossPersistedSegmentBoundary)
 
 TEST(ChunkPageStore, AvailabilityAndCorruptionRemainDistinct)
 {
-    auto           catalog = std::make_shared<MemoryRootCatalog>(1);
-    ChunkPageStore store({.tree_id = 5, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore store({.tree_id = 5, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
     const uint8_t  bytes[] = {1, 2, 3, 4};
     ASSERT_TRUE(store.write_at(8192, bytes, sizeof(bytes)).ok());
     ASSERT_TRUE(store.sync().ok());
@@ -165,15 +178,67 @@ TEST(ChunkPageStore, AvailabilityAndCorruptionRemainDistinct)
     store.inject_unavailable(true);
     EXPECT_EQ(store.read_at(8192, out, sizeof(out)).code(), Code::kUnavailable);
     store.inject_unavailable(false);
-    catalog->corrupt_active_pack(2, 0);
-    ChunkPageStore corrupted({.tree_id = 5, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    transport->inject_unavailable(true);
+    EXPECT_EQ(store.read_at(8192, out, sizeof(out)).code(), Code::kUnavailable);
+    transport->inject_unavailable(false);
+    auto manifest = catalog->load(5);
+    ASSERT_NE(manifest, nullptr);
+    for (uint32_t mirror = 0; mirror < 3; ++mirror) {
+        transport->corrupt_mirror(manifest->packs[2].ref.chunk_id, mirror, manifest->packs[2].ref.offset);
+    }
+    ChunkPageStore corrupted({.tree_id = 5, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
     EXPECT_EQ(corrupted.read_at(8192, out, sizeof(out)).code(), Code::kCorruption);
+}
+
+TEST(ChunkPageStore, RotatesWholePacksAndReopenAllocatesFreshChunk)
+{
+    auto                   catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto                   transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore::Config config{
+        .tree_id = 18, .owner_epoch = 1, .pack_bytes = 64, .max_chunk_bytes = 128, .iu_size = 1};
+    ChunkPageStore       store(config, catalog, transport);
+    std::vector<uint8_t> bytes(8196, 3);
+    ASSERT_TRUE(store.write_at(8192, bytes.data() + 8192, 4).ok());
+    ASSERT_TRUE(store.sync().ok());
+    ASSERT_TRUE(store.write_at(0, bytes.data(), 8192).ok());
+    ASSERT_TRUE(store.sync().ok());
+
+    auto first = catalog->load(18);
+    ASSERT_NE(first, nullptr);
+    std::unordered_set<uint64_t> chunk_ids;
+    for (const ChunkPagePack &pack : first->packs) {
+        EXPECT_LE(pack.ref.length, config.pack_bytes);
+        EXPECT_LE(pack.ref.offset + pack.ref.length, config.max_chunk_bytes);
+        chunk_ids.insert(pack.ref.chunk_id);
+    }
+    ASSERT_GT(chunk_ids.size(), 1U);
+    const uint64_t abandoned_chunk_id = first->packs.back().ref.chunk_id;
+    ChunkLayout    abandoned;
+    ASSERT_TRUE(transport->query_chunk(abandoned_chunk_id, &abandoned).ok());
+    EXPECT_FALSE(abandoned.sealed);
+
+    ChunkPageStore reopened(config, catalog, transport);
+    const uint8_t  changed = 7;
+    ASSERT_TRUE(reopened.write_at(8192, &changed, 1).ok());
+    ASSERT_TRUE(reopened.sync().ok());
+    ASSERT_TRUE(reopened.write_at(0, &changed, 1).ok());
+    ASSERT_TRUE(reopened.sync().ok());
+    auto second = catalog->load(18);
+    ASSERT_NE(second, nullptr);
+    EXPECT_NE(second->packs.front().ref.chunk_id, abandoned_chunk_id);
+
+    std::array<uint8_t, 4> old_bytes{};
+    ASSERT_TRUE(transport
+                    ->read_mirror(abandoned_chunk_id, 0, first->packs.back().ref.offset, old_bytes.data(),
+                                  first->packs.back().ref.length)
+                    .ok());
 }
 
 TEST(ChunkPageStore, MirrorRetryRequiresEveryReplicaAndHealthyFallbackReads)
 {
-    auto           catalog = std::make_shared<MemoryRootCatalog>(1);
-    ChunkPageStore store({.tree_id = 6, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore store({.tree_id = 6, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
     const uint8_t  bytes[] = {5, 6, 7, 8};
     ASSERT_TRUE(store.write_at(8192, bytes, sizeof(bytes)).ok());
     ASSERT_TRUE(store.sync().ok());
@@ -188,8 +253,10 @@ TEST(ChunkPageStore, MirrorRetryRequiresEveryReplicaAndHealthyFallbackReads)
 
     store.inject_mirror_write_failures(0);
     ASSERT_TRUE(store.sync().ok());
-    catalog->corrupt_active_mirror(2, 0, 0);
-    ChunkPageStore reopened({.tree_id = 6, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    auto manifest = catalog->load(6);
+    ASSERT_NE(manifest, nullptr);
+    transport->corrupt_mirror(manifest->packs[2].ref.chunk_id, 0, manifest->packs[2].ref.offset);
+    ChunkPageStore reopened({.tree_id = 6, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
     uint8_t        out[4] = {};
     ASSERT_TRUE(reopened.read_at(8192, out, sizeof(out)).ok());
     EXPECT_TRUE(std::equal(std::begin(bytes), std::end(bytes), std::begin(out)));
@@ -197,8 +264,9 @@ TEST(ChunkPageStore, MirrorRetryRequiresEveryReplicaAndHealthyFallbackReads)
 
 TEST(ChunkPageStore, ManifestPinsDelayReclamationButKeepOnlyFallback)
 {
-    auto           catalog = std::make_shared<MemoryRootCatalog>(1);
-    ChunkPageStore store({.tree_id = 12, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore store({.tree_id = 12, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
     publish_raw_generation(&store, 1);
     auto pinned = catalog->load_generation(12, 1);
     ASSERT_NE(pinned, nullptr);
@@ -219,15 +287,16 @@ TEST(ChunkPageStore, ManifestPinsDelayReclamationButKeepOnlyFallback)
 
 TEST(ChunkPageStore, LayoutCacheRefreshesAtValidityBoundary)
 {
-    auto           catalog = std::make_shared<MemoryRootCatalog>(1);
-    ChunkPageStore writer({.tree_id = 8, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore writer({.tree_id = 8, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
     const uint8_t  bytes[] = {1, 3, 5, 7};
     ASSERT_TRUE(writer.write_at(8192, bytes, sizeof(bytes)).ok());
     ASSERT_TRUE(writer.sync().ok());
     ASSERT_TRUE(writer.write_at(0, bytes, sizeof(bytes)).ok());
     ASSERT_TRUE(writer.sync().ok());
 
-    ChunkPageStore cached({.tree_id = 8, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    ChunkPageStore cached({.tree_id = 8, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
     uint8_t        out[4] = {};
     ASSERT_TRUE(cached.read_at(8192, out, sizeof(out)).ok());
     ASSERT_TRUE(cached.read_at(8192, out, sizeof(out)).ok());
@@ -235,7 +304,7 @@ TEST(ChunkPageStore, LayoutCacheRefreshesAtValidityBoundary)
     EXPECT_EQ(cached.stats().cache_hits, 1U);
 
     ChunkPageStore uncached({.tree_id = 8, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1, .layout_validity_ms = 0},
-                            catalog);
+                            catalog, transport);
     ASSERT_TRUE(uncached.read_at(8192, out, sizeof(out)).ok());
     ASSERT_TRUE(uncached.read_at(8192, out, sizeof(out)).ok());
     EXPECT_EQ(uncached.stats().layout_queries, 2U);
@@ -244,8 +313,9 @@ TEST(ChunkPageStore, LayoutCacheRefreshesAtValidityBoundary)
 
 TEST(ChunkPageStore, AsyncUnavailableRemainsTypedAndDoesNotLatchCorruption)
 {
-    auto           catalog = std::make_shared<MemoryRootCatalog>(1);
-    ChunkPageStore store({.tree_id = 15, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog);
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore store({.tree_id = 15, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
     Options        options;
     options.page_store       = &store;
     options.async_page_store = &store;
