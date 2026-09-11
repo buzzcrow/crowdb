@@ -1,306 +1,333 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-### R101: kv — Compare-and-Set on Put
+### R101: kv — Compare-and-Set Writes
 
 ## Status
 
-Deferred: the proposed leader-side read-before-propose check is not atomic
-with concurrent proposals on the same leader. Applying a conditional command
-inside the state machine is also incompatible with replica-local out-of-order
-apply because replicas can evaluate the same slots in different orders and
-diverge. A future implementation requires an explicit ordered application or
-serialization design; R101 is not a dependency of R132.
+Re-proposed with a reviewed design: evaluate revision preconditions on the
+leader before proposal, serialize conditional mutations through a
+`cas_transient_map`, and put only the resulting ordinary mutation batch in
+Paxos. Different keys retain parallel-slot concurrency and replicas never
+evaluate a condition.
+
+The guarantee is deliberately scoped: conditional writes serialize with other
+conditional writes that name the same precondition key. Blind Put, Delete, and
+BatchWrite requests do not join the guard and receive no conflict-detection
+guarantee. A caller that requires CAS protection for a key must use conditional
+writes for every competing mutation of that key.
+
+R101 is not a dependency of R132.
 
 ## Problem
 
-**Current behavior + impact**
+`FBKvSetRequest` and `FBKvBatchWriteRequest` are blind overwrites. A caller
+cannot atomically require that a mutation key still has the revision it read.
+Read-before-propose alone is insufficient because the sliding proposal window
+allows two requests for the same key to read revision N and enter different
+slots. Apply-time conditions are also invalid: learners apply slots out of
+order, so replicas could evaluate the same condition against different local
+states and diverge.
 
-`KvSetRequest` (`lib/crowdb-protocol/src/fbs/kv_client.fbs:29`) is a blind
-overwrite — it has no `expected_revision` field. The KV server's `put`
-handler (`lib/crowdb-kv/src/rpc/kv_service.rs:217`) calls `kv_put` →
-`propose_and_respond` → paxos propose, with no precondition check. The
-last writer wins, silently overwriting whatever was there before.
+The original diskdb free path demonstrates the missing primitive. Its desired
+operation is:
 
-This is safe under R99's chunkdb ownership model (one instance owns a
-chunk, so the in-process mutex in R100 serializes all writes). But it
-leaves no defense-in-depth: if R99's ownership is ever bypassed (bug in
-routing, misconfigured client, manual admin operation targeting the wrong
-instance), two writers can race on the same key with no detection.
+```
+check BusyBlockKey at the revision just read
+  -> Delete BusyBlockKey
+  -> Put incarnation-qualified FreeBlockKey
+```
 
-More broadly, the KV layer itself has no optimistic-concurrency primitive.
-Any caller that does read-modify-write (chunkdb, future diskio, future
-console tooling) must rely on external serialization (R100's lock) rather
-than a KV-level guard. A CAS primitive at the KV layer would benefit all
-read-modify-write callers, not just chunkdb.
+Without KV CAS, diskdb uses a safety-preserving compromise in
+`model/alloc.rs::free_block/free_blocks`: it blindly writes an immutable free
+fact, leaves the busy record present, and defers incarnation validation and
+busy deletion to compaction. This makes free idempotent but retains busy and
+free records until background work runs.
 
-**Design pointers**
+The real `FreeBlocks` RPC accepts multiple segments, but freeing one segment
+does not require another segment to succeed. It should specialize the generic
+primitive as one independently guarded conditional batch per segment, execute
+those batches with bounded concurrency, and return both the number freed and
+the segments that could not be freed. This preserves partial progress and
+keeps the KV primitive to one precondition per batch.
 
-- `doc/design/kv/design-crowdb-kv-group0.md` §2.1 — `crowdb-kv-client` is the
-  single sysdata API surface; the CAS method would live here.
-- `doc/design/chunkdb/design-crowdb-chunkdb.md` §9 (Chunk Lifecycle) —
-  "Concurrency: KV CAS or state machine guards prevent conflicting
-  transitions." R101 implements the KV CAS half of this statement (R100
-  implements the state-machine-guard half via the in-process mutex).
-- `lib/crowdb-protocol/src/fbs/kv_client.fbs:29` — `KvSetRequest` message to
-  extend.
-- `lib/crowdb-kv/src/cluster/px_kv_store.rs:488` — `propose_and_respond`,
-  the propose path where the CAS check would be inserted (read-before-
-  propose, lease-protected).
-- `lib/crowdb-kv/src/paxos/learner.rs:548` — `apply_entry`, the apply path
-  (no change needed — CAS is checked at propose time, not apply time).
-- `lib/crowdb-kv-client/src/client.rs:500` — `put` method to extend with
-  an optional `expected_revision`.
+Design sources that must be reconciled when R101 is implemented:
 
-**Use scenarios**
-
-- **chunkdb read-modify-write with CAS** — `append_chunk` reads the chunk
-  (gets revision N), mutates it, calls `put_chunk` with
-  `expected_revision=N`. If another writer (bug, bypassed routing) wrote
-  the same key between the read and the put, the CAS fails with
-  `RevisionMismatch` → `LifecycleError::StateConflict` → the caller
-  retries the read-modify-write. Defense-in-depth on top of R100's lock.
-- **Console admin tooling** — a management tool reads a chunk record,
-  modifies a field, writes it back with `expected_revision`. If the chunk
-  was modified between read and write, the CAS fails and the tool
-  re-reads and retries. No external lock needed.
-- **Future diskio component** — a diskio-like component doing
-  read-modify-write on block metadata uses CAS instead of an external
-  lock, since it may not have a per-key mutex like chunkdb's.
+- `doc/design/kv/design-crowdb-kv.md` currently excludes CAS because it has no
+  serialization boundary.
+- `doc/design/kv/design-crowdb-kv-slot.md` defines slot order and
+  highest-slot-wins apply.
+- `doc/design/kv/design-crowdb-kv-state-machine.md` defines asynchronous,
+  out-of-order apply and the applied frontier.
+- `doc/design/diskdb/design-crowdb-diskdb.md` and
+  `design-crowdb-diskdb-zone-management.md` describe the current immutable-free
+  compromise.
 
 ## Solution
 
-**One-line summary**
+Add one optional revision precondition to Put and BatchWrite. The leader checks
+the precondition while holding a non-waiting per-key guard, then proposes an
+ordinary Put/Delete batch. The checked key must be mutated by that batch.
+Conditions never enter the Paxos payload and are never re-evaluated by learners
+or replay.
 
-Add an optional `expected_revision` field to `KvSetRequest`; the KV
-server checks the key's current revision (via a linearizable read) before
-proposing; on mismatch, returns a CAS-failed response. The leader's lease
-guarantees the read-then-propose sequence is atomic with respect to other
-leaders.
+1. **Wire contract and client surface**
 
-**Why read-before-propose (not apply-time check)**
+   - Add `FBKvRevisionPrecondition { key, expected_revision }` and one optional
+     `precondition` field to `FBKvSetRequest` and `FBKvBatchWriteRequest` in
+     `lib/crowdb-protocol/src/fbs/kv_client.fbs`. Absence means a blind
+     mutation; a present revision zero means create-if-absent.
+   - Add `CasFailed`, `CasBusy`, and `OutcomeUnknown` return/error variants.
+     `CasFailed` returns the checked key's current revision. `CasBusy` is
+     retryable contention. `OutcomeUnknown` means the server could not prove
+     whether an Accepted value will later be chosen.
+   - Add `put_cas` and conditional `batch_write` surfaces in
+     `lib/crowdb-kv-client`. Existing `put` and `batch_write` signatures and
+     blind behavior remain unchanged.
+   - Require the precondition key to occur as a mutation in the batch. For a
+     Set request it must equal the Set key. `expected_revision=0` is legal for
+     Put/create, but not Delete of an absent key.
 
-The KV server sends the response at propose-choose time
-(`propose_and_respond` returns `ok_chosen(slot)` as soon as paxos chooses
-the entry, `px_kv_store.rs:502`), NOT at apply time (apply is async,
-`learner.rs:548`). An apply-time CAS check would mean the client gets
-`ok` even when the CAS fails — requiring a second round-trip to discover
-the failure. Read-before-propose avoids this: the leader reads the key's
-current revision, checks it against `expected_revision`, and returns
-CAS-failed immediately if it doesn't match — all before proposing. The
-leader's lease (used for linearizable reads, design §"lease fast-path")
-guarantees no other leader can interleave a write between the read and
-the propose, so the check is authoritative.
+2. **Conditional admission and check order**
 
-**Numbered work items**
+   - Add a per-group lock-free `cas_transient_map` owned by `PxGroup`, using
+     the existing `crossbeam_skiplist::SkipMap<Bytes, CasOwnerToken>`
+     dependency. It maps each unresolved precondition key to a unique
+     `(tenure, request)` ownership token. Only conditional requests touch it;
+     the blind write hot path remains unchanged.
+   - Claim with `compare_insert(key, token, replace_if_stale_tenure)` and
+     compare the returned token. Equality means this request inserted and owns
+     that exact entry; a different token from the active tenure returns
+     `CasBusy`. A new tenure may atomically replace an old-tenure entry after
+     its recovery barrier. The owner retains the returned entry handle and
+     removes that exact node on release, so a delayed old task cannot remove
+     the replacement. The operation never waits or introduces a lock into the
+     write path.
+   - Copy the precondition key once into `Bytes` before launching the
+     group-owned task because the RPC frame may be released first. Retain that
+     allocation through check, proposal resolution, and exact-entry removal.
+   - Acquire the key guard before reading its revision. Reading before guard
+     acquisition would recreate the original time-of-check/time-of-use race.
+   - Add a fallible versioned lookup to `KVEngine` for conditional admission.
+     It returns live `(revision, value)`, absent/tombstoned, or an engine error.
+     The existing `CrowdbTreeEngine::get` cannot be used unchanged because it
+     currently folds an underlying `try_get` error into `None`; CAS must never
+     interpret an I/O or corruption error as key absence.
+   - Under the guard, use that lookup over the complete leader engine view,
+     not the memtable directly. Crowdb-tree first checks every live L0
+     memtable; an L0 miss must continue into the L1 tree, including
+     asynchronous demand-load on a cold page. Only a successful lookup that
+     finds neither a live L0 value nor an L1 value means revision 0. An L0
+     tombstone masks an older L1 value and also contributes revision 0. Return
+     `CasFailed` without proposing if the expected revision differs; return an
+     engine error without allocating a slot if the lookup fails.
+   - Keeping an owned skip-list entry in `cas_transient_map` across an
+     asynchronous L1 read is intentional. No epoch pin, borrowed RPC frame,
+     or lock may be retained across `.await`.
+   - Recheck role, term, and conditional-write readiness immediately before
+     slot allocation. A leadership miss returns `NotLeader` without a
+     proposal.
 
-- **`KvSetRequest` fbs extension** (`lib/crowdb-protocol/src/fbs/kv_client.fbs`)
-  — add `optional uint64 expected_revision = 10;` to `KvSetRequest`
-  (field number 10, next available after the existing fields 1-9). When
-  absent (0 / None), behavior is unchanged (blind overwrite, the default).
-  When present, the server checks the key's current revision before
-  proposing.
-- **CAS check in the `put` handler**
-  (`lib/crowdb-kv/src/rpc/kv_service.rs:217`) — before calling
-  `store.kv_put`, if `req.expected_revision != 0`:
-  - Do a linearizable read of the key (via the existing `kv_get` path or
-    an internal `get_revision(group_id, key)` helper) to get the key's
-    current revision (the paxos slot at which it was last written, or 0
-    if the key does not exist).
-  - If `current_revision != expected_revision`, return a CAS-failed
-    `KvResponse` with a new error code `KV_ERROR_CAS_FAILED` and the
-    current revision (so the client can retry with the correct
-    revision without a separate read).
-  - If `current_revision == expected_revision`, proceed with
-    `store.kv_put` as today. The lease guarantees no interleaving.
-- **`KV_ERROR_CAS_FAILED` error code** (`kv_client.fbs` `KvErrorCode` enum)
-  — new error code. The `KvResponse` on CAS failure includes the
-  current revision in the `revision` field (normally the write's slot;
-  on CAS failure, it's the key's current revision for client retry).
-- **`put_cas` client method** (`lib/crowdb-kv-client/src/client.rs`) —
-  new method `put_cas(store_id, group_id, key, value, expected_revision,
-  ids) -> Result<WriteOutcome>`. Like `put` but passes
-  `expected_revision` in the request. On `KV_ERROR_CAS_FAILED`, returns
-  a new `Error::CasFailed { current_revision }` so the caller can retry.
-  Alternatively, extend the existing `put` method with an optional
-  `expected_revision: Option<u64>` parameter (preferred — one method,
-  fewer code paths).
-- **`ChunkStore::put_chunk_cas`** (`app/crowdb-chunkdb/src/storage.rs:51`)
-  — new method or extend `put_chunk` with an optional
-  `expected_revision: Option<u64>`. Passes the revision from the
-  `get_chunk` read to the `put_cas` call. On `CasFailed`, returns
-  `StoreError::CasFailed` → `LifecycleError::StateConflict` (the
-  variant already exists at `lifecycle.rs:39`, currently unreachable).
-  The lifecycle methods (append/seal/delete) can optionally retry the
-  read-modify-write on `StateConflict` (bounded retries, e.g. 3).
-- **`GetOutcome` revision propagation** — `GetOutcome::Found { value,
-  revision }` already returns the key's revision
-  (`client.rs:40`). `ChunkStore::get_chunk` must propagate this revision
-  to the caller so it can be passed to `put_chunk_cas`. Currently
-  `get_chunk` returns `Chunk` only; add a `get_chunk_with_revision`
-  variant or return `(Chunk, u64)`.
+3. **Proposal, apply visibility, and guard lifetime**
 
-**Flow diagram**
+   - Encode only the ordinary mutation batch and propose it through Paxos.
+     Conditional requests initially bypass proposal coalescing so one guarded
+     request owns one payload and outcome; the guarded batch may mutate the
+     precondition key plus related keys up to the normal batch limit.
+   - After the request payload is chosen, wait until its slot is locally
+     applied before releasing its key guards and returning success. The
+     existing contiguous applied fence may be reused initially; a per-slot
+     completion notification is an optimization.
+   - Run the guarded protocol in a group-owned task. RPC cancellation drops
+     only the response waiter, not the task or its guards.
+   - A guard is not an ordinary return-path Drop guard. It may be released only
+     after all slots allocated for the request are resolved, after the group
+     has closed conditional admission for the tenure, or after step-down.
+     Step-down invalidates the old tenure token; delayed old tasks can no
+     longer remove entries installed by a later tenure.
 
-```
-Client calls put_cas(key, value, expected_revision=N)
-        │
-        ▼
-  KV server: put handler
-        │
-        ├─ expected_revision == 0? ──yes──► blind put (existing path)
-        │                              no
-        │                              ▼
-        │                    linearizable read of key
-        │                    (lease-protected)
-        │                              │
-        │                    current_revision == N?
-        │                              │
-        │              yes ┌───────────┴───────────┐ no
-        │                  ▼                         ▼
-        │            propose(value)           return CAS_FAILED
-        │                  │                   (with current_revision)
-        │                  ▼
-        │            paxos chooses
-        │                  │
-        │                  ▼
-        │            return ok(slot)
-        │
-        ▼
-  Client: on ok → done (revision = slot)
-          on CAS_FAILED → retry with current_revision
-```
+4. **Close every uncertain allocated slot**
 
-**Edge cases at a glance**
+   - Track every slot allocated by a conditional proposal. If normal proposal
+     retries cannot determine a slot, run Phase 1 for that slot with a higher
+     ballot before releasing the guards.
+   - If the Phase-1 quorum reports no Accepted value, choose and apply NoOp.
+     If it reports an Accepted value, obey Paxos and choose the highest-ballot
+     value; a leader must never overwrite it with NoOp.
+   - If the adopted value is this request's payload, apply it and complete the
+     request successfully. If it is another payload, apply it, re-read the
+     guarded precondition, and retry this request in a new slot only if it
+     still matches.
+   - If the leader cannot obtain a resolution quorum, set conditional-write
+     readiness false for the tenure and return `OutcomeUnknown`. No later CAS
+     is admitted by that leader until recovery succeeds. Blind writes remain
+     outside this contract.
 
-- `expected_revision == 0` and key does not exist → CAS passes (creating
-  a new key with expected_revision=0 is the "create-if-absent" pattern).
-- `expected_revision == 0` and key exists → CAS fails (key already
-  exists). This gives chunkdb's `allocate_chunk` a KV-level existence
-  check without a separate `get_chunk`.
-- `expected_revision == N` and key was deleted after the read → the
-  key's revision is still N (delete is a write at slot N); CAS passes
-  and the put resurrects the key. If the caller wants "fail if deleted",
-  they must check the value, not just the revision. (For chunkdb, the
-  state check inside the lock handles this — CAS is defense-in-depth,
-  not the primary guard.)
-- Leader loses lease mid-read → the linearizable read may be stale; the
-  propose will fail with `NotLeader` (existing path). The client retries
-  against the new leader. No correctness issue — CAS is never applied on
-  a stale leader.
-- Key never written (revision=0) and `expected_revision=0` → CAS passes.
-  This is the "create-if-absent" case.
-- Batch write with CAS — `KvBatchWriteRequest` does not get CAS in this
-  R-number (batch CAS is more complex — per-key expected revisions).
-  Future extension if needed.
+5. **Leadership recovery barrier**
+
+   - Set conditional-write readiness false before a multi-replica candidate is
+     exposed as a CAS-serving leader. The existing role/term proposal gate is
+     not sufficient because bulk Phase 1 currently runs after leader promotion.
+   - Resolve every pre-tenure slot through the election ceiling and apply every
+     recovered value locally. A failed slot repair keeps conditional-write
+     readiness false; it must not be skipped followed by a ready transition.
+   - Set conditional-write readiness true only after that resolve-and-apply
+     barrier completes. A new leader then needs no predecessor's temporary key
+     map: all prior conditional writes are represented by ordinary applied
+     mutations.
+   - A single-replica leader may become ready after local WAL replay and engine
+     recovery complete.
+
+6. **Scoped interaction with blind writes**
+
+   - Blind mutations neither inspect nor reserve conditional keys. They may
+     overwrite a conditional result or be overwritten according to ordinary
+     highest-slot-wins behavior.
+   - R101 does not claim linearizable CAS relative to blind mutations. It
+     guarantees serialization only among conditional mutations sharing a
+     precondition key.
+   - Components relying on CAS must not mix blind and conditional mutations
+     for the protected state. This is an API contract, not an inference made
+     from request arrival order.
+
+7. **diskdb direct free migration**
+
+   - Change `DdbKvClient::get_busy` to propagate both `BusyBlockValue` and its
+     KV revision. Add a point lookup for the incarnation-qualified free fact
+     so a response-loss retry can recognize an already completed free.
+   - Specialize one segment as one conditional batch:
+     `Delete BusyBlockKey + Put FreeBlockKey`, with the busy key and its read
+     revision as the batch's sole precondition.
+   - In `model/alloc.rs::free_block`, first require the busy value's
+     `allocation_ts`, `unit_count`, and `owner_chunk` to equal the request
+     `Segment`; a stale or forged free must not delete a newer incarnation.
+   - In `free_blocks`, run the per-segment operations with bounded concurrency.
+     One segment's `NotBusy`, identity mismatch, CAS conflict, or unavailable
+     outcome does not roll back successful frees for other segments.
+     Deduplicate repeated physical-incarnation entries within one request so
+     they produce one mutation and one response result rather than inflate
+     `freed_count`.
+   - Extend `FreeResponse` and `FBFreeResponse` with append-only per-segment
+     failures. Keep `freed_count`; add entries containing the original segment
+     and a stable reason (`NotBusy`, `IncarnationMismatch`, `Conflict`, or
+     `OutcomeUnknown`). A completed partial request uses the Success top-level
+     code and requires the caller to inspect the failures.
+   - Preserve idempotent retries: if BusyBlockKey is absent but the matching
+     FreeBlockKey and value already exist, count that segment as freed rather
+     than return `NotBusy`. If both are absent, return `NotBusy`.
+   - Convert `commit_blocks` updates, and future state/health updates of an
+     existing `BusyBlockKey`, to the same single-key conditional write so they
+     cannot cross a free of that key. Allocation creates remain separated from
+     free by the conservative bitmap and compaction-before-reuse invariant;
+     create-if-absent CAS can be added without changing the free primitive.
+     The tentative cache must retain the Busy Put's returned KV revision for a
+     later conditional commit, or `commit_blocks` must fall back to the
+     fallible versioned KV lookup.
+   - Adapt compaction to the new proof: a successfully written free fact no
+     longer needs a live busy record because the conditional batch already
+     validated and deleted the exact busy revision. Compaction clears the
+     conservative bitmap range from the free fact, writes `ZoneValue`, and
+     deletes the processed free fact atomically.
+   - Preserve mixed-version cleanup: legacy free facts may coexist with their
+     busy records. Compaction continues full incarnation matching for those
+     pairs and conditionally deletes the matched busy revision. New-format
+     free facts with no busy record use the direct-free proof.
+   - The in-memory bitmap remains conservative and is still cleared only by
+     compaction. R101 removes the delayed busy-record validation compromise;
+     it does not move bitmap reuse onto the free RPC hot path.
+
+8. **chunkdb integration**
+
+   - Propagate `GetOutcome::Found.revision` through `ChunkStore`.
+   - Write lifecycle metadata with `put_cas`. Map `CasFailed` to
+     `LifecycleError::StateConflict`, re-read, re-run the state transition,
+     and retry within the caller's bounded policy.
+   - Do not retry an `OutcomeUnknown` as a fresh logical mutation. Reconcile by
+     reading current state or reuse the same idempotency identity when the
+     original leader remains available.
 
 ## Dependencies
 
-- Depends on: existing KV server `put` path (`kv_service.rs:217`,
-  `px_kv_store.rs:488`), existing `GetOutcome::Found { revision }`
-  (`client.rs:40`), existing leader lease (linearizable read path).
-- No schema-breaking changes — `expected_revision` is an optional field
-  (field number 10); existing clients that don't set it get blind-overwrite
-  behavior (backward compatible).
-- **R100** (chunkdb lifecycle lock) — not a dependency. R101 is
-  defense-in-depth on top of R100 + R99. R100's `StateConflict` variant
-  (`lifecycle.rs:39`) is already defined and currently unreachable; R101
-  wires it to the CAS-failure path.
-- **R99** (dynamic range binding) — not a dependency. R99's ownership
-  model is the primary correctness boundary; R101 is defense-in-depth if
-  R99's ownership is ever bypassed.
+- Depends on the existing proposal retry/adoption path, async apply fence,
+  bulk Phase-1 leader recovery, and `GetOutcome::Found.revision`.
+- Updates the KV root, slot, state-machine, RPC, and test designs when
+  implemented; those permanent documents continue to describe current code
+  until the requirement lands.
+- Replaces diskdb's immutable-free validation compromise. Implementation must
+  update both diskdb permanent design documents together with code.
+- R99 and R100 remain the primary chunkdb ownership and in-process lifecycle
+  boundaries; R101 adds KV conflict detection.
 
 ## Acceptance
 
-**CAS correctness**:
-
-- `put_cas` with `expected_revision=N` on a key whose current revision
-  is N → succeeds, returns `WriteOutcome { revision = new_slot }`. Unit
+- Given revision N, `put_cas(expected=N)` succeeds, applies at revision S, and
+  releases its guard only after the local engine reports S. Unit test.
+- Given a different revision, CAS returns `CasFailed` with the current
+  revision and allocates no slot. Unit test.
+- Given an absent key, Put with expected revision 0 succeeds; the same request
+  against a live key fails. Unit test.
+- Given a memtable miss and an existing value in a resident or cold L1 page,
+  CAS observes the tree value and revision rather than treating the key as
+  absent. Integration test.
+- Given an L0 tombstone over an older L1 value, CAS observes absence and never
+  resurrects the older tree revision during its check. Integration test.
+- Given an L1 demand-load I/O or corruption error, CAS returns an engine error,
+  does not reinterpret it as revision 0, and allocates no slot. Integration
   test.
-- `put_cas` with `expected_revision=N` on a key whose current revision
-  is M (M != N) → fails with `CasFailed { current_revision = M }`. Unit
+- Given two same-key CAS requests that both expect N, exactly one succeeds;
+  after retry, the other observes the new revision and fails. Integration test.
+- Given CAS requests on different keys, both can hold guards and occupy
+  different in-flight slots concurrently. Integration test.
+- Given a single-precondition batch, a mismatch leaves every batch item
+  unchanged; a match applies the full Delete/Put batch atomically. Integration
   test.
-- `put_cas` with `expected_revision=0` on a non-existent key → succeeds
-  (create-if-absent). Unit test.
-- `put_cas` with `expected_revision=0` on an existing key → fails with
-  `CasFailed { current_revision = current }`. Unit test.
-- `put` (no `expected_revision`) on any key → succeeds (blind overwrite,
-  backward compatible). Unit test.
-
-**CAS under concurrency**:
-
-- Two concurrent `put_cas` on the same key, both with
-  `expected_revision=N` → exactly one succeeds, the other fails with
-  `CasFailed`. Integration test.
-- `put_cas` with `expected_revision=N` succeeds; a second `put_cas` with
-  `expected_revision=N` (same stale revision) → fails (the first put
-  advanced the revision). Integration test.
-
-**Client retry**:
-
-- `put_cas` fails with `CasFailed { current_revision = M }` → client
-  re-reads, gets revision M, retries `put_cas` with
-  `expected_revision=M` → succeeds. Integration test.
-
-**chunkdb integration**:
-
-- `ChunkStore::put_chunk_cas` with `expected_revision=N` on a chunk
-  whose current revision is N → succeeds. Unit test.
-- `ChunkStore::put_chunk_cas` with `expected_revision=N` on a chunk
-  whose current revision is M → returns `StoreError::CasFailed` →
-  `LifecycleError::StateConflict`. Unit test.
-- `append_chunk` with CAS retry: CAS fails on first `put_chunk_cas` →
-  `StateConflict` → re-read + re-mutate + retry `put_chunk_cas` →
-  succeeds (within bounded retries). Integration test.
-- `append_chunk` exhausts CAS retries (3 consecutive failures) → returns
-  `StateConflict` to the caller. Integration test.
-
-**Backward compatibility**:
-
-- Existing `put` calls (no `expected_revision`) behave identically
-  before and after R101. Unit test.
-- Existing clients built against the old fbs schema can still send `put`
-  requests to a server upgraded with R101 (optional field). Integration
+- Given a guard collision, the request returns `CasBusy` without reading or
+  allocating a slot. Given a delayed task from an old tenure, its token cannot
+  remove the new tenure's same-key guard. Unit test.
+- Given chosen-but-delayed apply, a second same-key CAS remains busy until the
+  first slot is locally visible. Integration test.
+- Given RPC cancellation after slot allocation, the group-owned task keeps the
+  guard and resolves the slot before admitting another same-key CAS.
+  Integration test.
+- Given a partially Accepted conditional slot, higher-ballot closure chooses
+  the required adopted value or NoOp; it never overwrites an Accepted value
+  illegally. Paxos integration test.
+- Given an adopted foreign value that changes a guarded key, the conditional
+  request rechecks and fails instead of copying its stale decision into a new
+  slot. Paxos integration test.
+- Given leader loss with an unresolved conditional slot, the new leader rejects
+  CAS until bulk Phase 1 resolves and locally applies the complete recovery
+  range. Paxos integration test.
+- Given a repair failure inside that range, conditional-write readiness stays
+  false. Paxos integration test.
+- Given a concurrent blind write, no CAS-relative ordering assertion is made;
+  all replicas still converge by ordinary highest-slot-wins apply. Integration
   test.
+- Given one diskdb segment with matching busy identity and revision, free
+  atomically deletes BusyBlockKey and puts FreeBlockKey. Integration test.
+- Given a missing, mismatched-incarnation, or concurrently changed busy record,
+  diskdb free writes neither delete nor free record. Integration test.
+- Given multiple diskdb segments with mixed valid and invalid busy records,
+  every valid segment is freed, `freed_count` reports those successes, and the
+  response identifies every segment that was not freed with its reason.
+  Integration test.
+- Given a retried segment whose busy key is absent and matching free fact is
+  present, diskdb reports it as already freed successfully. Integration test.
+- Given a committed direct-free batch and delayed compaction, recovery remains
+  conservative; compaction later clears the bitmap and removes the free fact.
+  Integration test.
+- Given legacy busy-plus-free records during upgrade, compaction validates the
+  incarnation and migrates them without deleting a newer allocation.
+  Integration test.
+- Existing blind Put, Delete, and BatchWrite requests retain their wire and
+  highest-slot-wins behavior. Integration test.
 
-**Error mapping**:
+Run:
 
-- `CasFailed` maps to a crowdb-rpc error with the current revision in the
-  error detail (so the client can retry without a separate read). Unit
-  test.
-
-**Test commands**:
-
-- `pixi run cargo test -p crowdb-kv --test cas_test` (new test file)
-- `pixi run cargo test -p crowdb-kv-client --test put_cas_test`
-- `pixi run cargo test -p crowdb-chunkdb --test lifecycle_test`
-- `pixi run cargo fmt --all -- --check`
-- `pixi run cargo clippy --all-targets -- -D warnings`
-
-## Open Questions
-
-- **CAS check location: read-before-propose vs apply-time.** This doc
-  proposes read-before-propose (the leader reads the key's revision,
-  checks it, then proposes). This relies on the leader's lease being
-  valid for the duration of the read + propose. If the lease expires
-  mid-sequence, the propose will fail with `NotLeader` (safe — the CAS
-  is never applied on a stale leader). Alternative: apply-time check
-  (encode `expected_revision` in the paxos payload; check at apply time
-  in `learner.rs:548`; the client discovers the result via a second
-  read). Apply-time is more complex (requires a second round-trip to
-  discover failure) but doesn't depend on the lease. Default to
-  read-before-propose — it's simpler, lower-latency, and the lease
-  guarantee is already relied upon for linearizable reads. Revisit if
-  lease reliability becomes a concern.
-- **Extend `put` vs new `put_cas` method.** Two options: (a) add an
-  optional `expected_revision: Option<u64>` parameter to the existing
-  `put` method (one method, fewer code paths, but changes the signature
-  for all callers), or (b) add a separate `put_cas` method (existing
-  `put` unchanged, but two methods to maintain). Default to (a) —
-  `Option<u64>` is backward-compatible and avoids duplicating the retry
-  / not-leader / metrics logic. Revisit if the `put` signature becomes
-  too unwieldy.
-- **Batch CAS.** `KvBatchWriteRequest` does not get CAS in this
-  R-number. If needed, it would require per-key `expected_revision`
-  fields (a list parallel to the batch items). Deferred — no current
-  caller needs batch CAS. File a follow-up if a use case emerges.
+- `pixi run -- cargo test -p crowdb-kv --test group_test cas`
+- `pixi run -- cargo test -p crowdb-kv --test paxos_test cas`
+- `pixi run -- cargo test -p crowdb-kv-client --test put_cas_test`
+- `pixi run -- cargo test -p crowdb-diskdb --test cas_free_test`
+- `pixi run -- cargo test -p crowdb-chunkdb --test lifecycle_test cas`
+- `pixi run -- cargo fmt --all -- --check`
+- `pixi run -- cargo clippy --all-targets -- -D warnings`

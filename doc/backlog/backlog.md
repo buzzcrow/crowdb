@@ -11,16 +11,18 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R148** — Bump this line in the same commit when adding a new item.
+**Next R number: R150** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
 Dependency order: R142 depends on R141 and the completed chunk-backed tree
-storage; R143 depends on R142; R145 depends on R143. R144 is a deferred
+storage; R143 depends on R142; R145 depends on R143. R141's metadata
+publication depends on R101 KV compare-and-set. R144 is a deferred
 follow-up after R145 and after split and transfer are proven. R146 and R147 are
-deferred tree-chunk lifecycle follow-ups. The milestone deliberately separates
-the embeddable KV library, server process, routed client, and physical chunk
-maintenance.
+deferred chunk lifecycle follow-ups, and R148 defers stream metadata scale-out
+and sealed-chunk EC until the mirror-only baseline is measured. The milestone
+deliberately separates the embeddable KV library, server process, routed
+client, and physical chunk maintenance.
 - **[R141](R141-chunk-stream.md)** — chunk-stream mirrored logical byte stream — Area:
   chunk IO / WAL — Compose finite chunks into a logically unbounded,
   offset-addressed stream for WAL users. Group 0 registers which metadata KV
@@ -60,6 +62,11 @@ maintenance.
   manifest-fenced reclaim candidates. Repack mixed live strips, then use an
   idempotent generic in-chunk operation to release whole unreachable strips or
   chunks without racing retained manifests, snapshot pins, or layout readers.
+- **[R148](R148-chunk-stream-scale-out.md)** — chunk-stream metadata scale-out
+  and sealed-chunk EC — Area: chunk-stream / KV / chunkdb — Add fenced metadata
+  group migration, optional per-stream extent-index sharding, and background
+  conversion of sealed mirror chunks to EC. All three remain disabled by
+  default until the R141/R143 production baseline is measured.
 
 ### High Priority
 
@@ -80,10 +87,15 @@ maintenance.
   operator-manual `BindMapValue` write with automatic monitoring +
   rebinding. Monitor detects instance join/leave, rebalances disk-group
   assignments, migrates data during rebinding.
-- **[R101](R101-kv-put-cas.md)** — KV compare-and-set on Put — Area: kv —
-  deferred pending an ordered-application design. Leader-side
-  read-before-propose is not atomic with concurrent proposals, while
-  replica-local apply-time predicates can diverge under out-of-order apply.
+- **[R101](R101-kv-put-cas.md)** — KV conditional writes — Area: kv / diskdb —
+  serialize same-key conditional mutations through a leader-local lock-free
+  transient map, journal only ordinary mutation batches, close uncertain slots
+  before release, and restore diskdb's conditional direct-free operation.
+- **[R149](R149-platform-dashmap-audit.md)** — DashMap correctness and hot-path
+  replacement — Area: platform / concurrency — Share cloned diskdb routing
+  state, repair learner frontier races, make RPC pools generation-safe, publish
+  routing snapshots atomically, and retain DashMap only for classified
+  low-frequency registries.
 - **[R79](R79-diskdb-free-batch.md)** — diskdb free batch
   (size-threshold, no timer) — Area: diskdb — Group frees into a
   batch and flush via one `batch_write` when the batch reaches a

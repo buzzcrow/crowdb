@@ -37,28 +37,34 @@ KV group and only its registry binding in group 0.
    writer fencing, crash ordering, limits, and metrics. Explicitly defer
    metadata-group migration, per-stream metadata sharding, and EC conversion.
 2. Add a `crowdb-chunk-stream` library crate with asynchronous byte-stream
-   operations: `create`, `open`, `tail`, vectored `append`, `read_at`, bounded
-   sequential `read_from`, `trim_prefix`, and `close`. Every IO operation
-   returns a future; `read_from` returns an asynchronous bounded-window stream.
-   `append`
-   returns `{stream_name, begin, end}` only after all three mirror writes
-   and the active chunk's acknowledged cursor are durable. The stream stores no
-   WAL record framing; R142 owns record headers, checksums, request identity,
-   and replay interpretation above the byte stream.
-3. Give each stream a stable opaque `stream_name` and bind it to exactly one
-   metadata KV group. Store a small group-0 registry record containing
-   `stream_name`,
+   operations: `create`, `open`, `tail`, vectored `append`, `read_at`, seekable
+   sequential readers, `trim_prefix`, and `close`. A reader accepts either a
+   finite byte-count hint or `ToEnd`, returns EOF at its captured durable end,
+   and retains a bounded prefetch window. A nonempty `append` returns
+   `{stream_name, chunk_id, begin, end}` only after all three mirror writes and the active
+   chunk's acknowledged cursor are durable. Add `append_chunk_bound` for R142:
+   the caller supplies its complete body and CRC, then the stream worker chooses
+   the target chunk and appends that chunk's canonical 128-bit ID as a trailer
+   in the same durable request. The returned range includes the trailer. R142
+   owns all other record framing, request identity, and replay interpretation.
+   A zero-length ordinary append performs no IO and returns the current range
+   with no chunk identity.
+3. Give each stream a stable, time-ordered 128-bit `stream_name`, rendered as
+   32 hexadecimal digits, and bind it to exactly one metadata KV group. Store
+   a small, readable-key group-0 registry record containing `stream_name`,
    `metadata_group_id`, binding generation, state, and optional owner-kind.
    Group 0 is consulted on create/open and binding refresh, never on append or
    read. The registry does not contain the extent array or committed tail.
-   R143 creates and activates production bindings; R141 accepts an injected
-   registry so standalone tests do not require a server.
-4. Store stream metadata under the stream prefix in its bound KV group. Use an
-   immutable `StreamManifest` generation plus immutable bounded-size
-   `StreamExtentPage` records. The manifest contains `stream_name`, writer epoch,
-   generation, `trim_offset`, sealed logical tail, active chunk identity and
-   physical start, active logical start, extent-page fences, and previous
-   retained generation. An extent page stores parallel arrays:
+   R143 creates and activates production bindings; its configured metadata
+   group defaults to group 1. R141 accepts an injected registry so standalone
+   tests do not require a server.
+4. Store stream metadata under the stream prefix in its bound KV group. Use a
+   stable head key protected by R101 compare-and-set for the `StreamManifest`.
+   Write every changed tail page under a fresh versioned COW key; published
+   extent pages are immutable. The manifest contains `stream_name`, writer
+   epoch, generation, `trim_offset`, sealed logical tail, active chunk identity
+   and physical start, active logical start, and extent-page fences. An extent
+   page stores parallel arrays:
 
    - `chunk_ids[N]`
    - `logical_offsets[N + 1]`
@@ -86,21 +92,30 @@ KV group and only its registry binding in group 0.
    When idle, it takes the first request immediately and drains only
    requests already queued, stopping at configured request count, byte size,
    or remaining strip/chunk space. It never waits on a batching timer. Assemble
-   the ordered buffers in one retained staging area, issue one contiguous write
-   to the three mirrors concurrently, advance the acknowledged cursor once,
-   and complete every request with its individual logical subrange. The first
-   request therefore has no artificial aggregation delay, while concurrent
-   journal traffic naturally forms larger writes. A failed batch advances no
-   request and faults the ordered stream until recovery resolves its outcome.
-7. Prepare the next three-way mirrored WAL chunk before the active chunk fills.
+   the ordered buffers in one retained staging area, adding the selected
+   `ChunkId` after each chunk-bound request, issue one contiguous write to the
+   three mirrors concurrently, advance the acknowledged cursor once, and
+   complete every request with its individual logical subrange. Admission and
+   rollover capacity include the trailer bytes. The first request therefore
+   has no artificial aggregation delay, while concurrent journal traffic
+   naturally forms larger writes. A failed batch advances no request and faults
+   the ordered stream until recovery resolves its outcome.
+7. Add a one-chunk direct-buffer `MirrorChunkWriter` to
+   `crowdb-chunk-client`. It consumes owned byte buffers, appends three mirror
+   strips asynchronously, and never constructs the EC pipeline. The stream
+   layer prepares the next mirrored WAL chunk before the active chunk fills.
+   Each chunk has a hard 256-MiB logical capacity.
    If one append does not fit, roll before writing it; an append never straddles
    chunks, and an append larger than one chunk's supported data capacity is
-   rejected without advancing the tail. On rollover, seal the old chunk, COW
-   the last extent page or add a new one, install the new active descriptor,
-   and finally publish an immutable manifest generation in the metadata KV
-   group. Recovery selects the highest complete generation for the current
-   writer epoch; prepared chunks or metadata records not reachable from it are
-   orphans.
+   rejected without advancing the tail. On rollover, seal the old chunk, write
+   a new immutable version of the affected tail page, install the new active
+   descriptor in a candidate manifest, and finally CAS-publish that manifest
+   on the stable head key in the metadata KV group. Recovery reads the
+   CAS-current head and validates every referenced page; prepared chunks or
+   metadata records not reachable from it are orphans. A writer reopen never
+   resumes the prior process's chunk: it seals that chunk at its acknowledged
+   cursor and allocates a fresh chunk. Short sealed extents remain valid and
+   require no merge pass.
 8. Resolve reads by rejecting offsets below `trim_offset` or above the durable
    tail, binary-searching extent-page fences and then `logical_offsets`, and
    translating to `physical_offsets[i] + (logical - logical_offsets[i])`.
@@ -108,9 +123,12 @@ KV group and only its registry binding in group 0.
    chunk reader. The read path validates array lengths, monotonicity, exact
    coverage, checked arithmetic, chunk state, and acknowledged cursors before
    returning bytes. Cache immutable manifest and extent pages, coalesce adjacent
-   physical ranges in one chunk, and prefetch only within a bounded read window;
-   results are emitted in logical-offset order even if IO completes out of
-   order.
+   physical ranges in one chunk, and prefetch only within a bounded read window
+   of 8 MiB by default; cached bytes may be returned while later ranges are in
+   flight. Multiple readers may run concurrently, but each emits results in
+   logical-offset order even if IO completes out of order. A provenance-aware
+   reader also returns the physical `chunk_id` for each logical segment so R142
+   can compare a chunk-bound frame trailer with its actual source chunk.
 9. Implement `trim_prefix(g)` for a caller-supplied durable consumer watermark.
    Reject regression and `g > durable_tail`. First publish a new manifest with
    `trim_offset = g`; only then remove fully trimmed extent entries/pages and
@@ -120,20 +138,32 @@ KV group and only its registry binding in group 0.
    version. Deletion is idempotent and retryable, and never deletes the active
    strip or bytes at or after `g`.
 10. Fence all active-chunk cursor advances and manifest generations with the
-   monotonically increasing partition ownership epoch supplied by R142. Store
-   immutable metadata keys by `(stream_name, writer_epoch, generation)` so a
-   stale epoch can create only unreachable orphan records, not overwrite the
-   current epoch. Within an epoch, one stream task sequences append, rollover,
-   trim, and close without adding a lock to the append hot path.
+    monotonically increasing partition ownership epoch supplied by R142. Every
+    head update uses R101 CAS on the KV revision; no writer may blind-write the
+    head. Before a first publication or any CAS retry, compare the observed head
+    epoch with the local epoch. A lower local epoch returns `StaleWriter`; an
+    equal epoch may continue its sequenced transition; a higher epoch may adopt
+    the head only while holding R142 ownership authority. This monotonic epoch
+    check plus the CAS revision prevents an old owner from learning a newer
+    revision and publishing an epoch regression. R143's binding need not select
+    a metadata epoch. Within an epoch, one stream task sequences append,
+    rollover, trim, and close without adding a lock to the append hot path.
 11. Bind the durable stream identity to the logical partition, not a process or
     node. One R142 partition handle exclusively drives its stream handle. R143
     supplies group-0 binding and ownership decisions through R142 and never
     appends, reads, or performs stream GC directly. Ownership transfer reopens
     the same stream and chunks under a higher epoch; split creates separate
     child stream identities as part of the child artifacts.
-12. Bound active append buffers, in-flight mirror writes, extent-page size,
-    read window, prepared successor chunks, retained manifest generations, and
-    GC work per pass. Attach an observation watchdog to every in-flight append
+12. Allocate every stream chunk with a stream-specific chunk type and owner key
+    containing an owner-kind prefix plus `StreamName`. R146 owns the compatible
+    chunk-record extension and the restart-safe lease sweep that seals abandoned
+    non-empty chunks and deletes abandoned zero-length chunks. Superseded or
+    unreachable stream metadata is a separate watermark-driven metadata-GC
+    concern because chunkdb cannot infer metadata reachability.
+13. Bound active append buffers, in-flight mirror writes, extent-page size,
+    read window, prepared successor chunks, current head snapshots, orphan
+    metadata cleanup, and GC work per pass. Attach an observation watchdog to
+    every in-flight append
     batch and read window. At each watchdog interval, record and log
     `stream_name`, epoch, logical range, operation age, queue delay, batch
     request/byte count, and current IO/metadata stage, then continue awaiting
@@ -145,7 +175,7 @@ KV group and only its registry binding in group 0.
     extent-page cache hits, read-window/coalescing size, replay bytes, mirror
     failures, stale-writer rejects, tail recovery, trim lag, reclaimable strips,
     reclaimed bytes, and orphan metadata/chunks.
-13. Return typed outcomes that let R142 contain failures without guessing from
+14. Return typed outcomes that let R142 contain failures without guessing from
     text: invalid request, admission backpressure, stale/fenced writer,
     definitely-not-committed append, internally resolving ambiguous append,
     read unavailable, corrupt data/metadata, and internal invariant failure.
@@ -167,17 +197,22 @@ metadata-group scale-out is not attempted in this requirement.
 - Depends on `crowdb-chunk-client` and chunkdb for three-way mirror allocation,
   fenced acknowledged cursors, sealing, range reads, complete-strip deletion,
   and orphan cleanup. It reuses the existing `Location` mapping semantics but
-  owns the multi-chunk stream index.
+  owns the multi-chunk stream index. R141 adds the direct-buffer one-chunk
+  `MirrorChunkWriter`; R146 adds stream owner metadata and expired-owner
+  cleanup.
 - Depends on group-0 sysdata and `crowdb-kv-client` for the stream registry, and
   on an ordinary nonzero CROWDB KV group for manifests and extent pages. R141
   adds protocol key/value types for both. Tests may inject in-memory registry
   and metadata-store implementations.
+- Depends on R101 KV compare-and-set for stable-head publication fencing. All
+  competing head mutations use conditional writes; immutable versioned extent
+  pages use fresh keys and become reachable only through a successful head
+  CAS.
 - R142 owns WAL framing and consumes the byte stream for append, replay,
   checkpoint watermark, transfer, and split. R143 supplies production binding
   records and ownership epochs through R142.
-- A later backlog must design stream rebinding, metadata migration, and any
-  per-stream metadata sharding before stream count or retained extent metadata
-  exceeds one-group limits.
+- R148 owns disabled-by-default metadata rebinding/sharding and sealed-chunk EC
+  conversion after the single-group mirrored baseline is measured.
 
 ## Acceptance
 
@@ -203,6 +238,12 @@ metadata-group scale-out is not attempted in this requirement.
   on failure, assert none completes successfully. Invariant: physical
   aggregation preserves logical append boundaries and all-or-nothing batch
   acknowledgement. Integration test.
+- Given several R142 chunk-bound appends are batched around a rollover, when
+  the worker selects their target chunks, assert it appends the matching
+  canonical `ChunkId` after each supplied body+CRC, includes each trailer in
+  capacity and logical-range accounting, and returns that same ID to its
+  caller. Invariant: frame construction cannot race post-write chunk
+  discovery. Integration test.
 - Given a sequence of vectored appends crosses several chunk and strip
   boundaries, when read from logical offset 0, assert the exact concatenated
   bytes and stable logical ranges are returned. Invariant: chunk boundaries are
@@ -221,21 +262,42 @@ metadata-group scale-out is not attempted in this requirement.
   coalesced, memory stays within the read-window budget, and bytes are yielded
   in logical order. Invariant: asynchronous read concurrency cannot reorder or
   over-buffer the stream. Integration test.
+- Given finite and `ToEnd` readers seek into cached and uncached ranges, when
+  multiple readers run concurrently, assert each returns EOF at its captured
+  durable end, emits ordered bytes, and retains no more than its configured
+  8-MiB default window. Invariant: prefetch concurrency cannot make read memory
+  unbounded or change reader ordering. Integration test.
 - Given active-chunk cursor publication returns an ambiguous result, when the
   worker resolves the durable cursor and batch checksum, assert it completes
   the original append futures exactly once if committed or faults the stream
   without resubmitting at another offset. Invariant: ambiguous completion
   cannot duplicate stream bytes or create a logical gap. E2E test.
+- Given a provenance-aware reader encounters a frame trailer naming another
+  chunk or complete-looking residual bytes beyond the acknowledged cursor,
+  when R142 validates recovery input, assert the identity mismatch truncates
+  that frame and no byte beyond the cursor is returned. Invariant: physical
+  identity strengthens recovery but never promotes unacknowledged data.
+  Integration test.
 - Given an append does not fit in the current chunk, when it is submitted,
   assert rollover completes before any byte is written and the append occupies
   one logical range in the successor; an append larger than the maximum is
   rejected with an unchanged tail. Invariant: one append never exposes a
   crash-visible partial prefix across chunks. Integration test.
+- Given the production stream writer, when it writes and reopens around the
+  256-MiB limit, assert it uses the direct three-way mirror path without
+  starting EC work, rotates at the limit, and allocates a fresh chunk after
+  reopen. Invariant: chunk capacity and restart ownership are explicit and a
+  stale process's chunk is never resumed. Integration test.
 - Given a crash before or after rollover manifest publication, when the stream
   reopens, assert it selects either the complete old generation or the complete
   new generation, never a partial extent map, and reports unreachable prepared
   objects for cleanup. Invariant: rollover publication is atomic. Integration
   test.
+- Given owner A publishes or delays a head CAS while higher-epoch owner B takes
+  over, when either ordering occurs, assert B can adopt a complete A head, A's
+  CAS using an older revision fails after B publishes, and A cannot retry from
+  B's revision because its epoch is lower. Invariant: metadata authority cannot
+  regress to a stale ownership epoch. Integration test.
 - Given durable consumer watermark `g` falls between strips, when prefix trim
   completes, assert reads below `g` fail, complete earlier strips are released,
   and reading from `g` returns the original suffix. Invariant: trim removes no

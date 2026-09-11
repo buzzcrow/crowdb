@@ -61,10 +61,16 @@ read-after-write ordering.
 
 ## 4. WAL and Recovery
 
-Each frame has a versioned bounded header, serialized logical record, and
-CRC32C. Recovery validates frame completeness, checksum, partition identity,
-epoch, operation digest, result revision, sequence continuity, and request-ID
-uniqueness. It never reevaluates a recorded conditional result.
+Each physical frame has magic, version, flags, a bounded body length, a
+serialized logical record, CRC32C, and a canonical 128-bit physical chunk ID
+trailer. The CRC covers the header and body, not the trailer. The journal
+submits header+body+CRC through chunk-bound stream append; the stream selects
+the chunk and adds its identity. Recovery validates frame completeness,
+checksum, source-chunk identity, partition identity, epoch, operation digest,
+result revision, sequence continuity, and request-ID uniqueness. The durable
+acknowledged cursor is the recovery upper bound, so identity validation never
+promotes residual bytes. Recovery never reevaluates a conditional result. A
+timestamp is omitted; any future timestamp is diagnostic-only.
 
 A checkpoint contains the tree manifest identifier, applied mutation
 sequence, stream name, and replay offset. The replay offset is the oldest WAL

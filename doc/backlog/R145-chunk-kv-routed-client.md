@@ -32,7 +32,7 @@ Create `crowdb-chunk-kv-client` as the only supported routed client for the
 R143 service. It composes partitions explicitly and provides no cross-partition
 atomicity claim.
 
-1. Write a permanent client design under `doc/design/kv/` defining range-map
+1. Write a permanent client design under `doc/design/chunkds/` defining range-map
    caching, owner connection management, request identity, point routing,
    retries, multi-get, batch mutation, multi-partition scan, continuation, and
    consistency limits.

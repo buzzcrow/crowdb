@@ -3,19 +3,19 @@
 
 ### R146: chunkdb — Seal abandoned chunks across all chunk users
 
-**Status: Deferred.** Implement after R140 introduces B+tree chunk allocation,
-writer fencing, and acknowledged cursors. The existing chunkdb expired-writer
-sweep is the base mechanism, but B+tree ownership renewal and recovery coverage
-do not exist until that backend lands. The same orphan-sealing contract applies
-to all chunk types: `Repo` (chunk-stream), `Wal`, `BtreePage`, and `PageIndex`.
+**Status: Deferred.** The existing chunkdb expired-writer sweep is the base
+mechanism. Implement the generic owner identity after R141's production stream
+writer supplies owner metadata, then apply the same contract to all chunk
+types: `Stream`, `Repo`, `Wal`, `BtreePage`, and `PageIndex`.
 
 ## Problem
 
 Any chunk writer that crashes or loses ownership leaves an Active chunk whose
 unused tail cannot be reclaimed safely. This affects every chunk type:
 
-- **`Repo` (chunk-stream):** a stream writer crashes mid-append, leaving an
+- **`Stream`:** a stream writer crashes mid-append, leaving an
   Active chunk with unacknowledged bytes beyond the cursor.
+- **`Repo`:** an object writer crashes while it owns an Active chunk.
 - **`Wal`:** a WAL writer crashes after appending but before sealing.
 - **`BtreePage` / `PageIndex` (R140):** a B+tree process crashes during
   rotation; the old active chunk cannot be sealed and its tail is orphaned.
@@ -41,60 +41,76 @@ writer and its restart behavior.
 ## Solution
 
 Reuse chunkdb's persisted writer lease and expired-writer sweep for **all
-chunk types** (`Repo`, `Wal`, `BtreePage`, `PageIndex`), with periodic renewal
-independent of write traffic.
+chunk types** (`Stream`, `Repo`, `Wal`, `BtreePage`, `PageIndex`), with durable
+owner identity and periodic renewal independent of write traffic.
 
-1. Have R140 allocate every active B+tree chunk with a nonzero random writer
+1. Extend chunk metadata with `owner_key: bytes` and add the `Stream` chunk
+   type. A nonempty owner key starts with an owner-kind prefix followed by its
+   canonical identity: a 128-bit `StreamName` for stream chunks, the matching
+   tree identity for B+tree chunks, and the object identity for repository
+   chunks. Validate that the prefix matches `chunk_type`. An empty owner key is
+   retained only for records created before the extension and means
+   shared/unattributed ownership; it must not be invented by new writers.
+2. Have every active B+tree chunk use a nonzero random writer
    epoch, a persisted acknowledged byte cursor, and a configurable writer lease
    whose default is the existing 30 seconds. Every append and cursor advance
    carries that epoch and the expected chunk revision. A stale process cannot
    advance or seal the chunk after ownership has changed. The same contract
-   already applies to `Repo` (chunk-stream) and `Wal` chunks; R140 extends it
-   to `BtreePage` and `PageIndex`.
-2. Add a low-frequency writer-lease renewal operation to the private native
+   already applies to stream, repository, and WAL chunks; the tree backend
+   extends it to `BtreePage` and `PageIndex`.
+3. Add a low-frequency writer-lease renewal operation to the private native
    chunk backend and chunkdb lifecycle API for each chunk type. Renew from
    chunkdb's server clock while the owner holds the chunk, even when no writes
    occur. Schedule renewal no later than one-third of the configured lease. Run
    it on the backend maintenance path, not the hot path, and use the existing
    per-chunk lifecycle guard rather than adding a new lock.
-3. On clean rotation or shutdown, stop append admission, drain accepted
+4. On clean rotation or shutdown, stop append admission, drain accepted
    writes, persist the final acknowledged cursor, seal the non-empty chunk,
    and delete an empty chunk. On process restart, never renew or append to
    any chunk from the previous process; allocate a new writer epoch and new
    chunk.
-4. Extend chunkdb's bounded Active-chunk scan to include all chunk types,
-   not just `Repo`. For an expired lease, acquire the lifecycle guard, re-read
+5. Extend chunkdb's bounded Active-chunk scan to include all chunk types.
+   For an expired lease, acquire the lifecycle guard, re-read
    and recheck the epoch, lease, revision, state, and acknowledged cursor,
-   then seal at exactly that cursor. Bytes beyond it remain unreachable. A
-   concurrent valid renewal wins and prevents sealing.
-5. Keep writer ownership and lease authority in durable chunk metadata. Every
+   then seal a nonempty chunk at exactly that cursor or delete a zero-length
+   chunk and release its reservations. Bytes beyond the acknowledged cursor
+   remain unreachable. A concurrent valid renewal wins and prevents cleanup.
+6. Keep writer ownership and lease authority in durable chunk metadata. Every
    chunkdb instance startup restarts the bounded periodic scan over its
    currently bound ranges; its scan cursor may restart from the beginning.
    Range reassignment routes the same persisted chunk record to the new owner.
    No task correctness depends on the lifetime of any writer process or
    chunkdb process.
-6. Reconcile and free never-consumed reservations through the existing cleanup
+7. Reconcile and free never-consumed reservations through the existing cleanup
    intent path. Preserve consumed reservations until the writer lease and reuse
    grace expire, matching the shared small-write recovery contract.
-7. Expose renewal success/failure, expired chunks found, chunks sealed, cursor
-   bytes retained, reservation bytes reclaimed, scan lag, and retry counts.
+8. Expose renewal success/failure, expired chunks found, chunks sealed or
+   deleted, cursor bytes retained, reservation bytes reclaimed, scan lag, and
+   retry counts.
    Repeated metadata or DiskDB failure leaves the chunk Active and retryable;
    it never guesses a later cursor.
 
 ## Dependencies
 
 - Depends on R140 for B+tree chunk type usage, fresh-on-restart allocation,
-  writer epochs, and acknowledged cursors.
+  writer epochs, and acknowledged cursors, and on R141 for stream chunk
+  identity and production allocation.
 - Reuses chunkdb's durable writer fields, per-chunk lifecycle guard, bounded
   `list_chunks` scan, reservation reconciliation, and server-time lease logic.
-  These already cover `Repo` (chunk-stream) and `Wal` chunks; R146 extends the
-  sweep to include `BtreePage` and `PageIndex`.
+  R146 makes their owner identity explicit and extends the sweep uniformly to
+  `Stream`, `Repo`, `Wal`, `BtreePage`, and `PageIndex`.
 - R147 consumes the resulting sealed chunks for physical strip reclamation.
 - R142 supplies production tree ownership and shutdown sequencing but is not
   required for chunkdb's expiration test harness.
 
 ## Acceptance
 
+- Given each chunk type and canonical owner identity, when its metadata is
+  encoded and decoded, assert `owner_key` round-trips and a mismatched
+  owner-kind prefix is rejected. Given an old record without the field, assert
+  it decodes as shared/unattributed without changing its bytes. Invariant:
+  cleanup can identify attributed owners without breaking existing records.
+  Unit test.
 - Given a live but write-idle chunk owner (any type) holds an Active chunk,
   when more than one lease period passes, assert maintenance renewals keep its
   persisted lease current and the chunkdb sweep does not seal it. Invariant:
@@ -118,6 +134,11 @@ independent of write traffic.
   when the replacement chunkdb instance reloads its range and the durable
   deadline passes, assert its resumed sweep seals the old chunk. Invariant:
   orphan sealing survives chunkdb restart. E2E test.
+- Given an expired attributed chunk has acknowledged cursor zero, when the
+  sweep owns its lifecycle revision, assert the chunk and its unused
+  reservations are deleted rather than sealed. Invariant: an allocation that
+  published no durable byte does not become an empty sealed chunk. Integration
+  test.
 - Given chunkdb range ownership moves while an expired chunk is pending (any
   type), when the new owner begins its bounded scan, assert it seals the same
   durable record once and the former owner cannot mutate it. Invariant:

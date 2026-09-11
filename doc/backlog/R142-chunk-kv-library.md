@@ -59,7 +59,7 @@ R140's runtime-selected C++ chunk backend and an R141 chunk-stream WAL. Support
 online split preparation with a replay-budget-gated final write fence.
 Partition merge is specified separately by R144.
 
-1. Write a permanent design under `doc/design/kv/` defining partition identity,
+1. Write a permanent design under `doc/design/chunkds/` defining partition identity,
    bytewise half-open range bounds, ownership epochs, logical mutation
    sequence, lifecycle states, write acknowledgement, checkpoint/replay,
    split preparation and resolution, transfer, retention, and failure
@@ -112,13 +112,15 @@ Partition merge is specified separately by R144.
    plus a sequencer-owned staged overlay for earlier operations in the same
    batch, then submits
    `(partition_id, ownership_epoch, mutation_seq, request_id, resolved_result,
-   operation)` as a framed record to R141 in mutation order without adding a
-   request-path lock. R141 preserves frame order and assigns logical offsets.
+   operation)` as framed body+CRC bytes through R141's chunk-bound append in
+   mutation order without adding a request-path lock. R141 preserves frame
+   order, chooses one target chunk, appends that chunk's canonical 128-bit ID
+   outside the CRC, and assigns logical offsets including the trailer.
    Define `request_id` as `(client_instance_id[128], client_sequence[64])`;
    neither field is derived from a connection or endpoint.
    Journal both success and condition-failed outcomes. Do not mutate crowdb-tree
-   before R141 returns `{stream_name, begin, end}` durable. Then apply successful
-   records to the tree and advance condition-failed records as no-ops in
+   before R141 returns `{stream_name, chunk_id, begin, end}` durable. Then apply
+   successful records to the tree and advance condition-failed records as no-ops in
    `mutation_seq` order. Acknowledge only after their applied frontier advances,
    returning `{stream_name, begin}`. A default read
    bypasses the sequencer and sees only the current applied prefix; it may
@@ -135,10 +137,12 @@ Partition merge is specified separately by R144.
 7. Define a checkpoint as an atomically published tuple of tree manifest,
    applied `mutation_seq`, `stream_name`, and R141 logical replay offset. Page
    checkpointing is asynchronous. Recovery opens the manifest through R140,
-   replays later R141 bytes in logical-offset order, decodes complete WAL
-   records, rejects epoch or
-   sequence regression, treats an identical replay as idempotent, and fails on
-   conflicting duplicate sequences. Maintain
+   replays later R141 bytes in logical-offset order with chunk provenance,
+   decodes complete WAL records, compares each physical chunk trailer with its
+   source chunk, rejects epoch or sequence regression, treats an identical
+   replay as idempotent, and fails on conflicting duplicate sequences. The
+   acknowledged cursor remains the upper bound; a matching trailer never makes
+   later residual bytes durable. Maintain
    `checkpoint_seq <= applied_seq <= journal_durable_seq`. Prefix GC cannot pass
    the oldest live checkpoint, transfer or split pin, or bounded request-result
    retention window. A retry older than the declared retention floor returns
@@ -375,6 +379,12 @@ three frontiers prove it; only loss of tree-state trust triggers full replay.
   order position or applied from its proven durable range. Invariant: journal
   uncertainty stalls writes without forcing tree recovery or creating a gap.
   Integration test.
+- Given rollover reuses storage containing a complete-looking frame from an
+  earlier physical chunk, when replay reads the current chunk with provenance,
+  assert the mismatched `chunk_id` trailer ends valid frame discovery. Given
+  matching bytes beyond the acknowledged cursor, assert they are never read or
+  promoted. Invariant: chunk identity rejects residual frames without replacing
+  the durable cursor boundary. Integration test.
 - Given a request has a deterministic range, encoding, or size error, when it
   reaches admission, assert it is rejected before WAL append; given a durable,
   prevalidated frame, assert normal tree apply performs no chunk IO. Inject a

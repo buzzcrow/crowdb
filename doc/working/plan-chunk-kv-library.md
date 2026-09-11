@@ -16,6 +16,11 @@ whose ordered journal is R141 and whose durable tree is R140.
   checkpoint, split plan/artifact/proof, and typed error models.
 - [x] Implement canonical operation digests and checksummed bounded WAL frame
   encode/decode with corruption and incomplete-tail handling.
+- [ ] Extend WAL framing with the physical `chunk_id` trailer: submit
+  header+body+CRC through R141 chunk-bound append, validate the trailer against
+  read provenance, and keep the durable cursor as the recovery upper bound.
+  Files: `lib/crowdb-chunk-kv/src/partition/`,
+  `lib/crowdb-chunk-kv/tests/`.
 - [x] Add private journal and tree contracts plus in-memory `test-util`
   implementations; do not expose a raw R141 stream from the partition API.
 

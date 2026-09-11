@@ -48,10 +48,15 @@ put-if-absent, compare-exchange by revision or value, and conditional delete.
 The sequencer drains an already-queued bounded batch. It evaluates operations
 in order against the applied tree plus a private overlay containing preceding
 successful mutations in that batch. Both success and condition failure obtain
-a `mutation_seq` and a WAL record. The record includes a magic/version,
-partition ID, epoch, sequence, request ID, digest, resolved result, operation,
-payload lengths, and CRC32C. Length-prefixed framing rejects incomplete or
-oversized records without interpreting trailing bytes.
+a `mutation_seq` and a WAL record. The physical frame contains magic, version,
+flags, bounded body length, serialized record body, CRC32C, and a canonical
+128-bit physical `chunk_id` trailer. The CRC covers the header and body, not the
+trailer, so body+CRC can be submitted unchanged when rollover selects another
+chunk. The record body contains partition ID, ownership epoch, sequence,
+request ID, digest, resolved result, and operation. R142 submits header+body+CRC
+through R141's chunk-bound append; R141 selects the chunk and adds its ID.
+Framing rejects incomplete or oversized records without interpreting trailing
+bytes.
 
 Frames are appended to R141 in mutation order. Only after their range is
 durable does the worker apply each successful record to the tree with its
@@ -82,8 +87,10 @@ manifest precedes WAL trim, and GC respects live checkpoint, transfer, split,
 and request-result retention pins.
 
 Recovery opens the newest complete tree manifest or fallback, starts reading
-the stream at the checkpoint offset, verifies complete frame CRC and identity,
-and replays strictly increasing sequences. An identical duplicate is
+the stream at the checkpoint offset, verifies complete frame CRC and compares
+the trailer with R141 chunk provenance, and replays strictly increasing
+sequences. The acknowledged cursor is the recovery upper bound; a matching
+trailer cannot promote later residual bytes. An identical duplicate is
 idempotent; a conflicting duplicate faults the partition. Recorded conditional
 outcomes are applied without reevaluation. Service resumes only when applied
 and journal-durable frontiers match.

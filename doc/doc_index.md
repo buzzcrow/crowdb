@@ -59,7 +59,7 @@ Plan files live under `doc/working/`; flow analyses live under `doc/design/{kv,c
 | `SECURITY.md` | When reporting or handling a security vulnerability. |
 | `CODE_OF_CONDUCT.md` | Community behavior guidelines. |
 
-## Sub-Designs (`doc/design/{kv,tree,console,protocol,diskdb,diskio,chunkdb,chunkio,rpc}/`)
+## Sub-Designs (`doc/design/{kv,tree,console,protocol,diskdb,diskio,chunkdb,chunkio,chunkds,rpc}/`)
 
 | Doc | Read when working on |
 | --- | --- |
@@ -75,9 +75,9 @@ Plan files live under `doc/working/`; flow analyses live under `doc/design/{kv,c
 | `doc/design/kv/design-crowdb-kv-server.md` | `crowdb-kv-server` binary: startup, concurrency, HTTP management API, group lifecycle, group/store cleanup, wipe-user-data. |
 | `doc/design/kv/design-crowdb-kv-test.md` | Test strategy, layer-by-layer test guide, coverage rules. |
 | `doc/design/kv/design-crowdb-kv-observability.md` | Metrics module: five metric types, registry and collector concurrency, instrumentation points, log format. |
-| `doc/design/kv/design-crowdb-chunk-kv.md` | Chunk-backed range KV: epoch-fenced sequencing, WAL recovery, transfer, split proofs, and failure containment. |
-| `doc/design/kv/design-crowdb-chunk-kv-server.md` | Chunk KV service: immutable range catalog, domain monitor, aggregate serving grants, direct request fencing, transfer, balance, and lifecycle. |
-| `doc/design/kv/design-crowdb-chunk-kv-client.md` | Routed chunk KV client: catalog cache, stable request identity, direct operations, bounded composition, and topology-safe scans. |
+| `doc/design/chunkds/design-crowdb-chunk-kv.md` | Chunk-backed range KV: epoch-fenced sequencing, WAL recovery, transfer, split proofs, and failure containment. |
+| `doc/design/chunkds/design-crowdb-chunk-kv-server.md` | Chunk KV service: immutable range catalog, domain monitor, aggregate serving grants, direct request fencing, transfer, balance, and lifecycle. |
+| `doc/design/chunkds/design-crowdb-chunk-kv-client.md` | Routed chunk KV client: catalog cache, stable request identity, direct operations, bounded composition, and topology-safe scans. |
 | `doc/design/tree/design-crowdb-tree.md` | crowdb-tree overview, `KVEngine`/`EngineView`, out-of-order apply + two-GC model, FFI boundary. |
 | `doc/design/tree/design-crowdb-tree-engine.md` | In-memory engine: slot cell, pages/delta, write path, versioned root, lock-free epoch reclamation, io_uring FFI, metrics. |
 | `doc/design/tree/design-crowdb-tree-storage.md` | Durable storage: `PageStore` backends, slotted frame format, buffer-pool I/O reservations, snapshot/recovery, mapping table, GC. |
@@ -96,7 +96,7 @@ Plan files live under `doc/working/`; flow analyses live under `doc/design/{kv,c
 | `doc/design/chunkio/design-crowdb-chunkio.md` | chunk IO data path root: `crowdb-chunk-client` crate write pipeline — block-granularity EC flow (fetch → main write → parity hand-off), backpressure + per-writer memory budget + `WriterPool`, shard-based partial EC encode, chunk rotation + `Location`, abort cleanup, real-process E2E coverage, and fault-injection seams. |
 | `doc/design/chunkio/design-crowdb-chunkio-small-object-writer.md` | Small-object shared-chunk writer: whole-object admission, lock-free routing, reserved mirror/EC groups, generation-fenced recovery, queue-driven pipeline elasticity, and orphan sealing. |
 | `doc/design/chunkio/design-crowdb-chunkio-reader.md` | Unified full, range, partial, and bounded-stream reads over mirror and EC layouts; same-offset EC recovery, durable failure marking, layout fencing, and repair handoff. |
-| `doc/design/chunkio/design-crowdb-chunk-stream.md` | Fenced logical byte streams over finite mirrored chunks: immutable extent metadata, ordered append batching, rollover recovery, bounded reads, trim/GC ordering, and ownership transfer. |
+| `doc/design/chunkds/design-crowdb-chunk-stream.md` | Fenced logical byte streams over finite mirrored chunks: immutable extent metadata, ordered append batching, rollover recovery, bounded reads, trim/GC ordering, and ownership transfer. |
 | `doc/design/chunkio/chunkio-small-io-flow-analysis.md` | Full-stack small-write and small/large/mixed-read baselines, first-failure trace, bottlenecks, and ordered improvement plan. |
 | `doc/design/diskdb/design-crowdb-diskdb.md` | diskdb root: architecture, group-0 sysdata, disk status management, space metrics, background scanner, crate layout, concurrency. |
 | `doc/design/diskdb/design-crowdb-diskdb-zone-management.md` | Zone management: record model, allocation algorithm, persist-only free, compaction-on-rotation, preparatory thread, crash recovery, zone-level concurrency, invariants. |
