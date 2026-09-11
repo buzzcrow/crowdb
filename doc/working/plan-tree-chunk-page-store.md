@@ -95,7 +95,7 @@ and structurally safe range rebuild while preserving local tree behavior.
   serialized lower/upper fence keys remain open. Files:
   `include/crowdb-tree/maptable/frame_page.h`, `src/maptable/frame_page.cpp`,
   `src/maptable/page_codec.cpp`.
-- [ ] **Complete range rebuild**: replace whole-snapshot collection with
+- [~] **Complete range rebuild**: replace whole-snapshot collection with
   bounded native iteration and disjoint-subtree skipping, then reuse immutable
   mapping/reference images while retaining the landed filtered boundary and
   sibling rebuild, independent roots, high-water allocation, and concurrent
@@ -175,10 +175,10 @@ and structurally safe range rebuild while preserving local tree behavior.
 - Reference segments are immutable directory-addressed images, but mapping
   slots still hold local byte addresses instead of chunk-reference ordinals.
 - Page fences are reconstructed during native snapshot validation rather than
-  persisted. Range rebuild supports filtering, frame reuse, high-water page
-  allocation, and concurrent workers, but still collects the whole source and
-  copies frames into the destination instead of skipping disjoint unloaded
-  subtrees or sharing immutable mapping/reference images.
+  persisted. Range rebuild now uses separator-guided bounded native traversal,
+  skips disjoint subtrees before demand load, filters boundary leaves, preserves
+  high-water page allocation, and supports concurrent independent workers.
+  Immutable mapping/reference image sharing remains open.
 - Basic chunk-store counters, retention pins, and logical orphan accounting
   exist. Child materialization/repack, the full metric set, archive extraction
   checks, and fixed-workload benchmark evidence remain absent.

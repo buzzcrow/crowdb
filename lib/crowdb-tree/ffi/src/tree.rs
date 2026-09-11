@@ -159,6 +159,7 @@ impl Crowdbtree {
                 entries_filtered: raw.entries_filtered,
                 pages_reused: raw.pages_reused,
                 pages_rebuilt: raw.pages_rebuilt,
+                subtrees_skipped: raw.subtrees_skipped,
             },
         ))
     }

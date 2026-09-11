@@ -1467,6 +1467,7 @@ Status Crowdbtree::open(const Config &opt, std::unique_ptr<Crowdbtree> *out)
 
     tree->mapping_.set_next_page_id(anchor.next_page_id);
     tree->root_page_id_.store(anchor.root_page_id);
+    tree->routing_fences_trusted_.store(false, std::memory_order_release);
     tree->last_applied_slot_.store(anchor.last_applied_slot);
     tree->contiguous_slot_.store(anchor.last_applied_slot);
     tree->version_.store(anchor.snapshot_seq);

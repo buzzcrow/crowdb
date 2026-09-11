@@ -19,6 +19,7 @@ struct RangeRebuildStats
     uint64_t entries_filtered = 0;
     uint64_t pages_reused     = 0;
     uint64_t pages_rebuilt    = 0;
+    uint64_t subtrees_skipped = 0;
 };
 
 // Build an independently mutable tree whose physical structure contains only

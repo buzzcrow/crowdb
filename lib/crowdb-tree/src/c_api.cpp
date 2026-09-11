@@ -511,7 +511,8 @@ ct_status ct_rebuild_range(ct_tree *source, const ct_options *destination_option
                   .entries_emitted  = rebuilt.entries_emitted,
                   .entries_filtered = rebuilt.entries_filtered,
                   .pages_reused     = rebuilt.pages_reused,
-                  .pages_rebuilt    = rebuilt.pages_rebuilt};
+                  .pages_rebuilt    = rebuilt.pages_rebuilt,
+                  .subtrees_skipped = rebuilt.subtrees_skipped};
     }
     *out = handle.release();
     return static_cast<ct_status>(Code::kOk);

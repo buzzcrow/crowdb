@@ -24,6 +24,7 @@ pub struct RangeRebuildStats {
     pub entries_filtered: u64,
     pub pages_reused: u64,
     pub pages_rebuilt: u64,
+    pub subtrees_skipped: u64,
 }
 
 /// Point-in-time diagnostics snapshot; see [`Crowdbtree::stats`]. Every field

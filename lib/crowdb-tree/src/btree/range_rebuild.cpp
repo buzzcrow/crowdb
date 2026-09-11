@@ -268,7 +268,8 @@ Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destinati
     uint64_t                 source_root  = kInvalidPageId;
     uint64_t                 at_slot      = 0;
     uint64_t                 next_page_id = 0;
-    Status native_status = source.collect_native_frames(&source_frames, &source_root, &at_slot, &next_page_id);
+    Status native_status = source.collect_native_frames(&source_frames, &source_root, &at_slot, &next_page_id,
+                                                        range.is_bounded() ? &range : nullptr, &local.subtrees_skipped);
     if (!native_status.ok()) {
         return native_status;
     }
@@ -283,7 +284,7 @@ Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destinati
         return Status::invalid_argument("range rebuild requires matching fixed frame sizes");
     }
 
-    bool all_contained = true;
+    bool all_contained = local.subtrees_skipped == 0;
     for (const NativeFrame &frame : source_frames) {
         if (frame_page_type(frame.frame.data()) != page_type::kLeafBase) {
             continue;
@@ -306,7 +307,9 @@ Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destinati
         output_frames         = std::move(source_frames);
     }
     else {
-        local         = {};
+        const uint64_t subtrees_skipped = local.subtrees_skipped;
+        local                           = {};
+        local.subtrees_skipped          = subtrees_skipped;
         native_status = build_filtered_frames(source_frames, range, destination_options, next_page_id, &output_frames,
                                               &output_root, &local);
         if (!native_status.ok()) {

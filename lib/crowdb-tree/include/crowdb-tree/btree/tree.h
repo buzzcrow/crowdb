@@ -673,7 +673,8 @@ class Crowdbtree
     // next-PID high-water output lets range rebuilds allocate rewritten pages
     // beyond every PID ever issued by the selected source lineage.
     Status collect_native_frames(std::vector<NativeFrame> *out, uint64_t *out_root_page_id, uint64_t *out_at_slot,
-                                 uint64_t *out_next_page_id = nullptr);
+                                 uint64_t *out_next_page_id = nullptr, const KeyRange *filter = nullptr,
+                                 uint64_t *out_subtrees_skipped = nullptr);
     Status install_snapshot_native(std::vector<NativeFrame> frames, uint64_t root_page_id, uint64_t at_slot,
                                    uint64_t next_page_id = 0);
 
@@ -1259,15 +1260,19 @@ class Crowdbtree
     uint64_t              max_seen_slot_ = 0;
     std::atomic<uint64_t> auto_slot_{0}; // next auto-assigned slot for put/del/batch_put
 
-    std::atomic<uint64_t>     root_page_id_{kInvalidPageId};
-    std::atomic<uint64_t>     contiguous_slot_{0};
-    std::atomic<uint64_t>     last_applied_slot_{0};
-    std::atomic<uint64_t>     version_{0};
-    std::atomic<uint64_t>     gc_floor_{0};
-    std::atomic<uint64_t>     snapshot_pages_written_{0};    // pages written by last snapshot
-    std::atomic<uint64_t>     snapshot_pages_total_{0};      // cumulative pages written across all snapshots
-    std::atomic<uint64_t>     snapshot_segments_written_{0}; // segment images written by last snapshot
-    mutable std::atomic<bool> io_failed_{false};             // latched demand-load media fault
+    std::atomic<uint64_t> root_page_id_{kInvalidPageId};
+    std::atomic<uint64_t> contiguous_slot_{0};
+    std::atomic<uint64_t> last_applied_slot_{0};
+    std::atomic<uint64_t> version_{0};
+    std::atomic<uint64_t> gc_floor_{0};
+    std::atomic<uint64_t> snapshot_pages_written_{0};    // pages written by last snapshot
+    std::atomic<uint64_t> snapshot_pages_total_{0};      // cumulative pages written across all snapshots
+    std::atomic<uint64_t> snapshot_segments_written_{0}; // segment images written by last snapshot
+    // Freshly built and native-imported trees have globally verified routing
+    // separators. Lazy persistent recovery verifies them on the first bounded
+    // export before allowing separator-based subtree pruning.
+    std::atomic<bool>         routing_fences_trusted_{true};
+    mutable std::atomic<bool> io_failed_{false}; // latched demand-load media fault
 
     // Cumulative operation counters (monotonic since open, exposed via stats()).
     // mutable: get_view() is const but increments these counters.

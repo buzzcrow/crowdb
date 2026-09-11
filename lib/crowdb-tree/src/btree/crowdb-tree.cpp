@@ -64,11 +64,13 @@ Status validate_native_snapshot_graph(const std::vector<NativeFrame> &frames, ui
         std::optional<std::string> upper;
     };
 
-    std::unordered_set<uint64_t>              reached;
-    std::unordered_set<uint64_t>              active;
-    std::unordered_set<uint64_t>              overflow_reached;
-    std::vector<const NativeFrame *>          leaves;
-    std::function<Status(uint64_t, Bounds *)> walk = [&](uint64_t page_id, Bounds *bounds) -> Status {
+    std::unordered_set<uint64_t>     reached;
+    std::unordered_set<uint64_t>     active;
+    std::unordered_set<uint64_t>     overflow_reached;
+    std::vector<const NativeFrame *> leaves;
+    std::function<Status(uint64_t, const std::optional<std::string> &, const std::optional<std::string> &, Bounds *)>
+        walk = [&](uint64_t page_id, const std::optional<std::string> &expected_lower,
+                   const std::optional<std::string> &expected_upper, Bounds *bounds) -> Status {
         if (active.contains(page_id) || reached.contains(page_id)) {
             return Status::corruption("native snapshot: cyclic or multiply referenced tree page");
         }
@@ -90,6 +92,10 @@ Status validate_native_snapshot_graph(const std::vector<NativeFrame> &frames, ui
             if (!leaf.empty()) {
                 bounds->lower = leaf.key(0).to_string();
                 bounds->upper = leaf.key(leaf.count() - 1).to_string();
+                if ((expected_lower.has_value() && leaf.key(0).compare(Slice(*expected_lower)) < 0) ||
+                    (expected_upper.has_value() && leaf.key(leaf.count() - 1).compare(Slice(*expected_upper)) >= 0)) {
+                    return Status::corruption("native snapshot: leaf escapes its routed bounds");
+                }
             }
             for (uint32_t index = 0; index < leaf.count(); ++index) {
                 Slice    raw_cell = leaf.cell(index);
@@ -124,34 +130,36 @@ Status validate_native_snapshot_graph(const std::vector<NativeFrame> &frames, ui
         }
 
         InnerFrameView inner(frame.frame.data(), static_cast<uint32_t>(frame.frame.size()));
-        Bounds         prior;
         for (uint32_t index = 0; index < inner.num_children(); ++index) {
+            std::optional<std::string> child_lower =
+                index == 0 ? expected_lower : std::optional<std::string>(inner.separator_at(index - 1).to_string());
+            std::optional<std::string> child_upper =
+                index == inner.num_separators() ? expected_upper
+                                                : std::optional<std::string>(inner.separator_at(index).to_string());
+            if ((expected_lower.has_value() && child_lower.has_value() &&
+                 Slice(*child_lower).compare(Slice(*expected_lower)) < 0) ||
+                (expected_upper.has_value() && child_upper.has_value() &&
+                 Slice(*child_upper).compare(Slice(*expected_upper)) > 0)) {
+                return Status::corruption("native snapshot: inner separator escapes its routed bounds");
+            }
             Bounds child;
-            Status child_status = walk(inner.child_at(index), &child);
+            Status child_status = walk(inner.child_at(index), child_lower, child_upper, &child);
             if (!child_status.ok()) {
                 return child_status;
             }
-            if (index == 0) {
+            if (!bounds->lower.has_value() && child.lower.has_value()) {
                 bounds->lower = child.lower;
-            }
-            else {
-                Slice separator = inner.separator_at(index - 1);
-                if ((prior.upper.has_value() && Slice(*prior.upper).compare(separator) >= 0) ||
-                    (child.lower.has_value() && separator.compare(Slice(*child.lower)) > 0)) {
-                    return Status::corruption("native snapshot: separator does not bound adjacent children");
-                }
             }
             if (child.upper.has_value()) {
                 bounds->upper = child.upper;
             }
-            prior = std::move(child);
         }
         active.erase(page_id);
         return Status::Ok();
     };
 
     Bounds root_bounds;
-    Status graph_status = walk(root_page_id, &root_bounds);
+    Status graph_status = walk(root_page_id, std::nullopt, std::nullopt, &root_bounds);
     if (!graph_status.ok()) {
         return graph_status;
     }
@@ -3514,21 +3522,47 @@ Status Crowdbtree::install_snapshot(std::vector<leaf_entry> sorted_entries, uint
     if (at_slot > last_applied_slot_.load()) {
         last_applied_slot_.store(at_slot);
     }
+    routing_fences_trusted_.store(true, std::memory_order_release);
     return Status::Ok();
 }
 
 Status Crowdbtree::collect_native_frames(std::vector<NativeFrame> *out, uint64_t *out_root_page_id,
-                                         uint64_t *out_at_slot, uint64_t *out_next_page_id)
+                                         uint64_t *out_at_slot, uint64_t *out_next_page_id, const KeyRange *filter,
+                                         uint64_t *out_subtrees_skipped)
 {
     std::lock_guard<std::mutex> lk(write_mutex_);
-    uint64_t                    gc = gc_floor_.load();
+    uint64_t                    gc   = gc_floor_.load();
+    const bool      can_prune        = filter != nullptr && routing_fences_trusted_.load(std::memory_order_acquire);
+    const KeyRange *effective_filter = can_prune ? filter : nullptr;
 
     // Same DFS shape as the pre-#14c manifest walk: fold any delta chain
     // into a fresh consolidated base first (a real side effect on the live
     // tree, same as snapshot()'s prepare phase -- unlike the read-only
     // snapshot_view()), then dump the resolved base's frame bytes verbatim,
     // recursing into inner children / leaf overflow chains.
-    std::function<Status(uint64_t)> walk = [&](uint64_t page_id) -> Status {
+    auto intersects = [effective_filter](const std::optional<std::string> &lower,
+                                         const std::optional<std::string> &upper) {
+        if (effective_filter == nullptr || !effective_filter->is_bounded()) {
+            return true;
+        }
+        if (effective_filter->start().has_value() && effective_filter->end().has_value() &&
+            Slice(*effective_filter->start()).compare(Slice(*effective_filter->end())) == 0) {
+            return false;
+        }
+        const bool below_end   = !effective_filter->end().has_value() || !lower.has_value() ||
+                                 Slice(*lower).compare(Slice(*effective_filter->end())) < 0;
+        const bool above_start = !effective_filter->start().has_value() || !upper.has_value() ||
+                                 Slice(*upper).compare(Slice(*effective_filter->start())) > 0;
+        return below_end && above_start;
+    };
+    uint64_t                                                                                      skipped = 0;
+    std::function<Status(uint64_t, std::optional<std::string>, std::optional<std::string>, bool)> walk =
+        [&](uint64_t page_id, std::optional<std::string> lower, std::optional<std::string> upper,
+            bool is_root) -> Status {
+        if (!is_root && !intersects(lower, upper)) {
+            ++skipped;
+            return Status::Ok();
+        }
         PageBase *head = resident(page_id);
         if (head == nullptr) {
             return Status::internal_error("native snapshot: null page in walk");
@@ -3574,8 +3608,14 @@ Status Crowdbtree::collect_native_frames(std::vector<NativeFrame> *out, uint64_t
         out->push_back(NativeFrame{.page_id = page_id, .frame = std::vector<uint8_t>(frame, frame + plen)});
 
         if (base->type == page_type::kInnerBase) {
-            for (uint64_t child : static_cast<InnerBase *>(base)->children()) {
-                Status cs = walk(child);
+            InnerFrameView inner = static_cast<InnerBase *>(base)->view();
+            for (uint32_t index = 0; index < inner.num_children(); ++index) {
+                std::optional<std::string> child_lower =
+                    index == 0 ? lower : std::optional<std::string>(inner.separator_at(index - 1).to_string());
+                std::optional<std::string> child_upper =
+                    index == inner.num_separators() ? upper
+                                                    : std::optional<std::string>(inner.separator_at(index).to_string());
+                Status cs = walk(inner.child_at(index), std::move(child_lower), std::move(child_upper), false);
                 if (!cs.ok()) {
                     return cs;
                 }
@@ -3605,9 +3645,16 @@ Status Crowdbtree::collect_native_frames(std::vector<NativeFrame> *out, uint64_t
     };
 
     out->clear();
-    Status ws = walk(root_page_id_.load());
+    Status ws = walk(root_page_id_.load(), std::nullopt, std::nullopt, true);
     if (!ws.ok()) {
         return ws;
+    }
+    if (filter != nullptr && !can_prune) {
+        Status graph_status = validate_native_snapshot_graph(*out, root_page_id_.load());
+        if (!graph_status.ok()) {
+            return graph_status;
+        }
+        routing_fences_trusted_.store(true, std::memory_order_release);
     }
     if (out_root_page_id != nullptr) {
         *out_root_page_id = root_page_id_.load();
@@ -3617,6 +3664,9 @@ Status Crowdbtree::collect_native_frames(std::vector<NativeFrame> *out, uint64_t
     }
     if (out_next_page_id != nullptr) {
         *out_next_page_id = mapping_.next_page_id();
+    }
+    if (out_subtrees_skipped != nullptr) {
+        *out_subtrees_skipped = skipped;
     }
     return Status::Ok();
 }
@@ -3724,6 +3774,7 @@ Status Crowdbtree::install_snapshot_native(std::vector<NativeFrame> frames, uint
         max_seen_slot_ = at_slot;
     }
     version_.fetch_add(1);
+    routing_fences_trusted_.store(true, std::memory_order_release);
     return Status::Ok();
 }
 
@@ -3749,6 +3800,7 @@ Status Crowdbtree::clear()
         max_seen_slot_ = 0;
     }
     version_.fetch_add(1);
+    routing_fences_trusted_.store(true, std::memory_order_release);
     return Status::Ok();
 }
 

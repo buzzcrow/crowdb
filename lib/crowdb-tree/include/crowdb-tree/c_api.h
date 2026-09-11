@@ -59,6 +59,7 @@ using ct_range_rebuild_stats = struct
     uint64_t entries_filtered;
     uint64_t pages_reused;
     uint64_t pages_rebuilt;
+    uint64_t subtrees_skipped;
 };
 
 // Batched diagnostics snapshot; mirrors crowdb::tree::EngineStats. Every field

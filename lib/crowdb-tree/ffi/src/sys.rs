@@ -155,6 +155,7 @@ pub struct ct_range_rebuild_stats {
     pub entries_filtered: u64,
     pub pages_reused: u64,
     pub pages_rebuilt: u64,
+    pub subtrees_skipped: u64,
 }
 
 #[repr(C)]

@@ -31,6 +31,33 @@ std::map<std::string, std::string> live_entries(Crowdbtree &tree)
     return result;
 }
 
+NativeFrame make_leaf_frame(uint64_t page_id, uint64_t right_sibling,
+                            const std::vector<std::pair<std::string, std::string>> &entries)
+{
+    NativeFrame      frame{.page_id = page_id, .frame = std::vector<uint8_t>(4096)};
+    LeafFrameBuilder builder(frame.frame.data(), static_cast<uint32_t>(frame.frame.size()));
+    for (const auto &[key, value] : entries) {
+        const std::string cell = encode_cell(1, OpKind::kPut, Slice(value));
+        EXPECT_TRUE(builder.try_append_sorted(Slice(key), Slice(cell)));
+    }
+    builder.finish(page_id, right_sibling);
+    return frame;
+}
+
+NativeFrame make_inner_frame(uint64_t page_id, const std::vector<uint64_t> &children,
+                             const std::vector<std::string> &separators)
+{
+    NativeFrame        frame{.page_id = page_id, .frame = std::vector<uint8_t>(4096)};
+    std::vector<Slice> separator_slices;
+    separator_slices.reserve(separators.size());
+    for (const std::string &separator : separators) {
+        separator_slices.emplace_back(separator);
+    }
+    EXPECT_TRUE(inner_frame_build(frame.frame.data(), static_cast<uint32_t>(frame.frame.size()), page_id, children,
+                                  separator_slices));
+    return frame;
+}
+
 TEST(RangeRebuild, AdjacentChildrenHaveExactUnionAndEmptyIntersection)
 {
     MemPageStore source_store(1);
@@ -75,8 +102,10 @@ TEST(RangeRebuild, AdjacentChildrenHaveExactUnionAndEmptyIntersection)
     EXPECT_EQ(right->get(Slice("k1049"), nullptr, nullptr), false);
     EXPECT_GT(left_stats.pages_reused, 0U);
     EXPECT_GT(left_stats.pages_rebuilt, 0U);
+    EXPECT_GT(left_stats.subtrees_skipped, 0U);
     EXPECT_GT(right_stats.pages_reused, 0U);
     EXPECT_GT(right_stats.pages_rebuilt, 0U);
+    EXPECT_GT(right_stats.subtrees_skipped, 0U);
 }
 
 TEST(RangeRebuild, ConcurrentWorkersPublishIndependentTrees)
@@ -245,6 +274,31 @@ TEST(RangeRebuild, EmptyAndUnboundedEndpointsUseTheSameHalfOpenPredicate)
               (std::vector<std::string>{"a", "aa"}));
 }
 
+TEST(RangeRebuild, EmptyRangeSkipsEveryRootChildWithoutExaminingLeaves)
+{
+    MemPageStore source_store(1);
+    Config       options;
+    options.page_store       = &source_store;
+    options.frame_bytes      = 4096;
+    options.leaf_split_bytes = 128;
+    Crowdbtree source(options);
+    for (uint64_t index = 0; index < 100; ++index) {
+        ASSERT_TRUE(source.put(Slice("k" + std::to_string(index + 1000)), Slice("value")).ok());
+    }
+    ASSERT_TRUE(source.flush().ok());
+
+    MemPageStore destination_store(1);
+    options.page_store = &destination_store;
+    std::unique_ptr<Crowdbtree> destination;
+    RangeRebuildStats           stats;
+    ASSERT_TRUE(rebuild_range(source, KeyRange::bounded(std::string("k1050"), std::string("k1050")), options,
+                              &destination, &stats)
+                    .ok());
+    EXPECT_EQ(stats.entries_examined, 0U);
+    EXPECT_GT(stats.subtrees_skipped, 0U);
+    EXPECT_TRUE(live_entries(*destination).empty());
+}
+
 TEST(RangeRebuild, ChildMutationDoesNotChangeTheSourceTree)
 {
     MemPageStore source_store(1);
@@ -316,6 +370,69 @@ TEST(RangeRebuild, NativeInstallRejectsCrossingSiblingAndMissingChildReferences)
     Crowdbtree child_destination(options);
     EXPECT_EQ(child_destination.install_snapshot_native(std::move(broken_child), root, slot, highwater).code(),
               Code::kCorruption);
+}
+
+TEST(RangeRebuild, NativeInstallRejectsKeyHiddenBehindEmptyFirstChild)
+{
+    // Root routes its right subtree to [m, +inf). That subtree starts with an
+    // empty child, but its later child contains "a". Validation must use the
+    // first non-empty descendant and reject the key below the root separator.
+    std::vector<NativeFrame> frames;
+    frames.push_back(make_inner_frame(1, {2, 3}, {"m"}));
+    frames.push_back(make_leaf_frame(2, 4,
+                                     {
+                                         {"b", "left"}
+    }));
+    frames.push_back(make_inner_frame(3, {4, 5}, {"t"}));
+    frames.push_back(make_leaf_frame(4, 5, {}));
+    frames.push_back(make_leaf_frame(5, kInvalidPageId,
+                                     {
+                                         {"a", "hidden"}
+    }));
+
+    MemPageStore store(1);
+    Config       options;
+    options.page_store  = &store;
+    options.frame_bytes = 4096;
+    Crowdbtree destination(options);
+    EXPECT_EQ(destination.install_snapshot_native(std::move(frames), 1, 1, 6).code(), Code::kCorruption);
+}
+
+TEST(RangeRebuild, RecoveredTreeValidatesBeforeEnablingSubtreePruning)
+{
+    MemPageStore store(1);
+    Config       options;
+    options.page_store       = &store;
+    options.frame_bytes      = 4096;
+    options.leaf_split_bytes = 128;
+    {
+        Crowdbtree source(options);
+        for (uint64_t index = 0; index < 100; ++index) {
+            ASSERT_TRUE(source.put(Slice("k" + std::to_string(index + 1000)), Slice("value")).ok());
+        }
+        ASSERT_TRUE(source.flush().ok());
+        ASSERT_TRUE(source.snapshot().ok());
+    }
+
+    std::unique_ptr<Crowdbtree> recovered;
+    ASSERT_TRUE(Crowdbtree::open(options, &recovered).ok());
+    const KeyRange range = KeyRange::bounded(std::string("k1040"), std::string("k1060"));
+
+    MemPageStore first_store(1);
+    Config       child_options = options;
+    child_options.page_store   = &first_store;
+    std::unique_ptr<Crowdbtree> first;
+    RangeRebuildStats           first_stats;
+    ASSERT_TRUE(rebuild_range(*recovered, range, child_options, &first, &first_stats).ok());
+    EXPECT_EQ(first_stats.subtrees_skipped, 0U);
+
+    MemPageStore second_store(1);
+    child_options.page_store = &second_store;
+    std::unique_ptr<Crowdbtree> second;
+    RangeRebuildStats           second_stats;
+    ASSERT_TRUE(rebuild_range(*recovered, range, child_options, &second, &second_stats).ok());
+    EXPECT_GT(second_stats.subtrees_skipped, 0U);
+    EXPECT_EQ(live_entries(*first), live_entries(*second));
 }
 
 TEST(RangeRebuild, LazyRecoveryRejectsAResolvedPageOutsideTheTreeRange)
