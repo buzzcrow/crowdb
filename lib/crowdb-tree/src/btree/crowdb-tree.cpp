@@ -7,7 +7,7 @@
 
 #include "async_completion_adapter.h"
 #include "crowdb-common/log.h"
-#include "crowdb-tree/async_page_store.h"
+#include "crowdb-tree/backend/async_page_store.h"
 #include "crowdb-tree/compressor.h"
 #include "crowdb-tree/delta.h"
 #include "crowdb-tree/descent.h"

@@ -6,7 +6,7 @@
 #pragma once
 
 #include "chunk_transport.h"
-#include "crowdb-tree/async_page_store.h"
+#include "crowdb-tree/backend/async_page_store.h"
 #include "crowdb-tree/page_store.h"
 
 #include <array>

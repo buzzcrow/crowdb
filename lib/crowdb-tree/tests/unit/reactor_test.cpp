@@ -6,7 +6,7 @@
 // CROWDB_HAVE_LIBURING gate) -- io_uring is Linux-only.
 #include "async_completion_adapter.h"
 #include "crowdb-common/diskio_uring.h"
-#include "crowdb-tree/async_page_store.h"
+#include "crowdb-tree/backend/async_page_store.h"
 #include "crowdb-tree/block_page_store.h"
 #include "test_tmp.h"
 

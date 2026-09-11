@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "crowdb-tree/async_page_store.h"
+#include "crowdb-tree/backend/async_page_store.h"
 #include "crowdb-tree/c_api.h"
 #include "crowdb-tree/page_store.h"
 

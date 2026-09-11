@@ -14,12 +14,15 @@ and structurally safe range rebuild while preserving local tree behavior.
 - [x] **Reorganize sources and headers**: group B+tree, mapping-table page
   service, and backend implementations under `src/btree/`, `src/mtable/`, and
   `src/backend/{local,chunk}/`; group canonical headers under matching public
-  subfolders, provide an umbrella header, and retain source-compatible root
-  forwarding headers. Files: `lib/crowdb-tree/{include,src,CMakeLists.txt}`,
-  `ffi/build.rs`.
+  subfolders and provide an umbrella header. Files:
+  `lib/crowdb-tree/{include,src,CMakeLists.txt}`, `ffi/build.rs`.
+- [~] **Remove forwarding headers**: switch internal and test includes to the
+  canonical `btree/`, `mtable/`, and `backend/` paths, then delete redundant
+  root forwarding headers. Files: `lib/crowdb-tree/include/crowdb-tree/`,
+  `lib/crowdb-tree/{src,tests}/`.
 
 - [x] **Decouple async I/O**: make `AsyncPageStore` platform-neutral. Files:
-  `include/crowdb-tree/async_page_store.h`, `include/crowdb-tree/options.h`,
+  `include/crowdb-tree/backend/async_page_store.h`, `include/crowdb-tree/options.h`,
   `src/block_async_page_store.cpp`, `src/crowdb-tree.cpp`, `src/persist.cpp`.
 - [x] **Inject stores**: add opaque store ownership and make `ct_open` consume a
   supplied handle without naming chunk construction. Files:
@@ -46,7 +49,7 @@ and structurally safe range rebuild while preserving local tree behavior.
   segment directories, pins, retention watermarks, and orphan reclamation.
   Files: `src/backend/chunk/chunk_page_store.h`,
   `src/backend/chunk/chunk_page_store.cpp`.
-- [~] **Implement native chunk transport**: add direct C++ ChunkDB allocation,
+- [x] **Implement native chunk transport**: add direct C++ ChunkDB allocation,
   append, query, seal, and DiskIO mirror read/write RPC adapters with a bounded
   completion slab and immutable topology injection. Files:
   `src/backend/chunk/`, protocol/CMake generation wiring, `crowdb-chunk-kv`.
@@ -54,9 +57,10 @@ and structurally safe range rebuild while preserving local tree behavior.
   tails to 64 KiB, rotate whole packs at 256 MiB, allocate a fresh chunk after
   reopen, and emit logical reclaim candidates. Files:
   `src/backend/chunk/`, chunk backend tests.
-- [ ] **Implement asynchronous chunk store**: add bounded concurrent pack
-  writes, stdexec mirror fan-in, layout caching, coalesced reads, refresh,
-  publication, cancellation, shutdown drain, and typed failures. Files:
+- [ ] **Implement asynchronous chunk store**: replace inline synchronous
+  completion with bounded concurrent pack writes, stdexec mirror fan-in,
+  coalesced reads, cancellation, and shutdown drain. Preserve the landed
+  layout refresh, bounded mirror retry, publication, and typed failures. Files:
   `src/backend/chunk/`, protocol/CMake generation wiring.
 - [ ] **Verify chunk persistence**: cover pack bounds, durability ordering,
   all-or-nothing recovery, maintenance failure, layout refresh, mirror retry,
@@ -76,10 +80,12 @@ and structurally safe range rebuild while preserving local tree behavior.
   serialized lower/upper fence keys remain open. Files:
   `include/crowdb-tree/frame_page.h`, `src/frame_page.cpp`,
   `src/page_codec.cpp`.
-- [ ] **Implement range rebuild**: add bounded native iteration, leaf-frame
-  reuse, filtered boundary/sibling rebuilding, independent roots, high-water
-  allocation, and concurrent workers. Files: `include/crowdb-tree/chunk_page_store.h`,
-  `src/range_rebuild.cpp`, `include/crowdb-tree/c_api.h`, `src/c_api.cpp`.
+- [ ] **Complete range rebuild**: replace whole-snapshot collection with
+  bounded native iteration and disjoint-subtree skipping, then reuse immutable
+  mapping/reference images while retaining the landed filtered boundary and
+  sibling rebuild, independent roots, high-water allocation, and concurrent
+  workers. Files: `include/crowdb-tree/btree/range_rebuild.h`,
+  `src/btree/range_rebuild.cpp`, `include/crowdb-tree/c_api.h`, `src/c_api.cpp`.
 - [ ] **Verify structural isolation**: cover split union/intersection, disjoint
   skip, mixed leaves, crossing paths/siblings, shared immutable metadata,
   endpoint forms, concurrent workers, and corrupt fences. Files:
@@ -110,7 +116,7 @@ and structurally safe range rebuild while preserving local tree behavior.
 - [ ] **Run affected tests separately**: `pixi run tree-fmt`,
   `pixi run tree-lint`, `pixi run test-tree-ct`, and
   `pixi run test-tree-ffi`, and the chunk-KV integration tests. The previous
-  baseline passed 473 C++ tests and 34 Rust FFI tests; rerun every affected
+  baseline passed 515 C++ tests and 35 Rust FFI tests; rerun every affected
   acceptance after the remaining implementation lands.
 - [ ] **Fold permanent design**: create
   `doc/design/tree/design-crowdb-tree-chunk-storage.md`, update the tree root and
@@ -143,13 +149,17 @@ and structurally safe range rebuild while preserving local tree behavior.
 
 ## Remaining Audit Findings
 
-- The current `ChunkPageStore` keeps replica bytes inside `MemoryRootCatalog`;
-  it has no production `crowdb-rpc`/FlatBuffers transport, genuinely delayed
-  completion, coalesced DiskIO read, or stdexec mirror fan-in.
-- Reference segments are embedded in each manifest instead of immutable
-  directory-addressed images. Mapping slots still hold local byte addresses.
+- The production `crowdb-rpc`/FlatBuffers transport and immutable layout cache
+  are present, but `ChunkPageStore` still completes async submissions inline;
+  it has no bounded concurrent pack pipeline, coalesced DiskIO read, shutdown
+  drain, effective cancellation, or stdexec mirror fan-in.
+- Reference segments are immutable directory-addressed images, but mapping
+  slots still hold local byte addresses instead of chunk-reference ordinals.
 - Page fences are reconstructed during native snapshot validation rather than
-  persisted. Range rebuild copies frames into the destination and does not
-  skip disjoint unloaded subtrees or share immutable mapping/reference images.
-- Child materialization/repack, archive extraction checks, and fixed-workload
-  benchmark evidence remain absent.
+  persisted. Range rebuild supports filtering, frame reuse, high-water page
+  allocation, and concurrent workers, but still collects the whole source and
+  copies frames into the destination instead of skipping disjoint unloaded
+  subtrees or sharing immutable mapping/reference images.
+- Basic chunk-store counters, retention pins, and logical orphan accounting
+  exist. Child materialization/repack, the full metric set, archive extraction
+  checks, and fixed-workload benchmark evidence remain absent.
