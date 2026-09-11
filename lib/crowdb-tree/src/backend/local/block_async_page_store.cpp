@@ -1,6 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+// Local asynchronous block-backend implementation.
+
 #include "crowdb-common/diskio_uring.h"
 #include "crowdb-tree/async_page_store.h"
 #include "crowdb-tree/block_page_store.h"

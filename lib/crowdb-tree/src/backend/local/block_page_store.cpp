@@ -1,6 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+// Local block-backend implementation.
+
 #include "crowdb-tree/block_page_store.h"
 
 #include <dirent.h>

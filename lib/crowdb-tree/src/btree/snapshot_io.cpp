@@ -1,6 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+// B+tree snapshot stream implementation.
+
 #include "crowdb-tree/snapshot_io.h"
 
 #include "crowdb-common/crc32c.h"

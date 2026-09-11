@@ -1,6 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+// B+tree debug-codec implementation.
+
 #include "crowdb-tree/debug_codec.h"
 
 #include "crowdb-tree/cell.h"

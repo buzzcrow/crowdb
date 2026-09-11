@@ -68,6 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .debug(false)
         .flag("-g1")
         .include(&include)
+        .include(&src)
         .include(&common_include)
         .flag(format!("-isystem{}", stdexec_include.display()))
         .warnings(false);

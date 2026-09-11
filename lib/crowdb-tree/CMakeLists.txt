@@ -42,11 +42,12 @@ add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../crowdb-common/cpp crowdb-common-
 file(GLOB_RECURSE CROWDB_TREE_SRC CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp)
 if(NOT (LIBURING_INCLUDE_DIR AND LIBURING_LIB))
   list(REMOVE_ITEM CROWDB_TREE_SRC
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/block_async_page_store.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/backend/local/block_async_page_store.cpp
   )
 endif()
 add_library(crowdb-tree STATIC ${CROWDB_TREE_SRC})
 target_include_directories(crowdb-tree PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(crowdb-tree PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_include_directories(crowdb-tree SYSTEM PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../third-party/stdexec/include)
 find_package(Threads REQUIRED)
 target_link_libraries(crowdb-tree PUBLIC Threads::Threads crowdbcommon)

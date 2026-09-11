@@ -1,6 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+// Mapping-table implementation.
+
 #include "crowdb-tree/mapping_table.h"
 
 #include "crowdb-tree/page_store.h" // round_up_to_iu

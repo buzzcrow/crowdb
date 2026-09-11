@@ -1,6 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+// Chunk-backend implementation.
+
 #include "chunk_page_store.h"
 
 #include "c_api_internal.h"

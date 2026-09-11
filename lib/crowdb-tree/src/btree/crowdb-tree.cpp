@@ -1,6 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+// B+tree engine implementation.
+
 #include "crowdb-tree/crowdb-tree.h"
 
 #include "async_completion_adapter.h"

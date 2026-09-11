@@ -1,6 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+// Local text-backend implementation.
+
 #include "crowdb-tree/text_page_store.h"
 
 #include "crowdb-tree/debug_codec.h"

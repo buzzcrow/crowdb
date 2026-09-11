@@ -1,6 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+// Backend-neutral in-memory page-store implementation.
+
 #include "crowdb-tree/page_store.h"
 
 #include <fcntl.h>

@@ -1,6 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+// B+tree snapshot and recovery implementation.
+
 // snapshot and recovery (plan-tree #14c/#14d: mapping-table on-disk format).
 //
 // On-device layout owned here:

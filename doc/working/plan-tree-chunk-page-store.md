@@ -11,7 +11,7 @@ and structurally safe range rebuild while preserving local tree behavior.
 
 ## Phase 1: Backend and Completion Boundaries
 
-- [~] **Reorganize private sources**: group B+tree, mapping-table, and backend
+- [x] **Reorganize private sources**: group B+tree, mapping-table, and backend
   implementations under `src/btree/`, `src/mapping_table/`, and
   `src/backend/{local,chunk}/` while retaining public include paths and static
   archive behavior. Files: `lib/crowdb-tree/src/`, `CMakeLists.txt`,
@@ -40,7 +40,7 @@ and structurally safe range rebuild while preserving local tree behavior.
 - [x] **Define manifest core**: implement page references, checksums,
   generations, an epoch-fenced root catalog, and orphan accounting.
   Files: `src/chunk_page_store.h`, `src/chunk_page_store.cpp`.
-- [ ] **Segment manifest metadata**: add ordinal reference tables, immutable
+- [~] **Segment manifest metadata**: add ordinal reference tables, immutable
   segment directories, pins, retention watermarks, and orphan reclamation.
   Files: `src/chunk_page_store.h`, `src/chunk_page_store.cpp`.
 - [ ] **Implement native chunk transport**: add direct C++ ChunkDB allocation,
