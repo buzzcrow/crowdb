@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-// B+tree frame-page implementation.
+// Mapping-table frame-page service.
 
 #include "crowdb-tree/frame_page.h"
 

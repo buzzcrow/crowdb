@@ -11,10 +11,11 @@ and structurally safe range rebuild while preserving local tree behavior.
 
 ## Phase 1: Backend and Completion Boundaries
 
-- [x] **Reorganize private sources**: group B+tree, mapping-table, and backend
-  implementations under `src/btree/`, `src/mapping_table/`, and
-  `src/backend/{local,chunk}/` while retaining public include paths and static
-  archive behavior. Files: `lib/crowdb-tree/src/`, `CMakeLists.txt`,
+- [x] **Reorganize sources and headers**: group B+tree, mapping-table page
+  service, and backend implementations under `src/btree/`, `src/mtable/`, and
+  `src/backend/{local,chunk}/`; group canonical headers under matching public
+  subfolders, provide an umbrella header, and retain source-compatible root
+  forwarding headers. Files: `lib/crowdb-tree/{include,src,CMakeLists.txt}`,
   `ffi/build.rs`.
 
 - [x] **Decouple async I/O**: make `AsyncPageStore` platform-neutral. Files:

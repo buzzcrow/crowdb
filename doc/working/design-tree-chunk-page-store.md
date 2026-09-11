@@ -135,22 +135,25 @@ physical strip release.
 
 Private C++ implementation files are grouped by subsystem:
 
-- `src/btree/` contains tree algorithms, frames, codecs, ranges, and rebuild;
-- `src/mapping_table/` contains mapping persistence and the mapping table; and
+- `src/btree/` contains tree algorithms, ranges, and rebuild;
+- `src/mtable/` contains mapping persistence, page frames, codecs, and the
+  mapping-table page service; and
 - `src/backend/` contains backend-neutral adapters, with concrete local and
   chunk implementations below `src/backend/local/` and
   `src/backend/chunk/`.
 
-The installed `include/crowdb-tree/` paths remain stable. CMake and the Rust FFI
-build recurse below `src/`, so directory grouping does not change archive
-composition or public includes.
+Canonical public headers follow the same `btree/`, `mtable/`, and `backend/`
+grouping. `include/crowdb-tree/crowdb-tree.h` is the umbrella C++ interface;
+root forwarding headers preserve existing include paths. Implementation-only
+contracts remain below `src/`. CMake and the Rust FFI build recurse below
+`src/`, so directory grouping does not change archive composition.
 
 ## Scope
 
 - `third-party/stdexec/`: repository-pinned sender implementation.
 - `lib/crowdb-tree/include/crowdb-tree/{async_page_store,chunk_page_store,key_range,c_api,options,status}.h`:
   backend-neutral APIs and typed contracts.
-- `lib/crowdb-tree/src/{btree,mapping_table,backend}/`: grouped private tree,
+- `lib/crowdb-tree/src/{btree,mtable,backend}/`: grouped private tree,
   mapping, local-backend, and chunk-backend implementation.
 - `lib/crowdb-tree/src/{c_api,async_completion,stdexec_adapter}.*`: C ABI and
   cross-backend completion infrastructure.
@@ -205,12 +208,13 @@ cleanup require independent correctness tests.
 ```text
 lib/crowdb-tree/
 ├── include/crowdb-tree/
-│   ├── async_page_store.h       backend-neutral token submission
-│   ├── chunk_page_store.h       opaque factory and injected contracts
-│   └── key_range.h              immutable range policy
+│   ├── crowdb-tree.h             umbrella C++ interface
+│   ├── btree/                    tree and range interfaces
+│   ├── mtable/                   mapping-table page service
+│   └── backend/                  backend-neutral store interfaces
 ├── src/
 │   ├── btree/                    tree algorithms, frames, range rebuild
-│   ├── mapping_table/            mapping and persisted segment images
+│   ├── mtable/                   mapping and page services
 │   ├── backend/
 │   │   ├── local/                memory, text, and block stores
 │   │   └── chunk/                RPC backend, manifests, page packs

@@ -2,9 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 // CT1: scaffold smoke tests for Slice, Status, Options.
-#include "crowdb-tree/options.h"
-#include "crowdb-tree/slice.h"
-#include "crowdb-tree/status.h"
+#include "crowdb-tree.h"
 
 #include <gtest/gtest.h>
 
