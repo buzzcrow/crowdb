@@ -262,6 +262,7 @@ class Worker
     friend class SocketTransport;
 
     void run_loop();
+    void close_connections();
 };
 
 // ── SocketTransport: shared I/O logic for TCP ──────────────────────

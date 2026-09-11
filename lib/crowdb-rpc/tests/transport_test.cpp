@@ -76,6 +76,32 @@ TEST_F(TransportLoopbackTest, StopWakesIdleWorker)
     EXPECT_LT(elapsed, std::chrono::milliseconds(500));
 }
 
+TEST_F(TransportLoopbackTest, StopClosesRegisteredConnectionDescriptors)
+{
+    SocketTransport transport(1, 1);
+    transport.start();
+
+    int client_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(client_fd, 0);
+    struct sockaddr_in addr{};
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port        = htons(port_);
+    ASSERT_EQ(::connect(client_fd, reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr)), 0);
+
+    int server_fd = ::accept(listen_fd_, nullptr, nullptr);
+    ASSERT_GE(server_fd, 0);
+    auto server_conn = transport.create_connection(server_fd, "server");
+
+    transport.stop();
+
+    EXPECT_FALSE(server_conn->is_open());
+    errno = 0;
+    EXPECT_EQ(fcntl(server_fd, F_GETFL), -1);
+    EXPECT_EQ(errno, EBADF);
+    ::close(client_fd);
+}
+
 TEST_F(TransportLoopbackTest, SendAndReceiveFrame)
 {
     // Start the transport with 1 worker.

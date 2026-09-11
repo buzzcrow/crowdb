@@ -54,16 +54,20 @@ Worker::Worker(int id, SocketEngine *engine, TransportStats *stats, SocketTransp
 Worker::~Worker()
 {
     stop();
-    // Close dup'd write fds. The read fds are closed by the caller
-    // (server/client shutdown). The engine may already be destroyed
-    // (engines_ is destroyed before workers_ in SocketTransport), so
-    // we only close the fds — no epoll_ctl calls.
+    close_connections();
+}
+
+void Worker::close_connections()
+{
     std::lock_guard<std::mutex> lock(conns_mu_);
     for (auto &[fd, conn] : connections_) {
+        conn->close();
+        engine_->remove_connection(fd, conn->write_fd);
+        ::close(fd);
         if (conn->write_fd >= 0 && conn->write_fd != fd) {
             ::close(conn->write_fd);
-            conn->write_fd = -1;
         }
+        conn->write_fd = -1;
     }
     connections_.clear();
 }
@@ -476,6 +480,9 @@ void SocketTransport::stop()
     }
     for (auto &w : workers_) {
         w->join();
+    }
+    for (auto &w : workers_) {
+        w->close_connections();
     }
 }
 
