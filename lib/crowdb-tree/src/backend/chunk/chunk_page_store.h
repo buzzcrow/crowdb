@@ -20,6 +20,8 @@
 namespace crowdb::tree::detail
 {
 
+class ChunkAsyncExecutor;
+
 struct ChunkPageRef
 {
     ChunkId  chunk_id;
@@ -162,9 +164,11 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
         uint32_t iu_size            = 64U * 1024U;
         uint32_t mirror_retry_limit = 2;
         uint64_t layout_validity_ms = 30'000;
+        size_t   max_pending_ops    = 256;
     };
 
     ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catalog, std::shared_ptr<ChunkTransport> transport);
+    ~ChunkPageStore() override;
 
     Status                 write_at(uint64_t off, const uint8_t *buf, size_t len) override;
     Status                 read_at(uint64_t off, uint8_t *buf, size_t len) const override;
@@ -226,6 +230,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     ChunkId                                                   active_chunk_id_;
     uint64_t                                                  active_chunk_bytes_  = 0;
     uint64_t                                                  active_chunk_cursor_ = 0;
+    std::unique_ptr<ChunkAsyncExecutor>                       async_executor_;
 };
 
 } // namespace crowdb::tree::detail

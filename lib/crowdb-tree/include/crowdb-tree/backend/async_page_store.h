@@ -54,9 +54,11 @@ class AsyncPageStore
 
     // Submit an async read/write of `len` bytes at durable offset `addr`
     // (the same PageAddr/byte-offset domain as PageStore::read_at/write_at).
-    // `on_complete` fires exactly once, from the poll thread, with the
-    // outcome. Returns an opaque op id (always 0 — cancel is via cancel_fd
-    // at the DiskIOUring level, not per-op).
+    // `on_complete` fires exactly once with the outcome. Immediate results
+    // and rejected submissions may complete inline; accepted I/O completes
+    // from the backend's worker. Returns an opaque nonzero operation id when the backend
+    // supports per-operation cancellation; 0 means no cancellable operation
+    // was accepted.
     virtual uint64_t submit_read(PageAddr addr, void *buf, size_t len, AsyncCompletion on_complete)        = 0;
     virtual uint64_t submit_write(PageAddr addr, const void *buf, size_t len, AsyncCompletion on_complete) = 0;
 
@@ -65,8 +67,8 @@ class AsyncPageStore
     // own completion status arrives via `on_complete`, same as read/write.
     virtual Status submit_fsync(AsyncCompletion on_complete) = 0;
 
-    // No-op (kept for ABI compatibility). Per-op cancel is removed — use
-    // DiskIOUring::cancel_fd for fd-level cancellation.
+    // Best-effort cancellation. Backends without per-operation cancellation
+    // leave this as a no-op and may use transport-level cancellation instead.
     virtual void cancel(uint64_t op_id) = 0;
 };
 

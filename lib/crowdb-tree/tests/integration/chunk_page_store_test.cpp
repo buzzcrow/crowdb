@@ -8,9 +8,12 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <iterator>
 #include <memory>
 #include <string>
+#include <thread>
 
 namespace crowdb::tree::detail
 {
@@ -22,6 +25,56 @@ Batch put(uint64_t, std::string key, std::string value)
     Batch batch;
     batch.ops.push_back({.key = std::move(key), .kind = OpKind::kPut, .value = std::move(value)});
     return batch;
+}
+
+struct CompletionState
+{
+    std::atomic<bool> done{false};
+    std::atomic<int>  code{static_cast<int>(Code::kOk)};
+};
+
+void record_completion(void *context, Status status)
+{
+    auto *state = static_cast<CompletionState *>(context);
+    state->code.store(static_cast<int>(status.code()), std::memory_order_relaxed);
+    state->done.store(true, std::memory_order_release);
+    state->done.notify_one();
+}
+
+struct BlockingCompletion
+{
+    std::thread::id   submitter;
+    std::atomic<bool> entered{false};
+    std::atomic<bool> release{false};
+    std::atomic<bool> ran_off_submitter{false};
+};
+
+void block_completion(void *context, Status)
+{
+    auto *state = static_cast<BlockingCompletion *>(context);
+    state->ran_off_submitter.store(std::this_thread::get_id() != state->submitter, std::memory_order_relaxed);
+    state->entered.store(true, std::memory_order_release);
+    state->entered.notify_one();
+    state->release.wait(false, std::memory_order_acquire);
+}
+
+struct SelfDestroyCompletion
+{
+    std::unique_ptr<ChunkPageStore> store;
+    std::atomic<bool>               entered{false};
+    std::atomic<bool>               release{false};
+    std::atomic<bool>               done{false};
+};
+
+void destroy_store_from_completion(void *context, Status)
+{
+    auto *state = static_cast<SelfDestroyCompletion *>(context);
+    state->entered.store(true, std::memory_order_release);
+    state->entered.notify_one();
+    state->release.wait(false, std::memory_order_acquire);
+    state->store.reset();
+    state->done.store(true, std::memory_order_release);
+    state->done.notify_one();
 }
 
 void publish_raw_generation(ChunkPageStore *store, uint8_t value)
@@ -361,25 +414,103 @@ TEST(ChunkPageStore, AsyncUnavailableRemainsTypedAndDoesNotLatchCorruption)
     ASSERT_GT(tree.evict_clean_leaves(0), 0U);
 
     store.inject_unavailable(true);
-    Status  unavailable;
-    GetView missing;
+    Status            unavailable;
+    GetView           missing;
+    std::atomic<bool> unavailable_done{false};
     tree.get_async(Slice("key"), [&](Status status, GetView result) {
         unavailable = std::move(status);
         missing     = std::move(result);
+        unavailable_done.store(true, std::memory_order_release);
+        unavailable_done.notify_one();
     });
+    unavailable_done.wait(false, std::memory_order_acquire);
     EXPECT_EQ(unavailable.code(), Code::kUnavailable);
     EXPECT_FALSE(missing.found());
     EXPECT_FALSE(tree.io_failed());
 
     store.inject_unavailable(false);
-    Status  recovered;
-    GetView found;
+    Status            recovered;
+    GetView           found;
+    std::atomic<bool> recovered_done{false};
     tree.get_async(Slice("key"), [&](Status status, GetView result) {
         recovered = std::move(status);
         found     = std::move(result);
+        recovered_done.store(true, std::memory_order_release);
+        recovered_done.notify_one();
     });
+    recovered_done.wait(false, std::memory_order_acquire);
     EXPECT_TRUE(recovered.ok()) << recovered.to_string();
     EXPECT_TRUE(found.found());
+}
+
+TEST(ChunkPageStore, AsyncQueueIsBoundedAndRunsOffSubmitter)
+{
+    auto               catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto               transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore     store({.tree_id = 20, .owner_epoch = 1, .iu_size = 1, .max_pending_ops = 2}, catalog, transport);
+    BlockingCompletion blocked{.submitter = std::this_thread::get_id()};
+    const uint8_t      first = 1;
+    ASSERT_NE(store.submit_write(0, &first, 1, {.context = &blocked, .complete_fn = &block_completion}), 0U);
+    blocked.entered.wait(false, std::memory_order_acquire);
+
+    CompletionState queued;
+    CompletionState fsync_exhausted;
+    CompletionState exhausted;
+    const uint8_t   second = 2;
+    const uint8_t   third  = 3;
+    EXPECT_NE(store.submit_write(1, &second, 1, {.context = &queued, .complete_fn = &record_completion}), 0U);
+    EXPECT_TRUE(store.submit_fsync({.context = &fsync_exhausted, .complete_fn = &record_completion}).ok());
+    EXPECT_TRUE(fsync_exhausted.done.load(std::memory_order_acquire));
+    EXPECT_EQ(fsync_exhausted.code.load(std::memory_order_relaxed), static_cast<int>(Code::kResourceExhausted));
+    EXPECT_EQ(store.submit_write(2, &third, 1, {.context = &exhausted, .complete_fn = &record_completion}), 0U);
+    EXPECT_TRUE(exhausted.done.load(std::memory_order_acquire));
+    EXPECT_EQ(exhausted.code.load(std::memory_order_relaxed), static_cast<int>(Code::kResourceExhausted));
+    EXPECT_TRUE(blocked.ran_off_submitter.load(std::memory_order_relaxed));
+
+    blocked.release.store(true, std::memory_order_release);
+    blocked.release.notify_one();
+    queued.done.wait(false, std::memory_order_acquire);
+    EXPECT_EQ(queued.code.load(std::memory_order_relaxed), static_cast<int>(Code::kOk));
+}
+
+TEST(ChunkPageStore, CancelledQueuedOperationCompletesAndShutdownDrains)
+{
+    auto               catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto               transport = std::make_shared<MemoryChunkTransport>();
+    BlockingCompletion blocked{.submitter = std::this_thread::get_id()};
+    CompletionState    cancelled;
+    const uint8_t      first  = 1;
+    const uint8_t      second = 2;
+    {
+        ChunkPageStore store({.tree_id = 21, .owner_epoch = 1, .iu_size = 1, .max_pending_ops = 2}, catalog, transport);
+        ASSERT_NE(store.submit_write(0, &first, 1, {.context = &blocked, .complete_fn = &block_completion}), 0U);
+        blocked.entered.wait(false, std::memory_order_acquire);
+        const uint64_t operation_id =
+            store.submit_write(1, &second, 1, {.context = &cancelled, .complete_fn = &record_completion});
+        ASSERT_NE(operation_id, 0U);
+        store.cancel(operation_id);
+        blocked.release.store(true, std::memory_order_release);
+        blocked.release.notify_one();
+    }
+    EXPECT_TRUE(cancelled.done.load(std::memory_order_acquire));
+    EXPECT_EQ(cancelled.code.load(std::memory_order_relaxed), static_cast<int>(Code::kUnavailable));
+}
+
+TEST(ChunkPageStore, CompletionMayReleaseFinalStoreOwner)
+{
+    auto                  catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto                  transport = std::make_shared<MemoryChunkTransport>();
+    SelfDestroyCompletion completion;
+    completion.store = std::make_unique<ChunkPageStore>(
+        ChunkPageStore::Config{.tree_id = 22, .owner_epoch = 1, .iu_size = 1}, catalog, transport);
+    ChunkPageStore *store = completion.store.get();
+    const uint8_t   value = 1;
+    ASSERT_NE(
+        store->submit_write(0, &value, 1, {.context = &completion, .complete_fn = &destroy_store_from_completion}), 0U);
+    completion.entered.wait(false, std::memory_order_acquire);
+    completion.release.store(true, std::memory_order_release);
+    completion.release.notify_one();
+    completion.done.wait(false, std::memory_order_acquire);
 }
 
 TEST(ChunkPageStore, CApiFactoryInjectsBackendWithoutChangingOpen)
@@ -409,10 +540,18 @@ TEST(ChunkPageStore, CApiFactoryInjectsBackendWithoutChangingOpen)
     ASSERT_GT(ct_evict_clean_leaves(tree, 0), 0U);
     ct_future *future = ct_get_async(tree, reinterpret_cast<const uint8_t *>("key"), 3);
     ASSERT_NE(future, nullptr);
-    int32_t done  = 0;
-    int32_t found = 0;
-    ct_buf  value = {};
-    ASSERT_EQ(ct_future_poll(future, &done, &found, &slot, &value), 0);
+    int32_t    done          = 0;
+    int32_t    found         = 0;
+    ct_buf     value         = {};
+    ct_status  future_status = 0;
+    const auto deadline      = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    do {
+        future_status = ct_future_poll(future, &done, &found, &slot, &value);
+        if (done == 0) {
+            std::this_thread::yield();
+        }
+    } while (done == 0 && std::chrono::steady_clock::now() < deadline);
+    ASSERT_EQ(future_status, 0);
     EXPECT_EQ(done, 1);
     EXPECT_EQ(found, 1);
     EXPECT_EQ(std::string(reinterpret_cast<char *>(value.data), value.len), "value");

@@ -6,6 +6,7 @@
 #include "chunk_page_store.h"
 
 #include "c_api_internal.h"
+#include "chunk_async_executor.h"
 #include "chunk_c_api_internal.h"
 #include "crowdb-common/crc32c.h"
 
@@ -298,11 +299,17 @@ ChunkPageStore::ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catal
     if (config_.page_alignment == 0) {
         config_.page_alignment = 64U * 1024U;
     }
+    if (config_.max_pending_ops == 0) {
+        config_.max_pending_ops = 256;
+    }
     if (transport_ == nullptr) {
         transport_ = std::make_shared<MemoryChunkTransport>();
     }
     config_.pack_bytes = std::min<uint64_t>(config_.pack_bytes, config_.max_chunk_bytes);
+    async_executor_    = std::make_unique<ChunkAsyncExecutor>(this, config_.max_pending_ops);
 }
+
+ChunkPageStore::~ChunkPageStore() = default;
 
 Status ChunkPageStore::materialize_active(std::vector<uint8_t> *out) const
 {
@@ -683,25 +690,43 @@ uint64_t ChunkPageStore::size() const
 
 uint64_t ChunkPageStore::submit_read(PageAddr addr, void *buf, size_t len, AsyncCompletion on_complete)
 {
-    on_complete.complete(read_at(addr, static_cast<uint8_t *>(buf), len));
-    return 0;
+    const uint64_t operation_id = async_executor_->submit({.kind       = ChunkAsyncExecutor::Kind::kRead,
+                                                           .addr       = addr,
+                                                           .buffer     = buf,
+                                                           .length     = len,
+                                                           .completion = on_complete});
+    if (operation_id == 0) {
+        on_complete.complete(Status::resource_exhausted("chunk async operation queue is full"));
+    }
+    return operation_id;
 }
 
 uint64_t ChunkPageStore::submit_write(PageAddr addr, const void *buf, size_t len, AsyncCompletion on_complete)
 {
-    on_complete.complete(write_at(addr, static_cast<const uint8_t *>(buf), len));
-    return 0;
+    const uint64_t operation_id = async_executor_->submit({.kind         = ChunkAsyncExecutor::Kind::kWrite,
+                                                           .addr         = addr,
+                                                           .const_buffer = buf,
+                                                           .length       = len,
+                                                           .completion   = on_complete});
+    if (operation_id == 0) {
+        on_complete.complete(Status::resource_exhausted("chunk async operation queue is full"));
+    }
+    return operation_id;
 }
 
 Status ChunkPageStore::submit_fsync(AsyncCompletion on_complete)
 {
-    Status status = sync();
-    on_complete.complete(status);
+    const uint64_t operation_id =
+        async_executor_->submit({.kind = ChunkAsyncExecutor::Kind::kFsync, .completion = on_complete});
+    if (operation_id == 0) {
+        on_complete.complete(Status::resource_exhausted("chunk async operation queue is full"));
+    }
     return Status::Ok();
 }
 
-void ChunkPageStore::cancel(uint64_t)
+void ChunkPageStore::cancel(uint64_t operation_id)
 {
+    async_executor_->cancel(operation_id);
 }
 
 ChunkPageStoreStats ChunkPageStore::stats() const

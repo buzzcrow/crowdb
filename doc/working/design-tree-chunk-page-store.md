@@ -69,6 +69,14 @@ durable and the injected `RootCatalog::publish(expected_epoch, manifest)` is
 the sole visibility point. Publication failure leaves the prior root current
 and records all new objects as orphans.
 
+Backend-neutral read, write, and durability submissions first enter a bounded
+lock-free queue sized by `max_pending_ops` (default 256). One continuation
+worker preserves submission order across the two durability barriers, returns
+a stable nonzero operation ID, skips queued operations cancelled by ID, and
+drains all accepted callbacks before store destruction. A full queue completes
+the operation immediately with `ResourceExhausted`, preserving exactly-once
+completion ownership without admitting more queued work.
+
 ## 3. Manifest, Retention, and Recovery
 
 `ChunkManifest` contains tree identity, generation, owner epoch, root PID,

@@ -60,11 +60,17 @@ and structurally safe range rebuild while preserving local tree behavior.
   tails to 64 KiB, rotate whole packs at 256 MiB, allocate a fresh chunk after
   reopen, and emit logical reclaim candidates. Files:
   `src/backend/chunk/`, chunk backend tests.
-- [ ] **Implement asynchronous chunk store**: replace inline synchronous
-  completion with bounded concurrent pack writes, stdexec mirror fan-in,
-  coalesced reads, cancellation, and shutdown drain. Preserve the landed
-  layout refresh, bounded mirror retry, publication, and typed failures. Files:
-  `src/backend/chunk/`, protocol/CMake generation wiring.
+- [x] **Move chunk operations off the caller**: replace inline completion with
+  a bounded, lock-free, ordered executor; return stable operation IDs, cancel
+  queued work, reject overflow with resource exhaustion, and drain callbacks
+  during shutdown. Files: `src/backend/chunk/chunk_async_executor.*`,
+  `src/backend/chunk/chunk_page_store.*`,
+  `tests/integration/chunk_page_store_test.cpp`.
+- [ ] **Implement concurrent pack pipeline**: add bounded concurrent pack
+  writes, stdexec mirror fan-in, coalesced reads, and in-flight cancellation.
+  Preserve the landed layout refresh, bounded mirror retry, publication, and
+  typed failures. Files: `src/backend/chunk/`, protocol/CMake generation
+  wiring.
 - [ ] **Verify chunk persistence**: cover pack bounds, durability ordering,
   all-or-nothing recovery, maintenance failure, layout refresh, mirror retry,
   typed errors, retention, and metrics. Files:
