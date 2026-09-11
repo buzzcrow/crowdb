@@ -24,8 +24,8 @@ use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 use crate::{
     canonical_operation_digest, Checkpoint, ChunkKvError, CompareCondition, JournalPosition,
     MutationOperation, MutationResult, PartitionId, PartitionLifecycle, PartitionMetrics, PartitionRange,
-    RequestId, Result, SplitAbortProof, SplitArtifact, SplitCommitProof, SplitPlan, TransitionId,
-    ValueRevision, WalRecord,
+    PreparedChildArtifact, RequestId, Result, SplitAbortProof, SplitArtifact, SplitCommitProof, SplitPlan,
+    TransitionId, ValueRevision, WalRecord,
 };
 
 #[derive(Clone, Debug)]
@@ -127,6 +127,7 @@ pub struct Partition {
     applied_notify: Arc<Notify>,
     admission_notify: Arc<Notify>,
     split_transition: Arc<Mutex<Option<SplitTransition>>>,
+    prepared_artifact: Option<PreparedChildArtifact>,
     metrics: Arc<PartitionMetrics>,
     config: Arc<PartitionConfig>,
 }
@@ -230,6 +231,8 @@ impl Partition {
                 expired_floor: HashMap::new(),
                 recovered: false,
             },
+            PartitionLifecycle::Serving,
+            None,
         )
     }
 
@@ -269,9 +272,72 @@ impl Partition {
             journal.as_ref(),
         )
         .await?;
-        Self::start(partition_id, range, ownership_epoch, config, tree, journal, seed)
+        Self::start(
+            partition_id,
+            range,
+            ownership_epoch,
+            config,
+            tree,
+            journal,
+            seed,
+            PartitionLifecycle::Serving,
+            None,
+        )
     }
 
+    /// Recovers and validates one child artifact without granting service.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the artifact, checkpoint, tree, or journal does
+    /// not identify the same complete child frontier.
+    pub async fn recover_prepared(
+        artifact: PreparedChildArtifact,
+        checkpoint: Checkpoint,
+        config: PartitionConfig,
+        tree: Arc<dyn PartitionTree>,
+        journal: Arc<dyn PartitionJournal>,
+    ) -> Result<Self> {
+        if artifact.ownership_epoch == 0
+            || artifact.stream_name != checkpoint.stream_name
+            || artifact.stream_name != journal.stream_name()
+            || artifact.tree_manifest != checkpoint.tree_manifest
+            || artifact.applied_seq != checkpoint.applied_seq
+        {
+            return Err(ChunkKvError::InvalidRequest(
+                "prepared artifact does not match its checkpoint".into(),
+            ));
+        }
+        artifact.range.validate()?;
+        config.validate()?;
+        if tree.last_applied_seq() != checkpoint.applied_seq {
+            return Err(ChunkKvError::TreeCorruption(
+                "prepared tree frontier differs from checkpoint".into(),
+            ));
+        }
+        let seed = replay_suffix(
+            artifact.partition_id,
+            artifact.ownership_epoch,
+            &checkpoint,
+            config.retained_results,
+            tree.as_ref(),
+            journal.as_ref(),
+        )
+        .await?;
+        Self::start(
+            artifact.partition_id,
+            artifact.range.clone(),
+            artifact.ownership_epoch,
+            config,
+            tree,
+            journal,
+            seed,
+            PartitionLifecycle::Prepared,
+            Some(artifact),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn start(
         partition_id: PartitionId,
         range: PartitionRange,
@@ -280,13 +346,15 @@ impl Partition {
         tree: Arc<dyn PartitionTree>,
         journal: Arc<dyn PartitionJournal>,
         seed: RecoverySeed,
+        initial_lifecycle: PartitionLifecycle,
+        prepared_artifact: Option<PreparedChildArtifact>,
     ) -> Result<Self> {
         let next_seq = seed
             .applied_seq
             .checked_add(1)
             .ok_or_else(|| ChunkKvError::Faulted("mutation sequence exhausted".into()))?;
         let (sender, receiver) = mpsc::channel(config.queue_requests);
-        let lifecycle = Arc::new(AtomicU8::new(lifecycle_code(PartitionLifecycle::Serving)));
+        let lifecycle = Arc::new(AtomicU8::new(lifecycle_code(initial_lifecycle)));
         let queued_requests = Arc::new(AtomicUsize::new(0));
         let queued_bytes = Arc::new(AtomicU64::new(0));
         let journal_durable_seq = Arc::new(AtomicU64::new(seed.applied_seq));
@@ -340,6 +408,7 @@ impl Partition {
             applied_notify,
             admission_notify,
             split_transition,
+            prepared_artifact,
             metrics,
             config,
         })
@@ -685,6 +754,35 @@ impl Partition {
         self.lifecycle
             .store(lifecycle_code(PartitionLifecycle::Retired), Ordering::Release);
         self.metrics.split_commit();
+        Ok(())
+    }
+
+    /// Activates a validated prepared child only for the exact published split
+    /// artifact that contains it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an absent catalog revision, mismatched artifact,
+    /// or non-prepared lifecycle.
+    pub fn activate_prepared(&self, proof: &SplitCommitProof) -> Result<()> {
+        let expected = self.prepared_artifact.as_ref().ok_or_else(|| {
+            ChunkKvError::SplitRetry("partition was not opened from a prepared artifact".into())
+        })?;
+        if proof.catalog_revision == 0
+            || (&proof.artifact.left != expected && &proof.artifact.right != expected)
+        {
+            return Err(ChunkKvError::SplitRetry(
+                "catalog proof does not contain the exact prepared child".into(),
+            ));
+        }
+        self.lifecycle
+            .compare_exchange(
+                lifecycle_code(PartitionLifecycle::Prepared),
+                lifecycle_code(PartitionLifecycle::Serving),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(|observed| read_state_error(lifecycle_from_code(observed)))?;
         Ok(())
     }
 

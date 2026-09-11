@@ -63,7 +63,7 @@ whose ordered journal is R141 and whose durable tree is R140.
   with matching mutation/no-op sequence advancement.
 - [ ] Enforce lag limits, fence/drain the parent, checkpoint both children at
   cutover `c`, and return one immutable prepared artifact.
-- [ ] Open assigned children as non-serving `Prepared` handles and activate
+- [x] Open assigned children as non-serving `Prepared` handles and activate
   them only after exact catalog proof. Files: `lib/crowdb-chunk-kv/src/`,
   `lib/crowdb-chunk-kv/tests/`.
 - [ ] Resolve exact commit/abort proofs fail-closed; bounded post-commit

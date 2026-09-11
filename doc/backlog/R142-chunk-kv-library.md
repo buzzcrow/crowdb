@@ -546,9 +546,10 @@ Required gates:
   they must not be emulated with a racy Rust get-plus-scan or full materialize
   and sort.
 - Split currently validates plans, fences/drains admission, and resolves exact
-  typed commit/abort proofs, but the R140 range rebuild, serving delta replay,
-  child checkpoint/stream creation, base pins, lag budgets, and prepared-child
-  activation are not yet implemented.
+  typed commit/abort proofs. Prepared children recover fail-closed and activate
+  only when the catalog proof contains their exact artifact. The R140 range
+  rebuild, serving delta replay, child checkpoint/stream creation, base pins,
+  and lag budgets are not yet implemented.
 - Checkpoint replay and retry-retention frontiers are enforced, while durable
   checkpoint catalog publication, pin-aware R141 trim watermarks, maintenance
   retry policy, and orphan reporting still need production lifecycle wiring.

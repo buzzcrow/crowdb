@@ -868,6 +868,98 @@ async fn transfer_reuses_tree_and_stream_under_higher_epoch() {
 }
 
 #[tokio::test]
+async fn prepared_child_serves_only_after_exact_catalog_proof() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let stream_name = StreamName { high: 12, low: 12 };
+    let stream = ChunkStream::create(
+        StreamBinding {
+            stream_name,
+            metadata_group_id: 7,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("chunk-kv-partition".into()),
+        },
+        20,
+        StreamConfig::default(),
+        store.clone() as Arc<dyn StreamRegistry>,
+        store.clone() as Arc<dyn StreamMetadataStore>,
+        store as Arc<dyn StreamChunkStore>,
+    )
+    .await
+    .unwrap();
+    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
+    let artifact = PreparedChildArtifact {
+        partition_id: PartitionId { high: 12, low: 1 },
+        range: PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        ownership_epoch: 20,
+        tree_manifest: 0,
+        stream_name,
+        applied_seq: 0,
+    };
+    let prepared = Partition::recover_prepared(
+        artifact.clone(),
+        Checkpoint {
+            tree_manifest: 0,
+            applied_seq: 0,
+            stream_name,
+            replay_offset: 0,
+        },
+        PartitionConfig::default(),
+        Arc::new(MemoryPartitionTree::default()),
+        journal,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        prepared.lifecycle(),
+        crowdb_chunk_kv::PartitionLifecycle::Prepared
+    );
+    assert!(matches!(
+        prepared.get(20, b"b", None).await,
+        Err(ChunkKvError::NotServing(_))
+    ));
+
+    let other = PreparedChildArtifact {
+        partition_id: PartitionId { high: 12, low: 2 },
+        range: PartitionRange {
+            start: Some(b"m".to_vec()),
+            end: Some(b"z".to_vec()),
+        },
+        ownership_epoch: 20,
+        tree_manifest: 0,
+        stream_name: StreamName { high: 12, low: 13 },
+        applied_seq: 0,
+    };
+    let proof = SplitCommitProof {
+        catalog_revision: 7,
+        artifact: SplitArtifact {
+            transition_id: TransitionId { high: 70, low: 71 },
+            parent_id: PartitionId { high: 10, low: 1 },
+            parent_epoch: 19,
+            cutover_seq: 0,
+            left: artifact,
+            right: other,
+        },
+    };
+    prepared.activate_prepared(&proof).unwrap();
+    assert_eq!(prepared.lifecycle(), crowdb_chunk_kv::PartitionLifecycle::Serving);
+    prepared
+        .mutate(
+            20,
+            request(700),
+            MutationOperation::Put {
+                key: b"b".to_vec(),
+                value: b"ready".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn split_control_is_idempotent_and_commits_only_an_exact_artifact() {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let stream_name = StreamName { high: 12, low: 12 };
