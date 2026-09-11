@@ -50,7 +50,7 @@ maintenance.
   RPC surface with catalog-aware point routing, durable client request
   identities, multi-get, non-transactional batch mutation, multi-partition
   forward/reverse scan, bounded retry, and client-facing E2E coverage.
-- **[R146](R146-tree-chunk-orphan-sealing.md)** — seal abandoned B+tree
+- **[R146](R146-chunk-orphan-sealing.md)** — seal abandoned chunks across all chunk users
   chunks — Area: crowdb-tree / chunkdb — Renew durable writer leases while a
   tree owns its active chunk, allocate a fresh chunk after process restart, and
   extend chunkdb's restart-safe expired-writer sweep to seal abandoned B+tree

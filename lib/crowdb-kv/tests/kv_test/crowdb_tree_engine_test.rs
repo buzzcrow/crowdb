@@ -95,7 +95,7 @@ fn is_healthy_is_true_on_a_freshly_opened_engine() {
 /// `InMemKV`.
 #[test]
 fn get_scan_apply_always_resolve_ready() {
-    use crowdb_kv::kv::KVEngine;
+    use crowdb_kv::kv::{KVEngine, KVFuture};
 
     let e = open();
     assert!(matches!(
@@ -110,7 +110,7 @@ fn get_scan_apply_always_resolve_ready() {
 }
 
 /// A durable engine reloads an evicted leaf and returns the correct value.
-/// The io_uring completion can race the first Rust poll, so either `Ready` or
+/// The `io_uring` completion can race the first Rust poll, so either `Ready` or
 /// `Pending` is valid after the miss has submitted asynchronous I/O.
 #[tokio::test]
 async fn get_reloads_an_evicted_leaf() {
@@ -141,7 +141,7 @@ async fn get_reloads_an_evicted_leaf() {
 /// Same reload guard as [`get_reloads_an_evicted_leaf`], for `scan`.
 #[tokio::test]
 async fn scan_reloads_an_evicted_leaf() {
-    use crowdb_kv::kv::{KVEngine, KVFuture};
+    use crowdb_kv::kv::KVEngine;
 
     let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("crowdb-tree-engine");
     let e = CrowdbTreeEngine::open(&CrowdbTreeConfig {
