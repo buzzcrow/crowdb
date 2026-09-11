@@ -44,6 +44,14 @@ struct crowdb_rpc_pool_s
 // Opaque handle struct definitions are in c_api_internal.h (shared
 // with co_client.cpp).
 
+static crowdb_rpc_status submit_status(bool submitted, const crowdb::rpc::Connection *conn)
+{
+    if (submitted) {
+        return CROWDB_RPC_OK;
+    }
+    return conn != nullptr && !conn->is_open() ? CROWDB_RPC_ERR_CONN_CLOSED : CROWDB_RPC_ERR_SEND_QUEUE;
+}
+
 // ── Buffer ────────────────────────────────────────────────────────
 
 crowdb_rpc_buffer_t crowdb_rpc_buffer_alloc(crowdb_rpc_pool_t pool, uint32_t capacity)
@@ -608,7 +616,7 @@ crowdb_rpc_status crowdb_rpc_client_send(crowdb_rpc_client_t client, crowdb_rpc_
             crowdb_rpc_buffer_release(data);
         }
 
-        return ok ? CROWDB_RPC_OK : CROWDB_RPC_ERR_SEND_QUEUE;
+        return submit_status(ok, conn->conn.get());
     }
     catch (...) {
         return CROWDB_RPC_ERR_CONN_ERROR;
@@ -638,7 +646,7 @@ crowdb_rpc_status crowdb_rpc_client_send_slab(crowdb_rpc_client_t client, crowdb
         if (data != nullptr) {
             crowdb_rpc_buffer_release(data);
         }
-        return ok ? CROWDB_RPC_OK : CROWDB_RPC_ERR_SEND_QUEUE;
+        return submit_status(ok, conn->conn.get());
     }
     catch (...) {
         return CROWDB_RPC_ERR_CONN_ERROR;
