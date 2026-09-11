@@ -66,7 +66,12 @@ and structurally safe range rebuild while preserving local tree behavior.
   during shutdown. Files: `src/backend/chunk/chunk_async_executor.*`,
   `src/backend/chunk/chunk_page_store.*`,
   `tests/integration/chunk_page_store_test.cpp`.
-- [ ] **Implement concurrent pack pipeline**: add bounded concurrent pack
+- [x] **Harden reads and publication**: cache one immutable checksummed pack for
+  adjacent reads, observe cancellation around transport completion, hard-cap
+  logical chunk data at 256 MiB, and carry one generation fence from manifest
+  construction through publication. Files: `src/backend/chunk/`,
+  `tests/integration/chunk_page_store_test.cpp`.
+- [~] **Implement concurrent pack pipeline**: add bounded concurrent pack
   writes, stdexec mirror fan-in, coalesced reads, and in-flight cancellation.
   Preserve the landed layout refresh, bounded mirror retry, publication, and
   typed failures. Files: `src/backend/chunk/`, protocol/CMake generation
@@ -159,10 +164,12 @@ and structurally safe range rebuild while preserving local tree behavior.
 
 ## Remaining Audit Findings
 
-- The production `crowdb-rpc`/FlatBuffers transport and immutable layout cache
-  are present, but `ChunkPageStore` still completes async submissions inline;
-  it has no bounded concurrent pack pipeline, coalesced DiskIO read, shutdown
-  drain, effective cancellation, or stdexec mirror fan-in.
+- The production `crowdb-rpc`/FlatBuffers transport, ordered async executor,
+  immutable layout cache, checksummed pack-read cache, shutdown drain, and
+  queued/in-flight read cancellation are present. The pack writer remains
+  serialized and still needs asynchronous mirror senders with error/stop
+  propagation on one shared bounded blocking-I/O scheduler; `sync_wait` and
+  per-tree worker pools are not acceptable on this path.
 - Reference segments are immutable directory-addressed images, but mapping
   slots still hold local byte addresses instead of chunk-reference ordinals.
 - Page fences are reconstructed during native snapshot validation rather than

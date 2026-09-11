@@ -69,6 +69,15 @@ durable and the injected `RootCatalog::publish(expected_epoch, manifest)` is
 the sole visibility point. Publication failure leaves the prior root current
 and records all new objects as orphans.
 
+Reads fetch and checksum a whole pack, then publish one immutable cached pack
+on the chunk backend's ordered async executor. Adjacent async page reads
+covered by that pack reuse its bytes without another DiskIO call. A different
+reference replaces the executor-owned cache entry without atomic shared-pointer
+locking; direct synchronous reads bypass it. Cancellation is checked between
+transport attempts and again before returning bytes, advancing a cursor, or
+publishing a root; a synchronous transport call already in progress is allowed
+to return before the cancelled operation completes.
+
 Backend-neutral read, write, and durability submissions first enter a bounded
 lock-free queue sized by `max_pending_ops` (default 256). One continuation
 worker preserves submission order across the two durability barriers, returns
@@ -85,6 +94,12 @@ directory, and checksums. Directories and their images are immutable. Recovery
 loads the newest epoch-valid manifest, validates every checksum and bound, and
 falls back only to a preceding complete generation. Availability failures do
 not mutate mappings or mark the tree corrupt.
+
+Checkpoint captures one expected catalog generation before pack construction.
+The manifest is numbered exactly `expected + 1`, and publication uses that
+same expected value; the catalog rejects any skipped or reused generation.
+Concurrent publication therefore fences stale checkpoint work instead of
+allowing it to reload and overwrite the newer root.
 
 Opening a manifest creates a pin. The catalog exposes the oldest reclaimable
 generation, while in-memory pins may extend retention. Orphan scanning removes

@@ -23,6 +23,7 @@ namespace
 
 constexpr uint64_t kAnchorRegionBytes    = 8192;
 constexpr size_t   kReferencesPerSegment = 256;
+constexpr uint64_t kMaxChunkBytes        = 256U * 1024U * 1024U;
 
 uint32_t update_u64(uint32_t crc, uint64_t value)
 {
@@ -58,8 +59,18 @@ Status MemoryRootCatalog::publish(uint64_t tree_id, uint64_t expected_generation
     if (manifest == nullptr || manifest->tree_id != tree_id || manifest->owner_epoch != owner_epoch) {
         return Status::invalid_argument("chunk manifest identity mismatch");
     }
+    if (expected_generation == std::numeric_limits<uint64_t>::max() ||
+        manifest->generation != expected_generation + 1) {
+        return Status::invalid_argument("chunk manifest generation does not follow its publication fence");
+    }
     if (owner_epoch_.load(std::memory_order_acquire) != owner_epoch) {
         return Status::unavailable("chunk root publication fenced by owner epoch");
+    }
+    if (block_next_publish_.exchange(false, std::memory_order_acq_rel)) {
+        publish_blocked_.store(true, std::memory_order_release);
+        publish_blocked_.notify_all();
+        release_publish_.wait(false, std::memory_order_acquire);
+        publish_blocked_.store(false, std::memory_order_release);
     }
     auto           expected           = current_.load(std::memory_order_acquire);
     const uint64_t current_generation = expected == nullptr ? 0 : expected->generation;
@@ -128,6 +139,29 @@ std::shared_ptr<const ChunkReferenceSegmentImage> MemoryRootCatalog::load_refere
         return stored.tree_id == tree_id && stored.image->object_id == object_id;
     });
     return found == store->end() ? nullptr : found->image;
+}
+
+uint64_t MemoryRootCatalog::allocate_reference_segment_id(uint64_t)
+{
+    return next_reference_segment_id_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void MemoryRootCatalog::block_next_publish_for_tests()
+{
+    release_publish_.store(false, std::memory_order_release);
+    publish_blocked_.store(false, std::memory_order_release);
+    block_next_publish_.store(true, std::memory_order_release);
+}
+
+void MemoryRootCatalog::wait_for_blocked_publish_for_tests() const
+{
+    publish_blocked_.wait(false, std::memory_order_acquire);
+}
+
+void MemoryRootCatalog::release_blocked_publish_for_tests()
+{
+    release_publish_.store(true, std::memory_order_release);
+    release_publish_.notify_all();
 }
 
 uint64_t MemoryRootCatalog::discard_reference_segments(uint64_t tree_id, const std::vector<uint64_t> &object_ids)
@@ -305,8 +339,9 @@ ChunkPageStore::ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catal
     if (transport_ == nullptr) {
         transport_ = std::make_shared<MemoryChunkTransport>();
     }
-    config_.pack_bytes = std::min<uint64_t>(config_.pack_bytes, config_.max_chunk_bytes);
-    async_executor_    = std::make_unique<ChunkAsyncExecutor>(this, config_.max_pending_ops);
+    config_.max_chunk_bytes = std::min(config_.max_chunk_bytes, kMaxChunkBytes);
+    config_.pack_bytes      = std::min<uint64_t>(config_.pack_bytes, config_.max_chunk_bytes);
+    async_executor_         = std::make_unique<ChunkAsyncExecutor>(this, config_.max_pending_ops);
 }
 
 ChunkPageStore::~ChunkPageStore() = default;
@@ -387,6 +422,53 @@ Status ChunkPageStore::write_at(uint64_t off, const uint8_t *buf, size_t len)
 
 Status ChunkPageStore::read_at(uint64_t off, uint8_t *buf, size_t len) const
 {
+    return read_at_cancellable(off, buf, len, {});
+}
+
+Status ChunkPageStore::read_pack(const ChunkPageRef &ref, std::shared_ptr<const std::vector<uint8_t>> *out,
+                                 ChunkCancellation cancellation) const
+{
+    if (cancellation.cancelled()) {
+        return Status::unavailable("chunk page read cancelled");
+    }
+    const bool use_cache = cancellation.cancelled_id != nullptr;
+    auto       cached    = use_cache ? cached_pack_ : nullptr;
+    if (cached != nullptr && cached->ref.chunk_id == ref.chunk_id && cached->ref.offset == ref.offset &&
+        cached->ref.length == ref.length && cached->ref.checksum == ref.checksum) {
+        if (cancellation.cancelled()) {
+            return Status::unavailable("chunk page read cancelled");
+        }
+        *out = cached->bytes;
+        return Status::Ok();
+    }
+    pack_reads_.fetch_add(1, std::memory_order_relaxed);
+    auto valid_mirror     = std::make_shared<std::vector<uint8_t>>(ref.length);
+    bool mirror_responded = false;
+    for (uint32_t mirror = 0; mirror < 3; ++mirror) {
+        if (cancellation.cancelled()) {
+            return Status::unavailable("chunk page read cancelled");
+        }
+        Status read_status =
+            transport_->read_mirror(ref.chunk_id, mirror, ref.offset, valid_mirror->data(), valid_mirror->size());
+        if (!read_status.ok()) {
+            continue;
+        }
+        mirror_responded = true;
+        if (ref.checksum == crowdb::common::crc32c(valid_mirror->data(), valid_mirror->size())) {
+            auto entry = std::make_shared<CachedPack>(CachedPack{.ref = ref, .bytes = valid_mirror});
+            if (use_cache) {
+                cached_pack_ = std::move(entry);
+            }
+            *out = std::move(valid_mirror);
+            return cancellation.cancelled() ? Status::unavailable("chunk page read cancelled") : Status::Ok();
+        }
+    }
+    return mirror_responded ? Status::corruption("chunk page pack checksum mismatch on every mirror")
+                            : Status::unavailable("chunk page pack mirrors are unavailable");
+}
+
+Status ChunkPageStore::read_at_cancellable(uint64_t off, uint8_t *buf, size_t len, ChunkCancellation cancellation) const
+{
     if (unavailable_.load(std::memory_order_acquire)) {
         return Status::unavailable("chunk mirrors unavailable after bounded retries");
     }
@@ -413,30 +495,18 @@ Status ChunkPageStore::read_at(uint64_t off, uint8_t *buf, size_t len) const
         if (pack_end <= off || pack.logical_offset >= read_end) {
             continue;
         }
-        pack_reads_.fetch_add(1, std::memory_order_relaxed);
-        std::vector<uint8_t> valid_mirror(ref.length);
-        bool                 found            = false;
-        bool                 mirror_responded = false;
-        for (uint32_t mirror = 0; mirror < 3; ++mirror) {
-            Status read_status =
-                transport_->read_mirror(ref.chunk_id, mirror, ref.offset, valid_mirror.data(), valid_mirror.size());
-            if (!read_status.ok()) {
-                continue;
-            }
-            mirror_responded = true;
-            if (ref.checksum == crowdb::common::crc32c(valid_mirror.data(), valid_mirror.size())) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) {
-            return mirror_responded ? Status::corruption("chunk page pack checksum mismatch on every mirror")
-                                    : Status::unavailable("chunk page pack mirrors are unavailable");
+        std::shared_ptr<const std::vector<uint8_t>> valid_mirror;
+        Status                                      read_status = read_pack(ref, &valid_mirror, cancellation);
+        if (!read_status.ok()) {
+            return read_status;
         }
         const uint64_t begin = std::max(off, pack.logical_offset);
         const uint64_t end   = std::min(read_end, pack_end);
-        std::memcpy(buf + (begin - off), valid_mirror.data() + (begin - pack.logical_offset), end - begin);
+        std::memcpy(buf + (begin - off), valid_mirror->data() + (begin - pack.logical_offset), end - begin);
         copied += end - begin;
+    }
+    if (cancellation.cancelled()) {
+        return Status::unavailable("chunk page read cancelled");
     }
     if (copied != len) {
         return Status::corruption("chunk manifest has a page-pack coverage gap");
@@ -529,21 +599,27 @@ uint32_t ChunkPageStore::manifest_checksum(const ChunkManifest &manifest)
     return crc;
 }
 
-Status ChunkPageStore::build_manifest(std::shared_ptr<ChunkManifest> *out)
+Status ChunkPageStore::build_manifest(uint64_t expected_generation, std::shared_ptr<ChunkManifest> *out,
+                                      ChunkCancellation cancellation)
 {
+    if (expected_generation == std::numeric_limits<uint64_t>::max()) {
+        return Status::resource_exhausted("chunk manifest generation is exhausted");
+    }
     if (!orphan_reference_segments_.empty()) {
         catalog_->discard_reference_segments(config_.tree_id, orphan_reference_segments_);
         orphan_reference_segments_.clear();
     }
-    auto prior                = catalog_->load(config_.tree_id);
     auto manifest             = std::make_shared<ChunkManifest>();
     manifest->tree_id         = config_.tree_id;
-    manifest->generation      = prior == nullptr ? 1 : prior->generation + 1;
+    manifest->generation      = expected_generation + 1;
     manifest->owner_epoch     = config_.owner_epoch;
     manifest->logical_size    = staged_.size();
     manifest->published_at_ms = monotonic_millis();
     uint64_t offset           = 0;
     while (offset < staged_.size()) {
+        if (cancellation.cancelled()) {
+            return Status::unavailable("chunk manifest build cancelled");
+        }
         const size_t length = std::min(config_.pack_bytes, staged_.size() - static_cast<size_t>(offset));
         if (!active_chunk_id_.empty() && length > config_.max_chunk_bytes - active_chunk_bytes_) {
             Status seal_status = transport_->seal_chunk(active_chunk_id_, config_.owner_epoch, active_chunk_cursor_);
@@ -566,6 +642,7 @@ Status ChunkPageStore::build_manifest(std::shared_ptr<ChunkManifest> *out)
                 return allocate_status;
             }
         }
+
         ChunkPagePack pack;
         pack.ordinal                         = manifest->packs.size();
         pack.logical_offset                  = offset;
@@ -579,6 +656,9 @@ Status ChunkPageStore::build_manifest(std::shared_ptr<ChunkManifest> *out)
         for (uint32_t mirror = 0; mirror < 3; ++mirror) {
             bool written = false;
             for (uint32_t attempt = 0; attempt <= config_.mirror_retry_limit; ++attempt) {
+                if (cancellation.cancelled()) {
+                    return Status::unavailable("chunk manifest build cancelled");
+                }
                 mirror_write_attempts_.fetch_add(1, std::memory_order_relaxed);
                 if ((mirror_write_failure_mask_.load(std::memory_order_acquire) & (1U << mirror)) == 0) {
                     Status write_status = transport_->write_mirror(active_chunk_id_, mirror, active_chunk_cursor_,
@@ -594,6 +674,9 @@ Status ChunkPageStore::build_manifest(std::shared_ptr<ChunkManifest> *out)
                 return Status::unavailable("chunk mirror write unavailable after bounded retries");
             }
         }
+        if (cancellation.cancelled()) {
+            return Status::unavailable("chunk manifest build cancelled");
+        }
         Status advance_status =
             transport_->advance_write(active_chunk_id_, active_chunk_cursor_, active_chunk_cursor_ + physical_length);
         if (!advance_status.ok()) {
@@ -605,8 +688,12 @@ Status ChunkPageStore::build_manifest(std::shared_ptr<ChunkManifest> *out)
         offset += length;
     }
     for (size_t first = 0; first < manifest->packs.size(); first += kReferencesPerSegment) {
-        auto segment           = std::make_shared<ChunkReferenceSegmentImage>();
-        segment->object_id     = (manifest->generation << 32U) | (first / kReferencesPerSegment + 1);
+        auto segment       = std::make_shared<ChunkReferenceSegmentImage>();
+        segment->object_id = catalog_->allocate_reference_segment_id(config_.tree_id);
+        if (segment->object_id == 0) {
+            catalog_->discard_reference_segments(config_.tree_id, reference_segment_ids(*manifest));
+            return Status::resource_exhausted("chunk reference segment identity is exhausted");
+        }
         segment->first_ordinal = first;
         const size_t end       = std::min(first + kReferencesPerSegment, manifest->packs.size());
         for (size_t index = first; index < end; ++index) {
@@ -642,6 +729,11 @@ std::vector<uint64_t> ChunkPageStore::reference_segment_ids(const ChunkManifest 
 
 Status ChunkPageStore::sync()
 {
+    return sync_cancellable({});
+}
+
+Status ChunkPageStore::sync_cancellable(ChunkCancellation cancellation)
+{
     if (!staged_initialized_) {
         return Status::Ok();
     }
@@ -652,15 +744,21 @@ Status ChunkPageStore::sync()
     if (!data_durable_) {
         return Status::internal_error("chunk root cannot publish before data durability barrier");
     }
+    auto                           prior               = catalog_->load(config_.tree_id);
+    const uint64_t                 expected_generation = prior == nullptr ? 0 : prior->generation;
     std::shared_ptr<ChunkManifest> manifest;
-    Status                         build_status = build_manifest(&manifest);
+    Status                         build_status = build_manifest(expected_generation, &manifest, cancellation);
     if (!build_status.ok()) {
         orphan_bytes_.fetch_add(staged_.size(), std::memory_order_relaxed);
         return build_status;
     }
-    auto           prior               = catalog_->load(config_.tree_id);
-    const uint64_t expected_generation = prior == nullptr ? 0 : prior->generation;
-    Status         status = catalog_->publish(config_.tree_id, expected_generation, config_.owner_epoch, manifest);
+    if (cancellation.cancelled()) {
+        orphan_bytes_.fetch_add(staged_.size(), std::memory_order_relaxed);
+        auto ids = reference_segment_ids(*manifest);
+        orphan_reference_segments_.insert(orphan_reference_segments_.end(), ids.begin(), ids.end());
+        return Status::unavailable("chunk root publication cancelled");
+    }
+    Status status = catalog_->publish(config_.tree_id, expected_generation, config_.owner_epoch, manifest);
     if (!status.ok()) {
         orphan_bytes_.fetch_add(staged_.size(), std::memory_order_relaxed);
         auto ids = reference_segment_ids(*manifest);

@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include "chunk_cancellation.h"
 #include "chunk_transport.h"
 #include "crowdb-tree/backend/async_page_store.h"
 #include "crowdb-tree/backend/page_store.h"
@@ -76,6 +77,7 @@ class RootCatalog
                                              std::shared_ptr<const ChunkReferenceSegmentImage> segment)   = 0;
     [[nodiscard]] virtual std::shared_ptr<const ChunkReferenceSegmentImage>
                      load_reference_segment(uint64_t tree_id, uint64_t object_id) const                    = 0;
+    virtual uint64_t allocate_reference_segment_id(uint64_t tree_id)                                       = 0;
     virtual uint64_t discard_reference_segments(uint64_t tree_id, const std::vector<uint64_t> &object_ids) = 0;
     virtual Status   publish(uint64_t tree_id, uint64_t expected_generation, uint64_t owner_epoch,
                              std::shared_ptr<const ChunkManifest> manifest)                                = 0;
@@ -114,13 +116,18 @@ class MemoryRootCatalog final : public RootCatalog
                                      std::shared_ptr<const ChunkReferenceSegmentImage> segment) override;
     [[nodiscard]] std::shared_ptr<const ChunkReferenceSegmentImage>
              load_reference_segment(uint64_t tree_id, uint64_t object_id) const override;
+    uint64_t allocate_reference_segment_id(uint64_t tree_id) override;
     uint64_t discard_reference_segments(uint64_t tree_id, const std::vector<uint64_t> &object_ids) override;
 
     [[nodiscard]] uint64_t reference_segment_count(uint64_t tree_id) const;
     void                   corrupt_active_reference_segment(size_t segment_index, size_t ref_index);
+    void                   block_next_publish_for_tests();
+    void                   wait_for_blocked_publish_for_tests() const;
+    void                   release_blocked_publish_for_tests();
 
   private:
     std::atomic<uint64_t>                             owner_epoch_;
+    std::atomic<uint64_t>                             next_reference_segment_id_{1};
     std::atomic<std::shared_ptr<const ChunkManifest>> current_;
     using ManifestHistory = std::vector<std::shared_ptr<const ChunkManifest>>;
     std::atomic<std::shared_ptr<const ManifestHistory>> history_;
@@ -133,6 +140,9 @@ class MemoryRootCatalog final : public RootCatalog
 
     using ReferenceSegmentStore = std::vector<StoredReferenceSegment>;
     std::atomic<std::shared_ptr<const ReferenceSegmentStore>> reference_segment_store_;
+    std::atomic<bool>                                         block_next_publish_{false};
+    mutable std::atomic<bool>                                 publish_blocked_{false};
+    std::atomic<bool>                                         release_publish_{false};
 };
 
 struct ChunkPageStoreStats
@@ -198,8 +208,21 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     uint64_t                          reclaim_orphans();
 
   private:
-    Status                               materialize_active(std::vector<uint8_t> *out) const;
-    Status                               build_manifest(std::shared_ptr<ChunkManifest> *out);
+    friend class ChunkAsyncExecutor;
+
+    struct CachedPack
+    {
+        ChunkPageRef                                ref;
+        std::shared_ptr<const std::vector<uint8_t>> bytes;
+    };
+
+    Status materialize_active(std::vector<uint8_t> *out) const;
+    Status build_manifest(uint64_t expected_generation, std::shared_ptr<ChunkManifest> *out,
+                          ChunkCancellation cancellation = {});
+    Status read_at_cancellable(uint64_t off, uint8_t *buf, size_t len, ChunkCancellation cancellation) const;
+    Status sync_cancellable(ChunkCancellation cancellation);
+    Status read_pack(const ChunkPageRef &ref, std::shared_ptr<const std::vector<uint8_t>> *out,
+                     ChunkCancellation cancellation) const;
     std::shared_ptr<const ChunkManifest> load_layout() const;
     Status          resolve_ordinal(const ChunkManifest &manifest, uint64_t ordinal, ChunkPageRef *out) const;
     static uint32_t reference_segment_checksum(const ChunkReferenceSegmentImage &segment);
@@ -216,6 +239,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     std::atomic<bool>                                         unavailable_{false};
     std::atomic<uint8_t>                                      mirror_write_failure_mask_{0};
     mutable std::atomic<std::shared_ptr<const ChunkManifest>> cached_layout_;
+    mutable std::shared_ptr<const CachedPack>                 cached_pack_;
     mutable std::atomic<uint64_t>                             layout_valid_until_ms_{0};
     std::atomic<uint64_t>                                     generations_published_{0};
     std::atomic<uint64_t>                                     packs_written_{0};

@@ -150,8 +150,9 @@ void ChunkAsyncExecutor::run(const std::shared_ptr<State> &state)
 
 void ChunkAsyncExecutor::execute(const std::shared_ptr<State> &state, Slot *slot, uint64_t position)
 {
-    const uint64_t operation_id = position + 1;
-    Status         status;
+    const uint64_t          operation_id = position + 1;
+    const ChunkCancellation cancellation{.cancelled_id = &slot->cancelled_id, .operation_id = operation_id};
+    Status                  status;
     if (slot->cancelled_id.load(std::memory_order_acquire) == operation_id) {
         status = Status::unavailable("chunk page operation cancelled");
     }
@@ -159,9 +160,10 @@ void ChunkAsyncExecutor::execute(const std::shared_ptr<State> &state, Slot *slot
         switch (slot->task.kind) {
         case Kind::kRead: {
             auto *store = state->store.load(std::memory_order_acquire);
-            status = store == nullptr
-                       ? Status::unavailable("chunk page store is closing")
-                       : store->read_at(slot->task.addr, static_cast<uint8_t *>(slot->task.buffer), slot->task.length);
+            status      = store == nullptr
+                            ? Status::unavailable("chunk page store is closing")
+                            : store->read_at_cancellable(slot->task.addr, static_cast<uint8_t *>(slot->task.buffer),
+                                                         slot->task.length, cancellation);
             break;
         }
         case Kind::kWrite:
@@ -175,7 +177,7 @@ void ChunkAsyncExecutor::execute(const std::shared_ptr<State> &state, Slot *slot
             break;
         case Kind::kFsync:
             if (auto *store = state->store.load(std::memory_order_acquire); store != nullptr) {
-                status = store->sync();
+                status = store->sync_cancellable(cancellation);
             }
             else {
                 status = Status::unavailable("chunk page store is closing");

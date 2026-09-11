@@ -8,12 +8,14 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <iterator>
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace crowdb::tree::detail
 {
@@ -84,6 +86,70 @@ void publish_raw_generation(ChunkPageStore *store, uint8_t value)
     ASSERT_TRUE(store->write_at(0, &value, 1).ok());
     ASSERT_TRUE(store->sync().ok());
 }
+
+class BlockingReadTransport final : public ChunkTransport
+{
+  public:
+    Status allocate_mirror_chunk(uint64_t capacity, uint64_t owner_epoch, ChunkId *chunk_id) override
+    {
+        return inner_.allocate_mirror_chunk(capacity, owner_epoch, chunk_id);
+    }
+
+    Status write_mirror(ChunkId chunk_id, uint32_t mirror, uint64_t offset, const uint8_t *data, size_t length) override
+    {
+        return inner_.write_mirror(chunk_id, mirror, offset, data, length);
+    }
+
+    Status advance_write(ChunkId chunk_id, uint64_t expected, uint64_t acknowledged) override
+    {
+        return inner_.advance_write(chunk_id, expected, acknowledged);
+    }
+
+    Status read_mirror(ChunkId chunk_id, uint32_t mirror, uint64_t offset, uint8_t *data, size_t length) const override
+    {
+        read_entered_.store(true, std::memory_order_release);
+        read_entered_.notify_all();
+        if (hold_reads_.load(std::memory_order_acquire)) {
+            release_reads_.wait(false, std::memory_order_acquire);
+        }
+        return inner_.read_mirror(chunk_id, mirror, offset, data, length);
+    }
+
+    Status query_chunk(ChunkId chunk_id, ChunkLayout *layout) const override
+    {
+        return inner_.query_chunk(chunk_id, layout);
+    }
+
+    Status seal_chunk(ChunkId chunk_id, uint64_t owner_epoch, uint64_t acknowledged) override
+    {
+        return inner_.seal_chunk(chunk_id, owner_epoch, acknowledged);
+    }
+
+    void hold_reads()
+    {
+        read_entered_.store(false, std::memory_order_release);
+        release_reads_.store(false, std::memory_order_release);
+        hold_reads_.store(true, std::memory_order_release);
+    }
+
+    void release_reads()
+    {
+        hold_reads_.store(false, std::memory_order_release);
+        release_reads_.store(true, std::memory_order_release);
+        release_reads_.notify_all();
+    }
+
+    void wait_for_read() const
+    {
+        read_entered_.wait(false, std::memory_order_acquire);
+    }
+
+  private:
+    MemoryChunkTransport      inner_;
+    mutable std::atomic<bool> hold_reads_{false};
+    mutable std::atomic<bool> release_reads_{false};
+    mutable std::atomic<bool> read_entered_{false};
+};
 
 TEST(ChunkPageStore, SnapshotPublishesBoundedChecksummedPacksAndReopens)
 {
@@ -289,6 +355,48 @@ TEST(ChunkPageStore, RotatesWholePacksAndReopenAllocatesFreshChunk)
                     .ok());
 }
 
+TEST(ChunkPageStore, HardCapsConfiguredChunkCapacityAt256MiB)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore store({.tree_id         = 26,
+                          .owner_epoch     = 1,
+                          .pack_bytes      = 1U * 1024U * 1024U,
+                          .max_chunk_bytes = 512U * 1024U * 1024U,
+                          .page_alignment  = 1,
+                          .iu_size         = 1},
+                         catalog, transport);
+    const uint8_t  value = 2;
+    ASSERT_TRUE(store.write_at(8192, &value, 1).ok());
+    ASSERT_TRUE(store.sync().ok());
+    ASSERT_TRUE(store.write_at(0, &value, 1).ok());
+    ASSERT_TRUE(store.sync().ok());
+
+    auto manifest = catalog->load(26);
+    ASSERT_NE(manifest, nullptr);
+    ASSERT_FALSE(manifest->packs.empty());
+    ChunkLayout layout;
+    ASSERT_TRUE(transport->query_chunk(manifest->packs.front().ref.chunk_id, &layout).ok());
+    EXPECT_EQ(layout.logical_capacity, 256U * 1024U * 1024U);
+}
+
+TEST(ChunkPageStore, CatalogRejectsManifestGenerationOutsidePublicationFence)
+{
+    MemoryRootCatalog catalog(1);
+    auto              skipped = std::make_shared<ChunkManifest>();
+    skipped->tree_id          = 27;
+    skipped->owner_epoch      = 1;
+    skipped->generation       = 2;
+    EXPECT_EQ(catalog.publish(27, 0, 1, skipped).code(), Code::kInvalidArgument);
+    EXPECT_EQ(catalog.load(27), nullptr);
+
+    auto first         = std::make_shared<ChunkManifest>();
+    first->tree_id     = 27;
+    first->owner_epoch = 1;
+    first->generation  = 1;
+    EXPECT_TRUE(catalog.publish(27, 0, 1, first).ok());
+}
+
 TEST(ChunkPageStore, PadsPackTailWithoutChangingLogicalChecksum)
 {
     auto                 catalog   = std::make_shared<MemoryRootCatalog>(1);
@@ -396,6 +504,92 @@ TEST(ChunkPageStore, LayoutCacheRefreshesAtValidityBoundary)
     ASSERT_TRUE(uncached.read_at(8192, out, sizeof(out)).ok());
     EXPECT_EQ(uncached.stats().layout_queries, 2U);
     EXPECT_EQ(uncached.stats().cache_hits, 0U);
+}
+
+TEST(ChunkPageStore, ReusesChecksummedPackForAdjacentReads)
+{
+    auto                 catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto                 transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore       store({.tree_id = 24, .owner_epoch = 1, .pack_bytes = 16U * 1024U, .iu_size = 1}, catalog,
+                               transport);
+    std::vector<uint8_t> bytes(8196, 6);
+    ASSERT_TRUE(store.write_at(8192, bytes.data() + 8192, 4).ok());
+    ASSERT_TRUE(store.sync().ok());
+    ASSERT_TRUE(store.write_at(0, bytes.data(), 8192).ok());
+    ASSERT_TRUE(store.sync().ok());
+
+    std::array<uint8_t, 2> first{};
+    std::array<uint8_t, 2> second{};
+    CompletionState        first_done;
+    CompletionState        second_done;
+    ASSERT_NE(store.submit_read(8192, first.data(), first.size(),
+                                {.context = &first_done, .complete_fn = &record_completion}),
+              0U);
+    first_done.done.wait(false, std::memory_order_acquire);
+    ASSERT_EQ(first_done.code.load(std::memory_order_relaxed), static_cast<int>(Code::kOk));
+    ASSERT_NE(store.submit_read(8194, second.data(), second.size(),
+                                {.context = &second_done, .complete_fn = &record_completion}),
+              0U);
+    second_done.done.wait(false, std::memory_order_acquire);
+    ASSERT_EQ(second_done.code.load(std::memory_order_relaxed), static_cast<int>(Code::kOk));
+    EXPECT_EQ(store.stats().pack_reads, 1U);
+    EXPECT_TRUE(std::all_of(first.begin(), first.end(), [](uint8_t value) { return value == 6; }));
+    EXPECT_TRUE(std::all_of(second.begin(), second.end(), [](uint8_t value) { return value == 6; }));
+}
+
+TEST(ChunkPageStore, StaleCheckpointCannotPublishOverConcurrentWinner)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore stale({.tree_id = 28, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
+    ChunkPageStore winner({.tree_id = 28, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
+    const uint8_t  stale_value  = 3;
+    const uint8_t  winner_value = 7;
+    ASSERT_TRUE(stale.write_at(8192, &stale_value, 1).ok());
+    ASSERT_TRUE(stale.sync().ok());
+    ASSERT_TRUE(stale.write_at(0, &stale_value, 1).ok());
+    ASSERT_TRUE(winner.write_at(8192, &winner_value, 1).ok());
+    ASSERT_TRUE(winner.sync().ok());
+    ASSERT_TRUE(winner.write_at(0, &winner_value, 1).ok());
+
+    catalog->block_next_publish_for_tests();
+    CompletionState stale_done;
+    ASSERT_TRUE(stale.submit_fsync({.context = &stale_done, .complete_fn = &record_completion}).ok());
+    catalog->wait_for_blocked_publish_for_tests();
+    ASSERT_TRUE(winner.sync().ok());
+    auto published_winner = catalog->load(28);
+    ASSERT_NE(published_winner, nullptr);
+    catalog->release_blocked_publish_for_tests();
+    stale_done.done.wait(false, std::memory_order_acquire);
+
+    EXPECT_EQ(stale_done.code.load(std::memory_order_relaxed), static_cast<int>(Code::kUnavailable));
+    EXPECT_EQ(catalog->load(28), published_winner);
+    EXPECT_EQ(published_winner->generation, 1U);
+}
+
+TEST(ChunkPageStore, CancelsReadAfterTransportSubmission)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<BlockingReadTransport>();
+    ChunkPageStore store({.tree_id = 25, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
+    const uint8_t  value = 9;
+    ASSERT_TRUE(store.write_at(8192, &value, 1).ok());
+    ASSERT_TRUE(store.sync().ok());
+    ASSERT_TRUE(store.write_at(0, &value, 1).ok());
+    ASSERT_TRUE(store.sync().ok());
+
+    transport->hold_reads();
+    CompletionState completed;
+    uint8_t         out = 0;
+    const uint64_t  operation_id =
+        store.submit_read(8192, &out, 1, {.context = &completed, .complete_fn = &record_completion});
+    ASSERT_NE(operation_id, 0U);
+    transport->wait_for_read();
+    store.cancel(operation_id);
+    transport->release_reads();
+    completed.done.wait(false, std::memory_order_acquire);
+
+    EXPECT_EQ(completed.code.load(std::memory_order_relaxed), static_cast<int>(Code::kUnavailable));
 }
 
 TEST(ChunkPageStore, AsyncUnavailableRemainsTypedAndDoesNotLatchCorruption)
