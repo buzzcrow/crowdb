@@ -221,6 +221,8 @@ async fn byte_admission_applies_backpressure_while_write_is_pending() {
     store.pause_writes();
     let config = StreamConfig {
         queue_bytes: 4,
+        batch_bytes: 4,
+        max_append_bytes: 4,
         ..StreamConfig::default()
     };
     let stream = create_stream(&store, 64, config).await;

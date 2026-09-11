@@ -189,7 +189,7 @@ point.
 
 ## 8. Bounds and Observation
 
-Defaults bound the queue at 1,024 requests and 16 MiB, a batch at 64 requests
+Defaults bound the queue at 1,024 requests and 64 MiB, a batch at 64 requests
 and 1 MiB, one append at 64 MiB, one chunk at 256 MiB, an extent page at 1,024
 entries, a sequential read window at 8 MiB, and one GC pass at 64 MiB. All
 bounds are configurable and validated as nonzero.

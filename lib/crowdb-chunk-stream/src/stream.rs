@@ -36,11 +36,11 @@ impl Default for StreamConfig {
     fn default() -> Self {
         Self {
             queue_requests: 1_024,
-            queue_bytes: 16 * 1024 * 1024,
+            queue_bytes: 64 * 1024 * 1024,
             batch_requests: 64,
             batch_bytes: 1024 * 1024,
             max_append_bytes: 64 * 1024 * 1024,
-            extent_page_entries: 256,
+            extent_page_entries: 1_024,
             read_window_bytes: 8 * 1024 * 1024,
             gc_bytes_per_pass: 64 * 1024 * 1024,
             watchdog_interval: Duration::from_millis(500),
@@ -60,6 +60,7 @@ impl StreamConfig {
             || self.gc_bytes_per_pass == 0
             || self.watchdog_interval.is_zero()
             || self.batch_bytes > self.max_append_bytes
+            || self.queue_bytes < self.max_append_bytes as u64
         {
             return Err(StreamError::InvalidRequest(
                 "stream bounds must be nonzero and consistent".into(),

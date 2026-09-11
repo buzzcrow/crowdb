@@ -133,7 +133,7 @@ without cancelling, retrying, or completing the operation.
 
 ## 7. Bounds and Metrics
 
-Initial configurable bounds are 1,024 queued requests, 16 MiB queued bytes, 64
+Initial configurable bounds are 1,024 queued requests, 64 MiB queued bytes, 64
 requests or 1 MiB per batch, 256 MiB active chunks, 1,024 extents per page, an
 8 MiB read window, one prepared successor, one current CAS head, and 64 MiB of
 GC per pass. Metrics cover admission, queueing, batches,
