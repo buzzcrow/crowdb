@@ -47,7 +47,9 @@ Linux, `BlockAsyncPageStore` + `DiskIOUring` submit genuine `io_uring` SQEs;
 on macOS or without liburing, the `*_async` methods fall back to
 synchronous blocking I/O wrapped as immediately-ready completions, so the
 upper layer has a **unified async interface** with no sync/async split.
-No FFI on the I/O hot path.
+No FFI on the I/O hot path. An injected store may use immutable chunk page
+packs; its manifest, recovery, and range-sharing rules are specified in
+[`design-crowdb-tree-chunk-storage.md`](design-crowdb-tree-chunk-storage.md).
 
 **IU = Indivisible Unit.** The minimum atomically-writable size. Leaf base
 pages are padded to a multiple of it so a page write cannot tear (§3). The IU
@@ -60,19 +62,23 @@ alongside the root pointer in the commit anchor (§6).
 
 ## 2. Backends
 
-There are **two** `PageStore` implementations: a text-encoded debug store
-and a block-device store. RDMA is **not** a separate backend: a remote page
-region is just a block device reached over the network, served by the same
-`BlockPageStore` with an RDMA medium driver.
+There are **three** `PageStore` implementations: a text-encoded debug store,
+a block-device store, and an injected chunk store. RDMA is **not** a separate
+backend: a remote page region is just a block device reached over the network,
+served by the same `BlockPageStore` with an RDMA medium driver.
 
 | Backend | Medium | IU | Notes |
 | --- | --- | --- | --- |
 | `TextPageStore` | Local filesystem directory | 1 byte (always) | Debug/test backend. Each page, anchor, and segment image is a separate human-readable text file. No compression. Implements `PageStore` with `iu_size()=1`; internally maps addresses to filenames. |
 | `BlockPageStore` | Raw block device or regular file, served by a pluggable medium driver: **SSD** (`O_DIRECT`), **SCM** (byte-addressable), **mem** (test), **RDMA-remote** (one-sided verbs to a remote region) | SSD: 16/64 KiB; SCM/mem: down to **1 byte**; RDMA: the remote region's IU | Production backend. Array-of-blocks growth: a group owns multiple fixed-size block files (`{path}.blk-{NNNN}`), allocated on demand. No filesystem; the allocation map owns the whole device/region. Byte-IU media skip page padding. |
+| `ChunkPageStore` | ChunkDB mirror strips through DiskIO | 64 KiB | Injected backend. Writes immutable checksummed packs, resolves tagged mapping references through immutable manifests, and publishes roots through a generation-fenced catalog. See the [chunk-storage design](design-crowdb-tree-chunk-storage.md). |
 
-Both implement the same async `PageStore`. The backend is selected at `ct_open`
+All implement the same async `PageStore`. Local backends are selected at
+`ct_open`
 via `ct_options.backend` (0 = text debug, 1 = block). When `path` is
 null/empty, an in-memory `BlockPageStore` with IU=1 is used (test path).
+The chunk backend is constructed separately and injected through the opaque
+page-store handle.
 
 ### 2.3 Async I/O Architecture
 

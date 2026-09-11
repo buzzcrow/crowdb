@@ -36,8 +36,9 @@ See [`todo_code.md`](../todo_code.md) for anything still open.
   position) of the write that produced it, stored **in the value cell, not the
   key**. Putting it in the key would make each key sort into multiple ordered
   versions — multi-version storage — which is explicitly not wanted.
-- Pluggable persistence behind one page-granular backend: a **file** store and a
-  **block-device** store. The block-device store covers raw SSD, SCM, an
+- Pluggable persistence behind one page-granular backend: a **file** store, a
+  **block-device** store, and an immutable **chunk** store. The block-device
+  store covers raw SSD, SCM, an
   in-memory store for tests, and RDMA-remote (a remote block device); it is
   parameterized by an **IU (indivisible-unit) alignment** as small as 1 byte
   (mem / SCM) or a flash page (SSD).
@@ -114,8 +115,8 @@ crowdb-kv (Rust)
         ├─ DiskIOUring (1 thread)  io_uring event loop for async I/O
         ├─ root_pid / leftmost_leaf_pid
         ├─ RootVersion         versioned root + refcount for consistent snapshots
-        └─ PageStore (backend)  FilePageStore | BlockPageStore
-                                 (raw SSD / SCM / mem-for-test / RDMA-remote; IU-aligned, IU ≥ 1B)
+        └─ PageStore (backend)  TextPageStore | BlockPageStore | ChunkPageStore
+                                 (local aligned pages or immutable mirrored packs)
 ```
 
 - **One crowdb-tree per consensus group.** A node hosting many groups owns many
@@ -262,13 +263,14 @@ signatures):
 
 ## 5. Sub-Design Document Map
 
-The crowdb-tree design is split into two self-contained documents:
+The crowdb-tree design is split into focused documents:
 
 | Doc | Covers |
 | --- | --- |
 | `design-crowdb-tree.md` (this) | Goals, architecture, `KVEngine` trait, FFI boundary, decision log. |
 | [`design-crowdb-tree-engine.md`](design-crowdb-tree-engine.md) | **In-memory engine.** MemTable (L0) + COW B+tree (L1), slot-aware value cell, delta records + consolidation, split/merge, versioned root (MVCC snapshots), epoch-based reclamation, read path; the `buffer` memory-ownership model (zero-copy write/read pipelines); the io_uring async FFI bridge. |
 | [`design-crowdb-tree-storage.md`](design-crowdb-tree-storage.md) | **Durable storage.** `PageStore` backends, on-disk zero-copy frame format, buffer pool (frame cache) + eviction safety, snapshot + internal-WAL decision + recovery, snapshot export/import; the mapping table (PID indirection, segment persistence, recycling); snapshot/GC flow integration with the learner and consensus WAL. |
+| [`design-crowdb-tree-chunk-storage.md`](design-crowdb-tree-chunk-storage.md) | **Chunk storage.** Immutable mirrored page packs, async execution, fenced manifests and recovery, range rebuild, sharing, ownership materialization, and reclamation boundaries. |
 
 Test strategy for crowdb-tree (C++ unit, integration, crash/recovery, Rust FFI,
 cross-engine parity, sanitizer) is documented in [`../kv/design-crowdb-kv-test.md`](../kv/design-crowdb-kv-test.md) §
@@ -299,3 +301,4 @@ cross-engine parity, sanitizer) is documented in [`../kv/design-crowdb-kv-test.m
 | D17 | **No internal redo-WAL; snapshot-only recovery.** | crowdb-tree persists a snapshot = immutable root + `last_applied_slot`. On restart it composes with the external WAL: replay starts from `last_applied_slot+1`. Full rationale in [`design-crowdb-tree-storage.md §5`](design-crowdb-tree-storage.md#5-internal-wal-decision). |
 | D18 | **Snapshot is implicit (a COW root version).** | Every flush/snapshot yields a new immutable root tagged with its slot = a snapshot, no explicit "create snapshot" API; callers obtain `(version, root, slot)` via `snapshot_view()`. `snapshot_export` iterates a pinned root (§3.1). |
 | D19 | **Compression implemented (LZ4), off by default.** | LZ4 on-disk page compression is opt-in (`Config.compression = kLz4`); see [`design-crowdb-tree-storage.md §3.6`](design-crowdb-tree-storage.md#36-compression-details). |
+| D20 | **Chunk storage is an injected private backend built from immutable mirrored packs.** | Tree algorithms keep the `PageStore` contract while chunk-KV supplies topology, ownership epochs, and root publication. Immutable pack and metadata sharing makes range rebuild cheap; generation fencing and later materialization preserve independent ownership. Full design in [`design-crowdb-tree-chunk-storage.md`](design-crowdb-tree-chunk-storage.md). |

@@ -3,8 +3,9 @@
 
 # Tree Chunk Page Store Plan
 
-Source: [`design-tree-chunk-page-store.md`](design-tree-chunk-page-store.md) and
-[`../backlog/R140-tree-chunk-page-store.md`](../backlog/R140-tree-chunk-page-store.md).
+Source:
+[`../design/tree/design-crowdb-tree-chunk-storage.md`](../design/tree/design-crowdb-tree-chunk-storage.md)
+and [`../backlog/R140-tree-chunk-page-store.md`](../backlog/R140-tree-chunk-page-store.md).
 
 Goal: add an injected, asynchronously completed immutable chunk page backend
 and structurally safe range rebuild while preserving local tree behavior.
@@ -153,10 +154,10 @@ and structurally safe range rebuild while preserving local tree behavior.
 
 - [x] **Run affected tests separately**: `pixi run tree-fmt`,
   `pixi run tree-lint`, `pixi run test-tree-ct`, and
-  `pixi run test-tree-ffi`, and the chunk-KV integration tests. The previous
-  final implementation passed 566 C++ tests, 35 Rust FFI tests, and the
+  `pixi run test-tree-ffi`, and the chunk-KV integration tests. The final
+  implementation passed 566 C++ tests, 35 Rust FFI tests, and the
   focused ASAN sparse-repack/reuse/reopen cases.
-- [ ] **Fold permanent design**: create
+- [x] **Fold permanent design**: create
   `doc/design/tree/design-crowdb-tree-chunk-storage.md`, update the tree root and
   `doc/doc_index.md`, then remove the working design.
 - [ ] **Run repository gates**: `pixi run -- cargo fmt --all -- --check`,

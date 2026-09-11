@@ -81,6 +81,7 @@ Plan files live under `doc/working/`; flow analyses live under `doc/design/{kv,c
 | `doc/design/tree/design-crowdb-tree.md` | crowdb-tree overview, `KVEngine`/`EngineView`, out-of-order apply + two-GC model, FFI boundary. |
 | `doc/design/tree/design-crowdb-tree-engine.md` | In-memory engine: slot cell, pages/delta, write path, versioned root, lock-free epoch reclamation, io_uring FFI, metrics. |
 | `doc/design/tree/design-crowdb-tree-storage.md` | Durable storage: `PageStore` backends, slotted frame format, buffer-pool I/O reservations, snapshot/recovery, mapping table, GC. |
+| `doc/design/tree/design-crowdb-tree-chunk-storage.md` | Chunk storage: immutable mirrored page packs, fenced manifests, recovery, range rebuild, sharing, materialization, and reclamation boundaries. |
 | `doc/design/tree/design-crowdb-tree-engine-flush-flow.md` | Flush flow analysis: L0→L1 drain path, code positions, bottleneck breakdown, levers. |
 | `doc/design/tree/design-crowdb-tree-engine-snapshot-flow.md` | Snapshot flow analysis: durable persist path, code positions, sub-phase metrics, bottleneck breakdown, levers. |
 | `doc/design/console/design-crowdb-console.md` | Console core crate, web + CLI frontends, two-hierarchy API, monitor task, SSH lifecycle, bootstrap, sysdata sync, cluster destroy. |
