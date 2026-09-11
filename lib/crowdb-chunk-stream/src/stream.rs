@@ -722,11 +722,13 @@ impl ChunkStream {
     }
 }
 
+type PrefetchResult = tokio::task::JoinHandle<Result<(u64, Vec<ReadSegment>)>>;
+
 pub struct StreamReader {
     stream: ChunkStream,
     offset: u64,
     end: u64,
-    pending: Option<tokio::task::JoinHandle<Result<(u64, Bytes)>>>,
+    pending: Option<PrefetchResult>,
 }
 
 impl StreamReader {
@@ -755,6 +757,23 @@ impl StreamReader {
     ///
     /// Returns a typed metadata or chunk-read error.
     pub async fn next(&mut self) -> Result<Option<Bytes>> {
+        let Some(segments) = self.next_with_provenance().await? else {
+            return Ok(None);
+        };
+        let length = segments.iter().map(|segment| segment.data.len()).sum();
+        let mut bytes = BytesMut::with_capacity(length);
+        for segment in segments {
+            bytes.extend_from_slice(&segment.data);
+        }
+        Ok(Some(bytes.freeze()))
+    }
+
+    /// Returns the next bounded logical window split by physical chunk.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed metadata, task, or chunk-read error.
+    pub async fn next_with_provenance(&mut self) -> Result<Option<Vec<ReadSegment>>> {
         if self.offset == self.end {
             return Ok(None);
         }
@@ -763,7 +782,7 @@ impl StreamReader {
             .pending
             .take()
             .ok_or_else(|| StreamError::Internal("reader prefetch was not installed".into()))?;
-        let (offset, bytes) = pending
+        let (offset, segments) = pending
             .await
             .map_err(|error| StreamError::Internal(format!("reader prefetch task failed: {error}")))??;
         if offset != self.offset {
@@ -771,12 +790,15 @@ impl StreamReader {
                 "reader prefetch completed for a stale offset".into(),
             ));
         }
+        let length = segments.iter().try_fold(0_u64, |length, segment| {
+            length.checked_add(segment.data.len() as u64)
+        });
         self.offset = self
             .offset
-            .checked_add(bytes.len() as u64)
+            .checked_add(length.ok_or_else(|| StreamError::Corruption("reader length overflows".into()))?)
             .ok_or_else(|| StreamError::Corruption("reader offset overflows".into()))?;
         self.start_prefetch()?;
-        Ok(Some(bytes))
+        Ok(Some(segments))
     }
 
     fn start_prefetch(&mut self) -> Result<()> {
@@ -788,7 +810,10 @@ impl StreamReader {
             .map_err(|_| StreamError::InvalidRequest("read window exceeds addressable range".into()))?;
         let stream = self.stream.clone();
         self.pending = Some(tokio::spawn(async move {
-            stream.read_at(offset, length).await.map(|bytes| (offset, bytes))
+            stream
+                .read_at_with_provenance(offset, length)
+                .await
+                .map(|segments| (offset, segments))
         }));
         Ok(())
     }

@@ -94,7 +94,9 @@ async fn sequential_reader_prefetches_bounded_ordered_windows() {
     let stream = create_stream(&store, 16, config).await;
     stream.append(&[Bytes::from_static(b"abcde")]).await.unwrap();
     let mut reader = stream.reader(0, ReadHint::ToEnd).unwrap();
-    assert_eq!(reader.next().await.unwrap(), Some(Bytes::from_static(b"ab")));
+    let first = reader.next_with_provenance().await.unwrap().unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].data, Bytes::from_static(b"ab"));
     assert_eq!(reader.next().await.unwrap(), Some(Bytes::from_static(b"cd")));
     reader.seek(1).unwrap();
     assert_eq!(reader.next().await.unwrap(), Some(Bytes::from_static(b"bc")));

@@ -360,9 +360,8 @@ Required gates:
   production adapter work.
 - The seekable reader supports finite/`ToEnd` hints, keeps one bounded next
   window in flight while the caller consumes the current window, and exact
-  reads expose provenance. Concurrent physical reads within one multi-extent
-  window, a provenance-yielding sequential-reader API, and memory/concurrency
-  benchmarks remain open.
+  and sequential reads expose provenance. Concurrent physical reads within one
+  multi-extent window and memory/concurrency benchmarks remain open.
 - Extent-page identities derive from their stable first logical offset, so a
   trimmed generation retains a nonzero first page index without renumbering
   logical bytes. Watermark-driven cleanup of superseded page generations still
@@ -373,5 +372,6 @@ Required gates:
   record has no owner field.
 - Non-blocking lifecycle follow-up: until deferred R146 lands, a crashed
   writer's abandoned Active stream chunk remains allocated. R141 never resumes
-  it, reports it as an orphan, and allocates a fresh chunk, so this is bounded
-  by operational cleanup rather than a stream-safety gap.
+  it and allocates a fresh chunk; the abandoned owner epoch remains visible to
+  R146's future scan, so this is an operational-cleanup gap rather than a
+  stream-safety gap.

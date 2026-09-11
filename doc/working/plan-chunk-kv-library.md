@@ -23,7 +23,7 @@ whose ordered journal is R141 and whose durable tree is R140.
   `lib/crowdb-chunk-kv/tests/`.
 - [x] Add private journal and tree contracts plus in-memory `test-util`
   implementations; do not expose a raw R141 stream from the partition API.
-- [ ] Add production adapters for R140 native tree construction and the R141
+- [~] Add production adapters for R140 native tree construction and the R141
   stream registry, metadata store, and chunk store. Files:
   `lib/crowdb-chunk-kv/src/`, `lib/crowdb-tree-ffi/`,
   `lib/crowdb-chunk-stream/`.
@@ -56,7 +56,7 @@ whose ordered journal is R141 and whose durable tree is R140.
 
 ## Phase 4: Online Split
 
-- [ ] Validate idempotent split preparation state and exact typed catalog
+- [~] Validate idempotent split preparation state and exact typed catalog
   proofs; durable plan persistence and base pinning remain R143/production
   adapter work.
 - [ ] Rebuild exact children from one R140 manifest and replay serving deltas
@@ -66,7 +66,7 @@ whose ordered journal is R141 and whose durable tree is R140.
 - [x] Open assigned children as non-serving `Prepared` handles and activate
   them only after exact catalog proof. Files: `lib/crowdb-chunk-kv/src/`,
   `lib/crowdb-chunk-kv/tests/`.
-- [ ] Resolve exact commit/abort proofs fail-closed; bounded post-commit
+- [~] Resolve exact commit/abort proofs fail-closed; bounded post-commit
   materialization/repack remains production adapter work.
 
 ## Phase 5: Gates and Documentation
