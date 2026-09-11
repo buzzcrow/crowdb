@@ -871,6 +871,7 @@ impl Partition {
         if checkpoint.stream_name != self.journal.stream_name()
             || checkpoint.applied_seq > self.applied_seq.load(Ordering::Acquire)
             || checkpoint.replay_offset > self.journal.tail()
+            || checkpoint.replay_offset > self.retry_replay_offset.load(Ordering::Acquire)
         {
             return Err(ChunkKvError::InvalidRequest(
                 "checkpoint does not belong to this frontier".into(),

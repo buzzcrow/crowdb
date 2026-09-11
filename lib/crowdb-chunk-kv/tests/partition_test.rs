@@ -623,6 +623,12 @@ async fn mutation_fence_drains_admitted_work_and_rejects_later_writes() {
     assert_eq!(checkpoint.applied_seq, 1);
     assert_eq!(checkpoint.tree_manifest, 1);
     assert_eq!(checkpoint.replay_offset, 0);
+    let mut unsafe_watermark = checkpoint.clone();
+    unsafe_watermark.replay_offset = 1;
+    assert!(matches!(
+        partition.trim_published_checkpoint(10, &unsafe_watermark).await,
+        Err(ChunkKvError::InvalidRequest(_))
+    ));
     partition
         .trim_published_checkpoint(10, &checkpoint)
         .await
