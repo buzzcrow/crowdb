@@ -550,12 +550,17 @@ ChunkPageStore::ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catal
     if (config_.max_concurrent_packs == 0) {
         config_.max_concurrent_packs = 8;
     }
+    if (config_.materialization_bytes_per_pass == 0) {
+        config_.materialization_bytes_per_pass = 64U * 1024U * 1024U;
+    }
     if (transport_ == nullptr) {
         transport_ = std::make_shared<MemoryChunkTransport>();
     }
     config_.max_chunk_bytes = std::min(config_.max_chunk_bytes, kMaxChunkBytes);
     config_.pack_bytes      = std::min<uint64_t>(config_.pack_bytes, config_.max_chunk_bytes);
-    async_executor_         = std::make_unique<ChunkAsyncExecutor>(this, config_.max_pending_ops);
+    config_.materialization_bytes_per_pass =
+        std::max<uint64_t>(config_.materialization_bytes_per_pass, config_.pack_bytes);
+    async_executor_ = std::make_unique<ChunkAsyncExecutor>(this, config_.max_pending_ops);
 }
 
 ChunkPageStore::~ChunkPageStore() = default;
@@ -570,6 +575,10 @@ Status ChunkPageStore::inherit_snapshot_from(const ChunkPageStore &source)
     }
     if (transport_.get() != source.transport_.get() || catalog_.get() != source.catalog_.get()) {
         return Status::Ok();
+    }
+    if (config_.pack_bytes != source.config_.pack_bytes || config_.max_chunk_bytes != source.config_.max_chunk_bytes ||
+        config_.page_alignment != source.config_.page_alignment || config_.iu_size != source.config_.iu_size) {
+        return Status::invalid_argument("chunk snapshot inheritance requires matching storage geometry");
     }
     auto manifest = source.catalog_->load(source.config_.tree_id);
     if (manifest == nullptr) {
@@ -881,6 +890,9 @@ uint32_t ChunkPageStore::manifest_checksum(const ChunkManifest &manifest)
     crc = update_u64(crc, manifest.packs_reused);
     crc = update_u64(crc, manifest.pack_bytes_reused);
     for (const ChunkPagePack &pack : manifest.packs) {
+        if (manifest.format_version >= 2) {
+            crc = update_u64(crc, pack.owner_tree_id);
+        }
         crc = update_u64(crc, pack.ordinal);
         crc = update_u64(crc, pack.logical_offset);
         crc = update_u64(crc, pack.ref.chunk_id.high);
@@ -999,8 +1011,11 @@ Status ChunkPageStore::build_manifest(uint64_t expected_generation, std::shared_
             const ChunkPagePack *reused =
                 find_reusable_pack(*reuse_base, offset, static_cast<uint32_t>(length), checksum);
             if (reused != nullptr) {
-                manifest->packs.push_back(
-                    {.ordinal = manifest->packs.size(), .logical_offset = offset, .ref = reused->ref, .reused = true});
+                manifest->packs.push_back({.owner_tree_id  = chunk_pack_owner(*reuse_base, *reused),
+                                           .ordinal        = manifest->packs.size(),
+                                           .logical_offset = offset,
+                                           .ref            = reused->ref,
+                                           .reused         = true});
                 ++manifest->packs_reused;
                 manifest->pack_bytes_reused += length;
                 offset += length;
@@ -1030,6 +1045,7 @@ Status ChunkPageStore::build_manifest(uint64_t expected_generation, std::shared_
         }
 
         ChunkPagePack pack;
+        pack.owner_tree_id                   = config_.tree_id;
         pack.ordinal                         = manifest->packs.size();
         pack.logical_offset                  = offset;
         pack.ref.chunk_id                    = active_chunk_id_;
@@ -1093,6 +1109,176 @@ std::vector<uint64_t> ChunkPageStore::reference_segment_ids(const ChunkManifest 
         }
     }
     return ids;
+}
+
+Status ChunkPageStore::materialize_ownership(uint64_t *bytes_written, bool *complete)
+{
+    if (bytes_written == nullptr || complete == nullptr) {
+        return Status::invalid_argument("chunk materialization requires output counters");
+    }
+    *bytes_written = 0;
+    *complete      = false;
+    auto fail      = [this](Status status) {
+        materialization_failures_.fetch_add(1, std::memory_order_relaxed);
+        return status;
+    };
+    if (staged_initialized_) {
+        return fail(Status::unavailable("chunk materialization cannot race staged tree writes"));
+    }
+    auto base = catalog_->load(config_.tree_id);
+    if (base == nullptr) {
+        *complete = true;
+        materialization_passes_.fetch_add(1, std::memory_order_relaxed);
+        return Status::Ok();
+    }
+    Status base_status = validate_manifest(*base, *catalog_);
+    if (!base_status.ok()) {
+        return fail(std::move(base_status));
+    }
+    if (base->generation == std::numeric_limits<uint64_t>::max()) {
+        return fail(Status::resource_exhausted("chunk manifest generation is exhausted"));
+    }
+
+    auto manifest             = std::make_shared<ChunkManifest>();
+    manifest->format_version  = kChunkManifestFormat;
+    manifest->tree_id         = config_.tree_id;
+    manifest->generation      = base->generation + 1;
+    manifest->owner_epoch     = config_.owner_epoch;
+    manifest->logical_size    = base->logical_size;
+    manifest->published_at_ms = monotonic_millis();
+    manifest->packs.reserve(base->packs.size());
+
+    uint64_t copied_bytes   = 0;
+    bool     shared_remains = false;
+    for (const ChunkPagePack &base_pack : base->packs) {
+        const bool shared        = chunk_pack_owner(*base, base_pack) != config_.tree_id;
+        const bool within_budget = base_pack.ref.length <= config_.materialization_bytes_per_pass - copied_bytes;
+        if (!shared || !within_budget) {
+            ChunkPagePack reused = base_pack;
+            reused.owner_tree_id = chunk_pack_owner(*base, base_pack);
+            reused.reused        = true;
+            manifest->packs.push_back(reused);
+            ++manifest->packs_reused;
+            manifest->pack_bytes_reused += reused.ref.length;
+            shared_remains |= shared;
+            continue;
+        }
+
+        std::shared_ptr<const std::vector<uint8_t>> bytes;
+        Status                                      read_status = read_pack(base_pack.ref, &bytes, {});
+        if (!read_status.ok()) {
+            orphan_bytes_.fetch_add(copied_bytes, std::memory_order_relaxed);
+            return fail(std::move(read_status));
+        }
+        const size_t physical_length = round_up_to_iu(bytes->size(), config_.page_alignment);
+        if (!active_chunk_id_.empty() && base_pack.ref.length > config_.max_chunk_bytes - active_chunk_bytes_) {
+            Status seal_status = transport_->seal_chunk(active_chunk_id_, config_.owner_epoch, active_chunk_cursor_);
+            if (!seal_status.ok()) {
+                orphan_bytes_.fetch_add(copied_bytes, std::memory_order_relaxed);
+                active_chunk_id_     = {};
+                active_chunk_bytes_  = 0;
+                active_chunk_cursor_ = 0;
+                return fail(std::move(seal_status));
+            }
+            active_chunk_id_     = {};
+            active_chunk_bytes_  = 0;
+            active_chunk_cursor_ = 0;
+        }
+        if (active_chunk_id_.empty()) {
+            const uint64_t packs_per_chunk = (config_.max_chunk_bytes + config_.pack_bytes - 1) / config_.pack_bytes;
+            const uint64_t physical_pack_bytes = round_up_to_iu(config_.pack_bytes, config_.page_alignment);
+            if (packs_per_chunk > std::numeric_limits<uint64_t>::max() / physical_pack_bytes) {
+                orphan_bytes_.fetch_add(copied_bytes, std::memory_order_relaxed);
+                return fail(Status::resource_exhausted("chunk materialization framing exceeds address space"));
+            }
+            Status allocate_status = transport_->allocate_mirror_chunk(packs_per_chunk * physical_pack_bytes,
+                                                                       config_.owner_epoch, &active_chunk_id_);
+            if (!allocate_status.ok()) {
+                orphan_bytes_.fetch_add(copied_bytes, std::memory_order_relaxed);
+                return fail(std::move(allocate_status));
+            }
+        }
+
+        std::vector<uint8_t> framed(physical_length, 0);
+        std::copy(bytes->begin(), bytes->end(), framed.begin());
+        for (uint32_t mirror = 0; mirror < 3; ++mirror) {
+            bool written = false;
+            for (uint32_t attempt = 0; attempt <= config_.mirror_retry_limit; ++attempt) {
+                mirror_write_attempts_.fetch_add(1, std::memory_order_relaxed);
+                if ((mirror_write_failure_mask_.load(std::memory_order_acquire) & (1U << mirror)) == 0 &&
+                    transport_
+                        ->write_mirror(active_chunk_id_, mirror, active_chunk_cursor_, framed.data(), framed.size())
+                        .ok()) {
+                    written = true;
+                    break;
+                }
+                mirror_write_failures_.fetch_add(1, std::memory_order_relaxed);
+            }
+            if (!written) {
+                orphan_bytes_.fetch_add(copied_bytes + base_pack.ref.length, std::memory_order_relaxed);
+                return fail(
+                    Status::unavailable("chunk materialization mirror write unavailable after bounded retries"));
+            }
+        }
+        Status advance_status =
+            transport_->advance_write(active_chunk_id_, active_chunk_cursor_, active_chunk_cursor_ + physical_length);
+        if (!advance_status.ok()) {
+            orphan_bytes_.fetch_add(copied_bytes + base_pack.ref.length, std::memory_order_relaxed);
+            active_chunk_id_     = {};
+            active_chunk_bytes_  = 0;
+            active_chunk_cursor_ = 0;
+            return fail(std::move(advance_status));
+        }
+        ChunkPagePack copied = base_pack;
+        copied.owner_tree_id = config_.tree_id;
+        copied.ref.chunk_id  = active_chunk_id_;
+        copied.ref.offset    = active_chunk_cursor_;
+        copied.reused        = false;
+        manifest->packs.push_back(std::move(copied));
+        active_chunk_bytes_ += base_pack.ref.length;
+        active_chunk_cursor_ += physical_length;
+        copied_bytes += base_pack.ref.length;
+    }
+    if (copied_bytes == 0) {
+        *complete = !shared_remains;
+        materialization_passes_.fetch_add(1, std::memory_order_relaxed);
+        return Status::Ok();
+    }
+
+    Status segment_status = persist_reference_segments(manifest.get(), base.get());
+    if (!segment_status.ok()) {
+        orphan_bytes_.fetch_add(copied_bytes, std::memory_order_relaxed);
+        return fail(std::move(segment_status));
+    }
+    manifest->checksum       = manifest_checksum(*manifest);
+    Status validation_status = validate_manifest(*manifest, *catalog_);
+    if (!validation_status.ok()) {
+        orphan_bytes_.fetch_add(copied_bytes, std::memory_order_relaxed);
+        auto ids = reference_segment_ids(*manifest);
+        orphan_reference_segments_.insert(orphan_reference_segments_.end(), ids.begin(), ids.end());
+        return fail(std::move(validation_status));
+    }
+    Status publish_status = catalog_->publish(config_.tree_id, base->generation, config_.owner_epoch, manifest);
+    if (!publish_status.ok()) {
+        orphan_bytes_.fetch_add(copied_bytes, std::memory_order_relaxed);
+        auto ids = reference_segment_ids(*manifest);
+        orphan_reference_segments_.insert(orphan_reference_segments_.end(), ids.begin(), ids.end());
+        return fail(std::move(publish_status));
+    }
+    generations_published_.fetch_add(1, std::memory_order_relaxed);
+    packs_written_.fetch_add(manifest->packs.size() - manifest->packs_reused, std::memory_order_relaxed);
+    pack_bytes_written_.fetch_add(copied_bytes, std::memory_order_relaxed);
+    packs_reused_.fetch_add(manifest->packs_reused, std::memory_order_relaxed);
+    pack_bytes_reused_.fetch_add(manifest->pack_bytes_reused, std::memory_order_relaxed);
+    materialization_passes_.fetch_add(1, std::memory_order_relaxed);
+    materialization_packs_written_.fetch_add(manifest->packs.size() - manifest->packs_reused,
+                                             std::memory_order_relaxed);
+    materialization_bytes_written_.fetch_add(copied_bytes, std::memory_order_relaxed);
+    cached_layout_.store(manifest, std::memory_order_release);
+    layout_valid_until_ms_.store(monotonic_millis() + config_.layout_validity_ms, std::memory_order_release);
+    *bytes_written = copied_bytes;
+    *complete      = !shared_remains;
+    return Status::Ok();
 }
 
 Status ChunkPageStore::sync()
@@ -1247,21 +1433,33 @@ void ChunkPageStore::cancel(uint64_t operation_id)
 
 ChunkPageStoreStats ChunkPageStore::stats() const
 {
+    auto     manifest     = catalog_->load(config_.tree_id);
+    uint64_t shared_packs = 0;
+    if (manifest != nullptr) {
+        shared_packs = std::count_if(manifest->packs.begin(), manifest->packs.end(), [&](const ChunkPagePack &pack) {
+            return chunk_pack_owner(*manifest, pack) != config_.tree_id;
+        });
+    }
     return {
-        .generations_published = generations_published_.load(std::memory_order_relaxed),
-        .packs_written         = packs_written_.load(std::memory_order_relaxed),
-        .pack_bytes_written    = pack_bytes_written_.load(std::memory_order_relaxed),
-        .packs_reused          = packs_reused_.load(std::memory_order_relaxed),
-        .pack_bytes_reused     = pack_bytes_reused_.load(std::memory_order_relaxed),
-        .pack_reads            = pack_reads_.load(std::memory_order_relaxed),
-        .cache_hits            = cache_hits_.load(std::memory_order_relaxed),
-        .layout_queries        = layout_queries_.load(std::memory_order_relaxed),
-        .mirror_write_attempts = mirror_write_attempts_.load(std::memory_order_relaxed),
-        .mirror_write_failures = mirror_write_failures_.load(std::memory_order_relaxed),
-        .retained_manifests    = catalog_->retained_manifest_count(config_.tree_id),
-        .pinned_bytes          = catalog_->pinned_bytes(config_.tree_id),
-        .oldest_pin_age_ms     = catalog_->oldest_pin_age_ms(config_.tree_id),
-        .orphan_bytes          = orphan_bytes_.load(std::memory_order_relaxed),
+        .generations_published         = generations_published_.load(std::memory_order_relaxed),
+        .packs_written                 = packs_written_.load(std::memory_order_relaxed),
+        .pack_bytes_written            = pack_bytes_written_.load(std::memory_order_relaxed),
+        .packs_reused                  = packs_reused_.load(std::memory_order_relaxed),
+        .pack_bytes_reused             = pack_bytes_reused_.load(std::memory_order_relaxed),
+        .pack_reads                    = pack_reads_.load(std::memory_order_relaxed),
+        .cache_hits                    = cache_hits_.load(std::memory_order_relaxed),
+        .layout_queries                = layout_queries_.load(std::memory_order_relaxed),
+        .mirror_write_attempts         = mirror_write_attempts_.load(std::memory_order_relaxed),
+        .mirror_write_failures         = mirror_write_failures_.load(std::memory_order_relaxed),
+        .retained_manifests            = catalog_->retained_manifest_count(config_.tree_id),
+        .pinned_bytes                  = catalog_->pinned_bytes(config_.tree_id),
+        .oldest_pin_age_ms             = catalog_->oldest_pin_age_ms(config_.tree_id),
+        .orphan_bytes                  = orphan_bytes_.load(std::memory_order_relaxed),
+        .materialization_passes        = materialization_passes_.load(std::memory_order_relaxed),
+        .materialization_failures      = materialization_failures_.load(std::memory_order_relaxed),
+        .materialization_packs_written = materialization_packs_written_.load(std::memory_order_relaxed),
+        .materialization_bytes_written = materialization_bytes_written_.load(std::memory_order_relaxed),
+        .shared_packs                  = shared_packs,
     };
 }
 
@@ -1304,7 +1502,9 @@ ct_status ct_chunk_page_store_open(const ct_chunk_page_store_options *options, c
                                                      .owner_epoch          = options->owner_epoch,
                                                      .pack_bytes           = options->pack_bytes,
                                                      .iu_size              = options->iu_size,
-                                                     .max_concurrent_packs = options->max_concurrent_packs},
+                                                     .max_concurrent_packs = options->max_concurrent_packs,
+                                                     .materialization_bytes_per_pass =
+                                                         options->materialization_bytes_per_pass},
         catalog->catalog, catalog->transport);
     handle->bundle->async_store_view = store.get();
     handle->bundle->store            = std::move(store);
@@ -1327,7 +1527,9 @@ ct_status ct_chunk_page_store_open_with_transport(const ct_chunk_page_store_opti
                                                      .owner_epoch          = options->owner_epoch,
                                                      .pack_bytes           = options->pack_bytes,
                                                      .iu_size              = options->iu_size,
-                                                     .max_concurrent_packs = options->max_concurrent_packs},
+                                                     .max_concurrent_packs = options->max_concurrent_packs,
+                                                     .materialization_bytes_per_pass =
+                                                         options->materialization_bytes_per_pass},
         catalog->catalog, transport->transport);
     handle->bundle->async_store_view = store.get();
     handle->bundle->store            = std::move(store);
@@ -1346,20 +1548,25 @@ ct_status ct_chunk_page_store_get_stats(const ct_page_store *store, ct_chunk_pag
         return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
     }
     const auto stats = chunk->stats();
-    *out             = {.generations_published = stats.generations_published,
-                        .packs_written         = stats.packs_written,
-                        .pack_bytes_written    = stats.pack_bytes_written,
-                        .packs_reused          = stats.packs_reused,
-                        .pack_bytes_reused     = stats.pack_bytes_reused,
-                        .pack_reads            = stats.pack_reads,
-                        .cache_hits            = stats.cache_hits,
-                        .layout_queries        = stats.layout_queries,
-                        .mirror_write_attempts = stats.mirror_write_attempts,
-                        .mirror_write_failures = stats.mirror_write_failures,
-                        .retained_manifests    = stats.retained_manifests,
-                        .pinned_bytes          = stats.pinned_bytes,
-                        .oldest_pin_age_ms     = stats.oldest_pin_age_ms,
-                        .orphan_bytes          = stats.orphan_bytes};
+    *out             = {.generations_published         = stats.generations_published,
+                        .packs_written                 = stats.packs_written,
+                        .pack_bytes_written            = stats.pack_bytes_written,
+                        .packs_reused                  = stats.packs_reused,
+                        .pack_bytes_reused             = stats.pack_bytes_reused,
+                        .pack_reads                    = stats.pack_reads,
+                        .cache_hits                    = stats.cache_hits,
+                        .layout_queries                = stats.layout_queries,
+                        .mirror_write_attempts         = stats.mirror_write_attempts,
+                        .mirror_write_failures         = stats.mirror_write_failures,
+                        .retained_manifests            = stats.retained_manifests,
+                        .pinned_bytes                  = stats.pinned_bytes,
+                        .oldest_pin_age_ms             = stats.oldest_pin_age_ms,
+                        .orphan_bytes                  = stats.orphan_bytes,
+                        .materialization_passes        = stats.materialization_passes,
+                        .materialization_failures      = stats.materialization_failures,
+                        .materialization_packs_written = stats.materialization_packs_written,
+                        .materialization_bytes_written = stats.materialization_bytes_written,
+                        .shared_packs                  = stats.shared_packs};
     return static_cast<ct_status>(crowdb::tree::Code::kOk);
 }
 

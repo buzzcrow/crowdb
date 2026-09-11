@@ -29,6 +29,7 @@ pub struct ct_chunk_page_store_options {
     pub pack_bytes: usize,
     pub iu_size: u32,
     pub max_concurrent_packs: usize,
+    pub materialization_bytes_per_pass: u64,
 }
 
 #[repr(C)]
@@ -72,6 +73,11 @@ pub struct ct_chunk_page_store_stats {
     pub pinned_bytes: u64,
     pub oldest_pin_age_ms: u64,
     pub orphan_bytes: u64,
+    pub materialization_passes: u64,
+    pub materialization_failures: u64,
+    pub materialization_packs_written: u64,
+    pub materialization_bytes_written: u64,
+    pub shared_packs: u64,
 }
 #[repr(C)]
 pub struct ct_view {
@@ -241,6 +247,8 @@ extern "C" {
         out: *mut ct_chunk_page_store_stats,
     ) -> c_int;
     pub fn ct_chunk_page_store_reclaim_orphans(store: *mut ct_page_store) -> u64;
+    pub fn ct_materialize_ownership(tree: *mut ct_tree, bytes_written: *mut u64, complete: *mut i32)
+        -> c_int;
     pub fn ct_root_catalog_reclaim_before(
         catalog: *mut ct_root_catalog,
         tree_id: u64,

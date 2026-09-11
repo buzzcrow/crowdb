@@ -15,6 +15,15 @@ impl Crowdbtree {
         Ok(last)
     }
 
+    /// Run one bounded pass that replaces shared immutable backend objects
+    /// with objects owned by this tree's lineage.
+    pub fn materialize_ownership(&self) -> Result<(u64, bool), CtError> {
+        let mut bytes_written = 0;
+        let mut complete = 0;
+        check(unsafe { sys::ct_materialize_ownership(self.as_ptr(), &mut bytes_written, &mut complete) })?;
+        Ok((bytes_written, complete != 0))
+    }
+
     /// Materialize the durable snapshot view (key-sorted, includes tombstones).
     pub fn snapshot_view(&self) -> Result<(u64, Vec<ViewEntry>), CtError> {
         let mut view: *mut sys::ct_view = std::ptr::null_mut();

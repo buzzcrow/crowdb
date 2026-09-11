@@ -110,18 +110,21 @@ and structurally safe range rebuild while preserving local tree behavior.
 
 ## Phase 4: Materialization, Metrics, and Link Isolation
 
-- [~] **Materialize child ownership**: immutable source packs are inherited by
-  independent child manifests, byte-verified before reuse, retained across
-  source GC, and COW-replaced by changed logical packs. Reference-table
-  segment images are shared by owner-qualified identity and COW-replaced as a
-  unit when any entry changes. Mapping-image sharing, unreachable-slot
-  clearing, and bounded exclusive repack remain open. Implement mark
-  reachability, repack shared pages, generation-fence publication, and retry
-  stale work.
-  Files: `src/btree/range_rebuild.cpp`, `src/backend/chunk/chunk_page_store.cpp`.
-- [~] **Add observability**: pack reuse/write bytes, cache/layout queries,
-  mirror attempts/failures, retention pins, and orphan bytes are exposed.
-  Register the remaining chunk latency, coalescing, rebuild, materialization,
+- [x] **Materialize shared chunk packs**: copy owner-qualified shared packs in
+  bounded passes, COW the affected reference-table segments, publish through
+  the tree snapshot generation gate, abandon ambiguous chunk cursors, and keep
+  stale or failed work retryable. Persist explicit pack ownership with legacy
+  manifest compatibility and reject incompatible inherited storage geometry.
+  Files: `include/crowdb-tree/{backend/page_store.h,btree/tree.h,c_api.h}`,
+  `src/{backend/chunk,c_api.cpp,snapshot/persist.cpp}`, `ffi/`.
+- [ ] **Share and materialize mapping images**: make mapping slots reference
+  pack ordinals, share immutable mapping-directory images, mark reachable
+  slots, and clear unreachable slots before exclusive publication. Files:
+  `src/btree/range_rebuild.cpp`, `src/maptable/`,
+  `src/backend/chunk/chunk_page_store.cpp`.
+- [ ] **Complete observability**: pack reuse/write and materialization bytes,
+  cache/layout queries, mirror attempts/failures, retention pins, and orphan
+  bytes are exposed. Register the remaining chunk latency, coalescing, rebuild,
   publication, and recovery metrics. Files:
   `include/crowdb-tree/crowdb-tree.h`, `src/btree/crowdb-tree.cpp`,
   `src/backend/chunk/chunk_page_store.cpp`, `src/btree/range_rebuild.cpp`.
@@ -194,6 +197,7 @@ and structurally safe range rebuild while preserving local tree behavior.
   reference segments; later checkpoints COW only changed logical packs and
   their affected reference segments. Immutable mapping-directory sharing and
   unreachable-slot materialization remain open.
-- Basic chunk-store counters, retention pins, and logical orphan accounting
-  exist. Child materialization/repack, the full metric set, archive extraction
-  checks, and fixed-workload benchmark evidence remain absent.
+- Basic chunk-store counters, retention pins, logical orphan accounting, and
+  bounded child pack materialization metrics exist. Immutable mapping-image
+  materialization, the full metric set, archive extraction checks, and
+  fixed-workload benchmark evidence remain absent.

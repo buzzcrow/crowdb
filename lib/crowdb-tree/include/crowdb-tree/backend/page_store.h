@@ -74,6 +74,19 @@ class PageStore
         return Status::invalid_argument("delete_block: unsupported page store");
     }
 
+    // Run one bounded backend ownership-cleanup pass. Shared immutable stores
+    // override this; local byte stores have no ownership to materialize.
+    virtual Status materialize_ownership(uint64_t *bytes_written, bool *complete)
+    {
+        if (bytes_written != nullptr) {
+            *bytes_written = 0;
+        }
+        if (complete != nullptr) {
+            *complete = true;
+        }
+        return Status::Ok();
+    }
+
     // ── Async API ────────────────────────────────────────────────────
     // submit_read/submit_write/submit_fsync return an opaque op id usable
     // with cancel(). The callback fires exactly once with the outcome.

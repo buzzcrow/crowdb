@@ -407,6 +407,10 @@ class Crowdbtree
     // non-null). Requires opt.page_store != null.
     Status snapshot(uint64_t *out_last_applied = nullptr);
 
+    // Run one bounded immutable-backend ownership cleanup pass under the same
+    // generation gate as snapshot publication. Local stores complete as a no-op.
+    Status materialize_ownership(uint64_t *bytes_written, bool *complete);
+
     // Async twin of snapshot(). Always genuinely
     // async from *this* caller's perspective when Config::async_page_store is
     // wired (flush/snapshot are

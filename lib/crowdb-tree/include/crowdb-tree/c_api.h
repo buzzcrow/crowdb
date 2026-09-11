@@ -147,8 +147,9 @@ using ct_chunk_page_store_options = struct
     uint64_t tree_id;
     uint64_t owner_epoch;
     size_t   pack_bytes;
-    uint32_t iu_size;              // 0 => 64 KiB page framing
-    size_t   max_concurrent_packs; // 0 => 8
+    uint32_t iu_size;                        // 0 => 64 KiB page framing
+    size_t   max_concurrent_packs;           // 0 => 8
+    uint64_t materialization_bytes_per_pass; // 0 => 64 MiB; clamped to one pack
 };
 
 using ct_chunk_page_store_stats = struct
@@ -167,6 +168,11 @@ using ct_chunk_page_store_stats = struct
     uint64_t pinned_bytes;
     uint64_t oldest_pin_age_ms;
     uint64_t orphan_bytes;
+    uint64_t materialization_passes;
+    uint64_t materialization_failures;
+    uint64_t materialization_packs_written;
+    uint64_t materialization_bytes_written;
+    uint64_t shared_packs;
 };
 
 struct ct_chunk_rpc_route
@@ -221,6 +227,7 @@ void      ct_add_log_stderr(const char *level);
 void      ct_flush_logging();
 void      ct_shutdown_logging();
 ct_status ct_snapshot(ct_tree *t, uint64_t *out_last_applied);
+ct_status ct_materialize_ownership(ct_tree *t, uint64_t *bytes_written, int32_t *complete);
 uint64_t  ct_last_applied_slot(const ct_tree *t);
 size_t    ct_frozen_table_count(const ct_tree *t);
 // gc_slot = min(snapshot_slot, safe_slot); see crowdb::tree::set_gc_watermark.

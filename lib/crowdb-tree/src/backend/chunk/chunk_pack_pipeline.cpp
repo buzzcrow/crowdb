@@ -182,7 +182,8 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
                     return Status::unavailable("chunk manifest reuse verification cancelled");
                 }
                 if (reused != nullptr) {
-                    manifest->packs.push_back({.ordinal        = manifest->packs.size(),
+                    manifest->packs.push_back({.owner_tree_id  = chunk_pack_owner(*reuse_base, *reused),
+                                               .ordinal        = manifest->packs.size(),
                                                .logical_offset = offset,
                                                .ref            = reused->ref,
                                                .reused         = true});
@@ -217,6 +218,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             }
 
             auto job                 = std::make_unique<PackWrite>();
+            job->pack.owner_tree_id  = store->config_.tree_id;
             job->pack.ordinal        = manifest->packs.size();
             job->pack.logical_offset = offset;
             job->pack.ref            = {

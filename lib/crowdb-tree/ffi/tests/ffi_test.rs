@@ -48,6 +48,7 @@ fn injected_chunk_store_round_trip_and_stats() {
                 pack_bytes: 4096,
                 iu_size: 1,
                 max_concurrent_packs: 2,
+                materialization_bytes_per_pass: 4096,
             },
             &catalog,
             None,
@@ -68,6 +69,7 @@ fn injected_chunk_store_round_trip_and_stats() {
     let stats = store.chunk_stats().unwrap();
     assert_eq!(stats.generations_published, 1);
     assert!(stats.packs_written > 0);
+    assert_eq!(tree.materialize_ownership().unwrap(), (0, true));
 }
 
 #[test]

@@ -21,7 +21,7 @@
 namespace crowdb::tree::detail
 {
 
-inline constexpr uint32_t kChunkManifestFormat = 1;
+inline constexpr uint32_t kChunkManifestFormat = 2;
 
 class ChunkAsyncExecutor;
 class ChunkPackPipeline;
@@ -37,6 +37,7 @@ struct ChunkPageRef
 
 struct ChunkPagePack
 {
+    uint64_t     owner_tree_id  = 0;
     uint64_t     ordinal        = 0;
     uint64_t     logical_offset = 0;
     ChunkPageRef ref;
@@ -74,6 +75,16 @@ struct ChunkManifest
     std::vector<ChunkReferenceSegment> reference_segments;
     std::vector<ChunkPagePack>         packs;
 };
+
+inline uint64_t chunk_pack_owner(const ChunkManifest &manifest, const ChunkPagePack &pack)
+{
+    if (manifest.format_version >= 2) {
+        return pack.owner_tree_id;
+    }
+    // Older manifests did not distinguish same-lineage reuse from inherited
+    // reuse. Conservatively materialize every reused pack on the next pass.
+    return pack.reused ? UINT64_MAX : manifest.tree_id;
+}
 
 class RootCatalog
 {
@@ -167,20 +178,25 @@ class MemoryRootCatalog final : public RootCatalog
 
 struct ChunkPageStoreStats
 {
-    uint64_t generations_published = 0;
-    uint64_t packs_written         = 0;
-    uint64_t pack_bytes_written    = 0;
-    uint64_t packs_reused          = 0;
-    uint64_t pack_bytes_reused     = 0;
-    uint64_t pack_reads            = 0;
-    uint64_t cache_hits            = 0;
-    uint64_t layout_queries        = 0;
-    uint64_t mirror_write_attempts = 0;
-    uint64_t mirror_write_failures = 0;
-    uint64_t retained_manifests    = 0;
-    uint64_t pinned_bytes          = 0;
-    uint64_t oldest_pin_age_ms     = 0;
-    uint64_t orphan_bytes          = 0;
+    uint64_t generations_published         = 0;
+    uint64_t packs_written                 = 0;
+    uint64_t pack_bytes_written            = 0;
+    uint64_t packs_reused                  = 0;
+    uint64_t pack_bytes_reused             = 0;
+    uint64_t pack_reads                    = 0;
+    uint64_t cache_hits                    = 0;
+    uint64_t layout_queries                = 0;
+    uint64_t mirror_write_attempts         = 0;
+    uint64_t mirror_write_failures         = 0;
+    uint64_t retained_manifests            = 0;
+    uint64_t pinned_bytes                  = 0;
+    uint64_t oldest_pin_age_ms             = 0;
+    uint64_t orphan_bytes                  = 0;
+    uint64_t materialization_passes        = 0;
+    uint64_t materialization_failures      = 0;
+    uint64_t materialization_packs_written = 0;
+    uint64_t materialization_bytes_written = 0;
+    uint64_t shared_packs                  = 0;
 };
 
 class ChunkPageStore final : public PageStore, public AsyncPageStore
@@ -188,16 +204,17 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
   public:
     struct Config
     {
-        uint64_t tree_id              = 0;
-        uint64_t owner_epoch          = 0;
-        size_t   pack_bytes           = 4U * 1024U * 1024U;
-        uint64_t max_chunk_bytes      = 256U * 1024U * 1024U;
-        uint32_t page_alignment       = 64U * 1024U;
-        uint32_t iu_size              = 64U * 1024U;
-        uint32_t mirror_retry_limit   = 2;
-        uint64_t layout_validity_ms   = 30'000;
-        size_t   max_pending_ops      = 256;
-        size_t   max_concurrent_packs = 8;
+        uint64_t tree_id                        = 0;
+        uint64_t owner_epoch                    = 0;
+        size_t   pack_bytes                     = 4U * 1024U * 1024U;
+        uint64_t max_chunk_bytes                = 256U * 1024U * 1024U;
+        uint32_t page_alignment                 = 64U * 1024U;
+        uint32_t iu_size                        = 64U * 1024U;
+        uint32_t mirror_retry_limit             = 2;
+        uint64_t layout_validity_ms             = 30'000;
+        size_t   max_pending_ops                = 256;
+        size_t   max_concurrent_packs           = 8;
+        uint64_t materialization_bytes_per_pass = 64U * 1024U * 1024U;
     };
 
     ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catalog, std::shared_ptr<ChunkTransport> transport);
@@ -229,6 +246,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
 
     [[nodiscard]] ChunkPageStoreStats stats() const;
     uint64_t                          reclaim_orphans();
+    Status                            materialize_ownership(uint64_t *bytes_written, bool *complete) override;
 
     // Seed an unpublished destination from one immutable source generation.
     // Byte-identical packs are referenced directly by the next manifest;
@@ -291,6 +309,10 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     std::atomic<uint64_t>                                     mirror_write_attempts_{0};
     std::atomic<uint64_t>                                     mirror_write_failures_{0};
     std::atomic<uint64_t>                                     orphan_bytes_{0};
+    std::atomic<uint64_t>                                     materialization_passes_{0};
+    std::atomic<uint64_t>                                     materialization_failures_{0};
+    std::atomic<uint64_t>                                     materialization_packs_written_{0};
+    std::atomic<uint64_t>                                     materialization_bytes_written_{0};
     std::vector<uint64_t>                                     orphan_reference_segments_;
     ChunkId                                                   active_chunk_id_;
     uint64_t                                                  active_chunk_bytes_  = 0;

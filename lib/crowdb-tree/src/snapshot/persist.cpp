@@ -974,6 +974,17 @@ void Crowdbtree::release_snapshot_slot()
     snapshot_inflight_.store(false, std::memory_order_release);
 }
 
+Status Crowdbtree::materialize_ownership(uint64_t *bytes_written, bool *complete)
+{
+    if (opt_.page_store == nullptr || bytes_written == nullptr || complete == nullptr) {
+        return Status::invalid_argument("materialize_ownership: invalid argument");
+    }
+    acquire_snapshot_slot();
+    Status status = opt_.page_store->materialize_ownership(bytes_written, complete);
+    release_snapshot_slot();
+    return status;
+}
+
 Status Crowdbtree::snapshot(uint64_t *out_last_applied)
 {
     if (opt_.page_store == nullptr) {

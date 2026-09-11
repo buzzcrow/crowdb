@@ -14,6 +14,7 @@ pub struct ChunkPageStoreOptions {
     pub pack_bytes: usize,
     pub iu_size: u32,
     pub max_concurrent_packs: usize,
+    pub materialization_bytes_per_pass: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -32,6 +33,11 @@ pub struct ChunkPageStoreStats {
     pub pinned_bytes: u64,
     pub oldest_pin_age_ms: u64,
     pub orphan_bytes: u64,
+    pub materialization_passes: u64,
+    pub materialization_failures: u64,
+    pub materialization_packs_written: u64,
+    pub materialization_bytes_written: u64,
+    pub shared_packs: u64,
 }
 
 pub struct ChunkRootCatalog {
@@ -162,6 +168,7 @@ impl PageStore {
             pack_bytes: options.pack_bytes,
             iu_size: options.iu_size,
             max_concurrent_packs: options.max_concurrent_packs,
+            materialization_bytes_per_pass: options.materialization_bytes_per_pass,
         };
         let mut out = std::ptr::null_mut();
         let status = match transport {
@@ -199,6 +206,11 @@ impl PageStore {
             pinned_bytes: raw.pinned_bytes,
             oldest_pin_age_ms: raw.oldest_pin_age_ms,
             orphan_bytes: raw.orphan_bytes,
+            materialization_passes: raw.materialization_passes,
+            materialization_failures: raw.materialization_failures,
+            materialization_packs_written: raw.materialization_packs_written,
+            materialization_bytes_written: raw.materialization_bytes_written,
+            shared_packs: raw.shared_packs,
         })
     }
 

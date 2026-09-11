@@ -326,6 +326,60 @@ class FailingAdvanceTransport final : public ChunkTransport
     std::atomic<uint32_t> fail_on_call_{0};
 };
 
+class AmbiguousAdvanceTransport final : public ChunkTransport
+{
+  public:
+    Status allocate_mirror_chunk(uint64_t capacity, uint64_t owner_epoch, ChunkId *chunk_id) override
+    {
+        return inner_.allocate_mirror_chunk(capacity, owner_epoch, chunk_id);
+    }
+
+    Status write_mirror(ChunkId chunk_id, uint32_t mirror, uint64_t offset, const uint8_t *data, size_t length) override
+    {
+        return inner_.write_mirror(chunk_id, mirror, offset, data, length);
+    }
+
+    Status advance_write(ChunkId chunk_id, uint64_t expected, uint64_t acknowledged) override
+    {
+        Status status = inner_.advance_write(chunk_id, expected, acknowledged);
+        if (status.ok() && fail_next_.exchange(false, std::memory_order_acq_rel)) {
+            failed_chunk_ = chunk_id;
+            return Status::unavailable("injected lost advance response");
+        }
+        return status;
+    }
+
+    Status read_mirror(ChunkId chunk_id, uint32_t mirror, uint64_t offset, uint8_t *data, size_t length) const override
+    {
+        return inner_.read_mirror(chunk_id, mirror, offset, data, length);
+    }
+
+    Status query_chunk(ChunkId chunk_id, ChunkLayout *layout) const override
+    {
+        return inner_.query_chunk(chunk_id, layout);
+    }
+
+    Status seal_chunk(ChunkId chunk_id, uint64_t owner_epoch, uint64_t acknowledged) override
+    {
+        return inner_.seal_chunk(chunk_id, owner_epoch, acknowledged);
+    }
+
+    void fail_next_advance()
+    {
+        fail_next_.store(true, std::memory_order_release);
+    }
+
+    [[nodiscard]] ChunkId failed_chunk() const
+    {
+        return failed_chunk_;
+    }
+
+  private:
+    MemoryChunkTransport inner_;
+    std::atomic<bool>    fail_next_{false};
+    ChunkId              failed_chunk_;
+};
+
 TEST(ChunkPageStore, AsyncPackPipelineFansOutMirrorWrites)
 {
     auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
@@ -626,6 +680,188 @@ TEST(ChunkPageStore, TreeZeroCanShareReferenceSegmentsWithAnotherLineage)
     std::array<uint8_t, 1> value{};
     ASSERT_TRUE(child.read_at(8192, value.data(), value.size()).ok());
     EXPECT_EQ(value[0], 4U);
+}
+
+TEST(ChunkPageStore, BoundedMaterializationMakesChildPacksExclusive)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore source({.tree_id = 53, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                          catalog, transport);
+    publish_raw_generation(&source, 3);
+
+    ChunkPageStore child({.tree_id                        = 54,
+                          .owner_epoch                    = 1,
+                          .pack_bytes                     = 4096,
+                          .page_alignment                 = 1,
+                          .iu_size                        = 1,
+                          .materialization_bytes_per_pass = 4096},
+                         catalog, transport);
+    ASSERT_TRUE(child.inherit_snapshot_from(source).ok());
+    publish_raw_generation(&child, 3);
+    EXPECT_GT(child.stats().shared_packs, 0U);
+
+    uint64_t total_written    = 0;
+    bool     complete         = false;
+    uint64_t prior_generation = catalog->load(54)->generation;
+    while (!complete) {
+        uint64_t written = 0;
+        ASSERT_TRUE(child.materialize_ownership(&written, &complete).ok());
+        EXPECT_GT(written, 0U);
+        EXPECT_LE(written, 4096U);
+        total_written += written;
+        auto current = catalog->load(54);
+        ASSERT_NE(current, nullptr);
+        EXPECT_EQ(current->generation, ++prior_generation);
+    }
+    auto exclusive = catalog->load(54);
+    ASSERT_NE(exclusive, nullptr);
+    EXPECT_EQ(total_written, exclusive->logical_size);
+    EXPECT_TRUE(std::all_of(exclusive->packs.begin(), exclusive->packs.end(),
+                            [](const ChunkPagePack &pack) { return pack.owner_tree_id == 54; }));
+    EXPECT_TRUE(std::all_of(exclusive->reference_segments.begin(), exclusive->reference_segments.end(),
+                            [](const ChunkReferenceSegment &segment) { return segment.owner_tree_id == 54; }));
+    const auto stats = child.stats();
+    EXPECT_EQ(stats.shared_packs, 0U);
+    EXPECT_EQ(stats.materialization_bytes_written, total_written);
+    EXPECT_EQ(stats.materialization_packs_written, exclusive->packs.size());
+    EXPECT_GT(stats.materialization_passes, 0U);
+    EXPECT_EQ(stats.materialization_failures, 0U);
+
+    std::array<uint8_t, 1> source_value{};
+    ASSERT_TRUE(source.read_at(8192, source_value.data(), source_value.size()).ok());
+    EXPECT_EQ(source_value[0], 3U);
+}
+
+TEST(ChunkPageStore, FailedMaterializationKeepsPriorGenerationRetryable)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore source({.tree_id = 55, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                          catalog, transport);
+    publish_raw_generation(&source, 5);
+    ChunkPageStore child({.tree_id = 56, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                         catalog, transport);
+    ASSERT_TRUE(child.inherit_snapshot_from(source).ok());
+    publish_raw_generation(&child, 5);
+    auto prior = catalog->load(56);
+    ASSERT_NE(prior, nullptr);
+
+    child.inject_mirror_write_failures(1);
+    uint64_t written  = 0;
+    bool     complete = false;
+    EXPECT_EQ(child.materialize_ownership(&written, &complete).code(), Code::kUnavailable);
+    EXPECT_EQ(catalog->load(56), prior);
+    EXPECT_GT(child.stats().orphan_bytes, 0U);
+    EXPECT_EQ(child.stats().materialization_failures, 1U);
+
+    child.inject_mirror_write_failures(0);
+    ASSERT_TRUE(child.materialize_ownership(&written, &complete).ok());
+    EXPECT_GT(written, 0U);
+    EXPECT_GT(catalog->load(56)->generation, prior->generation);
+}
+
+TEST(ChunkPageStore, AmbiguousMaterializationAdvanceRetriesOnFreshChunk)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<AmbiguousAdvanceTransport>();
+    ChunkPageStore source({.tree_id = 59, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                          catalog, transport);
+    publish_raw_generation(&source, 8);
+    ChunkPageStore child({.tree_id = 60, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                         catalog, transport);
+    ASSERT_TRUE(child.inherit_snapshot_from(source).ok());
+    publish_raw_generation(&child, 8);
+
+    transport->fail_next_advance();
+    uint64_t written  = 0;
+    bool     complete = false;
+    EXPECT_EQ(child.materialize_ownership(&written, &complete).code(), Code::kUnavailable);
+    const ChunkId abandoned = transport->failed_chunk();
+    ASSERT_FALSE(abandoned.empty());
+
+    ASSERT_TRUE(child.materialize_ownership(&written, &complete).ok());
+    ASSERT_GT(written, 0U);
+    auto manifest = catalog->load(60);
+    ASSERT_NE(manifest, nullptr);
+    auto owned = std::find_if(manifest->packs.begin(), manifest->packs.end(),
+                              [](const ChunkPagePack &pack) { return pack.owner_tree_id == 60; });
+    ASSERT_NE(owned, manifest->packs.end());
+    EXPECT_NE(owned->ref.chunk_id, abandoned);
+}
+
+TEST(ChunkPageStore, MaterializationBudgetIsAtLeastOneConfiguredPack)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore source({.tree_id = 61, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                          catalog, transport);
+    publish_raw_generation(&source, 2);
+    ChunkPageStore child({.tree_id                        = 62,
+                          .owner_epoch                    = 1,
+                          .pack_bytes                     = 4096,
+                          .page_alignment                 = 1,
+                          .iu_size                        = 1,
+                          .materialization_bytes_per_pass = 1},
+                         catalog, transport);
+    ASSERT_TRUE(child.inherit_snapshot_from(source).ok());
+    publish_raw_generation(&child, 2);
+
+    uint64_t written  = 0;
+    bool     complete = false;
+    ASSERT_TRUE(child.materialize_ownership(&written, &complete).ok());
+    EXPECT_EQ(written, 4096U);
+    EXPECT_FALSE(complete);
+}
+
+TEST(ChunkPageStore, SnapshotInheritanceRejectsMismatchedStorageGeometry)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore source({.tree_id = 63, .owner_epoch = 1, .pack_bytes = 8192, .page_alignment = 1, .iu_size = 1},
+                          catalog, transport);
+    publish_raw_generation(&source, 2);
+
+    ChunkPageStore child({.tree_id = 64, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                         catalog, transport);
+    EXPECT_EQ(child.inherit_snapshot_from(source).code(), Code::kInvalidArgument);
+}
+
+TEST(ChunkPageStore, StaleMaterializationCannotReplaceForegroundCheckpoint)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore source({.tree_id = 57, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                          catalog, transport);
+    publish_raw_generation(&source, 7);
+    ChunkPageStore materializer(
+        {.tree_id = 58, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
+    ASSERT_TRUE(materializer.inherit_snapshot_from(source).ok());
+    publish_raw_generation(&materializer, 7);
+
+    ChunkPageStore winner({.tree_id = 58, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                          catalog, transport);
+    const uint8_t  winner_value = 9;
+    ASSERT_TRUE(winner.write_at(8192, &winner_value, 1).ok());
+    ASSERT_TRUE(winner.sync().ok());
+    ASSERT_TRUE(winner.write_at(0, &winner_value, 1).ok());
+
+    catalog->block_next_publish_for_tests();
+    Status      materialize_status;
+    uint64_t    materialized_bytes = 0;
+    bool        complete           = false;
+    std::thread cleanup(
+        [&] { materialize_status = materializer.materialize_ownership(&materialized_bytes, &complete); });
+    catalog->wait_for_blocked_publish_for_tests();
+    ASSERT_TRUE(winner.sync().ok());
+    auto published_winner = catalog->load(58);
+    ASSERT_NE(published_winner, nullptr);
+    catalog->release_blocked_publish_for_tests();
+    cleanup.join();
+
+    EXPECT_EQ(materialize_status.code(), Code::kUnavailable);
+    EXPECT_EQ(catalog->load(58), published_winner);
+    EXPECT_GT(materializer.stats().orphan_bytes, 0U);
 }
 
 TEST(ChunkPageStore, ReopensLegacyManifestChecksumWithoutOwnerFields)
@@ -1325,9 +1561,13 @@ TEST(ChunkPageStore, CApiFactoryInjectsBackendWithoutChangingOpen)
 
     ct_root_catalog *catalog = nullptr;
     ASSERT_EQ(ct_memory_root_catalog_open(11, &catalog), 0);
-    ct_chunk_page_store_options store_options = {
-        .tree_id = 77, .owner_epoch = 11, .pack_bytes = 4096, .iu_size = 1, .max_concurrent_packs = 2};
-    ct_page_store *store = nullptr;
+    ct_chunk_page_store_options store_options = {.tree_id                        = 77,
+                                                 .owner_epoch                    = 11,
+                                                 .pack_bytes                     = 4096,
+                                                 .iu_size                        = 1,
+                                                 .max_concurrent_packs           = 2,
+                                                 .materialization_bytes_per_pass = 4096};
+    ct_page_store              *store         = nullptr;
     ASSERT_EQ(ct_chunk_page_store_open(&store_options, catalog, &store), 0);
     ct_options options  = {};
     options.page_store  = store;
@@ -1341,6 +1581,11 @@ TEST(ChunkPageStore, CApiFactoryInjectsBackendWithoutChangingOpen)
     uint64_t slot = 0;
     ASSERT_EQ(ct_snapshot(tree, &slot), 0);
     EXPECT_EQ(slot, 1U);
+    uint64_t materialized_bytes = 1;
+    int32_t  materialized       = 0;
+    ASSERT_EQ(ct_materialize_ownership(tree, &materialized_bytes, &materialized), 0);
+    EXPECT_EQ(materialized_bytes, 0U);
+    EXPECT_EQ(materialized, 1);
     ASSERT_GT(ct_evict_clean_leaves(tree, 0), 0U);
     ct_future *future = ct_get_async(tree, reinterpret_cast<const uint8_t *>("key"), 3);
     ASSERT_NE(future, nullptr);
