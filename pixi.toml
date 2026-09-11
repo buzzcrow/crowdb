@@ -149,6 +149,10 @@ test-protocol = { cmd = "cargo test -p crowdb-protocol --all-targets" }
 test-kv-core = { cmd = "cargo test -p crowdb-kv --all-targets" }
 test-kv-client = { cmd = "cargo test -p crowdb-kv-client --all-targets" }
 test-chunkdb-client = { cmd = "cargo test -p crowdb-chunkdb-client --all-targets" }
+test-chunk-kv = { cmd = "cargo test -p crowdb-chunk-kv --all-targets" }
+test-chunk-stream = { cmd = "cargo test -p crowdb-chunk-stream --all-targets" }
+test-chunk-kv-client = { cmd = "cargo test -p crowdb-chunk-kv-client --all-targets" }
+test-chunk-kv-server = { cmd = "cargo test -p crowdb-chunk-kv-server --all-targets" }
 test-unit = { cmd = '''
 bash -c '
 set -e
@@ -157,6 +161,10 @@ pixi run test-protocol
 pixi run test-kv-core
 pixi run test-kv-client
 pixi run test-chunkdb-client
+pixi run test-chunk-kv
+pixi run test-chunk-stream
+pixi run test-chunk-kv-client
+pixi run test-chunk-kv-server
 '
 ''', depends-on = ["build-tests"] }
 
@@ -215,7 +223,7 @@ pixi run test-console-ui
 
 # ── Coverage & LOC ───────────────────────────────────────────────
 coverage = { cmd = "cargo tarpaulin --workspace --out Html --output-dir target/coverage --exclude-files '*/tests/*'", depends-on = ["install-deps"] }
-loc = "tokei . .github --exclude swagger-ui --exclude 'lib/crowdb-tree/build-*' --exclude target --exclude dist --exclude node_modules --exclude 'doc/user-manual/*.html' --exclude 'doc/user-manual/*.py' --exclude package-lock.json"
+loc = "tokei . .github --exclude swagger-ui --exclude third-party --exclude 'lib/crowdb-tree/build-*' --exclude target --exclude dist --exclude node_modules --exclude 'doc/user-manual/*.html' --exclude 'doc/user-manual/*.py' --exclude package-lock.json"
 
 # ── Clean ────────────────────────────────────────────────────────
 # Removes all build/test/runtime artifacts, keeping only git-tracked

@@ -31,7 +31,7 @@ locally.
 | --- | --- | --- | --- |
 | **Lint** | `test-task-coverage` | `cargo fmt`, `cargo clippy` | Formatting, linting, and package-to-task coverage validation |
 | **CppTests** | `test-cpp` | `test-tree-ct`, `test-common-ct`, `test-rpc-ct`, `test-diskio-ct`, `test-tree-ffi`, `test-rpc-ffi` | CMake-built C++ tests and Rust FFI tests |
-| **UnitTests** | `test-unit` | `test-common`, `test-protocol`, `test-kv-core`, `test-kv-client`, `test-chunkdb-client` | Pure Rust tests without subprocess dependencies |
+| **UnitTests** | `test-unit` | `test-common`, `test-protocol`, `test-kv-core`, `test-kv-client`, `test-chunkdb-client`, `test-chunk-kv`, `test-chunk-stream`, `test-chunk-kv-client`, `test-chunk-kv-server` | Pure Rust tests without subprocess dependencies |
 | **ServerTests** | `test-server` | `test-kv-server`, `test-diskdb`, `test-diskdb-client`, `test-chunkdb`, `test-chunk-client`, `test-diskio-client` | Tests that spawn KV, DiskDB, or DiskIO processes |
 | **ConsoleTests** | `test-console` | `test-console-shared`, `test-console-cli`, `test-console-server` | Console and lifecycle tests that spawn KV servers |
 | **UITests** | `test-console-ui` | Frontend Vitest and Playwright E2E | Real backend subprocesses and system browser |
@@ -85,29 +85,33 @@ runner's test results. A timeout is recorded when the task exceeded the
 
 Status icons: ✅ = PASS (0 failures), ⚠️ = PASS with ignored tests, ❌ = TIMEOUT or failures.
 
-| Suite                 | Tests | macOS    | Linux (09-10) | Status |
-| --------------------- | ----- | -------- | ------------- | ------ |
-| `test-tree-ct`        | 449   | 20.1 s   | 40.06 s       | ✅     |
-| `test-common-ct`      | 28    | —        | 0.60 s        | ✅     |
-| `test-tree-ffi`       | 31    | 13.5 s   | 0.87 s        | ✅     |
-| `test-rpc-ct`         | 65    | —        | 3.93 s        | ✅     |
-| `test-rpc-ffi`        | 15    | —        | 0.83 s        | ✅     |
-| `test-diskio-ct`      | 120   | —        | 7.40 s        | ✅     |
-| `test-common`         | 77    | 21.9 s   | 10.04 s       | ✅     |
-| `test-protocol`       | 135   | 12.2 s   | 0.39 s        | ✅     |
-| `test-kv-core`        | 572   | 43.2 s   | 56.21 s       | ✅     |
-| `test-kv-client`      | 58    | 23.4 s   | 7.06 s        | ✅     |
-| `test-chunkdb-client` | 10    | 13.8 s   | 3.90 s        | ✅     |
-| `test-kv-server`      | 89    | 53.0 s   | 34.80 s       | ✅     |
-| `test-diskdb`         | 141   | 42.8 s   | 25.15 s       | ✅     |
-| `test-diskdb-client`  | 7     | 13.9 s   | 9.47 s        | ✅     |
-| `test-chunkdb`        | 102   | 27.8 s   | 17.65 s       | ✅     |
-| `test-chunk-client`   | 105   | —        | 42.48 s       | ✅     |
-| `test-diskio-client`  | 4     | —        | 8.45 s        | ✅     |
-| `test-console-shared` | 115   | 39.2 s   | 33.19 s       | ✅     |
-| `test-console-cli`    | 15    | 69.4 s   | 11.73 s       | ✅     |
-| `test-console-server` | 82    | 50.7 s   | 73.98 s       | ✅     |
-| `test-console-ui`     | 138   | 165.7 s  | 221.93 s      | ✅     |
+| Suite                  | Tests | macOS    | Linux (09-10) | Status |
+| ---------------------- | ----- | -------- | ------------- | ------ |
+| `test-tree-ct`         | 449   | 20.1 s   | 40.06 s       | ✅      |
+| `test-common-ct`       | 28    | —        | 0.60 s        | ✅      |
+| `test-tree-ffi`        | 31    | 13.5 s   | 0.87 s        | ✅      |
+| `test-rpc-ct`          | 65    | —        | 3.93 s        | ✅      |
+| `test-rpc-ffi`         | 15    | —        | 0.83 s        | ✅      |
+| `test-diskio-ct`       | 120   | —        | 7.40 s        | ✅      |
+| `test-common`          | 77    | 21.9 s   | 10.04 s       | ✅      |
+| `test-protocol`        | 135   | 12.2 s   | 0.39 s        | ✅      |
+| `test-kv-core`         | 572   | 43.2 s   | 56.21 s       | ✅      |
+| `test-kv-client`       | 58    | 23.4 s   | 7.06 s        | ✅      |
+| `test-chunkdb-client`  | 10    | 13.8 s   | 3.90 s        | ✅      |
+| `test-chunk-kv`        | 19    | —        | 0.32 s        | ✅      |
+| `test-chunk-stream`    | 15    | —        | 0.30 s        | ✅      |
+| `test-chunk-kv-client` | 12    | —        | 0.36 s        | ✅      |
+| `test-chunk-kv-server` | 24    | —        | 0.36 s        | ✅      |
+| `test-kv-server`       | 89    | 53.0 s   | 34.80 s       | ✅      |
+| `test-diskdb`          | 141   | 42.8 s   | 25.15 s       | ✅      |
+| `test-diskdb-client`   | 7     | 13.9 s   | 9.47 s        | ✅      |
+| `test-chunkdb`         | 102   | 27.8 s   | 17.65 s       | ✅      |
+| `test-chunk-client`    | 105   | —        | 42.48 s       | ✅      |
+| `test-diskio-client`   | 4     | —        | 8.45 s        | ✅      |
+| `test-console-shared`  | 115   | 39.2 s   | 33.19 s       | ✅      |
+| `test-console-cli`     | 15    | 69.4 s   | 11.73 s       | ✅      |
+| `test-console-server`  | 82    | 50.7 s   | 73.98 s       | ✅      |
+| `test-console-ui`      | 138   | 165.7 s  | 221.93 s      | ✅      |
 
 ---
 
