@@ -90,6 +90,11 @@ uint64_t monotonic_nanos()
         .count();
 }
 
+uint64_t monotonic_millis()
+{
+    return monotonic_nanos() / 1'000'000;
+}
+
 void rpc_complete(uint64_t, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data, crowdb_rpc_status status,
                   void *context)
 {
@@ -207,8 +212,9 @@ struct RpcChunkTransport::Impl
     struct RemoteChunk
     {
         ChunkLayout        layout;
-        uint64_t           owner_epoch = 0;
-        uint64_t           modify_ts   = 0;
+        uint64_t           owner_epoch    = 0;
+        uint64_t           modify_ts      = 0;
+        uint64_t           valid_until_ms = 0;
         std::vector<Strip> strips;
     };
 
@@ -338,6 +344,11 @@ struct RpcChunkTransport::Impl
         return true;
     }
 
+    [[nodiscard]] bool cached_valid(ChunkId chunk_id, RemoteChunk *out) const
+    {
+        return cached(chunk_id, out) && monotonic_millis() < out->valid_until_ms;
+    }
+
     Status query_remote(ChunkId chunk_id, RemoteChunk *out) const
     {
         flatbuffers::FlatBufferBuilder builder;
@@ -362,6 +373,10 @@ struct RpcChunkTransport::Impl
         }
         status = parse_chunk(response->chunk(), out);
         if (status.ok()) {
+            const uint64_t now  = monotonic_millis();
+            out->valid_until_ms = response->layout_validity_ms() > std::numeric_limits<uint64_t>::max() - now
+                                    ? std::numeric_limits<uint64_t>::max()
+                                    : now + response->layout_validity_ms();
             cache(*out);
         }
         return status;
@@ -419,7 +434,8 @@ Status RpcChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint6
         remote.layout.logical_capacity < logical_capacity) {
         return status.ok() ? Status::corruption("ChunkDB allocation metadata mismatch") : status;
     }
-    *chunk_id = remote.layout.chunk_id;
+    remote.valid_until_ms = std::numeric_limits<uint64_t>::max();
+    *chunk_id             = remote.layout.chunk_id;
     impl_->cache(std::move(remote));
     return Status::Ok();
 }
@@ -527,9 +543,12 @@ Status RpcChunkTransport::read_mirror(ChunkId chunk_id, uint32_t mirror_index, u
         return Status::invalid_argument("tree chunk RPC mirror read arguments are invalid");
     }
     Impl::RemoteChunk chunk;
-    Status            status = impl_->query_remote(chunk_id, &chunk);
-    if (!status.ok()) {
-        return status;
+    Status            status = Status::Ok();
+    if (!impl_->cached_valid(chunk_id, &chunk)) {
+        status = impl_->query_remote(chunk_id, &chunk);
+        if (!status.ok()) {
+            return status;
+        }
     }
     if (offset > chunk.layout.acknowledged_bytes || length > chunk.layout.acknowledged_bytes - offset) {
         return Status::unavailable("tree chunk RPC read exceeds acknowledged cursor");
@@ -627,6 +646,7 @@ Status RpcChunkTransport::seal_chunk(ChunkId chunk_id, uint64_t owner_epoch, uin
         status = impl_->parse_chunk(response->chunk(), &updated);
     }
     if (status.ok()) {
+        updated.valid_until_ms = std::numeric_limits<uint64_t>::max();
         impl_->cache(std::move(updated));
     }
     return status;

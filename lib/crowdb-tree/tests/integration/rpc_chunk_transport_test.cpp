@@ -5,10 +5,12 @@
 #include "chunkdb_generated.h"
 #include "crowdb-rpc/c_api.h"
 #include "diskdb_generated.h"
+#include "diskio_generated.h"
 #include "msg_type_generated.h"
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <vector>
@@ -28,9 +30,13 @@ using crowdb::chunkdb::proto::FBChunkType_BtreePage;
 using crowdb::chunkdb::proto::FBStripBody_FBMirrorStrip;
 using crowdb::chunkdb::proto::FBStripType_Mirror;
 using crowdb::diskdb::proto::FBSegment;
+using crowdb::diskio::proto::CreateFBDiskReadResponse;
+using crowdb::diskio::proto::FBDiskReadRequest;
 using crowdb::rpc::proto::FBInt128;
 using crowdb::rpc::proto::FBMsgType_EAllocateChunkRequest;
 using crowdb::rpc::proto::FBMsgType_EAllocateChunkResponse;
+using crowdb::rpc::proto::FBMsgType_EDiskReadRequest;
+using crowdb::rpc::proto::FBMsgType_EDiskReadResponse;
 
 struct AllocateHandlerState
 {
@@ -69,13 +75,34 @@ extern "C" void handle_allocate(uint64_t request_id, uint64_t, uint16_t, const u
     const auto strips =
         builder.CreateVector(std::vector<flatbuffers::Offset<crowdb::chunkdb::proto::FBChunkStrip>>{strip});
     const auto chunk = CreateFBChunk(builder, &chunk_id, 3, FBChunkState_Active, 1, 0, 256U * 1024U * 1024U, 0, strips,
-                                     FBChunkType_BtreePage, 17);
+                                     FBChunkType_BtreePage, 17, 4);
     const auto response = CreateFBAllocateChunkResponse(
         builder, request_id, 0, crowdb::chunkdb::proto::FBChunkdbRetCode_Success, 0, 0, 0, chunk);
     builder.Finish(response);
     static_cast<void>(crowdb_rpc_server_submit_response(state->server, connection, builder.GetBufferPointer(),
                                                         builder.GetSize(), nullptr, 0, FBMsgType_EAllocateChunkResponse,
                                                         request_id));
+    crowdb_rpc_frame_release(frame);
+}
+
+extern "C" void handle_disk_read(uint64_t request_id, uint64_t, uint16_t, const uint8_t *control, uint32_t control_len,
+                                 const uint8_t *, uint32_t, void *connection, void *frame, void *user_data)
+{
+    auto                 *state = static_cast<AllocateHandlerState *>(user_data);
+    flatbuffers::Verifier verifier(control, control_len);
+    if (!verifier.VerifyBuffer<FBDiskReadRequest>(nullptr)) {
+        crowdb_rpc_frame_release(frame);
+        return;
+    }
+    const auto                    *request = flatbuffers::GetRoot<FBDiskReadRequest>(control);
+    flatbuffers::FlatBufferBuilder builder;
+    const auto                     response =
+        CreateFBDiskReadResponse(builder, request_id, 0, crowdb::diskio::proto::FBDiskIoRetCode_Success);
+    builder.Finish(response);
+    const std::array<uint8_t, 4> data{1, 2, 3, 4};
+    static_cast<void>(crowdb_rpc_server_submit_response(state->server, connection, builder.GetBufferPointer(),
+                                                        builder.GetSize(), data.data(), request->size(),
+                                                        FBMsgType_EDiskReadResponse, request_id));
     crowdb_rpc_frame_release(frame);
 }
 
@@ -87,6 +114,7 @@ TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
     ASSERT_EQ(crowdb_rpc_server_listen(server, "127.0.0.1", 0), CROWDB_RPC_OK);
     AllocateHandlerState handler{.server = server};
     crowdb_rpc_server_register_handler(server, FBMsgType_EAllocateChunkRequest, handle_allocate, &handler);
+    crowdb_rpc_server_register_handler(server, FBMsgType_EDiskReadRequest, handle_disk_read, &handler);
     crowdb_rpc_server_start(server);
 
     crowdb_rpc_client_t client = crowdb_rpc_client_create();
@@ -112,6 +140,9 @@ TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
     ASSERT_TRUE(transport.allocate_mirror_chunk(256U * 1024U * 1024U, 17, &allocated).ok());
     EXPECT_TRUE(handler.request_valid.load(std::memory_order_acquire));
     EXPECT_EQ(allocated, ChunkId(0x0200'0000'0000'0042ULL, 0x1234));
+    std::array<uint8_t, 4> read{};
+    ASSERT_TRUE(transport.read_mirror(allocated, 0, 0, read.data(), read.size()).ok());
+    EXPECT_EQ(read, (std::array<uint8_t, 4>{1, 2, 3, 4}));
 
     crowdb_rpc_conn_destroy(connection);
     crowdb_rpc_client_destroy(client);
