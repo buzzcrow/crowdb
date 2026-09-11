@@ -351,13 +351,13 @@ Required gates:
 - `MirrorChunkWriter` provides the one-chunk, owned-buffer, three-copy direct
   path without EC. `ProductionStreamChunkStore` connects it to fenced cursor
   reconciliation, `ChunkReader`, sealing, and whole-chunk trim release using
-  an atomic per-chunk view rather than an append-path lock. Chunk-KV server
-  construction and a real chunkdb/diskio restart test remain open production
-  lifecycle wiring.
+  an atomic per-chunk view rather than an append-path lock. `ChunkKvStorage`
+  assembles shared KV, chunk IO, and stream runtime clients. A real
+  chunkdb/diskio restart test remains production lifecycle work.
 - `KvStreamRegistry` and `KvStreamMetadataStore` now provide group-0 binding,
-  nonzero-group immutable extent pages, and an R101 CAS manifest head. Server
-  lifecycle wiring and a real-KV crash-order integration test remain with the
-  production adapter work.
+  nonzero-group immutable extent pages, and an R101 CAS manifest head.
+  `create_registered` consumes an Active control-plane binding without
+  attempting to recreate it. A real-KV crash-order integration test remains.
 - The seekable reader supports finite/`ToEnd` hints, keeps one bounded next
   window in flight while the caller consumes the current window, and runs a
   configurable bounded number of physical reads concurrently without changing

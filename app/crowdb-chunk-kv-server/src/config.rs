@@ -31,6 +31,7 @@ pub struct ChunkKvServerConfig {
     pub max_hosted_partitions: usize,
     pub catalog_refresh_interval_ms: u64,
     pub shutdown_drain_timeout_ms: u64,
+    pub storage: StorageConfig,
     pub monitor: DomainMonitorDescriptor,
     pub balance: BalanceConfig,
 }
@@ -45,6 +46,7 @@ impl Default for ChunkKvServerConfig {
             max_hosted_partitions: 256,
             catalog_refresh_interval_ms: 5_000,
             shutdown_drain_timeout_ms: 30_000,
+            storage: StorageConfig::default(),
             monitor: default_monitor(),
             balance: BalanceConfig::default(),
         }
@@ -89,6 +91,7 @@ impl ChunkKvServerConfig {
                 "partition capacity and lifecycle intervals must be nonzero".into(),
             ));
         }
+        self.storage.validate()?;
         self.monitor
             .validate()
             .map_err(|error| ConfigError::Invalid(error.to_string()))?;
@@ -98,6 +101,41 @@ impl ChunkKvServerConfig {
             || self.balance.cooldown_ms == 0
         {
             return Err(ConfigError::Invalid("balance policy is invalid".into()));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StorageConfig {
+    pub metadata_store_id: u64,
+    pub stream_writer_lease_ms: u64,
+    pub diskio_connections_per_endpoint: usize,
+    pub diskio_rpc_workers: u32,
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            metadata_store_id: 1,
+            stream_writer_lease_ms: 30_000,
+            diskio_connections_per_endpoint: 1,
+            diskio_rpc_workers: 2,
+        }
+    }
+}
+
+impl StorageConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.metadata_store_id == 0
+            || self.stream_writer_lease_ms == 0
+            || self.diskio_connections_per_endpoint == 0
+            || self.diskio_rpc_workers == 0
+        {
+            return Err(ConfigError::Invalid(
+                "storage identifiers, lease, connections, and workers must be nonzero".into(),
+            ));
         }
         Ok(())
     }

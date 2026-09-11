@@ -7,11 +7,13 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use crowdb_chunk_client::{ChunkAllocator, ChunkReadPolicy, DiskWriter, IoError};
+use crowdb_chunk_client::{ChunkAllocator, ChunkIoClient, ChunkReadPolicy, DiskWriter, IoError};
 use crowdb_chunk_stream::{
-    memory::MemoryStreamStore, ChunkStream, CursorAdvance, ProductionStreamChunkStore, StreamBinding,
-    StreamBindingState, StreamChunkStore, StreamConfig, StreamMetadataStore, StreamName, StreamRegistry,
+    memory::MemoryStreamStore, ChunkStream, CursorAdvance, ProductionStreamChunkStore,
+    ProductionStreamRuntime, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig,
+    StreamMetadataStore, StreamName, StreamRegistry,
 };
+use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
     AppendChunkRequest, AppendChunkResponse, Chunk, ChunkState, ChunkStrip, DeleteChunkRequest,
@@ -154,6 +156,27 @@ impl ChunkAllocator for Allocator {
 #[derive(Default)]
 struct Disks {
     bytes: Mutex<HashMap<u64, Vec<u8>>>,
+}
+
+#[test]
+fn production_runtime_shares_connected_chunk_io_parts() {
+    let allocator: Arc<dyn ChunkAllocator> = Arc::new(Allocator::new());
+    let disks: Arc<dyn DiskWriter> = Arc::new(Disks::default());
+    let chunk_io = ChunkIoClient::from_parts(allocator, disks);
+    let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(vec![
+        "http://127.0.0.1:1".into()
+    ])));
+
+    let runtime = ProductionStreamRuntime::new(
+        kv,
+        &chunk_io,
+        30_000,
+        ChunkReadPolicy::default(),
+        StreamConfig::default(),
+    )
+    .unwrap();
+    let _registry = runtime.registry();
+    let _chunks = runtime.chunks();
 }
 
 #[async_trait]

@@ -17,6 +17,10 @@ fn defaults_close_the_documented_timing_contract() {
     assert_eq!(config.balance.target_partitions_per_owner, 4);
     assert_eq!(config.balance.minimum_weighted_improvement_percent, 25);
     assert_eq!(config.balance.cooldown_ms, 600_000);
+    assert_eq!(config.storage.metadata_store_id, 1);
+    assert_eq!(config.storage.stream_writer_lease_ms, 30_000);
+    assert_eq!(config.storage.diskio_connections_per_endpoint, 1);
+    assert_eq!(config.storage.diskio_rpc_workers, 2);
 
     config.monitor.self_fence_margin_ms = 3_000;
     assert!(matches!(config.validate(), Err(ConfigError::Invalid(_))));
@@ -34,5 +38,8 @@ fn invalid_identity_address_and_capacity_fail_closed() {
     assert!(config.validate().is_err());
     config.rpc_listen_addr = "127.0.0.1:15200".into();
     config.max_hosted_partitions = 0;
+    assert!(config.validate().is_err());
+    config.max_hosted_partitions = 1;
+    config.storage.metadata_store_id = 0;
     assert!(config.validate().is_err());
 }

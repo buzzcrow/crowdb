@@ -51,7 +51,7 @@ impl Default for StreamConfig {
 }
 
 impl StreamConfig {
-    fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(&self) -> Result<()> {
         if self.queue_requests == 0
             || self.queue_bytes == 0
             || self.batch_requests == 0
@@ -182,7 +182,10 @@ impl ChunkStream {
         chunks: Arc<dyn StreamChunkStore>,
     ) -> Result<Self> {
         config.validate()?;
-        if binding.state != StreamBindingState::Active || binding.metadata_group_id == 0 || writer_epoch == 0
+        if binding.state != StreamBindingState::Active
+            || binding.metadata_group_id == 0
+            || binding.binding_generation == 0
+            || writer_epoch == 0
         {
             return Err(StreamError::InvalidRequest(
                 "stream binding or writer epoch is invalid".into(),
@@ -192,6 +195,53 @@ impl ChunkStream {
             return Err(StreamError::InvalidRequest("stream already exists".into()));
         }
         registry.create(binding.clone()).await?;
+        Self::initialize(binding, writer_epoch, config, metadata, chunks).await
+    }
+
+    /// Initializes stream metadata for an active binding already published by
+    /// the control plane.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed error if the binding is absent or inactive, metadata
+    /// already exists, or initial metadata publication fails.
+    pub async fn create_registered(
+        stream_name: StreamName,
+        writer_epoch: u64,
+        config: StreamConfig,
+        registry: Arc<dyn StreamRegistry>,
+        metadata: Arc<dyn StreamMetadataStore>,
+        chunks: Arc<dyn StreamChunkStore>,
+    ) -> Result<Self> {
+        config.validate()?;
+        let binding = registry
+            .load(stream_name)
+            .await?
+            .ok_or_else(|| StreamError::InvalidRequest("stream binding does not exist".into()))?;
+        if binding.state != StreamBindingState::Active
+            || binding.metadata_group_id == 0
+            || binding.binding_generation == 0
+            || writer_epoch == 0
+        {
+            return Err(StreamError::InvalidRequest(
+                "stream binding or writer epoch is invalid".into(),
+            ));
+        }
+        if metadata.load_current(stream_name).await?.is_some() {
+            return Err(StreamError::InvalidRequest(
+                "stream metadata already exists".into(),
+            ));
+        }
+        Self::initialize(binding, writer_epoch, config, metadata, chunks).await
+    }
+
+    async fn initialize(
+        binding: StreamBinding,
+        writer_epoch: u64,
+        config: StreamConfig,
+        metadata: Arc<dyn StreamMetadataStore>,
+        chunks: Arc<dyn StreamChunkStore>,
+    ) -> Result<Self> {
         let manifest = StreamManifest {
             stream_name: binding.stream_name,
             metadata_group_id: binding.metadata_group_id,

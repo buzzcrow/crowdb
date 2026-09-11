@@ -70,6 +70,12 @@ The production chunk store uses a direct-buffer `MirrorChunkWriter` from
 `crowdb-chunk-client`. It owns one chunk, appends mirror strips asynchronously,
 and never constructs the EC pipeline. Stream rollover remains above it.
 
+`ProductionStreamRuntime` shares the process KV client and discovered chunk IO
+routes across every stream handle. The chunk-KV server owns that runtime and
+selects the metadata store while each Active binding selects its metadata
+group. A control-plane-created binding is initialized through
+`create_registered`; standalone creation may publish its own binding.
+
 The `test-util` feature provides one deterministic in-memory implementation of
 all three traits, including write suspension, cursor outcomes, and metadata
 publication failure injection. Production adapters retain the same ownership

@@ -14,7 +14,9 @@ workspace = true
 arc-swap = "1.7"
 async-trait = "0.1"
 crowdb-chunk-kv = { path = "../../lib/crowdb-chunk-kv" }
+crowdb-chunk-client = { path = "../../lib/crowdb-chunk-client" }
 crowdb-chunk-stream = { path = "../../lib/crowdb-chunk-stream" }
+crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
 serde = { version = "1", features = ["derive"] }
 thiserror = { workspace = true }

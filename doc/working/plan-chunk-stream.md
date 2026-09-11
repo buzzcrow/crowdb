@@ -67,9 +67,10 @@ without placing rollover metadata on the append hot path.
   the 256-MiB hard chunk limit, and allocate a fresh chunk on every writer
   reopen. Files: `lib/crowdb-chunk-stream/src/`,
   `lib/crowdb-chunk-stream/tests/`.
-- [~] **Add configured binding placement**: expose group-0 registry plus an
+- [x] **Add configured binding placement**: expose group-0 registry plus an
   explicit metadata-group selection (default group 1), retain readable binding
-  keys and binary metadata keys, and let R143 drive group creation/activation.
+  keys and binary metadata keys, assemble shared production clients in the
+  chunk-KV server, and let R143 drive group creation/activation.
   Files: `lib/crowdb-protocol/src/{chunk_stream.rs,key/chunk_stream.rs}`,
   `lib/crowdb-chunk-stream/src/`, `app/crowdb-chunk-kv-server/src/`.
 - [x] **Implement seekable prefetch readers**: add finite and `ToEnd` read

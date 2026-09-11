@@ -13,8 +13,9 @@ making the stream interpret record framing or partition routing.
 `crowdb-chunk-stream` is an async Rust library. A `StreamName` is an opaque,
 stable 128-bit identifier owned by one logical partition. New names use a
 time-ordered layout and render as 32 hexadecimal digits, matching `ChunkId`
-display without sharing its type. `ChunkStream::create`
-and `ChunkStream::open` resolve its injected registry binding and return one
+display without sharing its type. `ChunkStream::create`,
+`ChunkStream::create_registered`, and `ChunkStream::open` resolve their
+injected registry binding and return one
 handle for a caller-supplied writer epoch. The handle exposes `tail`, vectored
 `append`, `append_chunk_bound`, `read_at`, bounded `read_from`, monotonic
 `trim_prefix`, and `close`. Nonempty appends return `AppendResult {stream_name,
@@ -45,6 +46,12 @@ Three async traits keep cluster coordination out of the core state machine:
 - `StreamChunkStore` allocates three-way mirrored WAL chunks, writes one
   contiguous range to every mirror, advances/queries the acknowledged cursor,
   seals chunks, reads ranges, and releases complete strips.
+
+`ProductionStreamRuntime` assembles the group-0 registry, a metadata adapter
+for the binding's selected nonzero group, and one shared production chunk
+store. `ChunkKvStorage` builds this runtime from the server's shared KV and
+chunk IO clients. The control plane publishes an Active binding before calling
+`create_registered`; standalone callers may continue to use `create`.
 
 The traits return `StreamError`, whose variants distinguish invalid requests,
 backpressure, stale writers, definitely absent appends, ambiguous resolution,
@@ -103,8 +110,8 @@ Reads reject offsets below `trim_offset` and beyond the durable tail.
 the captured durable end and leaves EOF handling to its caller. It resolves
 only metadata covering the seek target, serves cached bytes while prefetching
 later ranges, and retains at most `read_window_bytes` (8 MiB by default, within
-the 4-8 MiB target). Independent readers may issue bounded physical reads
-concurrently, but each reader emits bytes in logical order. Active reads are
+the 4-8 MiB target). Each window issues at most `read_concurrency` physical
+reads concurrently (eight by default), but emits bytes in logical order. Active reads are
 capped by an acknowledged-cursor snapshot. The provenance-aware reader form
 also yields the physical `chunk_id` for each logical segment. R142 uses it to
 compare a frame's chunk trailer with the chunk that supplied those bytes.
@@ -135,8 +142,8 @@ without cancelling, retrying, or completing the operation.
 
 Initial configurable bounds are 1,024 queued requests, 64 MiB queued bytes, 64
 requests or 1 MiB per batch, 256 MiB active chunks, 1,024 extents per page, an
-8 MiB read window, one prepared successor, one current CAS head, and 64 MiB of
-GC per pass. Metrics cover admission, queueing, batches,
+8 MiB read window with eight physical reads, one prepared successor, one
+current CAS head, and 64 MiB of GC per pass. Metrics cover admission, queueing, batches,
 logical/physical bytes, mirror failures, sync/append latency, watchdog
 observations, rollover, lookup, read windows, replay, stale writers, recovered
 tails, trim lag, reclaimed bytes, and orphans.

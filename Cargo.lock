@@ -641,8 +641,10 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "async-trait",
+ "crowdb-chunk-client",
  "crowdb-chunk-kv",
  "crowdb-chunk-stream",
+ "crowdb-kv-client",
  "crowdb-protocol",
  "serde",
  "thiserror 2.0.18",

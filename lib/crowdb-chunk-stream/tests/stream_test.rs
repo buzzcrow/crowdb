@@ -60,6 +60,23 @@ async fn first_append_has_no_timer_and_skips_metadata_consensus() {
 }
 
 #[tokio::test]
+async fn registered_binding_initializes_metadata_without_recreating_registry_record() {
+    let store = Arc::new(MemoryStreamStore::new(64));
+    let name = StreamName { high: 2, low: 1 };
+    store.create(binding(name)).await.unwrap();
+    let registry: Arc<dyn StreamRegistry> = store.clone();
+    let metadata: Arc<dyn StreamMetadataStore> = store.clone();
+    let chunks: Arc<dyn StreamChunkStore> = store.clone();
+
+    let stream = ChunkStream::create_registered(name, 9, StreamConfig::default(), registry, metadata, chunks)
+        .await
+        .unwrap();
+    assert_eq!(stream.tail(), 0);
+    assert_eq!(store.metadata_publish_count(), 1);
+    assert_eq!(store.load(name).await.unwrap(), Some(binding(name)));
+}
+
+#[tokio::test]
 async fn chunk_bound_append_adds_selected_chunk_identity_and_provenance() {
     let store = Arc::new(MemoryStreamStore::new(64));
     let stream = create_stream(&store, 64, StreamConfig::default()).await;

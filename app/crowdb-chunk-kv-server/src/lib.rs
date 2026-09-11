@@ -8,12 +8,13 @@ pub mod config;
 pub mod metrics;
 pub mod server;
 pub mod serving;
+pub mod storage;
 
 pub use catalog::{
     validate_and_clip_scan, CatalogError, CatalogPublisher, CatalogStore, ClippedScan, HeadWriteOutcome,
     MemoryCatalogStore, ScanValidationError,
 };
-pub use config::{ChunkKvServerConfig, ConfigError};
+pub use config::{ChunkKvServerConfig, ConfigError, StorageConfig};
 pub use metrics::{ServerMetrics, ServerMetricsSnapshot};
 pub use server::{ChunkKvService, HostedPartitionHealth, ServerHealth, ServerLifecycle};
 pub use serving::{
@@ -22,3 +23,4 @@ pub use serving::{
     MonitorError, MonitorTick, OwnerLoad, PartitionLoad, PreparedMonitor, ServingAuthority, SplitProposal,
     TransferAction, TransferProposal, TransferStateMachine,
 };
+pub use storage::{ChunkKvStorage, StorageRuntimeError};
