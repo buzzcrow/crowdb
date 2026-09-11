@@ -155,6 +155,8 @@ crashes before its extent entry is published is empty and is handled by R146's
 expired-writer scan. Published chunks removed by trim are normal idempotent GC.
 Unpublished or superseded metadata records remain metadata-store GC and require
 a retained-head watermark; R146 cannot infer their reachability.
+`reclaim_metadata_before` accepts that caller-proven oldest generation and a
+per-pass page bound, and never removes the current generation.
 
 Every stream chunk allocation carries a stream-specific chunk type and an
 owner key containing the owner-kind prefix plus `StreamName`. R146 owns the

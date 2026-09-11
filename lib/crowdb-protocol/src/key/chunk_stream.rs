@@ -107,6 +107,18 @@ pub struct StreamExtentPageKey {
     pub page_index: u64,
 }
 
+impl StreamExtentPageKey {
+    /// Encodes the exact key prefix shared by all extent pages for one stream.
+    #[must_use]
+    pub fn stream_prefix(stream_name: StreamName) -> Vec<u8> {
+        let mut out = Vec::with_capacity(19);
+        encode_header(&mut out, Self::TYPE_TAG);
+        encode_u64(&mut out, stream_name.high);
+        encode_u64(&mut out, stream_name.low);
+        out
+    }
+}
+
 impl BinaryKey for StreamExtentPageKey {
     const TYPE_TAG: u16 = 0x0011;
 

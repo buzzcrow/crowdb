@@ -574,6 +574,25 @@ impl ChunkStream {
             .map_err(|_| StreamError::Internal("trim worker stopped".into()))?
     }
 
+    /// Reclaims immutable extent pages older than a caller-proven retained
+    /// manifest generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the watermark could remove the current generation,
+    /// the pass bound is zero, or metadata deletion fails.
+    pub async fn reclaim_metadata_before(&self, retained_generation: u64, max_pages: usize) -> Result<u64> {
+        let current = self.manifest.load().generation;
+        if retained_generation == 0 || retained_generation > current || max_pages == 0 {
+            return Err(StreamError::InvalidRequest(
+                "metadata reclaim watermark is outside retained generations".into(),
+            ));
+        }
+        self.metadata
+            .reclaim_extent_pages_before(self.stream_name, retained_generation, max_pages)
+            .await
+    }
+
     /// Seals the active chunk and publishes a closed manifest.
     ///
     /// # Errors

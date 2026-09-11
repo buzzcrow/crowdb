@@ -282,6 +282,51 @@ impl StreamMetadataStore for KvStreamMetadataStore {
             Err(error) => Err(kv_error(error)),
         }
     }
+
+    async fn reclaim_extent_pages_before(
+        &self,
+        stream_name: StreamName,
+        retained_generation: u64,
+        max_pages: usize,
+    ) -> Result<u64> {
+        if retained_generation == 0 || max_pages == 0 {
+            return Err(StreamError::InvalidRequest(
+                "metadata reclaim watermark and page bound must be nonzero".into(),
+            ));
+        }
+        let prefix = StreamExtentPageKey::stream_prefix(stream_name);
+        let limit = u32::try_from(max_pages).unwrap_or(u32::MAX);
+        let candidates = self
+            .kv
+            .scan(
+                self.store_id,
+                self.group_id,
+                &prefix,
+                &[],
+                &[],
+                limit,
+                ReadMode::Linearizable,
+                None,
+                true,
+                None,
+            )
+            .await
+            .map_err(kv_error)?;
+        let mut reclaimed = 0_u64;
+        for (key, _) in candidates.items {
+            let page_key = StreamExtentPageKey::from_bytes(&key).map_err(|error| {
+                StreamError::Corruption(format!("stream extent-page key decode failed: {error}"))
+            })?;
+            if page_key.stream_name == stream_name && page_key.generation < retained_generation {
+                self.kv
+                    .delete(self.store_id, self.group_id, &key, None)
+                    .await
+                    .map_err(kv_error)?;
+                reclaimed += 1;
+            }
+        }
+        Ok(reclaimed)
+    }
 }
 
 fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {

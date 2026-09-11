@@ -52,6 +52,12 @@ pub trait StreamMetadataStore: Send + Sync {
         manifest: StreamManifest,
         extent_pages: Vec<StreamExtentPage>,
     ) -> Result<()>;
+    async fn reclaim_extent_pages_before(
+        &self,
+        stream_name: StreamName,
+        retained_generation: u64,
+        max_pages: usize,
+    ) -> Result<u64>;
 }
 
 #[async_trait]

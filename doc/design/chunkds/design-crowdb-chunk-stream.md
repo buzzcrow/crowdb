@@ -194,6 +194,12 @@ Calling trim again at the same watermark retries unfinished physical cleanup.
 Reads below the published watermark remain inaccessible throughout every crash
 point.
 
+Immutable metadata cleanup is separate from logical trim. A caller that owns
+reader/checkpoint retention supplies the oldest still-readable manifest
+generation to `reclaim_metadata_before`. Each call deletes only older extent
+pages and is bounded by a caller-supplied page count; the current generation is
+never eligible.
+
 ## 8. Bounds and Observation
 
 Defaults bound the queue at 1,024 requests and 64 MiB, a batch at 64 requests

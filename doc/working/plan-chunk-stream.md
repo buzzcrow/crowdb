@@ -89,11 +89,12 @@ without placing rollover metadata on the append hot path.
   own watermark-driven cleanup path. Files: `lib/crowdb-protocol/src/`,
   `lib/crowdb-chunk-client/src/`, `lib/crowdb-chunk-stream/src/`,
   `doc/backlog/R146-chunk-orphan-sealing.md`.
-- [~] **Implement metadata publication**: use R101 CAS for the stable
+- [x] **Implement metadata publication**: use R101 CAS for the stable
   manifest/head key and fresh immutable versioned COW keys for changed extent
-  pages, with logarithmic logical-offset discovery. Cover page rollover,
-  takeover in either CAS ordering, crash-created orphan pages, nonzero first
-  page indices, and monotonic-epoch stale-writer rejection. Files:
+  pages, with logarithmic logical-offset discovery and caller-watermarked,
+  bounded old-page reclamation. Cover page rollover, takeover in either CAS
+  ordering, crash-created orphan pages, nonzero first page indices, and
+  monotonic-epoch stale-writer rejection. Files:
   `lib/crowdb-protocol/src/`,
   `lib/crowdb-chunk-stream/src/`, `lib/crowdb-chunk-stream/tests/`.
 - [ ] **Benchmark concurrency and bounds**: use the NullDisk-backed harness for

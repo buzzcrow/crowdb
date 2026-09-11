@@ -362,6 +362,32 @@ async fn trim_keeps_nonzero_extent_page_identity() {
 }
 
 #[tokio::test]
+async fn metadata_reclaim_is_watermark_driven_bounded_and_keeps_current_pages() {
+    let store = Arc::new(MemoryStreamStore::new(1));
+    let config = StreamConfig {
+        extent_page_entries: 2,
+        ..StreamConfig::default()
+    };
+    let stream = create_stream(&store, 1, config).await;
+    for byte in *b"abcde" {
+        stream.append(&[Bytes::copy_from_slice(&[byte])]).await.unwrap();
+    }
+    let name = StreamName { high: 1, low: 1 };
+    let current = store.load_current(name).await.unwrap().unwrap().generation;
+    let before = store.extent_page_count().await;
+
+    assert_eq!(stream.reclaim_metadata_before(current, 1).await.unwrap(), 1);
+    assert_eq!(store.extent_page_count().await, before - 1);
+    while stream.reclaim_metadata_before(current, 64).await.unwrap() != 0 {}
+
+    assert_eq!(stream.read_at(0, 5).await.unwrap(), Bytes::from_static(b"abcde"));
+    assert!(matches!(
+        stream.reclaim_metadata_before(current + 1, 1).await,
+        Err(StreamError::InvalidRequest(_))
+    ));
+}
+
+#[tokio::test]
 async fn reopen_recovers_the_durable_active_tail() {
     let store = Arc::new(MemoryStreamStore::new(32));
     let stream = create_stream(&store, 32, StreamConfig::default()).await;

@@ -162,6 +162,10 @@ impl MemoryStreamStore {
         self.extent_page_loads.load(Ordering::Acquire)
     }
 
+    pub async fn extent_page_count(&self) -> usize {
+        self.state.lock().await.pages.len()
+    }
+
     #[must_use]
     pub fn chunk_write_count(&self) -> u64 {
         self.chunk_writes.load(Ordering::Acquire)
@@ -267,6 +271,31 @@ impl StreamMetadataStore for MemoryStreamStore {
         state.manifests.insert(manifest.stream_name, manifest);
         self.metadata_publishes.fetch_add(1, Ordering::AcqRel);
         Ok(())
+    }
+
+    async fn reclaim_extent_pages_before(
+        &self,
+        stream_name: StreamName,
+        retained_generation: u64,
+        max_pages: usize,
+    ) -> Result<u64> {
+        if retained_generation == 0 || max_pages == 0 {
+            return Err(StreamError::InvalidRequest(
+                "metadata reclaim watermark and page bound must be nonzero".into(),
+            ));
+        }
+        let mut state = self.state.lock().await;
+        let keys: Vec<_> = state
+            .pages
+            .keys()
+            .filter(|(name, _, generation, _)| *name == stream_name && *generation < retained_generation)
+            .take(max_pages)
+            .copied()
+            .collect();
+        for key in &keys {
+            state.pages.remove(key);
+        }
+        Ok(keys.len() as u64)
     }
 }
 

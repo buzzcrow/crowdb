@@ -364,8 +364,9 @@ Required gates:
   logical delivery order. Memory and concurrency benchmarks remain open.
 - Extent-page identities derive from their stable first logical offset, so a
   trimmed generation retains a nonzero first page index without renumbering
-  logical bytes. Watermark-driven cleanup of superseded page generations still
-  needs the persistent metadata-GC policy.
+  logical bytes. `reclaim_metadata_before` performs bounded cleanup of
+  superseded page generations only after the retention owner supplies its
+  durable oldest-live generation.
 - Stream names are process-unique and time ordered and reopen always rotates
   the old active chunk. The backward-compatible chunk owner-key schema and
   reporting abandoned chunks to R146 remain open because the current `Chunk`
