@@ -739,6 +739,7 @@ impl LifecycleHandler {
             chunk
                 .cleanup_intents
                 .retain(|intent| intent.operation_id != Some(operation_id));
+            chunk.modify_ts = chunk.modify_ts.saturating_add(1);
             self.store.put_chunk(&chunk).await?;
             if let Some(ref mut g) = guard {
                 g.refresh(chunk.clone());
@@ -785,6 +786,7 @@ impl LifecycleHandler {
                 .map_err(LifecycleError::Cleanup)?;
             chunk.strips.clear();
             chunk.capacity = 0;
+            chunk.modify_ts = chunk.modify_ts.saturating_add(1);
             self.store.put_chunk(&chunk).await?;
             if let Some(ref mut g) = guard {
                 g.refresh(chunk.clone());
@@ -844,6 +846,7 @@ impl LifecycleHandler {
         }
         chunk.strips.clear();
         chunk.capacity = 0;
+        chunk.modify_ts = chunk.modify_ts.saturating_add(1);
         self.store.put_chunk(&chunk).await?;
         if let Some(ref mut g) = guard {
             g.refresh(chunk.clone());
@@ -1425,6 +1428,7 @@ impl LifecycleHandler {
                     }
                     chunk.cleanup_intents = pending;
                     if chunk.cleanup_intents.len() != intent_count {
+                        chunk.modify_ts = chunk.modify_ts.saturating_add(1);
                         self.store.put_chunk(&chunk).await?;
                         if let (Some(locks), Some(chunk_id)) = (&self.locks, chunk.id) {
                             locks.populate_cache(&chunk_id, chunk.clone());
@@ -1436,6 +1440,7 @@ impl LifecycleHandler {
                     ChunkState::Init => {
                         self.commit_strip_segments(&chunk.strips).await?;
                         chunk.state = ProtoChunkState::Active as i32;
+                        chunk.modify_ts = chunk.modify_ts.saturating_add(1);
                     }
                     ChunkState::Deleted if !chunk.strips.is_empty() => {
                         let segments = chunk.strips.iter().flat_map(extract_segments).collect();
@@ -1446,6 +1451,7 @@ impl LifecycleHandler {
                             .map_err(LifecycleError::Cleanup)?;
                         chunk.strips.clear();
                         chunk.capacity = 0;
+                        chunk.modify_ts = chunk.modify_ts.saturating_add(1);
                     }
                     _ => continue,
                 }

@@ -16,7 +16,7 @@ use crate::cluster::group_election::XorShift64;
 use crate::cluster::group_prepare::PrepareAttempt;
 use crate::common::config::PaxosConfig;
 use crate::paxos::error::PxPaxosError;
-use crate::paxos::roles::DedupTag;
+use crate::paxos::roles::{DedupTag, PxLogEntry};
 
 impl PxGroup {
     /// Propose an opaque payload through Paxos. Returns the slot if chosen,
@@ -102,7 +102,7 @@ impl PxGroup {
         dedup_tags: &[DedupTag],
     ) -> ProposeResult {
         let e2e_start = std::time::Instant::now();
-        let result = self.propose_inner_impl(payload, dedup_tags).await;
+        let result = self.propose_inner_impl(payload, dedup_tags, None).await;
         if let Some(h) = self.write_handles.get() {
             h.propose_e2e
                 .observe(e2e_start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX));
@@ -110,7 +110,23 @@ impl PxGroup {
         result
     }
 
-    async fn propose_inner_impl(&self, payload: bytes::Bytes, dedup_tags: &[DedupTag]) -> ProposeResult {
+    pub(crate) async fn propose_inner_conditional(
+        &self,
+        payload: bytes::Bytes,
+        dedup_tags: &[DedupTag],
+        key: &[u8],
+        expected_revision: u64,
+    ) -> ProposeResult {
+        self.propose_inner_impl(payload, dedup_tags, Some((key, expected_revision)))
+            .await
+    }
+
+    async fn propose_inner_impl(
+        &self,
+        payload: bytes::Bytes,
+        dedup_tags: &[DedupTag],
+        condition: Option<(&[u8], u64)>,
+    ) -> ProposeResult {
         let replica = &self.local_replica;
 
         // Re-check the leadership gate (see `propose`).
@@ -234,16 +250,18 @@ impl PxGroup {
                     entry.ballot.round = min_round;
                 }
 
-                match self.run_accept_phase(replica, &entry, dedup_tags, quorum).await {
+                let own_payload = !adopted_foreign_value && entry.payload == payload;
+                let entry_tags = if own_payload { dedup_tags } else { &[] };
+                match self.run_accept_phase(replica, &entry, entry_tags, quorum).await {
                     AcceptAttempt::Chosen => {
                         // R17: when async_engine_apply is enabled, spawn
                         // the engine apply as a background task and return
                         // Chosen immediately. The fan_out_chosen_notice
                         // fires immediately too (non-blocking mpsc enqueue).
                         if self.config.async_engine_apply {
-                            replica.spawn_learn_chosen(entry.clone(), dedup_tags);
+                            replica.spawn_learn_chosen(entry.clone(), entry_tags);
                         } else {
-                            replica.learn_chosen(&entry, dedup_tags).await;
+                            replica.learn_chosen(&entry, entry_tags).await;
                         }
                         self.fan_out_chosen_notice(&entry, group_id);
                         trace!(
@@ -262,6 +280,19 @@ impl PxGroup {
                                 error = last_error,
                                 "foreign value chosen; retrying client value on next slot"
                             );
+                            if let Some((key, expected_revision)) = condition {
+                                replica.await_apply_fence(entry.slot).await;
+                                match replica.learner.engine_get_versioned(key).await {
+                                    Ok(value) => {
+                                        let current_revision =
+                                            value.as_ref().map_or(0, |(revision, _)| *revision);
+                                        if current_revision != expected_revision {
+                                            return ProposeResult::CasFailed { current_revision };
+                                        }
+                                    }
+                                    Err(error) => return ProposeResult::Err(error),
+                                }
+                            }
                             slot = self.next_slot.fetch_add(1, Ordering::Relaxed);
                             continue 'slot_retry;
                         }
@@ -319,6 +350,28 @@ impl PxGroup {
             }
 
             warn!(slot, last_error, "slot proposal failed; retrying on next slot");
+            if let Some((key, expected_revision)) = condition {
+                let Some(resolved) = self.resolve_conditional_slot(slot, quorum).await else {
+                    return ProposeResult::OutcomeUnknown;
+                };
+                replica.await_apply_fence(slot).await;
+                if resolved.payload == payload {
+                    // The abandoned attempt may have been accepted by a
+                    // quorum before its reply was lost. It is now chosen, but
+                    // was intentionally repaired without the request's dedup
+                    // tag, so the only honest response is indeterminate.
+                    return ProposeResult::OutcomeUnknown;
+                }
+                match replica.learner.engine_get_versioned(key).await {
+                    Ok(value) => {
+                        let current_revision = value.as_ref().map_or(0, |(revision, _)| *revision);
+                        if current_revision != expected_revision {
+                            return ProposeResult::CasFailed { current_revision };
+                        }
+                    }
+                    Err(error) => return ProposeResult::Err(error),
+                }
+            }
             slot = self.next_slot.fetch_add(1, Ordering::Relaxed);
         }
 
@@ -338,6 +391,42 @@ impl PxGroup {
                 PaxosConfig::DEFAULT.max_slot_retries
             )
         })
+    }
+
+    /// Close one slot allocated by a conditional request before releasing its
+    /// key guard. Phase 1 adopts any value already accepted there; otherwise
+    /// the empty payload is a `NoOp`. A failed repair leaves CAS admission to be
+    /// closed by the caller.
+    async fn resolve_conditional_slot(&self, slot: u64, quorum: usize) -> Option<PxLogEntry> {
+        let replica = &self.local_replica;
+        let mut min_round = 0_u64;
+        for attempt in 0..PaxosConfig::DEFAULT.max_paxos_retries {
+            let entry = match self
+                .run_prepare_phase(replica, slot, bytes::Bytes::new(), quorum, min_round)
+                .await
+            {
+                PrepareAttempt::Proceed { entry, .. } => entry,
+                PrepareAttempt::Retry { next_min_round, .. } => {
+                    min_round = next_min_round;
+                    sleep(Self::retry_backoff(attempt)).await;
+                    continue;
+                }
+                PrepareAttempt::Fail { .. } => return None,
+            };
+            match self.run_accept_phase(replica, &entry, &[], quorum).await {
+                AcceptAttempt::Chosen => {
+                    replica.learn_chosen(&entry, &[]).await;
+                    self.fan_out_chosen_notice(&entry, self.group_id);
+                    return Some(entry);
+                }
+                AcceptAttempt::Retry { next_min_round, .. } => {
+                    min_round = next_min_round;
+                    sleep(Self::retry_backoff(attempt)).await;
+                }
+                AcceptAttempt::Fail { .. } => return None,
+            }
+        }
+        None
     }
 
     pub(super) fn retry_backoff(attempt: usize) -> Duration {

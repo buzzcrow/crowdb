@@ -26,21 +26,22 @@
 use std::sync::Arc;
 
 use crowdb_protocol::common::{ChunkId, DiskId, HwStatus};
-use crowdb_protocol::diskdb::rpc::{DiskValue, Segment};
+use crowdb_protocol::diskdb::rpc::{DiskValue, FreeFailure, FreeFailureReason, Segment};
 use crowdb_protocol::diskdb_fb::{
     FBAllocateBlocksRequest, FBAllocateResponse, FBAllocateResponseArgs, FBCommitBlocksRequest,
     FBCommitBlocksResponse, FBCommitBlocksResponseArgs, FBCompactZoneRequest, FBCompactZoneResponse,
     FBCompactZoneResponseArgs, FBDiskGroupInfo, FBDiskGroupInfoArgs, FBDiskGroupRecalcResult,
     FBDiskGroupRecalcResultArgs, FBDiskInfo, FBDiskInfoArgs, FBDiskType, FBDiskdbRetCode,
-    FBFreeBlocksRequest, FBFreeResponse, FBFreeResponseArgs, FBGetDiskGroupInfoRequest,
-    FBGetDiskGroupInfoResponse, FBGetDiskGroupInfoResponseArgs, FBGetDiskInfoRequest, FBGetDiskInfoResponse,
-    FBGetDiskInfoResponseArgs, FBGetScanStatusRequest, FBGetScanStatusResponse, FBGetScanStatusResponseArgs,
-    FBHwStatus, FBInt128, FBQueryCapacityStatsRequest, FBQueryCapacityStatsResponse,
-    FBQueryCapacityStatsResponseArgs, FBRebuildZoneBitmapRequest, FBRebuildZoneBitmapResponse,
-    FBRebuildZoneBitmapResponseArgs, FBRecalcDiskUsageRequest, FBRecalcDiskUsageResponse,
-    FBRecalcDiskUsageResponseArgs, FBScanSummary, FBScanSummaryArgs, FBSegment, FBTriggerScanRequest,
-    FBTriggerScanResponse, FBTriggerScanResponseArgs, FBZoneAllocationState, FBZoneCompactionResult,
-    FBZoneCompactionResultArgs, FBZoneRecalcResult, FBZoneRecalcResultArgs, FBZoneUsage, FBZoneUsageArgs,
+    FBFreeBlocksRequest, FBFreeFailure, FBFreeFailureArgs, FBFreeFailureReason, FBFreeResponse,
+    FBFreeResponseArgs, FBGetDiskGroupInfoRequest, FBGetDiskGroupInfoResponse,
+    FBGetDiskGroupInfoResponseArgs, FBGetDiskInfoRequest, FBGetDiskInfoResponse, FBGetDiskInfoResponseArgs,
+    FBGetScanStatusRequest, FBGetScanStatusResponse, FBGetScanStatusResponseArgs, FBHwStatus, FBInt128,
+    FBQueryCapacityStatsRequest, FBQueryCapacityStatsResponse, FBQueryCapacityStatsResponseArgs,
+    FBRebuildZoneBitmapRequest, FBRebuildZoneBitmapResponse, FBRebuildZoneBitmapResponseArgs,
+    FBRecalcDiskUsageRequest, FBRecalcDiskUsageResponse, FBRecalcDiskUsageResponseArgs, FBScanSummary,
+    FBScanSummaryArgs, FBSegment, FBTriggerScanRequest, FBTriggerScanResponse, FBTriggerScanResponseArgs,
+    FBZoneAllocationState, FBZoneCompactionResult, FBZoneCompactionResultArgs, FBZoneRecalcResult,
+    FBZoneRecalcResultArgs, FBZoneUsage, FBZoneUsageArgs,
 };
 use crowdb_protocol::fb::FBMsgType;
 use crowdb_rpc_ffi::{Buffer, RpcServer, ServerRequest};

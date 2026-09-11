@@ -28,6 +28,15 @@ pub enum Error {
     #[error("journal scan asked for slots already GC'd below the WAL trim point")]
     JournalScanGcGap,
 
+    #[error("compare-and-set failed; current revision is {current_revision}")]
+    CasFailed { current_revision: u64 },
+
+    #[error("compare-and-set key is busy")]
+    CasBusy,
+
+    #[error("compare-and-set outcome is unknown; reconcile with a read")]
+    OutcomeUnknown,
+
     #[error("not leader (hint: {hint})")]
     NotLeader { hint: String },
 

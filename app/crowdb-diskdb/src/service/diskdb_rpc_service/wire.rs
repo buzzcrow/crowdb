@@ -3,15 +3,15 @@ use super::{
     DiskGroupUsage, DiskId, FBAllocateResponse, FBAllocateResponseArgs, FBCommitBlocksResponse,
     FBCommitBlocksResponseArgs, FBCompactZoneResponse, FBCompactZoneResponseArgs, FBDiskGroupInfo,
     FBDiskGroupInfoArgs, FBDiskGroupRecalcResult, FBDiskGroupRecalcResultArgs, FBDiskInfo, FBDiskInfoArgs,
-    FBDiskType, FBDiskdbRetCode, FBFreeResponse, FBFreeResponseArgs, FBGetDiskGroupInfoResponse,
-    FBGetDiskGroupInfoResponseArgs, FBGetDiskInfoResponse, FBGetDiskInfoResponseArgs,
-    FBGetScanStatusResponse, FBGetScanStatusResponseArgs, FBHwStatus, FBInt128, FBMsgType,
-    FBQueryCapacityStatsResponse, FBQueryCapacityStatsResponseArgs, FBRebuildZoneBitmapResponse,
+    FBDiskType, FBDiskdbRetCode, FBFreeFailure, FBFreeFailureArgs, FBFreeFailureReason, FBFreeResponse,
+    FBFreeResponseArgs, FBGetDiskGroupInfoResponse, FBGetDiskGroupInfoResponseArgs, FBGetDiskInfoResponse,
+    FBGetDiskInfoResponseArgs, FBGetScanStatusResponse, FBGetScanStatusResponseArgs, FBHwStatus, FBInt128,
+    FBMsgType, FBQueryCapacityStatsResponse, FBQueryCapacityStatsResponseArgs, FBRebuildZoneBitmapResponse,
     FBRebuildZoneBitmapResponseArgs, FBRecalcDiskUsageResponse, FBRecalcDiskUsageResponseArgs, FBScanSummary,
     FBScanSummaryArgs, FBSegment, FBTriggerScanResponse, FBTriggerScanResponseArgs, FBZoneAllocationState,
     FBZoneCompactionResult, FBZoneCompactionResultArgs, FBZoneRecalcResult, FBZoneRecalcResultArgs,
-    FBZoneUsage, FBZoneUsageArgs, FlatBufferBuilder, FreeError, HwStatus, RpcServer, ScanSummary, Segment,
-    ZoneUsage,
+    FBZoneUsage, FBZoneUsageArgs, FlatBufferBuilder, FreeError, FreeFailure, FreeFailureReason, HwStatus,
+    RpcServer, ScanSummary, Segment, ZoneUsage,
 };
 
 /// Validated parameters for `alloc::allocate_blocks`.
@@ -56,6 +56,10 @@ pub(super) fn parse_segments<'a, V: IntoIterator<Item = &'a FBSegment> + Clone>(
 pub(super) fn map_free_error(e: &FreeError) -> (FBDiskdbRetCode, String) {
     match e {
         FreeError::NotBusy { .. } => (FBDiskdbRetCode::NotFound, format!("free failed: {e}")),
+        FreeError::IncarnationMismatch | FreeError::Conflict => {
+            (FBDiskdbRetCode::InvalidArgument, format!("free failed: {e}"))
+        }
+        FreeError::OutcomeUnknown => (FBDiskdbRetCode::Unavailable, format!("free failed: {e}")),
         FreeError::Kv(_) => (FBDiskdbRetCode::Internal, format!("free persist failed: {e}")),
     }
 }
@@ -119,7 +123,7 @@ pub(super) fn build_error_response(
             build_allocate_response(req_id, create_nano, ret_code, error_msg, &[])
         }
         mt if mt == FBMsgType::EFreeBlocksResponse.0 as u16 => {
-            build_free_response(req_id, create_nano, ret_code, error_msg, 0)
+            build_free_response(req_id, create_nano, ret_code, error_msg, 0, &[])
         }
         mt if mt == FBMsgType::ECommitBlocksResponse.0 as u16 => {
             build_commit_response(req_id, create_nano, ret_code, error_msg, 0)
@@ -176,9 +180,41 @@ pub(super) fn build_free_response(
     ret_code: FBDiskdbRetCode,
     error_msg: Option<&str>,
     freed_count: u32,
+    failures: &[FreeFailure],
 ) -> (Vec<u8>, usize) {
     let mut fbb = FlatBufferBuilder::new();
     let err_off = error_msg.map(|m| fbb.create_string(m));
+    let failure_offsets: Vec<_> = failures
+        .iter()
+        .map(|failure| {
+            let segment = failure.segment;
+            let disk = segment.disk_id.unwrap_or_default();
+            let owner = segment.owner_chunk.unwrap_or_default();
+            let fb_segment = FBSegment::new(
+                &FBInt128::new(disk.high, disk.low),
+                &FBInt128::new(owner.high, owner.low),
+                segment.unit_offset,
+                segment.allocation_ts,
+                segment.zone_index,
+                segment.unit_count,
+            );
+            let reason = match failure.reason {
+                FreeFailureReason::NotBusy => FBFreeFailureReason::NotBusy,
+                FreeFailureReason::IncarnationMismatch => FBFreeFailureReason::IncarnationMismatch,
+                FreeFailureReason::Conflict => FBFreeFailureReason::Conflict,
+                FreeFailureReason::Unavailable => FBFreeFailureReason::Unavailable,
+                FreeFailureReason::OutcomeUnknown => FBFreeFailureReason::OutcomeUnknown,
+            };
+            FBFreeFailure::create(
+                &mut fbb,
+                &FBFreeFailureArgs {
+                    segment: Some(&fb_segment),
+                    reason,
+                },
+            )
+        })
+        .collect();
+    let failures_off = fbb.create_vector(&failure_offsets);
     let off = FBFreeResponse::create(
         &mut fbb,
         &FBFreeResponseArgs {
@@ -187,6 +223,7 @@ pub(super) fn build_free_response(
             ret_code,
             error_msg: err_off,
             freed_count,
+            failures: Some(failures_off),
         },
     );
     fbb.finish(off, None);

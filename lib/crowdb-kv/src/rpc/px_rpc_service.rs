@@ -492,9 +492,11 @@ impl PxRpcService {
 
             let replica = group.local_replica();
             let reply = <PxLocalReplica as ReplicaHandler>::on_accept(replica, &entry, group_id).await;
-            if matches!(reply, Ok(PxAcceptReply::Accepted { .. })) {
-                replica.learner.record_dedup_tags(&dedup_tags, entry.slot);
-            }
+            // An Accepted value is not yet known chosen. Recording dedup here
+            // could make a later leader report success for a value that was
+            // superseded by a higher ballot. Dedup is published only by the
+            // learner after a chosen value is applied.
+            drop(dedup_tags);
             let (rejected, rejected_round, rejected_leader_id, term_stale, reply_term) = match reply {
                 Ok(PxAcceptReply::Accepted { .. }) => (false, 0, 0, false, replica.current_term_snapshot()),
                 Ok(PxAcceptReply::Rejected { current_promised, .. }) => {

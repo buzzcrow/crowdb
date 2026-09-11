@@ -39,6 +39,9 @@ enum FBKvClientRetCode : int16 {
     // JournalScan asked for slots already GC'd below the WAL trim
     // point. The caller falls back to a full-scan rebuild.
     JournalScanGcGap = 6,
+    CasFailed = 7,
+    CasBusy = 8,
+    OutcomeUnknown = 9,
 }
 
 // ── Read mode (mirrors kv.proto ReadMode) ───────────────────────
@@ -51,6 +54,11 @@ enum FBReadMode : int16 {
 // Used by FBWatchNotify to carry multiple keys/values per push.
 table FBBytes {
     data:[ubyte];
+}
+
+table FBKvRevisionPrecondition {
+    key:[ubyte];
+    expected_revision:uint64;
 }
 
 // ── Put / Get / Delete / BatchWrite ─────────────────────────────
@@ -70,6 +78,7 @@ table FBKvSetRequest {
     request_create_ms:uint64;
     group_id:uint64;
     forwarded:bool;
+    precondition:FBKvRevisionPrecondition;
 }
 
 table FBKvGetRequest {
@@ -115,6 +124,7 @@ table FBKvBatchWriteRequest {
     request_create_ms:uint64;
     group_id:uint64;
     forwarded:bool;
+    precondition:FBKvRevisionPrecondition;
 }
 
 // Unified mutation + get response (mirrors kv.proto KvResponse).

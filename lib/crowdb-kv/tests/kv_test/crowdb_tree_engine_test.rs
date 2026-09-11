@@ -24,6 +24,36 @@ fn equal_slot_is_idempotent_noop() {
     conformance::equal_slot_is_idempotent_noop(&open());
 }
 
+#[tokio::test]
+async fn versioned_lookup_reads_cold_tree_and_respects_newer_tombstone() {
+    use crowdb_kv::kv::KVEngine;
+
+    let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("crowdb-tree-cas-lookup");
+    let opt = CrowdbTreeConfig {
+        path: Some(tmp.path().to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let engine = CrowdbTreeEngine::open(&opt).expect("open durable engine");
+    engine
+        .apply(1, &conformance::batch(vec![conformance::put(b"key", b"tree")]))
+        .into_ready()
+        .unwrap();
+    engine.flush();
+    assert_eq!(engine.persist_snapshot(), 1);
+    drop(engine);
+
+    let reopened = CrowdbTreeEngine::open(&opt).expect("reopen durable engine");
+    assert_eq!(
+        reopened.get_versioned(b"key").await.unwrap(),
+        Some((1, bytes::Bytes::from_static(b"tree")))
+    );
+    reopened
+        .apply(2, &conformance::batch(vec![conformance::del(b"key")]))
+        .into_ready()
+        .unwrap();
+    assert_eq!(reopened.get_versioned(b"key").await.unwrap(), None);
+}
+
 #[test]
 fn delete_writes_tombstone() {
     conformance::delete_writes_tombstone(&open());

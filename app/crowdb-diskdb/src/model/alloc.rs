@@ -13,7 +13,9 @@
 use std::sync::Arc;
 
 use crowdb_protocol::common::{ChunkId, DiskId};
-use crowdb_protocol::diskdb::rpc::{BlockState, BusyBlockValue, CommitState, FreeBlockValue, Segment};
+use crowdb_protocol::diskdb::rpc::{
+    BlockState, BusyBlockValue, CommitState, FreeBlockValue, FreeFailure, FreeFailureReason, Segment,
+};
 
 use crate::ddb_kv_client::{Bind, DdbKvClient};
 use crate::model::disk_group::{AllocClaim, AllocError, DdbDiskGroup, TentativeBlock};
@@ -30,6 +32,9 @@ pub enum FreeError {
         zone_index: u32,
         unit_offset: u64,
     },
+    IncarnationMismatch,
+    Conflict,
+    OutcomeUnknown,
 }
 
 impl std::fmt::Display for FreeError {
@@ -44,6 +49,9 @@ impl std::fmt::Display for FreeError {
                 f,
                 "block not busy: disk {disk_id:?} zone {zone_index} offset {unit_offset}"
             ),
+            Self::IncarnationMismatch => write!(f, "block incarnation does not match"),
+            Self::Conflict => write!(f, "busy block changed concurrently"),
+            Self::OutcomeUnknown => write!(f, "free outcome is unknown"),
         }
     }
 }
@@ -350,16 +358,59 @@ pub async fn free_block(
     })?;
     let bind: Bind = dg.bind();
 
-    // Persist one immutable incarnation-qualified free fact.
     let value = FreeBlockValue {
         unit_count: segment.unit_count,
         previous_owner: segment.owner_chunk,
         pre_allocation_ts: segment.allocation_ts,
         free_ts: crate::model::disk_group::now_nanos(),
     };
-    kv.persist_free(bind, &disk_id, segment.zone_index, segment.unit_offset, &value)
-        .await
-        .map_err(FreeError::from)?;
+    let Some((busy, revision)) = kv
+        .get_busy(bind, &disk_id, segment.zone_index, segment.unit_offset)
+        .await?
+    else {
+        let existing = kv
+            .get_free(
+                bind,
+                &disk_id,
+                segment.zone_index,
+                segment.unit_offset,
+                segment.allocation_ts,
+            )
+            .await?;
+        return if existing.as_ref().is_some_and(|free| {
+            free.unit_count == segment.unit_count
+                && free.previous_owner == segment.owner_chunk
+                && free.pre_allocation_ts == segment.allocation_ts
+        }) {
+            Ok(())
+        } else {
+            Err(FreeError::NotBusy {
+                disk_id,
+                zone_index: segment.zone_index,
+                unit_offset: segment.unit_offset,
+            })
+        };
+    };
+    if busy.allocation_ts != segment.allocation_ts
+        || busy.unit_count != segment.unit_count
+        || busy.owner_chunk != segment.owner_chunk
+    {
+        return Err(FreeError::IncarnationMismatch);
+    }
+    kv.free_busy_cas(
+        bind,
+        &disk_id,
+        segment.zone_index,
+        segment.unit_offset,
+        revision,
+        &value,
+    )
+    .await
+    .map_err(|error| match error {
+        crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy => FreeError::Conflict,
+        crowdb_kv_client::Error::OutcomeUnknown => FreeError::OutcomeUnknown,
+        other => FreeError::Kv(other),
+    })?;
     if dg.remove_matching_tentative(
         segment.allocation_ts,
         disk_id,
@@ -416,81 +467,48 @@ pub async fn free_blocks(
     dg: &Arc<DdbDiskGroup>,
     segments: &[Segment],
     kv: &DdbKvClient,
-) -> std::result::Result<(), FreeError> {
-    let bind: Bind = dg.bind();
-
-    // Phase 1: persist all in one batch_write (durable free first).
-    let records: Vec<(DiskId, u32, u64, FreeBlockValue)> = segments
-        .iter()
-        .filter_map(|seg| {
-            seg.disk_id.map(|disk_id| {
-                (
-                    disk_id,
-                    seg.zone_index,
-                    seg.unit_offset,
-                    FreeBlockValue {
-                        unit_count: seg.unit_count,
-                        previous_owner: seg.owner_chunk,
-                        pre_allocation_ts: seg.allocation_ts,
-                        free_ts: crate::model::disk_group::now_nanos(),
-                    },
-                )
-            })
-        })
-        .collect();
-
-    if records.is_empty() {
-        return Ok(());
-    }
-
-    kv.persist_free_batch(bind, &records)
-        .await
-        .map_err(FreeError::from)?;
+) -> std::result::Result<FreeBatchResult, FreeError> {
+    let mut result = FreeBatchResult::default();
+    let mut seen = std::collections::HashSet::with_capacity(segments.len());
     for segment in segments {
-        if let Some(disk_id) = segment.disk_id {
-            let _ = dg.remove_matching_tentative(
-                segment.allocation_ts,
-                disk_id,
-                segment.zone_index,
-                segment.unit_offset,
-            );
+        let identity = (
+            segment.disk_id,
+            segment.zone_index,
+            segment.unit_offset,
+            segment.allocation_ts,
+        );
+        if !seen.insert(identity) {
+            continue;
+        }
+        match free_block(dg, segment, kv).await {
+            Ok(()) => result.freed_count = result.freed_count.saturating_add(1),
+            Err(error) => result.failures.push(FreeFailure {
+                segment: *segment,
+                reason: match error {
+                    FreeError::NotBusy { .. } => FreeFailureReason::NotBusy,
+                    FreeError::IncarnationMismatch => FreeFailureReason::IncarnationMismatch,
+                    FreeError::Conflict => FreeFailureReason::Conflict,
+                    FreeError::OutcomeUnknown => FreeFailureReason::OutcomeUnknown,
+                    FreeError::Kv(_) => FreeFailureReason::Unavailable,
+                },
+            }),
         }
     }
-    // Persist succeeded — all blocks are free on disk. The in-memory
-    // bitmaps are untouched (persist-only, I1); compaction reconciles.
+    Ok(result)
+}
 
-    // Post-persist: bump each zone's uncompacted-free backlog. The
-    // bitmaps are NOT mutated — free is persist-only.
-    for seg in segments {
-        if let Some(disk_id) = seg.disk_id {
-            if !dg.free_block(&disk_id, seg.zone_index, seg.unit_offset, seg.unit_count) {
-                // Persist succeeded but the in-memory zone was not
-                // found (rare: disk removed concurrently). The free
-                // record is durable; the periodic compaction cadence
-                // still reclaims the block.
-                tracing::warn!(
-                    "free persist succeeded but in-memory zone not found for disk {disk_id:?} zone {} offset {} — backlog counter not bumped",
-                    seg.zone_index,
-                    seg.unit_offset
-                );
-            }
-            // Record per-disk event counter after durable free.
-            let unit_size = dg.disk_unit_size(disk_id).unwrap_or(0);
-            if let Some(m) = dg.disk_metrics(disk_id) {
-                m.record_free(seg.unit_count, unit_size);
-            }
-        }
-    }
-
-    Ok(())
+#[derive(Debug, Default)]
+pub struct FreeBatchResult {
+    pub freed_count: u32,
+    pub failures: Vec<FreeFailure>,
 }
 
 /// Commit blocks — mark previously-allocated blocks as permanent.
 ///
-/// For each segment, uses the matching tentative cache entry when present,
-/// otherwise reads the current `BusyBlockValue` from KV. It then sets
-/// `commit_state = COMMITTED` and persists the updates in one `batch_write`.
-/// A cache miss is recovery-safe because allocation persists before caching.
+/// For each segment, consults the tentative cache for metrics only and reads
+/// the authoritative busy record plus revision from KV. A matching tentative
+/// record is changed to committed with CAS, so a concurrent free or reuse
+/// cannot be overwritten by a stale commit.
 ///
 /// # Errors
 /// Returns `FreeError::NotBusy` if a segment has no busy-block record.
@@ -503,9 +521,8 @@ pub async fn commit_blocks(
 ) -> std::result::Result<u32, FreeError> {
     let bind: Bind = dg.bind();
 
-    // Read each busy block and prepare the updated value.
-    let mut records: Vec<(DiskId, u32, u64, BusyBlockValue)> = Vec::with_capacity(segments.len());
-    let mut cached_allocation_ts = Vec::with_capacity(segments.len());
+    let mut committed_count = 0_u32;
+    let mut seen = std::collections::HashSet::with_capacity(segments.len());
     for seg in segments {
         let disk_id = seg.disk_id.ok_or_else(|| {
             FreeError::Kv(crowdb_kv_client::Error::SysdataDecode {
@@ -513,6 +530,9 @@ pub async fn commit_blocks(
                 reason: "missing disk_id in Segment".to_string(),
             })
         })?;
+        if !seen.insert((disk_id, seg.zone_index, seg.unit_offset, seg.allocation_ts)) {
+            continue;
+        }
         let cached = dg.tentative(seg.allocation_ts).filter(|entry| {
             entry.disk_id == disk_id
                 && entry.zone_index == seg.zone_index
@@ -520,49 +540,43 @@ pub async fn commit_blocks(
                 && entry.value.owner_chunk == seg.owner_chunk
                 && entry.value.unit_count == seg.unit_count
         });
-        let mut busy = cached.as_ref().map(|entry| entry.value.clone());
-        if busy.is_some() {
+        if cached.is_some() {
             metrics.tentative_cache_hits.inc();
-            cached_allocation_ts.push(seg.allocation_ts);
         } else {
             metrics.tentative_cache_misses.inc();
-            for attempt in 0..100_u32 {
-                busy = kv
-                    .get_busy(bind, &disk_id, seg.zone_index, seg.unit_offset)
-                    .await?;
-                if busy.is_some() || attempt == 99 {
-                    break;
-                }
-                let backoff_ms = 1_u64.checked_shl(attempt).unwrap_or(u64::MAX).min(50);
-                tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-            }
         }
-        match busy {
-            None => {
-                return Err(FreeError::NotBusy {
-                    disk_id,
-                    zone_index: seg.zone_index,
-                    unit_offset: seg.unit_offset,
-                });
-            }
-            Some(mut bv) => {
-                bv.commit_state = CommitState::Committed as i32;
-                records.push((disk_id, seg.zone_index, seg.unit_offset, bv));
-            }
+        let Some((mut busy, revision)) = kv
+            .get_busy(bind, &disk_id, seg.zone_index, seg.unit_offset)
+            .await?
+        else {
+            return Err(FreeError::NotBusy {
+                disk_id,
+                zone_index: seg.zone_index,
+                unit_offset: seg.unit_offset,
+            });
+        };
+        if busy.allocation_ts != seg.allocation_ts
+            || busy.unit_count != seg.unit_count
+            || busy.owner_chunk != seg.owner_chunk
+        {
+            return Err(FreeError::IncarnationMismatch);
         }
+        if busy.commit_state != CommitState::Committed as i32 {
+            busy.commit_state = CommitState::Committed as i32;
+            kv.persist_busy_cas(bind, &disk_id, seg.zone_index, seg.unit_offset, &busy, revision)
+                .await
+                .map_err(|error| match error {
+                    crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy => {
+                        FreeError::Conflict
+                    }
+                    crowdb_kv_client::Error::OutcomeUnknown => FreeError::OutcomeUnknown,
+                    other => FreeError::Kv(other),
+                })?;
+        }
+        if cached.is_some() {
+            let _ = dg.remove_tentative(seg.allocation_ts);
+        }
+        committed_count = committed_count.saturating_add(1);
     }
-
-    if records.is_empty() {
-        return Ok(0);
-    }
-
-    // Persist all updates in one batch.
-    kv.persist_busy_batch(bind, &records)
-        .await
-        .map_err(FreeError::from)?;
-    for allocation_ts in cached_allocation_ts {
-        let _ = dg.remove_tentative(allocation_ts);
-    }
-
-    Ok(u32::try_from(records.len()).unwrap_or(u32::MAX))
+    Ok(committed_count)
 }

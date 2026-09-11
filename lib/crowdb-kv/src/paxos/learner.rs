@@ -264,6 +264,13 @@ impl PxLearner {
         self.engine.get_bytes(key).await
     }
 
+    pub(crate) async fn engine_get_versioned(
+        &self,
+        key: &[u8],
+    ) -> Result<Option<(SlotIndex, Bytes)>, String> {
+        self.engine.get_versioned(key).await
+    }
+
     /// Ordered prefix scan of live entries; see [`KVEngine::scan`].
     /// `async fn` for signature uniformity with [`Self::engine_get`], but
     /// `KVEngine::scan` has no genuine `Pending` path yet (no

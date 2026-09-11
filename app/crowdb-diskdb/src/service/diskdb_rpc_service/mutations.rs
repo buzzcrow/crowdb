@@ -169,7 +169,7 @@ impl DiskdbRpcService {
             Some(s) if !s.is_empty() => s,
             _ => {
                 request.mark_success();
-                let ctrl = build_free_response(req_id, create_nano, FBDiskdbRetCode::Success, None, 0);
+                let ctrl = build_free_response(req_id, create_nano, FBDiskdbRetCode::Success, None, 0, &[]);
                 submit_fb_response(server, req.conn_handle, ctrl, msg_type, req_id);
                 return;
             }
@@ -228,23 +228,29 @@ impl DiskdbRpcService {
         let metrics = Arc::clone(&self.metrics);
         let conn_handle_usize = req.conn_handle as usize;
         let server = Arc::clone(server);
-        #[allow(clippy::cast_possible_truncation)]
-        let freed_count = segments.len() as u32;
         self.rt.spawn(async move {
             let mut request = request;
             let result = alloc::free_blocks(&dg, &segments, &kv).await;
             let conn_handle = conn_handle_usize as *mut std::ffi::c_void;
             match result {
-                Ok(()) => {
+                Ok(result) => {
                     request.mark_success();
-                    metrics.free_total.inc();
-                    let ctrl =
-                        build_free_response(req_id, create_nano, FBDiskdbRetCode::Success, None, freed_count);
+                    if result.freed_count > 0 {
+                        metrics.free_total.inc();
+                    }
+                    let ctrl = build_free_response(
+                        req_id,
+                        create_nano,
+                        FBDiskdbRetCode::Success,
+                        None,
+                        result.freed_count,
+                        &result.failures,
+                    );
                     submit_fb_response(&server, conn_handle, ctrl, msg_type, req_id);
                 }
-                Err(e) => {
-                    let (code, msg) = map_free_error(&e);
-                    let ctrl = build_free_response(req_id, create_nano, code, Some(&msg), 0);
+                Err(error) => {
+                    let (code, message) = map_free_error(&error);
+                    let ctrl = build_free_response(req_id, create_nano, code, Some(&message), 0, &[]);
                     submit_fb_response(&server, conn_handle, ctrl, msg_type, req_id);
                 }
             }

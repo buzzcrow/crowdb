@@ -15,9 +15,9 @@ complexity, and dependency. Before implementation, follow the
 
 ### Next Milestone — Chunk-backed range KV
 
-Dependency order: R142 depends on R141 and the completed chunk-backed tree
-storage; R143 depends on R142; R145 depends on R143. R141's metadata
-publication depends on R101 KV compare-and-set. R144 is a deferred
+Dependency order: R142 depends on R141, the landed KV compare-and-set
+primitive, and the completed chunk-backed tree storage; R143 depends on R142;
+R145 depends on R143. R144 is a deferred
 follow-up after R145 and after split and transfer are proven. R146 and R147 are
 deferred chunk lifecycle follow-ups, and R148 defers stream metadata scale-out
 and sealed-chunk EC until the mirror-only baseline is measured. The milestone
@@ -87,10 +87,6 @@ client, and physical chunk maintenance.
   operator-manual `BindMapValue` write with automatic monitoring +
   rebinding. Monitor detects instance join/leave, rebalances disk-group
   assignments, migrates data during rebinding.
-- **[R101](R101-kv-put-cas.md)** — KV conditional writes — Area: kv / diskdb —
-  serialize same-key conditional mutations through a leader-local lock-free
-  transient map, journal only ordinary mutation batches, close uncertain slots
-  before release, and restore diskdb's conditional direct-free operation.
 - **[R149](R149-platform-dashmap-audit.md)** — DashMap correctness and hot-path
   replacement — Area: platform / concurrency — Share cloned diskdb routing
   state, repair learner frontier races, make RPC pools generation-safe, publish

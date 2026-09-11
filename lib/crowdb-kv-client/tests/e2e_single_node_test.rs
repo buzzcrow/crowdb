@@ -111,6 +111,55 @@ async fn put_get_delete_round_trip_via_topology_discovery() {
 }
 
 #[tokio::test]
+async fn revision_cas_and_conditional_batch_round_trip() {
+    let store = start_single_node_store().await;
+    let seed = spawn_topology_server(store.clone()).await;
+    let client = CrowdbKvClient::new(ClientConfig::new(vec![seed]));
+
+    let created = client
+        .put_cas(STORE_ID, GROUP_ID, b"guard", b"one", 0)
+        .await
+        .expect("create-if-absent CAS");
+    assert!(matches!(
+        client.put_cas(STORE_ID, GROUP_ID, b"guard", b"stale", 0).await,
+        Err(crowdb_kv_client::Error::CasFailed {
+            current_revision
+        }) if current_revision == created.revision
+    ));
+
+    let batch = [
+        BatchOp::Delete {
+            key: Bytes::from_static(b"guard"),
+        },
+        BatchOp::Put {
+            key: Bytes::from_static(b"related"),
+            value: Bytes::from_static(b"value"),
+        },
+    ];
+    client
+        .batch_write_cas(STORE_ID, GROUP_ID, &batch, b"guard", created.revision)
+        .await
+        .expect("matching conditional batch");
+    assert!(matches!(
+        client
+            .get(STORE_ID, GROUP_ID, b"guard", ReadMode::Linearizable, None)
+            .await
+            .unwrap(),
+        GetOutcome::NotFound
+    ));
+    assert!(matches!(
+        client
+            .get(STORE_ID, GROUP_ID, b"related", ReadMode::Linearizable, None)
+            .await
+            .unwrap(),
+        GetOutcome::Found { value, .. } if value.as_ref() == b"value"
+    ));
+
+    store.stop();
+    store.join().await;
+}
+
+#[tokio::test]
 async fn batch_write_and_scan() {
     let store = start_single_node_store().await;
     let seed = spawn_topology_server(store.clone()).await;

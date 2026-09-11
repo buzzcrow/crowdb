@@ -240,6 +240,22 @@ pub struct FreeBlocksRequest {
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct FreeResponse {
     pub freed_count: u32,
+    pub failures: Vec<FreeFailure>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FreeFailureReason {
+    NotBusy,
+    IncarnationMismatch,
+    Conflict,
+    Unavailable,
+    OutcomeUnknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FreeFailure {
+    pub segment: Segment,
+    pub reason: FreeFailureReason,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]

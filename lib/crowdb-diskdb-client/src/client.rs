@@ -21,9 +21,10 @@ use crowdb_kv_client::ServiceRegistryClient;
 use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::{
     AllocateBlocksRequest, AllocateResponse, CommitBlocksRequest, CommitBlocksResponse, CompactZoneRequest,
-    CompactZoneResponse, FreeBlocksRequest, FreeResponse, GetDiskGroupInfoResponse, GetDiskInfoResponse,
-    GetScanStatusResponse, QueryCapacityStatsRequest, QueryCapacityStatsResponse, RebuildZoneBitmapResponse,
-    RecalcDiskUsageRequest, RecalcDiskUsageResponse, TriggerScanResponse,
+    CompactZoneResponse, FreeBlocksRequest, FreeFailure, FreeFailureReason, FreeResponse,
+    GetDiskGroupInfoResponse, GetDiskInfoResponse, GetScanStatusResponse, QueryCapacityStatsRequest,
+    QueryCapacityStatsResponse, RebuildZoneBitmapResponse, RecalcDiskUsageRequest, RecalcDiskUsageResponse,
+    TriggerScanResponse,
 };
 use crowdb_protocol::DiskGroupId;
 
@@ -164,15 +165,25 @@ impl DiskdbClient {
     /// Returns `DiskdbClientError::Rpc` for RPC failures, `Unreachable` for connection errors.
     pub async fn free_blocks(&self, req: FreeBlocksRequest) -> Result<FreeResponse> {
         if req.segments.is_empty() {
-            return Ok(FreeResponse { freed_count: 0 });
+            return Ok(FreeResponse {
+                freed_count: 0,
+                failures: Vec::new(),
+            });
         }
         // Group segments by disk-group.
         let mut groups: Vec<(DiskGroupId, Vec<_>)> = Vec::new();
+        let mut failures = Vec::new();
         for seg in &req.segments {
             let disk_id = seg
                 .disk_id
                 .ok_or_else(|| DiskdbClientError::Rpc("segment.disk_id required".into()))?;
-            let dg_id = self.dg_for_disk(disk_id).await?;
+            let Ok(dg_id) = self.dg_for_disk(disk_id).await else {
+                failures.push(FreeFailure {
+                    segment: *seg,
+                    reason: FreeFailureReason::Unavailable,
+                });
+                continue;
+            };
             if let Some((_, segs)) = groups.iter_mut().find(|(g, _)| *g == dg_id) {
                 segs.push(*seg);
             } else {
@@ -181,17 +192,29 @@ impl DiskdbClient {
         }
         let mut total_freed = 0u32;
         for (dg_id, segs) in groups {
-            let sub_req = FreeBlocksRequest { segments: segs };
-            let resp = self
+            let sub_req = FreeBlocksRequest {
+                segments: segs.clone(),
+            };
+            match self
                 .with_rpc_retry(dg_id, |endpoint, rpc| {
                     let req = sub_req.clone();
                     async move { rpc.free_blocks(&endpoint, &req).await }
                 })
-                .await?;
-            total_freed += resp.freed_count;
+                .await
+            {
+                Ok(resp) => {
+                    total_freed = total_freed.saturating_add(resp.freed_count);
+                    failures.extend(resp.failures);
+                }
+                Err(_) => failures.extend(segs.into_iter().map(|segment| FreeFailure {
+                    segment,
+                    reason: FreeFailureReason::OutcomeUnknown,
+                })),
+            }
         }
         Ok(FreeResponse {
             freed_count: total_freed,
+            failures,
         })
     }
 

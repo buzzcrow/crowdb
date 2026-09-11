@@ -205,6 +205,21 @@ impl KVEngine for CrowdbTreeEngine {
         }
     }
 
+    fn get_versioned(&self, key: &[u8]) -> KVFuture<Result<Option<(u64, Bytes)>, String>> {
+        match self.inner.try_get_pinned(key) {
+            PinnedGetOutcome::Ready(result) => KVFuture::ready(
+                result
+                    .map(|value| value.map(|(slot, pinned)| (slot, pinned.into_bytes())))
+                    .map_err(|error| error.to_string()),
+            ),
+            PinnedGetOutcome::Pending(fut) => KVFuture::Pending(Box::pin(async move {
+                fut.await
+                    .map(|value| value.map(|(slot, bytes)| (slot, Bytes::from(bytes))))
+                    .map_err(|error| error.to_string())
+            })),
+        }
+    }
+
     fn scan(
         &self,
         prefix: &[u8],

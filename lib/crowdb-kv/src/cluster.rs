@@ -5,6 +5,7 @@
 
 pub mod group;
 pub mod group_accept;
+pub mod group_cas;
 pub mod group_coalesce;
 pub mod group_config;
 pub mod group_election;

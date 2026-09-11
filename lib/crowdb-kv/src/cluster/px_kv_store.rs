@@ -11,6 +11,7 @@ use crate::common::config::ServerConfig;
 use crate::common::report::OperationReport;
 use crate::metrics::MetricsRegistry;
 use crate::rpc::ReadMode;
+use bytes::Bytes;
 use dashmap::DashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -590,7 +591,77 @@ impl PxKvStore {
                 request_id,
                 request_create_ms,
             ),
+            ProposeResult::CasFailed { current_revision } => crate::rpc::KvResponse::cas_error(
+                crate::rpc::KvErrorCode::KvErrorCasFailed,
+                current_revision,
+                "compare-and-set precondition failed",
+                request_id,
+                request_create_ms,
+            ),
+            ProposeResult::CasBusy => crate::rpc::KvResponse::cas_error(
+                crate::rpc::KvErrorCode::KvErrorCasBusy,
+                0,
+                "compare-and-set key is busy",
+                request_id,
+                request_create_ms,
+            ),
+            ProposeResult::OutcomeUnknown => crate::rpc::KvResponse::cas_error(
+                crate::rpc::KvErrorCode::KvErrorOutcomeUnknown,
+                0,
+                "compare-and-set outcome is unknown",
+                request_id,
+                request_create_ms,
+            ),
             ProposeResult::Err(msg) => crate::rpc::KvResponse::err(msg, request_id, request_create_ms),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn propose_cas_and_respond(
+        &self,
+        group_id: u64,
+        payload: Vec<u8>,
+        precondition_key: Bytes,
+        expected_revision: u64,
+        client_id: u64,
+        seq: u64,
+        request_id: u64,
+        request_create_ms: u64,
+    ) -> crate::rpc::KvResponse {
+        let Some(group) = self.get_group(group_id) else {
+            return missing_group_response(request_id, request_create_ms);
+        };
+        match group
+            .propose_cas(payload, precondition_key, expected_revision, client_id, seq)
+            .await
+        {
+            ProposeResult::Chosen { slot } => {
+                crate::rpc::KvResponse::ok_chosen(slot, request_id, request_create_ms)
+            }
+            ProposeResult::NotLeader { leader_hint } => {
+                crate::rpc::KvResponse::not_leader(leader_hint, request_id, request_create_ms)
+            }
+            ProposeResult::CasFailed { current_revision } => crate::rpc::KvResponse::cas_error(
+                crate::rpc::KvErrorCode::KvErrorCasFailed,
+                current_revision,
+                "compare-and-set precondition failed",
+                request_id,
+                request_create_ms,
+            ),
+            ProposeResult::Busy | ProposeResult::CasBusy => crate::rpc::KvResponse::cas_error(
+                crate::rpc::KvErrorCode::KvErrorCasBusy,
+                0,
+                "compare-and-set admission busy",
+                request_id,
+                request_create_ms,
+            ),
+            ProposeResult::OutcomeUnknown | ProposeResult::Err(_) => crate::rpc::KvResponse::cas_error(
+                crate::rpc::KvErrorCode::KvErrorOutcomeUnknown,
+                0,
+                "compare-and-set outcome is unknown",
+                request_id,
+                request_create_ms,
+            ),
         }
     }
 

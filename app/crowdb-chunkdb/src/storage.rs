@@ -26,6 +26,8 @@ pub enum StoreError {
     ChunkNotFound,
     #[error("chunk already exists")]
     ChunkAlreadyExists,
+    #[error("chunk changed concurrently")]
+    Conflict,
     #[error("routing error: {0}")]
     Route(#[from] crate::routing::RouteError),
     #[error("kv client error: {0}")]
@@ -49,31 +51,81 @@ impl ChunkStore {
         Self { kv, bindings }
     }
 
-    /// Write a chunk record (overwrite if exists).
+    /// Publish one logical chunk transition with KV revision CAS. New chunks
+    /// use create-if-absent; updates must advance `modify_ts` exactly once.
+    /// An ambiguous response is reconciled by reading the current record.
     pub async fn put_chunk(&self, chunk: &Chunk) -> Result<()> {
         let id = chunk.id.as_ref().expect("chunk has id");
         let r = route(&self.bindings, id)?;
         let key = chunk_key(id);
         let value = encode_chunk(chunk);
 
+        self.put_chunk_at(r.kv_store_id, r.kv_group_id, &key, &value, chunk)
+            .await?;
         if r.migration_state == MigrationState::Copying || r.migration_state == MigrationState::Cutover {
-            // Dual-write: write to both new and old groups.
-            self.kv
-                .put(r.kv_store_id, r.kv_group_id, &key, &value, None)
-                .await
-                .map_err(|e| StoreError::Kv(e.to_string()))?;
+            // The new route is authoritative. Mirror the same guarded logical
+            // transition to the old route during migration.
             if let (Some(old_store), Some(old_group)) = (r.old_kv_store_id, r.old_kv_group_id) {
-                if let Err(e) = self.kv.put(old_store, old_group, &key, &value, None).await {
+                if let Err(e) = self.put_chunk_at(old_store, old_group, &key, &value, chunk).await {
                     warn!(error = %e, "dual-write: old group write failed (new group has data)");
                 }
             }
-        } else {
-            self.kv
-                .put(r.kv_store_id, r.kv_group_id, &key, &value, None)
-                .await
-                .map_err(|e| StoreError::Kv(e.to_string()))?;
         }
         Ok(())
+    }
+
+    async fn put_chunk_at(
+        &self,
+        store_id: u64,
+        group_id: u64,
+        key: &[u8],
+        value: &[u8],
+        chunk: &Chunk,
+    ) -> Result<()> {
+        let observed = self
+            .kv
+            .get(store_id, group_id, key, ReadMode::Linearizable, None)
+            .await
+            .map_err(|error| StoreError::Kv(error.to_string()))?;
+        let expected_revision = match observed {
+            GetOutcome::NotFound => 0,
+            GetOutcome::Found {
+                value: current,
+                revision,
+            } => {
+                let current = decode_chunk(&current)?;
+                if current == *chunk {
+                    return Ok(());
+                }
+                if chunk.modify_ts != current.modify_ts.saturating_add(1) {
+                    return Err(StoreError::Conflict);
+                }
+                revision
+            }
+        };
+        match self
+            .kv
+            .put_cas(store_id, group_id, key, value, expected_revision)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(
+                crowdb_kv_client::Error::CasFailed { .. }
+                | crowdb_kv_client::Error::CasBusy
+                | crowdb_kv_client::Error::OutcomeUnknown,
+            ) => {
+                match self
+                    .kv
+                    .get(store_id, group_id, key, ReadMode::Linearizable, None)
+                    .await
+                {
+                    Ok(GetOutcome::Found { value, .. }) if decode_chunk(&value)? == *chunk => Ok(()),
+                    Ok(_) => Err(StoreError::Conflict),
+                    Err(error) => Err(StoreError::Kv(error.to_string())),
+                }
+            }
+            Err(error) => Err(StoreError::Kv(error.to_string())),
+        }
     }
 
     /// Read a chunk by ID.

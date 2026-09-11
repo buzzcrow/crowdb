@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 
+use bytes::Bytes;
+use crossbeam_skiplist::SkipMap;
 use dashmap::DashMap;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
@@ -40,6 +42,12 @@ pub(crate) struct WriteRegistryHandles {
     pub(crate) propose_e2e: Arc<LatencySummary>,
     pub(crate) prepare_phase: Arc<LatencySummary>,
     pub(crate) accept_quorum_rpc: Arc<LatencySummary>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CasOwnerToken {
+    pub(crate) tenure: u64,
+    pub(crate) nonce: u64,
 }
 
 /// Registry-based metric handles for read-path instrumentation.
@@ -135,6 +143,8 @@ pub struct PxGroup {
     /// restore must first finish bulk Phase 1 recovery and locally relearn the
     /// chosen prefix before it can safely serve reads.
     pub(crate) leader_read_ready: AtomicBool,
+    pub(crate) cas_transient_map: SkipMap<Bytes, CasOwnerToken>,
+    pub(crate) cas_request_nonce: AtomicU64,
     /// Last-known `contiguous_applied` per voting peer, refreshed from
     /// heartbeat replies. Peers never heard from are absent (treated as
     /// `0`), which keeps [`Self::group_safe_slot`] conservative until every
@@ -357,6 +367,8 @@ impl PxGroup {
             pending_leader_handoff: parking_lot::Mutex::new(None),
             proposing_term: AtomicU64::new(0),
             leader_read_ready: AtomicBool::new(true),
+            cas_transient_map: SkipMap::new(),
+            cas_request_nonce: AtomicU64::new(1),
             peer_applied: parking_lot::Mutex::new(HashMap::new()),
             group_safe_slot: AtomicU64::new(0),
             peer_durable: parking_lot::Mutex::new(HashMap::new()),
@@ -911,6 +923,11 @@ pub enum ProposeResult {
     /// The proposer sliding window is full; the caller should retry shortly.
     /// Distinct from `Err` so the KV layer can surface a retryable signal.
     Busy,
+    CasFailed {
+        current_revision: u64,
+    },
+    CasBusy,
+    OutcomeUnknown,
     Err(String),
 }
 

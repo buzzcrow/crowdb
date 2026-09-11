@@ -12,8 +12,8 @@
 
 use crate::diskdb_fb::{
     FBAllocateResponse, FBCommitBlocksResponse, FBCompactZoneResponse, FBDiskGroupInfo,
-    FBDiskGroupRecalcResult, FBDiskInfo, FBDiskdbRetCode, FBFreeResponse, FBGetDiskGroupInfoResponse,
-    FBGetDiskInfoResponse, FBGetScanStatusResponse, FBQueryCapacityStatsResponse,
+    FBDiskGroupRecalcResult, FBDiskInfo, FBDiskdbRetCode, FBFreeFailure, FBFreeResponse,
+    FBGetDiskGroupInfoResponse, FBGetDiskInfoResponse, FBGetScanStatusResponse, FBQueryCapacityStatsResponse,
     FBRebuildZoneBitmapResponse, FBRecalcDiskUsageResponse, FBScanSummary, FBSegment, FBTriggerScanResponse,
     FBZoneCompactionResult,
 };
@@ -77,6 +77,11 @@ impl<'a> FBFreeResponseRef<'a> {
     }
     pub fn freed_count(&self) -> u32 {
         self.root.map_or(0, |r| r.freed_count())
+    }
+    pub fn failures(
+        &self,
+    ) -> Option<flatbuffers::Vector<'a, flatbuffers::ForwardsUOffset<FBFreeFailure<'a>>>> {
+        self.root.and_then(|r| r.failures())
     }
 }
 

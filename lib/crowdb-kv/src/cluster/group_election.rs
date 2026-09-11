@@ -177,6 +177,7 @@ impl LeaderElection for PxGroup {
     }
 
     #[tracing::instrument(level = "info", skip_all, fields(s = self.log_store_id().unwrap_or(0), g = self.group_id, replica = self.local_replica().id, term))]
+    #[allow(clippy::too_many_lines)]
     async fn run_bulk_phase1(
         &self,
         term: u64,
@@ -224,12 +225,17 @@ impl LeaderElection for PxGroup {
         );
 
         if ceiling <= floor {
+            tokio::select! {
+                () = replica.await_apply_fence(floor) => {}
+                () = cancel.cancelled() => return,
+            }
             self.leader_read_ready.store(true, Ordering::Release);
             debug!(term, "bulk phase 1 skipped (empty range)");
             return;
         }
 
         let mut slots_repaired = 0u64;
+        let mut all_resolved = true;
         let window = cfg.bulk_prepare_window.max(1);
 
         for slot in (floor + 1)..=ceiling {
@@ -255,6 +261,7 @@ impl LeaderElection for PxGroup {
             let mut entry = match attempt {
                 PrepareAttempt::Proceed { entry, .. } => entry,
                 PrepareAttempt::Retry { error, .. } | PrepareAttempt::Fail { error } => {
+                    all_resolved = false;
                     warn!(
                         group_id,
                         term,
@@ -275,6 +282,7 @@ impl LeaderElection for PxGroup {
                     slots_repaired += 1;
                 }
                 AcceptAttempt::Retry { error, .. } | AcceptAttempt::Fail { error } => {
+                    all_resolved = false;
                     warn!(
                         group_id,
                         term,
@@ -288,6 +296,17 @@ impl LeaderElection for PxGroup {
 
         let next = ceiling.saturating_add(1);
         self.next_slot.fetch_max(next, Ordering::AcqRel);
+        if !all_resolved {
+            warn!(
+                group_id,
+                term, ceiling, "bulk phase 1 incomplete; leader recovery remains closed"
+            );
+            return;
+        }
+        tokio::select! {
+            () = replica.await_apply_fence(ceiling) => {}
+            () = cancel.cancelled() => return,
+        }
         self.leader_read_ready.store(true, Ordering::Release);
         // R65: advance `known_commit_slot` to the leader's own
         // `contiguous_chosen` after the sweep. Leaders don't receive

@@ -73,7 +73,7 @@ impl DdbKvClient {
         disk_id: &DiskId,
         zone_index: u32,
         unit_offset: u64,
-    ) -> Result<Option<BusyBlockValue>> {
+    ) -> Result<Option<(BusyBlockValue, u64)>> {
         let key = BusyBlockKey {
             disk_id: *disk_id,
             zone_index,
@@ -85,16 +85,88 @@ impl DdbKvClient {
             .get(store_id, group_id, &key.to_bytes(), ReadMode::Linearizable, None)
             .await?;
         match outcome {
-            GetOutcome::Found { value, .. } => {
+            GetOutcome::Found { value, revision } => {
                 let bv =
                     bincode::deserialize(&value).map_err(|e| crowdb_kv_client::Error::SysdataDecode {
                         key: format!("{:02x?}", key.to_bytes()),
                         reason: e.to_string(),
                     })?;
-                Ok(Some(bv))
+                Ok(Some((bv, revision)))
             }
             GetOutcome::NotFound => Ok(None),
         }
+    }
+
+    pub async fn get_free(
+        &self,
+        bind: Bind,
+        disk_id: &DiskId,
+        zone_index: u32,
+        unit_offset: u64,
+        allocation_ts: u64,
+    ) -> Result<Option<FreeBlockValue>> {
+        let key = FreeBlockKey {
+            disk_id: *disk_id,
+            zone_index,
+            unit_offset,
+            allocation_ts,
+        };
+        let (store_id, group_id) = bind;
+        match self
+            .kv
+            .get(store_id, group_id, &key.to_bytes(), ReadMode::Linearizable, None)
+            .await?
+        {
+            GetOutcome::Found { value, .. } => bincode::deserialize(&value).map(Some).map_err(|error| {
+                crowdb_kv_client::Error::SysdataDecode {
+                    key: format!("{:02x?}", key.to_bytes()),
+                    reason: error.to_string(),
+                }
+            }),
+            GetOutcome::NotFound => Ok(None),
+        }
+    }
+
+    pub async fn free_busy_cas(
+        &self,
+        bind: Bind,
+        disk_id: &DiskId,
+        zone_index: u32,
+        unit_offset: u64,
+        busy_revision: u64,
+        free: &FreeBlockValue,
+    ) -> Result<()> {
+        let busy_key = Bytes::from(
+            BusyBlockKey {
+                disk_id: *disk_id,
+                zone_index,
+                unit_offset,
+            }
+            .to_bytes(),
+        );
+        let free_key = Bytes::from(
+            FreeBlockKey {
+                disk_id: *disk_id,
+                zone_index,
+                unit_offset,
+                allocation_ts: free.pre_allocation_ts,
+            }
+            .to_bytes(),
+        );
+        let ops = [
+            BatchOp::Delete {
+                key: busy_key.clone(),
+            },
+            BatchOp::Put {
+                key: free_key,
+                value: Bytes::from(bincode::serialize(free).expect("serialize FreeBlockValue")),
+            },
+        ];
+        let (store_id, group_id) = bind;
+        self.kv
+            .batch_write_cas(store_id, group_id, &ops, &busy_key, busy_revision)
+            .await
+            .map(|_| ())
     }
 
     /// Persist a single busy-block record: `put` to `BusyBlockKey`.
@@ -121,6 +193,30 @@ impl DdbKvClient {
         }];
         let (store_id, group_id) = bind;
         self.kv.batch_write(store_id, group_id, &ops).await.map(|_| ())
+    }
+
+    /// Replace one busy-block value only while its revision is unchanged.
+    pub async fn persist_busy_cas(
+        &self,
+        bind: Bind,
+        disk_id: &DiskId,
+        zone_index: u32,
+        unit_offset: u64,
+        value: &BusyBlockValue,
+        expected_revision: u64,
+    ) -> Result<()> {
+        let key = BusyBlockKey {
+            disk_id: *disk_id,
+            zone_index,
+            unit_offset,
+        }
+        .to_bytes();
+        let value = bincode::serialize(value).expect("serialize BusyBlockValue");
+        let (store_id, group_id) = bind;
+        self.kv
+            .put_cas(store_id, group_id, &key, &value, expected_revision)
+            .await
+            .map(|_| ())
     }
 
     /// Persist a batch of busy-block records in one `batch_write`

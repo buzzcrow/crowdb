@@ -37,9 +37,10 @@ use crowdb_protocol::kv_client_fb::{
     FBCreateSnapshotRequest, FBCreateSnapshotRequestArgs, FBKvBatchItem, FBKvBatchItemArgs,
     FBKvBatchWriteRequest, FBKvBatchWriteRequestArgs, FBKvClientRetCode, FBKvDeleteRequest,
     FBKvDeleteRequestArgs, FBKvGetRequest, FBKvGetRequestArgs, FBKvJournalScanRequest,
-    FBKvJournalScanRequestArgs, FBKvScanRequest, FBKvScanRequestArgs, FBKvSetRequest, FBKvSetRequestArgs,
-    FBListSnapshotsRequest, FBListSnapshotsRequestArgs, FBReadMode, FBReleaseSnapshotRequest,
-    FBReleaseSnapshotRequestArgs, FBSnapshotScanRequest, FBSnapshotScanRequestArgs,
+    FBKvJournalScanRequestArgs, FBKvRevisionPrecondition, FBKvRevisionPreconditionArgs, FBKvScanRequest,
+    FBKvScanRequestArgs, FBKvSetRequest, FBKvSetRequestArgs, FBListSnapshotsRequest,
+    FBListSnapshotsRequestArgs, FBReadMode, FBReleaseSnapshotRequest, FBReleaseSnapshotRequestArgs,
+    FBSnapshotScanRequest, FBSnapshotScanRequestArgs,
 };
 use crowdb_rpc_ffi::{Buffer, Connection, RpcClient, RpcError, RpcServer};
 
@@ -231,6 +232,7 @@ impl KvRpcTransport {
             request_create_ms,
             group_id,
             forwarded: false,
+            precondition: None,
         };
         let req = FBKvSetRequest::create(&mut builder, &args);
         builder.finish(req, None);
@@ -246,6 +248,74 @@ impl KvRpcTransport {
             status: "put response missing control buffer".into(),
         })?;
         parse_kv_response(ctrl.bytes())
+    }
+
+    /// Send a revision-conditional Put. Transport completion errors remain
+    /// ambiguous to the caller and are not retried by this layer.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_put_cas(
+        &self,
+        rpc_endpoint: &str,
+        key: &[u8],
+        value: &[u8],
+        expected_revision: u64,
+        client_id: u64,
+        seq: u64,
+        request_id: u64,
+        request_create_ms: u64,
+        group_id: u64,
+    ) -> Result<KvResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let fb_key = builder.create_vector(key);
+        let fb_value = builder.create_vector(value);
+        let precondition = FBKvRevisionPrecondition::create(
+            &mut builder,
+            &FBKvRevisionPreconditionArgs {
+                key: Some(fb_key),
+                expected_revision,
+            },
+        );
+        let request = FBKvSetRequest::create(
+            &mut builder,
+            &FBKvSetRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                version: 1,
+                key: Some(fb_key),
+                value: Some(fb_value),
+                seq,
+                ttl_ms: 0,
+                client_id,
+                request_id,
+                request_create_ms,
+                group_id,
+                forwarded: false,
+                precondition: Some(precondition),
+            },
+        );
+        builder.finish(request, None);
+        let control = Buffer::from_bytes(builder.finished_data());
+        let future = self
+            .rpc
+            .call(
+                &self.server,
+                &conn,
+                req_id,
+                control,
+                None,
+                FBMsgType::EKvSetRequest.0 as u16,
+            )
+            .map_err(|error| self.map_rpc_err(error, rpc_endpoint))?;
+        let response = future
+            .await
+            .map_err(|error| self.map_rpc_err(error, rpc_endpoint))?;
+        let control = response.control.ok_or_else(|| Error::Transport {
+            endpoint: rpc_endpoint.to_string(),
+            status: "put CAS response missing control buffer".into(),
+        })?;
+        parse_kv_response(control.bytes())
     }
 
     /// Send a `Get` request via crowdb-rpc.
@@ -404,6 +474,7 @@ impl KvRpcTransport {
             request_create_ms,
             group_id,
             forwarded: false,
+            precondition: None,
         };
         let req = FBKvBatchWriteRequest::create(&mut builder, &args);
         builder.finish(req, None);
@@ -419,6 +490,86 @@ impl KvRpcTransport {
             status: "batch_write response missing control buffer".into(),
         })?;
         parse_kv_response(ctrl.bytes())
+    }
+
+    /// Send a revision-conditional atomic batch.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_batch_write_cas(
+        &self,
+        rpc_endpoint: &str,
+        items: &[crowdb_kv::rpc::KvBatchItem],
+        precondition_key: &[u8],
+        expected_revision: u64,
+        client_id: u64,
+        seq: u64,
+        request_id: u64,
+        request_create_ms: u64,
+        group_id: u64,
+    ) -> Result<KvResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let item_offsets: Vec<_> = items
+            .iter()
+            .map(|item| {
+                let key = builder.create_vector(&item.key);
+                let value = builder.create_vector(&item.value);
+                FBKvBatchItem::create(
+                    &mut builder,
+                    &FBKvBatchItemArgs {
+                        key: Some(key),
+                        value: Some(value),
+                        is_delete: item.is_delete,
+                    },
+                )
+            })
+            .collect();
+        let fb_items = builder.create_vector(&item_offsets);
+        let fb_key = builder.create_vector(precondition_key);
+        let precondition = FBKvRevisionPrecondition::create(
+            &mut builder,
+            &FBKvRevisionPreconditionArgs {
+                key: Some(fb_key),
+                expected_revision,
+            },
+        );
+        let request = FBKvBatchWriteRequest::create(
+            &mut builder,
+            &FBKvBatchWriteRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                version: 1,
+                items: Some(fb_items),
+                seq,
+                client_id,
+                request_id,
+                request_create_ms,
+                group_id,
+                forwarded: false,
+                precondition: Some(precondition),
+            },
+        );
+        builder.finish(request, None);
+        let control = Buffer::from_bytes(builder.finished_data());
+        let future = self
+            .rpc
+            .call(
+                &self.server,
+                &conn,
+                req_id,
+                control,
+                None,
+                FBMsgType::EKvBatchWriteRequest.0 as u16,
+            )
+            .map_err(|error| self.map_rpc_err(error, rpc_endpoint))?;
+        let response = future
+            .await
+            .map_err(|error| self.map_rpc_err(error, rpc_endpoint))?;
+        let control = response.control.ok_or_else(|| Error::Transport {
+            endpoint: rpc_endpoint.to_string(),
+            status: "batch CAS response missing control buffer".into(),
+        })?;
+        parse_kv_response(control.bytes())
     }
 
     /// Send a `Scan` request via crowdb-rpc.
@@ -809,6 +960,9 @@ fn check_client_ret_code(code: FBKvClientRetCode, msg: Option<&str>, endpoint: &
             status: msg.unwrap_or("unavailable").into(),
         }),
         FBKvClientRetCode::JournalScanGcGap => Err(Error::JournalScanGcGap),
+        FBKvClientRetCode::CasFailed => Err(Error::CasFailed { current_revision: 0 }),
+        FBKvClientRetCode::CasBusy => Err(Error::CasBusy),
+        FBKvClientRetCode::OutcomeUnknown => Err(Error::OutcomeUnknown),
         _ => Err(Error::Transport {
             endpoint: endpoint.to_string(),
             status: msg.unwrap_or("internal error").into(),
@@ -945,6 +1099,9 @@ fn fb_ret_code_to_kv_error_code(code: FBKvClientRetCode) -> i32 {
         FBKvClientRetCode::NotLeader => KvErrorCode::KvErrorNotLeader as i32,
         FBKvClientRetCode::Unavailable => KvErrorCode::KvErrorUnavailable as i32,
         FBKvClientRetCode::JournalScanGcGap => KvErrorCode::KvErrorJournalScanGcGap as i32,
+        FBKvClientRetCode::CasFailed => KvErrorCode::KvErrorCasFailed as i32,
+        FBKvClientRetCode::CasBusy => KvErrorCode::KvErrorCasBusy as i32,
+        FBKvClientRetCode::OutcomeUnknown => KvErrorCode::KvErrorOutcomeUnknown as i32,
         _ => KvErrorCode::KvErrorInternal as i32,
     }
 }

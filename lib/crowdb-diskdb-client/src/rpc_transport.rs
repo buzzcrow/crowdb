@@ -19,19 +19,20 @@ use flatbuffers::FlatBufferBuilder;
 
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::{
-    AllocateResponse, CompactZoneResponse, DiskInfo, DiskType, FreeResponse, GetDiskGroupInfoResponse,
-    GetDiskInfoResponse, GetScanStatusResponse, QueryCapacityStatsResponse, RebuildZoneBitmapResponse,
-    RecalcDiskUsageResponse, Segment, TriggerScanResponse, ZoneAllocationState, ZoneUsage,
+    AllocateResponse, CompactZoneResponse, DiskInfo, DiskType, FreeFailure, FreeFailureReason, FreeResponse,
+    GetDiskGroupInfoResponse, GetDiskInfoResponse, GetScanStatusResponse, QueryCapacityStatsResponse,
+    RebuildZoneBitmapResponse, RecalcDiskUsageResponse, Segment, TriggerScanResponse, ZoneAllocationState,
+    ZoneUsage,
 };
 use crowdb_protocol::diskdb_fb::{
     FBAllocateBlocksRequest, FBAllocateBlocksRequestArgs, FBCommitBlocksRequest, FBCommitBlocksRequestArgs,
     FBCompactZoneRequest, FBCompactZoneRequestArgs, FBDiskGroupInfo, FBDiskInfo, FBDiskType, FBDiskdbRetCode,
-    FBFreeBlocksRequest, FBFreeBlocksRequestArgs, FBGetDiskGroupInfoRequest, FBGetDiskGroupInfoRequestArgs,
-    FBGetDiskInfoRequest, FBGetDiskInfoRequestArgs, FBGetScanStatusRequest, FBGetScanStatusRequestArgs,
-    FBHwStatus, FBInt128, FBQueryCapacityStatsRequest, FBQueryCapacityStatsRequestArgs,
-    FBRebuildZoneBitmapRequest, FBRebuildZoneBitmapRequestArgs, FBRecalcDiskUsageRequest,
-    FBRecalcDiskUsageRequestArgs, FBScanSummary, FBSegment, FBTriggerScanRequest, FBTriggerScanRequestArgs,
-    FBZoneAllocationState, FBZoneUsage,
+    FBFreeBlocksRequest, FBFreeBlocksRequestArgs, FBFreeFailureReason, FBGetDiskGroupInfoRequest,
+    FBGetDiskGroupInfoRequestArgs, FBGetDiskInfoRequest, FBGetDiskInfoRequestArgs, FBGetScanStatusRequest,
+    FBGetScanStatusRequestArgs, FBHwStatus, FBInt128, FBQueryCapacityStatsRequest,
+    FBQueryCapacityStatsRequestArgs, FBRebuildZoneBitmapRequest, FBRebuildZoneBitmapRequestArgs,
+    FBRecalcDiskUsageRequest, FBRecalcDiskUsageRequestArgs, FBScanSummary, FBSegment, FBTriggerScanRequest,
+    FBTriggerScanRequestArgs, FBZoneAllocationState, FBZoneUsage,
 };
 use crowdb_protocol::fb::FBMsgType;
 use crowdb_protocol::fb_wrappers::diskdb::{
@@ -623,8 +624,45 @@ fn parse_free_response(resp: &crowdb_rpc_ffi::Response) -> Result<FreeResponse> 
         return Err(DiskdbClientError::Rpc("invalid free response".into()));
     }
     check_ret_code(r.ret_code(), r.error_msg())?;
+    let failures = r
+        .failures()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|failure| {
+                    let segment = failure.segment()?;
+                    Some(FreeFailure {
+                        segment: Segment {
+                            disk_id: Some(DiskId {
+                                high: segment.disk_id().high(),
+                                low: segment.disk_id().low(),
+                            }),
+                            owner_chunk: Some(ChunkId {
+                                high: segment.owner_chunk().high(),
+                                low: segment.owner_chunk().low(),
+                            }),
+                            unit_offset: segment.unit_offset(),
+                            zone_index: segment.zone_index(),
+                            unit_count: segment.unit_count(),
+                            allocation_ts: segment.allocation_ts(),
+                        },
+                        reason: match failure.reason() {
+                            FBFreeFailureReason::NotBusy => FreeFailureReason::NotBusy,
+                            FBFreeFailureReason::IncarnationMismatch => {
+                                FreeFailureReason::IncarnationMismatch
+                            }
+                            FBFreeFailureReason::Conflict => FreeFailureReason::Conflict,
+                            FBFreeFailureReason::OutcomeUnknown => FreeFailureReason::OutcomeUnknown,
+                            _ => FreeFailureReason::Unavailable,
+                        },
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(FreeResponse {
         freed_count: r.freed_count(),
+        failures,
     })
 }
 

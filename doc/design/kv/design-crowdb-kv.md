@@ -52,20 +52,19 @@ higher throughput than Raft's strictly sequential log.
 performance, Multi-Paxos for the one thing that does." Leader election,
 leases, snapshot install, log replay are well-understood Raft patterns.
 The hot path, parallel slot writes, is where Multi-Paxos diverges.
-Blind operations only (`Put`, `Delete`); out-of-order apply is safe
-because no operation reads before writing.
+Replicas apply only unconditional mutation batches. Blind operations remain
+fully parallel; revision-conditional writes are serialized per checked key at
+the leader before their resulting ordinary batch enters Paxos.
 
 ## 2. Non-Goals (Design Envelope)
 
 - **No multi-group transactions / 2PC.** Each operation targets a
   single group.
-- **No read-modify-write (`CAS`, `Increment`).** Only blind operations.
-  This is what makes parallel slot writes safe. A leader-side read before
-  propose is not atomic because concurrent requests can observe the same
-  revision and enter different slots. An apply-time predicate is also unsafe:
-  replicas may apply those slots in different orders and choose different
-  predicate results. General conditional mutation therefore requires ordered
-  application or another serialization boundary and is outside this design.
+- **No general read-modify-write.** `Increment` and arbitrary predicates are
+  unsupported. Put and single-group BatchWrite support one revision
+  precondition on a key mutated by the request. Same-key conditional requests
+  use a leader-local lock-free transient map; the predicate never enters the
+  replicated payload and is never evaluated during out-of-order apply.
 - **No dynamic group split/merge.** Operator-managed; membership changes
   require planned reconfiguration.
 - **No core-library sharding.** Every KV RPC carries an explicit
@@ -199,16 +198,30 @@ single-field overrides without rebuilding the whole struct. The
 
 - **Key:** `Vec<u8>` (opaque bytes, lexicographic ordering for scans).
 - **Value:** `Vec<u8>`.
-- **Operations:** `Get`, `Put`, `Delete`, `Scan`, `BatchPut`,
-  `BatchGet`, `BatchDelete` — all single-group.
-- **Not supported:** `CAS`, `Increment`, `Watch`/change feed, TTL/expiry.
-  Callers that require retry-safe mutation should prefer immutable,
-  incarnation-qualified facts whose effects commute under out-of-order apply.
-  For example, DiskDB records a free against the allocation incarnation it
-  releases; later consolidation validates that fact against the current busy
-  incarnation. This preserves blind parallel writes without treating a
-  read-then-write sequence as atomic.
+- **Operations:** `Get`, `Put`, revision-conditional Put, `Delete`, `Scan`,
+  `BatchPut`, revision-conditional BatchWrite, `BatchGet`, `BatchDelete` — all
+  single-group.
+- **Not supported:** `Increment`, arbitrary predicates, `Watch`/change feed,
+  TTL/expiry.
 - **Limits:** key ≤ 1 KB, value ≤ 1 MB, batch ≤ 1024 ops or 4 MiB.
+
+### 5.1 Revision-conditional mutation
+
+The leader claims `cas_transient_map[key]` before a fallible lookup of the
+complete engine view (all live memtables followed by the tree). Revision zero
+means absent or tombstoned. A mismatch returns `CasFailed`; same-key guarded
+contention returns `CasBusy`. A match proposes only the ordinary mutation
+batch. The guard is retained until every allocated slot is resolved and the
+chosen slot is locally applied. Failed slot attempts run Classic Paxos at a
+higher ballot, adopting an accepted value or filling NoOp; failure to resolve
+closes conditional admission for that leader tenure and returns
+`OutcomeUnknown`.
+
+The group-owned task survives RPC cancellation. New leaders admit reads and
+CAS only after bulk Phase 1 has resolved and locally applied every slot through
+its election ceiling. Blind writes do not participate in the guard, so the CAS
+ordering guarantee applies only when every competing mutation of the protected
+key is conditional.
 
 ## 6. Read Modes
 

@@ -57,6 +57,9 @@ pub enum KvErrorCode {
     /// JournalScan asked for slots already GC'd below the WAL trim point.
     /// The caller falls back to a full-scan rebuild (diskdb strategy 1).
     KvErrorJournalScanGcGap = 4,
+    KvErrorCasFailed = 5,
+    KvErrorCasBusy = 6,
+    KvErrorOutcomeUnknown = 7,
 }
 impl_enum_conversions!(
     KvErrorCode,
@@ -64,7 +67,10 @@ impl_enum_conversions!(
     KvErrorNotLeader = 1,
     KvErrorUnavailable = 2,
     KvErrorInternal = 3,
-    KvErrorJournalScanGcGap = 4
+    KvErrorJournalScanGcGap = 4,
+    KvErrorCasFailed = 5,
+    KvErrorCasBusy = 6,
+    KvErrorOutcomeUnknown = 7
 );
 
 /// Point-read consistency mode. Applies to both KvGetRequest and (with the
@@ -144,6 +150,12 @@ pub struct KvBatchWriteRequest {
     pub request_id: u64,
     pub request_create_ms: u64,
     pub group_id: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct KvRevisionPrecondition {
+    pub key: Bytes,
+    pub expected_revision: u64,
 }
 
 /// Unified mutation response.
@@ -307,6 +319,20 @@ impl KvResponse {
             safe_slot: 0,
             error_code: KvErrorCode::KvErrorInternal as i32,
         }
+    }
+
+    #[must_use]
+    pub fn cas_error(
+        code: KvErrorCode,
+        revision: u64,
+        msg: impl Into<String>,
+        request_id: u64,
+        request_create_ms: u64,
+    ) -> Self {
+        let mut response = Self::err(msg.into(), request_id, request_create_ms);
+        response.revision = revision;
+        response.error_code = code as i32;
+        response
     }
 }
 

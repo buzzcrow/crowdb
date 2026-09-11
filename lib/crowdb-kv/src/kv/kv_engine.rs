@@ -65,6 +65,15 @@ pub trait KVEngine: Send + Sync {
         }
     }
 
+    /// Fallible live value lookup used by conditional admission. Unlike the
+    /// legacy read surface, storage errors must not be interpreted as absence.
+    fn get_versioned(&self, key: &[u8]) -> KVFuture<Result<Option<(u64, Bytes)>, String>> {
+        match self.get_bytes(key) {
+            KVFuture::Ready(v) => KVFuture::ready(Ok(v.flatten())),
+            KVFuture::Pending(fut) => KVFuture::Pending(Box::pin(async move { Ok(fut.await) })),
+        }
+    }
+
     /// Live entries (no tombstones) whose key starts with `prefix`, in key
     /// order, capped at `limit` (`0` = unlimited). Returns `(items, truncated)`
     /// where `truncated` is set when more matches existed than were returned.

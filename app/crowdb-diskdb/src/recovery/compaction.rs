@@ -98,21 +98,45 @@ pub async fn compact_zone(
         return Ok(());
     }
 
-    let free_keys: Vec<Vec<u8>> = records.free.iter().map(|r| r.key.to_bytes()).collect();
-    #[allow(clippy::cast_possible_truncation)]
-    let free_count = free_keys.len() as u32;
-
-    let matching_frees = matching_free_records(&records, scan_cutoff);
     let busy_by_offset: HashMap<u64, _> = records
         .busy
         .iter()
         .map(|record| (record.key.unit_offset, record))
         .collect();
-    let busy_keys: Vec<Vec<u8>> = matching_frees
+    let mut matching_frees = Vec::new();
+    for free in matching_free_records(&records, scan_cutoff) {
+        if let Some(busy) = busy_by_offset.get(&free.key.unit_offset) {
+            // Legacy layout: free and its matching busy record coexist. Move
+            // it to the direct-free layout with a guarded delete. The next
+            // compaction pass will observe the free without busy and clear it.
+            match kv
+                .free_busy_cas(
+                    bind,
+                    &disk_id,
+                    zone_idx,
+                    free.key.unit_offset,
+                    busy.commit_slot,
+                    &free.value,
+                )
+                .await
+            {
+                Ok(())
+                | Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => {}
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            matching_frees.push(free);
+        }
+    }
+    if matching_frees.is_empty() {
+        return Ok(());
+    }
+    let free_keys: Vec<Vec<u8>> = matching_frees
         .iter()
-        .filter_map(|free| busy_by_offset.get(&free.key.unit_offset))
-        .map(|busy| busy.key.to_bytes())
+        .map(|record| record.key.to_bytes())
         .collect();
+    #[allow(clippy::cast_possible_truncation)]
+    let free_count = free_keys.len() as u32;
 
     // Step 2: prepare the prospective durable bitmap without changing the
     // live zone. A failed batch must leave all in-memory state unchanged.
@@ -125,7 +149,7 @@ pub async fn compact_zone(
     // Step 3: atomic batch_write — Put ZoneValue + Delete all free
     // records (I6). They succeed or fail together.
     let persist_start = std::time::Instant::now();
-    kv.compact_zone_batch(bind, &disk_id, zone_idx, &zv, &busy_keys, &free_keys)
+    kv.compact_zone_batch(bind, &disk_id, zone_idx, &zv, &[], &free_keys)
         .await?;
     metrics
         .compaction_kv_persist_latency
@@ -139,8 +163,11 @@ pub async fn compact_zone(
 
     // Step 5: decrement uncompacted_free_record_count by the total
     // free records processed (both stale and new were deleted).
-    zone.uncompacted_free_record_count
-        .fetch_sub(free_count, Ordering::AcqRel);
+    let _ = zone
+        .uncompacted_free_record_count
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            Some(count.saturating_sub(free_count))
+        });
 
     // Step 6: mark the zone as compacted and ready for rotation.
     zone.mark_compacted_ready();
@@ -181,9 +208,9 @@ fn matching_free_records(records: &ZoneRecords, scan_cutoff: u64) -> Vec<crate::
         .iter()
         .filter(|free| {
             free.commit_slot <= scan_cutoff
-                && busy_by_offset.get(&free.key.unit_offset).is_some_and(|busy| {
-                    free.key.allocation_ts == free.value.pre_allocation_ts
-                        && busy.value.allocation_ts == free.value.pre_allocation_ts
+                && free.key.allocation_ts == free.value.pre_allocation_ts
+                && busy_by_offset.get(&free.key.unit_offset).map_or(true, |busy| {
+                    busy.value.allocation_ts == free.value.pre_allocation_ts
                         && busy.value.unit_count == free.value.unit_count
                         && busy.value.owner_chunk == free.value.previous_owner
                 })

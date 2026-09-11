@@ -428,17 +428,49 @@ impl KvRpcService {
             let seq = fb_req.seq();
             let request_id = fb_req.request_id();
             let request_create_ms = fb_req.request_create_ms();
-            let resp = store
-                .kv_put(
-                    group_id,
-                    key,
-                    value,
-                    client_id,
-                    seq,
-                    request_id,
-                    request_create_ms,
+            let precondition = fb_req.precondition().map(|condition| {
+                (
+                    bytes::Bytes::copy_from_slice(condition.key().map_or(&[], |key| key.bytes())),
+                    condition.expected_revision(),
                 )
-                .await;
+            });
+            let resp = if let Some((precondition_key, expected_revision)) = precondition {
+                if precondition_key.as_ref() != key || client_id == 0 {
+                    crate::rpc::KvResponse::cas_error(
+                        crate::rpc::KvErrorCode::KvErrorCasFailed,
+                        0,
+                        "invalid conditional put precondition",
+                        request_id,
+                        request_create_ms,
+                    )
+                } else {
+                    let payload = PxKvStore::encode_kv_payload(&[(key, Some(value))]);
+                    store
+                        .propose_cas_and_respond(
+                            group_id,
+                            payload,
+                            precondition_key,
+                            expected_revision,
+                            client_id,
+                            seq,
+                            request_id,
+                            request_create_ms,
+                        )
+                        .await
+                }
+            } else {
+                store
+                    .kv_put(
+                        group_id,
+                        key,
+                        value,
+                        client_id,
+                        seq,
+                        request_id,
+                        request_create_ms,
+                    )
+                    .await
+            };
             let ctrl = build_kv_response(req_id, create_nano, &resp);
             submit_fb_response(
                 &server,
@@ -694,9 +726,41 @@ impl KvRpcService {
             let seq = fb_req.seq();
             let request_id = fb_req.request_id();
             let request_create_ms = fb_req.request_create_ms();
-            let resp = store
-                .kv_batch_write(group_id, items, client_id, seq, request_id, request_create_ms)
-                .await;
+            let precondition = fb_req.precondition().map(|condition| {
+                (
+                    bytes::Bytes::copy_from_slice(condition.key().map_or(&[], |key| key.bytes())),
+                    condition.expected_revision(),
+                )
+            });
+            let resp = if let Some((precondition_key, expected_revision)) = precondition {
+                if client_id == 0 || !items.iter().any(|item| item.key == precondition_key) {
+                    crate::rpc::KvResponse::cas_error(
+                        crate::rpc::KvErrorCode::KvErrorCasFailed,
+                        0,
+                        "conditional batch must mutate its precondition key",
+                        request_id,
+                        request_create_ms,
+                    )
+                } else {
+                    let payload = PxKvStore::encode_kv_batch_items(&items);
+                    store
+                        .propose_cas_and_respond(
+                            group_id,
+                            payload,
+                            precondition_key,
+                            expected_revision,
+                            client_id,
+                            seq,
+                            request_id,
+                            request_create_ms,
+                        )
+                        .await
+                }
+            } else {
+                store
+                    .kv_batch_write(group_id, items, client_id, seq, request_id, request_create_ms)
+                    .await
+            };
             let ctrl = build_kv_response(req_id, create_nano, &resp);
             submit_fb_response(
                 &server,
@@ -1264,6 +1328,9 @@ fn kv_error_code_to_fb(code: i32) -> FBKvClientRetCode {
         1 => FBKvClientRetCode::NotLeader,
         2 => FBKvClientRetCode::Unavailable,
         4 => FBKvClientRetCode::JournalScanGcGap,
+        5 => FBKvClientRetCode::CasFailed,
+        6 => FBKvClientRetCode::CasBusy,
+        7 => FBKvClientRetCode::OutcomeUnknown,
         _ => FBKvClientRetCode::Internal,
     }
 }
