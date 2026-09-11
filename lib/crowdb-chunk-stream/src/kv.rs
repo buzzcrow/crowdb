@@ -36,14 +36,27 @@ impl StreamRegistry for KvStreamRegistry {
             .await
             .map_err(kv_error)?
         {
-            GetOutcome::Found { value, .. } => serde_json::from_slice(&value)
-                .map(Some)
-                .map_err(|error| StreamError::Corruption(format!("stream binding decode failed: {error}"))),
+            GetOutcome::Found { value, .. } => {
+                let binding: StreamBinding = serde_json::from_slice(&value).map_err(|error| {
+                    StreamError::Corruption(format!("stream binding decode failed: {error}"))
+                })?;
+                if binding.stream_name != stream_name || binding.metadata_group_id == 0 {
+                    return Err(StreamError::Corruption(
+                        "stream binding identity or metadata group is invalid".into(),
+                    ));
+                }
+                Ok(Some(binding))
+            }
             GetOutcome::NotFound => Ok(None),
         }
     }
 
     async fn create(&self, binding: StreamBinding) -> Result<()> {
+        if binding.metadata_group_id == 0 || binding.binding_generation == 0 {
+            return Err(StreamError::InvalidRequest(
+                "stream binding requires a nonzero metadata group and generation".into(),
+            ));
+        }
         let key = StreamBindingKey {
             stream_name: binding.stream_name,
         }
@@ -101,7 +114,13 @@ impl KvStreamMetadataStore {
             .map_err(kv_error)?
         {
             GetOutcome::Found { value, revision } => {
-                decode(&value).map(|manifest| Some((manifest, revision)))
+                let manifest: StreamManifest = decode(&value)?;
+                if manifest.stream_name != stream_name || manifest.metadata_group_id != self.group_id {
+                    return Err(StreamError::Corruption(
+                        "stream manifest identity or metadata group is invalid".into(),
+                    ));
+                }
+                Ok(Some((manifest, revision)))
             }
             GetOutcome::NotFound => Ok(None),
         }
@@ -179,7 +198,19 @@ impl StreamMetadataStore for KvStreamMetadataStore {
             .await
             .map_err(kv_error)?
         {
-            GetOutcome::Found { value, .. } => decode(&value).map(Some),
+            GetOutcome::Found { value, .. } => {
+                let page: StreamExtentPage = decode(&value)?;
+                if page.stream_name != stream_name
+                    || page.writer_epoch != writer_epoch
+                    || page.generation != generation
+                    || page.page_index != page_index
+                {
+                    return Err(StreamError::Corruption(
+                        "stream extent-page identity is invalid".into(),
+                    ));
+                }
+                Ok(Some(page))
+            }
             GetOutcome::NotFound => Ok(None),
         }
     }
