@@ -22,6 +22,8 @@ namespace crowdb::tree::detail
 {
 
 class ChunkAsyncExecutor;
+class ChunkPackPipeline;
+class ChunkPackPipelineImpl;
 
 struct ChunkPageRef
 {
@@ -166,15 +168,16 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
   public:
     struct Config
     {
-        uint64_t tree_id            = 0;
-        uint64_t owner_epoch        = 0;
-        size_t   pack_bytes         = 4U * 1024U * 1024U;
-        uint64_t max_chunk_bytes    = 256U * 1024U * 1024U;
-        uint32_t page_alignment     = 64U * 1024U;
-        uint32_t iu_size            = 64U * 1024U;
-        uint32_t mirror_retry_limit = 2;
-        uint64_t layout_validity_ms = 30'000;
-        size_t   max_pending_ops    = 256;
+        uint64_t tree_id              = 0;
+        uint64_t owner_epoch          = 0;
+        size_t   pack_bytes           = 4U * 1024U * 1024U;
+        uint64_t max_chunk_bytes      = 256U * 1024U * 1024U;
+        uint32_t page_alignment       = 64U * 1024U;
+        uint32_t iu_size              = 64U * 1024U;
+        uint32_t mirror_retry_limit   = 2;
+        uint64_t layout_validity_ms   = 30'000;
+        size_t   max_pending_ops      = 256;
+        size_t   max_concurrent_packs = 8;
     };
 
     ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catalog, std::shared_ptr<ChunkTransport> transport);
@@ -209,6 +212,8 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
 
   private:
     friend class ChunkAsyncExecutor;
+    friend class ChunkPackPipeline;
+    friend class ChunkPackPipelineImpl;
 
     struct CachedPack
     {
@@ -221,8 +226,11 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
                           ChunkCancellation cancellation = {});
     Status read_at_cancellable(uint64_t off, uint8_t *buf, size_t len, ChunkCancellation cancellation) const;
     Status sync_cancellable(ChunkCancellation cancellation);
-    Status read_pack(const ChunkPageRef &ref, std::shared_ptr<const std::vector<uint8_t>> *out,
-                     ChunkCancellation cancellation) const;
+    std::shared_ptr<void> start_sync_cancellable(ChunkCancellation cancellation, AsyncCompletion completion);
+    Status                finish_sync_cancellable(const std::shared_ptr<void> &state, ChunkCancellation cancellation,
+                                                  Status io_status);
+    Status                read_pack(const ChunkPageRef &ref, std::shared_ptr<const std::vector<uint8_t>> *out,
+                                    ChunkCancellation cancellation) const;
     std::shared_ptr<const ChunkManifest> load_layout() const;
     Status          resolve_ordinal(const ChunkManifest &manifest, uint64_t ordinal, ChunkPageRef *out) const;
     static uint32_t reference_segment_checksum(const ChunkReferenceSegmentImage &segment);

@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <utility>
 #include <vector>
 
 namespace crowdb::tree::detail
@@ -46,6 +47,25 @@ struct ChunkLayout
     bool     sealed             = false;
 };
 
+struct ChunkTransportCompletion
+{
+    void (*complete_fn)(void *context, Status status) = nullptr;
+    bool (*stop_requested_fn)(void *context)          = nullptr;
+    void *context                                     = nullptr;
+
+    void complete(Status status) const
+    {
+        if (complete_fn != nullptr) {
+            complete_fn(context, std::move(status));
+        }
+    }
+
+    [[nodiscard]] bool stop_requested() const
+    {
+        return stop_requested_fn != nullptr && stop_requested_fn(context);
+    }
+};
+
 class ChunkTransport
 {
   public:
@@ -54,11 +74,13 @@ class ChunkTransport
     virtual Status allocate_mirror_chunk(uint64_t logical_capacity, uint64_t owner_epoch, ChunkId *chunk_id) = 0;
     virtual Status write_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset, const uint8_t *data,
                                 size_t length)                                                               = 0;
-    virtual Status advance_write(ChunkId chunk_id, uint64_t expected_bytes, uint64_t acknowledged_bytes)     = 0;
+    virtual void   submit_write_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset, const uint8_t *data,
+                                       size_t length, ChunkTransportCompletion completion);
+    virtual Status advance_write(ChunkId chunk_id, uint64_t expected_bytes, uint64_t acknowledged_bytes) = 0;
     virtual Status read_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset, uint8_t *data,
-                               size_t length) const                                                          = 0;
-    virtual Status query_chunk(ChunkId chunk_id, ChunkLayout *layout) const                                  = 0;
-    virtual Status seal_chunk(ChunkId chunk_id, uint64_t owner_epoch, uint64_t acknowledged_bytes)           = 0;
+                               size_t length) const                                                      = 0;
+    virtual Status query_chunk(ChunkId chunk_id, ChunkLayout *layout) const                              = 0;
+    virtual Status seal_chunk(ChunkId chunk_id, uint64_t owner_epoch, uint64_t acknowledged_bytes)       = 0;
 };
 
 // Lock-free immutable-snapshot transport for tests and embedded use. It models

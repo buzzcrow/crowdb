@@ -13,6 +13,7 @@ pub struct ChunkPageStoreOptions {
     pub owner_epoch: u64,
     pub pack_bytes: usize,
     pub iu_size: u32,
+    pub max_concurrent_packs: usize,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -158,6 +159,7 @@ impl PageStore {
             owner_epoch: options.owner_epoch,
             pack_bytes: options.pack_bytes,
             iu_size: options.iu_size,
+            max_concurrent_packs: options.max_concurrent_packs,
         };
         let mut out = std::ptr::null_mut();
         let status = match transport {

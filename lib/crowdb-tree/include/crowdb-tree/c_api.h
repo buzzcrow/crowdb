@@ -146,7 +146,8 @@ using ct_chunk_page_store_options = struct
     uint64_t tree_id;
     uint64_t owner_epoch;
     size_t   pack_bytes;
-    uint32_t iu_size; // 0 => 64 KiB page framing
+    uint32_t iu_size;              // 0 => 64 KiB page framing
+    size_t   max_concurrent_packs; // 0 => 8
 };
 
 using ct_chunk_page_store_stats = struct

@@ -16,6 +16,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <new>
 #include <utility>
 #include <vector>
 
@@ -193,6 +194,8 @@ Status diskio_status(crowdb::diskio::proto::FBDiskIoRetCode code)
 
 struct RpcChunkTransport::Impl
 {
+    struct AsyncWrite;
+
     struct Segment
     {
         uint64_t disk_high   = 0;
@@ -349,6 +352,9 @@ struct RpcChunkTransport::Impl
         return cached(chunk_id, out) && monotonic_millis() < out->valid_until_ms;
     }
 
+    void submit_write(RemoteChunk chunk, uint32_t mirror_index, uint64_t offset, const uint8_t *data, size_t length,
+                      ChunkTransportCompletion completion);
+
     Status query_remote(ChunkId chunk_id, RemoteChunk *out) const
     {
         flatbuffers::FlatBufferBuilder builder;
@@ -387,6 +393,123 @@ struct RpcChunkTransport::Impl
     mutable std::atomic<uint64_t>                            request_ids{1};
     mutable std::atomic<std::shared_ptr<const RemoteChunks>> chunks;
 };
+
+struct RpcChunkTransport::Impl::AsyncWrite
+{
+    Impl                    *owner = nullptr;
+    RemoteChunk              chunk;
+    uint32_t                 mirror_index = 0;
+    uint64_t                 offset       = 0;
+    const uint8_t           *data         = nullptr;
+    size_t                   length       = 0;
+    size_t                   consumed     = 0;
+    ChunkTransportCompletion completion;
+
+    static void rpc_complete(uint64_t, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data_buffer,
+                             crowdb_rpc_status rpc_status, void *context)
+    {
+        auto     *self = static_cast<AsyncWrite *>(context);
+        RpcResult result;
+        result.status  = rpc_status;
+        result.control = control;
+        result.data    = data_buffer;
+        Status status  = rpc_status == CROWDB_RPC_OK ? Status::Ok() : Status::unavailable("chunk RPC call failed");
+        if (status.ok()) {
+            const auto *response = verified_response<crowdb::diskio::proto::FBDiskWriteResponse>(result.control);
+            status               = response == nullptr ? Status::corruption("DiskIO write response is malformed")
+                                                       : diskio_status(response->ret_code());
+        }
+        if (!status.ok()) {
+            finish(self, std::move(status));
+            return;
+        }
+        self->submit_part();
+    }
+
+    static void finish(AsyncWrite *self, Status status)
+    {
+        const ChunkTransportCompletion completion = self->completion;
+        delete self;
+        completion.complete(std::move(status));
+    }
+
+    void submit_part()
+    {
+        if (completion.stop_requested()) {
+            finish(this, Status::unavailable("chunk RPC write stopped before transport submission"));
+            return;
+        }
+        if (consumed == length) {
+            finish(this, Status::Ok());
+            return;
+        }
+        const uint64_t cursor = offset + consumed;
+        const auto     strip  = std::find_if(chunk.strips.begin(), chunk.strips.end(), [cursor](const Strip &item) {
+            return cursor >= item.chunk_offset && cursor < item.chunk_offset + item.capacity;
+        });
+        if (strip == chunk.strips.end()) {
+            finish(this, Status::resource_exhausted("tree chunk RPC write exceeds allocated strips"));
+            return;
+        }
+        const size_t       part = std::min<uint64_t>(length - consumed, strip->chunk_offset + strip->capacity - cursor);
+        const auto        &segment = strip->mirrors[mirror_index];
+        ct_chunk_rpc_route route{};
+        Status             status = owner->resolve_route(segment, &route);
+        if (!status.ok()) {
+            finish(this, std::move(status));
+            return;
+        }
+        const uint64_t                 unit_bytes  = static_cast<uint64_t>(strip->unit_kb) * 1024;
+        const uint64_t                 zone_offset = segment.unit_offset * unit_bytes + (cursor - strip->chunk_offset);
+        const uint64_t                 request_id  = owner->next_request_id();
+        const FBInt128                 disk_id(segment.disk_high, segment.disk_low);
+        flatbuffers::FlatBufferBuilder builder;
+        auto request = crowdb::diskio::proto::CreateFBDiskWriteRequest(builder, request_id, monotonic_nanos(), &disk_id,
+                                                                       segment.zone_index, zone_offset,
+                                                                       static_cast<uint32_t>(part), zone_offset);
+        builder.Finish(request);
+        crowdb_rpc_buffer_t control = crowdb_rpc_buffer_create(builder.GetBufferPointer(), builder.GetSize());
+        crowdb_rpc_buffer_t payload = crowdb_rpc_buffer_create(data + consumed, static_cast<uint32_t>(part));
+        if (control == nullptr || payload == nullptr) {
+            if (control != nullptr) {
+                crowdb_rpc_buffer_release(control);
+            }
+            if (payload != nullptr) {
+                crowdb_rpc_buffer_release(payload);
+            }
+            finish(this, Status::resource_exhausted("chunk RPC buffer allocation failed"));
+            return;
+        }
+        consumed += part;
+        const crowdb_rpc_status submit = crowdb_rpc_client_send_slab(
+            reinterpret_cast<crowdb_rpc_client_t>(route.client), reinterpret_cast<crowdb_rpc_server_t>(route.server),
+            reinterpret_cast<crowdb_rpc_conn_t>(route.connection), request_id, control, payload,
+            crowdb::rpc::proto::FBMsgType_EDiskWriteRequest, &AsyncWrite::rpc_complete, this);
+        if (submit != CROWDB_RPC_OK) {
+            finish(this, submit == CROWDB_RPC_ERR_SEND_QUEUE
+                             ? Status::resource_exhausted("chunk RPC completion slab is full")
+                             : Status::unavailable("chunk RPC submission failed"));
+        }
+    }
+};
+
+void RpcChunkTransport::Impl::submit_write(RemoteChunk chunk, uint32_t mirror_index, uint64_t offset,
+                                           const uint8_t *data, size_t length, ChunkTransportCompletion completion)
+{
+    auto *state = new (std::nothrow) AsyncWrite{.owner        = this,
+                                                .chunk        = std::move(chunk),
+                                                .mirror_index = mirror_index,
+                                                .offset       = offset,
+                                                .data         = data,
+                                                .length       = length,
+                                                .consumed     = 0,
+                                                .completion   = completion};
+    if (state == nullptr) {
+        completion.complete(Status::resource_exhausted("chunk RPC write state allocation failed"));
+        return;
+    }
+    state->submit_part();
+}
 
 RpcChunkTransport::RpcChunkTransport(const ct_chunk_rpc_transport_options &options)
     : impl_(std::make_unique<Impl>(options))
@@ -496,6 +619,21 @@ Status RpcChunkTransport::write_mirror(ChunkId chunk_id, uint32_t mirror_index, 
         consumed += part;
     }
     return Status::Ok();
+}
+
+void RpcChunkTransport::submit_write_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset,
+                                            const uint8_t *data, size_t length, ChunkTransportCompletion completion)
+{
+    if (mirror_index >= 3 || (data == nullptr && length != 0)) {
+        completion.complete(Status::invalid_argument("tree chunk RPC mirror write arguments are invalid"));
+        return;
+    }
+    Impl::RemoteChunk chunk;
+    if (!impl_->cached(chunk_id, &chunk)) {
+        ChunkTransport::submit_write_mirror(chunk_id, mirror_index, offset, data, length, completion);
+        return;
+    }
+    impl_->submit_write(std::move(chunk), mirror_index, offset, data, length, completion);
 }
 
 Status RpcChunkTransport::advance_write(ChunkId chunk_id, uint64_t expected_bytes, uint64_t acknowledged_bytes)

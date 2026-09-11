@@ -43,10 +43,15 @@ class ChunkAsyncExecutor
   private:
     struct Slot
     {
-        std::atomic<uint64_t> sequence{0};
-        std::atomic<uint64_t> active_id{0};
-        std::atomic<uint64_t> cancelled_id{0};
-        Task                  task;
+        std::atomic<uint64_t>  sequence{0};
+        std::atomic<uint64_t>  active_id{0};
+        std::atomic<uint64_t>  cancelled_id{0};
+        std::atomic<bool>      async_started{false};
+        std::atomic<bool>      async_ready{false};
+        std::atomic<uint64_t> *wake_epoch = nullptr;
+        Status                 async_status;
+        std::shared_ptr<void>  async_state;
+        Task                   task;
     };
 
     static constexpr uint64_t kClosedBit = uint64_t{1} << 63U;
@@ -66,7 +71,9 @@ class ChunkAsyncExecutor
     };
 
     static void run(const std::shared_ptr<State> &state);
-    static void execute(const std::shared_ptr<State> &state, Slot *slot, uint64_t position);
+    static bool execute(const std::shared_ptr<State> &state, Slot *slot, uint64_t position);
+    static void async_complete(void *context, Status status);
+    static void release_slot(const std::shared_ptr<State> &state, Slot *slot, uint64_t position, Status status);
     static bool enter_submission(const std::shared_ptr<State> &state);
     static void leave_submission(const std::shared_ptr<State> &state);
 

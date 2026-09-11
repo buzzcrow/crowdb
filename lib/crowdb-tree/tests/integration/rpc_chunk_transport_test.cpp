@@ -31,12 +31,16 @@ using crowdb::chunkdb::proto::FBStripBody_FBMirrorStrip;
 using crowdb::chunkdb::proto::FBStripType_Mirror;
 using crowdb::diskdb::proto::FBSegment;
 using crowdb::diskio::proto::CreateFBDiskReadResponse;
+using crowdb::diskio::proto::CreateFBDiskWriteResponse;
 using crowdb::diskio::proto::FBDiskReadRequest;
+using crowdb::diskio::proto::FBDiskWriteRequest;
 using crowdb::rpc::proto::FBInt128;
 using crowdb::rpc::proto::FBMsgType_EAllocateChunkRequest;
 using crowdb::rpc::proto::FBMsgType_EAllocateChunkResponse;
 using crowdb::rpc::proto::FBMsgType_EDiskReadRequest;
 using crowdb::rpc::proto::FBMsgType_EDiskReadResponse;
+using crowdb::rpc::proto::FBMsgType_EDiskWriteRequest;
+using crowdb::rpc::proto::FBMsgType_EDiskWriteResponse;
 
 struct AllocateHandlerState
 {
@@ -106,6 +110,45 @@ extern "C" void handle_disk_read(uint64_t request_id, uint64_t, uint16_t, const 
     crowdb_rpc_frame_release(frame);
 }
 
+extern "C" void handle_disk_write(uint64_t request_id, uint64_t, uint16_t, const uint8_t *control, uint32_t control_len,
+                                  const uint8_t *data, uint32_t data_len, void *connection, void *frame,
+                                  void *user_data)
+{
+    auto                 *state = static_cast<AllocateHandlerState *>(user_data);
+    flatbuffers::Verifier verifier(control, control_len);
+    if (!verifier.VerifyBuffer<FBDiskWriteRequest>(nullptr)) {
+        crowdb_rpc_frame_release(frame);
+        return;
+    }
+    const auto *request = flatbuffers::GetRoot<FBDiskWriteRequest>(control);
+    if (request->size() != data_len || (data_len != 0 && data == nullptr)) {
+        crowdb_rpc_frame_release(frame);
+        return;
+    }
+    flatbuffers::FlatBufferBuilder builder;
+    const auto                     response =
+        CreateFBDiskWriteResponse(builder, request_id, 0, crowdb::diskio::proto::FBDiskIoRetCode_Success);
+    builder.Finish(response);
+    static_cast<void>(crowdb_rpc_server_submit_response(state->server, connection, builder.GetBufferPointer(),
+                                                        builder.GetSize(), nullptr, 0, FBMsgType_EDiskWriteResponse,
+                                                        request_id));
+    crowdb_rpc_frame_release(frame);
+}
+
+struct AsyncWriteResult
+{
+    std::atomic<bool> done{false};
+    Status            status;
+};
+
+void complete_async_write(void *context, Status status)
+{
+    auto *result   = static_cast<AsyncWriteResult *>(context);
+    result->status = std::move(status);
+    result->done.store(true, std::memory_order_release);
+    result->done.notify_one();
+}
+
 TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
 {
     crowdb_rpc_pool_t   pool   = crowdb_rpc_pool_create(128);
@@ -115,6 +158,7 @@ TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
     AllocateHandlerState handler{.server = server};
     crowdb_rpc_server_register_handler(server, FBMsgType_EAllocateChunkRequest, handle_allocate, &handler);
     crowdb_rpc_server_register_handler(server, FBMsgType_EDiskReadRequest, handle_disk_read, &handler);
+    crowdb_rpc_server_register_handler(server, FBMsgType_EDiskWriteRequest, handle_disk_write, &handler);
     crowdb_rpc_server_start(server);
 
     crowdb_rpc_client_t client = crowdb_rpc_client_create();
@@ -143,6 +187,12 @@ TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
     std::array<uint8_t, 4> read{};
     ASSERT_TRUE(transport.read_mirror(allocated, 0, 0, read.data(), read.size()).ok());
     EXPECT_EQ(read, (std::array<uint8_t, 4>{1, 2, 3, 4}));
+    AsyncWriteResult             write_result;
+    const std::array<uint8_t, 4> write{5, 6, 7, 8};
+    transport.submit_write_mirror(allocated, 1, 0, write.data(), write.size(),
+                                  {.complete_fn = &complete_async_write, .context = &write_result});
+    write_result.done.wait(false, std::memory_order_acquire);
+    EXPECT_TRUE(write_result.status.ok()) << write_result.status.to_string();
 
     crowdb_rpc_conn_destroy(connection);
     crowdb_rpc_client_destroy(client);

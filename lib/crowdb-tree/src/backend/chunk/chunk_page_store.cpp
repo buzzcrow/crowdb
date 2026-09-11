@@ -8,6 +8,7 @@
 #include "c_api_internal.h"
 #include "chunk_async_executor.h"
 #include "chunk_c_api_internal.h"
+#include "chunk_pack_pipeline.h"
 #include "crowdb-common/crc32c.h"
 
 #include <algorithm>
@@ -335,6 +336,9 @@ ChunkPageStore::ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catal
     }
     if (config_.max_pending_ops == 0) {
         config_.max_pending_ops = 256;
+    }
+    if (config_.max_concurrent_packs == 0) {
+        config_.max_concurrent_packs = 8;
     }
     if (transport_ == nullptr) {
         transport_ = std::make_shared<MemoryChunkTransport>();
@@ -777,6 +781,44 @@ Status ChunkPageStore::sync_cancellable(ChunkCancellation cancellation)
     return Status::Ok();
 }
 
+std::shared_ptr<void> ChunkPageStore::start_sync_cancellable(ChunkCancellation cancellation, AsyncCompletion completion)
+{
+    if (!staged_initialized_) {
+        completion.complete(Status::Ok());
+        return {};
+    }
+    if (!anchor_dirty_) {
+        data_durable_ = true;
+        completion.complete(Status::Ok());
+        return {};
+    }
+    if (!data_durable_) {
+        completion.complete(Status::internal_error("chunk root cannot publish before data durability barrier"));
+        return {};
+    }
+    if (!orphan_reference_segments_.empty()) {
+        catalog_->discard_reference_segments(config_.tree_id, orphan_reference_segments_);
+        orphan_reference_segments_.clear();
+    }
+    auto           prior               = catalog_->load(config_.tree_id);
+    const uint64_t expected_generation = prior == nullptr ? 0 : prior->generation;
+    Status         start_status;
+    auto           state = ChunkPackPipeline::start(this, expected_generation, cancellation, completion, &start_status);
+    if (!start_status.ok()) {
+        completion.complete(std::move(start_status));
+    }
+    return state;
+}
+
+Status ChunkPageStore::finish_sync_cancellable(const std::shared_ptr<void> &state, ChunkCancellation cancellation,
+                                               Status io_status)
+{
+    if (state == nullptr) {
+        return io_status;
+    }
+    return std::static_pointer_cast<ChunkPackPipeline>(state)->finish(cancellation, std::move(io_status));
+}
+
 uint64_t ChunkPageStore::size() const
 {
     if (staged_initialized_) {
@@ -880,10 +922,11 @@ ct_status ct_chunk_page_store_open(const ct_chunk_page_store_options *options, c
     auto handle    = std::make_unique<ct_page_store>();
     handle->bundle = std::make_shared<PageStoreBundle>();
     auto store     = std::make_unique<crowdb::tree::detail::ChunkPageStore>(
-        crowdb::tree::detail::ChunkPageStore::Config{.tree_id     = options->tree_id,
-                                                     .owner_epoch = options->owner_epoch,
-                                                     .pack_bytes  = options->pack_bytes,
-                                                     .iu_size     = options->iu_size},
+        crowdb::tree::detail::ChunkPageStore::Config{.tree_id              = options->tree_id,
+                                                     .owner_epoch          = options->owner_epoch,
+                                                     .pack_bytes           = options->pack_bytes,
+                                                     .iu_size              = options->iu_size,
+                                                     .max_concurrent_packs = options->max_concurrent_packs},
         catalog->catalog, catalog->transport);
     handle->bundle->async_store_view = store.get();
     handle->bundle->store            = std::move(store);
@@ -902,10 +945,11 @@ ct_status ct_chunk_page_store_open_with_transport(const ct_chunk_page_store_opti
     auto handle    = std::make_unique<ct_page_store>();
     handle->bundle = std::make_shared<PageStoreBundle>();
     auto store     = std::make_unique<crowdb::tree::detail::ChunkPageStore>(
-        crowdb::tree::detail::ChunkPageStore::Config{.tree_id     = options->tree_id,
-                                                     .owner_epoch = options->owner_epoch,
-                                                     .pack_bytes  = options->pack_bytes,
-                                                     .iu_size     = options->iu_size},
+        crowdb::tree::detail::ChunkPageStore::Config{.tree_id              = options->tree_id,
+                                                     .owner_epoch          = options->owner_epoch,
+                                                     .pack_bytes           = options->pack_bytes,
+                                                     .iu_size              = options->iu_size,
+                                                     .max_concurrent_packs = options->max_concurrent_packs},
         catalog->catalog, transport->transport);
     handle->bundle->async_store_view = store.get();
     handle->bundle->store            = std::move(store);

@@ -47,6 +47,7 @@ fn injected_chunk_store_round_trip_and_stats() {
                 owner_epoch: 7,
                 pack_bytes: 4096,
                 iu_size: 1,
+                max_concurrent_packs: 2,
             },
             &catalog,
             None,

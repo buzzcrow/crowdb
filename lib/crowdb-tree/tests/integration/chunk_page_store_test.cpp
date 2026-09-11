@@ -151,6 +151,316 @@ class BlockingReadTransport final : public ChunkTransport
     mutable std::atomic<bool> read_entered_{false};
 };
 
+class BlockingWriteTransport final : public ChunkTransport
+{
+  public:
+    Status allocate_mirror_chunk(uint64_t capacity, uint64_t owner_epoch, ChunkId *chunk_id) override
+    {
+        return inner_.allocate_mirror_chunk(capacity, owner_epoch, chunk_id);
+    }
+
+    Status write_mirror(ChunkId chunk_id, uint32_t mirror, uint64_t offset, const uint8_t *data, size_t length) override
+    {
+        const uint32_t active   = active_writes_.fetch_add(1, std::memory_order_acq_rel) + 1;
+        uint32_t       observed = max_active_writes_.load(std::memory_order_relaxed);
+        while (observed < active && !max_active_writes_.compare_exchange_weak(observed, active)) {
+        }
+        active_writes_.notify_all();
+        if (hold_writes_.load(std::memory_order_acquire)) {
+            release_writes_.wait(false, std::memory_order_acquire);
+        }
+        Status status = inner_.write_mirror(chunk_id, mirror, offset, data, length);
+        active_writes_.fetch_sub(1, std::memory_order_acq_rel);
+        return status;
+    }
+
+    Status advance_write(ChunkId chunk_id, uint64_t expected, uint64_t acknowledged) override
+    {
+        return inner_.advance_write(chunk_id, expected, acknowledged);
+    }
+
+    Status read_mirror(ChunkId chunk_id, uint32_t mirror, uint64_t offset, uint8_t *data, size_t length) const override
+    {
+        return inner_.read_mirror(chunk_id, mirror, offset, data, length);
+    }
+
+    Status query_chunk(ChunkId chunk_id, ChunkLayout *layout) const override
+    {
+        return inner_.query_chunk(chunk_id, layout);
+    }
+
+    Status seal_chunk(ChunkId chunk_id, uint64_t owner_epoch, uint64_t acknowledged) override
+    {
+        return inner_.seal_chunk(chunk_id, owner_epoch, acknowledged);
+    }
+
+    void hold_writes()
+    {
+        release_writes_.store(false, std::memory_order_release);
+        hold_writes_.store(true, std::memory_order_release);
+    }
+
+    void wait_for_concurrent_writes(uint32_t count)
+    {
+        uint32_t active = active_writes_.load(std::memory_order_acquire);
+        while (active < count) {
+            active_writes_.wait(active, std::memory_order_acquire);
+            active = active_writes_.load(std::memory_order_acquire);
+        }
+    }
+
+    void release_writes()
+    {
+        hold_writes_.store(false, std::memory_order_release);
+        release_writes_.store(true, std::memory_order_release);
+        release_writes_.notify_all();
+    }
+
+    [[nodiscard]] uint32_t max_active_writes() const
+    {
+        return max_active_writes_.load(std::memory_order_acquire);
+    }
+
+  private:
+    MemoryChunkTransport  inner_;
+    std::atomic<bool>     hold_writes_{false};
+    std::atomic<bool>     release_writes_{false};
+    std::atomic<uint32_t> active_writes_{0};
+    std::atomic<uint32_t> max_active_writes_{0};
+};
+
+class InlineWriteTransport final : public ChunkTransport
+{
+  public:
+    Status allocate_mirror_chunk(uint64_t capacity, uint64_t owner_epoch, ChunkId *chunk_id) override
+    {
+        return inner_.allocate_mirror_chunk(capacity, owner_epoch, chunk_id);
+    }
+
+    Status write_mirror(ChunkId chunk_id, uint32_t mirror, uint64_t offset, const uint8_t *data, size_t length) override
+    {
+        return inner_.write_mirror(chunk_id, mirror, offset, data, length);
+    }
+
+    void submit_write_mirror(ChunkId chunk_id, uint32_t mirror, uint64_t offset, const uint8_t *data, size_t length,
+                             ChunkTransportCompletion completion) override
+    {
+        completion.complete(write_mirror(chunk_id, mirror, offset, data, length));
+    }
+
+    Status advance_write(ChunkId chunk_id, uint64_t expected, uint64_t acknowledged) override
+    {
+        return inner_.advance_write(chunk_id, expected, acknowledged);
+    }
+
+    Status read_mirror(ChunkId chunk_id, uint32_t mirror, uint64_t offset, uint8_t *data, size_t length) const override
+    {
+        return inner_.read_mirror(chunk_id, mirror, offset, data, length);
+    }
+
+    Status query_chunk(ChunkId chunk_id, ChunkLayout *layout) const override
+    {
+        return inner_.query_chunk(chunk_id, layout);
+    }
+
+    Status seal_chunk(ChunkId chunk_id, uint64_t owner_epoch, uint64_t acknowledged) override
+    {
+        return inner_.seal_chunk(chunk_id, owner_epoch, acknowledged);
+    }
+
+  private:
+    MemoryChunkTransport inner_;
+};
+
+class FailingAdvanceTransport final : public ChunkTransport
+{
+  public:
+    Status allocate_mirror_chunk(uint64_t capacity, uint64_t owner_epoch, ChunkId *chunk_id) override
+    {
+        return inner_.allocate_mirror_chunk(capacity, owner_epoch, chunk_id);
+    }
+
+    Status write_mirror(ChunkId chunk_id, uint32_t mirror, uint64_t offset, const uint8_t *data, size_t length) override
+    {
+        return inner_.write_mirror(chunk_id, mirror, offset, data, length);
+    }
+
+    Status advance_write(ChunkId chunk_id, uint64_t expected, uint64_t acknowledged) override
+    {
+        const uint32_t call = advance_calls_.fetch_add(1, std::memory_order_acq_rel) + 1;
+        if (fail_on_call_.load(std::memory_order_acquire) == call) {
+            return Status::unavailable("injected advance failure");
+        }
+        return inner_.advance_write(chunk_id, expected, acknowledged);
+    }
+
+    Status read_mirror(ChunkId chunk_id, uint32_t mirror, uint64_t offset, uint8_t *data, size_t length) const override
+    {
+        return inner_.read_mirror(chunk_id, mirror, offset, data, length);
+    }
+
+    Status query_chunk(ChunkId chunk_id, ChunkLayout *layout) const override
+    {
+        return inner_.query_chunk(chunk_id, layout);
+    }
+
+    Status seal_chunk(ChunkId chunk_id, uint64_t owner_epoch, uint64_t acknowledged) override
+    {
+        return inner_.seal_chunk(chunk_id, owner_epoch, acknowledged);
+    }
+
+    void fail_advance_call(uint32_t call)
+    {
+        advance_calls_.store(0, std::memory_order_release);
+        fail_on_call_.store(call, std::memory_order_release);
+    }
+
+    void clear_failure()
+    {
+        fail_on_call_.store(0, std::memory_order_release);
+    }
+
+  private:
+    MemoryChunkTransport  inner_;
+    std::atomic<uint32_t> advance_calls_{0};
+    std::atomic<uint32_t> fail_on_call_{0};
+};
+
+TEST(ChunkPageStore, AsyncPackPipelineFansOutMirrorWrites)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<BlockingWriteTransport>();
+    ChunkPageStore store({.tree_id = 29, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1, .max_concurrent_packs = 1},
+                         catalog, transport);
+    const uint8_t  value = 7;
+    ASSERT_TRUE(store.write_at(8192, &value, 1).ok());
+    ASSERT_TRUE(store.sync().ok());
+    ASSERT_TRUE(store.write_at(0, &value, 1).ok());
+
+    transport->hold_writes();
+    CompletionState completed;
+    ASSERT_TRUE(store.submit_fsync({.context = &completed, .complete_fn = &record_completion}).ok());
+    transport->wait_for_concurrent_writes(3);
+    EXPECT_GE(transport->max_active_writes(), 3U);
+    EXPECT_FALSE(completed.done.load(std::memory_order_acquire));
+    transport->release_writes();
+    completed.done.wait(false, std::memory_order_acquire);
+    EXPECT_EQ(completed.code.load(std::memory_order_relaxed), static_cast<int>(Code::kOk));
+    EXPECT_LE(transport->max_active_writes(), 3U);
+    ASSERT_NE(catalog->load(29), nullptr);
+}
+
+TEST(ChunkPageStore, InlineAsyncMirrorCompletionStillPublishesManifest)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<InlineWriteTransport>();
+    ChunkPageStore store({.tree_id = 30, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
+    const uint8_t  value = 9;
+    ASSERT_TRUE(store.write_at(8192, &value, 1).ok());
+    ASSERT_TRUE(store.sync().ok());
+    ASSERT_TRUE(store.write_at(0, &value, 1).ok());
+    CompletionState completed;
+    ASSERT_TRUE(store.submit_fsync({.context = &completed, .complete_fn = &record_completion}).ok());
+    completed.done.wait(false, std::memory_order_acquire);
+    EXPECT_EQ(completed.code.load(std::memory_order_relaxed), static_cast<int>(Code::kOk));
+    ASSERT_NE(catalog->load(30), nullptr);
+}
+
+TEST(ChunkPageStore, AsyncMirrorFailureStopsPipelineWithoutPublishing)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore store({.tree_id = 31, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
+    const uint8_t  value = 4;
+    ASSERT_TRUE(store.write_at(8192, &value, 1).ok());
+    ASSERT_TRUE(store.sync().ok());
+    ASSERT_TRUE(store.write_at(0, &value, 1).ok());
+    store.inject_mirror_write_failures(1);
+    CompletionState completed;
+    ASSERT_TRUE(store.submit_fsync({.context = &completed, .complete_fn = &record_completion}).ok());
+    completed.done.wait(false, std::memory_order_acquire);
+    EXPECT_EQ(completed.code.load(std::memory_order_relaxed), static_cast<int>(Code::kUnavailable));
+    EXPECT_EQ(catalog->load(31), nullptr);
+    EXPECT_GT(store.stats().orphan_bytes, 0U);
+}
+
+TEST(ChunkPageStore, AsyncRotationSealsPreexistingPartialChunk)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore store({.tree_id         = 32,
+                          .owner_epoch     = 1,
+                          .pack_bytes      = 8192,
+                          .max_chunk_bytes = 16384,
+                          .page_alignment  = 1,
+                          .iu_size         = 1},
+                         catalog, transport);
+    publish_raw_generation(&store, 1);
+    auto first = catalog->load(32);
+    ASSERT_NE(first, nullptr);
+    const ChunkId old_chunk = first->packs.front().ref.chunk_id;
+
+    const uint8_t value = 2;
+    ASSERT_TRUE(store.write_at(8192, &value, 1).ok());
+    ASSERT_TRUE(store.sync().ok());
+    ASSERT_TRUE(store.write_at(0, &value, 1).ok());
+    CompletionState completed;
+    ASSERT_TRUE(store.submit_fsync({.context = &completed, .complete_fn = &record_completion}).ok());
+    completed.done.wait(false, std::memory_order_acquire);
+    ASSERT_EQ(completed.code.load(std::memory_order_relaxed), static_cast<int>(Code::kOk));
+    ChunkLayout old_layout;
+    ASSERT_TRUE(transport->query_chunk(old_chunk, &old_layout).ok());
+    EXPECT_TRUE(old_layout.sealed);
+}
+
+TEST(ChunkPageStore, PartialAdvanceFailureRetriesOnFreshChunk)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<FailingAdvanceTransport>();
+    ChunkPageStore store({.tree_id = 33, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
+    const uint8_t  value = 6;
+    ASSERT_TRUE(store.write_at(8192, &value, 1).ok());
+    ASSERT_TRUE(store.sync().ok());
+    ASSERT_TRUE(store.write_at(0, &value, 1).ok());
+
+    transport->fail_advance_call(2);
+    CompletionState failed;
+    ASSERT_TRUE(store.submit_fsync({.context = &failed, .complete_fn = &record_completion}).ok());
+    failed.done.wait(false, std::memory_order_acquire);
+    ASSERT_EQ(failed.code.load(std::memory_order_relaxed), static_cast<int>(Code::kUnavailable));
+    EXPECT_EQ(catalog->load(33), nullptr);
+
+    transport->clear_failure();
+    CompletionState retried;
+    ASSERT_TRUE(store.submit_fsync({.context = &retried, .complete_fn = &record_completion}).ok());
+    retried.done.wait(false, std::memory_order_acquire);
+    EXPECT_EQ(retried.code.load(std::memory_order_relaxed), static_cast<int>(Code::kOk));
+    ASSERT_NE(catalog->load(33), nullptr);
+}
+
+TEST(ChunkPageStore, ShutdownCancelsAndDrainsBlockedPackWrites)
+{
+    auto catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto transport = std::make_shared<BlockingWriteTransport>();
+    auto store     = std::make_unique<ChunkPageStore>(
+        ChunkPageStore::Config{.tree_id = 34, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
+    const uint8_t value = 8;
+    ASSERT_TRUE(store->write_at(8192, &value, 1).ok());
+    ASSERT_TRUE(store->sync().ok());
+    ASSERT_TRUE(store->write_at(0, &value, 1).ok());
+    transport->hold_writes();
+    CompletionState completed;
+    ASSERT_TRUE(store->submit_fsync({.context = &completed, .complete_fn = &record_completion}).ok());
+    transport->wait_for_concurrent_writes(3);
+    std::thread closer([&store] { store.reset(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    transport->release_writes();
+    closer.join();
+    EXPECT_TRUE(completed.done.load(std::memory_order_acquire));
+    EXPECT_EQ(completed.code.load(std::memory_order_relaxed), static_cast<int>(Code::kUnavailable));
+    EXPECT_EQ(catalog->load(34), nullptr);
+}
+
 TEST(ChunkPageStore, SnapshotPublishesBoundedChecksummedPacksAndReopens)
 {
     auto                   catalog   = std::make_shared<MemoryRootCatalog>(7);
@@ -716,8 +1026,9 @@ TEST(ChunkPageStore, CApiFactoryInjectsBackendWithoutChangingOpen)
 
     ct_root_catalog *catalog = nullptr;
     ASSERT_EQ(ct_memory_root_catalog_open(11, &catalog), 0);
-    ct_chunk_page_store_options store_options = {.tree_id = 77, .owner_epoch = 11, .pack_bytes = 4096, .iu_size = 1};
-    ct_page_store              *store         = nullptr;
+    ct_chunk_page_store_options store_options = {
+        .tree_id = 77, .owner_epoch = 11, .pack_bytes = 4096, .iu_size = 1, .max_concurrent_packs = 2};
+    ct_page_store *store = nullptr;
     ASSERT_EQ(ct_chunk_page_store_open(&store_options, catalog, &store), 0);
     ct_options options  = {};
     options.page_store  = store;

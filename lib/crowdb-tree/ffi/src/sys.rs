@@ -28,6 +28,7 @@ pub struct ct_chunk_page_store_options {
     pub owner_epoch: u64,
     pub pack_bytes: usize,
     pub iu_size: u32,
+    pub max_concurrent_packs: usize,
 }
 
 #[repr(C)]
