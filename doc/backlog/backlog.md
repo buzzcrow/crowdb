@@ -15,19 +15,12 @@ complexity, and dependency. Before implementation, follow the
 
 ### Next Milestone — Chunk-backed range KV
 
-Dependency order: R140 and R141 may proceed in parallel; R142 depends on both;
-R143 depends on R142; R145 depends on R143. R144 is a deferred follow-up after
-R145 and after split and transfer are proven. R146 and R147 are deferred R140
-lifecycle follow-ups. The milestone deliberately separates the embeddable KV
-library, server process, routed client, and physical chunk maintenance.
-
-- **[R140](R140-tree-chunk-page-store.md)** — crowdb-tree chunk page store and
-  range rebuild — Area: crowdb-tree / chunk IO — Add chunk-backed durable page
-  storage while retaining local file and block-device backends. Persist enough
-  immutable page and snapshot metadata to reopen a tree from shared chunks and
-  rebuild a child tree for a key range without copying chunks between KV
-  owners. Fully contained pages may be reused; boundary pages are filtered so
-  keys outside the child range cannot enter its root.
+Dependency order: R142 depends on R141 and the completed chunk-backed tree
+storage; R143 depends on R142; R145 depends on R143. R144 is a deferred
+follow-up after R145 and after split and transfer are proven. R146 and R147 are
+deferred tree-chunk lifecycle follow-ups. The milestone deliberately separates
+the embeddable KV library, server process, routed client, and physical chunk
+maintenance.
 - **[R141](R141-chunk-stream.md)** — chunk-stream mirrored logical byte stream — Area:
   chunk IO / WAL — Compose finite chunks into a logically unbounded,
   offset-addressed stream for WAL users. Group 0 registers which metadata KV
