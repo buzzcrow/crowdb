@@ -54,6 +54,15 @@ slots store ordinals, not physical offsets. The backend caches immutable chunk
 layouts until `valid_until`; adjacent misses in the same pack are coalesced,
 and expired layouts are refreshed before data is returned.
 
+The first release allocates only three-way mirror strips. Each active B+tree
+chunk has a 256 MiB logical-data limit. A pack that does not fit causes the
+current chunk to seal and is written wholly to a new chunk. Reopening a tree
+always allocates a fresh chunk; the old active chunk remains readable and is
+sealed by the deferred orphan-management requirement. DiskIO owns device
+alignment. The tree encoder pads every page record to the 64-KiB page size so
+page starts are independently aligned while logical lengths and checksums omit
+padding.
+
 Three mirror writes are composed as one cancellable operation. A pack is
 durable only after all mirrors acknowledge it. Metadata images are then made
 durable and the injected `RootCatalog::publish(expected_epoch, manifest)` is
@@ -116,16 +125,35 @@ foreground checkpoint has published `g + 1`, the stale output becomes orphan
 work and the pass retries from the new manifest.
 
 Failures retain the prior correct generation. Historical manifests are never
-rewritten. Objects become reclaimable only when catalog retention and every
-in-memory pin have advanced beyond their last reference.
+rewritten. Objects become logically reclaimable only when catalog retention
+and every in-memory pin have advanced beyond their last reference. This
+requirement persists reclaim candidates but does not free chunk strips. The
+separate B+tree chunk-GC requirement consumes those candidates and owns
+physical strip release.
+
+## 7. Source Hierarchy
+
+Private C++ implementation files are grouped by subsystem:
+
+- `src/btree/` contains tree algorithms, frames, codecs, ranges, and rebuild;
+- `src/mapping_table/` contains mapping persistence and the mapping table; and
+- `src/backend/` contains backend-neutral adapters, with concrete local and
+  chunk implementations below `src/backend/local/` and
+  `src/backend/chunk/`.
+
+The installed `include/crowdb-tree/` paths remain stable. CMake and the Rust FFI
+build recurse below `src/`, so directory grouping does not change archive
+composition or public includes.
 
 ## Scope
 
 - `third-party/stdexec/`: repository-pinned sender implementation.
 - `lib/crowdb-tree/include/crowdb-tree/{async_page_store,chunk_page_store,key_range,c_api,options,status}.h`:
   backend-neutral APIs and typed contracts.
-- `lib/crowdb-tree/src/{async_completion,chunk_page_store,chunk_manifest,key_range,range_rebuild,c_api,crowdb-tree,persist}.cpp`:
-  completion, storage, recovery, range enforcement, and rebuild behavior.
+- `lib/crowdb-tree/src/{btree,mapping_table,backend}/`: grouped private tree,
+  mapping, local-backend, and chunk-backend implementation.
+- `lib/crowdb-tree/src/{c_api,async_completion,stdexec_adapter}.*`: C ABI and
+  cross-backend completion infrastructure.
 - `lib/crowdb-tree/ffi/{build.rs,src/options.rs,src/sys.rs,src/tree.rs,src/error.rs}`:
   C ABI construction and completion integration.
 - `lib/crowdb-tree/{CMakeLists.txt,tests/unit,tests/integration}`: build wiring
@@ -181,11 +209,13 @@ lib/crowdb-tree/
 │   ├── chunk_page_store.h       opaque factory and injected contracts
 │   └── key_range.h              immutable range policy
 ├── src/
-│   ├── async_completion.cpp     portable completion event
-│   ├── chunk_page_store.cpp     private RPC-backed immutable store
-│   ├── chunk_manifest.cpp       codecs, checksums, retention
-│   ├── key_range.cpp            centralized validation
-│   └── range_rebuild.cpp        iterator, builder, materialization
+│   ├── btree/                    tree algorithms, frames, range rebuild
+│   ├── mapping_table/            mapping and persisted segment images
+│   ├── backend/
+│   │   ├── local/                memory, text, and block stores
+│   │   └── chunk/                RPC backend, manifests, page packs
+│   ├── c_api.cpp                 backend-neutral construction
+│   └── stdexec_adapter.cpp       sender adapters
 └── tests/
     ├── unit/                    sender, codec, fence, rebuild cases
     └── integration/             publication, recovery, retention, ABI
@@ -193,18 +223,15 @@ lib/crowdb-tree/
 
 ## Config Extensions
 
-- `pack_bytes`: 4 MiB initial bound.
-- `max_concurrent_packs`: 8 initial bound.
+- `pack_bytes`: 4 MiB.
+- `max_chunk_bytes`: 256 MiB, fixed first-release ceiling.
+- `max_concurrent_packs`: 8.
 - `layout_validity_ms`: catalog-provided, capped at 30 seconds.
 - `read_coalesce_bytes`: one pack, capped by `pack_bytes`.
 - `materialization_bytes_per_pass`: 64 MiB initial bound.
 - `rpc_completion_capacity`: fixed at construction; exhaustion returns
   `ResourceExhausted` without using a fallback map.
 
-## Open Questions
-
-- Final defaults remain provisional until the required fixed-workload
-  benchmark is collected on production-equivalent NVMe and network hardware.
-- The production group-0 root-catalog implementation lands with R143; R140
-  ships and tests the epoch-fenced injected contract and in-memory catalog.
-
+The production group-0 root-catalog implementation is injected by the
+chunk-KV owner. R140 supplies the contract and its in-memory acceptance
+implementation without introducing a group-0 dependency into crowdb-tree.

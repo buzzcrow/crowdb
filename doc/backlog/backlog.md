@@ -11,14 +11,15 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R146** — Bump this line in the same commit when adding a new item.
+**Next R number: R148** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
 Dependency order: R140 and R141 may proceed in parallel; R142 depends on both;
 R143 depends on R142; R145 depends on R143. R144 is a deferred follow-up after
-R145 and after split and transfer are proven. The milestone deliberately
-separates the embeddable KV library, server process, and routed client.
+R145 and after split and transfer are proven. R146 and R147 are deferred R140
+lifecycle follow-ups. The milestone deliberately separates the embeddable KV
+library, server process, routed client, and physical chunk maintenance.
 
 - **[R140](R140-tree-chunk-page-store.md)** — crowdb-tree chunk page store and
   range rebuild — Area: crowdb-tree / chunk IO — Add chunk-backed durable page
@@ -56,6 +57,16 @@ separates the embeddable KV library, server process, and routed client.
   RPC surface with catalog-aware point routing, durable client request
   identities, multi-get, non-transactional batch mutation, multi-partition
   forward/reverse scan, bounded retry, and client-facing E2E coverage.
+- **[R146](R146-tree-chunk-orphan-sealing.md)** — seal abandoned B+tree
+  chunks — Area: crowdb-tree / chunkdb — Renew durable writer leases while a
+  tree owns its active chunk, allocate a fresh chunk after process restart, and
+  extend chunkdb's restart-safe expired-writer sweep to seal abandoned B+tree
+  chunks at their acknowledged cursors.
+- **[R147](R147-tree-chunk-gc.md)** — reclaim B+tree chunk strips — Area:
+  crowdb-tree / chunkdb / diskdb — Turn tree logical-GC results into durable,
+  manifest-fenced reclaim candidates. Repack mixed live strips, then use an
+  idempotent generic in-chunk operation to release whole unreachable strips or
+  chunks without racing retained manifests, snapshot pins, or layout readers.
 
 ### High Priority
 

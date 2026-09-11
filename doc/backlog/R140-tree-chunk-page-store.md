@@ -49,7 +49,13 @@ wholly inside the target range.
    directly encodes the shared ChunkDB and DiskIO FlatBuffers commands through
    C++ `crowdb-rpc`; it is not a public C++ chunk client. Keep its source in an
    isolated translation unit inside the same static `libcrowdb-tree.a` as the
-   local backends. Add an opaque backend handle to the C ABI so the Rust caller
+   local backends. Organize private implementation files by subsystem under
+   `src/btree/`, `src/mapping_table/`, and `src/backend/`, with concrete local and
+   chunk stores below `src/backend/local/` and `src/backend/chunk/`. Keep the
+   installed headers under `include/crowdb-tree/` source-compatible; the move
+   is an internal hierarchy cleanup, not a public include-path change. Both
+   CMake and `crowdb-tree-ffi/build.rs` continue discovering sources
+   recursively. Add an opaque backend handle to the C ABI so the Rust caller
    selects and supplies the store when creating a tree. Do not use a Cargo
    feature, a second tree library, runtime dynamic loading, or a plugin ABI to
    choose storage.
@@ -61,7 +67,15 @@ wholly inside the target range.
    member. Neither path depends on the Rust `crowdb-chunk-client` or
    `crowdb-chunkdb-client`.
 5. Accumulate immutable 64-KiB pages into bounded contiguous page packs and
-   submit a bounded number of packs concurrently to three-way mirrored chunks.
+   submit a bounded number of packs concurrently to chunks containing only
+   three-way mirror strips in the first release. Limit each B+tree chunk to
+   256 MiB of logical data and rotate before an append would cross that limit.
+   A reopened tree never resumes its former active chunk: it allocates a new
+   chunk, while R146 detects and seals the abandoned active chunk at its
+   acknowledged cursor. DiskIO owns device-write alignment exactly as it does
+   for small writes. The B+tree pack encoder additionally pads each encoded
+   page's tail to the 64-KiB page size, so every page begins at a page-size
+   boundary; the stored logical length and checksum exclude padding.
    The manifest maps compact page-reference ordinals to
    `(chunk_id, offset, length, checksum)` through immutable segmented reference
    tables, and the mapping table preserves its atomic 64-bit fast path by
@@ -131,8 +145,10 @@ wholly inside the target range.
    the same segment-level COW, so foreground change and background GC converge
    toward fully independent mapping images and packs. A retained parent or
    earlier child snapshot keeps its old immutable directory, segment images,
-   and packs pinned; it is never rewritten. Old objects become reclaimable only
-   after every referencing manifest and in-memory snapshot pin expires.
+   and packs pinned; it is never rewritten. Old objects become logically
+   reclaimable only after every referencing manifest and in-memory snapshot pin
+   expires. Emit durable reclaim candidates for R147 instead of freeing chunk
+   strips inside the tree's logical GC pass.
    Materialization failure leaves a correct but physically shared immutable
    image or pack and retries; it does not invalidate either child.
    Each pass pins one child manifest generation and publishes through the
@@ -173,6 +189,12 @@ wholly inside the target range.
   backend is compiled into crowdb-tree's static archive but is not extracted
   into ordinary crowdb-kv-server because that binary never references its
   constructor.
+- R146 adds restart-safe sealing for active B+tree chunks abandoned by a tree
+  process. R140 allocates a fresh active chunk on every reopen and does not wait
+  for the abandoned chunk to be sealed.
+- R147 consumes R140's durable reclaim candidates and performs physical B+tree
+  chunk-strip reclamation. R140's logical page and manifest GC remains correct
+  before R147 lands, but dead strip capacity is retained.
 
 ## Acceptance
 
@@ -216,6 +238,22 @@ wholly inside the target range.
   assert they are emitted in bounded page packs, written concurrently to three
   mirrors, and represented by ordinal manifest references. Invariant: remote
   snapshot I/O is bounded and not serialized per page. Integration test.
+- Given page data approaches 256 MiB in one active B+tree chunk, when the next
+  page pack would cross the limit, assert the backend seals that
+  chunk and writes the complete pack to a new three-way-mirrored chunk.
+  Invariant: no B+tree chunk exceeds 256 MiB and no page pack straddles chunks.
+  Integration test.
+- Given compressed or short encoded pages, when a page pack is emitted, assert
+  each page begins on a 64-KiB boundary, its tail is padded, and its logical
+  length and checksum exclude padding; assert DiskIO accepts the resulting
+  small-write-aligned requests without tree-side device-alignment logic.
+  Invariant: page framing and device I/O alignment have distinct owners. Unit
+  test.
+- Given a tree process restarts while its previous active chunk is below 256
+  MiB, when the tree reopens, assert its first subsequent pack uses a newly
+  allocated chunk and the old chunk remains readable at its acknowledged
+  cursor for R146 to seal. Invariant: restart never resumes an ambiguously owned
+  active chunk. Integration test.
 - Given adjacent unloaded pages in one pack and a valid cached layout, when a
   scan crosses them, assert the backend coalesces the requested bytes without a
   metadata query per page; after layout expiry, assert it re-queries before
@@ -380,9 +418,12 @@ or second tree library.
 
 ### Chosen backend boundary
 
-The backend source lives in `lib/crowdb-tree/src/` and remains private to the
-tree engine. CMake and `crowdb-tree-ffi/build.rs` compile it as an isolated
-object in the same static `libcrowdb-tree.a`; crowdb-tree is not a shared
+The backend source lives in `lib/crowdb-tree/src/backend/chunk/` and remains
+private to the tree engine. Local stores live under `src/backend/local/`, while
+B+tree and mapping-table implementation files live under `src/btree/` and
+`src/mapping_table/`. Public installed headers remain under `include/crowdb-tree/`.
+CMake and `crowdb-tree-ffi/build.rs` recursively compile the isolated backend
+object into the same static `libcrowdb-tree.a`; crowdb-tree is not a shared
 library and the backend is not loaded dynamically. Backend selection happens
 per tree instance through an opaque store handle passed at creation.
 
@@ -411,8 +452,10 @@ B+tree page packs. `crowdb-chunk-kv` may refresh group0 topology and inject an
 immutable snapshot through a low-frequency control call; page reads and writes
 never call Rust.
 
-Generation-addressed page packs are the first-version format. Content
-deduplication is out of scope. A contained interior subtree may be reused when
+Generation-addressed page packs in 256-MiB, three-way-mirrored chunks are the
+first-version format. Every encoded page starts at a 64-KiB boundary; DiskIO
+retains responsibility for physical-device alignment. Content deduplication is
+out of scope. A contained interior subtree may be reused when
 its inherited fences are verified. A mixed boundary leaf is reused by neither
 child; each child gets a newly filtered leaf. Boundary ancestors, child roots,
 and the final included leaf are rewritten so separator, child, overflow, and
