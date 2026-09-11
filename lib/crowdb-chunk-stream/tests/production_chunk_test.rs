@@ -7,7 +7,10 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_chunk_client::{ChunkAllocator, ChunkReadPolicy, DiskWriter, IoError};
-use crowdb_chunk_stream::{CursorAdvance, ProductionStreamChunkStore, StreamChunkStore, StreamName};
+use crowdb_chunk_stream::{
+    memory::MemoryStreamStore, ChunkStream, CursorAdvance, ProductionStreamChunkStore, StreamBinding,
+    StreamBindingState, StreamChunkStore, StreamConfig, StreamMetadataStore, StreamName, StreamRegistry,
+};
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
     AppendChunkRequest, AppendChunkResponse, Chunk, ChunkState, ChunkStrip, DeleteChunkRequest,
@@ -227,4 +230,41 @@ async fn production_store_writes_reads_advances_and_releases_one_mirror_chunk() 
             .reclaimed_bytes,
         6
     );
+}
+
+#[tokio::test]
+async fn chunk_stream_runs_end_to_end_over_the_production_chunk_adapter() {
+    let allocator: Arc<dyn ChunkAllocator> = Arc::new(Allocator::new());
+    let disks: Arc<dyn DiskWriter> = Arc::new(Disks::default());
+    let chunks: Arc<dyn StreamChunkStore> = Arc::new(
+        ProductionStreamChunkStore::new(allocator, disks, 30_000, ChunkReadPolicy::default()).unwrap(),
+    );
+    let metadata = Arc::new(MemoryStreamStore::new(1));
+    let registry: Arc<dyn StreamRegistry> = metadata.clone();
+    let metadata_store: Arc<dyn StreamMetadataStore> = metadata;
+    let stream_name = StreamName { high: 40, low: 41 };
+    let stream = ChunkStream::create(
+        StreamBinding {
+            stream_name,
+            metadata_group_id: 7,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("test".into()),
+        },
+        9,
+        StreamConfig::default(),
+        registry,
+        metadata_store,
+        chunks,
+    )
+    .await
+    .unwrap();
+    let range = stream
+        .append_chunk_bound(&[Bytes::from_static(b"frame")])
+        .await
+        .unwrap();
+    assert_eq!((range.begin, range.end), (0, 21));
+    let bytes = stream.read_at(0, 21).await.unwrap();
+    assert_eq!(&bytes[..5], b"frame");
+    assert_eq!(range.chunk_id.unwrap().low, 8);
 }

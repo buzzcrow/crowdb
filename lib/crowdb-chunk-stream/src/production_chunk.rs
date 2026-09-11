@@ -85,8 +85,8 @@ impl ProductionStreamChunkStore {
             has_checksum: AtomicBool::new(false),
             chunk,
         });
-        self.chunks.insert(key, Arc::clone(&view));
-        Ok(view)
+        let installed = self.chunks.get_or_insert(key, view);
+        Ok(Arc::clone(installed.value()))
     }
 
     async fn state(&self, chunk_id: ChunkId) -> Result<Arc<ChunkStateView>> {
