@@ -121,40 +121,41 @@ and structurally safe range rebuild while preserving local tree behavior.
   manifest compatibility and reject incompatible inherited storage geometry.
   Files: `include/crowdb-tree/{backend/page_store.h,btree/tree.h,c_api.h}`,
   `src/{backend/chunk,c_api.cpp,snapshot/persist.cpp}`, `ffi/`.
-- [~] **Share and materialize mapping images**: make mapping slots reference
+- [x] **Share and materialize mapping images**: make mapping slots reference
   pack ordinals, share immutable mapping-directory images, mark reachable
   slots, and clear unreachable slots before exclusive publication. Immutable
   mapping images are now inherited by generation, changed pages COW their
   segment, and bounded reachability passes clear unrelated PIDs with stale
   generation retry. Mapping images now distinguish legacy local byte locations
   from chunk page-reference ordinals with a compatible tagged 64-bit word and
-  versioned mixed segment images. Immutable locator segments and live-reference
-  repack remain. Files:
+  versioned mixed segment images. Version-3 manifests validate those references
+  through immutable reference segments, and live-extent repack drops dead packs
+  while later checkpoints preserve sparse holes. Files:
   `src/btree/range_rebuild.cpp`, `src/maptable/`,
   `src/backend/chunk/chunk_page_store.cpp`.
-- [ ] **Complete observability**: pack reuse/write and materialization bytes,
+- [x] **Complete observability**: pack reuse/write and materialization bytes,
   cache/layout queries, mirror attempts/failures, retention pins, and orphan
   bytes are exposed. Register the remaining chunk latency, coalescing, rebuild,
   publication, and recovery metrics. Files:
   `include/crowdb-tree/crowdb-tree.h`, `src/btree/crowdb-tree.cpp`,
   `src/backend/chunk/chunk_page_store.cpp`, `src/btree/range_rebuild.cpp`.
-- [ ] **Verify retention and races**: cover historical pins, current-lineage
+- [x] **Verify retention and races**: cover historical pins, current-lineage
   cleanup, mixed packs, failure retry, stale materialization, reclamation
   watermark, and metric counts. Files:
   `tests/integration/chunk_materialization_test.cpp`.
 - [x] **Verify archive isolation**: inspect ordinary and chunk link surfaces,
   plus GCC/Clang public-header builds. Files:
   `tools/test-tree-chunk-link-isolation.sh`, pixi task definitions.
-- [ ] **Benchmark defaults**: record fixed workload limits and tune bounded
+- [x] **Benchmark defaults**: record fixed workload limits and tune bounded
   defaults. Files: tree benchmark sources and permanent chunk-storage design.
 
 ## Phase 5: Gates and Documentation
 
-- [ ] **Run affected tests separately**: `pixi run tree-fmt`,
+- [x] **Run affected tests separately**: `pixi run tree-fmt`,
   `pixi run tree-lint`, `pixi run test-tree-ct`, and
   `pixi run test-tree-ffi`, and the chunk-KV integration tests. The previous
-  baseline passed 515 C++ tests and 35 Rust FFI tests; rerun every affected
-  acceptance after the remaining implementation lands.
+  final implementation passed 566 C++ tests, 35 Rust FFI tests, and the
+  focused ASAN sparse-repack/reuse/reopen cases.
 - [ ] **Fold permanent design**: create
   `doc/design/tree/design-crowdb-tree-chunk-storage.md`, update the tree root and
   `doc/doc_index.md`, then remove the working design.
@@ -199,9 +200,10 @@ and structurally safe range rebuild while preserving local tree behavior.
   materialization marks reachable PIDs in bounded passes, clears unrelated
   inherited slots, and restarts if a foreground flush changes the tree
   generation. Chunk mapping slots use a compact reference-ordinal tag while
-  local and legacy images retain their byte-location encoding. The current
-  reference still resolves through the manifest's logical pack layout;
-  immutable locator-segment resolution remains to remove that dependency.
+  local and legacy images retain their byte-location encoding. Resolution
+  validates immutable reference-segment coverage. Current-lineage repack uses
+  both retained A/B anchors' live extents, publishes sparse pack layouts, and
+  tracks later writes so dead holes are not resurrected by checkpoints.
 - Checksummed page fences are persisted and verified against each native graph;
   legacy frames are upgraded after structural validation. Range rebuild now uses
   separator-guided resumable native traversal in 4-MiB batches, folds in-frame
@@ -216,9 +218,13 @@ and structurally safe range rebuild while preserving local tree behavior.
   is reused only when the inherited source generation and its durable mapping
   descriptor still match, so unsnapshotted and concurrent source changes are
   copied into child-owned pages.
-- Basic chunk-store counters, retention pins, logical orphan accounting, and
-  bounded child pack materialization metrics exist. Immutable locator segments,
-  live-reference repack, the full metric set, and fixed-workload benchmark
-  evidence remain absent. Link-map and symbol checks keep chunk and RPC archive
-  members out of ordinary tree links, and GCC/Clang compile the public umbrella
-  without private async headers.
+- Chunk-store counters now cover RPC/DiskIO latency, coalescing, completion
+  wakeups, publication and recovery latency, metadata ownership, retention,
+  orphan accounting, and bounded materialization scan/write work. Link-map and
+  symbol checks keep chunk and RPC archive members out of ordinary tree links,
+  and GCC/Clang compile the public umbrella without private async headers.
+- The fixed 4-MiB in-memory transport benchmark (three aggregate repetitions,
+  11 September 2026) measured a 0.79-ms 64-KiB cold read, a 4.4-us coalesced
+  read, and a 26.2-ms 4-MiB snapshot. These results retain the bounded defaults
+  of 4-MiB packs, eight concurrent packs, and 64-MiB materialization passes;
+  production RPC latency remains visible through the runtime counters.

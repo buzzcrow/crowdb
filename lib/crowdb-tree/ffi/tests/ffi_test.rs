@@ -69,6 +69,9 @@ fn injected_chunk_store_round_trip_and_stats() {
     let stats = store.chunk_stats().unwrap();
     assert_eq!(stats.generations_published, 1);
     assert!(stats.packs_written > 0);
+    assert!(stats.pack_bytes_written > 0);
+    assert!(stats.diskio_operations > 0);
+    assert!(stats.rpc_operations > 0);
     assert_eq!(tree.materialize_ownership().unwrap(), (0, true));
 }
 

@@ -234,6 +234,9 @@ void ChunkAsyncExecutor::async_complete(void *context, Status status)
 
 void ChunkAsyncExecutor::release_slot(const std::shared_ptr<State> &state, Slot *slot, uint64_t position, Status status)
 {
+    if (auto *store = state->store.load(std::memory_order_acquire); store != nullptr) {
+        store->record_completion_wakeup();
+    }
     slot->task.completion.complete(std::move(status));
     slot->async_state.reset();
     slot->active_id.store(0, std::memory_order_release);

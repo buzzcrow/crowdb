@@ -13,8 +13,7 @@
 // doc/backlog/R50-epoch-protected-memtable.md Gate 2.
 //
 // Build:
-//   pixi run -- cmake -S lib/crowdb-tree -B lib/crowdb-tree/build-bench \
-//     -DCROWDB_TREE_BENCH=ON -DCMAKE_BUILD_TYPE=Release
+//   pixi run -- cmake -S lib/crowdb-tree -B lib/crowdb-tree/build-bench -DCROWDB_TREE_BENCH=ON
 //   pixi run -- cmake --build lib/crowdb-tree/build-bench -j
 //   ./lib/crowdb-tree/build-bench/scan_step_profile
 #include "crowdb-tree/backend/page_store.h"
@@ -33,7 +32,7 @@ namespace
 {
 std::string make_key(int i)
 {
-    std::string s(21, '\0');
+    std::string s(22, '\0');
     snprintf(s.data(), s.size(), "k%020d", i);
     s.resize(strlen(s.c_str()));
     return s;

@@ -173,6 +173,18 @@ using ct_chunk_page_store_stats = struct
     uint64_t materialization_packs_written;
     uint64_t materialization_bytes_written;
     uint64_t shared_packs;
+    uint64_t rpc_operations;
+    uint64_t rpc_latency_ns;
+    uint64_t diskio_operations;
+    uint64_t diskio_latency_ns;
+    uint64_t coalesced_reads;
+    uint64_t coalesced_read_bytes;
+    uint64_t completion_wakeups;
+    uint64_t materialization_scan_bytes;
+    uint64_t shared_metadata_segments;
+    uint64_t materialized_metadata_segments;
+    uint64_t manifest_publication_latency_ns;
+    uint64_t recovery_latency_ns;
 };
 
 struct ct_chunk_rpc_route

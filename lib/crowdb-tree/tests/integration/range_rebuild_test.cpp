@@ -429,6 +429,14 @@ TEST(RangeRebuild, MappingMaterializationClearsInheritedUnreachableSlots)
     EXPECT_EQ(live_entries(*child).size(), 40U);
     EXPECT_FALSE(live_entries(*child).contains("k1019"));
     EXPECT_FALSE(live_entries(*child).contains("k1060"));
+    Batch after_repack;
+    after_repack.ops.push_back({.key = "k1030x", .kind = OpKind::kPut, .value = "after-repack"});
+    ASSERT_TRUE(child->apply(81, after_repack).ok());
+    ASSERT_TRUE(child->flush().ok());
+    ASSERT_TRUE(child->snapshot().ok());
+    child.reset();
+    ASSERT_TRUE(Crowdbtree::open(child_options, &child).ok());
+    EXPECT_EQ(live_entries(*child).at("k1030x"), "after-repack");
 }
 
 TEST(RangeRebuild, UnsnapshottedSourcePageIsCopiedInsteadOfInherited)

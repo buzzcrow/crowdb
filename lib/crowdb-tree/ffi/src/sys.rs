@@ -78,6 +78,18 @@ pub struct ct_chunk_page_store_stats {
     pub materialization_packs_written: u64,
     pub materialization_bytes_written: u64,
     pub shared_packs: u64,
+    pub rpc_operations: u64,
+    pub rpc_latency_ns: u64,
+    pub diskio_operations: u64,
+    pub diskio_latency_ns: u64,
+    pub coalesced_reads: u64,
+    pub coalesced_read_bytes: u64,
+    pub completion_wakeups: u64,
+    pub materialization_scan_bytes: u64,
+    pub shared_metadata_segments: u64,
+    pub materialized_metadata_segments: u64,
+    pub manifest_publication_latency_ns: u64,
+    pub recovery_latency_ns: u64,
 }
 #[repr(C)]
 pub struct ct_view {

@@ -107,6 +107,9 @@ class BlockingReadTransport final : public ChunkTransport
 
     Status read_mirror(ChunkId chunk_id, uint32_t mirror, uint64_t offset, uint8_t *data, size_t length) const override
     {
+        if (reads_unavailable_.load(std::memory_order_acquire)) {
+            return Status::unavailable("injected read failure");
+        }
         read_entered_.store(true, std::memory_order_release);
         read_entered_.notify_all();
         if (hold_reads_.load(std::memory_order_acquire)) {
@@ -132,6 +135,11 @@ class BlockingReadTransport final : public ChunkTransport
         hold_reads_.store(true, std::memory_order_release);
     }
 
+    void inject_read_unavailable(bool unavailable)
+    {
+        reads_unavailable_.store(unavailable, std::memory_order_release);
+    }
+
     void release_reads()
     {
         hold_reads_.store(false, std::memory_order_release);
@@ -149,6 +157,7 @@ class BlockingReadTransport final : public ChunkTransport
     mutable std::atomic<bool> hold_reads_{false};
     mutable std::atomic<bool> release_reads_{false};
     mutable std::atomic<bool> read_entered_{false};
+    mutable std::atomic<bool> reads_unavailable_{false};
 };
 
 class BlockingWriteTransport final : public ChunkTransport
@@ -815,6 +824,103 @@ TEST(ChunkPageStore, MaterializationBudgetIsAtLeastOneConfiguredPack)
     EXPECT_FALSE(complete);
 }
 
+TEST(ChunkPageStore, LivePackRepackDropsDeadPacksWithoutResurrection)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<BlockingReadTransport>();
+    ChunkPageStore source({.tree_id = 65, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                          catalog, transport);
+    publish_raw_generation(&source, 3);
+
+    ChunkPageStore child({.tree_id = 66, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                         catalog, transport);
+    ASSERT_TRUE(child.inherit_snapshot_from(source).ok());
+    publish_raw_generation(&child, 3);
+    child.set_materialization_live_extents({
+        {0,    4096},
+        {8192, 1   }
+    });
+
+    uint64_t written  = 0;
+    bool     complete = false;
+    while (!complete) {
+        ASSERT_TRUE(child.materialize_ownership(&written, &complete).ok());
+    }
+    auto sparse = catalog->load(66);
+    ASSERT_NE(sparse, nullptr);
+    ASSERT_EQ(sparse->format_version, 3U);
+    ASSERT_EQ(sparse->packs.size(), 2U);
+    EXPECT_EQ(sparse->packs[0].logical_offset, 0U);
+    EXPECT_EQ(sparse->packs[1].logical_offset, 8192U);
+    uint8_t value = 0;
+    ASSERT_TRUE(child.read_at(8192, &value, 1).ok());
+    EXPECT_EQ(value, 3U);
+    EXPECT_EQ(child.read_at(4096, &value, 1).code(), Code::kCorruption);
+
+    const auto    before_checkpoint = child.stats();
+    const uint8_t changed           = 7;
+    ASSERT_TRUE(child.write_at(8192, &changed, 1).ok());
+    ASSERT_TRUE(child.sync().ok());
+    ASSERT_TRUE(child.write_at(0, &changed, 1).ok());
+    ASSERT_TRUE(child.sync().ok());
+    auto checkpoint = catalog->load(66);
+    ASSERT_NE(checkpoint, nullptr);
+    ASSERT_EQ(checkpoint->packs.size(), 2U);
+    EXPECT_EQ(checkpoint->packs[0].logical_offset, 0U);
+    EXPECT_EQ(checkpoint->packs[1].logical_offset, 8192U);
+    ASSERT_TRUE(child.read_at(8192, &value, 1).ok());
+    EXPECT_EQ(value, changed);
+    uint64_t checkpoint_new_bytes = 0;
+    for (const ChunkPagePack &pack : checkpoint->packs) {
+        if (!pack.reused) {
+            checkpoint_new_bytes += pack.ref.length;
+        }
+    }
+    EXPECT_EQ(child.stats().pack_bytes_written - before_checkpoint.pack_bytes_written, checkpoint_new_bytes);
+
+    const uint8_t rewrite = 9;
+    ASSERT_TRUE(child.write_at(8192, &rewrite, 1).ok());
+    ASSERT_TRUE(child.sync().ok());
+    ASSERT_TRUE(child.write_at(0, &rewrite, 1).ok());
+    transport->inject_read_unavailable(true);
+    ASSERT_TRUE(child.sync().ok());
+    transport->inject_read_unavailable(false);
+    auto after_failed_reuse = catalog->load(66);
+    ASSERT_NE(after_failed_reuse, nullptr);
+    ASSERT_EQ(after_failed_reuse->packs.size(), 2U);
+    ASSERT_TRUE(child.read_at(8192, &value, 1).ok());
+    EXPECT_EQ(value, rewrite);
+    const auto stats = child.stats();
+    EXPECT_GT(stats.materialization_scan_bytes, 0U);
+    EXPECT_GT(stats.materialized_metadata_segments, 0U);
+    EXPECT_GT(stats.diskio_operations, 0U);
+    EXPECT_GT(stats.rpc_operations, 0U);
+}
+
+TEST(ChunkPageStore, PageReferenceDecodeRequiresImmutableLocatorCoverage)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore store({.tree_id            = 67,
+                          .owner_epoch        = 1,
+                          .pack_bytes         = 4096,
+                          .page_alignment     = 1,
+                          .iu_size            = 1,
+                          .layout_validity_ms = 0},
+                         catalog, transport);
+    publish_raw_generation(&store, 4);
+    uint64_t word = 0;
+    ASSERT_TRUE(store.encode_mapping_location(8192, 1, &word).ok());
+    uint64_t addr = 0;
+    uint32_t len  = 0;
+    ASSERT_TRUE(store.decode_mapping_location(word, &addr, &len).ok());
+    EXPECT_EQ(addr, 8192U);
+    EXPECT_EQ(len, 1U);
+
+    catalog->corrupt_active_reference_segment(0, 0);
+    EXPECT_EQ(store.decode_mapping_location(word, &addr, &len).code(), Code::kCorruption);
+}
+
 TEST(ChunkPageStore, SnapshotInheritanceRejectsMismatchedStorageGeometry)
 {
     auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
@@ -1378,7 +1484,12 @@ TEST(ChunkPageStore, ReusesChecksummedPackForAdjacentReads)
               0U);
     second_done.done.wait(false, std::memory_order_acquire);
     ASSERT_EQ(second_done.code.load(std::memory_order_relaxed), static_cast<int>(Code::kOk));
-    EXPECT_EQ(store.stats().pack_reads, 1U);
+    const auto stats = store.stats();
+    EXPECT_EQ(stats.pack_reads, 1U);
+    EXPECT_EQ(stats.coalesced_reads, 1U);
+    EXPECT_EQ(stats.coalesced_read_bytes, 8196U);
+    EXPECT_EQ(stats.completion_wakeups, 2U);
+    EXPECT_GT(stats.diskio_operations, 0U);
     EXPECT_TRUE(std::all_of(first.begin(), first.end(), [](uint8_t value) { return value == 6; }));
     EXPECT_TRUE(std::all_of(second.begin(), second.end(), [](uint8_t value) { return value == 6; }));
 }

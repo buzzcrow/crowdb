@@ -116,6 +116,13 @@ class PageStore
         return Status::Ok();
     }
 
+    // Supply the current snapshot's verified live byte extents before an
+    // immutable backend repacks shared storage. Byte stores do not need this
+    // hint. Extents are logical PageStore addresses and lengths.
+    virtual void set_materialization_live_extents(std::vector<std::pair<uint64_t, uint64_t>>)
+    {
+    }
+
     // Seed an unpublished destination from an immutable source snapshot when
     // both stores support lineage sharing. Local and unlike backends remain
     // independent and require no preparation.

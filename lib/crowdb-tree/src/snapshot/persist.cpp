@@ -1120,6 +1120,23 @@ Status Crowdbtree::materialize_ownership(uint64_t *bytes_written, bool *complete
     }
 
     acquire_snapshot_slot();
+    if (opt_.page_store->has_shared_ownership()) {
+        std::vector<std::pair<uint64_t, uint64_t>> live{
+            {0, region_base_for(opt_.page_store->iu_size())}
+        };
+        const auto anchors = read_valid_anchors(*opt_.page_store, opt_.page_store->iu_size());
+        if (anchors.empty()) {
+            release_snapshot_slot();
+            return Status::corruption("materialize_ownership: current snapshot is unreadable");
+        }
+        for (const CommitAnchor &anchor : anchors) {
+            if (!collect_live_extents_from_directory(*opt_.page_store, anchor, opt_.page_store->iu_size(), &live)) {
+                release_snapshot_slot();
+                return Status::corruption("materialize_ownership: retained snapshot is unreadable");
+            }
+        }
+        opt_.page_store->set_materialization_live_extents(std::move(live));
+    }
     Status status = opt_.page_store->materialize_ownership(bytes_written, complete);
     release_snapshot_slot();
     return status;

@@ -38,6 +38,18 @@ pub struct ChunkPageStoreStats {
     pub materialization_packs_written: u64,
     pub materialization_bytes_written: u64,
     pub shared_packs: u64,
+    pub rpc_operations: u64,
+    pub rpc_latency_ns: u64,
+    pub diskio_operations: u64,
+    pub diskio_latency_ns: u64,
+    pub coalesced_reads: u64,
+    pub coalesced_read_bytes: u64,
+    pub completion_wakeups: u64,
+    pub materialization_scan_bytes: u64,
+    pub shared_metadata_segments: u64,
+    pub materialized_metadata_segments: u64,
+    pub manifest_publication_latency_ns: u64,
+    pub recovery_latency_ns: u64,
 }
 
 pub struct ChunkRootCatalog {
@@ -211,6 +223,18 @@ impl PageStore {
             materialization_packs_written: raw.materialization_packs_written,
             materialization_bytes_written: raw.materialization_bytes_written,
             shared_packs: raw.shared_packs,
+            rpc_operations: raw.rpc_operations,
+            rpc_latency_ns: raw.rpc_latency_ns,
+            diskio_operations: raw.diskio_operations,
+            diskio_latency_ns: raw.diskio_latency_ns,
+            coalesced_reads: raw.coalesced_reads,
+            coalesced_read_bytes: raw.coalesced_read_bytes,
+            completion_wakeups: raw.completion_wakeups,
+            materialization_scan_bytes: raw.materialization_scan_bytes,
+            shared_metadata_segments: raw.shared_metadata_segments,
+            materialized_metadata_segments: raw.materialized_metadata_segments,
+            manifest_publication_latency_ns: raw.manifest_publication_latency_ns,
+            recovery_latency_ns: raw.recovery_latency_ns,
         })
     }
 

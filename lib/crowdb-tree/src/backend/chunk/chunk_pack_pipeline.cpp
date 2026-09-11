@@ -23,6 +23,12 @@ uint64_t monotonic_millis()
         .count();
 }
 
+uint64_t monotonic_nanos()
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
 class ChunkPackPipelineImpl;
 
 struct MirrorWriteSource
@@ -33,14 +39,17 @@ struct MirrorWriteSource
     uint64_t                        offset       = 0;
     const std::vector<uint8_t>     *bytes        = nullptr;
     ChunkCancellation               cancellation;
-    uint32_t                        retry_limit    = 0;
-    const std::atomic<uint8_t>     *failure_mask   = nullptr;
-    std::atomic<uint64_t>          *attempts       = nullptr;
-    std::atomic<uint64_t>          *failures       = nullptr;
-    std::atomic<bool>              *stop_requested = nullptr;
-    CallbackComplete                complete       = nullptr;
-    void                           *operation      = nullptr;
-    uint32_t                        attempt        = 0;
+    uint32_t                        retry_limit       = 0;
+    const std::atomic<uint8_t>     *failure_mask      = nullptr;
+    std::atomic<uint64_t>          *attempts          = nullptr;
+    std::atomic<uint64_t>          *failures          = nullptr;
+    std::atomic<bool>              *stop_requested    = nullptr;
+    std::atomic<uint64_t>          *diskio_operations = nullptr;
+    std::atomic<uint64_t>          *diskio_latency_ns = nullptr;
+    CallbackComplete                complete          = nullptr;
+    void                           *operation         = nullptr;
+    uint32_t                        attempt           = 0;
+    uint64_t                        started_at_ns     = 0;
 
     static void submit(void *context, CallbackComplete complete_fn, void *operation_context)
     {
@@ -54,6 +63,8 @@ struct MirrorWriteSource
     static void transport_complete(void *context, Status status)
     {
         auto *self = static_cast<MirrorWriteSource *>(context);
+        self->diskio_operations->fetch_add(1, std::memory_order_relaxed);
+        self->diskio_latency_ns->fetch_add(monotonic_nanos() - self->started_at_ns, std::memory_order_relaxed);
         if (self->stop_requested_now()) {
             self->stop_requested->store(true, std::memory_order_release);
             self->complete(self->operation, CallbackSignal::kStopped,
@@ -92,6 +103,7 @@ struct MirrorWriteSource
             return;
         }
         attempts->fetch_add(1, std::memory_order_relaxed);
+        started_at_ns = monotonic_nanos();
         if ((failure_mask->load(std::memory_order_acquire) & (1U << mirror_index)) != 0) {
             transport_complete(this, Status::unavailable("injected chunk mirror write failure"));
             return;
@@ -175,6 +187,12 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             const size_t length =
                 std::min(store->config_.pack_bytes, store->staged_.size() - static_cast<size_t>(offset));
             const uint32_t checksum = crowdb::common::crc32c(store->staged_.data() + offset, length);
+            if (reuse_base != nullptr && reuse_base->format_version >= 3 &&
+                ChunkPageStore::find_pack_at(*reuse_base, offset, static_cast<uint32_t>(length)) == nullptr &&
+                !store->range_was_written(offset, length)) {
+                offset += length;
+                continue;
+            }
             if (reuse_base != nullptr) {
                 const ChunkPagePack *reused = store->find_reusable_pack(
                     *reuse_base, offset, static_cast<uint32_t>(length), checksum, cancellation);
@@ -327,16 +345,20 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             remember_orphan_segments();
             return Status::unavailable("chunk root publication cancelled");
         }
-        Status status =
+        const uint64_t publish_started = monotonic_nanos();
+        Status         status =
             store->catalog_->publish(store->config_.tree_id, expected_generation, store->config_.owner_epoch, manifest);
+        const uint64_t publish_elapsed = monotonic_nanos() - publish_started;
+        store->manifest_publication_latency_ns_.fetch_add(publish_elapsed, std::memory_order_relaxed);
+        store->rpc_latency_ns_.fetch_add(publish_elapsed, std::memory_order_relaxed);
+        store->rpc_operations_.fetch_add(1, std::memory_order_relaxed);
         if (!status.ok()) {
             remember_orphan_segments();
             return status;
         }
         store->generations_published_.fetch_add(1, std::memory_order_relaxed);
         store->packs_written_.fetch_add(manifest->packs.size() - manifest->packs_reused, std::memory_order_relaxed);
-        store->pack_bytes_written_.fetch_add(manifest->logical_size - manifest->pack_bytes_reused,
-                                             std::memory_order_relaxed);
+        store->pack_bytes_written_.fetch_add(new_pack_bytes(), std::memory_order_relaxed);
         store->packs_reused_.fetch_add(manifest->packs_reused, std::memory_order_relaxed);
         store->pack_bytes_reused_.fetch_add(manifest->pack_bytes_reused, std::memory_order_relaxed);
         store->cached_layout_.store(manifest, std::memory_order_release);
@@ -344,6 +366,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
                                             std::memory_order_release);
         store->staged_initialized_ = false;
         store->staged_.clear();
+        store->dirty_ranges_.clear();
         store->inherited_manifest_.reset();
         store->inherited_catalog_.reset();
         store->data_durable_ = false;
@@ -359,17 +382,19 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
         job.framed.assign(job.physical_length, 0);
         std::copy_n(store->staged_.data() + job.source_offset, job.pack.ref.length, job.framed.data());
         for (uint32_t mirror = 0; mirror < job.mirrors.size(); ++mirror) {
-            job.mirrors[mirror] = {.transport      = store->transport_,
-                                   .chunk_id       = job.pack.ref.chunk_id,
-                                   .mirror_index   = mirror,
-                                   .offset         = job.pack.ref.offset,
-                                   .bytes          = &job.framed,
-                                   .cancellation   = cancellation,
-                                   .retry_limit    = store->config_.mirror_retry_limit,
-                                   .failure_mask   = &store->mirror_write_failure_mask_,
-                                   .attempts       = &store->mirror_write_attempts_,
-                                   .failures       = &store->mirror_write_failures_,
-                                   .stop_requested = &stop_requested};
+            job.mirrors[mirror] = {.transport         = store->transport_,
+                                   .chunk_id          = job.pack.ref.chunk_id,
+                                   .mirror_index      = mirror,
+                                   .offset            = job.pack.ref.offset,
+                                   .bytes             = &job.framed,
+                                   .cancellation      = cancellation,
+                                   .retry_limit       = store->config_.mirror_retry_limit,
+                                   .failure_mask      = &store->mirror_write_failure_mask_,
+                                   .attempts          = &store->mirror_write_attempts_,
+                                   .failures          = &store->mirror_write_failures_,
+                                   .stop_requested    = &stop_requested,
+                                   .diskio_operations = &store->diskio_operations_,
+                                   .diskio_latency_ns = &store->diskio_latency_ns_};
         }
         auto sender   = stdexec::when_all(CallbackSender(&job.mirrors[0], &MirrorWriteSource::submit),
                                           CallbackSender(&job.mirrors[1], &MirrorWriteSource::submit),
@@ -381,7 +406,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
 
     void remember_orphan_segments()
     {
-        store->orphan_bytes_.fetch_add(manifest->logical_size - manifest->pack_bytes_reused, std::memory_order_relaxed);
+        store->orphan_bytes_.fetch_add(new_pack_bytes(), std::memory_order_relaxed);
         auto ids = ChunkPageStore::reference_segment_ids(*manifest);
         store->orphan_reference_segments_.insert(store->orphan_reference_segments_.end(), ids.begin(), ids.end());
     }
@@ -393,6 +418,15 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
         store->active_chunk_cursor_ = 0;
         store->orphan_bytes_.fetch_add(orphan_pack_bytes.load(std::memory_order_relaxed), std::memory_order_relaxed);
         return status;
+    }
+
+    [[nodiscard]] uint64_t new_pack_bytes() const
+    {
+        uint64_t bytes = 0;
+        for (const auto &write : writes) {
+            bytes += write->pack.ref.length;
+        }
+        return bytes;
     }
 
     ChunkPageStore                         *store;

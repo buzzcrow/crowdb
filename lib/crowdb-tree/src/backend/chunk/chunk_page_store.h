@@ -21,7 +21,7 @@
 namespace crowdb::tree::detail
 {
 
-inline constexpr uint32_t kChunkManifestFormat = 2;
+inline constexpr uint32_t kChunkManifestFormat = 3;
 
 class ChunkAsyncExecutor;
 class ChunkPackPipeline;
@@ -178,25 +178,37 @@ class MemoryRootCatalog final : public RootCatalog
 
 struct ChunkPageStoreStats
 {
-    uint64_t generations_published         = 0;
-    uint64_t packs_written                 = 0;
-    uint64_t pack_bytes_written            = 0;
-    uint64_t packs_reused                  = 0;
-    uint64_t pack_bytes_reused             = 0;
-    uint64_t pack_reads                    = 0;
-    uint64_t cache_hits                    = 0;
-    uint64_t layout_queries                = 0;
-    uint64_t mirror_write_attempts         = 0;
-    uint64_t mirror_write_failures         = 0;
-    uint64_t retained_manifests            = 0;
-    uint64_t pinned_bytes                  = 0;
-    uint64_t oldest_pin_age_ms             = 0;
-    uint64_t orphan_bytes                  = 0;
-    uint64_t materialization_passes        = 0;
-    uint64_t materialization_failures      = 0;
-    uint64_t materialization_packs_written = 0;
-    uint64_t materialization_bytes_written = 0;
-    uint64_t shared_packs                  = 0;
+    uint64_t generations_published           = 0;
+    uint64_t packs_written                   = 0;
+    uint64_t pack_bytes_written              = 0;
+    uint64_t packs_reused                    = 0;
+    uint64_t pack_bytes_reused               = 0;
+    uint64_t pack_reads                      = 0;
+    uint64_t cache_hits                      = 0;
+    uint64_t layout_queries                  = 0;
+    uint64_t mirror_write_attempts           = 0;
+    uint64_t mirror_write_failures           = 0;
+    uint64_t retained_manifests              = 0;
+    uint64_t pinned_bytes                    = 0;
+    uint64_t oldest_pin_age_ms               = 0;
+    uint64_t orphan_bytes                    = 0;
+    uint64_t materialization_passes          = 0;
+    uint64_t materialization_failures        = 0;
+    uint64_t materialization_packs_written   = 0;
+    uint64_t materialization_bytes_written   = 0;
+    uint64_t shared_packs                    = 0;
+    uint64_t rpc_operations                  = 0;
+    uint64_t rpc_latency_ns                  = 0;
+    uint64_t diskio_operations               = 0;
+    uint64_t diskio_latency_ns               = 0;
+    uint64_t coalesced_reads                 = 0;
+    uint64_t coalesced_read_bytes            = 0;
+    uint64_t completion_wakeups              = 0;
+    uint64_t materialization_scan_bytes      = 0;
+    uint64_t shared_metadata_segments        = 0;
+    uint64_t materialized_metadata_segments  = 0;
+    uint64_t manifest_publication_latency_ns = 0;
+    uint64_t recovery_latency_ns             = 0;
 };
 
 class ChunkPageStore final : public PageStore, public AsyncPageStore
@@ -250,6 +262,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     [[nodiscard]] ChunkPageStoreStats stats() const;
     uint64_t                          reclaim_orphans();
     Status                            materialize_ownership(uint64_t *bytes_written, bool *complete) override;
+    void set_materialization_live_extents(std::vector<std::pair<uint64_t, uint64_t>> extents) override;
 
     // Seed an unpublished destination from one immutable source generation.
     // Byte-identical packs are referenced directly by the next manifest;
@@ -290,17 +303,24 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     Status                validate_manifest(const ChunkManifest &manifest, const RootCatalog &catalog) const;
     Status                persist_reference_segments(ChunkManifest *manifest, const ChunkManifest *reuse_base);
     [[nodiscard]] std::shared_ptr<const ChunkManifest> reuse_base_manifest() const;
-    [[nodiscard]] const ChunkPagePack *find_reusable_pack(const ChunkManifest &base, uint64_t logical_offset,
-                                                          uint32_t length, uint32_t checksum,
-                                                          ChunkCancellation cancellation = {}) const;
-    static uint32_t                    reference_segment_checksum(const ChunkReferenceSegmentImage &segment);
-    static uint32_t                    manifest_checksum(const ChunkManifest &manifest);
-    static std::vector<uint64_t>       reference_segment_ids(const ChunkManifest &manifest);
+    [[nodiscard]] const ChunkPagePack        *find_reusable_pack(const ChunkManifest &base, uint64_t logical_offset,
+                                                                 uint32_t length, uint32_t checksum,
+                                                                 ChunkCancellation cancellation = {}) const;
+    [[nodiscard]] static const ChunkPagePack *find_pack_at(const ChunkManifest &base, uint64_t logical_offset,
+                                                           uint32_t length);
+    static uint32_t                           reference_segment_checksum(const ChunkReferenceSegmentImage &segment);
+    static uint32_t                           manifest_checksum(const ChunkManifest &manifest);
+    static std::vector<uint64_t>              reference_segment_ids(const ChunkManifest &manifest);
+    [[nodiscard]] bool                        pack_is_live(const ChunkPagePack &pack) const;
+    [[nodiscard]] bool                        range_was_written(uint64_t offset, uint64_t length) const;
+    void                                      record_completion_wakeup();
 
     Config                                                    config_;
     std::shared_ptr<RootCatalog>                              catalog_;
     std::shared_ptr<ChunkTransport>                           transport_;
     std::vector<uint8_t>                                      staged_;
+    std::vector<std::pair<uint64_t, uint64_t>>                dirty_ranges_;
+    std::vector<std::pair<uint64_t, uint64_t>>                materialization_live_extents_;
     bool                                                      staged_initialized_ = false;
     bool                                                      data_durable_       = false;
     bool                                                      anchor_dirty_       = false;
@@ -324,6 +344,18 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     std::atomic<uint64_t>                                     materialization_failures_{0};
     std::atomic<uint64_t>                                     materialization_packs_written_{0};
     std::atomic<uint64_t>                                     materialization_bytes_written_{0};
+    mutable std::atomic<uint64_t>                             rpc_operations_{0};
+    mutable std::atomic<uint64_t>                             rpc_latency_ns_{0};
+    mutable std::atomic<uint64_t>                             diskio_operations_{0};
+    mutable std::atomic<uint64_t>                             diskio_latency_ns_{0};
+    mutable std::atomic<uint64_t>                             coalesced_reads_{0};
+    mutable std::atomic<uint64_t>                             coalesced_read_bytes_{0};
+    std::atomic<uint64_t>                                     completion_wakeups_{0};
+    std::atomic<uint64_t>                                     materialization_scan_bytes_{0};
+    std::atomic<uint64_t>                                     materialized_metadata_segments_{0};
+    std::atomic<uint64_t>                                     manifest_publication_latency_ns_{0};
+    mutable std::atomic<uint64_t>                             recovery_latency_ns_{0};
+    mutable std::atomic<bool>                                 recovery_recorded_{false};
     std::vector<uint64_t>                                     orphan_reference_segments_;
     ChunkId                                                   active_chunk_id_;
     uint64_t                                                  active_chunk_bytes_  = 0;
