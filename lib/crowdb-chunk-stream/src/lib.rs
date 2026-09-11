@@ -26,6 +26,6 @@ pub use stream::{AppendRange, ChunkStream, ReadHint, ReadSegment, StreamConfig, 
 
 pub use crowdb_protocol::chunk_stream::{
     ActiveChunkDescriptor, StreamBinding, StreamBindingState, StreamExtentPage, StreamExtentPageFence,
-    StreamManifest, StreamName,
+    StreamManifest, StreamName, DEFAULT_STREAM_METADATA_GROUP_ID,
 };
 pub use crowdb_protocol::common::ChunkId;

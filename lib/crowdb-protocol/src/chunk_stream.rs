@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+pub const DEFAULT_STREAM_METADATA_GROUP_ID: u64 = 1;
+
 /// Stable opaque identity of one logical stream.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct StreamName {
@@ -52,6 +54,10 @@ mod tests {
         let second = StreamName::generate();
         assert!(first < second);
         assert_eq!(first.to_string().len(), 32);
+        assert_eq!(
+            super::StreamBinding::creating(first, None).metadata_group_id,
+            super::DEFAULT_STREAM_METADATA_GROUP_ID
+        );
     }
 }
 
@@ -76,6 +82,20 @@ pub struct StreamBinding {
     pub binding_generation: u64,
     pub state: StreamBindingState,
     pub owner_kind: Option<String>,
+}
+
+impl StreamBinding {
+    /// Creates an inactive binding in the default nonzero metadata group.
+    #[must_use]
+    pub fn creating(stream_name: StreamName, owner_kind: Option<String>) -> Self {
+        Self {
+            stream_name,
+            metadata_group_id: DEFAULT_STREAM_METADATA_GROUP_ID,
+            binding_generation: 1,
+            state: StreamBindingState::Creating,
+            owner_kind,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

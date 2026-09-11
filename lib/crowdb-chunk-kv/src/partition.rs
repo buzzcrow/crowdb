@@ -324,6 +324,11 @@ impl Partition {
             journal.as_ref(),
         )
         .await?;
+        if seed.applied_seq != artifact.applied_seq {
+            return Err(ChunkKvError::JournalCorruption(
+                "prepared child stream advanced beyond its artifact".into(),
+            ));
+        }
         Self::start(
             artifact.partition_id,
             artifact.range.clone(),
