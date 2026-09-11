@@ -43,8 +43,25 @@ object methods so fields propagate. Defaults remain file=`debug`, console=`info`
 
 ## Layout
 
+- Build a domain hierarchy, not a flat source directory. Keep crate/library
+  roots for entry points and top-level domain modules; place implementation
+  below the owning domain. `crowdb-kv/src/{cluster,paxos,wal}/` and
+  `crowdb-tree/src/{btree,mtable,backend}/` are the reference shape.
+- Before adding a file to a crowded directory, find its owning domain. Use an
+  existing subfolder or create a named domain module when the new concept has
+  multiple files or will grow independently. Group by product responsibility,
+  not by generic kinds such as `handlers/`, `types/`, or `utils/`.
 - Use the non-`mod.rs` layout: `foo.rs` + `foo/`; `foo.rs` contains module docs,
-  declarations, and re-exports.
+  declarations, and deliberate re-exports. Keep internal children private
+  unless callers need them.
+- For C++, mirror subsystem ownership between `include/<library>/` and `src/`
+  when an interface is public. Keep private headers beside their implementation
+  under `src/`. Use one intentional root umbrella header when useful; do not add
+  forwarding headers solely to preserve a flat include path unless compatibility
+  is an explicit requirement.
+- When an edited area is already flat, leave it better structured if the move
+  is cohesive with the task. Do not turn a focused change into an unrelated
+  repository-wide relocation.
 - Name files by domain subject, not kind, verb, transport, or legacy wording.
   Avoid `types.rs`, `impl.rs`, `core.rs`, `misc.rs`, and helper suffixes.
 - Keep one concept and one nameable responsibility per module. Group handlers by
