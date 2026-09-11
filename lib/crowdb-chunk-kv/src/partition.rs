@@ -415,6 +415,7 @@ impl Partition {
         key: &[u8],
         min_journal_position: Option<JournalPosition>,
     ) -> Result<Option<ValueRevision>> {
+        self.metrics.point_read();
         self.validate_epoch(ownership_epoch)?;
         if !self.range.contains(key) {
             self.metrics.range_reject();
@@ -484,6 +485,7 @@ impl Partition {
                 .zip(partition_start)
                 .is_some_and(|(end, start)| end <= start)
         {
+            self.metrics.forward_scan(0);
             return Ok(ScanPage {
                 entries: Vec::new(),
                 truncated: false,
@@ -507,6 +509,7 @@ impl Partition {
                 "tree scan returned a key outside the partition".into(),
             ));
         }
+        self.metrics.forward_scan(entries.len());
         Ok(ScanPage { entries, truncated })
     }
 

@@ -5,6 +5,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Default)]
 pub struct PartitionMetrics {
+    point_reads: AtomicU64,
+    forward_scans: AtomicU64,
+    scan_entries: AtomicU64,
     mutation_requests: AtomicU64,
     mutation_applied: AtomicU64,
     condition_failed: AtomicU64,
@@ -23,6 +26,9 @@ pub struct PartitionMetrics {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PartitionMetricsSnapshot {
+    pub point_reads: u64,
+    pub forward_scans: u64,
+    pub scan_entries: u64,
     pub mutation_requests: u64,
     pub mutation_applied: u64,
     pub condition_failed: u64,
@@ -43,6 +49,9 @@ impl PartitionMetrics {
     #[must_use]
     pub fn snapshot(&self) -> PartitionMetricsSnapshot {
         PartitionMetricsSnapshot {
+            point_reads: self.point_reads.load(Ordering::Relaxed),
+            forward_scans: self.forward_scans.load(Ordering::Relaxed),
+            scan_entries: self.scan_entries.load(Ordering::Relaxed),
             mutation_requests: self.mutation_requests.load(Ordering::Relaxed),
             mutation_applied: self.mutation_applied.load(Ordering::Relaxed),
             condition_failed: self.condition_failed.load(Ordering::Relaxed),
@@ -58,6 +67,16 @@ impl PartitionMetrics {
             split_commits: self.split_commits.load(Ordering::Relaxed),
             split_aborts: self.split_aborts.load(Ordering::Relaxed),
         }
+    }
+
+    pub(crate) fn point_read(&self) {
+        self.point_reads.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn forward_scan(&self, entries: usize) {
+        self.forward_scans.fetch_add(1, Ordering::Relaxed);
+        self.scan_entries
+            .fetch_add(u64::try_from(entries).unwrap_or(u64::MAX), Ordering::Relaxed);
     }
 
     pub(crate) fn mutation_request(&self) {

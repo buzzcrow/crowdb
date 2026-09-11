@@ -280,6 +280,8 @@ async fn forward_scan_is_bounded_and_clipped_to_the_partition() {
         vec![b"b".as_slice(), b"c".as_slice()]
     );
     assert!(page.truncated);
+    assert_eq!(partition.metrics().snapshot().forward_scans, 1);
+    assert_eq!(partition.metrics().snapshot().scan_entries, 2);
 
     let empty = partition
         .scan_forward(4, Some(b"z"), None, 10, 1024, None)

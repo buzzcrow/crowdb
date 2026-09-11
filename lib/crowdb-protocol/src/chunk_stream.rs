@@ -20,12 +20,38 @@ impl StreamName {
     #[must_use]
     pub fn generate() -> Self {
         static SEQUENCE: AtomicU64 = AtomicU64::new(1);
-        let duration = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+        static LAST_NANOS: AtomicU64 = AtomicU64::new(0);
+        let now = u64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+        )
+        .unwrap_or(u64::MAX);
+        let previous = LAST_NANOS
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |previous| {
+                Some(now.max(previous.saturating_add(1)))
+            })
+            .unwrap_or_else(|previous| previous);
+        let timestamp = now.max(previous.saturating_add(1));
         Self {
-            high: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
-            low: (u64::from(duration.subsec_nanos()) << 32)
+            high: timestamp,
+            low: (u64::from(std::process::id()) << 32)
                 | (SEQUENCE.fetch_add(1, Ordering::Relaxed) & u64::from(u32::MAX)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StreamName;
+
+    #[test]
+    fn generated_names_are_unique_ordered_and_fixed_width() {
+        let first = StreamName::generate();
+        let second = StreamName::generate();
+        assert!(first < second);
+        assert_eq!(first.to_string().len(), 32);
     }
 }
 
