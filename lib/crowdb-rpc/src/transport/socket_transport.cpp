@@ -520,13 +520,6 @@ bool SocketTransport::submit(Connection *conn, OutFrame *frame)
     if (tl_current_worker != nullptr) {
         if (!conn->is_open()) {
             CRB_LOG_WARN("submit: closed conn on worker thread conn_id={}", static_cast<long long>(conn->id()));
-            if (frame->control != nullptr) {
-                frame->control->release();
-            }
-            if (frame->data != nullptr) {
-                frame->data->release();
-            }
-            delete frame;
             return false;
         }
     }
@@ -537,14 +530,7 @@ bool SocketTransport::submit(Connection *conn, OutFrame *frame)
         if (lookup.has_value()) {
             auto &conn_ptr = lookup.value();
             if (conn_ptr == nullptr) {
-                CRB_LOG_WARN("submit: stale handle, dropping frame conn_id={}", static_cast<long long>(conn->id()));
-                if (frame->control != nullptr) {
-                    frame->control->release();
-                }
-                if (frame->data != nullptr) {
-                    frame->data->release();
-                }
-                delete frame;
+                CRB_LOG_WARN("submit: stale connection handle");
                 return false;
             }
             conn = conn_ptr.get();
@@ -565,17 +551,13 @@ bool SocketTransport::submit(Connection *conn, OutFrame *frame)
             }
             return true;
         }
-        // Overflow also full — drop the frame (last resort).
+        // Overflow also full — reject the frame (last resort). Ownership
+        // remains with the caller on every false return.
         cnt_send_queue_full().inc();
         stats_.send_queue_rejects.fetch_add(1, std::memory_order_relaxed);
         CRB_LOG_WARN("submit: enqueue_send + overflow failed (backpressure) conn_id={} name={} request_id={}",
                      static_cast<long long>(conn->id()), conn->name(),
                      static_cast<unsigned long long>(frame->request_id));
-        if (frame->control != nullptr)
-            frame->control->release();
-        if (frame->data != nullptr)
-            frame->data->release();
-        delete frame;
         return false;
     }
 

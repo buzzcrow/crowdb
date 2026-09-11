@@ -43,7 +43,9 @@ class Transport
 
     // Submit an OutFrame on a connection (non-blocking). Pushes to the
     // send queue and wakes the worker. Returns true on success, false if
-    // the queue is full (backpressure) or the connection is closed.
+    // the queue is full (backpressure) or the connection is closed. A true
+    // return transfers frame ownership to the transport; on false, ownership
+    // remains with the caller.
     // The caller (RpcClient) builds the OutFrame with request_id,
     // header, and pool-allocated control/data buffers already set.
     virtual bool submit(Connection *conn, OutFrame *frame) = 0;

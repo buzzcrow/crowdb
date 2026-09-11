@@ -89,6 +89,9 @@ class Connection
     // Returns true on success, false if overflow is also full.
     bool enqueue_overflow(OutFrame *frame)
     {
+        if (!is_open()) {
+            return false;
+        }
         return overflow_.try_push(frame);
     }
 

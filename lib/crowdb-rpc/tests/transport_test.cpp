@@ -99,6 +99,14 @@ TEST_F(TransportLoopbackTest, StopClosesRegisteredConnectionDescriptors)
     errno = 0;
     EXPECT_EQ(fcntl(server_fd, F_GETFL), -1);
     EXPECT_EQ(errno, EBADF);
+
+    auto *control     = transport.pool()->alloc(1);
+    auto *rejected    = new OutFrame();
+    rejected->control = control;
+    EXPECT_FALSE(transport.submit(server_conn.get(), rejected));
+    control->release();
+    delete rejected;
+
     ::close(client_fd);
 }
 
