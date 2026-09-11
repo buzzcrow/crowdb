@@ -533,3 +533,9 @@ Required gates:
 - `pixi run -- cargo test -p crowdb-chunk-stream --all-targets`
 - `pixi run -- cargo test -p crowdb-chunk-kv --all-targets`
 - `pixi run clean-env && pixi run test-server`
+
+## Open Questions
+
+None. The remaining work is implementation, integration, empirical tuning, or
+environment repair and is tracked in
+[`../working/plan-chunk-kv-library.md`](../working/plan-chunk-kv-library.md).

@@ -154,10 +154,12 @@ KV group and only its registry binding in group 0.
     appends, reads, or performs stream GC directly. Ownership transfer reopens
     the same stream and chunks under a higher epoch; split creates separate
     child stream identities as part of the child artifacts.
-12. Allocate every stream chunk with a stream-specific chunk type and owner key
-    containing an owner-kind prefix plus `StreamName`. R146 owns the compatible
-    chunk-record extension and the restart-safe lease sweep that seals abandoned
-    non-empty chunks and deletes abandoned zero-length chunks. Superseded or
+12. Add the stream-specific chunk type and the backward-compatible chunk-record
+    `owner_key` extension needed by the production writer. Every new stream
+    chunk carries an owner-kind prefix plus `StreamName`; old records decode as
+    shared/unattributed. R146 builds on this landed schema with the generic
+    restart-safe lease sweep that seals abandoned non-empty chunks and deletes
+    abandoned zero-length chunks across all chunk users. Superseded or
     unreachable stream metadata is a separate watermark-driven metadata-GC
     concern because chunkdb cannot infer metadata reachability.
 13. Bound active append buffers, in-flight mirror writes, extent-page size,
@@ -196,10 +198,11 @@ metadata-group scale-out is not attempted in this requirement.
 
 - Depends on `crowdb-chunk-client` and chunkdb for three-way mirror allocation,
   fenced acknowledged cursors, sealing, range reads, complete-strip deletion,
-  and orphan cleanup. It reuses the existing `Location` mapping semantics but
-  owns the multi-chunk stream index. R141 adds the direct-buffer one-chunk
-  `MirrorChunkWriter`; R146 adds stream owner metadata and expired-owner
-  cleanup.
+  and orphan detection/reporting. It reuses the existing `Location` mapping
+  semantics but owns the multi-chunk stream index. R141 adds the direct-buffer
+  one-chunk `MirrorChunkWriter`, the Stream chunk type, and compatible owner
+  metadata; R146 later adds expired-owner cleanup and extends the contract
+  uniformly to all chunk types.
 - Depends on group-0 sysdata and `crowdb-kv-client` for the stream registry, and
   on an ordinary nonzero CROWDB KV group for manifests and extent pages. R141
   adds protocol key/value types for both. Tests may inject in-memory registry
@@ -342,3 +345,15 @@ Required gates:
 - `pixi run test-chunk-client`
 - `pixi run -- cargo test -p crowdb-chunk-stream --all-targets`
 - `pixi run clean-env && pixi run test-server`
+
+## Open Issues
+
+- None blocking implementation after R101 lands. R142 supplies the production
+  ownership epoch and R143 supplies production registry bindings, but R141's
+  interfaces accept injected authority and registry implementations so its
+  standalone implementation and tests do not depend on those later
+  requirements.
+- Non-blocking lifecycle follow-up: until deferred R146 lands, a crashed
+  writer's abandoned Active stream chunk remains allocated. R141 never resumes
+  it, reports it as an orphan, and allocates a fresh chunk, so this is bounded
+  by operational cleanup rather than a stream-safety gap.

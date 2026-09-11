@@ -140,16 +140,7 @@ memory independently of the per-partition request/frame budgets.
 Lock-free metrics cover request results, range and epoch rejects, queue and
 memory admission, lifecycle states, logical/WAL/applied/checkpoint frontiers,
 stalls, recovery, maintenance degradation, scans/seeks, split base/catch-up/
-fence work, page reuse, pins, abandoned artifacts, and transfer.
-
-## Open Issues
-
-- Production R140 chunk-page-store construction still needs a Rust constructor
-  over the private native C ABI; initial sequencer tests use injected trees.
-- Reverse seek/scan needs the planned C++ L0/L1 directional cursor extension.
-- R143 must supply durable catalog plans, exact commit/abort proofs, leases,
-  and production stream registry/metadata adapters.
-- Production checkpoint retention, orphan enumeration, post-split mapping
-  materialization, and shared-pack repack remain to be wired to durable
-  metadata watermarks.
-- Replay, split-fence, memory, and latency defaults require hardware evidence.
+fence work, page reuse, pins, abandoned artifacts, and transfer. Remaining
+implementation and integration work is tracked only in
+[`plan-chunk-kv-library.md`](plan-chunk-kv-library.md); R142 has no unresolved
+human design decision.

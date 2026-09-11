@@ -44,8 +44,9 @@ Reuse chunkdb's persisted writer lease and expired-writer sweep for **all
 chunk types** (`Stream`, `Repo`, `Wal`, `BtreePage`, `PageIndex`), with durable
 owner identity and periodic renewal independent of write traffic.
 
-1. Extend chunk metadata with `owner_key: bytes` and add the `Stream` chunk
-   type. A nonempty owner key starts with an owner-kind prefix followed by its
+1. Reuse R141's backward-compatible `owner_key: bytes` extension and `Stream`
+   chunk type, and extend their ownership contract to all chunk users. A
+   nonempty owner key starts with an owner-kind prefix followed by its
    canonical identity: a 128-bit `StreamName` for stream chunks, the matching
    tree identity for B+tree chunks, and the object identity for repository
    chunks. Validate that the prefix matches `chunk_type`. An empty owner key is
@@ -93,11 +94,11 @@ owner identity and periodic renewal independent of write traffic.
 ## Dependencies
 
 - Depends on R140 for B+tree chunk type usage, fresh-on-restart allocation,
-  writer epochs, and acknowledged cursors, and on R141 for stream chunk
-  identity and production allocation.
+  writer epochs, and acknowledged cursors, and on R141 for the compatible
+  owner-key schema, stream chunk identity, and production allocation.
 - Reuses chunkdb's durable writer fields, per-chunk lifecycle guard, bounded
   `list_chunks` scan, reservation reconciliation, and server-time lease logic.
-  R146 makes their owner identity explicit and extends the sweep uniformly to
+  R146 extends R141's attributed Stream ownership and the sweep uniformly to
   `Stream`, `Repo`, `Wal`, `BtreePage`, and `PageIndex`.
 - R147 consumes the resulting sealed chunks for physical strip reclamation.
 - R142 supplies production tree ownership and shutdown sequencing but is not

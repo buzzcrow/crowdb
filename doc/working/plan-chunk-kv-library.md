@@ -16,13 +16,17 @@ whose ordered journal is R141 and whose durable tree is R140.
   checkpoint, split plan/artifact/proof, and typed error models.
 - [x] Implement canonical operation digests and checksummed bounded WAL frame
   encode/decode with corruption and incomplete-tail handling.
-- [ ] Extend WAL framing with the physical `chunk_id` trailer: submit
+- [~] Extend WAL framing with the physical `chunk_id` trailer: submit
   header+body+CRC through R141 chunk-bound append, validate the trailer against
   read provenance, and keep the durable cursor as the recovery upper bound.
   Files: `lib/crowdb-chunk-kv/src/partition/`,
   `lib/crowdb-chunk-kv/tests/`.
 - [x] Add private journal and tree contracts plus in-memory `test-util`
   implementations; do not expose a raw R141 stream from the partition API.
+- [ ] Add production adapters for R140 native tree construction and the R141
+  stream registry, metadata store, and chunk store. Files:
+  `lib/crowdb-chunk-kv/src/`, `lib/crowdb-tree-ffi/`,
+  `lib/crowdb-chunk-stream/`.
 
 ## Phase 2: Partition Sequencer and Reads
 
@@ -32,9 +36,9 @@ whose ordered journal is R141 and whose durable tree is R140.
   request results/digests, and publish durable/applied frontiers.
 - [ ] Implement range-checked point reads, min-position waits, bounded scans,
   and forward seek; add real C++ reverse cursor support for reverse operations.
-- [~] Cover multi-partition independence, retries/conflicts/expiry, concurrent
+- [ ] Cover multi-partition independence, retries/conflicts/expiry, concurrent
   conditions, pending-read visibility, stalls, and apply uncertainty.
-- [~] Expose per-partition lock-free counters for mutation outcomes, rejects,
+- [ ] Expose per-partition lock-free counters for mutation outcomes, rejects,
   admission, stalls, recovery, checkpoints, and split control; ordered-read,
   maintenance, pin, and detailed split-work metrics remain open.
 
@@ -46,45 +50,38 @@ whose ordered journal is R141 and whose durable tree is R140.
   reject sequence/epoch/digest conflicts and recover one partition only.
 - [x] Fence/drain a lower epoch and reopen the same tree and stream identities
   at a higher epoch without data copy.
+- [ ] Wire checkpoint retention, orphan reporting, and prefix reclamation to
+  durable R141 metadata watermarks. Files: `lib/crowdb-chunk-kv/src/`,
+  `lib/crowdb-chunk-stream/src/`.
 
 ## Phase 4: Online Split
 
-- [~] Validate idempotent split preparation state and exact typed catalog
+- [ ] Validate idempotent split preparation state and exact typed catalog
   proofs; durable plan persistence and base pinning remain R143/production
   adapter work.
 - [ ] Rebuild exact children from one R140 manifest and replay serving deltas
   with matching mutation/no-op sequence advancement.
 - [ ] Enforce lag limits, fence/drain the parent, checkpoint both children at
   cutover `c`, and return one immutable prepared artifact.
-- [~] Resolve exact commit/abort proofs fail-closed; bounded post-commit
+- [ ] Open assigned children as non-serving `Prepared` handles and activate
+  them only after exact catalog proof. Files: `lib/crowdb-chunk-kv/src/`,
+  `lib/crowdb-chunk-kv/tests/`.
+- [ ] Resolve exact commit/abort proofs fail-closed; bounded post-commit
   materialization/repack remains production adapter work.
 
 ## Phase 5: Gates and Documentation
 
-- [~] Run C++ format/lint/tree tests, Rust format/lint, stream/chunk-KV tests,
+- [ ] Run C++ format/lint/tree tests, Rust format/lint, stream/chunk-KV tests,
   and the server gate through `pixi run`. All source/test gates pass except
   `tree-lint`, which is blocked by missing clang sysroot/dependency headers;
   the aggregate server gate hit one cross-test hang that passes in isolation.
-- [x] Fold the stable design into `doc/design/kv/` and update the document
-  index while preserving unresolved production items in the final section.
+  The complete 473-test tree suite requires a file-descriptor limit above the
+  default 1024 because of two sparse-block GC tests.
+- [ ] Measure queue, replay, split-fence, latency, and memory behavior on target
+  hardware and commit evidence-backed defaults. Files:
+  `lib/crowdb-chunk-kv/`, `tools/`.
+- [x] Fold the stable design into `doc/design/chunkds/`, update the document
+  index, and keep only unresolved human decisions in the backlog's final
+  `Open Questions` section.
 - [ ] Remove completed backlog files only in a separate cleanup commit after
   every required production acceptance is satisfied.
-
-## Open Issues
-
-- Production R140 page-store and R141 registry/metadata/chunk adapters are not
-  yet simultaneously constructible from this library.
-- Reverse C++ cursors, durable catalog proofs, checkpoint retention, orphan
-  reporting, and post-split physical separation remain implementation work.
-- Online child base rebuild, serving delta catch-up, and prepared-child
-  activation still need production R140 tree construction and manifest pins.
-- Hardware evidence is required before finalizing queue, replay, fence, and
-  memory defaults.
-- Metrics still need scan/seek direction, page reuse/pins, replay duration,
-  maintenance degradation, and split base/catch-up/fenced-time observations.
-- The default 1024 file-descriptor limit is insufficient for two existing
-  sparse-block GC tests; the complete 473-test tree suite passes with 65536.
-- `tree-lint` cannot resolve the configured C/C++ sysroot and dependency
-  headers (`stddef.h`, spdlog, ISA-L, and liburing) in this environment.
-- The aggregate server gate stalled once in the chunk-client large-object E2E
-  suite; the named slow test passes in isolation after `clean-env`.

@@ -5,8 +5,8 @@
 
 ## Status
 
-Re-proposed with a reviewed design: evaluate revision preconditions on the
-leader before proposal, serialize conditional mutations through a
+Ready for implementation after final review: evaluate revision preconditions
+on the leader before proposal, serialize conditional mutations through a
 `cas_transient_map`, and put only the resulting ordinary mutation batch in
 Paxos. Different keys retain parallel-slot concurrency and replicas never
 evaluate a condition.
@@ -84,15 +84,31 @@ or replay.
    - Add `put_cas` and conditional `batch_write` surfaces in
      `lib/crowdb-kv-client`. Existing `put` and `batch_write` signatures and
      blind behavior remain unchanged.
+   - Require conditional requests to carry nonzero `(client_id, seq)` and keep
+     that identity unchanged across retries that are known not to have
+     allocated a slot. The server checks learner deduplication before claiming
+     the transient key or reading its revision. While that learner retains the
+     entry, a retry of an already applied CAS returns its original chosen slot
+     instead of comparing the old expected revision with the new value.
+     Existing dedup state is not durable across leader replacement, so any
+     post-send transport ambiguity returns `OutcomeUnknown` for caller-driven
+     read reconciliation rather than transparently retrying on another leader.
+   - Correct proposal adoption before relying on dedup: the current request's
+     dedup tag accompanies only its own payload. If Phase 1 adopts a foreign
+     payload, choose and apply it with no current-request tag, then recheck the
+     guarded condition before retrying the current payload. Never record the
+     current `(client_id, seq)` against the adopted foreign slot.
    - Require the precondition key to occur as a mutation in the batch. For a
      Set request it must equal the Set key. `expected_revision=0` is legal for
      Put/create, but not Delete of an absent key.
 
 2. **Conditional admission and check order**
 
-   - Add a per-group lock-free `cas_transient_map` owned by `PxGroup`, using
-     the existing `crossbeam_skiplist::SkipMap<Bytes, CasOwnerToken>`
-     dependency. It maps each unresolved precondition key to a unique
+   - Add a per-group lock-free `cas_transient_map` owned by `PxGroup`, and
+     promote the existing benchmark-only `crossbeam-skiplist` dependency in
+     `lib/crowdb-kv/Cargo.toml` to a normal dependency. Use
+     `crossbeam_skiplist::SkipMap<Bytes, CasOwnerToken>` to map each unresolved
+     precondition key to a unique
      `(tenure, request)` ownership token. Only conditional requests touch it;
      the blind write hot path remains unchanged.
    - Claim with `compare_insert(key, token, replace_if_stale_tenure)` and
@@ -138,6 +154,11 @@ or replay.
      applied before releasing its key guards and returning success. The
      existing contiguous applied fence may be reused initially; a per-slot
      completion notification is an optimization.
+   - Success means the conditional payload was chosen at slot S and local
+     apply has resolved S. A blind mutation at a higher slot may already win
+     the protected key, so the post-fence engine revision need only be at least
+     S; it is not required to equal S. This is the permitted blind-write
+     overwrite semantics, not a CAS failure.
    - Run the guarded protocol in a group-owned task. RPC cancellation drops
      only the response waiter, not the task or its guards.
    - A guard is not an ordinary return-path Drop guard. It may be released only
@@ -165,12 +186,19 @@ or replay.
 
 5. **Leadership recovery barrier**
 
-   - Set conditional-write readiness false before a multi-replica candidate is
-     exposed as a CAS-serving leader. The existing role/term proposal gate is
-     not sufficient because bulk Phase 1 currently runs after leader promotion.
+   - Use one leader-recovery readiness barrier for both linearizable reads and
+     conditional writes. Set it false before a multi-replica candidate is
+     exposed as either kind of serving leader. The existing role/term proposal
+     gate is not sufficient because bulk Phase 1 currently runs after leader
+     promotion.
    - Resolve every pre-tenure slot through the election ceiling and apply every
      recovered value locally. A failed slot repair keeps conditional-write
      readiness false; it must not be skipped followed by a ready transition.
+     In particular, change `cluster/group_election.rs::run_bulk_phase1`, whose
+     current loop continues after a failed Prepare/Accept and unconditionally
+     sets `leader_read_ready=true` at the end. The sweep completes ready only
+     if every slot in the range resolved and the contiguous local apply fence
+     reached the ceiling; otherwise it remains fail-closed for the tenure.
    - Set conditional-write readiness true only after that resolve-and-apply
      barrier completes. A new leader then needs no predecessor's temporary key
      map: all prior conditional writes are represented by ordinary applied
@@ -209,9 +237,17 @@ or replay.
      `freed_count`.
    - Extend `FreeResponse` and `FBFreeResponse` with append-only per-segment
      failures. Keep `freed_count`; add entries containing the original segment
-     and a stable reason (`NotBusy`, `IncarnationMismatch`, `Conflict`, or
-     `OutcomeUnknown`). A completed partial request uses the Success top-level
+     and a stable reason (`NotBusy`, `IncarnationMismatch`, `Conflict`,
+     `Unavailable`, or `OutcomeUnknown`). `Unavailable` means the request was
+     definitely not sent; an ambiguous transport completion maps to
+     `OutcomeUnknown`. A completed partial request uses the Success top-level
      code and requires the caller to inspect the failures.
+   - Preserve those per-segment results when
+     `lib/crowdb-diskdb-client::free_blocks` splits one request across disk
+     groups. A subgroup routing or transport failure becomes one failure entry
+     for each affected segment, while successful subgroup counts and failures
+     are still returned; it must not discard earlier success by returning the
+     first subgroup error.
    - Preserve idempotent retries: if BusyBlockKey is absent but the matching
      FreeBlockKey and value already exist, count that segment as freed rather
      than return `NotBusy`. If both are absent, return `NotBusy`.
@@ -223,15 +259,22 @@ or replay.
      The tentative cache must retain the Busy Put's returned KV revision for a
      later conditional commit, or `commit_blocks` must fall back to the
      fallible versioned KV lookup.
-   - Adapt compaction to the new proof: a successfully written free fact no
-     longer needs a live busy record because the conditional batch already
+   - Adapt compaction to the new proof: a successfully written free fact with
+     no live busy record is sufficient because the conditional batch already
      validated and deleted the exact busy revision. Compaction clears the
-     conservative bitmap range from the free fact, writes `ZoneValue`, and
+     conservative bitmap range from that free fact, writes `ZoneValue`, and
      deletes the processed free fact atomically.
-   - Preserve mixed-version cleanup: legacy free facts may coexist with their
-     busy records. Compaction continues full incarnation matching for those
-     pairs and conditionally deletes the matched busy revision. New-format
-     free facts with no busy record use the direct-free proof.
+   - Preserve mixed-version cleanup with an explicit two-stage migration.
+     Legacy free facts coexist with their busy records. For each full
+     incarnation match, first run one conditional batch guarded by that busy
+     revision: `Delete BusyBlockKey + Put the same FreeBlockKey/value`. Process
+     these pairs independently with bounded concurrency and reconcile unknown
+     outcomes by rereading both keys. Only a later compaction scan that sees
+     the free fact and no busy record may treat it as direct-free proof and
+     include it in the atomic `ZoneValue + Delete FreeBlockKey` batch. A crash
+     between the stages therefore leaks space temporarily but cannot lose the
+     durable evidence needed to clear the bitmap. A legacy mismatch remains
+     untouched for diagnosis and must not clear bitmap bits.
    - The in-memory bitmap remains conservative and is still cleared only by
      compaction. R101 removes the delayed busy-record validation compromise;
      it does not move bitmap reuse onto the free RPC hot path.
@@ -260,8 +303,9 @@ or replay.
 
 ## Acceptance
 
-- Given revision N, `put_cas(expected=N)` succeeds, applies at revision S, and
-  releases its guard only after the local engine reports S. Unit test.
+- Given revision N, `put_cas(expected=N)` is chosen at S and releases its guard
+  only after local apply resolves S; if a higher-slot blind write already won,
+  success remains valid and the visible revision is greater than S. Unit test.
 - Given a different revision, CAS returns `CasFailed` with the current
   revision and allocates no slot. Unit test.
 - Given an absent key, Put with expected revision 0 succeeds; the same request
@@ -289,17 +333,28 @@ or replay.
 - Given RPC cancellation after slot allocation, the group-owned task keeps the
   guard and resolves the slot before admitting another same-key CAS.
   Integration test.
+- Given a successful CAS response is lost while the original leader's dedup
+  entry remains available, retrying the same nonzero `(client_id, seq)` returns
+  the original chosen slot without rechecking the now-stale expected revision
+  or allocating another slot. Given a post-send transport ambiguity that may
+  cross leaders, the client returns `OutcomeUnknown` instead of transparently
+  resubmitting. Integration test.
 - Given a partially Accepted conditional slot, higher-ballot closure chooses
   the required adopted value or NoOp; it never overwrites an Accepted value
   illegally. Paxos integration test.
 - Given an adopted foreign value that changes a guarded key, the conditional
   request rechecks and fails instead of copying its stale decision into a new
   slot. Paxos integration test.
+- Given Phase 1 adopts a foreign payload, its slot records no dedup tag from the
+  current conditional request; a later retry cannot return that foreign slot
+  as the request's successful outcome. Paxos integration test.
 - Given leader loss with an unresolved conditional slot, the new leader rejects
   CAS until bulk Phase 1 resolves and locally applies the complete recovery
   range. Paxos integration test.
 - Given a repair failure inside that range, conditional-write readiness stays
-  false. Paxos integration test.
+  false, linearizable-read readiness does not advance past the same incomplete
+  barrier, and the leader does not advertise recovery completion. Paxos
+  integration test.
 - Given a concurrent blind write, no CAS-relative ordering assertion is made;
   all replicas still converge by ordinary highest-slot-wins apply. Integration
   test.
@@ -311,14 +366,19 @@ or replay.
   every valid segment is freed, `freed_count` reports those successes, and the
   response identifies every segment that was not freed with its reason.
   Integration test.
+- Given a multi-disk-group free where one subgroup succeeds and another is
+  unreachable, the diskdb client returns the successful count plus one stable
+  failure for every segment in the unavailable subgroup. Integration test.
 - Given a retried segment whose busy key is absent and matching free fact is
   present, diskdb reports it as already freed successfully. Integration test.
 - Given a committed direct-free batch and delayed compaction, recovery remains
   conservative; compaction later clears the bitmap and removes the free fact.
   Integration test.
 - Given legacy busy-plus-free records during upgrade, compaction validates the
-  incarnation and migrates them without deleting a newer allocation.
-  Integration test.
+  incarnation, conditionally migrates each matching pair to free-without-busy,
+  and only a subsequent safe compaction clears its bitmap range. A crash at
+  either stage retains enough durable state to retry, and a newer allocation
+  is never deleted. Integration test.
 - Existing blind Put, Delete, and BatchWrite requests retain their wire and
   highest-slot-wins behavior. Integration test.
 
@@ -331,3 +391,9 @@ Run:
 - `pixi run -- cargo test -p crowdb-chunkdb --test lifecycle_test cas`
 - `pixi run -- cargo fmt --all -- --check`
 - `pixi run -- cargo clippy --all-targets -- -D warnings`
+
+## Open Issues
+
+- None blocking implementation. Close R101 only after the CAS API,
+  deduplicated retry behavior, recovery-readiness barrier, diskdb migration,
+  and affected integration tests have landed. R141 may start after that.

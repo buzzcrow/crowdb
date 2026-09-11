@@ -120,20 +120,3 @@ and stale-epoch rejection, admission backpressure, write stalls, unknown apply
 outcomes, recoveries, checkpoints, and split lifecycle events. Snapshot
 frontiers expose lifecycle, stream identity, durable sequence, and applied
 sequence without combining independent partitions.
-
-## Open Issues
-
-- Production R140 chunk-page-store construction still needs a Rust constructor
-  over the private native C ABI; injected trees currently exercise the state
-  machine and lifecycle contracts.
-- Forward inclusive seek and reverse seek/scan require the planned native C++
-  L0/L1 directional cursor API. They must not be emulated with a racy `get`
-  followed by `scan` or by client-side sorting.
-- Online split still needs production manifest pinning, parallel bounded child
-  rebuild, serving delta catch-up, lag-budget enforcement, prepared-child open,
-  and post-commit mapping materialization/repack.
-- R143 must provide durable catalog plans, leases, exact commit/abort proofs,
-  and production stream registry, metadata, and chunk adapters.
-- Metrics still need ordered-read direction, page reuse and pins, detailed
-  replay timing, maintenance degradation, and split base/catch-up/fence work.
-- Queue, replay, split-fence, and memory defaults require hardware evidence.
