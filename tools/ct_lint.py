@@ -38,7 +38,7 @@ DEFAULT_JOBS = 10
 LIBURING_GATED_FILES = {
     "lib/crowdb-tree/include/crowdb-tree/reactor.h",
     "lib/crowdb-tree/src/reactor.cpp",
-    "lib/crowdb-tree/src/block_async_page_store.cpp",
+    "lib/crowdb-tree/src/backend/local/block_async_page_store.cpp",
     "lib/crowdb-tree/tests/unit/reactor_test.cpp",
 }
 
