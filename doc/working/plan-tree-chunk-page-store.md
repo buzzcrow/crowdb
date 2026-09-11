@@ -132,7 +132,7 @@ and structurally safe range rebuild while preserving local tree behavior.
   cleanup, mixed packs, failure retry, stale materialization, reclamation
   watermark, and metric counts. Files:
   `tests/integration/chunk_materialization_test.cpp`.
-- [ ] **Verify archive isolation**: inspect ordinary and chunk server symbols,
+- [x] **Verify archive isolation**: inspect ordinary and chunk link surfaces,
   plus GCC/Clang public-header builds. Files:
   `tools/test-tree-chunk-link-isolation.sh`, pixi task definitions.
 - [ ] **Benchmark defaults**: record fixed workload limits and tune bounded
@@ -199,5 +199,7 @@ and structurally safe range rebuild while preserving local tree behavior.
   unreachable-slot materialization remain open.
 - Basic chunk-store counters, retention pins, logical orphan accounting, and
   bounded child pack materialization metrics exist. Immutable mapping-image
-  materialization, the full metric set, archive extraction checks, and
-  fixed-workload benchmark evidence remain absent.
+  materialization, the full metric set, and fixed-workload benchmark evidence
+  remain absent. Link-map and symbol checks keep chunk and RPC archive members
+  out of ordinary tree links, and GCC/Clang compile the public umbrella without
+  private async headers.

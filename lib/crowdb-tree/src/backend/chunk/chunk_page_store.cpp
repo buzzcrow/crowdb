@@ -565,33 +565,38 @@ ChunkPageStore::ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catal
 
 ChunkPageStore::~ChunkPageStore() = default;
 
-Status ChunkPageStore::inherit_snapshot_from(const ChunkPageStore &source)
+Status ChunkPageStore::inherit_snapshot_from(const PageStore &source_store)
 {
-    if (config_.tree_id == source.config_.tree_id) {
+    const auto *source = dynamic_cast<const ChunkPageStore *>(&source_store);
+    if (source == nullptr) {
+        return Status::Ok();
+    }
+    if (config_.tree_id == source->config_.tree_id) {
         return Status::invalid_argument("chunk snapshot inheritance requires a distinct destination tree");
     }
     if (staged_initialized_ || catalog_->load(config_.tree_id) != nullptr) {
         return Status::invalid_argument("chunk snapshot inheritance requires an unpublished destination");
     }
-    if (transport_.get() != source.transport_.get() || catalog_.get() != source.catalog_.get()) {
+    if (transport_.get() != source->transport_.get() || catalog_.get() != source->catalog_.get()) {
         return Status::Ok();
     }
-    if (config_.pack_bytes != source.config_.pack_bytes || config_.max_chunk_bytes != source.config_.max_chunk_bytes ||
-        config_.page_alignment != source.config_.page_alignment || config_.iu_size != source.config_.iu_size) {
+    if (config_.pack_bytes != source->config_.pack_bytes ||
+        config_.max_chunk_bytes != source->config_.max_chunk_bytes ||
+        config_.page_alignment != source->config_.page_alignment || config_.iu_size != source->config_.iu_size) {
         return Status::invalid_argument("chunk snapshot inheritance requires matching storage geometry");
     }
-    auto manifest = source.catalog_->load(source.config_.tree_id);
+    auto manifest = source->catalog_->load(source->config_.tree_id);
     if (manifest == nullptr) {
         inherited_manifest_.reset();
         inherited_catalog_.reset();
         return Status::Ok();
     }
-    Status manifest_status = source.validate_manifest(*manifest, *source.catalog_);
+    Status manifest_status = source->validate_manifest(*manifest, *source->catalog_);
     if (!manifest_status.ok()) {
         return manifest_status;
     }
     inherited_manifest_ = std::move(manifest);
-    inherited_catalog_  = source.catalog_;
+    inherited_catalog_  = source->catalog_;
     return Status::Ok();
 }
 

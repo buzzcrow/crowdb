@@ -251,7 +251,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     // Seed an unpublished destination from one immutable source generation.
     // Byte-identical packs are referenced directly by the next manifest;
     // changed packs are written through the normal mirror pipeline.
-    Status inherit_snapshot_from(const ChunkPageStore &source);
+    Status inherit_snapshot_from(const PageStore &source) override;
 
   private:
     friend class ChunkAsyncExecutor;

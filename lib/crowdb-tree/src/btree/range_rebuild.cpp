@@ -5,7 +5,6 @@
 
 #include "crowdb-tree/btree/range_rebuild.h"
 
-#include "../backend/chunk/chunk_page_store.h"
 #include "crowdb-tree/btree/cell.h"
 #include "crowdb-tree/maptable/frame_page.h"
 
@@ -276,13 +275,9 @@ Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destinati
     if (!open_status.ok()) {
         return open_status;
     }
-    auto *source_chunk      = dynamic_cast<detail::ChunkPageStore *>(source.opt_.page_store);
-    auto *destination_chunk = dynamic_cast<detail::ChunkPageStore *>(destination_options.page_store);
-    if (source_chunk != nullptr && destination_chunk != nullptr) {
-        Status inherit_status = destination_chunk->inherit_snapshot_from(*source_chunk);
-        if (!inherit_status.ok()) {
-            return inherit_status;
-        }
+    Status inherit_status = destination_options.page_store->inherit_snapshot_from(*source.opt_.page_store);
+    if (!inherit_status.ok()) {
+        return inherit_status;
     }
 
     RangeRebuildStats        local;

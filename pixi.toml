@@ -81,6 +81,7 @@ tree-fmt = '''
 find lib/crowdb-tree/src lib/crowdb-tree/include lib/crowdb-tree/tests lib/crowdb-tree/bench lib/crowdb-common/cpp lib/crowdb-rpc/src lib/crowdb-rpc/include lib/crowdb-rpc/tests -type f \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format -i
 '''
 tree-lint = "python3 tools/ct_lint.py"
+test-tree-link-isolation = "bash tools/test-tree-chunk-link-isolation.sh"
 rs-fmt = "cargo fmt --all"
 rs-lint = "cargo clippy --all-targets -- -D warnings"
 ts-lint = { cmd = "cd app/crowdb-web/ui && npx tsc --noEmit --project tsconfig.e2e.json", depends-on = ["install-ui-deps"] }

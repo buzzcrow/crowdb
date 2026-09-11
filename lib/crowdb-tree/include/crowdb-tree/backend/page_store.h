@@ -87,6 +87,14 @@ class PageStore
         return Status::Ok();
     }
 
+    // Seed an unpublished destination from an immutable source snapshot when
+    // both stores support lineage sharing. Local and unlike backends remain
+    // independent and require no preparation.
+    virtual Status inherit_snapshot_from(const PageStore &)
+    {
+        return Status::Ok();
+    }
+
     // ── Async API ────────────────────────────────────────────────────
     // submit_read/submit_write/submit_fsync return an opaque op id usable
     // with cancel(). The callback fires exactly once with the outcome.
