@@ -5,12 +5,34 @@
 
 use crate::common::ChunkId;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Stable opaque identity of one logical stream.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct StreamName {
     pub high: u64,
     pub low: u64,
+}
+
+impl StreamName {
+    /// Generates a process-unique, time-ordered stream identifier.
+    #[must_use]
+    pub fn generate() -> Self {
+        static SEQUENCE: AtomicU64 = AtomicU64::new(1);
+        let duration = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+        Self {
+            high: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
+            low: (u64::from(duration.subsec_nanos()) << 32)
+                | (SEQUENCE.fetch_add(1, Ordering::Relaxed) & u64::from(u32::MAX)),
+        }
+    }
+}
+
+impl std::fmt::Display for StreamName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:016x}{:016x}", self.high, self.low)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

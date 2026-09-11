@@ -348,11 +348,26 @@ Required gates:
 
 ## Open Issues
 
-- None blocking implementation after R101 lands. R142 supplies the production
-  ownership epoch and R143 supplies production registry bindings, but R141's
-  interfaces accept injected authority and registry implementations so its
-  standalone implementation and tests do not depend on those later
-  requirements.
+- Production chunk IO is not yet wired: `MirrorStripWriter` remains a
+  placeholder, and no `StreamChunkStore` adapter currently connects direct
+  mirror writes, fenced cursor updates, `ChunkReader`, sealing, and strip
+  release. The in-memory contract is complete, but the server cannot use R141
+  durably until this adapter lands.
+- `KvStreamRegistry` and `KvStreamMetadataStore` now provide group-0 binding,
+  nonzero-group immutable extent pages, and an R101 CAS manifest head. Server
+  lifecycle wiring and a real-KV crash-order integration test remain with the
+  production adapter work.
+- The seekable reader now supports finite/`ToEnd` hints and provenance, but it
+  reads one bounded window synchronously. Adjacent-range asynchronous prefetch,
+  cached-byte overlap, and its memory/concurrency benchmarks remain open.
+- Extent-page rebuild currently starts page indices at zero after trim. Logical
+  byte offsets remain stable, but retaining nonzero first page indices and
+  watermark-driven cleanup of superseded page generations still needs the
+  persistent page allocator/GC policy.
+- Stream names are process-unique and time ordered and reopen always rotates
+  the old active chunk. The backward-compatible chunk owner-key schema and
+  reporting abandoned chunks to R146 remain open because the current `Chunk`
+  record has no owner field.
 - Non-blocking lifecycle follow-up: until deferred R146 lands, a crashed
   writer's abandoned Active stream chunk remains allocated. R141 never resumes
   it, reports it as an orphan, and allocates a fresh chunk, so this is bounded

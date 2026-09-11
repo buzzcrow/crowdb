@@ -18,8 +18,12 @@ test-util = []
 arc-swap = "1.9"
 async-trait = "0.1"
 bytes = "1"
+bincode = "1"
 crc32fast = "1"
+crowdb-kv-client = { path = "../crowdb-kv-client" }
 crowdb-protocol = { path = "../crowdb-protocol" }
+serde = "1"
+serde_json = "1"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tracing = { workspace = true }

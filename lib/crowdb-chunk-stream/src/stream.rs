@@ -72,14 +72,37 @@ impl StreamConfig {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AppendRange {
     pub stream_name: StreamName,
+    pub chunk_id: Option<ChunkId>,
     pub begin: u64,
     pub end: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadSegment {
+    pub chunk_id: ChunkId,
+    pub logical_start: u64,
+    pub data: Bytes,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadHint {
+    Bytes(u64),
+    ToEnd,
+}
+
 struct AppendRequest {
     data: Bytes,
+    chunk_bound: bool,
     enqueued_at: Instant,
     completion: oneshot::Sender<Result<AppendRange>>,
+}
+
+impl AppendRequest {
+    fn logical_len(&self) -> usize {
+        self.data
+            .len()
+            .saturating_add(if self.chunk_bound { 16 } else { 0 })
+    }
 }
 
 enum Command {
@@ -206,7 +229,7 @@ impl ChunkStream {
         let expected = (manifest.writer_epoch, manifest.generation);
         let mut needs_publish = manifest.writer_epoch < writer_epoch;
         manifest.writer_epoch = writer_epoch;
-        let mut recovered_sealed = false;
+        let mut rotate_active = false;
         if let Some(active) = &mut manifest.active {
             let durable = chunks.durable_cursor(active.chunk_id, writer_epoch).await?;
             if durable.offset < active.physical_start || durable.offset > active.capacity {
@@ -219,10 +242,13 @@ impl ChunkStream {
                 .logical_start
                 .checked_add(durable.offset - active.physical_start)
                 .ok_or_else(|| StreamError::Corruption("recovered tail overflows".into()))?;
-            recovered_sealed = durable.sealed;
+            if !durable.sealed {
+                chunks.seal(active.chunk_id, writer_epoch, durable.offset).await?;
+            }
+            rotate_active = true;
         }
         let mut extents = collect_extents(&pages);
-        if recovered_sealed {
+        if rotate_active {
             let active = manifest
                 .active
                 .take()
@@ -339,6 +365,7 @@ impl ChunkStream {
             let tail = self.tail();
             return Ok(AppendRange {
                 stream_name: self.stream_name,
+                chunk_id: None,
                 begin: tail,
                 end: tail,
             });
@@ -360,6 +387,7 @@ impl ChunkStream {
             .sender
             .try_send(Command::Append(AppendRequest {
                 data: data.freeze(),
+                chunk_bound: false,
                 enqueued_at: Instant::now(),
                 completion,
             }))
@@ -378,6 +406,94 @@ impl ChunkStream {
             self.metrics.failed.fetch_add(1, Ordering::Relaxed);
             Err(StreamError::WriteStalled)
         }
+    }
+
+    /// Appends one body-plus-checksum request and binds it to the selected
+    /// physical chunk by adding that chunk's canonical 16-byte ID trailer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed admission, storage, fencing, or durability error.
+    pub async fn append_chunk_bound(&self, buffers: &[Bytes]) -> Result<AppendRange> {
+        let length = buffers
+            .iter()
+            .try_fold(0_usize, |total, bytes| total.checked_add(bytes.len()))
+            .and_then(|length| length.checked_add(16))
+            .ok_or_else(|| StreamError::InvalidRequest("chunk-bound append length overflows".into()))?;
+        if length > self.config.max_append_bytes {
+            return Err(StreamError::InvalidRequest(
+                "chunk-bound append exceeds maximum chunk capacity".into(),
+            ));
+        }
+        let mut data = BytesMut::with_capacity(length - 16);
+        for bytes in buffers {
+            data.extend_from_slice(bytes);
+        }
+        self.enqueue_append(data.freeze(), true).await
+    }
+
+    /// Enqueues several chunk-bound records in input order and returns their
+    /// exact ranges. Enqueue completes for the entire slice before awaiting
+    /// results, allowing the worker to batch already-queued records.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed admission, storage, fencing, or durability error.
+    pub async fn append_chunk_bound_batch(&self, records: &[Bytes]) -> Result<Vec<AppendRange>> {
+        let mut pending = Vec::with_capacity(records.len());
+        for record in records {
+            pending.push(self.enqueue_append_request(record.clone(), true)?);
+        }
+        let mut ranges = Vec::with_capacity(pending.len());
+        for result in pending {
+            ranges.push(result.await.map_err(|_| StreamError::WriteStalled)??);
+        }
+        Ok(ranges)
+    }
+
+    async fn enqueue_append(&self, data: Bytes, chunk_bound: bool) -> Result<AppendRange> {
+        let result = self.enqueue_append_request(data, chunk_bound)?;
+        result.await.map_err(|_| StreamError::WriteStalled)?
+    }
+
+    fn enqueue_append_request(
+        &self,
+        data: Bytes,
+        chunk_bound: bool,
+    ) -> Result<oneshot::Receiver<Result<AppendRange>>> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(StreamError::WriteStalled);
+        }
+        let length = data
+            .len()
+            .checked_add(if chunk_bound { 16 } else { 0 })
+            .ok_or_else(|| StreamError::InvalidRequest("append length overflows".into()))?;
+        if length == 0 || length > self.config.max_append_bytes {
+            return Err(StreamError::InvalidRequest("append length is invalid".into()));
+        }
+        let length_u64 = length as u64;
+        reserve_requests(&self.queued_requests, self.config.queue_requests)?;
+        if let Err(error) = reserve_bytes(&self.queued_bytes, self.config.queue_bytes, length_u64) {
+            self.queued_requests.fetch_sub(1, Ordering::AcqRel);
+            return Err(error);
+        }
+        let (completion, result) = oneshot::channel();
+        if self
+            .sender
+            .try_send(Command::Append(AppendRequest {
+                data,
+                chunk_bound,
+                enqueued_at: Instant::now(),
+                completion,
+            }))
+            .is_err()
+        {
+            self.queued_bytes.fetch_sub(length_u64, Ordering::AcqRel);
+            self.queued_requests.fetch_sub(1, Ordering::AcqRel);
+            return Err(StreamError::Backpressure);
+        }
+        self.metrics.submitted.fetch_add(1, Ordering::Relaxed);
+        Ok(result)
     }
 
     /// Advances the durable logical trim point and reclaims complete extents.
@@ -421,6 +537,21 @@ impl ChunkStream {
     ///
     /// Returns an error for an invalid range, corrupt metadata, or unavailable data.
     pub async fn read_at(&self, offset: u64, length: usize) -> Result<Bytes> {
+        let segments = self.read_at_with_provenance(offset, length).await?;
+        let mut output = BytesMut::with_capacity(length);
+        for segment in segments {
+            output.extend_from_slice(&segment.data);
+        }
+        Ok(output.freeze())
+    }
+
+    /// Reads an exact range while retaining the physical chunk identity for
+    /// every returned logical segment.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid range, corrupt metadata, or unavailable data.
+    pub async fn read_at_with_provenance(&self, offset: u64, length: usize) -> Result<Vec<ReadSegment>> {
         let end = offset
             .checked_add(length as u64)
             .ok_or_else(|| StreamError::InvalidRequest("read range overflows".into()))?;
@@ -432,7 +563,8 @@ impl ChunkStream {
         }
         let mut pages = HashMap::new();
         let mut cursor = offset;
-        let mut output = BytesMut::with_capacity(length);
+        let mut output = Vec::new();
+        let mut output_len = 0_usize;
         while cursor < end {
             if cursor >= manifest.sealed_tail {
                 let active = manifest
@@ -446,11 +578,15 @@ impl ChunkStream {
                 let available = usize::try_from(end - cursor).map_err(|_| {
                     StreamError::InvalidRequest("read length exceeds addressable range".into())
                 })?;
-                output.extend_from_slice(
-                    &self
-                        .read_chunk_with_watchdog(active.chunk_id, physical, available, cursor)
-                        .await?,
-                );
+                let data = self
+                    .read_chunk_with_watchdog(active.chunk_id, physical, available, cursor)
+                    .await?;
+                output_len = output_len.saturating_add(data.len());
+                output.push(ReadSegment {
+                    chunk_id: active.chunk_id,
+                    logical_start: cursor,
+                    data,
+                });
                 cursor = end;
                 continue;
             }
@@ -486,14 +622,18 @@ impl ChunkStream {
             let location = resolve_extent(page, cursor)?;
             let read_len = usize::try_from(location.available.min(end - cursor))
                 .map_err(|_| StreamError::InvalidRequest("read length exceeds addressable range".into()))?;
-            output.extend_from_slice(
-                &self
-                    .read_chunk_with_watchdog(location.chunk_id, location.physical_offset, read_len, cursor)
-                    .await?,
-            );
+            let data = self
+                .read_chunk_with_watchdog(location.chunk_id, location.physical_offset, read_len, cursor)
+                .await?;
+            output_len = output_len.saturating_add(data.len());
+            output.push(ReadSegment {
+                chunk_id: location.chunk_id,
+                logical_start: cursor,
+                data,
+            });
             cursor += read_len as u64;
         }
-        if output.len() != length {
+        if output_len != length {
             return Err(StreamError::Corruption(
                 "chunk reads returned an unexpected length".into(),
             ));
@@ -501,7 +641,7 @@ impl ChunkStream {
         self.metrics
             .read_bytes
             .fetch_add(length as u64, Ordering::Relaxed);
-        Ok(output.freeze())
+        Ok(output)
     }
 
     /// Creates a bounded sequential reader ending at the current durable tail.
@@ -510,16 +650,33 @@ impl ChunkStream {
     ///
     /// Returns an error if `offset` is outside the retained durable range.
     pub fn read_from(&self, offset: u64) -> Result<StreamReader> {
+        self.reader(offset, ReadHint::ToEnd)
+    }
+
+    /// Creates a seekable reader with a finite or captured-tail hint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `offset` or its hint is outside the retained range.
+    pub fn reader(&self, offset: u64, hint: ReadHint) -> Result<StreamReader> {
         let manifest = self.manifest.load();
-        if offset < manifest.trim_offset || offset > self.tail() {
+        let tail = self.tail();
+        if offset < manifest.trim_offset || offset > tail {
             return Err(StreamError::InvalidRequest(
                 "read cursor is outside retained range".into(),
             ));
         }
+        let end = match hint {
+            ReadHint::ToEnd => tail,
+            ReadHint::Bytes(length) => offset
+                .checked_add(length)
+                .ok_or_else(|| StreamError::InvalidRequest("reader hint overflows".into()))?
+                .min(tail),
+        };
         Ok(StreamReader {
             stream: self.clone(),
             offset,
-            end: self.tail(),
+            end,
         })
     }
 
@@ -571,6 +728,22 @@ pub struct StreamReader {
 }
 
 impl StreamReader {
+    /// Moves the reader within its captured retained range.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `offset` is outside the captured range.
+    pub fn seek(&mut self, offset: u64) -> Result<()> {
+        let trim = self.stream.manifest.load().trim_offset;
+        if offset < trim || offset > self.end {
+            return Err(StreamError::InvalidRequest(
+                "seek is outside the reader range".into(),
+            ));
+        }
+        self.offset = offset;
+        Ok(())
+    }
+
     /// Returns the next bounded logical window, or `None` at the captured tail.
     ///
     /// # Errors
@@ -631,7 +804,7 @@ async fn process_append_batch(
         finish_failed(state, vec![first], &error);
         return;
     }
-    let first_len = first.data.len();
+    let first_len = first.logical_len();
     if !fits_active(state, first_len) {
         if let Err(error) = rollover(state).await {
             state.stalled = true;
@@ -654,10 +827,10 @@ async fn process_append_batch(
         match receiver.try_recv() {
             Ok(Command::Append(request))
                 if bytes
-                    .checked_add(request.data.len())
+                    .checked_add(request.logical_len())
                     .is_some_and(|total| total <= state.config.batch_bytes && fits_active(state, total)) =>
             {
-                bytes += request.data.len();
+                bytes += request.logical_len();
                 requests.push(request);
             }
             Ok(command) => {
@@ -673,13 +846,13 @@ async fn process_append_batch(
             for (request, range) in requests.into_iter().zip(ranges) {
                 state
                     .queued_bytes
-                    .fetch_sub(request.data.len() as u64, Ordering::AcqRel);
+                    .fetch_sub(request.logical_len() as u64, Ordering::AcqRel);
                 state.queued_requests.fetch_sub(1, Ordering::AcqRel);
                 state.metrics.completed.fetch_add(1, Ordering::Relaxed);
                 state
                     .metrics
                     .logical_append_bytes
-                    .fetch_add(request.data.len() as u64, Ordering::Relaxed);
+                    .fetch_add(request.logical_len() as u64, Ordering::Relaxed);
                 let _ = request.completion.send(Ok(range));
             }
         }
@@ -749,6 +922,10 @@ async fn write_batch(
     let mut staging = BytesMut::with_capacity(bytes);
     for request in requests {
         staging.extend_from_slice(&request.data);
+        if request.chunk_bound {
+            staging.extend_from_slice(&active.chunk_id.high.to_be_bytes());
+            staging.extend_from_slice(&active.chunk_id.low.to_be_bytes());
+        }
     }
     let staging = staging.freeze();
     if let Err(error) = state
@@ -782,9 +959,10 @@ async fn write_batch(
     let mut cursor = begin;
     let mut ranges = Vec::with_capacity(requests.len());
     for request in requests {
-        let end = cursor + request.data.len() as u64;
+        let end = cursor + request.logical_len() as u64;
         ranges.push(AppendRange {
             stream_name: state.stream_name,
+            chunk_id: Some(active.chunk_id),
             begin: cursor,
             end,
         });
@@ -1105,7 +1283,7 @@ fn finish_failed(state: &WorkerState, requests: Vec<AppendRequest>, error: &Stre
     for request in requests {
         state
             .queued_bytes
-            .fetch_sub(request.data.len() as u64, Ordering::AcqRel);
+            .fetch_sub(request.logical_len() as u64, Ordering::AcqRel);
         state.queued_requests.fetch_sub(1, Ordering::AcqRel);
         state.metrics.failed.fetch_add(1, Ordering::Relaxed);
         let _ = request.completion.send(Err(error.clone()));

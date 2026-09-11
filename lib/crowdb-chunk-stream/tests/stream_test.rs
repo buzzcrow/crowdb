@@ -6,7 +6,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
-    ChunkStream, CursorAdvance, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig,
+    ChunkStream, CursorAdvance, ReadHint, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig,
     StreamError, StreamMetadataStore, StreamName, StreamRegistry,
 };
 
@@ -57,6 +57,54 @@ async fn first_append_has_no_timer_and_skips_metadata_consensus() {
     assert_eq!(store.cursor_advance_count(), 1);
     assert_eq!(store.metadata_publish_count(), 2);
     assert_eq!(stream.read_at(0, 4).await.unwrap(), Bytes::from_static(b"abcd"));
+}
+
+#[tokio::test]
+async fn chunk_bound_append_adds_selected_chunk_identity_and_provenance() {
+    let store = Arc::new(MemoryStreamStore::new(64));
+    let stream = create_stream(&store, 64, StreamConfig::default()).await;
+    let range = stream
+        .append_chunk_bound(&[Bytes::from_static(b"body"), Bytes::from_static(b"crc")])
+        .await
+        .unwrap();
+    let chunk_id = range.chunk_id.expect("nonempty append has a chunk");
+    assert_eq!((range.begin, range.end), (0, 23));
+    let bytes = stream.read_at(0, 23).await.unwrap();
+    assert_eq!(&bytes[..7], b"bodycrc");
+    assert_eq!(&bytes[7..15], &chunk_id.high.to_be_bytes());
+    assert_eq!(&bytes[15..23], &chunk_id.low.to_be_bytes());
+    let segments = stream.read_at_with_provenance(0, 23).await.unwrap();
+    assert_eq!(segments.len(), 1);
+    assert_eq!(segments[0].chunk_id, chunk_id);
+
+    let mut reader = stream.reader(4, ReadHint::Bytes(3)).unwrap();
+    assert_eq!(reader.next().await.unwrap(), Some(Bytes::from_static(b"crc")));
+    assert_eq!(reader.next().await.unwrap(), None);
+    reader.seek(5).unwrap();
+    assert_eq!(reader.next().await.unwrap(), Some(Bytes::from_static(b"rc")));
+}
+
+#[tokio::test]
+async fn chunk_bound_batch_rolls_before_a_record_and_binds_each_chunk() {
+    let store = Arc::new(MemoryStreamStore::new(20));
+    let stream = create_stream(&store, 20, StreamConfig::default()).await;
+    let ranges = stream
+        .append_chunk_bound_batch(&[Bytes::from_static(b"aa"), Bytes::from_static(b"bb")])
+        .await
+        .unwrap();
+    assert_eq!(ranges.len(), 2);
+    assert_eq!((ranges[0].begin, ranges[0].end), (0, 18));
+    assert_eq!((ranges[1].begin, ranges[1].end), (18, 36));
+    assert_ne!(ranges[0].chunk_id, ranges[1].chunk_id);
+    for range in ranges {
+        let bytes = stream
+            .read_at(range.begin, usize::try_from(range.end - range.begin).unwrap())
+            .await
+            .unwrap();
+        let chunk_id = range.chunk_id.unwrap();
+        assert_eq!(&bytes[2..10], &chunk_id.high.to_be_bytes());
+        assert_eq!(&bytes[10..18], &chunk_id.low.to_be_bytes());
+    }
 }
 
 #[tokio::test]

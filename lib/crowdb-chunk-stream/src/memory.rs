@@ -138,6 +138,18 @@ impl MemoryStreamStore {
             .get(&chunk_id)
             .is_some_and(|chunk| chunk.released)
     }
+
+    /// Flips one durable byte for corruption-path tests.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the test chunk or durable byte does not exist.
+    pub async fn flip_durable_byte(&self, chunk_id: ChunkId, offset: usize) {
+        let mut state = self.state.lock().await;
+        let chunk = state.chunks.get_mut(&chunk_id).expect("test chunk must exist");
+        assert!(offset < usize::try_from(chunk.cursor).expect("test cursor must fit usize"));
+        chunk.bytes[offset] ^= 1;
+    }
 }
 
 #[async_trait]

@@ -67,28 +67,28 @@ without placing rollover metadata on the append hot path.
   the 256-MiB hard chunk limit, and allocate a fresh chunk on every writer
   reopen. Files: `lib/crowdb-chunk-stream/src/`,
   `lib/crowdb-chunk-stream/tests/`.
-- [ ] **Add configured binding placement**: expose group-0 registry plus an
+- [~] **Add configured binding placement**: expose group-0 registry plus an
   explicit metadata-group selection (default group 1), retain readable binding
   keys and binary metadata keys, and let R143 drive group creation/activation.
   Files: `lib/crowdb-protocol/src/{chunk_stream.rs,key/chunk_stream.rs}`,
   `lib/crowdb-chunk-stream/src/`, `app/crowdb-chunk-kv-server/src/`.
-- [ ] **Implement seekable prefetch readers**: add finite and `ToEnd` read
+- [~] **Implement seekable prefetch readers**: add finite and `ToEnd` read
   hints, an 8-MiB default retained buffer, cached-byte delivery concurrent with
   bounded adjacent-range prefetch, ordered output, EOF, and a provenance-aware
   form yielding the physical chunk for R142 validation. Files:
   `lib/crowdb-chunk-stream/src/`, `lib/crowdb-chunk-stream/tests/`.
-- [ ] **Add chunk-bound append**: accept R142 body+CRC bytes, append the chosen
+- [x] **Add chunk-bound append**: accept R142 body+CRC bytes, append the chosen
   chunk's canonical ID per request after rollover selection, include trailer
   bytes in admission/range accounting, and return the same ID in
   `AppendResult`. Files: `lib/crowdb-chunk-stream/src/`,
   `lib/crowdb-chunk-stream/tests/`.
-- [ ] **Add stream ownership metadata**: generate time-ordered 128-bit stream
+- [~] **Add stream ownership metadata**: generate time-ordered 128-bit stream
   names, allocate chunks with the stream owner kind/key, report empty and
   unreachable chunk candidates to R146, and keep superseded metadata on its
   own watermark-driven cleanup path. Files: `lib/crowdb-protocol/src/`,
   `lib/crowdb-chunk-client/src/`, `lib/crowdb-chunk-stream/src/`,
   `doc/backlog/R146-chunk-orphan-sealing.md`.
-- [ ] **Implement metadata publication**: use R101 CAS for the stable
+- [~] **Implement metadata publication**: use R101 CAS for the stable
   manifest/head key and fresh immutable versioned COW keys for changed extent
   pages, with logarithmic logical-offset discovery. Cover page rollover,
   takeover in either CAS ordering, crash-created orphan pages, nonzero first

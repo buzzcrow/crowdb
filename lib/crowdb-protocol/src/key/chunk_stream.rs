@@ -48,6 +48,31 @@ pub struct StreamManifestKey {
     pub generation: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct StreamManifestHeadKey {
+    pub stream_name: StreamName,
+}
+
+impl BinaryKey for StreamManifestHeadKey {
+    const TYPE_TAG: u16 = 0x0012;
+
+    fn encode_to(&self, out: &mut Vec<u8>) {
+        encode_header(out, Self::TYPE_TAG);
+        encode_u64(out, self.stream_name.high);
+        encode_u64(out, self.stream_name.low);
+    }
+
+    fn decode(buf: &[u8]) -> Result<Self, KeyError> {
+        let fields = decode_header(buf, Self::TYPE_TAG)?;
+        let (high, offset) = decode_u64(fields, 0)?;
+        let (low, offset) = decode_u64(fields, offset)?;
+        check_exact(fields, offset)?;
+        Ok(Self {
+            stream_name: StreamName { high, low },
+        })
+    }
+}
+
 impl BinaryKey for StreamManifestKey {
     const TYPE_TAG: u16 = 0x0010;
 
@@ -130,6 +155,9 @@ mod tests {
             StreamManifestKey::from_bytes(&manifest.to_bytes()).unwrap(),
             manifest
         );
+
+        let head = StreamManifestHeadKey { stream_name: name };
+        assert_eq!(StreamManifestHeadKey::from_bytes(&head.to_bytes()).unwrap(), head);
 
         let extent = StreamExtentPageKey {
             stream_name: name,
