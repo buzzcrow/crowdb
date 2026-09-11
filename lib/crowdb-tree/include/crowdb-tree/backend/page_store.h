@@ -95,6 +95,24 @@ class PageStore
         return Status::Ok();
     }
 
+    [[nodiscard]] virtual bool has_inherited_snapshot() const
+    {
+        return false;
+    }
+
+    // True only while this store's inherited image is still the source
+    // store's current published snapshot. Range rebuild uses this after its
+    // iterator is exhausted before reusing any inherited mapping slot.
+    [[nodiscard]] virtual bool inherited_snapshot_matches(const PageStore &) const
+    {
+        return false;
+    }
+
+    [[nodiscard]] virtual bool has_shared_ownership() const
+    {
+        return false;
+    }
+
     // ── Async API ────────────────────────────────────────────────────
     // submit_read/submit_write/submit_fsync return an opaque op id usable
     // with cancel(). The callback fires exactly once with the outcome.

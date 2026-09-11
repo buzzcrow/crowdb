@@ -723,7 +723,10 @@ Status NativeFrameIterator::next(size_t max_frames, std::vector<NativeFrame> *ou
                 Status::internal_error("native frame iterator encountered an unexpected page type");
             return impl_->terminal_status;
         }
-        out->push_back({.page_id = task.page_id, .frame = std::vector<uint8_t>(bytes, bytes + length)});
+        out->push_back({.page_id      = task.page_id,
+                        .frame        = std::vector<uint8_t>(bytes, bytes + length),
+                        .durable_addr = page->durable_addr,
+                        .durable_plen = page->durable_plen});
         impl_->consume(task.page_id);
     }
     *complete = impl_->tasks.empty();
@@ -4164,6 +4167,12 @@ Status Crowdbtree::collect_native_frames(std::vector<NativeFrame> *out, uint64_t
 Status Crowdbtree::install_snapshot_native(std::vector<NativeFrame> frames, uint64_t root_page_id, uint64_t at_slot,
                                            uint64_t next_page_id)
 {
+    return install_range_snapshot_native(std::move(frames), root_page_id, at_slot, next_page_id, false);
+}
+
+Status Crowdbtree::install_range_snapshot_native(std::vector<NativeFrame> frames, uint64_t root_page_id,
+                                                 uint64_t at_slot, uint64_t next_page_id, bool mapping_inherited)
+{
     std::lock_guard<std::mutex> lk(write_mutex_);
     for (const NativeFrame &frame : frames) {
         if (frame.page_id == kInvalidPageId || frame.frame.empty() ||
@@ -4181,7 +4190,9 @@ Status Crowdbtree::install_snapshot_native(std::vector<NativeFrame> frames, uint
     // releases write_mutex_ before its flush() call) since everything here
     // -- including installing every frame -- needs it, and nothing called
     // below re-acquires it.
-    free_all_resident_pages(/*retire=*/true);
+    if (!mapping_inherited) {
+        free_all_resident_pages(/*retire=*/true);
+    }
 
     uint64_t max_page_id = root_page_id;
     uint64_t leaves      = 0;
@@ -4202,6 +4213,17 @@ Status Crowdbtree::install_snapshot_native(std::vector<NativeFrame> frames, uint
         else if (ft == page_type::kInnerBase) {
             ++inners;
         }
+        if (mapping_inherited && f.inherited) {
+            const uint32_t iu = opt_.page_store->iu_size();
+            if (f.durable_addr != kNoAddr && f.durable_plen != 0 && f.durable_addr % iu == 0) {
+                const uint64_t iu_index = f.durable_addr / iu;
+                const auto     iu_count = static_cast<uint32_t>(round_up_to_iu(f.durable_plen, iu) / iu);
+                if (slot_word::fits_unloaded(iu_index, iu_count) &&
+                    mapping_.get_word(f.page_id) == slot_word::pack_unloaded(iu_index, iu_count)) {
+                    continue;
+                }
+            }
+        }
         PageBase *page = nullptr;
         switch (ft) {
         case page_type::kLeafBase:
@@ -4219,7 +4241,11 @@ Status Crowdbtree::install_snapshot_native(std::vector<NativeFrame> frames, uint
         // Freshly installed on *this* store: not yet durable here (durable_addr
         // defaults to kNoAddr on construction) -- picked up dirty by the next
         // snapshot(), same as any other freshly built page.
+        PageBase *old = mapping_.get_resident(f.page_id);
         mapping_.store(f.page_id, page);
+        if (old != nullptr) {
+            retire_page(old);
+        }
     }
     mapping_.set_next_page_id(std::max(max_page_id + 1, next_page_id));
     root_page_id_.store(root_page_id);
@@ -4227,7 +4253,7 @@ Status Crowdbtree::install_snapshot_native(std::vector<NativeFrame> frames, uint
     inner_count_.store(inners, std::memory_order_relaxed);
     // O4: initialize parent pointers on all inner pages' children by walking
     // from the root down. The root itself has no parent (kInvalidPageId).
-    {
+    if (!mapping_inherited) {
         std::vector<uint64_t> stack = {root_page_id};
         while (!stack.empty()) {
             uint64_t pid = stack.back();

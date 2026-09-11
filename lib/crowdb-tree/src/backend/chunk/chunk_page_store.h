@@ -253,6 +253,14 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     // changed packs are written through the normal mirror pipeline.
     Status inherit_snapshot_from(const PageStore &source) override;
 
+    [[nodiscard]] bool has_inherited_snapshot() const override
+    {
+        return inherited_manifest_ != nullptr;
+    }
+
+    [[nodiscard]] bool inherited_snapshot_matches(const PageStore &source) const override;
+    [[nodiscard]] bool has_shared_ownership() const override;
+
   private:
     friend class ChunkAsyncExecutor;
     friend class ChunkPackPipeline;

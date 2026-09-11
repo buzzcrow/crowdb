@@ -48,6 +48,7 @@
 #include <chrono>
 #include <cstring>
 #include <functional>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -979,6 +980,141 @@ Status Crowdbtree::materialize_ownership(uint64_t *bytes_written, bool *complete
     if (opt_.page_store == nullptr || bytes_written == nullptr || complete == nullptr) {
         return Status::invalid_argument("materialize_ownership: invalid argument");
     }
+    if (opt_.page_store->has_shared_ownership()) {
+        constexpr size_t kPagesPerPass    = 1024;
+        constexpr size_t kSegmentsPerPass = 1;
+        bool             mapping_ready    = false;
+        bool             needs_snapshot   = false;
+        uint64_t         pruned_version   = std::numeric_limits<uint64_t>::max();
+        {
+            std::lock_guard<std::mutex> lock(write_mutex_);
+            const uint64_t              current_version = version_.load();
+            if (mapping_pruned_version_ == current_version) {
+                mapping_ready = true;
+            }
+            else {
+                if (mapping_materialization_ == nullptr || mapping_materialization_->version != current_version) {
+                    mapping_materialization_          = std::make_unique<MappingMaterializationState>();
+                    mapping_materialization_->version = current_version;
+                    mapping_materialization_->stack.push_back(root_page_id_.load());
+                    mapping_materialization_->reachable.resize((mapping_.next_page_id() + 63) / 64);
+                }
+                MappingMaterializationState &state = *mapping_materialization_;
+                size_t                       work  = 0;
+                while (!state.stack.empty() && work < kPagesPerPass) {
+                    const uint64_t page_id = state.stack.back();
+                    state.stack.pop_back();
+                    if (page_id >= mapping_.next_page_id()) {
+                        continue;
+                    }
+                    uint64_t      &word = state.reachable[page_id / 64];
+                    const uint64_t bit  = uint64_t{1} << (page_id % 64);
+                    if ((word & bit) != 0) {
+                        continue;
+                    }
+                    word |= bit;
+                    ++work;
+                    PageBase *page = resident(page_id);
+                    if (page == nullptr) {
+                        mapping_materialization_.reset();
+                        return Status::corruption("mapping materialization: reachable page is missing");
+                    }
+                    while (page->type == page_type::kBatchDelta) {
+                        page = page->next;
+                        if (page == nullptr) {
+                            mapping_materialization_.reset();
+                            return Status::corruption("mapping materialization: delta chain has no base");
+                        }
+                    }
+                    if (page->type == page_type::kInnerBase) {
+                        for (uint64_t child : static_cast<InnerBase *>(page)->children()) {
+                            state.stack.push_back(child);
+                        }
+                    }
+                    else if (page->type == page_type::kLeafBase) {
+                        LeafFrameView leaf = static_cast<LeafBase *>(page)->view();
+                        for (uint32_t index = 0; index < leaf.count(); ++index) {
+                            CellView cell{leaf.cell(index)};
+                            if (cell.is_overflow()) {
+                                state.stack.push_back(cell.overflow_head());
+                            }
+                        }
+                    }
+                    else if (page->type == page_type::kOverflowFrame) {
+                        const uint64_t next = static_cast<OverflowBase *>(page)->next_page_id();
+                        if (next != kInvalidPageId) {
+                            state.stack.push_back(next);
+                        }
+                    }
+                    else {
+                        mapping_materialization_.reset();
+                        return Status::corruption("mapping materialization: unexpected page type");
+                    }
+                }
+                if (!state.stack.empty()) {
+                    *bytes_written = 0;
+                    *complete      = false;
+                    return Status::Ok();
+                }
+                const uint64_t segment_limit =
+                    (mapping_.next_page_id() + MappingTable::kSegmentSize - 1) / MappingTable::kSegmentSize;
+                size_t segments = 0;
+                while (state.next_segment < segment_limit && segments < kSegmentsPerPass) {
+                    const uint64_t  segment_index = state.next_segment++;
+                    MappingSegment *segment       = mapping_.segment_at(segment_index);
+                    ++segments;
+                    if (segment == nullptr) {
+                        continue;
+                    }
+                    std::vector<uint64_t> unreachable;
+                    for (uint32_t slot = 0; slot < segment->slot_count; ++slot) {
+                        const uint64_t page_id = (segment_index * MappingTable::kSegmentSize) + slot;
+                        const bool reachable   = page_id < mapping_.next_page_id() &&
+                                                 (state.reachable[page_id / 64] & (uint64_t{1} << (page_id % 64))) != 0;
+                        if (!reachable && !slot_word::is_empty(segment->slots[slot].load(std::memory_order_relaxed))) {
+                            unreachable.push_back(page_id);
+                        }
+                    }
+                    for (uint64_t page_id : unreachable) {
+                        const uint64_t word = mapping_.get_word(page_id);
+                        mapping_.clear(page_id);
+                        if (slot_word::is_resident(word)) {
+                            for (PageBase *page = slot_word::resident_ptr(word); page != nullptr;) {
+                                PageBase *next = page->next;
+                                retire_page(page);
+                                page = next;
+                            }
+                        }
+                    }
+                }
+                if (state.next_segment == segment_limit) {
+                    mapping_materialization_.reset();
+                    mapping_ready  = true;
+                    needs_snapshot = true;
+                    pruned_version = current_version;
+                }
+            }
+        }
+        if (!mapping_ready) {
+            *bytes_written = 0;
+            *complete      = false;
+            return Status::Ok();
+        }
+        if (needs_snapshot) {
+            Status snapshot_status = snapshot();
+            if (!snapshot_status.ok()) {
+                return snapshot_status;
+            }
+            std::lock_guard<std::mutex> lock(write_mutex_);
+            if (version_.load() != pruned_version + 1) {
+                *bytes_written = 0;
+                *complete      = false;
+                return Status::Ok();
+            }
+            mapping_pruned_version_ = version_.load();
+        }
+    }
+
     acquire_snapshot_slot();
     Status status = opt_.page_store->materialize_ownership(bytes_written, complete);
     release_snapshot_slot();

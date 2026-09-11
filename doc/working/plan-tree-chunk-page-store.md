@@ -123,7 +123,11 @@ and structurally safe range rebuild while preserving local tree behavior.
   `src/{backend/chunk,c_api.cpp,snapshot/persist.cpp}`, `ffi/`.
 - [~] **Share and materialize mapping images**: make mapping slots reference
   pack ordinals, share immutable mapping-directory images, mark reachable
-  slots, and clear unreachable slots before exclusive publication. Files:
+  slots, and clear unreachable slots before exclusive publication. Immutable
+  mapping images are now inherited by generation, changed pages COW their
+  segment, and bounded reachability passes clear unrelated PIDs with stale
+  generation retry. Compact ordinal slot encoding and live-reference repack
+  remain. Files:
   `src/btree/range_rebuild.cpp`, `src/maptable/`,
   `src/backend/chunk/chunk_page_store.cpp`.
 - [ ] **Complete observability**: pack reuse/write and materialization bytes,
@@ -188,9 +192,12 @@ and structurally safe range rebuild while preserving local tree behavior.
   transports. Framing memory is bounded by the configured in-flight pack
   window; failures and close stop admission, drain late completions, and keep
   cursor advancement and manifest publication on the ordered tree worker.
-- Reference segments are immutable, owner-qualified directory images shared
-  across child lineages and COW-replaced when their entries change, but mapping
-  slots still hold local byte addresses instead of chunk-reference ordinals.
+- Reference segments and mapping images are immutable directory entries shared
+  across child lineages and COW-replaced when their entries change. Mapping
+  materialization marks reachable PIDs in bounded passes, clears unrelated
+  inherited slots, and restarts if a foreground flush changes the tree
+  generation. Mapping slots still hold local byte addresses instead of compact
+  chunk-reference ordinals.
 - Checksummed page fences are persisted and verified against each native graph;
   legacy frames are upgraded after structural validation. Range rebuild now uses
   separator-guided resumable native traversal in 4-MiB batches, folds in-frame
@@ -199,13 +206,15 @@ and structurally safe range rebuild while preserving local tree behavior.
   concurrent independent workers. Overwritten source versions are pinned only
   until consumed; concurrent mutation is bounded by a retryable preservation
   budget.
-  Child chunk manifests now inherit byte-verified immutable source packs and
-  reference segments; later checkpoints COW only changed logical packs and
-  their affected reference segments. Immutable mapping-directory sharing and
-  unreachable-slot materialization remain open.
+  Child chunk manifests now inherit byte-verified immutable source packs,
+  reference segments, and matching mapping images; later checkpoints COW only
+  changed logical packs and their affected metadata segments. An iterator page
+  is reused only when the inherited source generation and its durable mapping
+  descriptor still match, so unsnapshotted and concurrent source changes are
+  copied into child-owned pages.
 - Basic chunk-store counters, retention pins, logical orphan accounting, and
-  bounded child pack materialization metrics exist. Immutable mapping-image
-  materialization, the full metric set, and fixed-workload benchmark evidence
-  remain absent. Link-map and symbol checks keep chunk and RPC archive members
-  out of ordinary tree links, and GCC/Clang compile the public umbrella without
-  private async headers.
+  bounded child pack materialization metrics exist. Compact ordinal mapping,
+  live-reference repack, the full metric set, and fixed-workload benchmark
+  evidence remain absent. Link-map and symbol checks keep chunk and RPC archive
+  members out of ordinary tree links, and GCC/Clang compile the public umbrella
+  without private async headers.

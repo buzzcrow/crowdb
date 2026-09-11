@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -385,6 +386,9 @@ struct NativeFrame
 {
     uint64_t             page_id = kInvalidPageId;
     std::vector<uint8_t> frame; // raw in-memory frame bytes (page_bytes() length)
+    uint64_t             durable_addr = kNoAddr;
+    uint32_t             durable_plen = 0;
+    bool                 inherited    = false;
 };
 
 // Resumable view over one native tree generation. Creation folds pending leaf
@@ -956,8 +960,10 @@ class Crowdbtree
         return q != 0 ? q : 1;
     }
 
-    void retire_page(PageBase *p);
-    void preserve_native_page_locked(uint64_t page_id, PageBase *page);
+    void   retire_page(PageBase *p);
+    void   preserve_native_page_locked(uint64_t page_id, PageBase *page);
+    Status install_range_snapshot_native(std::vector<NativeFrame> frames, uint64_t root_page_id, uint64_t at_slot,
+                                         uint64_t next_page_id, bool mapping_inherited);
     // Retire a page that becomes entirely unreachable by new readers with no
     // replacement under its own PID (a merged-away leaf/inner, or a
     // root-collapse's old root) -- as opposed to retire_page()'s usual
@@ -1304,8 +1310,19 @@ class Crowdbtree
     std::atomic<uint64_t> contiguous_slot_{0};
     std::atomic<uint64_t> last_applied_slot_{0};
     std::atomic<uint64_t> version_{0};
-    std::atomic<uint64_t> gc_floor_{0};
-    std::atomic<uint64_t> snapshot_pages_written_{0};    // pages written by last snapshot
+
+    struct MappingMaterializationState
+    {
+        uint64_t              version      = 0;
+        uint64_t              next_segment = 0;
+        std::vector<uint64_t> stack;
+        std::vector<uint64_t> reachable;
+    };
+
+    std::unique_ptr<MappingMaterializationState> mapping_materialization_;
+    uint64_t                                     mapping_pruned_version_ = std::numeric_limits<uint64_t>::max();
+    std::atomic<uint64_t>                        gc_floor_{0};
+    std::atomic<uint64_t>                        snapshot_pages_written_{0}; // pages written by last snapshot
     std::atomic<uint64_t> snapshot_pages_total_{0};      // cumulative pages written across all snapshots
     std::atomic<uint64_t> snapshot_segments_written_{0}; // segment images written by last snapshot
     // Freshly built and native-imported trees have globally verified routing

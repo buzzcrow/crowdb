@@ -269,17 +269,20 @@ Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destinati
         return range_status;
     }
 
-    destination_options.key_range = range;
-    std::unique_ptr<Crowdbtree> destination;
-    Status                      open_status = Crowdbtree::open(destination_options, &destination);
-    if (!open_status.ok()) {
-        return open_status;
-    }
+    bool mapping_inherited = false;
     if (source.opt_.page_store != nullptr) {
         Status inherit_status = destination_options.page_store->inherit_snapshot_from(*source.opt_.page_store);
         if (!inherit_status.ok()) {
             return inherit_status;
         }
+        mapping_inherited = destination_options.page_store->has_inherited_snapshot();
+    }
+    Config open_options    = destination_options;
+    open_options.key_range = mapping_inherited ? KeyRange::unbounded() : range;
+    std::unique_ptr<Crowdbtree> destination;
+    Status                      open_status = Crowdbtree::open(open_options, &destination);
+    if (!open_status.ok()) {
+        return open_status;
     }
 
     RangeRebuildStats                    local;
@@ -344,6 +347,11 @@ Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destinati
     if (source_frame_bytes == 0) {
         return Status::corruption("range rebuild: source snapshot has no root");
     }
+    const bool reuse_inherited_frames =
+        mapping_inherited && destination_options.page_store->inherited_snapshot_matches(*source.opt_.page_store);
+    for (NativeFrame &frame : source_frames) {
+        frame.inherited = reuse_inherited_frames;
+    }
 
     std::vector<NativeFrame> output_frames;
     uint64_t                 output_root = source_root;
@@ -363,11 +371,13 @@ Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destinati
         }
     }
 
-    native_status = destination->install_snapshot_native(std::move(output_frames), output_root, at_slot, next_page_id);
+    native_status = destination->install_range_snapshot_native(std::move(output_frames), output_root, at_slot,
+                                                               next_page_id, mapping_inherited);
     if (!native_status.ok()) {
         return native_status;
     }
-    Status snapshot_status = destination->snapshot();
+    destination->opt_.key_range = range;
+    Status snapshot_status      = destination->snapshot();
     if (!snapshot_status.ok()) {
         return snapshot_status;
     }

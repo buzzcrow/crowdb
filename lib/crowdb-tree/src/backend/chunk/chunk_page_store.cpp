@@ -600,6 +600,32 @@ Status ChunkPageStore::inherit_snapshot_from(const PageStore &source_store)
     return Status::Ok();
 }
 
+bool ChunkPageStore::has_shared_ownership() const
+{
+    auto manifest = catalog_->load(config_.tree_id);
+    if (manifest == nullptr) {
+        manifest = inherited_manifest_;
+    }
+    if (manifest == nullptr) {
+        return false;
+    }
+    return std::any_of(manifest->packs.begin(), manifest->packs.end(), [this, &manifest](const ChunkPagePack &pack) {
+        return chunk_pack_owner(*manifest, pack) != config_.tree_id;
+    });
+}
+
+bool ChunkPageStore::inherited_snapshot_matches(const PageStore &source_store) const
+{
+    const auto *source = dynamic_cast<const ChunkPageStore *>(&source_store);
+    if (source == nullptr || inherited_manifest_ == nullptr || inherited_catalog_ == nullptr ||
+        inherited_catalog_.get() != source->catalog_.get()) {
+        return false;
+    }
+    auto current = source->catalog_->load(source->config_.tree_id);
+    return current != nullptr && current->tree_id == inherited_manifest_->tree_id &&
+           current->generation == inherited_manifest_->generation && current->checksum == inherited_manifest_->checksum;
+}
+
 std::shared_ptr<const ChunkManifest> ChunkPageStore::reuse_base_manifest() const
 {
     auto current = catalog_->load(config_.tree_id);
@@ -851,10 +877,15 @@ Status ChunkPageStore::load_layout(std::shared_ptr<const ChunkManifest> *out) co
         *out = std::move(cached);
         return Status::Ok();
     }
-    auto manifest = catalog_->load(config_.tree_id);
+    auto               manifest         = catalog_->load(config_.tree_id);
+    const RootCatalog *manifest_catalog = catalog_.get();
+    if (manifest == nullptr && inherited_manifest_ != nullptr) {
+        manifest         = inherited_manifest_;
+        manifest_catalog = inherited_catalog_.get();
+    }
     layout_queries_.fetch_add(1, std::memory_order_relaxed);
     if (manifest != nullptr) {
-        Status status = validate_manifest(*manifest, *catalog_);
+        Status status = validate_manifest(*manifest, *manifest_catalog);
         if (!status.ok()) {
             return status;
         }
@@ -1391,7 +1422,7 @@ uint64_t ChunkPageStore::size() const
     if (staged_initialized_) {
         return staged_.size();
     }
-    auto manifest = catalog_->load(config_.tree_id);
+    auto manifest = reuse_base_manifest();
     return manifest == nullptr ? 0 : manifest->logical_size;
 }
 

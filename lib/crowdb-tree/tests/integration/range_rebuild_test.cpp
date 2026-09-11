@@ -14,6 +14,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace crowdb::tree
@@ -352,6 +353,12 @@ TEST(RangeRebuild, ChunkChildPublishesIndependentManifestWithSharedPacks)
     child_options.page_store = &child_store;
     std::unique_ptr<Crowdbtree> child;
     ASSERT_TRUE(rebuild_range(source, KeyRange::unbounded(), child_options, &child).ok());
+    MappingSegment *source_segment = source.mapping().segment_at(0);
+    MappingSegment *child_segment  = child->mapping().segment_at(0);
+    ASSERT_NE(source_segment, nullptr);
+    ASSERT_NE(child_segment, nullptr);
+    EXPECT_EQ(child_segment->image_addr, source_segment->image_addr);
+    EXPECT_EQ(child_segment->image_crc, source_segment->image_crc);
 
     auto child_manifest = catalog->load(61);
     ASSERT_NE(child_manifest, nullptr);
@@ -371,9 +378,149 @@ TEST(RangeRebuild, ChunkChildPublishesIndependentManifestWithSharedPacks)
     ASSERT_TRUE(child->put(Slice("new-key"), Slice("child-only")).ok());
     ASSERT_TRUE(child->flush().ok());
     ASSERT_TRUE(child->snapshot().ok());
+    EXPECT_NE(child->mapping().segment_at(0)->image_addr, source_segment->image_addr);
     EXPECT_EQ(live_entries(source).contains("new-key"), false);
     EXPECT_EQ(live_entries(*child).at("new-key"), "child-only");
     EXPECT_GT(child_store.stats().packs_reused, child_manifest->packs_reused);
+}
+
+TEST(RangeRebuild, MappingMaterializationClearsInheritedUnreachableSlots)
+{
+    auto                   catalog   = std::make_shared<detail::MemoryRootCatalog>(1);
+    auto                   transport = std::make_shared<detail::MemoryChunkTransport>();
+    detail::ChunkPageStore source_store(
+        {.tree_id = 70, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
+    Config source_options;
+    source_options.page_store       = &source_store;
+    source_options.frame_bytes      = 4096;
+    source_options.leaf_split_bytes = 256;
+    Crowdbtree source(source_options);
+    for (uint64_t index = 0; index < 80; ++index) {
+        ASSERT_TRUE(source.put(Slice("k" + std::to_string(index + 1000)), Slice(std::string(128, 'v'))).ok());
+    }
+    ASSERT_TRUE(source.flush().ok());
+    ASSERT_TRUE(source.snapshot().ok());
+
+    detail::ChunkPageStore child_store(
+        {.tree_id = 71, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
+    Config child_options              = source_options;
+    child_options.page_store          = &child_store;
+    const KeyRange              range = KeyRange::bounded(std::string("k1020"), std::string("k1060"));
+    std::unique_ptr<Crowdbtree> child;
+    ASSERT_TRUE(rebuild_range(source, range, child_options, &child).ok());
+    MappingSegment *segment = child->mapping().segment_at(0);
+    ASSERT_NE(segment, nullptr);
+    const uint32_t inherited_live_slots = segment->live_count.load();
+
+    bool complete = false;
+    for (uint32_t pass = 0; pass < 16 && !complete; ++pass) {
+        uint64_t bytes_written = 0;
+        ASSERT_TRUE(child->materialize_ownership(&bytes_written, &complete).ok());
+    }
+    ASSERT_TRUE(complete);
+    ASSERT_NE(child->mapping().segment_at(0), nullptr);
+    EXPECT_LT(child->mapping().segment_at(0)->live_count.load(), inherited_live_slots);
+    EXPECT_EQ(live_entries(*child).size(), 40U);
+    EXPECT_FALSE(live_entries(*child).contains("k1019"));
+    EXPECT_FALSE(live_entries(*child).contains("k1060"));
+
+    child.reset();
+    ASSERT_TRUE(Crowdbtree::open(child_options, &child).ok());
+    EXPECT_EQ(live_entries(*child).size(), 40U);
+    EXPECT_FALSE(live_entries(*child).contains("k1019"));
+    EXPECT_FALSE(live_entries(*child).contains("k1060"));
+}
+
+TEST(RangeRebuild, UnsnapshottedSourcePageIsCopiedInsteadOfInherited)
+{
+    auto                   catalog   = std::make_shared<detail::MemoryRootCatalog>(1);
+    auto                   transport = std::make_shared<detail::MemoryChunkTransport>();
+    detail::ChunkPageStore source_store(
+        {.tree_id = 72, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
+    Config source_options;
+    source_options.page_store  = &source_store;
+    source_options.frame_bytes = 4096;
+    Crowdbtree source(source_options);
+    ASSERT_TRUE(source.put(Slice("key"), Slice("old")).ok());
+    ASSERT_TRUE(source.flush().ok());
+    ASSERT_TRUE(source.snapshot().ok());
+    const uint64_t source_image = source.mapping().segment_at(0)->image_addr;
+
+    ASSERT_TRUE(source.put(Slice("key"), Slice("new")).ok());
+    ASSERT_TRUE(source.flush().ok());
+
+    detail::ChunkPageStore child_store(
+        {.tree_id = 73, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
+    Config child_options     = source_options;
+    child_options.page_store = &child_store;
+    std::unique_ptr<Crowdbtree> child;
+    ASSERT_TRUE(rebuild_range(source, KeyRange::unbounded(), child_options, &child).ok());
+    EXPECT_EQ(live_entries(*child).at("key"), "new");
+    EXPECT_NE(child->mapping().segment_at(0)->image_addr, source_image);
+
+    child.reset();
+    ASSERT_TRUE(Crowdbtree::open(child_options, &child).ok());
+    EXPECT_EQ(live_entries(*child).at("key"), "new");
+}
+
+TEST(RangeRebuild, MappingMaterializationRestartsAfterConcurrentFlush)
+{
+    auto                   catalog   = std::make_shared<detail::MemoryRootCatalog>(1);
+    auto                   transport = std::make_shared<detail::MemoryChunkTransport>();
+    detail::ChunkPageStore source_store(
+        {.tree_id = 74, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
+    Config source_options;
+    source_options.page_store       = &source_store;
+    source_options.frame_bytes      = 4096;
+    source_options.leaf_split_bytes = 256;
+    Crowdbtree source(source_options);
+    for (uint64_t index = 0; index < 80; ++index) {
+        ASSERT_TRUE(source.put(Slice("k" + std::to_string(index + 1000)), Slice(std::string(128, 'v'))).ok());
+    }
+    ASSERT_TRUE(source.flush().ok());
+    ASSERT_TRUE(source.snapshot().ok());
+
+    detail::ChunkPageStore child_store(
+        {.tree_id = 75, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
+    Config child_options              = source_options;
+    child_options.page_store          = &child_store;
+    const KeyRange              range = KeyRange::bounded(std::string("k1020"), std::string("k1060"));
+    std::unique_ptr<Crowdbtree> child;
+    ASSERT_TRUE(rebuild_range(source, range, child_options, &child).ok());
+
+    catalog->block_next_publish_for_tests();
+    Status      first_status;
+    uint64_t    first_bytes    = 0;
+    bool        first_complete = true;
+    std::thread materializer([&] { first_status = child->materialize_ownership(&first_bytes, &first_complete); });
+    catalog->wait_for_blocked_publish_for_tests();
+    Status mutation_status;
+    for (uint64_t index = 20; index < 40; ++index) {
+        Batch batch;
+        batch.ops.push_back({.key = "k" + std::to_string(index + 1000), .kind = OpKind::kDelete, .value = {}});
+        mutation_status = child->apply(81 + index - 20, batch);
+        if (!mutation_status.ok()) {
+            break;
+        }
+    }
+    if (mutation_status.ok()) {
+        mutation_status = child->flush();
+    }
+    catalog->release_blocked_publish_for_tests();
+    materializer.join();
+    ASSERT_TRUE(mutation_status.ok());
+    ASSERT_TRUE(first_status.ok());
+    EXPECT_FALSE(first_complete);
+    EXPECT_EQ(first_bytes, 0U);
+    EXPECT_TRUE(child_store.has_shared_ownership());
+
+    bool complete = false;
+    for (uint32_t pass = 0; pass < 16 && !complete; ++pass) {
+        uint64_t bytes_written = 0;
+        ASSERT_TRUE(child->materialize_ownership(&bytes_written, &complete).ok());
+    }
+    ASSERT_TRUE(complete);
+    EXPECT_EQ(live_entries(*child).size(), 20U);
 }
 
 TEST(RangeRebuild, CopiesOnlyOverflowChainsReferencedByTheChildRange)
