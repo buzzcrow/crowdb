@@ -14,6 +14,63 @@ pub struct ct_page_store {
     _private: [u8; 0],
 }
 #[repr(C)]
+pub struct ct_root_catalog {
+    _private: [u8; 0],
+}
+#[repr(C)]
+pub struct ct_chunk_transport {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct ct_chunk_page_store_options {
+    pub tree_id: u64,
+    pub owner_epoch: u64,
+    pub pack_bytes: usize,
+    pub iu_size: u32,
+}
+
+#[repr(C)]
+pub struct ct_chunk_rpc_route {
+    pub client: *mut std::ffi::c_void,
+    pub server: *mut std::ffi::c_void,
+    pub connection: *mut std::ffi::c_void,
+}
+
+#[repr(C)]
+pub struct ct_chunk_rpc_disk_route {
+    pub disk_id_high: u64,
+    pub disk_id_low: u64,
+    pub route: ct_chunk_rpc_route,
+}
+
+#[repr(C)]
+pub struct ct_chunk_rpc_transport_options {
+    pub chunkdb: ct_chunk_rpc_route,
+    pub disk_routes: *const ct_chunk_rpc_disk_route,
+    pub disk_route_count: usize,
+    pub writer_lease_ms: u64,
+    pub rpc_timeout_ms: u64,
+    pub completion_capacity: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub struct ct_chunk_page_store_stats {
+    pub generations_published: u64,
+    pub packs_written: u64,
+    pub pack_bytes_written: u64,
+    pub pack_reads: u64,
+    pub cache_hits: u64,
+    pub layout_queries: u64,
+    pub mirror_write_attempts: u64,
+    pub mirror_write_failures: u64,
+    pub retained_manifests: u64,
+    pub pinned_bytes: u64,
+    pub oldest_pin_age_ms: u64,
+    pub orphan_bytes: u64,
+}
+#[repr(C)]
 pub struct ct_view {
     _private: [u8; 0],
 }
@@ -157,6 +214,34 @@ extern "C" {
     pub fn ct_free_buf(buf: *mut ct_buf);
     pub fn ct_page_store_open_mem(iu_size: u32, out: *mut *mut ct_page_store) -> c_int;
     pub fn ct_page_store_free(store: *mut ct_page_store);
+    pub fn ct_memory_root_catalog_open(owner_epoch: u64, out: *mut *mut ct_root_catalog) -> c_int;
+    pub fn ct_root_catalog_free(catalog: *mut ct_root_catalog);
+    pub fn ct_chunk_page_store_open(
+        options: *const ct_chunk_page_store_options,
+        catalog: *mut ct_root_catalog,
+        out: *mut *mut ct_page_store,
+    ) -> c_int;
+    pub fn ct_chunk_page_store_open_with_transport(
+        options: *const ct_chunk_page_store_options,
+        catalog: *mut ct_root_catalog,
+        transport: *mut ct_chunk_transport,
+        out: *mut *mut ct_page_store,
+    ) -> c_int;
+    pub fn ct_rpc_chunk_transport_open(
+        options: *const ct_chunk_rpc_transport_options,
+        out: *mut *mut ct_chunk_transport,
+    ) -> c_int;
+    pub fn ct_chunk_transport_free(transport: *mut ct_chunk_transport);
+    pub fn ct_chunk_page_store_get_stats(
+        store: *const ct_page_store,
+        out: *mut ct_chunk_page_store_stats,
+    ) -> c_int;
+    pub fn ct_chunk_page_store_reclaim_orphans(store: *mut ct_page_store) -> u64;
+    pub fn ct_root_catalog_reclaim_before(
+        catalog: *mut ct_root_catalog,
+        tree_id: u64,
+        generation: u64,
+    ) -> u64;
     pub fn ct_open(opt: *const ct_options, out: *mut *mut ct_tree) -> c_int;
     pub fn ct_rebuild_range(
         source: *mut ct_tree,

@@ -11,7 +11,7 @@ use crate::sys;
 /// the underlying backend independently when opened, so this handle may be
 /// dropped immediately after `Crowdbtree::open` returns.
 pub struct PageStore {
-    ptr: NonNull<sys::ct_page_store>,
+    pub(crate) ptr: NonNull<sys::ct_page_store>,
 }
 
 impl PageStore {

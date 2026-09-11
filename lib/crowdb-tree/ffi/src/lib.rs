@@ -12,6 +12,7 @@
 
 pub mod async_tree;
 pub mod batch;
+pub mod chunk;
 pub mod cpp_global_metrics;
 pub mod crc;
 pub mod error;
@@ -26,6 +27,10 @@ pub mod write_handle;
 
 pub use async_tree::{AsyncCrowdbtree, GetOutcome, PinnedGetOutcome, ScanOutcome};
 pub use batch::{BatchOp, ExtOp};
+pub use chunk::{
+    ChunkPageStoreOptions, ChunkPageStoreStats, ChunkRootCatalog, ChunkRpcDiskRoute, ChunkRpcRoute,
+    ChunkRpcTransportOptions, ChunkTransport,
+};
 pub use cpp_global_metrics::{cpp_global_metrics_max_name_len, flush_cpp_global_metrics};
 pub use crc::{crc32c, crc32c_update};
 pub use error::CtError;

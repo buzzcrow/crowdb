@@ -3,8 +3,8 @@
 
 // PT8.5: C ABI / Rust integration tests through the safe adapter.
 use crowdb_tree_ffi::{
-    AsyncCrowdbtree, BatchOp, Crowdbtree, CtError, ExtOp, KeyRange, Options, PageStore, PageStoreBackend,
-    PinnedGetOutcome,
+    AsyncCrowdbtree, BatchOp, ChunkPageStoreOptions, ChunkRootCatalog, Crowdbtree, CtError, ExtOp, KeyRange,
+    Options, PageStore, PageStoreBackend, PinnedGetOutcome,
 };
 use std::sync::Arc;
 
@@ -35,6 +35,38 @@ fn mem_apply_get_scan() {
     assert!(!truncated);
     assert_eq!(entries.len(), 39); // 40 puts - 1 delete
     assert!(entries.windows(2).all(|w| w[0].key < w[1].key)); // key-sorted
+}
+
+#[test]
+fn injected_chunk_store_round_trip_and_stats() {
+    let catalog = ChunkRootCatalog::open_memory(7).unwrap();
+    let store = Arc::new(
+        PageStore::open_chunk(
+            ChunkPageStoreOptions {
+                tree_id: 41,
+                owner_epoch: 7,
+                pack_bytes: 4096,
+                iu_size: 1,
+            },
+            &catalog,
+            None,
+        )
+        .unwrap(),
+    );
+    let tree = Crowdbtree::open(&Options {
+        page_store: Some(Arc::clone(&store)),
+        ..Options::default()
+    })
+    .unwrap();
+    tree.apply_put(1, b"chunk-key", b"chunk-value").unwrap();
+    tree.snapshot().unwrap();
+    assert_eq!(
+        tree.get(b"chunk-key").unwrap(),
+        Some((1, b"chunk-value".to_vec()))
+    );
+    let stats = store.chunk_stats().unwrap();
+    assert_eq!(stats.generations_published, 1);
+    assert!(stats.packs_written > 0);
 }
 
 #[test]
