@@ -358,11 +358,14 @@ mod tests {
         let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
         let dir = std::env::temp_dir().join(format!("crowdb-port-alloc-test-{id}"));
         let _ = fs::remove_dir_all(&dir);
-        // Each test gets a unique offset starting at 30000 so probes
-        // land in a high range unlikely to collide with real services
-        // or other test binaries. 500-port windows per test.
-        // id is bounded by the test count (~10), so truncation is safe.
-        let offset = 30000 + ((id & 0xFF) as u16) * 500;
+        // Each test gets a unique offset so probes land in a range
+        // above the real-service ports (10000-15999) but below the Linux
+        // ephemeral port range (32768-60999). Probing inside the ephemeral
+        // range is racy: under load the kernel assigns those ports as
+        // ephemeral source ports, making bind probes fail spuriously.
+        // 500-port windows per test; id is bounded by the test count
+        // (~10), so the highest window stays well under 32768.
+        let offset = 6000 + ((id & 0xFF) as u16) * 500;
         PortAllocConfig::new(&dir).with_offset(offset)
     }
 

@@ -10,6 +10,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport, RetryConfig};
+use crowdb_protocol::port::alloc::alloc_test_port;
+use crowdb_protocol::ServicePort;
 
 use crate::hardware::INSTANCE_ID;
 
@@ -42,40 +44,6 @@ pub fn crowdb_chunkdb_bin() -> Option<std::path::PathBuf> {
         }
     }
     None
-}
-
-/// Bind a TCP socket to `127.0.0.1:0`, read the assigned port, then
-/// close the socket.
-pub fn find_free_port() -> i32 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("bind 0")
-        .local_addr()
-        .expect("local_addr")
-        .port()
-        .into()
-}
-
-/// Find a pair of free ports `(listen_port, rpc_port)` such that
-/// `rpc_port = listen_port - offset`. The chunkdb client derives the
-/// crowdb-rpc port from the crowdb-rpc port using a fixed offset
-/// (`CHUNKDB_RPC_BASE - CHUNKDB_LISTEN_BASE`), so the harness must pick a
-/// pair satisfying that constraint — otherwise the subprocess falls
-/// back to the hardcoded default `0.0.0.0:9961` and collides across
-/// tests. Tries up to 100 random ports.
-fn find_port_pair_with_offset(offset: i32) -> (i32, i32) {
-    for _ in 0..100 {
-        let listen_port = find_free_port();
-        let rpc_port = listen_port - offset;
-        if rpc_port > 1024 && is_port_free(rpc_port) {
-            return (listen_port, rpc_port);
-        }
-    }
-    panic!("could not find a free port pair with offset {offset}");
-}
-
-fn is_port_free(port: i32) -> bool {
-    let addr = format!("127.0.0.1:{port}");
-    std::net::TcpListener::bind(addr.as_str()).is_ok()
 }
 
 // ── chunkdb subprocess ───────────────────────────────────────────
@@ -149,16 +117,24 @@ impl ChunkdbProcess {
             panic!("crowdb-chunkdb binary not found; set CROWDB_CHUNKDB_BIN or build app/crowdb-chunkdb")
         });
 
-        // The client derives rpc_port from listen_port using a fixed
-        // offset (CHUNKDB_LISTEN_BASE - CHUNKDB_RPC_BASE = 10). Pick a
-        // port pair that satisfies this constraint so the subprocess
-        // binds the crowdb-rpc listener on the port the client will
-        // connect to (instead of the hardcoded default 0.0.0.0:9961,
-        // which collides across tests).
-        let rpc_port_offset =
-            i32::from(crowdb_protocol::CHUNKDB_LISTEN_BASE) - i32::from(crowdb_protocol::CHUNKDB_RPC_BASE);
-        let (listen_port, rpc_port) = find_port_pair_with_offset(rpc_port_offset);
-        let http_port = find_free_port();
+        // Allocate listen/rpc/http ports from the fixed chunkdb ranges
+        // (12000-12999) via the port allocator. These ranges sit below
+        // the Linux ephemeral range (32768-60999), so the kernel never
+        // reassigns them between the probe and the subprocess bind — the
+        // TOCTOU that plagues `bind(:0)`-style ephemeral port selection
+        // under load. The shared per-process claim file keeps the three
+        // ports pairwise distinct. ChunkdbListen and ChunkdbRpc bases
+        // differ by 200, so rpc_port = listen_port + 200, the offset
+        // the client derives (without it the subprocess falls back to
+        // the hardcoded default 0.0.0.0:9961 and collides across tests).
+        let listen_port = i32::from(alloc_test_port(ServicePort::ChunkdbListen));
+        let rpc_port = i32::from(alloc_test_port(ServicePort::ChunkdbRpc));
+        debug_assert_eq!(
+            rpc_port - listen_port,
+            i32::from(crowdb_protocol::CHUNKDB_RPC_BASE) - i32::from(crowdb_protocol::CHUNKDB_LISTEN_BASE),
+            "allocator must preserve the listen->rpc offset"
+        );
+        let http_port = i32::from(alloc_test_port(ServicePort::ChunkdbHttp));
 
         let config_content = format!(
             r#"[server]
