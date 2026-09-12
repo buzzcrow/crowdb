@@ -371,8 +371,8 @@ Status BlockPageStore::open_blocks(const std::string &dir, uint32_t store_id, ui
 
 Status BlockPageStore::allocate_new_block()
 {
-    auto     idx = static_cast<uint32_t>(extents_.size());
-    char     name[64];
+    auto idx = static_cast<uint32_t>(extents_.size());
+    char name[64];
     std::snprintf(name, sizeof(name), "%u-%u.blk-%04u", store_id_, group_id_, idx);
     std::string path = dir_ + "/" + name;
 

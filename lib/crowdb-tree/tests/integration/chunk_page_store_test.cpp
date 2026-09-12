@@ -1339,7 +1339,7 @@ TEST(ChunkPageStore, HardCapsConfiguredChunkCapacityAt256MiB)
             .iu_size         = 1,
         },
         catalog, transport);
-    const uint8_t  value = 2;
+    const uint8_t value = 2;
     ASSERT_TRUE(store.write_at(8192, &value, 1).ok());
     ASSERT_TRUE(store.sync().ok());
     ASSERT_TRUE(store.write_at(0, &value, 1).ok());
@@ -1372,9 +1372,9 @@ TEST(ChunkPageStore, CatalogRejectsManifestGenerationOutsidePublicationFence)
 
 TEST(ChunkPageStore, PadsPackTailWithoutChangingLogicalChecksum)
 {
-    auto                 catalog   = std::make_shared<MemoryRootCatalog>(1);
-    auto                 transport = std::make_shared<MemoryChunkTransport>();
-    ChunkPageStore       store(
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore store(
         {
             .tree_id         = 19,
             .owner_epoch     = 1,
@@ -1705,7 +1705,7 @@ TEST(ChunkPageStore, CApiFactoryInjectsBackendWithoutChangingOpen)
         .max_concurrent_packs           = 2,
         .materialization_bytes_per_pass = 4096,
     };
-    ct_page_store              *store         = nullptr;
+    ct_page_store *store = nullptr;
     ASSERT_EQ(ct_chunk_page_store_open(&store_options, catalog, &store), 0);
     ct_options options  = {};
     options.page_store  = store;

@@ -160,9 +160,9 @@ void MappingTable::clear(uint64_t page_id)
 
 uint64_t MappingTable::allocate_page_id()
 {
-    std::scoped_lock            lk(alloc_mu_);
-    uint64_t                    page_id = next_page_id_++;
-    uint64_t                    seg_idx = page_id / kSegmentSize;
+    std::scoped_lock lk(alloc_mu_);
+    uint64_t         page_id = next_page_id_++;
+    uint64_t         seg_idx = page_id / kSegmentSize;
     ensure_segment(seg_idx);
     if (alloc_counter_ != nullptr) {
         alloc_counter_->inc();

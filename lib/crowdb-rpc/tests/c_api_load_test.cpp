@@ -97,7 +97,7 @@ TEST(CApiLoadTest, MultiWorkerOneshotSharedTransport)
                 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x00, 0x0c, 0x00, 0x04, 0x00,
                 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
             };
-            uint64_t             req_id            = req_id_counter.fetch_add(1, std::memory_order_relaxed);
+            uint64_t req_id = req_id_counter.fetch_add(1, std::memory_order_relaxed);
 
             crowdb_rpc_buffer_t ctrl = crowdb_rpc_buffer_alloc(pool, 24);
             if (ctrl == nullptr) {

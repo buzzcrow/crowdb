@@ -78,8 +78,8 @@ size_t ConnectionPool::size()
 
 size_t ConnectionPool::healthy_count()
 {
-    std::scoped_lock            lock(mu_);
-    size_t                      count = 0;
+    std::scoped_lock lock(mu_);
+    size_t           count = 0;
     for (auto &conn : connections_) {
         if (conn->is_open()) {
             count++;

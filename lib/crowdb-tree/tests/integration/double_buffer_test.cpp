@@ -353,8 +353,8 @@ TEST(DoubleBuffer, ScanMergeLoserTreeDistinctKeysAcrossFrozenMemtables)
     // 1,4,7; gen2 has 2,5,8. Non-contiguous slots prevent draining.
     for (int gen = 0; gen < 3; ++gen) {
         for (int i = 0; i < 3; ++i) {
-            int      key_idx = gen + (i * 3);
-            auto     s       = static_cast<uint64_t>((key_idx + 1) * 10);
+            int  key_idx = gen + (i * 3);
+            auto s       = static_cast<uint64_t>((key_idx + 1) * 10);
             ASSERT_TRUE(t.apply(s, put_one(make_key(key_idx), "v" + std::to_string(s))).ok());
         }
     }

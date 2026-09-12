@@ -51,8 +51,8 @@ struct NativeBounds
 
 bool set_native_frame_fences(NativeFrame *frame, const NativeBounds &bounds)
 {
-    uint8_t       *bytes      = frame->frame.data();
-    const auto     page_bytes = static_cast<uint32_t>(frame->frame.size());
+    uint8_t   *bytes      = frame->frame.data();
+    const auto page_bytes = static_cast<uint32_t>(frame->frame.size());
     if (!bounds.lower.has_value()) {
         return frame_set_fences(bytes, page_bytes, nullptr, nullptr);
     }
@@ -647,8 +647,8 @@ Status NativeFrameIterator::next(size_t max_frames, std::vector<NativeFrame> *ou
         return impl_->terminal_status;
     }
 
-    Crowdbtree                 &source = *impl_->source;
-    std::scoped_lock            lock(source.write_mutex_);
+    Crowdbtree      &source = *impl_->source;
+    std::scoped_lock lock(source.write_mutex_);
     if (!impl_->terminal_status.ok()) {
         return impl_->terminal_status;
     }
@@ -857,8 +857,8 @@ PageBase *Crowdbtree::resident(uint64_t page_id) const
     // load_mutex_; double-checked so only one loader installs. The unloaded
     // descriptor is inline in the slot word (no heap allocation), so there is
     // no descriptor to free -- just re-read and check.
-    auto                        dl_t0 = std::chrono::steady_clock::now();
-    std::scoped_lock            lk(load_mutex_);
+    auto             dl_t0 = std::chrono::steady_clock::now();
+    std::scoped_lock lk(load_mutex_);
     w = mapping_.get_word(page_id);
     if (slot_word::is_empty(w) || !slot_word::is_unloaded(w)) {
         return slot_word::is_resident(w) ? slot_word::resident_ptr(w) : nullptr; // another loader won
@@ -1733,8 +1733,8 @@ bool Crowdbtree::drain_all_frozen_locked(std::deque<std::shared_ptr<MemTable>> &
 
 Status Crowdbtree::flush()
 {
-    auto                        t0 = std::chrono::steady_clock::now();
-    std::scoped_lock            lk(write_mutex_);
+    auto             t0 = std::chrono::steady_clock::now();
+    std::scoped_lock lk(write_mutex_);
 
     // Always freeze whatever is in active_ right now (even below threshold)
     // so an explicit flush() call (or the periodic background-thread tick)
@@ -2612,8 +2612,8 @@ void Crowdbtree::get_async_attempt(std::shared_ptr<std::string> key_owned, std::
         bool     still_unloaded = false;
         Status   location_status;
         {
-            std::scoped_lock            lk(load_mutex_);
-            uint64_t                    w = mapping_.get_word(pending_page_id);
+            std::scoped_lock lk(load_mutex_);
+            uint64_t         w = mapping_.get_word(pending_page_id);
             if (slot_word::is_unloaded(w)) {
                 location_status = opt_.page_store->decode_mapping_location(w, &addr, &plen);
                 still_unloaded  = location_status.ok();
@@ -2649,8 +2649,8 @@ void Crowdbtree::get_async_attempt(std::shared_ptr<std::string> key_owned, std::
                     }
                     bool installed_ok = true;
                     {
-                        std::scoped_lock            lk(load_mutex_);
-                        uint64_t                    w = mapping_.get_word(page_id);
+                        std::scoped_lock lk(load_mutex_);
+                        uint64_t         w = mapping_.get_word(page_id);
                         if (slot_word::is_unloaded(w)) {
                             installed_ok = install_loaded_page(page_id, addr, plen, *blob) != nullptr;
                         }
@@ -3972,8 +3972,8 @@ void Crowdbtree::scan_async_attempt(std::shared_ptr<std::string>        prefix_o
         bool     still_unloaded = false;
         Status   location_status;
         {
-            std::scoped_lock            lk(load_mutex_);
-            uint64_t                    w = mapping_.get_word(pending_page_id);
+            std::scoped_lock lk(load_mutex_);
+            uint64_t         w = mapping_.get_word(pending_page_id);
             if (slot_word::is_unloaded(w)) {
                 location_status = opt_.page_store->decode_mapping_location(w, &addr, &plen);
                 still_unloaded  = location_status.ok();
@@ -4016,8 +4016,8 @@ void Crowdbtree::scan_async_attempt(std::shared_ptr<std::string>        prefix_o
                 }
                 bool installed_ok = true;
                 {
-                    std::scoped_lock            lk(load_mutex_);
-                    uint64_t                    w = mapping_.get_word(page_id);
+                    std::scoped_lock lk(load_mutex_);
+                    uint64_t         w = mapping_.get_word(page_id);
                     if (slot_word::is_unloaded(w)) {
                         installed_ok = install_loaded_page(page_id, addr, plen, *blob) != nullptr;
                     }
@@ -4246,10 +4246,10 @@ Status Crowdbtree::collect_native_frames(std::vector<NativeFrame> *out, uint64_t
                                          uint64_t *out_at_slot, uint64_t *out_next_page_id, const KeyRange *filter,
                                          uint64_t *out_subtrees_skipped)
 {
-    std::scoped_lock            lk(write_mutex_);
-    uint64_t                    gc   = gc_floor_.load();
-    const bool      can_prune        = filter != nullptr && routing_fences_trusted_.load(std::memory_order_acquire);
-    const KeyRange *effective_filter = can_prune ? filter : nullptr;
+    std::scoped_lock lk(write_mutex_);
+    uint64_t         gc               = gc_floor_.load();
+    const bool       can_prune        = filter != nullptr && routing_fences_trusted_.load(std::memory_order_acquire);
+    const KeyRange  *effective_filter = can_prune ? filter : nullptr;
 
     // Same DFS shape as the pre-#14c manifest walk: fold any delta chain
     // into a fresh consolidated base first (a real side effect on the live

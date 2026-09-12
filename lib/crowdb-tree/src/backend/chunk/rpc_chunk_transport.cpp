@@ -465,10 +465,10 @@ struct RpcChunkTransport::Impl::AsyncWrite
             finish(this, std::move(status));
             return;
         }
-        const uint64_t                 unit_bytes  = static_cast<uint64_t>(strip->unit_kb) * 1024;
+        const uint64_t unit_bytes  = static_cast<uint64_t>(strip->unit_kb) * 1024;
         const uint64_t zone_offset = (segment.unit_offset * unit_bytes) + (cursor - strip->chunk_offset);
-        const uint64_t                 request_id  = owner->next_request_id();
-        const FBInt128                 disk_id(segment.disk_high, segment.disk_low);
+        const uint64_t request_id  = owner->next_request_id();
+        const FBInt128 disk_id(segment.disk_high, segment.disk_low);
         flatbuffers::FlatBufferBuilder builder;
         auto request = crowdb::diskio::proto::CreateFBDiskWriteRequest(builder, request_id, monotonic_nanos(), &disk_id,
                                                                        segment.zone_index, zone_offset,
@@ -600,10 +600,10 @@ Status RpcChunkTransport::write_mirror(ChunkId chunk_id, uint32_t mirror_index, 
         if (!status.ok()) {
             return status;
         }
-        const uint64_t                 unit_bytes  = static_cast<uint64_t>(strip->unit_kb) * 1024;
+        const uint64_t unit_bytes  = static_cast<uint64_t>(strip->unit_kb) * 1024;
         const uint64_t zone_offset = (segment.unit_offset * unit_bytes) + (cursor - strip->chunk_offset);
-        const uint64_t                 request_id  = impl_->next_request_id();
-        const FBInt128                 disk_id(segment.disk_high, segment.disk_low);
+        const uint64_t request_id  = impl_->next_request_id();
+        const FBInt128 disk_id(segment.disk_high, segment.disk_low);
         flatbuffers::FlatBufferBuilder builder;
         auto request = crowdb::diskio::proto::CreateFBDiskWriteRequest(builder, request_id, monotonic_nanos(), &disk_id,
                                                                        segment.zone_index, zone_offset,
@@ -715,10 +715,10 @@ Status RpcChunkTransport::read_mirror(ChunkId chunk_id, uint32_t mirror_index, u
         if (!status.ok()) {
             return status;
         }
-        const uint64_t                 unit_bytes  = static_cast<uint64_t>(strip->unit_kb) * 1024;
+        const uint64_t unit_bytes  = static_cast<uint64_t>(strip->unit_kb) * 1024;
         const uint64_t zone_offset = (segment.unit_offset * unit_bytes) + (cursor - strip->chunk_offset);
-        const uint64_t                 request_id  = impl_->next_request_id();
-        const FBInt128                 disk_id(segment.disk_high, segment.disk_low);
+        const uint64_t request_id  = impl_->next_request_id();
+        const FBInt128 disk_id(segment.disk_high, segment.disk_low);
         flatbuffers::FlatBufferBuilder builder;
         auto request = crowdb::diskio::proto::CreateFBDiskReadRequest(builder, request_id, monotonic_nanos(), &disk_id,
                                                                       segment.zone_index, zone_offset,

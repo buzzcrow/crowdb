@@ -406,15 +406,15 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
                 .diskio_latency_ns = &store->diskio_latency_ns_,
             };
         }
-        auto sender   = stdexec::when_all(CallbackSender(job.mirrors.data(), &MirrorWriteSource::submit),
-                                          CallbackSender(&job.mirrors[1], &MirrorWriteSource::submit),
-                                          CallbackSender(&job.mirrors[2], &MirrorWriteSource::submit));
+        auto sender = stdexec::when_all(CallbackSender(job.mirrors.data(), &MirrorWriteSource::submit),
+                                        CallbackSender(&job.mirrors[1], &MirrorWriteSource::submit),
+                                        CallbackSender(&job.mirrors[2], &MirrorWriteSource::submit));
         // PackOperation is immovable (STDEXEC_IMMOVABLE), so make_unique
         // cannot be used; construct directly from the connect() prvalue.
         // std::move(sender) is required: connect() takes Sender&&.
         // NOLINTNEXTLINE(modernize-make-unique,performance-move-const-arg)
-        job.operation = std::unique_ptr<PackOperation>(
-            new PackOperation(stdexec::connect(std::move(sender), PackReceiver{.pipeline = weak_from_this(), .index = index})));
+        job.operation = std::unique_ptr<PackOperation>(new PackOperation(
+            stdexec::connect(std::move(sender), PackReceiver{.pipeline = weak_from_this(), .index = index})));
         stdexec::start(*job.operation);
     }
 

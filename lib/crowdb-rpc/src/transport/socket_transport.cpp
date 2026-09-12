@@ -674,8 +674,8 @@ void SocketTransport::unregister_conn(Connection *conn)
 
 std::optional<std::shared_ptr<Connection>> SocketTransport::lookup_conn(Connection *conn)
 {
-    std::scoped_lock            lock(live_conns_mu_);
-    auto                        it = live_conns_.find(conn);
+    std::scoped_lock lock(live_conns_mu_);
+    auto             it = live_conns_.find(conn);
     if (it == live_conns_.end()) {
         return std::nullopt; // not registered (test/direct connection)
     }

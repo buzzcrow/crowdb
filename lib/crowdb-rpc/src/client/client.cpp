@@ -221,8 +221,8 @@ void RpcClient::dispatch_request(Frame *frame, Connection *conn)
     crowdb_rpc_handler_fn cb        = nullptr;
     void                 *user_data = nullptr;
     {
-        std::scoped_lock            lock(handler_mu_);
-        auto                        it = request_handlers_.find(msg_type);
+        std::scoped_lock lock(handler_mu_);
+        auto             it = request_handlers_.find(msg_type);
         if (it != request_handlers_.end()) {
             cb        = it->second.first;
             user_data = it->second.second;
@@ -319,9 +319,9 @@ void RpcClient::fail_all(Connection *conn, RpcError err)
             if (conn != nullptr && slot.conn != conn) {
                 continue;
             }
-            auto cb  = slot.cb;
+            auto  cb  = slot.cb;
             auto *ud  = slot.user_data;
-            auto rid = slot.request_id;
+            auto  rid = slot.request_id;
             if (slot.state.compare_exchange_strong(expected, SLOT_FREE, std::memory_order_acq_rel)) {
                 invoke_c_complete(cb, ud, rid, nullptr, err);
             }
@@ -393,7 +393,7 @@ void RpcClient::dump_pending()
 
     // Map: iterate entries.
     for (const auto &kv : pending_) {
-        uint64_t rid = kv.first;
+        uint64_t rid      = kv.first;
         min_id            = std::min(rid, min_id);
         max_id            = std::max(rid, max_id);
         int64_t  conn_id  = (kv.second.conn != nullptr) ? kv.second.conn->id() : -1;

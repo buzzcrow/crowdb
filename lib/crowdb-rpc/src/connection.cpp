@@ -27,8 +27,8 @@ namespace
 inline int build_frame_iovecs(OutFrame *frame, uint8_t *hdr_buf, iovec *iovs)
 {
     serialize_header(hdr_buf, frame->header);
-    auto    off   = static_cast<ssize_t>(frame->sent_offset);
-    int     count = 0;
+    auto off   = static_cast<ssize_t>(frame->sent_offset);
+    int  count = 0;
 
     if (off < HEADER_SIZE) {
         iovs[count++] = {.iov_base = hdr_buf + off, .iov_len = static_cast<size_t>(HEADER_SIZE - off)};
@@ -89,7 +89,7 @@ int __attribute__((noinline)) restore_pending(OutFrame **pending, int pending_co
                                               ssize_t *frame_totals, iovec *iovs, uint8_t (*hdr_bufs)[HEADER_SIZE],
                                               int *iov_count)
 {
-    int n = pending_count;
+    int n  = pending_count;
     n      = std::min(n, BATCH_MAX);
     int fc = 0;
     int ic = 0;

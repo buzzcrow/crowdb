@@ -109,8 +109,8 @@ Buffer *RdmaBufferPool::alloc(uint32_t capacity)
 {
     uint32_t bucket = bucket_capacity(capacity);
     {
-        std::scoped_lock            lock(mu_);
-        auto                        it = free_list_.find(bucket);
+        std::scoped_lock lock(mu_);
+        auto             it = free_list_.find(bucket);
         if (it != free_list_.end() && !it->second.empty()) {
             Buffer *buf = it->second.back();
             it->second.pop_back();
@@ -125,8 +125,8 @@ Buffer *RdmaBufferPool::alloc(uint32_t capacity)
 void RdmaBufferPool::recycle(Buffer *buf)
 {
     {
-        std::scoped_lock            lock(mu_);
-        uint32_t                    bucket = bucket_capacity(buf->capacity);
+        std::scoped_lock lock(mu_);
+        uint32_t         bucket = bucket_capacity(buf->capacity);
         free_list_[bucket].push_back(buf);
     }
     --outstanding_;
