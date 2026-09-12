@@ -13,10 +13,15 @@ use crowdb_chunk_kv::{
 use crowdb_protocol::chunk_kv::{
     CatalogEntry, CatalogHead, CatalogPage, ChunkKvResponse, ChunkKvRpcErrorCode, Id128, OperationResult,
     OwnerHint, PointOperation, PointRequest, RequestRouting, RpcCompareCondition, RpcFailure,
-    RpcJournalPosition, RpcValue,
+    RpcJournalPosition, RpcValue, ScanContinuation, ScanDirection, ScanRequest, SeekKind, SeekRequest,
 };
 
-use crate::{AuthorityError, CatalogError, ServerMetrics, ServingAuthority};
+use crate::{
+    validate_and_clip_scan, AuthorityError, CatalogError, ClippedScan, ScanValidationError, ServerMetrics,
+    ServingAuthority,
+};
+
+const DEFAULT_SCAN_RESPONSE_BYTES: usize = 17 * 1024 * 1024;
 
 #[derive(Clone, Debug, Default)]
 struct CatalogSnapshot {
@@ -63,6 +68,12 @@ impl CatalogSnapshot {
     fn entry_for_key(&self, key: &[u8]) -> Option<&CatalogEntry> {
         self.entries.iter().find(|entry| entry.range.contains(key))
     }
+
+    fn entry_for_partition(&self, partition_id: Id128) -> Option<&CatalogEntry> {
+        self.entries
+            .iter()
+            .find(|entry| entry.partition_id == partition_id)
+    }
 }
 
 /// One process-local request surface hosting zero or more independent partitions.
@@ -76,6 +87,7 @@ pub struct ChunkKvService {
     catalog: ArcSwap<CatalogSnapshot>,
     partitions: ArcSwap<HashMap<Id128, Partition>>,
     max_partitions: usize,
+    max_scan_response_bytes: usize,
     admitting: AtomicBool,
     metrics: ServerMetrics,
 }
@@ -87,9 +99,22 @@ impl ChunkKvService {
     ///
     /// Returns an invalid-request error for zero identity or capacity.
     pub fn new(instance_id: u64, max_partitions: usize) -> Result<Self, ChunkKvError> {
-        if instance_id == 0 || max_partitions == 0 {
+        Self::new_with_limits(instance_id, max_partitions, DEFAULT_SCAN_RESPONSE_BYTES)
+    }
+
+    /// Creates an empty service with explicit hosting and scan response bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-request error when any identity or bound is zero.
+    pub fn new_with_limits(
+        instance_id: u64,
+        max_partitions: usize,
+        max_scan_response_bytes: usize,
+    ) -> Result<Self, ChunkKvError> {
+        if instance_id == 0 || max_partitions == 0 || max_scan_response_bytes == 0 {
             return Err(ChunkKvError::InvalidRequest(
-                "server instance identity and partition capacity must be nonzero".into(),
+                "server instance identity and capacity bounds must be nonzero".into(),
             ));
         }
         Ok(Self {
@@ -98,6 +123,7 @@ impl ChunkKvService {
             catalog: ArcSwap::from_pointee(CatalogSnapshot::default()),
             partitions: ArcSwap::from_pointee(HashMap::new()),
             max_partitions,
+            max_scan_response_bytes,
             admitting: AtomicBool::new(true),
             metrics: ServerMetrics::default(),
         })
@@ -338,6 +364,251 @@ impl ChunkKvService {
             }
         }
     }
+
+    /// Handles one ordered seek directly against a partition view.
+    pub async fn handle_seek(
+        &self,
+        request: SeekRequest,
+        now_wall_ms: u64,
+        now_monotonic_ms: u64,
+    ) -> ChunkKvResponse {
+        self.metrics.request();
+        let response = self
+            .handle_seek_inner(request, now_wall_ms, now_monotonic_ms)
+            .await;
+        self.metrics.response(&response);
+        response
+    }
+
+    async fn handle_seek_inner(
+        &self,
+        request: SeekRequest,
+        now_wall_ms: u64,
+        now_monotonic_ms: u64,
+    ) -> ChunkKvResponse {
+        let catalog = self.catalog.load_full();
+        if !self.admitting.load(Ordering::Acquire) {
+            return failure(
+                catalog.generation,
+                ChunkKvRpcErrorCode::Recovering,
+                "server is draining".into(),
+            );
+        }
+        if request.routing.validate().is_err() {
+            return failure(
+                catalog.generation,
+                ChunkKvRpcErrorCode::InvalidRequest,
+                "seek routing is invalid".into(),
+            );
+        }
+        if request
+            .routing
+            .deadline_ms
+            .is_some_and(|deadline| now_wall_ms >= deadline)
+        {
+            return failure(
+                catalog.generation,
+                ChunkKvRpcErrorCode::RequestExpired,
+                "request deadline elapsed before admission".into(),
+            );
+        }
+        let Some(entry) = catalog.entry_for_key(&request.key) else {
+            return not_my_range(catalog.generation, None);
+        };
+        if !matches_routing(&request.routing, catalog.generation, entry, self.instance_id) {
+            return not_my_range(catalog.generation, Some(entry));
+        }
+        if let Err(error) = self.authority.authorize(
+            catalog.generation,
+            request.routing.partition_id,
+            request.routing.owner_epoch,
+            now_monotonic_ms,
+        ) {
+            return authority_failure(catalog.generation, &error, Some(entry));
+        }
+        let Some(partition) = self.partitions.load().get(&request.routing.partition_id).cloned() else {
+            return failure(
+                catalog.generation,
+                ChunkKvRpcErrorCode::Recovering,
+                "assigned partition is not prepared locally".into(),
+            );
+        };
+        let minimum = request.routing.min_journal_position.map(journal_position);
+        let result = match request.kind {
+            SeekKind::Ceiling => {
+                partition
+                    .ceiling(request.routing.owner_epoch, &request.key, minimum)
+                    .await
+            }
+            SeekKind::Higher => {
+                partition
+                    .higher(request.routing.owner_epoch, &request.key, minimum)
+                    .await
+            }
+            SeekKind::Floor => {
+                partition
+                    .floor(request.routing.owner_epoch, &request.key, minimum)
+                    .await
+            }
+            SeekKind::Lower => {
+                partition
+                    .lower(request.routing.owner_epoch, &request.key, minimum)
+                    .await
+            }
+        };
+        match result {
+            Ok(value) => success(
+                catalog.generation,
+                None,
+                OperationResult::Value(value.map(scan_entry_value)),
+            ),
+            Err(error) => partition_failure(catalog.generation, &error, Some(entry)),
+        }
+    }
+
+    /// Handles one bounded directional scan directly against a partition view.
+    pub async fn handle_scan(
+        &self,
+        request: ScanRequest,
+        now_wall_ms: u64,
+        now_monotonic_ms: u64,
+    ) -> ChunkKvResponse {
+        self.metrics.request();
+        let response = self
+            .handle_scan_inner(request, now_wall_ms, now_monotonic_ms)
+            .await;
+        self.metrics.response(&response);
+        response
+    }
+
+    async fn handle_scan_inner(
+        &self,
+        request: ScanRequest,
+        now_wall_ms: u64,
+        now_monotonic_ms: u64,
+    ) -> ChunkKvResponse {
+        let catalog = self.catalog.load_full();
+        if !self.admitting.load(Ordering::Acquire) {
+            return failure(
+                catalog.generation,
+                ChunkKvRpcErrorCode::Recovering,
+                "server is draining".into(),
+            );
+        }
+        if request.routing.validate().is_err() {
+            return failure(
+                catalog.generation,
+                ChunkKvRpcErrorCode::InvalidRequest,
+                "scan routing is invalid".into(),
+            );
+        }
+        if request
+            .routing
+            .deadline_ms
+            .is_some_and(|deadline| now_wall_ms >= deadline)
+        {
+            return failure(
+                catalog.generation,
+                ChunkKvRpcErrorCode::RequestExpired,
+                "request deadline elapsed before admission".into(),
+            );
+        }
+        let Some(entry) = catalog.entry_for_partition(request.routing.partition_id) else {
+            return not_my_range(catalog.generation, None);
+        };
+        if !matches_routing(&request.routing, catalog.generation, entry, self.instance_id) {
+            return not_my_range(catalog.generation, Some(entry));
+        }
+        let clipped = match validate_and_clip_scan(&request, &entry.range) {
+            Ok(clipped) => clipped,
+            Err(ScanValidationError::RefreshRequired) => {
+                return failure(
+                    catalog.generation,
+                    ChunkKvRpcErrorCode::RefreshRequired,
+                    "scan continuation topology is stale".into(),
+                );
+            }
+            Err(ScanValidationError::NotMyRange) => {
+                return not_my_range(catalog.generation, Some(entry));
+            }
+            Err(ScanValidationError::InvalidRequest) => {
+                return failure(
+                    catalog.generation,
+                    ChunkKvRpcErrorCode::InvalidRequest,
+                    "scan interval is invalid".into(),
+                );
+            }
+        };
+        if let Err(error) = self.authority.authorize(
+            catalog.generation,
+            request.routing.partition_id,
+            request.routing.owner_epoch,
+            now_monotonic_ms,
+        ) {
+            return authority_failure(catalog.generation, &error, Some(entry));
+        }
+        let Some(partition) = self.partitions.load().get(&request.routing.partition_id).cloned() else {
+            return failure(
+                catalog.generation,
+                ChunkKvRpcErrorCode::Recovering,
+                "assigned partition is not prepared locally".into(),
+            );
+        };
+        match self.execute_scan(&partition, &request, &clipped).await {
+            Ok(page) => scan_success(catalog.generation, &request, page),
+            Err(error) => partition_failure(catalog.generation, &error, Some(entry)),
+        }
+    }
+
+    async fn execute_scan(
+        &self,
+        partition: &Partition,
+        request: &ScanRequest,
+        clipped: &ClippedScan,
+    ) -> Result<crowdb_chunk_kv::ScanPage, ChunkKvError> {
+        let minimum = request.routing.min_journal_position.map(journal_position);
+        let limit = clipped.limit as usize;
+        match clipped.direction {
+            ScanDirection::Forward => {
+                if let Some(resume_after) = clipped.resume_after.as_deref() {
+                    partition
+                        .scan_forward_after(
+                            request.routing.owner_epoch,
+                            resume_after,
+                            clipped.end.as_deref(),
+                            limit,
+                            self.max_scan_response_bytes,
+                            minimum,
+                        )
+                        .await
+                } else {
+                    partition
+                        .scan_forward(
+                            request.routing.owner_epoch,
+                            Some(&clipped.start),
+                            clipped.end.as_deref(),
+                            limit,
+                            self.max_scan_response_bytes,
+                            minimum,
+                        )
+                        .await
+                }
+            }
+            ScanDirection::Reverse => {
+                let start_before = clipped.resume_after.as_deref().or(clipped.end.as_deref());
+                partition
+                    .scan_reverse(
+                        request.routing.owner_epoch,
+                        start_before,
+                        Some(&clipped.start),
+                        limit,
+                        self.max_scan_response_bytes,
+                        minimum,
+                    )
+                    .await
+            }
+        }
+    }
 }
 
 fn matches_routing(
@@ -397,6 +668,40 @@ fn rpc_value(key: Vec<u8>, value: ValueRevision) -> RpcValue {
         value: value.value,
         revision: value.revision,
     }
+}
+
+fn scan_entry_value(entry: crowdb_chunk_kv::ScanEntry) -> RpcValue {
+    RpcValue {
+        key: entry.key.to_vec(),
+        value: entry.value.value,
+        revision: entry.value.revision,
+    }
+}
+
+fn scan_success(
+    map_revision: u64,
+    request: &ScanRequest,
+    page: crowdb_chunk_kv::ScanPage,
+) -> ChunkKvResponse {
+    let continuation = page
+        .truncated
+        .then(|| page.entries.last())
+        .flatten()
+        .map(|entry| ScanContinuation {
+            direction: request.direction,
+            last_key: entry.key.to_vec(),
+            partition_id: request.routing.partition_id,
+            owner_epoch: request.routing.owner_epoch,
+            map_revision: request.routing.map_revision,
+        });
+    success(
+        map_revision,
+        None,
+        OperationResult::Scan {
+            items: page.entries.into_iter().map(scan_entry_value).collect(),
+            continuation,
+        },
+    )
 }
 
 fn success(

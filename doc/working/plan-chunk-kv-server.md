@@ -32,7 +32,7 @@ R142 partitions and publishes one complete group-0 range catalog.
   management, graceful shutdown, and zero/many partition hosting.
 - [x] Add direct point RPC types and handlers for R142 operations, typed errors,
   request identity, journal positions, deadlines, and stale-owner redirects.
-- [~] Bind ordered seek and scan requests to direction, partition, epoch, and map
+- [x] Bind ordered seek and scan requests to direction, partition, epoch, and map
   revision and return refresh-required after topology changes.
 
 ## Phase 4: Transfer, Split, and Balance
@@ -71,10 +71,10 @@ R142 partitions and publishes one complete group-0 range catalog.
 - Group-0 page/head persistence and monitor supervision need integration with
   the existing KV client/server boundaries.
 - R145 owns routed multi-partition composition and end-to-end client coverage.
-- Point operations now cross a FlatBuffers crowdb-rpc boundary;
+- Point and ordered-read operations cross a FlatBuffers crowdb-rpc boundary;
   transition-detail and balance-policy wire models cover their control-plane
-  foundation. Ordered seek/scan execution remains; scan interval clipping and
-  topology-bound continuation validation are complete.
+  foundation. Scan interval clipping, inclusive initial lower bounds, strict
+  continuation, and topology-bound continuation validation are complete.
 - Transfer records and the reducer preserve no-copy artifact identity and old-
   owner exclusion, but the group-0 transition store, target recovery worker,
   split orchestration, and catalog cutover adapter remain.

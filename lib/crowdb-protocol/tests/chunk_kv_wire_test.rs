@@ -4,6 +4,10 @@
 use crowdb_protocol::chunk_kv::{
     ChunkKvResponse, ChunkKvRpcErrorCode, ClientRequestId, Id128, OperationResult, OwnerHint, PointOperation,
     PointRequest, RequestRouting, RpcCompareCondition, RpcFailure, RpcJournalPosition, RpcValue,
+    ScanContinuation, ScanDirection, ScanRequest, SeekKind, SeekRequest,
+};
+use crowdb_protocol::chunk_kv_ordered_wire::{
+    decode_scan_request, decode_seek_request, encode_scan_request, encode_seek_request,
 };
 use crowdb_protocol::chunk_kv_wire::{
     decode_point_request, decode_point_response, encode_point_request, encode_point_response,
@@ -61,7 +65,7 @@ fn point_success_round_trip_preserves_positions_and_values() {
             }),
         }),
     };
-    let (buffer, offset) = encode_point_response(19, 20, &response).unwrap();
+    let (buffer, offset) = encode_point_response(19, 20, &response);
     assert_eq!(decode_point_response(&buffer[offset..]).unwrap(), response);
 }
 
@@ -82,6 +86,64 @@ fn point_failure_round_trip_preserves_redirect_fields() {
             }),
         }),
     };
-    let (buffer, offset) = encode_point_response(26, 27, &response).unwrap();
+    let (buffer, offset) = encode_point_response(26, 27, &response);
+    assert_eq!(decode_point_response(&buffer[offset..]).unwrap(), response);
+}
+
+#[test]
+fn ordered_request_round_trips_preserve_bounds_and_continuation() {
+    let seek = SeekRequest {
+        routing: routing(),
+        key: Vec::new(),
+        kind: SeekKind::Floor,
+    };
+    let (buffer, offset) = encode_seek_request(28, 29, &seek).unwrap();
+    let decoded = decode_seek_request(&buffer[offset..]).unwrap();
+    assert_eq!(decoded.rpc_request_id, 28);
+    assert_eq!(decoded.rpc_create_nano, 29);
+    assert_eq!(decoded.request, seek);
+
+    let scan = ScanRequest {
+        routing: routing(),
+        start: Some(Vec::new()),
+        end: Some(vec![0xff]),
+        direction: ScanDirection::Reverse,
+        limit: 30,
+        continuation: Some(ScanContinuation {
+            direction: ScanDirection::Reverse,
+            last_key: Vec::new(),
+            partition_id: routing().partition_id,
+            owner_epoch: routing().owner_epoch,
+            map_revision: routing().map_revision,
+        }),
+    };
+    let (buffer, offset) = encode_scan_request(31, 32, &scan).unwrap();
+    let decoded = decode_scan_request(&buffer[offset..]).unwrap();
+    assert_eq!(decoded.rpc_request_id, 31);
+    assert_eq!(decoded.rpc_create_nano, 32);
+    assert_eq!(decoded.request, scan);
+}
+
+#[test]
+fn scan_response_round_trip_preserves_items_and_cursor() {
+    let response = ChunkKvResponse {
+        map_revision: 33,
+        journal_position: None,
+        result: Ok(OperationResult::Scan {
+            items: vec![RpcValue {
+                key: Vec::new(),
+                value: vec![0],
+                revision: 34,
+            }],
+            continuation: Some(ScanContinuation {
+                direction: ScanDirection::Forward,
+                last_key: Vec::new(),
+                partition_id: Id128 { high: 35, low: 36 },
+                owner_epoch: 37,
+                map_revision: 33,
+            }),
+        }),
+    };
+    let (buffer, offset) = encode_point_response(38, 39, &response);
     assert_eq!(decode_point_response(&buffer[offset..]).unwrap(), response);
 }

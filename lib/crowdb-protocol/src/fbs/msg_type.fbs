@@ -130,4 +130,6 @@ enum FBMsgType : int16 {
     // chunk KV service (range 3700s, see chunk_kv.fbs)
     EChunkKvPointRequest = 3700,
     EChunkKvPointResponse = 3701,
+    EChunkKvSeekRequest = 3702,
+    EChunkKvScanRequest = 3703,
 }

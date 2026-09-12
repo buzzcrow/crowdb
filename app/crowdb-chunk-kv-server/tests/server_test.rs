@@ -17,8 +17,8 @@ use crowdb_chunk_stream::{
 use crowdb_protocol::chunk_kv::{
     CatalogEntry, CatalogHead, CatalogPage, CatalogPageRef, CatalogPartitionState, ChunkKvRpcErrorCode,
     ClientRequestId, DomainFailurePolicy, DomainMonitorDescriptor, Id128, KeyRange, OperationResult,
-    OwnerDescriptor, PartitionArtifact, PointOperation, PointRequest, RequestRouting, ServingAssignment,
-    ServingGrant,
+    OwnerDescriptor, PartitionArtifact, PointOperation, PointRequest, RequestRouting, ScanDirection,
+    ScanRequest, SeekKind, SeekRequest, ServingAssignment, ServingGrant,
 };
 
 const INSTANCE_ID: u64 = 7;
@@ -276,4 +276,84 @@ async fn drain_closes_admission_and_relinquishes_authority() {
     assert_eq!(response.result.unwrap_err().code, ChunkKvRpcErrorCode::Recovering);
     assert_eq!(partition.snapshot().journal_durable_seq, before);
     assert_eq!(service.metrics().snapshot().requests, 1);
+}
+
+#[tokio::test]
+async fn ordered_seek_and_scan_preserve_inclusive_range_start() {
+    let (service, _) = fixture().await;
+    for (sequence, key) in [(1, b"a".as_slice()), (2, b"b"), (3, b"c")] {
+        let response = service
+            .handle_point(
+                PointRequest {
+                    routing: routing(sequence),
+                    operation: PointOperation::Put {
+                        key: key.to_vec(),
+                        value: key.to_vec(),
+                    },
+                },
+                1_500,
+                50_100,
+            )
+            .await;
+        assert!(response.result.is_ok());
+    }
+
+    let seek = service
+        .handle_seek(
+            SeekRequest {
+                routing: routing(4),
+                key: b"b".to_vec(),
+                kind: SeekKind::Ceiling,
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    let OperationResult::Value(Some(value)) = seek.result.unwrap() else {
+        panic!("expected ceiling result");
+    };
+    assert_eq!(value.key, b"b");
+
+    let scan = service
+        .handle_scan(
+            ScanRequest {
+                routing: routing(5),
+                start: Some(b"b".to_vec()),
+                end: None,
+                direction: ScanDirection::Forward,
+                limit: 1,
+                continuation: None,
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    let OperationResult::Scan { items, continuation } = scan.result.unwrap() else {
+        panic!("expected scan result");
+    };
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].key, b"b");
+    let continuation = continuation.expect("truncated scan continuation");
+
+    let continued = service
+        .handle_scan(
+            ScanRequest {
+                routing: routing(6),
+                start: Some(b"b".to_vec()),
+                end: None,
+                direction: ScanDirection::Forward,
+                limit: 10,
+                continuation: Some(continuation),
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    let OperationResult::Scan { items, .. } = continued.result.unwrap() else {
+        panic!("expected continued scan result");
+    };
+    assert_eq!(
+        items.iter().map(|value| value.key.as_slice()).collect::<Vec<_>>(),
+        vec![b"c".as_slice()]
+    );
 }

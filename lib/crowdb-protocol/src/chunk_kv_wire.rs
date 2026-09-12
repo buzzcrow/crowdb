@@ -9,10 +9,12 @@ use thiserror::Error;
 use crate::chunk_kv::{
     ChunkKvResponse, ChunkKvRpcErrorCode, ClientRequestId, Id128, OperationResult, OwnerHint, PointOperation,
     PointRequest, RequestRouting, RpcCompareCondition, RpcFailure, RpcJournalPosition, RpcValue,
+    ScanContinuation, ScanDirection,
 };
 use crate::chunk_kv_fb::{
     FBChunkKvCondition, FBChunkKvOperation, FBChunkKvPointRequest, FBChunkKvPointRequestArgs,
     FBChunkKvPointResponse, FBChunkKvPointResponseArgs, FBChunkKvResult, FBChunkKvRetCode,
+    FBChunkKvScanDirection, FBChunkKvValue, FBChunkKvValueArgs,
 };
 
 type ByteVectorOffset<'a> = flatbuffers::WIPOffset<flatbuffers::Vector<'a, u8>>;
@@ -37,8 +39,6 @@ pub enum ChunkKvWireError {
     InvalidRequest,
     #[error("invalid chunk KV point response")]
     InvalidResponse,
-    #[error("unsupported chunk KV point result")]
-    UnsupportedResult,
 }
 
 /// Encodes one validated point request and its transport envelope.
@@ -141,16 +141,13 @@ pub fn decode_point_request(bytes: &[u8]) -> Result<PointRequestEnvelope, ChunkK
     })
 }
 
-/// Encodes one point response and its transport correlation fields.
-///
-/// # Errors
-///
-/// Returns `UnsupportedResult` when a non-point result is supplied.
+/// Encodes one chunk-KV response and its transport correlation fields.
+#[must_use]
 pub fn encode_point_response(
     rpc_request_id: u64,
     rpc_create_nano: u64,
     response: &ChunkKvResponse,
-) -> Result<(Vec<u8>, usize), ChunkKvWireError> {
+) -> (Vec<u8>, usize) {
     let mut builder = FlatBufferBuilder::new();
     let mut args = FBChunkKvPointResponseArgs {
         id: rpc_request_id,
@@ -165,12 +162,12 @@ pub fn encode_point_response(
         args.journal_offset = position.offset;
     }
     match &response.result {
-        Ok(result) => encode_success(&mut builder, &mut args, result)?,
+        Ok(result) => encode_success(&mut builder, &mut args, result),
         Err(failure) => encode_failure(&mut builder, &mut args, failure),
     }
     let root = FBChunkKvPointResponse::create(&mut builder, &args);
     builder.finish(root, None);
-    Ok(builder.collapse())
+    builder.collapse()
 }
 
 /// Decodes one typed point response.
@@ -310,7 +307,7 @@ fn encode_success<'a>(
     builder: &mut FlatBufferBuilder<'a>,
     args: &mut FBChunkKvPointResponseArgs<'a>,
     result: &OperationResult,
-) -> Result<(), ChunkKvWireError> {
+) {
     args.ret_code = FBChunkKvRetCode::Success;
     match result {
         OperationResult::Value(value) => {
@@ -338,11 +335,35 @@ fn encode_success<'a>(
                 args.observed_revision = value.revision;
             }
         }
-        OperationResult::Scan { .. } => {
-            return Err(ChunkKvWireError::UnsupportedResult);
+        OperationResult::Scan { items, continuation } => {
+            args.result = FBChunkKvResult::Scan;
+            let values = items
+                .iter()
+                .map(|value| {
+                    let key = Some(builder.create_vector(&value.key));
+                    let bytes = Some(builder.create_vector(&value.value));
+                    FBChunkKvValue::create(
+                        builder,
+                        &FBChunkKvValueArgs {
+                            key,
+                            value: bytes,
+                            revision: value.revision,
+                        },
+                    )
+                })
+                .collect::<Vec<_>>();
+            args.scan_items = Some(builder.create_vector(&values));
+            if let Some(continuation) = continuation {
+                args.has_continuation = true;
+                args.continuation_direction = encode_direction(continuation.direction);
+                args.continuation_last_key = Some(builder.create_vector(&continuation.last_key));
+                args.continuation_partition_high = continuation.partition_id.high;
+                args.continuation_partition_low = continuation.partition_id.low;
+                args.continuation_owner_epoch = continuation.owner_epoch;
+                args.continuation_map_revision = continuation.map_revision;
+            }
         }
     }
-    Ok(())
 }
 
 fn encode_failure<'a>(
@@ -399,6 +420,34 @@ fn decode_success(encoded: FBChunkKvPointResponse<'_>) -> Result<OperationResult
                     .then_some(encoded.mutation_revision()),
                 observed,
             })
+        }
+        FBChunkKvResult::Scan => {
+            let values = encoded.scan_items().ok_or(ChunkKvWireError::InvalidResponse)?;
+            let items = values
+                .iter()
+                .map(|value| {
+                    Ok(RpcValue {
+                        key: required_bytes(value.key())?,
+                        value: required_bytes(value.value())?,
+                        revision: value.revision(),
+                    })
+                })
+                .collect::<Result<Vec<_>, ChunkKvWireError>>()?;
+            let continuation = if encoded.has_continuation() {
+                Some(ScanContinuation {
+                    direction: decode_direction(encoded.continuation_direction())?,
+                    last_key: required_bytes(encoded.continuation_last_key())?,
+                    partition_id: Id128 {
+                        high: encoded.continuation_partition_high(),
+                        low: encoded.continuation_partition_low(),
+                    },
+                    owner_epoch: encoded.continuation_owner_epoch(),
+                    map_revision: encoded.continuation_map_revision(),
+                })
+            } else {
+                None
+            };
+            Ok(OperationResult::Scan { items, continuation })
         }
         _ => Err(ChunkKvWireError::InvalidResponse),
     }
@@ -461,6 +510,21 @@ fn decode_error_code(code: FBChunkKvRetCode) -> Result<ChunkKvRpcErrorCode, Chun
         FBChunkKvRetCode::RefreshRequired => Ok(ChunkKvRpcErrorCode::RefreshRequired),
         FBChunkKvRetCode::InvalidRequest => Ok(ChunkKvRpcErrorCode::InvalidRequest),
         FBChunkKvRetCode::Internal => Ok(ChunkKvRpcErrorCode::Internal),
+        _ => Err(ChunkKvWireError::InvalidResponse),
+    }
+}
+
+pub(crate) fn encode_direction(direction: ScanDirection) -> FBChunkKvScanDirection {
+    match direction {
+        ScanDirection::Forward => FBChunkKvScanDirection::Forward,
+        ScanDirection::Reverse => FBChunkKvScanDirection::Reverse,
+    }
+}
+
+pub(crate) fn decode_direction(direction: FBChunkKvScanDirection) -> Result<ScanDirection, ChunkKvWireError> {
+    match direction {
+        FBChunkKvScanDirection::Forward => Ok(ScanDirection::Forward),
+        FBChunkKvScanDirection::Reverse => Ok(ScanDirection::Reverse),
         _ => Err(ChunkKvWireError::InvalidResponse),
     }
 }

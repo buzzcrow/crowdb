@@ -89,10 +89,14 @@ read-after-write ordering.
 
 Seek provides ceiling, higher, floor, and lower operations within one partition
 view. Scan intervals are validated and clipped to the routed half-open range
-before execution. A continuation binds direction, last key, partition ID,
-owner epoch, and catalog revision. Any split, transfer, revision, epoch, or
-direction mismatch returns `RefreshRequired`; the server never guesses a resume
-position. Multi-partition composition belongs to the routed client.
+before execution. A forward scan includes its lower bound and excludes its
+upper bound. Its continuation resumes strictly after the last emitted key so a
+page boundary neither duplicates nor skips a key. Reverse scans use the
+corresponding exclusive upper cursor. A continuation binds direction, last key,
+partition ID, owner epoch, and catalog revision. Any split, transfer, revision,
+epoch, or direction mismatch returns `RefreshRequired`; the server never
+guesses a resume position. Multi-partition composition belongs to the routed
+client.
 
 ## 6. Transfer and Balance
 
@@ -131,15 +135,13 @@ derive from the same sorted partition snapshots and catalog generation.
 
 ## Open Issues
 
-- R142 needs production native tree construction, prepared-child activation,
-  and directional cursor operations before real seek/scan and restart coverage.
+- Production startup still needs to construct native trees and activate
+  prepared children before real-process restart coverage.
 - Group-0 adapters remain for atomic monitor descriptor/transition storage,
   catalog page/head writes, generation retention and reclamation, serving-grant
   publication, and stream-binding authorization.
 - The generic kv-server supervisor still needs durable descriptor watching,
   leader-change fencing, restart backoff, and chunkdb/diskdb startup adoption.
-- FlatBuffers schemas and crowdb-rpc server transport remain; current protocol
-  and handler tests use the in-process typed boundary.
 - Target recovery, online split/catch-up, catalog proof wiring, real-process
   object-metadata restart tests, and three-node failover/balance tests remain.
 - Management HTTP endpoints, structured process logging, heartbeat publication,

@@ -6,8 +6,10 @@ use std::time::Duration;
 
 use crowdb_chunk_kv_server::{ChunkKvRpcService, ChunkKvService};
 use crowdb_protocol::chunk_kv::{
-    ChunkKvRpcErrorCode, ClientRequestId, Id128, PointOperation, PointRequest, RequestRouting,
+    ChunkKvRpcErrorCode, ClientRequestId, Id128, PointOperation, PointRequest, RequestRouting, ScanDirection,
+    ScanRequest,
 };
+use crowdb_protocol::chunk_kv_ordered_wire::encode_scan_request;
 use crowdb_protocol::chunk_kv_wire::{decode_point_response, encode_point_request};
 use crowdb_protocol::fb::FBMsgType;
 use crowdb_rpc_ffi::{Buffer, RpcClient, RpcServer};
@@ -61,6 +63,33 @@ async fn point_request_crosses_real_rpc_boundary_with_typed_response() {
     assert_eq!(response.request_id, 8);
     let response =
         decode_point_response(response.control.as_ref().expect("point response control").bytes()).unwrap();
+    assert_eq!(response.result.unwrap_err().code, ChunkKvRpcErrorCode::NotMyRange);
+
+    let scan = ScanRequest {
+        routing: request.routing,
+        start: Some(Vec::new()),
+        end: None,
+        direction: ScanDirection::Forward,
+        limit: 10,
+        continuation: None,
+    };
+    let (bytes, offset) = encode_scan_request(10, 11, &scan).unwrap();
+    let response = client
+        .call(
+            &server,
+            &connection,
+            10,
+            Buffer::from_vec_offset(bytes, offset),
+            None,
+            FBMsgType::EChunkKvScanRequest.0 as u16,
+        )
+        .unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(10), response)
+        .await
+        .expect("scan RPC timed out")
+        .expect("scan RPC failed");
+    let response =
+        decode_point_response(response.control.as_ref().expect("scan response control").bytes()).unwrap();
     assert_eq!(response.result.unwrap_err().code, ChunkKvRpcErrorCode::NotMyRange);
 
     server.stop();
