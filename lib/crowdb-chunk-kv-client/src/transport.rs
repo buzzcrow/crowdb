@@ -9,6 +9,10 @@ use crowdb_protocol::chunk_kv::{
     BatchMutationRequest, BatchMutationResponse, ChunkKvResponse, MultiGetRequest, MultiGetResponse,
     PointRequest, ScanRequest, SeekRequest,
 };
+use crowdb_protocol::chunk_kv_group_wire::{
+    decode_batch_mutation_response, decode_multi_get_response, encode_batch_mutation_request,
+    encode_multi_get_request,
+};
 use crowdb_protocol::chunk_kv_ordered_wire::{encode_scan_request, encode_seek_request};
 use crowdb_protocol::chunk_kv_wire::{decode_point_response, encode_point_request, ChunkKvWireError};
 use crowdb_protocol::fb::FBMsgType;
@@ -137,13 +141,13 @@ impl ChunkKvRpcTransport {
         Ok(connections[round_robin_index(&self.connection_round_robin, connections.len())].clone())
     }
 
-    async fn call(
+    async fn call_control(
         &self,
         endpoint: &str,
         request_id: u64,
         control: Buffer,
         message_type: u16,
-    ) -> Result<ChunkKvResponse> {
+    ) -> Result<Buffer> {
         let connection = self.connection(endpoint)?;
         let response = self
             .rpc
@@ -151,10 +155,22 @@ impl ChunkKvRpcTransport {
             .map_err(|error| ClientError::Transport(error.to_string()))?
             .await
             .map_err(|error| ClientError::Transport(error.to_string()))?;
-        let control = response
+        response
             .control
-            .ok_or_else(|| ClientError::Transport("RPC response omitted its control buffer".into()))?;
-        decode_point_response(control.bytes()).map_err(|error| wire_error(&error))
+            .ok_or_else(|| ClientError::Transport("RPC response omitted its control buffer".into()))
+    }
+
+    async fn call_point_response(
+        &self,
+        endpoint: &str,
+        request_id: u64,
+        control: Buffer,
+        message_type: u16,
+    ) -> Result<ChunkKvResponse> {
+        let response = self
+            .call_control(endpoint, request_id, control, message_type)
+            .await?;
+        decode_point_response(response.bytes()).map_err(|error| wire_error(&error))
     }
 }
 
@@ -164,7 +180,7 @@ impl ChunkKvTransport for ChunkKvRpcTransport {
         let id = self.next_id()?;
         let (bytes, offset) =
             encode_point_request(id, wall_time_ns(), request).map_err(|error| wire_error(&error))?;
-        self.call(
+        self.call_point_response(
             endpoint,
             id,
             Buffer::from_vec_offset(bytes, offset),
@@ -177,7 +193,7 @@ impl ChunkKvTransport for ChunkKvRpcTransport {
         let id = self.next_id()?;
         let (bytes, offset) =
             encode_seek_request(id, wall_time_ns(), request).map_err(|error| wire_error(&error))?;
-        self.call(
+        self.call_point_response(
             endpoint,
             id,
             Buffer::from_vec_offset(bytes, offset),
@@ -190,13 +206,61 @@ impl ChunkKvTransport for ChunkKvRpcTransport {
         let id = self.next_id()?;
         let (bytes, offset) =
             encode_scan_request(id, wall_time_ns(), request).map_err(|error| wire_error(&error))?;
-        self.call(
+        self.call_point_response(
             endpoint,
             id,
             Buffer::from_vec_offset(bytes, offset),
             FBMsgType::EChunkKvScanRequest.0 as u16,
         )
         .await
+    }
+
+    async fn multi_get(&self, endpoint: &str, request: &MultiGetRequest) -> Result<MultiGetResponse> {
+        let id = self.next_id()?;
+        let bytes = encode_multi_get_request(id, wall_time_ns(), request)
+            .map_err(|error| ClientError::Transport(error.to_string()))?;
+        let response = self
+            .call_control(
+                endpoint,
+                id,
+                Buffer::from_vec(bytes),
+                FBMsgType::EChunkKvMultiGetRequest.0 as u16,
+            )
+            .await?;
+        let (response_id, _, response) = decode_multi_get_response(response.bytes())
+            .map_err(|error| ClientError::Transport(error.to_string()))?;
+        if response_id != id {
+            return Err(ClientError::Transport(
+                "multi-get response identity mismatch".into(),
+            ));
+        }
+        Ok(response)
+    }
+
+    async fn batch_mutate(
+        &self,
+        endpoint: &str,
+        request: &BatchMutationRequest,
+    ) -> Result<BatchMutationResponse> {
+        let id = self.next_id()?;
+        let bytes = encode_batch_mutation_request(id, wall_time_ns(), request)
+            .map_err(|error| ClientError::Transport(error.to_string()))?;
+        let response = self
+            .call_control(
+                endpoint,
+                id,
+                Buffer::from_vec(bytes),
+                FBMsgType::EChunkKvBatchMutationRequest.0 as u16,
+            )
+            .await?;
+        let (response_id, _, response) = decode_batch_mutation_response(response.bytes())
+            .map_err(|error| ClientError::Transport(error.to_string()))?;
+        if response_id != id {
+            return Err(ClientError::Transport(
+                "batch mutation response identity mismatch".into(),
+            ));
+        }
+        Ok(response)
     }
 }
 

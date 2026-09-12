@@ -124,6 +124,18 @@ table FBChunkKvScanRequest {
     continuation_map_revision:uint64;
 }
 
+table FBChunkKvGroupRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    payload:[ubyte];
+}
+
+table FBChunkKvGroupResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    payload:[ubyte];
+}
+
 table FBChunkKvValue {
     key:[ubyte];
     value:[ubyte];

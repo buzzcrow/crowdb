@@ -8,7 +8,13 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crowdb_protocol::chunk_kv::{ChunkKvResponse, ChunkKvRpcErrorCode, RpcFailure};
+use crowdb_protocol::chunk_kv::{
+    BatchMutationResponse, ChunkKvResponse, ChunkKvRpcErrorCode, MultiGetResponse, RpcFailure,
+};
+use crowdb_protocol::chunk_kv_group_wire::{
+    decode_batch_mutation_request, decode_multi_get_request, encode_batch_mutation_response,
+    encode_multi_get_response,
+};
 use crowdb_protocol::chunk_kv_ordered_wire::{decode_scan_request, decode_seek_request};
 use crowdb_protocol::chunk_kv_wire::{decode_point_request, encode_point_response};
 use crowdb_protocol::fb::FBMsgType;
@@ -43,6 +49,16 @@ impl ChunkKvRpcService {
         let response_server = Arc::clone(server);
         server.register_handler(FBMsgType::EChunkKvScanRequest.0 as u16, move |request| {
             rpc_service.handle_scan(request, &response_server);
+        });
+        let rpc_service = Arc::clone(self);
+        let response_server = Arc::clone(server);
+        server.register_handler(FBMsgType::EChunkKvMultiGetRequest.0 as u16, move |request| {
+            rpc_service.handle_multi_get(request, &response_server);
+        });
+        let rpc_service = Arc::clone(self);
+        let response_server = Arc::clone(server);
+        server.register_handler(FBMsgType::EChunkKvBatchMutationRequest.0 as u16, move |request| {
+            rpc_service.handle_batch_mutation(request, &response_server);
         });
     }
 
@@ -120,6 +136,84 @@ impl ChunkKvRpcService {
             );
         });
     }
+
+    fn handle_multi_get(&self, request: ServerRequest, server: &Arc<RpcServer>) {
+        let service = Arc::clone(&self.service);
+        let server = Arc::clone(server);
+        self.runtime.spawn(async move {
+            let id = request.request_id;
+            let create_nano = request.rpc_create_nano;
+            let response = match decode_multi_get_request(request.control()) {
+                Ok((envelope_id, _, request)) if envelope_id == id => {
+                    service
+                        .handle_multi_get(request, wall_time_ms(), service.monotonic_ms())
+                        .await
+                }
+                Ok(_) => invalid_multi_get("RPC frame and control request IDs differ"),
+                Err(error) => invalid_multi_get(&error.to_string()),
+            };
+            if let Ok(bytes) = encode_multi_get_response(id, create_nano, &response) {
+                submit_group_response(
+                    &server,
+                    request.conn_handle,
+                    id,
+                    Buffer::from_vec(bytes),
+                    FBMsgType::EChunkKvMultiGetResponse.0 as u16,
+                );
+            }
+        });
+    }
+
+    fn handle_batch_mutation(&self, request: ServerRequest, server: &Arc<RpcServer>) {
+        let service = Arc::clone(&self.service);
+        let server = Arc::clone(server);
+        self.runtime.spawn(async move {
+            let id = request.request_id;
+            let create_nano = request.rpc_create_nano;
+            let response = match decode_batch_mutation_request(request.control()) {
+                Ok((envelope_id, _, request)) if envelope_id == id => {
+                    service
+                        .handle_batch_mutation(request, wall_time_ms(), service.monotonic_ms())
+                        .await
+                }
+                Ok(_) => invalid_batch("RPC frame and control request IDs differ"),
+                Err(error) => invalid_batch(&error.to_string()),
+            };
+            if let Ok(bytes) = encode_batch_mutation_response(id, create_nano, &response) {
+                submit_group_response(
+                    &server,
+                    request.conn_handle,
+                    id,
+                    Buffer::from_vec(bytes),
+                    FBMsgType::EChunkKvBatchMutationResponse.0 as u16,
+                );
+            }
+        });
+    }
+}
+
+fn invalid_multi_get(message: &str) -> MultiGetResponse {
+    MultiGetResponse {
+        map_revision: 0,
+        result: Err(invalid_failure(message)),
+    }
+}
+
+fn invalid_batch(message: &str) -> BatchMutationResponse {
+    BatchMutationResponse {
+        map_revision: 0,
+        result: Err(invalid_failure(message)),
+    }
+}
+
+fn invalid_failure(message: &str) -> RpcFailure {
+    RpcFailure {
+        code: ChunkKvRpcErrorCode::InvalidRequest,
+        message: message.into(),
+        retry_after_ms: None,
+        latest_map_revision: None,
+        owner_hint: None,
+    }
 }
 
 fn invalid_response(message: &str) -> ChunkKvResponse {
@@ -153,6 +247,18 @@ fn submit_response(
             FBMsgType::EChunkKvPointResponse.0 as u16,
             rpc_request_id,
         );
+    }
+}
+
+fn submit_group_response(
+    server: &RpcServer,
+    conn_handle: *mut std::ffi::c_void,
+    rpc_request_id: u64,
+    buffer: Buffer,
+    message_type: u16,
+) {
+    unsafe {
+        let _ = server.submit_response_buffer(conn_handle, buffer, None, message_type, rpc_request_id);
     }
 }
 

@@ -12,10 +12,11 @@ use crowdb_chunk_kv::{
     ValueRevision,
 };
 use crowdb_protocol::chunk_kv::{
-    ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage,
-    ChunkKvRangeCatalogPartitionState, ChunkKvResponse, ChunkKvRpcErrorCode, Id128, OperationResult,
-    OwnerHint, PointOperation, PointRequest, RequestRouting, RpcCompareCondition, RpcFailure,
-    RpcJournalPosition, RpcValue, ScanContinuation, ScanDirection, ScanRequest, SeekKind, SeekRequest,
+    BatchMutationRequest, BatchMutationResponse, BatchMutationResult, ChunkKvRangeCatalogEntry,
+    ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPartitionState, ChunkKvResponse,
+    ChunkKvRpcErrorCode, Id128, MultiGetRequest, MultiGetResponse, OperationResult, OwnerHint,
+    PointOperation, PointRequest, RequestRouting, RpcCompareCondition, RpcFailure, RpcJournalPosition,
+    RpcValue, ScanContinuation, ScanDirection, ScanRequest, SeekKind, SeekRequest,
 };
 use crowdb_protocol::common::ChunkKvExtra;
 use thiserror::Error;
@@ -566,6 +567,137 @@ impl ChunkKvService {
         }
     }
 
+    /// Executes a fully range-validated partition-local multi-get.
+    pub async fn handle_multi_get(
+        &self,
+        request: MultiGetRequest,
+        now_wall_ms: u64,
+        now_monotonic_ms: u64,
+    ) -> MultiGetResponse {
+        let catalog = self.catalog.load_full();
+        let Some(entry) = catalog.entry_for_partition(request.routing.partition_id) else {
+            return MultiGetResponse {
+                map_revision: catalog.generation,
+                result: Err(not_my_range_failure(catalog.generation, None)),
+            };
+        };
+        if request.validate_for_range(&entry.range).is_err() {
+            return MultiGetResponse {
+                map_revision: catalog.generation,
+                result: Err(rpc_failure(
+                    ChunkKvRpcErrorCode::InvalidRequest,
+                    "multi-get group contains an out-of-range key",
+                )),
+            };
+        }
+        if !matches_routing(&request.routing, catalog.generation, entry, self.instance_id) {
+            return MultiGetResponse {
+                map_revision: catalog.generation,
+                result: Err(not_my_range_failure(catalog.generation, Some(entry))),
+            };
+        }
+        let mut values = Vec::with_capacity(request.keys.len());
+        for key in request.keys {
+            let response = self
+                .handle_point(
+                    PointRequest {
+                        routing: request.routing.clone(),
+                        operation: PointOperation::Get { key },
+                    },
+                    now_wall_ms,
+                    now_monotonic_ms,
+                )
+                .await;
+            match response.result {
+                Ok(OperationResult::Value(value)) => values.push(value),
+                Ok(_) => {
+                    return MultiGetResponse {
+                        map_revision: response.map_revision,
+                        result: Err(rpc_failure(
+                            ChunkKvRpcErrorCode::Internal,
+                            "multi-get produced a non-value result",
+                        )),
+                    };
+                }
+                Err(error) => {
+                    return MultiGetResponse {
+                        map_revision: response.map_revision,
+                        result: Err(error),
+                    };
+                }
+            }
+        }
+        MultiGetResponse {
+            map_revision: catalog.generation,
+            result: Ok(values),
+        }
+    }
+
+    /// Executes a fully range-validated mutation group in input order.
+    pub async fn handle_batch_mutation(
+        &self,
+        request: BatchMutationRequest,
+        now_wall_ms: u64,
+        now_monotonic_ms: u64,
+    ) -> BatchMutationResponse {
+        let catalog = self.catalog.load_full();
+        let Some(entry) = catalog.entry_for_partition(request.routing.partition_id) else {
+            return BatchMutationResponse {
+                map_revision: catalog.generation,
+                result: Err(not_my_range_failure(catalog.generation, None)),
+            };
+        };
+        if request.validate_for_range(&entry.range).is_err() {
+            return BatchMutationResponse {
+                map_revision: catalog.generation,
+                result: Err(rpc_failure(
+                    ChunkKvRpcErrorCode::InvalidRequest,
+                    "batch group contains an invalid or out-of-range mutation",
+                )),
+            };
+        }
+        let first_id = request.operations[0].request_id;
+        let routing = RequestRouting {
+            request_id: first_id,
+            map_revision: request.routing.map_revision,
+            partition_id: request.routing.partition_id,
+            owner_epoch: request.routing.owner_epoch,
+            min_journal_position: None,
+            deadline_ms: request.routing.deadline_ms,
+        };
+        if !matches_routing(&routing, catalog.generation, entry, self.instance_id) {
+            return BatchMutationResponse {
+                map_revision: catalog.generation,
+                result: Err(not_my_range_failure(catalog.generation, Some(entry))),
+            };
+        }
+        let mut results = Vec::with_capacity(request.operations.len());
+        for item in request.operations {
+            let response = self
+                .handle_point(
+                    PointRequest {
+                        routing: RequestRouting {
+                            request_id: item.request_id,
+                            ..routing.clone()
+                        },
+                        operation: item.operation,
+                    },
+                    now_wall_ms,
+                    now_monotonic_ms,
+                )
+                .await;
+            results.push(BatchMutationResult {
+                request_id: item.request_id,
+                journal_position: response.journal_position,
+                result: response.result,
+            });
+        }
+        BatchMutationResponse {
+            map_revision: catalog.generation,
+            result: Ok(results),
+        }
+    }
+
     /// Handles one ordered seek directly against a partition view.
     pub async fn handle_seek(
         &self,
@@ -964,6 +1096,30 @@ fn not_my_range(map_revision: u64, entry: Option<&ChunkKvRangeCatalogEntry>) -> 
                 owner_epoch: entry.owner_epoch,
             }),
         }),
+    }
+}
+
+fn not_my_range_failure(map_revision: u64, entry: Option<&ChunkKvRangeCatalogEntry>) -> RpcFailure {
+    RpcFailure {
+        code: ChunkKvRpcErrorCode::NotMyRange,
+        message: "request routing does not match the active owner".into(),
+        retry_after_ms: None,
+        latest_map_revision: Some(map_revision),
+        owner_hint: entry.map(|entry| OwnerHint {
+            instance_id: entry.owner.instance_id,
+            rpc_endpoint: entry.owner.rpc_endpoint.clone(),
+            owner_epoch: entry.owner_epoch,
+        }),
+    }
+}
+
+fn rpc_failure(code: ChunkKvRpcErrorCode, message: &str) -> RpcFailure {
+    RpcFailure {
+        code,
+        message: message.into(),
+        retry_after_ms: None,
+        latest_map_revision: None,
+        owner_hint: None,
     }
 }
 

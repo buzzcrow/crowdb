@@ -57,6 +57,4 @@ identity, ordering, fencing, and partial-success semantics.
   transports and uses a bounded `DashMap` keyed by endpoint. This introduces a
   sharded lock on connection lookup, outside the storage data path, in exchange
   for preventing duplicate connection storms and enforcing the owner cap.
-- R143 internal group RPC handlers and production transport for multi-get and
-  batch remain.
 - R144 merge-specific continuation and retained-result cases stay skipped.
