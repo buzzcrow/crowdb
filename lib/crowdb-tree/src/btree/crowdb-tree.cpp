@@ -2705,6 +2705,10 @@ Crowdbtree::scan(Slice prefix, Slice start_after, Slice end_key, size_t limit, s
                  size_t *out_count, // NOLINT(readability-non-const-parameter) written to via *out_count
                  bool has_start_bound, bool start_inclusive) const
 {
+    // Preserve scan()'s original `start_after` contract for direct C++
+    // callers.  The explicit flag additionally makes an empty key usable as
+    // a real lower bound through scan-from APIs.
+    has_start_bound = has_start_bound || !start_after.empty();
     if (out != nullptr) {
         out->clear();
     }

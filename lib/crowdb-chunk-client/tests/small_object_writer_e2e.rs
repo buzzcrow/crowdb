@@ -250,21 +250,11 @@ async fn eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread()
     assert!(locations
         .iter()
         .all(|location| location.chunk_id == locations[0].chunk_id));
-    let chunk = tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            let chunk = stack.query_chunk(&locations[0]).await;
-            if chunk
-                .strips
-                .first()
-                .is_some_and(|strip| matches!(strip.strip, Some(Strip::EcStrip(_))))
-            {
-                break chunk;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("background parity publication");
+    // Draining joins the already-scheduled foreground conversion task. This
+    // is a deterministic completion boundary and still proves that parity was
+    // produced from retained mirror images rather than rereading the data.
+    stack.client.shutdown_small_writes().await.unwrap();
+    let chunk = stack.query_chunk(&locations[0]).await;
     assert_eq!(chunk.strips.len(), 1);
     let strip = &chunk.strips[0];
     let Some(Strip::EcStrip(ec)) = &strip.strip else {
@@ -309,7 +299,6 @@ async fn eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread()
             *expected
         );
     }
-    stack.client.shutdown_small_writes().await.unwrap();
     let sealed = stack.query_chunk(&locations[0]).await;
     assert_eq!(sealed.state, ChunkState::Sealed as i32);
     assert_eq!(sealed.strips.len(), 1);

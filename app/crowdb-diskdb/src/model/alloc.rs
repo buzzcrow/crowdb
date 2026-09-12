@@ -326,14 +326,17 @@ fn rollback_claims(claims: &[AllocClaim], metrics: &crate::metrics::DiskdbMetric
 
 /// Free a single block. v1: synchronous (no batch, no timer).
 ///
-/// The free path is **persist-only**: one immutable allocation-qualified
-/// `FreeBlockValue` records the request. The in-memory bitmap is not touched,
+/// The free path is **persist-only** with respect to the bitmap. The current
+/// busy record and revision are read from the complete KV engine.
+/// A matching incarnation is CAS-deleted while its `FreeBlockValue` is written
+/// atomically. The in-memory bitmap is not touched,
 /// `used_count` is not decremented (I1). Compaction is the sole
 /// bit-clearer for freed blocks (I3); `rollback_allocate` is the
 /// allocate-only bitmap clear and is never used here.
 ///
-/// No KV read is required. Compaction validates the segment's owner and
-/// allocation timestamp against the current busy incarnation.
+/// A retry after a lost response succeeds when the matching free fact already
+/// exists. A missing or mismatched busy incarnation is rejected without a
+/// mutation.
 /// Post-persist: increment `uncompacted_free_record_count` on the zone
 /// so compaction knows there is work to do.
 ///
@@ -453,10 +456,11 @@ pub async fn free_block(
 
 /// Free multiple blocks (one `batch_write` per data group).
 ///
-/// Persist-only free (same contract as `free_block`): one `batch_write`
-/// writes allocation-qualified `FreeBlockValue`s. The in-memory bitmaps are
-/// not touched — bits stay set, `used_count`
-/// is not decremented (I1); compaction is the sole bit-clearer (I3).
+/// Persist-only free (same contract as `free_block`): each distinct segment
+/// validates and conditionally replaces its busy incarnation. Successful
+/// segments are counted and rejected segments are returned individually. The
+/// in-memory bitmaps are not touched — bits stay set, `used_count` is not
+/// decremented (I1); compaction is the sole bit-clearer (I3).
 ///
 /// If the persist fails, no in-memory state changed — all blocks are
 /// still busy and the caller can retry safely.

@@ -702,11 +702,11 @@ Allocate runs only on active zones (in the `active_zone_context`).
 
 ### Free (persist-only, no lock)
 
-One blind Put of an incarnation-qualified `FreeBlockValue`. No bitmap touch,
-no `used_count` decrement, no zone-level lock. Free can
-run on any zone (active or not) without coordination. It only writes
-to the KV store and increments `uncompacted_free_record_count`. The
-bitmap is reconciled later by compaction.
+Read and validate the current busy incarnation, then conditionally delete its
+revision and put the incarnation-qualified `FreeBlockValue` in one atomic
+batch. No bitmap touch, no `used_count` decrement, and no zone-level lock.
+Free can run on any zone (active or not); successful frees increment
+`uncompacted_free_record_count`. The bitmap is reconciled later by compaction.
 
 ### Zone-level lock for non-allocate operations
 
@@ -753,8 +753,9 @@ RCU-published alongside the allocate context on add/remove/status-change:
   `uncompacted_free_record_count` increment; no bitmap mutation.)
 - **KV free path:** the incarnation-qualified `FreeBlockKey` is constructed
   directly from the `Segment`. `owner_chunk` and `allocation_ts` are carried
-  in the segment and become `previous_owner` and `pre_allocation_ts`. Free is
-  one blind put; compaction performs authoritative validation.
+  in the segment and become `previous_owner` and `pre_allocation_ts`. Free
+  validates the full-engine busy value and revision before the guarded batch;
+  compaction consumes only the resulting self-consistent fact.
 
 Node-level `add_disk` / `remove_disk` acquire a write lock on the disk
 list; allocation/free acquire a read lock (concurrent with each other,

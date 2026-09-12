@@ -14,7 +14,7 @@ use crowdb_test_harness::hardware::{seed_hardware, standard_disk_ids_3, DG_ID, U
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn compaction_rejects_mismatched_free_facts() {
+async fn wrong_owner_free_is_rejected_before_compaction() {
     require_binaries();
 
     // 1. Start kv cluster + seed hardware.
@@ -70,8 +70,8 @@ async fn compaction_rejects_mismatched_free_facts() {
         seg.disk_id, seg.zone_index, seg.unit_offset
     );
 
-    // 5. Blind free persists the wrong-owner fact, but compaction must not
-    // clear the current busy incarnation.
+    // 5. A wrong-owner free is rejected before it can replace the current
+    // busy incarnation with a durable free fact.
     let owner_b = make_chunk_id(0, 999);
     let wrong_seg = Segment {
         disk_id: seg.disk_id,
@@ -86,8 +86,14 @@ async fn compaction_rejects_mismatched_free_facts() {
             segments: vec![wrong_seg],
         })
         .await
-        .expect("blind wrong-owner free is persisted");
-    assert_eq!(wrong_free.freed_count, 1);
+        .expect("wrong-owner free returns a per-segment result");
+    assert_eq!(wrong_free.freed_count, 0);
+    assert_eq!(wrong_free.failures.len(), 1);
+    assert_eq!(wrong_free.failures[0].segment, wrong_seg);
+    assert_eq!(
+        wrong_free.failures[0].reason,
+        crowdb_protocol::diskdb::rpc::FreeFailureReason::IncarnationMismatch
+    );
     let disk_id = seg.disk_id.expect("allocated segment has disk id");
     let wrong_compaction = client
         .compact_zone(CompactZoneRequest {
@@ -95,7 +101,7 @@ async fn compaction_rejects_mismatched_free_facts() {
             zone_indices: vec![seg.zone_index],
         })
         .await
-        .expect("compact wrong-owner fact");
+        .expect("compact after rejected wrong-owner free");
     assert!(wrong_compaction.zones.iter().all(|zone| zone.success));
     let after_wrong = client
         .query_disk_group(DG_ID)
