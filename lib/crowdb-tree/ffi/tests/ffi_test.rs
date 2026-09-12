@@ -130,6 +130,28 @@ fn reverse_scan_is_descending_bounded_and_tombstone_aware() {
 }
 
 #[test]
+fn reverse_scan_crosses_leaf_boundaries() {
+    let tree = Crowdbtree::open(&Config {
+        frame_bytes: 4096,
+        ..Config::default()
+    })
+    .unwrap();
+    for index in 0..400_u64 {
+        let key = format!("key-{index:04}");
+        tree.apply_put(index + 1, key.as_bytes(), b"0123456789abcdef")
+            .unwrap();
+    }
+    tree.flush().unwrap();
+
+    let (entries, truncated) = tree.scan_reverse(None, false, b"", 500, 1 << 20).unwrap();
+    assert!(!truncated);
+    assert_eq!(entries.len(), 400);
+    assert!(entries.windows(2).all(|pair| pair[0].key > pair[1].key));
+    assert_eq!(entries.first().unwrap().key.as_ref(), b"key-0399");
+    assert_eq!(entries.last().unwrap().key.as_ref(), b"key-0000");
+}
+
+#[test]
 fn injected_chunk_store_round_trip_and_stats() {
     let catalog = ChunkRootCatalog::open_memory(7).unwrap();
     let store = Arc::new(
