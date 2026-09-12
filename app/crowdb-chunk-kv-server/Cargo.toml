@@ -14,20 +14,27 @@ workspace = true
 arc-swap = "1.7"
 async-trait = "0.1"
 bytes = "1"
+clap = { version = "4", features = ["derive"] }
 crowdb-chunk-kv = { path = "../../lib/crowdb-chunk-kv" }
 crowdb-chunk-client = { path = "../../lib/crowdb-chunk-client" }
 crowdb-chunk-stream = { path = "../../lib/crowdb-chunk-stream" }
+crowdb-common = { workspace = true }
 crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
+crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
 crowdb-tree-ffi = { path = "../../lib/crowdb-tree/ffi", features = ["chunk-rpc"] }
+axum = "0.7"
 serde = { version = "1", features = ["derive"] }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
 toml = "0.8"
+tracing = { workspace = true }
 
 [dev-dependencies]
 crowdb-chunk-kv = { path = "../../lib/crowdb-chunk-kv", features = ["test-util"] }
 crowdb-chunk-stream = { path = "../../lib/crowdb-chunk-stream", features = ["test-util"] }
+serde_json = "1"
+tower = { version = "0.5", features = ["util"] }
 
 [[bin]]
 name = "crowdb-chunk-kv-server"

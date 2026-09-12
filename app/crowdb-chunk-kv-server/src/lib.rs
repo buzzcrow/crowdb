@@ -5,6 +5,7 @@
 
 pub mod catalog;
 pub mod config;
+pub mod management;
 pub mod metrics;
 pub mod server;
 pub mod serving;
@@ -15,6 +16,7 @@ pub use catalog::{
     MemoryCatalogStore, ScanValidationError,
 };
 pub use config::{ChunkKvServerConfig, ConfigError, StorageConfig};
+pub use management::{management_router, ManagementState};
 pub use metrics::{ServerMetrics, ServerMetricsSnapshot};
 pub use server::{ChunkKvService, HostedPartitionHealth, ServerHealth, ServerLifecycle};
 pub use serving::{

@@ -641,17 +641,24 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "async-trait",
+ "axum",
  "bytes",
+ "clap",
  "crowdb-chunk-client",
  "crowdb-chunk-kv",
  "crowdb-chunk-stream",
+ "crowdb-common",
  "crowdb-kv-client",
  "crowdb-protocol",
+ "crowdb-rpc-ffi",
  "crowdb-tree-ffi",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "toml",
+ "tower",
+ "tracing",
 ]
 
 [[package]]

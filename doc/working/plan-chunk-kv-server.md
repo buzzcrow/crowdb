@@ -11,7 +11,7 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 ## Phase 1: Protocol and Catalog Core
 
-- [~] Add monitor descriptor, instance observation, assignment, artifact,
+- [ ] Add monitor descriptor, instance observation, assignment, artifact,
   transition, range-page/head, serving-grant, and typed outcome models.
 - [x] Validate complete binary-keyspace coverage, page/head checksums,
   generation monotonicity, exact adjacency, and epoch non-regression.
@@ -20,7 +20,7 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 ## Phase 2: Monitor and Lease Authority
 
-- [~] Implement idempotent domain-monitor registration and a supervised,
+- [ ] Implement idempotent domain-monitor registration and a supervised,
   leader-fenced driver runtime with read-failure containment.
 - [x] Add raw expired-instance observation and fake-clock health transitions.
 - [x] Issue aggregate assignment-digest grants and enforce conservative local
@@ -30,22 +30,22 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 - [~] Add `crowdb-chunk-kv-server` config, logging, metrics, health,
   management, graceful shutdown, and zero/many partition hosting.
-- [~] Add direct RPC types and handlers for R142 operations, typed errors,
+- [ ] Add direct RPC types and handlers for R142 operations, typed errors,
   request identity, journal positions, deadlines, and stale-owner redirects.
-- [~] Bind scan continuation tokens to direction, partition, epoch, and map
+- [ ] Bind scan continuation tokens to direction, partition, epoch, and map
   revision and return refresh-required after topology changes.
 
 ## Phase 4: Transfer, Split, and Balance
 
-- [~] Persist and resume idempotent transfer/split transitions with prepared
+- [ ] Persist and resume idempotent transfer/split transitions with prepared
   target readiness and exact R142 proof resolution.
-- [~] Implement dead-owner exclusion, graceful fencing, and no-copy transfer.
+- [ ] Implement dead-owner exclusion, graceful fencing, and no-copy transfer.
 - [x] Add median split selection, count-first placement, weighted improvement,
   cooldown, and transition concurrency limits.
 
 ## Phase 5: Gates and Documentation
 
-- [~] Add protocol, catalog, lease, monitor, RPC, lifecycle, and fixture tests.
+- [ ] Add protocol, catalog, lease, monitor, RPC, lifecycle, and fixture tests.
 - [ ] Run every required Rust and server gate through `pixi run`.
 - [x] Fold stable behavior into a permanent server design and index entry.
 

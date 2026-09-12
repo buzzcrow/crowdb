@@ -4,6 +4,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crowdb_protocol::chunk_kv::{ChunkKvResponse, ChunkKvRpcErrorCode};
+use serde::Serialize;
 
 #[derive(Debug, Default)]
 pub struct ServerMetrics {
@@ -16,7 +17,7 @@ pub struct ServerMetrics {
     internal_errors: AtomicU64,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct ServerMetricsSnapshot {
     pub requests: u64,
     pub successes: u64,
