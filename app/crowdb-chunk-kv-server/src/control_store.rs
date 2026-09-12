@@ -12,8 +12,8 @@ use crowdb_protocol::chunk_kv::{
     ServingGrant, SplitTransition, TransferTransition,
 };
 use crowdb_protocol::key::{
-    ChunkKvCatalogHeadKey, ChunkKvCatalogPageKey, ChunkKvSplitKey, ChunkKvTransferKey, DomainMonitorKey,
-    ServingGrantKey, TextKey,
+    ChunkKvRangeCatalogHeadKey, ChunkKvRangeCatalogPageKey, ChunkKvSplitKey, ChunkKvTransferKey,
+    DomainMonitorKey, ServingGrantKey, TextKey,
 };
 use thiserror::Error;
 
@@ -449,7 +449,7 @@ impl Group0ControlStore {
 impl ChunkKvRangeCatalogStore for Group0ControlStore {
     async fn put_page(&self, page: ChunkKvRangeCatalogPage) -> Result<(), ChunkKvRangeCatalogError> {
         page.validate()?;
-        let path = ChunkKvCatalogPageKey {
+        let path = ChunkKvRangeCatalogPageKey {
             generation: page.generation,
             page_index: page.page_index,
         }
@@ -481,7 +481,7 @@ impl ChunkKvRangeCatalogStore for Group0ControlStore {
         generation: u64,
         page_index: u64,
     ) -> Result<Option<ChunkKvRangeCatalogPage>, ChunkKvRangeCatalogError> {
-        let path = ChunkKvCatalogPageKey {
+        let path = ChunkKvRangeCatalogPageKey {
             generation,
             page_index,
         }
@@ -496,7 +496,7 @@ impl ChunkKvRangeCatalogStore for Group0ControlStore {
         &self,
         head: ChunkKvRangeCatalogHead,
     ) -> Result<HeadWriteOutcome, ChunkKvRangeCatalogError> {
-        let path = ChunkKvCatalogHeadKey.to_path();
+        let path = ChunkKvRangeCatalogHeadKey.to_path();
         let current = self
             .read::<ChunkKvRangeCatalogHead>(&path)
             .await
@@ -531,7 +531,7 @@ impl ChunkKvRangeCatalogStore for Group0ControlStore {
     }
 
     async fn get_head(&self) -> Result<Option<ChunkKvRangeCatalogHead>, ChunkKvRangeCatalogError> {
-        let path = ChunkKvCatalogHeadKey.to_path();
+        let path = ChunkKvRangeCatalogHeadKey.to_path();
         self.read(&path)
             .await
             .map(|value| value.map(|(head, _)| head))

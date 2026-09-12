@@ -96,6 +96,36 @@ impl Group0ControlPlane {
         Ok((scan.items, scan.truncated, scan.scan_cutoff))
     }
 
+    /// Read an entire prefix through fixed-cutoff pagination.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any page cannot be read in the bound leader tenure.
+    pub async fn scan_all_prefix(
+        &self,
+        prefix: Bytes,
+        page_limit: usize,
+    ) -> Result<Vec<KvGroupScanItem>, KvGroupOperationError> {
+        let mut items = Vec::new();
+        let mut start_after = Bytes::new();
+        let mut scan_cutoff = 0;
+        loop {
+            let (page, truncated, cutoff) = self
+                .scan_prefix(prefix.clone(), start_after.clone(), page_limit, scan_cutoff)
+                .await?;
+            scan_cutoff = cutoff;
+            if let Some(last) = page.last() {
+                start_after = last.key.clone();
+            }
+            let empty = page.is_empty();
+            items.extend(page);
+            if !truncated || empty {
+                break;
+            }
+        }
+        Ok(items)
+    }
+
     /// Put a value only when the key has `expected_revision`.
     ///
     /// # Errors

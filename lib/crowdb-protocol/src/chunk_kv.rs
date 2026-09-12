@@ -377,7 +377,7 @@ impl TransferTransition {
                 }
                 AuthorityReleaseProof::LeaseExpired {
                     activation_not_before_ms,
-                } if *activation_not_before_ms > self.old_grant_expires_at_ms => {}
+                } if *activation_not_before_ms >= self.old_grant_expires_at_ms => {}
                 _ => return Err(ChunkKvProtocolError::InvalidTransferTransition),
             }
         }

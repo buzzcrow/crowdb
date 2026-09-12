@@ -17,7 +17,7 @@ use crowdb_protocol::chunk_kv::{
     SplitReadinessProof, SplitTransition, TransferPhase, TransferTransition,
 };
 use crowdb_protocol::chunk_stream::StreamName;
-use crowdb_protocol::key::{ChunkKvCatalogHeadKey, ServingGrantKey, TextKey};
+use crowdb_protocol::key::{ChunkKvRangeCatalogHeadKey, ServingGrantKey, TextKey};
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
@@ -248,7 +248,7 @@ async fn group0_catalog_reconciles_an_ambiguous_committed_head() {
     let catalog_page = page(1);
     let catalog_head = head(1, None, &catalog_page);
     kv.inject(InjectedPut {
-        path: ChunkKvCatalogHeadKey.to_path(),
+        path: ChunkKvRangeCatalogHeadKey.to_path(),
         error: Group0KvError::OutcomeUnknown,
         commit: true,
     })

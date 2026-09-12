@@ -4,9 +4,11 @@
 //! Group-0 service discovery, registry, and watch/notify.
 
 pub mod discovery;
+pub mod domain_monitor;
 pub mod registry;
 pub mod watch_notify;
 
 pub use discovery::ServiceDiscoveryClient;
+pub use domain_monitor::DomainMonitorClient;
 pub use registry::ServiceRegistryClient;
 pub use watch_notify::{WatchNotify, WatchNotifyClient, WatchSubscription};

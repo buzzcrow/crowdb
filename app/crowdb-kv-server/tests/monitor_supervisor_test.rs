@@ -4,7 +4,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use crowdb_kv_server::background::binding_monitor_wiring::spawn_restarting_monitor;
+use crowdb_kv_server::background::domain_monitor::spawn_restarting_monitor;
 
 #[tokio::test]
 async fn failed_monitor_task_is_restarted_and_shutdown_is_drained() {

@@ -22,7 +22,11 @@ use crowdb_diskdb::recovery::ZoneLoader;
 use crowdb_diskdb::scanner::{ScanState, ScannerTask};
 use crowdb_diskdb::service::DiskdbRpcService;
 use crowdb_kv_client::{
-    ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient, WatchNotifyClient,
+    ClientConfig, CrowdbKvClient, DomainMonitorClient, HardwareClient, ServiceRegistryClient,
+    WatchNotifyClient,
+};
+use crowdb_protocol::chunk_kv::{
+    DomainFailurePolicy, DomainMonitorDescriptor, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest,
 };
 use tracing::{error, info, warn};
 
@@ -207,6 +211,36 @@ async fn main() {
     );
     let hw = HardwareClient::from_shared(Arc::clone(&kv_client));
     let svc = ServiceRegistryClient::from_shared(Arc::clone(&kv_client));
+    let monitor_request = EnsureDomainMonitorRequest {
+        descriptor: DomainMonitorDescriptor {
+            domain: "diskdb".into(),
+            service_registry_name: "diskdb".into(),
+            driver_version: 1,
+            capability_version: 1,
+            heartbeat_interval_ms: 5_000,
+            suspect_after_ms: 10_000,
+            dead_after_ms: 15_000,
+            lease_duration_ms: 20_000,
+            max_clock_skew_ms: 1_000,
+            self_fence_margin_ms: 1_000,
+            failure_policy: DomainFailurePolicy::OperatorOnly,
+            balance_policy: "operator-only-v1".into(),
+        },
+    };
+    match DomainMonitorClient::from_shared(Arc::clone(&kv_client))
+        .ensure(&monitor_request)
+        .await
+    {
+        Ok(EnsureDomainMonitorOutcome::Created | EnsureDomainMonitorOutcome::AlreadyExists) => {}
+        Ok(outcome) => {
+            error!(?outcome, "diskdb domain monitor registration rejected");
+            return;
+        }
+        Err(error) => {
+            error!(%error, "diskdb domain monitor registration failed");
+            return;
+        }
+    }
     // Register diskdb metrics (§11: `zone.allocate.retry.cms.bit`,
     // `disk.bad.impacted_blocks`). The CAS retry counter is attached
     // to each `Zone` during disk-add init so the allocate path can

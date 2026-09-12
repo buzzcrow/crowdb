@@ -24,9 +24,12 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 ## Phase 2: Monitor and Lease Authority
 
-- [~] Extract shared `KvGroupOperations`, add a group-0 control-plane facade,
+- [x] Extract shared `KvGroupOperations`, add a group-0 control-plane facade,
   and migrate the supervised domain-monitor runtime off KV-client loopback RPC
   while preserving read-failure containment and leader-tenure fencing.
+- [x] Persist monitor descriptors from chunk-KV, chunkdb, and diskdb before
+  readiness; run compiled chunk-KV/chunkdb drivers and an operator-only diskdb
+  driver on every group-0 replica, with publication gated by leader tenure.
 - [x] Add raw expired-instance observation and fake-clock health transitions.
 - [x] Issue aggregate assignment-digest grants and enforce conservative local
   self-fencing and replacement exclusion deadlines.
@@ -47,9 +50,10 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 ## Phase 4: Transfer, Split, and Balance
 
-- [ ] Persist and resume idempotent transfer/split transitions with prepared
+- [x] Persist and resume idempotent transfer/split transitions with prepared
   target readiness and exact R142 proof resolution.
-- [~] Implement dead-owner exclusion, graceful fencing, and no-copy transfer.
+- [x] Implement dead-owner detection, deterministic transfer planning, lease
+  exclusion, graceful fencing, target recovery, and no-copy catalog cutover.
 - [x] Add median split selection, count-first placement, weighted improvement,
   cooldown, and transition concurrency limits.
 
@@ -81,3 +85,9 @@ R142 partitions and publishes one complete group-0 range catalog.
   it. `KvGroupOperations` owns the read apply fence, and conditional group-0
   control writes wait through apply before returning; R143 monitor writes use
   only the conditional path.
+- Review decision: `EnsureDomainMonitor` is implemented as a revision-checked
+  group-0 client operation rather than a new kv-server RPC. The compiled
+  supervisor rejects unsupported persisted descriptors and the existing
+  registry contract exposes `UnsupportedMonitorDomain`; adding a separate RPC
+  solely for capability negotiation would reintroduce the self-RPC coupling
+  removed from monitor execution.

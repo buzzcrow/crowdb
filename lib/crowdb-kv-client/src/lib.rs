@@ -48,7 +48,8 @@ pub use hardware::{
 };
 pub use metrics::{ClientMetrics, ClientMetricsSnapshot, LeaderChangeEpisode, WindowLatencySnapshot};
 pub use service::{
-    ServiceDiscoveryClient, ServiceRegistryClient, WatchNotify, WatchNotifyClient, WatchSubscription,
+    DomainMonitorClient, ServiceDiscoveryClient, ServiceRegistryClient, WatchNotify, WatchNotifyClient,
+    WatchSubscription,
 };
 pub use transport::{KVClusterAdmin, KVClusterMetaClient, KvRpcTransport};
 

@@ -144,11 +144,6 @@ generation.
 
 - Real-process restart coverage still needs to exercise production partition
   recovery and prepared-child activation against live chunk services.
-- Group-0 adapters remain for transition storage, generation retention and
-  reclamation, serving-grant publication, and stream-binding authorization.
-- The generic kv-server supervisor still needs durable descriptor watching,
-  leader-change fencing, restart backoff, and chunkdb/diskdb startup adoption.
-- Target recovery, online split/catch-up, catalog proof wiring, real-process
-  object-metadata restart tests, and three-node failover/balance tests remain.
-- Management HTTP endpoints, structured process logging, heartbeat publication,
-  metrics export, and bounded checkpoint concurrency remain to be wired.
+- Automatic split planning still needs per-partition live-byte samples in the
+  service-registry observation; the split and placement policy is implemented,
+  but the monitor cannot safely infer a median from aggregate instance bytes.

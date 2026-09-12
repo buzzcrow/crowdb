@@ -41,6 +41,14 @@ impl TextKey for ChunkKvTransferKey {
     }
 }
 
+impl ChunkKvTransferKey {
+    /// Text prefix for scanning all chunk-KV transfer transitions.
+    #[must_use]
+    pub fn text_prefix_all() -> String {
+        format!("{}/{}/", Self::PATH_MAGIC, Self::PATH_TYPE)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ChunkKvSplitKey {
     pub transition_id: Id128,
@@ -69,6 +77,14 @@ impl TextKey for ChunkKvSplitKey {
     }
 }
 
+impl ChunkKvSplitKey {
+    /// Text prefix for scanning all chunk-KV split transitions.
+    #[must_use]
+    pub fn text_prefix_all() -> String {
+        format!("{}/{}/", Self::PATH_MAGIC, Self::PATH_TYPE)
+    }
+}
+
 impl TextKey for DomainMonitorKey {
     const PATH_MAGIC: &'static str = "/monitor";
     const PATH_TYPE: &'static str = "domain";
@@ -91,10 +107,18 @@ impl TextKey for DomainMonitorKey {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ChunkKvCatalogHeadKey;
+impl DomainMonitorKey {
+    /// Text prefix for scanning all persisted domain-monitor descriptors.
+    #[must_use]
+    pub fn text_prefix_all() -> String {
+        format!("{}/{}/", Self::PATH_MAGIC, Self::PATH_TYPE)
+    }
+}
 
-impl TextKey for ChunkKvCatalogHeadKey {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ChunkKvRangeCatalogHeadKey;
+
+impl TextKey for ChunkKvRangeCatalogHeadKey {
     const PATH_MAGIC: &'static str = "/chunk-kv";
     const PATH_TYPE: &'static str = "catalog-head";
 
@@ -109,12 +133,12 @@ impl TextKey for ChunkKvCatalogHeadKey {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ChunkKvCatalogPageKey {
+pub struct ChunkKvRangeCatalogPageKey {
     pub generation: u64,
     pub page_index: u64,
 }
 
-impl TextKey for ChunkKvCatalogPageKey {
+impl TextKey for ChunkKvRangeCatalogPageKey {
     const PATH_MAGIC: &'static str = "/chunk-kv";
     const PATH_TYPE: &'static str = "catalog-page";
 
@@ -181,14 +205,17 @@ mod tests {
         };
         assert_eq!(ChunkKvSplitKey::from_path(&split.to_path()).unwrap(), split);
         assert_eq!(
-            ChunkKvCatalogHeadKey::from_path(&ChunkKvCatalogHeadKey.to_path()).unwrap(),
-            ChunkKvCatalogHeadKey
+            ChunkKvRangeCatalogHeadKey::from_path(&ChunkKvRangeCatalogHeadKey.to_path()).unwrap(),
+            ChunkKvRangeCatalogHeadKey
         );
-        let page = ChunkKvCatalogPageKey {
+        let page = ChunkKvRangeCatalogPageKey {
             generation: 3,
             page_index: 4,
         };
-        assert_eq!(ChunkKvCatalogPageKey::from_path(&page.to_path()).unwrap(), page);
+        assert_eq!(
+            ChunkKvRangeCatalogPageKey::from_path(&page.to_path()).unwrap(),
+            page
+        );
         let grant = ServingGrantKey { instance_id: 5 };
         assert_eq!(ServingGrantKey::from_path(&grant.to_path()).unwrap(), grant);
     }

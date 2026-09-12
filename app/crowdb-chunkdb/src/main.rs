@@ -26,8 +26,8 @@ use crowdb_chunkdb::topology::{
 };
 use crowdb_common::metrics::{MetricsRegistry, MetricsRunner};
 use crowdb_kv_client::{
-    ClientConfig, CrowdbKvClient, HardwareClient, RangeBindingClient, ServiceRegistryClient,
-    WatchNotifyClient,
+    ClientConfig, CrowdbKvClient, DomainMonitorClient, HardwareClient, RangeBindingClient,
+    ServiceRegistryClient, WatchNotifyClient,
 };
 use tracing::{error, info, warn};
 
@@ -181,6 +181,39 @@ async fn main() {
         error!("initial topology refresh failed; refusing readiness");
         return;
     };
+    let monitor_request = crowdb_protocol::chunk_kv::EnsureDomainMonitorRequest {
+        descriptor: crowdb_protocol::chunk_kv::DomainMonitorDescriptor {
+            domain: "chunkdb".into(),
+            service_registry_name: "chunkdb".into(),
+            driver_version: 1,
+            capability_version: 1,
+            heartbeat_interval_ms: 5_000,
+            suspect_after_ms: 10_000,
+            dead_after_ms: 15_000,
+            lease_duration_ms: 20_000,
+            max_clock_skew_ms: 1_000,
+            self_fence_margin_ms: 1_000,
+            failure_policy: crowdb_protocol::chunk_kv::DomainFailurePolicy::AutomaticSharedStorage,
+            balance_policy: "uniform-1024-v1".into(),
+        },
+    };
+    match DomainMonitorClient::from_shared(Arc::clone(&kv))
+        .ensure(&monitor_request)
+        .await
+    {
+        Ok(
+            crowdb_protocol::chunk_kv::EnsureDomainMonitorOutcome::Created
+            | crowdb_protocol::chunk_kv::EnsureDomainMonitorOutcome::AlreadyExists,
+        ) => {}
+        Ok(outcome) => {
+            error!(?outcome, "chunkdb domain monitor registration rejected");
+            return;
+        }
+        Err(error) => {
+            error!(%error, "chunkdb domain monitor registration failed");
+            return;
+        }
+    }
     cache.replace(initial_topology);
 
     let refresh_cache = cache.clone();

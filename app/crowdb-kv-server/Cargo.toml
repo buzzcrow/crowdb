@@ -35,6 +35,7 @@ dashmap = "6"
 arc-swap = "1.9"
 utoipa = "5"
 bytes = "1"
+sha2 = "0.10"
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json"] }
@@ -68,6 +69,10 @@ path = "tests/monitor_supervisor_test.rs"
 [[test]]
 name = "group0_control_plane_test"
 path = "tests/group0_control_plane_test.rs"
+
+[[test]]
+name = "domain_monitor_test"
+path = "tests/domain_monitor_test.rs"
 
 [[test]]
 name = "reconcile_test"

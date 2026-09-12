@@ -294,23 +294,23 @@ async fn main() {
         None
     };
 
-    // Start the chunkdb range binding monitor (leader-gated on group-0).
-    // Reuses the keep-alive group-0 endpoint derivation. Only the
-    // group-0 leader writes the binding table; followers compute only.
-    let binding_monitor = if args.binding_monitor_interval > 0 {
-        let group0_ep = registry
-            .get_store(0)
-            .and_then(|s| s.listen_addr().map(|a| a.to_string()))
-            .or_else(|| registry.first_port().map(|p| format!("{display_ip}:{p}")))
-            .unwrap_or_else(|| format!("http://{display_addr}"));
-        Some(
-            crowdb_kv_server::background::binding_monitor_wiring::spawn_chunkdb_binding_monitor(
-                &registry,
-                group0_ep,
-                format!("http://{display_addr}"),
-                args.binding_monitor_interval,
-            ),
-        )
+    // Every group-0 replica discovers persisted monitor descriptors and keeps
+    // their compiled drivers prepared. Driver ticks acquire an exact local
+    // leader tenure, so followers remain idle without loopback RPC.
+    let domain_monitors = if args.binding_monitor_interval > 0 {
+        use crowdb_kv_server::background::domain_monitor::{
+            spawn_domain_monitor_supervisor, ChunkKvRangeMonitorDriver, ChunkdbRangeMonitorDriver,
+            DiskdbOwnershipMonitorDriver, DomainMonitorDrivers,
+        };
+        Some(spawn_domain_monitor_supervisor(
+            Arc::clone(&registry),
+            DomainMonitorDrivers::new(vec![
+                Arc::new(ChunkdbRangeMonitorDriver::new()),
+                Arc::new(ChunkKvRangeMonitorDriver::new()),
+                Arc::new(DiskdbOwnershipMonitorDriver::new()),
+            ]),
+            std::time::Duration::from_secs(args.binding_monitor_interval),
+        ))
     } else {
         None
     };
@@ -343,9 +343,9 @@ async fn main() {
         ka.stop().await;
         info!("keep-alive loop stopped");
     }
-    if let Some(bm) = binding_monitor {
-        bm.stop_and_wait().await;
-        info!("chunkdb binding monitor stopped");
+    if let Some(monitors) = domain_monitors {
+        monitors.stop_and_wait().await;
+        info!("domain monitor supervisor stopped");
     }
     graceful_shutdown(registry).await;
 }

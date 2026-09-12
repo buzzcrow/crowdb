@@ -3,5 +3,5 @@
 
 //! Background tasks: service keepalive and binding monitor.
 
-pub mod binding_monitor_wiring;
+pub mod domain_monitor;
 pub mod keepalive;
