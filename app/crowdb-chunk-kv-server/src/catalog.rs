@@ -5,6 +5,8 @@
 
 mod scan;
 mod store;
+mod transition;
 
 pub use scan::{validate_and_clip_scan, ClippedScan, ScanValidationError};
 pub use store::{CatalogError, CatalogPublisher, CatalogStore, HeadWriteOutcome, MemoryCatalogStore};
+pub use transition::CatalogCutover;

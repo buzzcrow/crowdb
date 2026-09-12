@@ -30,6 +30,12 @@ pub enum CatalogError {
     AmbiguousHead,
     #[error("catalog references an absent or changed immutable page")]
     MissingPage,
+    #[error("catalog transition is not ready for publication")]
+    TransitionNotReady,
+    #[error("catalog transition does not match the current generation")]
+    TransitionConflict,
+    #[error("catalog generation cannot advance")]
+    GenerationOverflow,
 }
 
 #[async_trait]

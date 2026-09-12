@@ -14,8 +14,8 @@ pub mod serving;
 pub mod storage;
 
 pub use catalog::{
-    validate_and_clip_scan, CatalogError, CatalogPublisher, CatalogStore, ClippedScan, HeadWriteOutcome,
-    MemoryCatalogStore, ScanValidationError,
+    validate_and_clip_scan, CatalogCutover, CatalogError, CatalogPublisher, CatalogStore, ClippedScan,
+    HeadWriteOutcome, MemoryCatalogStore, ScanValidationError,
 };
 pub use config::{ChunkKvServerConfig, ConfigError, StorageConfig};
 pub use control_store::{Group0ControlStore, Group0Kv, Group0KvError, VersionedValue};

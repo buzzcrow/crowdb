@@ -90,8 +90,10 @@ R142 partitions and publishes one complete group-0 range catalog.
 - Transfer and split records, reducers, and revision-fenced group-0 stores
   preserve stable artifact identity, authority proofs, exact child coverage,
   and common cutover frontiers across restart, including ambiguous-write
-  reconciliation. Target/parent recovery workers and catalog cutover adapters
-  remain.
+  reconciliation. Catalog cutover rewrites only the affected immutable page,
+  reuses every unchanged page, retains the transition identity for committed
+  retry reconciliation, and publishes the new head last. Target and parent
+  recovery workers remain.
 - Config defaults, reserved ports, process logging, HTTP management, RPC
   listener startup, validated catalog/grant refresh, service registration and
   heartbeat, lock-free counters, health snapshots, and drain-time admission
