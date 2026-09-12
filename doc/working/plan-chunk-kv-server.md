@@ -24,7 +24,7 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 ## Phase 2: Monitor and Lease Authority
 
-- [ ] Extract shared `KvGroupOperations`, add a group-0 control-plane facade,
+- [~] Extract shared `KvGroupOperations`, add a group-0 control-plane facade,
   and migrate the supervised domain-monitor runtime off KV-client loopback RPC
   while preserving read-failure containment and leader-tenure fencing.
 - [x] Add raw expired-instance observation and fake-clock health transitions.
@@ -76,33 +76,8 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 ## Open Issues
 
-- Production startup now reopens every local catalog assignment from its exact
-  tree and stream identities, reads the mutable checkpoint from the latest tree
-  root, replays WAL while `Prepared`, and activates only after a matching grant.
-  Catalog refresh reconciles incoming and outgoing assignments; real-process
-  restart coverage remains.
-- The existing KV-server monitor now aborts ticks on binding-read failure,
-  restarts a failed task, and drains the active task on shutdown. Persisted
-  descriptor discovery, on-demand driver lifecycle, and chunk-KV serving-grant
-  publication still need integration at the KV-server process boundary.
-- R145 owns routed multi-partition composition and end-to-end client coverage.
-- Point and ordered-read operations cross a FlatBuffers crowdb-rpc boundary;
-  transition-detail and balance-policy wire models cover their control-plane
-  foundation. Scan interval clipping, inclusive initial lower bounds, strict
-  continuation, and topology-bound continuation validation are complete.
-- Transfer and split records, reducers, and revision-fenced group-0 stores
-  preserve stable artifact identity, authority proofs, exact child coverage,
-  and common cutover frontiers across restart, including ambiguous-write
-  reconciliation. Catalog cutover rewrites only the affected immutable page,
-  reuses every unchanged page, retains the transition identity for committed
-  retry reconciliation, and publishes the new head last. Process-local workers
-  now fence transfer sources, replay transfer targets without activation, and
-  rebuild split children under stable identities before returning a common
-  frontier. The server subscribes to both transition prefixes, uses periodic
-  fixed-cutoff scans as a safety net, and persists work-authorizing phases
-  before local storage actions. The group-0 monitor's cutover/grant
-  orchestration remains.
-- Config defaults, reserved ports, process logging, HTTP management, RPC
-  listener startup, validated catalog/grant refresh, service registration and
-  heartbeat, lock-free counters, health snapshots, and drain-time admission
-  closure are implemented; bounded checkpoint drain remains.
+- Review decision: ordinary legacy KV puts retain their existing
+  Paxos-chosen response point because callers and async-apply tests depend on
+  it. `KvGroupOperations` owns the read apply fence, and conditional group-0
+  control writes wait through apply before returning; R143 monitor writes use
+  only the conditional path.

@@ -58,3 +58,6 @@ mod snapshot_api;
 
 #[path = "store_test/bounded_scan_test.rs"]
 mod bounded_scan;
+
+#[path = "store_test/group_operations_test.rs"]
+mod group_operations;

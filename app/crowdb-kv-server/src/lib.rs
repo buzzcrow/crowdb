@@ -11,6 +11,7 @@
 pub mod background;
 pub mod cli;
 pub mod engine_collector;
+pub mod group0_control_plane;
 pub mod mgmt;
 pub mod recovery;
 pub mod store_registry;

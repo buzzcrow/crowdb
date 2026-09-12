@@ -34,12 +34,12 @@ serde_json = "1"
 dashmap = "6"
 arc-swap = "1.9"
 utoipa = "5"
+bytes = "1"
 
 [dev-dependencies]
 reqwest = { version = "0.12", features = ["json"] }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi", features = ["test-util"] }
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }
-bytes = "1"
 
 [[test]]
 name = "async_ops_test"
@@ -64,6 +64,10 @@ path = "tests/multi_store_test.rs"
 [[test]]
 name = "monitor_supervisor_test"
 path = "tests/monitor_supervisor_test.rs"
+
+[[test]]
+name = "group0_control_plane_test"
+path = "tests/group0_control_plane_test.rs"
 
 [[test]]
 name = "reconcile_test"

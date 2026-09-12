@@ -3,20 +3,22 @@
 
 #![allow(clippy::cast_possible_truncation)]
 
-use crate::cluster::group::{ProposeResult, PxGroup};
-use crate::cluster::group_election::{LeaderElection, ReadBarrierOutcome};
+use crate::cluster::group::PxGroup;
+use crate::cluster::group_election::LeaderElection;
+use crate::cluster::group_operations::{
+    KvGroupOperationError, KvGroupOperations, KvReadConsistency, KvRequestIdentity,
+};
 use crate::cluster::kv_server::{RpcServerState, RpcTaskState};
 use crate::cluster::status::{GroupStatus, StatusLevel, StoreStatus};
 use crate::common::config::ServerConfig;
 use crate::common::report::OperationReport;
 use crate::metrics::MetricsRegistry;
-use crate::rpc::ReadMode;
 use bytes::Bytes;
 use dashmap::DashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use tracing::{debug, info, info_span, Instrument};
@@ -400,6 +402,13 @@ impl PxKvStore {
         self.groups.get(&group_id).map(|r| r.clone())
     }
 
+    /// Build the shared in-process operation facade for one hosted group.
+    #[must_use]
+    pub fn group_operations(&self, group_id: u64) -> Option<KvGroupOperations> {
+        self.get_group(group_id)
+            .map(|group| KvGroupOperations::new(group, self.scan_byte_budget))
+    }
+
     /// Decide whether a KV read on `group_id` should be forwarded to the
     /// group's leader. Returns `Some(endpoint)` only when **all** of:
     ///
@@ -439,68 +448,22 @@ impl PxKvStore {
         read_mode: i32,
         min_slot: u64,
     ) -> ReadDecision {
-        let replica = group.local_replica();
-        let safe_slot = group.group_safe_slot();
-        let contiguous_applied = replica.contiguous_applied();
-        if let Some(h) = group.read_handles() {
-            h.safe_slot.set(safe_slot);
-        }
-        let mode = ReadMode::try_from(read_mode).unwrap_or(ReadMode::Linearizable);
-        match mode {
-            ReadMode::Linearizable => {
-                if replica.is_leader() {
-                    match group.linearizable_read_barrier().await {
-                        ReadBarrierOutcome::Ready { read_slot } => {
-                            // R35 apply fence: with R17 (`async_engine_apply`)
-                            // on, a just-chosen slot may not yet be applied
-                            // when the barrier resolves, so a linearizable
-                            // read could miss a just-written value. Wait for
-                            // the local applied frontier to reach `read_slot`
-                            // before serving the engine get. With R17 off the
-                            // frontier already equals `read_slot` and this is
-                            // a single atomic load + compare (no wait).
-                            let fence_start = Instant::now();
-                            replica.await_apply_fence(read_slot).await;
-                            if let Some(h) = group.read_handles() {
-                                h.apply_fence.observe(fence_start.elapsed().as_nanos() as u64);
-                            }
-                            ReadDecision::Serve { read_slot, safe_slot }
-                        }
-                        // Lost leadership during the barrier: redirect to the
-                        // current leader rather than serving stale local state.
-                        ReadBarrierOutcome::NotLeader => ReadDecision::NotLeader {
-                            hint: group.leader_endpoint().unwrap_or_default(),
-                        },
-                        ReadBarrierOutcome::NoQuorum => ReadDecision::Unavailable {
-                            msg: "linearizable read: leadership quorum unavailable".to_string(),
-                        },
-                    }
-                } else {
-                    // Non-leader: a linearizable read cannot be proven fresh
-                    // here. `kv_service` forwards linearizable reads to the
-                    // leader before reaching the store; arriving here means
-                    // forwarding was unavailable or the loop-guard is set.
-                    // Redirect instead of serving a stale local value.
-                    ReadDecision::NotLeader {
-                        hint: group.leader_endpoint().unwrap_or_default(),
-                    }
-                }
+        let consistency =
+            match crate::rpc::ReadMode::try_from(read_mode).unwrap_or(crate::rpc::ReadMode::Linearizable) {
+                crate::rpc::ReadMode::Linearizable => KvReadConsistency::Linearizable,
+                crate::rpc::ReadMode::MinSlot => KvReadConsistency::MinAppliedSlot(min_slot),
+            };
+        match KvGroupOperations::new(Arc::clone(group), self.scan_byte_budget)
+            .resolve_read_point(consistency)
+            .await
+        {
+            Ok((read_slot, _)) => ReadDecision::Serve { read_slot },
+            Err(KvGroupOperationError::NotLeader { leader_hint }) => {
+                ReadDecision::NotLeader { hint: leader_hint }
             }
-            ReadMode::MinSlot => {
-                if contiguous_applied >= min_slot {
-                    ReadDecision::Serve {
-                        read_slot: contiguous_applied,
-                        safe_slot,
-                    }
-                } else {
-                    if let Some(h) = group.read_handles() {
-                        h.minslot_fallback.inc();
-                    }
-                    ReadDecision::NotLeader {
-                        hint: group.leader_endpoint().unwrap_or_default(),
-                    }
-                }
-            }
+            Err(error) => ReadDecision::Unavailable {
+                msg: error.to_string(),
+            },
         }
     }
 
@@ -564,58 +527,6 @@ impl PxKvStore {
 
     // ── KV operations ─────────────────────────────────────────
 
-    pub(crate) async fn propose_and_respond(
-        &self,
-        group_id: u64,
-        payload: Vec<u8>,
-        client_id: Option<u64>,
-        seq: Option<u64>,
-        request_id: u64,
-        request_create_ms: u64,
-    ) -> crate::rpc::KvResponse {
-        let Some(group) = self.get_group(group_id) else {
-            return missing_group_response(request_id, request_create_ms);
-        };
-
-        match group.propose(payload, client_id, seq).await {
-            ProposeResult::Chosen { slot } => {
-                crate::rpc::KvResponse::ok_chosen(slot, request_id, request_create_ms)
-            }
-            ProposeResult::NotLeader { leader_hint } => {
-                crate::rpc::KvResponse::not_leader(leader_hint, request_id, request_create_ms)
-            }
-            // Window-full: surface a retryable error keyword so clients back
-            // off and retry rather than treating it as a hard failure.
-            ProposeResult::Busy => crate::rpc::KvResponse::err(
-                crate::paxos::error::PxPaxosError::Busy.keyword().to_string(),
-                request_id,
-                request_create_ms,
-            ),
-            ProposeResult::CasFailed { current_revision } => crate::rpc::KvResponse::cas_error(
-                crate::rpc::KvErrorCode::KvErrorCasFailed,
-                current_revision,
-                "compare-and-set precondition failed",
-                request_id,
-                request_create_ms,
-            ),
-            ProposeResult::CasBusy => crate::rpc::KvResponse::cas_error(
-                crate::rpc::KvErrorCode::KvErrorCasBusy,
-                0,
-                "compare-and-set key is busy",
-                request_id,
-                request_create_ms,
-            ),
-            ProposeResult::OutcomeUnknown => crate::rpc::KvResponse::cas_error(
-                crate::rpc::KvErrorCode::KvErrorOutcomeUnknown,
-                0,
-                "compare-and-set outcome is unknown",
-                request_id,
-                request_create_ms,
-            ),
-            ProposeResult::Err(msg) => crate::rpc::KvResponse::err(msg, request_id, request_create_ms),
-        }
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn propose_cas_and_respond(
         &self,
@@ -628,34 +539,48 @@ impl PxKvStore {
         request_id: u64,
         request_create_ms: u64,
     ) -> crate::rpc::KvResponse {
-        let Some(group) = self.get_group(group_id) else {
+        let Some(operations) = self.group_operations(group_id) else {
             return missing_group_response(request_id, request_create_ms);
         };
-        match group
-            .propose_cas(payload, precondition_key, expected_revision, client_id, seq)
+        match operations
+            .compare_encoded(
+                payload,
+                precondition_key,
+                expected_revision,
+                KvRequestIdentity {
+                    client_id,
+                    sequence: seq,
+                },
+            )
             .await
         {
-            ProposeResult::Chosen { slot } => {
-                crate::rpc::KvResponse::ok_chosen(slot, request_id, request_create_ms)
-            }
-            ProposeResult::NotLeader { leader_hint } => {
+            Ok(write) => crate::rpc::KvResponse::ok_chosen(write.chosen_slot, request_id, request_create_ms),
+            Err(KvGroupOperationError::NotLeader { leader_hint }) => {
                 crate::rpc::KvResponse::not_leader(leader_hint, request_id, request_create_ms)
             }
-            ProposeResult::CasFailed { current_revision } => crate::rpc::KvResponse::cas_error(
-                crate::rpc::KvErrorCode::KvErrorCasFailed,
-                current_revision,
-                "compare-and-set precondition failed",
-                request_id,
-                request_create_ms,
-            ),
-            ProposeResult::Busy | ProposeResult::CasBusy => crate::rpc::KvResponse::cas_error(
-                crate::rpc::KvErrorCode::KvErrorCasBusy,
-                0,
-                "compare-and-set admission busy",
-                request_id,
-                request_create_ms,
-            ),
-            ProposeResult::OutcomeUnknown | ProposeResult::Err(_) => crate::rpc::KvResponse::cas_error(
+            Err(KvGroupOperationError::CompareFailed { current_revision }) => {
+                crate::rpc::KvResponse::cas_error(
+                    crate::rpc::KvErrorCode::KvErrorCasFailed,
+                    current_revision,
+                    "compare-and-set precondition failed",
+                    request_id,
+                    request_create_ms,
+                )
+            }
+            Err(KvGroupOperationError::Busy | KvGroupOperationError::CompareBusy) => {
+                crate::rpc::KvResponse::cas_error(
+                    crate::rpc::KvErrorCode::KvErrorCasBusy,
+                    0,
+                    "compare-and-set admission busy",
+                    request_id,
+                    request_create_ms,
+                )
+            }
+            Err(
+                KvGroupOperationError::OutcomeUnknown
+                | KvGroupOperationError::Unavailable(_)
+                | KvGroupOperationError::Internal(_),
+            ) => crate::rpc::KvResponse::cas_error(
                 crate::rpc::KvErrorCode::KvErrorOutcomeUnknown,
                 0,
                 "compare-and-set outcome is unknown",
@@ -745,9 +670,8 @@ pub(crate) fn scan_err(
 /// Outcome of [`PxKvStore::resolve_read_point`]: whether a read may be served
 /// from local state (and at which slots) or must be redirected / failed.
 pub(crate) enum ReadDecision {
-    /// Serve from local applied state. `read_slot` is the serving frontier;
-    /// `safe_slot` is the group safe-slot for bounded-stale reporting.
-    Serve { read_slot: u64, safe_slot: u64 },
+    /// Serve from local applied state at `read_slot`.
+    Serve { read_slot: u64 },
     /// Redirect the client to the leader (`hint` may be empty if unknown).
     NotLeader { hint: String },
     /// The read cannot currently be served with the requested consistency.

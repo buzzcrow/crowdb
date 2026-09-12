@@ -15,6 +15,7 @@ pub mod group_fetchgap;
 pub mod group_inflight;
 pub mod group_maintenance;
 pub mod group_membership;
+pub mod group_operations;
 pub mod group_prepare;
 pub mod group_propose;
 #[cfg(feature = "test-util")]

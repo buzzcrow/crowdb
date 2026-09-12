@@ -21,10 +21,51 @@ impl PxGroup {
         client_id: u64,
         seq: u64,
     ) -> ProposeResult {
+        self.propose_cas_with_tenure(payload, precondition_key, expected_revision, client_id, seq, None)
+            .await
+    }
+
+    /// Execute a conditional proposal only in `required_term`.
+    pub async fn propose_cas_in_tenure(
+        self: &Arc<Self>,
+        payload: Vec<u8>,
+        precondition_key: Bytes,
+        expected_revision: u64,
+        client_id: u64,
+        seq: u64,
+        required_term: u64,
+    ) -> ProposeResult {
+        self.propose_cas_with_tenure(
+            payload,
+            precondition_key,
+            expected_revision,
+            client_id,
+            seq,
+            Some(required_term),
+        )
+        .await
+    }
+
+    async fn propose_cas_with_tenure(
+        self: &Arc<Self>,
+        payload: Vec<u8>,
+        precondition_key: Bytes,
+        expected_revision: u64,
+        client_id: u64,
+        seq: u64,
+        required_term: Option<u64>,
+    ) -> ProposeResult {
         let group = Arc::clone(self);
         match tokio::spawn(async move {
             group
-                .propose_cas_owned(payload, precondition_key, expected_revision, client_id, seq)
+                .propose_cas_owned(
+                    payload,
+                    precondition_key,
+                    expected_revision,
+                    client_id,
+                    seq,
+                    required_term,
+                )
                 .await
         })
         .await
@@ -44,6 +85,7 @@ impl PxGroup {
         expected_revision: u64,
         client_id: u64,
         seq: u64,
+        required_term: Option<u64>,
     ) -> ProposeResult {
         if client_id == 0 {
             return ProposeResult::Err("conditional write requires nonzero client_id".into());
@@ -53,7 +95,7 @@ impl PxGroup {
         }
 
         let tenure = self.proposing_term.load(Ordering::Acquire);
-        if !self.cas_admission_ready(tenure) {
+        if !self.cas_admission_ready(tenure, required_term) {
             return self.cas_not_ready_result();
         }
         let token = CasOwnerToken {
@@ -78,17 +120,28 @@ impl PxGroup {
                 let current_revision = value.as_ref().map_or(0, |(revision, _)| *revision);
                 if current_revision != expected_revision {
                     ProposeResult::CasFailed { current_revision }
-                } else if !self.cas_admission_ready(tenure) {
+                } else if !self.cas_admission_ready(tenure, required_term) {
                     self.cas_not_ready_result()
                 } else {
                     let tag = [DedupTag { client_id, seq }];
-                    self.propose_inner_conditional(
-                        Bytes::from(payload),
-                        &tag,
-                        &precondition_key,
-                        expected_revision,
-                    )
-                    .await
+                    if let Some(required_term) = required_term {
+                        self.propose_inner_conditional_in_tenure(
+                            Bytes::from(payload),
+                            &tag,
+                            &precondition_key,
+                            expected_revision,
+                            required_term,
+                        )
+                        .await
+                    } else {
+                        self.propose_inner_conditional(
+                            Bytes::from(payload),
+                            &tag,
+                            &precondition_key,
+                            expected_revision,
+                        )
+                        .await
+                    }
                 }
             }
         };
@@ -106,10 +159,11 @@ impl PxGroup {
         }
     }
 
-    fn cas_admission_ready(&self, tenure: u64) -> bool {
+    fn cas_admission_ready(&self, tenure: u64, required_term: Option<u64>) -> bool {
         self.leader_read_ready.load(Ordering::Acquire)
             && self.local_replica.role() == PxLocalReplicaRole::Leader
             && self.local_replica.current_term_snapshot() == tenure
+            && required_term.map_or(true, |term| term == tenure)
     }
 
     fn cas_not_ready_result(&self) -> ProposeResult {

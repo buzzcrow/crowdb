@@ -31,6 +31,33 @@ impl PxGroup {
     /// legacy one-proposal-per-key path.
     #[tracing::instrument(level = "debug", name = "propose", skip_all, fields(s = self.log_store_id().unwrap_or(0), g = self.group_id, replica = self.local_replica().id))]
     pub async fn propose(&self, payload: Vec<u8>, client_id: Option<u64>, seq: Option<u64>) -> ProposeResult {
+        self.propose_with_tenure(payload, client_id, seq, None).await
+    }
+
+    /// Propose only while this group remains leader in `required_term`.
+    ///
+    /// Domain-control tasks use this entry point so work retained by an old
+    /// leader task cannot be admitted after the same replica wins a later
+    /// term. Tenure-bound proposals intentionally bypass coalescing because a
+    /// shared batch cannot carry one unambiguous leader-tenure fence.
+    pub async fn propose_in_tenure(
+        &self,
+        payload: Vec<u8>,
+        client_id: Option<u64>,
+        seq: Option<u64>,
+        required_term: u64,
+    ) -> ProposeResult {
+        self.propose_with_tenure(payload, client_id, seq, Some(required_term))
+            .await
+    }
+
+    async fn propose_with_tenure(
+        &self,
+        payload: Vec<u8>,
+        client_id: Option<u64>,
+        seq: Option<u64>,
+        required_term: Option<u64>,
+    ) -> ProposeResult {
         let replica = &self.local_replica;
 
         // Leadership gate. Checks BOTH:
@@ -49,7 +76,9 @@ impl PxGroup {
         // role == Leader and never advance the term, so they pass the
         // gate with current_term == 0 == proposing_term. Production
         // leaders pass once `stamp_proposing_term` has run on tenure entry.
-        let gate_pass = role_is_leader && current_term == proposing_term;
+        let gate_pass = role_is_leader
+            && current_term == proposing_term
+            && required_term.map_or(true, |term| term == current_term);
         if !gate_pass {
             return ProposeResult::NotLeader {
                 leader_hint: self.leader_endpoint().unwrap_or_default(),
@@ -79,14 +108,17 @@ impl PxGroup {
         // R45: event-driven coalescing. When `coalesce_max_keys > 0` and
         // self-weak is set, the first op starts a round immediately (no
         // timer) and ops arriving during the round join the next batch.
-        let coalesce_on = self.config.paxos.coalesce_max_keys > 0 && self.self_weak.get().is_some();
+        let coalesce_on = required_term.is_none()
+            && self.config.paxos.coalesce_max_keys > 0
+            && self.self_weak.get().is_some();
         if coalesce_on {
             self.coalesce_enqueue(payload, tag).await
         } else {
             let tags: Vec<DedupTag> = tag.into_iter().collect();
             // `Bytes::from(Vec<u8>)` reuses the allocation (no copy) and
             // gives cheap `Clone` for the slot-retry loop and Accept fanout.
-            self.propose_inner(bytes::Bytes::from(payload), &tags).await
+            self.propose_inner_impl(bytes::Bytes::from(payload), &tags, None, required_term)
+                .await
         }
     }
 
@@ -102,7 +134,7 @@ impl PxGroup {
         dedup_tags: &[DedupTag],
     ) -> ProposeResult {
         let e2e_start = std::time::Instant::now();
-        let result = self.propose_inner_impl(payload, dedup_tags, None).await;
+        let result = self.propose_inner_impl(payload, dedup_tags, None, None).await;
         if let Some(h) = self.write_handles.get() {
             h.propose_e2e
                 .observe(e2e_start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX));
@@ -117,8 +149,25 @@ impl PxGroup {
         key: &[u8],
         expected_revision: u64,
     ) -> ProposeResult {
-        self.propose_inner_impl(payload, dedup_tags, Some((key, expected_revision)))
+        self.propose_inner_impl(payload, dedup_tags, Some((key, expected_revision)), None)
             .await
+    }
+
+    pub(crate) async fn propose_inner_conditional_in_tenure(
+        &self,
+        payload: bytes::Bytes,
+        dedup_tags: &[DedupTag],
+        key: &[u8],
+        expected_revision: u64,
+        required_term: u64,
+    ) -> ProposeResult {
+        self.propose_inner_impl(
+            payload,
+            dedup_tags,
+            Some((key, expected_revision)),
+            Some(required_term),
+        )
+        .await
     }
 
     async fn propose_inner_impl(
@@ -126,6 +175,7 @@ impl PxGroup {
         payload: bytes::Bytes,
         dedup_tags: &[DedupTag],
         condition: Option<(&[u8], u64)>,
+        required_term: Option<u64>,
     ) -> ProposeResult {
         let replica = &self.local_replica;
 
@@ -133,7 +183,10 @@ impl PxGroup {
         let role_is_leader = replica.role() == crate::cluster::local_replica::PxLocalReplicaRole::Leader;
         let current_term = replica.current_term_snapshot();
         let proposing_term = self.proposing_term.load(Ordering::Acquire);
-        if !(role_is_leader && current_term == proposing_term) {
+        if !(role_is_leader
+            && current_term == proposing_term
+            && required_term.map_or(true, |term| term == current_term))
+        {
             return ProposeResult::NotLeader {
                 leader_hint: self.leader_endpoint().unwrap_or_default(),
             };
