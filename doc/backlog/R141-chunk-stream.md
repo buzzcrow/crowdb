@@ -348,32 +348,5 @@ Required gates:
 
 ## Open Issues
 
-- `MirrorChunkWriter` provides the one-chunk, owned-buffer, three-copy direct
-  path without EC. `ProductionStreamChunkStore` connects it to fenced cursor
-  reconciliation, `ChunkReader`, sealing, and whole-chunk trim release using
-  an atomic per-chunk view rather than an append-path lock. `ChunkKvStorage`
-  assembles shared KV, chunk IO, and stream runtime clients. A real
-  chunkdb/diskio restart test remains production lifecycle work.
-- `KvStreamRegistry` and `KvStreamMetadataStore` now provide group-0 binding,
-  nonzero-group immutable extent pages, and an R101 CAS manifest head.
-  `create_registered` consumes an Active control-plane binding without
-  attempting to recreate it. A real-KV crash-order integration test remains.
-- The seekable reader supports finite/`ToEnd` hints, keeps one bounded next
-  window in flight while the caller consumes the current window, and runs a
-  configurable bounded number of physical reads concurrently without changing
-  logical delivery order. Memory and concurrency benchmarks remain open.
-- Extent-page identities derive from their stable first logical offset, so a
-  trimmed generation retains a nonzero first page index without renumbering
-  logical bytes. `reclaim_metadata_before` performs bounded cleanup of
-  superseded page generations only after the retention owner supplies its
-  durable oldest-live generation.
-- Stream names are process-unique and time ordered and reopen always rotates
-  the old active chunk. New allocations use the backward-compatible `Stream`
-  chunk type and canonical owner key; old bincode and FlatBuffers records
-  decode as unattributed. Chunk listing now carries that identity for R146's
-  generic abandoned-writer scan.
-- Non-blocking lifecycle follow-up: until deferred R146 lands, a crashed
-  writer's abandoned Active stream chunk remains allocated. R141 never resumes
-  it and allocates a fresh chunk; the abandoned owner epoch remains visible to
-  R146's future scan, so this is an operational-cleanup gap rather than a
-  stream-safety gap.
+None. Remaining implementation and validation work is tracked in the working
+plan and does not require a design decision.

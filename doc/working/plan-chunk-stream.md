@@ -98,12 +98,6 @@ without placing rollover metadata on the append hot path.
   monotonic-epoch stale-writer rejection. Files:
   `lib/crowdb-protocol/src/`,
   `lib/crowdb-chunk-stream/src/`, `lib/crowdb-chunk-stream/tests/`.
-- [ ] **Benchmark concurrency and bounds**: use the NullDisk-backed harness for
-  concurrent streams/readers, queue saturation, 256-MiB rollover, random seek,
-  sequential replay, and prefetch memory. Record selected thresholds in the
-  permanent design. Files: `lib/crowdb-chunk-client/src/benchmark.rs`,
-  `lib/crowdb-chunk-stream/benches/`, `doc/design/chunkds/`.
-
 ## Tests
 
 - Unit: extent validation/lookup, queue bounds, aggregation, rollover limits,
@@ -111,3 +105,14 @@ without placing rollover metadata on the append hot path.
 - Integration: registry separation, no per-append metadata write, multi-chunk
   replay, crash recovery, trim/reclaim ordering, out-of-order reads.
 - E2E: higher-epoch ownership reopen and exact byte continuity.
+
+## Phase 7: Production Validation
+
+- [ ] **Exercise real restart ordering**: run the attributed production writer
+  through real KV, chunkdb, and diskio process restarts and verify authoritative
+  head recovery, abandoned old-chunk isolation, and exact byte continuity.
+  Files: `lib/crowdb-chunk-stream/tests/`, `lib/crowdb-test-harness/`.
+- [ ] **Measure production bounds**: run the NullDisk-backed concurrency,
+  rollover, random-seek, replay, prefetch-memory, and GC workloads and record
+  evidence-backed thresholds in the permanent design. Files:
+  `lib/crowdb-chunk-stream/benches/`, `doc/design/chunkds/`.

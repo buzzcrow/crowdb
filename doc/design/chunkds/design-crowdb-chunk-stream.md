@@ -238,8 +238,5 @@ The central invariants are:
 
 ## Open Issues
 
-- Production registry/metadata adapters, mirror writer, reader prefetch, and
-  orphan reporting remain implementation work. NullDisk-backed concurrency
-  workloads select final queue, watchdog, page, read-window, and GC limits.
-  Metadata-group rebinding, per-stream sharding, and EC conversion are deferred
-  scale-out work.
+None. Metadata-group rebinding, per-stream sharding, and EC conversion are
+explicit scale-out non-goals for this design.
