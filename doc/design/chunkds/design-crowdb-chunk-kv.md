@@ -38,8 +38,10 @@ page-store backend at runtime. A partition transfer reopens the same tree and
 stream identities under a higher epoch instead of copying their bytes.
 
 Point reads, ceiling/higher/floor/lower, and bounded forward/reverse scans read
-only the applied tree prefix. Forward operations use the native merged lower
-bound. Reverse operations use a native predecessor descent that fixes the L0
+only the applied tree prefix. A forward scan uses an inclusive lower bound and
+exclusive upper bound; its distinct continuation cursor resumes strictly after
+the last emitted key. Forward operations use the native merged lower bound.
+Reverse operations use a native predecessor descent that fixes the L0
 memtable set, root page, and GC floor for the page, merges the highest revision
 for each L0/L1 collision, and skips tombstones before returning descending
 keys. Both directions enforce count and byte budgets inside C++; Rust does not

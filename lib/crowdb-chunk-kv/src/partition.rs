@@ -739,10 +739,12 @@ impl Partition {
         Ok(entry)
     }
 
-    /// Returns a bounded forward page clipped to this partition.
+    /// Returns a bounded forward page over the half-open interval
+    /// `[start_key, end_key)`, clipped to this partition.
     ///
-    /// `start_after` and `end_key` are exclusive. Bounds outside the
-    /// partition are clipped; a non-intersecting interval returns no entries.
+    /// The lower bound is inclusive and the upper bound is exclusive. Bounds
+    /// outside the partition are clipped; a non-intersecting interval returns
+    /// no entries.
     ///
     /// # Errors
     ///
@@ -751,7 +753,60 @@ impl Partition {
     pub async fn scan_forward(
         &self,
         ownership_epoch: u64,
-        start_after: Option<&[u8]>,
+        start_key: Option<&[u8]>,
+        end_key: Option<&[u8]>,
+        limit: usize,
+        byte_budget: usize,
+        min_journal_position: Option<JournalPosition>,
+    ) -> Result<ScanPage> {
+        self.scan_forward_bound(
+            ownership_epoch,
+            start_key,
+            true,
+            end_key,
+            limit,
+            byte_budget,
+            min_journal_position,
+        )
+        .await
+    }
+
+    /// Returns a bounded forward continuation strictly after `start_after`.
+    ///
+    /// This is distinct from the inclusive initial range lower bound so a
+    /// continuation cannot repeat its last emitted key.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed epoch, lifecycle, bound, or tree-read error.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn scan_forward_after(
+        &self,
+        ownership_epoch: u64,
+        start_after: &[u8],
+        end_key: Option<&[u8]>,
+        limit: usize,
+        byte_budget: usize,
+        min_journal_position: Option<JournalPosition>,
+    ) -> Result<ScanPage> {
+        self.scan_forward_bound(
+            ownership_epoch,
+            Some(start_after),
+            false,
+            end_key,
+            limit,
+            byte_budget,
+            min_journal_position,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn scan_forward_bound(
+        &self,
+        ownership_epoch: u64,
+        start_key: Option<&[u8]>,
+        start_inclusive: bool,
         end_key: Option<&[u8]>,
         limit: usize,
         byte_budget: usize,
@@ -764,14 +819,14 @@ impl Partition {
                 "scan count and byte bounds must be nonzero".into(),
             ));
         }
-        if start_after.is_some_and(|key| key.len() > self.config.max_key_bytes)
+        if start_key.is_some_and(|key| key.len() > self.config.max_key_bytes)
             || end_key.is_some_and(|key| key.len() > self.config.max_key_bytes)
         {
             return Err(ChunkKvError::InvalidRequest(
                 "scan bound exceeds configured key limit".into(),
             ));
         }
-        if let (Some(start), Some(end)) = (start_after, end_key) {
+        if let (Some(start), Some(end)) = (start_key, end_key) {
             if start >= end {
                 return Err(ChunkKvError::InvalidRequest(
                     "scan interval is empty or reversed".into(),
@@ -783,7 +838,7 @@ impl Partition {
         }
         let partition_start = self.range.start.as_deref();
         let partition_end = self.range.end.as_deref();
-        if start_after
+        if start_key
             .zip(partition_end)
             .is_some_and(|(start, end)| start >= end)
             || end_key
@@ -796,7 +851,7 @@ impl Partition {
                 truncated: false,
             });
         }
-        let clipped_start = match (start_after, partition_start) {
+        let clipped_start = match (start_key, partition_start) {
             (Some(start), Some(partition_start)) if start < partition_start => None,
             (start, _) => start,
         };
@@ -807,7 +862,7 @@ impl Partition {
         };
         let (entries, truncated) = self
             .tree
-            .scan_forward(clipped_start, false, clipped_end, limit, byte_budget)
+            .scan_forward(clipped_start, start_inclusive, clipped_end, limit, byte_budget)
             .await?;
         if entries.iter().any(|entry| !self.range.contains(&entry.key)) {
             return Err(ChunkKvError::TreeCorruption(

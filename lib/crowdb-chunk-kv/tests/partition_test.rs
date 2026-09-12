@@ -482,6 +482,31 @@ async fn forward_scan_is_bounded_and_clipped_to_the_partition() {
     assert_eq!(partition.metrics().snapshot().forward_scans, 1);
     assert_eq!(partition.metrics().snapshot().scan_entries, 2);
 
+    let inclusive = partition
+        .scan_forward(4, Some(b"b"), Some(b"d"), 10, 1024, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        inclusive
+            .entries
+            .iter()
+            .map(|entry| entry.key.as_ref())
+            .collect::<Vec<_>>(),
+        vec![b"b".as_slice(), b"c".as_slice()]
+    );
+    let continued = partition
+        .scan_forward_after(4, b"b", Some(b"d"), 10, 1024, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        continued
+            .entries
+            .iter()
+            .map(|entry| entry.key.as_ref())
+            .collect::<Vec<_>>(),
+        vec![b"c".as_slice()]
+    );
+
     let empty = partition
         .scan_forward(4, Some(b"z"), None, 10, 1024, None)
         .await
@@ -515,7 +540,7 @@ async fn forward_scan_is_bounded_and_clipped_to_the_partition() {
         vec![b"c".as_slice(), b"b".as_slice()]
     );
     assert_eq!(partition.metrics().snapshot().reverse_scans, 2);
-    assert_eq!(partition.metrics().snapshot().scan_entries, 6);
+    assert_eq!(partition.metrics().snapshot().scan_entries, 9);
 }
 
 #[tokio::test]
