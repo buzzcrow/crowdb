@@ -10,7 +10,7 @@ use crowdb_protocol::diskio_fb::{
     FBDiskWriteResponse, FBInt128 as FBDiskInt128,
 };
 use crowdb_protocol::fb::FBMsgType;
-use crowdb_rpc_ffi::{Buffer, CallFuture, Connection, RpcClient, RpcError, RpcServer};
+use crowdb_rpc_ffi::{Buffer, CallFuture, Connection, RpcClient, RpcClientHandle, RpcError, RpcServer};
 use flatbuffers::FlatBufferBuilder;
 use thiserror::Error;
 
@@ -105,6 +105,12 @@ pub type DiskioResult<T> = std::result::Result<T, DiskioError>;
 pub struct DiskioClient {
     rpc: RpcClient,
     req_id_gen: RequestIdGen,
+}
+
+impl RpcClientHandle for DiskioClient {
+    fn rpc_client_handle(&self) -> *mut std::ffi::c_void {
+        self.rpc.handle().cast()
+    }
 }
 
 impl std::fmt::Debug for DiskioClient {

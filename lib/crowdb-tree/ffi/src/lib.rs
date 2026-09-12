@@ -31,6 +31,8 @@ pub use chunk::{
     ChunkPageStoreOptions, ChunkPageStoreStats, ChunkRootCatalog, ChunkRpcDiskRoute, ChunkRpcRoute,
     ChunkRpcTransportOptions, ChunkTransport,
 };
+#[cfg(feature = "chunk-rpc")]
+pub use chunk::{OwnedChunkRpcDiskRoute, OwnedChunkRpcTransportOptions};
 pub use config::{Compression, Config, KeyRange, PageStore, PageStoreBackend, SyncMode};
 pub use cpp_global_metrics::{cpp_global_metrics_max_name_len, flush_cpp_global_metrics};
 pub use crc::{crc32c, crc32c_update};

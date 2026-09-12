@@ -7,6 +7,9 @@ use std::ptr::NonNull;
 use crate::error::{check, CtError};
 use crate::{sys, PageStore};
 
+#[cfg(feature = "chunk-rpc")]
+use crowdb_rpc_ffi::OwnedClientRoute;
+
 #[derive(Debug, Clone, Copy)]
 pub struct ChunkPageStoreOptions {
     pub tree_id: u64,
@@ -107,8 +110,35 @@ pub struct ChunkRpcTransportOptions<'a> {
     pub completion_capacity: u32,
 }
 
+#[cfg(feature = "chunk-rpc")]
+#[derive(Debug, Clone)]
+pub struct OwnedChunkRpcDiskRoute {
+    pub disk_id_high: u64,
+    pub disk_id_low: u64,
+    pub route: OwnedClientRoute,
+}
+
+#[cfg(feature = "chunk-rpc")]
+#[derive(Debug)]
+pub struct OwnedChunkRpcTransportOptions {
+    pub chunkdb: OwnedClientRoute,
+    pub disk_routes: Vec<OwnedChunkRpcDiskRoute>,
+    pub writer_lease_ms: u64,
+    pub rpc_timeout_ms: u64,
+    pub completion_capacity: u32,
+}
+
+#[cfg(feature = "chunk-rpc")]
+#[derive(Debug)]
+struct OwnedTransportRoutes {
+    _chunkdb: OwnedClientRoute,
+    _disk_routes: Vec<OwnedChunkRpcDiskRoute>,
+}
+
 pub struct ChunkTransport {
     ptr: NonNull<sys::ct_chunk_transport>,
+    #[cfg(feature = "chunk-rpc")]
+    _routes: Option<OwnedTransportRoutes>,
 }
 
 impl ChunkTransport {
@@ -141,7 +171,47 @@ impl ChunkTransport {
         check(unsafe { sys::ct_rpc_chunk_transport_open(&raw, &mut out) })?;
         Ok(Self {
             ptr: NonNull::new(out).ok_or(CtError::Internal)?,
+            #[cfg(feature = "chunk-rpc")]
+            _routes: None,
         })
+    }
+
+    /// Create a direct C++ transport while retaining all crowdb-rpc owners.
+    #[cfg(feature = "chunk-rpc")]
+    pub fn open_owned_rpc(options: OwnedChunkRpcTransportOptions) -> Result<Self, CtError> {
+        let chunkdb = owned_raw_route(&options.chunkdb);
+        let disk_routes: Vec<_> = options
+            .disk_routes
+            .iter()
+            .map(|route| ChunkRpcDiskRoute {
+                disk_id_high: route.disk_id_high,
+                disk_id_low: route.disk_id_low,
+                route: owned_raw_route(&route.route),
+            })
+            .collect();
+        let raw_options = ChunkRpcTransportOptions {
+            chunkdb,
+            disk_routes: &disk_routes,
+            writer_lease_ms: options.writer_lease_ms,
+            rpc_timeout_ms: options.rpc_timeout_ms,
+            completion_capacity: options.completion_capacity,
+        };
+        let mut transport = unsafe { Self::open_rpc(&raw_options) }?;
+        transport._routes = Some(OwnedTransportRoutes {
+            _chunkdb: options.chunkdb,
+            _disk_routes: options.disk_routes,
+        });
+        Ok(transport)
+    }
+}
+
+#[cfg(feature = "chunk-rpc")]
+fn owned_raw_route(route: &OwnedClientRoute) -> ChunkRpcRoute {
+    let (client, server, connection) = route.raw_handles();
+    ChunkRpcRoute {
+        client,
+        server,
+        connection,
     }
 }
 

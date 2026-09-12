@@ -1006,6 +1006,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "cc",
+ "crowdb-rpc-ffi",
  "crowdb-test-harness",
  "crowdb-tree-ffi",
  "tokio",

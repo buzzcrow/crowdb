@@ -56,7 +56,7 @@ use crowdb_protocol::fb_wrappers::chunkdb::{
     FBAdvanceChunkWriteResponseRef, FBAllocateChunkResponseRef, FBAppendChunkResponseRef,
     FBDeleteChunkRangeResponseRef, FBListChunksResponseRef, FBQueryChunkResponseRef,
 };
-use crowdb_rpc_ffi::{Buffer, Connection, RpcClient, RpcError, RpcServer};
+use crowdb_rpc_ffi::{Buffer, Connection, OwnedClientRoute, RpcClient, RpcError, RpcServer};
 
 use crate::{ChunkdbClientError, Result};
 
@@ -145,6 +145,17 @@ impl ChunkdbRpcTransport {
         }
         let index = rr_index(&self.conn_rr, entry.len());
         Ok(entry[index].clone())
+    }
+
+    /// Resolve an endpoint and retain every crowdb-rpc owner needed by a
+    /// higher-level FFI transport.
+    pub fn owned_route(&self, rpc_endpoint: &str) -> Result<OwnedClientRoute> {
+        let connection = self.conn_for(rpc_endpoint)?;
+        Ok(OwnedClientRoute::new(
+            Arc::clone(&self.rpc),
+            Arc::clone(&self.server),
+            connection,
+        ))
     }
 
     // ── AllocateChunk ─────────────────────────────────────────────

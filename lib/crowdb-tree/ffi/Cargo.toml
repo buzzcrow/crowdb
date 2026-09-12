@@ -12,6 +12,7 @@ path = "src/lib.rs"
 
 [features]
 default = []
+chunk-rpc = ["dep:crowdb-rpc-ffi"]
 # Auto-init C++ spdlog to a temp dir on first Crowdbtree::open. Used by
 # this crate's own tests (via self dev-dependency) so tree engine logs go
 # to files instead of stderr without each test calling ct_init_test_logging.
@@ -19,6 +20,7 @@ test-util = []
 
 [dependencies]
 bytes = "1"
+crowdb-rpc-ffi = { path = "../../crowdb-rpc/ffi", optional = true }
 # "net" is required for tokio::io::unix::AsyncFd, "sync" for tokio::sync::
 # Notify.
 tokio = { version = "1.40", features = ["rt", "rt-multi-thread", "macros", "net", "sync"] }

@@ -23,6 +23,7 @@ use crowdb_protocol::chunkdb::rpc::{
     UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_rpc_ffi::OwnedClientRoute;
 
 use crate::metrics::SmallWriteMetrics;
 use crate::negative_list::FailedDiskList;
@@ -162,6 +163,26 @@ impl ChunkIoClient {
     #[must_use]
     pub fn storage_parts(&self) -> (Arc<dyn crate::ChunkAllocator>, Arc<dyn DiskWriter>) {
         (Arc::clone(&self.allocator), Arc::clone(&self.disk_writer))
+    }
+
+    /// Export retained ChunkDB and DiskIO routes for the native tree page
+    /// store. Clients assembled from test seams do not have production routes.
+    pub async fn native_storage_routes(
+        &self,
+    ) -> Result<(
+        OwnedClientRoute,
+        Vec<(crowdb_diskio_client::DiskId, OwnedClientRoute)>,
+    )> {
+        let topology = self
+            .topology
+            .as_ref()
+            .ok_or_else(|| crate::IoError::Topology("client has no discovered production topology".into()))?;
+        let chunkdb = topology
+            .chunkdb
+            .storage_route()
+            .await
+            .map_err(|error| crate::IoError::Topology(format!("resolve ChunkDB route: {error}")))?;
+        Ok((chunkdb, topology.disk_writer.storage_routes()))
     }
 
     /// Construct low-level seams with an explicit small-write policy.

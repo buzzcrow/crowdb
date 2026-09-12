@@ -8,8 +8,39 @@ use crowdb_tree_ffi::{
 };
 use std::sync::Arc;
 
+#[cfg(feature = "chunk-rpc")]
+use crowdb_rpc_ffi::{OwnedClientRoute, RpcClient, RpcServer};
+#[cfg(feature = "chunk-rpc")]
+use crowdb_tree_ffi::{OwnedChunkRpcDiskRoute, OwnedChunkRpcTransportOptions};
+
 fn key(i: usize) -> Vec<u8> {
     format!("key{i:05}").into_bytes()
+}
+
+#[cfg(feature = "chunk-rpc")]
+#[test]
+fn owned_chunk_rpc_transport_retains_route_handles() {
+    let server = Arc::new(RpcServer::new(None));
+    server.listen("127.0.0.1", 0).unwrap();
+    server.start();
+    let connection = server.connect("127.0.0.1", server.port()).unwrap();
+    let client = Arc::new(RpcClient::new());
+    client.attach(&connection);
+    let route = OwnedClientRoute::new(client, server, connection);
+
+    let transport = crowdb_tree_ffi::ChunkTransport::open_owned_rpc(OwnedChunkRpcTransportOptions {
+        chunkdb: route.clone(),
+        disk_routes: vec![OwnedChunkRpcDiskRoute {
+            disk_id_high: 1,
+            disk_id_low: 2,
+            route,
+        }],
+        writer_lease_ms: 30_000,
+        rpc_timeout_ms: 1_000,
+        completion_capacity: 32,
+    })
+    .unwrap();
+    drop(transport);
 }
 
 #[test]

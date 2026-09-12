@@ -19,7 +19,7 @@ async-trait = "0.1"
 bincode = "1"
 bytes = "1"
 crowdb-chunk-stream = { path = "../crowdb-chunk-stream" }
-crowdb-tree-ffi = { path = "../crowdb-tree/ffi" }
+crowdb-tree-ffi = { path = "../crowdb-tree/ffi", features = ["chunk-rpc"] }
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 thiserror = { workspace = true }

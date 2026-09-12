@@ -13,7 +13,7 @@ use bytes::Bytes;
 use crowdb_diskio_client::{DiskId, DiskIoRetCode, DiskioClient, SegmentWriteTarget};
 use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::diskdb::rpc::Segment;
-use crowdb_rpc_ffi::{Connection, RpcServer};
+use crowdb_rpc_ffi::{Connection, OwnedClientRoute, RpcServer};
 
 use crate::{DiskWriter, IoError, Result};
 
@@ -174,6 +174,26 @@ impl RoutedDiskWriter {
             .get(&disk_id)
             .cloned()
             .ok_or_else(|| IoError::Topology(format!("disk {}:{} has no route", disk_id.high, disk_id.low)))
+    }
+
+    /// Snapshot one retained crowdb-rpc route per discovered disk for a
+    /// storage engine that performs DiskIO directly.
+    #[must_use]
+    pub fn storage_routes(&self) -> Vec<(DiskId, OwnedClientRoute)> {
+        self.routes
+            .load()
+            .iter()
+            .map(|(disk_id, route)| {
+                (
+                    *disk_id,
+                    OwnedClientRoute::new(
+                        Arc::clone(&self.client),
+                        Arc::clone(&self.server),
+                        route.priority_connection.clone(),
+                    ),
+                )
+            })
+            .collect()
     }
 }
 
