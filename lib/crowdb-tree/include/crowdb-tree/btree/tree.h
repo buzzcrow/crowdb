@@ -438,7 +438,7 @@ class Crowdbtree
     // segment and the segment directory, then commits the inactive A/B
     // anchor slot. Returns the durable last_applied_slot via out (if
     // non-null). Requires opt.page_store != null.
-    Status snapshot(uint64_t *out_last_applied = nullptr);
+    Status snapshot(uint64_t *out_last_applied = nullptr, uint64_t *out_snapshot_seq = nullptr);
 
     // Run one bounded immutable-backend ownership cleanup pass under the same
     // generation gate as snapshot publication. Local stores complete as a no-op.

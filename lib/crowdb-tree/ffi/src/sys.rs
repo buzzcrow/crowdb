@@ -285,6 +285,8 @@ extern "C" {
     pub fn ct_add_log_stderr(level: *const c_char);
     pub fn ct_shutdown_logging();
     pub fn ct_snapshot(t: *mut ct_tree, out_last_applied: *mut u64) -> c_int;
+    pub fn ct_snapshot_info(t: *mut ct_tree, out_snapshot_seq: *mut u64, out_last_applied: *mut u64)
+        -> c_int;
     pub fn ct_last_applied_slot(t: *const ct_tree) -> u64;
     pub fn ct_frozen_table_count(t: *const ct_tree) -> usize;
     pub fn ct_set_gc_watermark(t: *mut ct_tree, snapshot_slot: u64, safe_slot: u64);

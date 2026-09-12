@@ -549,6 +549,14 @@ ct_status ct_snapshot(ct_tree *t, uint64_t *out_last_applied)
     return to_status(t->tree->snapshot(out_last_applied));
 }
 
+ct_status ct_snapshot_info(ct_tree *t, uint64_t *out_snapshot_seq, uint64_t *out_last_applied)
+{
+    if (t == nullptr || out_snapshot_seq == nullptr || out_last_applied == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    return to_status(t->tree->snapshot(out_last_applied, out_snapshot_seq));
+}
+
 ct_status ct_materialize_ownership(ct_tree *t, uint64_t *bytes_written, int32_t *complete)
 {
     if (t == nullptr || bytes_written == nullptr || complete == nullptr) {

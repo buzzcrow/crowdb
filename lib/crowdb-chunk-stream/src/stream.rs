@@ -168,6 +168,11 @@ struct WorkerState {
 }
 
 impl ChunkStream {
+    #[must_use]
+    pub fn stream_name(&self) -> StreamName {
+        self.stream_name
+    }
+
     /// Creates and publishes a new registered stream.
     ///
     /// # Errors

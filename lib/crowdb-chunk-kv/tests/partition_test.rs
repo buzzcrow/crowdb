@@ -197,6 +197,59 @@ async fn pending_mutation_is_invisible_until_durable_and_applied() {
 }
 
 #[tokio::test]
+async fn native_partition_constructor_owns_tree_and_stream_storage() {
+    let stream_name = StreamName { high: 1, low: 9 };
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let stream = ChunkStream::create(
+        StreamBinding {
+            stream_name,
+            metadata_group_id: 7,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("chunk-kv-partition".into()),
+        },
+        4,
+        StreamConfig::default(),
+        store.clone() as Arc<dyn StreamRegistry>,
+        store.clone() as Arc<dyn StreamMetadataStore>,
+        store as Arc<dyn StreamChunkStore>,
+    )
+    .await
+    .unwrap();
+    let partition = Partition::open_native(
+        PartitionId { high: 1, low: 9 },
+        PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        4,
+        PartitionConfig::default(),
+        44,
+        crowdb_tree_ffi::Config::default(),
+        Arc::new(crowdb_tree_ffi::PageStore::open_mem(1).unwrap()),
+        stream,
+    )
+    .unwrap();
+    partition
+        .mutate(
+            4,
+            request(9),
+            MutationOperation::Put {
+                key: b"b".to_vec(),
+                value: b"native".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        partition.get(4, b"b", None).await.unwrap().unwrap().value,
+        b"native"
+    );
+    partition.fence_mutations(4).await.unwrap();
+    assert_eq!(partition.checkpoint_fenced(4).await.unwrap().tree_id, 44);
+}
+
+#[tokio::test]
 async fn same_batch_conditions_observe_preceding_staged_mutations() {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let partition = partition(

@@ -1142,7 +1142,7 @@ Status Crowdbtree::materialize_ownership(uint64_t *bytes_written, bool *complete
     return status;
 }
 
-Status Crowdbtree::snapshot(uint64_t *out_last_applied)
+Status Crowdbtree::snapshot(uint64_t *out_last_applied, uint64_t *out_snapshot_seq)
 {
     if (opt_.page_store == nullptr) {
         return Status::invalid_argument("snapshot: no page_store");
@@ -1243,6 +1243,9 @@ Status Crowdbtree::snapshot(uint64_t *out_last_applied)
     release_snapshot_slot();
     if (out_last_applied != nullptr) {
         *out_last_applied = prepared.last_applied_slot;
+    }
+    if (out_snapshot_seq != nullptr) {
+        *out_snapshot_seq = prepared.seq;
     }
     if (metrics_.snapshot_l != nullptr) {
         auto ns =

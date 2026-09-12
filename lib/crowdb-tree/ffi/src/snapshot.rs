@@ -15,6 +15,14 @@ impl Crowdbtree {
         Ok(last)
     }
 
+    /// Persists a snapshot and returns `(snapshot generation, applied slot)`.
+    pub fn snapshot_info(&self) -> Result<(u64, u64), CtError> {
+        let mut generation = 0_u64;
+        let mut last_applied = 0_u64;
+        check(unsafe { sys::ct_snapshot_info(self.as_ptr(), &mut generation, &mut last_applied) })?;
+        Ok((generation, last_applied))
+    }
+
     /// Run one bounded pass that replaces shared immutable backend objects
     /// with objects owned by this tree's lineage.
     pub fn materialize_ownership(&self) -> Result<(u64, bool), CtError> {

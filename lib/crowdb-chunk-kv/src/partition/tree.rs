@@ -46,6 +46,23 @@ impl CrowdbPartitionTree {
     pub fn new(tree_id: u64, tree: crowdb_tree_ffi::Crowdbtree) -> Self {
         Self { tree_id, tree }
     }
+
+    /// Opens a native tree with one explicit durable identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed configuration, storage availability, or corruption
+    /// error.
+    pub fn open(tree_id: u64, config: &crowdb_tree_ffi::Config) -> Result<Self> {
+        if tree_id == 0 {
+            return Err(ChunkKvError::InvalidRequest(
+                "tree identity must be nonzero".into(),
+            ));
+        }
+        crowdb_tree_ffi::Crowdbtree::open(config)
+            .map(|tree| Self::new(tree_id, tree))
+            .map_err(map_tree_read_error)
+    }
 }
 
 #[async_trait]
@@ -164,14 +181,22 @@ impl PartitionTree for CrowdbPartitionTree {
     }
 
     async fn checkpoint(&self) -> Result<u64> {
-        self.tree.snapshot().map_err(|error| match error {
+        self.tree.flush().map_err(|error| match error {
             crowdb_tree_ffi::CtError::Corruption => ChunkKvError::TreeCorruption(error.to_string()),
             _ => ChunkKvError::MaintenanceDegraded(error.to_string()),
-        })
+        })?;
+        let (generation, applied_seq) = self.tree.snapshot_info().map_err(|error| match error {
+            crowdb_tree_ffi::CtError::Corruption => ChunkKvError::TreeCorruption(error.to_string()),
+            _ => ChunkKvError::MaintenanceDegraded(error.to_string()),
+        })?;
+        if applied_seq != self.tree.stats().contiguous_slot {
+            return Err(ChunkKvError::ApplyStateUnknown);
+        }
+        Ok(generation)
     }
 
     fn last_applied_seq(&self) -> u64 {
-        self.tree.last_applied_slot()
+        self.tree.stats().contiguous_slot
     }
 }
 

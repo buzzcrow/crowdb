@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use bytes::{Buf, Bytes, BytesMut};
-use crowdb_chunk_stream::StreamName;
+use crowdb_chunk_stream::{ChunkStream, StreamName};
 use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 
 use crate::{
@@ -236,6 +236,29 @@ impl Partition {
         )
     }
 
+    /// Opens a serving partition while consuming its native tree store and
+    /// private stream handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed tree-open or partition configuration error.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_native(
+        partition_id: PartitionId,
+        range: PartitionRange,
+        ownership_epoch: u64,
+        config: PartitionConfig,
+        tree_id: u64,
+        tree_config: crowdb_tree_ffi::Config,
+        page_store: Arc<crowdb_tree_ffi::PageStore>,
+        stream: ChunkStream,
+    ) -> Result<Self> {
+        range.validate()?;
+        config.validate()?;
+        let (tree, journal) = native_storage_parts(tree_id, &range, tree_config, page_store, stream)?;
+        Self::open(partition_id, range, ownership_epoch, config, tree, journal)
+    }
+
     /// Replays the durable suffix after `checkpoint` before serving.
     ///
     /// # Errors
@@ -287,6 +310,44 @@ impl Partition {
             PartitionLifecycle::Serving,
             None,
         )
+    }
+
+    /// Recovers a partition while consuming its native tree store and private
+    /// stream handle.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed tree-open, checkpoint, or WAL recovery error.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn recover_native(
+        partition_id: PartitionId,
+        range: PartitionRange,
+        ownership_epoch: u64,
+        checkpoint: Checkpoint,
+        config: PartitionConfig,
+        tree_config: crowdb_tree_ffi::Config,
+        page_store: Arc<crowdb_tree_ffi::PageStore>,
+        stream: ChunkStream,
+    ) -> Result<Self> {
+        range.validate()?;
+        config.validate()?;
+        if checkpoint.stream_name != stream.stream_name() {
+            return Err(ChunkKvError::InvalidRequest(
+                "checkpoint stream identity is invalid".into(),
+            ));
+        }
+        let (tree, journal) =
+            native_storage_parts(checkpoint.tree_id, &range, tree_config, page_store, stream)?;
+        Self::recover(
+            partition_id,
+            range,
+            ownership_epoch,
+            checkpoint,
+            config,
+            tree,
+            journal,
+        )
+        .await
     }
 
     /// Recovers and validates one child artifact without granting service.
@@ -1169,6 +1230,24 @@ impl Partition {
             notified.await;
         }
     }
+}
+
+fn native_storage_parts(
+    tree_id: u64,
+    range: &PartitionRange,
+    mut tree_config: crowdb_tree_ffi::Config,
+    page_store: Arc<crowdb_tree_ffi::PageStore>,
+    stream: ChunkStream,
+) -> Result<(Arc<dyn PartitionTree>, Arc<dyn PartitionJournal>)> {
+    tree_config.page_store = Some(page_store);
+    tree_config.key_range = crowdb_tree_ffi::KeyRange::Bounded {
+        start: range.start.clone(),
+        end: range.end.clone(),
+    };
+    let tree: Arc<dyn PartitionTree> = Arc::new(CrowdbPartitionTree::open(tree_id, &tree_config)?);
+    let stream_name = stream.stream_name();
+    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
+    Ok((tree, journal))
 }
 
 fn validate_split_artifact(plan: &SplitPlan, artifact: &SplitArtifact, cutover_seq: u64) -> Result<()> {

@@ -239,6 +239,7 @@ void      ct_add_log_stderr(const char *level);
 void      ct_flush_logging();
 void      ct_shutdown_logging();
 ct_status ct_snapshot(ct_tree *t, uint64_t *out_last_applied);
+ct_status ct_snapshot_info(ct_tree *t, uint64_t *out_snapshot_seq, uint64_t *out_last_applied);
 ct_status ct_materialize_ownership(ct_tree *t, uint64_t *bytes_written, int32_t *complete);
 uint64_t  ct_last_applied_slot(const ct_tree *t);
 size_t    ct_frozen_table_count(const ct_tree *t);
