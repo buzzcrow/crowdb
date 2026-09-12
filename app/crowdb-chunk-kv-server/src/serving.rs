@@ -7,6 +7,7 @@
 pub mod balance;
 pub mod lease;
 pub mod monitor;
+pub mod split;
 pub mod transfer;
 
 pub use balance::{
@@ -18,4 +19,5 @@ pub use monitor::{
     DomainMonitorDriver, DomainMonitorRegistry, MonitorDescriptorStore, MonitorError, MonitorTick,
     PreparedMonitor,
 };
+pub use split::{SplitAction, SplitStateMachine};
 pub use transfer::{TransferAction, TransferStateMachine};

@@ -32,7 +32,8 @@ pub mod kv_cluster;
 mod key_tests;
 
 pub use chunk_kv::{
-    ChunkKvCatalogHeadKey, ChunkKvCatalogPageKey, ChunkKvTransferKey, DomainMonitorKey, ServingGrantKey,
+    ChunkKvCatalogHeadKey, ChunkKvCatalogPageKey, ChunkKvSplitKey, ChunkKvTransferKey, DomainMonitorKey,
+    ServingGrantKey,
 };
 pub use chunk_stream::{StreamBindingKey, StreamExtentPageKey, StreamManifestHeadKey, StreamManifestKey};
 pub use chunk_task::{ChunkTaskKey, LeasedChunkTaskKey, ReadyChunkTaskKey};

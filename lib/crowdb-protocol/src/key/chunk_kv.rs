@@ -41,6 +41,34 @@ impl TextKey for ChunkKvTransferKey {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ChunkKvSplitKey {
+    pub transition_id: Id128,
+}
+
+impl TextKey for ChunkKvSplitKey {
+    const PATH_MAGIC: &'static str = "/chunk-kv";
+    const PATH_TYPE: &'static str = "split";
+
+    fn encode_to_path(&self, out: &mut String) {
+        encode_path_header(out, Self::PATH_MAGIC, Self::PATH_TYPE);
+        encode_path_u64(out, self.transition_id.high);
+        encode_path_u64(out, self.transition_id.low);
+    }
+
+    fn decode_path(parts: &[&str]) -> Result<Self, KeyError> {
+        if parts.len() < 2 {
+            return Err(KeyError::ShortInput);
+        }
+        let transition_id = Id128 {
+            high: decode_path_u64(parts[0])?,
+            low: decode_path_u64(parts[1])?,
+        };
+        check_path_exact(parts, 2)?;
+        Ok(Self { transition_id })
+    }
+}
+
 impl TextKey for DomainMonitorKey {
     const PATH_MAGIC: &'static str = "/monitor";
     const PATH_TYPE: &'static str = "domain";
@@ -148,6 +176,10 @@ mod tests {
             ChunkKvTransferKey::from_path(&transfer.to_path()).unwrap(),
             transfer
         );
+        let split = ChunkKvSplitKey {
+            transition_id: Id128 { high: 9, low: 10 },
+        };
+        assert_eq!(ChunkKvSplitKey::from_path(&split.to_path()).unwrap(), split);
         assert_eq!(
             ChunkKvCatalogHeadKey::from_path(&ChunkKvCatalogHeadKey.to_path()).unwrap(),
             ChunkKvCatalogHeadKey

@@ -4,7 +4,7 @@
 use crowdb_protocol::chunk_kv::{
     CatalogEntry, CatalogHead, CatalogPage, CatalogPageRef, CatalogPartitionState, ChunkKvProtocolError,
     DomainFailurePolicy, DomainMonitorDescriptor, Id128, KeyRange, OwnerDescriptor, PartitionArtifact,
-    ServingAssignment, ServingGrant,
+    ServingAssignment, ServingGrant, SplitChildAssignment, SplitPhase, SplitReadinessProof, SplitTransition,
 };
 use crowdb_protocol::chunk_stream::StreamName;
 
@@ -176,5 +176,67 @@ fn successor_reuses_unchanged_pages_and_rejects_epoch_regression() {
     assert_eq!(
         regressed_head.validate_successor(&[regressed_page], &previous, &previous_pages),
         Err(ChunkKvProtocolError::CatalogRegression)
+    );
+}
+
+#[test]
+fn split_transition_requires_exact_coverage_and_common_cutover() {
+    let owner = OwnerDescriptor {
+        instance_id: 8,
+        rpc_endpoint: "127.0.0.1:9008".into(),
+    };
+    let artifact = |tree_id, low| PartitionArtifact {
+        tree_id,
+        stream_name: StreamName { high: 9, low },
+    };
+    let child = |partition_low, start: &[u8], end: Option<&[u8]>, tree_id| SplitChildAssignment {
+        partition_id: Id128 {
+            high: 1,
+            low: partition_low,
+        },
+        range: KeyRange {
+            start: start.to_vec(),
+            end: end.map(<[u8]>::to_vec),
+        },
+        owner: owner.clone(),
+        owner_epoch: 1,
+        artifact: artifact(tree_id, tree_id),
+    };
+    let mut transition = SplitTransition {
+        transition_id: Id128 { high: 2, low: 3 },
+        parent_id: Id128 { high: 1, low: 1 },
+        parent_range: KeyRange {
+            start: b"a".to_vec(),
+            end: Some(b"z".to_vec()),
+        },
+        parent_owner: owner.clone(),
+        parent_epoch: 4,
+        parent_artifact: artifact(5, 5),
+        split_key: b"m".to_vec(),
+        left: child(2, b"a", Some(b"m"), 6),
+        right: child(3, b"m", Some(b"z"), 7),
+        phase: SplitPhase::ParentPreparing,
+        readiness_proof: None,
+        failure: None,
+    };
+    transition.validate().unwrap();
+    transition.phase = SplitPhase::ChildrenPrepared;
+    transition.readiness_proof = Some(SplitReadinessProof {
+        cutover_seq: 11,
+        left_applied_seq: 11,
+        right_applied_seq: 11,
+    });
+    transition.validate().unwrap();
+
+    transition.right.range.start = b"n".to_vec();
+    assert_eq!(
+        transition.validate(),
+        Err(ChunkKvProtocolError::InvalidSplitTransition)
+    );
+    transition.right.range.start = b"m".to_vec();
+    transition.readiness_proof.as_mut().unwrap().right_applied_seq = 10;
+    assert_eq!(
+        transition.validate(),
+        Err(ChunkKvProtocolError::InvalidSplitTransition)
     );
 }

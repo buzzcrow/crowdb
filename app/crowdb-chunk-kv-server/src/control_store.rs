@@ -9,11 +9,11 @@ use async_trait::async_trait;
 use crowdb_kv_client::{CrowdbKvClient, Error as KvClientError, GetOutcome, ReadMode};
 use crowdb_protocol::chunk_kv::{
     CatalogHead, CatalogPage, DomainMonitorDescriptor, EnsureDomainMonitorOutcome, ServingGrant,
-    TransferTransition,
+    SplitTransition, TransferTransition,
 };
 use crowdb_protocol::key::{
-    ChunkKvCatalogHeadKey, ChunkKvCatalogPageKey, ChunkKvTransferKey, DomainMonitorKey, ServingGrantKey,
-    TextKey,
+    ChunkKvCatalogHeadKey, ChunkKvCatalogPageKey, ChunkKvSplitKey, ChunkKvTransferKey, DomainMonitorKey,
+    ServingGrantKey, TextKey,
 };
 use thiserror::Error;
 
@@ -189,6 +189,90 @@ impl Group0ControlStore {
                     )),
                     None => Err(MonitorError::Store(
                         "transfer transition write was not visible after reconciliation".into(),
+                    )),
+                }
+            }
+            Err(error) => Err(MonitorError::Store(error.to_string())),
+        }
+    }
+
+    /// Loads and validates one durable split transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed control-plane error for unavailable, malformed, or
+    /// internally inconsistent persisted state.
+    pub async fn load_split_transition(
+        &self,
+        transition_id: crowdb_protocol::chunk_kv::Id128,
+    ) -> Result<Option<(SplitTransition, u64)>, MonitorError> {
+        let path = ChunkKvSplitKey { transition_id }.to_path();
+        let stored = self
+            .read::<SplitTransition>(&path)
+            .await
+            .map_err(MonitorError::Store)?;
+        if let Some((transition, revision)) = stored {
+            transition
+                .validate()
+                .map_err(|error| MonitorError::PlanFailed(error.to_string()))?;
+            if transition.transition_id != transition_id {
+                return Err(MonitorError::PlanFailed(
+                    "split key and record identity differ".into(),
+                ));
+            }
+            return Ok(Some((transition, revision)));
+        }
+        Ok(None)
+    }
+
+    /// Persists one validated split state with revision fencing and ambiguous
+    /// write reconciliation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a planning error for invalid/conflicting state or a storage
+    /// error when the write cannot be reconciled.
+    pub async fn persist_split_transition(
+        &self,
+        transition: &SplitTransition,
+        expected_revision: u64,
+    ) -> Result<u64, MonitorError> {
+        transition
+            .validate()
+            .map_err(|error| MonitorError::PlanFailed(error.to_string()))?;
+        let path = ChunkKvSplitKey {
+            transition_id: transition.transition_id,
+        }
+        .to_path();
+        if let Some((current, revision)) = self.load_split_transition(transition.transition_id).await? {
+            if current == *transition {
+                return Ok(revision);
+            }
+            if revision != expected_revision {
+                return Err(MonitorError::PlanFailed(
+                    "split transition revision conflict".into(),
+                ));
+            }
+        } else if expected_revision != 0 {
+            return Err(MonitorError::PlanFailed(
+                "split transition revision conflict".into(),
+            ));
+        }
+        let encoded =
+            serde_json::to_vec(transition).map_err(|error| MonitorError::Store(error.to_string()))?;
+        match self
+            .kv
+            .put_cas(path.as_bytes(), &encoded, expected_revision)
+            .await
+        {
+            Ok(()) | Err(Group0KvError::CasFailed { .. } | Group0KvError::OutcomeUnknown) => {
+                match self.load_split_transition(transition.transition_id).await? {
+                    Some((current, revision)) if current == *transition => Ok(revision),
+                    Some(_) => Err(MonitorError::PlanFailed(
+                        "split transition write conflicted".into(),
+                    )),
+                    None => Err(MonitorError::Store(
+                        "split transition write was not visible after reconciliation".into(),
                     )),
                 }
             }

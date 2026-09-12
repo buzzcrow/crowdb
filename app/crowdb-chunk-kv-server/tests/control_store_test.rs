@@ -7,12 +7,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use crowdb_chunk_kv_server::{
     CatalogPublisher, CatalogStore, DomainMonitorRegistry, Group0ControlStore, Group0Kv, Group0KvError,
-    TransferStateMachine, VersionedValue,
+    SplitAction, SplitStateMachine, TransferStateMachine, VersionedValue,
 };
 use crowdb_protocol::chunk_kv::{
     AuthorityReleaseProof, CatalogEntry, CatalogHead, CatalogPage, CatalogPageRef, CatalogPartitionState,
     DomainFailurePolicy, DomainMonitorDescriptor, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest,
-    Id128, KeyRange, OwnerDescriptor, PartitionArtifact, ServingAssignment, ServingGrant, TransferPhase,
+    Id128, KeyRange, OwnerDescriptor, PartitionArtifact, ServingAssignment, ServingGrant,
+    SplitChildAssignment, SplitPhase, SplitReadinessProof, SplitTransition, TransferPhase,
     TransferTransition,
 };
 use crowdb_protocol::chunk_stream::StreamName;
@@ -162,6 +163,62 @@ fn transfer() -> TransferTransition {
         old_grant_expires_at_ms: 10_000,
         phase: TransferPhase::Planned,
         release_proof: None,
+        readiness_proof: None,
+        failure: None,
+    }
+}
+
+fn split() -> SplitTransition {
+    SplitTransition {
+        transition_id: Id128 { high: 20, low: 21 },
+        parent_id: Id128 { high: 1, low: 2 },
+        parent_range: KeyRange {
+            start: Vec::new(),
+            end: None,
+        },
+        parent_owner: OwnerDescriptor {
+            instance_id: 11,
+            rpc_endpoint: "127.0.0.1:9911".into(),
+        },
+        parent_epoch: 3,
+        parent_artifact: PartitionArtifact {
+            tree_id: 5,
+            stream_name: StreamName { high: 6, low: 7 },
+        },
+        split_key: b"m".to_vec(),
+        left: SplitChildAssignment {
+            partition_id: Id128 { high: 22, low: 23 },
+            range: KeyRange {
+                start: Vec::new(),
+                end: Some(b"m".to_vec()),
+            },
+            owner: OwnerDescriptor {
+                instance_id: 11,
+                rpc_endpoint: "127.0.0.1:9911".into(),
+            },
+            owner_epoch: 1,
+            artifact: PartitionArtifact {
+                tree_id: 24,
+                stream_name: StreamName { high: 25, low: 26 },
+            },
+        },
+        right: SplitChildAssignment {
+            partition_id: Id128 { high: 27, low: 28 },
+            range: KeyRange {
+                start: b"m".to_vec(),
+                end: None,
+            },
+            owner: OwnerDescriptor {
+                instance_id: 12,
+                rpc_endpoint: "127.0.0.1:9912".into(),
+            },
+            owner_epoch: 1,
+            artifact: PartitionArtifact {
+                tree_id: 29,
+                stream_name: StreamName { high: 30, low: 31 },
+            },
+        },
+        phase: SplitPhase::Planned,
         readiness_proof: None,
         failure: None,
     }
@@ -334,4 +391,44 @@ async fn group0_transfer_store_reconciles_and_resumes_exact_phase() {
         .persist_transfer_transition(&transfer(), corrupt_revision)
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn group0_split_store_resumes_prepared_children_before_catalog_cutover() {
+    let kv = Arc::new(TestKv::default());
+    let store = Group0ControlStore::new(kv.clone());
+    let planned = split();
+    let revision = store.persist_split_transition(&planned, 0).await.unwrap();
+    let mut machine = SplitStateMachine::restore(planned).unwrap();
+    machine.begin_parent_prepare().unwrap();
+    machine
+        .record_children_ready(SplitReadinessProof {
+            cutover_seq: 41,
+            left_applied_seq: 41,
+            right_applied_seq: 41,
+        })
+        .unwrap();
+    let prepared = machine.transition().clone();
+    let path = crowdb_protocol::key::ChunkKvSplitKey {
+        transition_id: prepared.transition_id,
+    }
+    .to_path();
+    kv.inject(InjectedPut {
+        path,
+        error: Group0KvError::OutcomeUnknown,
+        commit: true,
+    })
+    .await;
+    let next_revision = store.persist_split_transition(&prepared, revision).await.unwrap();
+    let (loaded, loaded_revision) = store
+        .load_split_transition(prepared.transition_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded_revision, next_revision);
+    assert_eq!(loaded, prepared);
+    assert_eq!(
+        SplitStateMachine::restore(loaded).unwrap().next_action(),
+        SplitAction::PublishCatalog
+    );
 }

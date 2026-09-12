@@ -87,10 +87,11 @@ R142 partitions and publishes one complete group-0 range catalog.
   transition-detail and balance-policy wire models cover their control-plane
   foundation. Scan interval clipping, inclusive initial lower bounds, strict
   continuation, and topology-bound continuation validation are complete.
-- Transfer records, the reducer, and a revision-fenced group-0 store preserve
-  no-copy artifact identity and old-owner exclusion across restart, including
-  ambiguous-write reconciliation. The target recovery worker, split
-  orchestration, and catalog cutover adapter remain.
+- Transfer and split records, reducers, and revision-fenced group-0 stores
+  preserve stable artifact identity, authority proofs, exact child coverage,
+  and common cutover frontiers across restart, including ambiguous-write
+  reconciliation. Target/parent recovery workers and catalog cutover adapters
+  remain.
 - Config defaults, reserved ports, process logging, HTTP management, RPC
   listener startup, validated catalog/grant refresh, service registration and
   heartbeat, lock-free counters, health snapshots, and drain-time admission

@@ -410,6 +410,106 @@ impl TransferTransition {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SplitPhase {
+    #[default]
+    Planned,
+    ParentPreparing,
+    ChildrenPrepared,
+    CatalogCommitted,
+    Aborted,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SplitChildAssignment {
+    pub partition_id: Id128,
+    pub range: KeyRange,
+    pub owner: OwnerDescriptor,
+    pub owner_epoch: u64,
+    pub artifact: PartitionArtifact,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SplitReadinessProof {
+    pub cutover_seq: u64,
+    pub left_applied_seq: u64,
+    pub right_applied_seq: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SplitTransition {
+    pub transition_id: Id128,
+    pub parent_id: Id128,
+    pub parent_range: KeyRange,
+    pub parent_owner: OwnerDescriptor,
+    pub parent_epoch: u64,
+    pub parent_artifact: PartitionArtifact,
+    pub split_key: Vec<u8>,
+    pub left: SplitChildAssignment,
+    pub right: SplitChildAssignment,
+    pub phase: SplitPhase,
+    pub readiness_proof: Option<SplitReadinessProof>,
+    pub failure: Option<String>,
+}
+
+impl SplitTransition {
+    /// Validates exact half-open child coverage and phase-bound readiness.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid identities, bounds, artifacts, or phase
+    /// fields that cannot represent one atomic parent-to-children cutover.
+    pub fn validate(&self) -> Result<(), ChunkKvProtocolError> {
+        let valid_identity = self.transition_id != Id128::default()
+            && self.parent_id != Id128::default()
+            && self.left.partition_id != Id128::default()
+            && self.right.partition_id != Id128::default()
+            && self.parent_id != self.left.partition_id
+            && self.parent_id != self.right.partition_id
+            && self.left.partition_id != self.right.partition_id
+            && self.parent_owner.instance_id != 0
+            && !self.parent_owner.rpc_endpoint.is_empty()
+            && self.parent_epoch != 0
+            && valid_artifact(&self.parent_artifact)
+            && valid_split_child(&self.left)
+            && valid_split_child(&self.right);
+        let exact_ranges = self.split_key > self.parent_range.start
+            && self
+                .parent_range
+                .end
+                .as_ref()
+                .map_or(true, |end| self.split_key < *end)
+            && self.left.range.start == self.parent_range.start
+            && self.left.range.end.as_ref() == Some(&self.split_key)
+            && self.right.range.start == self.split_key
+            && self.right.range.end == self.parent_range.end;
+        if !valid_identity || !exact_ranges {
+            return Err(ChunkKvProtocolError::InvalidSplitTransition);
+        }
+        if let Some(proof) = &self.readiness_proof {
+            if proof.cutover_seq == 0
+                || proof.left_applied_seq != proof.cutover_seq
+                || proof.right_applied_seq != proof.cutover_seq
+            {
+                return Err(ChunkKvProtocolError::InvalidSplitTransition);
+            }
+        }
+        let fields_match_phase = match self.phase {
+            SplitPhase::Planned | SplitPhase::ParentPreparing => {
+                self.readiness_proof.is_none() && self.failure.is_none()
+            }
+            SplitPhase::ChildrenPrepared | SplitPhase::CatalogCommitted => {
+                self.readiness_proof.is_some() && self.failure.is_none()
+            }
+            SplitPhase::Aborted => self.failure.as_ref().is_some_and(|failure| !failure.is_empty()),
+        };
+        if !fields_match_phase {
+            return Err(ChunkKvProtocolError::InvalidSplitTransition);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ServingAssignment {
     pub partition_id: Id128,
@@ -816,6 +916,8 @@ pub enum ChunkKvProtocolError {
     InvalidRpcRequest,
     #[error("chunk KV transfer transition is invalid")]
     InvalidTransferTransition,
+    #[error("chunk KV split transition is invalid")]
+    InvalidSplitTransition,
     #[error("protocol record encoding failed")]
     Encoding,
 }
@@ -825,6 +927,22 @@ fn valid_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn valid_artifact(artifact: &PartitionArtifact) -> bool {
+    artifact.tree_id != 0 && artifact.stream_name != StreamName::default()
+}
+
+fn valid_split_child(child: &SplitChildAssignment) -> bool {
+    child.owner.instance_id != 0
+        && !child.owner.rpc_endpoint.is_empty()
+        && child.owner_epoch != 0
+        && valid_artifact(&child.artifact)
+        && child
+            .range
+            .end
+            .as_ref()
+            .map_or(true, |end| child.range.start < *end)
 }
 
 fn validate_entry(entry: &CatalogEntry) -> Result<(), ChunkKvProtocolError> {
