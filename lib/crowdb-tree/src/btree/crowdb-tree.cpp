@@ -3186,6 +3186,168 @@ Crowdbtree::scan(Slice prefix, Slice start_after, Slice end_key, size_t limit, s
     return Status::Ok();
 }
 
+Status Crowdbtree::seek_reverse(Slice start_key, bool inclusive, Slice begin_key, scan_entry *out, bool *found) const
+{
+    if (out == nullptr || found == nullptr) {
+        return Status::invalid_argument("seek_reverse output is null");
+    }
+    *found                    = false;
+    *out                      = {};
+    EpochManager::Guard guard = epoch_.enter();
+
+    struct ParentStep
+    {
+        InnerBase *page;
+        size_t     child_index;
+    };
+
+    auto resolve_base = [](PageBase *head) {
+        while (head != nullptr && head->type == page_type::kBatchDelta) {
+            head = head->next;
+        }
+        return head;
+    };
+    auto l1_predecessor = [&](Slice bound, bool include, Slice *key, Slice *cell) -> bool {
+        std::vector<ParentStep> path;
+        uint64_t                page_id = root_page_id_.load();
+        while (page_id != kInvalidPageId) {
+            PageBase *head = resident(page_id);
+            PageBase *base = resolve_base(head);
+            if (base == nullptr) {
+                return false;
+            }
+            if (base->type == page_type::kLeafBase) {
+                LeafChainCursor cursor(head, gc_floor_.load());
+                cursor.seek_reverse(bound, include);
+                if (cursor.valid()) {
+                    *key  = cursor.key();
+                    *cell = cursor.cell();
+                    return true;
+                }
+                break;
+            }
+            auto  *inner = static_cast<InnerBase *>(base);
+            size_t index = inner->child_index_for(bound);
+            path.push_back({.page = inner, .child_index = index});
+            page_id = inner->child_at(index);
+        }
+
+        while (!path.empty()) {
+            ParentStep step = path.back();
+            path.pop_back();
+            if (step.child_index == 0) {
+                continue;
+            }
+            page_id = step.page->child_at(step.child_index - 1);
+            while (page_id != kInvalidPageId) {
+                PageBase *head = resident(page_id);
+                PageBase *base = resolve_base(head);
+                if (base == nullptr) {
+                    return false;
+                }
+                if (base->type == page_type::kLeafBase) {
+                    LeafChainCursor cursor(head, gc_floor_.load());
+                    cursor.seek_last();
+                    if (cursor.valid()) {
+                        *key  = cursor.key();
+                        *cell = cursor.cell();
+                        return true;
+                    }
+                    break;
+                }
+                auto  *inner = static_cast<InnerBase *>(base);
+                size_t index = inner->num_children() - 1;
+                path.push_back({.page = inner, .child_index = index});
+                page_id = inner->child_at(index);
+            }
+        }
+        return false;
+    };
+
+    std::string bound         = start_key.to_string();
+    bool        include_bound = inclusive;
+    while (true) {
+        Slice              winner_key;
+        const CellVersion *winner_l0 = nullptr;
+        Slice              winner_l1;
+        bool               have_winner = false;
+        for (auto &memtable : all_memtables()) {
+            auto cursor = memtable->cursor_reverse(Slice(bound), true, include_bound);
+            if (!cursor.valid()) {
+                continue;
+            }
+            uint64_t slot = cursor.cell_version() != nullptr ? cursor.cell_version()->slot : 0;
+            uint64_t winner_slot =
+                winner_l0 != nullptr ? winner_l0->slot : (winner_l1.empty() ? 0 : CellView{winner_l1}.slot());
+            int comparison = have_winner ? cursor.key().compare(winner_key) : 1;
+            if (comparison > 0 || (comparison == 0 && slot > winner_slot)) {
+                winner_key  = cursor.key();
+                winner_l0   = cursor.cell_version();
+                winner_l1   = {};
+                have_winner = true;
+            }
+        }
+
+        Slice l1_key;
+        Slice l1_cell;
+        if (l1_predecessor(Slice(bound), include_bound, &l1_key, &l1_cell)) {
+            uint64_t l1_slot = CellView{l1_cell}.slot();
+            uint64_t winner_slot =
+                winner_l0 != nullptr ? winner_l0->slot : (winner_l1.empty() ? 0 : CellView{winner_l1}.slot());
+            int comparison = have_winner ? l1_key.compare(winner_key) : 1;
+            if (comparison > 0 || (comparison == 0 && l1_slot > winner_slot)) {
+                winner_key  = l1_key;
+                winner_l0   = nullptr;
+                winner_l1   = l1_cell;
+                have_winner = true;
+            }
+        }
+        if (!have_winner || (!begin_key.empty() && winner_key.compare(begin_key) < 0) ||
+            opt_.key_range.before(winner_key)) {
+            return Status::Ok();
+        }
+        if (opt_.key_range.at_or_after_end(winner_key)) {
+            bound         = winner_key.to_string();
+            include_bound = false;
+            continue;
+        }
+
+        buffer materialized;
+        Slice  winner_cell = winner_l1;
+        if (winner_l0 != nullptr) {
+            if (winner_l0->cell.ownership() != buffer::mode::kExternal) {
+                winner_cell = winner_l0->cell.slice();
+            }
+            else {
+                size_t value_len = winner_l0->cell.size();
+                materialized     = buffer::alloc(value_len, kCellHeaderSize);
+                uint8_t *data    = materialized.data();
+                for (int i = 0; i < 8; ++i) {
+                    data[i] = static_cast<uint8_t>((winner_l0->slot >> (8 * i)) & 0xff);
+                }
+                data[8] = winner_l0->flags;
+                if (value_len > 0) {
+                    std::memcpy(data + kCellHeaderSize, winner_l0->cell.data(), value_len);
+                }
+                winner_cell = materialized.slice();
+            }
+        }
+        CellView value{winner_cell};
+        if (value.is_tombstone()) {
+            bound         = winner_key.to_string();
+            include_bound = false;
+            continue;
+        }
+        out->key       = winner_key.to_string();
+        out->slot      = value.slot();
+        out->value     = value.is_overflow() ? assemble_overflow_value(value.overflow_head(), value.overflow_len())
+                                             : value.value().to_string();
+        out->tombstone = false;
+        *found         = true;
+        return Status::Ok();
+    }
+}
+
 bool Crowdbtree::try_scan_no_load(
     Slice prefix, Slice start_after, Slice end_key, size_t limit, size_t byte_budget, bool keys_only,
     uint64_t                 deadline_ms,

@@ -77,6 +77,47 @@ pub(crate) fn decode_scan(bytes: Vec<u8>, count: usize) -> Result<Vec<ScanEntry>
 }
 
 impl Crowdbtree {
+    /// Returns the greatest live key at or before the supplied upper bound.
+    pub fn seek_reverse(
+        &self,
+        start_key: &[u8],
+        start_inclusive: bool,
+        begin_key: &[u8],
+    ) -> Result<Option<ScanEntry>, CtError> {
+        let mut found: c_int = 0;
+        let mut key = sys::ct_buf {
+            data: std::ptr::null_mut(),
+            len: 0,
+        };
+        let mut value = sys::ct_buf {
+            data: std::ptr::null_mut(),
+            len: 0,
+        };
+        let mut slot = 0_u64;
+        check(unsafe {
+            sys::ct_seek_reverse(
+                self.as_ptr(),
+                start_key.as_ptr(),
+                start_key.len(),
+                if start_inclusive { 1 } else { 0 },
+                begin_key.as_ptr(),
+                begin_key.len(),
+                &mut found,
+                &mut key,
+                &mut slot,
+                &mut value,
+            )
+        })?;
+        let key = take_buf(key);
+        let value = take_buf(value);
+        Ok((found != 0).then(|| ScanEntry {
+            key: Bytes::from(key),
+            slot,
+            value: Bytes::from(value),
+            tombstone: false,
+        }))
+    }
+
     /// Range scan over `prefix` (empty = whole keyspace).
     /// When `include_tombstones` is true, tombstone entries are included.
     /// `start_after` (empty = start from beginning) is an exclusive lower

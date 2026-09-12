@@ -63,6 +63,41 @@ fn scan_from_honors_inclusive_and_exclusive_lower_bounds() {
 }
 
 #[test]
+fn reverse_seek_merges_l0_l1_and_tombstones() {
+    let tree = Crowdbtree::open(&Config::default()).unwrap();
+    for (slot, key) in [b"".as_slice(), b"b", b"d"].into_iter().enumerate() {
+        tree.apply_put(slot as u64 + 1, key, b"value").unwrap();
+    }
+    tree.flush().unwrap();
+    tree.apply_put(4, b"e", b"latest").unwrap();
+
+    assert_eq!(
+        tree.seek_reverse(b"d", true, b"").unwrap().unwrap().key.as_ref(),
+        b"d"
+    );
+    assert_eq!(
+        tree.seek_reverse(b"d", false, b"").unwrap().unwrap().key.as_ref(),
+        b"b"
+    );
+    assert_eq!(
+        tree.seek_reverse(b"e", true, b"").unwrap().unwrap().key.as_ref(),
+        b"e"
+    );
+    assert_eq!(
+        tree.seek_reverse(b"", true, b"").unwrap().unwrap().key.as_ref(),
+        b""
+    );
+    assert!(tree.seek_reverse(b"", false, b"").unwrap().is_none());
+
+    tree.apply_delete(5, b"d").unwrap();
+    assert_eq!(
+        tree.seek_reverse(b"d", true, b"").unwrap().unwrap().key.as_ref(),
+        b"b"
+    );
+    assert!(tree.seek_reverse(b"d", true, b"c").unwrap().is_none());
+}
+
+#[test]
 fn injected_chunk_store_round_trip_and_stats() {
     let catalog = ChunkRootCatalog::open_memory(7).unwrap();
     let store = Arc::new(

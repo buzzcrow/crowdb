@@ -580,6 +580,74 @@ impl Partition {
         Ok(entries.pop())
     }
 
+    /// Returns the final key less than or equal to `key` in this partition.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed range, epoch, lifecycle, or tree-read error.
+    pub async fn floor(
+        &self,
+        ownership_epoch: u64,
+        key: &[u8],
+        min_journal_position: Option<JournalPosition>,
+    ) -> Result<Option<ScanEntry>> {
+        self.seek_reverse(ownership_epoch, key, true, min_journal_position)
+            .await
+    }
+
+    /// Returns the final key strictly less than `key` in this partition.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed range, epoch, lifecycle, or tree-read error.
+    pub async fn lower(
+        &self,
+        ownership_epoch: u64,
+        key: &[u8],
+        min_journal_position: Option<JournalPosition>,
+    ) -> Result<Option<ScanEntry>> {
+        self.seek_reverse(ownership_epoch, key, false, min_journal_position)
+            .await
+    }
+
+    async fn seek_reverse(
+        &self,
+        ownership_epoch: u64,
+        key: &[u8],
+        inclusive: bool,
+        min_journal_position: Option<JournalPosition>,
+    ) -> Result<Option<ScanEntry>> {
+        self.metrics.reverse_seek();
+        self.validate_epoch(ownership_epoch)?;
+        self.validate_read_lifecycle()?;
+        if key.len() > self.config.max_key_bytes {
+            return Err(ChunkKvError::InvalidRequest(
+                "seek key exceeds configured key limit".into(),
+            ));
+        }
+        if !self.range.contains(key) {
+            self.metrics.range_reject();
+            return Err(ChunkKvError::OutOfRange);
+        }
+        if let Some(position) = min_journal_position {
+            self.wait_applied(position).await?;
+        }
+        let entry = self
+            .tree
+            .seek_reverse(key, inclusive, self.range.start.as_deref())
+            .await?;
+        if entry.as_ref().is_some_and(|entry| {
+            !self.range.contains(&entry.key)
+                || entry.key.as_ref() > key
+                || (!inclusive && entry.key.as_ref() == key)
+        }) {
+            return Err(ChunkKvError::TreeCorruption(
+                "tree reverse seek returned an invalid key".into(),
+            ));
+        }
+        Ok(entry)
+    }
+
     /// Returns a bounded forward page clipped to this partition.
     ///
     /// `start_after` and `end_key` are exclusive. Bounds outside the

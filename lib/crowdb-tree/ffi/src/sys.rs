@@ -360,6 +360,18 @@ extern "C" {
         out_count: *mut u64,
         truncated: *mut c_int,
     ) -> c_int;
+    pub fn ct_seek_reverse(
+        t: *mut ct_tree,
+        start_key: *const u8,
+        sklen: usize,
+        start_inclusive: c_int,
+        begin_key: *const u8,
+        bklen: usize,
+        found: *mut c_int,
+        out_key: *mut ct_buf,
+        out_slot: *mut u64,
+        out_value: *mut ct_buf,
+    ) -> c_int;
     pub fn ct_snapshot_view(t: *mut ct_tree, out: *mut *mut ct_view) -> c_int;
     pub fn ct_view_at_slot(v: *const ct_view) -> u64;
     pub fn ct_view_iter(v: *mut ct_view, out: *mut *mut ct_iter) -> c_int;

@@ -292,7 +292,7 @@ async fn forward_scan_is_bounded_and_clipped_to_the_partition() {
 }
 
 #[tokio::test]
-async fn forward_seeks_return_nearest_key_from_one_tree_view() {
+async fn ordered_seeks_return_nearest_key_from_one_tree_view() {
     let store = Arc::new(MemoryStreamStore::new(16_384));
     let partition = partition(
         &store,
@@ -330,6 +330,20 @@ async fn forward_seeks_return_nearest_key_from_one_tree_view() {
     );
     assert!(partition.higher(4, b"d", None).await.unwrap().is_none());
     assert_eq!(partition.metrics().snapshot().forward_seeks, 4);
+    assert_eq!(
+        partition.floor(4, b"d", None).await.unwrap().unwrap().key,
+        b"d".as_slice()
+    );
+    assert_eq!(
+        partition.lower(4, b"d", None).await.unwrap().unwrap().key,
+        b"b".as_slice()
+    );
+    assert_eq!(
+        partition.floor(4, b"c", None).await.unwrap().unwrap().key,
+        b"b".as_slice()
+    );
+    assert!(partition.lower(4, b"b", None).await.unwrap().is_none());
+    assert_eq!(partition.metrics().snapshot().reverse_seeks, 4);
     assert_eq!(
         partition.ceiling(4, b"m", None).await,
         Err(ChunkKvError::OutOfRange)

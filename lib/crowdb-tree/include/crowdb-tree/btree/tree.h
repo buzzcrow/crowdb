@@ -661,6 +661,11 @@ class Crowdbtree
                 ScanPackedBuf *out_packed = nullptr, size_t *out_count = nullptr, bool has_start_bound = false,
                 bool start_inclusive = false) const;
 
+    // Resolve the greatest live key <= `start_key`, or < it when `inclusive`
+    // is false, while merging L0 and L1 under one epoch guard. `begin_key` is
+    // an inclusive lower bound; empty means unbounded.
+    Status seek_reverse(Slice start_key, bool inclusive, Slice begin_key, scan_entry *out, bool *found) const;
+
     // Async twin of scan(). Unlike get_async,
     // which has exactly one possible miss point (the root->leaf descent for
     // a single key), scan() walks a whole range of leaves via

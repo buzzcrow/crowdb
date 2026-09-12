@@ -1210,6 +1210,33 @@ ct_status ct_scan_from(ct_tree *t, const uint8_t *prefix, size_t plen, const uin
     return static_cast<ct_status>(Code::kOk);
 }
 
+ct_status ct_seek_reverse(ct_tree *t, const uint8_t *start_key, size_t sklen, int start_inclusive,
+                          const uint8_t *begin_key, size_t bklen, int32_t *found, ct_buf *out_key, uint64_t *out_slot,
+                          ct_buf *out_value)
+{
+    if (t == nullptr || found == nullptr || out_key == nullptr || out_slot == nullptr || out_value == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    scan_entry entry;
+    bool       present = false;
+    Status status = t->tree->seek_reverse(Slice(reinterpret_cast<const char *>(start_key), sklen), start_inclusive != 0,
+                                          Slice(reinterpret_cast<const char *>(begin_key), bklen), &entry, &present);
+    if (!status.ok()) {
+        return to_status(status);
+    }
+    *found = present ? 1 : 0;
+    if (!present) {
+        *out_key   = make_buf(nullptr, 0);
+        *out_value = make_buf(nullptr, 0);
+        *out_slot  = 0;
+        return static_cast<ct_status>(Code::kOk);
+    }
+    *out_key   = make_buf(entry.key.data(), entry.key.size());
+    *out_value = make_buf(entry.value.data(), entry.value.size());
+    *out_slot  = entry.slot;
+    return static_cast<ct_status>(Code::kOk);
+}
+
 // ── Snapshot view + iterator ──────────────────────────────────────
 
 ct_status ct_snapshot_view(ct_tree *t, ct_view **out)

@@ -127,6 +127,30 @@ class LeafChainCursor
         advance();
     }
 
+    // Reposition on the last entry <= `key`, or < `key` when `inclusive` is
+    // false. Sources remain borrowed and are merged from right to left.
+    void seek_reverse(Slice key, bool inclusive)
+    {
+        for (Source &s : sources_) {
+            s.idx = inclusive ? upper_bound(s, key) : lower_bound(s, key);
+        }
+        advance_reverse();
+    }
+
+    // Reposition on the final entry in this leaf chain.
+    void seek_last()
+    {
+        for (Source &s : sources_) {
+            s.idx = s.count;
+        }
+        advance_reverse();
+    }
+
+    void previous()
+    {
+        advance_reverse();
+    }
+
     // Upper bound on the entries left (duplicates across sources and GC'd
     // tombstones may make the real count smaller). For reserve() only.
     [[nodiscard]] size_t remaining_hint() const
@@ -190,6 +214,22 @@ class LeafChainCursor
         while (lo < hi) {
             uint32_t mid = lo + ((hi - lo) / 2);
             if (key_at(s, mid).compare(key) < 0) {
+                lo = mid + 1;
+            }
+            else {
+                hi = mid;
+            }
+        }
+        return lo;
+    }
+
+    [[nodiscard]] uint32_t upper_bound(const Source &s, Slice key) const
+    {
+        uint32_t lo = 0;
+        uint32_t hi = s.count;
+        while (lo < hi) {
+            uint32_t mid = lo + ((hi - lo) / 2);
+            if (key_at(s, mid).compare(key) <= 0) {
                 lo = mid + 1;
             }
             else {
@@ -275,6 +315,55 @@ class LeafChainCursor
                 continue; // GC drop
             }
             key_   = min_key;
+            cell_  = win_cell;
+            valid_ = true;
+            return;
+        }
+    }
+
+    void advance_reverse()
+    {
+        while (true) {
+            Slice max_key;
+            bool  has_any = false;
+            for (const Source &s : sources_) {
+                if (s.idx == 0) {
+                    continue;
+                }
+                Slice k = key_at(s, s.idx - 1);
+                if (!has_any || k.compare(max_key) > 0) {
+                    max_key = k;
+                    has_any = true;
+                }
+            }
+            if (!has_any) {
+                valid_ = false;
+                return;
+            }
+
+            Slice    win_cell;
+            uint64_t win_slot = 0;
+            uint32_t win_rank = 0;
+            bool     have_win = false;
+            for (Source &s : sources_) {
+                if (s.idx == 0 || key_at(s, s.idx - 1).compare(max_key) != 0) {
+                    continue;
+                }
+                --s.idx;
+                Slice    cell = cell_at(s, s.idx);
+                uint64_t slot = CellView{cell}.slot();
+                if (!have_win || slot > win_slot || (slot == win_slot && s.rank < win_rank)) {
+                    win_cell = cell;
+                    win_slot = slot;
+                    win_rank = s.rank;
+                    have_win = true;
+                }
+            }
+            CellView value{win_cell};
+            if (value.is_tombstone() && value.slot() <= gc_floor_) {
+                continue;
+            }
+            key_   = max_key;
             cell_  = win_cell;
             valid_ = true;
             return;

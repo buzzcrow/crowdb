@@ -215,6 +215,35 @@ ConcurrentSkipList::Cursor ConcurrentSkipList::cursor_from(Slice start_key, bool
     return Cursor(n);
 }
 
+ConcurrentSkipList::Cursor ConcurrentSkipList::cursor_reverse(Slice start_key, bool has_start_bound,
+                                                              bool inclusive) const
+{
+    Node *candidate = nullptr;
+    Slice bound     = start_key;
+    bool  bounded   = has_start_bound;
+    bool  include   = inclusive;
+    while (true) {
+        Node *x = head_;
+        int   h = static_cast<int>(max_height_.load(std::memory_order_acquire)) - 1;
+        while (h >= 0) {
+            Node *next = x->next(h);
+            while (next != nullptr && (!bounded || (include ? next->key_slice().compare(bound) <= 0
+                                                            : next->key_slice().compare(bound) < 0))) {
+                x    = next;
+                next = x->next(h);
+            }
+            --h;
+        }
+        candidate = x == head_ ? nullptr : x;
+        if (candidate == nullptr || !candidate->deleted_.load(std::memory_order_acquire)) {
+            return Cursor(candidate);
+        }
+        bound   = candidate->key_slice();
+        bounded = true;
+        include = false;
+    }
+}
+
 void ConcurrentSkipList::Cursor::advance()
 {
     if (cur_ == nullptr) {

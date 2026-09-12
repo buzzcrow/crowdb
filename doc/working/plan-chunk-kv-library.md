@@ -35,15 +35,15 @@ whose ordered journal is R141 and whose durable tree is R140.
 - [x] Journal resolved success/failure, apply only after durability, retain
   request results/digests, and publish durable/applied frontiers.
 - [x] Implement range-checked point reads, min-position waits, bounded forward
-  scans, and native ceiling/higher seek across L0 and L1.
-- [ ] Add real C++ reverse L0/L1 cursor support, then implement bounded reverse
-  scans and native floor/lower seek without materializing and sorting.
+  scans, and native ceiling/higher/floor/lower seek across L0 and L1.
+- [ ] Extend the native reverse predecessor path into bounded reverse scans
+  without materializing and sorting.
 - [~] Cover multi-partition independence, retries/conflicts/expiry, concurrent
   conditions, pending-read visibility, stalls, and apply uncertainty.
 - [~] Expose per-partition lock-free counters for mutation outcomes, rejects,
-  admission, stalls, recovery, checkpoints, forward scans/seeks, and split
-  control; reverse ordered-read, maintenance, pin, and detailed split-work
-  metrics remain open.
+  admission, stalls, recovery, checkpoints, ordered seeks, forward scans, and
+  split control; reverse-scan, maintenance, pin, and detailed split-work metrics
+  remain open.
 
 ## Phase 3: Checkpoint, Replay, and Transfer
 

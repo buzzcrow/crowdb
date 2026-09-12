@@ -16,6 +16,12 @@ pub trait PartitionTree: Send + Sync {
         limit: usize,
         byte_budget: usize,
     ) -> Result<(Vec<ScanEntry>, bool)>;
+    async fn seek_reverse(
+        &self,
+        start_key: &[u8],
+        start_inclusive: bool,
+        begin_key: Option<&[u8]>,
+    ) -> Result<Option<ScanEntry>>;
     async fn apply(&self, mutation_seq: u64, operation: &MutationOperation) -> Result<()>;
     async fn advance_noop(&self, mutation_seq: u64) -> Result<()>;
     async fn checkpoint(&self) -> Result<u64>;
@@ -77,6 +83,26 @@ impl PartitionTree for CrowdbPartitionTree {
                 .collect(),
             truncated,
         ))
+    }
+
+    async fn seek_reverse(
+        &self,
+        start_key: &[u8],
+        start_inclusive: bool,
+        begin_key: Option<&[u8]>,
+    ) -> Result<Option<ScanEntry>> {
+        self.tree
+            .seek_reverse(start_key, start_inclusive, begin_key.unwrap_or_default())
+            .map(|entry| {
+                entry.map(|entry| ScanEntry {
+                    key: entry.key,
+                    value: ValueRevision {
+                        revision: entry.slot,
+                        value: entry.value.to_vec(),
+                    },
+                })
+            })
+            .map_err(map_tree_read_error)
     }
 
     async fn apply(&self, mutation_seq: u64, operation: &MutationOperation) -> Result<()> {

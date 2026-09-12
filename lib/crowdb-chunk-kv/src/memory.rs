@@ -66,6 +66,26 @@ impl PartitionTree for MemoryPartitionTree {
         Ok((entries, truncated))
     }
 
+    async fn seek_reverse(
+        &self,
+        start_key: &[u8],
+        start_inclusive: bool,
+        begin_key: Option<&[u8]>,
+    ) -> Result<Option<ScanEntry>> {
+        let values = self.values.read().await;
+        Ok(values
+            .iter()
+            .rev()
+            .find(|(key, _)| {
+                begin_key.map_or(true, |begin| key.as_slice() >= begin)
+                    && (key.as_slice() < start_key || (start_inclusive && key.as_slice() == start_key))
+            })
+            .map(|(key, value)| ScanEntry {
+                key: Bytes::copy_from_slice(key),
+                value: value.clone(),
+            }))
+    }
+
     async fn apply(&self, mutation_seq: u64, operation: &MutationOperation) -> Result<()> {
         if self.fail_next_apply.swap(false, Ordering::AcqRel) {
             return Err(crate::ChunkKvError::ApplyStateUnknown);

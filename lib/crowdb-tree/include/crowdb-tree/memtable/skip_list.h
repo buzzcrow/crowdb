@@ -179,6 +179,10 @@ class ConcurrentSkipList
     // key is an explicit bound.
     [[nodiscard]] Cursor cursor_from(Slice start_key, bool inclusive) const;
 
+    // Return the final live node <= `start_key`, or < it when `inclusive` is
+    // false. When `has_start_bound` is false, return the final live node.
+    [[nodiscard]] Cursor cursor_reverse(Slice start_key, bool has_start_bound, bool inclusive) const;
+
     // Remove and return all live entries with slot <= `cs`, in key order.
     // Each removed entry's node is unlinked and returned (caller retires the
     // node and its CellVersion via epoch). The key is copied into the

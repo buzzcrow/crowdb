@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub struct PartitionMetrics {
     point_reads: AtomicU64,
     forward_seeks: AtomicU64,
+    reverse_seeks: AtomicU64,
     forward_scans: AtomicU64,
     scan_entries: AtomicU64,
     mutation_requests: AtomicU64,
@@ -29,6 +30,7 @@ pub struct PartitionMetrics {
 pub struct PartitionMetricsSnapshot {
     pub point_reads: u64,
     pub forward_seeks: u64,
+    pub reverse_seeks: u64,
     pub forward_scans: u64,
     pub scan_entries: u64,
     pub mutation_requests: u64,
@@ -53,6 +55,7 @@ impl PartitionMetrics {
         PartitionMetricsSnapshot {
             point_reads: self.point_reads.load(Ordering::Relaxed),
             forward_seeks: self.forward_seeks.load(Ordering::Relaxed),
+            reverse_seeks: self.reverse_seeks.load(Ordering::Relaxed),
             forward_scans: self.forward_scans.load(Ordering::Relaxed),
             scan_entries: self.scan_entries.load(Ordering::Relaxed),
             mutation_requests: self.mutation_requests.load(Ordering::Relaxed),
@@ -78,6 +81,10 @@ impl PartitionMetrics {
 
     pub(crate) fn forward_seek(&self) {
         self.forward_seeks.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn reverse_seek(&self) {
+        self.reverse_seeks.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn forward_scan(&self, entries: usize) {
