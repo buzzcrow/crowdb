@@ -254,4 +254,9 @@ impl PartitionTree for MemoryPartitionTree {
     fn last_applied_seq(&self) -> u64 {
         self.last_applied.load(Ordering::Acquire)
     }
+
+    fn checkpoint_state(&self) -> Result<(u64, u64)> {
+        let applied = self.last_applied.load(Ordering::Acquire);
+        Ok((applied, applied))
+    }
 }

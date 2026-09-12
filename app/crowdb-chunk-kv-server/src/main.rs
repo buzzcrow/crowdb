@@ -13,7 +13,9 @@ use crowdb_chunk_kv_server::{
     ChunkKvStorage, DomainMonitorRegistry, Group0ControlStore, ManagementState,
 };
 use crowdb_kv_client::ServiceRegistryClient;
-use crowdb_protocol::chunk_kv::{EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest};
+use crowdb_protocol::chunk_kv::{
+    CatalogPage, CatalogPartitionState, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest,
+};
 use tracing::{error, info, warn};
 
 #[derive(Debug, Parser)]
@@ -172,7 +174,16 @@ async fn main() {
                 error!(%error, "failed to install initial chunk KV catalog");
                 return;
             }
-            info!(generation = head.generation, "installed initial chunk KV catalog");
+            match recover_assigned_partitions(&storage, &service, &pages, config.instance_id).await {
+                Ok(partitions) => info!(
+                    generation = head.generation,
+                    partitions, "installed initial chunk KV catalog and replayed assigned partitions"
+                ),
+                Err(error) => {
+                    error!(%error, "failed to recover an assigned chunk KV partition");
+                    return;
+                }
+            }
         }
         Ok(None) => warn!("chunk KV catalog is not published; service remains unready"),
         Err(error) => {
@@ -306,17 +317,57 @@ async fn install_latest_grant(
 ) {
     match store.load_serving_grant(config.instance_id).await {
         Ok(Some(grant)) => {
+            let catalog_generation = grant.catalog_generation;
+            let assignments = grant.assignments.clone();
+            let now_monotonic_ms = service.monotonic_ms();
             if let Err(error) =
                 service
                     .authority()
-                    .install(grant, &config.monitor, wall_time_ms(), service.monotonic_ms())
+                    .install(grant, &config.monitor, wall_time_ms(), now_monotonic_ms)
             {
                 warn!(%error, "rejected chunk KV serving grant");
+            } else if service.health(now_monotonic_ms).catalog_generation == catalog_generation {
+                for assignment in assignments {
+                    if let Err(error) =
+                        service.activate_recovered_partition(assignment.partition_id, assignment.owner_epoch)
+                    {
+                        warn!(
+                            partition_id_high = assignment.partition_id.high,
+                            partition_id_low = assignment.partition_id.low,
+                            owner_epoch = assignment.owner_epoch,
+                            %error,
+                            "serving grant could not activate recovered partition"
+                        );
+                    }
+                }
             }
         }
         Ok(None) => service.authority().clear(),
         Err(error) => warn!(%error, "serving-grant refresh failed; retaining local lease deadline"),
     }
+}
+
+async fn recover_assigned_partitions(
+    storage: &ChunkKvStorage,
+    service: &ChunkKvService,
+    pages: &[CatalogPage],
+    instance_id: u64,
+) -> Result<usize, crowdb_chunk_kv_server::StorageRuntimeError> {
+    let mut recovered = 0;
+    for entry in pages.iter().flat_map(|page| &page.entries).filter(|entry| {
+        entry.owner.instance_id == instance_id
+            && !matches!(
+                entry.state,
+                CatalogPartitionState::Retired | CatalogPartitionState::Faulted
+            )
+    }) {
+        let partition = storage.recover_partition(entry).await?;
+        service
+            .install_partition(&partition)
+            .map_err(|error| crowdb_chunk_kv_server::StorageRuntimeError::Partition(error.to_string()))?;
+        recovered += 1;
+    }
+    Ok(recovered)
 }
 
 fn wall_time_ms() -> u64 {

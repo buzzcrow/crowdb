@@ -14,9 +14,11 @@ the only authority to admit data requests.
 The catalog is one checksummed generation head over ordered immutable pages.
 Each entry contains an exact half-open binary-key range, stable partition ID,
 owner endpoint, monotonic owner epoch, lifecycle state, tree manifest, stream
-name, applied sequence, and optional transition ID. A valid generation starts
-at the empty byte string, has exact adjacent bounds, ends unbounded, and covers
-each binary key once.
+name and manifest generation, WAL replay offset, applied sequence, and optional
+transition ID. These fields form the exact R142 checkpoint: startup reopens the
+published tree root and replays the stream from that offset to its current
+durable tail. A valid generation starts at the empty byte string, has exact
+adjacent bounds, ends unbounded, and covers each binary key once.
 
 Publishers validate the complete successor, including retained-partition epoch
 non-regression, before I/O. They write only new pages, reread and validate every
@@ -121,8 +123,9 @@ time.
 ## 7. Lifecycle and Observability
 
 Startup ensures the monitor, registers the instance, loads a complete catalog,
-opens assignments as `Prepared`, validates manifests, replays durable tails,
-reports readiness, and serves only after installing a matching grant. Shutdown
+reopens each assignment's exact tree and stream manifests as `Prepared`, replays
+WAL from the published offset through the durable tail, reports readiness, and
+serves only after installing a matching grant. Shutdown
 atomically stops new admission and clears authority; already admitted R142
 operations retain handles and finish before bounded checkpoint/drain work.
 
@@ -137,8 +140,8 @@ generation.
 
 ## Open Issues
 
-- Production startup still needs to construct native trees and activate
-  prepared children before real-process restart coverage.
+- Real-process restart coverage still needs to exercise production partition
+  recovery and prepared-child activation against live chunk services.
 - Group-0 adapters remain for transition storage, generation retention and
   reclamation, serving-grant publication, and stream-binding authorization.
 - The generic kv-server supervisor still needs durable descriptor watching,

@@ -32,6 +32,8 @@ fn catalog() -> (CatalogHead, Vec<CatalogPage>) {
             tree_id: id,
             tree_manifest: id,
             stream_name: StreamName { high: 2, low: id },
+            stream_manifest_generation: 1,
+            replay_offset: 0,
             applied_seq: 0,
         },
         transition_id: None,

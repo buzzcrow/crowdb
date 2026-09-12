@@ -43,6 +43,13 @@ pub trait PartitionTree: Send + Sync {
         std::sync::Arc<dyn PartitionTree>,
         crowdb_tree_ffi::RangeRebuildStats,
     )>;
+    /// Returns the currently opened durable `(manifest, applied sequence)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed tree read error when durable snapshot state is
+    /// unavailable or corrupt.
+    fn checkpoint_state(&self) -> Result<(u64, u64)>;
     fn last_applied_seq(&self) -> u64;
     /// Returns chunk-backend counters, or `None` for another backend.
     ///
@@ -297,6 +304,10 @@ impl PartitionTree for CrowdbPartitionTree {
 
     fn last_applied_seq(&self) -> u64 {
         self.tree.stats().contiguous_slot
+    }
+
+    fn checkpoint_state(&self) -> Result<(u64, u64)> {
+        self.tree.snapshot_state().map_err(map_tree_read_error)
     }
 
     fn chunk_stats(&self) -> Result<Option<crowdb_tree_ffi::ChunkPageStoreStats>> {

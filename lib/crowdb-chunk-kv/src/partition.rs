@@ -293,6 +293,61 @@ impl Partition {
         tree: Arc<dyn PartitionTree>,
         journal: Arc<dyn PartitionJournal>,
     ) -> Result<Self> {
+        Self::recover_assignment(
+            partition_id,
+            range,
+            ownership_epoch,
+            checkpoint,
+            config,
+            tree,
+            journal,
+            PartitionLifecycle::Serving,
+        )
+        .await
+    }
+
+    /// Replays a durable assignment but keeps it fenced in `Prepared` state.
+    ///
+    /// The owning server must call [`Self::activate_recovered`] only after it
+    /// validates matching external serving authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same identity, frontier, replay, and storage errors as
+    /// [`Self::recover`].
+    pub async fn recover_prepared_assignment(
+        partition_id: PartitionId,
+        range: PartitionRange,
+        ownership_epoch: u64,
+        checkpoint: Checkpoint,
+        config: PartitionConfig,
+        tree: Arc<dyn PartitionTree>,
+        journal: Arc<dyn PartitionJournal>,
+    ) -> Result<Self> {
+        Self::recover_assignment(
+            partition_id,
+            range,
+            ownership_epoch,
+            checkpoint,
+            config,
+            tree,
+            journal,
+            PartitionLifecycle::Prepared,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn recover_assignment(
+        partition_id: PartitionId,
+        range: PartitionRange,
+        ownership_epoch: u64,
+        checkpoint: Checkpoint,
+        config: PartitionConfig,
+        tree: Arc<dyn PartitionTree>,
+        journal: Arc<dyn PartitionJournal>,
+        initial_lifecycle: PartitionLifecycle,
+    ) -> Result<Self> {
         range.validate()?;
         config.validate()?;
         if ownership_epoch == 0
@@ -306,9 +361,9 @@ impl Partition {
                 "checkpoint identity or epoch is invalid".into(),
             ));
         }
-        if tree.last_applied_seq() != checkpoint.applied_seq {
+        if tree.checkpoint_state()? != (checkpoint.tree_manifest, checkpoint.applied_seq) {
             return Err(ChunkKvError::TreeCorruption(
-                "tree frontier differs from checkpoint".into(),
+                "tree root or frontier differs from checkpoint".into(),
             ));
         }
         let seed = replay_suffix(
@@ -328,7 +383,7 @@ impl Partition {
             tree,
             journal,
             seed,
-            PartitionLifecycle::Serving,
+            initial_lifecycle,
             None,
         )
     }
@@ -350,6 +405,63 @@ impl Partition {
         page_store: Arc<crowdb_tree_ffi::PageStore>,
         stream: ChunkStream,
     ) -> Result<Self> {
+        Self::recover_native_assignment(
+            partition_id,
+            range,
+            ownership_epoch,
+            checkpoint,
+            config,
+            tree_config,
+            page_store,
+            stream,
+            PartitionLifecycle::Serving,
+        )
+        .await
+    }
+
+    /// Reopens native storage, replays WAL, and remains `Prepared` until an
+    /// exact external authority proof activates the assignment.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed tree-open, checkpoint, or WAL recovery error.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn recover_native_prepared_assignment(
+        partition_id: PartitionId,
+        range: PartitionRange,
+        ownership_epoch: u64,
+        checkpoint: Checkpoint,
+        config: PartitionConfig,
+        tree_config: crowdb_tree_ffi::Config,
+        page_store: Arc<crowdb_tree_ffi::PageStore>,
+        stream: ChunkStream,
+    ) -> Result<Self> {
+        Self::recover_native_assignment(
+            partition_id,
+            range,
+            ownership_epoch,
+            checkpoint,
+            config,
+            tree_config,
+            page_store,
+            stream,
+            PartitionLifecycle::Prepared,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn recover_native_assignment(
+        partition_id: PartitionId,
+        range: PartitionRange,
+        ownership_epoch: u64,
+        checkpoint: Checkpoint,
+        config: PartitionConfig,
+        tree_config: crowdb_tree_ffi::Config,
+        page_store: Arc<crowdb_tree_ffi::PageStore>,
+        stream: ChunkStream,
+        initial_lifecycle: PartitionLifecycle,
+    ) -> Result<Self> {
         range.validate()?;
         config.validate()?;
         if checkpoint.stream_name != stream.stream_name() {
@@ -359,7 +471,7 @@ impl Partition {
         }
         let (tree, journal) =
             native_storage_parts(checkpoint.tree_id, &range, tree_config, page_store, stream)?;
-        Self::recover(
+        Self::recover_assignment(
             partition_id,
             range,
             ownership_epoch,
@@ -367,6 +479,7 @@ impl Partition {
             config,
             tree,
             journal,
+            initial_lifecycle,
         )
         .await
     }
@@ -1159,6 +1272,36 @@ impl Partition {
             )
             .map_err(|observed| read_state_error(lifecycle_from_code(observed)))?;
         Ok(())
+    }
+
+    /// Activates a replayed assignment after its owner validates external
+    /// catalog and lease authority for the exact epoch.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stale-epoch or lifecycle error. Split children must continue
+    /// through [`Self::activate_prepared`] with their catalog commit proof.
+    pub fn activate_recovered(&self, ownership_epoch: u64) -> Result<()> {
+        self.validate_epoch(ownership_epoch)?;
+        if self.prepared_artifact.is_some() {
+            return Err(ChunkKvError::InvalidRequest(
+                "prepared split child requires a split commit proof".into(),
+            ));
+        }
+        match self.lifecycle() {
+            PartitionLifecycle::Serving => Ok(()),
+            PartitionLifecycle::Prepared => self
+                .lifecycle
+                .compare_exchange(
+                    lifecycle_code(PartitionLifecycle::Prepared),
+                    lifecycle_code(PartitionLifecycle::Serving),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .map(|_| ())
+                .map_err(|observed| read_state_error(lifecycle_from_code(observed))),
+            state => Err(read_state_error(state)),
+        }
     }
 
     /// Resumes the parent only after authoritative proof of non-publication.

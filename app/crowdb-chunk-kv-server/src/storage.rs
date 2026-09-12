@@ -7,8 +7,10 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
-use crowdb_chunk_stream::{ChunkStream, ProductionStreamRuntime, StreamConfig, StreamName};
+use crowdb_chunk_kv::{Checkpoint, Partition, PartitionConfig, PartitionId, PartitionRange};
+use crowdb_chunk_stream::{ChunkStream, ProductionStreamRuntime, StreamConfig, StreamName, StreamRegistry};
 use crowdb_kv_client::{BatchOp, ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_protocol::chunk_kv::CatalogEntry;
 use crowdb_tree_ffi::{
     ChunkPageStoreOptions, ChunkRootCatalog, ChunkTransport, OwnedChunkRpcDiskRoute,
     OwnedChunkRpcTransportOptions, PageStore, RootCatalogObject, RootCatalogStore,
@@ -25,6 +27,8 @@ pub enum StorageRuntimeError {
     Stream(String),
     #[error("failed to configure native tree storage: {0}")]
     Tree(String),
+    #[error("failed to recover chunk KV partition: {0}")]
+    Partition(String),
 }
 
 /// Process-wide production clients shared by every hosted partition stream.
@@ -214,6 +218,63 @@ impl ChunkKvStorage {
             .open(stream_name, self.metadata_store_id, writer_epoch)
             .await
             .map_err(|error| StorageRuntimeError::Stream(error.to_string()))
+    }
+
+    /// Reopens an assigned tree root and WAL, replays through the durable tail,
+    /// and returns a partition fenced in `Prepared` state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stream binding is absent, either durable
+    /// artifact cannot be reopened exactly, or WAL replay fails.
+    pub async fn recover_partition(&self, entry: &CatalogEntry) -> Result<Partition, StorageRuntimeError> {
+        let stream_name = entry.artifact.stream_name;
+        let binding = self
+            .streams
+            .registry()
+            .load(stream_name)
+            .await
+            .map_err(|error| StorageRuntimeError::Stream(error.to_string()))?
+            .ok_or_else(|| StorageRuntimeError::Stream("assigned stream binding does not exist".into()))?;
+        let stream = self.open_stream(stream_name, entry.owner_epoch).await?;
+        let page_store = self
+            .open_durable_tree_page_store(
+                ChunkPageStoreOptions {
+                    tree_id: entry.artifact.tree_id,
+                    owner_epoch: entry.owner_epoch,
+                    pack_bytes: 0,
+                    iu_size: 0,
+                    max_concurrent_packs: 0,
+                    materialization_bytes_per_pass: 0,
+                },
+                binding.metadata_group_id,
+            )
+            .await?;
+        Partition::recover_native_prepared_assignment(
+            PartitionId {
+                high: entry.partition_id.high,
+                low: entry.partition_id.low,
+            },
+            PartitionRange {
+                start: Some(entry.range.start.clone()),
+                end: entry.range.end.clone(),
+            },
+            entry.owner_epoch,
+            Checkpoint {
+                tree_id: entry.artifact.tree_id,
+                tree_manifest: entry.artifact.tree_manifest,
+                applied_seq: entry.artifact.applied_seq,
+                stream_name,
+                stream_manifest_generation: entry.artifact.stream_manifest_generation,
+                replay_offset: entry.artifact.replay_offset,
+            },
+            PartitionConfig::default(),
+            crowdb_tree_ffi::Config::default(),
+            page_store,
+            stream,
+        )
+        .await
+        .map_err(|error| StorageRuntimeError::Partition(error.to_string()))
     }
 }
 

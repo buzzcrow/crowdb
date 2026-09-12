@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use crowdb_chunk_kv::memory::MemoryPartitionTree;
 use crowdb_chunk_kv::{
-    Partition, PartitionConfig, PartitionId, PartitionJournal, PartitionRange, PartitionTree,
-    StreamPartitionJournal,
+    Checkpoint, Partition, PartitionConfig, PartitionId, PartitionJournal, PartitionLifecycle,
+    PartitionRange, PartitionTree, StreamPartitionJournal,
 };
 use crowdb_chunk_kv_server::{ChunkKvService, ServerLifecycle};
 use crowdb_chunk_stream::memory::MemoryStreamStore;
@@ -108,6 +108,8 @@ async fn fixture() -> (ChunkKvService, Partition) {
                 tree_id: 1,
                 tree_manifest: 1,
                 stream_name,
+                stream_manifest_generation: 1,
+                replay_offset: 0,
                 applied_seq: 0,
             },
             transition_id: None,
@@ -149,6 +151,104 @@ async fn fixture() -> (ChunkKvService, Partition) {
         .install(grant, &policy(), 1_000, 50_000)
         .unwrap();
     (service, partition)
+}
+
+#[tokio::test]
+async fn matching_grant_activation_promotes_a_replayed_partition() {
+    let stream_name = StreamName { high: 30, low: 32 };
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let stream = ChunkStream::create(
+        StreamBinding {
+            stream_name,
+            metadata_group_id: 7,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("chunk-kv-partition".into()),
+        },
+        EPOCH,
+        StreamConfig::default(),
+        store.clone() as Arc<dyn StreamRegistry>,
+        store.clone() as Arc<dyn StreamMetadataStore>,
+        store as Arc<dyn StreamChunkStore>,
+    )
+    .await
+    .unwrap();
+    let partition = Partition::recover_prepared_assignment(
+        PartitionId { high: 1, low: 3 },
+        PartitionRange {
+            start: Some(Vec::new()),
+            end: None,
+        },
+        EPOCH,
+        Checkpoint {
+            tree_id: 1,
+            tree_manifest: 0,
+            applied_seq: 0,
+            stream_name,
+            stream_manifest_generation: 1,
+            replay_offset: 0,
+        },
+        PartitionConfig::default(),
+        Arc::new(MemoryPartitionTree::default()),
+        Arc::new(StreamPartitionJournal::new(stream, stream_name)),
+    )
+    .await
+    .unwrap();
+    let service = ChunkKvService::new(INSTANCE_ID, 4).unwrap();
+    let mut page = CatalogPage {
+        generation: 1,
+        page_index: 0,
+        entries: vec![CatalogEntry {
+            partition_id: Id128 { high: 1, low: 3 },
+            range: KeyRange {
+                start: Vec::new(),
+                end: None,
+            },
+            owner: OwnerDescriptor {
+                instance_id: INSTANCE_ID,
+                rpc_endpoint: "127.0.0.1:9900".into(),
+            },
+            owner_epoch: EPOCH,
+            state: CatalogPartitionState::Serving,
+            artifact: PartitionArtifact {
+                tree_id: 1,
+                tree_manifest: 1,
+                stream_name,
+                stream_manifest_generation: 1,
+                replay_offset: 0,
+                applied_seq: 0,
+            },
+            transition_id: None,
+        }],
+        checksum: [0; 32],
+    };
+    page.seal().unwrap();
+    let mut head = CatalogHead {
+        generation: 1,
+        previous_generation: None,
+        pages: vec![CatalogPageRef {
+            page_generation: 1,
+            page_index: 0,
+            first_key: Vec::new(),
+            page_checksum: page.checksum,
+        }],
+        checksum: [0; 32],
+    };
+    head.seal().unwrap();
+    service.install_catalog(&head, &[page]).unwrap();
+    service.install_partition(&partition).unwrap();
+    assert_eq!(partition.snapshot().lifecycle, PartitionLifecycle::Prepared);
+    assert!(matches!(
+        service.activate_recovered_partition(Id128 { high: 1, low: 3 }, EPOCH - 1),
+        Err(crowdb_chunk_kv::ChunkKvError::NotServing(_))
+    ));
+    assert_eq!(partition.snapshot().lifecycle, PartitionLifecycle::Prepared);
+
+    service
+        .activate_recovered_partition(Id128 { high: 1, low: 3 }, EPOCH)
+        .unwrap();
+
+    assert_eq!(partition.snapshot().lifecycle, PartitionLifecycle::Serving);
 }
 
 #[tokio::test]

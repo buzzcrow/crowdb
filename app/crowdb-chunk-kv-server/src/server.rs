@@ -12,9 +12,10 @@ use crowdb_chunk_kv::{
     ValueRevision,
 };
 use crowdb_protocol::chunk_kv::{
-    CatalogEntry, CatalogHead, CatalogPage, ChunkKvResponse, ChunkKvRpcErrorCode, Id128, OperationResult,
-    OwnerHint, PointOperation, PointRequest, RequestRouting, RpcCompareCondition, RpcFailure,
-    RpcJournalPosition, RpcValue, ScanContinuation, ScanDirection, ScanRequest, SeekKind, SeekRequest,
+    CatalogEntry, CatalogHead, CatalogPage, CatalogPartitionState, ChunkKvResponse, ChunkKvRpcErrorCode,
+    Id128, OperationResult, OwnerHint, PointOperation, PointRequest, RequestRouting, RpcCompareCondition,
+    RpcFailure, RpcJournalPosition, RpcValue, ScanContinuation, ScanDirection, ScanRequest, SeekKind,
+    SeekRequest,
 };
 use crowdb_protocol::common::ChunkKvExtra;
 
@@ -283,6 +284,37 @@ impl ChunkKvService {
             next.remove(&partition_id);
             Arc::new(next)
         });
+    }
+
+    /// Activates one replayed assignment after a matching catalog and serving
+    /// grant have been installed by the process lifecycle.
+    ///
+    /// # Errors
+    ///
+    /// Returns `OutOfRange` when the partition is not hosted, or the precise
+    /// partition epoch/lifecycle error when activation is unsafe.
+    pub fn activate_recovered_partition(
+        &self,
+        partition_id: Id128,
+        owner_epoch: u64,
+    ) -> Result<(), ChunkKvError> {
+        let catalog = self.catalog.load();
+        let entry = catalog
+            .entry_for_partition(partition_id)
+            .ok_or(ChunkKvError::OutOfRange)?;
+        if entry.owner.instance_id != self.instance_id
+            || entry.owner_epoch != owner_epoch
+            || entry.state != CatalogPartitionState::Serving
+        {
+            return Err(ChunkKvError::NotServing(
+                "catalog does not publish this serving assignment".into(),
+            ));
+        }
+        self.partitions
+            .load()
+            .get(&partition_id)
+            .ok_or(ChunkKvError::OutOfRange)?
+            .activate_recovered(owner_epoch)
     }
 
     /// Handles a point request directly; it never proxies to another owner.

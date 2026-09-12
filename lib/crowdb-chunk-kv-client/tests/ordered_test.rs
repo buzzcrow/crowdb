@@ -43,6 +43,8 @@ fn catalog(generation: u64, boundaries: &[Boundary<'_>]) -> (CatalogHead, Vec<Ca
                     high: generation,
                     low: *owner,
                 },
+                stream_manifest_generation: 1,
+                replay_offset: 0,
                 applied_seq: 0,
             },
             transition_id: None,

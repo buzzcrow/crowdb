@@ -25,6 +25,8 @@ fn entry(id: u64, start: &[u8], end: Option<&[u8]>, epoch: u64) -> CatalogEntry 
             tree_id: id,
             tree_manifest: 10 + id,
             stream_name: StreamName { high: 2, low: id },
+            stream_manifest_generation: 1,
+            replay_offset: 0,
             applied_seq: 20,
         },
         transition_id: None,

@@ -53,6 +53,8 @@ pub struct PartitionArtifact {
     pub tree_id: u64,
     pub tree_manifest: u64,
     pub stream_name: StreamName,
+    pub stream_manifest_generation: u64,
+    pub replay_offset: u64,
     pub applied_seq: u64,
 }
 
@@ -832,7 +834,9 @@ fn validate_entry(entry: &CatalogEntry) -> Result<(), ChunkKvProtocolError> {
         || entry.owner.rpc_endpoint.is_empty()
         || entry.owner_epoch == 0
         || entry.artifact.tree_id == 0
+        || entry.artifact.tree_manifest == 0
         || entry.artifact.stream_name == StreamName::default()
+        || entry.artifact.stream_manifest_generation == 0
         || entry
             .range
             .end

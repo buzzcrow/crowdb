@@ -32,6 +32,8 @@ fn page(generation: u64, owner_epoch: u64) -> CatalogPage {
                 tree_id: 1,
                 tree_manifest: 7,
                 stream_name: StreamName { high: 2, low: 3 },
+                stream_manifest_generation: 1,
+                replay_offset: 0,
                 applied_seq: 11,
             },
             transition_id: None,

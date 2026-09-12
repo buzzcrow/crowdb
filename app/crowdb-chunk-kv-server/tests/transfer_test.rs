@@ -30,6 +30,8 @@ fn transition() -> TransferTransition {
             tree_id: 1,
             tree_manifest: 9,
             stream_name: StreamName { high: 10, low: 11 },
+            stream_manifest_generation: 1,
+            replay_offset: 0,
             applied_seq: 12,
         },
         old_grant_expires_at_ms: 20_000,

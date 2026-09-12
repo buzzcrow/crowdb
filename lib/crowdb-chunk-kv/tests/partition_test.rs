@@ -785,7 +785,7 @@ async fn recovery_replays_recorded_results_and_restores_deduplication() {
     .await
     .unwrap();
     let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
-    let recovered = Partition::recover(
+    let recovered = Partition::recover_prepared_assignment(
         PartitionId { high: 6, low: 6 },
         PartitionRange {
             start: Some(b"a".to_vec()),
@@ -808,6 +808,21 @@ async fn recovery_replays_recorded_results_and_restores_deduplication() {
     .unwrap();
     assert_eq!(recovered.snapshot().applied_seq, 2);
     assert_eq!(
+        recovered.snapshot().lifecycle,
+        crowdb_chunk_kv::PartitionLifecycle::Prepared
+    );
+    assert!(matches!(
+        recovered.get(9, b"key", None).await,
+        Err(ChunkKvError::NotServing(_))
+    ));
+    assert!(matches!(
+        recovered
+            .mutate(9, request(52), MutationOperation::Delete { key: b"key".to_vec() })
+            .await,
+        Err(ChunkKvError::NotServing(_))
+    ));
+    recovered.activate_recovered(9).unwrap();
+    assert_eq!(
         recovered.get(9, b"key", None).await.unwrap().unwrap().value,
         b"value"
     );
@@ -817,6 +832,57 @@ async fn recovery_replays_recorded_results_and_restores_deduplication() {
         original
     );
     assert_eq!(store.chunk_write_count(), writes);
+}
+
+#[tokio::test]
+async fn recovery_rejects_a_tree_root_other_than_the_checkpoint() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let stream_name = StreamName { high: 6, low: 7 };
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        stream_name,
+        9,
+        PartitionConfig::default(),
+    )
+    .await;
+    drop(partition);
+
+    let registry: Arc<dyn StreamRegistry> = store.clone();
+    let metadata: Arc<dyn StreamMetadataStore> = store.clone();
+    let chunks: Arc<dyn StreamChunkStore> = store.clone();
+    let stream = ChunkStream::open(
+        stream_name,
+        9,
+        StreamConfig::default(),
+        registry,
+        metadata,
+        chunks,
+    )
+    .await
+    .unwrap();
+    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
+    let result = Partition::recover_prepared_assignment(
+        PartitionId { high: 6, low: 7 },
+        PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        9,
+        Checkpoint {
+            tree_id: 1,
+            tree_manifest: 1,
+            applied_seq: 0,
+            stream_name,
+            stream_manifest_generation: 1,
+            replay_offset: 0,
+        },
+        PartitionConfig::default(),
+        Arc::new(MemoryPartitionTree::default()),
+        journal,
+    )
+    .await;
+    assert!(matches!(result, Err(ChunkKvError::TreeCorruption(_))));
 }
 
 #[tokio::test]
