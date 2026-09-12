@@ -27,6 +27,7 @@ fn transition() -> TransferTransition {
         },
         target_epoch: 8,
         artifact: PartitionArtifact {
+            tree_id: 1,
             tree_manifest: 9,
             stream_name: StreamName { high: 10, low: 11 },
             applied_seq: 12,

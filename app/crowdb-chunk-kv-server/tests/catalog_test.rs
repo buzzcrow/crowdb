@@ -29,6 +29,7 @@ fn page(generation: u64, owner_epoch: u64) -> CatalogPage {
             owner_epoch,
             state: CatalogPartitionState::Serving,
             artifact: PartitionArtifact {
+                tree_id: 1,
                 tree_manifest: 7,
                 stream_name: StreamName { high: 2, low: 3 },
                 applied_seq: 11,

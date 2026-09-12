@@ -12,14 +12,34 @@ use tokio::sync::RwLock;
 
 use crate::{MutationOperation, PartitionTree, Result, ScanEntry, ValueRevision};
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MemoryPartitionTree {
+    tree_id: u64,
     values: RwLock<BTreeMap<Vec<u8>, ValueRevision>>,
     last_applied: AtomicU64,
     fail_next_apply: AtomicBool,
 }
 
+impl Default for MemoryPartitionTree {
+    fn default() -> Self {
+        Self {
+            tree_id: 1,
+            values: RwLock::default(),
+            last_applied: AtomicU64::new(0),
+            fail_next_apply: AtomicBool::new(false),
+        }
+    }
+}
+
 impl MemoryPartitionTree {
+    #[must_use]
+    pub fn with_tree_id(tree_id: u64) -> Self {
+        Self {
+            tree_id,
+            ..Self::default()
+        }
+    }
+
     pub fn fail_next_apply(&self) {
         self.fail_next_apply.store(true, Ordering::Release);
     }
@@ -27,6 +47,10 @@ impl MemoryPartitionTree {
 
 #[async_trait]
 impl PartitionTree for MemoryPartitionTree {
+    fn tree_id(&self) -> u64 {
+        self.tree_id
+    }
+
     async fn get(&self, key: &[u8]) -> Result<Option<ValueRevision>> {
         Ok(self.values.read().await.get(key).cloned())
     }

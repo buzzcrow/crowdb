@@ -50,6 +50,7 @@ pub struct OwnerDescriptor {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartitionArtifact {
+    pub tree_id: u64,
     pub tree_manifest: u64,
     pub stream_name: StreamName,
     pub applied_seq: u64,
@@ -358,6 +359,7 @@ impl TransferTransition {
             && !self.target.rpc_endpoint.is_empty()
             && self.source_epoch != 0
             && self.target_epoch > self.source_epoch
+            && self.artifact.tree_id != 0
             && self.artifact.stream_name != StreamName::default()
             && self
                 .range
@@ -829,6 +831,7 @@ fn validate_entry(entry: &CatalogEntry) -> Result<(), ChunkKvProtocolError> {
         || entry.owner.instance_id == 0
         || entry.owner.rpc_endpoint.is_empty()
         || entry.owner_epoch == 0
+        || entry.artifact.tree_id == 0
         || entry.artifact.stream_name == StreamName::default()
         || entry
             .range

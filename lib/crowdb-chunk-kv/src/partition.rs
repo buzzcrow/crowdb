@@ -209,9 +209,9 @@ impl Partition {
     ) -> Result<Self> {
         range.validate()?;
         config.validate()?;
-        if ownership_epoch == 0 {
+        if ownership_epoch == 0 || tree.tree_id() == 0 {
             return Err(ChunkKvError::InvalidRequest(
-                "ownership epoch must be nonzero".into(),
+                "ownership epoch and tree identity must be nonzero".into(),
             ));
         }
         let applied = tree.last_applied_seq();
@@ -253,7 +253,11 @@ impl Partition {
     ) -> Result<Self> {
         range.validate()?;
         config.validate()?;
-        if ownership_epoch == 0 || checkpoint.stream_name != journal.stream_name() {
+        if ownership_epoch == 0
+            || checkpoint.tree_id == 0
+            || checkpoint.stream_name != journal.stream_name()
+            || checkpoint.tree_id != tree.tree_id()
+        {
             return Err(ChunkKvError::InvalidRequest(
                 "checkpoint identity or epoch is invalid".into(),
             ));
@@ -299,8 +303,11 @@ impl Partition {
         journal: Arc<dyn PartitionJournal>,
     ) -> Result<Self> {
         if artifact.ownership_epoch == 0
+            || artifact.tree_id == 0
             || artifact.stream_name != checkpoint.stream_name
             || artifact.stream_name != journal.stream_name()
+            || artifact.tree_id != checkpoint.tree_id
+            || artifact.tree_id != tree.tree_id()
             || artifact.tree_manifest != checkpoint.tree_manifest
             || artifact.applied_seq != checkpoint.applied_seq
         {
@@ -1074,6 +1081,7 @@ impl Partition {
         }
         self.metrics.checkpoint();
         Ok(Checkpoint {
+            tree_id: self.tree.tree_id(),
             tree_manifest,
             applied_seq,
             stream_name: self.journal.stream_name(),
@@ -1176,6 +1184,9 @@ fn validate_split_artifact(plan: &SplitPlan, artifact: &SplitArtifact, cutover_s
         || artifact.right.ownership_epoch != plan.right.ownership_epoch
         || artifact.left.applied_seq != cutover_seq
         || artifact.right.applied_seq != cutover_seq
+        || artifact.left.tree_id == 0
+        || artifact.right.tree_id == 0
+        || artifact.left.tree_id == artifact.right.tree_id
         || artifact.left.stream_name == artifact.right.stream_name
     {
         return Err(ChunkKvError::SplitRetry(

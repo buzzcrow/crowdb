@@ -29,6 +29,7 @@ fn catalog() -> (CatalogHead, Vec<CatalogPage>) {
         owner_epoch: id,
         state: CatalogPartitionState::Serving,
         artifact: PartitionArtifact {
+            tree_id: id,
             tree_manifest: id,
             stream_name: StreamName { high: 2, low: id },
             applied_seq: 0,

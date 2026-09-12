@@ -80,9 +80,13 @@ acknowledged cursor is the recovery upper bound, so identity validation never
 promotes residual bytes. Recovery never reevaluates a conditional result. A
 timestamp is omitted; any future timestamp is diagnostic-only.
 
-A checkpoint contains the tree manifest identifier, applied mutation
-sequence, stream name, and replay offset. The replay offset is the oldest WAL
-record needed by retained retry results, rather than simply the current tail.
+A checkpoint contains the explicit 64-bit R140 tree identity, tree manifest
+identifier, applied mutation sequence, stream name, and replay offset. The
+tree identity is allocated and persisted; it is never derived by truncating
+the partition's 128-bit identity. Recovery rejects a checkpoint or prepared
+child whose tree identity differs from the injected tree. The replay offset is
+the oldest WAL record needed by retained retry results, rather than simply the
+current tail.
 Recovery reads those pre-checkpoint frames to rebuild the retry cache without
 reapplying them, then applies only the suffix above the checkpoint sequence.
 WAL trim cannot cross the checkpoint's replay offset. Requests below the

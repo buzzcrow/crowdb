@@ -58,6 +58,7 @@ fn split_artifact(plan: &SplitPlan, cutover_seq: u64) -> SplitArtifact {
         partition_id: spec.partition_id,
         range: spec.range.clone(),
         ownership_epoch: spec.ownership_epoch,
+        tree_id: 100 + low,
         tree_manifest: cutover_seq + low,
         stream_name: StreamName { high: 90, low },
         applied_seq: cutover_seq,
@@ -116,6 +117,27 @@ async fn partition(
         journal,
     )
     .unwrap()
+}
+
+async fn assert_prepared_tree_identity_mismatch(
+    artifact: &PreparedChildArtifact,
+    journal: Arc<dyn PartitionJournal>,
+) {
+    let result = Partition::recover_prepared(
+        artifact.clone(),
+        Checkpoint {
+            tree_id: artifact.tree_id + 1,
+            tree_manifest: artifact.tree_manifest,
+            applied_seq: artifact.applied_seq,
+            stream_name: artifact.stream_name,
+            replay_offset: 0,
+        },
+        PartitionConfig::default(),
+        Arc::new(MemoryPartitionTree::with_tree_id(artifact.tree_id)),
+        journal,
+    )
+    .await;
+    assert!(matches!(result, Err(ChunkKvError::InvalidRequest(_))));
 }
 
 #[tokio::test]
@@ -569,6 +591,7 @@ async fn recovery_replays_recorded_results_and_restores_deduplication() {
         },
         9,
         Checkpoint {
+            tree_id: 1,
             tree_manifest: 0,
             applied_seq: 0,
             stream_name,
@@ -649,6 +672,7 @@ async fn recovery_rejects_a_frame_bound_to_another_physical_chunk() {
         },
         9,
         Checkpoint {
+            tree_id: 1,
             tree_manifest: 0,
             applied_seq: 0,
             stream_name,
@@ -988,13 +1012,16 @@ async fn prepared_child_serves_only_after_exact_catalog_proof() {
             end: Some(b"m".to_vec()),
         },
         ownership_epoch: 20,
+        tree_id: 1,
         tree_manifest: 0,
         stream_name,
         applied_seq: 0,
     };
+    assert_prepared_tree_identity_mismatch(&artifact, Arc::clone(&journal)).await;
     let prepared = Partition::recover_prepared(
         artifact.clone(),
         Checkpoint {
+            tree_id: 1,
             tree_manifest: 0,
             applied_seq: 0,
             stream_name,
@@ -1022,6 +1049,7 @@ async fn prepared_child_serves_only_after_exact_catalog_proof() {
             end: Some(b"z".to_vec()),
         },
         ownership_epoch: 20,
+        tree_id: 2,
         tree_manifest: 0,
         stream_name: StreamName { high: 12, low: 13 },
         applied_seq: 0,

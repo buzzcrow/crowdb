@@ -24,7 +24,9 @@ whose ordered journal is R141 and whose durable tree is R140.
 - [x] Add private journal and tree contracts plus in-memory `test-util`
   implementations; do not expose a raw R141 stream from the partition API.
 - [~] Add production adapters for R140 native tree construction and the R141
-  stream registry, metadata store, and chunk store. Files:
+  stream registry, metadata store, and chunk store. Checkpoints and catalog
+  artifacts now carry and validate an explicit R140 tree ID; process transport
+  and durable root-catalog assembly remain. Files:
   `lib/crowdb-chunk-kv/src/`, `lib/crowdb-tree-ffi/`,
   `lib/crowdb-chunk-stream/`.
 

@@ -80,8 +80,9 @@ bounded, and scan intervals are clipped to the owning partition.
 
 ## 5. Checkpoint and Recovery
 
-A checkpoint atomically identifies the tree manifest, applied mutation
-sequence, stream name, and replay offset. Its invariants are
+A checkpoint atomically identifies the explicit R140 tree ID, tree manifest,
+applied mutation sequence, stream name, and replay offset. The tree ID is
+persisted rather than derived from the wider partition ID. Its invariants are
 `checkpoint_seq <= applied_seq <= journal_durable_seq`. Publishing a new tree
 manifest precedes WAL trim, and GC respects live checkpoint, transfer, split,
 and request-result retention pins.

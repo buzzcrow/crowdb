@@ -37,6 +37,7 @@ fn catalog(generation: u64, boundaries: &[Boundary<'_>]) -> (CatalogHead, Vec<Ca
             owner_epoch: generation,
             state: CatalogPartitionState::Serving,
             artifact: PartitionArtifact {
+                tree_id: generation,
                 tree_manifest: generation,
                 stream_name: StreamName {
                     high: generation,

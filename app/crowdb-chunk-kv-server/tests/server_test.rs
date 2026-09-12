@@ -105,6 +105,7 @@ async fn fixture() -> (ChunkKvService, Partition) {
             owner_epoch: EPOCH,
             state: CatalogPartitionState::Serving,
             artifact: PartitionArtifact {
+                tree_id: 1,
                 tree_manifest: 1,
                 stream_name,
                 applied_seq: 0,

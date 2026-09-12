@@ -7,6 +7,7 @@ use crate::{ChunkKvError, MutationOperation, Result, ScanEntry, ValueRevision};
 
 #[async_trait]
 pub trait PartitionTree: Send + Sync {
+    fn tree_id(&self) -> u64;
     async fn get(&self, key: &[u8]) -> Result<Option<ValueRevision>>;
     async fn scan_forward(
         &self,
@@ -36,18 +37,23 @@ pub trait PartitionTree: Send + Sync {
 }
 
 pub struct CrowdbPartitionTree {
+    tree_id: u64,
     tree: crowdb_tree_ffi::Crowdbtree,
 }
 
 impl CrowdbPartitionTree {
     #[must_use]
-    pub fn new(tree: crowdb_tree_ffi::Crowdbtree) -> Self {
-        Self { tree }
+    pub fn new(tree_id: u64, tree: crowdb_tree_ffi::Crowdbtree) -> Self {
+        Self { tree_id, tree }
     }
 }
 
 #[async_trait]
 impl PartitionTree for CrowdbPartitionTree {
+    fn tree_id(&self) -> u64 {
+        self.tree_id
+    }
+
     async fn get(&self, key: &[u8]) -> Result<Option<ValueRevision>> {
         self.tree
             .get(key)

@@ -22,6 +22,7 @@ fn entry(id: u64, start: &[u8], end: Option<&[u8]>) -> CatalogEntry {
         owner_epoch: 1,
         state: CatalogPartitionState::Serving,
         artifact: PartitionArtifact {
+            tree_id: id,
             tree_manifest: id,
             stream_name: StreamName { high: 2, low: id },
             applied_seq: 0,
