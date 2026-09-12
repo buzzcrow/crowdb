@@ -160,6 +160,10 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
         if (expected_generation == std::numeric_limits<uint64_t>::max()) {
             return Status::resource_exhausted("chunk manifest generation is exhausted");
         }
+        Status active_status = store->refresh_active_chunk();
+        if (!active_status.ok()) {
+            return active_status;
+        }
         manifest                    = std::make_shared<ChunkManifest>();
         manifest->format_version    = kChunkManifestFormat;
         manifest->tree_id           = store->config_.tree_id;

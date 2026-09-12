@@ -6,7 +6,8 @@ use std::sync::Arc;
 use crowdb_chunk_kv::memory::MemoryPartitionTree;
 use crowdb_chunk_kv::{
     Checkpoint, Partition, PartitionConfig, PartitionId, PartitionJournal, PartitionLifecycle,
-    PartitionRange, PartitionTree, StreamPartitionJournal,
+    PartitionRange, PartitionTree, PreparedChildArtifact, SplitArtifact, SplitChild, SplitPlan,
+    StreamPartitionJournal, TransitionId,
 };
 use crowdb_chunk_kv_server::{ChunkKvService, ServerLifecycle};
 use crowdb_chunk_stream::memory::MemoryStreamStore;
@@ -39,6 +40,7 @@ fn policy() -> DomainMonitorDescriptor {
         self_fence_margin_ms: 1_000,
         failure_policy: DomainFailurePolicy::AutomaticSharedStorage,
         balance_policy: "count-first-v1".into(),
+        chunk_kv_range_balance: Some(crowdb_protocol::chunk_kv::ChunkKvRangeBalancePolicy::default()),
     }
 }
 
@@ -217,6 +219,7 @@ async fn matching_grant_activation_promotes_a_replayed_partition() {
         .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&partition))
         .unwrap();
     assert_eq!(partition.snapshot().lifecycle, PartitionLifecycle::Prepared);
+    assert!(!service.registry_observation(1_024, 0).hosted[0].recovering);
     assert!(matches!(
         service.activate_recovered_partition(Id128 { high: 1, low: 3 }, EPOCH - 1),
         Err(crowdb_chunk_kv::ChunkKvError::NotServing(_))
@@ -228,6 +231,110 @@ async fn matching_grant_activation_promotes_a_replayed_partition() {
         .unwrap();
 
     assert_eq!(partition.snapshot().lifecycle, PartitionLifecycle::Serving);
+}
+
+#[tokio::test]
+async fn catalog_cutover_commits_the_exact_fenced_split_parent() {
+    let (service, parent) = fixture().await;
+    let transition_id = TransitionId { high: 8, low: 9 };
+    let left_id = PartitionId { high: 8, low: 10 };
+    let right_id = PartitionId { high: 8, low: 11 };
+    let left_range = PartitionRange {
+        start: Some(Vec::new()),
+        end: Some(b"m".to_vec()),
+    };
+    let right_range = PartitionRange {
+        start: Some(b"m".to_vec()),
+        end: None,
+    };
+    parent
+        .begin_split(SplitPlan {
+            transition_id,
+            parent_id: PartitionId { high: 1, low: 2 },
+            parent_epoch: EPOCH,
+            parent_range: PartitionRange {
+                start: Some(Vec::new()),
+                end: None,
+            },
+            split_key: b"m".to_vec(),
+            left: SplitChild {
+                partition_id: left_id,
+                ownership_epoch: EPOCH + 1,
+                range: left_range.clone(),
+            },
+            right: SplitChild {
+                partition_id: right_id,
+                ownership_epoch: EPOCH + 1,
+                range: right_range.clone(),
+            },
+        })
+        .await
+        .unwrap();
+    parent.fence_split(transition_id).await.unwrap();
+    let cutover_seq = parent.snapshot().applied_seq;
+    let artifact = SplitArtifact {
+        transition_id,
+        parent_id: PartitionId { high: 1, low: 2 },
+        parent_epoch: EPOCH,
+        cutover_seq,
+        left: PreparedChildArtifact {
+            partition_id: left_id,
+            range: left_range,
+            ownership_epoch: EPOCH + 1,
+            tree_id: 81,
+            tree_manifest: 1,
+            stream_name: StreamName { high: 81, low: 1 },
+            applied_seq: cutover_seq,
+        },
+        right: PreparedChildArtifact {
+            partition_id: right_id,
+            range: right_range,
+            ownership_epoch: EPOCH + 1,
+            tree_id: 82,
+            tree_manifest: 1,
+            stream_name: StreamName { high: 82, low: 1 },
+            applied_seq: cutover_seq,
+        },
+    };
+    parent.record_split_artifact(artifact.clone()).await.unwrap();
+    let mut page = ChunkKvRangeCatalogPage {
+        generation: 2,
+        page_index: 0,
+        entries: [&artifact.left, &artifact.right]
+            .into_iter()
+            .map(|child| ChunkKvRangeCatalogEntry {
+                partition_id: Id128 {
+                    high: child.partition_id.high,
+                    low: child.partition_id.low,
+                },
+                range: KeyRange {
+                    start: child.range.start.clone().unwrap_or_default(),
+                    end: child.range.end.clone(),
+                },
+                owner: OwnerDescriptor {
+                    instance_id: INSTANCE_ID,
+                    rpc_endpoint: "127.0.0.1:9900".into(),
+                },
+                owner_epoch: child.ownership_epoch,
+                state: ChunkKvRangeCatalogPartitionState::Serving,
+                artifact: PartitionArtifact {
+                    tree_id: child.tree_id,
+                    stream_name: child.stream_name,
+                },
+                transition_id: Some(Id128 {
+                    high: transition_id.high,
+                    low: transition_id.low,
+                }),
+            })
+            .collect(),
+        checksum: [0; 32],
+    };
+    page.seal().unwrap();
+
+    service.commit_catalog_splits(2, &[page]).await.unwrap();
+
+    assert_eq!(parent.lifecycle(), PartitionLifecycle::Retired);
+    assert_eq!(service.metrics_snapshot().split_commits, 1);
 }
 
 #[tokio::test]

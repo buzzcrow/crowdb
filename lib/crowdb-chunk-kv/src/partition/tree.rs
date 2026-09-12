@@ -151,20 +151,30 @@ impl PartitionTree for CrowdbPartitionTree {
         limit: usize,
         byte_budget: usize,
     ) -> Result<(Vec<ScanEntry>, bool)> {
-        let (entries, truncated) = self
-            .tree
-            .scan_from(
+        let scan = match start_key {
+            Some(start_key) => self.tree.scan_from(
                 b"",
-                start_key.unwrap_or_default(),
-                start_key.is_some() && start_inclusive,
+                start_key,
+                start_inclusive,
                 end_key.unwrap_or_default(),
                 limit,
                 byte_budget,
                 false,
                 0,
                 false,
-            )
-            .map_err(map_tree_read_error)?;
+            ),
+            None => self.tree.scan(
+                b"",
+                b"",
+                end_key.unwrap_or_default(),
+                limit,
+                byte_budget,
+                false,
+                0,
+                false,
+            ),
+        };
+        let (entries, truncated) = scan.map_err(map_tree_read_error)?;
         Ok((
             entries
                 .into_iter()

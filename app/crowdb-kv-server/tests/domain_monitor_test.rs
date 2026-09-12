@@ -16,17 +16,17 @@ use crowdb_kv_server::background::domain_monitor::{
 use crowdb_kv_server::group0_control_plane::Group0ControlPlane;
 use crowdb_kv_server::store_registry::KvStoreRegistry;
 use crowdb_protocol::chunk_kv::{
-    AuthorityReleaseProof, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage,
-    ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState, HostedPartition, Id128, KeyRange,
-    OwnerDescriptor, PartitionArtifact, ServingGrant, TargetReadinessProof, TransferPhase,
-    TransferTransition,
+    AuthorityReleaseProof, ChunkKvRangeBalancePolicy, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead,
+    ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState, HostedPartition,
+    Id128, KeyRange, OwnerDescriptor, PartitionArtifact, ServingGrant, SplitPhase, SplitTransition,
+    TargetReadinessProof, TransferPhase, TransferTransition,
 };
 use crowdb_protocol::chunk_kv::{DomainFailurePolicy, DomainMonitorDescriptor};
 use crowdb_protocol::chunk_stream::StreamName;
-use crowdb_protocol::common::{ChunkKvExtra, InstanceValue, ServiceExtra};
+use crowdb_protocol::common::{ChunkKvExtra, ChunkKvPartitionLoad, InstanceValue, ServiceExtra};
 use crowdb_protocol::key::{
-    ChunkKvRangeCatalogHeadKey, ChunkKvRangeCatalogPageKey, ChunkKvTransferKey, ChunkdbRangeBindingKey,
-    DomainMonitorKey, InstanceKey, ServingGrantKey, TextKey,
+    ChunkKvRangeCatalogHeadKey, ChunkKvRangeCatalogPageKey, ChunkKvSplitKey, ChunkKvTransferKey,
+    ChunkdbRangeBindingKey, DomainMonitorKey, InstanceKey, ServingGrantKey, TextKey,
 };
 
 struct CountingDriver {
@@ -68,6 +68,7 @@ fn descriptor() -> DomainMonitorDescriptor {
         self_fence_margin_ms: 5,
         failure_policy: DomainFailurePolicy::AutomaticSharedStorage,
         balance_policy: "test-v1".into(),
+        chunk_kv_range_balance: None,
     }
 }
 
@@ -300,6 +301,7 @@ async fn chunk_kv_driver_publishes_ready_transfer_then_issues_matching_grant() {
         target: target.clone(),
         target_epoch: 2,
         artifact: artifact.clone(),
+        planned_at_ms: 0,
         old_grant_expires_at_ms: 1,
         phase: TransferPhase::TargetPrepared,
         release_proof: Some(AuthorityReleaseProof::ExplicitFence {
@@ -469,6 +471,132 @@ async fn chunk_kv_driver_plans_dead_owner_recovery_once_and_waits_for_target() {
             .generation,
         1
     );
+}
+
+#[allow(clippy::too_many_lines)]
+async fn assert_chunk_kv_split_plan(target_partitions_per_owner: u32, target_partition_bytes: u64) {
+    use crowdb_kv_server::background::domain_monitor::ChunkKvRangeMonitorDriver;
+
+    let (_, store) = registry_with_group_zero(PxLocalReplicaRole::Leader);
+    let control = Group0ControlPlane::acquire(&store).await.unwrap();
+    let partition_id = Id128 { high: 31, low: 32 };
+    let mut page = ChunkKvRangeCatalogPage {
+        generation: 1,
+        page_index: 0,
+        entries: vec![ChunkKvRangeCatalogEntry {
+            partition_id,
+            range: KeyRange {
+                start: Vec::new(),
+                end: None,
+            },
+            owner: OwnerDescriptor {
+                instance_id: 1,
+                rpc_endpoint: "127.0.0.1:17001".into(),
+            },
+            owner_epoch: 1,
+            state: ChunkKvRangeCatalogPartitionState::Serving,
+            artifact: PartitionArtifact {
+                tree_id: 33,
+                stream_name: StreamName { high: 34, low: 35 },
+            },
+            transition_id: None,
+        }],
+        checksum: [0; 32],
+    };
+    page.seal().unwrap();
+    let mut head = ChunkKvRangeCatalogHead {
+        generation: 1,
+        previous_generation: None,
+        pages: vec![ChunkKvRangeCatalogPageRef {
+            page_generation: 1,
+            page_index: 0,
+            first_key: Vec::new(),
+            page_checksum: page.checksum,
+        }],
+        checksum: [0; 32],
+    };
+    head.seal().unwrap();
+    put_json(
+        &control,
+        ChunkKvRangeCatalogPageKey {
+            generation: 1,
+            page_index: 0,
+        }
+        .to_path(),
+        &page,
+    )
+    .await;
+    put_json(&control, ChunkKvRangeCatalogHeadKey.to_path(), &head).await;
+    put_json(
+        &control,
+        InstanceKey {
+            service: "chunk-kv".into(),
+            instance_id: 1,
+        }
+        .to_path(),
+        &InstanceValue {
+            instance_id: 1,
+            rpc_endpoint: "127.0.0.1:17001".into(),
+            last_heartbeat_ms: u64::MAX,
+            extra: Some(ServiceExtra {
+                chunk_kv: Some(ChunkKvExtra {
+                    capacity_bytes: 1_000,
+                    durable_bytes: 600,
+                    request_rate: 0,
+                    hosted: vec![HostedPartition {
+                        partition_id,
+                        owner_epoch: 1,
+                        recovering: false,
+                    }],
+                    partition_loads: vec![ChunkKvPartitionLoad {
+                        partition_id,
+                        durable_bytes: 600,
+                        live_byte_samples: vec![
+                            (b"a".to_vec(), 100),
+                            (b"m".to_vec(), 400),
+                            (b"z".to_vec(), 100),
+                        ],
+                    }],
+                }),
+                ..ServiceExtra::default()
+            }),
+        },
+    )
+    .await;
+    let mut policy = descriptor();
+    policy.domain = "chunk-kv".into();
+    policy.service_registry_name = "chunk-kv".into();
+    policy.chunk_kv_range_balance = Some(ChunkKvRangeBalancePolicy {
+        target_partitions_per_owner,
+        target_partition_bytes,
+        cooldown_ms: 1,
+        ..ChunkKvRangeBalancePolicy::default()
+    });
+
+    let driver = ChunkKvRangeMonitorDriver::new();
+    driver.tick(&control, &policy).await.unwrap();
+    driver.tick(&control, &policy).await.unwrap();
+
+    let transitions = control
+        .scan_all_prefix(Bytes::from(ChunkKvSplitKey::text_prefix_all()), 16)
+        .await
+        .unwrap();
+    assert_eq!(transitions.len(), 1);
+    let transition: SplitTransition = serde_json::from_slice(&transitions[0].value).unwrap();
+    transition.validate().unwrap();
+    assert_eq!(transition.parent_id, partition_id);
+    assert_eq!(transition.split_key, b"m");
+    assert_eq!(transition.phase, SplitPhase::Planned);
+}
+
+#[tokio::test]
+async fn chunk_kv_driver_plans_count_driven_split() {
+    assert_chunk_kv_split_plan(2, u64::MAX).await;
+}
+
+#[tokio::test]
+async fn chunk_kv_driver_plans_size_driven_split() {
+    assert_chunk_kv_split_plan(1, 100).await;
 }
 
 async fn put_json<T: serde::Serialize>(control: &Group0ControlPlane, path: String, value: &T) {

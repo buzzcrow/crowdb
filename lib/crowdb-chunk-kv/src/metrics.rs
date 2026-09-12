@@ -32,6 +32,7 @@ pub struct PartitionMetrics {
     split_pages_rebuilt: AtomicU64,
     split_delta_records: AtomicU64,
     split_fence_lag_records: AtomicU64,
+    split_fence_duration_us: AtomicU64,
     split_fences: AtomicU64,
     split_commits: AtomicU64,
     split_aborts: AtomicU64,
@@ -69,6 +70,7 @@ pub struct PartitionMetricsSnapshot {
     pub split_pages_rebuilt: u64,
     pub split_delta_records: u64,
     pub split_fence_lag_records: u64,
+    pub split_fence_duration_us: u64,
     pub split_fences: u64,
     pub split_commits: u64,
     pub split_aborts: u64,
@@ -108,6 +110,7 @@ impl PartitionMetrics {
             split_pages_rebuilt: self.split_pages_rebuilt.load(Ordering::Relaxed),
             split_delta_records: self.split_delta_records.load(Ordering::Relaxed),
             split_fence_lag_records: self.split_fence_lag_records.load(Ordering::Relaxed),
+            split_fence_duration_us: self.split_fence_duration_us.load(Ordering::Relaxed),
             split_fences: self.split_fences.load(Ordering::Relaxed),
             split_commits: self.split_commits.load(Ordering::Relaxed),
             split_aborts: self.split_aborts.load(Ordering::Relaxed),
@@ -226,6 +229,11 @@ impl PartitionMetrics {
 
     pub(crate) fn split_fence(&self) {
         self.split_fences.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn split_fence_duration(&self, duration_us: u64) {
+        self.split_fence_duration_us
+            .fetch_max(duration_us, Ordering::Relaxed);
     }
 
     pub(crate) fn split_commit(&self) {

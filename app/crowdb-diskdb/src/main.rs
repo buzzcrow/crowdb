@@ -225,6 +225,7 @@ async fn main() {
             self_fence_margin_ms: 1_000,
             failure_policy: DomainFailurePolicy::OperatorOnly,
             balance_policy: "operator-only-v1".into(),
+            chunk_kv_range_balance: None,
         },
     };
     match DomainMonitorClient::from_shared(Arc::clone(&kv_client))

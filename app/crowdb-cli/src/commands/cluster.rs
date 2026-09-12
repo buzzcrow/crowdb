@@ -54,6 +54,9 @@ pub enum ClusterVerb {
         /// [diskio] RPC I/O worker threads. 0 = server default (4).
         #[arg(long, default_value_t = 0)]
         diskio_rpc_workers: u32,
+        /// [diskio] Backend for auto-discovered local disks (null|mem).
+        #[arg(long, default_value = "null", value_parser = ["null", "mem"])]
+        diskio_dummy_disk_type: String,
         /// [kv] `--peer-pool-size` for the spawned server. 0 = server default (2).
         #[arg(long, default_value_t = 0)]
         peer_pool_size: usize,
@@ -214,6 +217,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             enable_nagle,
             rpc_workers,
             diskio_rpc_workers,
+            diskio_dummy_disk_type,
             peer_pool_size,
             max_inflight,
             coalesce_max_keys,
@@ -283,6 +287,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     Some(&tunables),
                     &disk,
                     &chunk,
+                    &diskio_dummy_disk_type,
                 )
                 .await
                 {

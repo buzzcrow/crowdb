@@ -81,7 +81,6 @@ pub async fn publish_transfer(
             && entry.owner_epoch == transition.source_epoch
             && entry.state == ChunkKvRangeCatalogPartitionState::Serving
             && entry.artifact == transition.artifact
-            && entry.transition_id.is_none()
     };
     let (head, pages) = replace_one(catalog.head, catalog.pages, source, vec![desired])?;
     publish(control, head, pages, catalog.head_revision).await
@@ -117,7 +116,6 @@ pub async fn publish_split(
             && entry.owner_epoch == transition.parent_epoch
             && entry.state == ChunkKvRangeCatalogPartitionState::Serving
             && entry.artifact == transition.parent_artifact
-            && entry.transition_id.is_none()
     };
     let (head, pages) = replace_one(catalog.head, catalog.pages, parent, desired)?;
     publish(control, head, pages, catalog.head_revision).await

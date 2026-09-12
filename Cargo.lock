@@ -629,6 +629,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "bytes",
+ "clap",
  "crowdb-chunk-kv-server",
  "crowdb-kv-client",
  "crowdb-protocol",

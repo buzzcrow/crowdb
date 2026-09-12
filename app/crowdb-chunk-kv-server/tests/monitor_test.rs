@@ -28,6 +28,7 @@ fn descriptor(driver_version: u32) -> DomainMonitorDescriptor {
         self_fence_margin_ms: 1_000,
         failure_policy: DomainFailurePolicy::AutomaticSharedStorage,
         balance_policy: "count-first-v1".into(),
+        chunk_kv_range_balance: Some(crowdb_protocol::chunk_kv::ChunkKvRangeBalancePolicy::default()),
     }
 }
 

@@ -22,8 +22,8 @@ impl Default for ClientConfig {
     fn default() -> Self {
         Self {
             operation_timeout: Duration::from_secs(5),
-            retry_backoff: Duration::from_millis(10),
-            max_attempts: 8,
+            retry_backoff: Duration::from_millis(20),
+            max_attempts: 256,
             max_route_refreshes: 3,
             max_owner_connections: 64,
             max_inflight_partition_groups: 8,

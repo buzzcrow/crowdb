@@ -21,6 +21,7 @@ use crate::group0_control_plane::Group0ControlPlane;
 
 use super::{DomainMonitorDriver, DomainMonitorFuture};
 
+mod balance;
 mod catalog;
 
 pub struct ChunkKvRangeMonitorDriver;
@@ -55,6 +56,7 @@ impl DomainMonitorDriver for ChunkKvRangeMonitorDriver {
         Box::pin(async move {
             plan_dead_owner_transfer(control, descriptor).await?;
             advance_dead_owner_exclusion(control, descriptor).await?;
+            balance::plan(control, descriptor).await?;
             publish_ready_transitions(control).await?;
             issue_serving_grants(control, descriptor).await
         })
@@ -138,6 +140,7 @@ async fn plan_dead_owner_transfer(
             },
             target_epoch,
             artifact: entry.artifact.clone(),
+            planned_at_ms: now_ms,
             old_grant_expires_at_ms,
             phase: TransferPhase::AwaitingFence,
             release_proof: None,
@@ -338,7 +341,7 @@ async fn read_ready_instances(
     Ok(ready)
 }
 
-async fn read_instances(
+pub(super) async fn read_instances(
     control: &Group0ControlPlane,
     descriptor: &DomainMonitorDescriptor,
 ) -> Result<HashMap<u64, InstanceValue>, String> {
@@ -357,7 +360,7 @@ async fn read_instances(
     Ok(instances)
 }
 
-async fn read_transfers(
+pub(super) async fn read_transfers(
     control: &Group0ControlPlane,
 ) -> Result<Vec<(TransferTransition, KvGroupScanItem)>, String> {
     let items = control
@@ -368,6 +371,23 @@ async fn read_transfers(
         .into_iter()
         .map(|item| {
             let transition: TransferTransition = decode_transition(&item)?;
+            transition.validate().map_err(|error| error.to_string())?;
+            Ok((transition, item))
+        })
+        .collect()
+}
+
+pub(super) async fn read_splits(
+    control: &Group0ControlPlane,
+) -> Result<Vec<(SplitTransition, KvGroupScanItem)>, String> {
+    let items = control
+        .scan_all_prefix(Bytes::from(ChunkKvSplitKey::text_prefix_all()), 128)
+        .await
+        .map_err(|error| operation_error(&error))?;
+    items
+        .into_iter()
+        .map(|item| {
+            let transition: SplitTransition = decode_transition(&item)?;
             transition.validate().map_err(|error| error.to_string())?;
             Ok((transition, item))
         })
@@ -402,7 +422,11 @@ async fn read_grant_expiry(
     })
 }
 
-fn transfer_id(entry: &ChunkKvRangeCatalogEntry, target_instance_id: u64, target_epoch: u64) -> Id128 {
+pub(super) fn transfer_id(
+    entry: &ChunkKvRangeCatalogEntry,
+    target_instance_id: u64,
+    target_epoch: u64,
+) -> Id128 {
     let mut digest = Sha256::new();
     digest.update(b"chunk-kv-transfer-v1");
     digest.update(entry.partition_id.high.to_be_bytes());
@@ -441,11 +465,11 @@ where
         .map_err(|error| operation_error(&error))
 }
 
-fn operation_error(error: &KvGroupOperationError) -> String {
+pub(super) fn operation_error(error: &KvGroupOperationError) -> String {
     error.to_string()
 }
 
-fn wall_time_ms() -> u64 {
+pub(super) fn wall_time_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| {

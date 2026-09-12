@@ -10,6 +10,7 @@
 #include "chunk_c_api_internal.h"
 #include "chunk_pack_pipeline.h"
 #include "crowdb-common/crc32c.h"
+#include "crowdb-common/log.h"
 
 #include <algorithm>
 #include <chrono>
@@ -22,7 +23,7 @@ namespace crowdb::tree::detail
 namespace
 {
 
-constexpr uint64_t kAnchorRegionBytes    = 8192;
+constexpr uint64_t kAnchorSlotBytes      = 4096;
 constexpr size_t   kReferencesPerSegment = 256;
 constexpr uint64_t kMaxChunkBytes        = 256U * 1024U * 1024U;
 
@@ -877,8 +878,13 @@ Status ChunkPageStore::inherit_snapshot_from(const PageStore &source_store)
     if (config_.tree_id == source->config_.tree_id) {
         return Status::invalid_argument("chunk snapshot inheritance requires a distinct destination tree");
     }
-    if (staged_initialized_ || catalog_->load(config_.tree_id) != nullptr) {
+    if (staged_initialized_) {
         return Status::invalid_argument("chunk snapshot inheritance requires an unpublished destination");
+    }
+    if (catalog_->load(config_.tree_id) != nullptr) {
+        inherited_manifest_.reset();
+        inherited_catalog_.reset();
+        return Status::Ok();
     }
     if (transport_.get() != source->transport_.get() || catalog_.get() != source->catalog_.get()) {
         return Status::Ok();
@@ -931,6 +937,10 @@ bool ChunkPageStore::inherited_snapshot_matches(const PageStore &source_store) c
 
 std::shared_ptr<const ChunkManifest> ChunkPageStore::reuse_base_manifest() const
 {
+    auto cached = cached_layout_.load(std::memory_order_acquire);
+    if (cached != nullptr && monotonic_millis() < layout_valid_until_ms_.load(std::memory_order_acquire)) {
+        return cached;
+    }
     auto current = catalog_->load(config_.tree_id);
     return current == nullptr ? inherited_manifest_ : current;
 }
@@ -1086,10 +1096,11 @@ Status ChunkPageStore::write_at(uint64_t off, const uint8_t *buf, size_t len)
         std::memcpy(staged_.data() + off, buf, len);
         dirty_ranges_.emplace_back(off, len);
     }
-    if (end > kAnchorRegionBytes) {
+    const uint64_t anchor_region_bytes = round_up_to_iu(kAnchorSlotBytes, config_.iu_size) * 2;
+    if (end > anchor_region_bytes) {
         data_durable_ = false;
     }
-    if (off < kAnchorRegionBytes) {
+    if (off < anchor_region_bytes) {
         anchor_dirty_ = true;
     }
     return Status::Ok();
@@ -1131,10 +1142,14 @@ Status ChunkPageStore::read_pack(const ChunkPageRef &ref, std::shared_ptr<const 
         diskio_operations_.fetch_add(1, std::memory_order_relaxed);
         diskio_latency_ns_.fetch_add(monotonic_nanos() - started, std::memory_order_relaxed);
         if (!read_status.ok()) {
+            CRB_LOG_ERROR("chunk page store tree={} mirror={} read failed: chunk={}:{} offset={} length={} status={}",
+                          config_.tree_id, mirror, ref.chunk_id.high, ref.chunk_id.low, ref.offset, ref.length,
+                          read_status.to_string());
             continue;
         }
-        mirror_responded = true;
-        if (ref.checksum == crowdb::common::crc32c(valid_mirror->data(), valid_mirror->size())) {
+        mirror_responded                 = true;
+        const uint32_t observed_checksum = crowdb::common::crc32c(valid_mirror->data(), valid_mirror->size());
+        if (ref.checksum == observed_checksum) {
             auto entry = std::make_shared<CachedPack>(CachedPack{.ref = ref, .bytes = valid_mirror});
             if (use_cache) {
                 cached_pack_ = std::move(entry);
@@ -1142,6 +1157,10 @@ Status ChunkPageStore::read_pack(const ChunkPageRef &ref, std::shared_ptr<const 
             *out = std::move(valid_mirror);
             return cancellation.cancelled() ? Status::unavailable("chunk page read cancelled") : Status::Ok();
         }
+        CRB_LOG_ERROR("chunk page store tree={} mirror={} checksum mismatch: chunk={}:{} offset={} length={} "
+                      "expected={} observed={}",
+                      config_.tree_id, mirror, ref.chunk_id.high, ref.chunk_id.low, ref.offset, ref.length,
+                      ref.checksum, observed_checksum);
     }
     return mirror_responded ? Status::corruption("chunk page pack checksum mismatch on every mirror")
                             : Status::unavailable("chunk page pack mirrors are unavailable");
@@ -1351,6 +1370,10 @@ Status ChunkPageStore::build_manifest(uint64_t expected_generation, std::shared_
     if (expected_generation == std::numeric_limits<uint64_t>::max()) {
         return Status::resource_exhausted("chunk manifest generation is exhausted");
     }
+    Status active_status = refresh_active_chunk();
+    if (!active_status.ok()) {
+        return active_status;
+    }
     if (!orphan_reference_segments_.empty()) {
         catalog_->discard_reference_segments(config_.tree_id, orphan_reference_segments_);
         orphan_reference_segments_.clear();
@@ -1479,6 +1502,28 @@ Status ChunkPageStore::build_manifest(uint64_t expected_generation, std::shared_
     }
     manifest->checksum = manifest_checksum(*manifest);
     *out               = std::move(manifest);
+    return Status::Ok();
+}
+
+Status ChunkPageStore::refresh_active_chunk()
+{
+    if (active_chunk_id_.empty()) {
+        return Status::Ok();
+    }
+    ChunkLayout layout;
+    Status      status = transport_->query_chunk(active_chunk_id_, &layout);
+    if (!status.ok()) {
+        return status;
+    }
+    if (layout.sealed) {
+        active_chunk_id_     = {};
+        active_chunk_bytes_  = 0;
+        active_chunk_cursor_ = 0;
+        return Status::Ok();
+    }
+    if (layout.acknowledged_bytes != active_chunk_cursor_ || layout.logical_capacity < active_chunk_cursor_) {
+        return Status::corruption("active tree chunk cursor diverged from ChunkDB");
+    }
     return Status::Ok();
 }
 
@@ -1702,6 +1747,7 @@ Status ChunkPageStore::sync_cancellable(ChunkCancellation cancellation)
         return Status::Ok();
     }
     if (!data_durable_) {
+        CRB_LOG_ERROR("chunk page store tree={} rejected root publication before data durability", config_.tree_id);
         return Status::internal_error("chunk root cannot publish before data durability barrier");
     }
     auto                           prior               = catalog_->load(config_.tree_id);
@@ -1710,6 +1756,7 @@ Status ChunkPageStore::sync_cancellable(ChunkCancellation cancellation)
     uint64_t                       new_pack_bytes = 0;
     Status build_status = build_manifest(expected_generation, &manifest, &new_pack_bytes, cancellation);
     if (!build_status.ok()) {
+        CRB_LOG_ERROR("chunk page store tree={} manifest build failed: {}", config_.tree_id, build_status.to_string());
         orphan_bytes_.fetch_add(new_pack_bytes, std::memory_order_relaxed);
         return build_status;
     }
@@ -1721,6 +1768,8 @@ Status ChunkPageStore::sync_cancellable(ChunkCancellation cancellation)
     }
     Status validation_status = validate_manifest(*manifest, *catalog_);
     if (!validation_status.ok()) {
+        CRB_LOG_ERROR("chunk page store tree={} manifest validation failed: {}", config_.tree_id,
+                      validation_status.to_string());
         orphan_bytes_.fetch_add(new_pack_bytes, std::memory_order_relaxed);
         auto ids = reference_segment_ids(*manifest);
         orphan_reference_segments_.insert(orphan_reference_segments_.end(), ids.begin(), ids.end());
@@ -1733,6 +1782,7 @@ Status ChunkPageStore::sync_cancellable(ChunkCancellation cancellation)
     rpc_latency_ns_.fetch_add(publish_elapsed, std::memory_order_relaxed);
     rpc_operations_.fetch_add(1, std::memory_order_relaxed);
     if (!status.ok()) {
+        CRB_LOG_ERROR("chunk page store tree={} manifest publication failed: {}", config_.tree_id, status.to_string());
         orphan_bytes_.fetch_add(new_pack_bytes, std::memory_order_relaxed);
         auto ids = reference_segment_ids(*manifest);
         orphan_reference_segments_.insert(orphan_reference_segments_.end(), ids.begin(), ids.end());
@@ -1798,7 +1848,10 @@ uint64_t ChunkPageStore::size() const
     if (staged_initialized_) {
         return staged_.size();
     }
-    auto manifest = reuse_base_manifest();
+    auto manifest = cached_layout_.load(std::memory_order_acquire);
+    if (manifest == nullptr || monotonic_millis() >= layout_valid_until_ms_.load(std::memory_order_acquire)) {
+        manifest = reuse_base_manifest();
+    }
     return manifest == nullptr ? 0 : manifest->logical_size;
 }
 
@@ -1856,6 +1909,8 @@ Status ChunkPageStore::set_wal_replay_offset(uint64_t offset)
     if (current != nullptr) {
         Status status = validate_manifest(*current, *catalog_);
         if (!status.ok()) {
+            CRB_LOG_ERROR("chunk page store tree={} WAL replay manifest validation failed: {}", config_.tree_id,
+                          status.to_string());
             return status;
         }
         if (current->format_version >= 4 && offset < current->wal_replay_offset) {

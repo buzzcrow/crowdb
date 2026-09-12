@@ -304,7 +304,10 @@ Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destinati
     std::vector<NativeFrame> source_frames;
     bool                     iteration_complete = false;
     bool                     all_contained      = local.subtrees_skipped == 0;
-    uint32_t                 source_frame_bytes = 0;
+    bool                     saw_source_frame = false;
+    if (source.opt_.frame_bytes != destination_options.frame_bytes) {
+        return Status::invalid_argument("range rebuild requires matching fixed frame sizes");
+    }
     while (!iteration_complete) {
         std::vector<NativeFrame> batch;
         native_status = iterator->next(batch_frames, &batch, &iteration_complete);
@@ -312,15 +315,10 @@ Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destinati
             return native_status;
         }
         for (NativeFrame &frame : batch) {
-            if (source_frame_bytes == 0) {
-                source_frame_bytes = static_cast<uint32_t>(frame.frame.size());
-            }
-            if (frame.frame.size() != source_frame_bytes || source_frame_bytes != destination_options.frame_bytes) {
-                return Status::invalid_argument("range rebuild requires matching fixed frame sizes");
-            }
+            saw_source_frame = true;
             const page_type type = frame_page_type(frame.frame.data());
             if (type == page_type::kLeafBase) {
-                LeafFrameView leaf(frame.frame.data(), source_frame_bytes);
+                LeafFrameView leaf(frame.frame.data(), static_cast<uint32_t>(frame.frame.size()));
                 for (uint32_t index = 0; index < leaf.count(); ++index) {
                     ++local.entries_examined;
                     if (!range.contains(leaf.key(index))) {
@@ -348,7 +346,7 @@ Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destinati
             return type != page_type::kLeafBase && type != page_type::kOverflowFrame;
         });
     }
-    if (source_frame_bytes == 0) {
+    if (!saw_source_frame) {
         return Status::corruption("range rebuild: source snapshot has no root");
     }
     const bool reuse_inherited_frames =

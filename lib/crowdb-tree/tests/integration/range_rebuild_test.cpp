@@ -384,6 +384,43 @@ TEST(RangeRebuild, ChunkChildPublishesIndependentManifestWithSharedPacks)
     EXPECT_GT(child_store.stats().packs_reused, child_manifest->packs_reused);
 }
 
+TEST(RangeRebuild, RetryAtomicallyReplacesAnAlreadyPublishedChunkChild)
+{
+    auto                   catalog   = std::make_shared<detail::MemoryRootCatalog>(1);
+    auto                   transport = std::make_shared<detail::MemoryChunkTransport>();
+    detail::ChunkPageStore source_store(
+        {.tree_id = 62, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
+    Config source_options;
+    source_options.page_store  = &source_store;
+    source_options.frame_bytes = 4096;
+    Crowdbtree source(source_options);
+    ASSERT_TRUE(source.put(Slice("a"), Slice("first")).ok());
+    ASSERT_TRUE(source.flush().ok());
+    ASSERT_TRUE(source.snapshot().ok());
+
+    detail::ChunkPageStore first_child_store(
+        {.tree_id = 63, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
+    Config child_options     = source_options;
+    child_options.page_store = &first_child_store;
+    std::unique_ptr<Crowdbtree> child;
+    ASSERT_TRUE(rebuild_range(source, KeyRange::unbounded(), child_options, &child).ok());
+    const auto first_manifest = catalog->load(63);
+    ASSERT_NE(first_manifest, nullptr);
+    child.reset();
+
+    ASSERT_TRUE(source.put(Slice("b"), Slice("second")).ok());
+    ASSERT_TRUE(source.flush().ok());
+    ASSERT_TRUE(source.snapshot().ok());
+    detail::ChunkPageStore retry_child_store(
+        {.tree_id = 63, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
+    child_options.page_store = &retry_child_store;
+    ASSERT_TRUE(rebuild_range(source, KeyRange::unbounded(), child_options, &child).ok());
+    EXPECT_EQ(live_entries(*child), (std::map<std::string, std::string>{{"a", "first"}, {"b", "second"}}));
+    const auto retry_manifest = catalog->load(63);
+    ASSERT_NE(retry_manifest, nullptr);
+    EXPECT_GT(retry_manifest->generation, first_manifest->generation);
+}
+
 TEST(RangeRebuild, MappingMaterializationClearsInheritedUnreachableSlots)
 {
     auto                   catalog   = std::make_shared<detail::MemoryRootCatalog>(1);

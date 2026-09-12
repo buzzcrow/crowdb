@@ -123,6 +123,7 @@ fn prepared_transfer() -> TransferTransition {
         target: owner(3),
         target_epoch: 4,
         artifact: artifact.clone(),
+        planned_at_ms: 0,
         old_grant_expires_at_ms: 100,
         phase: TransferPhase::TargetPrepared,
         release_proof: Some(AuthorityReleaseProof::ExplicitFence {
@@ -196,6 +197,7 @@ fn prepared_split() -> SplitTransition {
             owner_epoch: 1,
             artifact: artifact(14),
         },
+        planned_at_ms: 0,
         phase: SplitPhase::ChildrenPrepared,
         readiness_proof: Some(SplitReadinessProof {
             cutover_seq: 55,

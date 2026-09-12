@@ -504,6 +504,7 @@ ct_status ct_rebuild_range(ct_tree *source, const ct_options *destination_option
     RangeRebuildStats rebuilt;
     Status            status = rebuild_range(*source->tree, options.key_range, options, &handle->tree, &rebuilt);
     if (!status.ok()) {
+        CRB_LOG_ERROR("range rebuild failed: {}", status.to_string());
         return to_status(status);
     }
     if (stats != nullptr) {

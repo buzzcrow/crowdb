@@ -191,6 +191,7 @@ fn transfer(phase: TransferPhase) -> TransferTransition {
         target: owner(2),
         target_epoch: 4,
         artifact: artifact.clone(),
+        planned_at_ms: 0,
         old_grant_expires_at_ms: 100,
         phase,
         release_proof: (phase == TransferPhase::TargetPreparing).then_some(
@@ -237,6 +238,7 @@ fn split_transition() -> SplitTransition {
             owner_epoch: 1,
             artifact: artifact(13),
         },
+        planned_at_ms: 0,
         phase: SplitPhase::ParentPreparing,
         readiness_proof: None,
         failure: None,

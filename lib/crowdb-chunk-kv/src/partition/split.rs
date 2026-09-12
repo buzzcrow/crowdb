@@ -5,6 +5,7 @@
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Instant;
 
 use bytes::{Buf, BytesMut};
 
@@ -146,6 +147,7 @@ impl Partition {
             tokio::task::yield_now().await;
         };
 
+        let fence_started = Instant::now();
         self.fence_split(plan.transition_id).await?;
         let cutover_seq = self.applied_seq.load(Ordering::Acquire);
         replay_children_until(
@@ -177,6 +179,8 @@ impl Partition {
             right: right.artifact.clone(),
         };
         self.record_split_artifact(artifact.clone()).await?;
+        self.metrics
+            .split_fence_duration(u64::try_from(fence_started.elapsed().as_micros()).unwrap_or(u64::MAX));
         Ok(PreparedSplit {
             artifact,
             left,

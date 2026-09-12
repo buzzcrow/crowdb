@@ -9,7 +9,7 @@ use std::time::Instant;
 use arc_swap::ArcSwap;
 use crowdb_chunk_kv::{
     ChunkKvError, CompareCondition, JournalPosition, MutationOperation, MutationResult, Partition, RequestId,
-    ValueRevision,
+    SplitCommitProof, ValueRevision,
 };
 use crowdb_protocol::chunk_kv::{
     BatchMutationRequest, BatchMutationResponse, BatchMutationResult, ChunkKvRangeCatalogEntry,
@@ -18,7 +18,7 @@ use crowdb_protocol::chunk_kv::{
     PointOperation, PointRequest, RequestRouting, RpcCompareCondition, RpcFailure, RpcJournalPosition,
     RpcValue, ScanContinuation, ScanDirection, ScanRequest, SeekKind, SeekRequest,
 };
-use crowdb_protocol::common::ChunkKvExtra;
+use crowdb_protocol::common::{ChunkKvExtra, ChunkKvPartitionLoad};
 use thiserror::Error;
 
 use crate::{
@@ -157,6 +157,27 @@ impl ChunkKvService {
         &self.metrics
     }
 
+    #[must_use]
+    pub fn metrics_snapshot(&self) -> crate::ServerMetricsSnapshot {
+        let mut result = self.metrics.snapshot();
+        for partition in self.partitions.load().values() {
+            let metrics = partition.metrics().snapshot();
+            result.admission_backpressure = result
+                .admission_backpressure
+                .saturating_add(metrics.admission_backpressure);
+            result.recoveries = result.recoveries.saturating_add(metrics.recoveries);
+            result.split_fences = result.split_fences.saturating_add(metrics.split_fences);
+            result.split_commits = result.split_commits.saturating_add(metrics.split_commits);
+            result.split_fence_lag_records = result
+                .split_fence_lag_records
+                .max(metrics.split_fence_lag_records);
+            result.split_fence_duration_us = result
+                .split_fence_duration_us
+                .max(metrics.split_fence_duration_us);
+        }
+        result
+    }
+
     /// Milliseconds elapsed on the process-local monotonic clock.
     #[must_use]
     pub fn monotonic_ms(&self) -> u64 {
@@ -195,9 +216,10 @@ impl ChunkKvService {
         let lifecycle = if !self.admitting.load(Ordering::Acquire) {
             ServerLifecycle::Draining
         } else if catalog_generation != 0
-            && self
-                .authority
-                .has_live_grant(catalog_generation, now_monotonic_ms)
+            && (partitions.is_empty()
+                || self
+                    .authority
+                    .has_live_grant(catalog_generation, now_monotonic_ms))
         {
             ServerLifecycle::Serving
         } else {
@@ -230,7 +252,11 @@ impl ChunkKvService {
                         low: snapshot.partition_id.low,
                     },
                     owner_epoch: snapshot.ownership_epoch,
-                    recovering: snapshot.lifecycle != crowdb_chunk_kv::PartitionLifecycle::Serving,
+                    recovering: !matches!(
+                        snapshot.lifecycle,
+                        crowdb_chunk_kv::PartitionLifecycle::Prepared
+                            | crowdb_chunk_kv::PartitionLifecycle::Serving
+                    ),
                 }
             })
             .collect();
@@ -240,7 +266,61 @@ impl ChunkKvService {
             durable_bytes,
             request_rate,
             hosted,
+            partition_loads: Vec::new(),
         }
+    }
+
+    /// Builds a heartbeat observation and samples the largest serving
+    /// partition with bounded memory for median split planning.
+    ///
+    /// # Errors
+    ///
+    /// Returns a partition read error when the sampled view cannot be scanned.
+    pub async fn registry_observation_with_load_samples(
+        &self,
+        capacity_bytes: u64,
+        request_rate: u64,
+        max_samples: usize,
+    ) -> Result<ChunkKvExtra, ChunkKvError> {
+        let mut observation = self.registry_observation(capacity_bytes, request_rate);
+        let partitions = self.partitions.load_full();
+        let mut loads: Vec<_> = partitions
+            .values()
+            .map(|partition| {
+                let snapshot = partition.snapshot();
+                let durable_bytes = partition.chunk_storage_stats().ok().flatten().map_or(0, |stats| {
+                    stats.pack_bytes_written.saturating_sub(stats.orphan_bytes)
+                });
+                (partition.clone(), snapshot, durable_bytes)
+            })
+            .collect();
+        let largest = loads
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, snapshot, _))| {
+                snapshot.lifecycle == crowdb_chunk_kv::PartitionLifecycle::Serving
+            })
+            .max_by_key(|(_, (_, _, durable_bytes))| *durable_bytes)
+            .map(|(index, _)| index);
+        for (index, (partition, snapshot, durable_bytes)) in loads.drain(..).enumerate() {
+            let live_byte_samples = if Some(index) == largest && max_samples > 0 {
+                sample_live_bytes(&partition, snapshot.ownership_epoch, max_samples).await?
+            } else {
+                Vec::new()
+            };
+            observation.partition_loads.push(ChunkKvPartitionLoad {
+                partition_id: Id128 {
+                    high: snapshot.partition_id.high,
+                    low: snapshot.partition_id.low,
+                },
+                durable_bytes,
+                live_byte_samples,
+            });
+        }
+        observation
+            .partition_loads
+            .sort_unstable_by_key(|load| load.partition_id);
+        Ok(observation)
     }
 
     /// Validates and atomically activates a newer complete catalog snapshot.
@@ -347,7 +427,53 @@ impl ChunkKvService {
         }
         let next = self.reconciled_partition_snapshot(pages, recovered)?;
         self.activate_catalog(&candidate)?;
+        let current = self.partitions.load_full();
+        for (partition_id, partition) in current.iter() {
+            if !next.contains_key(partition_id) {
+                self.metrics.retire_partition(&partition.metrics().snapshot());
+            }
+        }
         self.partitions.store(next);
+        Ok(())
+    }
+
+    /// Commits fenced split parents only after the replacement children are
+    /// present in one validated catalog generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a removed fenced parent does not match the exact
+    /// child artifacts published by the catalog.
+    pub async fn commit_catalog_splits(
+        &self,
+        catalog_generation: u64,
+        pages: &[ChunkKvRangeCatalogPage],
+    ) -> Result<(), ChunkKvError> {
+        for partition in self.partitions.load_full().values() {
+            let Some(artifact) = partition.current_prepared_split_artifact().await else {
+                continue;
+            };
+            let parent_remains = pages.iter().flat_map(|page| &page.entries).any(|entry| {
+                entry.partition_id.high == artifact.parent_id.high
+                    && entry.partition_id.low == artifact.parent_id.low
+            });
+            if parent_remains {
+                continue;
+            }
+            if !catalog_contains_split_child(pages, artifact.transition_id, &artifact.left)
+                || !catalog_contains_split_child(pages, artifact.transition_id, &artifact.right)
+            {
+                return Err(ChunkKvError::SplitRetry(
+                    "catalog replacement does not match the prepared split children".into(),
+                ));
+            }
+            partition
+                .commit_split(&SplitCommitProof {
+                    catalog_revision: catalog_generation,
+                    artifact,
+                })
+                .await?;
+        }
         Ok(())
     }
 
@@ -944,6 +1070,66 @@ impl ChunkKvService {
     }
 }
 
+async fn sample_live_bytes(
+    partition: &Partition,
+    ownership_epoch: u64,
+    max_samples: usize,
+) -> Result<Vec<(Vec<u8>, u64)>, ChunkKvError> {
+    const PAGE_ENTRIES: usize = 256;
+    const PAGE_BYTES: usize = 4 * 1024 * 1024;
+
+    let mut samples = Vec::with_capacity(max_samples.saturating_add(1));
+    let mut start_after: Option<Vec<u8>> = None;
+    loop {
+        let page = match start_after.as_deref() {
+            Some(key) => {
+                partition
+                    .scan_forward_after(ownership_epoch, key, None, PAGE_ENTRIES, PAGE_BYTES, None)
+                    .await?
+            }
+            None => {
+                partition
+                    .scan_forward(ownership_epoch, None, None, PAGE_ENTRIES, PAGE_BYTES, None)
+                    .await?
+            }
+        };
+        if page.entries.is_empty() {
+            break;
+        }
+        for entry in &page.entries {
+            let bytes =
+                u64::try_from(entry.key.len().saturating_add(entry.value.value.len())).unwrap_or(u64::MAX);
+            samples.push((entry.key.to_vec(), bytes));
+        }
+        compact_live_byte_samples(&mut samples, max_samples);
+        start_after = page.entries.last().map(|entry| entry.key.to_vec());
+        if !page.truncated {
+            break;
+        }
+    }
+    Ok(samples)
+}
+
+fn compact_live_byte_samples(samples: &mut Vec<(Vec<u8>, u64)>, max_samples: usize) {
+    while samples.len() > max_samples {
+        let mut compacted = Vec::with_capacity(samples.len().div_ceil(2));
+        for pair in samples.chunks(2) {
+            if let [left, right] = pair {
+                let total = left.1.saturating_add(right.1);
+                let key = if left.1.saturating_mul(2) >= total {
+                    left.0.clone()
+                } else {
+                    right.0.clone()
+                };
+                compacted.push((key, total));
+            } else {
+                compacted.push(pair[0].clone());
+            }
+        }
+        *samples = compacted;
+    }
+}
+
 fn recoverable_local_entry(entry: &ChunkKvRangeCatalogEntry, instance_id: u64) -> bool {
     entry.owner.instance_id == instance_id
         && !matches!(
@@ -1053,6 +1239,27 @@ fn scan_success(
             continuation,
         },
     )
+}
+
+fn catalog_contains_split_child(
+    pages: &[ChunkKvRangeCatalogPage],
+    transition_id: crowdb_chunk_kv::TransitionId,
+    child: &crowdb_chunk_kv::PreparedChildArtifact,
+) -> bool {
+    pages.iter().flat_map(|page| &page.entries).any(|entry| {
+        entry.partition_id.high == child.partition_id.high
+            && entry.partition_id.low == child.partition_id.low
+            && entry.range.start == child.range.start.clone().unwrap_or_default()
+            && entry.range.end == child.range.end
+            && entry.owner_epoch == child.ownership_epoch
+            && entry.artifact.tree_id == child.tree_id
+            && entry.artifact.stream_name == child.stream_name
+            && entry.transition_id
+                == Some(Id128 {
+                    high: transition_id.high,
+                    low: transition_id.low,
+                })
+    })
 }
 
 fn success(

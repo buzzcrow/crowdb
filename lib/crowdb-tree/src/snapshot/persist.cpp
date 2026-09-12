@@ -1193,6 +1193,7 @@ Status Crowdbtree::snapshot(uint64_t *out_last_applied, uint64_t *out_snapshot_s
             metrics_.snapshot_page_write_bw->observe(w.blob.size());
         }
         if (!s.ok()) {
+            CRB_LOG_ERROR("[{}] snapshot page write failed: addr={} status={}", name_, w.addr, s.to_string());
             release_snapshot_slot();
             return s;
         }
@@ -1200,6 +1201,7 @@ Status Crowdbtree::snapshot(uint64_t *out_last_applied, uint64_t *out_snapshot_s
     for (auto &sw : prepared.segment_writes) {
         Status s = opt_.page_store->write_at(sw.addr, sw.blob.data(), sw.blob.size());
         if (!s.ok()) {
+            CRB_LOG_ERROR("[{}] snapshot segment write failed: addr={} status={}", name_, sw.addr, s.to_string());
             release_snapshot_slot();
             return s;
         }
@@ -1207,6 +1209,8 @@ Status Crowdbtree::snapshot(uint64_t *out_last_applied, uint64_t *out_snapshot_s
     Status dw = opt_.page_store->write_at(prepared.directory_write.addr, prepared.directory_write.blob.data(),
                                           prepared.directory_write.blob.size());
     if (!dw.ok()) {
+        CRB_LOG_ERROR("[{}] snapshot directory write failed: addr={} status={}", name_, prepared.directory_write.addr,
+                      dw.to_string());
         release_snapshot_slot();
         return dw;
     }
@@ -1220,12 +1224,15 @@ Status Crowdbtree::snapshot(uint64_t *out_last_applied, uint64_t *out_snapshot_s
         metrics_.fsync_l->observe(static_cast<uint64_t>(ns));
     }
     if (!sync1.ok()) {
+        CRB_LOG_ERROR("[{}] snapshot data sync failed: {}", name_, sync1.to_string());
         release_snapshot_slot();
         return sync1;
     }
     Status aw = opt_.page_store->write_at(prepared.anchor_write.addr, prepared.anchor_write.blob.data(),
                                           prepared.anchor_write.blob.size());
     if (!aw.ok()) {
+        CRB_LOG_ERROR("[{}] snapshot anchor write failed: addr={} status={}", name_, prepared.anchor_write.addr,
+                      aw.to_string());
         release_snapshot_slot();
         return aw;
     }
@@ -1237,6 +1244,7 @@ Status Crowdbtree::snapshot(uint64_t *out_last_applied, uint64_t *out_snapshot_s
         metrics_.fsync_l->observe(static_cast<uint64_t>(ns));
     }
     if (!sync2.ok()) {
+        CRB_LOG_ERROR("[{}] snapshot anchor sync failed: {}", name_, sync2.to_string());
         commit_prepared_snapshot(prepared);
         release_snapshot_slot();
         return sync2;

@@ -308,6 +308,8 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     Status wal_replay_offset(uint64_t *offset) const;
 
     // Seed an unpublished destination from one immutable source generation.
+    // A published destination is left intact so range rebuild can atomically
+    // replace it through its own generation CAS during an idempotent retry.
     // Byte-identical packs are referenced directly by the next manifest;
     // changed packs are written through the normal mirror pipeline.
     Status inherit_snapshot_from(const PageStore &source) override;
@@ -333,6 +335,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     };
 
     Status materialize_active(std::vector<uint8_t> *out) const;
+    Status refresh_active_chunk();
     Status build_manifest(uint64_t expected_generation, std::shared_ptr<ChunkManifest> *out, uint64_t *new_pack_bytes,
                           ChunkCancellation cancellation = {});
     Status read_at_cancellable(uint64_t off, uint8_t *buf, size_t len, ChunkCancellation cancellation) const;

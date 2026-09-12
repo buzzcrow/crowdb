@@ -86,7 +86,7 @@ def rdma_available() -> bool:
     return "CROWDB_RPC_HAVE_RDMA:INTERNAL=TRUE" in text
 
 
-def collect_files() -> list[tuple[str, str]]:
+def collect_files(selected: set[str] | None = None) -> list[tuple[str, str]]:
     """Return list of (filepath, build_dir) pairs."""
     skip_liburing = not liburing_available()
     skip_rdma = not rdma_available()
@@ -103,6 +103,8 @@ def collect_files() -> list[tuple[str, str]]:
             for path in root.rglob("*"):
                 if path.is_file() and path.suffix in EXTENSIONS:
                     posix = path.as_posix()
+                    if selected is not None and posix not in selected:
+                        continue
                     if skip_liburing and posix in LIBURING_GATED_FILES:
                         continue
                     if skip_rdma and posix in RDMA_GATED_FILES:
@@ -192,7 +194,14 @@ def format_output(output: str, compact_tests: bool) -> str:
 def main() -> int:
     batch_size = max(1, int(os.environ.get("CT_LINT_BATCH_SIZE", str(DEFAULT_BATCH_SIZE))))
     jobs = max(1, int(os.environ.get("CT_LINT_JOBS", str(DEFAULT_JOBS))))
-    files = collect_files()
+    selected = {str(Path(path)) for path in sys.argv[1:]} or None
+    files = collect_files(selected)
+    if selected is not None:
+        found = {path for path, _ in files}
+        missing = sorted(selected - found)
+        if missing:
+            sys.stderr.write(f"tree-lint: unsupported or missing files: {', '.join(missing)}\n")
+            return 2
     if not files:
         return 0
 

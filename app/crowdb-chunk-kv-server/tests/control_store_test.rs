@@ -151,6 +151,7 @@ fn descriptor() -> DomainMonitorDescriptor {
         self_fence_margin_ms: 1_000,
         failure_policy: DomainFailurePolicy::AutomaticSharedStorage,
         balance_policy: "count-first-v1".into(),
+        chunk_kv_range_balance: Some(crowdb_protocol::chunk_kv::ChunkKvRangeBalancePolicy::default()),
     }
 }
 
@@ -176,6 +177,7 @@ fn transfer() -> TransferTransition {
             tree_id: 5,
             stream_name: StreamName { high: 6, low: 7 },
         },
+        planned_at_ms: 0,
         old_grant_expires_at_ms: 10_000,
         phase: TransferPhase::Planned,
         release_proof: None,
@@ -234,6 +236,7 @@ fn split() -> SplitTransition {
                 stream_name: StreamName { high: 30, low: 31 },
             },
         },
+        planned_at_ms: 0,
         phase: SplitPhase::Planned,
         readiness_proof: None,
         failure: None,

@@ -57,7 +57,7 @@ async fn ready(State(state): State<ManagementState>) -> (StatusCode, Json<Health
 }
 
 async fn metrics(State(state): State<ManagementState>) -> Json<ServerMetricsSnapshot> {
-    Json(state.service.metrics().snapshot())
+    Json(state.service.metrics_snapshot())
 }
 
 fn health_response(state: &ManagementState) -> HealthResponse {

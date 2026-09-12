@@ -207,6 +207,45 @@ pub enum DomainFailurePolicy {
     OperatorOnly,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChunkKvRangeBalancePolicy {
+    pub target_partitions_per_owner: u32,
+    pub target_partition_bytes: u64,
+    pub minimum_weighted_improvement_percent: u32,
+    pub cooldown_ms: u64,
+    pub max_owner_request_rate: u64,
+}
+
+impl Default for ChunkKvRangeBalancePolicy {
+    fn default() -> Self {
+        Self {
+            target_partitions_per_owner: 4,
+            target_partition_bytes: 1 << 30,
+            minimum_weighted_improvement_percent: 25,
+            cooldown_ms: 10 * 60 * 1_000,
+            max_owner_request_rate: 0,
+        }
+    }
+}
+
+impl ChunkKvRangeBalancePolicy {
+    /// Validates persisted chunk-KV balancing bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for zero sizing/cooldown or a percentage above 100.
+    pub fn validate(&self) -> Result<(), ChunkKvProtocolError> {
+        if self.target_partitions_per_owner == 0
+            || self.target_partition_bytes == 0
+            || self.minimum_weighted_improvement_percent > 100
+            || self.cooldown_ms == 0
+        {
+            return Err(ChunkKvProtocolError::InvalidMonitorDescriptor);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainMonitorDescriptor {
     pub domain: String,
@@ -221,6 +260,8 @@ pub struct DomainMonitorDescriptor {
     pub self_fence_margin_ms: u64,
     pub failure_policy: DomainFailurePolicy,
     pub balance_policy: String,
+    #[serde(default)]
+    pub chunk_kv_range_balance: Option<ChunkKvRangeBalancePolicy>,
 }
 
 impl DomainMonitorDescriptor {
@@ -247,6 +288,15 @@ impl DomainMonitorDescriptor {
                 .checked_add(self.self_fence_margin_ms)
                 .map_or(true, |deadline| deadline > self.lease_duration_ms)
         {
+            return Err(ChunkKvProtocolError::InvalidMonitorDescriptor);
+        }
+        if self.domain == "chunk-kv" {
+            if let Some(policy) = &self.chunk_kv_range_balance {
+                policy.validate()?;
+            } else {
+                ChunkKvRangeBalancePolicy::default().validate()?;
+            }
+        } else if self.chunk_kv_range_balance.is_some() {
             return Err(ChunkKvProtocolError::InvalidMonitorDescriptor);
         }
         Ok(())
@@ -333,6 +383,8 @@ pub struct TransferTransition {
     pub target: OwnerDescriptor,
     pub target_epoch: u64,
     pub artifact: PartitionArtifact,
+    #[serde(default)]
+    pub planned_at_ms: u64,
     pub old_grant_expires_at_ms: u64,
     pub phase: TransferPhase,
     pub release_proof: Option<AuthorityReleaseProof>,
@@ -447,6 +499,8 @@ pub struct SplitTransition {
     pub split_key: Vec<u8>,
     pub left: SplitChildAssignment,
     pub right: SplitChildAssignment,
+    #[serde(default)]
+    pub planned_at_ms: u64,
     pub phase: SplitPhase,
     pub readiness_proof: Option<SplitReadinessProof>,
     pub failure: Option<String>,

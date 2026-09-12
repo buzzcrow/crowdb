@@ -255,6 +255,15 @@ pub struct ChunkKvExtra {
     pub durable_bytes: u64,
     pub request_rate: u64,
     pub hosted: Vec<crate::chunk_kv::HostedPartition>,
+    #[serde(default)]
+    pub partition_loads: Vec<ChunkKvPartitionLoad>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct ChunkKvPartitionLoad {
+    pub partition_id: crate::chunk_kv::Id128,
+    pub durable_bytes: u64,
+    pub live_byte_samples: Vec<(Vec<u8>, u64)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]

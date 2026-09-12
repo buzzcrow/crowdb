@@ -159,7 +159,7 @@ pub struct ChunkdbDeployRequest {
     pub metrics_interval: Option<u64>,
 }
 
-/// Inputs for one local `NullDisk` `DiskIO` service.
+/// Inputs for one local dummy-disk `DiskIO` service.
 #[derive(Debug, Clone)]
 pub struct DiskioDeployRequest {
     pub server_id: String,
@@ -169,6 +169,7 @@ pub struct DiskioDeployRequest {
     pub node_id: u64,
     pub disk_group_id: u64,
     pub kv_server_mgmt_seeds: Vec<String>,
+    pub dummy_disk_type: String,
     pub rpc_workers: Option<u32>,
     pub metrics_interval: Option<u64>,
 }
@@ -1237,7 +1238,7 @@ fn chunkdb_launch_args(req: &ChunkdbDeployRequest, config_path: &Path, log_dir: 
     args
 }
 
-/// Spawn one local `DiskIO` service with a `NullDisk` backend.
+/// Spawn one local `DiskIO` service with the selected dummy-disk backend.
 ///
 /// Readiness is completed by the caller through the group-0 service registry,
 /// which proves both KV synchronization and ownership publication.
@@ -1272,11 +1273,12 @@ pub async fn deploy_diskio_local(
         .collect::<Vec<_>>()
         .join(", ");
     let config = format!(
-        "[server]\nbind_address = {:?}\nlisten_port = {}\nrpc_workers = {}\nnode_id = {}\ndummy_disk_type = \"null\"\no_direct = true\n\n[engine]\nthread_pool_size = 4\nsq_entries = 256\n\n[group0]\nkv_seeds = [{}]\ninstance_id = {}\nrack_id = {}\ndisk_group_id = {}\nsync_interval_ms = 1000\nauto_discover_disks = true\n\n[metrics]\nlog_dir = {:?}\ninterval_secs = {}\n",
+        "[server]\nbind_address = {:?}\nlisten_port = {}\nrpc_workers = {}\nnode_id = {}\ndummy_disk_type = {:?}\no_direct = true\n\n[engine]\nthread_pool_size = 4\nsq_entries = 256\n\n[group0]\nkv_seeds = [{}]\ninstance_id = {}\nrack_id = {}\ndisk_group_id = {}\nsync_interval_ms = 1000\nauto_discover_disks = true\n\n[metrics]\nlog_dir = {:?}\ninterval_secs = {}\n",
         node.host,
         req.rpc_port,
         req.rpc_workers.unwrap_or(4),
         req.node_id,
+        req.dummy_disk_type,
         seeds,
         req.instance_id,
         req.rack_id,

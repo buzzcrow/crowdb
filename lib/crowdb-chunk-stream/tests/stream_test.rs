@@ -461,6 +461,21 @@ async fn reopen_recovers_the_durable_active_tail() {
 }
 
 #[tokio::test]
+async fn append_rotates_an_active_chunk_sealed_by_its_writer_lease() {
+    let store = Arc::new(MemoryStreamStore::new(32));
+    let stream = create_stream(&store, 32, StreamConfig::default()).await;
+    let first = stream.append(&[Bytes::from_static(b"old")]).await.unwrap();
+    let active_chunk = first.chunk_id.unwrap();
+    store.seal(active_chunk, 9, first.end).await.unwrap();
+
+    let range = stream.append(&[Bytes::from_static(b"new")]).await.unwrap();
+
+    assert_eq!((range.begin, range.end), (3, 6));
+    assert_ne!(range.chunk_id, Some(active_chunk));
+    assert_eq!(stream.read_at(0, 6).await.unwrap(), Bytes::from_static(b"oldnew"));
+}
+
+#[tokio::test]
 async fn watchdog_observes_without_cancelling_or_repeating_after_completion() {
     let store = Arc::new(MemoryStreamStore::new(32));
     store.pause_writes();

@@ -18,7 +18,7 @@ pub use catalog::{
     ChunkKvRangeCatalogPublisher, ChunkKvRangeCatalogStore, ClippedScan, HeadWriteOutcome,
     MemoryChunkKvRangeCatalogStore, ScanValidationError,
 };
-pub use config::{ChunkKvServerConfig, ConfigError, StorageConfig};
+pub use config::{BootstrapPartitionConfig, ChunkKvServerConfig, ConfigError, StorageConfig};
 pub use control_store::{Group0ControlStore, Group0Kv, Group0KvError, VersionedValue};
 pub use management::{management_router, ManagementState};
 pub use metrics::{ServerMetrics, ServerMetricsSnapshot};

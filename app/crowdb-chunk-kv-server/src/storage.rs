@@ -3,13 +3,15 @@
 
 //! Production chunk-stream dependency assembly.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use bytes::Bytes;
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
 use crowdb_chunk_kv::{
-    Partition, PartitionConfig, PartitionId, PartitionRange, SplitArtifact, SplitChild, SplitChildTarget,
-    SplitPlan, StreamPartitionJournal, TransitionId,
+    MutationOperation, Partition, PartitionConfig, PartitionId, PartitionRange, RequestId, SplitArtifact,
+    SplitChild, SplitChildTarget, SplitPlan, StreamPartitionJournal, TransitionId,
 };
 use crowdb_chunk_stream::{ChunkStream, ProductionStreamRuntime, StreamConfig, StreamName, StreamRegistry};
 use crowdb_kv_client::{BatchOp, ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
@@ -21,7 +23,7 @@ use crowdb_tree_ffi::{
 };
 use thiserror::Error;
 
-use crate::ChunkKvServerConfig;
+use crate::{BootstrapPartitionConfig, ChunkKvServerConfig};
 
 #[derive(Debug, Error)]
 pub enum StorageRuntimeError {
@@ -79,18 +81,13 @@ impl ChunkKvStorage {
     ///
     /// # Errors
     ///
-    /// Returns an error for an invalid metadata store, lease, or read policy.
+    /// Returns an error for an invalid stream lease or read policy.
     pub async fn from_parts(
         kv: Arc<CrowdbKvClient>,
         chunk_io: ChunkIoClient,
         metadata_store_id: u64,
         writer_lease_ms: u64,
     ) -> Result<Self, StorageRuntimeError> {
-        if metadata_store_id == 0 {
-            return Err(StorageRuntimeError::Stream(
-                "stream metadata store must be nonzero".into(),
-            ));
-        }
         let streams = Arc::new(
             ProductionStreamRuntime::new(
                 Arc::clone(&kv),
@@ -277,6 +274,102 @@ impl ChunkKvStorage {
         .map_err(|error| StorageRuntimeError::Partition(error.to_string()))
     }
 
+    /// Creates the explicitly configured initial full-range partition and
+    /// publishes its first tree checkpoint before catalog visibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for conflicting durable identities or any stream,
+    /// tree, checkpoint, or replay failure.
+    pub async fn bootstrap_partition(
+        &self,
+        config: &BootstrapPartitionConfig,
+    ) -> Result<Partition, StorageRuntimeError> {
+        let binding = StreamBinding {
+            stream_name: config.stream_name,
+            metadata_group_id: config.metadata_group_id,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("chunk-kv-partition".into()),
+        };
+        let existing = self
+            .streams
+            .registry()
+            .load(config.stream_name)
+            .await
+            .map_err(|error| StorageRuntimeError::Stream(error.to_string()))?;
+        let fresh = match existing {
+            Some(observed) if observed != binding => {
+                return Err(StorageRuntimeError::Stream(
+                    "bootstrap stream binding conflicts".into(),
+                ));
+            }
+            Some(_) => false,
+            None => {
+                self.streams
+                    .registry()
+                    .create(binding)
+                    .await
+                    .map_err(|error| StorageRuntimeError::Stream(error.to_string()))?;
+                true
+            }
+        };
+        let stream = if fresh {
+            self.create_registered_stream(config.stream_name, config.owner_epoch)
+                .await?
+        } else {
+            self.open_stream(config.stream_name, config.owner_epoch).await?
+        };
+        let page_store = self
+            .open_durable_tree_page_store(
+                ChunkPageStoreOptions {
+                    tree_id: config.tree_id,
+                    owner_epoch: config.owner_epoch,
+                    pack_bytes: 0,
+                    iu_size: 0,
+                    max_concurrent_packs: 0,
+                    materialization_bytes_per_pass: 0,
+                },
+                config.metadata_group_id,
+            )
+            .await?;
+        let partition_id = PartitionId {
+            high: config.partition_id.high,
+            low: config.partition_id.low,
+        };
+        let range = PartitionRange {
+            start: Some(Vec::new()),
+            end: None,
+        };
+        if !fresh {
+            return Partition::recover_native_latest_prepared_assignment(
+                partition_id,
+                range,
+                config.owner_epoch,
+                config.tree_id,
+                PartitionConfig::default(),
+                crowdb_tree_ffi::Config::default(),
+                page_store,
+                stream,
+            )
+            .await
+            .map_err(|error| StorageRuntimeError::Partition(error.to_string()));
+        }
+        let partition = Partition::open_native(
+            partition_id,
+            range,
+            config.owner_epoch,
+            PartitionConfig::default(),
+            config.tree_id,
+            crowdb_tree_ffi::Config::default(),
+            page_store,
+            stream,
+        )
+        .map_err(|error| StorageRuntimeError::Partition(format!("bootstrap tree open: {error}")))?;
+        initialize_bootstrap_root(&partition, config).await?;
+        Ok(partition)
+    }
+
     /// Rebuilds both durable split children from the authoritative parent.
     ///
     /// Existing child streams and tree roots are reopened under the same
@@ -395,6 +488,43 @@ impl ChunkKvStorage {
     }
 }
 
+async fn initialize_bootstrap_root(
+    partition: &Partition,
+    config: &BootstrapPartitionConfig,
+) -> Result<(), StorageRuntimeError> {
+    // An empty native tree has no root generation to recover. Apply and remove
+    // one deterministic bootstrap value before catalog visibility so the
+    // first checkpoint has a durable root but exposes no reserved user key.
+    for (client_sequence, operation) in [
+        (
+            1,
+            MutationOperation::Put {
+                key: Vec::new(),
+                value: b"crowdb-bootstrap".to_vec(),
+            },
+        ),
+        (2, MutationOperation::Delete { key: Vec::new() }),
+    ] {
+        partition
+            .mutate(
+                config.owner_epoch,
+                RequestId {
+                    client_high: config.partition_id.high,
+                    client_low: config.partition_id.low,
+                    client_sequence,
+                },
+                operation,
+            )
+            .await
+            .map_err(|error| StorageRuntimeError::Partition(format!("bootstrap mutation: {error}")))?;
+    }
+    partition
+        .checkpoint(config.owner_epoch)
+        .await
+        .map(|_| ())
+        .map_err(|error| StorageRuntimeError::Partition(format!("bootstrap checkpoint: {error}")))
+}
+
 fn split_plan(transition: &SplitTransition) -> SplitPlan {
     SplitPlan {
         transition_id: TransitionId {
@@ -472,6 +602,7 @@ struct KvRootCatalogStore {
     group_id: u64,
     tree_id: u64,
     owner_epoch: u64,
+    published_objects: ArcSwap<HashMap<Vec<u8>, Vec<u8>>>,
 }
 
 impl KvRootCatalogStore {
@@ -529,6 +660,7 @@ impl KvRootCatalogStore {
             group_id,
             tree_id,
             owner_epoch,
+            published_objects: ArcSwap::from_pointee(HashMap::new()),
         })
     }
 
@@ -549,6 +681,14 @@ impl KvRootCatalogStore {
                 GetOutcome::NotFound => None,
             })
     }
+
+    fn remember_published(&self, key: &[u8], value: &[u8]) {
+        self.published_objects.rcu(|current| {
+            let mut next = HashMap::clone(current);
+            next.insert(key.to_vec(), value.to_vec());
+            next
+        });
+    }
 }
 
 impl RootCatalogStore for KvRootCatalogStore {
@@ -561,6 +701,9 @@ impl RootCatalogStore for KvRootCatalogStore {
             return Err(crowdb_tree_ffi::CtError::InvalidArgument);
         }
         let key = object_key(tree_id, object);
+        if let Some(value) = self.published_objects.load().get(&key) {
+            return Ok(Some(value.clone()));
+        }
         let value = self
             .wait(self.get(&key))
             .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?;
@@ -592,7 +735,9 @@ impl RootCatalogStore for KvRootCatalogStore {
         let key = object_key(tree_id, object);
         self.wait(self.kv.put(self.store_id, self.group_id, &key, data, None))
             .map(|_| ())
-            .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)
+            .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?;
+        self.remember_published(&key, data);
+        Ok(())
     }
 
     fn publish(
@@ -636,7 +781,10 @@ impl RootCatalogStore for KvRootCatalogStore {
                 .batch_write_cas(self.store_id, self.group_id, &ops, &authority_key, revision),
         )
         .map(|_| ())
-        .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)
+        .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?;
+        self.remember_published(&catalog_key(tree_id, b"current", 0), manifest);
+        self.remember_published(&catalog_key(tree_id, b"manifest", generation), manifest);
+        Ok(())
     }
 
     fn allocate_reference_segment_id(&self, tree_id: u64) -> Result<u64, crowdb_tree_ffi::CtError> {

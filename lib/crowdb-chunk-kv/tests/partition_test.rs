@@ -280,7 +280,7 @@ async fn native_partition_constructor_owns_tree_and_stream_storage() {
     let partition = Partition::open_native(
         PartitionId { high: 1, low: 9 },
         PartitionRange {
-            start: Some(b"a".to_vec()),
+            start: Some(Vec::new()),
             end: Some(b"m".to_vec()),
         },
         4,
@@ -294,6 +294,17 @@ async fn native_partition_constructor_owns_tree_and_stream_storage() {
     partition
         .mutate(
             4,
+            request(8),
+            MutationOperation::Put {
+                key: Vec::new(),
+                value: b"lower-bound".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    partition
+        .mutate(
+            4,
             request(9),
             MutationOperation::Put {
                 key: b"b".to_vec(),
@@ -302,6 +313,11 @@ async fn native_partition_constructor_owns_tree_and_stream_storage() {
         )
         .await
         .unwrap();
+    let page = partition
+        .scan_forward(4, None, None, 8, 1024, None)
+        .await
+        .unwrap();
+    assert_eq!(page.entries[0].key.as_ref(), b"");
     assert_eq!(
         partition.get(4, b"b", None).await.unwrap().unwrap().value,
         b"native"
@@ -1617,6 +1633,7 @@ async fn online_split_rebuilds_both_ranges_and_replays_serving_deltas() {
     assert_eq!(metrics.split_entries_emitted, 2);
     assert_eq!(metrics.split_delta_records, 2);
     assert!(metrics.split_fence_lag_records <= 8);
+    assert!(metrics.split_fence_duration_us > 0);
     let proof = SplitCommitProof {
         catalog_revision: 7,
         artifact: prepared.artifact.clone(),

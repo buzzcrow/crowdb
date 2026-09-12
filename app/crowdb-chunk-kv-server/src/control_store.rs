@@ -123,10 +123,19 @@ impl Group0Kv for CrowdbKvClient {
     }
 
     async fn put_cas(&self, key: &[u8], value: &[u8], expected_revision: u64) -> Result<(), Group0KvError> {
-        CrowdbKvClient::put_cas(self, GROUP0_STORE, GROUP0_GROUP, key, value, expected_revision)
-            .await
-            .map(|_| ())
-            .map_err(map_client_error)
+        const MAX_BUSY_ATTEMPTS: usize = 20;
+        for attempt in 0..MAX_BUSY_ATTEMPTS {
+            match CrowdbKvClient::put_cas(self, GROUP0_STORE, GROUP0_GROUP, key, value, expected_revision)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(KvClientError::CasBusy) if attempt + 1 < MAX_BUSY_ATTEMPTS => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(error) => return Err(map_client_error(error)),
+            }
+        }
+        unreachable!("bounded CAS retry loop always returns")
     }
 }
 

@@ -2,10 +2,10 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_protocol::chunk_kv::{
-    ChunkKvProtocolError, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage,
-    ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState, DomainFailurePolicy,
-    DomainMonitorDescriptor, Id128, KeyRange, OwnerDescriptor, PartitionArtifact, ServingAssignment,
-    ServingGrant, SplitChildAssignment, SplitPhase, SplitReadinessProof, SplitTransition,
+    ChunkKvProtocolError, ChunkKvRangeBalancePolicy, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead,
+    ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState,
+    DomainFailurePolicy, DomainMonitorDescriptor, Id128, KeyRange, OwnerDescriptor, PartitionArtifact,
+    ServingAssignment, ServingGrant, SplitChildAssignment, SplitPhase, SplitReadinessProof, SplitTransition,
 };
 use crowdb_protocol::chunk_stream::StreamName;
 
@@ -127,6 +127,7 @@ fn monitor_descriptor_enforces_safe_timing_order() {
         self_fence_margin_ms: 1_000,
         failure_policy: DomainFailurePolicy::AutomaticSharedStorage,
         balance_policy: "count-first-v1".into(),
+        chunk_kv_range_balance: Some(ChunkKvRangeBalancePolicy::default()),
     };
     descriptor.validate().unwrap();
     let mut unsafe_descriptor = descriptor;
@@ -218,6 +219,7 @@ fn split_transition_requires_exact_coverage_and_common_cutover() {
         split_key: b"m".to_vec(),
         left: child(2, b"a", Some(b"m"), 6),
         right: child(3, b"m", Some(b"z"), 7),
+        planned_at_ms: 0,
         phase: SplitPhase::ParentPreparing,
         readiness_proof: None,
         failure: None,

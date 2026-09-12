@@ -1058,7 +1058,10 @@ async fn process_append_batch(
             Err(_) => break,
         }
     }
-    let result = write_batch_with_watchdog(state, &requests, bytes).await;
+    let mut result = write_batch_with_watchdog(state, &requests, bytes).await;
+    if result.is_err() && matches!(rotate_externally_sealed_active(state).await, Ok(true)) {
+        result = write_batch_with_watchdog(state, &requests, bytes).await;
+    }
     match result {
         Ok(ranges) => {
             for (request, range) in requests.into_iter().zip(ranges) {
@@ -1293,6 +1296,46 @@ async fn rollover(state: &mut WorkerState) -> Result<()> {
     publish_state(state).await?;
     state.metrics.rollovers.fetch_add(1, Ordering::Relaxed);
     Ok(())
+}
+
+async fn rotate_externally_sealed_active(state: &mut WorkerState) -> Result<bool> {
+    let Some(active) = state.manifest.active.clone() else {
+        return Ok(false);
+    };
+    let durable = state
+        .chunks
+        .durable_cursor(active.chunk_id, state.writer_epoch)
+        .await?;
+    if !durable.sealed {
+        return Ok(false);
+    }
+    if durable.offset != active.acknowledged_cursor {
+        return Err(StreamError::Corruption(
+            "externally sealed active chunk has an unexpected durable cursor".into(),
+        ));
+    }
+
+    let tail = state.tail_view.load(Ordering::Acquire);
+    state.manifest.active = None;
+    if tail > active.logical_start {
+        state.extents.push(Extent {
+            chunk_id: active.chunk_id,
+            logical_start: active.logical_start,
+            logical_end: tail,
+            physical_start: active.physical_start,
+        });
+    }
+    state.manifest.sealed_tail = tail;
+    let mut successor = state
+        .chunks
+        .allocate_mirrored(state.stream_name, state.writer_epoch)
+        .await?;
+    successor.logical_start = tail;
+    state.manifest.active = Some(successor);
+    publish_state(state).await?;
+    state.stalled = false;
+    state.metrics.rollovers.fetch_add(1, Ordering::Relaxed);
+    Ok(true)
 }
 
 async fn process_trim(state: &mut WorkerState, offset: u64) -> Result<u64> {

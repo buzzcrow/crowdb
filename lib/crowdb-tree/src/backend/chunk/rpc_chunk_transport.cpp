@@ -17,6 +17,7 @@
 #include <limits>
 #include <memory>
 #include <new>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -154,22 +155,23 @@ template <typename Response> const Response *verified_response(crowdb_rpc_buffer
     return verifier.VerifyBuffer<Response>(nullptr) ? flatbuffers::GetRoot<Response>(bytes) : nullptr;
 }
 
-Status chunkdb_status(FBChunkdbRetCode code)
+Status chunkdb_status(FBChunkdbRetCode code, const flatbuffers::String *error)
 {
     using namespace crowdb::chunkdb::proto;
+    const std::string message = error == nullptr || error->empty() ? "tree chunk request failed" : error->str();
     switch (code) {
     case FBChunkdbRetCode_Success:
         return Status::Ok();
     case FBChunkdbRetCode_InvalidArgument:
     case FBChunkdbRetCode_FailedPrecondition:
     case FBChunkdbRetCode_StripIndexOutOfRange:
-        return Status::invalid_argument("ChunkDB rejected the tree chunk request");
+        return Status::invalid_argument("ChunkDB rejected the tree chunk request: " + message);
     case FBChunkdbRetCode_Unavailable:
     case FBChunkdbRetCode_NotMyRange:
     case FBChunkdbRetCode_Aborted:
-        return Status::unavailable("ChunkDB could not complete the tree chunk request");
+        return Status::unavailable("ChunkDB could not complete the tree chunk request: " + message);
     default:
-        return Status::internal_error("ChunkDB returned an unexpected tree chunk result");
+        return Status::internal_error("ChunkDB returned an unexpected tree chunk result: " + message);
     }
 }
 
@@ -280,7 +282,7 @@ struct RpcChunkTransport::Impl
         RemoteChunk parsed;
         parsed.layout = {
             .chunk_id           = ChunkId(chunk->id()->high(), chunk->id()->low()),
-            .logical_capacity   = chunk->capacity(),
+            .logical_capacity   = static_cast<uint64_t>(chunk->capacity()) * 1024,
             .acknowledged_bytes = chunk->acknowledged_cursor(),
             .sealed             = chunk->state() == FBChunkState_Sealed,
         };
@@ -292,8 +294,8 @@ struct RpcChunkTransport::Impl
                 mirror->segments() == nullptr || mirror->segments()->size() != 3 || wire_strip->unit_kb() == 0) {
                 return Status::corruption("ChunkDB returned a non-mirror tree chunk layout");
             }
-            Strip strip{.chunk_offset = wire_strip->chunk_offset(),
-                        .capacity     = wire_strip->capacity(),
+            Strip strip{.chunk_offset = static_cast<uint64_t>(wire_strip->chunk_offset()) * 1024,
+                        .capacity     = static_cast<uint64_t>(wire_strip->capacity()) * 1024,
                         .unit_kb      = wire_strip->unit_kb(),
                         .mirrors      = {}};
             for (size_t index = 0; index < strip.mirrors.size(); ++index) {
@@ -377,7 +379,7 @@ struct RpcChunkTransport::Impl
         if (response == nullptr) {
             return Status::corruption("ChunkDB query response is malformed");
         }
-        status = chunkdb_status(response->ret_code());
+        status = chunkdb_status(response->ret_code(), response->error_msg());
         if (!status.ok()) {
             return status;
         }
@@ -553,7 +555,7 @@ Status RpcChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint6
     if (response == nullptr) {
         return Status::corruption("ChunkDB allocation response is malformed");
     }
-    status = chunkdb_status(response->ret_code());
+    status = chunkdb_status(response->ret_code(), response->error_msg());
     if (!status.ok()) {
         return status;
     }
@@ -669,7 +671,7 @@ Status RpcChunkTransport::advance_write(ChunkId chunk_id, uint64_t expected_byte
     if (response == nullptr) {
         return Status::corruption("ChunkDB advance response is malformed");
     }
-    status = chunkdb_status(response->ret_code());
+    status = chunkdb_status(response->ret_code(), response->error_msg());
     Impl::RemoteChunk updated;
     if (status.ok()) {
         status = crowdb::tree::detail::RpcChunkTransport::Impl::parse_chunk(response->chunk(), &updated);
@@ -763,15 +765,17 @@ Status RpcChunkTransport::seal_chunk(ChunkId chunk_id, uint64_t owner_epoch, uin
     if (!status.ok()) {
         return status;
     }
+    constexpr uint64_t kKiB = 1024;
     if (chunk.owner_epoch != owner_epoch || chunk.layout.acknowledged_bytes != acknowledged_bytes ||
-        acknowledged_bytes > std::numeric_limits<uint32_t>::max()) {
+        acknowledged_bytes > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) * kKiB) {
         return Status::unavailable("tree chunk RPC seal is fenced by owner epoch or cursor");
     }
+    const uint32_t seal_length_kib = static_cast<uint32_t>((acknowledged_bytes + kKiB - 1) / kKiB);
     const uint64_t                 request_id = impl_->next_request_id();
     const FBInt128                 id(chunk_id.high, chunk_id.low);
     flatbuffers::FlatBufferBuilder builder;
     auto request = crowdb::chunkdb::proto::CreateFBSealChunkRequest(builder, request_id, monotonic_nanos(), &id,
-                                                                    static_cast<uint32_t>(acknowledged_bytes));
+                                                                    seal_length_kib);
     builder.Finish(request);
     std::vector<uint8_t> control(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());
     RpcResult            result;
@@ -784,7 +788,7 @@ Status RpcChunkTransport::seal_chunk(ChunkId chunk_id, uint64_t owner_epoch, uin
     if (response == nullptr) {
         return Status::corruption("ChunkDB seal response is malformed");
     }
-    status = chunkdb_status(response->ret_code());
+    status = chunkdb_status(response->ret_code(), response->error_msg());
     Impl::RemoteChunk updated;
     if (status.ok()) {
         status = crowdb::tree::detail::RpcChunkTransport::Impl::parse_chunk(response->chunk(), &updated);

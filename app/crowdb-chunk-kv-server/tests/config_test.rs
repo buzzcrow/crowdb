@@ -50,5 +50,6 @@ fn invalid_identity_address_and_capacity_fail_closed() {
     assert!(config.validate().is_err());
     config.max_split_fence_lag_records = 1;
     config.storage.metadata_store_id = 0;
+    config.storage.stream_writer_lease_ms = 0;
     assert!(config.validate().is_err());
 }

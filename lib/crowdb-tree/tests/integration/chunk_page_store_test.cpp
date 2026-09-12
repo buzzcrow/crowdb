@@ -479,6 +479,29 @@ TEST(ChunkPageStore, AsyncRotationSealsPreexistingPartialChunk)
     EXPECT_TRUE(old_layout.sealed);
 }
 
+TEST(ChunkPageStore, CheckpointRotatesAChunkSealedByItsWriterLease)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore store({.tree_id = 67, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
+                         catalog, transport);
+    publish_raw_generation(&store, 1);
+    auto first = catalog->load(67);
+    ASSERT_NE(first, nullptr);
+    ASSERT_FALSE(first->packs.empty());
+    const ChunkId old_chunk = first->packs.front().ref.chunk_id;
+    ChunkLayout   old_layout;
+    ASSERT_TRUE(transport->query_chunk(old_chunk, &old_layout).ok());
+    ASSERT_TRUE(transport->seal_chunk(old_chunk, 1, old_layout.acknowledged_bytes).ok());
+
+    publish_raw_generation(&store, 2);
+
+    auto second = catalog->load(67);
+    ASSERT_NE(second, nullptr);
+    ASSERT_FALSE(second->packs.empty());
+    EXPECT_NE(second->packs.front().ref.chunk_id, old_chunk);
+}
+
 TEST(ChunkPageStore, PartialAdvanceFailureRetriesOnFreshChunk)
 {
     auto           catalog   = std::make_shared<MemoryRootCatalog>(1);

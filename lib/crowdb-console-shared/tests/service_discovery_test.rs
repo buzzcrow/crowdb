@@ -58,6 +58,7 @@ async fn chunk_kv_raw_observation_preserves_load_and_partition_state() {
             owner_epoch: 4,
             recovering: true,
         }],
+        partition_loads: Vec::new(),
     };
     svc.register_chunk_kv(7, "127.0.0.1:15507", &payload)
         .await

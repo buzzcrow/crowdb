@@ -9,14 +9,16 @@ use std::sync::Arc;
 
 use clap::Parser;
 use crowdb_chunk_kv_server::{
-    management_router, ChunkKvRangeCatalogPublisher, ChunkKvRangeCatalogReconcileError, ChunkKvRpcService,
-    ChunkKvServerConfig, ChunkKvService, ChunkKvStorage, DomainMonitorRegistry, Group0ControlStore,
-    ManagementState, TransitionExecutor, TransitionProcessor,
+    management_router, BootstrapPartitionConfig, ChunkKvRangeCatalogPublisher,
+    ChunkKvRangeCatalogReconcileError, ChunkKvRpcService, ChunkKvServerConfig, ChunkKvService,
+    ChunkKvStorage, DomainMonitorRegistry, Group0ControlStore, ManagementState, TransitionExecutor,
+    TransitionProcessor,
 };
 use crowdb_kv_client::{ServiceRegistryClient, WatchNotifyClient, WatchSubscription};
 use crowdb_protocol::chunk_kv::{
-    ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPartitionState, EnsureDomainMonitorOutcome,
-    EnsureDomainMonitorRequest,
+    ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
+    ChunkKvRangeCatalogPartitionState, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest, KeyRange,
+    OwnerDescriptor, PartitionArtifact,
 };
 use crowdb_protocol::key::{ChunkKvSplitKey, ChunkKvTransferKey, TextKey};
 use tracing::{error, info, warn};
@@ -191,7 +193,37 @@ async fn main() {
                 "installed initial chunk KV catalog and replayed assigned partitions"
             );
         }
-        Ok(None) => warn!("chunk KV catalog is not published; service remains unready"),
+        Ok(None) => {
+            if let Some(bootstrap) = &config.bootstrap_partition {
+                match bootstrap_initial_catalog(
+                    &storage,
+                    &catalog,
+                    bootstrap,
+                    config.instance_id,
+                    &rpc_advertise_addr.to_string(),
+                )
+                .await
+                {
+                    Ok((head, pages, partition)) => {
+                        if let Err(error) = service.install_catalog_and_reconcile(&head, &pages, &[partition])
+                        {
+                            error!(%error, "failed to install bootstrapped chunk KV catalog");
+                            return;
+                        }
+                        info!(
+                            generation = head.generation,
+                            "published and installed initial chunk KV partition"
+                        );
+                    }
+                    Err(error) => {
+                        error!(%error, "failed to bootstrap initial chunk KV partition");
+                        return;
+                    }
+                }
+            } else {
+                warn!("chunk KV catalog is not published; service remains unready");
+            }
+        }
         Err(error) => {
             error!(%error, "failed to load initial chunk KV catalog");
             return;
@@ -223,6 +255,13 @@ async fn main() {
                             continue;
                         }
                     };
+                    if let Err(error) = refresh_service
+                        .commit_catalog_splits(head.generation, &pages)
+                        .await
+                    {
+                        warn!(%error, "catalog refresh could not commit a fenced split parent");
+                        continue;
+                    }
                     match refresh_service.install_catalog_and_reconcile(&head, &pages, &recovered) {
                         Ok(()) => info!(
                             generation = head.generation,
@@ -336,7 +375,16 @@ async fn main() {
             let request_rate = requests.saturating_sub(previous_requests).saturating_mul(1_000) / elapsed_ms;
             previous_requests = requests;
             previous_ms = now_ms;
-            let observation = heartbeat_service.registry_observation(capacity_bytes, request_rate);
+            let observation = match heartbeat_service
+                .registry_observation_with_load_samples(capacity_bytes, request_rate, 256)
+                .await
+            {
+                Ok(observation) => observation,
+                Err(error) => {
+                    warn!(%error, "chunk KV load sampling failed; publishing unsampled heartbeat");
+                    heartbeat_service.registry_observation(capacity_bytes, request_rate)
+                }
+            };
             if let Err(error) = heartbeat_registry
                 .heartbeat_chunk_kv(heartbeat_config.instance_id, &heartbeat_endpoint, &observation)
                 .await
@@ -393,6 +441,67 @@ async fn main() {
     if let Err(error) = service_registry.unregister("chunk-kv", config.instance_id).await {
         warn!(%error, "failed to unregister chunk KV instance");
     }
+}
+
+async fn bootstrap_initial_catalog(
+    storage: &ChunkKvStorage,
+    catalog: &ChunkKvRangeCatalogPublisher,
+    bootstrap: &BootstrapPartitionConfig,
+    instance_id: u64,
+    rpc_endpoint: &str,
+) -> Result<
+    (
+        ChunkKvRangeCatalogHead,
+        Vec<ChunkKvRangeCatalogPage>,
+        crowdb_chunk_kv::Partition,
+    ),
+    String,
+> {
+    let partition = storage
+        .bootstrap_partition(bootstrap)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut page = ChunkKvRangeCatalogPage {
+        generation: 1,
+        page_index: 0,
+        entries: vec![ChunkKvRangeCatalogEntry {
+            partition_id: bootstrap.partition_id,
+            range: KeyRange {
+                start: Vec::new(),
+                end: None,
+            },
+            owner: OwnerDescriptor {
+                instance_id,
+                rpc_endpoint: rpc_endpoint.into(),
+            },
+            owner_epoch: bootstrap.owner_epoch,
+            state: ChunkKvRangeCatalogPartitionState::Serving,
+            artifact: PartitionArtifact {
+                tree_id: bootstrap.tree_id,
+                stream_name: bootstrap.stream_name,
+            },
+            transition_id: None,
+        }],
+        checksum: [0; 32],
+    };
+    page.seal().map_err(|error| error.to_string())?;
+    let mut head = ChunkKvRangeCatalogHead {
+        generation: 1,
+        previous_generation: None,
+        pages: vec![ChunkKvRangeCatalogPageRef {
+            page_generation: 1,
+            page_index: 0,
+            first_key: Vec::new(),
+            page_checksum: page.checksum,
+        }],
+        checksum: [0; 32],
+    };
+    head.seal().map_err(|error| error.to_string())?;
+    catalog
+        .publish(head.clone(), vec![page.clone()])
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok((head, vec![page], partition))
 }
 
 async fn receive_transition_notify(subscription: &mut Option<WatchSubscription>) -> bool {

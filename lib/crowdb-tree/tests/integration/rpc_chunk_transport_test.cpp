@@ -75,12 +75,12 @@ extern "C" void handle_allocate(uint64_t request_id, uint64_t /*unused*/, uint16
     }
     const auto segment_vector = builder.CreateVectorOfStructs(segments);
     const auto mirror         = CreateFBMirrorStrip(builder, segment_vector);
-    const auto strip          = CreateFBChunkStrip(builder, 0, 0, 256U * 1024U, 256U * 1024U * 1024U, 1, 0, 0,
-                                                   FBStripType_Mirror, FBStripBody_FBMirrorStrip, mirror.Union());
+    const auto strip = CreateFBChunkStrip(builder, 0, 0, 256U * 1024U, 256U * 1024U, 1, 0, 0, FBStripType_Mirror,
+                                          FBStripBody_FBMirrorStrip, mirror.Union());
     const auto strips =
         builder.CreateVector(std::vector<flatbuffers::Offset<crowdb::chunkdb::proto::FBChunkStrip>>{strip});
-    const auto chunk = CreateFBChunk(builder, &chunk_id, 3, FBChunkState_Active, 1, 0, 256U * 1024U * 1024U, 0, strips,
-                                     FBChunkType_BtreePage, 17, 4);
+    const auto chunk    = CreateFBChunk(builder, &chunk_id, 3, FBChunkState_Active, 1, 0, 256U * 1024U, 0, strips,
+                                        FBChunkType_BtreePage, 17, 4);
     const auto response = CreateFBAllocateChunkResponse(
         builder, request_id, 0, crowdb::chunkdb::proto::FBChunkdbRetCode_Success, 0, 0, 0, chunk);
     builder.Finish(response);

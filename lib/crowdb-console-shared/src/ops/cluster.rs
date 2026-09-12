@@ -799,14 +799,21 @@ pub async fn local_deploy_combined(
     tunables: Option<&KvDeployTunables>,
     disk: &LocalDiskdbDeployConfig,
     chunk: &LocalChunkdbDeployConfig,
+    diskio_dummy_disk_type: &str,
 ) -> Result<LocalCombinedDeploySummary> {
     local_deploy(ctx, 3, Some(workspace), tunables).await?;
     for group_id in &disk.data_groups {
         crate::ops::kv_logical::add_group(ctx, 0, *group_id, 100 + *group_id, &[1, 2, 3]).await?;
     }
     let diskdb = local_deploy_diskdb(ctx, workspace, disk).await?;
-    let diskio =
-        local_deploy_diskio(ctx, workspace, chunk.diskio_rpc_workers, chunk.metrics_interval).await?;
+    let diskio = local_deploy_diskio(
+        ctx,
+        workspace,
+        chunk.diskio_rpc_workers,
+        chunk.metrics_interval,
+        diskio_dummy_disk_type,
+    )
+    .await?;
     let chunkdb = local_deploy_chunkdb(ctx, workspace, chunk).await?;
     Ok(LocalCombinedDeploySummary {
         kv_nodes: 3,
@@ -822,7 +829,14 @@ async fn local_deploy_diskio(
     workspace: &std::path::Path,
     rpc_workers: Option<u32>,
     metrics_interval: Option<u64>,
+    dummy_disk_type: &str,
 ) -> Result<usize> {
+    if !matches!(dummy_disk_type, "null" | "mem") {
+        return Err(Error::Validation {
+            field: "diskio_dummy_disk_type".into(),
+            message: "must be null or mem".into(),
+        });
+    }
     let mut nodes = ctx.config().nodes.clone();
     nodes.sort_by_key(|node| node.id);
     let seeds = ctx
@@ -862,6 +876,7 @@ async fn local_deploy_diskio(
                 node_id: node.id,
                 disk_group_id: node.id * 100 + 1,
                 kv_server_mgmt_seeds: vec![leader_seed.clone()],
+                dummy_disk_type: dummy_disk_type.to_owned(),
                 rpc_workers,
                 metrics_interval,
             },

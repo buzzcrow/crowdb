@@ -7,13 +7,14 @@ use crowdb_tree_ffi::{
     KeyRange, PageStore, PageStoreBackend, PinnedGetOutcome, RootCatalogObject, RootCatalogStore,
 };
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 struct FileRootCatalogStore {
     dir: PathBuf,
     generation: AtomicU64,
     next_reference: AtomicU64,
+    hide_current: AtomicBool,
 }
 
 impl FileRootCatalogStore {
@@ -29,6 +30,9 @@ impl FileRootCatalogStore {
 
 impl RootCatalogStore for FileRootCatalogStore {
     fn load(&self, tree_id: u64, object: RootCatalogObject) -> Result<Option<Vec<u8>>, CtError> {
+        if object == RootCatalogObject::CurrentManifest && self.hide_current.load(Ordering::Acquire) {
+            return Ok(None);
+        }
         match std::fs::read(self.path(tree_id, object)) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -287,6 +291,7 @@ fn callback_root_catalog_reopens_published_manifest() {
         dir: dir.path().to_path_buf(),
         generation: AtomicU64::new(0),
         next_reference: AtomicU64::new(1),
+        hide_current: AtomicBool::new(false),
     });
     let catalog = Arc::new(ChunkRootCatalog::open_callback(backend).unwrap());
     let options = ChunkPageStoreOptions {
@@ -322,6 +327,50 @@ fn callback_root_catalog_reopens_published_manifest() {
         ..Config::default()
     })
     .unwrap();
+    assert_eq!(
+        reopened.get(b"durable-root").unwrap(),
+        Some((1, b"chunk-value".to_vec()))
+    );
+}
+
+#[test]
+fn published_manifest_is_visible_through_the_same_page_store() {
+    let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-callback-read-own-write");
+    let backend = Arc::new(FileRootCatalogStore {
+        dir: dir.path().to_path_buf(),
+        generation: AtomicU64::new(0),
+        next_reference: AtomicU64::new(1),
+        hide_current: AtomicBool::new(false),
+    });
+    let catalog_backend: Arc<dyn RootCatalogStore> = backend.clone();
+    let catalog = Arc::new(ChunkRootCatalog::open_callback(catalog_backend).unwrap());
+    let store = Arc::new(
+        PageStore::open_chunk(
+            ChunkPageStoreOptions {
+                tree_id: 43,
+                owner_epoch: 10,
+                pack_bytes: 4096,
+                iu_size: 65_536,
+                max_concurrent_packs: 2,
+                materialization_bytes_per_pass: 4096,
+            },
+            catalog,
+            None,
+        )
+        .unwrap(),
+    );
+    let config = Config {
+        page_store: Some(Arc::clone(&store)),
+        ..Config::default()
+    };
+    let tree = Crowdbtree::open(&config).unwrap();
+    tree.apply_put(1, b"durable-root", b"chunk-value").unwrap();
+    tree.flush().unwrap();
+    let published = tree.snapshot_info().unwrap();
+    backend.hide_current.store(true, Ordering::Release);
+
+    let reopened = Crowdbtree::open(&config).unwrap();
+    assert_eq!(reopened.snapshot_state().unwrap(), published);
     assert_eq!(
         reopened.get(b"durable-root").unwrap(),
         Some((1, b"chunk-value".to_vec()))

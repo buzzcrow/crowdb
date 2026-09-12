@@ -4,7 +4,10 @@
 use std::net::SocketAddr;
 use std::path::Path;
 
-use crowdb_protocol::chunk_kv::{DomainFailurePolicy, DomainMonitorDescriptor};
+use crowdb_protocol::chunk_kv::{
+    ChunkKvRangeBalancePolicy, DomainFailurePolicy, DomainMonitorDescriptor, Id128,
+};
+use crowdb_protocol::chunk_stream::StreamName;
 use crowdb_protocol::{CHUNK_KV_HTTP_BASE, CHUNK_KV_RPC_BASE, KV_SERVER_MGMT_BASE};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -35,6 +38,7 @@ pub struct ChunkKvServerConfig {
     pub shutdown_drain_timeout_ms: u64,
     pub rpc_workers: u32,
     pub storage: StorageConfig,
+    pub bootstrap_partition: Option<BootstrapPartitionConfig>,
     pub monitor: DomainMonitorDescriptor,
     pub balance: BalanceConfig,
 }
@@ -53,6 +57,7 @@ impl Default for ChunkKvServerConfig {
             shutdown_drain_timeout_ms: 30_000,
             rpc_workers: 2,
             storage: StorageConfig::default(),
+            bootstrap_partition: None,
             monitor: default_monitor(),
             balance: BalanceConfig::default(),
         }
@@ -67,8 +72,9 @@ impl ChunkKvServerConfig {
     /// Returns a typed file, TOML, or semantic validation error.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let encoded = std::fs::read_to_string(path).map_err(|error| ConfigError::Read(error.to_string()))?;
-        let config: Self =
+        let mut config: Self =
             toml::from_str(&encoded).map_err(|error| ConfigError::Decode(error.to_string()))?;
+        config.monitor.chunk_kv_range_balance = Some(balance_policy(&config.balance));
         config.validate()?;
         Ok(config)
     }
@@ -106,6 +112,9 @@ impl ChunkKvServerConfig {
             ));
         }
         self.storage.validate()?;
+        if let Some(bootstrap) = &self.bootstrap_partition {
+            bootstrap.validate()?;
+        }
         self.monitor
             .validate()
             .map_err(|error| ConfigError::Invalid(error.to_string()))?;
@@ -115,6 +124,36 @@ impl ChunkKvServerConfig {
             || self.balance.cooldown_ms == 0
         {
             return Err(ConfigError::Invalid("balance policy is invalid".into()));
+        }
+        if self.monitor.chunk_kv_range_balance.as_ref() != Some(&balance_policy(&self.balance)) {
+            return Err(ConfigError::Invalid(
+                "monitor and server balance policy differ".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BootstrapPartitionConfig {
+    pub partition_id: Id128,
+    pub tree_id: u64,
+    pub stream_name: StreamName,
+    pub owner_epoch: u64,
+    pub metadata_group_id: u64,
+}
+
+impl BootstrapPartitionConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.partition_id == Id128::default()
+            || self.tree_id == 0
+            || self.stream_name == StreamName::default()
+            || self.owner_epoch == 0
+            || self.metadata_group_id == 0
+        {
+            return Err(ConfigError::Invalid(
+                "bootstrap partition identities and epoch must be nonzero".into(),
+            ));
         }
         Ok(())
     }
@@ -142,13 +181,12 @@ impl Default for StorageConfig {
 
 impl StorageConfig {
     fn validate(&self) -> Result<(), ConfigError> {
-        if self.metadata_store_id == 0
-            || self.stream_writer_lease_ms == 0
+        if self.stream_writer_lease_ms == 0
             || self.diskio_connections_per_endpoint == 0
             || self.diskio_rpc_workers == 0
         {
             return Err(ConfigError::Invalid(
-                "storage identifiers, lease, connections, and workers must be nonzero".into(),
+                "storage lease, connections, and workers must be nonzero".into(),
             ));
         }
         Ok(())
@@ -175,5 +213,16 @@ fn default_monitor() -> DomainMonitorDescriptor {
         self_fence_margin_ms: 1_000,
         failure_policy: DomainFailurePolicy::AutomaticSharedStorage,
         balance_policy: "count-first-v1".into(),
+        chunk_kv_range_balance: Some(ChunkKvRangeBalancePolicy::default()),
+    }
+}
+
+fn balance_policy(config: &BalanceConfig) -> ChunkKvRangeBalancePolicy {
+    ChunkKvRangeBalancePolicy {
+        target_partitions_per_owner: u32::try_from(config.target_partitions_per_owner).unwrap_or(u32::MAX),
+        target_partition_bytes: config.target_partition_bytes,
+        minimum_weighted_improvement_percent: config.minimum_weighted_improvement_percent,
+        cooldown_ms: config.cooldown_ms,
+        max_owner_request_rate: config.max_owner_request_rate,
     }
 }

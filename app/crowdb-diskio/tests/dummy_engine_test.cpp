@@ -142,6 +142,20 @@ TEST(MemDisk, WriteAndReadBack)
     EXPECT_EQ(out, data);
 }
 
+TEST(MemDisk, BackingFileCoversEveryZone)
+{
+    auto engine = make_engine();
+    std::vector<crowdb::diskio::Zone> zones{{0, 0, 4096}, {1, 16384, 4096}};
+    auto disk = std::make_shared<crowdb::diskio::MemDisk>(crowdb::diskio::DiskId{8, 8}, engine, std::move(zones));
+    std::vector<uint8_t> out(4096, 0xff);
+    std::atomic<int>     read_res{-1};
+    disk->engine()->submit_read(disk.get(), 16384, out.data(), out.size(), 0,
+                                [&](int r) { read_res.store(r, std::memory_order_relaxed); });
+    wait_for([&] { return read_res.load() != -1; });
+    EXPECT_EQ(read_res.load(), 4096);
+    EXPECT_EQ(out, std::vector<uint8_t>(4096, 0));
+}
+
 TEST(MemDisk, FsyncSucceeds)
 {
     auto engine = make_engine();

@@ -1290,6 +1290,19 @@ impl Partition {
             .and_then(|active| active.artifact.clone())
     }
 
+    /// Returns the prepared artifact while this parent awaits catalog commit.
+    #[must_use]
+    pub async fn current_prepared_split_artifact(&self) -> Option<SplitArtifact> {
+        if self.lifecycle() != PartitionLifecycle::SplitFenced {
+            return None;
+        }
+        self.split_transition
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|active| active.artifact.clone())
+    }
+
     /// Retires the parent only for an exact durable catalog publication proof.
     ///
     /// # Errors
