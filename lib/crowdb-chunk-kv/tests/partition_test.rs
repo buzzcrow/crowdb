@@ -250,6 +250,68 @@ async fn native_partition_constructor_owns_tree_and_stream_storage() {
 }
 
 #[tokio::test]
+async fn native_partition_reopens_the_exact_checkpointed_tree() {
+    let page_store = Arc::new(crowdb_tree_ffi::PageStore::open_mem(1).unwrap());
+    let tree = crowdb_tree_ffi::Crowdbtree::open(&crowdb_tree_ffi::Config {
+        page_store: Some(Arc::clone(&page_store)),
+        key_range: crowdb_tree_ffi::KeyRange::Bounded {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        ..crowdb_tree_ffi::Config::default()
+    })
+    .unwrap();
+    tree.apply_put(1, b"b", b"persisted").unwrap();
+    tree.flush().unwrap();
+    let (tree_manifest, applied_seq) = tree.snapshot_info().unwrap();
+    drop(tree);
+
+    let stream_name = StreamName { high: 1, low: 10 };
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let stream = ChunkStream::create(
+        StreamBinding {
+            stream_name,
+            metadata_group_id: 7,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("chunk-kv-partition".into()),
+        },
+        4,
+        StreamConfig::default(),
+        store.clone() as Arc<dyn StreamRegistry>,
+        store.clone() as Arc<dyn StreamMetadataStore>,
+        store as Arc<dyn StreamChunkStore>,
+    )
+    .await
+    .unwrap();
+    let partition = Partition::recover_native(
+        PartitionId { high: 1, low: 10 },
+        PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        4,
+        Checkpoint {
+            tree_id: 44,
+            tree_manifest,
+            applied_seq,
+            stream_name,
+            replay_offset: 0,
+        },
+        PartitionConfig::default(),
+        crowdb_tree_ffi::Config::default(),
+        page_store,
+        stream,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        partition.get(4, b"b", None).await.unwrap().unwrap().value,
+        b"persisted"
+    );
+}
+
+#[tokio::test]
 async fn same_batch_conditions_observe_preceding_staged_mutations() {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let partition = partition(
