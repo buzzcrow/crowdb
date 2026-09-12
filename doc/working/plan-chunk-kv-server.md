@@ -28,11 +28,11 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 ## Phase 3: Server and RPC
 
-- [~] Add `crowdb-chunk-kv-server` config, logging, metrics, health,
+- [ ] Add `crowdb-chunk-kv-server` config, logging, metrics, health,
   management, graceful shutdown, and zero/many partition hosting.
-- [ ] Add direct RPC types and handlers for R142 operations, typed errors,
+- [x] Add direct point RPC types and handlers for R142 operations, typed errors,
   request identity, journal positions, deadlines, and stale-owner redirects.
-- [ ] Bind scan continuation tokens to direction, partition, epoch, and map
+- [~] Bind ordered seek and scan requests to direction, partition, epoch, and map
   revision and return refresh-required after topology changes.
 
 ## Phase 4: Transfer, Split, and Balance
@@ -66,19 +66,19 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 ## Open Issues
 
-- Production R142 constructors and ordered operations constrain full data-plane
-  and real-process coverage.
+- Production catalog, grant, and partition startup wiring constrain complete
+  data-plane and real-process coverage.
 - Group-0 page/head persistence and monitor supervision need integration with
   the existing KV client/server boundaries.
 - R145 owns routed multi-partition composition and end-to-end client coverage.
-- Data RPC request/response, transition-detail, and balance-policy wire models
-  now cover the point-operation foundation; crowdb-rpc FlatBuffers transport,
-  ordered seek/scan execution, and management endpoints remain. Scan interval
-  clipping and topology-bound continuation validation are complete.
+- Point operations now cross a FlatBuffers crowdb-rpc boundary;
+  transition-detail and balance-policy wire models cover their control-plane
+  foundation. Ordered seek/scan execution remains; scan interval clipping and
+  topology-bound continuation validation are complete.
 - Transfer records and the reducer preserve no-copy artifact identity and old-
   owner exclusion, but the group-0 transition store, target recovery worker,
   split orchestration, and catalog cutover adapter remain.
-- Config defaults, reserved ports, lock-free counters, health snapshots, and
-  drain-time admission closure are implemented; process logging, HTTP
-  management, heartbeat publication, RPC listener startup, and bounded
+- Config defaults, reserved ports, process logging, HTTP management, RPC
+  listener startup, lock-free counters, health snapshots, and drain-time
+  admission closure are implemented; heartbeat publication and bounded
   checkpoint drain remain.

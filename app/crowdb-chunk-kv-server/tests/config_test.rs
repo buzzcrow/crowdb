@@ -21,6 +21,7 @@ fn defaults_close_the_documented_timing_contract() {
     assert_eq!(config.storage.stream_writer_lease_ms, 30_000);
     assert_eq!(config.storage.diskio_connections_per_endpoint, 1);
     assert_eq!(config.storage.diskio_rpc_workers, 2);
+    assert_eq!(config.rpc_workers, 2);
 
     config.monitor.self_fence_margin_ms = 3_000;
     assert!(matches!(config.validate(), Err(ConfigError::Invalid(_))));

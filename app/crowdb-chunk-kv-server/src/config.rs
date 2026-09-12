@@ -31,6 +31,7 @@ pub struct ChunkKvServerConfig {
     pub max_hosted_partitions: usize,
     pub catalog_refresh_interval_ms: u64,
     pub shutdown_drain_timeout_ms: u64,
+    pub rpc_workers: u32,
     pub storage: StorageConfig,
     pub monitor: DomainMonitorDescriptor,
     pub balance: BalanceConfig,
@@ -46,6 +47,7 @@ impl Default for ChunkKvServerConfig {
             max_hosted_partitions: 256,
             catalog_refresh_interval_ms: 5_000,
             shutdown_drain_timeout_ms: 30_000,
+            rpc_workers: 2,
             storage: StorageConfig::default(),
             monitor: default_monitor(),
             balance: BalanceConfig::default(),
@@ -86,6 +88,7 @@ impl ChunkKvServerConfig {
         if self.max_hosted_partitions == 0
             || self.catalog_refresh_interval_ms == 0
             || self.shutdown_drain_timeout_ms == 0
+            || self.rpc_workers == 0
         {
             return Err(ConfigError::Invalid(
                 "partition capacity and lifecycle intervals must be nonzero".into(),

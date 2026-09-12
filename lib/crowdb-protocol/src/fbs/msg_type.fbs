@@ -13,6 +13,7 @@ namespace crowdb.rpc.proto;
 //   diskdb      3000s
 //   chunkdb     3300s
 //   disk io     3600s
+//   chunk KV    3700s
 enum FBMsgType : int16 {
     EUnknownRequest = 0,
     EUnknownResponse = 1,
@@ -126,4 +127,7 @@ enum FBMsgType : int16 {
     EReserveStripGroupResponse = 3333,
     EMutateStripReservationRequest = 3334,
     EMutateStripReservationResponse = 3335,
+    // chunk KV service (range 3700s, see chunk_kv.fbs)
+    EChunkKvPointRequest = 3700,
+    EChunkKvPointResponse = 3701,
 }

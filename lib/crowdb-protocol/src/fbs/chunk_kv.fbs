@@ -1,0 +1,93 @@
+include "common_type.fbs";
+
+namespace crowdb.chunk_kv.proto;
+
+enum FBChunkKvOperation : int8 {
+    Get = 0,
+    Put = 1,
+    Delete = 2,
+    PutIfAbsent = 3,
+    CompareExchange = 4,
+    ConditionalDelete = 5,
+}
+
+enum FBChunkKvCondition : int8 {
+    None = 0,
+    Revision = 1,
+    Value = 2,
+}
+
+enum FBChunkKvResult : int8 {
+    Value = 0,
+    Mutation = 1,
+}
+
+enum FBChunkKvRetCode : int16 {
+    Success = 0,
+    Overloaded = 1,
+    WriteStalled = 2,
+    Recovering = 3,
+    LeaseExpired = 4,
+    RequestExpired = 5,
+    RequestConflict = 6,
+    NotMyRange = 7,
+    RefreshRequired = 8,
+    InvalidRequest = 9,
+    Internal = 10,
+}
+
+table FBChunkKvPointRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    client_instance_high:uint64;
+    client_instance_low:uint64;
+    client_sequence:uint64;
+    map_revision:uint64;
+    partition_high:uint64;
+    partition_low:uint64;
+    owner_epoch:uint64;
+    has_min_journal_position:bool;
+    min_stream_high:uint64;
+    min_stream_low:uint64;
+    min_journal_offset:uint64;
+    has_deadline:bool;
+    deadline_ms:uint64;
+    operation:FBChunkKvOperation;
+    key:[ubyte];
+    value:[ubyte];
+    condition:FBChunkKvCondition;
+    condition_revision:uint64;
+    condition_value:[ubyte];
+}
+
+table FBChunkKvPointResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    ret_code:FBChunkKvRetCode;
+    error_msg:string;
+    map_revision:uint64;
+    has_journal_position:bool;
+    journal_stream_high:uint64;
+    journal_stream_low:uint64;
+    journal_offset:uint64;
+    result:FBChunkKvResult;
+    found:bool;
+    key:[ubyte];
+    value:[ubyte];
+    value_revision:uint64;
+    mutation_applied:bool;
+    has_mutation_revision:bool;
+    mutation_revision:uint64;
+    has_observed:bool;
+    observed_key:[ubyte];
+    observed_value:[ubyte];
+    observed_revision:uint64;
+    has_retry_after:bool;
+    retry_after_ms:uint64;
+    has_latest_map_revision:bool;
+    latest_map_revision:uint64;
+    has_owner_hint:bool;
+    owner_instance_id:uint64;
+    owner_rpc_endpoint:string;
+    owner_epoch:uint64;
+}

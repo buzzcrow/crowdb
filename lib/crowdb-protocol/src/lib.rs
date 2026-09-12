@@ -11,6 +11,7 @@
 mod types;
 
 pub mod chunk_kv;
+pub mod chunk_kv_wire;
 pub mod chunk_stream;
 
 pub mod common {
@@ -147,6 +148,17 @@ mod chunkdb_generated {
     )]
     include!(concat!(env!("OUT_DIR"), "/chunkdb_generated.rs"));
 }
+mod chunk_kv_generated {
+    #![allow(
+        unsafe_code,
+        clippy::all,
+        clippy::pedantic,
+        dead_code,
+        non_camel_case_types,
+        non_snake_case
+    )]
+    include!(concat!(env!("OUT_DIR"), "/chunk_kv_generated.rs"));
+}
 mod chunk_task_generated {
     #![allow(
         unsafe_code,
@@ -246,6 +258,12 @@ pub mod chunkdb_fb {
     pub use crate::chunkdb_generated::crowdb::chunkdb::proto::*;
     pub use crate::chunkdb_generated::crowdb::diskdb::proto::FBSegment;
     pub use crate::chunkdb_generated::crowdb::rpc::proto::FBInt128;
+}
+
+/// Flatbuffer chunk-KV data-plane control-message types.
+pub mod chunk_kv_fb {
+    pub use crate::chunk_kv_generated::crowdb::chunk_kv::proto::*;
+    pub use crate::chunk_kv_generated::crowdb::rpc::proto::FBInt128;
 }
 
 /// Flatbuffer persistent task value types.

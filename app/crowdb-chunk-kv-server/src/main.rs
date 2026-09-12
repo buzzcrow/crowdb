@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use clap::Parser;
 use crowdb_chunk_kv_server::{
-    management_router, ChunkKvServerConfig, ChunkKvService, ChunkKvStorage, ManagementState,
+    management_router, ChunkKvRpcService, ChunkKvServerConfig, ChunkKvService, ChunkKvStorage,
+    ManagementState,
 };
 use tracing::{error, info, warn};
 
@@ -49,6 +50,7 @@ struct Cli {
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() {
     let args = Cli::parse();
     let _log_guards = if args.log {
@@ -133,6 +135,23 @@ async fn main() {
         }
     };
 
+    let rpc_server = Arc::new(crowdb_rpc_ffi::RpcServer::with_engines(
+        None,
+        1,
+        config.rpc_workers,
+    ));
+    if let Err(error) = rpc_server.listen(&rpc_addr.ip().to_string(), i32::from(rpc_addr.port())) {
+        error!(%rpc_addr, %error, "data RPC bind failed");
+        return;
+    }
+    let rpc_service = Arc::new(ChunkKvRpcService::new(
+        Arc::clone(&service),
+        tokio::runtime::Handle::current(),
+    ));
+    rpc_service.register_handlers(&rpc_server);
+    rpc_server.start();
+    info!(%rpc_addr, "data RPC server listening");
+
     let listener = match tokio::net::TcpListener::bind(http_addr).await {
         Ok(listener) => listener,
         Err(error) => {
@@ -141,14 +160,15 @@ async fn main() {
         }
     };
     info!(%http_addr, "HTTP management server listening");
-    warn!(%rpc_addr, "data RPC listener is not implemented; readiness remains fenced");
 
     let shutdown_service = Arc::clone(&service);
+    let shutdown_rpc = Arc::clone(&rpc_server);
     let app = management_router(ManagementState::new(service));
     if let Err(error) = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
             shutdown_service.begin_drain();
+            shutdown_rpc.stop();
             info!("chunk KV service admission drained");
         })
         .await

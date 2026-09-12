@@ -7,6 +7,7 @@ pub mod catalog;
 pub mod config;
 pub mod management;
 pub mod metrics;
+pub mod rpc;
 pub mod server;
 pub mod serving;
 pub mod storage;
@@ -18,6 +19,7 @@ pub use catalog::{
 pub use config::{ChunkKvServerConfig, ConfigError, StorageConfig};
 pub use management::{management_router, ManagementState};
 pub use metrics::{ServerMetrics, ServerMetricsSnapshot};
+pub use rpc::ChunkKvRpcService;
 pub use server::{ChunkKvService, HostedPartitionHealth, ServerHealth, ServerLifecycle};
 pub use serving::{
     choose_split, choose_transfer, classify_instance, desired_partition_count, replacement_may_activate,
