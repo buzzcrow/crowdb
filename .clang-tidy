@@ -1,4 +1,6 @@
 ---
+# Suppressed checks — fix-its are unsafe or the warning source is
+# third-party macro noise. See coding SKILL.md § "C++ clang-tidy".
 Checks: >
   -*,
   clang-analyzer-*,
@@ -11,11 +13,11 @@ Checks: >
   -readability-magic-numbers,
   -readability-function-cognitive-complexity,
   -bugprone-easily-swappable-parameters,
-  -bugprone-signed-bitwise,
-  -bugprone-implicit-widening-of-multiplication-result,
-  -performance-unnecessary-value-param,
-  -performance-move-const-arg,
-  -readability-convert-member-functions-to-static
+  -bugprone-signed-bitwise,                          # POSIX flag macros are signed by definition
+  -bugprone-implicit-widening-of-multiplication-result, # fix-its wrap multi-arg calls in static_cast
+  -performance-unnecessary-value-param,              # breaks std::move of params into storage
+  -performance-move-const-arg,                       # strips valid std::move from std::function
+  -readability-convert-member-functions-to-static    # mangles coroutine promise types
 WarningsAsErrors: ''
 HeaderFilterRegex: '(^|.*/)crowdb-tree/(include|src|tests)/.*'
 FormatStyle: file
