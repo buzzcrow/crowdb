@@ -6,10 +6,39 @@
 use super::encoding::{
     check_path_exact, decode_path_u64, encode_path_header, encode_path_u64, KeyError, TextKey,
 };
+use crate::chunk_kv::Id128;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DomainMonitorKey {
     pub domain: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ChunkKvTransferKey {
+    pub transition_id: Id128,
+}
+
+impl TextKey for ChunkKvTransferKey {
+    const PATH_MAGIC: &'static str = "/chunk-kv";
+    const PATH_TYPE: &'static str = "transfer";
+
+    fn encode_to_path(&self, out: &mut String) {
+        encode_path_header(out, Self::PATH_MAGIC, Self::PATH_TYPE);
+        encode_path_u64(out, self.transition_id.high);
+        encode_path_u64(out, self.transition_id.low);
+    }
+
+    fn decode_path(parts: &[&str]) -> Result<Self, KeyError> {
+        if parts.len() < 2 {
+            return Err(KeyError::ShortInput);
+        }
+        let transition_id = Id128 {
+            high: decode_path_u64(parts[0])?,
+            low: decode_path_u64(parts[1])?,
+        };
+        check_path_exact(parts, 2)?;
+        Ok(Self { transition_id })
+    }
 }
 
 impl TextKey for DomainMonitorKey {
@@ -112,6 +141,13 @@ mod tests {
             domain: "chunk-kv".into(),
         };
         assert_eq!(DomainMonitorKey::from_path(&domain.to_path()).unwrap(), domain);
+        let transfer = ChunkKvTransferKey {
+            transition_id: Id128 { high: 7, low: 8 },
+        };
+        assert_eq!(
+            ChunkKvTransferKey::from_path(&transfer.to_path()).unwrap(),
+            transfer
+        );
         assert_eq!(
             ChunkKvCatalogHeadKey::from_path(&ChunkKvCatalogHeadKey.to_path()).unwrap(),
             ChunkKvCatalogHeadKey

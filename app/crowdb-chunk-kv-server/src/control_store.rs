@@ -9,9 +9,11 @@ use async_trait::async_trait;
 use crowdb_kv_client::{CrowdbKvClient, Error as KvClientError, GetOutcome, ReadMode};
 use crowdb_protocol::chunk_kv::{
     CatalogHead, CatalogPage, DomainMonitorDescriptor, EnsureDomainMonitorOutcome, ServingGrant,
+    TransferTransition,
 };
 use crowdb_protocol::key::{
-    ChunkKvCatalogHeadKey, ChunkKvCatalogPageKey, DomainMonitorKey, ServingGrantKey, TextKey,
+    ChunkKvCatalogHeadKey, ChunkKvCatalogPageKey, ChunkKvTransferKey, DomainMonitorKey, ServingGrantKey,
+    TextKey,
 };
 use thiserror::Error;
 
@@ -108,6 +110,90 @@ impl Group0ControlStore {
             )));
         }
         Ok(grant)
+    }
+
+    /// Loads and validates one durable ownership-transfer transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed control-plane error for unavailable, malformed, or
+    /// internally inconsistent persisted state.
+    pub async fn load_transfer_transition(
+        &self,
+        transition_id: crowdb_protocol::chunk_kv::Id128,
+    ) -> Result<Option<(TransferTransition, u64)>, MonitorError> {
+        let path = ChunkKvTransferKey { transition_id }.to_path();
+        let stored = self
+            .read::<TransferTransition>(&path)
+            .await
+            .map_err(MonitorError::Store)?;
+        if let Some((transition, revision)) = stored {
+            transition
+                .validate()
+                .map_err(|error| MonitorError::PlanFailed(error.to_string()))?;
+            if transition.transition_id != transition_id {
+                return Err(MonitorError::PlanFailed(
+                    "transfer key and record identity differ".into(),
+                ));
+            }
+            return Ok(Some((transition, revision)));
+        }
+        Ok(None)
+    }
+
+    /// Persists exactly one validated transfer state with revision fencing.
+    /// Exact repeats are idempotent; stale or conflicting writers fail closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a planning error for invalid/conflicting state or a storage
+    /// error when the write cannot be reconciled.
+    pub async fn persist_transfer_transition(
+        &self,
+        transition: &TransferTransition,
+        expected_revision: u64,
+    ) -> Result<u64, MonitorError> {
+        transition
+            .validate()
+            .map_err(|error| MonitorError::PlanFailed(error.to_string()))?;
+        let path = ChunkKvTransferKey {
+            transition_id: transition.transition_id,
+        }
+        .to_path();
+        if let Some((current, revision)) = self.load_transfer_transition(transition.transition_id).await? {
+            if current == *transition {
+                return Ok(revision);
+            }
+            if revision != expected_revision {
+                return Err(MonitorError::PlanFailed(
+                    "transfer transition revision conflict".into(),
+                ));
+            }
+        } else if expected_revision != 0 {
+            return Err(MonitorError::PlanFailed(
+                "transfer transition revision conflict".into(),
+            ));
+        }
+        let encoded =
+            serde_json::to_vec(transition).map_err(|error| MonitorError::Store(error.to_string()))?;
+        match self
+            .kv
+            .put_cas(path.as_bytes(), &encoded, expected_revision)
+            .await
+        {
+            Ok(()) | Err(Group0KvError::CasFailed { .. } | Group0KvError::OutcomeUnknown) => {
+                match self.load_transfer_transition(transition.transition_id).await? {
+                    Some((current, revision)) if current == *transition => Ok(revision),
+                    Some(_) => Err(MonitorError::PlanFailed(
+                        "transfer transition write conflicted".into(),
+                    )),
+                    None => Err(MonitorError::Store(
+                        "transfer transition write was not visible after reconciliation".into(),
+                    )),
+                }
+            }
+            Err(error) => Err(MonitorError::Store(error.to_string())),
+        }
     }
 
     async fn read<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<Option<(T, u64)>, String> {

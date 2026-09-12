@@ -7,12 +7,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use crowdb_chunk_kv_server::{
     CatalogPublisher, CatalogStore, DomainMonitorRegistry, Group0ControlStore, Group0Kv, Group0KvError,
-    VersionedValue,
+    TransferStateMachine, VersionedValue,
 };
 use crowdb_protocol::chunk_kv::{
-    CatalogEntry, CatalogHead, CatalogPage, CatalogPageRef, CatalogPartitionState, DomainFailurePolicy,
-    DomainMonitorDescriptor, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest, Id128, KeyRange,
-    OwnerDescriptor, PartitionArtifact, ServingAssignment, ServingGrant,
+    AuthorityReleaseProof, CatalogEntry, CatalogHead, CatalogPage, CatalogPageRef, CatalogPartitionState,
+    DomainFailurePolicy, DomainMonitorDescriptor, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest,
+    Id128, KeyRange, OwnerDescriptor, PartitionArtifact, ServingAssignment, ServingGrant, TransferPhase,
+    TransferTransition,
 };
 use crowdb_protocol::chunk_stream::StreamName;
 use crowdb_protocol::key::{ChunkKvCatalogHeadKey, ServingGrantKey, TextKey};
@@ -136,6 +137,36 @@ fn descriptor() -> DomainMonitorDescriptor {
     }
 }
 
+fn transfer() -> TransferTransition {
+    TransferTransition {
+        transition_id: Id128 { high: 9, low: 10 },
+        partition_id: Id128 { high: 1, low: 2 },
+        range: KeyRange {
+            start: Vec::new(),
+            end: None,
+        },
+        source: OwnerDescriptor {
+            instance_id: 11,
+            rpc_endpoint: "127.0.0.1:9911".into(),
+        },
+        source_epoch: 3,
+        target: OwnerDescriptor {
+            instance_id: 12,
+            rpc_endpoint: "127.0.0.1:9912".into(),
+        },
+        target_epoch: 4,
+        artifact: PartitionArtifact {
+            tree_id: 5,
+            stream_name: StreamName { high: 6, low: 7 },
+        },
+        old_grant_expires_at_ms: 10_000,
+        phase: TransferPhase::Planned,
+        release_proof: None,
+        readiness_proof: None,
+        failure: None,
+    }
+}
+
 #[tokio::test]
 async fn group0_catalog_reconciles_an_ambiguous_committed_head() {
     let kv = Arc::new(TestKv::default());
@@ -224,4 +255,83 @@ async fn group0_serving_grant_load_rejects_invalid_authority() {
         store.load_serving_grant(7).await,
         Err(Group0KvError::Unavailable(_))
     ));
+}
+
+#[tokio::test]
+async fn group0_transfer_store_reconciles_and_resumes_exact_phase() {
+    let kv = Arc::new(TestKv::default());
+    let store = Group0ControlStore::new(kv.clone());
+    let planned = transfer();
+    let revision = store.persist_transfer_transition(&planned, 0).await.unwrap();
+    assert_eq!(
+        store.persist_transfer_transition(&planned, 0).await.unwrap(),
+        revision
+    );
+
+    let mut machine = TransferStateMachine::restore(planned).unwrap();
+    machine
+        .record_source_fence(AuthorityReleaseProof::ExplicitFence {
+            source_instance_id: 11,
+            source_epoch: 3,
+            durable_tail: 19,
+        })
+        .unwrap();
+    machine.begin_target_prepare().unwrap();
+    let preparing = machine.transition().clone();
+    let path = crowdb_protocol::key::ChunkKvTransferKey {
+        transition_id: preparing.transition_id,
+    }
+    .to_path();
+    kv.inject(InjectedPut {
+        path: path.clone(),
+        error: Group0KvError::OutcomeUnknown,
+        commit: true,
+    })
+    .await;
+    let next_revision = store
+        .persist_transfer_transition(&preparing, revision)
+        .await
+        .unwrap();
+    assert!(next_revision > revision);
+
+    let (loaded, loaded_revision) = store
+        .load_transfer_transition(preparing.transition_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded_revision, next_revision);
+    assert_eq!(loaded, preparing);
+    assert_eq!(
+        TransferStateMachine::restore(loaded)
+            .unwrap()
+            .next_action(true, 1_000),
+        crowdb_chunk_kv_server::TransferAction::PrepareTarget {
+            instance_id: 12,
+            owner_epoch: 4,
+        }
+    );
+
+    let mut conflicting = transfer();
+    conflicting.old_grant_expires_at_ms += 1;
+    assert!(store
+        .persist_transfer_transition(&conflicting, revision)
+        .await
+        .is_err());
+
+    let invalid = TransferTransition {
+        phase: TransferPhase::TargetPrepared,
+        ..preparing
+    };
+    kv.put_cas(
+        path.as_bytes(),
+        &serde_json::to_vec(&invalid).unwrap(),
+        next_revision,
+    )
+    .await
+    .unwrap();
+    let corrupt_revision = kv.get(path.as_bytes()).await.unwrap().unwrap().revision;
+    assert!(store
+        .persist_transfer_transition(&transfer(), corrupt_revision)
+        .await
+        .is_err());
 }
