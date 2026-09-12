@@ -344,7 +344,7 @@ async fn main() {
         info!("keep-alive loop stopped");
     }
     if let Some(bm) = binding_monitor {
-        bm.stop();
+        bm.stop_and_wait().await;
         info!("chunkdb binding monitor stopped");
     }
     graceful_shutdown(registry).await;

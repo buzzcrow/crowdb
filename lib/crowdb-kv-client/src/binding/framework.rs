@@ -101,7 +101,7 @@ impl<S: BindingStrategy> BindingMonitor<S> {
         let instance_count = instances.len();
         let (bindings, changed) = if is_leader {
             // Read existing bindings + compute incremental diff.
-            let current = self.strategy.read_bindings(&self.kv).await.unwrap_or_default();
+            let current = self.strategy.read_bindings(&self.kv).await?;
             let (new_bindings, changed) = self.strategy.compute_incremental_assignment(&current, &instances);
             if changed {
                 self.strategy.write_bindings(&self.kv, &new_bindings).await?;
@@ -109,7 +109,7 @@ impl<S: BindingStrategy> BindingMonitor<S> {
             (new_bindings, changed)
         } else {
             // Follower: compute only, skip write.
-            let current = self.strategy.read_bindings(&self.kv).await.unwrap_or_default();
+            let current = self.strategy.read_bindings(&self.kv).await?;
             self.strategy.compute_incremental_assignment(&current, &instances)
         };
         Ok(MonitorTickResult {

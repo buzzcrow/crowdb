@@ -18,7 +18,7 @@ use std::sync::Arc;
 use crowdb_kv_client::{
     BindingMonitor, ChunkdbRangeStrategy, ClientConfig, CrowdbKvClient, ServiceRegistryClient,
 };
-use tracing::{info, info_span, Instrument};
+use tracing::{info, info_span, warn, Instrument};
 
 use crate::store_registry::KvStoreRegistry;
 
@@ -27,6 +27,42 @@ use crate::store_registry::KvStoreRegistry;
 /// after the signal is sent.
 pub struct BindingMonitorHandle {
     stop_tx: tokio::sync::watch::Sender<bool>,
+    supervisor: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// Runs one monitor child at a time and reconstructs it after an unexpected
+/// return or panic. The receiver is cloned into each child, so shutdown drains
+/// the active child before the supervisor exits.
+pub fn spawn_restarting_monitor<F, Fut>(
+    mut stop_rx: tokio::sync::watch::Receiver<bool>,
+    make_monitor: F,
+) -> tokio::task::JoinHandle<()>
+where
+    F: Fn(tokio::sync::watch::Receiver<bool>) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        loop {
+            if *stop_rx.borrow() {
+                break;
+            }
+            let mut child = tokio::spawn(make_monitor(stop_rx.clone()));
+            tokio::select! {
+                result = &mut child => {
+                    if !*stop_rx.borrow() {
+                        warn!(?result, "domain monitor task exited; restarting");
+                        tokio::task::yield_now().await;
+                    }
+                }
+                changed = stop_rx.changed() => {
+                    if changed.is_err() || *stop_rx.borrow() {
+                        let _ = child.await;
+                        break;
+                    }
+                }
+            }
+        }
+    })
 }
 
 impl BindingMonitorHandle {
@@ -34,6 +70,14 @@ impl BindingMonitorHandle {
     /// its next tick.
     pub fn stop(&self) {
         let _ = self.stop_tx.send(true);
+    }
+
+    /// Stop the monitor and wait until its current task and supervisor exit.
+    pub async fn stop_and_wait(mut self) {
+        self.stop();
+        if let Some(supervisor) = self.supervisor.take() {
+            let _ = supervisor.await;
+        }
     }
 }
 
@@ -68,33 +112,34 @@ pub fn spawn_chunkdb_binding_monitor(
 
     let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(vec![mgmt_endpoint])));
     kv.seed_leader(0, 0, group0_endpoint);
-    let svc = ServiceRegistryClient::from_shared(Arc::clone(&kv));
-    let strategy = ChunkdbRangeStrategy::new();
-    let monitor = BindingMonitor::new(
-        kv,
-        svc,
-        strategy,
-        std::time::Duration::from_secs(interval_secs),
-        "chunkdb",
-    );
-
-    // Leader-gating closure: reads the local group-0 replica's role.
-    // `is_leader()` is the single source of truth (updated by
-    // `become_leader` / `become_follower` in the election driver).
-    let registry_for_leader = Arc::clone(registry);
-    let is_leader = move || {
-        registry_for_leader
-            .get_store(0)
-            .and_then(|s| s.get_group(0))
-            .is_some_and(|g| g.local_replica().is_leader())
-    };
 
     info!(interval_secs, "chunkdb binding monitor spawning");
-    tokio::spawn(
-        monitor
-            .run(stop_rx, is_leader)
-            .instrument(info_span!("binding_monitor", s = 0, g = 0)),
-    );
+    let registry = Arc::clone(registry);
+    let supervisor = spawn_restarting_monitor(stop_rx, move |child_stop| {
+        let kv = Arc::clone(&kv);
+        let registry = Arc::clone(&registry);
+        async move {
+            let monitor = BindingMonitor::new(
+                Arc::clone(&kv),
+                ServiceRegistryClient::from_shared(Arc::clone(&kv)),
+                ChunkdbRangeStrategy::new(),
+                std::time::Duration::from_secs(interval_secs),
+                "chunkdb",
+            );
+            monitor
+                .run(child_stop, move || {
+                    registry
+                        .get_store(0)
+                        .and_then(|store| store.get_group(0))
+                        .is_some_and(|group| group.local_replica().is_leader())
+                })
+                .instrument(info_span!("binding_monitor", s = 0, g = 0))
+                .await;
+        }
+    });
 
-    BindingMonitorHandle { stop_tx }
+    BindingMonitorHandle {
+        stop_tx,
+        supervisor: Some(supervisor),
+    }
 }

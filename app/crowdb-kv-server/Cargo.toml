@@ -62,6 +62,10 @@ name = "multi_store_test"
 path = "tests/multi_store_test.rs"
 
 [[test]]
+name = "monitor_supervisor_test"
+path = "tests/monitor_supervisor_test.rs"
+
+[[test]]
 name = "reconcile_test"
 path = "tests/reconcile_test.rs"
 

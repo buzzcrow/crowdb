@@ -78,8 +78,10 @@ R142 partitions and publishes one complete group-0 range catalog.
   root, replays WAL while `Prepared`, and activates only after a matching grant.
   Catalog refresh reconciles incoming and outgoing assignments; real-process
   restart coverage remains.
-- Group-0 monitor supervision and serving-grant publication still need integration
-  with the existing KV server and process boundaries.
+- The existing KV-server monitor now aborts ticks on binding-read failure,
+  restarts a failed task, and drains the active task on shutdown. Persisted
+  descriptor discovery, on-demand driver lifecycle, and chunk-KV serving-grant
+  publication still need integration at the KV-server process boundary.
 - R145 owns routed multi-partition composition and end-to-end client coverage.
 - Point and ordered-read operations cross a FlatBuffers crowdb-rpc boundary;
   transition-detail and balance-policy wire models cover their control-plane

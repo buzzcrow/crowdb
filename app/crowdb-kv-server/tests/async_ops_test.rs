@@ -114,6 +114,7 @@ async fn wire_topology(nodes: &[ServerNode], group_id: u64) {
 
 async fn wait_for_leader(nodes: &[ServerNode], group_id: u64, timeout: Duration) -> usize {
     let deadline = std::time::Instant::now() + timeout;
+    let mut previous = None;
     while std::time::Instant::now() < deadline {
         let mut leaders: Vec<usize> = Vec::new();
         for (idx, node) in nodes.iter().enumerate() {
@@ -128,7 +129,13 @@ async fn wait_for_leader(nodes: &[ServerNode], group_id: u64, timeout: Duration)
             }
         }
         if leaders.len() == 1 {
-            return leaders[0];
+            let leader = leaders[0];
+            if previous == Some(leader) {
+                return leader;
+            }
+            previous = Some(leader);
+        } else {
+            previous = None;
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
