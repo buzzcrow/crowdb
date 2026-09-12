@@ -10,7 +10,12 @@ Checks: >
   -readability-identifier-length,
   -readability-magic-numbers,
   -readability-function-cognitive-complexity,
-  -bugprone-easily-swappable-parameters
+  -bugprone-easily-swappable-parameters,
+  -bugprone-signed-bitwise,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -performance-unnecessary-value-param,
+  -performance-move-const-arg,
+  -readability-convert-member-functions-to-static
 WarningsAsErrors: ''
 HeaderFilterRegex: '(^|.*/)crowdb-tree/(include|src|tests)/.*'
 FormatStyle: file

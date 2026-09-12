@@ -238,7 +238,7 @@ Status MemoryChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, ui
         next->push_back({
             .layout      = {.chunk_id = allocated, .logical_capacity = logical_capacity},
             .owner_epoch = owner_epoch,
-            .mirrors     = {},
+            .mirrors     = {}
         });
         if (chunks_.compare_exchange_weak(current, next, std::memory_order_release, std::memory_order_acquire)) {
             *chunk_id = allocated;

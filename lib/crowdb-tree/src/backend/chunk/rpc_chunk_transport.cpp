@@ -292,10 +292,12 @@ struct RpcChunkTransport::Impl
                 mirror->segments() == nullptr || mirror->segments()->size() != 3 || wire_strip->unit_kb() == 0) {
                 return Status::corruption("ChunkDB returned a non-mirror tree chunk layout");
             }
-            Strip strip{.chunk_offset = wire_strip->chunk_offset(),
-                        .capacity     = wire_strip->capacity(),
-                        .unit_kb      = wire_strip->unit_kb(),
-                        .mirrors      = {}};
+            Strip strip{
+                .chunk_offset = wire_strip->chunk_offset(),
+                .capacity     = wire_strip->capacity(),
+                .unit_kb      = wire_strip->unit_kb(),
+                .mirrors      = {},
+            };
             for (size_t index = 0; index < strip.mirrors.size(); ++index) {
                 const auto *segment  = mirror->segments()->Get(index);
                 strip.mirrors[index] = {

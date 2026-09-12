@@ -300,8 +300,7 @@ struct SystemCollector::DramBwImpl
 
     // Aggregate request-with-data events exported by Linux perf for Zen 3.
     static constexpr std::array<uint64_t, 8> AMD_DF_TOTAL_EVENTS = {
-        0x3807, 0x3847, 0x3887, 0x38c7, 0x100003807ULL, 0x100003847ULL, 0x100003887ULL, 0x1000038c7ULL,
-    };
+        0x3807, 0x3847, 0x3887, 0x38c7, 0x100003807ULL, 0x100003847ULL, 0x100003887ULL, 0x1000038c7ULL};
 
     void init()
     {
