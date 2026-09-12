@@ -118,6 +118,40 @@ impl Crowdbtree {
         }))
     }
 
+    /// Returns a bounded page in descending key order.
+    pub fn scan_reverse(
+        &self,
+        start_key: Option<&[u8]>,
+        start_inclusive: bool,
+        begin_key: &[u8],
+        limit: usize,
+        byte_budget: usize,
+    ) -> Result<(Vec<ScanEntry>, bool), CtError> {
+        let mut entries = sys::ct_buf {
+            data: std::ptr::null_mut(),
+            len: 0,
+        };
+        let mut count = 0_u64;
+        let mut truncated: c_int = 0;
+        check(unsafe {
+            sys::ct_scan_reverse(
+                self.as_ptr(),
+                start_key.unwrap_or_default().as_ptr(),
+                start_key.map_or(0, <[u8]>::len),
+                if start_key.is_some() { 1 } else { 0 },
+                if start_inclusive { 1 } else { 0 },
+                begin_key.as_ptr(),
+                begin_key.len(),
+                limit,
+                byte_budget,
+                &mut entries,
+                &mut count,
+                &mut truncated,
+            )
+        })?;
+        Ok((decode_scan(take_buf(entries), count as usize)?, truncated != 0))
+    }
+
     /// Range scan over `prefix` (empty = whole keyspace).
     /// When `include_tombstones` is true, tombstone entries are included.
     /// `start_after` (empty = start from beginning) is an exclusive lower

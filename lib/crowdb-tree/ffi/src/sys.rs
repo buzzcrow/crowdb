@@ -372,6 +372,20 @@ extern "C" {
         out_slot: *mut u64,
         out_value: *mut ct_buf,
     ) -> c_int;
+    pub fn ct_scan_reverse(
+        t: *mut ct_tree,
+        start_key: *const u8,
+        sklen: usize,
+        has_start_bound: c_int,
+        start_inclusive: c_int,
+        begin_key: *const u8,
+        bklen: usize,
+        limit: usize,
+        byte_budget: usize,
+        out_entries: *mut ct_buf,
+        out_count: *mut u64,
+        truncated: *mut c_int,
+    ) -> c_int;
     pub fn ct_snapshot_view(t: *mut ct_tree, out: *mut *mut ct_view) -> c_int;
     pub fn ct_view_at_slot(v: *const ct_view) -> u64;
     pub fn ct_view_iter(v: *mut ct_view, out: *mut *mut ct_iter) -> c_int;

@@ -1237,6 +1237,37 @@ ct_status ct_seek_reverse(ct_tree *t, const uint8_t *start_key, size_t sklen, in
     return static_cast<ct_status>(Code::kOk);
 }
 
+ct_status ct_scan_reverse(ct_tree *t, const uint8_t *start_key, size_t sklen, int has_start_bound, int start_inclusive,
+                          const uint8_t *begin_key, size_t bklen, size_t limit, size_t byte_budget, ct_buf *out_entries,
+                          uint64_t *out_count, int32_t *truncated)
+{
+    if (t == nullptr || out_entries == nullptr || out_count == nullptr || truncated == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    std::vector<scan_entry> entries;
+    bool                    was_truncated = false;
+    Status status = t->tree->scan_reverse(Slice(reinterpret_cast<const char *>(start_key), sklen), has_start_bound != 0,
+                                          start_inclusive != 0, Slice(reinterpret_cast<const char *>(begin_key), bklen),
+                                          limit, byte_budget, &entries, &was_truncated);
+    if (!status.ok()) {
+        return to_status(status);
+    }
+    ScanPackedBuf packed;
+    for (const scan_entry &entry : entries) {
+        packed.pack_u32(static_cast<uint32_t>(entry.key.size()));
+        packed.append(Slice(entry.key));
+        packed.pack_u64(entry.slot);
+        packed.push_back(0);
+        packed.pack_u32(static_cast<uint32_t>(entry.value.size()));
+        packed.append(Slice(entry.value));
+    }
+    out_entries->len  = packed.size();
+    out_entries->data = packed.release();
+    *out_count        = entries.size();
+    *truncated        = was_truncated ? 1 : 0;
+    return static_cast<ct_status>(Code::kOk);
+}
+
 // ── Snapshot view + iterator ──────────────────────────────────────
 
 ct_status ct_snapshot_view(ct_tree *t, ct_view **out)

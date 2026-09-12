@@ -3191,9 +3191,15 @@ Status Crowdbtree::seek_reverse(Slice start_key, bool inclusive, Slice begin_key
     if (out == nullptr || found == nullptr) {
         return Status::invalid_argument("seek_reverse output is null");
     }
-    *found                    = false;
     *out                      = {};
     EpochManager::Guard guard = epoch_.enter();
+    *found                    = seek_reverse_guarded(start_key, true, inclusive, begin_key, out);
+    return Status::Ok();
+}
+
+bool Crowdbtree::seek_reverse_guarded(Slice start_key, bool has_start_bound, bool inclusive, Slice begin_key,
+                                      scan_entry *out) const
+{
 
     struct ParentStep
     {
@@ -3207,7 +3213,7 @@ Status Crowdbtree::seek_reverse(Slice start_key, bool inclusive, Slice begin_key
         }
         return head;
     };
-    auto l1_predecessor = [&](Slice bound, bool include, Slice *key, Slice *cell) -> bool {
+    auto l1_predecessor = [&](Slice bound, bool has_bound, bool include, Slice *key, Slice *cell) -> bool {
         std::vector<ParentStep> path;
         uint64_t                page_id = root_page_id_.load();
         while (page_id != kInvalidPageId) {
@@ -3218,7 +3224,12 @@ Status Crowdbtree::seek_reverse(Slice start_key, bool inclusive, Slice begin_key
             }
             if (base->type == page_type::kLeafBase) {
                 LeafChainCursor cursor(head, gc_floor_.load());
-                cursor.seek_reverse(bound, include);
+                if (has_bound) {
+                    cursor.seek_reverse(bound, include);
+                }
+                else {
+                    cursor.seek_last();
+                }
                 if (cursor.valid()) {
                     *key  = cursor.key();
                     *cell = cursor.cell();
@@ -3227,7 +3238,7 @@ Status Crowdbtree::seek_reverse(Slice start_key, bool inclusive, Slice begin_key
                 break;
             }
             auto  *inner = static_cast<InnerBase *>(base);
-            size_t index = inner->child_index_for(bound);
+            size_t index = has_bound ? inner->child_index_for(bound) : inner->num_children() - 1;
             path.push_back({.page = inner, .child_index = index});
             page_id = inner->child_at(index);
         }
@@ -3265,6 +3276,7 @@ Status Crowdbtree::seek_reverse(Slice start_key, bool inclusive, Slice begin_key
     };
 
     std::string bound         = start_key.to_string();
+    bool        has_bound     = has_start_bound;
     bool        include_bound = inclusive;
     while (true) {
         Slice              winner_key;
@@ -3272,7 +3284,7 @@ Status Crowdbtree::seek_reverse(Slice start_key, bool inclusive, Slice begin_key
         Slice              winner_l1;
         bool               have_winner = false;
         for (auto &memtable : all_memtables()) {
-            auto cursor = memtable->cursor_reverse(Slice(bound), true, include_bound);
+            auto cursor = memtable->cursor_reverse(Slice(bound), has_bound, include_bound);
             if (!cursor.valid()) {
                 continue;
             }
@@ -3290,7 +3302,7 @@ Status Crowdbtree::seek_reverse(Slice start_key, bool inclusive, Slice begin_key
 
         Slice l1_key;
         Slice l1_cell;
-        if (l1_predecessor(Slice(bound), include_bound, &l1_key, &l1_cell)) {
+        if (l1_predecessor(Slice(bound), has_bound, include_bound, &l1_key, &l1_cell)) {
             uint64_t l1_slot = CellView{l1_cell}.slot();
             uint64_t winner_slot =
                 winner_l0 != nullptr ? winner_l0->slot : (winner_l1.empty() ? 0 : CellView{winner_l1}.slot());
@@ -3304,10 +3316,11 @@ Status Crowdbtree::seek_reverse(Slice start_key, bool inclusive, Slice begin_key
         }
         if (!have_winner || (!begin_key.empty() && winner_key.compare(begin_key) < 0) ||
             opt_.key_range.before(winner_key)) {
-            return Status::Ok();
+            return false;
         }
         if (opt_.key_range.at_or_after_end(winner_key)) {
             bound         = winner_key.to_string();
+            has_bound     = true;
             include_bound = false;
             continue;
         }
@@ -3335,6 +3348,7 @@ Status Crowdbtree::seek_reverse(Slice start_key, bool inclusive, Slice begin_key
         CellView value{winner_cell};
         if (value.is_tombstone()) {
             bound         = winner_key.to_string();
+            has_bound     = true;
             include_bound = false;
             continue;
         }
@@ -3343,9 +3357,41 @@ Status Crowdbtree::seek_reverse(Slice start_key, bool inclusive, Slice begin_key
         out->value     = value.is_overflow() ? assemble_overflow_value(value.overflow_head(), value.overflow_len())
                                              : value.value().to_string();
         out->tombstone = false;
-        *found         = true;
-        return Status::Ok();
+        return true;
     }
+}
+
+Status Crowdbtree::scan_reverse(Slice start_key, bool has_start_bound, bool start_inclusive, Slice begin_key,
+                                size_t limit, size_t byte_budget, std::vector<scan_entry> *out, bool *truncated) const
+{
+    if (out == nullptr || truncated == nullptr) {
+        return Status::invalid_argument("scan_reverse output is null");
+    }
+    out->clear();
+    *truncated                            = false;
+    EpochManager::Guard guard             = epoch_.enter();
+    std::string         bound             = start_key.to_string();
+    bool                has_bound         = has_start_bound;
+    bool                inclusive         = start_inclusive;
+    size_t              accumulated_bytes = 0;
+    while (true) {
+        scan_entry entry;
+        if (!seek_reverse_guarded(Slice(bound), has_bound, inclusive, begin_key, &entry)) {
+            break;
+        }
+        size_t entry_bytes = entry.key.size() + entry.value.size();
+        if ((limit != 0 && out->size() >= limit) ||
+            (byte_budget != 0 && !out->empty() && accumulated_bytes + entry_bytes > byte_budget)) {
+            *truncated = true;
+            break;
+        }
+        bound     = entry.key;
+        has_bound = true;
+        inclusive = false;
+        accumulated_bytes += entry_bytes;
+        out->push_back(std::move(entry));
+    }
+    return Status::Ok();
 }
 
 bool Crowdbtree::try_scan_no_load(

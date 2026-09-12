@@ -525,6 +525,9 @@ ct_status ct_scan_from(ct_tree *t, const uint8_t *prefix, size_t plen, const uin
 ct_status ct_seek_reverse(ct_tree *t, const uint8_t *start_key, size_t sklen, int start_inclusive,
                           const uint8_t *begin_key, size_t bklen, int32_t *found, ct_buf *out_key, uint64_t *out_slot,
                           ct_buf *out_value);
+ct_status ct_scan_reverse(ct_tree *t, const uint8_t *start_key, size_t sklen, int has_start_bound, int start_inclusive,
+                          const uint8_t *begin_key, size_t bklen, size_t limit, size_t byte_budget, ct_buf *out_entries,
+                          uint64_t *out_count, int32_t *truncated);
 
 // ── Consistent view (compare / iterate) ───────────────────────────
 ct_status ct_snapshot_view(ct_tree *t, ct_view **out);

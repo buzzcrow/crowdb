@@ -289,6 +289,34 @@ async fn forward_scan_is_bounded_and_clipped_to_the_partition() {
         .unwrap();
     assert!(empty.entries.is_empty());
     assert!(!empty.truncated);
+
+    let reverse = partition
+        .scan_reverse(4, Some(b"z"), Some(b"a"), 2, 1024, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        reverse
+            .entries
+            .iter()
+            .map(|entry| entry.key.as_ref())
+            .collect::<Vec<_>>(),
+        vec![b"e".as_slice(), b"d".as_slice()]
+    );
+    assert!(reverse.truncated);
+    let continued = partition
+        .scan_reverse(4, Some(b"d"), None, 10, 1024, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        continued
+            .entries
+            .iter()
+            .map(|entry| entry.key.as_ref())
+            .collect::<Vec<_>>(),
+        vec![b"c".as_slice(), b"b".as_slice()]
+    );
+    assert_eq!(partition.metrics().snapshot().reverse_scans, 2);
+    assert_eq!(partition.metrics().snapshot().scan_entries, 6);
 }
 
 #[tokio::test]

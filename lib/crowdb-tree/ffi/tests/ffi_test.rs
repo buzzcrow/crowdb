@@ -98,6 +98,38 @@ fn reverse_seek_merges_l0_l1_and_tombstones() {
 }
 
 #[test]
+fn reverse_scan_is_descending_bounded_and_tombstone_aware() {
+    let tree = Crowdbtree::open(&Config::default()).unwrap();
+    for (slot, key) in [b"a", b"b", b"c", b"d"].into_iter().enumerate() {
+        tree.apply_put(slot as u64 + 1, key, key).unwrap();
+    }
+    tree.flush().unwrap();
+    tree.apply_put(5, b"e", b"e").unwrap();
+    tree.apply_delete(6, b"d").unwrap();
+
+    let (page, truncated) = tree.scan_reverse(Some(b"e"), true, b"b", 2, 1024).unwrap();
+    assert_eq!(
+        page.iter().map(|entry| entry.key.as_ref()).collect::<Vec<_>>(),
+        vec![b"e", b"c"]
+    );
+    assert!(truncated);
+
+    let (page, truncated) = tree.scan_reverse(Some(b"e"), false, b"b", 10, 1024).unwrap();
+    assert_eq!(
+        page.iter().map(|entry| entry.key.as_ref()).collect::<Vec<_>>(),
+        vec![b"c", b"b"]
+    );
+    assert!(!truncated);
+
+    let (page, truncated) = tree.scan_reverse(None, false, b"b", 10, 1024).unwrap();
+    assert_eq!(
+        page.iter().map(|entry| entry.key.as_ref()).collect::<Vec<_>>(),
+        vec![b"e", b"c", b"b"]
+    );
+    assert!(!truncated);
+}
+
+#[test]
 fn injected_chunk_store_round_trip_and_stats() {
     let catalog = ChunkRootCatalog::open_memory(7).unwrap();
     let store = Arc::new(

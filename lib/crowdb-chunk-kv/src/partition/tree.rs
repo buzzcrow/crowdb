@@ -22,6 +22,13 @@ pub trait PartitionTree: Send + Sync {
         start_inclusive: bool,
         begin_key: Option<&[u8]>,
     ) -> Result<Option<ScanEntry>>;
+    async fn scan_reverse(
+        &self,
+        start_before: Option<&[u8]>,
+        begin_key: Option<&[u8]>,
+        limit: usize,
+        byte_budget: usize,
+    ) -> Result<(Vec<ScanEntry>, bool)>;
     async fn apply(&self, mutation_seq: u64, operation: &MutationOperation) -> Result<()>;
     async fn advance_noop(&self, mutation_seq: u64) -> Result<()>;
     async fn checkpoint(&self) -> Result<u64>;
@@ -103,6 +110,38 @@ impl PartitionTree for CrowdbPartitionTree {
                 })
             })
             .map_err(map_tree_read_error)
+    }
+
+    async fn scan_reverse(
+        &self,
+        start_before: Option<&[u8]>,
+        begin_key: Option<&[u8]>,
+        limit: usize,
+        byte_budget: usize,
+    ) -> Result<(Vec<ScanEntry>, bool)> {
+        let (entries, truncated) = self
+            .tree
+            .scan_reverse(
+                start_before,
+                false,
+                begin_key.unwrap_or_default(),
+                limit,
+                byte_budget,
+            )
+            .map_err(map_tree_read_error)?;
+        Ok((
+            entries
+                .into_iter()
+                .map(|entry| ScanEntry {
+                    key: entry.key,
+                    value: ValueRevision {
+                        revision: entry.slot,
+                        value: entry.value.to_vec(),
+                    },
+                })
+                .collect(),
+            truncated,
+        ))
     }
 
     async fn apply(&self, mutation_seq: u64, operation: &MutationOperation) -> Result<()> {

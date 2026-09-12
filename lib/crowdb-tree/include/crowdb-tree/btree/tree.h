@@ -666,6 +666,12 @@ class Crowdbtree
     // an inclusive lower bound; empty means unbounded.
     Status seek_reverse(Slice start_key, bool inclusive, Slice begin_key, scan_entry *out, bool *found) const;
 
+    // Descending counterpart to scan(), with an explicit upper cursor and an
+    // inclusive lower bound. Work and materialization are bounded by the
+    // requested count and byte budget.
+    Status scan_reverse(Slice start_key, bool has_start_bound, bool start_inclusive, Slice begin_key, size_t limit,
+                        size_t byte_budget, std::vector<scan_entry> *out, bool *truncated) const;
+
     // Async twin of scan(). Unlike get_async,
     // which has exactly one possible miss point (the root->leaf descent for
     // a single key), scan() walks a whole range of leaves via
@@ -881,8 +887,10 @@ class Crowdbtree
 
   private:
     friend class NativeFrameIterator;
-    friend Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destination_options,
-                                std::unique_ptr<Crowdbtree> *out, RangeRebuildStats *stats);
+    friend Status      rebuild_range(Crowdbtree &source, const KeyRange &range, Config destination_options,
+                                     std::unique_ptr<Crowdbtree> *out, RangeRebuildStats *stats);
+    [[nodiscard]] bool seek_reverse_guarded(Slice start_key, bool has_start_bound, bool inclusive, Slice begin_key,
+                                            scan_entry *out) const;
     // apply a batch's ops into L0 at `slot` (intra-batch last-op-wins).
     void apply_batch(uint64_t slot, const Batch &batch);
     // Shared apply()/apply_encoded() tail: slot bookkeeping (max_seen_slot_,

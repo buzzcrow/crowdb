@@ -9,6 +9,7 @@ pub struct PartitionMetrics {
     forward_seeks: AtomicU64,
     reverse_seeks: AtomicU64,
     forward_scans: AtomicU64,
+    reverse_scans: AtomicU64,
     scan_entries: AtomicU64,
     mutation_requests: AtomicU64,
     mutation_applied: AtomicU64,
@@ -32,6 +33,7 @@ pub struct PartitionMetricsSnapshot {
     pub forward_seeks: u64,
     pub reverse_seeks: u64,
     pub forward_scans: u64,
+    pub reverse_scans: u64,
     pub scan_entries: u64,
     pub mutation_requests: u64,
     pub mutation_applied: u64,
@@ -57,6 +59,7 @@ impl PartitionMetrics {
             forward_seeks: self.forward_seeks.load(Ordering::Relaxed),
             reverse_seeks: self.reverse_seeks.load(Ordering::Relaxed),
             forward_scans: self.forward_scans.load(Ordering::Relaxed),
+            reverse_scans: self.reverse_scans.load(Ordering::Relaxed),
             scan_entries: self.scan_entries.load(Ordering::Relaxed),
             mutation_requests: self.mutation_requests.load(Ordering::Relaxed),
             mutation_applied: self.mutation_applied.load(Ordering::Relaxed),
@@ -89,6 +92,12 @@ impl PartitionMetrics {
 
     pub(crate) fn forward_scan(&self, entries: usize) {
         self.forward_scans.fetch_add(1, Ordering::Relaxed);
+        self.scan_entries
+            .fetch_add(u64::try_from(entries).unwrap_or(u64::MAX), Ordering::Relaxed);
+    }
+
+    pub(crate) fn reverse_scan(&self, entries: usize) {
+        self.reverse_scans.fetch_add(1, Ordering::Relaxed);
         self.scan_entries
             .fetch_add(u64::try_from(entries).unwrap_or(u64::MAX), Ordering::Relaxed);
     }

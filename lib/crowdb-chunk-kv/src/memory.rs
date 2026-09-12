@@ -86,6 +86,39 @@ impl PartitionTree for MemoryPartitionTree {
             }))
     }
 
+    async fn scan_reverse(
+        &self,
+        start_before: Option<&[u8]>,
+        begin_key: Option<&[u8]>,
+        limit: usize,
+        byte_budget: usize,
+    ) -> Result<(Vec<ScanEntry>, bool)> {
+        let values = self.values.read().await;
+        let mut entries = Vec::new();
+        let mut bytes = 0_usize;
+        let mut truncated = false;
+        for (key, value) in values.iter().rev() {
+            if start_before.is_some_and(|start| key.as_slice() >= start)
+                || begin_key.is_some_and(|begin| key.as_slice() < begin)
+            {
+                continue;
+            }
+            let entry_bytes = key.len().saturating_add(value.value.len());
+            if entries.len() == limit
+                || (!entries.is_empty() && bytes.saturating_add(entry_bytes) > byte_budget)
+            {
+                truncated = true;
+                break;
+            }
+            bytes = bytes.saturating_add(entry_bytes);
+            entries.push(ScanEntry {
+                key: Bytes::copy_from_slice(key),
+                value: value.clone(),
+            });
+        }
+        Ok((entries, truncated))
+    }
+
     async fn apply(&self, mutation_seq: u64, operation: &MutationOperation) -> Result<()> {
         if self.fail_next_apply.swap(false, Ordering::AcqRel) {
             return Err(crate::ChunkKvError::ApplyStateUnknown);
