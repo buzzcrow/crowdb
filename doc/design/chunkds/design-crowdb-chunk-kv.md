@@ -37,6 +37,14 @@ path through `crowdb-chunk-client`; the production tree selects R140's native
 page-store backend at runtime. A partition transfer reopens the same tree and
 stream identities under a higher epoch instead of copying their bytes.
 
+Point reads, ceiling/higher/floor/lower, and bounded forward/reverse scans read
+only the applied tree prefix. Forward operations use the native merged lower
+bound. Reverse operations use a native predecessor descent that fixes the L0
+memtable set, root page, and GC floor for the page, merges the highest revision
+for each L0/L1 collision, and skips tombstones before returning descending
+keys. Both directions enforce count and byte budgets inside C++; Rust does not
+compose point reads, materialize the range, or sort results.
+
 ## 3. Mutation Ordering
 
 `RequestId` contains a 128-bit client instance ID and a 64-bit client sequence.
@@ -115,8 +123,8 @@ localized to that read. Corruption, conflicting recovery records, and unknown
 post-journal apply state require recovery of the affected partition only.
 Checkpoint and GC failures retain the prior manifest and WAL authority.
 
-Per-partition lock-free counters cover mutation requests and outcomes, range
-and stale-epoch rejection, admission backpressure, write stalls, unknown apply
-outcomes, recoveries, checkpoints, and split lifecycle events. Snapshot
-frontiers expose lifecycle, stream identity, durable sequence, and applied
-sequence without combining independent partitions.
+Per-partition lock-free counters cover mutation requests and outcomes, ordered
+seeks and scans, range and stale-epoch rejection, admission backpressure, write
+stalls, unknown apply outcomes, recoveries, checkpoints, and split lifecycle
+events. Snapshot frontiers expose lifecycle, stream identity, durable sequence,
+and applied sequence without combining independent partitions.

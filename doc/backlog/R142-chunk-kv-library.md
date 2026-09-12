@@ -300,10 +300,10 @@ three frontiers prove it; only loss of tree-state trust triggers full replay.
   compare-and-swap, so R143 must publish one self-contained, epoch-fenced
   range-map activation record rather than ask R142 to coordinate multiple
   group-0 keys.
-- Depends on the C++ engine and FFI portion of R52 for reverse cursor support.
-  Ceiling and higher seek extend the existing `lower_bound`/forward cursor;
-  floor, lower, and reverse scan require a real reverse L0/L1 cursor rather
-  than client-side sorting.
+- The C++ engine and FFI now provide native inclusive forward bounds and a
+  bounded reverse predecessor path for ceiling/higher/floor/lower and
+  forward/reverse partition scans. R52 retains the broader async tree, RPC,
+  and legacy client direction surface; R142 does not sort in Rust.
 - R144 consumes R142's lifecycle, checkpoint, sequence, and catalog-proof
   boundaries to add partition merge. R142 does not expose a merge operation.
 - Existing crowdb-kv remains on its Paxos/local-WAL architecture. R142 does not
