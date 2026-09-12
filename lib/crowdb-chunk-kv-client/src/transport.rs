@@ -1,11 +1,19 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use crowdb_protocol::chunk_kv::{
     BatchMutationRequest, BatchMutationResponse, ChunkKvResponse, MultiGetRequest, MultiGetResponse,
     PointRequest, ScanRequest, SeekRequest,
 };
+use crowdb_protocol::chunk_kv_ordered_wire::{encode_scan_request, encode_seek_request};
+use crowdb_protocol::chunk_kv_wire::{decode_point_response, encode_point_request, ChunkKvWireError};
+use crowdb_protocol::fb::FBMsgType;
+use crowdb_rpc_ffi::{Buffer, Connection, RpcClient, RpcServer};
+use dashmap::DashMap;
 
 use crate::{ClientError, Result};
 
@@ -62,4 +70,172 @@ pub trait ChunkKvTransport: Send + Sync {
     async fn scan(&self, _endpoint: &str, _request: &ScanRequest) -> Result<ChunkKvResponse> {
         Err(ClientError::Transport("scan transport is not implemented".into()))
     }
+}
+
+/// Bounded production crowdb-rpc connection pool for direct owner calls.
+pub struct ChunkKvRpcTransport {
+    server: Arc<RpcServer>,
+    rpc: RpcClient,
+    connections: DashMap<String, Vec<Connection>>,
+    pool_size: usize,
+    max_owners: usize,
+    connection_round_robin: AtomicU64,
+    next_rpc_request_id: AtomicU64,
+}
+
+impl ChunkKvRpcTransport {
+    #[must_use]
+    pub fn new(max_owners: usize, pool_size: usize, workers: u32) -> Self {
+        let server = Arc::new(RpcServer::with_engines(None, 1, workers.max(1)));
+        server.start();
+        server.register_conn_count_gauge("chunk_kv.client.connections");
+        let rpc = RpcClient::new();
+        rpc.set_completion_pool_size(1024);
+        rpc.start_reaper(30_000_000_000, 500_000_000);
+        Self {
+            server,
+            rpc,
+            connections: DashMap::new(),
+            pool_size: pool_size.max(1),
+            max_owners: max_owners.max(1),
+            connection_round_robin: AtomicU64::new(0),
+            next_rpc_request_id: AtomicU64::new(1),
+        }
+    }
+
+    fn next_id(&self) -> Result<u64> {
+        let id = self.next_rpc_request_id.fetch_add(1, Ordering::Relaxed);
+        if id == 0 {
+            Err(ClientError::Transport("RPC request identity exhausted".into()))
+        } else {
+            Ok(id)
+        }
+    }
+
+    fn connection(&self, endpoint: &str) -> Result<Connection> {
+        let endpoint = normalize_endpoint(endpoint);
+        if let Some(connections) = self.connections.get(&endpoint) {
+            if connections.len() == self.pool_size {
+                return Ok(
+                    connections[round_robin_index(&self.connection_round_robin, connections.len())].clone(),
+                );
+            }
+        }
+        if !self.connections.contains_key(&endpoint) && self.connections.len() >= self.max_owners {
+            return Err(ClientError::Transport("owner connection limit reached".into()));
+        }
+        let (host, port) = parse_endpoint(&endpoint)?;
+        let mut connections = self.connections.entry(endpoint).or_default();
+        while connections.len() < self.pool_size {
+            let connection = self
+                .server
+                .connect(&host, port)
+                .map_err(|error| ClientError::Transport(format!("connect to {host}:{port}: {error:?}")))?;
+            self.rpc.attach(&connection);
+            connections.push(connection);
+        }
+        Ok(connections[round_robin_index(&self.connection_round_robin, connections.len())].clone())
+    }
+
+    async fn call(
+        &self,
+        endpoint: &str,
+        request_id: u64,
+        control: Buffer,
+        message_type: u16,
+    ) -> Result<ChunkKvResponse> {
+        let connection = self.connection(endpoint)?;
+        let response = self
+            .rpc
+            .call(&self.server, &connection, request_id, control, None, message_type)
+            .map_err(|error| ClientError::Transport(error.to_string()))?
+            .await
+            .map_err(|error| ClientError::Transport(error.to_string()))?;
+        let control = response
+            .control
+            .ok_or_else(|| ClientError::Transport("RPC response omitted its control buffer".into()))?;
+        decode_point_response(control.bytes()).map_err(|error| wire_error(&error))
+    }
+}
+
+#[async_trait]
+impl ChunkKvTransport for ChunkKvRpcTransport {
+    async fn point(&self, endpoint: &str, request: &PointRequest) -> Result<ChunkKvResponse> {
+        let id = self.next_id()?;
+        let (bytes, offset) =
+            encode_point_request(id, wall_time_ns(), request).map_err(|error| wire_error(&error))?;
+        self.call(
+            endpoint,
+            id,
+            Buffer::from_vec_offset(bytes, offset),
+            FBMsgType::EChunkKvPointRequest.0 as u16,
+        )
+        .await
+    }
+
+    async fn seek(&self, endpoint: &str, request: &SeekRequest) -> Result<ChunkKvResponse> {
+        let id = self.next_id()?;
+        let (bytes, offset) =
+            encode_seek_request(id, wall_time_ns(), request).map_err(|error| wire_error(&error))?;
+        self.call(
+            endpoint,
+            id,
+            Buffer::from_vec_offset(bytes, offset),
+            FBMsgType::EChunkKvSeekRequest.0 as u16,
+        )
+        .await
+    }
+
+    async fn scan(&self, endpoint: &str, request: &ScanRequest) -> Result<ChunkKvResponse> {
+        let id = self.next_id()?;
+        let (bytes, offset) =
+            encode_scan_request(id, wall_time_ns(), request).map_err(|error| wire_error(&error))?;
+        self.call(
+            endpoint,
+            id,
+            Buffer::from_vec_offset(bytes, offset),
+            FBMsgType::EChunkKvScanRequest.0 as u16,
+        )
+        .await
+    }
+}
+
+fn normalize_endpoint(endpoint: &str) -> String {
+    let endpoint = endpoint
+        .strip_prefix("http://")
+        .or_else(|| endpoint.strip_prefix("https://"))
+        .unwrap_or(endpoint);
+    endpoint.replacen("0.0.0.0:", "127.0.0.1:", 1)
+}
+
+fn parse_endpoint(endpoint: &str) -> Result<(String, i32)> {
+    let (host, port) = endpoint
+        .rsplit_once(':')
+        .ok_or_else(|| ClientError::Transport(format!("invalid owner endpoint: {endpoint}")))?;
+    let port = port
+        .parse::<i32>()
+        .map_err(|_| ClientError::Transport(format!("invalid owner endpoint port: {endpoint}")))?;
+    if host.is_empty() || !(1..=u16::MAX.into()).contains(&port) {
+        return Err(ClientError::Transport(format!(
+            "invalid owner endpoint: {endpoint}"
+        )));
+    }
+    Ok((host.into(), port))
+}
+
+fn round_robin_index(counter: &AtomicU64, len: usize) -> usize {
+    let len = u64::try_from(len).unwrap_or(u64::MAX);
+    usize::try_from(counter.fetch_add(1, Ordering::Relaxed) % len).unwrap_or(0)
+}
+
+fn wall_time_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
+        })
+}
+
+fn wire_error(error: &ChunkKvWireError) -> ClientError {
+    ClientError::Transport(error.to_string())
 }

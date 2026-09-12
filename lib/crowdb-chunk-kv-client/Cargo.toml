@@ -14,10 +14,17 @@ workspace = true
 arc-swap = "1.9"
 async-trait = "0.1"
 crowdb-protocol = { path = "../crowdb-protocol" }
+crowdb-kv-client = { path = "../crowdb-kv-client" }
+crowdb-rpc-ffi = { path = "../crowdb-rpc/ffi" }
+bytes = "1"
+dashmap = "6"
 futures = "0.3"
 rand = "0.8"
+serde_json = "1"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
+crowdb-chunk-kv-server = { path = "../../app/crowdb-chunk-kv-server" }
+crowdb-rpc-ffi = { path = "../crowdb-rpc/ffi", features = ["test-util"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "test-util"] }

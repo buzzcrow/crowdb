@@ -6,6 +6,9 @@ use std::sync::Arc;
 use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
 use crowdb_protocol::chunk_kv::{ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage};
+use crowdb_protocol::key::{ChunkKvRangeCatalogHeadKey, ChunkKvRangeCatalogPageKey, TextKey};
+
+use crowdb_kv_client::{CrowdbKvClient, GetOutcome, ReadMode};
 
 use crate::{ClientError, Result};
 
@@ -17,6 +20,56 @@ pub trait ChunkKvRangeCatalogSource: Send + Sync {
     ///
     /// Returns an availability or decoding failure without changing the cache.
     async fn load(&self) -> Result<(ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>)>;
+}
+
+/// Production catalog source reading immutable pages from group 0.
+pub struct Group0ChunkKvRangeCatalogSource {
+    kv: Arc<CrowdbKvClient>,
+}
+
+impl Group0ChunkKvRangeCatalogSource {
+    #[must_use]
+    pub fn from_shared(kv: Arc<CrowdbKvClient>) -> Self {
+        Self { kv }
+    }
+
+    async fn read(&self, path: &str) -> Result<Vec<u8>> {
+        match self
+            .kv
+            .get(0, 0, path.as_bytes(), ReadMode::Linearizable, None)
+            .await
+            .map_err(|error| ClientError::CatalogUnavailable(error.to_string()))?
+        {
+            GetOutcome::Found { value, .. } => Ok(value.to_vec()),
+            GetOutcome::NotFound => Err(ClientError::CatalogUnavailable(format!(
+                "group-0 catalog record is missing: {path}"
+            ))),
+        }
+    }
+}
+
+#[async_trait]
+impl ChunkKvRangeCatalogSource for Group0ChunkKvRangeCatalogSource {
+    async fn load(&self) -> Result<(ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>)> {
+        let head_path = ChunkKvRangeCatalogHeadKey.to_path();
+        let head: ChunkKvRangeCatalogHead = serde_json::from_slice(&self.read(&head_path).await?)
+            .map_err(|error| ClientError::InvalidCatalog(error.to_string()))?;
+        let mut pages = Vec::with_capacity(head.pages.len());
+        for page in &head.pages {
+            let path = ChunkKvRangeCatalogPageKey {
+                generation: page.page_generation,
+                page_index: page.page_index,
+            }
+            .to_path();
+            pages.push(
+                serde_json::from_slice(&self.read(&path).await?)
+                    .map_err(|error| ClientError::InvalidCatalog(error.to_string()))?,
+            );
+        }
+        head.validate_pages(&pages)
+            .map_err(|error| ClientError::InvalidCatalog(error.to_string()))?;
+        Ok((head, pages))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

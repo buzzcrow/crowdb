@@ -24,6 +24,8 @@ identity, ordering, fencing, and partial-success semantics.
 - [x] Preserve typed results, journal positions, minimum-position reads, and
   identity across bounded refresh/transport retries under one deadline.
 - [x] Wrap seek and single-partition directional scan without semantic emulation.
+- [x] Add production group-0 catalog loading and bounded direct-owner
+  crowdb-rpc transport for point, seek, and scan operations.
 
 ## Phase 3: Bounded Composition
 
@@ -51,7 +53,10 @@ identity, ordering, fencing, and partial-success semantics.
 
 ## Open Issues
 
-- Production R143 group-0 and crowdb-rpc adapters are not yet available.
-- Ordered server execution waits for R142 native directional cursor support.
-- R143 internal group RPC handlers and real-process lifecycle fixtures remain.
+- Review decision: the owner connection pool follows existing CROWDB RPC
+  transports and uses a bounded `DashMap` keyed by endpoint. This introduces a
+  sharded lock on connection lookup, outside the storage data path, in exchange
+  for preventing duplicate connection storms and enforcing the owner cap.
+- R143 internal group RPC handlers and production transport for multi-get and
+  batch remain.
 - R144 merge-specific continuation and retained-result cases stay skipped.

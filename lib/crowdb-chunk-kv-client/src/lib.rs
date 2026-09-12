@@ -11,7 +11,8 @@ mod error;
 mod transport;
 
 pub use catalog::{
-    ChunkKvRangeCatalogCache, ChunkKvRangeCatalogMap, ChunkKvRangeCatalogSource, RequestIdentityAllocator,
+    ChunkKvRangeCatalogCache, ChunkKvRangeCatalogMap, ChunkKvRangeCatalogSource,
+    Group0ChunkKvRangeCatalogSource, RequestIdentityAllocator,
 };
 pub use client::ChunkKvClient;
 pub use compose::{
@@ -19,4 +20,4 @@ pub use compose::{
 };
 pub use config::ClientConfig;
 pub use error::{ClientError, Result};
-pub use transport::ChunkKvTransport;
+pub use transport::{ChunkKvRpcTransport, ChunkKvTransport};
