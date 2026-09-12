@@ -191,7 +191,7 @@ TEST(R6, ConcurrentReadersAndInstallSnapshotNoUAF)
             for (int j = 0; j < 20; ++j) {
                 std::string k = make_key(j);
                 std::string v = "v" + std::to_string(i) + "_" + std::to_string(j);
-                entries.push_back({k, encode_cell_buf((i * 100) + j, OpKind::kPut, Slice(v))});
+                entries.push_back({.key = k, .cell = encode_cell_buf((i * 100) + j, OpKind::kPut, Slice(v))});
             }
             if (!t.install_snapshot(std::move(entries), (i * 100) + 20).ok()) {
                 bad.store(true, std::memory_order_relaxed);

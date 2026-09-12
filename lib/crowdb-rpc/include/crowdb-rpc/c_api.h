@@ -3,8 +3,7 @@
 
 #pragma once
 
-#include <stddef.h>
-
+#include <cstddef>
 #include <cstdint>
 
 #ifdef __cplusplus

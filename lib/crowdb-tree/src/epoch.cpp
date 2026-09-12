@@ -81,7 +81,7 @@ EpochManager::~EpochManager()
     // nothing's left, so a nested retirement's deleter still runs instead of
     // being silently dropped.
     {
-        std::lock_guard<std::recursive_mutex> lk(reclaim_mu_);
+        std::scoped_lock lk(reclaim_mu_);
         while (!retired_.empty()) {
             std::vector<Retired> pending;
             pending.swap(retired_);
@@ -119,7 +119,7 @@ uint64_t EpochManager::min_active_epoch()
 
 void EpochManager::retire(void *ptr, Deleter deleter)
 {
-    std::lock_guard<std::recursive_mutex> lk(reclaim_mu_);
+    std::scoped_lock lk(reclaim_mu_);
     // New retirements belong to the current epoch; bump so a fresh guard entering
     // after this cannot claim to predate the retirement.
     retired_.push_back(
@@ -159,13 +159,13 @@ size_t EpochManager::reclaim_locked()
 
 size_t EpochManager::try_reclaim()
 {
-    std::lock_guard<std::recursive_mutex> lk(reclaim_mu_);
+    std::scoped_lock lk(reclaim_mu_);
     return reclaim_locked();
 }
 
 size_t EpochManager::pending_retired()
 {
-    std::lock_guard<std::recursive_mutex> lk(reclaim_mu_);
+    std::scoped_lock lk(reclaim_mu_);
     return retired_.size();
 }
 

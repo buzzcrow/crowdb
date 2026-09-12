@@ -46,7 +46,7 @@ class LatencySummary
         return {.count = c, .sum = s, .max = m, .total_count = t};
     }
 
-    const std::string &name() const
+    [[nodiscard]] const std::string &name() const
     {
         return name_;
     }

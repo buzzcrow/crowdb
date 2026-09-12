@@ -60,7 +60,7 @@ class ConnectionPool
     // Number of healthy connections.
     size_t healthy_count();
 
-    const PoolConfig &config() const
+    [[nodiscard]] const PoolConfig &config() const
     {
         return config_;
     }

@@ -36,7 +36,7 @@ RdmaBufferPool::RdmaBufferPool(struct ibv_pd *pd, uint32_t mr_size, uint32_t max
 
 RdmaBufferPool::~RdmaBufferPool()
 {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::scoped_lock lock(mu_);
     for (auto &[_, vec] : free_list_) {
         for (Buffer *buf : vec) {
             delete buf->ref;
@@ -53,8 +53,9 @@ RdmaBufferPool::~RdmaBufferPool()
 
 static uint32_t bucket_capacity(uint32_t capacity)
 {
-    if (capacity == 0)
+    if (capacity == 0) {
         return 1;
+    }
     --capacity;
     capacity |= capacity >> 1;
     capacity |= capacity >> 2;
@@ -108,7 +109,7 @@ Buffer *RdmaBufferPool::alloc(uint32_t capacity)
 {
     uint32_t bucket = bucket_capacity(capacity);
     {
-        std::lock_guard<std::mutex> lock(mu_);
+        std::scoped_lock            lock(mu_);
         auto                        it = free_list_.find(bucket);
         if (it != free_list_.end() && !it->second.empty()) {
             Buffer *buf = it->second.back();
@@ -124,7 +125,7 @@ Buffer *RdmaBufferPool::alloc(uint32_t capacity)
 void RdmaBufferPool::recycle(Buffer *buf)
 {
     {
-        std::lock_guard<std::mutex> lock(mu_);
+        std::scoped_lock            lock(mu_);
         uint32_t                    bucket = bucket_capacity(buf->capacity);
         free_list_[bucket].push_back(buf);
     }

@@ -93,9 +93,10 @@ TEST(CApiLoadTest, MultiWorkerOneshotSharedTransport)
             // offset 16 (little-endian u64). We copy the template and patch
             // the id. This mirrors what the bench does (Rust builds the
             // flatbuffer, allocs a pool buffer, writes to it).
-            static const uint8_t PING_TEMPLATE[24] = {0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x00,
-                                                      0x0c, 0x00, 0x04, 0x00, 0x06, 0x00, 0x00, 0x00,
-                                                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+            static const uint8_t PING_TEMPLATE[24] = {
+                0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06, 0x00, 0x0c, 0x00, 0x04, 0x00,
+                0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            };
             uint64_t             req_id            = req_id_counter.fetch_add(1, std::memory_order_relaxed);
 
             crowdb_rpc_buffer_t ctrl = crowdb_rpc_buffer_alloc(pool, 24);
@@ -120,7 +121,7 @@ TEST(CApiLoadTest, MultiWorkerOneshotSharedTransport)
                 }
                 uint8_t payload[DATA_SIZE];
                 for (uint32_t i = 0; i < DATA_SIZE; i++) {
-                    payload[i] = static_cast<uint8_t>((i + r * 7) % 256);
+                    payload[i] = static_cast<uint8_t>((i + (r * 7)) % 256);
                 }
                 crowdb_rpc_buffer_write(data, payload, DATA_SIZE);
             }
@@ -146,8 +147,9 @@ TEST(CApiLoadTest, MultiWorkerOneshotSharedTransport)
                     break;
                 }
             }
-            if (all_done)
+            if (all_done) {
                 break;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 

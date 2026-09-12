@@ -63,7 +63,7 @@ struct FrameStore
                 return ptr;
             }
         }
-        auto pb = static_cast<uint32_t>((need < 128 ? 128 : need + 7) & ~size_t(7));
+        auto pb = static_cast<uint32_t>((need < 128 ? 128 : need + 7) & ~static_cast<size_t>(7));
         owned.assign(pb, 0);
         ptr        = owned.data();
         page_bytes = pb;
@@ -187,8 +187,10 @@ class LeafBase : public PageBase
     [[nodiscard]] leaf_entry entry(size_t i) const
     {
         LeafFrameView v = view();
-        return {.key  = v.key(static_cast<uint32_t>(i)).to_string(),
-                .cell = buffer::copy_of(v.cell(static_cast<uint32_t>(i)))};
+        return {
+            .key  = v.key(static_cast<uint32_t>(i)).to_string(),
+            .cell = buffer::copy_of(v.cell(static_cast<uint32_t>(i))),
+        };
     }
 
     [[nodiscard]] std::vector<leaf_entry> entries() const
@@ -197,7 +199,7 @@ class LeafBase : public PageBase
         std::vector<leaf_entry> out;
         out.reserve(v.count());
         for (uint32_t i = 0; i < v.count(); ++i) {
-            out.push_back({v.key(i).to_string(), buffer::copy_of(v.cell(i))});
+            out.push_back({.key = v.key(i).to_string(), .cell = buffer::copy_of(v.cell(i))});
         }
         return out;
     }

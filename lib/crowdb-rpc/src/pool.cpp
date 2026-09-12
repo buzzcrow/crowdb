@@ -12,7 +12,7 @@ ConnectionPool::ConnectionPool(PoolConfig config) : config_(config)
 
 Connection *ConnectionPool::get()
 {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::scoped_lock lock(mu_);
     if (connections_.empty()) {
         return nullptr;
     }
@@ -29,7 +29,7 @@ Connection *ConnectionPool::get()
 
 Connection *ConnectionPool::get_for(const std::string &endpoint)
 {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::scoped_lock lock(mu_);
     // Find all connections whose name matches the endpoint.
     std::vector<size_t> matches;
     for (size_t i = 0; i < connections_.size(); i++) {
@@ -46,13 +46,13 @@ Connection *ConnectionPool::get_for(const std::string &endpoint)
 
 void ConnectionPool::add(std::shared_ptr<Connection> conn)
 {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::scoped_lock lock(mu_);
     connections_.push_back(std::move(conn));
 }
 
 void ConnectionPool::remove(Connection *conn)
 {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::scoped_lock lock(mu_);
     for (auto it = connections_.begin(); it != connections_.end(); ++it) {
         if (it->get() == conn) {
             connections_.erase(it);
@@ -63,7 +63,7 @@ void ConnectionPool::remove(Connection *conn)
 
 void ConnectionPool::close_all()
 {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::scoped_lock lock(mu_);
     for (auto &conn : connections_) {
         conn->close();
     }
@@ -72,13 +72,13 @@ void ConnectionPool::close_all()
 
 size_t ConnectionPool::size()
 {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::scoped_lock lock(mu_);
     return connections_.size();
 }
 
 size_t ConnectionPool::healthy_count()
 {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::scoped_lock            lock(mu_);
     size_t                      count = 0;
     for (auto &conn : connections_) {
         if (conn->is_open()) {

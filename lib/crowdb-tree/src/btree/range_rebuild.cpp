@@ -170,11 +170,13 @@ Status build_leaf_frames(const std::vector<NativeFrame> &source_frames, uint32_t
                 return copy_status;
             }
         }
-        level->push_back({.page_id            = leaf.page_id,
-                          .first_key          = leaf.entries.front().key,
-                          .last_key           = leaf.entries.back().key,
-                          .first_leaf_page_id = leaf.page_id,
-                          .last_leaf_page_id  = leaf.page_id});
+        level->push_back({
+            .page_id            = leaf.page_id,
+            .first_key          = leaf.entries.front().key,
+            .last_key           = leaf.entries.back().key,
+            .first_leaf_page_id = leaf.page_id,
+            .last_leaf_page_id  = leaf.page_id,
+        });
     }
     return Status::Ok();
 }
@@ -219,11 +221,13 @@ Status build_inner_frames(uint32_t frame_bytes, uint32_t inner_max_keys, uint64_
             if (!built) {
                 return Status::resource_exhausted("range rebuild: inner separator does not fit destination frame");
             }
-            parents.push_back({.page_id            = frame.page_id,
-                               .first_key          = (*level)[begin].first_key,
-                               .last_key           = (*level)[begin + count - 1].last_key,
-                               .first_leaf_page_id = (*level)[begin].first_leaf_page_id,
-                               .last_leaf_page_id  = (*level)[begin + count - 1].last_leaf_page_id});
+            parents.push_back({
+                .page_id            = frame.page_id,
+                .first_key          = (*level)[begin].first_key,
+                .last_key           = (*level)[begin + count - 1].last_key,
+                .first_leaf_page_id = (*level)[begin].first_leaf_page_id,
+                .last_leaf_page_id  = (*level)[begin + count - 1].last_leaf_page_id,
+            });
             output->push_back(std::move(frame));
             ++stats->pages_rebuilt;
             begin += count;

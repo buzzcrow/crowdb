@@ -22,7 +22,7 @@ namespace crowdb::tree
 
 Status MemPageStore::write_at(uint64_t off, const uint8_t *buf, size_t len)
 {
-    std::lock_guard<std::mutex> lk(mu_);
+    std::scoped_lock lk(mu_);
     if (off + len > data_.size()) {
         data_.resize(off + len, 0);
     }
@@ -32,7 +32,7 @@ Status MemPageStore::write_at(uint64_t off, const uint8_t *buf, size_t len)
 
 Status MemPageStore::read_at(uint64_t off, uint8_t *buf, size_t len) const
 {
-    std::lock_guard<std::mutex> lk(mu_);
+    std::scoped_lock lk(mu_);
     if (off + len > data_.size()) {
         return Status::io_error("MemPageStore: read past end");
     }
@@ -42,7 +42,7 @@ Status MemPageStore::read_at(uint64_t off, uint8_t *buf, size_t len) const
 
 uint64_t MemPageStore::size() const
 {
-    std::lock_guard<std::mutex> lk(mu_);
+    std::scoped_lock lk(mu_);
     return data_.size();
 }
 

@@ -27,12 +27,12 @@ class CallbackGauge
 
     // Invoke the callback to get the current value. Called by the
     // metrics flush thread at report time.
-    uint64_t get() const
+    [[nodiscard]] uint64_t get() const
     {
         return cb_();
     }
 
-    const std::string &name() const
+    [[nodiscard]] const std::string &name() const
     {
         return name_;
     }

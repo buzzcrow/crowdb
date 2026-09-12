@@ -57,37 +57,43 @@ class LeafChainCursor
             if (n->type == page_type::kBatchDelta) {
                 const auto &entries = static_cast<BatchDelta *>(n)->entries();
                 if (!entries.empty()) {
-                    sources_.push_back({.kind          = SourceKind::kDelta,
-                                        .delta         = &entries,
-                                        .leaf          = nullptr,
-                                        .inframe_begin = 0,
-                                        .idx           = 0,
-                                        .count         = static_cast<uint32_t>(entries.size()),
-                                        .rank          = 2 * node});
+                    sources_.push_back({
+                        .kind          = SourceKind::kDelta,
+                        .delta         = &entries,
+                        .leaf          = nullptr,
+                        .inframe_begin = 0,
+                        .idx           = 0,
+                        .count         = static_cast<uint32_t>(entries.size()),
+                        .rank          = 2 * node,
+                    });
                 }
             }
             else if (n->type == page_type::kLeafBase) {
                 auto         *leaf = static_cast<LeafBase *>(n);
                 LeafFrameView v    = leaf->view();
                 if (v.count() > 0) {
-                    sources_.push_back({.kind          = SourceKind::kBase,
-                                        .delta         = nullptr,
-                                        .leaf          = leaf,
-                                        .inframe_begin = 0,
-                                        .idx           = 0,
-                                        .count         = v.count(),
-                                        .rank          = 2 * node});
+                    sources_.push_back({
+                        .kind          = SourceKind::kBase,
+                        .delta         = nullptr,
+                        .leaf          = leaf,
+                        .inframe_begin = 0,
+                        .idx           = 0,
+                        .count         = v.count(),
+                        .rank          = 2 * node,
+                    });
                 }
                 if (v.delta_count() > 0) {
                     auto begin = static_cast<uint32_t>(inframe_order_.size());
                     sort_inframe(v);
-                    sources_.push_back({.kind          = SourceKind::kInframe,
-                                        .delta         = nullptr,
-                                        .leaf          = leaf,
-                                        .inframe_begin = begin,
-                                        .idx           = 0,
-                                        .count         = static_cast<uint32_t>(inframe_order_.size()) - begin,
-                                        .rank          = (2 * node) + 1});
+                    sources_.push_back({
+                        .kind          = SourceKind::kInframe,
+                        .delta         = nullptr,
+                        .leaf          = leaf,
+                        .inframe_begin = begin,
+                        .idx           = 0,
+                        .count         = static_cast<uint32_t>(inframe_order_.size()) - begin,
+                        .rank          = (2 * node) + 1,
+                    });
                 }
             }
         }

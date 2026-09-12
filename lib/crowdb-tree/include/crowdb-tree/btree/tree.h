@@ -1182,14 +1182,15 @@ class Crowdbtree
     struct SnapshotPrepareContext;
     Status prepare_snapshot_pages_locked(SnapshotPrepareContext &ctx);
     Status fold_snapshot_page_locked(uint64_t page_id, uint64_t gc, PageBase **page);
-    Status queue_snapshot_page_locked(SnapshotPrepareContext &ctx, uint64_t page_id, PageBase *page,
-                                      const uint8_t *frame, uint32_t frame_len, bool relocate, uint64_t *addr,
-                                      uint32_t *logical_len);
+    Status        queue_snapshot_page_locked(SnapshotPrepareContext &ctx, uint64_t page_id, PageBase *page,
+                                             const uint8_t *frame, uint32_t frame_len, bool relocate, uint64_t *addr,
+                                             uint32_t *logical_len) const;
     Status prepare_snapshot_resident_page_locked(SnapshotPrepareContext &ctx, uint64_t page_id, uint64_t seg_idx);
     Status prepare_snapshot_segments_locked(SnapshotPrepareContext &ctx);
-    Status prepare_snapshot_slot_locked(SnapshotPrepareContext &ctx, uint64_t page_id, uint64_t word,
-                                        uint64_t *durable_word, uint32_t *live_count);
-    Status prepare_snapshot_segment_locked(SnapshotPrepareContext &ctx, uint64_t seg_idx, MappingSegment *segment);
+    static Status prepare_snapshot_slot_locked(SnapshotPrepareContext &ctx, uint64_t page_id, uint64_t word,
+                                               uint64_t *durable_word, uint32_t *live_count);
+    static Status prepare_snapshot_segment_locked(SnapshotPrepareContext &ctx, uint64_t seg_idx,
+                                                  MappingSegment *segment);
     void   prepare_snapshot_metadata_locked(SnapshotPrepareContext &ctx);
     Status prefetch_sparse_pages(std::vector<PrefetchedPage> *out, std::set<uint32_t> *selected_blocks);
     Status persist_compaction_snapshot(std::vector<PrefetchedPage> prefetched, std::set<uint32_t> selected_blocks,

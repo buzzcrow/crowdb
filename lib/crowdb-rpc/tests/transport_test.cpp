@@ -170,8 +170,8 @@ TEST_F(TransportLoopbackTest, SendAndReceiveFrame)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     EXPECT_TRUE(got_frame.load(std::memory_order_acquire));
-    EXPECT_EQ(recv_msg_type, 42u);
-    EXPECT_EQ(recv_msg_size, 16u);
+    EXPECT_EQ(recv_msg_type, 42U);
+    EXPECT_EQ(recv_msg_size, 16U);
 
     transport.stop();
     ::close(client_fd);
@@ -348,7 +348,7 @@ TEST_F(TransportLoopbackTest, LargeDataPayloadDirectRead)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     EXPECT_TRUE(got_frame.load(std::memory_order_acquire));
-    EXPECT_EQ(recv_msg_type, 99u);
+    EXPECT_EQ(recv_msg_type, 99U);
     EXPECT_EQ(recv_data_size, DATA_SIZE);
     ASSERT_EQ(recv_data.size(), DATA_SIZE);
 

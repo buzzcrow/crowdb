@@ -191,7 +191,7 @@ uint64_t BlockAsyncPageStore::submit_write(PageAddr addr, const void *buf, size_
                     if (res < 0 || static_cast<size_t>(res) < chunk) {
                         Status s = result_to_status(res, chunk, "write");
                         if (state->first_error.ok()) {
-                            state->first_error = s;
+                            state->first_error = std::move(s);
                         }
                     }
                     state->pending--;
@@ -261,7 +261,7 @@ Status BlockAsyncPageStore::submit_fsync(AsyncCompletion on_complete)
     state->cb  = on_complete;
 
     auto chain = std::make_shared<std::function<void()>>();
-    *chain     = [this, state, chain]() {
+    *chain     = [this, state, chain] {
         if (state->idx >= state->fds.size()) {
             if (state->cb) {
                 state->cb.complete(Status::Ok());

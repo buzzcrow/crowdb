@@ -303,7 +303,7 @@ TEST(SplitMerge, ConsolidationSplitsIterativelyToThreshold)
     for (int i = 0; i < 200; ++i) {
         big.ops.push_back({.key = make_key(i), .kind = OpKind::kPut, .value = "val-" + std::to_string(i)});
     }
-    ASSERT_TRUE(t.apply(2, std::move(big)).ok());
+    ASSERT_TRUE(t.apply(2, big).ok());
     ASSERT_TRUE(t.flush().ok());
 
     // With iterative splitting, ~7000 bytes / 200-byte threshold => ~35

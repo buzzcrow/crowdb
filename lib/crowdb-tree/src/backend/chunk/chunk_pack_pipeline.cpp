@@ -109,9 +109,11 @@ struct MirrorWriteSource
             return;
         }
         transport->submit_write_mirror(chunk_id, mirror_index, offset, bytes->data(), bytes->size(),
-                                       {.complete_fn       = &MirrorWriteSource::transport_complete,
-                                        .stop_requested_fn = &MirrorWriteSource::transport_stop_requested,
-                                        .context           = this});
+                                       {
+                                           .complete_fn       = &MirrorWriteSource::transport_complete,
+                                           .stop_requested_fn = &MirrorWriteSource::transport_stop_requested,
+                                           .context           = this,
+                                       });
     }
 };
 
@@ -122,9 +124,9 @@ struct PackReceiver
     std::weak_ptr<ChunkPackPipelineImpl> pipeline;
     size_t                               index = 0;
 
-    void set_value() noexcept;
-    void set_error(Status status) noexcept;
-    void set_stopped() noexcept;
+    void set_value() const noexcept;
+    void set_error(Status status) const noexcept;
+    void set_stopped() const noexcept;
 };
 
 using PackSender    = decltype(stdexec::when_all(std::declval<CallbackSender>(), std::declval<CallbackSender>(),
@@ -170,7 +172,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             const RootCatalog &reuse_catalog = reuse_base == store->inherited_manifest_ && store->inherited_catalog_
                                                  ? *store->inherited_catalog_
                                                  : *store->catalog_;
-            Status             status        = store->validate_manifest(*reuse_base, reuse_catalog);
+            Status status = crowdb::tree::detail::ChunkPageStore::validate_manifest(*reuse_base, reuse_catalog);
             if (!status.ok()) {
                 return status;
             }
@@ -200,11 +202,13 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
                     return Status::unavailable("chunk manifest reuse verification cancelled");
                 }
                 if (reused != nullptr) {
-                    manifest->packs.push_back({.owner_tree_id  = chunk_pack_owner(*reuse_base, *reused),
-                                               .ordinal        = manifest->packs.size(),
-                                               .logical_offset = offset,
-                                               .ref            = reused->ref,
-                                               .reused         = true});
+                    manifest->packs.push_back({
+                        .owner_tree_id  = chunk_pack_owner(*reuse_base, *reused),
+                        .ordinal        = manifest->packs.size(),
+                        .logical_offset = offset,
+                        .ref            = reused->ref,
+                        .reused         = true,
+                    });
                     ++manifest->packs_reused;
                     manifest->pack_bytes_reused += length;
                     offset += length;
@@ -240,7 +244,11 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             job->pack.ordinal        = manifest->packs.size();
             job->pack.logical_offset = offset;
             job->pack.ref            = {
-                .chunk_id = chunk, .offset = cursor, .length = static_cast<uint32_t>(length), .checksum = checksum};
+                .chunk_id = chunk,
+                .offset   = cursor,
+                .length   = static_cast<uint32_t>(length),
+                .checksum = checksum,
+            };
             job->physical_length = round_up_to_iu(length, store->config_.page_alignment);
             job->source_offset   = offset;
             manifest->packs.push_back(job->pack);
@@ -336,7 +344,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             return segment_status;
         }
         manifest->checksum       = ChunkPageStore::manifest_checksum(*manifest);
-        Status validation_status = store->validate_manifest(*manifest, *store->catalog_);
+        Status validation_status = crowdb::tree::detail::ChunkPageStore::validate_manifest(*manifest, *store->catalog_);
         if (!validation_status.ok()) {
             remember_orphan_segments();
             return validation_status;
@@ -382,25 +390,31 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
         job.framed.assign(job.physical_length, 0);
         std::copy_n(store->staged_.data() + job.source_offset, job.pack.ref.length, job.framed.data());
         for (uint32_t mirror = 0; mirror < job.mirrors.size(); ++mirror) {
-            job.mirrors[mirror] = {.transport         = store->transport_,
-                                   .chunk_id          = job.pack.ref.chunk_id,
-                                   .mirror_index      = mirror,
-                                   .offset            = job.pack.ref.offset,
-                                   .bytes             = &job.framed,
-                                   .cancellation      = cancellation,
-                                   .retry_limit       = store->config_.mirror_retry_limit,
-                                   .failure_mask      = &store->mirror_write_failure_mask_,
-                                   .attempts          = &store->mirror_write_attempts_,
-                                   .failures          = &store->mirror_write_failures_,
-                                   .stop_requested    = &stop_requested,
-                                   .diskio_operations = &store->diskio_operations_,
-                                   .diskio_latency_ns = &store->diskio_latency_ns_};
+            job.mirrors[mirror] = {
+                .transport         = store->transport_,
+                .chunk_id          = job.pack.ref.chunk_id,
+                .mirror_index      = mirror,
+                .offset            = job.pack.ref.offset,
+                .bytes             = &job.framed,
+                .cancellation      = cancellation,
+                .retry_limit       = store->config_.mirror_retry_limit,
+                .failure_mask      = &store->mirror_write_failure_mask_,
+                .attempts          = &store->mirror_write_attempts_,
+                .failures          = &store->mirror_write_failures_,
+                .stop_requested    = &stop_requested,
+                .diskio_operations = &store->diskio_operations_,
+                .diskio_latency_ns = &store->diskio_latency_ns_,
+            };
         }
-        auto sender   = stdexec::when_all(CallbackSender(&job.mirrors[0], &MirrorWriteSource::submit),
+        auto sender   = stdexec::when_all(CallbackSender(job.mirrors.data(), &MirrorWriteSource::submit),
                                           CallbackSender(&job.mirrors[1], &MirrorWriteSource::submit),
                                           CallbackSender(&job.mirrors[2], &MirrorWriteSource::submit));
-        job.operation = std::unique_ptr<PackOperation>(new PackOperation(
-            stdexec::connect(std::move(sender), PackReceiver{.pipeline = weak_from_this(), .index = index})));
+        // PackOperation is immovable (STDEXEC_IMMOVABLE), so make_unique
+        // cannot be used; construct directly from the connect() prvalue.
+        // std::move(sender) is required: connect() takes Sender&&.
+        // NOLINTNEXTLINE(modernize-make-unique,performance-move-const-arg)
+        job.operation = std::unique_ptr<PackOperation>(
+            new PackOperation(stdexec::connect(std::move(sender), PackReceiver{.pipeline = weak_from_this(), .index = index})));
         stdexec::start(*job.operation);
     }
 
@@ -448,7 +462,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
     Status                                  first_error;
 };
 
-void PackReceiver::set_value() noexcept
+void PackReceiver::set_value() const noexcept
 {
     if (auto owner = pipeline.lock()) {
         owner->release_frame(index);
@@ -456,7 +470,7 @@ void PackReceiver::set_value() noexcept
     }
 }
 
-void PackReceiver::set_error(Status status) noexcept
+void PackReceiver::set_error(Status status) const noexcept
 {
     if (auto owner = pipeline.lock()) {
         owner->release_frame(index);
@@ -464,7 +478,7 @@ void PackReceiver::set_error(Status status) noexcept
     }
 }
 
-void PackReceiver::set_stopped() noexcept
+void PackReceiver::set_stopped() const noexcept
 {
     if (auto owner = pipeline.lock()) {
         owner->release_frame(index);

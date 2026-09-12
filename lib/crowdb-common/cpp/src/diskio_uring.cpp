@@ -105,7 +105,7 @@ DiskIOUring::DiskIOUring(Topology topo)
 
     // Start poll threads.
     for (auto &pt : poll_threads_) {
-        pt->thread = std::thread([this, ptp = pt.get()]() { poll_thread_run(*ptp); });
+        pt->thread = std::thread([this, ptp = pt.get()] { poll_thread_run(*ptp); });
     }
 }
 
@@ -312,7 +312,7 @@ void DiskIOUring::submit_lockfree(Pipeline &p, int fd, std::function<void(int)> 
         fd_in_flight_[fd].fetch_add(1, std::memory_order_acq_rel);
     }
 
-    auto *entry = new CallbackEntry{std::move(on_complete), fd, {}};
+    auto *entry = new CallbackEntry{.cb = std::move(on_complete), .fd = fd, .next_free = {}};
 
     // CAS loop: check capacity BEFORE claiming a slot.
     for (int attempt = 0; attempt < 1000; ++attempt) {
@@ -365,7 +365,7 @@ void DiskIOUring::publish_ready_sqes(Pipeline &p)
     io_uring_smp_store_release(p.ring.sq.ktail, p.sqe_head);
 
     if (p.mode == PollingMode::Sqpoll) {
-        if (p.ring.sq.kflags != nullptr && (*p.ring.sq.kflags & IORING_SQ_NEED_WAKEUP)) {
+        if (p.ring.sq.kflags != nullptr && ((*p.ring.sq.kflags & IORING_SQ_NEED_WAKEUP) != 0U)) {
             ::io_uring_enter(p.ring.ring_fd, 0, 0, IORING_ENTER_SQ_WAKEUP, nullptr);
         }
     }
@@ -508,7 +508,7 @@ void DiskIOUring::poll_thread_run(PollThread &pt)
 
 bool DiskIOUring::wait_classic(Pipeline &p, struct io_uring_cqe *&cqe)
 {
-    struct __kernel_timespec ts{0, 50'000'000}; // 50ms
+    struct __kernel_timespec ts{.tv_sec = 0, .tv_nsec = 50'000'000}; // 50ms
     int                      rc = ::io_uring_wait_cqe_timeout(&p.ring, &cqe, &ts);
     return rc == 0;
 }
@@ -526,7 +526,7 @@ bool DiskIOUring::wait_hybrid(Pipeline &p, struct io_uring_cqe *&cqe, unsigned &
         std::this_thread::yield();
         return false;
     }
-    struct __kernel_timespec ts{0, 50'000'000};
+    struct __kernel_timespec ts{.tv_sec = 0, .tv_nsec = 50'000'000};
     int                      rc = ::io_uring_wait_cqe_timeout(&p.ring, &cqe, &ts);
     if (rc == 0) {
         busy_poll_count = 0;
@@ -537,10 +537,10 @@ bool DiskIOUring::wait_hybrid(Pipeline &p, struct io_uring_cqe *&cqe, unsigned &
 
 bool DiskIOUring::wait_sqpoll(Pipeline &p, struct io_uring_cqe *&cqe)
 {
-    if (p.ring.sq.kflags != nullptr && (*p.ring.sq.kflags & IORING_SQ_NEED_WAKEUP)) {
+    if (p.ring.sq.kflags != nullptr && ((*p.ring.sq.kflags & IORING_SQ_NEED_WAKEUP) != 0U)) {
         ::io_uring_enter(p.ring.ring_fd, 0, 0, IORING_ENTER_SQ_WAKEUP, nullptr);
     }
-    struct __kernel_timespec ts{0, 50'000'000};
+    struct __kernel_timespec ts{.tv_sec = 0, .tv_nsec = 50'000'000};
     int                      rc = ::io_uring_wait_cqe_timeout(&p.ring, &cqe, &ts);
     return rc == 0;
 }

@@ -34,7 +34,7 @@ class BloomFilter
     {
         uint64_t bits = static_cast<uint64_t>(n_keys) * bits_per_key;
         bits          = std::max<uint64_t>(bits, 64);
-        size_t words  = static_cast<size_t>((bits + 63) / 64);
+        auto words    = static_cast<size_t>((bits + 63) / 64);
         words_.assign(words, 0);
         num_bits_ = static_cast<uint64_t>(words) * 64;
         k_        = static_cast<uint32_t>(bits_per_key * 0.69); // ln2
@@ -45,10 +45,10 @@ class BloomFilter
     void add(Slice key)
     {
         uint64_t h  = fnv1a64(key);
-        uint32_t h1 = static_cast<uint32_t>(h);
+        auto     h1 = static_cast<uint32_t>(h);
         uint32_t h2 = static_cast<uint32_t>(h >> 32) | 1; // odd, non-zero
         for (uint32_t i = 0; i < k_; ++i) {
-            uint64_t bit = (static_cast<uint64_t>(h1) + static_cast<uint64_t>(i) * h2) % num_bits_;
+            uint64_t bit = (static_cast<uint64_t>(h1) + (static_cast<uint64_t>(i) * h2)) % num_bits_;
             words_[bit / 64] |= (1ULL << (bit % 64));
         }
     }
@@ -59,10 +59,10 @@ class BloomFilter
             return true; // empty filter: never a false negative
         }
         uint64_t h  = fnv1a64(key);
-        uint32_t h1 = static_cast<uint32_t>(h);
+        auto     h1 = static_cast<uint32_t>(h);
         uint32_t h2 = static_cast<uint32_t>(h >> 32) | 1;
         for (uint32_t i = 0; i < k_; ++i) {
-            uint64_t bit = (static_cast<uint64_t>(h1) + static_cast<uint64_t>(i) * h2) % num_bits_;
+            uint64_t bit = (static_cast<uint64_t>(h1) + (static_cast<uint64_t>(i) * h2)) % num_bits_;
             if ((words_[bit / 64] & (1ULL << (bit % 64))) == 0) {
                 return false;
             }

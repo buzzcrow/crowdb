@@ -295,12 +295,12 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     Status read_at_cancellable(uint64_t off, uint8_t *buf, size_t len, ChunkCancellation cancellation) const;
     Status sync_cancellable(ChunkCancellation cancellation);
     std::shared_ptr<void> start_sync_cancellable(ChunkCancellation cancellation, AsyncCompletion completion);
-    Status                finish_sync_cancellable(const std::shared_ptr<void> &state, ChunkCancellation cancellation,
+    static Status         finish_sync_cancellable(const std::shared_ptr<void> &state, ChunkCancellation cancellation,
                                                   Status io_status);
     Status                read_pack(const ChunkPageRef &ref, std::shared_ptr<const std::vector<uint8_t>> *out,
                                     ChunkCancellation cancellation) const;
     Status                load_layout(std::shared_ptr<const ChunkManifest> *out) const;
-    Status                validate_manifest(const ChunkManifest &manifest, const RootCatalog &catalog) const;
+    static Status         validate_manifest(const ChunkManifest &manifest, const RootCatalog &catalog);
     Status                persist_reference_segments(ChunkManifest *manifest, const ChunkManifest *reuse_base);
     [[nodiscard]] std::shared_ptr<const ChunkManifest> reuse_base_manifest() const;
     [[nodiscard]] const ChunkPagePack        *find_reusable_pack(const ChunkManifest &base, uint64_t logical_offset,

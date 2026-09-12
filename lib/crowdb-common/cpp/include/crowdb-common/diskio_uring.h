@@ -131,7 +131,7 @@ class DiskIOUring
     int cancel_fd(int fd);
 
     // Number of in-flight ops for a fd (for monitoring / testing).
-    uint32_t in_flight_count(int fd) const;
+    [[nodiscard]] uint32_t in_flight_count(int fd) const;
 
     // Unregister fd: cancel in-flight, wait for CQEs to drain, clear slot.
     void unregister_fd(int fd);
@@ -218,22 +218,22 @@ class DiskIOUring
     void submit_lockfree(Pipeline &p, int fd, std::function<void(int)> on_complete, const Prep &prep);
 
     // Publish contiguous filled SQE slots to the kernel for one pipeline.
-    void publish_ready_sqes(Pipeline &p);
+    static void publish_ready_sqes(Pipeline &p);
 
     // Poll thread body: drains CQs for all assigned pipelines.
     void poll_thread_run(PollThread &pt);
 
     // Mode-specific wait for one pipeline.
-    bool wait_classic(Pipeline &p, struct io_uring_cqe *&cqe);
-    bool wait_hybrid(Pipeline &p, struct io_uring_cqe *&cqe, unsigned &busy_poll_count);
-    bool wait_sqpoll(Pipeline &p, struct io_uring_cqe *&cqe);
+    static bool wait_classic(Pipeline &p, struct io_uring_cqe *&cqe);
+    static bool wait_hybrid(Pipeline &p, struct io_uring_cqe *&cqe, unsigned &busy_poll_count);
+    static bool wait_sqpoll(Pipeline &p, struct io_uring_cqe *&cqe);
 
     // Drain all ready CQEs for one pipeline and dispatch callbacks.
     void drain_cqes(Pipeline &p);
 
     // Wake a sleeping poll thread through its private eventfd. Pipeline
     // eventfds are reserved for external completion consumers.
-    void wake_poll_thread(PollThread &pt);
+    static void wake_poll_thread(PollThread &pt);
 
     // Publish the idle-to-pending transition and wake the owning poll thread.
     void mark_pending(Pipeline &p);

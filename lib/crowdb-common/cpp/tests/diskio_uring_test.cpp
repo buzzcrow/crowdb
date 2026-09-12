@@ -60,7 +60,7 @@ TEST(DiskIOUring, SinglePipelineSubmitReadCompletes)
     ASSERT_EQ(::pwrite(fd, expected.data(), expected.size(), 0), static_cast<ssize_t>(expected.size()));
 
     Topology topo;
-    topo.pipelines.push_back({256, PollingMode::Classic});
+    topo.pipelines.push_back({.entries = 256, .mode = PollingMode::Classic});
     DiskIOUring uring(std::move(topo));
     ASSERT_GE(uring.eventfds(nullptr, 0), 0); // just check it doesn't crash
     uring.register_fd(fd);
@@ -88,7 +88,7 @@ TEST(DiskIOUring, SinglePipelineSubmitWriteThenReadRoundTrips)
     ASSERT_GE(fd, 0);
 
     Topology topo;
-    topo.pipelines.push_back({256, PollingMode::Classic});
+    topo.pipelines.push_back({.entries = 256, .mode = PollingMode::Classic});
     DiskIOUring uring(std::move(topo));
     uring.register_fd(fd);
 
@@ -117,7 +117,7 @@ TEST(DiskIOUring, SinglePipelineFsyncCompletes)
     ASSERT_GE(fd, 0);
 
     Topology topo;
-    topo.pipelines.push_back({256, PollingMode::Classic});
+    topo.pipelines.push_back({.entries = 256, .mode = PollingMode::Classic});
     DiskIOUring uring(std::move(topo));
     uring.register_fd(fd);
 
@@ -148,7 +148,7 @@ TEST(DiskIOUring, SinglePipelineMultipleConcurrentSubmitsAllComplete)
     ASSERT_EQ(::ftruncate(fd, static_cast<off_t>(kOps) * 16), 0);
 
     Topology topo;
-    topo.pipelines.push_back({256, PollingMode::Classic});
+    topo.pipelines.push_back({.entries = 256, .mode = PollingMode::Classic});
     DiskIOUring uring(std::move(topo));
     uring.register_fd(fd);
 
@@ -188,17 +188,19 @@ TEST(DiskIOUring, MultiPipelineExplicitRouting)
     ASSERT_EQ(::ftruncate(fd_b, 4096), 0);
 
     Topology topo;
-    topo.pipelines.push_back({64, PollingMode::Classic});
-    topo.pipelines.push_back({64, PollingMode::Classic});
+    topo.pipelines.push_back({.entries = 64, .mode = PollingMode::Classic});
+    topo.pipelines.push_back({.entries = 64, .mode = PollingMode::Classic});
     topo.poll_thread_groups.push_back({
-        {0, 1}
+        .pipelines = {0, 1},
     }); // one thread for both
     DiskIOUring uring(std::move(topo));
     uring.register_fd(fd_a, 0);
     uring.register_fd(fd_b, 1);
 
-    std::atomic<bool>    done_a{false}, done_b{false};
-    std::atomic<int>     res_a{-1}, res_b{-1};
+    std::atomic<bool>    done_a{false};
+    std::atomic<bool>    done_b{false};
+    std::atomic<int>     res_a{-1};
+    std::atomic<int>     res_b{-1};
     std::vector<uint8_t> buf(4096, 0xAA);
 
     uring.submit_write(fd_a, buf.data(), buf.size(), 0, [&](int res) {
@@ -223,13 +225,13 @@ TEST(DiskIOUring, MultiPipelineExplicitRouting)
 TEST(DiskIOUring, MultiPipelineEventfdsReturnsAllPipelines)
 {
     Topology topo;
-    topo.pipelines.push_back({64, PollingMode::Classic});
-    topo.pipelines.push_back({64, PollingMode::Classic});
+    topo.pipelines.push_back({.entries = 64, .mode = PollingMode::Classic});
+    topo.pipelines.push_back({.entries = 64, .mode = PollingMode::Classic});
     DiskIOUring uring(std::move(topo));
 
     int32_t fds[2] = {-1, -1};
     size_t  count  = uring.eventfds(fds, 2);
-    EXPECT_EQ(count, 2u);
+    EXPECT_EQ(count, 2U);
     EXPECT_GE(fds[0], 0);
     EXPECT_GE(fds[1], 0);
     EXPECT_NE(fds[0], fds[1]);
@@ -245,11 +247,11 @@ TEST(DiskIOUring, InFlightCountTracksSubmitAndComplete)
     ASSERT_EQ(::ftruncate(fd, 4096), 0);
 
     Topology topo;
-    topo.pipelines.push_back({256, PollingMode::Classic});
+    topo.pipelines.push_back({.entries = 256, .mode = PollingMode::Classic});
     DiskIOUring uring(std::move(topo));
     uring.register_fd(fd);
 
-    EXPECT_EQ(uring.in_flight_count(fd), 0u);
+    EXPECT_EQ(uring.in_flight_count(fd), 0U);
 
     std::atomic<bool>    done{false};
     std::vector<uint8_t> buf(4096, 0);
@@ -257,7 +259,7 @@ TEST(DiskIOUring, InFlightCountTracksSubmitAndComplete)
 
     // After completion, in_flight should be back to 0.
     ASSERT_TRUE(wait_for([&] { return done.load(std::memory_order_acquire); }));
-    EXPECT_EQ(uring.in_flight_count(fd), 0u);
+    EXPECT_EQ(uring.in_flight_count(fd), 0U);
 
     ::close(fd);
     std::remove(path.c_str());
@@ -271,7 +273,7 @@ TEST(DiskIOUring, ConsecutiveIdleSubmissionsDoNotWaitForPollTimeout)
     ASSERT_EQ(::ftruncate(fd, 4096), 0);
 
     Topology topo;
-    topo.pipelines.push_back({256, PollingMode::Classic});
+    topo.pipelines.push_back({.entries = 256, .mode = PollingMode::Classic});
     DiskIOUring uring(std::move(topo));
     uring.register_fd(fd);
 
@@ -298,10 +300,10 @@ TEST(DiskIOUring, DestructorStopsThreadsCleanly)
 {
     {
         Topology topo;
-        topo.pipelines.push_back({256, PollingMode::Classic});
+        topo.pipelines.push_back({.entries = 256, .mode = PollingMode::Classic});
         DiskIOUring uring(std::move(topo));
         int32_t     fds[1];
-        EXPECT_EQ(uring.eventfds(fds, 1), 1u);
+        EXPECT_EQ(uring.eventfds(fds, 1), 1U);
         EXPECT_GE(fds[0], 0);
     }
     SUCCEED();
@@ -347,8 +349,8 @@ TEST(DiskIOUring, UnregisteredFdRoutesToPipeline0)
     ASSERT_EQ(::ftruncate(fd, 4096), 0);
 
     Topology topo;
-    topo.pipelines.push_back({256, PollingMode::Classic});
-    topo.pipelines.push_back({256, PollingMode::Classic});
+    topo.pipelines.push_back({.entries = 256, .mode = PollingMode::Classic});
+    topo.pipelines.push_back({.entries = 256, .mode = PollingMode::Classic});
     DiskIOUring uring(std::move(topo));
     // Note: fd not registered — should route to pipeline 0 with warning.
 
@@ -374,7 +376,7 @@ TEST(DiskIOUring, IdleSubmissionDoesNotWaitForPollTimeout)
     ASSERT_EQ(::ftruncate(fd, 4096), 0);
 
     Topology topo;
-    topo.pipelines.push_back({256, PollingMode::Hybrid});
+    topo.pipelines.push_back({.entries = 256, .mode = PollingMode::Hybrid});
     DiskIOUring uring(std::move(topo));
     uring.register_fd(fd);
 

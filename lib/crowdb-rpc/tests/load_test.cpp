@@ -139,7 +139,7 @@ TEST(LoadTest, MultiThreadEcho)
             auto pr = std::make_shared<PendingReq>();
             pr->payload.resize(DATA_SIZE);
             for (uint32_t i = 0; i < DATA_SIZE; i++) {
-                pr->payload[i] = static_cast<uint8_t>((i + r * 7 + tid * 13) % 256);
+                pr->payload[i] = static_cast<uint8_t>((i + (r * 7) + (tid * 13)) % 256);
             }
 
             uint64_t    req_id = id_gen.next();
@@ -275,7 +275,7 @@ TEST(LoadTest, MultiWorkerOneshotEcho)
             auto pr = std::make_shared<PendingReq>();
             pr->payload.resize(DATA_SIZE);
             for (uint32_t i = 0; i < DATA_SIZE; i++) {
-                pr->payload[i] = static_cast<uint8_t>((i + r * 7 + tid * 13) % 256);
+                pr->payload[i] = static_cast<uint8_t>((i + (r * 7) + (tid * 13)) % 256);
             }
 
             uint64_t    req_id = id_gen.next();
@@ -377,7 +377,7 @@ TEST(LoadTest, SharedTransportOneshotEcho)
     // Client connections on the SERVER's transport (shared).
     // This is the key difference from MultiWorkerOneshotEcho.
     auto &shared_transport = *server.transport();
-    auto  pool             = shared_transport.pool();
+    auto *pool             = shared_transport.pool();
 
     std::vector<std::shared_ptr<Connection>> conns;
     std::vector<std::unique_ptr<RpcClient>>  callers;
@@ -404,7 +404,7 @@ TEST(LoadTest, SharedTransportOneshotEcho)
             auto  pr     = std::make_shared<PendingReq>();
             pr->payload.resize(DATA_SIZE);
             for (uint32_t i = 0; i < DATA_SIZE; i++) {
-                pr->payload[i] = static_cast<uint8_t>((i + r * 7 + tid * 13) % 256);
+                pr->payload[i] = static_cast<uint8_t>((i + (r * 7) + (tid * 13)) % 256);
             }
             uint64_t req_id = id_gen.next();
             Buffer  *ctrl   = build_ping_request(pool, req_id, 0);
@@ -426,8 +426,9 @@ TEST(LoadTest, SharedTransportOneshotEcho)
                     break;
                 }
             }
-            if (all_done)
+            if (all_done) {
                 break;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         for (auto &pr : reqs) {

@@ -26,8 +26,9 @@ TEST(RequestIdGen, NextIsUniqueUnderConcurrency)
     std::vector<std::thread>           threads;
     std::vector<std::vector<uint64_t>> results(n_threads);
 
+    threads.reserve(n_threads);
     for (int t = 0; t < n_threads; ++t) {
-        threads.emplace_back([&gen, &results, t]() {
+        threads.emplace_back([&gen, &results, t] {
             for (int i = 0; i < per_thread; ++i) {
                 results[t].push_back(gen.next());
             }

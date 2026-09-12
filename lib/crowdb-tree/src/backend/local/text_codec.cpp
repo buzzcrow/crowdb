@@ -40,12 +40,15 @@ bool from_hex(const std::string &hex, std::vector<uint8_t> *out)
         auto hi  = hex[i];
         auto lo  = hex[i + 1];
         auto val = [](char c) -> int {
-            if (c >= '0' && c <= '9')
+            if (c >= '0' && c <= '9') {
                 return c - '0';
-            if (c >= 'a' && c <= 'f')
+            }
+            if (c >= 'a' && c <= 'f') {
                 return c - 'a' + 10;
-            if (c >= 'A' && c <= 'F')
+            }
+            if (c >= 'A' && c <= 'F') {
                 return c - 'A' + 10;
+            }
             return -1;
         };
         int h = val(hi);
@@ -92,7 +95,7 @@ Status decode_generic_text(const std::string &text, std::vector<uint8_t> *out)
     std::istringstream iss(text);
     std::string        line;
     while (std::getline(iss, line)) {
-        if (line.substr(0, 4) == "raw ") {
+        if (line.starts_with("raw ")) {
             if (!from_hex(line.substr(4), out)) {
                 return Status::corruption("text codec: invalid hex in raw line");
             }

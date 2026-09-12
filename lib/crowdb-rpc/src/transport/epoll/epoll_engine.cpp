@@ -74,22 +74,22 @@ static constexpr uintptr_t WRITE_FD_MASK = 1;
 // is needed. Redundant MODs are ~1µs each — cheaper than a mutex.
 // For read fds: data.ptr = conn (no mask bit).
 // For write fds: data.ptr = conn | WRITE_FD_MASK (bit 0 set).
-void EpollEngine::mod_fd(int fd, uint32_t events, Connection *conn)
+void EpollEngine::mod_fd(int fd, uint32_t events, Connection *conn) const
 {
     struct epoll_event ev;
     std::memset(&ev, 0, sizeof(ev));
-    ev.events   = events | (oneshot_ ? static_cast<uint32_t>(EPOLLONESHOT) : 0u);
+    ev.events   = events | (oneshot_ ? static_cast<uint32_t>(EPOLLONESHOT) : 0U);
     ev.data.ptr = conn; // udata = Connection* for zero-lock dispatch
     ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
 }
 
 // MOD for write fds — preserves the WRITE_FD_MASK bit in data.ptr so
 // wait() can distinguish write events from read events.
-void EpollEngine::mod_fd_write(int fd, uint32_t events, Connection *conn)
+void EpollEngine::mod_fd_write(int fd, uint32_t events, Connection *conn) const
 {
     struct epoll_event ev;
     std::memset(&ev, 0, sizeof(ev));
-    ev.events   = events | (oneshot_ ? static_cast<uint32_t>(EPOLLONESHOT) : 0u);
+    ev.events   = events | (oneshot_ ? static_cast<uint32_t>(EPOLLONESHOT) : 0U);
     ev.data.ptr = reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(conn) | WRITE_FD_MASK);
     ::epoll_ctl(epoll_fd_, EPOLL_CTL_MOD, fd, &ev);
 }
@@ -115,13 +115,13 @@ void EpollEngine::remove_listen_fd(int fd)
 void EpollEngine::add_connection(int read_fd, int write_fd, Connection *conn)
 {
     {
-        std::lock_guard<std::mutex> lock(conn_mu_);
+        std::scoped_lock lock(conn_mu_);
         connections_[read_fd] = conn;
     }
     // Register read fd with EPOLLIN (armed immediately for reading).
     struct epoll_event ev;
     std::memset(&ev, 0, sizeof(ev));
-    ev.events   = EPOLLIN | (oneshot_ ? static_cast<uint32_t>(EPOLLONESHOT) : 0u);
+    ev.events   = EPOLLIN | (oneshot_ ? static_cast<uint32_t>(EPOLLONESHOT) : 0U);
     ev.data.ptr = conn; // udata = Connection* for zero-lock dispatch
     ::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, read_fd, &ev);
 
@@ -139,7 +139,7 @@ void EpollEngine::add_connection(int read_fd, int write_fd, Connection *conn)
 void EpollEngine::remove_connection(int read_fd, int write_fd)
 {
     {
-        std::lock_guard<std::mutex> lock(conn_mu_);
+        std::scoped_lock lock(conn_mu_);
         connections_.erase(read_fd);
     }
     ::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, read_fd, nullptr);
@@ -227,13 +227,13 @@ int EpollEngine::wait(EngineEvent *out_events, int max_events, int timeout_ms)
                 uint64_t val;
                 ::read(notify_fd_, &val, sizeof(val));
             }
-            out_events[out++] = {SocketEvent::Notify, -1, nullptr};
+            out_events[out++] = {.type = SocketEvent::Notify, .fd = -1, .conn = nullptr};
             continue;
         }
         if (fd == timer_fd_) {
             uint64_t val;
             ::read(timer_fd_, &val, sizeof(val));
-            out_events[out++] = {SocketEvent::Timer, -1, nullptr};
+            out_events[out++] = {.type = SocketEvent::Timer, .fd = -1, .conn = nullptr};
             continue;
         }
         // Listen socket: data.fd was set (not data.ptr). Must check
@@ -241,7 +241,7 @@ int EpollEngine::wait(EngineEvent *out_events, int max_events, int timeout_ms)
         // union, so data.ptr is non-null when data.fd is set, which
         // would produce a garbage Connection* pointer.
         if (fd == listen_fd_ && listen_fd_ >= 0) {
-            out_events[out++] = {SocketEvent::Accept, fd, nullptr};
+            out_events[out++] = {.type = SocketEvent::Accept, .fd = fd, .conn = nullptr};
             continue;
         }
 
@@ -259,23 +259,23 @@ int EpollEngine::wait(EngineEvent *out_events, int max_events, int timeout_ms)
             fd = is_write_fd ? conn->write_fd : static_cast<int>(conn->transport_handle);
         }
 
-        if (ev.events & (EPOLLERR | EPOLLHUP)) {
-            out_events[out++] = {SocketEvent::Error, fd, conn};
+        if ((ev.events & (EPOLLERR | EPOLLHUP)) != 0U) {
+            out_events[out++] = {.type = SocketEvent::Error, .fd = fd, .conn = conn};
         }
         else if (is_write_fd) {
             // Write fd event — only EPOLLOUT is armed on this fd.
-            if (ev.events & EPOLLOUT && conn != nullptr) {
-                out_events[out++] = {SocketEvent::Writable, fd, conn};
+            if (((ev.events & EPOLLOUT) != 0U) && conn != nullptr) {
+                out_events[out++] = {.type = SocketEvent::Writable, .fd = fd, .conn = conn};
             }
         }
         else {
             // Read fd event — EPOLLIN for connection or listen socket.
-            if (ev.events & EPOLLIN) {
+            if ((ev.events & EPOLLIN) != 0U) {
                 if (conn != nullptr) {
-                    out_events[out++] = {SocketEvent::Readable, fd, conn};
+                    out_events[out++] = {.type = SocketEvent::Readable, .fd = fd, .conn = conn};
                 }
                 else {
-                    out_events[out++] = {SocketEvent::Accept, fd, nullptr};
+                    out_events[out++] = {.type = SocketEvent::Accept, .fd = fd, .conn = nullptr};
                 }
             }
         }

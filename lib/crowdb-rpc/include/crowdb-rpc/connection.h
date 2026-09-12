@@ -47,17 +47,17 @@ class Connection
 
     ~Connection();
 
-    int64_t id() const
+    [[nodiscard]] int64_t id() const
     {
         return id_;
     }
 
-    const std::string &name() const
+    [[nodiscard]] const std::string &name() const
     {
         return name_;
     }
 
-    bool is_open() const
+    [[nodiscard]] bool is_open() const
     {
         return open_.load(std::memory_order_relaxed);
     }
@@ -80,7 +80,7 @@ class Connection
     bool try_send(int fd, TransportStats *stats);
 
     // Check if the connection has pending send data (queue or partials).
-    bool has_pending_send() const
+    [[nodiscard]] bool has_pending_send() const
     {
         return send_queue_.has_pending() || overflow_.has_pending() || pending_count_ > 0;
     }
@@ -120,7 +120,7 @@ class Connection
     }
 
     // Send queue capacity (backpressure bound, fixed at construction).
-    uint32_t send_queue_capacity() const
+    [[nodiscard]] uint32_t send_queue_capacity() const
     {
         return send_queue_.capacity();
     }
@@ -163,7 +163,7 @@ class Connection
     }
 
     // Buffer pool for receive-side allocations (control/data buffers).
-    BufferPool *pool() const
+    [[nodiscard]] BufferPool *pool() const
     {
         return pool_;
     }

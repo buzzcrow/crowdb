@@ -274,7 +274,7 @@ TEST(SkipList, ConcurrentOverwriteAndIterate)
                 CellVersion *cv  = make_cv_simple(s, "v" + std::to_string(w));
                 CellVersion *old = do_upsert(sl, "hot", cv);
                 if (old != nullptr) {
-                    std::lock_guard lk(old_mu);
+                    std::scoped_lock lk(old_mu);
                     old_versions.push_back(old);
                 }
             }

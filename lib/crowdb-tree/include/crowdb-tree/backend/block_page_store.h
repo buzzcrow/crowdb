@@ -196,7 +196,7 @@ class BlockPageStore : public PageStore
     // single medium's fd (single-file mode), for fd registration with
     // DiskIOUring at startup. Unlike dirty_fds(), does not clear the dirty
     // flag. Returns an empty vector if no fd is usable (e.g. MemoryMedium).
-    std::vector<int> all_extent_fds() const;
+    [[nodiscard]] std::vector<int> all_extent_fds() const;
 
     // Number of live block files in an array-of-blocks store (0 for single-medium).
     [[nodiscard]] size_t num_extents() const

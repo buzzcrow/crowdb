@@ -201,7 +201,7 @@ std::vector<CommitAnchor> read_valid_anchors(const PageStore &store, uint32_t iu
 {
     const uint64_t            slot_bytes = superblock_slot_bytes(iu);
     std::vector<CommitAnchor> anchors;
-    for (uint64_t slot : {uint64_t(0), slot_bytes}) {
+    for (uint64_t slot : {static_cast<uint64_t>(0), slot_bytes}) {
         if (slot + slot_bytes > store.size()) {
             continue;
         }
@@ -411,14 +411,14 @@ std::set<uint32_t> select_sparse_blocks(const std::vector<std::pair<uint64_t, ui
 
     std::vector<std::pair<uint32_t, uint64_t>> candidates;
     for (const auto &[block, bytes] : live_bytes) {
-        double free_ratio = 1.0 - static_cast<double>(bytes) / static_cast<double>(block_size);
+        double free_ratio = 1.0 - (static_cast<double>(bytes) / static_cast<double>(block_size));
         if (block != 0 && free_ratio > sparse_threshold) {
             candidates.emplace_back(block, bytes);
         }
     }
     std::ranges::sort(candidates, [block_size](const auto &a, const auto &b) {
-        double free_a = 1.0 - static_cast<double>(a.second) / static_cast<double>(block_size);
-        double free_b = 1.0 - static_cast<double>(b.second) / static_cast<double>(block_size);
+        double free_a = 1.0 - (static_cast<double>(a.second) / static_cast<double>(block_size));
+        double free_b = 1.0 - (static_cast<double>(b.second) / static_cast<double>(block_size));
         return free_a == free_b ? a.first < b.first : free_a > free_b;
     });
 
@@ -523,20 +523,22 @@ Status Crowdbtree::prepare_snapshot_locked(PreparedSnapshot *out, std::vector<Pr
     const uint64_t block_size = store->block_size();
     out->blocks_selected      = relocation_blocks.size();
 
-    SnapshotPrepareContext ctx{.out                   = out,
-                               .store                 = store,
-                               .iu                    = iu,
-                               .gc                    = gc,
-                               .block_size            = block_size,
-                               .have_prev             = have_prev,
-                               .prev                  = prev,
-                               .alloc                 = std::move(alloc),
-                               .relocation_blocks     = std::move(relocation_blocks),
-                               .prefetched            = std::move(prefetched),
-                               .prefetch_by_page_id   = {},
-                               .forced_segment_images = {},
-                               .pending_addr          = {},
-                               .directory_entries     = {}};
+    SnapshotPrepareContext ctx{
+        .out                   = out,
+        .store                 = store,
+        .iu                    = iu,
+        .gc                    = gc,
+        .block_size            = block_size,
+        .have_prev             = have_prev,
+        .prev                  = prev,
+        .alloc                 = std::move(alloc),
+        .relocation_blocks     = std::move(relocation_blocks),
+        .prefetched            = std::move(prefetched),
+        .prefetch_by_page_id   = {},
+        .forced_segment_images = {},
+        .pending_addr          = {},
+        .directory_entries     = {},
+    };
     for (auto &pf : ctx.prefetched) {
         ctx.prefetch_by_page_id[pf.page_id] = &pf;
         ctx.forced_segment_images.insert(pf.page_id / MappingTable::kSegmentSize);
@@ -616,7 +618,7 @@ Status Crowdbtree::fold_snapshot_page_locked(uint64_t page_id, uint64_t gc, Page
 
 Status Crowdbtree::queue_snapshot_page_locked(SnapshotPrepareContext &ctx, uint64_t page_id, PageBase *page,
                                               const uint8_t *frame, uint32_t frame_len, bool relocate, uint64_t *addr,
-                                              uint32_t *logical_len)
+                                              uint32_t *logical_len) const
 {
     if (page->durable_addr != kNoAddr && !relocate) {
         *addr        = page->durable_addr;
@@ -633,12 +635,14 @@ Status Crowdbtree::queue_snapshot_page_locked(SnapshotPrepareContext &ctx, uint6
     *addr        = ctx.alloc.alloc(logical);
     *logical_len = logical;
     blob.resize(round_up_to_iu(logical, ctx.iu), 0);
-    ctx.out->page_writes.push_back(PreparedPageWrite{.page_id     = page_id,
-                                                     .page        = page,
-                                                     .prior_addr  = page->durable_addr,
-                                                     .addr        = *addr,
-                                                     .logical_len = logical,
-                                                     .blob        = std::move(blob)});
+    ctx.out->page_writes.push_back(PreparedPageWrite{
+        .page_id     = page_id,
+        .page        = page,
+        .prior_addr  = page->durable_addr,
+        .addr        = *addr,
+        .logical_len = logical,
+        .blob        = std::move(blob),
+    });
     ++ctx.pages_written;
     if (relocate) {
         ++ctx.pages_relocated;
@@ -765,12 +769,14 @@ Status Crowdbtree::prepare_snapshot_slot_locked(SnapshotPrepareContext &ctx, uin
     if (!encode_status.ok()) {
         return encode_status;
     }
-    ctx.out->page_writes.push_back(PreparedPageWrite{.page_id     = page_id,
-                                                     .page        = nullptr,
-                                                     .prior_addr  = old_addr,
-                                                     .addr        = new_addr,
-                                                     .logical_len = padded_len,
-                                                     .blob        = std::move(blob)});
+    ctx.out->page_writes.push_back(PreparedPageWrite{
+        .page_id     = page_id,
+        .page        = nullptr,
+        .prior_addr  = old_addr,
+        .addr        = new_addr,
+        .logical_len = padded_len,
+        .blob        = std::move(blob),
+    });
     ctx.out->unloaded_relocations.push_back(
         PreparedUnloadedRelocation{.page_id = page_id, .old_word = word, .new_word = new_word});
     *durable_word = new_word;
@@ -784,11 +790,13 @@ Status Crowdbtree::prepare_snapshot_segment_locked(SnapshotPrepareContext &ctx, 
                                                    MappingSegment *segment)
 {
     if (!segment->is_dirty() && !ctx.forced_segment_images.contains(seg_idx)) {
-        ctx.directory_entries.push_back(DirEntry{.seg_idx    = static_cast<uint32_t>(seg_idx),
-                                                 .generation = segment->generation.load(std::memory_order_relaxed),
-                                                 .image_addr = segment->image_addr,
-                                                 .image_len  = segment->image_len,
-                                                 .image_crc  = segment->image_crc});
+        ctx.directory_entries.push_back(DirEntry{
+            .seg_idx    = static_cast<uint32_t>(seg_idx),
+            .generation = segment->generation.load(std::memory_order_relaxed),
+            .image_addr = segment->image_addr,
+            .image_len  = segment->image_len,
+            .image_crc  = segment->image_crc,
+        });
         return Status::Ok();
     }
 
@@ -805,29 +813,35 @@ Status Crowdbtree::prepare_snapshot_segment_locked(SnapshotPrepareContext &ctx, 
 
     uint64_t             seen_write_seq = segment->write_seq.load(std::memory_order_relaxed);
     uint64_t             generation     = segment->generation.load(std::memory_order_relaxed) + 1;
-    SegmentImageHeader   header{.seg_idx    = static_cast<uint32_t>(seg_idx),
-                                .generation = generation,
-                                .slot_count = segment->slot_count,
-                                .live_count = live_count};
+    SegmentImageHeader   header{
+        .seg_idx    = static_cast<uint32_t>(seg_idx),
+        .generation = generation,
+        .slot_count = segment->slot_count,
+        .live_count = live_count,
+    };
     std::vector<uint8_t> image;
     uint32_t             image_crc = 0;
     encode_segment_image(header, words, &image, &image_crc);
     auto     image_len  = static_cast<uint32_t>(image.size());
     uint64_t image_addr = ctx.alloc.alloc(image_len);
     image.resize(round_up_to_iu(image_len, ctx.iu), 0);
-    ctx.out->segment_writes.push_back(PreparedSegmentWrite{.seg_idx        = seg_idx,
-                                                           .seg            = segment,
-                                                           .seen_write_seq = seen_write_seq,
-                                                           .new_generation = generation,
-                                                           .addr           = image_addr,
-                                                           .logical_len    = image_len,
-                                                           .image_crc      = image_crc,
-                                                           .blob           = std::move(image)});
-    ctx.directory_entries.push_back(DirEntry{.seg_idx    = static_cast<uint32_t>(seg_idx),
-                                             .generation = generation,
-                                             .image_addr = image_addr,
-                                             .image_len  = image_len,
-                                             .image_crc  = image_crc});
+    ctx.out->segment_writes.push_back(PreparedSegmentWrite{
+        .seg_idx        = seg_idx,
+        .seg            = segment,
+        .seen_write_seq = seen_write_seq,
+        .new_generation = generation,
+        .addr           = image_addr,
+        .logical_len    = image_len,
+        .image_crc      = image_crc,
+        .blob           = std::move(image),
+    });
+    ctx.directory_entries.push_back(DirEntry{
+        .seg_idx    = static_cast<uint32_t>(seg_idx),
+        .generation = generation,
+        .image_addr = image_addr,
+        .image_len  = image_len,
+        .image_crc  = image_crc,
+    });
     ++ctx.segments_written;
     ctx.live_page_count += live_count;
     return Status::Ok();
@@ -902,7 +916,7 @@ void Crowdbtree::prepare_snapshot_metadata_locked(SnapshotPrepareContext &ctx)
 void Crowdbtree::commit_prepared_snapshot(const PreparedSnapshot &prepared)
 {
     {
-        std::lock_guard<std::mutex> lk(write_mutex_);
+        std::scoped_lock lk(write_mutex_);
         for (const auto &pw : prepared.page_writes) {
             PageBase *v = mapping_.get_resident(pw.page_id);
             // Identity check (not just durable_addr == kNoAddr): `v` may be a
@@ -991,7 +1005,7 @@ Status Crowdbtree::materialize_ownership(uint64_t *bytes_written, bool *complete
         bool             needs_snapshot   = false;
         uint64_t         pruned_version   = std::numeric_limits<uint64_t>::max();
         {
-            std::lock_guard<std::mutex> lock(write_mutex_);
+            std::scoped_lock            lock(write_mutex_);
             const uint64_t              current_version = version_.load();
             if (mapping_pruned_version_ == current_version) {
                 mapping_ready = true;
@@ -1109,7 +1123,7 @@ Status Crowdbtree::materialize_ownership(uint64_t *bytes_written, bool *complete
             if (!snapshot_status.ok()) {
                 return snapshot_status;
             }
-            std::lock_guard<std::mutex> lock(write_mutex_);
+            std::scoped_lock lock(write_mutex_);
             if (version_.load() != pruned_version + 1) {
                 *bytes_written = 0;
                 *complete      = false;
@@ -1122,7 +1136,7 @@ Status Crowdbtree::materialize_ownership(uint64_t *bytes_written, bool *complete
     acquire_snapshot_slot();
     if (opt_.page_store->has_shared_ownership()) {
         std::vector<std::pair<uint64_t, uint64_t>> live{
-            {0, region_base_for(opt_.page_store->iu_size())}
+            {0, region_base_for(opt_.page_store->iu_size())},
         };
         const auto anchors = read_valid_anchors(*opt_.page_store, opt_.page_store->iu_size());
         if (anchors.empty()) {
@@ -1153,7 +1167,7 @@ Status Crowdbtree::snapshot(uint64_t *out_last_applied, uint64_t *out_snapshot_s
     Status           ps;
     {
         auto                        apply_t0 = std::chrono::steady_clock::now();
-        std::lock_guard<std::mutex> lk(write_mutex_);
+        std::scoped_lock            lk(write_mutex_);
         ps = prepare_snapshot_locked(&prepared);
         if (metrics_.snapshot_apply_l != nullptr) {
             auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - apply_t0)
@@ -1267,7 +1281,7 @@ void Crowdbtree::snapshot_async(
         auto   prepared = std::make_shared<PreparedSnapshot>();
         Status ps;
         {
-            std::lock_guard<std::mutex> lk(write_mutex_);
+            std::scoped_lock lk(write_mutex_);
             ps = prepare_snapshot_locked(prepared.get());
         }
         if (!ps.ok()) {
@@ -1444,7 +1458,7 @@ Status Crowdbtree::persist_compaction_snapshot(std::vector<PrefetchedPage> prefe
     acquire_snapshot_slot();
     Status prepare;
     {
-        std::lock_guard<std::mutex> lk(write_mutex_);
+        std::scoped_lock lk(write_mutex_);
         prepare = prepare_snapshot_locked(prepared, std::move(prefetched), std::move(selected_blocks));
     }
     if (!prepare.ok()) {
@@ -1544,10 +1558,12 @@ Status Crowdbtree::compact_sparse_blocks(MergeGcStats *out_stats)
     if (!persist.ok()) {
         return persist;
     }
-    *out_stats   = MergeGcStats{.blocks_selected = prepared.blocks_selected,
-                                .pages_relocated = prepared.pages_relocated,
-                                .bytes_relocated = prepared.bytes_relocated,
-                                .blocks_deleted  = prepared.blocks_deleted};
+    *out_stats = MergeGcStats{
+        .blocks_selected = prepared.blocks_selected,
+        .pages_relocated = prepared.pages_relocated,
+        .bytes_relocated = prepared.bytes_relocated,
+        .blocks_deleted  = prepared.blocks_deleted,
+    };
     auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started_at);
     record_compaction_metrics(*out_stats, static_cast<uint64_t>(elapsed.count()));
     return Status::Ok();

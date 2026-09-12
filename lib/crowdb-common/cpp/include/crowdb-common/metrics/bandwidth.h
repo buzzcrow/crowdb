@@ -46,7 +46,7 @@ class Bandwidth
         return {.count = c, .sum = s, .max_bytes = m, .total_bytes = t};
     }
 
-    const std::string &name() const
+    [[nodiscard]] const std::string &name() const
     {
         return name_;
     }

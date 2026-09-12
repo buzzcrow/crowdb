@@ -184,13 +184,15 @@ SharedChunkIoExecutor &shared_chunk_io_executor()
 void ChunkTransport::submit_write_mirror(ChunkId chunk_id, uint32_t mirror_index, uint64_t offset, const uint8_t *data,
                                          size_t length, ChunkTransportCompletion completion)
 {
-    if (!shared_chunk_io_executor().submit({.transport    = this,
-                                            .chunk_id     = chunk_id,
-                                            .mirror_index = mirror_index,
-                                            .offset       = offset,
-                                            .data         = data,
-                                            .length       = length,
-                                            .completion   = completion})) {
+    if (!shared_chunk_io_executor().submit({
+            .transport    = this,
+            .chunk_id     = chunk_id,
+            .mirror_index = mirror_index,
+            .offset       = offset,
+            .data         = data,
+            .length       = length,
+            .completion   = completion,
+        })) {
         completion.complete(Status::resource_exhausted("shared chunk I/O queue is full"));
     }
 }

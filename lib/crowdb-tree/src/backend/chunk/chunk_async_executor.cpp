@@ -174,7 +174,8 @@ bool ChunkAsyncExecutor::execute(const std::shared_ptr<State> &state, Slot *slot
         }
         Status status = std::move(slot->async_status);
         if (auto *store = state->store.load(std::memory_order_acquire); store != nullptr) {
-            status = store->finish_sync_cancellable(slot->async_state, cancellation, std::move(status));
+            status = crowdb::tree::detail::ChunkPageStore::finish_sync_cancellable(slot->async_state, cancellation,
+                                                                                   std::move(status));
         }
         release_slot(state, slot, position, std::move(status));
         return true;
@@ -211,7 +212,8 @@ bool ChunkAsyncExecutor::execute(const std::shared_ptr<State> &state, Slot *slot
                     return false;
                 }
                 status = std::move(slot->async_status);
-                status = store->finish_sync_cancellable(slot->async_state, cancellation, std::move(status));
+                status = crowdb::tree::detail::ChunkPageStore::finish_sync_cancellable(slot->async_state, cancellation,
+                                                                                       std::move(status));
             }
             else {
                 status = Status::unavailable("chunk page store is closing");

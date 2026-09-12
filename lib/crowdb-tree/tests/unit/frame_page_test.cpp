@@ -42,7 +42,7 @@ TEST(FramePage, LeafBuildViewRoundTrip)
     std::vector<std::pair<std::string, std::string>> entries = {
         {"a", make_cell(1, "A")},
         {"b", make_cell(2, "BB")},
-        {"c", make_cell(3, "", true)}
+        {"c", make_cell(3, "", true)},
     };
     LeafFrameBuilder b(frame.data(), pb);
     for (auto &e : entries) {

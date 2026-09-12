@@ -100,7 +100,7 @@ class BlockingPageStore : public PageStore
 
     void release()
     {
-        std::lock_guard<std::mutex> lk(mu_);
+        std::scoped_lock lk(mu_);
         released_ = true;
         cv_.notify_all();
     }

@@ -120,12 +120,14 @@ TEST(DurableEdgeCases, OverflowChunkBoundarySizes)
     std::map<std::string, std::string> oracle;
     {
         Crowdbtree          t(opt);
-        std::vector<size_t> sizes = {cap - 1,
-                                     cap,
-                                     cap + 1,
-                                     static_cast<size_t>(2) * cap,
-                                     (static_cast<size_t>(2) * cap) + 1,
-                                     static_cast<size_t>(3) * cap};
+        std::vector<size_t> sizes = {
+            cap - 1,
+            cap,
+            cap + 1,
+            static_cast<size_t>(2) * cap,
+            (static_cast<size_t>(2) * cap) + 1,
+            static_cast<size_t>(3) * cap,
+        };
         uint64_t            slot  = 0;
         for (size_t i = 0; i < sizes.size(); ++i) {
             ++slot;

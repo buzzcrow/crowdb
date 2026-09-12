@@ -17,7 +17,7 @@
 #include <iomanip>
 #include <sstream>
 
-#if defined(__linux__)
+#ifdef __linux__
 #    include <linux/fs.h>
 #    include <sys/ioctl.h>
 #endif
@@ -83,7 +83,7 @@ Status MemoryMedium::pwrite_at(uint64_t off, const uint8_t *buf, size_t len)
     if (len == 0) {
         return Status::Ok();
     }
-    std::lock_guard<std::mutex> lk(mu_);
+    std::scoped_lock lk(mu_);
     if (off + len > data_.size()) {
         data_.resize(off + len, 0);
     }
@@ -93,7 +93,7 @@ Status MemoryMedium::pwrite_at(uint64_t off, const uint8_t *buf, size_t len)
 
 Status MemoryMedium::pread_partial(uint64_t off, uint8_t *buf, size_t len, size_t *out_read) const
 {
-    std::lock_guard<std::mutex> lk(mu_);
+    std::scoped_lock lk(mu_);
     if (off >= data_.size()) {
         *out_read = 0;
         return Status::Ok();
@@ -112,7 +112,7 @@ Status MemoryMedium::fsync()
 
 uint64_t MemoryMedium::size() const
 {
-    std::lock_guard<std::mutex> lk(mu_);
+    std::scoped_lock lk(mu_);
     return data_.size();
 }
 
@@ -127,7 +127,7 @@ FileMedium::~FileMedium()
 
 Status FileMedium::open(const std::string &path, bool o_direct, std::unique_ptr<FileMedium> *out)
 {
-#if defined(__APPLE__)
+#ifdef __APPLE__
     (void)o_direct; // macOS has no O_DIRECT; use F_NOCACHE instead
     int fd = ::open(path.c_str(), O_RDWR | O_CREAT, 0644);
     if (fd < 0) {
@@ -190,7 +190,7 @@ Status FileMedium::pread_partial(uint64_t off, uint8_t *buf, size_t len, size_t 
 
 Status FileMedium::fsync()
 {
-#if defined(__APPLE__)
+#ifdef __APPLE__
     if (::fsync(fd_) < 0) {
         return Status::io_error(std::string("fsync: ") + std::strerror(errno));
     }
@@ -215,7 +215,7 @@ BlockPageStore::~BlockPageStore() = default;
 int BlockPageStore::fd() const
 {
     auto *fm = dynamic_cast<FileMedium *>(medium_.get());
-    return fm ? fm->fd() : -1;
+    return (fm != nullptr) ? fm->fd() : -1;
 }
 
 Status BlockPageStore::open(const std::string &path, uint32_t iu_size, std::unique_ptr<BlockPageStore> *out)
@@ -234,7 +234,7 @@ Status BlockPageStore::open(const std::string &path, uint32_t iu_size, std::uniq
     uint32_t effective_iu = iu_size == 0 ? 4096 : iu_size;
     uint64_t probed_bytes = 0;
 
-#if defined(__linux__)
+#ifdef __linux__
     if (is_block) {
         uint64_t bytes = 0;
         if (::ioctl(medium->fd(), BLKGETSIZE64, &bytes) == 0) {
@@ -304,7 +304,9 @@ Status BlockPageStore::open_blocks(const std::string &dir, uint32_t store_id, ui
     if (d != nullptr) {
         struct dirent *ent;
         while ((ent = ::readdir(d)) != nullptr) {
-            uint32_t s_id = 0, p_id = 0, idx = 0;
+            uint32_t s_id = 0;
+            uint32_t p_id = 0;
+            uint32_t idx  = 0;
             if (!parse_block_filename(ent->d_name, s_id, p_id, idx)) {
                 continue;
             }
@@ -340,7 +342,7 @@ Status BlockPageStore::open_blocks(const std::string &dir, uint32_t store_id, ui
         std::vector<BlockExtent> dense;
         uint32_t                 expected_idx = 0;
         for (auto &ext : store->extents_) {
-            uint32_t ext_idx = static_cast<uint32_t>(ext.base_offset / block_size);
+            auto ext_idx = static_cast<uint32_t>(ext.base_offset / block_size);
             while (expected_idx < ext_idx) {
                 BlockExtent gap;
                 gap.base_offset = static_cast<uint64_t>(expected_idx) * block_size;
@@ -369,7 +371,7 @@ Status BlockPageStore::open_blocks(const std::string &dir, uint32_t store_id, ui
 
 Status BlockPageStore::allocate_new_block()
 {
-    uint32_t idx = static_cast<uint32_t>(extents_.size());
+    auto     idx = static_cast<uint32_t>(extents_.size());
     char     name[64];
     std::snprintf(name, sizeof(name), "%u-%u.blk-%04u", store_id_, group_id_, idx);
     std::string path = dir_ + "/" + name;

@@ -96,7 +96,7 @@ uint64_t monotonic_millis()
     return monotonic_nanos() / 1'000'000;
 }
 
-void rpc_complete(uint64_t, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data, crowdb_rpc_status status,
+void rpc_complete(uint64_t /*unused*/, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data, crowdb_rpc_status status,
                   void *context)
 {
     auto *state           = static_cast<RpcCallState *>(context);
@@ -272,16 +272,18 @@ struct RpcChunkTransport::Impl
         return Status::Ok();
     }
 
-    Status parse_chunk(const FBChunk *chunk, RemoteChunk *out) const
+    static Status parse_chunk(const FBChunk *chunk, RemoteChunk *out)
     {
         if (chunk == nullptr || chunk->id() == nullptr || chunk->strips() == nullptr) {
             return Status::corruption("ChunkDB returned malformed tree chunk metadata");
         }
         RemoteChunk parsed;
-        parsed.layout      = {.chunk_id           = ChunkId(chunk->id()->high(), chunk->id()->low()),
-                              .logical_capacity   = chunk->capacity(),
-                              .acknowledged_bytes = chunk->acknowledged_cursor(),
-                              .sealed             = chunk->state() == FBChunkState_Sealed};
+        parsed.layout = {
+            .chunk_id           = ChunkId(chunk->id()->high(), chunk->id()->low()),
+            .logical_capacity   = chunk->capacity(),
+            .acknowledged_bytes = chunk->acknowledged_cursor(),
+            .sealed             = chunk->state() == FBChunkState_Sealed,
+        };
         parsed.owner_epoch = chunk->writer_epoch();
         parsed.modify_ts   = chunk->modify_ts();
         for (const auto *wire_strip : *chunk->strips()) {
@@ -296,10 +298,12 @@ struct RpcChunkTransport::Impl
                         .mirrors      = {}};
             for (size_t index = 0; index < strip.mirrors.size(); ++index) {
                 const auto *segment  = mirror->segments()->Get(index);
-                strip.mirrors[index] = {.disk_high   = segment->disk_id().high(),
-                                        .disk_low    = segment->disk_id().low(),
-                                        .unit_offset = segment->unit_offset(),
-                                        .zone_index  = segment->zone_index()};
+                strip.mirrors[index] = {
+                    .disk_high   = segment->disk_id().high(),
+                    .disk_low    = segment->disk_id().low(),
+                    .unit_offset = segment->unit_offset(),
+                    .zone_index  = segment->zone_index(),
+                };
             }
             parsed.strips.push_back(strip);
         }
@@ -405,7 +409,7 @@ struct RpcChunkTransport::Impl::AsyncWrite
     size_t                   consumed     = 0;
     ChunkTransportCompletion completion;
 
-    static void rpc_complete(uint64_t, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data_buffer,
+    static void rpc_complete(uint64_t /*unused*/, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data_buffer,
                              crowdb_rpc_status rpc_status, void *context)
     {
         auto     *self = static_cast<AsyncWrite *>(context);
@@ -460,7 +464,7 @@ struct RpcChunkTransport::Impl::AsyncWrite
             return;
         }
         const uint64_t                 unit_bytes  = static_cast<uint64_t>(strip->unit_kb) * 1024;
-        const uint64_t                 zone_offset = segment.unit_offset * unit_bytes + (cursor - strip->chunk_offset);
+        const uint64_t zone_offset = (segment.unit_offset * unit_bytes) + (cursor - strip->chunk_offset);
         const uint64_t                 request_id  = owner->next_request_id();
         const FBInt128                 disk_id(segment.disk_high, segment.disk_low);
         flatbuffers::FlatBufferBuilder builder;
@@ -496,14 +500,16 @@ struct RpcChunkTransport::Impl::AsyncWrite
 void RpcChunkTransport::Impl::submit_write(RemoteChunk chunk, uint32_t mirror_index, uint64_t offset,
                                            const uint8_t *data, size_t length, ChunkTransportCompletion completion)
 {
-    auto *state = new (std::nothrow) AsyncWrite{.owner        = this,
-                                                .chunk        = std::move(chunk),
-                                                .mirror_index = mirror_index,
-                                                .offset       = offset,
-                                                .data         = data,
-                                                .length       = length,
-                                                .consumed     = 0,
-                                                .completion   = completion};
+    auto *state = new (std::nothrow) AsyncWrite{
+        .owner        = this,
+        .chunk        = std::move(chunk),
+        .mirror_index = mirror_index,
+        .offset       = offset,
+        .data         = data,
+        .length       = length,
+        .consumed     = 0,
+        .completion   = completion,
+    };
     if (state == nullptr) {
         completion.complete(Status::resource_exhausted("chunk RPC write state allocation failed"));
         return;
@@ -530,7 +536,7 @@ Status RpcChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint6
         return Status::invalid_argument("tree chunk RPC allocation arguments are invalid");
     }
     const uint64_t                 request_id     = impl_->next_request_id();
-    const uint32_t                 granularity_kb = static_cast<uint32_t>((logical_capacity + 1023) / 1024);
+    const auto                     granularity_kb = static_cast<uint32_t>((logical_capacity + 1023) / 1024);
     flatbuffers::FlatBufferBuilder builder;
     auto                           request = crowdb::chunkdb::proto::CreateFBAllocateChunkRequest(
         builder, request_id, monotonic_nanos(), nullptr, granularity_kb, 1, FBStripType_Mirror, 0, 0, 3,
@@ -552,7 +558,7 @@ Status RpcChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint6
         return status;
     }
     Impl::RemoteChunk remote;
-    status = impl_->parse_chunk(response->chunk(), &remote);
+    status = crowdb::tree::detail::RpcChunkTransport::Impl::parse_chunk(response->chunk(), &remote);
     if (!status.ok() || remote.layout.chunk_id.empty() || remote.owner_epoch != owner_epoch ||
         remote.layout.logical_capacity < logical_capacity) {
         return status.ok() ? Status::corruption("ChunkDB allocation metadata mismatch") : status;
@@ -593,7 +599,7 @@ Status RpcChunkTransport::write_mirror(ChunkId chunk_id, uint32_t mirror_index, 
             return status;
         }
         const uint64_t                 unit_bytes  = static_cast<uint64_t>(strip->unit_kb) * 1024;
-        const uint64_t                 zone_offset = segment.unit_offset * unit_bytes + (cursor - strip->chunk_offset);
+        const uint64_t zone_offset = (segment.unit_offset * unit_bytes) + (cursor - strip->chunk_offset);
         const uint64_t                 request_id  = impl_->next_request_id();
         const FBInt128                 disk_id(segment.disk_high, segment.disk_low);
         flatbuffers::FlatBufferBuilder builder;
@@ -666,7 +672,7 @@ Status RpcChunkTransport::advance_write(ChunkId chunk_id, uint64_t expected_byte
     status = chunkdb_status(response->ret_code());
     Impl::RemoteChunk updated;
     if (status.ok()) {
-        status = impl_->parse_chunk(response->chunk(), &updated);
+        status = crowdb::tree::detail::RpcChunkTransport::Impl::parse_chunk(response->chunk(), &updated);
     }
     if (status.ok()) {
         impl_->cache(std::move(updated));
@@ -708,7 +714,7 @@ Status RpcChunkTransport::read_mirror(ChunkId chunk_id, uint32_t mirror_index, u
             return status;
         }
         const uint64_t                 unit_bytes  = static_cast<uint64_t>(strip->unit_kb) * 1024;
-        const uint64_t                 zone_offset = segment.unit_offset * unit_bytes + (cursor - strip->chunk_offset);
+        const uint64_t zone_offset = (segment.unit_offset * unit_bytes) + (cursor - strip->chunk_offset);
         const uint64_t                 request_id  = impl_->next_request_id();
         const FBInt128                 disk_id(segment.disk_high, segment.disk_low);
         flatbuffers::FlatBufferBuilder builder;
@@ -781,7 +787,7 @@ Status RpcChunkTransport::seal_chunk(ChunkId chunk_id, uint64_t owner_epoch, uin
     status = chunkdb_status(response->ret_code());
     Impl::RemoteChunk updated;
     if (status.ok()) {
-        status = impl_->parse_chunk(response->chunk(), &updated);
+        status = crowdb::tree::detail::RpcChunkTransport::Impl::parse_chunk(response->chunk(), &updated);
     }
     if (status.ok()) {
         updated.valid_until_ms = std::numeric_limits<uint64_t>::max();

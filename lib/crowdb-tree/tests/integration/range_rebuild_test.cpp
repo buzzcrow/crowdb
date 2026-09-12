@@ -815,13 +815,13 @@ TEST(RangeRebuild, NativeInstallRejectsKeyHiddenBehindEmptyFirstChild)
     frames.push_back(make_inner_frame(1, {2, 3}, {"m"}));
     frames.push_back(make_leaf_frame(2, 4,
                                      {
-                                         {"b", "left"}
+                                         {"b", "left"},
     }));
     frames.push_back(make_inner_frame(3, {4, 5}, {"t"}));
     frames.push_back(make_leaf_frame(4, 5, {}));
     frames.push_back(make_leaf_frame(5, kInvalidPageId,
                                      {
-                                         {"a", "hidden"}
+                                         {"a", "hidden"},
     }));
 
     MemPageStore store(1);
@@ -838,11 +838,11 @@ TEST(RangeRebuild, NativeInstallUpgradesLegacyInnerFramesWithoutFences)
     frames.push_back(make_inner_frame(1, {2, 3}, {"m"}));
     frames.push_back(make_leaf_frame(2, 3,
                                      {
-                                         {"a", "left"}
+                                         {"a", "left"},
     }));
     frames.push_back(make_leaf_frame(3, kInvalidPageId,
                                      {
-                                         {"m", "right"}
+                                         {"m", "right"},
     }));
     ASSERT_FALSE(frame_has_lower_fence(frames.front().frame.data()));
 

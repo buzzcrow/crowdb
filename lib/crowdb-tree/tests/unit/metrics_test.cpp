@@ -27,26 +27,26 @@ TEST(MetricsCounter, WindowResetAndTotalAccumulate)
     c.inc();
     c.inc();
     auto snap = c.flush();
-    EXPECT_EQ(snap.count, 2u);
-    EXPECT_EQ(snap.total, 2u);
+    EXPECT_EQ(snap.count, 2U);
+    EXPECT_EQ(snap.total, 2U);
 
     c.inc();
     snap = c.flush();
-    EXPECT_EQ(snap.count, 1u);
-    EXPECT_EQ(snap.total, 3u);
+    EXPECT_EQ(snap.count, 1U);
+    EXPECT_EQ(snap.total, 3U);
 
     snap = c.flush();
-    EXPECT_EQ(snap.count, 0u);
-    EXPECT_EQ(snap.total, 3u);
+    EXPECT_EQ(snap.count, 0U);
+    EXPECT_EQ(snap.total, 3U);
 }
 
 TEST(MetricsGauge, ReportsLastValue)
 {
     Gauge g("test.g");
     g.set(42);
-    EXPECT_EQ(g.get(), 42u);
+    EXPECT_EQ(g.get(), 42U);
     g.set(0);
-    EXPECT_EQ(g.get(), 0u);
+    EXPECT_EQ(g.get(), 0U);
 }
 
 TEST(MetricsBandwidth, BasicFlush)
@@ -56,13 +56,13 @@ TEST(MetricsBandwidth, BasicFlush)
         bw.observe(100);
     }
     auto snap = bw.flush();
-    EXPECT_EQ(snap.count, 10u);
-    EXPECT_EQ(snap.sum, 1000u);
-    EXPECT_EQ(snap.total_bytes, 1000u);
+    EXPECT_EQ(snap.count, 10U);
+    EXPECT_EQ(snap.sum, 1000U);
+    EXPECT_EQ(snap.total_bytes, 1000U);
 
     snap = bw.flush();
-    EXPECT_EQ(snap.count, 0u);
-    EXPECT_EQ(snap.total_bytes, 1000u);
+    EXPECT_EQ(snap.count, 0U);
+    EXPECT_EQ(snap.total_bytes, 1000U);
 }
 
 TEST(MetricsHistogram, P50P99WithKnownDistribution)
@@ -72,11 +72,11 @@ TEST(MetricsHistogram, P50P99WithKnownDistribution)
         h.observe(500'000); // 500us
     }
     auto snap = h.flush();
-    EXPECT_EQ(snap.count, 100u);
+    EXPECT_EQ(snap.count, 100U);
     // HDR bucket upper bound for 500us is 501'760ns (≤0.78% error).
-    EXPECT_EQ(snap.p50, 501'760u);
-    EXPECT_EQ(snap.p99, 501'760u);
-    EXPECT_EQ(snap.max, 501'760u);
+    EXPECT_EQ(snap.p50, 501'760U);
+    EXPECT_EQ(snap.p99, 501'760U);
+    EXPECT_EQ(snap.max, 501'760U);
     // avg is exact (f64).
     EXPECT_DOUBLE_EQ(snap.avg, 500'000.0);
 }
@@ -92,12 +92,12 @@ TEST(MetricsHistogram, MixedDistribution)
         h.observe(10'000'000);
     }
     auto snap = h.flush();
-    EXPECT_EQ(snap.count, 100u);
+    EXPECT_EQ(snap.count, 100U);
     // p50 falls in the 200us bucket (upper bound 200'704ns).
-    EXPECT_EQ(snap.p50, 200'704u);
+    EXPECT_EQ(snap.p50, 200'704U);
     // p99 falls in the 10ms bucket (upper bound 10'027'008ns).
-    EXPECT_EQ(snap.p99, 10'027'008u);
-    EXPECT_EQ(snap.max, 10'027'008u);
+    EXPECT_EQ(snap.p99, 10'027'008U);
+    EXPECT_EQ(snap.max, 10'027'008U);
 }
 
 TEST(MetricsHistogram, UnderflowAndOverflow)
@@ -112,11 +112,11 @@ TEST(MetricsHistogram, UnderflowAndOverflow)
     h.observe(100'000);
     h.observe(500'000);
     auto snap = h.flush();
-    EXPECT_EQ(snap.count, 6u);
+    EXPECT_EQ(snap.count, 6U);
     // p50 (target=3) falls in the 100us bucket (upper bound 100'352ns).
-    EXPECT_EQ(snap.p50, 100'352u);
+    EXPECT_EQ(snap.p50, 100'352U);
     // max falls in the 500us bucket (upper bound 501'760ns).
-    EXPECT_EQ(snap.max, 501'760u);
+    EXPECT_EQ(snap.max, 501'760U);
 }
 
 TEST(MetricsHistogram, WindowResetsAfterFlush)
@@ -125,13 +125,13 @@ TEST(MetricsHistogram, WindowResetsAfterFlush)
     h.observe(100'000);
     h.observe(200'000);
     auto s1 = h.flush();
-    EXPECT_EQ(s1.count, 2u);
-    EXPECT_EQ(s1.total_count, 2u);
+    EXPECT_EQ(s1.count, 2U);
+    EXPECT_EQ(s1.total_count, 2U);
 
     auto s2 = h.flush();
-    EXPECT_EQ(s2.count, 0u);
-    EXPECT_EQ(s2.p50, 0u);
-    EXPECT_EQ(s2.total_count, 2u); // total accumulates
+    EXPECT_EQ(s2.count, 0U);
+    EXPECT_EQ(s2.p50, 0U);
+    EXPECT_EQ(s2.total_count, 2U); // total accumulates
 }
 
 TEST(MetricsSummary, AvgAndMax)
@@ -141,13 +141,13 @@ TEST(MetricsSummary, AvgAndMax)
     s.observe(200);
     s.observe(300);
     auto snap = s.flush();
-    EXPECT_EQ(snap.count, 3u);
-    EXPECT_EQ(snap.sum, 600u);
-    EXPECT_EQ(snap.max, 300u);
-    EXPECT_EQ(snap.total_count, 3u);
+    EXPECT_EQ(snap.count, 3U);
+    EXPECT_EQ(snap.sum, 600U);
+    EXPECT_EQ(snap.max, 300U);
+    EXPECT_EQ(snap.total_count, 3U);
 
     uint64_t avg = snap.sum / snap.count;
-    EXPECT_EQ(avg, 200u);
+    EXPECT_EQ(avg, 200U);
 }
 
 TEST(MetricsSummary, MaxResetsAfterFlush)
@@ -155,10 +155,10 @@ TEST(MetricsSummary, MaxResetsAfterFlush)
     LatencySummary s("test.ls2");
     s.observe(500);
     auto snap = s.flush();
-    EXPECT_EQ(snap.max, 500u);
+    EXPECT_EQ(snap.max, 500U);
 
     snap = s.flush();
-    EXPECT_EQ(snap.max, 0u);
+    EXPECT_EQ(snap.max, 0U);
 }
 
 TEST(MetricsRegistry, RegisterReturnsUsableHandle)

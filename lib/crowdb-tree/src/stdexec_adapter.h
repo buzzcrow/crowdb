@@ -78,7 +78,8 @@ class CallbackSender
         std::atomic_flag terminal_ = ATOMIC_FLAG_INIT;
     };
 
-    template <class Receiver> auto connect(Receiver receiver) const -> Operation<Receiver>
+    template <class Receiver>
+    [[nodiscard]] [[nodiscard]] [[nodiscard]] auto connect(Receiver receiver) const -> Operation<Receiver>
     {
         return Operation<Receiver>{std::move(receiver), source_, submit_};
     }

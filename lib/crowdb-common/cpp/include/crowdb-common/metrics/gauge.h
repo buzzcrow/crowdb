@@ -24,12 +24,12 @@ class Gauge
         value_.store(v, std::memory_order_relaxed);
     }
 
-    uint64_t get() const
+    [[nodiscard]] uint64_t get() const
     {
         return value_.load(std::memory_order_relaxed);
     }
 
-    const std::string &name() const
+    [[nodiscard]] const std::string &name() const
     {
         return name_;
     }

@@ -3,7 +3,7 @@
 
 #include "crowdb-rpc/transport/socket_transport.h"
 
-#if defined(__linux__)
+#ifdef __linux__
 #    include "crowdb-rpc/transport/epoll/epoll_engine.h"
 #elif defined(__APPLE__)
 #    include "crowdb-rpc/transport/kqueue/kqueue_engine.h"
@@ -76,7 +76,7 @@ Worker::~Worker()
 
 void Worker::close_connections()
 {
-    std::lock_guard<std::mutex> lock(conns_mu_);
+    std::scoped_lock lock(conns_mu_);
     for (auto &[fd, conn] : connections_) {
         (void)fd;
         conn->close();
@@ -132,7 +132,7 @@ void Worker::add_connection(int read_fd, int write_fd, std::shared_ptr<Connectio
     conn->io_engine = engine_;
     conn->io_worker = this;
     {
-        std::lock_guard<std::mutex> lock(conns_mu_);
+        std::scoped_lock lock(conns_mu_);
         connections_[read_fd] = std::move(conn);
     }
     engine_->add_connection(read_fd, write_fd, connections_.at(read_fd).get());
@@ -174,7 +174,7 @@ void Worker::run_loop()
                     {
                         std::vector<Connection *> pending;
                         {
-                            std::lock_guard<std::mutex> lock(transport_->cross_thread_mu_);
+                            std::scoped_lock lock(transport_->cross_thread_mu_);
                             pending.swap(transport_->cross_thread_pending_);
                             transport_->cross_thread_notified_.store(false, std::memory_order_release);
                         }
@@ -288,7 +288,7 @@ void Worker::run_loop()
             // Now safe to release closed connections — pending_write_conns_
             // has been flushed and won't access the raw pointers.
             if (!closed_fds.empty()) {
-                std::lock_guard<std::mutex> lock(conns_mu_);
+                std::scoped_lock lock(conns_mu_);
                 for (int fd : closed_fds) {
                     connections_.erase(fd);
                 }
@@ -369,7 +369,7 @@ static void on_readable_impl(Connection *conn, int fd, uint8_t *recv_buf, size_t
             break;
         }
         bw_read().observe(static_cast<uint64_t>(n));
-#if defined(__linux__)
+#ifdef __linux__
         // Re-arm TCP_QUICKACK — the kernel resets it after sending each
         // ACK. Without this, delayed ACKs stall Nagle's send (40ms/round).
         if (conn->quickack) {
@@ -438,7 +438,7 @@ SocketTransport::SocketTransport(uint32_t io_engines, uint32_t io_workers, Buffe
         SocketEngine *engine_ptr = engine.get();
         engines_.push_back(std::move(engine));
         for (uint32_t w = 0; w < workers_per_engine; w++) {
-            int  worker_id = static_cast<int>(e * workers_per_engine + w);
+            int  worker_id = static_cast<int>((e * workers_per_engine) + w);
             auto worker    = std::make_unique<Worker>(worker_id, engine_ptr, &stats_, this);
             workers_.push_back(std::move(worker));
         }
@@ -568,7 +568,7 @@ bool SocketTransport::submit(Connection *conn, OutFrame *frame)
         auto *engine = static_cast<SocketEngine *>(conn->io_engine);
         if (engine != nullptr) {
             {
-                std::lock_guard<std::mutex> lock(cross_thread_mu_);
+                std::scoped_lock lock(cross_thread_mu_);
                 cross_thread_pending_.push_back(conn);
             }
             bool expected = false;
@@ -613,10 +613,12 @@ bool SocketTransport::submit_inline(Connection *conn, OutFrame *frame)
     stats_.send_queue_rejects.fetch_add(1, std::memory_order_relaxed);
     CRB_LOG_WARN("submit_inline: enqueue + overflow failed conn_id={} request_id={}",
                  static_cast<long long>(conn->id()), static_cast<unsigned long long>(frame->request_id));
-    if (frame->control != nullptr)
+    if (frame->control != nullptr) {
         frame->control->release();
-    if (frame->data != nullptr)
+    }
+    if (frame->data != nullptr) {
         frame->data->release();
+    }
     delete frame;
     return false;
 }
@@ -660,19 +662,19 @@ std::shared_ptr<Connection> SocketTransport::create_connection(int fd, const std
 
 void SocketTransport::register_conn(const std::shared_ptr<Connection> &conn)
 {
-    std::lock_guard<std::mutex> lock(live_conns_mu_);
+    std::scoped_lock lock(live_conns_mu_);
     live_conns_[conn.get()] = conn;
 }
 
 void SocketTransport::unregister_conn(Connection *conn)
 {
-    std::lock_guard<std::mutex> lock(live_conns_mu_);
+    std::scoped_lock lock(live_conns_mu_);
     live_conns_.erase(conn);
 }
 
 std::optional<std::shared_ptr<Connection>> SocketTransport::lookup_conn(Connection *conn)
 {
-    std::lock_guard<std::mutex> lock(live_conns_mu_);
+    std::scoped_lock            lock(live_conns_mu_);
     auto                        it = live_conns_.find(conn);
     if (it == live_conns_.end()) {
         return std::nullopt; // not registered (test/direct connection)
@@ -682,7 +684,7 @@ std::optional<std::shared_ptr<Connection>> SocketTransport::lookup_conn(Connecti
 
 size_t SocketTransport::connection_count() const
 {
-    std::lock_guard<std::mutex> lock(live_conns_mu_);
+    std::scoped_lock lock(live_conns_mu_);
     return live_conns_.size();
 }
 
@@ -716,7 +718,7 @@ std::shared_ptr<Connection> SocketTransport::connect(const std::string &addr, in
 
     int nodelay = tcp_nodelay_ ? 1 : 0;
     ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
-#if defined(__linux__)
+#ifdef __linux__
     if (quickack_) {
         int quickack = 1;
         ::setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &quickack, sizeof(quickack));
@@ -732,7 +734,7 @@ std::shared_ptr<Connection> SocketTransport::connect(const std::string &addr, in
 
 std::unique_ptr<SocketEngine> SocketTransport::create_engine()
 {
-#if defined(__linux__)
+#ifdef __linux__
     return std::make_unique<EpollEngine>();
 #elif defined(__APPLE__)
     return std::make_unique<KqueueEngine>();

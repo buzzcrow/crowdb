@@ -126,16 +126,19 @@ FrameParser::ReadTarget FrameParser::next_read_target()
 {
     switch (state_) {
     case ParseState::ReadingHeader:
-        return {header_buf_ + header_offset_, HEADER_SIZE - header_offset_};
+        return {.ptr = header_buf_ + header_offset_, .len = HEADER_SIZE - header_offset_};
     case ParseState::ReadingControl:
-        return {control_buf_.data() + control_offset_, static_cast<uint32_t>(control_buf_.size()) - control_offset_};
+        return {
+            .ptr = control_buf_.data() + control_offset_,
+            .len = static_cast<uint32_t>(control_buf_.size()) - control_offset_,
+        };
     case ParseState::ReadingData:
         if (data_buf_ != nullptr) {
-            return {data_buf_->data + data_offset_, data_buf_->capacity - data_offset_};
+            return {.ptr = data_buf_->data + data_offset_, .len = data_buf_->capacity - data_offset_};
         }
-        return {nullptr, 0};
+        return {.ptr = nullptr, .len = 0};
     }
-    return {nullptr, 0};
+    return {.ptr = nullptr, .len = 0};
 }
 
 Frame *FrameParser::advance(uint32_t bytes_read)

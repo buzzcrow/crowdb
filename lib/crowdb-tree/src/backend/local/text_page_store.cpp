@@ -119,13 +119,13 @@ Status TextPageStore::load_manifest()
         std::istringstream liss(line);
         std::string        tok;
         while (liss >> tok) {
-            if (tok.substr(0, 5) == "addr=") {
+            if (tok.starts_with("addr=")) {
                 entry.addr = std::stoull(tok.substr(5));
             }
-            else if (tok.substr(0, 4) == "len=") {
+            else if (tok.starts_with("len=")) {
                 entry.len = std::stoull(tok.substr(4));
             }
-            else if (tok.substr(0, 5) == "file=") {
+            else if (tok.starts_with("file=")) {
                 entry.filename = tok.substr(5);
             }
         }
@@ -154,7 +154,7 @@ Status TextPageStore::flush_manifest()
     return s;
 }
 
-std::string TextPageStore::filename_for(uint64_t addr, const uint8_t *buf, size_t len) const
+std::string TextPageStore::filename_for(uint64_t addr, const uint8_t *buf, size_t len)
 {
     if (len >= 4) {
         uint32_t magic = get_u32(buf);
@@ -178,7 +178,7 @@ std::string TextPageStore::filename_for(uint64_t addr, const uint8_t *buf, size_
     return "page-" + std::to_string(addr) + ".crb";
 }
 
-std::string TextPageStore::encode_blob(const uint8_t *buf, size_t len) const
+std::string TextPageStore::encode_blob(const uint8_t *buf, size_t len)
 {
     if (len >= 4) {
         uint32_t magic = get_u32(buf);
@@ -205,13 +205,13 @@ Status TextPageStore::decode_file(const std::string &filename, std::vector<uint8
     }
 
     // Determine type from filename prefix
-    if (filename.substr(0, 6) == "anchor") {
+    if (filename.starts_with("anchor")) {
         return decode_anchor_text(content, out);
     }
-    if (filename.substr(0, 4) == "seg-") {
+    if (filename.starts_with("seg-")) {
         return decode_seg_image_text(content, out);
     }
-    if (filename.substr(0, 6) == "segdir") {
+    if (filename.starts_with("segdir")) {
         return decode_segdir_text(content, out);
     }
     // Default: page frame
@@ -283,7 +283,7 @@ Status TextPageStore::sync()
     // fsync the directory to persist manifest changes
     int fd = ::open(dir_.c_str(), O_RDONLY, 0);
     if (fd >= 0) {
-#if defined(__APPLE__)
+#ifdef __APPLE__
         ::fsync(fd);
 #else
         ::fdatasync(fd);

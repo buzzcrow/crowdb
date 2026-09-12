@@ -507,12 +507,14 @@ ct_status ct_rebuild_range(ct_tree *source, const ct_options *destination_option
         return to_status(status);
     }
     if (stats != nullptr) {
-        *stats = {.entries_examined = rebuilt.entries_examined,
-                  .entries_emitted  = rebuilt.entries_emitted,
-                  .entries_filtered = rebuilt.entries_filtered,
-                  .pages_reused     = rebuilt.pages_reused,
-                  .pages_rebuilt    = rebuilt.pages_rebuilt,
-                  .subtrees_skipped = rebuilt.subtrees_skipped};
+        *stats = {
+            .entries_examined = rebuilt.entries_examined,
+            .entries_emitted  = rebuilt.entries_emitted,
+            .entries_filtered = rebuilt.entries_filtered,
+            .pages_reused     = rebuilt.pages_reused,
+            .pages_rebuilt    = rebuilt.pages_rebuilt,
+            .subtrees_skipped = rebuilt.subtrees_skipped,
+        };
     }
     *out = handle.release();
     return static_cast<ct_status>(Code::kOk);
@@ -738,8 +740,10 @@ ct_status ct_apply_put(ct_tree *t, uint64_t slot, const uint8_t *key, size_t kle
     }
     try {
         std::vector<Crowdbtree::encoded_op> ops;
-        ops.push_back({std::string(reinterpret_cast<const char *>(key), klen),
-                       encode_cell_buf(slot, OpKind::kPut, Slice(reinterpret_cast<const char *>(val), vlen))});
+        ops.push_back({
+            .key  = std::string(reinterpret_cast<const char *>(key), klen),
+            .cell = encode_cell_buf(slot, OpKind::kPut, Slice(reinterpret_cast<const char *>(val), vlen)),
+        });
         return to_status(t->tree->apply_encoded(slot, std::move(ops)));
     }
     catch (...) {
@@ -754,7 +758,10 @@ ct_status ct_apply_delete(ct_tree *t, uint64_t slot, const uint8_t *key, size_t 
     }
     try {
         std::vector<Crowdbtree::encoded_op> ops;
-        ops.push_back({std::string(reinterpret_cast<const char *>(key), klen), encode_cell_buf(slot, OpKind::kDelete)});
+        ops.push_back({
+            .key  = std::string(reinterpret_cast<const char *>(key), klen),
+            .cell = encode_cell_buf(slot, OpKind::kDelete),
+        });
         return to_status(t->tree->apply_encoded(slot, std::move(ops)));
     }
     catch (...) {
@@ -794,7 +801,8 @@ ct_status ct_apply_batch(ct_tree *t, uint64_t slot, const uint8_t *ops, size_t o
         Slice value_slice(reinterpret_cast<const char *>(ops + pos), vlen);
         pos += vlen;
         OpKind kind = kind_byte == 0 ? OpKind::kPut : OpKind::kDelete;
-        encoded.push_back({std::move(key), encode_cell_buf(slot, kind, kind == OpKind::kPut ? value_slice : Slice())});
+        encoded.push_back(
+            {.key = std::move(key), .cell = encode_cell_buf(slot, kind, kind == OpKind::kPut ? value_slice : Slice())});
     }
     return to_status(t->tree->apply_encoded(slot, std::move(encoded)));
 }
@@ -817,7 +825,8 @@ ct_status ct_apply_batch_slices(ct_tree *t, uint64_t slot, const ct_kv_ref *ops,
         std::string key(reinterpret_cast<const char *>(op.key), op.key_len);
         OpKind      kind = op.kind == 0 ? OpKind::kPut : OpKind::kDelete;
         Slice       value_slice(reinterpret_cast<const char *>(op.value), op.value_len);
-        encoded.push_back({std::move(key), encode_cell_buf(slot, kind, kind == OpKind::kPut ? value_slice : Slice())});
+        encoded.push_back(
+            {.key = std::move(key), .cell = encode_cell_buf(slot, kind, kind == OpKind::kPut ? value_slice : Slice())});
     }
     return to_status(t->tree->apply_encoded(slot, std::move(encoded)));
 }
@@ -850,7 +859,7 @@ ct_status ct_apply_batch_external(ct_tree *t, uint64_t slot, const ct_ext_op *op
             value = buffer::alloc(0);
         }
         // Delete: value stays default (empty); flags = kFlagTombstone.
-        external.push_back({std::move(key), flags, std::move(value)});
+        external.push_back({.key = std::move(key), .flags = flags, .value = std::move(value)});
     }
     return to_status(t->tree->apply_external(slot, std::move(external)));
 }
@@ -895,7 +904,7 @@ ct_status ct_apply_put_owned(ct_tree *t, uint64_t slot, ct_write_handle *handle)
     }
     p[8] = 0; // kPut (no tombstone flag)
     std::vector<Crowdbtree::encoded_op> ops;
-    ops.push_back({std::move(handle->key), std::move(handle->cell)});
+    ops.push_back({.key = std::move(handle->key), .cell = std::move(handle->cell)});
     auto status = to_status(t->tree->apply_encoded(slot, std::move(ops)));
     delete handle;
     return status;

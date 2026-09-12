@@ -180,7 +180,7 @@ TEST(AsyncGet, MissAfterEvictionCompletesViaReactor)
     int32_t efd = -1;
     size_t  n   = ct_uring_eventfds(t, &efd, 1);
 #ifdef CROWDB_HAVE_LIBURING
-    EXPECT_EQ(n, 1u) << "a durable tree on a liburing build should have a real DiskIOUring";
+    EXPECT_EQ(n, 1U) << "a durable tree on a liburing build should have a real DiskIOUring";
     EXPECT_GE(efd, 0);
 #else
     EXPECT_EQ(n, 0u);

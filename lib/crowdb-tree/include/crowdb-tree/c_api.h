@@ -13,8 +13,8 @@
 #ifndef CROWDB_TREE_C_API_H
 #define CROWDB_TREE_C_API_H
 
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
 
 #ifdef __cplusplus
 extern "C" {

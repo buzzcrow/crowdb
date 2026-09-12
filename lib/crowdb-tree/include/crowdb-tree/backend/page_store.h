@@ -98,7 +98,7 @@ class PageStore
         return 0;
     }
 
-    virtual Status delete_block(uint32_t)
+    virtual Status delete_block(uint32_t /*unused*/)
     {
         return Status::invalid_argument("delete_block: unsupported page store");
     }
@@ -119,14 +119,14 @@ class PageStore
     // Supply the current snapshot's verified live byte extents before an
     // immutable backend repacks shared storage. Byte stores do not need this
     // hint. Extents are logical PageStore addresses and lengths.
-    virtual void set_materialization_live_extents(std::vector<std::pair<uint64_t, uint64_t>>)
+    virtual void set_materialization_live_extents(std::vector<std::pair<uint64_t, uint64_t>> /*unused*/)
     {
     }
 
     // Seed an unpublished destination from an immutable source snapshot when
     // both stores support lineage sharing. Local and unlike backends remain
     // independent and require no preparation.
-    virtual Status inherit_snapshot_from(const PageStore &)
+    virtual Status inherit_snapshot_from(const PageStore & /*unused*/)
     {
         return Status::Ok();
     }
@@ -139,7 +139,7 @@ class PageStore
     // True only while this store's inherited image is still the source
     // store's current published snapshot. Range rebuild uses this after its
     // iterator is exhausted before reusing any inherited mapping slot.
-    [[nodiscard]] virtual bool inherited_snapshot_matches(const PageStore &) const
+    [[nodiscard]] virtual bool inherited_snapshot_matches(const PageStore & /*unused*/) const
     {
         return false;
     }

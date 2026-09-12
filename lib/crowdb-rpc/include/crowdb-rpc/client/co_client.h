@@ -5,8 +5,8 @@
 
 #include "crowdb-rpc/c_api.h"
 
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
 
 #ifdef __cplusplus
 extern "C" {

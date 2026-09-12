@@ -74,7 +74,7 @@ void MappingTable::store(uint64_t page_id, PageBase *page)
     assert(seg_idx < kMaxSegments);
     MappingSegment *seg = segments_[seg_idx].load(std::memory_order_acquire);
     if (seg == nullptr) {
-        std::lock_guard<std::mutex> lk(alloc_mu_);
+        std::scoped_lock lk(alloc_mu_);
         seg = ensure_segment(seg_idx);
     }
     if (page != nullptr) {
@@ -108,7 +108,7 @@ void MappingTable::store_word(uint64_t page_id, uint64_t word)
     assert(seg_idx < kMaxSegments);
     MappingSegment *seg = segments_[seg_idx].load(std::memory_order_acquire);
     if (seg == nullptr) {
-        std::lock_guard<std::mutex> lk(alloc_mu_);
+        std::scoped_lock lk(alloc_mu_);
         seg = ensure_segment(seg_idx);
     }
     uint64_t old_w    = seg->slots[page_id % kSegmentSize].exchange(word, std::memory_order_acq_rel);
@@ -160,7 +160,7 @@ void MappingTable::clear(uint64_t page_id)
 
 uint64_t MappingTable::allocate_page_id()
 {
-    std::lock_guard<std::mutex> lk(alloc_mu_);
+    std::scoped_lock            lk(alloc_mu_);
     uint64_t                    page_id = next_page_id_++;
     uint64_t                    seg_idx = page_id / kSegmentSize;
     ensure_segment(seg_idx);
@@ -172,13 +172,13 @@ uint64_t MappingTable::allocate_page_id()
 
 void MappingTable::set_next_page_id(uint64_t next)
 {
-    std::lock_guard<std::mutex> lk(alloc_mu_);
+    std::scoped_lock lk(alloc_mu_);
     next_page_id_ = next;
 }
 
 uint64_t MappingTable::next_page_id() const
 {
-    std::lock_guard<std::mutex> lk(alloc_mu_);
+    std::scoped_lock lk(alloc_mu_);
     return next_page_id_;
 }
 

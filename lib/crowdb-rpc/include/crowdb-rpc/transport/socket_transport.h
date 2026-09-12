@@ -66,7 +66,7 @@ struct LatencyHistogram
         }
     }
 
-    uint64_t avg_ns() const
+    [[nodiscard]] uint64_t avg_ns() const
     {
         uint64_t c = count.load(std::memory_order_relaxed);
         return c > 0 ? sum_ns.load(std::memory_order_relaxed) / c : 0;
@@ -120,7 +120,7 @@ class SocketEngine
 
     // The worker that owns this engine (set by SocketTransport). Used by
     // submit() to find the worker's cross-thread pending list.
-    Worker *owner_worker() const
+    [[nodiscard]] Worker *owner_worker() const
     {
         return owner_;
     }
@@ -141,7 +141,7 @@ class SocketEngine
     // Whether one-shot mode is enabled (set via set_oneshot before workers
     // start). Workers check this to decide whether to re-arm read/write
     // after processing an event.
-    virtual bool oneshot() const = 0;
+    [[nodiscard]] virtual bool oneshot() const = 0;
 
     // Register a listen socket (acceptor only). fd is the listening socket.
     virtual void add_listen_fd(int fd) = 0;

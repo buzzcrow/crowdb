@@ -22,7 +22,7 @@ namespace crowdb::tree::detail
 namespace
 {
 
-Batch put(uint64_t, std::string key, std::string value)
+Batch put(uint64_t /*unused*/, std::string key, std::string value)
 {
     Batch batch;
     batch.ops.push_back({.key = std::move(key), .kind = OpKind::kPut, .value = std::move(value)});
@@ -51,7 +51,7 @@ struct BlockingCompletion
     std::atomic<bool> ran_off_submitter{false};
 };
 
-void block_completion(void *context, Status)
+void block_completion(void *context, Status /*unused*/)
 {
     auto *state = static_cast<BlockingCompletion *>(context);
     state->ran_off_submitter.store(std::this_thread::get_id() != state->submitter, std::memory_order_relaxed);
@@ -68,7 +68,7 @@ struct SelfDestroyCompletion
     std::atomic<bool>               done{false};
 };
 
-void destroy_store_from_completion(void *context, Status)
+void destroy_store_from_completion(void *context, Status /*unused*/)
 {
     auto *state = static_cast<SelfDestroyCompletion *>(context);
     state->entered.store(true, std::memory_order_release);
@@ -451,13 +451,16 @@ TEST(ChunkPageStore, AsyncRotationSealsPreexistingPartialChunk)
 {
     auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
     auto           transport = std::make_shared<MemoryChunkTransport>();
-    ChunkPageStore store({.tree_id         = 32,
-                          .owner_epoch     = 1,
-                          .pack_bytes      = 8192,
-                          .max_chunk_bytes = 16384,
-                          .page_alignment  = 1,
-                          .iu_size         = 1},
-                         catalog, transport);
+    ChunkPageStore store(
+        {
+            .tree_id         = 32,
+            .owner_epoch     = 1,
+            .pack_bytes      = 8192,
+            .max_chunk_bytes = 16384,
+            .page_alignment  = 1,
+            .iu_size         = 1,
+        },
+        catalog, transport);
     publish_raw_generation(&store, 1);
     auto first = catalog->load(32);
     ASSERT_NE(first, nullptr);
@@ -700,13 +703,16 @@ TEST(ChunkPageStore, BoundedMaterializationMakesChildPacksExclusive)
                           catalog, transport);
     publish_raw_generation(&source, 3);
 
-    ChunkPageStore child({.tree_id                        = 54,
-                          .owner_epoch                    = 1,
-                          .pack_bytes                     = 4096,
-                          .page_alignment                 = 1,
-                          .iu_size                        = 1,
-                          .materialization_bytes_per_pass = 4096},
-                         catalog, transport);
+    ChunkPageStore child(
+        {
+            .tree_id                        = 54,
+            .owner_epoch                    = 1,
+            .pack_bytes                     = 4096,
+            .page_alignment                 = 1,
+            .iu_size                        = 1,
+            .materialization_bytes_per_pass = 4096,
+        },
+        catalog, transport);
     ASSERT_TRUE(child.inherit_snapshot_from(source).ok());
     publish_raw_generation(&child, 3);
     EXPECT_GT(child.stats().shared_packs, 0U);
@@ -807,13 +813,16 @@ TEST(ChunkPageStore, MaterializationBudgetIsAtLeastOneConfiguredPack)
     ChunkPageStore source({.tree_id = 61, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
                           catalog, transport);
     publish_raw_generation(&source, 2);
-    ChunkPageStore child({.tree_id                        = 62,
-                          .owner_epoch                    = 1,
-                          .pack_bytes                     = 4096,
-                          .page_alignment                 = 1,
-                          .iu_size                        = 1,
-                          .materialization_bytes_per_pass = 1},
-                         catalog, transport);
+    ChunkPageStore child(
+        {
+            .tree_id                        = 62,
+            .owner_epoch                    = 1,
+            .pack_bytes                     = 4096,
+            .page_alignment                 = 1,
+            .iu_size                        = 1,
+            .materialization_bytes_per_pass = 1,
+        },
+        catalog, transport);
     ASSERT_TRUE(child.inherit_snapshot_from(source).ok());
     publish_raw_generation(&child, 2);
 
@@ -838,7 +847,7 @@ TEST(ChunkPageStore, LivePackRepackDropsDeadPacksWithoutResurrection)
     publish_raw_generation(&child, 3);
     child.set_materialization_live_extents({
         {0,    4096},
-        {8192, 1   }
+        {8192, 1   },
     });
 
     uint64_t written  = 0;
@@ -901,13 +910,16 @@ TEST(ChunkPageStore, PageReferenceDecodeRequiresImmutableLocatorCoverage)
 {
     auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
     auto           transport = std::make_shared<MemoryChunkTransport>();
-    ChunkPageStore store({.tree_id            = 67,
-                          .owner_epoch        = 1,
-                          .pack_bytes         = 4096,
-                          .page_alignment     = 1,
-                          .iu_size            = 1,
-                          .layout_validity_ms = 0},
-                         catalog, transport);
+    ChunkPageStore store(
+        {
+            .tree_id            = 67,
+            .owner_epoch        = 1,
+            .pack_bytes         = 4096,
+            .page_alignment     = 1,
+            .iu_size            = 1,
+            .layout_validity_ms = 0,
+        },
+        catalog, transport);
     publish_raw_generation(&store, 4);
     uint64_t word = 0;
     ASSERT_TRUE(store.encode_mapping_location(8192, 1, &word).ok());
@@ -1266,7 +1278,13 @@ TEST(ChunkPageStore, RotatesWholePacksAndReopenAllocatesFreshChunk)
     auto                   catalog   = std::make_shared<MemoryRootCatalog>(1);
     auto                   transport = std::make_shared<MemoryChunkTransport>();
     ChunkPageStore::Config config{
-        .tree_id = 18, .owner_epoch = 1, .pack_bytes = 64, .max_chunk_bytes = 128, .page_alignment = 1, .iu_size = 1};
+        .tree_id         = 18,
+        .owner_epoch     = 1,
+        .pack_bytes      = 64,
+        .max_chunk_bytes = 128,
+        .page_alignment  = 1,
+        .iu_size         = 1,
+    };
     ChunkPageStore       store(config, catalog, transport);
     std::vector<uint8_t> bytes(8196, 3);
     ASSERT_TRUE(store.write_at(8192, bytes.data() + 8192, 4).ok());
@@ -1311,13 +1329,16 @@ TEST(ChunkPageStore, HardCapsConfiguredChunkCapacityAt256MiB)
 {
     auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
     auto           transport = std::make_shared<MemoryChunkTransport>();
-    ChunkPageStore store({.tree_id         = 26,
-                          .owner_epoch     = 1,
-                          .pack_bytes      = 1U * 1024U * 1024U,
-                          .max_chunk_bytes = 512U * 1024U * 1024U,
-                          .page_alignment  = 1,
-                          .iu_size         = 1},
-                         catalog, transport);
+    ChunkPageStore store(
+        {
+            .tree_id         = 26,
+            .owner_epoch     = 1,
+            .pack_bytes      = 1U * 1024U * 1024U,
+            .max_chunk_bytes = 512U * 1024U * 1024U,
+            .page_alignment  = 1,
+            .iu_size         = 1,
+        },
+        catalog, transport);
     const uint8_t  value = 2;
     ASSERT_TRUE(store.write_at(8192, &value, 1).ok());
     ASSERT_TRUE(store.sync().ok());
@@ -1353,13 +1374,16 @@ TEST(ChunkPageStore, PadsPackTailWithoutChangingLogicalChecksum)
 {
     auto                 catalog   = std::make_shared<MemoryRootCatalog>(1);
     auto                 transport = std::make_shared<MemoryChunkTransport>();
-    ChunkPageStore       store({.tree_id         = 19,
-                                .owner_epoch     = 1,
-                                .pack_bytes      = 16U * 1024U,
-                                .max_chunk_bytes = 64U * 1024U,
-                                .page_alignment  = 64U * 1024U,
-                                .iu_size         = 64U * 1024U},
-                               catalog, transport);
+    ChunkPageStore       store(
+        {
+            .tree_id         = 19,
+            .owner_epoch     = 1,
+            .pack_bytes      = 16U * 1024U,
+            .max_chunk_bytes = 64U * 1024U,
+            .page_alignment  = 64U * 1024U,
+            .iu_size         = 64U * 1024U,
+        },
+        catalog, transport);
     std::vector<uint8_t> bytes(8196, 4);
     ASSERT_TRUE(store.write_at(8192, bytes.data() + 8192, 4).ok());
     ASSERT_TRUE(store.sync().ok());
@@ -1673,12 +1697,14 @@ TEST(ChunkPageStore, CApiFactoryInjectsBackendWithoutChangingOpen)
 
     ct_root_catalog *catalog = nullptr;
     ASSERT_EQ(ct_memory_root_catalog_open(11, &catalog), 0);
-    ct_chunk_page_store_options store_options = {.tree_id                        = 77,
-                                                 .owner_epoch                    = 11,
-                                                 .pack_bytes                     = 4096,
-                                                 .iu_size                        = 1,
-                                                 .max_concurrent_packs           = 2,
-                                                 .materialization_bytes_per_pass = 4096};
+    ct_chunk_page_store_options store_options = {
+        .tree_id                        = 77,
+        .owner_epoch                    = 11,
+        .pack_bytes                     = 4096,
+        .iu_size                        = 1,
+        .max_concurrent_packs           = 2,
+        .materialization_bytes_per_pass = 4096,
+    };
     ct_page_store              *store         = nullptr;
     ASSERT_EQ(ct_chunk_page_store_open(&store_options, catalog, &store), 0);
     ct_options options  = {};

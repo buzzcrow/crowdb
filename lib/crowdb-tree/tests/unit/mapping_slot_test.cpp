@@ -37,7 +37,7 @@ TEST(MappingSlot, UnloadedRoundTrip)
          {.iu_index = kMaxIuIndex, .iu_count = 1},
          {.iu_index = 5, .iu_count = kMaxIuCount},
          {.iu_index = kMaxIuIndex, .iu_count = kMaxIuCount},
-         }
+         },
     };
     for (const auto &c : cases) {
         ASSERT_TRUE(fits_unloaded(c.iu_index, c.iu_count));

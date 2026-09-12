@@ -155,7 +155,7 @@ class RpcClient
     // to break reference cycles (Rust handler closures capture Arcs).
     void clear_handlers()
     {
-        std::lock_guard<std::mutex> lock(handler_mu_);
+        std::scoped_lock lock(handler_mu_);
         request_handlers_.clear();
     }
 
@@ -236,7 +236,7 @@ class RpcClient
 
     // Build an OutFrame for submission. The RpcClient owns the OutFrame;
     // the transport takes it and releases buffers after send.
-    OutFrame *build_frame(uint64_t request_id, Buffer *control, Buffer *data, uint16_t msg_type, uint8_t flags);
+    static OutFrame *build_frame(uint64_t request_id, Buffer *control, Buffer *data, uint16_t msg_type, uint8_t flags);
 
     // Reaper loop: scans slab pool + pending map for timed-out entries.
     void reaper_loop();

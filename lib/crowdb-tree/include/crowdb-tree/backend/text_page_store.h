@@ -72,10 +72,10 @@ class TextPageStore : public PageStore
 
     // Determine the filename for a write at `addr` with `buf` content.
     // Uses magic bytes to detect blob type.
-    std::string filename_for(uint64_t addr, const uint8_t *buf, size_t len) const;
+    static std::string filename_for(uint64_t addr, const uint8_t *buf, size_t len);
 
     // Encode a binary blob to text based on magic detection.
-    std::string encode_blob(const uint8_t *buf, size_t len) const;
+    static std::string encode_blob(const uint8_t *buf, size_t len);
 
     // Decode a text file back to binary.
     Status decode_file(const std::string &filename, std::vector<uint8_t> *out) const;

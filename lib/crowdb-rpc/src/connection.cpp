@@ -10,6 +10,7 @@
 #include <sys/uio.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cassert>
 #include <cerrno>
 #include <cstring>
@@ -23,23 +24,23 @@ namespace
 // Serialize the frame header into hdr_buf and build up to 3 iovecs from
 // the frame at its current sent_offset. Returns the number of iovecs.
 // hdr_buf must point to HEADER_SIZE bytes of stable storage.
-static inline int build_frame_iovecs(OutFrame *frame, uint8_t *hdr_buf, iovec *iovs)
+inline int build_frame_iovecs(OutFrame *frame, uint8_t *hdr_buf, iovec *iovs)
 {
     serialize_header(hdr_buf, frame->header);
-    ssize_t off   = static_cast<ssize_t>(frame->sent_offset);
+    auto    off   = static_cast<ssize_t>(frame->sent_offset);
     int     count = 0;
 
     if (off < HEADER_SIZE) {
-        iovs[count++] = {hdr_buf + off, static_cast<size_t>(HEADER_SIZE - off)};
+        iovs[count++] = {.iov_base = hdr_buf + off, .iov_len = static_cast<size_t>(HEADER_SIZE - off)};
     }
     else {
         off -= HEADER_SIZE;
     }
 
     if (frame->control != nullptr && frame->control->len > 0) {
-        ssize_t clen = static_cast<ssize_t>(frame->control->len);
+        auto clen = static_cast<ssize_t>(frame->control->len);
         if (off < clen) {
-            iovs[count++] = {frame->control->data + off, static_cast<size_t>(clen - off)};
+            iovs[count++] = {.iov_base = frame->control->data + off, .iov_len = static_cast<size_t>(clen - off)};
             off           = 0;
         }
         else {
@@ -48,9 +49,9 @@ static inline int build_frame_iovecs(OutFrame *frame, uint8_t *hdr_buf, iovec *i
     }
 
     if (frame->data != nullptr && frame->data->len > 0) {
-        ssize_t dlen = static_cast<ssize_t>(frame->data->len);
+        auto dlen = static_cast<ssize_t>(frame->data->len);
         if (off < dlen) {
-            iovs[count++] = {frame->data->data + off, static_cast<size_t>(dlen - off)};
+            iovs[count++] = {.iov_base = frame->data->data + off, .iov_len = static_cast<size_t>(dlen - off)};
         }
     }
 
@@ -58,7 +59,7 @@ static inline int build_frame_iovecs(OutFrame *frame, uint8_t *hdr_buf, iovec *i
 }
 
 // Total bytes in a frame (header + control + data).
-static inline ssize_t frame_total(OutFrame *frame)
+inline ssize_t frame_total(OutFrame *frame)
 {
     ssize_t total = HEADER_SIZE;
     if (frame->control != nullptr) {
@@ -71,7 +72,7 @@ static inline ssize_t frame_total(OutFrame *frame)
 }
 
 // Release an OutFrame's buffers and delete it.
-static inline void release_frame(OutFrame *frame)
+inline void release_frame(OutFrame *frame)
 {
     if (frame->control != nullptr) {
         frame->control->release();
@@ -89,9 +90,7 @@ int __attribute__((noinline)) restore_pending(OutFrame **pending, int pending_co
                                               int *iov_count)
 {
     int n = pending_count;
-    if (n > BATCH_MAX) {
-        n = BATCH_MAX;
-    }
+    n      = std::min(n, BATCH_MAX);
     int fc = 0;
     int ic = 0;
     for (int i = 0; i < n; i++) {

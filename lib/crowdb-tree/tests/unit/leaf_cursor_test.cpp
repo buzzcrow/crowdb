@@ -85,10 +85,12 @@ std::vector<resolved_entry> drain(PageBase *head, uint64_t gc_floor)
     std::vector<resolved_entry> out;
     for (LeafChainCursor c(head, gc_floor); c.valid(); c.next()) {
         CellView v{c.cell()};
-        out.push_back({.key       = c.key().to_string(),
-                       .slot      = v.slot(),
-                       .tombstone = v.is_tombstone(),
-                       .value     = v.is_tombstone() ? "" : v.value().to_string()});
+        out.push_back({
+            .key       = c.key().to_string(),
+            .slot      = v.slot(),
+            .tombstone = v.is_tombstone(),
+            .value     = v.is_tombstone() ? "" : v.value().to_string(),
+        });
     }
     return out;
 }
@@ -130,10 +132,12 @@ std::vector<resolved_entry> reference_fold(PageBase *head, uint64_t gc_floor)
         if (v.is_tombstone() && v.slot() <= gc_floor) {
             continue;
         }
-        out.push_back({.key       = kv.first.to_string(),
-                       .slot      = v.slot(),
-                       .tombstone = v.is_tombstone(),
-                       .value     = v.is_tombstone() ? "" : v.value().to_string()});
+        out.push_back({
+            .key       = kv.first.to_string(),
+            .slot      = v.slot(),
+            .tombstone = v.is_tombstone(),
+            .value     = v.is_tombstone() ? "" : v.value().to_string(),
+        });
     }
     return out;
 }

@@ -174,7 +174,7 @@ TEST(DiskIOUring, DestructorStopsThreadCleanly)
     {
         DiskIOUring uring = make_uring();
         int32_t     efd   = -1;
-        EXPECT_EQ(uring.eventfds(&efd, 1), 1u);
+        EXPECT_EQ(uring.eventfds(&efd, 1), 1U);
         EXPECT_GE(efd, 0);
     }
     SUCCEED();
@@ -287,7 +287,7 @@ TEST(BlockAsyncPageStore, AllExtentFdsReturnsAllLiveFds)
     ASSERT_TRUE(BlockPageStore::open(path, 4096, &bs).ok());
     std::vector<int> fds = bs->all_extent_fds();
     // Single-medium mode: exactly one fd.
-    EXPECT_EQ(fds.size(), 1u);
+    EXPECT_EQ(fds.size(), 1U);
     EXPECT_GE(fds[0], 0);
     std::remove(path.c_str());
 }

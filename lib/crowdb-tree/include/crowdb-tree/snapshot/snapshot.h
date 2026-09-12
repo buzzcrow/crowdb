@@ -120,31 +120,31 @@ class Snapshot
         while (i < a.size() && j < b.size()) {
             int c = Slice(a[i].key).compare(Slice(b[j].key));
             if (c < 0) {
-                diffs.push_back({a[i].key, engine_diff::kOnlyLeft});
+                diffs.push_back({.key = a[i].key, .kind = engine_diff::kOnlyLeft});
                 ++i;
             }
             else if (c > 0) {
-                diffs.push_back({b[j].key, engine_diff::kOnlyRight});
+                diffs.push_back({.key = b[j].key, .kind = engine_diff::kOnlyRight});
                 ++j;
             }
             else {
                 CellView va{Slice(a[i].cell)};
                 CellView vb{Slice(b[j].cell)};
                 if (va.slot() != vb.slot()) {
-                    diffs.push_back({a[i].key, engine_diff::kSlotDiffers});
+                    diffs.push_back({.key = a[i].key, .kind = engine_diff::kSlotDiffers});
                 }
                 else if (va.raw() != vb.raw()) {
-                    diffs.push_back({a[i].key, engine_diff::kValueDiffers});
+                    diffs.push_back({.key = a[i].key, .kind = engine_diff::kValueDiffers});
                 }
                 ++i;
                 ++j;
             }
         }
         for (; i < a.size(); ++i) {
-            diffs.push_back({a[i].key, engine_diff::kOnlyLeft});
+            diffs.push_back({.key = a[i].key, .kind = engine_diff::kOnlyLeft});
         }
         for (; j < b.size(); ++j) {
-            diffs.push_back({b[j].key, engine_diff::kOnlyRight});
+            diffs.push_back({.key = b[j].key, .kind = engine_diff::kOnlyRight});
         }
         return diffs;
     }

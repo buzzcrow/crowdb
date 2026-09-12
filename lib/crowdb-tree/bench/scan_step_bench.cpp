@@ -192,8 +192,9 @@ void run_concurrent(const char *label, int n_prepop, int value_size, size_t limi
         flusher = std::thread([&] {
             while (!stop.load(std::memory_order_relaxed)) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(flush_every_ms));
-                if (stop.load(std::memory_order_relaxed))
+                if (stop.load(std::memory_order_relaxed)) {
                     break;
+                }
                 s.tree->flush();
                 flushes_done.fetch_add(1, std::memory_order_relaxed);
             }
@@ -217,8 +218,9 @@ void run_concurrent(const char *label, int n_prepop, int value_size, size_t limi
 
     stop.store(true, std::memory_order_relaxed);
     writer.join();
-    if (flusher.joinable())
+    if (flusher.joinable()) {
         flusher.join();
+    }
 
     uint64_t wd        = writes_done.load(std::memory_order_relaxed);
     uint64_t fd        = flushes_done.load(std::memory_order_relaxed);

@@ -90,12 +90,12 @@ template <typename T> class MpscQueue
 
     // Conservative pending check: may return true when a producer has
     // claimed a slot but not yet filled it. Safe for wake/disarm decisions.
-    bool has_pending() const
+    [[nodiscard]] bool has_pending() const
     {
         return head_.load(std::memory_order_acquire) != tail_.load(std::memory_order_acquire);
     }
 
-    uint32_t capacity() const
+    [[nodiscard]] uint32_t capacity() const
     {
         return capacity_;
     }

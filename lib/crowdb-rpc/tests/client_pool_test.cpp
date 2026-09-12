@@ -42,7 +42,7 @@ TEST(ScheduledExecutorTest, FireDueTask)
     ScheduledExecutor exec;
     std::atomic<bool> fired{false};
 
-    exec.schedule([&]() { fired.store(true); }, 10);
+    exec.schedule([&] { fired.store(true); }, 10);
 
     // Wait for the task to be due.
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -56,8 +56,8 @@ TEST(ScheduledExecutorTest, CancelTask)
     ScheduledExecutor exec;
     std::atomic<bool> fired{false};
 
-    auto id = exec.schedule([&]() { fired.store(true); }, 10);
-    EXPECT_GT(id, 0u);
+    auto id = exec.schedule([&] { fired.store(true); }, 10);
+    EXPECT_GT(id, 0U);
 
     EXPECT_TRUE(exec.cancel(id));
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -70,7 +70,7 @@ TEST(ScheduledExecutorTest, NextDeadline)
     ScheduledExecutor exec;
     std::atomic<bool> fired{false};
 
-    exec.schedule([&]() { fired.store(true); }, 50);
+    exec.schedule([&] { fired.store(true); }, 50);
 
     // Immediately — task not due, should return ~50ms.
     int next_ms = exec.run_due_tasks();
@@ -123,7 +123,7 @@ TEST(ConnectionPoolTest, AllDownReturnsNull)
     c1->close();
 
     EXPECT_EQ(pool.get(), nullptr);
-    EXPECT_EQ(pool.healthy_count(), 0u);
+    EXPECT_EQ(pool.healthy_count(), 0U);
 }
 
 TEST(ConnectionPoolTest, GetForEndpoint)
@@ -170,8 +170,9 @@ class CallerLoopbackTest : public ::testing::Test
 
     void TearDown() override
     {
-        if (listen_fd_ >= 0)
+        if (listen_fd_ >= 0) {
             ::close(listen_fd_);
+        }
     }
 
     int                          listen_fd_ = -1;
@@ -292,7 +293,7 @@ TEST_F(CallerLoopbackTest, FailAllOnClose)
 
     // Test fail_all with 0 pending (edge case — should be a no-op).
     caller.fail_all(nullptr, RpcError::ConnectionClosed);
-    EXPECT_EQ(caller.pending_count(), 0u);
+    EXPECT_EQ(caller.pending_count(), 0U);
 }
 
 // ── Slab fallback + reaper tests ───────────────────────────────────
@@ -512,8 +513,8 @@ TEST_F(CallerLoopbackTest, ReaperTimesOutSlabSlot)
 
     EXPECT_EQ(state.call_count.load(std::memory_order_acquire), 1);
     EXPECT_EQ(state.last_status.load(std::memory_order_relaxed), CROWDB_RPC_ERR_TIMEOUT);
-    EXPECT_EQ(rpc_reaped().window(), 1u);
-    EXPECT_EQ(caller.pending_count(), 0u);
+    EXPECT_EQ(rpc_reaped().window(), 1U);
+    EXPECT_EQ(caller.pending_count(), 0U);
 
     // Late response after timeout — should be dropped, no double-invoke.
     auto *late_resp            = new Frame;
@@ -523,7 +524,7 @@ TEST_F(CallerLoopbackTest, ReaperTimesOutSlabSlot)
     caller.on_response(1, late_resp);
 
     EXPECT_EQ(state.call_count.load(std::memory_order_acquire), 1); // still 1
-    EXPECT_EQ(rpc_resp_missed().window(), 1u);
+    EXPECT_EQ(rpc_resp_missed().window(), 1U);
 
     caller.stop_reaper();
     transport.stop();
@@ -595,8 +596,8 @@ TEST_F(CallerLoopbackTest, ReaperTimesOutMapFallback)
     EXPECT_EQ(state1.last_status.load(std::memory_order_relaxed), CROWDB_RPC_ERR_TIMEOUT);
     EXPECT_EQ(state2.call_count.load(std::memory_order_acquire), 1);
     EXPECT_EQ(state2.last_status.load(std::memory_order_relaxed), CROWDB_RPC_ERR_TIMEOUT);
-    EXPECT_EQ(rpc_reaped().window(), 2u); // slab + map
-    EXPECT_EQ(caller.pending_count(), 0u);
+    EXPECT_EQ(rpc_reaped().window(), 2U); // slab + map
+    EXPECT_EQ(caller.pending_count(), 0U);
 
     caller.stop_reaper();
     transport.stop();

@@ -48,8 +48,9 @@ struct AllocateHandlerState
     std::atomic<bool>   request_valid{false};
 };
 
-extern "C" void handle_allocate(uint64_t request_id, uint64_t, uint16_t, const uint8_t *control, uint32_t control_len,
-                                const uint8_t *, uint32_t, void *connection, void *frame, void *user_data)
+extern "C" void handle_allocate(uint64_t request_id, uint64_t /*unused*/, uint16_t /*unused*/, const uint8_t *control,
+                                uint32_t control_len, const uint8_t * /*unused*/, uint32_t /*unused*/, void *connection,
+                                void *frame, void *user_data)
 {
     auto                 *state = static_cast<AllocateHandlerState *>(user_data);
     flatbuffers::Verifier verifier(control, control_len);
@@ -89,8 +90,9 @@ extern "C" void handle_allocate(uint64_t request_id, uint64_t, uint16_t, const u
     crowdb_rpc_frame_release(frame);
 }
 
-extern "C" void handle_disk_read(uint64_t request_id, uint64_t, uint16_t, const uint8_t *control, uint32_t control_len,
-                                 const uint8_t *, uint32_t, void *connection, void *frame, void *user_data)
+extern "C" void handle_disk_read(uint64_t request_id, uint64_t /*unused*/, uint16_t /*unused*/, const uint8_t *control,
+                                 uint32_t control_len, const uint8_t * /*unused*/, uint32_t /*unused*/,
+                                 void *connection, void *frame, void *user_data)
 {
     auto                 *state = static_cast<AllocateHandlerState *>(user_data);
     flatbuffers::Verifier verifier(control, control_len);
@@ -110,9 +112,9 @@ extern "C" void handle_disk_read(uint64_t request_id, uint64_t, uint16_t, const 
     crowdb_rpc_frame_release(frame);
 }
 
-extern "C" void handle_disk_write(uint64_t request_id, uint64_t, uint16_t, const uint8_t *control, uint32_t control_len,
-                                  const uint8_t *data, uint32_t data_len, void *connection, void *frame,
-                                  void *user_data)
+extern "C" void handle_disk_write(uint64_t request_id, uint64_t /*unused*/, uint16_t /*unused*/, const uint8_t *control,
+                                  uint32_t control_len, const uint8_t *data, uint32_t data_len, void *connection,
+                                  void *frame, void *user_data)
 {
     auto                 *state = static_cast<AllocateHandlerState *>(user_data);
     flatbuffers::Verifier verifier(control, control_len);
@@ -169,7 +171,9 @@ TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
     crowdb_rpc_client_attach(client, connection);
 
     ct_chunk_rpc_disk_route disk_route{
-        .disk_id_high = 9, .disk_id_low = 10, .route = {.client = client, .server = server, .connection = connection}
+        .disk_id_high = 9,
+        .disk_id_low  = 10,
+        .route        = {.client = client, .server = server, .connection = connection},
     };
     ct_chunk_rpc_transport_options options{
         .chunkdb             = {.client = client, .server = server, .connection = connection},

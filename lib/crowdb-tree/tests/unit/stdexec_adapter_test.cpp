@@ -32,7 +32,7 @@ struct Receiver
         result->values.fetch_add(1);
     }
 
-    void set_error(Status) noexcept
+    void set_error(Status /*unused*/) noexcept
     {
         result->errors.fetch_add(1);
     }

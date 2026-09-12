@@ -98,9 +98,9 @@ bool frame_set_fences(uint8_t *f, uint32_t page_bytes, const Slice *lower, const
         return false;
     }
     auto internal_offset = [f, body](Slice key, uint32_t *offset) {
-        const uintptr_t begin = reinterpret_cast<uintptr_t>(f);
+        const auto      begin = reinterpret_cast<uintptr_t>(f);
         const uintptr_t end   = begin + body;
-        const uintptr_t data  = reinterpret_cast<uintptr_t>(key.data());
+        const auto      data  = reinterpret_cast<uintptr_t>(key.data());
         if (data < begin || data > end || key.size() > end - data) {
             return false;
         }

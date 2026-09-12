@@ -20,6 +20,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <ranges>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -51,7 +52,7 @@ struct NativeBounds
 bool set_native_frame_fences(NativeFrame *frame, const NativeBounds &bounds)
 {
     uint8_t       *bytes      = frame->frame.data();
-    const uint32_t page_bytes = static_cast<uint32_t>(frame->frame.size());
+    const auto     page_bytes = static_cast<uint32_t>(frame->frame.size());
     if (!bounds.lower.has_value()) {
         return frame_set_fences(bytes, page_bytes, nullptr, nullptr);
     }
@@ -647,7 +648,7 @@ Status NativeFrameIterator::next(size_t max_frames, std::vector<NativeFrame> *ou
     }
 
     Crowdbtree                 &source = *impl_->source;
-    std::lock_guard<std::mutex> lock(source.write_mutex_);
+    std::scoped_lock            lock(source.write_mutex_);
     if (!impl_->terminal_status.ok()) {
         return impl_->terminal_status;
     }
@@ -687,8 +688,9 @@ Status NativeFrameIterator::next(size_t max_frames, std::vector<NativeFrame> *ou
                     overflow_heads.push_back(cell.overflow_head());
                 }
             }
-            for (auto head = overflow_heads.rbegin(); head != overflow_heads.rend(); ++head) {
-                impl_->schedule({.page_id = *head, .lower = std::nullopt, .upper = std::nullopt, .overflow = true});
+            for (unsigned long &overflow_head : std::views::reverse(overflow_heads)) {
+                impl_->schedule(
+                    {.page_id = overflow_head, .lower = std::nullopt, .upper = std::nullopt, .overflow = true});
             }
         }
         else if (page->type == page_type::kInnerBase) {
@@ -698,13 +700,14 @@ Status NativeFrameIterator::next(size_t max_frames, std::vector<NativeFrame> *ou
             InnerFrameView view = inner->view();
             for (uint32_t reverse = view.num_children(); reverse != 0; --reverse) {
                 const uint32_t index = reverse - 1;
-                impl_->schedule({.page_id = view.child_at(index),
-                                 .lower   = index == 0
-                                              ? task.lower
-                                              : std::optional<std::string>(view.separator_at(index - 1).to_string()),
-                                 .upper   = index == view.num_separators()
-                                              ? task.upper
-                                              : std::optional<std::string>(view.separator_at(index).to_string())});
+                impl_->schedule({
+                    .page_id = view.child_at(index),
+                    .lower =
+                        index == 0 ? task.lower : std::optional<std::string>(view.separator_at(index - 1).to_string()),
+                    .upper = index == view.num_separators()
+                               ? task.upper
+                               : std::optional<std::string>(view.separator_at(index).to_string()),
+                });
             }
         }
         else if (page->type == page_type::kOverflowFrame) {
@@ -712,10 +715,12 @@ Status NativeFrameIterator::next(size_t max_frames, std::vector<NativeFrame> *ou
             bytes          = overflow->frame();
             length         = overflow->page_bytes();
             if (overflow->next_page_id() != kInvalidPageId) {
-                impl_->schedule({.page_id  = overflow->next_page_id(),
-                                 .lower    = std::nullopt,
-                                 .upper    = std::nullopt,
-                                 .overflow = true});
+                impl_->schedule({
+                    .page_id  = overflow->next_page_id(),
+                    .lower    = std::nullopt,
+                    .upper    = std::nullopt,
+                    .overflow = true,
+                });
             }
         }
         else {
@@ -723,10 +728,12 @@ Status NativeFrameIterator::next(size_t max_frames, std::vector<NativeFrame> *ou
                 Status::internal_error("native frame iterator encountered an unexpected page type");
             return impl_->terminal_status;
         }
-        out->push_back({.page_id      = task.page_id,
-                        .frame        = std::vector<uint8_t>(bytes, bytes + length),
-                        .durable_addr = page->durable_addr,
-                        .durable_plen = page->durable_plen});
+        out->push_back({
+            .page_id      = task.page_id,
+            .frame        = std::vector<uint8_t>(bytes, bytes + length),
+            .durable_addr = page->durable_addr,
+            .durable_plen = page->durable_plen,
+        });
         impl_->consume(task.page_id);
     }
     *complete = impl_->tasks.empty();
@@ -851,7 +858,7 @@ PageBase *Crowdbtree::resident(uint64_t page_id) const
     // descriptor is inline in the slot word (no heap allocation), so there is
     // no descriptor to free -- just re-read and check.
     auto                        dl_t0 = std::chrono::steady_clock::now();
-    std::lock_guard<std::mutex> lk(load_mutex_);
+    std::scoped_lock            lk(load_mutex_);
     w = mapping_.get_word(page_id);
     if (slot_word::is_empty(w) || !slot_word::is_unloaded(w)) {
         return slot_word::is_resident(w) ? slot_word::resident_ptr(w) : nullptr; // another loader won
@@ -1155,7 +1162,7 @@ size_t Crowdbtree::evict_clean_leaves_locked(size_t max_resident_leaves)
 
 size_t Crowdbtree::evict_clean_leaves(size_t max_resident_leaves)
 {
-    std::lock_guard<std::mutex> lk(write_mutex_);
+    std::scoped_lock lk(write_mutex_);
     return evict_clean_leaves_locked(max_resident_leaves);
 }
 
@@ -1243,7 +1250,7 @@ size_t Crowdbtree::evict_clean_inner_locked(size_t max_resident_inner)
 
 size_t Crowdbtree::evict_clean_inner(size_t max_resident_inner)
 {
-    std::lock_guard<std::mutex> lk(write_mutex_);
+    std::scoped_lock lk(write_mutex_);
     return evict_clean_inner_locked(max_resident_inner);
 }
 
@@ -1259,10 +1266,10 @@ void Crowdbtree::maybe_evict_locked()
     // High-water 85%: evict clean leaves down to ~70% of the arena. Best-effort —
     // inner pages and dirty/working-set frames are not evictable, so usage may
     // remain above target until the next snapshot cleans the working set.
-    if (uint64_t(st.used) * 100 < uint64_t(st.num_frames) * 85) {
+    if (static_cast<uint64_t>(st.used) * 100 < static_cast<uint64_t>(st.num_frames) * 85) {
         return;
     }
-    evict_clean_leaves_locked((size_t(st.num_frames) * 70) / 100);
+    evict_clean_leaves_locked((static_cast<size_t>(st.num_frames) * 70) / 100);
 }
 
 void Crowdbtree::apply_batch(uint64_t slot, const Batch &batch)
@@ -1311,7 +1318,7 @@ void Crowdbtree::recompute_contiguous_locked()
 void Crowdbtree::note_applied_slot(uint64_t slot)
 {
     {
-        std::lock_guard<std::mutex> lk(slot_mutex_);
+        std::scoped_lock lk(slot_mutex_);
         max_seen_slot_ = std::max(max_seen_slot_, slot);
         received_slots_.insert(slot);
         recompute_contiguous_locked();
@@ -1411,7 +1418,7 @@ Status Crowdbtree::apply_external(uint64_t slot, std::vector<external_op> ops)
 void Crowdbtree::force_advance_slot(uint64_t slot)
 {
     {
-        std::lock_guard<std::mutex> lk(slot_mutex_);
+        std::scoped_lock lk(slot_mutex_);
         max_seen_slot_ = std::max(max_seen_slot_, slot);
         // Treat any gap up to `slot` as NoOps: jump the frontier, then fold in any
         // already-received slots that are now contiguous with it.
@@ -1434,9 +1441,11 @@ void Crowdbtree::set_gc_watermark(uint64_t snapshot_slot, uint64_t safe_slot)
 Status Crowdbtree::put(Slice key, Slice value)
 {
     Batch b;
-    b.ops.push_back({.key   = std::string(key.data(), key.size()),
-                     .kind  = OpKind::kPut,
-                     .value = std::string(value.data(), value.size())});
+    b.ops.push_back({
+        .key   = std::string(key.data(), key.size()),
+        .kind  = OpKind::kPut,
+        .value = std::string(value.data(), value.size()),
+    });
     return apply(auto_slot_.fetch_add(1) + 1, b);
 }
 
@@ -1725,7 +1734,7 @@ bool Crowdbtree::drain_all_frozen_locked(std::deque<std::shared_ptr<MemTable>> &
 Status Crowdbtree::flush()
 {
     auto                        t0 = std::chrono::steady_clock::now();
-    std::lock_guard<std::mutex> lk(write_mutex_);
+    std::scoped_lock            lk(write_mutex_);
 
     // Always freeze whatever is in active_ right now (even below threshold)
     // so an explicit flush() call (or the periodic background-thread tick)
@@ -2603,7 +2612,7 @@ void Crowdbtree::get_async_attempt(std::shared_ptr<std::string> key_owned, std::
         bool     still_unloaded = false;
         Status   location_status;
         {
-            std::lock_guard<std::mutex> lk(load_mutex_);
+            std::scoped_lock            lk(load_mutex_);
             uint64_t                    w = mapping_.get_word(pending_page_id);
             if (slot_word::is_unloaded(w)) {
                 location_status = opt_.page_store->decode_mapping_location(w, &addr, &plen);
@@ -2640,7 +2649,7 @@ void Crowdbtree::get_async_attempt(std::shared_ptr<std::string> key_owned, std::
                     }
                     bool installed_ok = true;
                     {
-                        std::lock_guard<std::mutex> lk(load_mutex_);
+                        std::scoped_lock            lk(load_mutex_);
                         uint64_t                    w = mapping_.get_word(page_id);
                         if (slot_word::is_unloaded(w)) {
                             installed_ok = install_loaded_page(page_id, addr, plen, *blob) != nullptr;
@@ -3963,7 +3972,7 @@ void Crowdbtree::scan_async_attempt(std::shared_ptr<std::string>        prefix_o
         bool     still_unloaded = false;
         Status   location_status;
         {
-            std::lock_guard<std::mutex> lk(load_mutex_);
+            std::scoped_lock            lk(load_mutex_);
             uint64_t                    w = mapping_.get_word(pending_page_id);
             if (slot_word::is_unloaded(w)) {
                 location_status = opt_.page_store->decode_mapping_location(w, &addr, &plen);
@@ -4007,7 +4016,7 @@ void Crowdbtree::scan_async_attempt(std::shared_ptr<std::string>        prefix_o
                 }
                 bool installed_ok = true;
                 {
-                    std::lock_guard<std::mutex> lk(load_mutex_);
+                    std::scoped_lock            lk(load_mutex_);
                     uint64_t                    w = mapping_.get_word(page_id);
                     if (slot_word::is_unloaded(w)) {
                         installed_ok = install_loaded_page(page_id, addr, plen, *blob) != nullptr;
@@ -4091,7 +4100,7 @@ size_t Crowdbtree::leaf_count() const
 Status Crowdbtree::install_snapshot(std::vector<leaf_entry> sorted_entries, uint64_t at_slot)
 {
     {
-        std::lock_guard<std::mutex> lk(write_mutex_);
+        std::scoped_lock lk(write_mutex_);
         // Replace L1: drop the live tree and start a fresh empty root. (v1 clears in
         // place under the write lock; a true staging + RootVersion swap is deferred.)
         // Epoch-retire (not immediate free): lock-free readers may still be walking
@@ -4108,7 +4117,7 @@ Status Crowdbtree::install_snapshot(std::vector<leaf_entry> sorted_entries, uint
         contiguous_slot_.store(0);
         gc_floor_.store(0);
         {
-            std::lock_guard<std::mutex> sl(slot_mutex_);
+            std::scoped_lock sl(slot_mutex_);
             received_slots_.clear();
             max_seen_slot_ = 0;
         }
@@ -4163,7 +4172,7 @@ Status Crowdbtree::open_native_frame_iterator(const KeyRange *filter, std::uniqu
         return Status::Ok();
     }
 
-    std::lock_guard<std::mutex>     lk(write_mutex_);
+    std::scoped_lock                lk(write_mutex_);
     const uint64_t                  gc      = gc_floor_.load();
     std::function<Status(uint64_t)> prepare = [&](uint64_t page_id) -> Status {
         PageBase *head = resident(page_id);
@@ -4237,7 +4246,7 @@ Status Crowdbtree::collect_native_frames(std::vector<NativeFrame> *out, uint64_t
                                          uint64_t *out_at_slot, uint64_t *out_next_page_id, const KeyRange *filter,
                                          uint64_t *out_subtrees_skipped)
 {
-    std::lock_guard<std::mutex> lk(write_mutex_);
+    std::scoped_lock            lk(write_mutex_);
     uint64_t                    gc   = gc_floor_.load();
     const bool      can_prune        = filter != nullptr && routing_fences_trusted_.load(std::memory_order_acquire);
     const KeyRange *effective_filter = can_prune ? filter : nullptr;
@@ -4371,7 +4380,9 @@ Status Crowdbtree::collect_native_frames(std::vector<NativeFrame> *out, uint64_t
                     }
                     auto *ov = static_cast<OverflowBase *>(op);
                     out->push_back(NativeFrame{
-                        .page_id = opid, .frame = std::vector<uint8_t>(ov->frame(), ov->frame() + ov->page_bytes())});
+                        .page_id = opid,
+                        .frame   = std::vector<uint8_t>(ov->frame(), ov->frame() + ov->page_bytes()),
+                    });
                     opid = ov->next_page_id();
                 }
             }
@@ -4416,7 +4427,7 @@ Status Crowdbtree::install_snapshot_native(std::vector<NativeFrame> frames, uint
 Status Crowdbtree::install_range_snapshot_native(std::vector<NativeFrame> frames, uint64_t root_page_id,
                                                  uint64_t at_slot, uint64_t next_page_id, bool mapping_inherited)
 {
-    std::lock_guard<std::mutex> lk(write_mutex_);
+    std::scoped_lock lk(write_mutex_);
     for (const NativeFrame &frame : frames) {
         if (frame.page_id == kInvalidPageId || frame.frame.empty() ||
             !frame_validate_key_range(frame.frame.data(), static_cast<uint32_t>(frame.frame.size()), opt_.key_range)) {
@@ -4525,7 +4536,7 @@ Status Crowdbtree::install_range_snapshot_native(std::vector<NativeFrame> frames
     contiguous_slot_.store(at_slot);
     gc_floor_.store(0);
     {
-        std::lock_guard<std::mutex> sl(slot_mutex_);
+        std::scoped_lock sl(slot_mutex_);
         received_slots_.clear();
         max_seen_slot_ = at_slot;
     }
@@ -4536,7 +4547,7 @@ Status Crowdbtree::install_range_snapshot_native(std::vector<NativeFrame> frames
 
 Status Crowdbtree::clear()
 {
-    std::lock_guard<std::mutex> lk(write_mutex_);
+    std::scoped_lock lk(write_mutex_);
     // Identical wipe sequence to install_snapshot's first block (see its
     // comment for the retire=true rationale) -- clear() is exactly that
     // wipe with nothing loaded afterward.
@@ -4551,7 +4562,7 @@ Status Crowdbtree::clear()
     contiguous_slot_.store(0);
     gc_floor_.store(0);
     {
-        std::lock_guard<std::mutex> sl(slot_mutex_);
+        std::scoped_lock sl(slot_mutex_);
         received_slots_.clear();
         max_seen_slot_ = 0;
     }

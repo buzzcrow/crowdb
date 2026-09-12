@@ -152,7 +152,7 @@ TEST(CApi, ApplyBatchAtomicMultiKey)
 
     for (const auto &kv : std::vector<std::pair<std::string, std::string>>{
              {"a", "va"},
-             {"b", "vb"}
+             {"b", "vb"},
     }) {
         int32_t  found = 0;
         uint64_t slot  = 0;

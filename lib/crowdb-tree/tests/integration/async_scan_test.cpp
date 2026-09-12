@@ -64,7 +64,7 @@ std::map<std::string, std::string> unpack_entries(const ct_buf &buf, uint64_t co
     std::map<std::string, std::string> out;
     const auto                        *p       = reinterpret_cast<const uint8_t *>(buf.data);
     size_t                             pos     = 0;
-    auto                               get_u32 = [&]() {
+    auto                               get_u32 = [&] {
         uint32_t v = 0;
         for (int i = 0; i < 4; ++i) {
             v |= static_cast<uint32_t>(p[pos + i]) << (8 * i);
@@ -72,7 +72,7 @@ std::map<std::string, std::string> unpack_entries(const ct_buf &buf, uint64_t co
         pos += 4;
         return v;
     };
-    auto get_u64 = [&]() {
+    auto get_u64 = [&] {
         uint64_t v = 0;
         for (int i = 0; i < 8; ++i) {
             v |= static_cast<uint64_t>(p[pos + i]) << (8 * i);

@@ -120,7 +120,7 @@ struct CoAwait
 {
     CoState *state;
 
-    constexpr bool await_ready() const noexcept
+    [[nodiscard]] constexpr bool await_ready() const noexcept
     {
         return false;
     }
