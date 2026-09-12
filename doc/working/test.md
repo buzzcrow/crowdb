@@ -76,7 +76,7 @@ the appropriate component task.
 
 ## Suite Timing
 
-The latest Linux run was performed on 2026-09-11 by running each component
+The latest Linux run was performed on 2026-09-12 by running each component
 Pixi task independently, in table order. Latest times are wall-clock task
 times including incremental build and subprocess startup/shutdown. C++ ctest
 suites report their test count from ctest; Rust and UI suites report the
@@ -85,33 +85,33 @@ runner's test results. A timeout is recorded when the task exceeded the
 
 Status icons: ✅ = PASS (0 failures), ⚠️ = PASS with ignored tests, ❌ = TIMEOUT or failures.
 
-| Suite                  | Tests | macOS    | Linux (09-11) | Status |
+| Suite                  | Tests | macOS    | Linux (09-12) | Status |
 | ---------------------- | ----- | -------- | ------------- | ------ |
-| `test-tree-ct`         | 449   | 20.1 s   | 58.43 s       | ✅      |
-| `test-common-ct`       | 28    | —        | 0.67 s        | ✅      |
-| `test-tree-ffi`        | 31    | 13.5 s   | 1.54 s        | ✅      |
-| `test-rpc-ct`          | 65    | —        | 4.52 s        | ✅      |
-| `test-rpc-ffi`         | 15    | —        | 0.81 s        | ✅      |
-| `test-diskio-ct`       | 120   | —        | 8.15 s        | ✅      |
-| `test-common`          | 77    | 21.9 s   | 13.78 s       | ✅      |
-| `test-protocol`        | 135   | 12.2 s   | 0.50 s        | ✅      |
-| `test-kv-core`         | 572   | 43.2 s   | 57.38 s       | ✅      |
-| `test-kv-client`       | 58    | 23.4 s   | 10.72 s       | ✅      |
-| `test-chunkdb-client`  | 10    | 13.8 s   | 6.43 s        | ✅      |
-| `test-chunk-kv`        | 19    | —        | 4.34 s        | ✅      |
-| `test-chunk-stream`    | 15    | —        | 1.34 s        | ✅      |
-| `test-chunk-kv-client` | 12    | —        | 4.37 s        | ✅      |
-| `test-chunk-kv-server` | 24    | —        | 1.89 s        | ✅      |
-| `test-kv-server`       | 89    | 53.0 s   | 35.48 s       | ✅      |
-| `test-diskdb`          | 141   | 42.8 s   | 25.29 s       | ✅      |
-| `test-diskdb-client`   | 7     | 13.9 s   | 9.90 s        | ✅      |
-| `test-chunkdb`         | 102   | 27.8 s   | 22.61 s       | ✅      |
-| `test-chunk-client`    | 105   | —        | 46.31 s       | ✅      |
-| `test-diskio-client`   | 4     | —        | 8.63 s        | ✅      |
-| `test-console-shared`  | 115   | 39.2 s   | 39.41 s       | ✅      |
-| `test-console-cli`     | 15    | 69.4 s   | 18.69 s       | ✅      |
-| `test-console-server`  | 82    | 50.7 s   | 63.17 s       | ✅      |
-| `test-console-ui`      | 138   | 165.7 s  | 222.06 s      | ✅      |
+| `test-tree-ct`         | 449   | 20.1 s   | 57.20 s       | ❌      |
+| `test-common-ct`       | 28    | —        | 0.66 s        | ✅      |
+| `test-tree-ffi`        | 31    | 13.5 s   | 2.89 s        | ✅      |
+| `test-rpc-ct`          | 67    | —        | 4.32 s        | ✅      |
+| `test-rpc-ffi`         | 15    | —        | 10.43 s       | ✅      |
+| `test-diskio-ct`       | 121   | —        | 8.12 s        | ✅      |
+| `test-common`          | 77    | 21.9 s   | 20.56 s       | ✅      |
+| `test-protocol`        | 135   | 12.2 s   | 3.75 s        | ✅      |
+| `test-kv-core`         | 572   | 43.2 s   | 72.87 s       | ✅      |
+| `test-kv-client`       | 58    | 23.4 s   | 27.55 s       | ✅      |
+| `test-chunkdb-client`  | 10    | 13.8 s   | 7.65 s        | ✅      |
+| `test-chunk-kv`        | 19    | —        | 5.32 s        | ✅      |
+| `test-chunk-stream`    | 15    | —        | 1.56 s        | ✅      |
+| `test-chunk-kv-client` | 12    | —        | 0.37 s        | ✅      |
+| `test-chunk-kv-server` | 24    | —        | 6.57 s        | ✅      |
+| `test-kv-server`       | 89    | 53.0 s   | 53.94 s       | ✅      |
+| `test-diskdb`          | 141   | 42.8 s   | 36.88 s       | ✅      |
+| `test-diskdb-client`   | 7     | 13.9 s   | 25.44 s       | ❌      |
+| `test-chunkdb`         | 102   | 27.8 s   | 41.61 s       | ✅      |
+| `test-chunk-client`    | 105   | —        | 57.98 s       | ❌      |
+| `test-diskio-client`   | 4     | —        | 10.33 s       | ✅      |
+| `test-console-shared`  | 115   | 39.2 s   | 81.29 s       | ✅      |
+| `test-console-cli`     | 15    | 69.4 s   | 8.54 s        | ❌      |
+| `test-console-server`  | 82    | 50.7 s   | 79.91 s       | ✅      |
+| `test-console-ui`      | 138   | 165.7 s  | 252.99 s      | ✅      |
 
 ---
 

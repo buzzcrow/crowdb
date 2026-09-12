@@ -37,23 +37,12 @@ and transport exposed through FFI.
 
 - Repository skills live only under `.agents/skills/`; do not create legacy
   aliases or compatibility symlinks such as `.devin`.
-- Code: `/coding`; visible UI or Playwright: also `/console-ui-e2e`.
-- Test failure: `/debug-test`.
-- Documentation: `/doc`, then its matched document-type guide.
-- Backlog requirement: read its index and detail, then follow
-  `/implement-requirement` end to end.
-- Pre-push review: `/review`.
-- Design question: use `doc/doc_index.md` to select one design section.
-- Operations and user behavior: `doc/user-manual/user-guide.md`.
-
-## Benchmarks
-
-Regression sentinels live under `tools/bench-*-regression.sh`. The KV bench
-spawns `crowdb-kv-server` as a subprocess, so build both binaries first:
-`pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server`.
-
-- KV: use `crowdb-cli bench kv read|write|scan`; the matching
-  `tools/bench-kv-*-regression.sh` configures deployment and storage mode.
-- RPC: `crowdb-cli bench rpc`; sentinel `tools/bench-rpc-regression.sh`.
-- Diskdb / chunkdb: sentinels `tools/bench-diskdb-regression.sh`,
-  `tools/bench-chunkdb-regression.sh`.
+- Code changes: `/coding`; add `/console-ui-e2e` only for visible UI or
+  Playwright work.
+- Test diagnosis: `/debug-test`, or `/console-ui-e2e` for browser/UI failures.
+- Docs: one matched `/doc-*` guide; `/doc` only for general or unclear targets.
+- Requirements: `/implement-requirement`; open the detail directly and consult
+  the backlog index only for selection, ordering, or status.
+- Pre-push or explicitly requested code review: `/review`.
+- Design questions: one section selected through `doc/doc_index.md`.
+- Operations/user behavior: `doc/user-manual/user-guide.md`.

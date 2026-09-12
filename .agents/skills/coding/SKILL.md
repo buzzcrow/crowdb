@@ -1,9 +1,6 @@
 ---
 name: coding
-description: Apply CROWDB code, logging, test, and module conventions.
-triggers:
-  - user
-  - model
+description: Apply CROWDB conventions while changing production or test code; not for read-only questions or reviews.
 ---
 
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
@@ -11,9 +8,9 @@ triggers:
 
 # Coding
 
-Read `doc/doc_index.md`, select the matching design section, and keep code
-consistent with it. Update upstream design first when intent is missing or
-contradictory. Ask only when architectural choices remain equivalent.
+Inspect the touched module and its callers. Read `doc/doc_index.md` and the one
+matched design section only when the change alters documented behavior,
+crosses module boundaries, or leaves architectural intent unclear.
 
 ## Logging
 
@@ -43,45 +40,21 @@ object methods so fields propagate. Defaults remain file=`debug`, console=`info`
 
 ## Layout
 
-- Build a domain hierarchy, not a flat source directory. Keep crate/library
-  roots for entry points and top-level domain modules; place implementation
-  below the owning domain. `crowdb-kv/src/{cluster,paxos,wal}/` and
-  `crowdb-tree/src/{btree,maptable,memtable,snapshot,backend}/` are the
-  reference shape.
-- At the start of work in a crate or library, inspect its source and public
-  include roots. Classify touched files by domain owner and perform cohesive
-  moves needed to make that ownership visible; do not wait for the user to name
-  every related file. A file being public is not a reason to leave it flat.
-- Keep roots small. Root files are entry points, facades, ABI boundaries,
-  configuration, or primitives genuinely shared across domains. Move a family
-  of related algorithms, state, codecs, or services into a descriptive domain
-  folder and update every caller to the canonical path.
-- Before adding a file to a crowded directory, find its owning domain. Use an
-  existing subfolder or create a named domain module when the new concept has
-  multiple files or will grow independently. Group by product responsibility,
-  not by generic kinds such as `handlers/`, `types/`, or `utils/`.
+- Keep roots for entry points, facades, ABI boundaries, configuration, and
+  genuinely shared primitives. Put implementation under its owning product
+  domain; avoid catch-all `handlers`, `types`, and `utils` folders.
 - Use the non-`mod.rs` layout: `foo.rs` + `foo/`; `foo.rs` contains module docs,
   declarations, and deliberate re-exports. Keep internal children private
   unless callers need them.
-- For C++, mirror subsystem ownership between `include/<library>/` and `src/`
-  when an interface is public. Keep private headers beside their implementation
-  under `src/`. Use one intentional root umbrella header when useful; do not add
-  forwarding headers solely to preserve a flat include path unless compatibility
-  is an explicit requirement.
-- Prefer clear domain names over unexplained abbreviations. Use the established
-  project term exactly, such as `maptable`, `memtable`, and `snapshot`; keep the
-  same spelling across source, include, build, tests, and documentation paths.
-- When an edited area is already flat, leave it better structured if the move
-  is cohesive with the task. Do not turn a focused change into an unrelated
-  repository-wide relocation.
-- Name files by domain subject, not kind, verb, transport, or legacy wording.
-  Avoid `types.rs`, `impl.rs`, `core.rs`, `misc.rs`, and helper suffixes.
-- Keep one concept and one nameable responsibility per module. Group handlers by
-  resource, strategies by file, and services one per file.
-- Separate domain state/invariants from runtime wiring and infrastructure.
+- Mirror public C++ subsystem ownership under `include/<library>/` and `src/`;
+  keep private headers with their implementation. Avoid forwarding headers
+  unless compatibility requires them.
+- Use established domain names consistently. Keep one nameable responsibility
+  per module and separate domain invariants from runtime wiring.
+- Improve nearby layout only when cohesive with the requested change.
 - Keep code files near 300 lines; split before adding to one over 1000. Keep
   functions near 40 lines, at most 80 for orchestration; split over 150.
 - Use the narrowest visibility. Test hooks require `test-util` and `_for_tests`.
 - Do not add lint suppressions.
 
-Use `/console-ui-e2e` for visible UI changes and `/review` before handoff.
+For visible console UI or Playwright work, also apply `/console-ui-e2e`.

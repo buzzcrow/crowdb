@@ -22,6 +22,16 @@ libabseil = "*"  # lib/crowdb-tree MemTable uses absl::btree_map (plan-tree #9)
 spdlog = ">=1.17.0,<2"  # lib/crowdb-tree async file logging (plan-tree #10)
 clang-format = ">=19.0.0"
 clang-tools = "*"
+# clang-tidy (from clang-tools) needs the clang builtin resource headers
+# (stddef.h, stdarg.h, ...) under lib/clang/<ver>/include/. clang-tools ships
+# only the tools, not those headers (conda-forge/clangdev-feedstock#87), so
+# clang-tidy fails with "'stddef.h' file not found" on the conda sysroot.
+# clang-23 pulls in compiler-rt23, which installs the resource-dir headers.
+# Pinned to 23.1.0 to match the locked clang-tools; the resource dir is keyed
+# by major version (23), so any 23.1.x is compatible. This does NOT change the
+# C++ build compiler: cxx-compiler activates the conda gcc/g++, and no clang
+# activation script overrides CC/CXX, so cmake keeps using GNU.
+clang-23 = "==23.1.0"
 folly = "*"
 isa-l = "*"
 # Flatbuffer schema compiler + runtime headers for crowdb-rpc (R104) and
@@ -80,7 +90,14 @@ cargo install --locked inferno || echo "Warning: inferno install failed"
 tree-fmt = '''
 find lib/crowdb-tree/src lib/crowdb-tree/include lib/crowdb-tree/tests lib/crowdb-tree/bench lib/crowdb-common/cpp lib/crowdb-rpc/src lib/crowdb-rpc/include lib/crowdb-rpc/tests -type f \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format -i
 '''
-tree-lint = "python3 tools/ct_lint.py"
+# CPATH lets clang-tidy find the conda env headers (spdlog, gtest, folly,
+# absl, flatbuffers, zlib, isa-l, liburing, infiniband, ...) at
+# $CONDA_PREFIX/include. The conda gcc has this as a built-in default include
+# path, but clang-tidy (a separate compiler) does not, and compile_commands.json
+# does not list it explicitly because gcc finds those headers automatically.
+# clang treats CPATH entries as system includes, so warnings from third-party
+# headers are suppressed.
+tree-lint = "CPATH=$CONDA_PREFIX/include python3 tools/ct_lint.py"
 test-tree-link-isolation = "bash tools/test-tree-chunk-link-isolation.sh"
 rs-fmt = "cargo fmt --all"
 rs-lint = "cargo clippy --all-targets -- -D warnings"

@@ -1,9 +1,6 @@
 ---
 name: implement-requirement
-description: Implement a CROWDB backlog requirement through design and cleanup.
-triggers:
-  - user
-  - model
+description: Implement one CROWDB backlog requirement from its high-level design through focused verification and cleanup.
 ---
 
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
@@ -11,29 +8,32 @@ triggers:
 
 # Implement Requirement
 
-Use for an item in `doc/backlog/backlog.md`. Open its detail and matched doc
-guides before creating artifacts.
+Use for an item in `doc/backlog/backlog.md`. Its detail is the high-level
+design and testable contract; do not create a separate design draft.
 
-1. Read relevant code and indexed design; confirm the problem.
-2. Create `doc/working/design-<topic>.md` with `/doc-working-design`.
-3. Create `doc/working/plan-<topic>.md` with `/doc-working-plan`.
-4. Implement in plan order and keep the plan current.
-5. Commit code, tests, design, and plan by task; group only small related tasks.
-6. Run every affected acceptance test separately; no skips.
-7. Fold the draft into formal design with `/doc-design`; delete the draft.
-8. Delete the requirement, backlog entry, and completed plan. Commit this
-   cleanup separately.
-9. Before push, run `pixi run -- cargo fmt --all -- --check`,
-   `pixi run rs-lint`, and `pixi run test-suite`.
+1. Read the matched requirement and relevant code. Read the backlog index only
+   for selection, dependency ordering, or status; read design sections only to
+   resolve behavior or module interaction.
+2. Update a missing high-level decision with `/doc-backlog`; block only on a
+   real human choice.
+3. Create one `doc/working/plan-<topic>.md` with `/doc-working-plan`; keep all
+   file, symbol, sequencing, and test detail there.
+4. Implement in plan order, keep it current, and commit coherent tasks.
+5. Run affected acceptance tests and fmt/lint gates separately.
+6. Update permanent design only for an in-scope architecture change.
+7. Delete the completed requirement, backlog entry, and plan in a final cleanup
+   commit.
 
-Discover affected tests with `pixi task list`. Prefix server-spawning tests
-with `pixi run clean-env &&`; use it when uncertain. Step 6 runs the affected
-tasks separately; `test-suite` owns the ordered full local CI set in Step 9.
+Find tests with `pixi task list`; prefix server-spawning tests with
+`pixi run clean-env &&`. Before push run fmt and `pixi run rs-lint`.
 
 Proceed autonomously except when a design has multiple valid choices with no
 clear winner, or a test still fails after five root-cause-driven attempts.
-Then add `## Blocked` to the plan with trade-offs or the command, attempts,
-diagnosis, and exact failure; commit that state and ask the user.
+Then record the alternatives or failed command, attempts, diagnosis, and exact
+failure under plan `## Blocked`; commit that state and ask the user.
 
-This overrides ordinary commit cadence: use implementation commit(s) plus a
-separate final design/cleanup commit. Every commit passes its applicable gate.
+`Open Questions` contains only decisions requiring user input. Keep unfinished
+implementation work in the plan instead of presenting it as an open issue.
+
+This overrides ordinary commit cadence. Every commit passes its applicable
+gate.

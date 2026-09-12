@@ -1,10 +1,6 @@
 ---
 name: console-ui-e2e
-description: Build, diagnose, and optimize CROWDB console UI and Playwright E2E tests.
-subagent: true
-triggers:
-  - user
-  - model
+description: Change visible CROWDB console UI or work on its Playwright E2E tests; not for backend-only changes or general questions.
 ---
 
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
@@ -50,34 +46,9 @@ visible change; add a regression assertion for every UI bug fix.
 
 ## Diagnose
 
-- Reproduce the exact test first, then the complete affected spec. If it passes
-  alone, run the original ordered selection and inspect shared backend state,
-  reused IDs, port collisions, and leaked processes.
-- Use the retained trace, `error-context.md`, browser console errors, raw API
-  responses, and `stepTimer` output to locate the first divergence. Distinguish
-  backend mutation time from the UI's post-mutation refresh.
-- A strict-locator failure is an ambiguity bug. Scope to `main`, the named
-  sidebar, or a named dialog; do not use page-level `.first()` or `.last()`.
-- Reuse one `APIRequestContext` inside a poll or test phase. Creating and
-  disposing a context on every 100 ms poll iteration adds noise and overhead.
-- For asynchronous service cadence, poll the resulting API state. If the real
-  production interval dominates E2E time, add an explicit test-mode interval
-  at process configuration and keep production defaults unchanged.
-- Verify process lifecycle with both the API record and the OS process list.
-  A test that passes alone but fails under default concurrency usually has an
-  isolation problem, not a timeout problem; confirm by running its test file
-  serially before changing code.
-
-Useful console/KV-client signals:
-
-- `new standalone instance created`: transport was not shared.
-- `no mgmt seeds configured`: invalid empty seed set.
-- `no KV servers deployed`: cluster is not initialized.
-- `no rpc endpoint resolved` or `no group-0 endpoint found`: no usable
-  group-0 endpoint.
-- `group-0 query failed`: RPC failed and config fallback was used.
-- `topology refresh failed` or `topology discovery failed`: inspect whether
-  the seed is a store listen address or node RPC address.
+For a failing, flaky, or slow E2E test, read
+[references/diagnosis.md](references/diagnosis.md). Ordinary UI implementation
+does not need that reference.
 
 ## Run
 
@@ -88,6 +59,5 @@ pixi run bash -c 'export CROWDB_KV_SERVER_BINARY=$(pwd)/target/debug/crowdb-kv-s
   && npx playwright test --config=e2e/realBackend.config.ts e2e/flows/NN-<area>-<fn>.spec.ts'
 ```
 
-Use `pixi run test-console-ui` for the full suite. If blocked, keep the
-regression assertion and report why. Apply `/debug-test` for its generic
-first-divergence method; this skill owns Playwright-specific diagnosis.
+Use `pixi run test-console-ui` for the full suite only when requested. If
+blocked, keep the regression assertion and report why.

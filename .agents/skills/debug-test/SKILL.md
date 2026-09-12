@@ -1,10 +1,6 @@
 ---
 name: debug-test
-description: Diagnose a failing test from first divergence to root cause.
-subagent: true
-triggers:
-  - user
-  - model
+description: Diagnose a non-browser failing test from first divergence to root cause.
 ---
 
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
@@ -29,7 +25,5 @@ retries, or otherwise make only the symptom pass.
 7. Fix the earliest upstream cause. Rerun the test, affected suite, and quality
    gate. Add a regression test for a code bug.
 
-For browser or console UI tests, apply `/console-ui-e2e`; it owns Playwright
-traces, locators, browser/API divergence, shared real-backend state, and UI
-runtime analysis. During requirement work, follow `/implement-requirement`
-retry and blocking rules.
+For browser or console UI tests, use `/console-ui-e2e` instead. During active
+requirement work, its retry and blocking rules remain authoritative.

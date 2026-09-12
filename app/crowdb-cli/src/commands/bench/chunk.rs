@@ -262,6 +262,7 @@ async fn allocate(client: &ChunkdbClient, args: &ChunkdbArgs) -> crowdb_chunkdb_
             chunk_type: ChunkType::Repo as i32,
             writer_epoch: 0,
             writer_lease_ms: 0,
+            owner_key: Vec::new(),
         })
         .await
     {
