@@ -24,7 +24,9 @@ use crowdb_protocol::ServicePort;
 struct ServerHandle {
     child: Child,
     base_url: String,
-    _root: crate::test_dirs::TestDir,
+    root: crate::test_dirs::TestDir,
+    management_port: u16,
+    listen_port: u16,
 }
 
 impl ServerHandle {
@@ -48,29 +50,37 @@ impl ServerHandle {
             "server was not ready before timeout",
         ))
     }
+
+    fn crash(&mut self) {
+        terminate(&mut self.child);
+    }
 }
 
 impl Drop for ServerHandle {
     fn drop(&mut self) {
-        let pid = self.child.id();
-        let _ = std::process::Command::new("kill")
-            .arg("-TERM")
-            .arg(pid.to_string())
-            .status();
-        let start = Instant::now();
-        loop {
-            match self.child.try_wait() {
-                Ok(Some(_)) | Err(_) => break,
-                Ok(None) => {
-                    if start.elapsed() >= Duration::from_secs(2) {
-                        let _ = std::process::Command::new("kill")
-                            .arg("-KILL")
-                            .arg(pid.to_string())
-                            .status();
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
+        self.crash();
+    }
+}
+
+fn terminate(child: &mut Child) {
+    let pid = child.id();
+    let _ = std::process::Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .status();
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => break,
+            Ok(None) => {
+                if start.elapsed() >= Duration::from_secs(2) {
+                    let _ = std::process::Command::new("kill")
+                        .arg("-KILL")
+                        .arg(pid.to_string())
+                        .status();
+                    break;
                 }
+                std::thread::sleep(Duration::from_millis(10));
             }
         }
     }
@@ -81,11 +91,27 @@ pub struct KvNode {
     handle: ServerHandle,
     pub node_id: u64,
     pub replica_id: u64,
+    group_ids: Vec<u64>,
 }
 
 impl KvNode {
     pub fn base_url(&self) -> &str {
         self.handle.base_url()
+    }
+
+    async fn crash_and_restart(&mut self) -> std_io::Result<()> {
+        terminate(&mut self.handle.child);
+        let (child, base_url) = spawn_kv_process(
+            self.handle.root.path(),
+            self.node_id,
+            &self.group_ids,
+            self.replica_id,
+            self.handle.management_port,
+            self.handle.listen_port,
+        )?;
+        self.handle.child = child;
+        self.handle.base_url = base_url;
+        self.handle.wait_for_ready(Duration::from_secs(10)).await
     }
 }
 
@@ -251,6 +277,27 @@ impl KvCluster {
         }
     }
 
+    /// Crash every KV process and reopen the same stores on the same ports.
+    ///
+    /// The test data roots remain owned by the cluster, so WAL and tree state
+    /// are recovered instead of recreated.
+    pub async fn crash_and_restart(&mut self) {
+        for node in &mut self.nodes {
+            node.crash_and_restart()
+                .await
+                .unwrap_or_else(|error| panic!("restart kv node {}: {error}", node.node_id));
+        }
+        wire_topology(&self.nodes, 0).await;
+        wire_topology(&self.nodes, 1).await;
+        self.group0_leader_endpoint = leader_endpoint(&self.nodes, 0).await;
+        self.group1_leader_endpoint = leader_endpoint(&self.nodes, 1).await;
+        self.mgmt_endpoints = self
+            .nodes
+            .iter()
+            .map(|node| node.base_url().to_string())
+            .collect();
+    }
+
     /// Build a `HardwareClient` seeded with the group-0 leader endpoint.
     #[cfg(feature = "kv-client")]
     #[must_use]
@@ -302,17 +349,49 @@ async fn start_kv_node_with_groups(
     group_ids: &[u64],
     replica_id: u64,
 ) -> std_io::Result<KvNode> {
-    let group_str = group_ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
     let root = crate::test_dirs::TestDir::new("kv-node")?;
+    let mgmt_port = port_alloc::alloc_test_port(ServicePort::KvServerMgmt);
+    let listen_port = port_alloc::alloc_test_port(ServicePort::KvServerListen);
+    let (child, base_url) = spawn_kv_process(
+        root.path(),
+        node_id,
+        group_ids,
+        replica_id,
+        mgmt_port,
+        listen_port,
+    )?;
+    let handle = ServerHandle {
+        child,
+        base_url,
+        root,
+        management_port: mgmt_port,
+        listen_port,
+    };
+    handle.wait_for_ready(Duration::from_secs(10)).await?;
+    Ok(KvNode {
+        handle,
+        node_id,
+        replica_id,
+        group_ids: group_ids.to_vec(),
+    })
+}
+
+fn spawn_kv_process(
+    root: &std::path::Path,
+    node_id: u64,
+    group_ids: &[u64],
+    replica_id: u64,
+    mgmt_port: u16,
+    listen_port: u16,
+) -> std_io::Result<(Child, String)> {
+    let group_str = group_ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
     let bin = crowdb_kv_server_bin().ok_or_else(|| {
         std_io::Error::new(std_io::ErrorKind::NotFound, "crowdb-kv-server binary not found")
     })?;
-    let mgmt_port = port_alloc::alloc_test_port(ServicePort::KvServerMgmt);
-    let listen_port = port_alloc::alloc_test_port(ServicePort::KvServerListen);
     let mut cmd = Command::new(bin);
     cmd.args([
         "--root",
-        root.path().to_str().unwrap(),
+        root.to_str().unwrap(),
         "--stores",
         &node_id.to_string(),
         "--groups",
@@ -366,15 +445,5 @@ async fn start_kv_node_with_groups(
             return Err(std_io::Error::new(std_io::ErrorKind::BrokenPipe, msg));
         }
     };
-    let handle = ServerHandle {
-        child,
-        base_url: format!("http://{addr}"),
-        _root: root,
-    };
-    handle.wait_for_ready(Duration::from_secs(10)).await?;
-    Ok(KvNode {
-        handle,
-        node_id,
-        replica_id,
-    })
+    Ok((child, format!("http://{addr}")))
 }

@@ -108,7 +108,7 @@ without placing rollover metadata on the append hot path.
 
 ## Phase 7: Production Validation
 
-- [ ] **Exercise real restart ordering**: run the attributed production writer
+- [x] **Exercise real restart ordering**: run the attributed production writer
   through real KV, chunkdb, and diskio process restarts and verify authoritative
   head recovery, abandoned old-chunk isolation, and exact byte continuity.
   Files: `lib/crowdb-chunk-stream/tests/`, `lib/crowdb-test-harness/`.

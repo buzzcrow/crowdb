@@ -666,6 +666,7 @@ dependencies = [
  "crowdb-chunk-stream",
  "crowdb-kv-client",
  "crowdb-protocol",
+ "crowdb-test-harness",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
