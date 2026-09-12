@@ -3,6 +3,7 @@
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
+use std::sync::Arc;
 
 use crate::error::{check, CtError};
 use crate::{sys, PageStore};
@@ -241,7 +242,7 @@ impl Drop for ChunkTransport {
 impl PageStore {
     pub fn open_chunk(
         options: ChunkPageStoreOptions,
-        catalog: &ChunkRootCatalog,
+        catalog: Arc<ChunkRootCatalog>,
         transport: Option<&ChunkTransport>,
     ) -> Result<Self, CtError> {
         let raw = sys::ct_chunk_page_store_options {
@@ -267,6 +268,7 @@ impl PageStore {
         check(status)?;
         Ok(Self {
             ptr: NonNull::new(out).ok_or(CtError::Internal)?,
+            chunk_catalog: Some(catalog),
         })
     }
 
@@ -310,5 +312,14 @@ impl PageStore {
 
     pub fn reclaim_chunk_orphans(&self) -> u64 {
         unsafe { sys::ct_chunk_page_store_reclaim_orphans(self.ptr.as_ptr()) }
+    }
+
+    /// Reclaim catalog generations older than the supplied published
+    /// retention watermark. Non-chunk stores have no catalog generations.
+    #[must_use]
+    pub fn reclaim_chunk_generations_before(&self, tree_id: u64, generation: u64) -> u64 {
+        self.chunk_catalog
+            .as_ref()
+            .map_or(0, |catalog| catalog.reclaim_before(tree_id, generation))
     }
 }

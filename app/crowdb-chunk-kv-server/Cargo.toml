@@ -18,6 +18,7 @@ crowdb-chunk-client = { path = "../../lib/crowdb-chunk-client" }
 crowdb-chunk-stream = { path = "../../lib/crowdb-chunk-stream" }
 crowdb-kv-client = { path = "../../lib/crowdb-kv-client" }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
+crowdb-tree-ffi = { path = "../../lib/crowdb-tree/ffi", features = ["chunk-rpc"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }

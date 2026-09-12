@@ -184,7 +184,7 @@ fn reverse_scan_crosses_leaf_boundaries() {
 
 #[test]
 fn injected_chunk_store_round_trip_and_stats() {
-    let catalog = ChunkRootCatalog::open_memory(7).unwrap();
+    let catalog = Arc::new(ChunkRootCatalog::open_memory(7).unwrap());
     let store = Arc::new(
         PageStore::open_chunk(
             ChunkPageStoreOptions {
@@ -195,7 +195,7 @@ fn injected_chunk_store_round_trip_and_stats() {
                 max_concurrent_packs: 2,
                 materialization_bytes_per_pass: 4096,
             },
-            &catalog,
+            Arc::clone(&catalog),
             None,
         )
         .unwrap(),
@@ -206,7 +206,10 @@ fn injected_chunk_store_round_trip_and_stats() {
     })
     .unwrap();
     tree.apply_put(1, b"chunk-key", b"chunk-value").unwrap();
-    tree.snapshot().unwrap();
+    let published = tree.snapshot_info().unwrap();
+    assert_eq!(published.0, 1);
+    assert_eq!(tree.snapshot_state().unwrap(), published);
+    assert_eq!(tree.snapshot_state().unwrap(), published);
     assert_eq!(
         tree.get(b"chunk-key").unwrap(),
         Some((1, b"chunk-value".to_vec()))

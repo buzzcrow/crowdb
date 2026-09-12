@@ -646,6 +646,7 @@ dependencies = [
  "crowdb-chunk-stream",
  "crowdb-kv-client",
  "crowdb-protocol",
+ "crowdb-tree-ffi",
  "serde",
  "thiserror 2.0.18",
  "tokio",

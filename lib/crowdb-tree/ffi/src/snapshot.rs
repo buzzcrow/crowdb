@@ -23,6 +23,15 @@ impl Crowdbtree {
         Ok((generation, last_applied))
     }
 
+    /// Return the loaded durable generation and frontier without writing a
+    /// new snapshot.
+    pub fn snapshot_state(&self) -> Result<(u64, u64), CtError> {
+        let mut generation = 0;
+        let mut last_applied = 0;
+        check(unsafe { sys::ct_snapshot_state(self.as_ptr(), &mut generation, &mut last_applied) })?;
+        Ok((generation, last_applied))
+    }
+
     /// Run one bounded pass that replaces shared immutable backend objects
     /// with objects owned by this tree's lineage.
     pub fn materialize_ownership(&self) -> Result<(u64, bool), CtError> {

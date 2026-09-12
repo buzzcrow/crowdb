@@ -588,6 +588,12 @@ impl ChunkStream {
             .map_err(|_| StreamError::Internal("trim worker stopped".into()))?
     }
 
+    /// Returns the immutable metadata generation currently backing reads.
+    #[must_use]
+    pub fn manifest_generation(&self) -> u64 {
+        self.manifest.load().generation
+    }
+
     /// Reclaims immutable extent pages older than a caller-proven retained
     /// manifest generation.
     ///

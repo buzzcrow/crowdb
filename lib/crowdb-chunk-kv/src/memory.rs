@@ -5,9 +5,11 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use tokio::sync::Notify;
 use tokio::sync::RwLock;
 
 use crate::{MutationOperation, PartitionTree, Result, ScanEntry, ValueRevision};
@@ -18,6 +20,9 @@ pub struct MemoryPartitionTree {
     values: RwLock<BTreeMap<Vec<u8>, ValueRevision>>,
     last_applied: AtomicU64,
     fail_next_apply: AtomicBool,
+    rebuild_paused: Arc<AtomicBool>,
+    rebuild_started: Arc<Notify>,
+    rebuild_resume: Arc<Notify>,
 }
 
 impl Default for MemoryPartitionTree {
@@ -27,6 +32,9 @@ impl Default for MemoryPartitionTree {
             values: RwLock::default(),
             last_applied: AtomicU64::new(0),
             fail_next_apply: AtomicBool::new(false),
+            rebuild_paused: Arc::new(AtomicBool::new(false)),
+            rebuild_started: Arc::new(Notify::new()),
+            rebuild_resume: Arc::new(Notify::new()),
         }
     }
 }
@@ -42,6 +50,22 @@ impl MemoryPartitionTree {
 
     pub fn fail_next_apply(&self) {
         self.fail_next_apply.store(true, Ordering::Release);
+    }
+
+    pub fn pause_rebuild(&self) {
+        self.rebuild_paused.store(true, Ordering::Release);
+    }
+
+    pub async fn wait_for_rebuild(&self) {
+        let notified = self.rebuild_started.notified();
+        if self.rebuild_paused.load(Ordering::Acquire) {
+            notified.await;
+        }
+    }
+
+    pub fn resume_rebuild(&self) {
+        self.rebuild_paused.store(false, Ordering::Release);
+        self.rebuild_resume.notify_waiters();
     }
 }
 
@@ -171,8 +195,60 @@ impl PartitionTree for MemoryPartitionTree {
         Ok(())
     }
 
-    async fn checkpoint(&self) -> Result<u64> {
-        Ok(self.last_applied.load(Ordering::Acquire))
+    async fn checkpoint(&self) -> Result<(u64, u64)> {
+        let applied = self.last_applied.load(Ordering::Acquire);
+        Ok((applied, applied))
+    }
+
+    async fn checkpoint_snapshot(&self) -> Result<(u64, u64, Arc<dyn PartitionTree>)> {
+        let values = self.values.read().await.clone();
+        let applied = self.last_applied.load(Ordering::Acquire);
+        let snapshot = Self {
+            tree_id: self.tree_id,
+            values: RwLock::new(values),
+            last_applied: AtomicU64::new(applied),
+            fail_next_apply: AtomicBool::new(false),
+            rebuild_paused: Arc::clone(&self.rebuild_paused),
+            rebuild_started: Arc::clone(&self.rebuild_started),
+            rebuild_resume: Arc::clone(&self.rebuild_resume),
+        };
+        Ok((applied, applied, Arc::new(snapshot)))
+    }
+
+    async fn rebuild_range(
+        &self,
+        tree_id: u64,
+        range: &crate::PartitionRange,
+        _config: crowdb_tree_ffi::Config,
+    ) -> Result<(Arc<dyn PartitionTree>, crowdb_tree_ffi::RangeRebuildStats)> {
+        if self.rebuild_paused.load(Ordering::Acquire) {
+            self.rebuild_started.notify_one();
+            while self.rebuild_paused.load(Ordering::Acquire) {
+                self.rebuild_resume.notified().await;
+            }
+        }
+        let values = self.values.read().await;
+        let filtered = values
+            .iter()
+            .filter(|(key, _)| range.contains(key))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let stats = crowdb_tree_ffi::RangeRebuildStats {
+            entries_examined: values.len() as u64,
+            entries_emitted: filtered.len() as u64,
+            entries_filtered: values.len().saturating_sub(filtered.len()) as u64,
+            ..crowdb_tree_ffi::RangeRebuildStats::default()
+        };
+        let rebuilt = Self {
+            tree_id,
+            values: RwLock::new(filtered),
+            last_applied: AtomicU64::new(self.last_applied.load(Ordering::Acquire)),
+            fail_next_apply: AtomicBool::new(false),
+            rebuild_paused: Arc::clone(&self.rebuild_paused),
+            rebuild_started: Arc::clone(&self.rebuild_started),
+            rebuild_resume: Arc::clone(&self.rebuild_resume),
+        };
+        Ok((Arc::new(rebuilt), stats))
     }
 
     fn last_applied_seq(&self) -> u64 {

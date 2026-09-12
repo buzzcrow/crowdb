@@ -7,10 +7,12 @@
 
 mod frame;
 mod journal;
+mod split;
 mod tree;
 
 pub use frame::{decode_frame, encode_frame, DecodedFrame, FrameDecode, MAX_FRAME_BYTES};
 pub use journal::{PartitionJournal, StreamPartitionJournal};
+pub use split::{PreparedSplit, PreparedSplitChild, SplitChildTarget};
 pub use tree::{CrowdbPartitionTree, PartitionTree};
 
 use std::collections::HashMap;
@@ -37,6 +39,7 @@ pub struct PartitionConfig {
     pub max_key_bytes: usize,
     pub max_value_bytes: usize,
     pub retained_results: usize,
+    pub metadata_reclaim_pages_per_pass: usize,
 }
 
 impl Default for PartitionConfig {
@@ -49,6 +52,7 @@ impl Default for PartitionConfig {
             max_key_bytes: 64 * 1024,
             max_value_bytes: 16 * 1024 * 1024,
             retained_results: 65_536,
+            metadata_reclaim_pages_per_pass: 128,
         }
     }
 }
@@ -62,6 +66,7 @@ impl PartitionConfig {
             || self.max_key_bytes == 0
             || self.max_value_bytes == 0
             || self.retained_results == 0
+            || self.metadata_reclaim_pages_per_pass == 0
         {
             return Err(ChunkKvError::InvalidRequest(
                 "partition bounds must be nonzero".into(),
@@ -99,6 +104,14 @@ pub struct PartitionSnapshot {
     pub stream_name: StreamName,
     pub journal_durable_seq: u64,
     pub applied_seq: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CheckpointReclaim {
+    pub journal_bytes: u64,
+    pub metadata_pages: u64,
+    pub tree_bytes: u64,
+    pub orphan_bytes: u64,
 }
 
 struct MutationRequest {
@@ -278,6 +291,8 @@ impl Partition {
         config.validate()?;
         if ownership_epoch == 0
             || checkpoint.tree_id == 0
+            || checkpoint.stream_manifest_generation == 0
+            || checkpoint.stream_manifest_generation > journal.manifest_generation()
             || checkpoint.stream_name != journal.stream_name()
             || checkpoint.tree_id != tree.tree_id()
         {
@@ -365,6 +380,8 @@ impl Partition {
     ) -> Result<Self> {
         if artifact.ownership_epoch == 0
             || artifact.tree_id == 0
+            || checkpoint.stream_manifest_generation == 0
+            || checkpoint.stream_manifest_generation > journal.manifest_generation()
             || artifact.stream_name != checkpoint.stream_name
             || artifact.stream_name != journal.stream_name()
             || artifact.tree_id != checkpoint.tree_id
@@ -1123,6 +1140,7 @@ impl Partition {
     /// tree checkpoint fails.
     pub async fn checkpoint_fenced(&self, ownership_epoch: u64) -> Result<Checkpoint> {
         self.validate_epoch(ownership_epoch)?;
+        let _maintenance = self.split_transition.lock().await;
         if self.lifecycle() != PartitionLifecycle::SplitFenced
             || self.queued_requests.load(Ordering::Acquire) != 0
         {
@@ -1130,14 +1148,35 @@ impl Partition {
                 "checkpoint requires a drained mutation fence".into(),
             ));
         }
-        let applied_seq = self.applied_seq.load(Ordering::Acquire);
-        if applied_seq != self.journal_durable_seq.load(Ordering::Acquire) {
-            return Err(ChunkKvError::Internal(
-                "checkpoint frontiers are not aligned".into(),
-            ));
+        self.create_checkpoint().await
+    }
+
+    /// Publishes a recoverable checkpoint while the partition continues
+    /// serving. The replay offset is captured before the tree flush, so a
+    /// concurrent mutation can only make recovery replay an already included
+    /// record; it cannot create a WAL gap.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stale-epoch, lifecycle, tree, or frontier error.
+    pub async fn checkpoint(&self, ownership_epoch: u64) -> Result<Checkpoint> {
+        self.validate_epoch(ownership_epoch)?;
+        let _maintenance = self.split_transition.lock().await;
+        match self.lifecycle() {
+            PartitionLifecycle::Serving
+            | PartitionLifecycle::WriteStalled
+            | PartitionLifecycle::SplitFenced => self.create_checkpoint().await,
+            state => Err(read_state_error(state)),
         }
-        let tree_manifest = self.tree.checkpoint().await?;
-        if self.tree.last_applied_seq() != applied_seq {
+    }
+
+    async fn create_checkpoint(&self) -> Result<Checkpoint> {
+        let replay_offset = self.retry_replay_offset.load(Ordering::Acquire);
+        let stream_manifest_generation = self.journal.manifest_generation();
+        let (tree_manifest, applied_seq) = self.tree.checkpoint().await?;
+        if applied_seq > self.journal_durable_seq.load(Ordering::Acquire)
+            || self.tree.last_applied_seq() < applied_seq
+        {
             return Err(ChunkKvError::ApplyStateUnknown);
         }
         self.metrics.checkpoint();
@@ -1146,7 +1185,8 @@ impl Partition {
             tree_manifest,
             applied_seq,
             stream_name: self.journal.stream_name(),
-            replay_offset: self.retry_replay_offset.load(Ordering::Acquire),
+            stream_manifest_generation,
+            replay_offset,
         })
     }
 
@@ -1162,6 +1202,8 @@ impl Partition {
     ) -> Result<u64> {
         self.validate_epoch(ownership_epoch)?;
         if checkpoint.stream_name != self.journal.stream_name()
+            || checkpoint.stream_manifest_generation == 0
+            || checkpoint.stream_manifest_generation > self.journal.manifest_generation()
             || checkpoint.applied_seq > self.applied_seq.load(Ordering::Acquire)
             || checkpoint.replay_offset > self.journal.tail()
             || checkpoint.replay_offset > self.retry_replay_offset.load(Ordering::Acquire)
@@ -1171,6 +1213,51 @@ impl Partition {
             ));
         }
         self.journal.trim_prefix(checkpoint.replay_offset).await
+    }
+
+    /// Advances both durable retention watermarks after the caller has
+    /// published this exact checkpoint, then reclaims unreferenced chunk
+    /// objects left by interrupted page-store work.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale authority, a mismatched checkpoint, or a
+    /// journal/tree maintenance failure.
+    pub async fn reclaim_published_checkpoint(
+        &self,
+        ownership_epoch: u64,
+        checkpoint: &Checkpoint,
+    ) -> Result<CheckpointReclaim> {
+        let journal_bytes = self
+            .trim_published_checkpoint(ownership_epoch, checkpoint)
+            .await?;
+        let metadata_pages = self
+            .journal
+            .reclaim_metadata_before(
+                checkpoint.stream_manifest_generation,
+                self.config.metadata_reclaim_pages_per_pass,
+            )
+            .await?;
+        let tree_bytes = self.tree.reclaim_before(checkpoint.tree_manifest)?;
+        let orphan_bytes = self.tree.reclaim_orphans()?;
+        self.metrics
+            .reclaim(journal_bytes, metadata_pages, tree_bytes, orphan_bytes);
+        Ok(CheckpointReclaim {
+            journal_bytes,
+            metadata_pages,
+            tree_bytes,
+            orphan_bytes,
+        })
+    }
+
+    /// Returns native chunk page-store counters when this partition uses the
+    /// R140 backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed storage error if the native counters are unavailable.
+    pub fn chunk_storage_stats(&self) -> Result<Option<crowdb_tree_ffi::ChunkPageStoreStats>> {
+        self.tree.chunk_stats()
     }
 
     fn validate_epoch(&self, ownership_epoch: u64) -> Result<()> {

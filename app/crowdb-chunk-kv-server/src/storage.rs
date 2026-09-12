@@ -8,6 +8,10 @@ use std::sync::Arc;
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
 use crowdb_chunk_stream::{ChunkStream, ProductionStreamRuntime, StreamConfig, StreamName};
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_tree_ffi::{
+    ChunkPageStoreOptions, ChunkRootCatalog, ChunkTransport, OwnedChunkRpcDiskRoute,
+    OwnedChunkRpcTransportOptions, PageStore,
+};
 use thiserror::Error;
 
 use crate::ChunkKvServerConfig;
@@ -18,6 +22,8 @@ pub enum StorageRuntimeError {
     ChunkIo(String),
     #[error("failed to configure chunk stream: {0}")]
     Stream(String),
+    #[error("failed to configure native tree storage: {0}")]
+    Tree(String),
 }
 
 /// Process-wide production clients shared by every hosted partition stream.
@@ -25,6 +31,7 @@ pub struct ChunkKvStorage {
     kv: Arc<CrowdbKvClient>,
     chunk_io: ChunkIoClient,
     streams: Arc<ProductionStreamRuntime>,
+    tree_transport: Arc<ChunkTransport>,
     metadata_store_id: u64,
 }
 
@@ -56,6 +63,7 @@ impl ChunkKvStorage {
             config.storage.metadata_store_id,
             config.storage.stream_writer_lease_ms,
         )
+        .await
     }
 
     /// Assembles production adapters from already connected process clients.
@@ -63,7 +71,7 @@ impl ChunkKvStorage {
     /// # Errors
     ///
     /// Returns an error for an invalid metadata store, lease, or read policy.
-    pub fn from_parts(
+    pub async fn from_parts(
         kv: Arc<CrowdbKvClient>,
         chunk_io: ChunkIoClient,
         metadata_store_id: u64,
@@ -84,10 +92,33 @@ impl ChunkKvStorage {
             )
             .map_err(|error| StorageRuntimeError::Stream(error.to_string()))?,
         );
+        let (chunkdb, disks) = chunk_io
+            .native_storage_routes()
+            .await
+            .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?;
+        let disk_routes = disks
+            .into_iter()
+            .map(|(disk_id, route)| OwnedChunkRpcDiskRoute {
+                disk_id_high: disk_id.high,
+                disk_id_low: disk_id.low,
+                route,
+            })
+            .collect();
+        let tree_transport = Arc::new(
+            ChunkTransport::open_owned_rpc(OwnedChunkRpcTransportOptions {
+                chunkdb,
+                disk_routes,
+                writer_lease_ms,
+                rpc_timeout_ms: writer_lease_ms,
+                completion_capacity: 1_024,
+            })
+            .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?,
+        );
         Ok(Self {
             kv,
             chunk_io,
             streams,
+            tree_transport,
             metadata_store_id,
         })
     }
@@ -105,6 +136,23 @@ impl ChunkKvStorage {
     #[must_use]
     pub fn streams(&self) -> &Arc<ProductionStreamRuntime> {
         &self.streams
+    }
+
+    /// Open the R140 page store with the process-owned native RPC transport.
+    /// The supplied catalog determines durable generation publication and
+    /// ownership fencing for this tree identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid native page-store or transport error.
+    pub fn open_tree_page_store(
+        &self,
+        options: ChunkPageStoreOptions,
+        catalog: Arc<ChunkRootCatalog>,
+    ) -> Result<Arc<PageStore>, StorageRuntimeError> {
+        PageStore::open_chunk(options, catalog, Some(&self.tree_transport))
+            .map(Arc::new)
+            .map_err(|error| StorageRuntimeError::Tree(error.to_string()))
     }
 
     /// Initializes the stream selected by an Active catalog binding.

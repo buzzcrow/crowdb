@@ -15,8 +15,10 @@ pub trait PartitionJournal: Send + Sync {
         Ok(())
     }
     async fn trim_prefix(&self, offset: u64) -> Result<u64>;
+    async fn reclaim_metadata_before(&self, generation: u64, max_pages: usize) -> Result<u64>;
     async fn close(&self) -> Result<()>;
     fn stream_name(&self) -> StreamName;
+    fn manifest_generation(&self) -> u64;
     fn tail(&self) -> u64;
 }
 
@@ -93,6 +95,13 @@ impl PartitionJournal for StreamPartitionJournal {
         self.stream.trim_prefix(offset).await.map_err(map_stream_error)
     }
 
+    async fn reclaim_metadata_before(&self, generation: u64, max_pages: usize) -> Result<u64> {
+        self.stream
+            .reclaim_metadata_before(generation, max_pages)
+            .await
+            .map_err(map_stream_error)
+    }
+
     async fn validate_frame_source(&self, offset: u64, length: usize, chunk_id: ChunkId) -> Result<()> {
         let segments = self
             .stream
@@ -113,6 +122,10 @@ impl PartitionJournal for StreamPartitionJournal {
 
     fn stream_name(&self) -> StreamName {
         self.stream_name
+    }
+
+    fn manifest_generation(&self) -> u64 {
+        self.stream.manifest_generation()
     }
 
     fn tail(&self) -> u64 {

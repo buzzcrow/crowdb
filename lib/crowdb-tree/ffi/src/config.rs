@@ -12,6 +12,7 @@ use crate::sys;
 /// dropped immediately after `Crowdbtree::open` returns.
 pub struct PageStore {
     pub(crate) ptr: NonNull<sys::ct_page_store>,
+    pub(crate) chunk_catalog: Option<Arc<crate::ChunkRootCatalog>>,
 }
 
 impl PageStore {
@@ -23,11 +24,17 @@ impl PageStore {
         check(unsafe { sys::ct_page_store_open_mem(iu_size, &mut out) })?;
         Ok(Self {
             ptr: NonNull::new(out).ok_or(CtError::Internal)?,
+            chunk_catalog: None,
         })
     }
 
     pub(crate) fn as_ptr(&self) -> *mut sys::ct_page_store {
         self.ptr.as_ptr()
+    }
+
+    #[must_use]
+    pub fn is_chunk_backed(&self) -> bool {
+        self.chunk_catalog.is_some()
     }
 }
 

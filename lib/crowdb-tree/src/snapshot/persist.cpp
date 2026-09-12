@@ -811,9 +811,9 @@ Status Crowdbtree::prepare_snapshot_segment_locked(SnapshotPrepareContext &ctx, 
         }
     }
 
-    uint64_t             seen_write_seq = segment->write_seq.load(std::memory_order_relaxed);
-    uint64_t             generation     = segment->generation.load(std::memory_order_relaxed) + 1;
-    SegmentImageHeader   header{
+    uint64_t           seen_write_seq = segment->write_seq.load(std::memory_order_relaxed);
+    uint64_t           generation     = segment->generation.load(std::memory_order_relaxed) + 1;
+    SegmentImageHeader header{
         .seg_idx    = static_cast<uint32_t>(seg_idx),
         .generation = generation,
         .slot_count = segment->slot_count,
@@ -944,6 +944,7 @@ void Crowdbtree::commit_prepared_snapshot(const PreparedSnapshot &prepared)
         }
     }
     version_.fetch_add(1);
+    last_applied_slot_.store(prepared.last_applied_slot, std::memory_order_release);
     snapshot_total_.fetch_add(1, std::memory_order_relaxed);
     CRB_LOG_INFO("[{}] snapshot committed: seq={} last_applied={} live_pages={} written={} segdir_len={}", name_,
                  prepared.seq, prepared.last_applied_slot, prepared.live_page_count, prepared.pages_written,
@@ -1005,8 +1006,8 @@ Status Crowdbtree::materialize_ownership(uint64_t *bytes_written, bool *complete
         bool             needs_snapshot   = false;
         uint64_t         pruned_version   = std::numeric_limits<uint64_t>::max();
         {
-            std::scoped_lock            lock(write_mutex_);
-            const uint64_t              current_version = version_.load();
+            std::scoped_lock lock(write_mutex_);
+            const uint64_t   current_version = version_.load();
             if (mapping_pruned_version_ == current_version) {
                 mapping_ready = true;
             }
@@ -1166,8 +1167,8 @@ Status Crowdbtree::snapshot(uint64_t *out_last_applied, uint64_t *out_snapshot_s
     PreparedSnapshot prepared;
     Status           ps;
     {
-        auto                        apply_t0 = std::chrono::steady_clock::now();
-        std::scoped_lock            lk(write_mutex_);
+        auto             apply_t0 = std::chrono::steady_clock::now();
+        std::scoped_lock lk(write_mutex_);
         ps = prepare_snapshot_locked(&prepared);
         if (metrics_.snapshot_apply_l != nullptr) {
             auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - apply_t0)

@@ -189,6 +189,7 @@ pub struct Checkpoint {
     pub tree_manifest: u64,
     pub applied_seq: u64,
     pub stream_name: StreamName,
+    pub stream_manifest_generation: u64,
     pub replay_offset: u64,
 }
 
