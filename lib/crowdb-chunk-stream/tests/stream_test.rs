@@ -161,6 +161,9 @@ async fn queued_requests_aggregate_after_an_inflight_batch() {
         }));
         tokio::task::yield_now().await;
     }
+    let queued = stream.metrics();
+    assert_eq!(queued.max_queued_requests, 4);
+    assert_eq!(queued.max_queued_bytes, 4);
     store.resume_writes();
 
     let first = first.await.unwrap().unwrap();
@@ -180,6 +183,27 @@ async fn queued_requests_aggregate_after_an_inflight_batch() {
     assert_eq!(store.chunk_write_count(), 2);
     assert_eq!(store.cursor_advance_count(), 2);
     assert_eq!(stream.read_at(0, 4).await.unwrap(), Bytes::from_static(b"abcd"));
+}
+
+#[tokio::test]
+async fn extent_pages_are_cached_across_independent_reads() {
+    let store = Arc::new(MemoryStreamStore::new(2));
+    let stream = create_stream(&store, 2, StreamConfig::default()).await;
+    for bytes in [b"ab", b"cd", b"ef"] {
+        stream.append(&[Bytes::copy_from_slice(bytes)]).await.unwrap();
+    }
+
+    let loads = store.extent_page_load_count();
+    assert_eq!(stream.read_at(0, 1).await.unwrap(), Bytes::from_static(b"a"));
+    assert_eq!(store.extent_page_load_count(), loads + 1);
+    assert_eq!(stream.read_at(1, 1).await.unwrap(), Bytes::from_static(b"b"));
+    assert_eq!(store.extent_page_load_count(), loads + 1);
+
+    let metrics = stream.metrics();
+    assert_eq!(metrics.extent_page_cache_misses, 1);
+    assert_eq!(metrics.extent_page_cache_hits, 1);
+    assert_eq!(metrics.physical_read_requests, 2);
+    assert_eq!(metrics.metadata_publications, 3);
 }
 
 #[tokio::test]

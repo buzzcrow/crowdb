@@ -4,6 +4,7 @@
 //! Fenced, mirrored logical byte streams assembled from finite chunks.
 
 mod error;
+mod extent_cache;
 mod kv;
 mod metadata;
 mod metrics;

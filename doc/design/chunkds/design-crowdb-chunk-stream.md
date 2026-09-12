@@ -179,6 +179,10 @@ window; delivery remains in logical order. The default retained window is 8
 MiB and at most eight physical reads from that window run concurrently.
 Independent readers may run concurrently. Each physical read has an observation
 watchdog that never cancels or retries the underlying future.
+A stream handle keeps the current manifest generation's extent pages in an
+`ArcSwap` snapshot. Reads hit the immutable snapshot without a lock; a miss
+publishes a copy-on-write snapshot, and an older reader cannot replace a newer
+generation. The cache therefore remains bounded by one manifest generation.
 A provenance-aware reader also yields each logical segment's physical chunk
 identity. A journal compares that identity with its frame trailer. The durable
 acknowledged cursor remains the read and recovery upper bound; identity
@@ -213,7 +217,9 @@ nonzero.
 
 Lock-free counters report submitted/completed/failed requests, logical and
 three-mirror physical bytes, batch/request counts, rollovers, read bytes,
-reclaimed bytes, and watchdog observations. Append and read watchdogs log the
+reclaimed bytes, queue high-water marks, metadata publications, extent-page
+cache hits/misses, physical-read amplification, and watchdog observations.
+Append and read watchdogs log the
 stream identity, epoch, logical range or offset, operation age, queue age,
 batch size, and stage at every interval while retaining the original future as
 the sole completion owner.

@@ -1,7 +1,6 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,6 +13,7 @@ use crowdb_protocol::chunk_stream::{
 use crowdb_protocol::common::ChunkId;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::extent_cache::ExtentPageCache;
 use crate::metadata::{resolve_extent, validate_manifest};
 use crate::metrics::{StreamMetrics, StreamMetricsSnapshot};
 use crate::storage::{CursorAdvance, StreamChunkStore, StreamMetadataStore, StreamRegistry};
@@ -140,6 +140,7 @@ pub struct ChunkStream {
     manifest: Arc<ArcSwap<StreamManifest>>,
     closed: Arc<AtomicBool>,
     metrics: Arc<StreamMetrics>,
+    extent_cache: Arc<ExtentPageCache>,
 }
 
 #[derive(Clone)]
@@ -260,7 +261,7 @@ impl ChunkStream {
             closed: false,
         };
         metadata.publish(None, manifest.clone(), Vec::new()).await?;
-        Self::start(config, metadata, chunks, manifest, Vec::new())
+        Self::start(config, metadata, chunks, manifest, Vec::new(), &[])
     }
 
     /// Opens an existing stream and recovers its durable active cursor.
@@ -352,7 +353,7 @@ impl ChunkStream {
                 .publish(Some(expected), manifest.clone(), adopted_pages)
                 .await?;
         }
-        let stream = Self::start(config, metadata, chunks, manifest, extents)?;
+        let stream = Self::start(config, metadata, chunks, manifest, extents, &pages)?;
         stream.tail.store(tail, Ordering::Release);
         Ok(stream)
     }
@@ -363,6 +364,7 @@ impl ChunkStream {
         chunks: Arc<dyn StreamChunkStore>,
         manifest: StreamManifest,
         extents: Vec<Extent>,
+        pages: &[StreamExtentPage],
     ) -> Result<Self> {
         let (sender, receiver) = mpsc::channel(config.queue_requests);
         let config = Arc::new(config);
@@ -372,6 +374,7 @@ impl ChunkStream {
         let manifest_view = Arc::new(ArcSwap::from_pointee(manifest.clone()));
         let closed = Arc::new(AtomicBool::new(manifest.closed));
         let metrics = Arc::new(StreamMetrics::default());
+        let extent_cache = Arc::new(ExtentPageCache::new(&manifest, pages));
         let state = WorkerState {
             stream_name: manifest.stream_name,
             writer_epoch: manifest.writer_epoch,
@@ -402,6 +405,7 @@ impl ChunkStream {
             manifest: manifest_view,
             closed,
             metrics,
+            extent_cache,
         })
     }
 
@@ -444,6 +448,7 @@ impl ChunkStream {
             self.queued_requests.fetch_sub(1, Ordering::AcqRel);
             return Err(error);
         }
+        self.record_queue_high_watermarks();
         self.metrics.submitted.fetch_add(1, Ordering::Relaxed);
         let mut data = BytesMut::with_capacity(length);
         for bytes in buffers {
@@ -544,6 +549,7 @@ impl ChunkStream {
             self.queued_requests.fetch_sub(1, Ordering::AcqRel);
             return Err(error);
         }
+        self.record_queue_high_watermarks();
         let (completion, result) = oneshot::channel();
         if self
             .sender
@@ -647,7 +653,6 @@ impl ChunkStream {
                 "read is outside retained durable range".into(),
             ));
         }
-        let mut pages = HashMap::new();
         let mut cursor = offset;
         let mut reads = Vec::new();
         while cursor < end {
@@ -674,34 +679,8 @@ impl ChunkStream {
             }
             let fence_index = find_extent_fence(&manifest, cursor)?;
             let fence = &manifest.extent_pages[fence_index];
-            if let std::collections::hash_map::Entry::Vacant(entry) = pages.entry(fence.page_index) {
-                let page = self
-                    .metadata
-                    .load_extent_page(
-                        manifest.stream_name,
-                        manifest.writer_epoch,
-                        manifest.generation,
-                        fence.page_index,
-                    )
-                    .await?
-                    .ok_or_else(|| StreamError::Corruption("referenced extent page is missing".into()))?;
-                if page.stream_name != manifest.stream_name
-                    || page.writer_epoch != manifest.writer_epoch
-                    || page.generation != manifest.generation
-                    || page.page_index != fence.page_index
-                    || page.logical_offsets.first() != Some(&fence.first_logical)
-                    || page.logical_offsets.last() != Some(&fence.end_logical)
-                {
-                    return Err(StreamError::Corruption(
-                        "extent page fence or identity mismatch".into(),
-                    ));
-                }
-                entry.insert(page);
-            }
-            let page = pages
-                .get(&fence.page_index)
-                .ok_or_else(|| StreamError::Internal("loaded extent page is absent".into()))?;
-            let location = resolve_extent(page, cursor)?;
+            let page = self.load_extent_page(&manifest, fence).await?;
+            let location = resolve_extent(&page, cursor)?;
             let read_len = usize::try_from(location.available.min(end - cursor))
                 .map_err(|_| StreamError::InvalidRequest("read length exceeds addressable range".into()))?;
             reads.push(PhysicalRead {
@@ -728,6 +707,9 @@ impl ChunkStream {
     }
 
     async fn read_physical_ranges(&self, reads: &[PhysicalRead]) -> Result<Vec<ReadSegment>> {
+        self.metrics
+            .physical_read_requests
+            .fetch_add(reads.len() as u64, Ordering::Relaxed);
         let mut output = vec![None; reads.len()];
         let mut tasks = tokio::task::JoinSet::new();
         let mut next = 0_usize;
@@ -816,6 +798,47 @@ impl ChunkStream {
     #[must_use]
     pub fn metrics(&self) -> StreamMetricsSnapshot {
         self.metrics.snapshot()
+    }
+
+    fn record_queue_high_watermarks(&self) {
+        self.metrics.max_queued_requests.fetch_max(
+            self.queued_requests.load(Ordering::Acquire) as u64,
+            Ordering::Relaxed,
+        );
+        self.metrics
+            .max_queued_bytes
+            .fetch_max(self.queued_bytes.load(Ordering::Acquire), Ordering::Relaxed);
+    }
+
+    async fn load_extent_page(
+        &self,
+        manifest: &StreamManifest,
+        fence: &StreamExtentPageFence,
+    ) -> Result<Arc<StreamExtentPage>> {
+        if let Some(page) =
+            self.extent_cache
+                .get(manifest.writer_epoch, manifest.generation, fence.page_index)
+        {
+            self.metrics
+                .extent_page_cache_hits
+                .fetch_add(1, Ordering::Relaxed);
+            return Ok(page);
+        }
+        self.metrics
+            .extent_page_cache_misses
+            .fetch_add(1, Ordering::Relaxed);
+        let page = self
+            .metadata
+            .load_extent_page(
+                manifest.stream_name,
+                manifest.writer_epoch,
+                manifest.generation,
+                fence.page_index,
+            )
+            .await?
+            .ok_or_else(|| StreamError::Corruption("referenced extent page is missing".into()))?;
+        validate_page_fence(manifest, fence, &page)?;
+        Ok(self.extent_cache.insert(page))
     }
 
     async fn read_chunk_with_watchdog(
@@ -1355,6 +1378,10 @@ async fn publish_state(state: &mut WorkerState) -> Result<()> {
         state.stalled = true;
         return Err(error);
     }
+    state
+        .metrics
+        .metadata_publications
+        .fetch_add(1, Ordering::Relaxed);
     state.manifest_view.store(Arc::new(state.manifest.clone()));
     Ok(())
 }
@@ -1451,6 +1478,25 @@ fn find_extent_fence(manifest: &StreamManifest, offset: u64) -> Result<usize> {
         ));
     }
     Ok(index)
+}
+
+fn validate_page_fence(
+    manifest: &StreamManifest,
+    fence: &StreamExtentPageFence,
+    page: &StreamExtentPage,
+) -> Result<()> {
+    if page.stream_name != manifest.stream_name
+        || page.writer_epoch != manifest.writer_epoch
+        || page.generation != manifest.generation
+        || page.page_index != fence.page_index
+        || page.logical_offsets.first() != Some(&fence.first_logical)
+        || page.logical_offsets.last() != Some(&fence.end_logical)
+    {
+        return Err(StreamError::Corruption(
+            "extent page fence or identity mismatch".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn fits_active(state: &WorkerState, bytes: usize) -> bool {

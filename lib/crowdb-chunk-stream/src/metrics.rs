@@ -17,6 +17,12 @@ pub struct StreamMetrics {
     pub(crate) rollovers: AtomicU64,
     pub(crate) read_bytes: AtomicU64,
     pub(crate) reclaimed_bytes: AtomicU64,
+    pub(crate) max_queued_requests: AtomicU64,
+    pub(crate) max_queued_bytes: AtomicU64,
+    pub(crate) metadata_publications: AtomicU64,
+    pub(crate) extent_page_cache_hits: AtomicU64,
+    pub(crate) extent_page_cache_misses: AtomicU64,
+    pub(crate) physical_read_requests: AtomicU64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -32,6 +38,12 @@ pub struct StreamMetricsSnapshot {
     pub rollovers: u64,
     pub read_bytes: u64,
     pub reclaimed_bytes: u64,
+    pub max_queued_requests: u64,
+    pub max_queued_bytes: u64,
+    pub metadata_publications: u64,
+    pub extent_page_cache_hits: u64,
+    pub extent_page_cache_misses: u64,
+    pub physical_read_requests: u64,
 }
 
 impl StreamMetrics {
@@ -49,6 +61,12 @@ impl StreamMetrics {
             rollovers: self.rollovers.load(Ordering::Relaxed),
             read_bytes: self.read_bytes.load(Ordering::Relaxed),
             reclaimed_bytes: self.reclaimed_bytes.load(Ordering::Relaxed),
+            max_queued_requests: self.max_queued_requests.load(Ordering::Relaxed),
+            max_queued_bytes: self.max_queued_bytes.load(Ordering::Relaxed),
+            metadata_publications: self.metadata_publications.load(Ordering::Relaxed),
+            extent_page_cache_hits: self.extent_page_cache_hits.load(Ordering::Relaxed),
+            extent_page_cache_misses: self.extent_page_cache_misses.load(Ordering::Relaxed),
+            physical_read_requests: self.physical_read_requests.load(Ordering::Relaxed),
         }
     }
 }
