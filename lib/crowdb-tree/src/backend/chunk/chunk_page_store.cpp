@@ -1286,7 +1286,7 @@ Status ChunkPageStore::persist_reference_segments(ChunkManifest *manifest, const
     for (size_t first = 0; first < manifest->packs.size(); first += kReferencesPerSegment) {
         const size_t end = std::min(first + kReferencesPerSegment, manifest->packs.size());
         if (reuse_base != nullptr && first / kReferencesPerSegment < reuse_base->reference_segments.size()) {
-            const ChunkReferenceSegment &candidate = reuse_base->reference_segments[first / kReferencesPerSegment];
+            const ChunkReferenceSegment &candidate    = reuse_base->reference_segments[first / kReferencesPerSegment];
             const auto                   first_offset = static_cast<std::vector<ChunkPagePack>::difference_type>(first);
             const auto                   end_offset   = static_cast<std::vector<ChunkPagePack>::difference_type>(end);
             const bool                   same =

@@ -398,6 +398,12 @@ pub async fn free_block(
         || busy.unit_count != segment.unit_count
         || busy.owner_chunk != segment.owner_chunk
     {
+        // A newer busy incarnation means the block was already freed,
+        // compacted, and reallocated. The original free succeeded; a
+        // delayed retry is idempotent and must not touch the new owner.
+        if busy.allocation_ts > segment.allocation_ts {
+            return Ok(());
+        }
         return Err(FreeError::IncarnationMismatch);
     }
     kv.free_busy_cas(

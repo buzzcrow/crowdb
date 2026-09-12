@@ -22,7 +22,7 @@ whose ordered journal is R141 and whose durable tree is R140.
   `lib/crowdb-chunk-kv/tests/`.
 - [x] Add private journal and tree contracts plus in-memory `test-util`
   implementations; do not expose a raw R141 stream from the partition API.
-- [~] Add production adapters for R140 native tree construction and the R141
+- [x] Add production adapters for R140 native tree construction and the R141
   stream registry, metadata store, and chunk store. Checkpoints and catalog
   artifacts carry an explicit tree ID. Export lifetime-safe ChunkDB/DiskIO RPC
   routes, assemble the native chunk transport, and persist the root catalog
@@ -68,16 +68,16 @@ whose ordered journal is R141 and whose durable tree is R140.
 - [x] Open assigned children as non-serving `Prepared` handles and activate
   them only after exact catalog proof. Files: `lib/crowdb-chunk-kv/src/`,
   `lib/crowdb-chunk-kv/tests/`.
-- [~] Resolve exact commit/abort proofs fail-closed; bounded post-commit
+- [x] Resolve exact commit/abort proofs fail-closed; bounded post-commit
   materialization/repack remains production adapter work.
 
 ## Phase 5: Gates and Documentation
 
 - [~] Run C++ format/lint/tree tests, Rust format/lint, stream/chunk-KV tests,
-  and the server gate through `pixi run`. C++ build/format, affected C++ tests,
-  Rust format/clippy, and the complete chunk-KV target suite pass. The user
-  already completed the full suite and tree-lint run; rerun the final focused
-  gates after the durable catalog and benchmark land.
+  and the server gate through `pixi run`. C++ build/format and the serial
+  runnable tree suite (568/568) pass; the focused chunk-KV suite (28/28) and
+  Rust format check pass. Remaining gates are the standalone tree lint, tree
+  FFI tests, Rust clippy, chunk-stream tests, and the server gate.
 - [ ] Measure queue, replay, split-fence, latency, and memory behavior on target
   hardware and commit evidence-backed defaults. Files:
   `lib/crowdb-chunk-kv/`, `tools/`.

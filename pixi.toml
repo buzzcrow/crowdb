@@ -73,7 +73,7 @@ rdma-core = "*"
 # C++ libraries only (crowdb-tree, crowdb-rpc, crowdb-diskio). Needed by C++
 # ctest tasks. Rust FFI crates compile their own C++ via cc::Build in
 # build.rs, so Rust tests do NOT depend on this.
-build-cpp = { cmd = "cmake -S lib/crowdb-tree -B lib/crowdb-tree/build -DCMAKE_BUILD_TYPE=Release && cmake --build lib/crowdb-tree/build -j && cmake -S lib/crowdb-rpc -B lib/crowdb-rpc/build -DCMAKE_BUILD_TYPE=Release && cmake --build lib/crowdb-rpc/build -j && cmake -S app/crowdb-diskio -B app/crowdb-diskio/build -DCMAKE_BUILD_TYPE=Release && cmake --build app/crowdb-diskio/build -j" }
+build-cpp = { cmd = "cmake -S lib/crowdb-tree -B lib/crowdb-tree/build -DCMAKE_BUILD_TYPE=Release && cmake --build lib/crowdb-tree/build -j && cmake --build lib/crowdb-tree/build -j --target crowdb_rpc_tests && cmake -S lib/crowdb-rpc -B lib/crowdb-rpc/build -DCMAKE_BUILD_TYPE=Release && cmake --build lib/crowdb-rpc/build -j && cmake -S app/crowdb-diskio -B app/crowdb-diskio/build -DCMAKE_BUILD_TYPE=Release && cmake --build app/crowdb-diskio/build -j" }
 # npm deps only (for UI tests and ts-lint). Separated from install-deps
 # so test-console-ui doesn't trigger cargo installs of profiling tools.
 install-ui-deps = "test -d app/crowdb-web/ui/node_modules || (cd app/crowdb-web/ui && npm ci)"
@@ -189,7 +189,7 @@ pixi run test-chunk-kv-server
 # ── ServerTests job: spawns crowdb-kv-server / crowdb-diskdb / crowdb-diskio ──
 test-kv-server = { cmd = "cargo test -p crowdb-kv-server --all-targets" }
 test-diskdb = { cmd = "cargo test -p crowdb-diskdb --all-targets" }
-test-diskdb-client = { cmd = "cargo test -p crowdb-diskdb-client --all-targets" }
+test-diskdb-client = { cmd = "cargo build -p crowdb-kv-server -p crowdb-diskdb && cargo test -p crowdb-diskdb-client --all-targets" }
 test-chunkdb = { cmd = "cargo test -p crowdb-chunkdb --all-targets" }
 test-chunk-client = { cmd = "cargo test -p crowdb-chunk-client --all-targets" }
 test-diskio-client = { cmd = "cargo test -p crowdb-diskio-client --all-targets" }
@@ -289,7 +289,7 @@ echo "[clean] log dirs"
 rm -rf log cli-log app/crowdb-kv-server/log app/crowdb-diskdb/log app/crowdb-chunkdb/log \
   app/crowdb-cli/log lib/crowdb-console-shared/log app/crowdb-web/log \
   app/crowdb-web/ui/e2e/log \
-  lib/crowdb-chunk-client/log lib/crowdb-diskdb-client/log lib/crowdb-diskio-client/log
+  lib/crowdb-chunk-client/log lib/crowdb-chunk-stream/log lib/crowdb-diskdb-client/log lib/crowdb-diskio-client/log
 
 # ── Profiling artifacts ──
 echo "[clean] profiling artifacts"

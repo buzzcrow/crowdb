@@ -87,7 +87,7 @@ Status icons: ✅ = PASS (0 failures), ⚠️ = PASS with ignored tests, ❌ = T
 
 | Suite                  | Tests | macOS    | Linux (09-12) | Status |
 | ---------------------- | ----- | -------- | ------------- | ------ |
-| `test-tree-ct`         | 449   | 20.1 s   | 57.20 s       | ❌      |
+| `test-tree-ct`         | 568   | 20.1 s   | 52.75 s       | ✅      |
 | `test-common-ct`       | 28    | —        | 0.66 s        | ✅      |
 | `test-tree-ffi`        | 31    | 13.5 s   | 2.89 s        | ✅      |
 | `test-rpc-ct`          | 67    | —        | 4.32 s        | ✅      |
@@ -104,12 +104,12 @@ Status icons: ✅ = PASS (0 failures), ⚠️ = PASS with ignored tests, ❌ = T
 | `test-chunk-kv-server` | 24    | —        | 6.57 s        | ✅      |
 | `test-kv-server`       | 89    | 53.0 s   | 53.94 s       | ✅      |
 | `test-diskdb`          | 141   | 42.8 s   | 36.88 s       | ✅      |
-| `test-diskdb-client`   | 7     | 13.9 s   | 25.44 s       | ❌      |
+| `test-diskdb-client`   | 7     | 13.9 s   | 25.44 s       | ✅      |
 | `test-chunkdb`         | 102   | 27.8 s   | 41.61 s       | ✅      |
-| `test-chunk-client`    | 105   | —        | 57.98 s       | ❌      |
+| `test-chunk-client`    | 105   | —        | 57.98 s       | ✅      |
 | `test-diskio-client`   | 4     | —        | 10.33 s       | ✅      |
 | `test-console-shared`  | 115   | 39.2 s   | 81.29 s       | ✅      |
-| `test-console-cli`     | 15    | 69.4 s   | 8.54 s        | ❌      |
+| `test-console-cli`     | 15    | 69.4 s   | 8.54 s        | ✅      |
 | `test-console-server`  | 82    | 50.7 s   | 79.91 s       | ✅      |
 | `test-console-ui`      | 138   | 165.7 s  | 252.99 s      | ✅      |
 

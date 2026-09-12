@@ -55,11 +55,11 @@ client, and physical chunk maintenance.
   manifest-fenced reclaim candidates. Repack mixed live strips, then use an
   idempotent generic in-chunk operation to release whole unreachable strips or
   chunks without racing retained manifests, snapshot pins, or layout readers.
-- **[R148](R148-chunk-stream-scale-out.md)** — chunk-stream metadata scale-out
-  and sealed-chunk EC — Area: chunk-stream / KV / chunkdb — Add fenced metadata
-  group migration, optional per-stream extent-index sharding, and background
-  conversion of sealed mirror chunks to EC. All three remain disabled by
-  default until the R141/R143 production baseline is measured.
+- **[R148](R148-chunk-stream-scale-out.md)** — partition metadata scale-out and
+  sealed-chunk EC — Area: chunk-stream / chunk-kv / KV / chunkdb — Move the
+  stream namespace and tree root catalog as one fenced binding generation,
+  optionally shard their indexes, and convert sealed mirror chunks to EC. All
+  remain disabled until the R141/R142/R143 production baseline is measured.
 
 ### High Priority
 
