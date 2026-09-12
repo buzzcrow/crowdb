@@ -253,6 +253,7 @@ impl ServiceRegistryClient {
                 group_usages: group_usages.to_vec(),
             }),
             kv_server: None,
+            chunk_kv: None,
         };
         self.register("diskdb", instance_id, rpc_endpoint, &extra).await
     }
@@ -300,6 +301,7 @@ impl ServiceRegistryClient {
                 group_usages: group_usages.to_vec(),
             }),
             kv_server: None,
+            chunk_kv: None,
         };
         self.register("diskio", instance_id, rpc_endpoint, &extra).await
     }
@@ -327,6 +329,7 @@ impl ServiceRegistryClient {
                 health: health.to_string(),
                 data_root: data_root.to_string(),
             }),
+            chunk_kv: None,
         };
         self.register("kv-server", instance_id, rpc_endpoint, &extra)
             .await
@@ -370,6 +373,7 @@ impl ServiceRegistryClient {
         let extra = ServiceExtra {
             diskdb: None,
             kv_server: None,
+            chunk_kv: None,
         };
         self.register("chunkdb", instance_id, rpc_endpoint, &extra).await
     }
@@ -382,5 +386,64 @@ impl ServiceRegistryClient {
     /// Read all live chunkdb instances.
     pub async fn read_all_chunkdb_instances(&self) -> Result<Vec<(InstanceId, InstanceValue)>> {
         self.read_all_instances("chunkdb").await
+    }
+}
+
+// ── chunk-kv convenience wrappers ──────────────────────────────
+
+impl ServiceRegistryClient {
+    /// Register a chunk-KV owner and its current partition/load observation.
+    pub async fn register_chunk_kv(
+        &self,
+        instance_id: InstanceId,
+        rpc_endpoint: &str,
+        observation: &crowdb_protocol::common::ChunkKvExtra,
+    ) -> Result<()> {
+        let extra = ServiceExtra {
+            diskdb: None,
+            kv_server: None,
+            chunk_kv: Some(observation.clone()),
+        };
+        self.register("chunk-kv", instance_id, rpc_endpoint, &extra).await
+    }
+
+    /// Heartbeat a chunk-KV owner with a complete replacement observation.
+    pub async fn heartbeat_chunk_kv(
+        &self,
+        instance_id: InstanceId,
+        rpc_endpoint: &str,
+        observation: &crowdb_protocol::common::ChunkKvExtra,
+    ) -> Result<()> {
+        self.register_chunk_kv(instance_id, rpc_endpoint, observation)
+            .await
+    }
+
+    /// Read raw chunk-KV owner observations, including expired registrations.
+    pub async fn read_all_chunk_kv_observations(
+        &self,
+    ) -> Result<Vec<crowdb_protocol::chunk_kv::ChunkKvInstanceObservation>> {
+        self.read_all_instance_observations("chunk-kv")
+            .await?
+            .into_iter()
+            .map(|(instance_id, value)| {
+                let observation =
+                    value
+                        .extra
+                        .and_then(|extra| extra.chunk_kv)
+                        .ok_or_else(|| Error::SysdataDecode {
+                            key: format!("/srv/chunk-kv/{instance_id}"),
+                            reason: "missing chunk-kv service payload".into(),
+                        })?;
+                Ok(crowdb_protocol::chunk_kv::ChunkKvInstanceObservation {
+                    instance_id,
+                    rpc_endpoint: value.rpc_endpoint,
+                    last_heartbeat_ms: value.last_heartbeat_ms,
+                    capacity_bytes: observation.capacity_bytes,
+                    durable_bytes: observation.durable_bytes,
+                    request_rate: observation.request_rate,
+                    hosted: observation.hosted,
+                })
+            })
+            .collect()
     }
 }

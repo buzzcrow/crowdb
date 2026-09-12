@@ -9,7 +9,10 @@
 use std::time::Duration;
 
 use crowdb_kv_client::{Error, ServiceDiscoveryClient};
-use crowdb_protocol::common::{DiskGroupUsageSummary, DiskdbExtra, InstanceValue, ServiceExtra};
+use crowdb_protocol::chunk_kv::{HostedPartition, Id128};
+use crowdb_protocol::common::{
+    ChunkKvExtra, DiskGroupUsageSummary, DiskdbExtra, InstanceValue, ServiceExtra,
+};
 use crowdb_protocol::common_type::InstanceId;
 use crowdb_protocol::key::InstanceKey;
 use crowdb_test_harness::cluster::KvCluster;
@@ -40,6 +43,37 @@ async fn discover_registered_diskdb_instance() {
     let instances = discovery.discover_all("diskdb").await.expect("discover_all");
     assert_eq!(instances.len(), 1);
     assert_eq!(instances[0].1.rpc_endpoint, "127.0.0.1:11000");
+}
+
+#[tokio::test]
+async fn chunk_kv_raw_observation_preserves_load_and_partition_state() {
+    let cluster = KvCluster::start().await;
+    let svc = cluster.make_service_registry_client();
+    let payload = ChunkKvExtra {
+        capacity_bytes: 10_000,
+        durable_bytes: 4_000,
+        request_rate: 37,
+        hosted: vec![HostedPartition {
+            partition_id: Id128 { high: 2, low: 3 },
+            owner_epoch: 4,
+            recovering: true,
+        }],
+    };
+    svc.register_chunk_kv(7, "127.0.0.1:15507", &payload)
+        .await
+        .expect("register chunk KV");
+
+    let observed = svc
+        .read_all_chunk_kv_observations()
+        .await
+        .expect("read chunk KV observations");
+    assert_eq!(observed.len(), 1);
+    assert_eq!(observed[0].instance_id, 7);
+    assert_eq!(observed[0].rpc_endpoint, "127.0.0.1:15507");
+    assert_eq!(observed[0].capacity_bytes, payload.capacity_bytes);
+    assert_eq!(observed[0].durable_bytes, payload.durable_bytes);
+    assert_eq!(observed[0].request_rate, payload.request_rate);
+    assert_eq!(observed[0].hosted, payload.hosted);
 }
 
 /// Cache returns the same result within TTL without re-querying.
@@ -201,6 +235,7 @@ async fn expired_instance_filtered() {
                 group_usages: vec![],
             }),
             kv_server: None,
+            chunk_kv: None,
         }),
     };
     let kv = svc.kv();

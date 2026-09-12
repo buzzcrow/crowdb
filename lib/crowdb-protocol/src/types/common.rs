@@ -245,6 +245,16 @@ pub struct InstanceValue {
 pub struct ServiceExtra {
     pub diskdb: Option<DiskdbExtra>,
     pub kv_server: Option<KvServerExtra>,
+    #[serde(default)]
+    pub chunk_kv: Option<ChunkKvExtra>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct ChunkKvExtra {
+    pub capacity_bytes: u64,
+    pub durable_bytes: u64,
+    pub request_rate: u64,
+    pub hosted: Vec<crate::chunk_kv::HostedPartition>,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
