@@ -30,5 +30,6 @@ pub use serving::{
     AuthorityError, BalanceConfig, DomainMonitorDriver, DomainMonitorRegistry, MonitorDescriptorStore,
     MonitorError, MonitorTick, OwnerLoad, PartitionLoad, PreparedMonitor, ServingAuthority, SplitAction,
     SplitProposal, SplitStateMachine, TransferAction, TransferProposal, TransferStateMachine,
+    TransitionExecutor, TransitionStorage,
 };
 pub use storage::{ChunkKvStorage, StorageRuntimeError};

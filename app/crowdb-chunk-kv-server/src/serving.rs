@@ -9,6 +9,7 @@ pub mod lease;
 pub mod monitor;
 pub mod split;
 pub mod transfer;
+mod worker;
 
 pub use balance::{
     choose_split, choose_transfer, desired_partition_count, BalanceConfig, OwnerLoad, PartitionLoad,
@@ -21,3 +22,4 @@ pub use monitor::{
 };
 pub use split::{SplitAction, SplitStateMachine};
 pub use transfer::{TransferAction, TransferStateMachine};
+pub use worker::{TransitionExecutor, TransitionStorage};

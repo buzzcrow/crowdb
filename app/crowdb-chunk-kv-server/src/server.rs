@@ -398,6 +398,10 @@ impl ChunkKvService {
         });
     }
 
+    pub(crate) fn hosted_partition(&self, partition_id: Id128) -> Option<Partition> {
+        self.partitions.load().get(&partition_id).cloned()
+    }
+
     /// Activates one replayed assignment after a matching catalog and serving
     /// grant have been installed by the process lifecycle.
     ///

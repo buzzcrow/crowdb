@@ -46,7 +46,7 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 - [ ] Persist and resume idempotent transfer/split transitions with prepared
   target readiness and exact R142 proof resolution.
-- [ ] Implement dead-owner exclusion, graceful fencing, and no-copy transfer.
+- [~] Implement dead-owner exclusion, graceful fencing, and no-copy transfer.
 - [x] Add median split selection, count-first placement, weighted improvement,
   cooldown, and transition concurrency limits.
 
@@ -92,8 +92,11 @@ R142 partitions and publishes one complete group-0 range catalog.
   and common cutover frontiers across restart, including ambiguous-write
   reconciliation. Catalog cutover rewrites only the affected immutable page,
   reuses every unchanged page, retains the transition identity for committed
-  retry reconciliation, and publishes the new head last. Target and parent
-  recovery workers remain.
+  retry reconciliation, and publishes the new head last. Process-local workers
+  now fence transfer sources, replay transfer targets without activation, and
+  rebuild split children under stable identities before returning a common
+  frontier. Transition-prefix subscription and the monitor orchestration loop
+  remain.
 - Config defaults, reserved ports, process logging, HTTP management, RPC
   listener startup, validated catalog/grant refresh, service registration and
   heartbeat, lock-free counters, health snapshots, and drain-time admission

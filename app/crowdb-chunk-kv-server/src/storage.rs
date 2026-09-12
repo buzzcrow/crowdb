@@ -7,10 +7,14 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
-use crowdb_chunk_kv::{Partition, PartitionConfig, PartitionId, PartitionRange};
+use crowdb_chunk_kv::{
+    Partition, PartitionConfig, PartitionId, PartitionRange, SplitArtifact, SplitChild, SplitChildTarget,
+    SplitPlan, StreamPartitionJournal, TransitionId,
+};
 use crowdb_chunk_stream::{ChunkStream, ProductionStreamRuntime, StreamConfig, StreamName, StreamRegistry};
 use crowdb_kv_client::{BatchOp, ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
-use crowdb_protocol::chunk_kv::CatalogEntry;
+use crowdb_protocol::chunk_kv::{CatalogEntry, SplitChildAssignment, SplitTransition};
+use crowdb_protocol::chunk_stream::{StreamBinding, StreamBindingState};
 use crowdb_tree_ffi::{
     ChunkPageStoreOptions, ChunkRootCatalog, ChunkTransport, OwnedChunkRpcDiskRoute,
     OwnedChunkRpcTransportOptions, PageStore, RootCatalogObject, RootCatalogStore,
@@ -269,6 +273,193 @@ impl ChunkKvStorage {
         .await
         .map_err(|error| StorageRuntimeError::Partition(error.to_string()))
     }
+
+    /// Rebuilds both durable split children from the authoritative parent.
+    ///
+    /// Existing child streams and tree roots are reopened under the same
+    /// stable identities, so a `ParentPreparing` retry after restart replaces
+    /// incomplete preparation with a newly fenced common frontier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for conflicting stream bindings, stale tree authority,
+    /// invalid transition identity, or an incomplete R142 split preparation.
+    pub async fn prepare_split(
+        &self,
+        parent: &Partition,
+        transition: &SplitTransition,
+        max_fence_lag_records: u64,
+    ) -> Result<SplitArtifact, crate::MonitorError> {
+        let parent_binding = self
+            .streams
+            .registry()
+            .load(transition.parent_artifact.stream_name)
+            .await
+            .map_err(|error| storage_plan_error(&error.to_string()))?
+            .ok_or_else(|| storage_plan_error("split parent stream binding does not exist"))?;
+        let left = self
+            .split_target(&transition.left, parent_binding.metadata_group_id)
+            .await?;
+        let right = self
+            .split_target(&transition.right, parent_binding.metadata_group_id)
+            .await?;
+        let prepared = parent
+            .prepare_split(split_plan(transition), left, right, max_fence_lag_records)
+            .await
+            .map_err(|error| storage_plan_error(&error.to_string()))?;
+        validate_prepared_split(transition, &prepared.artifact)?;
+        Ok(prepared.artifact)
+    }
+
+    async fn split_target(
+        &self,
+        child: &SplitChildAssignment,
+        metadata_group_id: u64,
+    ) -> Result<SplitChildTarget, crate::MonitorError> {
+        let stream = self
+            .open_or_create_empty_stream(child.artifact.stream_name, child.owner_epoch, metadata_group_id)
+            .await?;
+        let page_store = self
+            .open_durable_tree_page_store(
+                ChunkPageStoreOptions {
+                    tree_id: child.artifact.tree_id,
+                    owner_epoch: child.owner_epoch,
+                    pack_bytes: 0,
+                    iu_size: 0,
+                    max_concurrent_packs: 0,
+                    materialization_bytes_per_pass: 0,
+                },
+                metadata_group_id,
+            )
+            .await
+            .map_err(|error| storage_plan_error(&error.to_string()))?;
+        Ok(SplitChildTarget {
+            tree_id: child.artifact.tree_id,
+            tree_config: crowdb_tree_ffi::Config {
+                page_store: Some(page_store),
+                ..crowdb_tree_ffi::Config::default()
+            },
+            journal: Arc::new(StreamPartitionJournal::new(stream, child.artifact.stream_name)),
+        })
+    }
+
+    async fn open_or_create_empty_stream(
+        &self,
+        stream_name: StreamName,
+        writer_epoch: u64,
+        metadata_group_id: u64,
+    ) -> Result<ChunkStream, crate::MonitorError> {
+        let registry = self.streams.registry();
+        let expected = StreamBinding {
+            stream_name,
+            metadata_group_id,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("chunk-kv-partition".into()),
+        };
+        match registry
+            .load(stream_name)
+            .await
+            .map_err(|error| storage_plan_error(&error.to_string()))?
+        {
+            Some(observed) if observed != expected => {
+                return Err(storage_plan_error("split child stream binding conflicts"));
+            }
+            Some(_) => {}
+            None => {
+                if let Err(error) = registry.create(expected.clone()).await {
+                    let reconciled = registry
+                        .load(stream_name)
+                        .await
+                        .map_err(|error| storage_plan_error(&error.to_string()))?;
+                    if reconciled.as_ref() != Some(&expected) {
+                        return Err(storage_plan_error(&error.to_string()));
+                    }
+                }
+            }
+        }
+        let stream = match self.create_registered_stream(stream_name, writer_epoch).await {
+            Ok(stream) => stream,
+            Err(_) => self
+                .open_stream(stream_name, writer_epoch)
+                .await
+                .map_err(|error| storage_plan_error(&error.to_string()))?,
+        };
+        if stream.tail() != 0 {
+            return Err(storage_plan_error("split child WAL is not empty"));
+        }
+        Ok(stream)
+    }
+}
+
+fn split_plan(transition: &SplitTransition) -> SplitPlan {
+    SplitPlan {
+        transition_id: TransitionId {
+            high: transition.transition_id.high,
+            low: transition.transition_id.low,
+        },
+        parent_id: partition_id(transition.parent_id),
+        parent_range: partition_range(&transition.parent_range),
+        parent_epoch: transition.parent_epoch,
+        split_key: transition.split_key.clone(),
+        left: split_child(&transition.left),
+        right: split_child(&transition.right),
+    }
+}
+
+fn split_child(child: &SplitChildAssignment) -> SplitChild {
+    SplitChild {
+        partition_id: partition_id(child.partition_id),
+        range: partition_range(&child.range),
+        ownership_epoch: child.owner_epoch,
+    }
+}
+
+fn partition_id(id: crowdb_protocol::chunk_kv::Id128) -> PartitionId {
+    PartitionId {
+        high: id.high,
+        low: id.low,
+    }
+}
+
+fn partition_range(range: &crowdb_protocol::chunk_kv::KeyRange) -> PartitionRange {
+    PartitionRange {
+        start: Some(range.start.clone()),
+        end: range.end.clone(),
+    }
+}
+
+fn validate_prepared_split(
+    transition: &SplitTransition,
+    artifact: &SplitArtifact,
+) -> Result<(), crate::MonitorError> {
+    let exact = artifact.transition_id
+        == (TransitionId {
+            high: transition.transition_id.high,
+            low: transition.transition_id.low,
+        })
+        && artifact.parent_id == partition_id(transition.parent_id)
+        && artifact.parent_epoch == transition.parent_epoch
+        && artifact.left.partition_id == partition_id(transition.left.partition_id)
+        && artifact.left.tree_id == transition.left.artifact.tree_id
+        && artifact.left.stream_name == transition.left.artifact.stream_name
+        && artifact.right.partition_id == partition_id(transition.right.partition_id)
+        && artifact.right.tree_id == transition.right.artifact.tree_id
+        && artifact.right.stream_name == transition.right.artifact.stream_name
+        && artifact.cutover_seq != 0
+        && artifact.left.applied_seq == artifact.cutover_seq
+        && artifact.right.applied_seq == artifact.cutover_seq;
+    if exact {
+        Ok(())
+    } else {
+        Err(storage_plan_error(
+            "prepared split does not match the persisted identities and frontier",
+        ))
+    }
+}
+
+fn storage_plan_error(error: &str) -> crate::MonitorError {
+    crate::MonitorError::PlanFailed(error.into())
 }
 
 struct KvRootCatalogStore {

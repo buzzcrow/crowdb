@@ -1514,6 +1514,10 @@ async fn split_control_is_idempotent_and_commits_only_an_exact_artifact() {
     partition.fence_split(plan.transition_id).await.unwrap();
     let artifact = split_artifact(&plan, 1);
     partition.record_split_artifact(artifact.clone()).await.unwrap();
+    assert_eq!(
+        partition.prepared_split_artifact(plan.transition_id).await,
+        Some(artifact.clone())
+    );
 
     let mut wrong = artifact.clone();
     wrong.right.tree_manifest += 1;

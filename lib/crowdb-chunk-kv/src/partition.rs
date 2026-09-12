@@ -1276,6 +1276,20 @@ impl Partition {
         Ok(())
     }
 
+    /// Returns the exact prepared split artifact for an idempotent worker retry.
+    #[must_use]
+    pub async fn prepared_split_artifact(&self, transition_id: TransitionId) -> Option<SplitArtifact> {
+        if self.lifecycle() != PartitionLifecycle::SplitFenced {
+            return None;
+        }
+        self.split_transition
+            .lock()
+            .await
+            .as_ref()
+            .filter(|active| active.plan.transition_id == transition_id)
+            .and_then(|active| active.artifact.clone())
+    }
+
     /// Retires the parent only for an exact durable catalog publication proof.
     ///
     /// # Errors
