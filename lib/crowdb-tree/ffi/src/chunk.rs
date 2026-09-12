@@ -550,6 +550,29 @@ impl PageStore {
         })
     }
 
+    /// Sets the WAL byte offset that the next chunk-root publication makes
+    /// recoverable. Non-chunk stores accept the hint without persisting it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid-argument, availability, or corruption error.
+    pub fn set_wal_replay_offset(&self, offset: u64) -> Result<(), CtError> {
+        check(unsafe { sys::ct_chunk_page_store_set_wal_replay_offset(self.ptr.as_ptr(), offset) })
+    }
+
+    /// Returns the WAL replay offset persisted with the current chunk root.
+    /// Legacy and non-chunk stores return zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns an availability or corruption error when the current root
+    /// cannot be validated.
+    pub fn wal_replay_offset(&self) -> Result<u64, CtError> {
+        let mut offset = 0;
+        check(unsafe { sys::ct_chunk_page_store_get_wal_replay_offset(self.ptr.as_ptr(), &mut offset) })?;
+        Ok(offset)
+    }
+
     pub fn reclaim_chunk_orphans(&self) -> u64 {
         unsafe { sys::ct_chunk_page_store_reclaim_orphans(self.ptr.as_ptr()) }
     }

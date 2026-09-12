@@ -160,14 +160,15 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
         if (expected_generation == std::numeric_limits<uint64_t>::max()) {
             return Status::resource_exhausted("chunk manifest generation is exhausted");
         }
-        manifest                  = std::make_shared<ChunkManifest>();
-        manifest->format_version  = kChunkManifestFormat;
-        manifest->tree_id         = store->config_.tree_id;
-        manifest->generation      = expected_generation + 1;
-        manifest->owner_epoch     = store->config_.owner_epoch;
-        manifest->logical_size    = store->staged_.size();
-        manifest->published_at_ms = monotonic_millis();
-        auto reuse_base           = store->reuse_base_manifest();
+        manifest                    = std::make_shared<ChunkManifest>();
+        manifest->format_version    = kChunkManifestFormat;
+        manifest->tree_id           = store->config_.tree_id;
+        manifest->generation        = expected_generation + 1;
+        manifest->owner_epoch       = store->config_.owner_epoch;
+        manifest->logical_size      = store->staged_.size();
+        manifest->published_at_ms   = monotonic_millis();
+        manifest->wal_replay_offset = store->wal_replay_offset_.load(std::memory_order_acquire);
+        auto reuse_base             = store->reuse_base_manifest();
         if (reuse_base != nullptr) {
             const RootCatalog &reuse_catalog = reuse_base == store->inherited_manifest_ && store->inherited_catalog_
                                                  ? *store->inherited_catalog_

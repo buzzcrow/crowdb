@@ -13,12 +13,10 @@ the only authority to admit data requests.
 
 The catalog is one checksummed generation head over ordered immutable pages.
 Each entry contains an exact half-open binary-key range, stable partition ID,
-owner endpoint, monotonic owner epoch, lifecycle state, tree manifest, stream
-name and manifest generation, WAL replay offset, applied sequence, and optional
-transition ID. These fields form the exact R142 checkpoint: startup reopens the
-published tree root and replays the stream from that offset to its current
-durable tail. A valid generation starts at the empty byte string, has exact
-adjacent bounds, ends unbounded, and covers each binary key once.
+owner endpoint, monotonic owner epoch, lifecycle state, stable tree ID, stable
+stream name, and optional transition ID. Mutable tree and stream frontiers do
+not live in group 0. A valid generation starts at the empty byte string, has
+exact adjacent bounds, ends unbounded, and covers each binary key once.
 
 Publishers validate the complete successor, including retained-partition epoch
 non-regression, before I/O. They write only new pages, reread and validate every
@@ -123,9 +121,10 @@ time.
 ## 7. Lifecycle and Observability
 
 Startup ensures the monitor, registers the instance, loads a complete catalog,
-reopens each assignment's exact tree and stream manifests as `Prepared`, replays
-WAL from the published offset through the durable tail, reports readiness, and
-serves only after installing a matching grant. Shutdown
+opens each assignment's latest tree root and stream manifest as `Prepared`,
+reads the applied sequence and WAL replay offset from that tree root, replays
+through the stream's current durable tail, reports readiness, and serves only
+after installing a matching grant. Shutdown
 atomically stops new admission and clears authority; already admitted R142
 operations retain handles and finish before bounded checkpoint/drain work.
 Catalog refresh recovers every new or changed local assignment first, then

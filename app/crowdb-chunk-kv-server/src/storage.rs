@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
-use crowdb_chunk_kv::{Checkpoint, Partition, PartitionConfig, PartitionId, PartitionRange};
+use crowdb_chunk_kv::{Partition, PartitionConfig, PartitionId, PartitionRange};
 use crowdb_chunk_stream::{ChunkStream, ProductionStreamRuntime, StreamConfig, StreamName, StreamRegistry};
 use crowdb_kv_client::{BatchOp, ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
 use crowdb_protocol::chunk_kv::CatalogEntry;
@@ -250,7 +250,7 @@ impl ChunkKvStorage {
                 binding.metadata_group_id,
             )
             .await?;
-        Partition::recover_native_prepared_assignment(
+        Partition::recover_native_latest_prepared_assignment(
             PartitionId {
                 high: entry.partition_id.high,
                 low: entry.partition_id.low,
@@ -260,14 +260,7 @@ impl ChunkKvStorage {
                 end: entry.range.end.clone(),
             },
             entry.owner_epoch,
-            Checkpoint {
-                tree_id: entry.artifact.tree_id,
-                tree_manifest: entry.artifact.tree_manifest,
-                applied_seq: entry.artifact.applied_seq,
-                stream_name,
-                stream_manifest_generation: entry.artifact.stream_manifest_generation,
-                replay_offset: entry.artifact.replay_offset,
-            },
+            entry.artifact.tree_id,
             PartitionConfig::default(),
             crowdb_tree_ffi::Config::default(),
             page_store,

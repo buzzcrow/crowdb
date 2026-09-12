@@ -135,6 +135,9 @@ std::vector<uint8_t> encode_manifest(const ChunkManifest &manifest)
     append_scalar(&out, manifest.published_at_ms);
     append_scalar(&out, manifest.packs_reused);
     append_scalar(&out, manifest.pack_bytes_reused);
+    if (manifest.format_version >= 4) {
+        append_scalar(&out, manifest.wal_replay_offset);
+    }
     append_scalar(&out, manifest.checksum);
     append_scalar(&out, static_cast<uint64_t>(manifest.reference_segments.size()));
     for (const auto &segment : manifest.reference_segments) {
@@ -169,6 +172,7 @@ std::shared_ptr<const ChunkManifest> decode_manifest(const std::vector<uint8_t> 
         !reader.scalar(&manifest->generation) || !reader.scalar(&manifest->owner_epoch) ||
         !reader.scalar(&manifest->logical_size) || !reader.scalar(&manifest->published_at_ms) ||
         !reader.scalar(&manifest->packs_reused) || !reader.scalar(&manifest->pack_bytes_reused) ||
+        (manifest->format_version >= 4 && !reader.scalar(&manifest->wal_replay_offset)) ||
         !reader.scalar(&manifest->checksum) || !reader.scalar(&reference_count) ||
         reference_count > reader.remaining() / 33U) {
         return nullptr;
@@ -772,6 +776,9 @@ ChunkPageStore::ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catal
     if (transport_ == nullptr) {
         transport_ = std::make_shared<MemoryChunkTransport>();
     }
+    if (auto current = catalog_->load(config_.tree_id); current != nullptr && current->format_version >= 4) {
+        wal_replay_offset_.store(current->wal_replay_offset, std::memory_order_relaxed);
+    }
     config_.max_chunk_bytes = std::min(config_.max_chunk_bytes, kMaxChunkBytes);
     config_.pack_bytes      = std::min<uint64_t>(config_.pack_bytes, config_.max_chunk_bytes);
     config_.materialization_bytes_per_pass =
@@ -1248,6 +1255,9 @@ uint32_t ChunkPageStore::manifest_checksum(const ChunkManifest &manifest)
     crc = update_u64(crc, manifest.published_at_ms);
     crc = update_u64(crc, manifest.packs_reused);
     crc = update_u64(crc, manifest.pack_bytes_reused);
+    if (manifest.format_version >= 4) {
+        crc = update_u64(crc, manifest.wal_replay_offset);
+    }
     for (const ChunkPagePack &pack : manifest.packs) {
         if (manifest.format_version >= 2) {
             crc = update_u64(crc, pack.owner_tree_id);
@@ -1345,14 +1355,15 @@ Status ChunkPageStore::build_manifest(uint64_t expected_generation, std::shared_
         catalog_->discard_reference_segments(config_.tree_id, orphan_reference_segments_);
         orphan_reference_segments_.clear();
     }
-    auto manifest             = std::make_shared<ChunkManifest>();
-    manifest->format_version  = kChunkManifestFormat;
-    manifest->tree_id         = config_.tree_id;
-    manifest->generation      = expected_generation + 1;
-    manifest->owner_epoch     = config_.owner_epoch;
-    manifest->logical_size    = staged_.size();
-    manifest->published_at_ms = monotonic_millis();
-    auto reuse_base           = reuse_base_manifest();
+    auto manifest               = std::make_shared<ChunkManifest>();
+    manifest->format_version    = kChunkManifestFormat;
+    manifest->tree_id           = config_.tree_id;
+    manifest->generation        = expected_generation + 1;
+    manifest->owner_epoch       = config_.owner_epoch;
+    manifest->logical_size      = staged_.size();
+    manifest->published_at_ms   = monotonic_millis();
+    manifest->wal_replay_offset = wal_replay_offset_.load(std::memory_order_acquire);
+    auto reuse_base             = reuse_base_manifest();
     if (reuse_base != nullptr) {
         const RootCatalog &reuse_catalog =
             reuse_base == inherited_manifest_ && inherited_catalog_ != nullptr ? *inherited_catalog_ : *catalog_;
@@ -1511,13 +1522,14 @@ Status ChunkPageStore::materialize_ownership(uint64_t *bytes_written, bool *comp
         return fail(Status::resource_exhausted("chunk manifest generation is exhausted"));
     }
 
-    auto manifest             = std::make_shared<ChunkManifest>();
-    manifest->format_version  = kChunkManifestFormat;
-    manifest->tree_id         = config_.tree_id;
-    manifest->generation      = base->generation + 1;
-    manifest->owner_epoch     = config_.owner_epoch;
-    manifest->logical_size    = base->logical_size;
-    manifest->published_at_ms = monotonic_millis();
+    auto manifest               = std::make_shared<ChunkManifest>();
+    manifest->format_version    = kChunkManifestFormat;
+    manifest->tree_id           = config_.tree_id;
+    manifest->generation        = base->generation + 1;
+    manifest->owner_epoch       = config_.owner_epoch;
+    manifest->logical_size      = base->logical_size;
+    manifest->published_at_ms   = monotonic_millis();
+    manifest->wal_replay_offset = base->wal_replay_offset;
     manifest->packs.reserve(base->packs.size());
 
     uint64_t copied_bytes   = 0;
@@ -1838,6 +1850,48 @@ void ChunkPageStore::cancel(uint64_t op_id)
     async_executor_->cancel(op_id);
 }
 
+Status ChunkPageStore::set_wal_replay_offset(uint64_t offset)
+{
+    auto current = catalog_->load(config_.tree_id);
+    if (current != nullptr) {
+        Status status = validate_manifest(*current, *catalog_);
+        if (!status.ok()) {
+            return status;
+        }
+        if (current->format_version >= 4 && offset < current->wal_replay_offset) {
+            return Status::invalid_argument("WAL replay offset cannot regress");
+        }
+    }
+    uint64_t observed = wal_replay_offset_.load(std::memory_order_acquire);
+    for (;;) {
+        if (offset < observed) {
+            return Status::invalid_argument("WAL replay offset cannot regress");
+        }
+        if (offset == observed || wal_replay_offset_.compare_exchange_weak(observed, offset, std::memory_order_release,
+                                                                           std::memory_order_acquire)) {
+            return Status::Ok();
+        }
+    }
+}
+
+Status ChunkPageStore::wal_replay_offset(uint64_t *offset) const
+{
+    if (offset == nullptr) {
+        return Status::invalid_argument("WAL replay offset output is null");
+    }
+    auto current = catalog_->load(config_.tree_id);
+    if (current == nullptr) {
+        *offset = 0;
+        return Status::Ok();
+    }
+    Status status = validate_manifest(*current, *catalog_);
+    if (!status.ok()) {
+        return status;
+    }
+    *offset = current->format_version >= 4 ? current->wal_replay_offset : 0;
+    return Status::Ok();
+}
+
 ChunkPageStoreStats ChunkPageStore::stats() const
 {
     auto     manifest                 = catalog_->load(config_.tree_id);
@@ -2111,6 +2165,29 @@ ct_status ct_chunk_page_store_get_stats(const ct_page_store *store, ct_chunk_pag
         .recovery_latency_ns             = stats.recovery_latency_ns,
     };
     return static_cast<ct_status>(crowdb::tree::Code::kOk);
+}
+
+ct_status ct_chunk_page_store_set_wal_replay_offset(ct_page_store *store, uint64_t offset)
+{
+    if (store == nullptr || store->bundle == nullptr) {
+        return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
+    }
+    auto *chunk = dynamic_cast<crowdb::tree::detail::ChunkPageStore *>(store->bundle->store.get());
+    return chunk == nullptr ? static_cast<ct_status>(crowdb::tree::Code::kOk)
+                            : static_cast<ct_status>(chunk->set_wal_replay_offset(offset).code());
+}
+
+ct_status ct_chunk_page_store_get_wal_replay_offset(const ct_page_store *store, uint64_t *offset)
+{
+    if (store == nullptr || store->bundle == nullptr || offset == nullptr) {
+        return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
+    }
+    auto *chunk = dynamic_cast<crowdb::tree::detail::ChunkPageStore *>(store->bundle->store.get());
+    if (chunk == nullptr) {
+        *offset = 0;
+        return static_cast<ct_status>(crowdb::tree::Code::kOk);
+    }
+    return static_cast<ct_status>(chunk->wal_replay_offset(offset).code());
 }
 
 uint64_t ct_chunk_page_store_reclaim_orphans(ct_page_store *store)

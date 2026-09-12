@@ -62,7 +62,8 @@ through immutable segmented reference tables. Untagged words remain valid for
 local stores and legacy mapping images. Mixed mapping images use their versioned
 codec so the two forms cannot be confused.
 
-Manifest format 3 permits sorted, non-overlapping sparse pack layouts. A gap
+Manifest format 4 adds the WAL replay offset associated with the tree snapshot;
+format 3 permits sorted, non-overlapping sparse pack layouts. A gap
 means that no live page references that logical pack range. Recovery and page
 reference decoding validate arithmetic bounds, reference-segment checksums, and
 complete pack coverage for every addressed page.
@@ -96,8 +97,9 @@ nonblocking pipe. Rust polls the descriptor through its existing async reactor.
 ## 4. Manifest Publication and Recovery
 
 `ChunkManifest` records tree identity, generation, owner epoch, logical size,
-pack entries, reference-segment directory, sharing counters, and checksums.
-Manifest directories and reference-segment images are immutable.
+the snapshot's WAL replay offset, pack entries, reference-segment directory,
+sharing counters, and checksums. Manifest directories and reference-segment
+images are immutable. Legacy manifests imply replay offset zero.
 
 A checkpoint captures the current catalog generation before it constructs any
 packs. Its new manifest is numbered `expected_generation + 1`. After pack and
@@ -110,6 +112,12 @@ Recovery opens the newest epoch-valid, fully verified manifest. It may fall
 back only to the preceding complete retained generation. Corruption and
 temporary availability remain distinct typed outcomes; an unavailable mirror
 does not poison mappings or convert a retryable read into corruption.
+
+The tree owner sets a monotonic WAL replay offset before snapshot publication.
+The offset and tree snapshot become visible in the same root manifest. WAL
+retention advances only after that root is current, so recovery can always open
+the latest root and replay from its offset through the stream's latest durable
+tail without consulting a duplicated group-0 frontier.
 
 ## 5. Reads and Cache Validity
 
@@ -176,6 +184,9 @@ resume after a tree or ChunkDB restart.
   retained manifest or in-memory pin can name it.
 - **I9 — Exactly-once completion:** every admitted async operation completes its
   callback once, including cancellation, overload, and shutdown.
+- **I10 — Root/WAL checkpoint:** a manifest's WAL replay offset becomes visible
+  atomically with its tree snapshot and never regresses within one lineage;
+  WAL trimming follows root publication.
 
 ## 9. Configuration and Metrics
 

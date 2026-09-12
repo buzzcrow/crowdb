@@ -22,7 +22,7 @@
 namespace crowdb::tree::detail
 {
 
-inline constexpr uint32_t kChunkManifestFormat = 3;
+inline constexpr uint32_t kChunkManifestFormat = 4;
 
 class ChunkAsyncExecutor;
 class ChunkPackPipeline;
@@ -72,6 +72,7 @@ struct ChunkManifest
     uint64_t                           published_at_ms   = 0;
     uint64_t                           packs_reused      = 0;
     uint64_t                           pack_bytes_reused = 0;
+    uint64_t                           wal_replay_offset = 0;
     uint32_t                           checksum          = 0;
     std::vector<ChunkReferenceSegment> reference_segments;
     std::vector<ChunkPagePack>         packs;
@@ -302,7 +303,9 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     [[nodiscard]] ChunkPageStoreStats stats() const;
     uint64_t                          reclaim_orphans();
     Status                            materialize_ownership(uint64_t *bytes_written, bool *complete) override;
-    void set_materialization_live_extents(std::vector<std::pair<uint64_t, uint64_t>> extents) override;
+    void   set_materialization_live_extents(std::vector<std::pair<uint64_t, uint64_t>> extents) override;
+    Status set_wal_replay_offset(uint64_t offset);
+    Status wal_replay_offset(uint64_t *offset) const;
 
     // Seed an unpublished destination from one immutable source generation.
     // Byte-identical packs are referenced directly by the next manifest;
@@ -370,6 +373,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     mutable std::shared_ptr<const CachedPack>                 cached_pack_;
     mutable std::atomic<uint64_t>                             layout_valid_until_ms_{0};
     std::atomic<uint64_t>                                     generations_published_{0};
+    std::atomic<uint64_t>                                     wal_replay_offset_{0};
     std::atomic<uint64_t>                                     packs_written_{0};
     std::atomic<uint64_t>                                     pack_bytes_written_{0};
     std::atomic<uint64_t>                                     packs_reused_{0};

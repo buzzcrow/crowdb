@@ -32,8 +32,9 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 - [~] Add `crowdb-chunk-kv-server` config, logging, metrics, health,
   management, graceful shutdown, and zero/many partition hosting.
-- [x] Reopen locally assigned tree and WAL checkpoints as `Prepared`, replay
-  through the durable tail, and activate only under a matching serving grant.
+- [x] Reopen each locally assigned latest tree root and stream manifest as
+  `Prepared`, replay from the root's WAL offset through the durable tail, and
+  activate only under a matching serving grant.
 - [x] Reconcile refreshed catalogs with the exact hosted-partition snapshot,
   recovering incoming assignments before atomically replacing local handles.
 - [x] Add direct point RPC types and handlers for R142 operations, typed errors,
@@ -73,9 +74,10 @@ R142 partitions and publishes one complete group-0 range catalog.
 ## Open Issues
 
 - Production startup now reopens every local catalog assignment from its exact
-  tree and stream checkpoint, replays WAL while `Prepared`, and activates only
-  after a matching grant. Catalog refresh reconciles incoming and outgoing
-  assignments; real-process restart coverage remains.
+  tree and stream identities, reads the mutable checkpoint from the latest tree
+  root, replays WAL while `Prepared`, and activates only after a matching grant.
+  Catalog refresh reconciles incoming and outgoing assignments; real-process
+  restart coverage remains.
 - Group-0 monitor supervision and serving-grant publication still need integration
   with the existing KV server and process boundaries.
 - R145 owns routed multi-partition composition and end-to-end client coverage.

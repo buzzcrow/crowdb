@@ -198,7 +198,7 @@ impl Partition {
         }
         let replay_offset = self.retry_replay_offset.load(Ordering::Acquire);
         let stream_manifest_generation = self.journal.manifest_generation();
-        let (tree_manifest, applied_seq, source) = self.tree.checkpoint_snapshot().await?;
+        let (tree_manifest, applied_seq, source) = self.tree.checkpoint_snapshot(replay_offset).await?;
         if applied_seq > self.journal_durable_seq.load(Ordering::Acquire) {
             return Err(ChunkKvError::ApplyStateUnknown);
         }
@@ -361,7 +361,7 @@ async fn checkpoint_child(
     tree: Arc<dyn PartitionTree>,
     cutover_seq: u64,
 ) -> Result<PreparedSplitChild> {
-    let (tree_manifest, applied_seq) = tree.checkpoint().await?;
+    let (tree_manifest, applied_seq) = tree.checkpoint(0).await?;
     if applied_seq != cutover_seq || tree.last_applied_seq() != cutover_seq {
         return Err(ChunkKvError::ApplyStateUnknown);
     }

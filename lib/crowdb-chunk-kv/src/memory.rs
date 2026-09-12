@@ -195,12 +195,15 @@ impl PartitionTree for MemoryPartitionTree {
         Ok(())
     }
 
-    async fn checkpoint(&self) -> Result<(u64, u64)> {
+    async fn checkpoint(&self, _wal_replay_offset: u64) -> Result<(u64, u64)> {
         let applied = self.last_applied.load(Ordering::Acquire);
         Ok((applied, applied))
     }
 
-    async fn checkpoint_snapshot(&self) -> Result<(u64, u64, Arc<dyn PartitionTree>)> {
+    async fn checkpoint_snapshot(
+        &self,
+        _wal_replay_offset: u64,
+    ) -> Result<(u64, u64, Arc<dyn PartitionTree>)> {
         let values = self.values.read().await.clone();
         let applied = self.last_applied.load(Ordering::Acquire);
         let snapshot = Self {

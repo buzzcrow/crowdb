@@ -311,7 +311,7 @@ async fn native_partition_constructor_owns_tree_and_stream_storage() {
 }
 
 #[tokio::test]
-async fn native_partition_reopens_the_exact_checkpointed_tree() {
+async fn native_partition_reopens_the_latest_tree_root() {
     let page_store = Arc::new(crowdb_tree_ffi::PageStore::open_mem(1).unwrap());
     let tree = crowdb_tree_ffi::Crowdbtree::open(&crowdb_tree_ffi::Config {
         page_store: Some(Arc::clone(&page_store)),
@@ -324,7 +324,7 @@ async fn native_partition_reopens_the_exact_checkpointed_tree() {
     .unwrap();
     tree.apply_put(1, b"b", b"persisted").unwrap();
     tree.flush().unwrap();
-    let (tree_manifest, applied_seq) = tree.snapshot_info().unwrap();
+    tree.snapshot_info().unwrap();
     drop(tree);
 
     let stream_name = StreamName { high: 1, low: 10 };
@@ -345,21 +345,14 @@ async fn native_partition_reopens_the_exact_checkpointed_tree() {
     )
     .await
     .unwrap();
-    let partition = Partition::recover_native(
+    let partition = Partition::recover_native_latest_prepared_assignment(
         PartitionId { high: 1, low: 10 },
         PartitionRange {
             start: Some(b"a".to_vec()),
             end: Some(b"m".to_vec()),
         },
         4,
-        Checkpoint {
-            tree_id: 44,
-            tree_manifest,
-            applied_seq,
-            stream_name,
-            stream_manifest_generation: 1,
-            replay_offset: 0,
-        },
+        44,
         PartitionConfig::default(),
         crowdb_tree_ffi::Config::default(),
         page_store,
@@ -367,10 +360,108 @@ async fn native_partition_reopens_the_exact_checkpointed_tree() {
     )
     .await
     .unwrap();
+    partition.activate_recovered(4).unwrap();
     assert_eq!(
         partition.get(4, b"b", None).await.unwrap().unwrap().value,
         b"persisted"
     );
+}
+
+#[tokio::test]
+async fn chunk_root_checkpoint_supplies_the_wal_replay_offset() {
+    let stream_name = StreamName { high: 1, low: 11 };
+    let stream_store = Arc::new(MemoryStreamStore::new(4_096));
+    let stream = ChunkStream::create(
+        StreamBinding {
+            stream_name,
+            metadata_group_id: 7,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("chunk-kv-partition".into()),
+        },
+        4,
+        StreamConfig::default(),
+        stream_store.clone() as Arc<dyn StreamRegistry>,
+        stream_store.clone() as Arc<dyn StreamMetadataStore>,
+        stream_store.clone() as Arc<dyn StreamChunkStore>,
+    )
+    .await
+    .unwrap();
+    let catalog = Arc::new(ChunkRootCatalog::open_memory(4).unwrap());
+    let options = ChunkPageStoreOptions {
+        tree_id: 45,
+        owner_epoch: 4,
+        pack_bytes: 4_096,
+        iu_size: 1,
+        max_concurrent_packs: 2,
+        materialization_bytes_per_pass: 4_096,
+    };
+    let page_store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
+    let config = PartitionConfig {
+        retained_results: 1,
+        ..PartitionConfig::default()
+    };
+    let partition = Partition::open_native(
+        PartitionId { high: 1, low: 11 },
+        PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        4,
+        config.clone(),
+        45,
+        crowdb_tree_ffi::Config::default(),
+        Arc::clone(&page_store),
+        stream,
+    )
+    .unwrap();
+    for sequence in [1, 2] {
+        partition
+            .mutate(
+                4,
+                request(sequence),
+                MutationOperation::Put {
+                    key: b"b".to_vec(),
+                    value: sequence.to_string().into_bytes(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    partition.fence_mutations(4).await.unwrap();
+    let checkpoint = partition.checkpoint_fenced(4).await.unwrap();
+    assert!(checkpoint.replay_offset > 0);
+    assert_eq!(page_store.wal_replay_offset().unwrap(), checkpoint.replay_offset);
+    drop(partition);
+
+    let stream = ChunkStream::open(
+        stream_name,
+        4,
+        StreamConfig::default(),
+        stream_store.clone() as Arc<dyn StreamRegistry>,
+        stream_store.clone() as Arc<dyn StreamMetadataStore>,
+        stream_store as Arc<dyn StreamChunkStore>,
+    )
+    .await
+    .unwrap();
+    let page_store = Arc::new(PageStore::open_chunk(options, catalog, None).unwrap());
+    let recovered = Partition::recover_native_latest_prepared_assignment(
+        PartitionId { high: 1, low: 11 },
+        PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        4,
+        45,
+        config,
+        crowdb_tree_ffi::Config::default(),
+        page_store,
+        stream,
+    )
+    .await
+    .unwrap();
+    recovered.activate_recovered(4).unwrap();
+    assert_eq!(recovered.get(4, b"b", None).await.unwrap().unwrap().value, b"2");
 }
 
 #[tokio::test]

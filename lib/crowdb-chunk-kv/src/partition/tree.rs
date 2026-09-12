@@ -32,8 +32,11 @@ pub trait PartitionTree: Send + Sync {
     ) -> Result<(Vec<ScanEntry>, bool)>;
     async fn apply(&self, mutation_seq: u64, operation: &MutationOperation) -> Result<()>;
     async fn advance_noop(&self, mutation_seq: u64) -> Result<()>;
-    async fn checkpoint(&self) -> Result<(u64, u64)>;
-    async fn checkpoint_snapshot(&self) -> Result<(u64, u64, std::sync::Arc<dyn PartitionTree>)>;
+    async fn checkpoint(&self, wal_replay_offset: u64) -> Result<(u64, u64)>;
+    async fn checkpoint_snapshot(
+        &self,
+        wal_replay_offset: u64,
+    ) -> Result<(u64, u64, std::sync::Arc<dyn PartitionTree>)>;
     async fn rebuild_range(
         &self,
         tree_id: u64,
@@ -242,7 +245,12 @@ impl PartitionTree for CrowdbPartitionTree {
         Ok(())
     }
 
-    async fn checkpoint(&self) -> Result<(u64, u64)> {
+    async fn checkpoint(&self, wal_replay_offset: u64) -> Result<(u64, u64)> {
+        if let Some(page_store) = self.config.as_ref().and_then(|config| config.page_store.as_ref()) {
+            page_store
+                .set_wal_replay_offset(wal_replay_offset)
+                .map_err(map_tree_read_error)?;
+        }
         self.tree.flush().map_err(|error| match error {
             crowdb_tree_ffi::CtError::Corruption => ChunkKvError::TreeCorruption(error.to_string()),
             _ => ChunkKvError::MaintenanceDegraded(error.to_string()),
@@ -257,8 +265,11 @@ impl PartitionTree for CrowdbPartitionTree {
         Ok((generation, applied_seq))
     }
 
-    async fn checkpoint_snapshot(&self) -> Result<(u64, u64, std::sync::Arc<dyn PartitionTree>)> {
-        let (generation, applied_seq) = self.checkpoint().await?;
+    async fn checkpoint_snapshot(
+        &self,
+        wal_replay_offset: u64,
+    ) -> Result<(u64, u64, std::sync::Arc<dyn PartitionTree>)> {
+        let (generation, applied_seq) = self.checkpoint(wal_replay_offset).await?;
         let config = self.config.as_ref().ok_or_else(|| {
             ChunkKvError::InvalidRequest("native tree was not opened from a retained configuration".into())
         })?;

@@ -79,11 +79,7 @@ fn catalog(
             state: CatalogPartitionState::Serving,
             artifact: PartitionArtifact {
                 tree_id: 1,
-                tree_manifest: 1,
                 stream_name,
-                stream_manifest_generation: 1,
-                replay_offset: 0,
-                applied_seq: 0,
             },
             transition_id: None,
         }],

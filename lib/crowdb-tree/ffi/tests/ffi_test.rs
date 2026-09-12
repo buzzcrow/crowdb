@@ -299,8 +299,10 @@ fn callback_root_catalog_reopens_published_manifest() {
     };
     let store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
     {
+        store.set_wal_replay_offset(4_096).unwrap();
+        assert_eq!(store.set_wal_replay_offset(4_095), Err(CtError::InvalidArgument));
         let tree = Crowdbtree::open(&Config {
-            page_store: Some(store),
+            page_store: Some(Arc::clone(&store)),
             ..Config::default()
         })
         .unwrap();
@@ -310,6 +312,11 @@ fn callback_root_catalog_reopens_published_manifest() {
     }
 
     let reopened_store = Arc::new(PageStore::open_chunk(options, catalog, None).unwrap());
+    assert_eq!(reopened_store.wal_replay_offset().unwrap(), 4_096);
+    assert_eq!(
+        reopened_store.set_wal_replay_offset(4_095),
+        Err(CtError::InvalidArgument)
+    );
     let reopened = Crowdbtree::open(&Config {
         page_store: Some(reopened_store),
         ..Config::default()

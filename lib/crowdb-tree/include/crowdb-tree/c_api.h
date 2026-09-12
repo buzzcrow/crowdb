@@ -245,6 +245,8 @@ ct_status ct_chunk_page_store_open_with_transport(const ct_chunk_page_store_opti
 ct_status ct_rpc_chunk_transport_open(const ct_chunk_rpc_transport_options *options, ct_chunk_transport **out);
 void      ct_chunk_transport_free(ct_chunk_transport *transport);
 ct_status ct_chunk_page_store_get_stats(const ct_page_store *store, ct_chunk_page_store_stats *out);
+ct_status ct_chunk_page_store_set_wal_replay_offset(ct_page_store *store, uint64_t offset);
+ct_status ct_chunk_page_store_get_wal_replay_offset(const ct_page_store *store, uint64_t *offset);
 uint64_t  ct_chunk_page_store_reclaim_orphans(ct_page_store *store);
 uint64_t  ct_root_catalog_reclaim_before(ct_root_catalog *catalog, uint64_t tree_id, uint64_t generation);
 ct_status ct_open(const ct_options *opt, ct_tree **out);

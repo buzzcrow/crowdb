@@ -450,6 +450,61 @@ impl Partition {
         .await
     }
 
+    /// Reopens the latest authoritative native tree root and stream manifest,
+    /// then replays WAL while remaining `Prepared`.
+    ///
+    /// The tree root supplies its own applied frontier and WAL replay offset;
+    /// callers provide only stable storage identities.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed tree-open, root-checkpoint, or WAL recovery error.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn recover_native_latest_prepared_assignment(
+        partition_id: PartitionId,
+        range: PartitionRange,
+        ownership_epoch: u64,
+        tree_id: u64,
+        config: PartitionConfig,
+        tree_config: crowdb_tree_ffi::Config,
+        page_store: Arc<crowdb_tree_ffi::PageStore>,
+        stream: ChunkStream,
+    ) -> Result<Self> {
+        range.validate()?;
+        config.validate()?;
+        if tree_id == 0 || ownership_epoch == 0 {
+            return Err(ChunkKvError::InvalidRequest(
+                "tree identity and ownership epoch must be nonzero".into(),
+            ));
+        }
+        let replay_offset = page_store.wal_replay_offset().map_err(|error| match error {
+            crowdb_tree_ffi::CtError::Corruption => ChunkKvError::TreeCorruption(error.to_string()),
+            _ => ChunkKvError::TreeUnavailable(error.to_string()),
+        })?;
+        let stream_name = stream.stream_name();
+        let stream_manifest_generation = stream.manifest_generation();
+        let (tree, journal) = native_storage_parts(tree_id, &range, tree_config, page_store, stream)?;
+        let (tree_manifest, applied_seq) = tree.checkpoint_state()?;
+        Self::recover_assignment(
+            partition_id,
+            range,
+            ownership_epoch,
+            Checkpoint {
+                tree_id,
+                tree_manifest,
+                applied_seq,
+                stream_name,
+                stream_manifest_generation,
+                replay_offset,
+            },
+            config,
+            tree,
+            journal,
+            PartitionLifecycle::Prepared,
+        )
+        .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn recover_native_assignment(
         partition_id: PartitionId,
@@ -1377,7 +1432,7 @@ impl Partition {
     async fn create_checkpoint(&self) -> Result<Checkpoint> {
         let replay_offset = self.retry_replay_offset.load(Ordering::Acquire);
         let stream_manifest_generation = self.journal.manifest_generation();
-        let (tree_manifest, applied_seq) = self.tree.checkpoint().await?;
+        let (tree_manifest, applied_seq) = self.tree.checkpoint(replay_offset).await?;
         if applied_seq > self.journal_durable_seq.load(Ordering::Acquire)
             || self.tree.last_applied_seq() < applied_seq
         {

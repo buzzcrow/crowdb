@@ -287,6 +287,8 @@ extern "C" {
         store: *const ct_page_store,
         out: *mut ct_chunk_page_store_stats,
     ) -> c_int;
+    pub fn ct_chunk_page_store_set_wal_replay_offset(store: *mut ct_page_store, offset: u64) -> c_int;
+    pub fn ct_chunk_page_store_get_wal_replay_offset(store: *const ct_page_store, offset: *mut u64) -> c_int;
     pub fn ct_chunk_page_store_reclaim_orphans(store: *mut ct_page_store) -> u64;
     pub fn ct_materialize_ownership(tree: *mut ct_tree, bytes_written: *mut u64, complete: *mut i32)
         -> c_int;

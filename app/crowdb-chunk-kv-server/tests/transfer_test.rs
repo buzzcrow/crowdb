@@ -28,11 +28,7 @@ fn transition() -> TransferTransition {
         target_epoch: 8,
         artifact: PartitionArtifact {
             tree_id: 1,
-            tree_manifest: 9,
             stream_name: StreamName { high: 10, low: 11 },
-            stream_manifest_generation: 1,
-            replay_offset: 0,
-            applied_seq: 12,
         },
         old_grant_expires_at_ms: 20_000,
         phase: TransferPhase::Planned,
@@ -65,6 +61,25 @@ fn dead_owner_waits_through_grant_and_skew_before_prepare() {
 
 #[test]
 fn graceful_transfer_requires_exact_fence_and_readiness_proofs() {
+    let mut lagging = TransferStateMachine::restore(transition()).unwrap();
+    lagging
+        .record_source_fence(AuthorityReleaseProof::ExplicitFence {
+            source_instance_id: 5,
+            source_epoch: 6,
+            durable_tail: 12,
+        })
+        .unwrap();
+    lagging.begin_target_prepare().unwrap();
+    let lagging_artifact = lagging.transition().artifact.clone();
+    assert!(lagging
+        .record_target_ready(TargetReadinessProof {
+            target_instance_id: 7,
+            target_epoch: 8,
+            artifact: lagging_artifact,
+            durable_tail: 11,
+        })
+        .is_err());
+
     let mut machine = TransferStateMachine::restore(transition()).unwrap();
     let fence = AuthorityReleaseProof::ExplicitFence {
         source_instance_id: 5,

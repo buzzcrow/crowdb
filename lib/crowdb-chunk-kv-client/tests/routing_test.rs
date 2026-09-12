@@ -33,11 +33,7 @@ fn catalog(generation: u64, owner: u64, epoch: u64) -> (CatalogHead, Vec<Catalog
             state: CatalogPartitionState::Serving,
             artifact: PartitionArtifact {
                 tree_id: 2,
-                tree_manifest: 3,
                 stream_name: StreamName { high: 4, low: 5 },
-                stream_manifest_generation: 1,
-                replay_offset: 0,
-                applied_seq: 6,
             },
             transition_id: None,
         }],

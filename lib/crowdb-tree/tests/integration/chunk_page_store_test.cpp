@@ -857,7 +857,7 @@ TEST(ChunkPageStore, LivePackRepackDropsDeadPacksWithoutResurrection)
     }
     auto sparse = catalog->load(66);
     ASSERT_NE(sparse, nullptr);
-    ASSERT_EQ(sparse->format_version, 3U);
+    ASSERT_EQ(sparse->format_version, 4U);
     ASSERT_EQ(sparse->packs.size(), 2U);
     EXPECT_EQ(sparse->packs[0].logical_offset, 0U);
     EXPECT_EQ(sparse->packs[1].logical_offset, 8192U);
