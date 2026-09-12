@@ -5,33 +5,33 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
 use async_trait::async_trait;
-use crowdb_protocol::chunk_kv::{CatalogEntry, CatalogHead, CatalogPage};
+use crowdb_protocol::chunk_kv::{ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage};
 
 use crate::{ClientError, Result};
 
 #[async_trait]
-pub trait CatalogSource: Send + Sync {
+pub trait ChunkKvRangeCatalogSource: Send + Sync {
     /// Loads one head and all referenced immutable pages.
     ///
     /// # Errors
     ///
     /// Returns an availability or decoding failure without changing the cache.
-    async fn load(&self) -> Result<(CatalogHead, Vec<CatalogPage>)>;
+    async fn load(&self) -> Result<(ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>)>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CatalogMap {
+pub struct ChunkKvRangeCatalogMap {
     generation: u64,
-    entries: Vec<CatalogEntry>,
+    entries: Vec<ChunkKvRangeCatalogEntry>,
 }
 
-impl CatalogMap {
+impl ChunkKvRangeCatalogMap {
     /// Builds a route map only from one fully valid catalog generation.
     ///
     /// # Errors
     ///
     /// Returns an error for holes, overlap, corruption, or identity regression.
-    pub fn decode(head: &CatalogHead, pages: &[CatalogPage]) -> Result<Self> {
+    pub fn decode(head: &ChunkKvRangeCatalogHead, pages: &[ChunkKvRangeCatalogPage]) -> Result<Self> {
         head.validate_pages(pages)
             .map_err(|error| ClientError::InvalidCatalog(error.to_string()))?;
         Ok(Self {
@@ -49,12 +49,12 @@ impl CatalogMap {
     }
 
     #[must_use]
-    pub fn entries(&self) -> &[CatalogEntry] {
+    pub fn entries(&self) -> &[ChunkKvRangeCatalogEntry] {
         &self.entries
     }
 
     #[must_use]
-    pub fn route(&self, key: &[u8]) -> Option<&CatalogEntry> {
+    pub fn route(&self, key: &[u8]) -> Option<&ChunkKvRangeCatalogEntry> {
         let upper = self
             .entries
             .partition_point(|entry| entry.range.start.as_slice() <= key);
@@ -66,13 +66,13 @@ impl CatalogMap {
 }
 
 #[derive(Default)]
-pub struct CatalogCache {
-    current: ArcSwapOption<CatalogMap>,
+pub struct ChunkKvRangeCatalogCache {
+    current: ArcSwapOption<ChunkKvRangeCatalogMap>,
 }
 
-impl CatalogCache {
+impl ChunkKvRangeCatalogCache {
     #[must_use]
-    pub fn load(&self) -> Option<Arc<CatalogMap>> {
+    pub fn load(&self) -> Option<Arc<ChunkKvRangeCatalogMap>> {
         self.current.load_full()
     }
 
@@ -81,7 +81,7 @@ impl CatalogCache {
     /// # Errors
     ///
     /// Returns an error for a same-generation conflict or generation regression.
-    pub fn install(&self, map: CatalogMap) -> Result<()> {
+    pub fn install(&self, map: ChunkKvRangeCatalogMap) -> Result<()> {
         let candidate = Arc::new(map);
         if let Some(current) = self.current.load_full() {
             if current.as_ref() == candidate.as_ref() {

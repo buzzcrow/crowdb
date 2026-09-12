@@ -6,15 +6,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use crowdb_chunk_kv_server::{
-    CatalogPublisher, CatalogStore, DomainMonitorRegistry, Group0ControlStore, Group0Kv, Group0KvError,
-    SplitAction, SplitStateMachine, TransferStateMachine, VersionedValue,
+    ChunkKvRangeCatalogPublisher, ChunkKvRangeCatalogStore, DomainMonitorRegistry, Group0ControlStore,
+    Group0Kv, Group0KvError, SplitAction, SplitStateMachine, TransferStateMachine, VersionedValue,
 };
 use crowdb_protocol::chunk_kv::{
-    AuthorityReleaseProof, CatalogEntry, CatalogHead, CatalogPage, CatalogPageRef, CatalogPartitionState,
-    DomainFailurePolicy, DomainMonitorDescriptor, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest,
-    Id128, KeyRange, OwnerDescriptor, PartitionArtifact, ServingAssignment, ServingGrant,
-    SplitChildAssignment, SplitPhase, SplitReadinessProof, SplitTransition, TransferPhase,
-    TransferTransition,
+    AuthorityReleaseProof, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage,
+    ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState, DomainFailurePolicy,
+    DomainMonitorDescriptor, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest, Id128, KeyRange,
+    OwnerDescriptor, PartitionArtifact, ServingAssignment, ServingGrant, SplitChildAssignment, SplitPhase,
+    SplitReadinessProof, SplitTransition, TransferPhase, TransferTransition,
 };
 use crowdb_protocol::chunk_stream::StreamName;
 use crowdb_protocol::key::{ChunkKvCatalogHeadKey, ServingGrantKey, TextKey};
@@ -89,11 +89,11 @@ impl Group0Kv for TestKv {
     }
 }
 
-fn page(generation: u64) -> CatalogPage {
-    let mut page = CatalogPage {
+fn page(generation: u64) -> ChunkKvRangeCatalogPage {
+    let mut page = ChunkKvRangeCatalogPage {
         generation,
         page_index: 0,
-        entries: vec![CatalogEntry {
+        entries: vec![ChunkKvRangeCatalogEntry {
             partition_id: Id128 { high: 1, low: 1 },
             range: KeyRange {
                 start: Vec::new(),
@@ -104,7 +104,7 @@ fn page(generation: u64) -> CatalogPage {
                 rpc_endpoint: "127.0.0.1:9900".into(),
             },
             owner_epoch: generation,
-            state: CatalogPartitionState::Serving,
+            state: ChunkKvRangeCatalogPartitionState::Serving,
             artifact: PartitionArtifact {
                 tree_id: 1,
                 stream_name: StreamName { high: 2, low: 3 },
@@ -117,11 +117,15 @@ fn page(generation: u64) -> CatalogPage {
     page
 }
 
-fn head(generation: u64, previous_generation: Option<u64>, page: &CatalogPage) -> CatalogHead {
-    let mut head = CatalogHead {
+fn head(
+    generation: u64,
+    previous_generation: Option<u64>,
+    page: &ChunkKvRangeCatalogPage,
+) -> ChunkKvRangeCatalogHead {
+    let mut head = ChunkKvRangeCatalogHead {
         generation,
         previous_generation,
-        pages: vec![CatalogPageRef {
+        pages: vec![ChunkKvRangeCatalogPageRef {
             page_generation: page.generation,
             page_index: page.page_index,
             first_key: Vec::new(),
@@ -240,7 +244,7 @@ fn split() -> SplitTransition {
 async fn group0_catalog_reconciles_an_ambiguous_committed_head() {
     let kv = Arc::new(TestKv::default());
     let store = Arc::new(Group0ControlStore::new(kv.clone()));
-    let publisher = CatalogPublisher::new(store.clone());
+    let publisher = ChunkKvRangeCatalogPublisher::new(store.clone());
     let catalog_page = page(1);
     let catalog_head = head(1, None, &catalog_page);
     kv.inject(InjectedPut {

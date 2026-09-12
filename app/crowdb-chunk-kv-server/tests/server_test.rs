@@ -15,10 +15,11 @@ use crowdb_chunk_stream::{
     StreamName, StreamRegistry,
 };
 use crowdb_protocol::chunk_kv::{
-    CatalogEntry, CatalogHead, CatalogPage, CatalogPageRef, CatalogPartitionState, ChunkKvRpcErrorCode,
-    ClientRequestId, DomainFailurePolicy, DomainMonitorDescriptor, Id128, KeyRange, OperationResult,
-    OwnerDescriptor, PartitionArtifact, PointOperation, PointRequest, RequestRouting, ScanDirection,
-    ScanRequest, SeekKind, SeekRequest, ServingAssignment, ServingGrant,
+    ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
+    ChunkKvRangeCatalogPartitionState, ChunkKvRpcErrorCode, ClientRequestId, DomainFailurePolicy,
+    DomainMonitorDescriptor, Id128, KeyRange, OperationResult, OwnerDescriptor, PartitionArtifact,
+    PointOperation, PointRequest, RequestRouting, ScanDirection, ScanRequest, SeekKind, SeekRequest,
+    ServingAssignment, ServingGrant,
 };
 
 const INSTANCE_ID: u64 = 7;
@@ -61,11 +62,11 @@ fn catalog(
     owner_epoch: u64,
     generation: u64,
     previous_generation: Option<u64>,
-) -> (CatalogHead, CatalogPage) {
-    let mut page = CatalogPage {
+) -> (ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage) {
+    let mut page = ChunkKvRangeCatalogPage {
         generation,
         page_index: 0,
-        entries: vec![CatalogEntry {
+        entries: vec![ChunkKvRangeCatalogEntry {
             partition_id,
             range: KeyRange {
                 start: Vec::new(),
@@ -76,7 +77,7 @@ fn catalog(
                 rpc_endpoint: "127.0.0.1:9900".into(),
             },
             owner_epoch,
-            state: CatalogPartitionState::Serving,
+            state: ChunkKvRangeCatalogPartitionState::Serving,
             artifact: PartitionArtifact {
                 tree_id: 1,
                 stream_name,
@@ -86,10 +87,10 @@ fn catalog(
         checksum: [0; 32],
     };
     page.seal().unwrap();
-    let mut head = CatalogHead {
+    let mut head = ChunkKvRangeCatalogHead {
         generation,
         previous_generation,
-        pages: vec![CatalogPageRef {
+        pages: vec![ChunkKvRangeCatalogPageRef {
             page_generation: generation,
             page_index: 0,
             first_key: Vec::new(),

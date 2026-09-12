@@ -11,6 +11,8 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 ## Phase 1: Protocol and Catalog Core
 
+- [x] Rename public catalog symbols to the explicit
+  `ChunkKvRangeCatalog*` vocabulary across protocol, server, and routed client.
 - [x] Add monitor descriptor, instance observation, assignment, artifact,
   transition, range-page/head, serving-grant, and typed outcome models.
 - [x] Validate complete binary-keyspace coverage, page/head checksums,
@@ -22,8 +24,9 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 ## Phase 2: Monitor and Lease Authority
 
-- [ ] Implement idempotent domain-monitor registration and a supervised,
-  leader-fenced driver runtime with read-failure containment.
+- [ ] Extract shared `KvGroupOperations`, add a group-0 control-plane facade,
+  and migrate the supervised domain-monitor runtime off KV-client loopback RPC
+  while preserving read-failure containment and leader-tenure fencing.
 - [x] Add raw expired-instance observation and fake-clock health transitions.
 - [x] Issue aggregate assignment-digest grants and enforce conservative local
   self-fencing and replacement exclusion deadlines.

@@ -4,22 +4,22 @@
 use std::sync::Arc;
 
 use crowdb_protocol::chunk_kv::{
-    CatalogEntry, CatalogHead, CatalogPage, CatalogPageRef, CatalogPartitionState, SplitPhase,
-    SplitTransition, TransferPhase, TransferTransition,
+    ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
+    ChunkKvRangeCatalogPartitionState, SplitPhase, SplitTransition, TransferPhase, TransferTransition,
 };
 
-use super::{CatalogError, CatalogPublisher, CatalogStore};
+use super::{ChunkKvRangeCatalogError, ChunkKvRangeCatalogPublisher, ChunkKvRangeCatalogStore};
 
 /// Publishes transfer and split cutovers from durable, readiness-proven plans.
-pub struct CatalogCutover {
-    publisher: CatalogPublisher,
+pub struct ChunkKvRangeCatalogCutover {
+    publisher: ChunkKvRangeCatalogPublisher,
 }
 
-impl CatalogCutover {
+impl ChunkKvRangeCatalogCutover {
     #[must_use]
-    pub fn new(store: Arc<dyn CatalogStore>) -> Self {
+    pub fn new(store: Arc<dyn ChunkKvRangeCatalogStore>) -> Self {
         Self {
-            publisher: CatalogPublisher::new(store),
+            publisher: ChunkKvRangeCatalogPublisher::new(store),
         }
     }
 
@@ -29,31 +29,34 @@ impl CatalogCutover {
     ///
     /// Returns an error when the transition is not prepared, does not match the
     /// current catalog, or the immutable successor cannot be published.
-    pub async fn publish_transfer(&self, transition: &TransferTransition) -> Result<u64, CatalogError> {
+    pub async fn publish_transfer(
+        &self,
+        transition: &TransferTransition,
+    ) -> Result<u64, ChunkKvRangeCatalogError> {
         transition.validate()?;
         if !matches!(
             transition.phase,
             TransferPhase::TargetPrepared | TransferPhase::CatalogCommitted
         ) {
-            return Err(CatalogError::TransitionNotReady);
+            return Err(ChunkKvRangeCatalogError::TransitionNotReady);
         }
         let (head, pages) = self
             .publisher
             .load_current()
             .await?
-            .ok_or(CatalogError::TransitionConflict)?;
+            .ok_or(ChunkKvRangeCatalogError::TransitionConflict)?;
         let desired = transfer_entry(transition);
         if exact_entries(&pages, |entry| entry == &desired) == 1 {
             reject_reused_transition_id(&pages, transition.transition_id, 1)?;
             return Ok(head.generation);
         }
         reject_reused_transition_id(&pages, transition.transition_id, 0)?;
-        let source = |entry: &CatalogEntry| {
+        let source = |entry: &ChunkKvRangeCatalogEntry| {
             entry.partition_id == transition.partition_id
                 && entry.range == transition.range
                 && entry.owner == transition.source
                 && entry.owner_epoch == transition.source_epoch
-                && entry.state == CatalogPartitionState::Serving
+                && entry.state == ChunkKvRangeCatalogPartitionState::Serving
                 && entry.artifact == transition.artifact
                 && entry.transition_id.is_none()
         };
@@ -69,19 +72,19 @@ impl CatalogCutover {
     ///
     /// Returns an error when the transition is not prepared, does not match the
     /// current catalog, or the immutable successor cannot be published.
-    pub async fn publish_split(&self, transition: &SplitTransition) -> Result<u64, CatalogError> {
+    pub async fn publish_split(&self, transition: &SplitTransition) -> Result<u64, ChunkKvRangeCatalogError> {
         transition.validate()?;
         if !matches!(
             transition.phase,
             SplitPhase::ChildrenPrepared | SplitPhase::CatalogCommitted
         ) {
-            return Err(CatalogError::TransitionNotReady);
+            return Err(ChunkKvRangeCatalogError::TransitionNotReady);
         }
         let (head, pages) = self
             .publisher
             .load_current()
             .await?
-            .ok_or(CatalogError::TransitionConflict)?;
+            .ok_or(ChunkKvRangeCatalogError::TransitionConflict)?;
         let desired = split_entries(transition);
         if desired
             .iter()
@@ -91,12 +94,12 @@ impl CatalogCutover {
             return Ok(head.generation);
         }
         reject_reused_transition_id(&pages, transition.transition_id, 0)?;
-        let parent = |entry: &CatalogEntry| {
+        let parent = |entry: &ChunkKvRangeCatalogEntry| {
             entry.partition_id == transition.parent_id
                 && entry.range == transition.parent_range
                 && entry.owner == transition.parent_owner
                 && entry.owner_epoch == transition.parent_epoch
-                && entry.state == CatalogPartitionState::Serving
+                && entry.state == ChunkKvRangeCatalogPartitionState::Serving
                 && entry.artifact == transition.parent_artifact
                 && entry.transition_id.is_none()
         };
@@ -107,27 +110,27 @@ impl CatalogCutover {
     }
 }
 
-fn transfer_entry(transition: &TransferTransition) -> CatalogEntry {
-    CatalogEntry {
+fn transfer_entry(transition: &TransferTransition) -> ChunkKvRangeCatalogEntry {
+    ChunkKvRangeCatalogEntry {
         partition_id: transition.partition_id,
         range: transition.range.clone(),
         owner: transition.target.clone(),
         owner_epoch: transition.target_epoch,
-        state: CatalogPartitionState::Serving,
+        state: ChunkKvRangeCatalogPartitionState::Serving,
         artifact: transition.artifact.clone(),
         transition_id: Some(transition.transition_id),
     }
 }
 
-fn split_entries(transition: &SplitTransition) -> Vec<CatalogEntry> {
+fn split_entries(transition: &SplitTransition) -> Vec<ChunkKvRangeCatalogEntry> {
     [&transition.left, &transition.right]
         .into_iter()
-        .map(|child| CatalogEntry {
+        .map(|child| ChunkKvRangeCatalogEntry {
             partition_id: child.partition_id,
             range: child.range.clone(),
             owner: child.owner.clone(),
             owner_epoch: child.owner_epoch,
-            state: CatalogPartitionState::Serving,
+            state: ChunkKvRangeCatalogPartitionState::Serving,
             artifact: child.artifact.clone(),
             transition_id: Some(transition.transition_id),
         })
@@ -135,27 +138,27 @@ fn split_entries(transition: &SplitTransition) -> Vec<CatalogEntry> {
 }
 
 fn replace_one<F>(
-    head: CatalogHead,
-    mut pages: Vec<CatalogPage>,
+    head: ChunkKvRangeCatalogHead,
+    mut pages: Vec<ChunkKvRangeCatalogPage>,
     matches: F,
-    replacement: Vec<CatalogEntry>,
-) -> Result<(CatalogHead, Vec<CatalogPage>), CatalogError>
+    replacement: Vec<ChunkKvRangeCatalogEntry>,
+) -> Result<(ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>), ChunkKvRangeCatalogError>
 where
-    F: Fn(&CatalogEntry) -> bool,
+    F: Fn(&ChunkKvRangeCatalogEntry) -> bool,
 {
     let mut found = None;
     for (page_offset, page) in pages.iter().enumerate() {
         for (entry_offset, entry) in page.entries.iter().enumerate() {
             if matches(entry) && found.replace((page_offset, entry_offset)).is_some() {
-                return Err(CatalogError::TransitionConflict);
+                return Err(ChunkKvRangeCatalogError::TransitionConflict);
             }
         }
     }
-    let (page_offset, entry_offset) = found.ok_or(CatalogError::TransitionConflict)?;
+    let (page_offset, entry_offset) = found.ok_or(ChunkKvRangeCatalogError::TransitionConflict)?;
     let generation = head
         .generation
         .checked_add(1)
-        .ok_or(CatalogError::GenerationOverflow)?;
+        .ok_or(ChunkKvRangeCatalogError::GenerationOverflow)?;
     let changed = &mut pages[page_offset];
     changed.generation = generation;
     changed.entries.splice(entry_offset..=entry_offset, replacement);
@@ -163,7 +166,7 @@ where
 
     let mut references = head.pages;
     references[page_offset] = page_reference(changed);
-    let mut next = CatalogHead {
+    let mut next = ChunkKvRangeCatalogHead {
         generation,
         previous_generation: Some(head.generation),
         pages: references,
@@ -174,8 +177,8 @@ where
     Ok((next, pages))
 }
 
-fn page_reference(page: &CatalogPage) -> CatalogPageRef {
-    CatalogPageRef {
+fn page_reference(page: &ChunkKvRangeCatalogPage) -> ChunkKvRangeCatalogPageRef {
+    ChunkKvRangeCatalogPageRef {
         page_generation: page.generation,
         page_index: page.page_index,
         first_key: page.entries[0].range.start.clone(),
@@ -183,9 +186,9 @@ fn page_reference(page: &CatalogPage) -> CatalogPageRef {
     }
 }
 
-fn exact_entries<F>(pages: &[CatalogPage], matches: F) -> usize
+fn exact_entries<F>(pages: &[ChunkKvRangeCatalogPage], matches: F) -> usize
 where
-    F: Fn(&CatalogEntry) -> bool,
+    F: Fn(&ChunkKvRangeCatalogEntry) -> bool,
 {
     pages
         .iter()
@@ -195,14 +198,14 @@ where
 }
 
 fn reject_reused_transition_id(
-    pages: &[CatalogPage],
+    pages: &[ChunkKvRangeCatalogPage],
     transition_id: crowdb_protocol::chunk_kv::Id128,
     expected: usize,
-) -> Result<(), CatalogError> {
+) -> Result<(), ChunkKvRangeCatalogError> {
     let actual = exact_entries(pages, |entry| entry.transition_id == Some(transition_id));
     if actual == expected {
         Ok(())
     } else {
-        Err(CatalogError::TransitionConflict)
+        Err(ChunkKvRangeCatalogError::TransitionConflict)
     }
 }

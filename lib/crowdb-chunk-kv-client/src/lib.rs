@@ -10,7 +10,9 @@ mod config;
 mod error;
 mod transport;
 
-pub use catalog::{CatalogCache, CatalogMap, CatalogSource, RequestIdentityAllocator};
+pub use catalog::{
+    ChunkKvRangeCatalogCache, ChunkKvRangeCatalogMap, ChunkKvRangeCatalogSource, RequestIdentityAllocator,
+};
 pub use client::ChunkKvClient;
 pub use compose::{
     BatchItem, ComposedItemError, MultiGetItemResult, MultiScanContinuation, MultiScanPage, MultiScanRequest,

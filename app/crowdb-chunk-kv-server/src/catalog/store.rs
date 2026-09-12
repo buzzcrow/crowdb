@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use crowdb_protocol::chunk_kv::{CatalogHead, CatalogPage, ChunkKvProtocolError};
+use crowdb_protocol::chunk_kv::{ChunkKvProtocolError, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
@@ -17,7 +17,7 @@ pub enum HeadWriteOutcome {
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
-pub enum CatalogError {
+pub enum ChunkKvRangeCatalogError {
     #[error(transparent)]
     Invalid(#[from] ChunkKvProtocolError),
     #[error("catalog storage is unavailable: {0}")]
@@ -39,20 +39,27 @@ pub enum CatalogError {
 }
 
 #[async_trait]
-pub trait CatalogStore: Send + Sync {
-    async fn put_page(&self, page: CatalogPage) -> Result<(), CatalogError>;
-    async fn get_page(&self, generation: u64, page_index: u64) -> Result<Option<CatalogPage>, CatalogError>;
-    async fn put_head(&self, head: CatalogHead) -> Result<HeadWriteOutcome, CatalogError>;
-    async fn get_head(&self) -> Result<Option<CatalogHead>, CatalogError>;
+pub trait ChunkKvRangeCatalogStore: Send + Sync {
+    async fn put_page(&self, page: ChunkKvRangeCatalogPage) -> Result<(), ChunkKvRangeCatalogError>;
+    async fn get_page(
+        &self,
+        generation: u64,
+        page_index: u64,
+    ) -> Result<Option<ChunkKvRangeCatalogPage>, ChunkKvRangeCatalogError>;
+    async fn put_head(
+        &self,
+        head: ChunkKvRangeCatalogHead,
+    ) -> Result<HeadWriteOutcome, ChunkKvRangeCatalogError>;
+    async fn get_head(&self) -> Result<Option<ChunkKvRangeCatalogHead>, ChunkKvRangeCatalogError>;
 }
 
-pub struct CatalogPublisher {
-    store: Arc<dyn CatalogStore>,
+pub struct ChunkKvRangeCatalogPublisher {
+    store: Arc<dyn ChunkKvRangeCatalogStore>,
 }
 
-impl CatalogPublisher {
+impl ChunkKvRangeCatalogPublisher {
     #[must_use]
-    pub fn new(store: Arc<dyn CatalogStore>) -> Self {
+    pub fn new(store: Arc<dyn ChunkKvRangeCatalogStore>) -> Self {
         Self { store }
     }
 
@@ -62,7 +69,10 @@ impl CatalogPublisher {
     ///
     /// Returns an error when the head or any referenced immutable page is
     /// unavailable, changed, or invalid.
-    pub async fn load_current(&self) -> Result<Option<(CatalogHead, Vec<CatalogPage>)>, CatalogError> {
+    pub async fn load_current(
+        &self,
+    ) -> Result<Option<(ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>)>, ChunkKvRangeCatalogError>
+    {
         let Some(head) = self.store.get_head().await? else {
             return Ok(None);
         };
@@ -77,7 +87,11 @@ impl CatalogPublisher {
     ///
     /// Returns an error for invalid/regressing input, storage failure, a
     /// definite absent head write, or an ambiguous outcome not proven by reread.
-    pub async fn publish(&self, head: CatalogHead, pages: Vec<CatalogPage>) -> Result<(), CatalogError> {
+    pub async fn publish(
+        &self,
+        head: ChunkKvRangeCatalogHead,
+        pages: Vec<ChunkKvRangeCatalogPage>,
+    ) -> Result<(), ChunkKvRangeCatalogError> {
         head.validate_pages(&pages)?;
         let current = self.store.get_head().await?;
         if current.as_ref() == Some(&head) {
@@ -88,11 +102,11 @@ impl CatalogPublisher {
                 let previous_pages = self.load_pages(previous).await?;
                 head.validate_successor(&pages, previous, &previous_pages)?;
                 if head.previous_generation != Some(previous.generation) {
-                    return Err(CatalogError::GenerationConflict);
+                    return Err(ChunkKvRangeCatalogError::GenerationConflict);
                 }
             }
             None if head.previous_generation.is_some() || head.generation != 1 => {
-                return Err(CatalogError::GenerationConflict);
+                return Err(ChunkKvRangeCatalogError::GenerationConflict);
             }
             None => {}
         }
@@ -104,25 +118,28 @@ impl CatalogPublisher {
         head.validate_pages(&stored_pages)?;
         match self.store.put_head(head.clone()).await? {
             HeadWriteOutcome::Committed => Ok(()),
-            HeadWriteOutcome::DefinitelyNotCommitted => Err(CatalogError::HeadNotCommitted),
+            HeadWriteOutcome::DefinitelyNotCommitted => Err(ChunkKvRangeCatalogError::HeadNotCommitted),
             HeadWriteOutcome::Ambiguous => {
                 if self.store.get_head().await?.as_ref() == Some(&head) {
                     Ok(())
                 } else {
-                    Err(CatalogError::AmbiguousHead)
+                    Err(ChunkKvRangeCatalogError::AmbiguousHead)
                 }
             }
         }
     }
 
-    async fn load_pages(&self, head: &CatalogHead) -> Result<Vec<CatalogPage>, CatalogError> {
+    async fn load_pages(
+        &self,
+        head: &ChunkKvRangeCatalogHead,
+    ) -> Result<Vec<ChunkKvRangeCatalogPage>, ChunkKvRangeCatalogError> {
         let mut pages = Vec::with_capacity(head.pages.len());
         for reference in &head.pages {
             let page = self
                 .store
                 .get_page(reference.page_generation, reference.page_index)
                 .await?
-                .ok_or(CatalogError::MissingPage)?;
+                .ok_or(ChunkKvRangeCatalogError::MissingPage)?;
             pages.push(page);
         }
         Ok(pages)
@@ -131,19 +148,19 @@ impl CatalogPublisher {
 
 #[derive(Default)]
 struct MemoryCatalogState {
-    pages: HashMap<(u64, u64), CatalogPage>,
-    head: Option<CatalogHead>,
+    pages: HashMap<(u64, u64), ChunkKvRangeCatalogPage>,
+    head: Option<ChunkKvRangeCatalogHead>,
     next_head_outcome: Option<(HeadWriteOutcome, bool)>,
     page_writes: u64,
     head_writes: u64,
 }
 
 #[derive(Default)]
-pub struct MemoryCatalogStore {
+pub struct MemoryChunkKvRangeCatalogStore {
     state: Mutex<MemoryCatalogState>,
 }
 
-impl MemoryCatalogStore {
+impl MemoryChunkKvRangeCatalogStore {
     pub async fn set_next_head_outcome(&self, outcome: HeadWriteOutcome, commit: bool) {
         self.state.lock().await.next_head_outcome = Some((outcome, commit));
     }
@@ -155,19 +172,23 @@ impl MemoryCatalogStore {
 }
 
 #[async_trait]
-impl CatalogStore for MemoryCatalogStore {
-    async fn put_page(&self, page: CatalogPage) -> Result<(), CatalogError> {
+impl ChunkKvRangeCatalogStore for MemoryChunkKvRangeCatalogStore {
+    async fn put_page(&self, page: ChunkKvRangeCatalogPage) -> Result<(), ChunkKvRangeCatalogError> {
         let mut state = self.state.lock().await;
         let key = (page.generation, page.page_index);
         if state.pages.get(&key).is_some_and(|current| current != &page) {
-            return Err(CatalogError::GenerationConflict);
+            return Err(ChunkKvRangeCatalogError::GenerationConflict);
         }
         state.pages.insert(key, page);
         state.page_writes += 1;
         Ok(())
     }
 
-    async fn get_page(&self, generation: u64, page_index: u64) -> Result<Option<CatalogPage>, CatalogError> {
+    async fn get_page(
+        &self,
+        generation: u64,
+        page_index: u64,
+    ) -> Result<Option<ChunkKvRangeCatalogPage>, ChunkKvRangeCatalogError> {
         Ok(self
             .state
             .lock()
@@ -177,7 +198,10 @@ impl CatalogStore for MemoryCatalogStore {
             .cloned())
     }
 
-    async fn put_head(&self, head: CatalogHead) -> Result<HeadWriteOutcome, CatalogError> {
+    async fn put_head(
+        &self,
+        head: ChunkKvRangeCatalogHead,
+    ) -> Result<HeadWriteOutcome, ChunkKvRangeCatalogError> {
         let mut state = self.state.lock().await;
         state.head_writes += 1;
         let (outcome, commit) = state
@@ -190,7 +214,7 @@ impl CatalogStore for MemoryCatalogStore {
         Ok(outcome)
     }
 
-    async fn get_head(&self) -> Result<Option<CatalogHead>, CatalogError> {
+    async fn get_head(&self) -> Result<Option<ChunkKvRangeCatalogHead>, ChunkKvRangeCatalogError> {
         Ok(self.state.lock().await.head.clone())
     }
 }

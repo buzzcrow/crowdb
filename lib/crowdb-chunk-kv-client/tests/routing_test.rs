@@ -6,20 +6,24 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use crowdb_chunk_kv_client::{
-    CatalogSource, ChunkKvClient, ChunkKvTransport, ClientConfig, ClientError, Result,
+    ChunkKvClient, ChunkKvRangeCatalogSource, ChunkKvTransport, ClientConfig, ClientError, Result,
 };
 use crowdb_protocol::chunk_kv::{
-    CatalogEntry, CatalogHead, CatalogPage, CatalogPageRef, CatalogPartitionState, ChunkKvResponse,
-    ChunkKvRpcErrorCode, Id128, KeyRange, OperationResult, OwnerDescriptor, PartitionArtifact, PointRequest,
-    RpcFailure,
+    ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
+    ChunkKvRangeCatalogPartitionState, ChunkKvResponse, ChunkKvRpcErrorCode, Id128, KeyRange,
+    OperationResult, OwnerDescriptor, PartitionArtifact, PointRequest, RpcFailure,
 };
 use crowdb_protocol::chunk_stream::StreamName;
 
-fn catalog(generation: u64, owner: u64, epoch: u64) -> (CatalogHead, Vec<CatalogPage>) {
-    let mut page = CatalogPage {
+fn catalog(
+    generation: u64,
+    owner: u64,
+    epoch: u64,
+) -> (ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>) {
+    let mut page = ChunkKvRangeCatalogPage {
         generation,
         page_index: 0,
-        entries: vec![CatalogEntry {
+        entries: vec![ChunkKvRangeCatalogEntry {
             partition_id: Id128 { high: 1, low: 2 },
             range: KeyRange {
                 start: Vec::new(),
@@ -30,7 +34,7 @@ fn catalog(generation: u64, owner: u64, epoch: u64) -> (CatalogHead, Vec<Catalog
                 rpc_endpoint: format!("owner-{owner}"),
             },
             owner_epoch: epoch,
-            state: CatalogPartitionState::Serving,
+            state: ChunkKvRangeCatalogPartitionState::Serving,
             artifact: PartitionArtifact {
                 tree_id: 2,
                 stream_name: StreamName { high: 4, low: 5 },
@@ -40,10 +44,10 @@ fn catalog(generation: u64, owner: u64, epoch: u64) -> (CatalogHead, Vec<Catalog
         checksum: [0; 32],
     };
     page.seal().unwrap();
-    let mut head = CatalogHead {
+    let mut head = ChunkKvRangeCatalogHead {
         generation,
         previous_generation: generation.checked_sub(1).filter(|previous| *previous != 0),
-        pages: vec![CatalogPageRef {
+        pages: vec![ChunkKvRangeCatalogPageRef {
             page_generation: generation,
             page_index: 0,
             first_key: Vec::new(),
@@ -56,12 +60,12 @@ fn catalog(generation: u64, owner: u64, epoch: u64) -> (CatalogHead, Vec<Catalog
 }
 
 struct ScriptedCatalog {
-    generations: Mutex<Vec<(CatalogHead, Vec<CatalogPage>)>>,
+    generations: Mutex<Vec<(ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>)>>,
 }
 
 #[async_trait]
-impl CatalogSource for ScriptedCatalog {
-    async fn load(&self) -> Result<(CatalogHead, Vec<CatalogPage>)> {
+impl ChunkKvRangeCatalogSource for ScriptedCatalog {
+    async fn load(&self) -> Result<(ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>)> {
         let mut generations = self.generations.lock().unwrap();
         if generations.is_empty() {
             return Err(ClientError::CatalogUnavailable("group 0 unavailable".into()));

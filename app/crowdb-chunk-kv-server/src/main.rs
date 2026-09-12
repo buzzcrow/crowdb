@@ -9,13 +9,14 @@ use std::sync::Arc;
 
 use clap::Parser;
 use crowdb_chunk_kv_server::{
-    management_router, CatalogPublisher, CatalogReconcileError, ChunkKvRpcService, ChunkKvServerConfig,
-    ChunkKvService, ChunkKvStorage, DomainMonitorRegistry, Group0ControlStore, ManagementState,
-    TransitionExecutor, TransitionProcessor,
+    management_router, ChunkKvRangeCatalogPublisher, ChunkKvRangeCatalogReconcileError, ChunkKvRpcService,
+    ChunkKvServerConfig, ChunkKvService, ChunkKvStorage, DomainMonitorRegistry, Group0ControlStore,
+    ManagementState, TransitionExecutor, TransitionProcessor,
 };
 use crowdb_kv_client::{ServiceRegistryClient, WatchNotifyClient, WatchSubscription};
 use crowdb_protocol::chunk_kv::{
-    CatalogPage, CatalogPartitionState, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest,
+    ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPartitionState, EnsureDomainMonitorOutcome,
+    EnsureDomainMonitorRequest,
 };
 use crowdb_protocol::key::{ChunkKvSplitKey, ChunkKvTransferKey, TextKey};
 use tracing::{error, info, warn};
@@ -169,7 +170,7 @@ async fn main() {
         }
     }
 
-    let catalog = Arc::new(CatalogPublisher::new(control_store.clone()));
+    let catalog = Arc::new(ChunkKvRangeCatalogPublisher::new(control_store.clone()));
     match catalog.load_current().await {
         Ok(Some((head, pages))) => {
             let recovered =
@@ -228,8 +229,8 @@ async fn main() {
                             recovered = recovered.len(),
                             "installed refreshed chunk KV catalog and reconciled assignments"
                         ),
-                        Err(CatalogReconcileError::Catalog(
-                            crowdb_chunk_kv_server::CatalogError::GenerationConflict,
+                        Err(ChunkKvRangeCatalogReconcileError::Catalog(
+                            crowdb_chunk_kv_server::ChunkKvRangeCatalogError::GenerationConflict,
                         )) => {}
                         Err(error) => warn!(%error, "rejected refreshed chunk KV catalog"),
                     }
@@ -441,7 +442,7 @@ async fn install_latest_grant(
 async fn recover_assigned_partitions(
     storage: &ChunkKvStorage,
     service: &ChunkKvService,
-    pages: &[CatalogPage],
+    pages: &[ChunkKvRangeCatalogPage],
     instance_id: u64,
 ) -> Result<Vec<crowdb_chunk_kv::Partition>, crowdb_chunk_kv_server::StorageRuntimeError> {
     let mut recovered = Vec::new();
@@ -449,7 +450,7 @@ async fn recover_assigned_partitions(
         entry.owner.instance_id == instance_id
             && !matches!(
                 entry.state,
-                CatalogPartitionState::Retired | CatalogPartitionState::Faulted
+                ChunkKvRangeCatalogPartitionState::Retired | ChunkKvRangeCatalogPartitionState::Faulted
             )
     }) {
         if !service.hosts_catalog_assignment(entry) {

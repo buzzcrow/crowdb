@@ -3,11 +3,15 @@
 
 use std::sync::Arc;
 
-use crowdb_chunk_kv_server::{CatalogCutover, CatalogError, CatalogPublisher, MemoryCatalogStore};
+use crowdb_chunk_kv_server::{
+    ChunkKvRangeCatalogCutover, ChunkKvRangeCatalogError, ChunkKvRangeCatalogPublisher,
+    MemoryChunkKvRangeCatalogStore,
+};
 use crowdb_protocol::chunk_kv::{
-    AuthorityReleaseProof, CatalogEntry, CatalogHead, CatalogPage, CatalogPageRef, CatalogPartitionState,
-    Id128, KeyRange, OwnerDescriptor, PartitionArtifact, SplitChildAssignment, SplitPhase,
-    SplitReadinessProof, SplitTransition, TargetReadinessProof, TransferPhase, TransferTransition,
+    AuthorityReleaseProof, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage,
+    ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState, Id128, KeyRange, OwnerDescriptor,
+    PartitionArtifact, SplitChildAssignment, SplitPhase, SplitReadinessProof, SplitTransition,
+    TargetReadinessProof, TransferPhase, TransferTransition,
 };
 use crowdb_protocol::chunk_stream::StreamName;
 
@@ -39,8 +43,8 @@ fn entry(
     owner: OwnerDescriptor,
     owner_epoch: u64,
     artifact: PartitionArtifact,
-) -> CatalogEntry {
-    CatalogEntry {
+) -> ChunkKvRangeCatalogEntry {
+    ChunkKvRangeCatalogEntry {
         partition_id,
         range: KeyRange {
             start: start.to_vec(),
@@ -48,14 +52,14 @@ fn entry(
         },
         owner,
         owner_epoch,
-        state: CatalogPartitionState::Serving,
+        state: ChunkKvRangeCatalogPartitionState::Serving,
         artifact,
         transition_id: None,
     }
 }
 
-fn page(generation: u64, page_index: u64, entries: Vec<CatalogEntry>) -> CatalogPage {
-    let mut page = CatalogPage {
+fn page(generation: u64, page_index: u64, entries: Vec<ChunkKvRangeCatalogEntry>) -> ChunkKvRangeCatalogPage {
+    let mut page = ChunkKvRangeCatalogPage {
         generation,
         page_index,
         entries,
@@ -65,13 +69,13 @@ fn page(generation: u64, page_index: u64, entries: Vec<CatalogEntry>) -> Catalog
     page
 }
 
-fn head(generation: u64, pages: &[CatalogPage]) -> CatalogHead {
-    let mut head = CatalogHead {
+fn head(generation: u64, pages: &[ChunkKvRangeCatalogPage]) -> ChunkKvRangeCatalogHead {
+    let mut head = ChunkKvRangeCatalogHead {
         generation,
         previous_generation: None,
         pages: pages
             .iter()
-            .map(|page| CatalogPageRef {
+            .map(|page| ChunkKvRangeCatalogPageRef {
                 page_generation: page.generation,
                 page_index: page.page_index,
                 first_key: page.entries[0].range.start.clone(),
@@ -84,7 +88,11 @@ fn head(generation: u64, pages: &[CatalogPage]) -> CatalogHead {
     head
 }
 
-async fn seeded_catalog() -> (Arc<MemoryCatalogStore>, CatalogHead, Vec<CatalogPage>) {
+async fn seeded_catalog() -> (
+    Arc<MemoryChunkKvRangeCatalogStore>,
+    ChunkKvRangeCatalogHead,
+    Vec<ChunkKvRangeCatalogPage>,
+) {
     let first = page(
         1,
         0,
@@ -93,8 +101,8 @@ async fn seeded_catalog() -> (Arc<MemoryCatalogStore>, CatalogHead, Vec<CatalogP
     let second = page(1, 1, vec![entry(id(2), b"m", None, owner(2), 4, artifact(12))]);
     let pages = vec![first, second];
     let head = head(1, &pages);
-    let store = Arc::new(MemoryCatalogStore::default());
-    CatalogPublisher::new(store.clone())
+    let store = Arc::new(MemoryChunkKvRangeCatalogStore::default());
+    ChunkKvRangeCatalogPublisher::new(store.clone())
         .publish(head.clone(), pages.clone())
         .await
         .unwrap();
@@ -135,11 +143,11 @@ fn prepared_transfer() -> TransferTransition {
 #[tokio::test]
 async fn transfer_rewrites_only_its_page_and_reconciles_committed_retry() {
     let (store, old_head, _) = seeded_catalog().await;
-    let cutover = CatalogCutover::new(store.clone());
+    let cutover = ChunkKvRangeCatalogCutover::new(store.clone());
     let transition = prepared_transfer();
 
     assert_eq!(cutover.publish_transfer(&transition).await.unwrap(), 2);
-    let (new_head, pages) = CatalogPublisher::new(store.clone())
+    let (new_head, pages) = ChunkKvRangeCatalogPublisher::new(store.clone())
         .load_current()
         .await
         .unwrap()
@@ -201,11 +209,11 @@ fn prepared_split() -> SplitTransition {
 #[tokio::test]
 async fn split_replaces_parent_with_exact_children_in_one_generation() {
     let (store, old_head, _) = seeded_catalog().await;
-    let cutover = CatalogCutover::new(store.clone());
+    let cutover = ChunkKvRangeCatalogCutover::new(store.clone());
     let transition = prepared_split();
 
     assert_eq!(cutover.publish_split(&transition).await.unwrap(), 2);
-    let (new_head, pages) = CatalogPublisher::new(store.clone())
+    let (new_head, pages) = ChunkKvRangeCatalogPublisher::new(store.clone())
         .load_current()
         .await
         .unwrap()
@@ -225,13 +233,13 @@ async fn split_replaces_parent_with_exact_children_in_one_generation() {
 #[tokio::test]
 async fn cutover_rejects_unprepared_or_stale_transition() {
     let (store, _, _) = seeded_catalog().await;
-    let cutover = CatalogCutover::new(store);
+    let cutover = ChunkKvRangeCatalogCutover::new(store);
     let mut transition = prepared_transfer();
     transition.phase = TransferPhase::TargetPreparing;
     transition.readiness_proof = None;
     assert_eq!(
         cutover.publish_transfer(&transition).await,
-        Err(CatalogError::TransitionNotReady)
+        Err(ChunkKvRangeCatalogError::TransitionNotReady)
     );
 
     let mut stale = prepared_transfer();
@@ -243,6 +251,6 @@ async fn cutover_rejects_unprepared_or_stale_transition() {
     });
     assert_eq!(
         cutover.publish_transfer(&stale).await,
-        Err(CatalogError::TransitionConflict)
+        Err(ChunkKvRangeCatalogError::TransitionConflict)
     );
 }

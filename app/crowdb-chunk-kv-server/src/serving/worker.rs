@@ -6,8 +6,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use crowdb_chunk_kv::{Partition, SplitArtifact};
 use crowdb_protocol::chunk_kv::{
-    AuthorityReleaseProof, CatalogEntry, CatalogPartitionState, SplitPhase, SplitReadinessProof,
-    SplitTransition, TargetReadinessProof, TransferPhase, TransferTransition,
+    AuthorityReleaseProof, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogPartitionState, SplitPhase,
+    SplitReadinessProof, SplitTransition, TargetReadinessProof, TransferPhase, TransferTransition,
 };
 
 use crate::{ChunkKvService, ChunkKvStorage, MonitorError};
@@ -112,12 +112,12 @@ impl TransitionExecutor {
         {
             return Err(plan_error("transfer does not request local target preparation"));
         }
-        let entry = CatalogEntry {
+        let entry = ChunkKvRangeCatalogEntry {
             partition_id: transition.partition_id,
             range: transition.range.clone(),
             owner: transition.target.clone(),
             owner_epoch: transition.target_epoch,
-            state: CatalogPartitionState::Prepared,
+            state: ChunkKvRangeCatalogPartitionState::Prepared,
             artifact: transition.artifact.clone(),
             transition_id: Some(transition.transition_id),
         };
@@ -189,7 +189,7 @@ impl TransitionExecutor {
 
 #[async_trait]
 pub trait TransitionStorage: Send + Sync {
-    async fn recover_partition(&self, entry: &CatalogEntry) -> Result<Partition, MonitorError>;
+    async fn recover_partition(&self, entry: &ChunkKvRangeCatalogEntry) -> Result<Partition, MonitorError>;
     async fn prepare_split(
         &self,
         parent: &Partition,
@@ -200,7 +200,7 @@ pub trait TransitionStorage: Send + Sync {
 
 #[async_trait]
 impl TransitionStorage for ChunkKvStorage {
-    async fn recover_partition(&self, entry: &CatalogEntry) -> Result<Partition, MonitorError> {
+    async fn recover_partition(&self, entry: &ChunkKvRangeCatalogEntry) -> Result<Partition, MonitorError> {
         ChunkKvStorage::recover_partition(self, entry)
             .await
             .map_err(|error| plan_error(&error.to_string()))

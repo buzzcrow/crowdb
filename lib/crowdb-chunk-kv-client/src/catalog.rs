@@ -7,4 +7,4 @@ mod identity;
 mod store;
 
 pub use identity::RequestIdentityAllocator;
-pub use store::{CatalogCache, CatalogMap, CatalogSource};
+pub use store::{ChunkKvRangeCatalogCache, ChunkKvRangeCatalogMap, ChunkKvRangeCatalogSource};

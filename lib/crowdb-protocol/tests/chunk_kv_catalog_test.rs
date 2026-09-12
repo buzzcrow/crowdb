@@ -2,14 +2,15 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_protocol::chunk_kv::{
-    CatalogEntry, CatalogHead, CatalogPage, CatalogPageRef, CatalogPartitionState, ChunkKvProtocolError,
-    DomainFailurePolicy, DomainMonitorDescriptor, Id128, KeyRange, OwnerDescriptor, PartitionArtifact,
-    ServingAssignment, ServingGrant, SplitChildAssignment, SplitPhase, SplitReadinessProof, SplitTransition,
+    ChunkKvProtocolError, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage,
+    ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState, DomainFailurePolicy,
+    DomainMonitorDescriptor, Id128, KeyRange, OwnerDescriptor, PartitionArtifact, ServingAssignment,
+    ServingGrant, SplitChildAssignment, SplitPhase, SplitReadinessProof, SplitTransition,
 };
 use crowdb_protocol::chunk_stream::StreamName;
 
-fn entry(id: u64, start: &[u8], end: Option<&[u8]>, epoch: u64) -> CatalogEntry {
-    CatalogEntry {
+fn entry(id: u64, start: &[u8], end: Option<&[u8]>, epoch: u64) -> ChunkKvRangeCatalogEntry {
+    ChunkKvRangeCatalogEntry {
         partition_id: Id128 { high: 1, low: id },
         range: KeyRange {
             start: start.to_vec(),
@@ -20,7 +21,7 @@ fn entry(id: u64, start: &[u8], end: Option<&[u8]>, epoch: u64) -> CatalogEntry 
             rpc_endpoint: format!("127.0.0.1:{}", 9000 + id),
         },
         owner_epoch: epoch,
-        state: CatalogPartitionState::Serving,
+        state: ChunkKvRangeCatalogPartitionState::Serving,
         artifact: PartitionArtifact {
             tree_id: id,
             stream_name: StreamName { high: 2, low: id },
@@ -29,18 +30,20 @@ fn entry(id: u64, start: &[u8], end: Option<&[u8]>, epoch: u64) -> CatalogEntry 
     }
 }
 
-fn catalog(entries: Vec<CatalogEntry>) -> (CatalogHead, Vec<CatalogPage>) {
-    let mut page = CatalogPage {
+fn catalog(
+    entries: Vec<ChunkKvRangeCatalogEntry>,
+) -> (ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>) {
+    let mut page = ChunkKvRangeCatalogPage {
         generation: 3,
         page_index: 0,
         entries,
         checksum: [0; 32],
     };
     page.seal().unwrap();
-    let mut head = CatalogHead {
+    let mut head = ChunkKvRangeCatalogHead {
         generation: 3,
         previous_generation: Some(2),
-        pages: vec![CatalogPageRef {
+        pages: vec![ChunkKvRangeCatalogPageRef {
             page_generation: 3,
             page_index: 0,
             first_key: page.entries[0].range.start.clone(),
@@ -138,10 +141,10 @@ fn monitor_descriptor_enforces_safe_timing_order() {
 fn successor_reuses_unchanged_pages_and_rejects_epoch_regression() {
     let (previous, previous_pages) = catalog(vec![entry(1, b"", None, 4)]);
     let reused_page = previous_pages[0].clone();
-    let mut reused_head = CatalogHead {
+    let mut reused_head = ChunkKvRangeCatalogHead {
         generation: 4,
         previous_generation: Some(3),
-        pages: vec![CatalogPageRef {
+        pages: vec![ChunkKvRangeCatalogPageRef {
             page_generation: reused_page.generation,
             page_index: reused_page.page_index,
             first_key: Vec::new(),
@@ -154,17 +157,17 @@ fn successor_reuses_unchanged_pages_and_rejects_epoch_regression() {
         .validate_successor(&[reused_page], &previous, &previous_pages)
         .unwrap();
 
-    let mut regressed_page = CatalogPage {
+    let mut regressed_page = ChunkKvRangeCatalogPage {
         generation: 4,
         page_index: 0,
         entries: vec![entry(1, b"", None, 3)],
         checksum: [0; 32],
     };
     regressed_page.seal().unwrap();
-    let mut regressed_head = CatalogHead {
+    let mut regressed_head = ChunkKvRangeCatalogHead {
         generation: 4,
         previous_generation: Some(3),
-        pages: vec![CatalogPageRef {
+        pages: vec![ChunkKvRangeCatalogPageRef {
             page_generation: 4,
             page_index: 0,
             first_key: Vec::new(),

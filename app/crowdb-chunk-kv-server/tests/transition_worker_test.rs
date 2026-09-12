@@ -21,7 +21,7 @@ use crowdb_chunk_stream::{
     StreamName, StreamRegistry,
 };
 use crowdb_protocol::chunk_kv::{
-    AuthorityReleaseProof, CatalogEntry, Id128, KeyRange, OwnerDescriptor, PartitionArtifact,
+    AuthorityReleaseProof, ChunkKvRangeCatalogEntry, Id128, KeyRange, OwnerDescriptor, PartitionArtifact,
     SplitChildAssignment, SplitPhase, SplitTransition, TransferPhase, TransferTransition,
 };
 use tokio::sync::Mutex;
@@ -163,7 +163,7 @@ struct FakeStorage {
 
 #[async_trait]
 impl TransitionStorage for FakeStorage {
-    async fn recover_partition(&self, _entry: &CatalogEntry) -> Result<Partition, MonitorError> {
+    async fn recover_partition(&self, _entry: &ChunkKvRangeCatalogEntry) -> Result<Partition, MonitorError> {
         Ok(self.recovered.clone())
     }
 

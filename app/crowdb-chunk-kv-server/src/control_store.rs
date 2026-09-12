@@ -8,8 +8,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use crowdb_kv_client::{CrowdbKvClient, Error as KvClientError, GetOutcome, ReadMode};
 use crowdb_protocol::chunk_kv::{
-    CatalogHead, CatalogPage, DomainMonitorDescriptor, EnsureDomainMonitorOutcome, ServingGrant,
-    SplitTransition, TransferTransition,
+    ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, DomainMonitorDescriptor, EnsureDomainMonitorOutcome,
+    ServingGrant, SplitTransition, TransferTransition,
 };
 use crowdb_protocol::key::{
     ChunkKvCatalogHeadKey, ChunkKvCatalogPageKey, ChunkKvSplitKey, ChunkKvTransferKey, DomainMonitorKey,
@@ -17,7 +17,10 @@ use crowdb_protocol::key::{
 };
 use thiserror::Error;
 
-use crate::{CatalogError, CatalogStore, HeadWriteOutcome, MonitorDescriptorStore, MonitorError};
+use crate::{
+    ChunkKvRangeCatalogError, ChunkKvRangeCatalogStore, HeadWriteOutcome, MonitorDescriptorStore,
+    MonitorError,
+};
 
 const GROUP0_STORE: u64 = 0;
 const GROUP0_GROUP: u64 = 0;
@@ -424,14 +427,18 @@ impl Group0ControlStore {
             .transpose()
     }
 
-    async fn reconcile_immutable<T>(&self, path: &str, intended: &T) -> Result<(), CatalogError>
+    async fn reconcile_immutable<T>(&self, path: &str, intended: &T) -> Result<(), ChunkKvRangeCatalogError>
     where
         T: serde::de::DeserializeOwned + PartialEq,
     {
-        match self.read::<T>(path).await.map_err(CatalogError::Unavailable)? {
+        match self
+            .read::<T>(path)
+            .await
+            .map_err(ChunkKvRangeCatalogError::Unavailable)?
+        {
             Some((current, _)) if current == *intended => Ok(()),
-            Some(_) => Err(CatalogError::GenerationConflict),
-            None => Err(CatalogError::Unavailable(
+            Some(_) => Err(ChunkKvRangeCatalogError::GenerationConflict),
+            None => Err(ChunkKvRangeCatalogError::Unavailable(
                 "immutable page write was not visible after reconciliation".into(),
             )),
         }
@@ -439,8 +446,8 @@ impl Group0ControlStore {
 }
 
 #[async_trait]
-impl CatalogStore for Group0ControlStore {
-    async fn put_page(&self, page: CatalogPage) -> Result<(), CatalogError> {
+impl ChunkKvRangeCatalogStore for Group0ControlStore {
+    async fn put_page(&self, page: ChunkKvRangeCatalogPage) -> Result<(), ChunkKvRangeCatalogError> {
         page.validate()?;
         let path = ChunkKvCatalogPageKey {
             generation: page.generation,
@@ -448,28 +455,32 @@ impl CatalogStore for Group0ControlStore {
         }
         .to_path();
         if let Some((current, _)) = self
-            .read::<CatalogPage>(&path)
+            .read::<ChunkKvRangeCatalogPage>(&path)
             .await
-            .map_err(CatalogError::Unavailable)?
+            .map_err(ChunkKvRangeCatalogError::Unavailable)?
         {
             return if current == page {
                 Ok(())
             } else {
-                Err(CatalogError::GenerationConflict)
+                Err(ChunkKvRangeCatalogError::GenerationConflict)
             };
         }
-        let encoded =
-            serde_json::to_vec(&page).map_err(|error| CatalogError::Unavailable(error.to_string()))?;
+        let encoded = serde_json::to_vec(&page)
+            .map_err(|error| ChunkKvRangeCatalogError::Unavailable(error.to_string()))?;
         match self.kv.put_cas(path.as_bytes(), &encoded, 0).await {
             Ok(()) => Ok(()),
             Err(Group0KvError::CasFailed { .. } | Group0KvError::OutcomeUnknown) => {
                 self.reconcile_immutable(&path, &page).await
             }
-            Err(error) => Err(CatalogError::Unavailable(error.to_string())),
+            Err(error) => Err(ChunkKvRangeCatalogError::Unavailable(error.to_string())),
         }
     }
 
-    async fn get_page(&self, generation: u64, page_index: u64) -> Result<Option<CatalogPage>, CatalogError> {
+    async fn get_page(
+        &self,
+        generation: u64,
+        page_index: u64,
+    ) -> Result<Option<ChunkKvRangeCatalogPage>, ChunkKvRangeCatalogError> {
         let path = ChunkKvCatalogPageKey {
             generation,
             page_index,
@@ -478,21 +489,24 @@ impl CatalogStore for Group0ControlStore {
         self.read(&path)
             .await
             .map(|value| value.map(|(page, _)| page))
-            .map_err(CatalogError::Unavailable)
+            .map_err(ChunkKvRangeCatalogError::Unavailable)
     }
 
-    async fn put_head(&self, head: CatalogHead) -> Result<HeadWriteOutcome, CatalogError> {
+    async fn put_head(
+        &self,
+        head: ChunkKvRangeCatalogHead,
+    ) -> Result<HeadWriteOutcome, ChunkKvRangeCatalogError> {
         let path = ChunkKvCatalogHeadKey.to_path();
         let current = self
-            .read::<CatalogHead>(&path)
+            .read::<ChunkKvRangeCatalogHead>(&path)
             .await
-            .map_err(CatalogError::Unavailable)?;
+            .map_err(ChunkKvRangeCatalogError::Unavailable)?;
         if current.as_ref().is_some_and(|(stored, _)| stored == &head) {
             return Ok(HeadWriteOutcome::Committed);
         }
         let expected_revision = current.map_or(0, |(_, revision)| revision);
-        let encoded =
-            serde_json::to_vec(&head).map_err(|error| CatalogError::Unavailable(error.to_string()))?;
+        let encoded = serde_json::to_vec(&head)
+            .map_err(|error| ChunkKvRangeCatalogError::Unavailable(error.to_string()))?;
         match self
             .kv
             .put_cas(path.as_bytes(), &encoded, expected_revision)
@@ -501,9 +515,9 @@ impl CatalogStore for Group0ControlStore {
             Ok(()) => Ok(HeadWriteOutcome::Committed),
             Err(Group0KvError::CasFailed { .. }) => {
                 let committed = self
-                    .read::<CatalogHead>(&path)
+                    .read::<ChunkKvRangeCatalogHead>(&path)
                     .await
-                    .map_err(CatalogError::Unavailable)?
+                    .map_err(ChunkKvRangeCatalogError::Unavailable)?
                     .is_some_and(|(stored, _)| stored == head);
                 Ok(if committed {
                     HeadWriteOutcome::Committed
@@ -512,16 +526,16 @@ impl CatalogStore for Group0ControlStore {
                 })
             }
             Err(Group0KvError::OutcomeUnknown) => Ok(HeadWriteOutcome::Ambiguous),
-            Err(error) => Err(CatalogError::Unavailable(error.to_string())),
+            Err(error) => Err(ChunkKvRangeCatalogError::Unavailable(error.to_string())),
         }
     }
 
-    async fn get_head(&self) -> Result<Option<CatalogHead>, CatalogError> {
+    async fn get_head(&self) -> Result<Option<ChunkKvRangeCatalogHead>, ChunkKvRangeCatalogError> {
         let path = ChunkKvCatalogHeadKey.to_path();
         self.read(&path)
             .await
             .map(|value| value.map(|(head, _)| head))
-            .map_err(CatalogError::Unavailable)
+            .map_err(ChunkKvRangeCatalogError::Unavailable)
     }
 }
 

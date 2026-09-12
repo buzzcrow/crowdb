@@ -4,19 +4,20 @@
 use std::sync::Arc;
 
 use crowdb_chunk_kv_server::{
-    CatalogError, CatalogPublisher, CatalogStore, HeadWriteOutcome, MemoryCatalogStore,
+    ChunkKvRangeCatalogError, ChunkKvRangeCatalogPublisher, ChunkKvRangeCatalogStore, HeadWriteOutcome,
+    MemoryChunkKvRangeCatalogStore,
 };
 use crowdb_protocol::chunk_kv::{
-    CatalogEntry, CatalogHead, CatalogPage, CatalogPageRef, CatalogPartitionState, Id128, KeyRange,
-    OwnerDescriptor, PartitionArtifact,
+    ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
+    ChunkKvRangeCatalogPartitionState, Id128, KeyRange, OwnerDescriptor, PartitionArtifact,
 };
 use crowdb_protocol::chunk_stream::StreamName;
 
-fn page(generation: u64, owner_epoch: u64) -> CatalogPage {
-    let mut page = CatalogPage {
+fn page(generation: u64, owner_epoch: u64) -> ChunkKvRangeCatalogPage {
+    let mut page = ChunkKvRangeCatalogPage {
         generation,
         page_index: 0,
-        entries: vec![CatalogEntry {
+        entries: vec![ChunkKvRangeCatalogEntry {
             partition_id: Id128 { high: 1, low: 1 },
             range: KeyRange {
                 start: Vec::new(),
@@ -27,7 +28,7 @@ fn page(generation: u64, owner_epoch: u64) -> CatalogPage {
                 rpc_endpoint: "127.0.0.1:9900".into(),
             },
             owner_epoch,
-            state: CatalogPartitionState::Serving,
+            state: ChunkKvRangeCatalogPartitionState::Serving,
             artifact: PartitionArtifact {
                 tree_id: 1,
                 stream_name: StreamName { high: 2, low: 3 },
@@ -40,11 +41,15 @@ fn page(generation: u64, owner_epoch: u64) -> CatalogPage {
     page
 }
 
-fn head(generation: u64, previous_generation: Option<u64>, page: &CatalogPage) -> CatalogHead {
-    let mut head = CatalogHead {
+fn head(
+    generation: u64,
+    previous_generation: Option<u64>,
+    page: &ChunkKvRangeCatalogPage,
+) -> ChunkKvRangeCatalogHead {
+    let mut head = ChunkKvRangeCatalogHead {
         generation,
         previous_generation,
-        pages: vec![CatalogPageRef {
+        pages: vec![ChunkKvRangeCatalogPageRef {
             page_generation: page.generation,
             page_index: page.page_index,
             first_key: Vec::new(),
@@ -58,8 +63,8 @@ fn head(generation: u64, previous_generation: Option<u64>, page: &CatalogPage) -
 
 #[tokio::test]
 async fn publisher_writes_pages_before_head_and_reuses_unchanged_pages() {
-    let store = Arc::new(MemoryCatalogStore::default());
-    let publisher = CatalogPublisher::new(store.clone());
+    let store = Arc::new(MemoryChunkKvRangeCatalogStore::default());
+    let publisher = ChunkKvRangeCatalogPublisher::new(store.clone());
     let first_page = page(1, 1);
     let first_head = head(1, None, &first_page);
     publisher
@@ -80,8 +85,8 @@ async fn publisher_writes_pages_before_head_and_reuses_unchanged_pages() {
 
 #[tokio::test]
 async fn ambiguous_head_is_accepted_only_when_reread_proves_exact_commit() {
-    let store = Arc::new(MemoryCatalogStore::default());
-    let publisher = CatalogPublisher::new(store.clone());
+    let store = Arc::new(MemoryChunkKvRangeCatalogStore::default());
+    let publisher = ChunkKvRangeCatalogPublisher::new(store.clone());
     let first_page = page(1, 1);
     let first_head = head(1, None, &first_page);
     store
@@ -96,14 +101,14 @@ async fn ambiguous_head_is_accepted_only_when_reread_proves_exact_commit() {
         .await;
     assert_eq!(
         publisher.publish(second_head, vec![second_page]).await,
-        Err(CatalogError::AmbiguousHead)
+        Err(ChunkKvRangeCatalogError::AmbiguousHead)
     );
 }
 
 #[tokio::test]
 async fn publisher_rejects_epoch_regression_before_head_write() {
-    let store = Arc::new(MemoryCatalogStore::default());
-    let publisher = CatalogPublisher::new(store.clone());
+    let store = Arc::new(MemoryChunkKvRangeCatalogStore::default());
+    let publisher = ChunkKvRangeCatalogPublisher::new(store.clone());
     let first_page = page(1, 4);
     publisher
         .publish(head(1, None, &first_page), vec![first_page])
@@ -120,8 +125,8 @@ async fn publisher_rejects_epoch_regression_before_head_write() {
 
 #[tokio::test]
 async fn current_catalog_load_validates_every_referenced_page() {
-    let store = Arc::new(MemoryCatalogStore::default());
-    let publisher = CatalogPublisher::new(store.clone());
+    let store = Arc::new(MemoryChunkKvRangeCatalogStore::default());
+    let publisher = ChunkKvRangeCatalogPublisher::new(store.clone());
     assert_eq!(publisher.load_current().await.unwrap(), None);
 
     let catalog_page = page(1, 1);

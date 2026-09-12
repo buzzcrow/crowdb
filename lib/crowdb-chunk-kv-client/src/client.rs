@@ -10,15 +10,15 @@ use crowdb_protocol::chunk_kv::{
 };
 
 use crate::{
-    CatalogCache, CatalogMap, CatalogSource, ChunkKvTransport, ClientConfig, ClientError,
-    RequestIdentityAllocator, Result,
+    ChunkKvRangeCatalogCache, ChunkKvRangeCatalogMap, ChunkKvRangeCatalogSource, ChunkKvTransport,
+    ClientConfig, ClientError, RequestIdentityAllocator, Result,
 };
 
 pub struct ChunkKvClient {
     pub(crate) config: ClientConfig,
-    catalog_source: Arc<dyn CatalogSource>,
+    catalog_source: Arc<dyn ChunkKvRangeCatalogSource>,
     pub(crate) transport: Arc<dyn ChunkKvTransport>,
-    pub(crate) cache: Arc<CatalogCache>,
+    pub(crate) cache: Arc<ChunkKvRangeCatalogCache>,
     pub(crate) identities: RequestIdentityAllocator,
 }
 
@@ -31,7 +31,7 @@ impl ChunkKvClient {
     /// Returns an error for an unbounded or zero client configuration.
     pub fn new(
         config: ClientConfig,
-        catalog_source: Arc<dyn CatalogSource>,
+        catalog_source: Arc<dyn ChunkKvRangeCatalogSource>,
         transport: Arc<dyn ChunkKvTransport>,
     ) -> Result<Self> {
         config.validate()?;
@@ -39,7 +39,7 @@ impl ChunkKvClient {
             config,
             catalog_source,
             transport,
-            cache: Arc::new(CatalogCache::default()),
+            cache: Arc::new(ChunkKvRangeCatalogCache::default()),
             identities: RequestIdentityAllocator::new(),
         })
     }
@@ -50,7 +50,7 @@ impl ChunkKvClient {
     }
 
     #[must_use]
-    pub fn cached_catalog(&self) -> Option<Arc<CatalogMap>> {
+    pub fn cached_catalog(&self) -> Option<Arc<ChunkKvRangeCatalogMap>> {
         self.cache.load()
     }
 
@@ -59,9 +59,9 @@ impl ChunkKvClient {
     /// # Errors
     ///
     /// Returns source or validation failure while preserving a valid warm cache.
-    pub async fn refresh_catalog(&self) -> Result<Arc<CatalogMap>> {
+    pub async fn refresh_catalog(&self) -> Result<Arc<ChunkKvRangeCatalogMap>> {
         let (head, pages) = self.catalog_source.load().await?;
-        let map = CatalogMap::decode(&head, &pages)?;
+        let map = ChunkKvRangeCatalogMap::decode(&head, &pages)?;
         self.cache.install(map)?;
         self.cache
             .load()
@@ -256,7 +256,10 @@ impl ChunkKvClient {
         self.execute_with_identity(operation, None, request_id).await
     }
 
-    pub(crate) async fn refresh_with_deadline(&self, deadline: Instant) -> Result<Arc<CatalogMap>> {
+    pub(crate) async fn refresh_with_deadline(
+        &self,
+        deadline: Instant,
+    ) -> Result<Arc<ChunkKvRangeCatalogMap>> {
         let remaining = deadline
             .checked_duration_since(Instant::now())
             .ok_or(ClientError::Deadline)?;

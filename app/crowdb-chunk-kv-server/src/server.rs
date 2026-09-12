@@ -12,17 +12,17 @@ use crowdb_chunk_kv::{
     ValueRevision,
 };
 use crowdb_protocol::chunk_kv::{
-    CatalogEntry, CatalogHead, CatalogPage, CatalogPartitionState, ChunkKvResponse, ChunkKvRpcErrorCode,
-    Id128, OperationResult, OwnerHint, PointOperation, PointRequest, RequestRouting, RpcCompareCondition,
-    RpcFailure, RpcJournalPosition, RpcValue, ScanContinuation, ScanDirection, ScanRequest, SeekKind,
-    SeekRequest,
+    ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage,
+    ChunkKvRangeCatalogPartitionState, ChunkKvResponse, ChunkKvRpcErrorCode, Id128, OperationResult,
+    OwnerHint, PointOperation, PointRequest, RequestRouting, RpcCompareCondition, RpcFailure,
+    RpcJournalPosition, RpcValue, ScanContinuation, ScanDirection, ScanRequest, SeekKind, SeekRequest,
 };
 use crowdb_protocol::common::ChunkKvExtra;
 use thiserror::Error;
 
 use crate::{
-    validate_and_clip_scan, AuthorityError, CatalogError, ClippedScan, ScanValidationError, ServerMetrics,
-    ServingAuthority,
+    validate_and_clip_scan, AuthorityError, ChunkKvRangeCatalogError, ClippedScan, ScanValidationError,
+    ServerMetrics, ServingAuthority,
 };
 
 const DEFAULT_SCAN_RESPONSE_BYTES: usize = 17 * 1024 * 1024;
@@ -30,7 +30,7 @@ const DEFAULT_SCAN_RESPONSE_BYTES: usize = 17 * 1024 * 1024;
 #[derive(Clone, Debug, Default)]
 struct CatalogSnapshot {
     generation: u64,
-    entries: Vec<CatalogEntry>,
+    entries: Vec<ChunkKvRangeCatalogEntry>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,15 +58,18 @@ pub struct ServerHealth {
 }
 
 #[derive(Debug, Error)]
-pub enum CatalogReconcileError {
+pub enum ChunkKvRangeCatalogReconcileError {
     #[error(transparent)]
-    Catalog(#[from] CatalogError),
+    Catalog(#[from] ChunkKvRangeCatalogError),
     #[error(transparent)]
     Partition(#[from] ChunkKvError),
 }
 
 impl CatalogSnapshot {
-    fn from_catalog(head: &CatalogHead, pages: &[CatalogPage]) -> Result<Self, CatalogError> {
+    fn from_catalog(
+        head: &ChunkKvRangeCatalogHead,
+        pages: &[ChunkKvRangeCatalogPage],
+    ) -> Result<Self, ChunkKvRangeCatalogError> {
         head.validate_pages(pages)?;
         Ok(Self {
             generation: head.generation,
@@ -77,11 +80,11 @@ impl CatalogSnapshot {
         })
     }
 
-    fn entry_for_key(&self, key: &[u8]) -> Option<&CatalogEntry> {
+    fn entry_for_key(&self, key: &[u8]) -> Option<&ChunkKvRangeCatalogEntry> {
         self.entries.iter().find(|entry| entry.range.contains(key))
     }
 
-    fn entry_for_partition(&self, partition_id: Id128) -> Option<&CatalogEntry> {
+    fn entry_for_partition(&self, partition_id: Id128) -> Option<&ChunkKvRangeCatalogEntry> {
         self.entries
             .iter()
             .find(|entry| entry.partition_id == partition_id)
@@ -245,15 +248,19 @@ impl ChunkKvService {
     ///
     /// Returns an error without changing the active catalog when validation
     /// fails or the generation does not advance.
-    pub fn install_catalog(&self, head: &CatalogHead, pages: &[CatalogPage]) -> Result<(), CatalogError> {
+    pub fn install_catalog(
+        &self,
+        head: &ChunkKvRangeCatalogHead,
+        pages: &[ChunkKvRangeCatalogPage],
+    ) -> Result<(), ChunkKvRangeCatalogError> {
         let candidate = Arc::new(CatalogSnapshot::from_catalog(head, pages)?);
         self.activate_catalog(&candidate)
     }
 
-    fn activate_catalog(&self, candidate: &Arc<CatalogSnapshot>) -> Result<(), CatalogError> {
+    fn activate_catalog(&self, candidate: &Arc<CatalogSnapshot>) -> Result<(), ChunkKvRangeCatalogError> {
         let current = self.catalog.load_full();
         if candidate.generation <= current.generation {
-            return Err(CatalogError::GenerationConflict);
+            return Err(ChunkKvRangeCatalogError::GenerationConflict);
         }
         self.catalog.rcu(|installed| {
             if installed.generation >= candidate.generation {
@@ -265,7 +272,7 @@ impl ChunkKvService {
         if self.catalog.load().generation == candidate.generation {
             Ok(())
         } else {
-            Err(CatalogError::GenerationConflict)
+            Err(ChunkKvRangeCatalogError::GenerationConflict)
         }
     }
 
@@ -293,7 +300,7 @@ impl ChunkKvService {
 
     /// Returns whether the exact catalog assignment is already hosted.
     #[must_use]
-    pub fn hosts_catalog_assignment(&self, entry: &CatalogEntry) -> bool {
+    pub fn hosts_catalog_assignment(&self, entry: &ChunkKvRangeCatalogEntry) -> bool {
         self.partitions
             .load()
             .get(&entry.partition_id)
@@ -312,7 +319,7 @@ impl ChunkKvService {
     /// hosted snapshot.
     pub fn reconcile_partitions(
         &self,
-        pages: &[CatalogPage],
+        pages: &[ChunkKvRangeCatalogPage],
         recovered: &[Partition],
     ) -> Result<(), ChunkKvError> {
         let next = self.reconciled_partition_snapshot(pages, recovered)?;
@@ -329,13 +336,13 @@ impl ChunkKvService {
     /// either active snapshot.
     pub fn install_catalog_and_reconcile(
         &self,
-        head: &CatalogHead,
-        pages: &[CatalogPage],
+        head: &ChunkKvRangeCatalogHead,
+        pages: &[ChunkKvRangeCatalogPage],
         recovered: &[Partition],
-    ) -> Result<(), CatalogReconcileError> {
+    ) -> Result<(), ChunkKvRangeCatalogReconcileError> {
         let candidate = Arc::new(CatalogSnapshot::from_catalog(head, pages)?);
         if candidate.generation <= self.catalog.load().generation {
-            return Err(CatalogError::GenerationConflict.into());
+            return Err(ChunkKvRangeCatalogError::GenerationConflict.into());
         }
         let next = self.reconciled_partition_snapshot(pages, recovered)?;
         self.activate_catalog(&candidate)?;
@@ -345,7 +352,7 @@ impl ChunkKvService {
 
     fn reconciled_partition_snapshot(
         &self,
-        pages: &[CatalogPage],
+        pages: &[ChunkKvRangeCatalogPage],
         recovered: &[Partition],
     ) -> Result<Arc<HashMap<Id128, Partition>>, ChunkKvError> {
         let current = self.partitions.load_full();
@@ -420,7 +427,7 @@ impl ChunkKvService {
             .ok_or(ChunkKvError::OutOfRange)?;
         if entry.owner.instance_id != self.instance_id
             || entry.owner_epoch != owner_epoch
-            || entry.state != CatalogPartitionState::Serving
+            || entry.state != ChunkKvRangeCatalogPartitionState::Serving
         {
             return Err(ChunkKvError::NotServing(
                 "catalog does not publish this serving assignment".into(),
@@ -805,15 +812,15 @@ impl ChunkKvService {
     }
 }
 
-fn recoverable_local_entry(entry: &CatalogEntry, instance_id: u64) -> bool {
+fn recoverable_local_entry(entry: &ChunkKvRangeCatalogEntry, instance_id: u64) -> bool {
     entry.owner.instance_id == instance_id
         && !matches!(
             entry.state,
-            CatalogPartitionState::Retired | CatalogPartitionState::Faulted
+            ChunkKvRangeCatalogPartitionState::Retired | ChunkKvRangeCatalogPartitionState::Faulted
         )
 }
 
-fn partition_matches_entry(partition: &Partition, entry: &CatalogEntry) -> bool {
+fn partition_matches_entry(partition: &Partition, entry: &ChunkKvRangeCatalogEntry) -> bool {
     let snapshot = partition.snapshot();
     snapshot.partition_id.high == entry.partition_id.high
         && snapshot.partition_id.low == entry.partition_id.low
@@ -826,7 +833,7 @@ fn partition_matches_entry(partition: &Partition, entry: &CatalogEntry) -> bool 
 fn matches_routing(
     routing: &RequestRouting,
     generation: u64,
-    entry: &CatalogEntry,
+    entry: &ChunkKvRangeCatalogEntry,
     instance_id: u64,
 ) -> bool {
     routing.map_revision == generation
@@ -942,7 +949,7 @@ fn failure(map_revision: u64, code: ChunkKvRpcErrorCode, message: String) -> Chu
     }
 }
 
-fn not_my_range(map_revision: u64, entry: Option<&CatalogEntry>) -> ChunkKvResponse {
+fn not_my_range(map_revision: u64, entry: Option<&ChunkKvRangeCatalogEntry>) -> ChunkKvResponse {
     ChunkKvResponse {
         map_revision,
         journal_position: None,
@@ -963,7 +970,7 @@ fn not_my_range(map_revision: u64, entry: Option<&CatalogEntry>) -> ChunkKvRespo
 fn authority_failure(
     map_revision: u64,
     error: &AuthorityError,
-    entry: Option<&CatalogEntry>,
+    entry: Option<&ChunkKvRangeCatalogEntry>,
 ) -> ChunkKvResponse {
     match error {
         AuthorityError::LeaseExpired => {
@@ -976,7 +983,7 @@ fn authority_failure(
 fn partition_failure(
     map_revision: u64,
     error: &ChunkKvError,
-    entry: Option<&CatalogEntry>,
+    entry: Option<&ChunkKvRangeCatalogEntry>,
 ) -> ChunkKvResponse {
     let code = match error {
         ChunkKvError::OutOfRange | ChunkKvError::StaleEpoch => {

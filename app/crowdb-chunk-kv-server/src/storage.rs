@@ -13,7 +13,7 @@ use crowdb_chunk_kv::{
 };
 use crowdb_chunk_stream::{ChunkStream, ProductionStreamRuntime, StreamConfig, StreamName, StreamRegistry};
 use crowdb_kv_client::{BatchOp, ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
-use crowdb_protocol::chunk_kv::{CatalogEntry, SplitChildAssignment, SplitTransition};
+use crowdb_protocol::chunk_kv::{ChunkKvRangeCatalogEntry, SplitChildAssignment, SplitTransition};
 use crowdb_protocol::chunk_stream::{StreamBinding, StreamBindingState};
 use crowdb_tree_ffi::{
     ChunkPageStoreOptions, ChunkRootCatalog, ChunkTransport, OwnedChunkRpcDiskRoute,
@@ -231,7 +231,10 @@ impl ChunkKvStorage {
     ///
     /// Returns an error when the stream binding is absent, either durable
     /// artifact cannot be reopened exactly, or WAL replay fails.
-    pub async fn recover_partition(&self, entry: &CatalogEntry) -> Result<Partition, StorageRuntimeError> {
+    pub async fn recover_partition(
+        &self,
+        entry: &ChunkKvRangeCatalogEntry,
+    ) -> Result<Partition, StorageRuntimeError> {
         let stream_name = entry.artifact.stream_name;
         let binding = self
             .streams

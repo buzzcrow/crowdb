@@ -6,22 +6,25 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use crowdb_chunk_kv_client::{
-    CatalogSource, ChunkKvClient, ChunkKvTransport, ClientConfig, MultiScanRequest, Result,
+    ChunkKvClient, ChunkKvRangeCatalogSource, ChunkKvTransport, ClientConfig, MultiScanRequest, Result,
 };
 use crowdb_protocol::chunk_kv::{
-    CatalogEntry, CatalogHead, CatalogPage, CatalogPageRef, CatalogPartitionState, ChunkKvResponse,
-    ChunkKvRpcErrorCode, Id128, KeyRange, OperationResult, OwnerDescriptor, PartitionArtifact, PointRequest,
-    RpcFailure, RpcJournalPosition, RpcValue, ScanContinuation, ScanDirection, ScanRequest, SeekKind,
-    SeekRequest,
+    ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
+    ChunkKvRangeCatalogPartitionState, ChunkKvResponse, ChunkKvRpcErrorCode, Id128, KeyRange,
+    OperationResult, OwnerDescriptor, PartitionArtifact, PointRequest, RpcFailure, RpcJournalPosition,
+    RpcValue, ScanContinuation, ScanDirection, ScanRequest, SeekKind, SeekRequest,
 };
 use crowdb_protocol::chunk_stream::StreamName;
 
 type Boundary<'a> = (&'a [u8], Option<&'a [u8]>, u64);
 
-fn catalog(generation: u64, boundaries: &[Boundary<'_>]) -> (CatalogHead, Vec<CatalogPage>) {
+fn catalog(
+    generation: u64,
+    boundaries: &[Boundary<'_>],
+) -> (ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>) {
     let entries = boundaries
         .iter()
-        .map(|(start, end, owner)| CatalogEntry {
+        .map(|(start, end, owner)| ChunkKvRangeCatalogEntry {
             partition_id: Id128 {
                 high: generation,
                 low: *owner,
@@ -35,7 +38,7 @@ fn catalog(generation: u64, boundaries: &[Boundary<'_>]) -> (CatalogHead, Vec<Ca
                 rpc_endpoint: format!("owner-{owner}"),
             },
             owner_epoch: generation,
-            state: CatalogPartitionState::Serving,
+            state: ChunkKvRangeCatalogPartitionState::Serving,
             artifact: PartitionArtifact {
                 tree_id: generation,
                 stream_name: StreamName {
@@ -46,17 +49,17 @@ fn catalog(generation: u64, boundaries: &[Boundary<'_>]) -> (CatalogHead, Vec<Ca
             transition_id: None,
         })
         .collect();
-    let mut page = CatalogPage {
+    let mut page = ChunkKvRangeCatalogPage {
         generation,
         page_index: 0,
         entries,
         checksum: [0; 32],
     };
     page.seal().unwrap();
-    let mut head = CatalogHead {
+    let mut head = ChunkKvRangeCatalogHead {
         generation,
         previous_generation: generation.checked_sub(1).filter(|value| *value != 0),
-        pages: vec![CatalogPageRef {
+        pages: vec![ChunkKvRangeCatalogPageRef {
             page_generation: generation,
             page_index: 0,
             first_key: Vec::new(),
@@ -69,12 +72,12 @@ fn catalog(generation: u64, boundaries: &[Boundary<'_>]) -> (CatalogHead, Vec<Ca
 }
 
 struct ScriptedCatalog {
-    versions: Mutex<Vec<(CatalogHead, Vec<CatalogPage>)>>,
+    versions: Mutex<Vec<(ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>)>>,
 }
 
 #[async_trait]
-impl CatalogSource for ScriptedCatalog {
-    async fn load(&self) -> Result<(CatalogHead, Vec<CatalogPage>)> {
+impl ChunkKvRangeCatalogSource for ScriptedCatalog {
+    async fn load(&self) -> Result<(ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>)> {
         let mut versions = self.versions.lock().unwrap();
         if versions.len() > 1 {
             Ok(versions.remove(0))

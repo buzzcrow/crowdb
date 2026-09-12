@@ -31,7 +31,7 @@ impl KeyRange {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CatalogPartitionState {
+pub enum ChunkKvRangeCatalogPartitionState {
     #[default]
     Prepared,
     Serving,
@@ -55,25 +55,25 @@ pub struct PartitionArtifact {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CatalogEntry {
+pub struct ChunkKvRangeCatalogEntry {
     pub partition_id: Id128,
     pub range: KeyRange,
     pub owner: OwnerDescriptor,
     pub owner_epoch: u64,
-    pub state: CatalogPartitionState,
+    pub state: ChunkKvRangeCatalogPartitionState,
     pub artifact: PartitionArtifact,
     pub transition_id: Option<Id128>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CatalogPage {
+pub struct ChunkKvRangeCatalogPage {
     pub generation: u64,
     pub page_index: u64,
-    pub entries: Vec<CatalogEntry>,
+    pub entries: Vec<ChunkKvRangeCatalogEntry>,
     pub checksum: [u8; 32],
 }
 
-impl CatalogPage {
+impl ChunkKvRangeCatalogPage {
     /// Computes and installs the canonical checksum for this page.
     ///
     /// # Errors
@@ -108,7 +108,7 @@ impl CatalogPage {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CatalogPageRef {
+pub struct ChunkKvRangeCatalogPageRef {
     pub page_generation: u64,
     pub page_index: u64,
     pub first_key: Vec<u8>,
@@ -116,14 +116,14 @@ pub struct CatalogPageRef {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CatalogHead {
+pub struct ChunkKvRangeCatalogHead {
     pub generation: u64,
     pub previous_generation: Option<u64>,
-    pub pages: Vec<CatalogPageRef>,
+    pub pages: Vec<ChunkKvRangeCatalogPageRef>,
     pub checksum: [u8; 32],
 }
 
-impl CatalogHead {
+impl ChunkKvRangeCatalogHead {
     /// Computes and installs the canonical checksum for this head.
     ///
     /// # Errors
@@ -140,7 +140,7 @@ impl CatalogHead {
     ///
     /// Returns an error for bad checksums, identities, ordering, holes,
     /// overlaps, or incomplete binary-keyspace coverage.
-    pub fn validate_pages(&self, pages: &[CatalogPage]) -> Result<(), ChunkKvProtocolError> {
+    pub fn validate_pages(&self, pages: &[ChunkKvRangeCatalogPage]) -> Result<(), ChunkKvProtocolError> {
         if self.generation == 0
             || self.pages.is_empty()
             || self.checksum != head_checksum(self)?
@@ -175,9 +175,9 @@ impl CatalogHead {
     /// not advance, or a retained partition's ownership epoch decreases.
     pub fn validate_successor(
         &self,
-        pages: &[CatalogPage],
-        previous: &CatalogHead,
-        previous_pages: &[CatalogPage],
+        pages: &[ChunkKvRangeCatalogPage],
+        previous: &ChunkKvRangeCatalogHead,
+        previous_pages: &[ChunkKvRangeCatalogPage],
     ) -> Result<(), ChunkKvProtocolError> {
         previous.validate_pages(previous_pages)?;
         self.validate_pages(pages)?;
@@ -945,7 +945,7 @@ fn valid_split_child(child: &SplitChildAssignment) -> bool {
             .map_or(true, |end| child.range.start < *end)
 }
 
-fn validate_entry(entry: &CatalogEntry) -> Result<(), ChunkKvProtocolError> {
+fn validate_entry(entry: &ChunkKvRangeCatalogEntry) -> Result<(), ChunkKvProtocolError> {
     if entry.partition_id == Id128::default()
         || entry.owner.instance_id == 0
         || entry.owner.rpc_endpoint.is_empty()
@@ -963,7 +963,7 @@ fn validate_entry(entry: &CatalogEntry) -> Result<(), ChunkKvProtocolError> {
     Ok(())
 }
 
-fn validate_complete_entries(entries: &[&CatalogEntry]) -> Result<(), ChunkKvProtocolError> {
+fn validate_complete_entries(entries: &[&ChunkKvRangeCatalogEntry]) -> Result<(), ChunkKvProtocolError> {
     if entries
         .first()
         .map_or(true, |entry| !entry.range.start.is_empty())
@@ -983,11 +983,11 @@ fn validate_complete_entries(entries: &[&CatalogEntry]) -> Result<(), ChunkKvPro
     Ok(())
 }
 
-fn page_checksum(page: &CatalogPage) -> Result<[u8; 32], ChunkKvProtocolError> {
+fn page_checksum(page: &ChunkKvRangeCatalogPage) -> Result<[u8; 32], ChunkKvProtocolError> {
     hash_encoded(&(page.generation, page.page_index, &page.entries))
 }
 
-fn head_checksum(head: &CatalogHead) -> Result<[u8; 32], ChunkKvProtocolError> {
+fn head_checksum(head: &ChunkKvRangeCatalogHead) -> Result<[u8; 32], ChunkKvProtocolError> {
     hash_encoded(&(head.generation, head.previous_generation, &head.pages))
 }
 
