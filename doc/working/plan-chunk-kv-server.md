@@ -11,12 +11,14 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 ## Phase 1: Protocol and Catalog Core
 
-- [ ] Add monitor descriptor, instance observation, assignment, artifact,
+- [x] Add monitor descriptor, instance observation, assignment, artifact,
   transition, range-page/head, serving-grant, and typed outcome models.
 - [x] Validate complete binary-keyspace coverage, page/head checksums,
   generation monotonicity, exact adjacency, and epoch non-regression.
 - [x] Implement an injected immutable catalog store with page-before-head
   publication and ambiguous-head reread resolution.
+- [x] Back catalog pages, the generation head, and monitor descriptors with
+  revision-checked group-0 KV operations and reconciliation reads.
 
 ## Phase 2: Monitor and Lease Authority
 
@@ -68,8 +70,8 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 - Production catalog, grant, and partition startup wiring constrain complete
   data-plane and real-process coverage.
-- Group-0 page/head persistence and monitor supervision need integration with
-  the existing KV client/server boundaries.
+- Group-0 monitor supervision and runtime catalog refresh still need integration
+  with the existing KV server and process boundaries.
 - R145 owns routed multi-partition composition and end-to-end client coverage.
 - Point and ordered-read operations cross a FlatBuffers crowdb-rpc boundary;
   transition-detail and balance-policy wire models cover their control-plane

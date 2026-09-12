@@ -25,6 +25,7 @@ crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
 crowdb-tree-ffi = { path = "../../lib/crowdb-tree/ffi", features = ["chunk-rpc"] }
 axum = "0.7"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
 toml = "0.8"
@@ -34,7 +35,6 @@ tracing = { workspace = true }
 crowdb-chunk-kv = { path = "../../lib/crowdb-chunk-kv", features = ["test-util"] }
 crowdb-chunk-stream = { path = "../../lib/crowdb-chunk-stream", features = ["test-util"] }
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi", features = ["test-util"] }
-serde_json = "1"
 tower = { version = "0.5", features = ["util"] }
 
 [[bin]]

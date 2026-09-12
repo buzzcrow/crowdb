@@ -137,9 +137,8 @@ derive from the same sorted partition snapshots and catalog generation.
 
 - Production startup still needs to construct native trees and activate
   prepared children before real-process restart coverage.
-- Group-0 adapters remain for atomic monitor descriptor/transition storage,
-  catalog page/head writes, generation retention and reclamation, serving-grant
-  publication, and stream-binding authorization.
+- Group-0 adapters remain for transition storage, generation retention and
+  reclamation, serving-grant publication, and stream-binding authorization.
 - The generic kv-server supervisor still needs durable descriptor watching,
   leader-change fencing, restart backoff, and chunkdb/diskdb startup adoption.
 - Target recovery, online split/catch-up, catalog proof wiring, real-process
