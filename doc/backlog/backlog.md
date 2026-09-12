@@ -15,21 +15,14 @@ complexity, and dependency. Before implementation, follow the
 
 ### Next Milestone — Chunk-backed range KV
 
-Dependency order: R142 depends on R141, the landed KV compare-and-set
-primitive, and the completed chunk-backed tree storage; R143 depends on R142;
+Dependency order: R142 depends on the completed chunk stream, the landed KV
+compare-and-set primitive, and the completed chunk-backed tree storage; R143 depends on R142;
 R145 depends on R143. R144 is a deferred
 follow-up after R145 and after split and transfer are proven. R146 and R147 are
 deferred chunk lifecycle follow-ups, and R148 defers stream metadata scale-out
 and sealed-chunk EC until the mirror-only baseline is measured. The milestone
 deliberately separates the embeddable KV library, server process, routed
 client, and physical chunk maintenance.
-- **[R141](R141-chunk-stream.md)** — chunk-stream mirrored logical byte stream — Area:
-  chunk IO / WAL — Compose finite chunks into a logically unbounded,
-  offset-addressed stream for WAL users. Group 0 registers which metadata KV
-  group owns each stream map; ordered logical/physical offset arrays in that
-  group map reads across three-way mirror chunks. The first version defers
-  metadata scale-out and reclaims complete strips below a durable logical
-  watermark.
 - **[R142](R142-chunk-kv-library.md)** — `crowdb-chunk-kv` range-partitioned KV
   library — Area: KV / crowdb-tree / chunk-stream — Build an embeddable KV
   component whose partition count is independent of node count, whose tree
