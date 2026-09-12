@@ -154,6 +154,11 @@ async fn fixture() -> (ChunkKvService, Partition) {
 #[tokio::test]
 async fn direct_put_get_preserves_object_metadata_and_position() {
     let (service, _) = fixture().await;
+    let observation = service.registry_observation(1_024, 7);
+    assert_eq!(observation.capacity_bytes, 1_024);
+    assert_eq!(observation.request_rate, 7);
+    assert_eq!(observation.hosted.len(), 1);
+    assert!(!observation.hosted[0].recovering);
     let put = service
         .handle_point(
             PointRequest {

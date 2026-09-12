@@ -16,6 +16,7 @@ use crowdb_protocol::chunk_kv::{
     OwnerHint, PointOperation, PointRequest, RequestRouting, RpcCompareCondition, RpcFailure,
     RpcJournalPosition, RpcValue, ScanContinuation, ScanDirection, ScanRequest, SeekKind, SeekRequest,
 };
+use crowdb_protocol::common::ChunkKvExtra;
 
 use crate::{
     validate_and_clip_scan, AuthorityError, CatalogError, ClippedScan, ScanValidationError, ServerMetrics,
@@ -179,7 +180,11 @@ impl ChunkKvService {
         partitions.sort_unstable_by_key(|partition| partition.partition_id);
         let lifecycle = if !self.admitting.load(Ordering::Acquire) {
             ServerLifecycle::Draining
-        } else if catalog_generation != 0 && self.authority.has_live_grant(now_monotonic_ms) {
+        } else if catalog_generation != 0
+            && self
+                .authority
+                .has_live_grant(catalog_generation, now_monotonic_ms)
+        {
             ServerLifecycle::Serving
         } else {
             ServerLifecycle::Prepared
@@ -189,6 +194,38 @@ impl ChunkKvService {
             lifecycle,
             catalog_generation,
             partitions,
+        }
+    }
+
+    /// Builds the service-registry payload from immutable partition snapshots.
+    #[must_use]
+    pub fn registry_observation(&self, capacity_bytes: u64, request_rate: u64) -> ChunkKvExtra {
+        let partitions = self.partitions.load_full();
+        let durable_bytes = partitions
+            .values()
+            .filter_map(|partition| partition.chunk_storage_stats().ok().flatten())
+            .map(|stats| stats.pack_bytes_written.saturating_sub(stats.orphan_bytes))
+            .sum();
+        let mut hosted: Vec<_> = partitions
+            .values()
+            .map(|partition| {
+                let snapshot = partition.snapshot();
+                crowdb_protocol::chunk_kv::HostedPartition {
+                    partition_id: Id128 {
+                        high: snapshot.partition_id.high,
+                        low: snapshot.partition_id.low,
+                    },
+                    owner_epoch: snapshot.ownership_epoch,
+                    recovering: snapshot.lifecycle != crowdb_chunk_kv::PartitionLifecycle::Serving,
+                }
+            })
+            .collect();
+        hosted.sort_unstable_by_key(|partition| partition.partition_id);
+        ChunkKvExtra {
+            capacity_bytes,
+            durable_bytes,
+            request_rate,
+            hosted,
         }
     }
 

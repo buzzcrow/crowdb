@@ -69,6 +69,8 @@ fn grant_authorizes_only_exact_catalog_partition_and_epoch() {
     let authority = ServingAuthority::new(7);
     authority.install(grant(4, 11), &policy(), 1_000, 8_000).unwrap();
     let partition = assignment(11).partition_id;
+    assert!(authority.has_live_grant(3, 8_001));
+    assert!(!authority.has_live_grant(2, 8_001));
     assert!(authority.authorize(3, partition, 11, 8_001).is_ok());
     assert_eq!(
         authority.authorize(2, partition, 11, 8_001),

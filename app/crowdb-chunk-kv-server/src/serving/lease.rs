@@ -147,11 +147,11 @@ impl ServingAuthority {
     }
 
     #[must_use]
-    pub fn has_live_grant(&self, now_monotonic_ms: u64) -> bool {
-        self.snapshot
-            .load()
-            .as_ref()
-            .is_some_and(|snapshot| now_monotonic_ms < snapshot.local_deadline_ms)
+    pub fn has_live_grant(&self, catalog_generation: u64, now_monotonic_ms: u64) -> bool {
+        self.snapshot.load().as_ref().is_some_and(|snapshot| {
+            snapshot.grant.catalog_generation == catalog_generation
+                && now_monotonic_ms < snapshot.local_deadline_ms
+        })
     }
 }
 
