@@ -3191,14 +3191,18 @@ Status Crowdbtree::seek_reverse(Slice start_key, bool inclusive, Slice begin_key
     if (out == nullptr || found == nullptr) {
         return Status::invalid_argument("seek_reverse output is null");
     }
-    *out                      = {};
-    EpochManager::Guard guard = epoch_.enter();
-    *found                    = seek_reverse_guarded(start_key, true, inclusive, begin_key, out);
+    *out                             = {};
+    EpochManager::Guard guard        = epoch_.enter();
+    auto                memtables    = all_memtables();
+    const uint64_t      root_page_id = root_page_id_.load();
+    const uint64_t      gc_floor     = gc_floor_.load();
+    *found = seek_reverse_guarded(start_key, true, inclusive, begin_key, memtables, root_page_id, gc_floor, out);
     return Status::Ok();
 }
 
 bool Crowdbtree::seek_reverse_guarded(Slice start_key, bool has_start_bound, bool inclusive, Slice begin_key,
-                                      scan_entry *out) const
+                                      const std::vector<std::shared_ptr<MemTable>> &memtables, uint64_t root_page_id,
+                                      uint64_t gc_floor, scan_entry *out) const
 {
 
     struct ParentStep
@@ -3215,7 +3219,7 @@ bool Crowdbtree::seek_reverse_guarded(Slice start_key, bool has_start_bound, boo
     };
     auto l1_predecessor = [&](Slice bound, bool has_bound, bool include, Slice *key, Slice *cell) -> bool {
         std::vector<ParentStep> path;
-        uint64_t                page_id = root_page_id_.load();
+        uint64_t                page_id = root_page_id;
         while (page_id != kInvalidPageId) {
             PageBase *head = resident(page_id);
             PageBase *base = resolve_base(head);
@@ -3223,7 +3227,7 @@ bool Crowdbtree::seek_reverse_guarded(Slice start_key, bool has_start_bound, boo
                 return false;
             }
             if (base->type == page_type::kLeafBase) {
-                LeafChainCursor cursor(head, gc_floor_.load());
+                LeafChainCursor cursor(head, gc_floor);
                 if (has_bound) {
                     cursor.seek_reverse(bound, include);
                 }
@@ -3257,7 +3261,7 @@ bool Crowdbtree::seek_reverse_guarded(Slice start_key, bool has_start_bound, boo
                     return false;
                 }
                 if (base->type == page_type::kLeafBase) {
-                    LeafChainCursor cursor(head, gc_floor_.load());
+                    LeafChainCursor cursor(head, gc_floor);
                     cursor.seek_last();
                     if (cursor.valid()) {
                         *key  = cursor.key();
@@ -3283,7 +3287,7 @@ bool Crowdbtree::seek_reverse_guarded(Slice start_key, bool has_start_bound, boo
         const CellVersion *winner_l0 = nullptr;
         Slice              winner_l1;
         bool               have_winner = false;
-        for (auto &memtable : all_memtables()) {
+        for (const auto &memtable : memtables) {
             auto cursor = memtable->cursor_reverse(Slice(bound), has_bound, include_bound);
             if (!cursor.valid()) {
                 continue;
@@ -3370,13 +3374,17 @@ Status Crowdbtree::scan_reverse(Slice start_key, bool has_start_bound, bool star
     out->clear();
     *truncated                            = false;
     EpochManager::Guard guard             = epoch_.enter();
+    auto                memtables         = all_memtables();
+    const uint64_t      root_page_id      = root_page_id_.load();
+    const uint64_t      gc_floor          = gc_floor_.load();
     std::string         bound             = start_key.to_string();
     bool                has_bound         = has_start_bound;
     bool                inclusive         = start_inclusive;
     size_t              accumulated_bytes = 0;
     while (true) {
         scan_entry entry;
-        if (!seek_reverse_guarded(Slice(bound), has_bound, inclusive, begin_key, &entry)) {
+        if (!seek_reverse_guarded(Slice(bound), has_bound, inclusive, begin_key, memtables, root_page_id, gc_floor,
+                                  &entry)) {
             break;
         }
         size_t entry_bytes = entry.key.size() + entry.value.size();

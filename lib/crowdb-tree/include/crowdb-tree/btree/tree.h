@@ -890,7 +890,8 @@ class Crowdbtree
     friend Status      rebuild_range(Crowdbtree &source, const KeyRange &range, Config destination_options,
                                      std::unique_ptr<Crowdbtree> *out, RangeRebuildStats *stats);
     [[nodiscard]] bool seek_reverse_guarded(Slice start_key, bool has_start_bound, bool inclusive, Slice begin_key,
-                                            scan_entry *out) const;
+                                            const std::vector<std::shared_ptr<MemTable>> &memtables,
+                                            uint64_t root_page_id, uint64_t gc_floor, scan_entry *out) const;
     // apply a batch's ops into L0 at `slot` (intra-batch last-op-wins).
     void apply_batch(uint64_t slot, const Batch &batch);
     // Shared apply()/apply_encoded() tail: slot bookkeeping (max_seen_slot_,
