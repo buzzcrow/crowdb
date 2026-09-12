@@ -114,6 +114,12 @@ pub struct CheckpointReclaim {
     pub orphan_bytes: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MaterializationProgress {
+    pub bytes_written: u64,
+    pub complete: bool,
+}
+
 struct MutationRequest {
     request_id: RequestId,
     operation: MutationOperation,
@@ -1258,6 +1264,36 @@ impl Partition {
     /// Returns a typed storage error if the native counters are unavailable.
     pub fn chunk_storage_stats(&self) -> Result<Option<crowdb_tree_ffi::ChunkPageStoreStats>> {
         self.tree.chunk_stats()
+    }
+
+    /// Runs one bounded R140 ownership-materialization pass after a split
+    /// child has been activated. Call again until `complete` is true.
+    ///
+    /// Foreground reads and mutations remain available. Maintenance work is
+    /// serialized with checkpoint and split preparation for this partition.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stale-epoch, lifecycle, or storage-maintenance error.
+    pub async fn materialize_split_ownership(&self, ownership_epoch: u64) -> Result<MaterializationProgress> {
+        self.validate_epoch(ownership_epoch)?;
+        let _maintenance = self.split_transition.lock().await;
+        if self.lifecycle() != PartitionLifecycle::Serving {
+            return Err(read_state_error(self.lifecycle()));
+        }
+        match self.tree.materialize_ownership() {
+            Ok((bytes_written, complete)) => {
+                self.metrics.materialization(Ok((bytes_written, complete)));
+                Ok(MaterializationProgress {
+                    bytes_written,
+                    complete,
+                })
+            }
+            Err(error) => {
+                self.metrics.materialization(Err(()));
+                Err(error)
+            }
+        }
     }
 
     fn validate_epoch(&self, ownership_epoch: u64) -> Result<()> {

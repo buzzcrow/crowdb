@@ -163,6 +163,22 @@ fn chunk_page_store(tree_id: u64, owner_epoch: u64) -> Arc<PageStore> {
     )
 }
 
+async fn finish_materialization(partition: &Partition, ownership_epoch: u64) -> u64 {
+    let mut passes = 0;
+    loop {
+        let progress = partition
+            .materialize_split_ownership(ownership_epoch)
+            .await
+            .unwrap();
+        passes += 1;
+        if progress.complete {
+            return passes;
+        }
+        assert!(progress.bytes_written > 0);
+        assert!(passes < 8);
+    }
+}
+
 async fn assert_prepared_tree_identity_mismatch(
     artifact: &PreparedChildArtifact,
     journal: Arc<dyn PartitionJournal>,
@@ -1423,6 +1439,14 @@ async fn online_split_rebuilds_both_ranges_and_replays_serving_deltas() {
     let right = prepared.right.open(PartitionConfig::default()).await.unwrap();
     left.activate_prepared(&proof).unwrap();
     right.activate_prepared(&proof).unwrap();
+    assert_eq!(
+        left.materialize_split_ownership(19).await.unwrap(),
+        crowdb_chunk_kv::MaterializationProgress {
+            bytes_written: 0,
+            complete: true,
+        }
+    );
+    assert_eq!(left.metrics().snapshot().materialization_passes, 1);
     for key in [b"b".as_slice(), b"d".as_slice()] {
         assert_eq!(left.get(19, key, None).await.unwrap().unwrap().value, key);
     }
@@ -1519,6 +1543,19 @@ async fn native_online_split_reopens_one_manifest_for_both_child_rebuilds() {
     assert!(prepared.left.artifact().tree_manifest > 0);
     assert_eq!(prepared.left_rebuild.entries_emitted, 1);
     assert_eq!(prepared.right_rebuild.entries_emitted, 1);
+    let proof = SplitCommitProof {
+        catalog_revision: 8,
+        artifact: prepared.artifact.clone(),
+    };
+    let left = prepared.left.open(PartitionConfig::default()).await.unwrap();
+    let right = prepared.right.open(PartitionConfig::default()).await.unwrap();
+    left.activate_prepared(&proof).unwrap();
+    right.activate_prepared(&proof).unwrap();
+    for child in [&left, &right] {
+        let passes = finish_materialization(child, 19).await;
+        assert_eq!(child.metrics().snapshot().materialization_passes, passes);
+        assert_eq!(child.chunk_storage_stats().unwrap().unwrap().shared_packs, 0);
+    }
 }
 
 #[tokio::test]

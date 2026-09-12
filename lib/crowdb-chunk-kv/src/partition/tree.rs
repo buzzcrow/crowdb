@@ -68,6 +68,17 @@ pub trait PartitionTree: Send + Sync {
     fn reclaim_orphans(&self) -> Result<u64> {
         Ok(0)
     }
+    /// Materializes one bounded pass of storage inherited from another tree.
+    ///
+    /// The returned tuple is `(bytes_written, complete)`. Backends without
+    /// shared physical ownership are already complete.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage maintenance or corruption error.
+    fn materialize_ownership(&self) -> Result<(u64, bool)> {
+        Ok((0, true))
+    }
 }
 
 pub struct CrowdbPartitionTree {
@@ -313,6 +324,13 @@ impl PartitionTree for CrowdbPartitionTree {
             .as_ref()
             .and_then(|config| config.page_store.as_ref())
             .map_or(0, |store| store.reclaim_chunk_orphans()))
+    }
+
+    fn materialize_ownership(&self) -> Result<(u64, bool)> {
+        self.tree.materialize_ownership().map_err(|error| match error {
+            crowdb_tree_ffi::CtError::Corruption => ChunkKvError::TreeCorruption(error.to_string()),
+            _ => ChunkKvError::MaintenanceDegraded(error.to_string()),
+        })
     }
 }
 

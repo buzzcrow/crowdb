@@ -296,7 +296,7 @@ struct RpcChunkTransport::Impl
                 .chunk_offset = wire_strip->chunk_offset(),
                 .capacity     = wire_strip->capacity(),
                 .unit_kb      = wire_strip->unit_kb(),
-                .mirrors      = {},
+                .mirrors      = {}
             };
             for (size_t index = 0; index < strip.mirrors.size(); ++index) {
                 const auto *segment  = mirror->segments()->Get(index);

@@ -35,6 +35,9 @@ pub struct PartitionMetrics {
     split_fences: AtomicU64,
     split_commits: AtomicU64,
     split_aborts: AtomicU64,
+    materialization_passes: AtomicU64,
+    materialization_bytes: AtomicU64,
+    materialization_failures: AtomicU64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -69,6 +72,9 @@ pub struct PartitionMetricsSnapshot {
     pub split_fences: u64,
     pub split_commits: u64,
     pub split_aborts: u64,
+    pub materialization_passes: u64,
+    pub materialization_bytes: u64,
+    pub materialization_failures: u64,
 }
 
 impl PartitionMetrics {
@@ -105,6 +111,9 @@ impl PartitionMetrics {
             split_fences: self.split_fences.load(Ordering::Relaxed),
             split_commits: self.split_commits.load(Ordering::Relaxed),
             split_aborts: self.split_aborts.load(Ordering::Relaxed),
+            materialization_passes: self.materialization_passes.load(Ordering::Relaxed),
+            materialization_bytes: self.materialization_bytes.load(Ordering::Relaxed),
+            materialization_failures: self.materialization_failures.load(Ordering::Relaxed),
         }
     }
 
@@ -225,5 +234,17 @@ impl PartitionMetrics {
 
     pub(crate) fn split_abort(&self) {
         self.split_aborts.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn materialization(&self, result: Result<(u64, bool), ()>) {
+        self.materialization_passes.fetch_add(1, Ordering::Relaxed);
+        match result {
+            Ok((bytes, _)) => {
+                self.materialization_bytes.fetch_add(bytes, Ordering::Relaxed);
+            }
+            Err(()) => {
+                self.materialization_failures.fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 }

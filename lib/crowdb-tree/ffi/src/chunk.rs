@@ -60,6 +60,36 @@ pub struct ChunkRootCatalog {
     ptr: NonNull<sys::ct_root_catalog>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootCatalogObject {
+    CurrentManifest,
+    Manifest(u64),
+    ReferenceSegment(u64),
+}
+
+/// Synchronous persistence contract used only by tree checkpoint and
+/// maintenance paths. Implementations may bridge to an asynchronous service
+/// on a dedicated worker; tree point reads never call this interface.
+pub trait RootCatalogStore: Send + Sync + 'static {
+    fn load(&self, tree_id: u64, object: RootCatalogObject) -> Result<Option<Vec<u8>>, CtError>;
+    fn store(&self, tree_id: u64, object: RootCatalogObject, data: &[u8]) -> Result<(), CtError>;
+    fn publish(
+        &self,
+        tree_id: u64,
+        expected_generation: u64,
+        owner_epoch: u64,
+        generation: u64,
+        manifest: &[u8],
+    ) -> Result<(), CtError>;
+    fn allocate_reference_segment_id(&self, tree_id: u64) -> Result<u64, CtError>;
+    fn discard_reference_segments(&self, _tree_id: u64, _object_ids: &[u64]) -> u64 {
+        0
+    }
+    fn reclaim_before(&self, _tree_id: u64, _generation: u64) -> u64 {
+        0
+    }
+}
+
 impl ChunkRootCatalog {
     pub fn open_memory(owner_epoch: u64) -> Result<Self, CtError> {
         let mut out = std::ptr::null_mut();
@@ -69,8 +99,218 @@ impl ChunkRootCatalog {
         })
     }
 
+    /// Opens a catalog whose opaque manifests are persisted by `store`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an invalid callback configuration error.
+    pub fn open_callback(store: Arc<dyn RootCatalogStore>) -> Result<Self, CtError> {
+        let context = Box::into_raw(Box::new(store)).cast::<c_void>();
+        let callbacks = sys::ct_root_catalog_callbacks {
+            load: Some(catalog_load),
+            free_blob: Some(catalog_free_blob),
+            store: Some(catalog_store),
+            publish: Some(catalog_publish),
+            allocate_reference_segment_id: Some(catalog_allocate_reference_segment_id),
+            discard_reference_segments: Some(catalog_discard_reference_segments),
+            reclaim_before: Some(catalog_reclaim_before),
+            drop_context: Some(catalog_drop_context),
+        };
+        let mut out = std::ptr::null_mut();
+        if let Err(error) =
+            check(unsafe { sys::ct_callback_root_catalog_open(&callbacks, context, &mut out) })
+        {
+            unsafe { drop(Box::from_raw(context.cast::<Arc<dyn RootCatalogStore>>())) };
+            return Err(error);
+        }
+        Ok(Self {
+            ptr: NonNull::new(out).ok_or(CtError::Internal)?,
+        })
+    }
+
     pub fn reclaim_before(&self, tree_id: u64, generation: u64) -> u64 {
         unsafe { sys::ct_root_catalog_reclaim_before(self.ptr.as_ptr(), tree_id, generation) }
+    }
+}
+
+fn catalog_object(kind: i32, object_id: u64) -> Result<RootCatalogObject, CtError> {
+    match kind {
+        1 => Ok(RootCatalogObject::CurrentManifest),
+        2 => Ok(RootCatalogObject::Manifest(object_id)),
+        3 => Ok(RootCatalogObject::ReferenceSegment(object_id)),
+        _ => Err(CtError::InvalidArgument),
+    }
+}
+
+fn error_code(error: CtError) -> i32 {
+    match error {
+        CtError::NotFound => -1,
+        CtError::InvalidArgument => -2,
+        CtError::Corruption => -3,
+        CtError::IoError => -4,
+        CtError::NotSupported => -5,
+        CtError::Internal => -6,
+        CtError::ResourceExhausted => -7,
+        CtError::Unavailable | CtError::Unknown(_) => -8,
+    }
+}
+
+unsafe fn catalog_store_ref<'a>(context: *mut c_void) -> &'a Arc<dyn RootCatalogStore> {
+    &*context.cast::<Arc<dyn RootCatalogStore>>()
+}
+
+unsafe extern "C" fn catalog_load(
+    context: *mut c_void,
+    kind: i32,
+    tree_id: u64,
+    object_id: u64,
+    out: *mut *const u8,
+    len: *mut usize,
+) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if context.is_null() || out.is_null() || len.is_null() {
+            return -2;
+        }
+        let object = match catalog_object(kind, object_id) {
+            Ok(object) => object,
+            Err(error) => return error_code(error),
+        };
+        match catalog_store_ref(context).load(tree_id, object) {
+            Ok(Some(bytes)) if !bytes.is_empty() => {
+                let bytes = bytes.into_boxed_slice();
+                *len = bytes.len();
+                *out = Box::into_raw(bytes).cast::<u8>();
+                0
+            }
+            Ok(_) => -1,
+            Err(error) => error_code(error),
+        }
+    }))
+    .unwrap_or(-6)
+}
+
+unsafe extern "C" fn catalog_free_blob(_context: *mut c_void, data: *const u8, len: usize) {
+    if !data.is_null() {
+        drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(
+            data.cast_mut(),
+            len,
+        )));
+    }
+}
+
+unsafe extern "C" fn catalog_store(
+    context: *mut c_void,
+    kind: i32,
+    tree_id: u64,
+    object_id: u64,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if context.is_null() || (data.is_null() && len != 0) {
+            return -2;
+        }
+        let object = match catalog_object(kind, object_id) {
+            Ok(object) => object,
+            Err(error) => return error_code(error),
+        };
+        let bytes = if len == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(data, len)
+        };
+        catalog_store_ref(context)
+            .store(tree_id, object, bytes)
+            .map_or_else(error_code, |()| 0)
+    }))
+    .unwrap_or(-6)
+}
+
+unsafe extern "C" fn catalog_publish(
+    context: *mut c_void,
+    tree_id: u64,
+    expected_generation: u64,
+    owner_epoch: u64,
+    generation: u64,
+    data: *const u8,
+    len: usize,
+) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if context.is_null() || (data.is_null() && len != 0) {
+            return -2;
+        }
+        catalog_store_ref(context)
+            .publish(
+                tree_id,
+                expected_generation,
+                owner_epoch,
+                generation,
+                if len == 0 {
+                    &[]
+                } else {
+                    std::slice::from_raw_parts(data, len)
+                },
+            )
+            .map_or_else(error_code, |()| 0)
+    }))
+    .unwrap_or(-6)
+}
+
+unsafe extern "C" fn catalog_allocate_reference_segment_id(
+    context: *mut c_void,
+    tree_id: u64,
+    out: *mut u64,
+) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if context.is_null() || out.is_null() {
+            return -2;
+        }
+        match catalog_store_ref(context).allocate_reference_segment_id(tree_id) {
+            Ok(value) => {
+                *out = value;
+                0
+            }
+            Err(error) => error_code(error),
+        }
+    }))
+    .unwrap_or(-6)
+}
+
+unsafe extern "C" fn catalog_discard_reference_segments(
+    context: *mut c_void,
+    tree_id: u64,
+    object_ids: *const u64,
+    object_count: usize,
+) -> u64 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if context.is_null() || (object_ids.is_null() && object_count != 0) {
+            return 0;
+        }
+        let ids = if object_count == 0 {
+            &[]
+        } else {
+            std::slice::from_raw_parts(object_ids, object_count)
+        };
+        catalog_store_ref(context).discard_reference_segments(tree_id, ids)
+    }))
+    .unwrap_or(0)
+}
+
+unsafe extern "C" fn catalog_reclaim_before(context: *mut c_void, tree_id: u64, generation: u64) -> u64 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if context.is_null() {
+            return 0;
+        }
+        catalog_store_ref(context).reclaim_before(tree_id, generation)
+    }))
+    .unwrap_or(0)
+}
+
+unsafe extern "C" fn catalog_drop_context(context: *mut c_void) {
+    if !context.is_null() {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            drop(Box::from_raw(context.cast::<Arc<dyn RootCatalogStore>>()));
+        }));
     }
 }
 

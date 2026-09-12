@@ -5,12 +5,13 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
 use crowdb_chunk_stream::{ChunkStream, ProductionStreamRuntime, StreamConfig, StreamName};
-use crowdb_kv_client::{ClientConfig, CrowdbKvClient};
+use crowdb_kv_client::{BatchOp, ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
 use crowdb_tree_ffi::{
     ChunkPageStoreOptions, ChunkRootCatalog, ChunkTransport, OwnedChunkRpcDiskRoute,
-    OwnedChunkRpcTransportOptions, PageStore,
+    OwnedChunkRpcTransportOptions, PageStore, RootCatalogObject, RootCatalogStore,
 };
 use thiserror::Error;
 
@@ -155,6 +156,34 @@ impl ChunkKvStorage {
             .map_err(|error| StorageRuntimeError::Tree(error.to_string()))
     }
 
+    /// Claims one tree root at `owner_epoch` and opens its durable,
+    /// generation-CAS page store in the supplied metadata group.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stale authority, KV availability, or native page-store error.
+    pub async fn open_durable_tree_page_store(
+        &self,
+        options: ChunkPageStoreOptions,
+        metadata_group_id: u64,
+    ) -> Result<Arc<PageStore>, StorageRuntimeError> {
+        let catalog = KvRootCatalogStore::claim(
+            Arc::clone(&self.kv),
+            self.metadata_store_id,
+            metadata_group_id,
+            options.tree_id,
+            options.owner_epoch,
+        )
+        .await?;
+        self.open_tree_page_store(
+            options,
+            Arc::new(
+                ChunkRootCatalog::open_callback(Arc::new(catalog))
+                    .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?,
+            ),
+        )
+    }
+
     /// Initializes the stream selected by an Active catalog binding.
     ///
     /// # Errors
@@ -186,4 +215,292 @@ impl ChunkKvStorage {
             .await
             .map_err(|error| StorageRuntimeError::Stream(error.to_string()))
     }
+}
+
+struct KvRootCatalogStore {
+    kv: Arc<CrowdbKvClient>,
+    runtime: tokio::runtime::Handle,
+    store_id: u64,
+    group_id: u64,
+    tree_id: u64,
+    owner_epoch: u64,
+}
+
+impl KvRootCatalogStore {
+    async fn claim(
+        kv: Arc<CrowdbKvClient>,
+        store_id: u64,
+        group_id: u64,
+        tree_id: u64,
+        owner_epoch: u64,
+    ) -> Result<Self, StorageRuntimeError> {
+        if group_id == 0 || tree_id == 0 || owner_epoch == 0 {
+            return Err(StorageRuntimeError::Tree(
+                "root catalog group, tree, and owner epoch must be nonzero".into(),
+            ));
+        }
+        let key = catalog_key(tree_id, b"authority", 0);
+        loop {
+            let (current_epoch, generation, revision) = match kv
+                .get(store_id, group_id, &key, ReadMode::Linearizable, None)
+                .await
+                .map_err(|error| StorageRuntimeError::Tree(error.to_string()))?
+            {
+                GetOutcome::NotFound => (0, 0, 0),
+                GetOutcome::Found { value, revision } => {
+                    let (epoch, generation) = decode_authority(&value)
+                        .ok_or_else(|| StorageRuntimeError::Tree("invalid root authority record".into()))?;
+                    (epoch, generation, revision)
+                }
+            };
+            if current_epoch > owner_epoch {
+                return Err(StorageRuntimeError::Tree("tree root owner epoch is stale".into()));
+            }
+            if current_epoch == owner_epoch {
+                break;
+            }
+            match kv
+                .put_cas(
+                    store_id,
+                    group_id,
+                    &key,
+                    &encode_authority(owner_epoch, generation),
+                    revision,
+                )
+                .await
+            {
+                Ok(_) => break,
+                Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => {}
+                Err(error) => return Err(StorageRuntimeError::Tree(error.to_string())),
+            }
+        }
+        Ok(Self {
+            kv,
+            runtime: tokio::runtime::Handle::current(),
+            store_id,
+            group_id,
+            tree_id,
+            owner_epoch,
+        })
+    }
+
+    fn wait<F: std::future::Future>(&self, future: F) -> F::Output {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::task::block_in_place(|| self.runtime.block_on(future))
+        } else {
+            self.runtime.block_on(future)
+        }
+    }
+
+    async fn get(&self, key: &[u8]) -> Result<Option<(Bytes, u64)>, crowdb_kv_client::Error> {
+        self.kv
+            .get(self.store_id, self.group_id, key, ReadMode::Linearizable, None)
+            .await
+            .map(|outcome| match outcome {
+                GetOutcome::Found { value, revision } => Some((value, revision)),
+                GetOutcome::NotFound => None,
+            })
+    }
+}
+
+impl RootCatalogStore for KvRootCatalogStore {
+    fn load(
+        &self,
+        tree_id: u64,
+        object: RootCatalogObject,
+    ) -> Result<Option<Vec<u8>>, crowdb_tree_ffi::CtError> {
+        if tree_id != self.tree_id {
+            return Err(crowdb_tree_ffi::CtError::InvalidArgument);
+        }
+        let key = object_key(tree_id, object);
+        let value = self
+            .wait(self.get(&key))
+            .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?;
+        if value.is_none() && object == RootCatalogObject::CurrentManifest {
+            let authority_key = catalog_key(tree_id, b"authority", 0);
+            if let Some((authority, _)) = self
+                .wait(self.get(&authority_key))
+                .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?
+            {
+                let (_, generation) =
+                    decode_authority(&authority).ok_or(crowdb_tree_ffi::CtError::Corruption)?;
+                if generation != 0 {
+                    return Err(crowdb_tree_ffi::CtError::Corruption);
+                }
+            }
+        }
+        Ok(value.map(|(bytes, _)| bytes.to_vec()))
+    }
+
+    fn store(
+        &self,
+        tree_id: u64,
+        object: RootCatalogObject,
+        data: &[u8],
+    ) -> Result<(), crowdb_tree_ffi::CtError> {
+        if tree_id != self.tree_id || !matches!(object, RootCatalogObject::ReferenceSegment(_)) {
+            return Err(crowdb_tree_ffi::CtError::InvalidArgument);
+        }
+        let key = object_key(tree_id, object);
+        self.wait(self.kv.put(self.store_id, self.group_id, &key, data, None))
+            .map(|_| ())
+            .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)
+    }
+
+    fn publish(
+        &self,
+        tree_id: u64,
+        expected_generation: u64,
+        owner_epoch: u64,
+        generation: u64,
+        manifest: &[u8],
+    ) -> Result<(), crowdb_tree_ffi::CtError> {
+        if tree_id != self.tree_id || owner_epoch != self.owner_epoch || generation != expected_generation + 1
+        {
+            return Err(crowdb_tree_ffi::CtError::InvalidArgument);
+        }
+        let authority_key = catalog_key(tree_id, b"authority", 0);
+        let Some((authority, revision)) = self
+            .wait(self.get(&authority_key))
+            .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?
+        else {
+            return Err(crowdb_tree_ffi::CtError::Unavailable);
+        };
+        if decode_authority(&authority) != Some((owner_epoch, expected_generation)) {
+            return Err(crowdb_tree_ffi::CtError::Unavailable);
+        }
+        let ops = [
+            BatchOp::Put {
+                key: Bytes::from(authority_key.clone()),
+                value: Bytes::copy_from_slice(&encode_authority(owner_epoch, generation)),
+            },
+            BatchOp::Put {
+                key: Bytes::from(catalog_key(tree_id, b"current", 0)),
+                value: Bytes::copy_from_slice(manifest),
+            },
+            BatchOp::Put {
+                key: Bytes::from(catalog_key(tree_id, b"manifest", generation)),
+                value: Bytes::copy_from_slice(manifest),
+            },
+        ];
+        self.wait(
+            self.kv
+                .batch_write_cas(self.store_id, self.group_id, &ops, &authority_key, revision),
+        )
+        .map(|_| ())
+        .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)
+    }
+
+    fn allocate_reference_segment_id(&self, tree_id: u64) -> Result<u64, crowdb_tree_ffi::CtError> {
+        if tree_id != self.tree_id {
+            return Err(crowdb_tree_ffi::CtError::InvalidArgument);
+        }
+        let key = catalog_key(tree_id, b"next-reference", 0);
+        loop {
+            let (current, revision) = match self
+                .wait(self.get(&key))
+                .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?
+            {
+                Some((value, revision)) => (
+                    decode_u64(&value).ok_or(crowdb_tree_ffi::CtError::Corruption)?,
+                    revision,
+                ),
+                None => (1, 0),
+            };
+            let next = current
+                .checked_add(1)
+                .ok_or(crowdb_tree_ffi::CtError::ResourceExhausted)?;
+            match self.wait(self.kv.put_cas(
+                self.store_id,
+                self.group_id,
+                &key,
+                &next.to_be_bytes(),
+                revision,
+            )) {
+                Ok(_) => return Ok(current),
+                Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => {}
+                Err(_) => return Err(crowdb_tree_ffi::CtError::Unavailable),
+            }
+        }
+    }
+
+    fn discard_reference_segments(&self, tree_id: u64, object_ids: &[u64]) -> u64 {
+        if tree_id != self.tree_id || object_ids.is_empty() {
+            return 0;
+        }
+        let ops = object_ids
+            .iter()
+            .map(|object_id| BatchOp::Delete {
+                key: Bytes::from(catalog_key(tree_id, b"reference", *object_id)),
+            })
+            .collect::<Vec<_>>();
+        self.wait(self.kv.batch_write(self.store_id, self.group_id, &ops))
+            .map_or(0, |_| object_ids.len() as u64)
+    }
+
+    fn reclaim_before(&self, tree_id: u64, generation: u64) -> u64 {
+        if tree_id != self.tree_id || generation <= 2 {
+            return 0;
+        }
+        let floor_key = catalog_key(tree_id, b"reclaim-floor", 0);
+        let (floor, revision) = match self.wait(self.get(&floor_key)) {
+            Ok(Some((value, revision))) => match decode_u64(&value) {
+                Some(floor) => (floor, revision),
+                None => return 0,
+            },
+            Ok(None) => (1, 0),
+            Err(_) => return 0,
+        };
+        let end = generation.saturating_sub(1).min(floor.saturating_add(128));
+        if floor >= end {
+            return 0;
+        }
+        let mut ops = (floor..end)
+            .map(|old_generation| BatchOp::Delete {
+                key: Bytes::from(catalog_key(tree_id, b"manifest", old_generation)),
+            })
+            .collect::<Vec<_>>();
+        ops.push(BatchOp::Put {
+            key: Bytes::from(floor_key.clone()),
+            value: Bytes::copy_from_slice(&end.to_be_bytes()),
+        });
+        self.wait(
+            self.kv
+                .batch_write_cas(self.store_id, self.group_id, &ops, &floor_key, revision),
+        )
+        .map_or(0, |_| end - floor)
+    }
+}
+
+fn catalog_key(tree_id: u64, kind: &[u8], object_id: u64) -> Vec<u8> {
+    let mut key = b"\0crowdb/chunk-kv/root/v1/".to_vec();
+    key.extend_from_slice(&tree_id.to_be_bytes());
+    key.push(b'/');
+    key.extend_from_slice(kind);
+    key.push(b'/');
+    key.extend_from_slice(&object_id.to_be_bytes());
+    key
+}
+
+fn object_key(tree_id: u64, object: RootCatalogObject) -> Vec<u8> {
+    match object {
+        RootCatalogObject::CurrentManifest => catalog_key(tree_id, b"current", 0),
+        RootCatalogObject::Manifest(generation) => catalog_key(tree_id, b"manifest", generation),
+        RootCatalogObject::ReferenceSegment(object_id) => catalog_key(tree_id, b"reference", object_id),
+    }
+}
+
+fn encode_authority(owner_epoch: u64, generation: u64) -> [u8; 16] {
+    let mut value = [0; 16];
+    value[..8].copy_from_slice(&owner_epoch.to_be_bytes());
+    value[8..].copy_from_slice(&generation.to_be_bytes());
+    value
+}
+
+fn decode_authority(value: &[u8]) -> Option<(u64, u64)> {
+    (value.len() == 16).then(|| (decode_u64(&value[..8]).unwrap(), decode_u64(&value[8..]).unwrap()))
+}
+
+fn decode_u64(value: &[u8]) -> Option<u64> {
+    value.try_into().ok().map(u64::from_be_bytes)
 }

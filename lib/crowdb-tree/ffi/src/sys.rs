@@ -5,6 +5,30 @@
 
 use std::os::raw::{c_char, c_int};
 
+pub type ct_root_catalog_load_fn = unsafe extern "C" fn(
+    context: *mut std::ffi::c_void,
+    kind: i32,
+    tree_id: u64,
+    object_id: u64,
+    out: *mut *const u8,
+    len: *mut usize,
+) -> c_int;
+
+#[repr(C)]
+pub struct ct_root_catalog_callbacks {
+    pub load: Option<ct_root_catalog_load_fn>,
+    pub free_blob: Option<unsafe extern "C" fn(*mut std::ffi::c_void, *const u8, usize)>,
+    pub store: Option<unsafe extern "C" fn(*mut std::ffi::c_void, i32, u64, u64, *const u8, usize) -> c_int>,
+    pub publish:
+        Option<unsafe extern "C" fn(*mut std::ffi::c_void, u64, u64, u64, u64, *const u8, usize) -> c_int>,
+    pub allocate_reference_segment_id:
+        Option<unsafe extern "C" fn(*mut std::ffi::c_void, u64, *mut u64) -> c_int>,
+    pub discard_reference_segments:
+        Option<unsafe extern "C" fn(*mut std::ffi::c_void, u64, *const u64, usize) -> u64>,
+    pub reclaim_before: Option<unsafe extern "C" fn(*mut std::ffi::c_void, u64, u64) -> u64>,
+    pub drop_context: Option<unsafe extern "C" fn(*mut std::ffi::c_void)>,
+}
+
 #[repr(C)]
 pub struct ct_tree {
     _private: [u8; 0],
@@ -237,6 +261,11 @@ extern "C" {
     pub fn ct_page_store_open_mem(iu_size: u32, out: *mut *mut ct_page_store) -> c_int;
     pub fn ct_page_store_free(store: *mut ct_page_store);
     pub fn ct_memory_root_catalog_open(owner_epoch: u64, out: *mut *mut ct_root_catalog) -> c_int;
+    pub fn ct_callback_root_catalog_open(
+        callbacks: *const ct_root_catalog_callbacks,
+        context: *mut std::ffi::c_void,
+        out: *mut *mut ct_root_catalog,
+    ) -> c_int;
     pub fn ct_root_catalog_free(catalog: *mut ct_root_catalog);
     pub fn ct_chunk_page_store_open(
         options: *const ct_chunk_page_store_options,

@@ -212,6 +212,31 @@ struct ct_chunk_rpc_transport_options
 };
 
 ct_status ct_memory_root_catalog_open(uint64_t owner_epoch, ct_root_catalog **out);
+
+enum ct_root_catalog_object_kind {
+    CT_ROOT_CATALOG_CURRENT_MANIFEST  = 1,
+    CT_ROOT_CATALOG_MANIFEST          = 2,
+    CT_ROOT_CATALOG_REFERENCE_SEGMENT = 3,
+};
+
+struct ct_root_catalog_callbacks
+{
+    ct_status (*load)(void *context, int32_t kind, uint64_t tree_id, uint64_t object_id, const uint8_t **out,
+                      size_t *len);
+    void (*free_blob)(void *context, const uint8_t *data, size_t len);
+    ct_status (*store)(void *context, int32_t kind, uint64_t tree_id, uint64_t object_id, const uint8_t *data,
+                       size_t len);
+    ct_status (*publish)(void *context, uint64_t tree_id, uint64_t expected_generation, uint64_t owner_epoch,
+                         uint64_t generation, const uint8_t *data, size_t len);
+    ct_status (*allocate_reference_segment_id)(void *context, uint64_t tree_id, uint64_t *out);
+    uint64_t (*discard_reference_segments)(void *context, uint64_t tree_id, const uint64_t *object_ids,
+                                           size_t object_count);
+    uint64_t (*reclaim_before)(void *context, uint64_t tree_id, uint64_t generation);
+    void (*drop_context)(void *context);
+};
+
+ct_status ct_callback_root_catalog_open(const ct_root_catalog_callbacks *callbacks, void *context,
+                                        ct_root_catalog **out);
 void      ct_root_catalog_free(ct_root_catalog *catalog);
 ct_status ct_chunk_page_store_open(const ct_chunk_page_store_options *options, ct_root_catalog *catalog,
                                    ct_page_store **out);

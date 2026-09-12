@@ -29,7 +29,7 @@ pub use async_tree::{AsyncCrowdbtree, GetOutcome, PinnedGetOutcome, ScanOutcome}
 pub use batch::{BatchOp, ExtOp};
 pub use chunk::{
     ChunkPageStoreOptions, ChunkPageStoreStats, ChunkRootCatalog, ChunkRpcDiskRoute, ChunkRpcRoute,
-    ChunkRpcTransportOptions, ChunkTransport,
+    ChunkRpcTransportOptions, ChunkTransport, RootCatalogObject, RootCatalogStore,
 };
 #[cfg(feature = "chunk-rpc")]
 pub use chunk::{OwnedChunkRpcDiskRoute, OwnedChunkRpcTransportOptions};

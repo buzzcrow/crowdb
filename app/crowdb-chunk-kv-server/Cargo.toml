@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 arc-swap = "1.7"
 async-trait = "0.1"
+bytes = "1"
 crowdb-chunk-kv = { path = "../../lib/crowdb-chunk-kv" }
 crowdb-chunk-client = { path = "../../lib/crowdb-chunk-client" }
 crowdb-chunk-stream = { path = "../../lib/crowdb-chunk-stream" }

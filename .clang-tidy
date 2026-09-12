@@ -1,7 +1,9 @@
 ---
 # Suppressed checks — fix-its are unsafe or the warning source is
 # third-party macro noise. See coding SKILL.md § "C++ clang-tidy".
-Checks: >
+# These checks can change ownership, ABI, overload resolution, or hot-path
+# behavior through their fix-its; keep them visible only when reviewed locally.
+Checks: >-
   -*,
   clang-analyzer-*,
   bugprone-*,
@@ -13,13 +15,18 @@ Checks: >
   -readability-magic-numbers,
   -readability-function-cognitive-complexity,
   -bugprone-easily-swappable-parameters,
-  -bugprone-signed-bitwise,                          # POSIX flag macros are signed by definition
-  -bugprone-implicit-widening-of-multiplication-result, # fix-its wrap multi-arg calls in static_cast
-  -performance-unnecessary-value-param,              # breaks std::move of params into storage
-  -performance-move-const-arg,                       # strips valid std::move from std::function
-  -readability-convert-member-functions-to-static    # mangles coroutine promise types
+  -bugprone-signed-bitwise,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -performance-unnecessary-value-param,
+  -performance-move-const-arg,
+  -readability-convert-member-functions-to-static,
+  -modernize-use-ranges,
+  -modernize-avoid-c-arrays,
+  -readability-non-const-parameter,
+  -readability-trailing-comma
 WarningsAsErrors: ''
-HeaderFilterRegex: '(^|.*/)crowdb-tree/(include|src|tests)/.*'
+HeaderFilterRegex: '(^|.*/)(crowdb-tree/(include|src|tests)|crowdb-common/cpp|crowdb-rpc/(include|src|tests))/.*'
+ExcludeHeaderFilterRegex: '(^|.*/)(\.pixi|usr/include|usr/local/include|third-party)/.*'
 FormatStyle: file
 CheckOptions:
   - key: modernize-use-nodiscard.ReplacementString

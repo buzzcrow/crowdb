@@ -9,6 +9,7 @@
 #include "chunk_transport.h"
 #include "crowdb-tree/backend/async_page_store.h"
 #include "crowdb-tree/backend/page_store.h"
+#include "crowdb-tree/c_api.h"
 
 #include <array>
 #include <atomic>
@@ -174,6 +175,45 @@ class MemoryRootCatalog final : public RootCatalog
     std::atomic<bool>                                         block_next_publish_{false};
     mutable std::atomic<bool>                                 publish_blocked_{false};
     std::atomic<bool>                                         release_publish_{false};
+};
+
+class CallbackRootCatalog final : public RootCatalog
+{
+  public:
+    CallbackRootCatalog(ct_root_catalog_callbacks callbacks, void *context);
+    ~CallbackRootCatalog() override;
+
+    [[nodiscard]] std::shared_ptr<const ChunkManifest> load(uint64_t tree_id) const override;
+    [[nodiscard]] std::shared_ptr<const ChunkManifest> load_generation(uint64_t tree_id,
+                                                                       uint64_t generation) const override;
+    Status publish(uint64_t tree_id, uint64_t expected_generation, uint64_t owner_epoch,
+                   std::shared_ptr<const ChunkManifest> manifest) override;
+    Status persist_reference_segment(uint64_t                                          tree_id,
+                                     std::shared_ptr<const ChunkReferenceSegmentImage> segment) override;
+    [[nodiscard]] std::shared_ptr<const ChunkReferenceSegmentImage>
+             load_reference_segment(uint64_t tree_id, uint64_t object_id) const override;
+    uint64_t allocate_reference_segment_id(uint64_t tree_id) override;
+    uint64_t discard_reference_segments(uint64_t tree_id, const std::vector<uint64_t> &object_ids) override;
+    uint64_t reclaim_before(uint64_t tree_id, uint64_t generation) override;
+
+    [[nodiscard]] uint64_t retained_manifest_count(uint64_t) const override
+    {
+        return 0;
+    }
+
+    [[nodiscard]] uint64_t pinned_bytes(uint64_t) const override
+    {
+        return 0;
+    }
+
+    [[nodiscard]] uint64_t oldest_pin_age_ms(uint64_t) const override
+    {
+        return 0;
+    }
+
+  private:
+    ct_root_catalog_callbacks callbacks_;
+    void                     *context_;
 };
 
 struct ChunkPageStoreStats

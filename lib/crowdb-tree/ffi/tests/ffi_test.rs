@@ -4,9 +4,66 @@
 // PT8.5: C ABI / Rust integration tests through the safe adapter.
 use crowdb_tree_ffi::{
     AsyncCrowdbtree, BatchOp, ChunkPageStoreOptions, ChunkRootCatalog, Config, Crowdbtree, CtError, ExtOp,
-    KeyRange, PageStore, PageStoreBackend, PinnedGetOutcome,
+    KeyRange, PageStore, PageStoreBackend, PinnedGetOutcome, RootCatalogObject, RootCatalogStore,
 };
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+struct FileRootCatalogStore {
+    dir: PathBuf,
+    generation: AtomicU64,
+    next_reference: AtomicU64,
+}
+
+impl FileRootCatalogStore {
+    fn path(&self, tree_id: u64, object: RootCatalogObject) -> PathBuf {
+        let suffix = match object {
+            RootCatalogObject::CurrentManifest => "current".to_owned(),
+            RootCatalogObject::Manifest(generation) => format!("manifest-{generation}"),
+            RootCatalogObject::ReferenceSegment(id) => format!("reference-{id}"),
+        };
+        self.dir.join(format!("{tree_id}-{suffix}"))
+    }
+}
+
+impl RootCatalogStore for FileRootCatalogStore {
+    fn load(&self, tree_id: u64, object: RootCatalogObject) -> Result<Option<Vec<u8>>, CtError> {
+        match std::fs::read(self.path(tree_id, object)) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(CtError::IoError),
+        }
+    }
+
+    fn store(&self, tree_id: u64, object: RootCatalogObject, data: &[u8]) -> Result<(), CtError> {
+        std::fs::write(self.path(tree_id, object), data).map_err(|_| CtError::IoError)
+    }
+
+    fn publish(
+        &self,
+        tree_id: u64,
+        expected_generation: u64,
+        _owner_epoch: u64,
+        generation: u64,
+        manifest: &[u8],
+    ) -> Result<(), CtError> {
+        self.generation
+            .compare_exchange(
+                expected_generation,
+                generation,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(|_| CtError::Unavailable)?;
+        self.store(tree_id, RootCatalogObject::Manifest(generation), manifest)?;
+        self.store(tree_id, RootCatalogObject::CurrentManifest, manifest)
+    }
+
+    fn allocate_reference_segment_id(&self, _tree_id: u64) -> Result<u64, CtError> {
+        Ok(self.next_reference.fetch_add(1, Ordering::Relaxed))
+    }
+}
 
 #[cfg(feature = "chunk-rpc")]
 use crowdb_rpc_ffi::{OwnedClientRoute, RpcClient, RpcServer};
@@ -221,6 +278,47 @@ fn injected_chunk_store_round_trip_and_stats() {
     assert!(stats.diskio_operations > 0);
     assert!(stats.rpc_operations > 0);
     assert_eq!(tree.materialize_ownership().unwrap(), (0, true));
+}
+
+#[test]
+fn callback_root_catalog_reopens_published_manifest() {
+    let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-callback-root");
+    let backend = Arc::new(FileRootCatalogStore {
+        dir: dir.path().to_path_buf(),
+        generation: AtomicU64::new(0),
+        next_reference: AtomicU64::new(1),
+    });
+    let catalog = Arc::new(ChunkRootCatalog::open_callback(backend).unwrap());
+    let options = ChunkPageStoreOptions {
+        tree_id: 42,
+        owner_epoch: 9,
+        pack_bytes: 4096,
+        iu_size: 1,
+        max_concurrent_packs: 2,
+        materialization_bytes_per_pass: 4096,
+    };
+    let store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
+    {
+        let tree = Crowdbtree::open(&Config {
+            page_store: Some(store),
+            ..Config::default()
+        })
+        .unwrap();
+        tree.apply_put(1, b"durable-root", b"chunk-value").unwrap();
+        tree.flush().unwrap();
+        assert_eq!(tree.snapshot_info().unwrap(), (1, 1));
+    }
+
+    let reopened_store = Arc::new(PageStore::open_chunk(options, catalog, None).unwrap());
+    let reopened = Crowdbtree::open(&Config {
+        page_store: Some(reopened_store),
+        ..Config::default()
+    })
+    .unwrap();
+    assert_eq!(
+        reopened.get(b"durable-root").unwrap(),
+        Some((1, b"chunk-value".to_vec()))
+    );
 }
 
 #[test]

@@ -43,6 +43,214 @@ uint64_t monotonic_nanos()
         .count();
 }
 
+template <typename T> void append_scalar(std::vector<uint8_t> *out, T value)
+{
+    for (size_t i = 0; i < sizeof(T); ++i) {
+        out->push_back(static_cast<uint8_t>((value >> (i * 8U)) & 0xffU));
+    }
+}
+
+class BlobReader
+{
+  public:
+    explicit BlobReader(const std::vector<uint8_t> &bytes) : bytes_(bytes)
+    {
+    }
+
+    template <typename T> bool scalar(T *out)
+    {
+        if (out == nullptr || offset_ > bytes_.size() || sizeof(T) > bytes_.size() - offset_) {
+            return false;
+        }
+        T value = 0;
+        for (size_t i = 0; i < sizeof(T); ++i) {
+            value |= static_cast<T>(bytes_[offset_ + i]) << (i * 8U);
+        }
+        offset_ += sizeof(T);
+        *out = value;
+        return true;
+    }
+
+    [[nodiscard]] bool complete() const
+    {
+        return offset_ == bytes_.size();
+    }
+
+    [[nodiscard]] size_t remaining() const
+    {
+        return bytes_.size() - offset_;
+    }
+
+  private:
+    const std::vector<uint8_t> &bytes_;
+    size_t                      offset_ = 0;
+};
+
+std::vector<uint8_t> encode_reference_segment(const ChunkReferenceSegmentImage &segment)
+{
+    std::vector<uint8_t> out;
+    out.reserve(24 + (segment.refs.size() * 32));
+    append_scalar(&out, segment.object_id);
+    append_scalar(&out, segment.first_ordinal);
+    append_scalar(&out, static_cast<uint64_t>(segment.refs.size()));
+    for (const auto &ref : segment.refs) {
+        append_scalar(&out, ref.chunk_id.high);
+        append_scalar(&out, ref.chunk_id.low);
+        append_scalar(&out, ref.offset);
+        append_scalar(&out, ref.length);
+        append_scalar(&out, ref.checksum);
+    }
+    return out;
+}
+
+std::shared_ptr<const ChunkReferenceSegmentImage> decode_reference_segment(const std::vector<uint8_t> &bytes)
+{
+    BlobReader reader(bytes);
+    auto       segment = std::make_shared<ChunkReferenceSegmentImage>();
+    uint64_t   count   = 0;
+    if (!reader.scalar(&segment->object_id) || !reader.scalar(&segment->first_ordinal) || !reader.scalar(&count) ||
+        count > reader.remaining() / 32U) {
+        return nullptr;
+    }
+    segment->refs.reserve(static_cast<size_t>(count));
+    for (uint64_t i = 0; i < count; ++i) {
+        ChunkPageRef ref;
+        if (!reader.scalar(&ref.chunk_id.high) || !reader.scalar(&ref.chunk_id.low) || !reader.scalar(&ref.offset) ||
+            !reader.scalar(&ref.length) || !reader.scalar(&ref.checksum)) {
+            return nullptr;
+        }
+        segment->refs.push_back(ref);
+    }
+    return reader.complete() ? segment : nullptr;
+}
+
+std::vector<uint8_t> encode_manifest(const ChunkManifest &manifest)
+{
+    std::vector<uint8_t> out;
+    append_scalar(&out, manifest.format_version);
+    append_scalar(&out, manifest.tree_id);
+    append_scalar(&out, manifest.generation);
+    append_scalar(&out, manifest.owner_epoch);
+    append_scalar(&out, manifest.logical_size);
+    append_scalar(&out, manifest.published_at_ms);
+    append_scalar(&out, manifest.packs_reused);
+    append_scalar(&out, manifest.pack_bytes_reused);
+    append_scalar(&out, manifest.checksum);
+    append_scalar(&out, static_cast<uint64_t>(manifest.reference_segments.size()));
+    for (const auto &segment : manifest.reference_segments) {
+        append_scalar(&out, segment.owner_tree_id);
+        append_scalar(&out, segment.object_id);
+        append_scalar(&out, segment.first_ordinal);
+        append_scalar(&out, segment.ref_count);
+        append_scalar(&out, segment.checksum);
+        append_scalar(&out, static_cast<uint8_t>(segment.reused));
+    }
+    append_scalar(&out, static_cast<uint64_t>(manifest.packs.size()));
+    for (const auto &pack : manifest.packs) {
+        append_scalar(&out, pack.owner_tree_id);
+        append_scalar(&out, pack.ordinal);
+        append_scalar(&out, pack.logical_offset);
+        append_scalar(&out, pack.ref.chunk_id.high);
+        append_scalar(&out, pack.ref.chunk_id.low);
+        append_scalar(&out, pack.ref.offset);
+        append_scalar(&out, pack.ref.length);
+        append_scalar(&out, pack.ref.checksum);
+        append_scalar(&out, static_cast<uint8_t>(pack.reused));
+    }
+    return out;
+}
+
+std::shared_ptr<const ChunkManifest> decode_manifest(const std::vector<uint8_t> &bytes)
+{
+    BlobReader reader(bytes);
+    auto       manifest        = std::make_shared<ChunkManifest>();
+    uint64_t   reference_count = 0;
+    if (!reader.scalar(&manifest->format_version) || !reader.scalar(&manifest->tree_id) ||
+        !reader.scalar(&manifest->generation) || !reader.scalar(&manifest->owner_epoch) ||
+        !reader.scalar(&manifest->logical_size) || !reader.scalar(&manifest->published_at_ms) ||
+        !reader.scalar(&manifest->packs_reused) || !reader.scalar(&manifest->pack_bytes_reused) ||
+        !reader.scalar(&manifest->checksum) || !reader.scalar(&reference_count) ||
+        reference_count > reader.remaining() / 33U) {
+        return nullptr;
+    }
+    manifest->reference_segments.reserve(static_cast<size_t>(reference_count));
+    for (uint64_t i = 0; i < reference_count; ++i) {
+        ChunkReferenceSegment segment;
+        uint8_t               reused = 0;
+        if (!reader.scalar(&segment.owner_tree_id) || !reader.scalar(&segment.object_id) ||
+            !reader.scalar(&segment.first_ordinal) || !reader.scalar(&segment.ref_count) ||
+            !reader.scalar(&segment.checksum) || !reader.scalar(&reused) || reused > 1) {
+            return nullptr;
+        }
+        segment.reused = reused != 0;
+        manifest->reference_segments.push_back(segment);
+    }
+    uint64_t pack_count = 0;
+    if (!reader.scalar(&pack_count) || pack_count > reader.remaining() / 57U) {
+        return nullptr;
+    }
+    manifest->packs.reserve(static_cast<size_t>(pack_count));
+    for (uint64_t i = 0; i < pack_count; ++i) {
+        ChunkPagePack pack;
+        uint8_t       reused = 0;
+        if (!reader.scalar(&pack.owner_tree_id) || !reader.scalar(&pack.ordinal) ||
+            !reader.scalar(&pack.logical_offset) || !reader.scalar(&pack.ref.chunk_id.high) ||
+            !reader.scalar(&pack.ref.chunk_id.low) || !reader.scalar(&pack.ref.offset) ||
+            !reader.scalar(&pack.ref.length) || !reader.scalar(&pack.ref.checksum) || !reader.scalar(&reused) ||
+            reused > 1) {
+            return nullptr;
+        }
+        pack.reused = reused != 0;
+        manifest->packs.push_back(pack);
+    }
+    return reader.complete() ? manifest : nullptr;
+}
+
+struct CallbackBlob
+{
+    ct_status            status = 0;
+    std::vector<uint8_t> bytes;
+};
+
+CallbackBlob callback_load(const ct_root_catalog_callbacks &callbacks, void *context, int32_t kind, uint64_t tree_id,
+                           uint64_t object_id)
+{
+    const uint8_t *data = nullptr;
+    size_t         size = 0;
+    const auto     code = callbacks.load(context, kind, tree_id, object_id, &data, &size);
+    if (code != 0 || data == nullptr || size == 0) {
+        return {.status = code, .bytes = {}};
+    }
+    std::vector<uint8_t> bytes(data, data + size);
+    callbacks.free_blob(context, data, size);
+    return {.status = 0, .bytes = std::move(bytes)};
+}
+
+Status callback_status(ct_status code, const char *message)
+{
+    switch (static_cast<Code>(code)) {
+    case Code::kOk:
+        return Status::Ok();
+    case Code::kNotFound:
+        return Status::not_found(message);
+    case Code::kInvalidArgument:
+        return Status::invalid_argument(message);
+    case Code::kCorruption:
+        return Status::corruption(message);
+    case Code::kIoError:
+        return Status::io_error(message);
+    case Code::kNotSupported:
+        return Status::not_supported(message);
+    case Code::kInternal:
+        return Status::internal_error(message);
+    case Code::kResourceExhausted:
+        return Status::resource_exhausted(message);
+    case Code::kUnavailable:
+    default:
+        return Status::unavailable(message);
+    }
+}
+
 uint64_t reference_segment_bytes(const ChunkReferenceSegmentImage &segment)
 {
     return sizeof(segment.object_id) + sizeof(segment.first_ordinal) + (segment.refs.size() * sizeof(ChunkPageRef));
@@ -1079,11 +1287,13 @@ Status ChunkPageStore::persist_reference_segments(ChunkManifest *manifest, const
         const size_t end = std::min(first + kReferencesPerSegment, manifest->packs.size());
         if (reuse_base != nullptr && first / kReferencesPerSegment < reuse_base->reference_segments.size()) {
             const ChunkReferenceSegment &candidate = reuse_base->reference_segments[first / kReferencesPerSegment];
+            const auto                   first_offset = static_cast<std::vector<ChunkPagePack>::difference_type>(first);
+            const auto                   end_offset   = static_cast<std::vector<ChunkPagePack>::difference_type>(end);
             const bool                   same =
                 candidate.first_ordinal == first && candidate.ref_count == end - first &&
                 end <= reuse_base->packs.size() &&
-                std::equal(manifest->packs.begin() + first, manifest->packs.begin() + end,
-                           reuse_base->packs.begin() + first, [](const auto &left, const auto &right) {
+                std::equal(manifest->packs.begin() + first_offset, manifest->packs.begin() + end_offset,
+                           reuse_base->packs.begin() + first_offset, [](const auto &left, const auto &right) {
                                return left.ref.chunk_id == right.ref.chunk_id && left.ref.offset == right.ref.offset &&
                                       left.ref.length == right.ref.length && left.ref.checksum == right.ref.checksum;
                            });
@@ -1623,9 +1833,9 @@ Status ChunkPageStore::submit_fsync(AsyncCompletion on_complete)
     return Status::Ok();
 }
 
-void ChunkPageStore::cancel(uint64_t operation_id)
+void ChunkPageStore::cancel(uint64_t op_id)
 {
-    async_executor_->cancel(operation_id);
+    async_executor_->cancel(op_id);
 }
 
 ChunkPageStoreStats ChunkPageStore::stats() const
@@ -1685,6 +1895,93 @@ uint64_t ChunkPageStore::reclaim_orphans()
     return orphan_bytes_.exchange(0, std::memory_order_acq_rel);
 }
 
+CallbackRootCatalog::CallbackRootCatalog(ct_root_catalog_callbacks callbacks, void *context)
+    : callbacks_(callbacks),
+      context_(context)
+{
+}
+
+CallbackRootCatalog::~CallbackRootCatalog()
+{
+    if (callbacks_.drop_context != nullptr) {
+        callbacks_.drop_context(context_);
+    }
+}
+
+std::shared_ptr<const ChunkManifest> CallbackRootCatalog::load(uint64_t tree_id) const
+{
+    auto blob = callback_load(callbacks_, context_, CT_ROOT_CATALOG_CURRENT_MANIFEST, tree_id, 0);
+    if (blob.status == static_cast<ct_status>(Code::kNotFound)) {
+        return nullptr;
+    }
+    if (blob.status != 0) {
+        return std::make_shared<ChunkManifest>();
+    }
+    auto manifest = decode_manifest(blob.bytes);
+    return manifest != nullptr ? manifest : std::make_shared<ChunkManifest>();
+}
+
+std::shared_ptr<const ChunkManifest> CallbackRootCatalog::load_generation(uint64_t tree_id, uint64_t generation) const
+{
+    auto blob = callback_load(callbacks_, context_, CT_ROOT_CATALOG_MANIFEST, tree_id, generation);
+    if (blob.status != 0) {
+        return nullptr;
+    }
+    return decode_manifest(blob.bytes);
+}
+
+Status CallbackRootCatalog::publish(uint64_t tree_id, uint64_t expected_generation, uint64_t owner_epoch,
+                                    std::shared_ptr<const ChunkManifest> manifest)
+{
+    if (manifest == nullptr || callbacks_.publish == nullptr) {
+        return Status::invalid_argument("callback root catalog publish is unavailable");
+    }
+    const auto bytes = encode_manifest(*manifest);
+    const auto code  = callbacks_.publish(context_, tree_id, expected_generation, owner_epoch, manifest->generation,
+                                          bytes.data(), bytes.size());
+    return callback_status(code, "callback root catalog publish failed");
+}
+
+Status CallbackRootCatalog::persist_reference_segment(uint64_t                                          tree_id,
+                                                      std::shared_ptr<const ChunkReferenceSegmentImage> segment)
+{
+    if (segment == nullptr || callbacks_.store == nullptr) {
+        return Status::invalid_argument("callback root catalog store is unavailable");
+    }
+    const auto bytes = encode_reference_segment(*segment);
+    const auto code  = callbacks_.store(context_, CT_ROOT_CATALOG_REFERENCE_SEGMENT, tree_id, segment->object_id,
+                                        bytes.data(), bytes.size());
+    return callback_status(code, "callback reference segment store failed");
+}
+
+std::shared_ptr<const ChunkReferenceSegmentImage> CallbackRootCatalog::load_reference_segment(uint64_t tree_id,
+                                                                                              uint64_t object_id) const
+{
+    auto blob = callback_load(callbacks_, context_, CT_ROOT_CATALOG_REFERENCE_SEGMENT, tree_id, object_id);
+    return blob.status == 0 ? decode_reference_segment(blob.bytes) : nullptr;
+}
+
+uint64_t CallbackRootCatalog::allocate_reference_segment_id(uint64_t tree_id)
+{
+    uint64_t out = 0;
+    return callbacks_.allocate_reference_segment_id != nullptr &&
+                   callbacks_.allocate_reference_segment_id(context_, tree_id, &out) == 0
+             ? out
+             : 0;
+}
+
+uint64_t CallbackRootCatalog::discard_reference_segments(uint64_t tree_id, const std::vector<uint64_t> &object_ids)
+{
+    return callbacks_.discard_reference_segments == nullptr
+             ? 0
+             : callbacks_.discard_reference_segments(context_, tree_id, object_ids.data(), object_ids.size());
+}
+
+uint64_t CallbackRootCatalog::reclaim_before(uint64_t tree_id, uint64_t generation)
+{
+    return callbacks_.reclaim_before == nullptr ? 0 : callbacks_.reclaim_before(context_, tree_id, generation);
+}
+
 } // namespace crowdb::tree::detail
 
 ct_status ct_memory_root_catalog_open(uint64_t owner_epoch, ct_root_catalog **out)
@@ -1694,6 +1991,21 @@ ct_status ct_memory_root_catalog_open(uint64_t owner_epoch, ct_root_catalog **ou
     }
     auto handle       = std::make_unique<ct_root_catalog>();
     handle->catalog   = std::make_shared<crowdb::tree::detail::MemoryRootCatalog>(owner_epoch);
+    handle->transport = std::make_shared<crowdb::tree::detail::MemoryChunkTransport>();
+    *out              = handle.release();
+    return static_cast<ct_status>(crowdb::tree::Code::kOk);
+}
+
+ct_status ct_callback_root_catalog_open(const ct_root_catalog_callbacks *callbacks, void *context,
+                                        ct_root_catalog **out)
+{
+    if (callbacks == nullptr || callbacks->load == nullptr || callbacks->free_blob == nullptr ||
+        callbacks->store == nullptr || callbacks->publish == nullptr ||
+        callbacks->allocate_reference_segment_id == nullptr || out == nullptr) {
+        return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
+    }
+    auto handle       = std::make_unique<ct_root_catalog>();
+    handle->catalog   = std::make_shared<crowdb::tree::detail::CallbackRootCatalog>(*callbacks, context);
     handle->transport = std::make_shared<crowdb::tree::detail::MemoryChunkTransport>();
     *out              = handle.release();
     return static_cast<ct_status>(crowdb::tree::Code::kOk);
