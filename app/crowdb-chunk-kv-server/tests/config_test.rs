@@ -22,6 +22,7 @@ fn defaults_close_the_documented_timing_contract() {
     assert_eq!(config.storage.diskio_connections_per_endpoint, 1);
     assert_eq!(config.storage.diskio_rpc_workers, 2);
     assert_eq!(config.rpc_workers, 2);
+    assert_eq!(config.rpc_advertise_addr, "127.0.0.1:15200");
 
     config.monitor.self_fence_margin_ms = 3_000;
     assert!(matches!(config.validate(), Err(ConfigError::Invalid(_))));
@@ -38,6 +39,9 @@ fn invalid_identity_address_and_capacity_fail_closed() {
     config.rpc_listen_addr = "not-an-address".into();
     assert!(config.validate().is_err());
     config.rpc_listen_addr = "127.0.0.1:15200".into();
+    config.rpc_advertise_addr = "0.0.0.0:15200".into();
+    assert!(config.validate().is_err());
+    config.rpc_advertise_addr = "127.0.0.1:15200".into();
     config.max_hosted_partitions = 0;
     assert!(config.validate().is_err());
     config.max_hosted_partitions = 1;

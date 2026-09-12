@@ -126,12 +126,14 @@ reports readiness, and serves only after installing a matching grant. Shutdown
 atomically stops new admission and clears authority; already admitted R142
 operations retain handles and finish before bounded checkpoint/drain work.
 
-Configuration exposes identity, group-0 seeds, dedicated 15xxx HTTP/RPC ports,
-hosted-partition capacity, refresh/drain intervals, timing policy, and balance
-policy. Validation rejects unsafe timing, zero bounds, bad addresses, and empty
-discovery seeds. Lock-free counters distinguish successes, redirects, lease and
-deadline rejections, overload, and internal errors. Health and heartbeat views
-derive from the same sorted partition snapshots and catalog generation.
+Configuration exposes identity, group-0 seeds, separate RPC listen and routable
+advertise addresses, dedicated 15xxx HTTP/RPC ports, hosted-partition capacity,
+refresh/drain intervals, timing policy, and balance policy. Validation rejects
+unsafe timing, zero bounds, bad addresses, unspecified advertise addresses, and
+empty discovery seeds. Lock-free counters distinguish successes, redirects,
+lease and deadline rejections, overload, and internal errors. Health and
+heartbeat views derive from the same sorted partition snapshots and catalog
+generation.
 
 ## Open Issues
 

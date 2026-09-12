@@ -10,8 +10,10 @@ use std::sync::Arc;
 use clap::Parser;
 use crowdb_chunk_kv_server::{
     management_router, CatalogPublisher, ChunkKvRpcService, ChunkKvServerConfig, ChunkKvService,
-    ChunkKvStorage, Group0ControlStore, ManagementState,
+    ChunkKvStorage, DomainMonitorRegistry, Group0ControlStore, ManagementState,
 };
+use crowdb_kv_client::ServiceRegistryClient;
+use crowdb_protocol::chunk_kv::{EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest};
 use tracing::{error, info, warn};
 
 #[derive(Debug, Parser)]
@@ -113,10 +115,15 @@ async fn main() {
         .rpc_listen_addr
         .parse()
         .expect("validated RPC listen address");
+    let rpc_advertise_addr: SocketAddr = config
+        .rpc_advertise_addr
+        .parse()
+        .expect("validated RPC advertise address");
     info!(
         instance_id = config.instance_id,
         %http_addr,
         %rpc_addr,
+        %rpc_advertise_addr,
         "crowdb-chunk-kv-server starting"
     );
 
@@ -134,9 +141,31 @@ async fn main() {
             return;
         }
     };
-    let catalog = Arc::new(CatalogPublisher::new(Arc::new(Group0ControlStore::from_client(
-        Arc::clone(storage.kv()),
-    ))));
+    let control_store = Arc::new(Group0ControlStore::from_client(Arc::clone(storage.kv())));
+    let monitor_registry = DomainMonitorRegistry::new(
+        control_store.clone(),
+        vec![crowdb_chunk_kv_server::serving::monitor::SupportedMonitor {
+            domain: "chunk-kv".into(),
+            driver_version: 1,
+            max_capability_version: 1,
+        }],
+    );
+    let ensure_request = EnsureDomainMonitorRequest {
+        descriptor: config.monitor.clone(),
+    };
+    match monitor_registry.ensure(&ensure_request).await {
+        Ok(EnsureDomainMonitorOutcome::Created | EnsureDomainMonitorOutcome::AlreadyExists) => {}
+        Ok(outcome) => {
+            error!(?outcome, "chunk KV monitor registration was rejected");
+            return;
+        }
+        Err(error) => {
+            error!(%error, "failed to persist chunk KV monitor registration");
+            return;
+        }
+    }
+
+    let catalog = Arc::new(CatalogPublisher::new(control_store.clone()));
     match catalog.load_current().await {
         Ok(Some((head, pages))) => {
             if let Err(error) = service.install_catalog(&head, &pages) {
@@ -174,6 +203,55 @@ async fn main() {
         }
     });
 
+    let service_registry = Arc::new(ServiceRegistryClient::from_shared(Arc::clone(storage.kv())));
+    let capacity_bytes = u64::try_from(config.max_hosted_partitions)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(config.balance.target_partition_bytes);
+    let initial_observation = service.registry_observation(capacity_bytes, 0);
+    if let Err(error) = service_registry
+        .register_chunk_kv(
+            config.instance_id,
+            &rpc_advertise_addr.to_string(),
+            &initial_observation,
+        )
+        .await
+    {
+        error!(%error, "failed to register chunk KV instance");
+        refresh_task.abort();
+        return;
+    }
+    install_latest_grant(&control_store, &service, &config).await;
+    let heartbeat_service = Arc::clone(&service);
+    let heartbeat_registry = Arc::clone(&service_registry);
+    let heartbeat_store = Arc::clone(&control_store);
+    let heartbeat_config = config.clone();
+    let heartbeat_endpoint = rpc_advertise_addr.to_string();
+    let heartbeat_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(
+            heartbeat_config.monitor.heartbeat_interval_ms,
+        ));
+        interval.tick().await;
+        let mut previous_requests = heartbeat_service.metrics().snapshot().requests;
+        let mut previous_ms = heartbeat_service.monotonic_ms();
+        loop {
+            interval.tick().await;
+            let now_ms = heartbeat_service.monotonic_ms();
+            let requests = heartbeat_service.metrics().snapshot().requests;
+            let elapsed_ms = now_ms.saturating_sub(previous_ms).max(1);
+            let request_rate = requests.saturating_sub(previous_requests).saturating_mul(1_000) / elapsed_ms;
+            previous_requests = requests;
+            previous_ms = now_ms;
+            let observation = heartbeat_service.registry_observation(capacity_bytes, request_rate);
+            if let Err(error) = heartbeat_registry
+                .heartbeat_chunk_kv(heartbeat_config.instance_id, &heartbeat_endpoint, &observation)
+                .await
+            {
+                warn!(%error, "chunk KV heartbeat failed");
+            }
+            install_latest_grant(&heartbeat_store, &heartbeat_service, &heartbeat_config).await;
+        }
+    });
+
     let rpc_server = Arc::new(crowdb_rpc_ffi::RpcServer::with_engines(
         None,
         1,
@@ -202,7 +280,7 @@ async fn main() {
 
     let shutdown_service = Arc::clone(&service);
     let shutdown_rpc = Arc::clone(&rpc_server);
-    let app = management_router(ManagementState::new(service));
+    let app = management_router(ManagementState::new(Arc::clone(&service)));
     if let Err(error) = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
@@ -214,7 +292,37 @@ async fn main() {
     {
         error!(%error, "HTTP management server failed");
     }
+    heartbeat_task.abort();
     refresh_task.abort();
+    if let Err(error) = service_registry.unregister("chunk-kv", config.instance_id).await {
+        warn!(%error, "failed to unregister chunk KV instance");
+    }
+}
+
+async fn install_latest_grant(
+    store: &Group0ControlStore,
+    service: &ChunkKvService,
+    config: &ChunkKvServerConfig,
+) {
+    match store.load_serving_grant(config.instance_id).await {
+        Ok(Some(grant)) => {
+            if let Err(error) =
+                service
+                    .authority()
+                    .install(grant, &config.monitor, wall_time_ms(), service.monotonic_ms())
+            {
+                warn!(%error, "rejected chunk KV serving grant");
+            }
+        }
+        Ok(None) => service.authority().clear(),
+        Err(error) => warn!(%error, "serving-grant refresh failed; retaining local lease deadline"),
+    }
+}
+
+fn wall_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis().try_into().unwrap_or(u64::MAX))
 }
 
 async fn shutdown_signal() {

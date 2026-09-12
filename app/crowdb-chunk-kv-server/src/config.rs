@@ -26,6 +26,7 @@ pub enum ConfigError {
 pub struct ChunkKvServerConfig {
     pub instance_id: u64,
     pub rpc_listen_addr: String,
+    pub rpc_advertise_addr: String,
     pub http_listen_addr: String,
     pub group0_mgmt_seeds: Vec<String>,
     pub max_hosted_partitions: usize,
@@ -42,6 +43,7 @@ impl Default for ChunkKvServerConfig {
         Self {
             instance_id: 0,
             rpc_listen_addr: format!("0.0.0.0:{CHUNK_KV_RPC_BASE}"),
+            rpc_advertise_addr: format!("127.0.0.1:{CHUNK_KV_RPC_BASE}"),
             http_listen_addr: format!("0.0.0.0:{CHUNK_KV_HTTP_BASE}"),
             group0_mgmt_seeds: vec![format!("http://127.0.0.1:{KV_SERVER_MGMT_BASE}")],
             max_hosted_partitions: 256,
@@ -79,6 +81,12 @@ impl ChunkKvServerConfig {
             return Err(ConfigError::Invalid("instance_id must be nonzero".into()));
         }
         parse_address("rpc_listen_addr", &self.rpc_listen_addr)?;
+        let advertise = parse_address("rpc_advertise_addr", &self.rpc_advertise_addr)?;
+        if advertise.ip().is_unspecified() {
+            return Err(ConfigError::Invalid(
+                "rpc_advertise_addr must be routable, not unspecified".into(),
+            ));
+        }
         parse_address("http_listen_addr", &self.http_listen_addr)?;
         if self.group0_mgmt_seeds.is_empty()
             || self.group0_mgmt_seeds.iter().any(|seed| seed.trim().is_empty())
