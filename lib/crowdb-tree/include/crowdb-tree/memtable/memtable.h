@@ -114,6 +114,11 @@ class MemTable
         return list_.cursor(start_after);
     }
 
+    [[nodiscard]] ConcurrentSkipList::Cursor cursor_from(Slice start_key, bool inclusive) const
+    {
+        return list_.cursor_from(start_key, inclusive);
+    }
+
     // Remove and return, in key order, all entries with slot <= cs. Entries
     // with slot > cs are retained. The returned entries have materialized
     // contiguous cells (copied — this is the drain/flush path, not the hot

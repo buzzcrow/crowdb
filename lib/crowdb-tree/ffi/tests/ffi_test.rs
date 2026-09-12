@@ -38,6 +38,31 @@ fn mem_apply_get_scan() {
 }
 
 #[test]
+fn scan_from_honors_inclusive_and_exclusive_lower_bounds() {
+    let tree = Crowdbtree::open(&Config::default()).unwrap();
+    for (slot, key) in [b"".as_slice(), b"b"].into_iter().enumerate() {
+        tree.apply_put(slot as u64 + 1, key, b"value").unwrap();
+    }
+    tree.flush().unwrap();
+    tree.apply_put(3, b"d", b"value").unwrap();
+
+    let (inclusive, _) = tree
+        .scan_from(b"", b"b", true, b"", 1, 1024, false, 0, false)
+        .unwrap();
+    assert_eq!(inclusive[0].key.as_ref(), b"b");
+
+    let (exclusive, _) = tree
+        .scan_from(b"", b"b", false, b"", 1, 1024, false, 0, false)
+        .unwrap();
+    assert_eq!(exclusive[0].key.as_ref(), b"d");
+
+    let (after_empty, _) = tree
+        .scan_from(b"", b"", false, b"", 1, 1024, false, 0, false)
+        .unwrap();
+    assert_eq!(after_empty[0].key.as_ref(), b"b");
+}
+
+#[test]
 fn injected_chunk_store_round_trip_and_stats() {
     let catalog = ChunkRootCatalog::open_memory(7).unwrap();
     let store = Arc::new(

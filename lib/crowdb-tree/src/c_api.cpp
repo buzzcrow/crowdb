@@ -1152,7 +1152,43 @@ ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t 
     Status s = t->tree->scan(Slice(reinterpret_cast<const char *>(prefix), plen),
                              Slice(reinterpret_cast<const char *>(start_after), salen),
                              Slice(reinterpret_cast<const char *>(end_key), elen), limit, byte_budget, keys_only != 0,
-                             deadline_ms, nullptr, &tr, include_tombstones != 0, &packed, &count);
+                             deadline_ms, nullptr, &tr, include_tombstones != 0, &packed, &count, salen != 0);
+    if (!s.ok()) {
+        return to_status(s);
+    }
+    size_t sz = packed.size();
+    if (sz > 0) {
+        out_entries->data = packed.release();
+        out_entries->len  = sz;
+    }
+    else {
+        out_entries->data = nullptr;
+        out_entries->len  = 0;
+    }
+    if (out_count != nullptr) {
+        *out_count = count;
+    }
+    if (truncated != nullptr) {
+        *truncated = tr ? 1 : 0;
+    }
+    return static_cast<ct_status>(Code::kOk);
+}
+
+ct_status ct_scan_from(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_key, size_t sklen,
+                       int start_inclusive, const uint8_t *end_key, size_t elen, size_t limit, size_t byte_budget,
+                       int keys_only, uint64_t deadline_ms, int include_tombstones, ct_buf *out_entries,
+                       uint64_t *out_count, int32_t *truncated)
+{
+    if (t == nullptr || out_entries == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    ScanPackedBuf packed;
+    size_t        count = 0;
+    bool          tr    = false;
+    Status        s     = t->tree->scan(
+        Slice(reinterpret_cast<const char *>(prefix), plen), Slice(reinterpret_cast<const char *>(start_key), sklen),
+        Slice(reinterpret_cast<const char *>(end_key), elen), limit, byte_budget, keys_only != 0, deadline_ms, nullptr,
+        &tr, include_tombstones != 0, &packed, &count, true, start_inclusive != 0);
     if (!s.ok()) {
         return to_status(s);
     }

@@ -33,7 +33,8 @@ impl PartitionTree for MemoryPartitionTree {
 
     async fn scan_forward(
         &self,
-        start_after: Option<&[u8]>,
+        start_key: Option<&[u8]>,
+        start_inclusive: bool,
         end_key: Option<&[u8]>,
         limit: usize,
         byte_budget: usize,
@@ -43,7 +44,8 @@ impl PartitionTree for MemoryPartitionTree {
         let mut bytes = 0_usize;
         let mut truncated = false;
         for (key, value) in values.iter() {
-            if start_after.is_some_and(|start| key.as_slice() <= start)
+            if start_key
+                .is_some_and(|start| key.as_slice() < start || (!start_inclusive && key.as_slice() == start))
                 || end_key.is_some_and(|end| key.as_slice() >= end)
             {
                 continue;

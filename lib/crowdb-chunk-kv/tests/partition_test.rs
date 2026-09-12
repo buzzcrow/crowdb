@@ -292,6 +292,51 @@ async fn forward_scan_is_bounded_and_clipped_to_the_partition() {
 }
 
 #[tokio::test]
+async fn forward_seeks_return_nearest_key_from_one_tree_view() {
+    let store = Arc::new(MemoryStreamStore::new(16_384));
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        StreamName { high: 2, low: 21 },
+        4,
+        PartitionConfig::default(),
+    )
+    .await;
+    for (sequence, key) in [(1, b"b".as_slice()), (2, b"d")] {
+        partition
+            .mutate(
+                4,
+                request(220 + sequence),
+                MutationOperation::Put {
+                    key: key.to_vec(),
+                    value: key.to_vec(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(
+        partition.ceiling(4, b"b", None).await.unwrap().unwrap().key,
+        b"b".as_slice()
+    );
+    assert_eq!(
+        partition.higher(4, b"b", None).await.unwrap().unwrap().key,
+        b"d".as_slice()
+    );
+    assert_eq!(
+        partition.ceiling(4, b"c", None).await.unwrap().unwrap().key,
+        b"d".as_slice()
+    );
+    assert!(partition.higher(4, b"d", None).await.unwrap().is_none());
+    assert_eq!(partition.metrics().snapshot().forward_seeks, 4);
+    assert_eq!(
+        partition.ceiling(4, b"m", None).await,
+        Err(ChunkKvError::OutOfRange)
+    );
+}
+
+#[tokio::test]
 async fn retry_returns_original_result_and_digest_conflict_does_no_io() {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let partition = partition(

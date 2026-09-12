@@ -516,6 +516,12 @@ ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t 
                   const uint8_t *end_key, size_t elen, size_t limit, size_t byte_budget, int keys_only,
                   uint64_t deadline_ms, int include_tombstones, ct_buf *out_entries, uint64_t *out_count,
                   int32_t *truncated);
+// Inclusive/exclusive lower-bound variant used by ordered seek. Existing
+// ct_scan remains the exclusive ABI.
+ct_status ct_scan_from(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_key, size_t sklen,
+                       int start_inclusive, const uint8_t *end_key, size_t elen, size_t limit, size_t byte_budget,
+                       int keys_only, uint64_t deadline_ms, int include_tombstones, ct_buf *out_entries,
+                       uint64_t *out_count, int32_t *truncated);
 
 // ── Consistent view (compare / iterate) ───────────────────────────
 ct_status ct_snapshot_view(ct_tree *t, ct_view **out);

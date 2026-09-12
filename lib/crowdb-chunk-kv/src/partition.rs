@@ -508,6 +508,78 @@ impl Partition {
         self.tree.get(key).await
     }
 
+    /// Returns the first key greater than or equal to `key` in this partition.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed range, epoch, lifecycle, or tree-read error.
+    pub async fn ceiling(
+        &self,
+        ownership_epoch: u64,
+        key: &[u8],
+        min_journal_position: Option<JournalPosition>,
+    ) -> Result<Option<ScanEntry>> {
+        self.seek_forward(ownership_epoch, key, true, min_journal_position)
+            .await
+    }
+
+    /// Returns the first key strictly greater than `key` in this partition.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed range, epoch, lifecycle, or tree-read error.
+    pub async fn higher(
+        &self,
+        ownership_epoch: u64,
+        key: &[u8],
+        min_journal_position: Option<JournalPosition>,
+    ) -> Result<Option<ScanEntry>> {
+        self.seek_forward(ownership_epoch, key, false, min_journal_position)
+            .await
+    }
+
+    async fn seek_forward(
+        &self,
+        ownership_epoch: u64,
+        key: &[u8],
+        inclusive: bool,
+        min_journal_position: Option<JournalPosition>,
+    ) -> Result<Option<ScanEntry>> {
+        self.metrics.forward_seek();
+        self.validate_epoch(ownership_epoch)?;
+        self.validate_read_lifecycle()?;
+        if key.len() > self.config.max_key_bytes {
+            return Err(ChunkKvError::InvalidRequest(
+                "seek key exceeds configured key limit".into(),
+            ));
+        }
+        if !self.range.contains(key) {
+            self.metrics.range_reject();
+            return Err(ChunkKvError::OutOfRange);
+        }
+        if let Some(position) = min_journal_position {
+            self.wait_applied(position).await?;
+        }
+        let byte_budget = self
+            .config
+            .max_key_bytes
+            .saturating_add(self.config.max_value_bytes);
+        let (mut entries, _) = self
+            .tree
+            .scan_forward(Some(key), inclusive, self.range.end.as_deref(), 1, byte_budget)
+            .await?;
+        if entries.iter().any(|entry| {
+            !self.range.contains(&entry.key)
+                || entry.key.as_ref() < key
+                || (!inclusive && entry.key.as_ref() == key)
+        }) {
+            return Err(ChunkKvError::TreeCorruption(
+                "tree seek returned an invalid key".into(),
+            ));
+        }
+        Ok(entries.pop())
+    }
+
     /// Returns a bounded forward page clipped to this partition.
     ///
     /// `start_after` and `end_key` are exclusive. Bounds outside the
@@ -576,7 +648,7 @@ impl Partition {
         };
         let (entries, truncated) = self
             .tree
-            .scan_forward(clipped_start, clipped_end, limit, byte_budget)
+            .scan_forward(clipped_start, false, clipped_end, limit, byte_budget)
             .await?;
         if entries.iter().any(|entry| !self.range.contains(&entry.key)) {
             return Err(ChunkKvError::TreeCorruption(

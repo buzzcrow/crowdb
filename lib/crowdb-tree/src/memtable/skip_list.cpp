@@ -195,6 +195,26 @@ ConcurrentSkipList::Cursor ConcurrentSkipList::cursor(Slice start_after) const
     return Cursor(n);
 }
 
+ConcurrentSkipList::Cursor ConcurrentSkipList::cursor_from(Slice start_key, bool inclusive) const
+{
+    Node *x = head_;
+    int   h = static_cast<int>(max_height_.load(std::memory_order_acquire)) - 1;
+    while (h >= 0) {
+        Node *next = x->next(h);
+        while (next != nullptr &&
+               (inclusive ? next->key_slice().compare(start_key) < 0 : next->key_slice().compare(start_key) <= 0)) {
+            x    = next;
+            next = x->next(h);
+        }
+        --h;
+    }
+    Node *n = x->next(0);
+    while (n != nullptr && n->deleted_.load(std::memory_order_acquire)) {
+        n = n->next(0);
+    }
+    return Cursor(n);
+}
+
 void ConcurrentSkipList::Cursor::advance()
 {
     if (cur_ == nullptr) {

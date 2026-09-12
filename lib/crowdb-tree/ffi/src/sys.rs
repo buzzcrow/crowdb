@@ -342,6 +342,24 @@ extern "C" {
         out_count: *mut u64,
         truncated: *mut c_int,
     ) -> c_int;
+    pub fn ct_scan_from(
+        t: *mut ct_tree,
+        prefix: *const u8,
+        plen: usize,
+        start_key: *const u8,
+        sklen: usize,
+        start_inclusive: c_int,
+        end_key: *const u8,
+        elen: usize,
+        limit: usize,
+        byte_budget: usize,
+        keys_only: c_int,
+        deadline_ms: u64,
+        include_tombstones: c_int,
+        out_entries: *mut ct_buf,
+        out_count: *mut u64,
+        truncated: *mut c_int,
+    ) -> c_int;
     pub fn ct_snapshot_view(t: *mut ct_tree, out: *mut *mut ct_view) -> c_int;
     pub fn ct_view_at_slot(v: *const ct_view) -> u64;
     pub fn ct_view_iter(v: *mut ct_view, out: *mut *mut ct_iter) -> c_int;

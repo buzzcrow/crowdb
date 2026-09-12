@@ -10,7 +10,8 @@ pub trait PartitionTree: Send + Sync {
     async fn get(&self, key: &[u8]) -> Result<Option<ValueRevision>>;
     async fn scan_forward(
         &self,
-        start_after: Option<&[u8]>,
+        start_key: Option<&[u8]>,
+        start_inclusive: bool,
         end_key: Option<&[u8]>,
         limit: usize,
         byte_budget: usize,
@@ -43,16 +44,18 @@ impl PartitionTree for CrowdbPartitionTree {
 
     async fn scan_forward(
         &self,
-        start_after: Option<&[u8]>,
+        start_key: Option<&[u8]>,
+        start_inclusive: bool,
         end_key: Option<&[u8]>,
         limit: usize,
         byte_budget: usize,
     ) -> Result<(Vec<ScanEntry>, bool)> {
         let (entries, truncated) = self
             .tree
-            .scan(
+            .scan_from(
                 b"",
-                start_after.unwrap_or_default(),
+                start_key.unwrap_or_default(),
+                start_key.is_some() && start_inclusive,
                 end_key.unwrap_or_default(),
                 limit,
                 byte_budget,

@@ -2702,8 +2702,8 @@ Crowdbtree::scan(Slice prefix, Slice start_after, Slice end_key, size_t limit, s
                  uint64_t                 deadline_ms,
                  std::vector<scan_entry> *out, // NOLINT(readability-non-const-parameter) written to via push_back
                  bool *truncated, bool include_tombstones, ScanPackedBuf *out_packed,
-                 size_t *out_count) // NOLINT(readability-non-const-parameter) written to via *out_count
-    const
+                 size_t *out_count, // NOLINT(readability-non-const-parameter) written to via *out_count
+                 bool has_start_bound, bool start_inclusive) const
 {
     if (out != nullptr) {
         out->clear();
@@ -2757,7 +2757,8 @@ Crowdbtree::scan(Slice prefix, Slice start_after, Slice end_key, size_t limit, s
     auto                  t0 = std::chrono::steady_clock::now();
     std::vector<L0Cursor> l0;
     for (auto &mt : all_memtables()) {
-        l0.push_back({.cur = mt->cursor(start_after)});
+        l0.push_back(
+            {.cur = has_start_bound ? mt->cursor_from(start_after, start_inclusive) : mt->cursor(start_after)});
     }
     uint64_t l0_ns = dur_ns(t0);
 
@@ -2797,7 +2798,7 @@ Crowdbtree::scan(Slice prefix, Slice start_after, Slice end_key, size_t limit, s
             // the descent landed on it. Seek past them by binary search
             // instead of letting the merge loop step over them one by one.
             if (first_leaf && !descend_key.empty()) {
-                l1.seek(descend_key, /*exclusive=*/!start_after.empty());
+                l1.seek(descend_key, /*exclusive=*/has_start_bound && !start_inclusive);
             }
             first_leaf = false;
             l1_ns += dur_ns(rt);
@@ -2826,8 +2827,8 @@ Crowdbtree::scan(Slice prefix, Slice start_after, Slice end_key, size_t limit, s
         if (opt_.key_range.at_or_after_end(key)) {
             return false;
         }
-        if (!start_after.empty() && key.compare(start_after) <= 0) {
-            return true; // cursor: skip keys <= start_after (exclusive lower bound)
+        if (has_start_bound && (start_inclusive ? key.compare(start_after) < 0 : key.compare(start_after) <= 0)) {
+            return true;
         }
         if (!key.starts_with(prefix)) {
             return true;

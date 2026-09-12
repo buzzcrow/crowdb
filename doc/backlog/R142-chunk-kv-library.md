@@ -536,24 +536,6 @@ Required gates:
 
 ## Open Issues
 
-- R141 now has its production `StreamChunkStore`, direct mirror writer, and KV
-  metadata adapters, and `CrowdbPartitionTree` wraps the native tree. The
-  chunk-KV server still does not assemble those dependencies and the R140
-  backend configuration into a durable partition handle.
-- Point get, min-position waiting, and bounded forward scan are implemented.
-  Ceiling/higher, floor/lower, and reverse scan remain open because the native
-  tree interface still lacks the required inclusive and reverse L0/L1 cursor;
-  they must not be emulated with a racy Rust get-plus-scan or full materialize
-  and sort.
-- Split currently validates plans, fences/drains admission, and resolves exact
-  typed commit/abort proofs. Prepared children recover fail-closed and activate
-  only when the catalog proof contains their exact artifact. The R140 range
-  rebuild, serving delta replay, child checkpoint/stream creation, base pins,
-  and lag budgets are not yet implemented.
-- Checkpoint replay and retry-retention frontiers are enforced, while durable
-  checkpoint catalog publication, pin-aware R141 trim watermarks, maintenance
-  retry policy, and orphan reporting still need production lifecycle wiring.
-- Existing counters cover mutation outcomes, range/epoch/admission rejects,
-  stalls, recovery, checkpoints, and split control. Ordered-operation,
-  maintenance, pin, detailed split-work, latency, and memory metrics plus
-  evidence-based benchmark thresholds remain open.
+None. Remaining implementation and validation work is tracked in
+`doc/working/plan-chunk-kv-library.md` and does not currently require a human
+design decision.

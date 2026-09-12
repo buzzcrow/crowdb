@@ -97,31 +97,109 @@ impl Crowdbtree {
         deadline_ms: u64,
         include_tombstones: bool,
     ) -> Result<(Vec<ScanEntry>, bool), CtError> {
+        self.scan_bound(
+            prefix,
+            start_after,
+            !start_after.is_empty(),
+            false,
+            end_key,
+            limit,
+            byte_budget,
+            keys_only,
+            deadline_ms,
+            include_tombstones,
+        )
+    }
+
+    /// Range scan with an explicitly inclusive or exclusive lower bound.
+    #[allow(clippy::too_many_arguments)]
+    pub fn scan_from(
+        &self,
+        prefix: &[u8],
+        start_key: &[u8],
+        start_inclusive: bool,
+        end_key: &[u8],
+        limit: usize,
+        byte_budget: usize,
+        keys_only: bool,
+        deadline_ms: u64,
+        include_tombstones: bool,
+    ) -> Result<(Vec<ScanEntry>, bool), CtError> {
+        self.scan_bound(
+            prefix,
+            start_key,
+            true,
+            start_inclusive,
+            end_key,
+            limit,
+            byte_budget,
+            keys_only,
+            deadline_ms,
+            include_tombstones,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn scan_bound(
+        &self,
+        prefix: &[u8],
+        start_key: &[u8],
+        has_start_bound: bool,
+        start_inclusive: bool,
+        end_key: &[u8],
+        limit: usize,
+        byte_budget: usize,
+        keys_only: bool,
+        deadline_ms: u64,
+        include_tombstones: bool,
+    ) -> Result<(Vec<ScanEntry>, bool), CtError> {
         let mut buf = sys::ct_buf {
             data: std::ptr::null_mut(),
             len: 0,
         };
         let mut count = 0u64;
         let mut truncated: c_int = 0;
-        check(unsafe {
-            sys::ct_scan(
-                self.as_ptr(),
-                prefix.as_ptr(),
-                prefix.len(),
-                start_after.as_ptr(),
-                start_after.len(),
-                end_key.as_ptr(),
-                end_key.len(),
-                limit,
-                byte_budget,
-                if keys_only { 1 } else { 0 },
-                deadline_ms,
-                if include_tombstones { 1 } else { 0 },
-                &mut buf,
-                &mut count,
-                &mut truncated,
-            )
-        })?;
+        let status = unsafe {
+            if has_start_bound {
+                sys::ct_scan_from(
+                    self.as_ptr(),
+                    prefix.as_ptr(),
+                    prefix.len(),
+                    start_key.as_ptr(),
+                    start_key.len(),
+                    if start_inclusive { 1 } else { 0 },
+                    end_key.as_ptr(),
+                    end_key.len(),
+                    limit,
+                    byte_budget,
+                    if keys_only { 1 } else { 0 },
+                    deadline_ms,
+                    if include_tombstones { 1 } else { 0 },
+                    &mut buf,
+                    &mut count,
+                    &mut truncated,
+                )
+            } else {
+                sys::ct_scan(
+                    self.as_ptr(),
+                    prefix.as_ptr(),
+                    prefix.len(),
+                    start_key.as_ptr(),
+                    start_key.len(),
+                    end_key.as_ptr(),
+                    end_key.len(),
+                    limit,
+                    byte_budget,
+                    if keys_only { 1 } else { 0 },
+                    deadline_ms,
+                    if include_tombstones { 1 } else { 0 },
+                    &mut buf,
+                    &mut count,
+                    &mut truncated,
+                )
+            }
+        };
+        check(status)?;
         let bytes = take_buf(buf);
         let entries = decode_scan(bytes, count as usize)?;
         Ok((entries, truncated != 0))
