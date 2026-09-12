@@ -41,6 +41,7 @@ pub enum Group0KvError {
 #[async_trait]
 pub trait Group0Kv: Send + Sync {
     async fn get(&self, key: &[u8]) -> Result<Option<VersionedValue>, Group0KvError>;
+    async fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, VersionedValue)>, Group0KvError>;
     async fn put_cas(&self, key: &[u8], value: &[u8], expected_revision: u64) -> Result<(), Group0KvError>;
 }
 
@@ -58,6 +59,64 @@ impl Group0Kv for CrowdbKvClient {
             })),
             GetOutcome::NotFound => Ok(None),
         }
+    }
+
+    async fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, VersionedValue)>, Group0KvError> {
+        let mut values = Vec::new();
+        let mut start_after = Vec::new();
+        let mut cutoff = None;
+        loop {
+            let page = match cutoff {
+                Some(cutoff) => {
+                    self.scan_bounded_at(
+                        GROUP0_STORE,
+                        GROUP0_GROUP,
+                        prefix,
+                        &start_after,
+                        &[],
+                        0,
+                        false,
+                        None,
+                        cutoff,
+                    )
+                    .await
+                }
+                None => {
+                    self.scan_bounded(
+                        GROUP0_STORE,
+                        GROUP0_GROUP,
+                        prefix,
+                        &start_after,
+                        &[],
+                        0,
+                        false,
+                        None,
+                    )
+                    .await
+                }
+            }
+            .map_err(map_client_error)?;
+            if page.items.len() != page.commit_slots.len() {
+                return Err(Group0KvError::Unavailable(
+                    "group-0 scan returned mismatched item revisions".into(),
+                ));
+            }
+            cutoff = Some(page.scan_cutoff);
+            for ((key, value), revision) in page.items.iter().zip(page.commit_slots) {
+                values.push((
+                    key.to_vec(),
+                    VersionedValue {
+                        value: value.to_vec(),
+                        revision,
+                    },
+                ));
+            }
+            if !page.truncated || page.items.is_empty() {
+                break;
+            }
+            start_after = page.items.last().expect("nonempty page").0.to_vec();
+        }
+        Ok(values)
     }
 
     async fn put_cas(&self, key: &[u8], value: &[u8], expected_revision: u64) -> Result<(), Group0KvError> {
@@ -139,6 +198,41 @@ impl Group0ControlStore {
             return Ok(Some((transition, revision)));
         }
         Ok(None)
+    }
+
+    /// Lists one fixed-snapshot view of every durable transfer transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for scan failure, malformed keys or values, or an
+    /// identity mismatch. Callers must abandon the whole observation on error.
+    pub async fn list_transfer_transitions(&self) -> Result<Vec<(TransferTransition, u64)>, MonitorError> {
+        let prefix = <ChunkKvTransferKey as TextKey>::prefix_all();
+        let records = self
+            .kv
+            .scan_prefix(prefix.as_bytes())
+            .await
+            .map_err(|error| MonitorError::Store(error.to_string()))?;
+        records
+            .into_iter()
+            .map(|(key, stored)| {
+                let path =
+                    std::str::from_utf8(&key).map_err(|error| MonitorError::Store(error.to_string()))?;
+                let typed = ChunkKvTransferKey::from_path(path)
+                    .map_err(|error| MonitorError::Store(error.to_string()))?;
+                let transition: TransferTransition = serde_json::from_slice(&stored.value)
+                    .map_err(|error| MonitorError::Store(error.to_string()))?;
+                transition
+                    .validate()
+                    .map_err(|error| MonitorError::PlanFailed(error.to_string()))?;
+                if typed.transition_id != transition.transition_id {
+                    return Err(MonitorError::PlanFailed(
+                        "transfer key and record identity differ".into(),
+                    ));
+                }
+                Ok((transition, stored.revision))
+            })
+            .collect()
     }
 
     /// Persists exactly one validated transfer state with revision fencing.
@@ -223,6 +317,41 @@ impl Group0ControlStore {
             return Ok(Some((transition, revision)));
         }
         Ok(None)
+    }
+
+    /// Lists one fixed-snapshot view of every durable split transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for scan failure, malformed keys or values, or an
+    /// identity mismatch. Callers must abandon the whole observation on error.
+    pub async fn list_split_transitions(&self) -> Result<Vec<(SplitTransition, u64)>, MonitorError> {
+        let prefix = <ChunkKvSplitKey as TextKey>::prefix_all();
+        let records = self
+            .kv
+            .scan_prefix(prefix.as_bytes())
+            .await
+            .map_err(|error| MonitorError::Store(error.to_string()))?;
+        records
+            .into_iter()
+            .map(|(key, stored)| {
+                let path =
+                    std::str::from_utf8(&key).map_err(|error| MonitorError::Store(error.to_string()))?;
+                let typed = ChunkKvSplitKey::from_path(path)
+                    .map_err(|error| MonitorError::Store(error.to_string()))?;
+                let transition: SplitTransition = serde_json::from_slice(&stored.value)
+                    .map_err(|error| MonitorError::Store(error.to_string()))?;
+                transition
+                    .validate()
+                    .map_err(|error| MonitorError::PlanFailed(error.to_string()))?;
+                if typed.transition_id != transition.transition_id {
+                    return Err(MonitorError::PlanFailed(
+                        "split key and record identity differ".into(),
+                    ));
+                }
+                Ok((transition, stored.revision))
+            })
+            .collect()
     }
 
     /// Persists one validated split state with revision fencing and ambiguous

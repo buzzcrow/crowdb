@@ -95,8 +95,10 @@ R142 partitions and publishes one complete group-0 range catalog.
   retry reconciliation, and publishes the new head last. Process-local workers
   now fence transfer sources, replay transfer targets without activation, and
   rebuild split children under stable identities before returning a common
-  frontier. Transition-prefix subscription and the monitor orchestration loop
-  remain.
+  frontier. The server subscribes to both transition prefixes, uses periodic
+  fixed-cutoff scans as a safety net, and persists work-authorizing phases
+  before local storage actions. The group-0 monitor's cutover/grant
+  orchestration remains.
 - Config defaults, reserved ports, process logging, HTTP management, RPC
   listener startup, validated catalog/grant refresh, service registration and
   heartbeat, lock-free counters, health snapshots, and drain-time admission

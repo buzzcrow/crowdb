@@ -11,11 +11,13 @@ use clap::Parser;
 use crowdb_chunk_kv_server::{
     management_router, CatalogPublisher, CatalogReconcileError, ChunkKvRpcService, ChunkKvServerConfig,
     ChunkKvService, ChunkKvStorage, DomainMonitorRegistry, Group0ControlStore, ManagementState,
+    TransitionExecutor, TransitionProcessor,
 };
-use crowdb_kv_client::ServiceRegistryClient;
+use crowdb_kv_client::{ServiceRegistryClient, WatchNotifyClient, WatchSubscription};
 use crowdb_protocol::chunk_kv::{
     CatalogPage, CatalogPartitionState, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest,
 };
+use crowdb_protocol::key::{ChunkKvSplitKey, ChunkKvTransferKey, TextKey};
 use tracing::{error, info, warn};
 
 #[derive(Debug, Parser)]
@@ -237,6 +239,62 @@ async fn main() {
             }
         }
     });
+    let transition_executor = match TransitionExecutor::new(
+        config.instance_id,
+        Arc::clone(&service),
+        Arc::clone(&storage),
+        config.max_split_fence_lag_records,
+    ) {
+        Ok(executor) => Arc::new(executor),
+        Err(error) => {
+            error!(%error, "failed to initialize transition worker");
+            refresh_task.abort();
+            return;
+        }
+    };
+    let transition_processor = TransitionProcessor::new(
+        config.instance_id,
+        Arc::clone(&control_store),
+        transition_executor,
+    );
+    let watch = WatchNotifyClient::from_shared(Arc::clone(storage.kv()));
+    let mut transfer_watch =
+        match watch.subscribe(0, 0, <ChunkKvTransferKey as TextKey>::prefix_all().as_bytes()) {
+            Ok(subscription) => Some(subscription),
+            Err(error) => {
+                warn!(%error, "transfer watch unavailable; periodic transition scan remains active");
+                None
+            }
+        };
+    let mut split_watch = match watch.subscribe(0, 0, <ChunkKvSplitKey as TextKey>::prefix_all().as_bytes()) {
+        Ok(subscription) => Some(subscription),
+        Err(error) => {
+            warn!(%error, "split watch unavailable; periodic transition scan remains active");
+            None
+        }
+    };
+    let transition_interval = std::time::Duration::from_millis(config.catalog_refresh_interval_ms);
+    let transition_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(transition_interval);
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {}
+                alive = receive_transition_notify(&mut transfer_watch) => {
+                    if !alive {
+                        transfer_watch = None;
+                    }
+                }
+                alive = receive_transition_notify(&mut split_watch) => {
+                    if !alive {
+                        split_watch = None;
+                    }
+                }
+            }
+            if let Err(error) = transition_processor.tick().await {
+                warn!(%error, "chunk KV transition processing failed; retrying from durable state");
+            }
+        }
+    });
 
     let service_registry = Arc::new(ServiceRegistryClient::from_shared(Arc::clone(storage.kv())));
     let capacity_bytes = u64::try_from(config.max_hosted_partitions)
@@ -252,6 +310,7 @@ async fn main() {
         .await
     {
         error!(%error, "failed to register chunk KV instance");
+        transition_task.abort();
         refresh_task.abort();
         return;
     }
@@ -328,9 +387,17 @@ async fn main() {
         error!(%error, "HTTP management server failed");
     }
     heartbeat_task.abort();
+    transition_task.abort();
     refresh_task.abort();
     if let Err(error) = service_registry.unregister("chunk-kv", config.instance_id).await {
         warn!(%error, "failed to unregister chunk KV instance");
+    }
+}
+
+async fn receive_transition_notify(subscription: &mut Option<WatchSubscription>) -> bool {
+    match subscription {
+        Some(subscription) => subscription.notify_rx.recv().await.is_some(),
+        None => std::future::pending().await,
     }
 }
 

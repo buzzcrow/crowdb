@@ -51,6 +51,18 @@ impl Group0Kv for TestKv {
         Ok(self.state.lock().await.values.get(key).cloned())
     }
 
+    async fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, VersionedValue)>, Group0KvError> {
+        let state = self.state.lock().await;
+        let mut values = state
+            .values
+            .iter()
+            .filter(|(key, _)| key.starts_with(prefix))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<Vec<_>>();
+        values.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        Ok(values)
+    }
+
     async fn put_cas(&self, key: &[u8], value: &[u8], expected_revision: u64) -> Result<(), Group0KvError> {
         let mut state = self.state.lock().await;
         let current_revision = state.values.get(key).map_or(0, |value| value.revision);

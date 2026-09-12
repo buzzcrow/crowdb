@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -10,7 +11,10 @@ use crowdb_chunk_kv::{
     PartitionRange, PartitionTree, PreparedChildArtifact, SplitArtifact, StreamPartitionJournal,
     TransitionId,
 };
-use crowdb_chunk_kv_server::{ChunkKvService, MonitorError, TransitionExecutor, TransitionStorage};
+use crowdb_chunk_kv_server::{
+    ChunkKvService, Group0ControlStore, Group0Kv, Group0KvError, MonitorError, TransitionExecutor,
+    TransitionProcessor, TransitionStorage, VersionedValue,
+};
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
     ChunkStream, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig, StreamMetadataStore,
@@ -20,6 +24,47 @@ use crowdb_protocol::chunk_kv::{
     AuthorityReleaseProof, CatalogEntry, Id128, KeyRange, OwnerDescriptor, PartitionArtifact,
     SplitChildAssignment, SplitPhase, SplitTransition, TransferPhase, TransferTransition,
 };
+use tokio::sync::Mutex;
+
+#[derive(Default)]
+struct MemoryKv {
+    values: Mutex<HashMap<Vec<u8>, VersionedValue>>,
+}
+
+#[async_trait]
+impl Group0Kv for MemoryKv {
+    async fn get(&self, key: &[u8]) -> Result<Option<VersionedValue>, Group0KvError> {
+        Ok(self.values.lock().await.get(key).cloned())
+    }
+
+    async fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, VersionedValue)>, Group0KvError> {
+        let values = self.values.lock().await;
+        let mut found = values
+            .iter()
+            .filter(|(key, _)| key.starts_with(prefix))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<Vec<_>>();
+        found.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        Ok(found)
+    }
+
+    async fn put_cas(&self, key: &[u8], value: &[u8], expected_revision: u64) -> Result<(), Group0KvError> {
+        let mut values = self.values.lock().await;
+        let current_revision = values.get(key).map_or(0, |value| value.revision);
+        if current_revision != expected_revision {
+            return Err(Group0KvError::CasFailed { current_revision });
+        }
+        let revision = current_revision.saturating_add(1);
+        values.insert(
+            key.to_vec(),
+            VersionedValue {
+                value: value.to_vec(),
+                revision,
+            },
+        );
+        Ok(())
+    }
+}
 
 fn id(low: u64) -> Id128 {
     Id128 { high: 1, low }
@@ -327,4 +372,84 @@ async fn split_worker_reports_only_a_common_child_frontier() {
     assert_eq!(proof.cutover_seq, 8);
     assert_eq!(proof.left_applied_seq, 8);
     assert_eq!(proof.right_applied_seq, 8);
+}
+
+#[tokio::test]
+async fn processor_persists_target_preparing_before_readiness() {
+    let kv = Arc::new(MemoryKv::default());
+    let store = Arc::new(Group0ControlStore::new(kv));
+    let mut transition = transfer(TransferPhase::TargetPreparing);
+    transition.phase = TransferPhase::AwaitingFence;
+    assert_eq!(
+        store.persist_transfer_transition(&transition, 0).await.unwrap(),
+        1
+    );
+    let recovered = partition(id(1), KeyRange::default(), 4, &artifact(11), true).await;
+    let service = Arc::new(ChunkKvService::new(2, 4).unwrap());
+    let executor = Arc::new(
+        TransitionExecutor::with_storage(
+            2,
+            service,
+            Arc::new(FakeStorage {
+                recovered,
+                split: split_artifact(&split_transition()),
+            }),
+            8,
+        )
+        .unwrap(),
+    );
+    let processor = TransitionProcessor::new(2, Arc::clone(&store), executor);
+
+    processor.tick().await.unwrap();
+    let (stored, revision) = store
+        .load_transfer_transition(transition.transition_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.phase, TransferPhase::TargetPrepared);
+    assert!(stored.readiness_proof.is_some());
+    assert_eq!(revision, 3);
+}
+
+#[tokio::test]
+async fn processor_resumes_planned_split_through_durable_readiness() {
+    let kv = Arc::new(MemoryKv::default());
+    let store = Arc::new(Group0ControlStore::new(kv));
+    let mut transition = split_transition();
+    transition.phase = SplitPhase::Planned;
+    store.persist_split_transition(&transition, 0).await.unwrap();
+    let parent = partition(
+        id(1),
+        transition.parent_range.clone(),
+        3,
+        &transition.parent_artifact,
+        false,
+    )
+    .await;
+    let recovered = partition(id(9), KeyRange::default(), 1, &artifact(99), true).await;
+    let service = Arc::new(ChunkKvService::new(1, 4).unwrap());
+    service.install_partition(&parent).unwrap();
+    let executor = Arc::new(
+        TransitionExecutor::with_storage(
+            1,
+            service,
+            Arc::new(FakeStorage {
+                recovered,
+                split: split_artifact(&transition),
+            }),
+            8,
+        )
+        .unwrap(),
+    );
+    let processor = TransitionProcessor::new(1, Arc::clone(&store), executor);
+
+    processor.tick().await.unwrap();
+    let (stored, revision) = store
+        .load_split_transition(transition.transition_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.phase, SplitPhase::ChildrenPrepared);
+    assert_eq!(stored.readiness_proof.unwrap().cutover_seq, 8);
+    assert_eq!(revision, 3);
 }
