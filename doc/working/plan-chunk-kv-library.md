@@ -73,14 +73,16 @@ whose ordered journal is R141 and whose durable tree is R140.
 
 ## Phase 5: Gates and Documentation
 
-- [~] Run C++ format/lint/tree tests, Rust format/lint, stream/chunk-KV tests,
-  and the server gate through `pixi run`. C++ build/format and the serial
-  runnable tree suite (568/568) pass; the focused chunk-KV suite (28/28) and
-  Rust format check pass. Remaining gates are the standalone tree lint, tree
-  FFI tests, Rust clippy, chunk-stream tests, and the server gate.
-- [ ] Measure queue, replay, split-fence, latency, and memory behavior on target
-  hardware and commit evidence-backed defaults. Files:
-  `lib/crowdb-chunk-kv/`, `tools/`.
+- [x] Run C++ format/lint/tree tests, Rust format/lint, stream/chunk-KV tests,
+  and the server gate through `pixi run`. C++ format/build and the serial
+  runnable tree suite (568/568) pass; the focused chunk-KV suite (28/28),
+  chunk-stream suite, tree-FFI suite (40/40), Rust format/clippy, tree lint,
+  and the complete server gate pass.
+- [x] Transfer production measurement to R145, where the CLI can drive the
+  routed chunk-KV client through ready R143 server processes. R145 now owns
+  queue, replay, split-fence, latency, memory, retained evidence, regression
+  thresholds, and evidence-backed default tuning. Files:
+  `doc/backlog/R145-chunk-kv-routed-client.md`.
 - [x] Fold the stable design into `doc/design/chunkds/`, update the document
   index, and keep unresolved implementation gaps in the backlog's final
   `Open Issues` section.

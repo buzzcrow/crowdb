@@ -108,6 +108,17 @@ atomicity claim.
     multi-partition scan. R143 retains unit and integration coverage for server
     and control-plane components; deferred R144 owns its later merge-specific
     E2E cases.
+12. Add a retained-evidence production regression tool under `tools/` following
+    the existing regression-script lifecycle. Build release binaries, deploy
+    the real storage and control-plane stack, start every R143 chunk-KV server,
+    and wait for its readiness endpoint before the CLI uses the routed client
+    to inject load. Measure bounded queue saturation and backpressure, recovery
+    replay, split preparation and final fence duration, operation throughput and
+    tail latency, and process memory on target hardware. Retain machine-readable
+    results and complete process logs, enforce evidence-backed regression
+    thresholds, and update R142/R143/R145 runtime defaults only when the
+    measurements justify them. Do not substitute an in-process or memory-backed
+    benchmark for this production-path gate.
 
 ## Dependencies
 
@@ -211,6 +222,14 @@ atomicity claim.
   acknowledged result remains recoverable without page or WAL data migration.
   Invariant: the complete object-metadata client path preserves durability,
   routing, and fencing. E2E test.
+- Given release binaries on target hardware, when the chunk-KV regression tool
+  deploys the production stack, assert it waits for every R143 server to become
+  ready before the CLI drives the routed client. Under queue saturation,
+  restart/replay, and online split load, assert the retained results report
+  throughput, tail latency, replay rate, split-fence duration, backpressure, and
+  process memory; assert configured limits meet the committed thresholds or
+  fail the run. Invariant: production defaults and regressions are backed by
+  repeatable measurements through the public client/server path. E2E test.
 
 Required gates:
 
@@ -219,3 +238,4 @@ Required gates:
 - `pixi run -- cargo test -p crowdb-chunk-kv-client --all-targets`
 - `pixi run -- cargo test -p crowdb-chunk-kv-server --all-targets`
 - `pixi run clean-env && pixi run test-server`
+- `pixi run -- bash tools/bench-chunk-kv-regression.sh`
