@@ -128,6 +128,9 @@ WAL from the published offset through the durable tail, reports readiness, and
 serves only after installing a matching grant. Shutdown
 atomically stops new admission and clears authority; already admitted R142
 operations retain handles and finish before bounded checkpoint/drain work.
+Catalog refresh recovers every new or changed local assignment first, then
+replaces the catalog and hosted-partition snapshots; unchanged exact-epoch
+handles remain live and departed assignments are dropped.
 
 Configuration exposes identity, group-0 seeds, separate RPC listen and routable
 advertise addresses, dedicated 15xxx HTTP/RPC ports, hosted-partition capacity,

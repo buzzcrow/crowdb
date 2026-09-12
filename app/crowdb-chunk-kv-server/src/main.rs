@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use clap::Parser;
 use crowdb_chunk_kv_server::{
-    management_router, CatalogPublisher, ChunkKvRpcService, ChunkKvServerConfig, ChunkKvService,
-    ChunkKvStorage, DomainMonitorRegistry, Group0ControlStore, ManagementState,
+    management_router, CatalogPublisher, CatalogReconcileError, ChunkKvRpcService, ChunkKvServerConfig,
+    ChunkKvService, ChunkKvStorage, DomainMonitorRegistry, Group0ControlStore, ManagementState,
 };
 use crowdb_kv_client::ServiceRegistryClient;
 use crowdb_protocol::chunk_kv::{
@@ -130,7 +130,7 @@ async fn main() {
     );
 
     let storage = match ChunkKvStorage::connect(&config).await {
-        Ok(storage) => storage,
+        Ok(storage) => Arc::new(storage),
         Err(error) => {
             error!(%error, "failed to connect production chunk storage");
             return;
@@ -170,20 +170,23 @@ async fn main() {
     let catalog = Arc::new(CatalogPublisher::new(control_store.clone()));
     match catalog.load_current().await {
         Ok(Some((head, pages))) => {
-            if let Err(error) = service.install_catalog(&head, &pages) {
-                error!(%error, "failed to install initial chunk KV catalog");
+            let recovered =
+                match recover_assigned_partitions(&storage, &service, &pages, config.instance_id).await {
+                    Ok(recovered) => recovered,
+                    Err(error) => {
+                        error!(%error, "failed to recover an assigned chunk KV partition");
+                        return;
+                    }
+                };
+            if let Err(error) = service.install_catalog_and_reconcile(&head, &pages, &recovered) {
+                error!(%error, "failed to install initial chunk KV catalog and partitions");
                 return;
             }
-            match recover_assigned_partitions(&storage, &service, &pages, config.instance_id).await {
-                Ok(partitions) => info!(
-                    generation = head.generation,
-                    partitions, "installed initial chunk KV catalog and replayed assigned partitions"
-                ),
-                Err(error) => {
-                    error!(%error, "failed to recover an assigned chunk KV partition");
-                    return;
-                }
-            }
+            info!(
+                generation = head.generation,
+                partitions = recovered.len(),
+                "installed initial chunk KV catalog and replayed assigned partitions"
+            );
         }
         Ok(None) => warn!("chunk KV catalog is not published; service remains unready"),
         Err(error) => {
@@ -193,6 +196,8 @@ async fn main() {
     }
     let refresh_service = Arc::clone(&service);
     let refresh_catalog = Arc::clone(&catalog);
+    let refresh_storage = Arc::clone(&storage);
+    let refresh_instance_id = config.instance_id;
     let refresh_interval = std::time::Duration::from_millis(config.catalog_refresh_interval_ms);
     let refresh_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(refresh_interval);
@@ -200,14 +205,33 @@ async fn main() {
         loop {
             interval.tick().await;
             match refresh_catalog.load_current().await {
-                Ok(Some((head, pages))) => match refresh_service.install_catalog(&head, &pages) {
-                    Ok(()) => info!(
-                        generation = head.generation,
-                        "installed refreshed chunk KV catalog"
-                    ),
-                    Err(crowdb_chunk_kv_server::CatalogError::GenerationConflict) => {}
-                    Err(error) => warn!(%error, "rejected refreshed chunk KV catalog"),
-                },
+                Ok(Some((head, pages))) => {
+                    let recovered = match recover_assigned_partitions(
+                        &refresh_storage,
+                        &refresh_service,
+                        &pages,
+                        refresh_instance_id,
+                    )
+                    .await
+                    {
+                        Ok(recovered) => recovered,
+                        Err(error) => {
+                            warn!(%error, "catalog refresh recovery failed; retaining installed catalog");
+                            continue;
+                        }
+                    };
+                    match refresh_service.install_catalog_and_reconcile(&head, &pages, &recovered) {
+                        Ok(()) => info!(
+                            generation = head.generation,
+                            recovered = recovered.len(),
+                            "installed refreshed chunk KV catalog and reconciled assignments"
+                        ),
+                        Err(CatalogReconcileError::Catalog(
+                            crowdb_chunk_kv_server::CatalogError::GenerationConflict,
+                        )) => {}
+                        Err(error) => warn!(%error, "rejected refreshed chunk KV catalog"),
+                    }
+                }
                 Ok(None) => warn!("chunk KV catalog head is absent; retaining installed catalog"),
                 Err(error) => warn!(%error, "catalog refresh failed; retaining installed catalog"),
             }
@@ -352,8 +376,8 @@ async fn recover_assigned_partitions(
     service: &ChunkKvService,
     pages: &[CatalogPage],
     instance_id: u64,
-) -> Result<usize, crowdb_chunk_kv_server::StorageRuntimeError> {
-    let mut recovered = 0;
+) -> Result<Vec<crowdb_chunk_kv::Partition>, crowdb_chunk_kv_server::StorageRuntimeError> {
+    let mut recovered = Vec::new();
     for entry in pages.iter().flat_map(|page| &page.entries).filter(|entry| {
         entry.owner.instance_id == instance_id
             && !matches!(
@@ -361,11 +385,9 @@ async fn recover_assigned_partitions(
                 CatalogPartitionState::Retired | CatalogPartitionState::Faulted
             )
     }) {
-        let partition = storage.recover_partition(entry).await?;
-        service
-            .install_partition(&partition)
-            .map_err(|error| crowdb_chunk_kv_server::StorageRuntimeError::Partition(error.to_string()))?;
-        recovered += 1;
+        if !service.hosts_catalog_assignment(entry) {
+            recovered.push(storage.recover_partition(entry).await?);
+        }
     }
     Ok(recovered)
 }

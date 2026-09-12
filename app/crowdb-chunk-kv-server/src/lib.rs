@@ -22,7 +22,9 @@ pub use control_store::{Group0ControlStore, Group0Kv, Group0KvError, VersionedVa
 pub use management::{management_router, ManagementState};
 pub use metrics::{ServerMetrics, ServerMetricsSnapshot};
 pub use rpc::ChunkKvRpcService;
-pub use server::{ChunkKvService, HostedPartitionHealth, ServerHealth, ServerLifecycle};
+pub use server::{
+    CatalogReconcileError, ChunkKvService, HostedPartitionHealth, ServerHealth, ServerLifecycle,
+};
 pub use serving::{
     choose_split, choose_transfer, classify_instance, desired_partition_count, replacement_may_activate,
     AuthorityError, BalanceConfig, DomainMonitorDriver, DomainMonitorRegistry, MonitorDescriptorStore,

@@ -18,6 +18,7 @@ use crowdb_protocol::chunk_kv::{
     SeekRequest,
 };
 use crowdb_protocol::common::ChunkKvExtra;
+use thiserror::Error;
 
 use crate::{
     validate_and_clip_scan, AuthorityError, CatalogError, ClippedScan, ScanValidationError, ServerMetrics,
@@ -54,6 +55,14 @@ pub struct ServerHealth {
     pub lifecycle: ServerLifecycle,
     pub catalog_generation: u64,
     pub partitions: Vec<HostedPartitionHealth>,
+}
+
+#[derive(Debug, Error)]
+pub enum CatalogReconcileError {
+    #[error(transparent)]
+    Catalog(#[from] CatalogError),
+    #[error(transparent)]
+    Partition(#[from] ChunkKvError),
 }
 
 impl CatalogSnapshot {
@@ -238,6 +247,10 @@ impl ChunkKvService {
     /// fails or the generation does not advance.
     pub fn install_catalog(&self, head: &CatalogHead, pages: &[CatalogPage]) -> Result<(), CatalogError> {
         let candidate = Arc::new(CatalogSnapshot::from_catalog(head, pages)?);
+        self.activate_catalog(&candidate)
+    }
+
+    fn activate_catalog(&self, candidate: &Arc<CatalogSnapshot>) -> Result<(), CatalogError> {
         let current = self.catalog.load_full();
         if candidate.generation <= current.generation {
             return Err(CatalogError::GenerationConflict);
@@ -246,7 +259,7 @@ impl ChunkKvService {
             if installed.generation >= candidate.generation {
                 Arc::clone(installed)
             } else {
-                Arc::clone(&candidate)
+                Arc::clone(candidate)
             }
         });
         if self.catalog.load().generation == candidate.generation {
@@ -276,6 +289,105 @@ impl ChunkKvService {
             Arc::new(next)
         });
         Ok(())
+    }
+
+    /// Returns whether the exact catalog assignment is already hosted.
+    #[must_use]
+    pub fn hosts_catalog_assignment(&self, entry: &CatalogEntry) -> bool {
+        self.partitions
+            .load()
+            .get(&entry.partition_id)
+            .is_some_and(|partition| partition_matches_entry(partition, entry))
+    }
+
+    /// Replaces the hosted snapshot with exactly the local, recoverable
+    /// assignments from a validated catalog.
+    ///
+    /// Existing exact assignments retain their live handles. Every new or
+    /// changed assignment must be supplied after replay in `recovered`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an overload or invalid-assignment error without changing the
+    /// hosted snapshot.
+    pub fn reconcile_partitions(
+        &self,
+        pages: &[CatalogPage],
+        recovered: &[Partition],
+    ) -> Result<(), ChunkKvError> {
+        let next = self.reconciled_partition_snapshot(pages, recovered)?;
+        self.partitions.store(next);
+        Ok(())
+    }
+
+    /// Validates and installs one catalog together with its exact local
+    /// partition snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns a catalog or partition reconciliation error without changing
+    /// either active snapshot.
+    pub fn install_catalog_and_reconcile(
+        &self,
+        head: &CatalogHead,
+        pages: &[CatalogPage],
+        recovered: &[Partition],
+    ) -> Result<(), CatalogReconcileError> {
+        let candidate = Arc::new(CatalogSnapshot::from_catalog(head, pages)?);
+        if candidate.generation <= self.catalog.load().generation {
+            return Err(CatalogError::GenerationConflict.into());
+        }
+        let next = self.reconciled_partition_snapshot(pages, recovered)?;
+        self.activate_catalog(&candidate)?;
+        self.partitions.store(next);
+        Ok(())
+    }
+
+    fn reconciled_partition_snapshot(
+        &self,
+        pages: &[CatalogPage],
+        recovered: &[Partition],
+    ) -> Result<Arc<HashMap<Id128, Partition>>, ChunkKvError> {
+        let current = self.partitions.load_full();
+        let recovered: HashMap<_, _> = recovered
+            .iter()
+            .map(|partition| {
+                let snapshot = partition.snapshot();
+                (
+                    Id128 {
+                        high: snapshot.partition_id.high,
+                        low: snapshot.partition_id.low,
+                    },
+                    partition.clone(),
+                )
+            })
+            .collect();
+        let desired: Vec<_> = pages
+            .iter()
+            .flat_map(|page| &page.entries)
+            .filter(|entry| recoverable_local_entry(entry, self.instance_id))
+            .collect();
+        if desired.len() > self.max_partitions {
+            return Err(ChunkKvError::Overloaded);
+        }
+        let mut next = HashMap::with_capacity(desired.len());
+        for entry in desired {
+            let partition = current
+                .get(&entry.partition_id)
+                .filter(|partition| partition_matches_entry(partition, entry))
+                .or_else(|| {
+                    recovered
+                        .get(&entry.partition_id)
+                        .filter(|partition| partition_matches_entry(partition, entry))
+                })
+                .ok_or_else(|| {
+                    ChunkKvError::InvalidRequest(
+                        "catalog assignment was not recovered before reconciliation".into(),
+                    )
+                })?;
+            next.insert(entry.partition_id, partition.clone());
+        }
+        Ok(Arc::new(next))
     }
 
     pub fn remove_partition(&self, partition_id: Id128) {
@@ -687,6 +799,24 @@ impl ChunkKvService {
             }
         }
     }
+}
+
+fn recoverable_local_entry(entry: &CatalogEntry, instance_id: u64) -> bool {
+    entry.owner.instance_id == instance_id
+        && !matches!(
+            entry.state,
+            CatalogPartitionState::Retired | CatalogPartitionState::Faulted
+        )
+}
+
+fn partition_matches_entry(partition: &Partition, entry: &CatalogEntry) -> bool {
+    let snapshot = partition.snapshot();
+    snapshot.partition_id.high == entry.partition_id.high
+        && snapshot.partition_id.low == entry.partition_id.low
+        && snapshot.ownership_epoch == entry.owner_epoch
+        && snapshot.range.start.as_deref() == Some(entry.range.start.as_slice())
+        && snapshot.range.end == entry.range.end
+        && snapshot.stream_name == entry.artifact.stream_name
 }
 
 fn matches_routing(

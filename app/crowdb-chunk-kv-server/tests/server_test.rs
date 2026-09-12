@@ -55,6 +55,101 @@ fn routing(sequence: u64) -> RequestRouting {
     }
 }
 
+fn catalog(
+    partition_id: Id128,
+    stream_name: StreamName,
+    owner_epoch: u64,
+    generation: u64,
+    previous_generation: Option<u64>,
+) -> (CatalogHead, CatalogPage) {
+    let mut page = CatalogPage {
+        generation,
+        page_index: 0,
+        entries: vec![CatalogEntry {
+            partition_id,
+            range: KeyRange {
+                start: Vec::new(),
+                end: None,
+            },
+            owner: OwnerDescriptor {
+                instance_id: INSTANCE_ID,
+                rpc_endpoint: "127.0.0.1:9900".into(),
+            },
+            owner_epoch,
+            state: CatalogPartitionState::Serving,
+            artifact: PartitionArtifact {
+                tree_id: 1,
+                tree_manifest: 1,
+                stream_name,
+                stream_manifest_generation: 1,
+                replay_offset: 0,
+                applied_seq: 0,
+            },
+            transition_id: None,
+        }],
+        checksum: [0; 32],
+    };
+    page.seal().unwrap();
+    let mut head = CatalogHead {
+        generation,
+        previous_generation,
+        pages: vec![CatalogPageRef {
+            page_generation: generation,
+            page_index: 0,
+            first_key: Vec::new(),
+            page_checksum: page.checksum,
+        }],
+        checksum: [0; 32],
+    };
+    head.seal().unwrap();
+    (head, page)
+}
+
+async fn prepared_partition(
+    partition_id: PartitionId,
+    stream_name: StreamName,
+    owner_epoch: u64,
+) -> Partition {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let stream = ChunkStream::create(
+        StreamBinding {
+            stream_name,
+            metadata_group_id: 7,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("chunk-kv-partition".into()),
+        },
+        owner_epoch,
+        StreamConfig::default(),
+        store.clone() as Arc<dyn StreamRegistry>,
+        store.clone() as Arc<dyn StreamMetadataStore>,
+        store as Arc<dyn StreamChunkStore>,
+    )
+    .await
+    .unwrap();
+    Partition::recover_prepared_assignment(
+        partition_id,
+        PartitionRange {
+            start: Some(Vec::new()),
+            end: None,
+        },
+        owner_epoch,
+        Checkpoint {
+            tree_id: 1,
+            tree_manifest: 0,
+            applied_seq: 0,
+            stream_name,
+            stream_manifest_generation: 1,
+            replay_offset: 0,
+        },
+        PartitionConfig::default(),
+        Arc::new(MemoryPartitionTree::default()),
+        Arc::new(StreamPartitionJournal::new(stream, stream_name)),
+    )
+    .await
+    .unwrap()
+}
+
 async fn fixture() -> (ChunkKvService, Partition) {
     let stream_name = StreamName { high: 30, low: 31 };
     let store = Arc::new(MemoryStreamStore::new(4_096));
@@ -89,50 +184,12 @@ async fn fixture() -> (ChunkKvService, Partition) {
     )
     .unwrap();
 
-    let mut page = CatalogPage {
-        generation: 1,
-        page_index: 0,
-        entries: vec![CatalogEntry {
-            partition_id: Id128 { high: 1, low: 2 },
-            range: KeyRange {
-                start: Vec::new(),
-                end: None,
-            },
-            owner: OwnerDescriptor {
-                instance_id: INSTANCE_ID,
-                rpc_endpoint: "127.0.0.1:9900".into(),
-            },
-            owner_epoch: EPOCH,
-            state: CatalogPartitionState::Serving,
-            artifact: PartitionArtifact {
-                tree_id: 1,
-                tree_manifest: 1,
-                stream_name,
-                stream_manifest_generation: 1,
-                replay_offset: 0,
-                applied_seq: 0,
-            },
-            transition_id: None,
-        }],
-        checksum: [0; 32],
-    };
-    page.seal().unwrap();
-    let mut head = CatalogHead {
-        generation: 1,
-        previous_generation: None,
-        pages: vec![CatalogPageRef {
-            page_generation: 1,
-            page_index: 0,
-            first_key: Vec::new(),
-            page_checksum: page.checksum,
-        }],
-        checksum: [0; 32],
-    };
-    head.seal().unwrap();
+    let (head, page) = catalog(Id128 { high: 1, low: 2 }, stream_name, EPOCH, 1, None);
 
     let service = ChunkKvService::new(INSTANCE_ID, 8).unwrap();
-    service.install_catalog(&head, &[page]).unwrap();
-    service.install_partition(&partition).unwrap();
+    service
+        .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&partition))
+        .unwrap();
     let mut grant = ServingGrant {
         instance_id: INSTANCE_ID,
         lease_sequence: 1,
@@ -156,87 +213,12 @@ async fn fixture() -> (ChunkKvService, Partition) {
 #[tokio::test]
 async fn matching_grant_activation_promotes_a_replayed_partition() {
     let stream_name = StreamName { high: 30, low: 32 };
-    let store = Arc::new(MemoryStreamStore::new(4_096));
-    let stream = ChunkStream::create(
-        StreamBinding {
-            stream_name,
-            metadata_group_id: 7,
-            binding_generation: 1,
-            state: StreamBindingState::Active,
-            owner_kind: Some("chunk-kv-partition".into()),
-        },
-        EPOCH,
-        StreamConfig::default(),
-        store.clone() as Arc<dyn StreamRegistry>,
-        store.clone() as Arc<dyn StreamMetadataStore>,
-        store as Arc<dyn StreamChunkStore>,
-    )
-    .await
-    .unwrap();
-    let partition = Partition::recover_prepared_assignment(
-        PartitionId { high: 1, low: 3 },
-        PartitionRange {
-            start: Some(Vec::new()),
-            end: None,
-        },
-        EPOCH,
-        Checkpoint {
-            tree_id: 1,
-            tree_manifest: 0,
-            applied_seq: 0,
-            stream_name,
-            stream_manifest_generation: 1,
-            replay_offset: 0,
-        },
-        PartitionConfig::default(),
-        Arc::new(MemoryPartitionTree::default()),
-        Arc::new(StreamPartitionJournal::new(stream, stream_name)),
-    )
-    .await
-    .unwrap();
+    let partition = prepared_partition(PartitionId { high: 1, low: 3 }, stream_name, EPOCH).await;
     let service = ChunkKvService::new(INSTANCE_ID, 4).unwrap();
-    let mut page = CatalogPage {
-        generation: 1,
-        page_index: 0,
-        entries: vec![CatalogEntry {
-            partition_id: Id128 { high: 1, low: 3 },
-            range: KeyRange {
-                start: Vec::new(),
-                end: None,
-            },
-            owner: OwnerDescriptor {
-                instance_id: INSTANCE_ID,
-                rpc_endpoint: "127.0.0.1:9900".into(),
-            },
-            owner_epoch: EPOCH,
-            state: CatalogPartitionState::Serving,
-            artifact: PartitionArtifact {
-                tree_id: 1,
-                tree_manifest: 1,
-                stream_name,
-                stream_manifest_generation: 1,
-                replay_offset: 0,
-                applied_seq: 0,
-            },
-            transition_id: None,
-        }],
-        checksum: [0; 32],
-    };
-    page.seal().unwrap();
-    let mut head = CatalogHead {
-        generation: 1,
-        previous_generation: None,
-        pages: vec![CatalogPageRef {
-            page_generation: 1,
-            page_index: 0,
-            first_key: Vec::new(),
-            page_checksum: page.checksum,
-        }],
-        checksum: [0; 32],
-    };
-    head.seal().unwrap();
-    service.install_catalog(&head, &[page]).unwrap();
-    service.install_partition(&partition).unwrap();
+    let (head, page) = catalog(Id128 { high: 1, low: 3 }, stream_name, EPOCH, 1, None);
+    service
+        .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&partition))
+        .unwrap();
     assert_eq!(partition.snapshot().lifecycle, PartitionLifecycle::Prepared);
     assert!(matches!(
         service.activate_recovered_partition(Id128 { high: 1, low: 3 }, EPOCH - 1),
@@ -249,6 +231,39 @@ async fn matching_grant_activation_promotes_a_replayed_partition() {
         .unwrap();
 
     assert_eq!(partition.snapshot().lifecycle, PartitionLifecycle::Serving);
+}
+
+#[tokio::test]
+async fn newer_catalog_replaces_hosted_assignments_only_after_recovery() {
+    let (service, _) = fixture().await;
+    let partition_id = Id128 { high: 1, low: 4 };
+    let stream_name = StreamName { high: 30, low: 33 };
+    let next_epoch = EPOCH + 1;
+    let partition = prepared_partition(
+        PartitionId {
+            high: partition_id.high,
+            low: partition_id.low,
+        },
+        stream_name,
+        next_epoch,
+    )
+    .await;
+    let (head, page) = catalog(partition_id, stream_name, next_epoch, 2, Some(1));
+
+    assert!(service
+        .install_catalog_and_reconcile(&head, std::slice::from_ref(&page), &[])
+        .is_err());
+    assert_eq!(service.health(50_000).catalog_generation, 1);
+
+    service
+        .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&partition))
+        .unwrap();
+    let health = service.health(50_000);
+    assert_eq!(health.catalog_generation, 2);
+    assert_eq!(health.partitions.len(), 1);
+    assert_eq!(health.partitions[0].partition_id, partition_id);
+    assert_eq!(health.partitions[0].owner_epoch, next_epoch);
+    assert_eq!(health.partitions[0].lifecycle, PartitionLifecycle::Prepared);
 }
 
 #[tokio::test]
