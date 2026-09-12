@@ -112,7 +112,7 @@ without placing rollover metadata on the append hot path.
   through real KV, chunkdb, and diskio process restarts and verify authoritative
   head recovery, abandoned old-chunk isolation, and exact byte continuity.
   Files: `lib/crowdb-chunk-stream/tests/`, `lib/crowdb-test-harness/`.
-- [~] **Measure production bounds**: run the NullDisk-backed concurrency,
+- [x] **Measure production bounds**: run the NullDisk-backed concurrency,
   rollover, random-seek, replay, prefetch-memory, and GC workloads and record
   evidence-backed thresholds in the permanent design. Files:
   `lib/crowdb-chunk-stream/benches/`, `doc/design/chunkds/`.

@@ -8,6 +8,10 @@ repository.workspace = true
 description = "Fenced mirrored logical byte streams over CROWDB chunks."
 autobenches = false
 
+[[bench]]
+name = "production_bounds"
+harness = false
+
 [lints]
 workspace = true
 

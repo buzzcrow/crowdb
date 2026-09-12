@@ -28,6 +28,7 @@ pub struct StreamConfig {
     pub max_append_bytes: usize,
     pub extent_page_entries: usize,
     pub read_window_bytes: usize,
+    pub read_request_bytes: usize,
     pub read_concurrency: usize,
     pub gc_bytes_per_pass: u64,
     pub watchdog_interval: Duration,
@@ -43,6 +44,7 @@ impl Default for StreamConfig {
             max_append_bytes: 64 * 1024 * 1024,
             extent_page_entries: 1_024,
             read_window_bytes: 8 * 1024 * 1024,
+            read_request_bytes: 1024 * 1024,
             read_concurrency: 8,
             gc_bytes_per_pass: 64 * 1024 * 1024,
             watchdog_interval: Duration::from_millis(500),
@@ -59,6 +61,7 @@ impl StreamConfig {
             || self.max_append_bytes == 0
             || self.extent_page_entries == 0
             || self.read_window_bytes == 0
+            || self.read_request_bytes == 0
             || self.read_concurrency == 0
             || self.gc_bytes_per_pass == 0
             || self.watchdog_interval.is_zero()
@@ -668,13 +671,14 @@ impl ChunkStream {
                 let available = usize::try_from(end - cursor).map_err(|_| {
                     StreamError::InvalidRequest("read length exceeds addressable range".into())
                 })?;
+                let available = available.min(self.config.read_request_bytes);
                 reads.push(PhysicalRead {
                     chunk_id: active.chunk_id,
                     logical_start: cursor,
                     physical_start: physical,
                     length: available,
                 });
-                cursor = end;
+                cursor += available as u64;
                 continue;
             }
             let fence_index = find_extent_fence(&manifest, cursor)?;
@@ -683,6 +687,7 @@ impl ChunkStream {
             let location = resolve_extent(&page, cursor)?;
             let read_len = usize::try_from(location.available.min(end - cursor))
                 .map_err(|_| StreamError::InvalidRequest("read length exceeds addressable range".into()))?;
+            let read_len = read_len.min(self.config.read_request_bytes);
             reads.push(PhysicalRead {
                 chunk_id: location.chunk_id,
                 logical_start: cursor,

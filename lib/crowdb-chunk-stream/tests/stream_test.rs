@@ -122,6 +122,25 @@ async fn sequential_reader_prefetches_bounded_ordered_windows() {
 }
 
 #[tokio::test]
+async fn sequential_reader_splits_windows_into_bounded_physical_reads() {
+    let store = Arc::new(MemoryStreamStore::new(16));
+    let config = StreamConfig {
+        read_window_bytes: 8,
+        read_request_bytes: 2,
+        ..StreamConfig::default()
+    };
+    let stream = create_stream(&store, 16, config).await;
+    stream.append(&[Bytes::from_static(b"abcdefgh")]).await.unwrap();
+
+    let mut reader = stream.reader(0, ReadHint::ToEnd).unwrap();
+    assert_eq!(
+        reader.next().await.unwrap(),
+        Some(Bytes::from_static(b"abcdefgh"))
+    );
+    assert_eq!(stream.metrics().physical_read_requests, 4);
+}
+
+#[tokio::test]
 async fn chunk_bound_batch_rolls_before_a_record_and_binds_each_chunk() {
     let store = Arc::new(MemoryStreamStore::new(20));
     let stream = create_stream(&store, 20, StreamConfig::default()).await;

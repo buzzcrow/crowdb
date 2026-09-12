@@ -167,16 +167,17 @@ write or advance the cursor.
 Reads reject ranges below `trim_offset` or beyond the current durable tail.
 For sealed data, the reader binary-searches manifest fences, loads only the
 target extent pages, validates each loaded page against its fence, and resolves
-the physical offset with checked arithmetic. Pages touched by one request are
-cached for that request. Active reads use the immutable acknowledged cursor
-snapshot.
+the physical offset with checked arithmetic. Active reads use the immutable
+acknowledged cursor snapshot.
 
 A sequential reader starts at a caller-supplied logical offset and accepts a
 finite byte hint or `ToEnd`. It captures the corresponding durable end, returns
 EOF there, and leaves EOF handling to its caller. Cached bytes are returned
 while adjacent physical ranges are prefetched out of order within one bounded
 window; delivery remains in logical order. The default retained window is 8
-MiB and at most eight physical reads from that window run concurrently.
+MiB. Each physical request is at most 1 MiB and at most eight requests from the
+window run concurrently. This keeps production DiskIO frames below their
+deadline-sensitive large-message range without reducing sequential readahead.
 Independent readers may run concurrently. Each physical read has an observation
 watchdog that never cancels or retries the underlying future.
 A stream handle keeps the current manifest generation's extent pages in an
@@ -212,8 +213,8 @@ never eligible.
 Defaults bound the queue at 1,024 requests and 64 MiB, a batch at 64 requests
 and 1 MiB, one append at 64 MiB, one chunk at 256 MiB, an extent page at 1,024
 entries, a sequential read window at 8 MiB with eight concurrent physical
-reads, and one GC pass at 64 MiB. All bounds are configurable and validated as
-nonzero.
+reads capped at 1 MiB each, and one GC pass at 64 MiB. All bounds are
+configurable and validated as nonzero.
 
 Lock-free counters report submitted/completed/failed requests, logical and
 three-mirror physical bytes, batch/request counts, rollovers, read bytes,
@@ -223,6 +224,28 @@ Append and read watchdogs log the
 stream identity, epoch, logical range or offset, operation age, queue age,
 batch size, and stage at every interval while retaining the original future as
 the sole completion owner.
+
+The production regression baseline uses a three-node loopback deployment with
+three NullDisk instances, memory-backed KV/WAL, an Intel Core i9-7960X, and
+Linux 6.11. A ten-second reference run produced these results and gates:
+
+| Workload                 | Reference throughput | Reference p99 | Regression floor | p99 ceiling | Peak RSS growth |
+|--------------------------|---------------------:|--------------:|-----------------:|------------:|----------------:|
+| 4 KiB append, 1 task     |          470 ops/s   |        3.3 ms |        250 ops/s  |       10 ms |         0.3 MiB |
+| 4 KiB append, 32 tasks   |        7,076 ops/s   |        5.5 ms |      3,000 ops/s  |       20 ms |         1.5 MiB |
+| 1 MiB append, 8 tasks    |          284 MiB/s   |         38 ms |        125 MiB/s  |      150 ms |          33 MiB |
+| 4 MiB rollover, 8 tasks  |          444 MiB/s   |        112 ms |        200 MiB/s  |      500 ms |          91 MiB |
+| 4 KiB random, 32 tasks   |       71,606 ops/s   |        0.7 ms |     30,000 ops/s  |        5 ms |          10 MiB |
+| 320 MiB replay, 1 task   |          746 MiB/s   |        478 ms |        300 MiB/s  |    2,000 ms |         144 MiB |
+| 576 MiB prefix trim      |       28,888 MiB/s   |        8.9 ms |      1,000 MiB/s  |      100 ms |           0 MiB |
+
+The sentinel also requires zero errors and watchdog observations, queue high
+water below configured admission bounds, and peak RSS growth below 256 MiB.
+Metadata publications may not exceed initial allocation plus rollover count.
+One manifest generation incurs at most one extent-page miss per concurrent
+reader; the 32-task random baseline observed 25 racing initial misses followed
+by 572,996 hits, while replay observed one miss and 6,143 hits. GC must release
+at least one complete chunk.
 
 ## 9. Errors and Invariants
 
