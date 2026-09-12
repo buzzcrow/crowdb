@@ -119,3 +119,21 @@ async fn publisher_rejects_epoch_regression_before_head_write() {
         .is_err());
     assert_eq!(store.write_counts().await, (1, 1));
 }
+
+#[tokio::test]
+async fn current_catalog_load_validates_every_referenced_page() {
+    let store = Arc::new(MemoryCatalogStore::default());
+    let publisher = CatalogPublisher::new(store.clone());
+    assert_eq!(publisher.load_current().await.unwrap(), None);
+
+    let catalog_page = page(1, 1);
+    let catalog_head = head(1, None, &catalog_page);
+    publisher
+        .publish(catalog_head.clone(), vec![catalog_page.clone()])
+        .await
+        .unwrap();
+    assert_eq!(
+        publisher.load_current().await.unwrap(),
+        Some((catalog_head, vec![catalog_page]))
+    );
+}

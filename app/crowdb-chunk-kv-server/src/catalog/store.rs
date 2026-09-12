@@ -50,6 +50,21 @@ impl CatalogPublisher {
         Self { store }
     }
 
+    /// Loads and validates the currently published generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the head or any referenced immutable page is
+    /// unavailable, changed, or invalid.
+    pub async fn load_current(&self) -> Result<Option<(CatalogHead, Vec<CatalogPage>)>, CatalogError> {
+        let Some(head) = self.store.get_head().await? else {
+            return Ok(None);
+        };
+        let pages = self.load_pages(&head).await?;
+        head.validate_pages(&pages)?;
+        Ok(Some((head, pages)))
+    }
+
     /// Publishes one fully validated immutable generation, pages before head.
     ///
     /// # Errors

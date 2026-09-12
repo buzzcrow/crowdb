@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use clap::Parser;
 use crowdb_chunk_kv_server::{
-    management_router, ChunkKvRpcService, ChunkKvServerConfig, ChunkKvService, ChunkKvStorage,
-    ManagementState,
+    management_router, CatalogPublisher, ChunkKvRpcService, ChunkKvServerConfig, ChunkKvService,
+    ChunkKvStorage, Group0ControlStore, ManagementState,
 };
 use tracing::{error, info, warn};
 
@@ -120,7 +120,7 @@ async fn main() {
         "crowdb-chunk-kv-server starting"
     );
 
-    let _storage = match ChunkKvStorage::connect(&config).await {
+    let storage = match ChunkKvStorage::connect(&config).await {
         Ok(storage) => storage,
         Err(error) => {
             error!(%error, "failed to connect production chunk storage");
@@ -134,6 +134,45 @@ async fn main() {
             return;
         }
     };
+    let catalog = Arc::new(CatalogPublisher::new(Arc::new(Group0ControlStore::from_client(
+        Arc::clone(storage.kv()),
+    ))));
+    match catalog.load_current().await {
+        Ok(Some((head, pages))) => {
+            if let Err(error) = service.install_catalog(&head, &pages) {
+                error!(%error, "failed to install initial chunk KV catalog");
+                return;
+            }
+            info!(generation = head.generation, "installed initial chunk KV catalog");
+        }
+        Ok(None) => warn!("chunk KV catalog is not published; service remains unready"),
+        Err(error) => {
+            error!(%error, "failed to load initial chunk KV catalog");
+            return;
+        }
+    }
+    let refresh_service = Arc::clone(&service);
+    let refresh_catalog = Arc::clone(&catalog);
+    let refresh_interval = std::time::Duration::from_millis(config.catalog_refresh_interval_ms);
+    let refresh_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(refresh_interval);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            match refresh_catalog.load_current().await {
+                Ok(Some((head, pages))) => match refresh_service.install_catalog(&head, &pages) {
+                    Ok(()) => info!(
+                        generation = head.generation,
+                        "installed refreshed chunk KV catalog"
+                    ),
+                    Err(crowdb_chunk_kv_server::CatalogError::GenerationConflict) => {}
+                    Err(error) => warn!(%error, "rejected refreshed chunk KV catalog"),
+                },
+                Ok(None) => warn!("chunk KV catalog head is absent; retaining installed catalog"),
+                Err(error) => warn!(%error, "catalog refresh failed; retaining installed catalog"),
+            }
+        }
+    });
 
     let rpc_server = Arc::new(crowdb_rpc_ffi::RpcServer::with_engines(
         None,
@@ -175,6 +214,7 @@ async fn main() {
     {
         error!(%error, "HTTP management server failed");
     }
+    refresh_task.abort();
 }
 
 async fn shutdown_signal() {

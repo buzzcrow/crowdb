@@ -30,7 +30,7 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 ## Phase 3: Server and RPC
 
-- [ ] Add `crowdb-chunk-kv-server` config, logging, metrics, health,
+- [~] Add `crowdb-chunk-kv-server` config, logging, metrics, health,
   management, graceful shutdown, and zero/many partition hosting.
 - [x] Add direct point RPC types and handlers for R142 operations, typed errors,
   request identity, journal positions, deadlines, and stale-owner redirects.
@@ -70,7 +70,7 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 - Production catalog, grant, and partition startup wiring constrain complete
   data-plane and real-process coverage.
-- Group-0 monitor supervision and runtime catalog refresh still need integration
+- Group-0 monitor supervision and serving-grant refresh still need integration
   with the existing KV server and process boundaries.
 - R145 owns routed multi-partition composition and end-to-end client coverage.
 - Point and ordered-read operations cross a FlatBuffers crowdb-rpc boundary;
@@ -81,6 +81,6 @@ R142 partitions and publishes one complete group-0 range catalog.
   owner exclusion, but the group-0 transition store, target recovery worker,
   split orchestration, and catalog cutover adapter remain.
 - Config defaults, reserved ports, process logging, HTTP management, RPC
-  listener startup, lock-free counters, health snapshots, and drain-time
-  admission closure are implemented; heartbeat publication and bounded
-  checkpoint drain remain.
+  listener startup, validated catalog refresh, lock-free counters, health
+  snapshots, and drain-time admission closure are implemented; heartbeat and
+  grant publication and bounded checkpoint drain remain.
