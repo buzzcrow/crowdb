@@ -158,9 +158,10 @@ a retained-head watermark; R146 cannot infer their reachability.
 `reclaim_metadata_before` accepts that caller-proven oldest generation and a
 per-pass page bound, and never removes the current generation.
 
-Every stream chunk allocation carries a stream-specific chunk type and an
-owner key containing the owner-kind prefix plus `StreamName`. R146 owns the
-compatible chunk-record extension, lease expiry, sealing, and deletion of
+Every stream chunk allocation carries `ChunkType::Stream` and an owner key
+containing the `stream/` owner-kind prefix plus `StreamName`. Old persisted and
+wire records decode with an empty, unattributed owner. R146 extends the owner
+contract to other chunk types and owns lease expiry, sealing, and deletion of
 zero-length chunks. R141 supplies the stream identity on allocation and reports
 unreachable metadata separately.
 

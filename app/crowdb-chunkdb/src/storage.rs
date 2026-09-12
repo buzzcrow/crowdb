@@ -14,8 +14,9 @@ use std::sync::Arc;
 use tracing::warn;
 
 use crowdb_kv_client::{CrowdbKvClient, GetOutcome, ReadMode, ScanOutcome};
-use crowdb_protocol::chunkdb::rpc::Chunk;
+use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkStrip, StripCleanupIntent};
 use crowdb_protocol::common::ChunkId;
+use serde::Deserialize;
 
 use crate::routing::{route, BindingCache, MigrationState, Route};
 
@@ -43,6 +44,50 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 pub struct ChunkStore {
     pub(super) kv: Arc<CrowdbKvClient>,
     pub(super) bindings: BindingCache,
+}
+
+#[derive(Deserialize)]
+struct LegacyChunk {
+    id: Option<ChunkId>,
+    modify_ts: u64,
+    state: i32,
+    create_ts_ms: u64,
+    sealed_ts_ms: u64,
+    capacity: u32,
+    sealed_length: u32,
+    strips: Vec<ChunkStrip>,
+    chunk_type: i32,
+    writer_epoch: u64,
+    acknowledged_cursor: u64,
+    closed_strip_sequence: Option<u32>,
+    writer_lease_deadline_ms: u64,
+    next_strip_sequence: u32,
+    cleanup_intents: Vec<StripCleanupIntent>,
+    last_strip_replacement: Option<ChunkId>,
+}
+
+impl From<LegacyChunk> for Chunk {
+    fn from(chunk: LegacyChunk) -> Self {
+        Self {
+            id: chunk.id,
+            modify_ts: chunk.modify_ts,
+            state: chunk.state,
+            create_ts_ms: chunk.create_ts_ms,
+            sealed_ts_ms: chunk.sealed_ts_ms,
+            capacity: chunk.capacity,
+            sealed_length: chunk.sealed_length,
+            strips: chunk.strips,
+            chunk_type: chunk.chunk_type,
+            writer_epoch: chunk.writer_epoch,
+            acknowledged_cursor: chunk.acknowledged_cursor,
+            closed_strip_sequence: chunk.closed_strip_sequence,
+            writer_lease_deadline_ms: chunk.writer_lease_deadline_ms,
+            next_strip_sequence: chunk.next_strip_sequence,
+            cleanup_intents: chunk.cleanup_intents,
+            last_strip_replacement: chunk.last_strip_replacement,
+            owner_key: Vec::new(),
+        }
+    }
 }
 
 impl ChunkStore {
@@ -260,5 +305,12 @@ pub(super) fn encode_chunk(chunk: &Chunk) -> Vec<u8> {
 
 /// Decode a `Chunk` from bytes (bincode).
 fn decode_chunk(data: &[u8]) -> Result<Chunk> {
-    bincode::deserialize(data).map_err(|e| StoreError::Serde(e.to_string()))
+    bincode::deserialize(data)
+        .or_else(|_| bincode::deserialize::<LegacyChunk>(data).map(Chunk::from))
+        .map_err(|e| StoreError::Serde(e.to_string()))
+}
+
+#[cfg(feature = "test-util")]
+pub fn decode_chunk_for_tests(data: &[u8]) -> Result<Chunk> {
+    decode_chunk(data)
 }

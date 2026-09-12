@@ -60,6 +60,7 @@ enum FBChunkType : int16 {
     Wal = 1,
     BtreePage = 2,
     PageIndex = 3,
+    Stream = 4,
 }
 
 // ── Strip types ──────────────────────────────────────────────────
@@ -118,6 +119,7 @@ table FBChunk {
     next_strip_sequence:uint32;
     cleanup_intents:[FBStripCleanupIntent];
     last_strip_replacement:crowdb.rpc.proto.FBInt128;
+    owner_key:[ubyte];
 }
 
 table FBStripCleanupIntent {
@@ -141,6 +143,7 @@ table FBAllocateChunkRequest {
     chunk_type:FBChunkType;
     writer_epoch:uint64;
     writer_lease_ms:uint64;
+    owner_key:[ubyte];
 }
 
 table FBAllocateChunkResponse {

@@ -111,12 +111,13 @@ impl ProductionStreamChunkStore {
 impl StreamChunkStore for ProductionStreamChunkStore {
     async fn allocate_mirrored(
         &self,
-        _stream_name: StreamName,
+        stream_name: StreamName,
         writer_epoch: u64,
     ) -> Result<ActiveChunkDescriptor> {
         let writer = MirrorChunkWriter::allocate(
             Arc::clone(&self.allocator),
             Arc::clone(&self.disk_writer),
+            stream_name,
             writer_epoch,
             self.writer_lease_ms,
         )

@@ -368,9 +368,10 @@ Required gates:
   superseded page generations only after the retention owner supplies its
   durable oldest-live generation.
 - Stream names are process-unique and time ordered and reopen always rotates
-  the old active chunk. The backward-compatible chunk owner-key schema and
-  reporting abandoned chunks to R146 remain open because the current `Chunk`
-  record has no owner field.
+  the old active chunk. New allocations use the backward-compatible `Stream`
+  chunk type and canonical owner key; old bincode and FlatBuffers records
+  decode as unattributed. Chunk listing now carries that identity for R146's
+  generic abandoned-writer scan.
 - Non-blocking lifecycle follow-up: until deferred R146 lands, a crashed
   writer's abandoned Active stream chunk remains allocated. R141 never resumes
   it and allocates a fresh chunk; the abandoned owner epoch remains visible to

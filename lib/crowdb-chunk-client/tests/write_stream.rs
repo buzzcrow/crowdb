@@ -179,6 +179,7 @@ impl ChunkAllocator for MockChunkAllocator {
             next_strip_sequence: 1,
             cleanup_intents: vec![],
             last_strip_replacement: None,
+            owner_key: req.owner_key,
         };
 
         st.chunks

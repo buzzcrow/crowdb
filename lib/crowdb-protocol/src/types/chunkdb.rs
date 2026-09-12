@@ -79,8 +79,16 @@ pub enum ChunkType {
     Wal = 1,
     BtreePage = 2,
     PageIndex = 3,
+    Stream = 4,
 }
-impl_enum_conversions!(ChunkType, Repo = 0, Wal = 1, BtreePage = 2, PageIndex = 3);
+impl_enum_conversions!(
+    ChunkType,
+    Repo = 0,
+    Wal = 1,
+    BtreePage = 2,
+    PageIndex = 3,
+    Stream = 4
+);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[repr(i32)]
@@ -184,6 +192,8 @@ pub struct Chunk {
     pub cleanup_intents: Vec<StripCleanupIntent>,
     /// Most recently committed fenced replacement operation.
     pub last_strip_replacement: Option<ChunkId>,
+    /// Stable logical owner identity. Empty only for legacy unattributed chunks.
+    pub owner_key: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -227,6 +237,8 @@ pub struct AllocateChunkRequest {
     pub writer_epoch: u64,
     /// Lease duration installed for a nonzero writer epoch.
     pub writer_lease_ms: u64,
+    /// Stable logical owner identity for attributed shared chunks.
+    pub owner_key: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]

@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use crowdb_protocol::chunk_stream::StreamName;
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AllocateChunkRequest, Chunk, ChunkState, ChunkType, SealChunkRequest, Strip,
     StripType,
@@ -40,6 +41,7 @@ impl MirrorChunkWriter {
     pub async fn allocate(
         allocator: Arc<dyn ChunkAllocator>,
         disk_writer: Arc<dyn DiskWriter>,
+        stream_name: StreamName,
         writer_epoch: u64,
         writer_lease_ms: u64,
     ) -> Result<Self> {
@@ -57,15 +59,23 @@ impl MirrorChunkWriter {
                 data_num: 0,
                 code_num: 0,
                 copy_count: 3,
-                chunk_type: ChunkType::Wal as i32,
+                chunk_type: ChunkType::Stream as i32,
                 writer_epoch,
                 writer_lease_ms,
+                owner_key: stream_name.chunk_owner_key(),
             })
             .await?;
         let chunk = response
             .chunk
             .ok_or_else(|| IoError::AllocationFailed("stream chunk allocation returned no chunk".into()))?;
-        Self::open(allocator, disk_writer, chunk, writer_epoch, writer_lease_ms)
+        Self::open(
+            allocator,
+            disk_writer,
+            chunk,
+            stream_name,
+            writer_epoch,
+            writer_lease_ms,
+        )
     }
 
     /// Opens an allocated or recovered direct mirror chunk.
@@ -77,6 +87,7 @@ impl MirrorChunkWriter {
         allocator: Arc<dyn ChunkAllocator>,
         disk_writer: Arc<dyn DiskWriter>,
         chunk: Chunk,
+        stream_name: StreamName,
         writer_epoch: u64,
         writer_lease_ms: u64,
     ) -> Result<Self> {
@@ -85,7 +96,8 @@ impl MirrorChunkWriter {
             .ok_or_else(|| IoError::AllocationFailed("stream chunk has no identity".into()))?;
         if chunk.writer_epoch != writer_epoch
             || chunk.state != ChunkState::Active as i32
-            || chunk.chunk_type != ChunkType::Wal as i32
+            || chunk.chunk_type != ChunkType::Stream as i32
+            || chunk.owner_key != stream_name.chunk_owner_key()
             || chunk.strips.len() != 1
         {
             return Err(IoError::MetadataConflict(

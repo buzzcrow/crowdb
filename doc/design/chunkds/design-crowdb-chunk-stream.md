@@ -68,7 +68,10 @@ transport:
 
 The production chunk store uses a direct-buffer `MirrorChunkWriter` from
 `crowdb-chunk-client`. It owns one chunk, appends mirror strips asynchronously,
-and never constructs the EC pipeline. Stream rollover remains above it.
+and never constructs the EC pipeline. Every allocation uses `ChunkType::Stream`
+and a canonical `stream/` owner key followed by the 128-bit stream identity.
+Legacy persisted and wire chunk records decode with an empty unattributed owner.
+Stream rollover remains above the writer.
 
 `ProductionStreamRuntime` shares the process KV client and discovered chunk IO
 routes across every stream handle. The chunk-KV server owns that runtime and

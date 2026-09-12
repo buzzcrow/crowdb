@@ -38,6 +38,7 @@ fn make_chunk(id: ChunkId, state: i32) -> Chunk {
         next_strip_sequence: 0,
         cleanup_intents: vec![],
         last_strip_replacement: None,
+        owner_key: Vec::new(),
     }
 }
 

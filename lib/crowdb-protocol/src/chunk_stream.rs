@@ -3,6 +3,7 @@
 
 //! Durable metadata shared by chunk-stream registry and storage adapters.
 
+use crate::chunkdb::rpc::ChunkType;
 use crate::common::ChunkId;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -44,9 +45,48 @@ impl StreamName {
     }
 }
 
+/// Validates the currently supported attributed chunk owner schema.
+#[must_use]
+pub fn chunk_owner_key_matches_type(chunk_type: ChunkType, key: &[u8]) -> bool {
+    match chunk_type {
+        ChunkType::Stream => StreamName::from_chunk_owner_key(key).is_some(),
+        _ => key.is_empty(),
+    }
+}
+
+/// Binary owner-kind prefix stored in attributed stream chunks.
+pub const STREAM_CHUNK_OWNER_PREFIX: &[u8] = b"stream/";
+
+impl StreamName {
+    /// Returns the canonical attributed chunk owner key.
+    #[must_use]
+    pub fn chunk_owner_key(self) -> Vec<u8> {
+        let mut key = Vec::with_capacity(STREAM_CHUNK_OWNER_PREFIX.len() + 16);
+        key.extend_from_slice(STREAM_CHUNK_OWNER_PREFIX);
+        key.extend_from_slice(&self.high.to_be_bytes());
+        key.extend_from_slice(&self.low.to_be_bytes());
+        key
+    }
+
+    /// Decodes a canonical attributed stream chunk owner key.
+    #[must_use]
+    pub fn from_chunk_owner_key(key: &[u8]) -> Option<Self> {
+        let identity = key.strip_prefix(STREAM_CHUNK_OWNER_PREFIX)?;
+        if identity.len() != 16 {
+            return None;
+        }
+        let (high, low) = identity.split_at(8);
+        Some(Self {
+            high: u64::from_be_bytes(high.try_into().ok()?),
+            low: u64::from_be_bytes(low.try_into().ok()?),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::StreamName;
+    use super::{chunk_owner_key_matches_type, StreamName};
+    use crate::chunkdb::rpc::ChunkType;
 
     #[test]
     fn generated_names_are_unique_ordered_and_fixed_width() {
@@ -58,6 +98,17 @@ mod tests {
             super::StreamBinding::creating(first, None).metadata_group_id,
             super::DEFAULT_STREAM_METADATA_GROUP_ID
         );
+    }
+
+    #[test]
+    fn stream_chunk_owner_key_is_typed_and_round_trips() {
+        let name = StreamName { high: 7, low: 9 };
+        let key = name.chunk_owner_key();
+        assert_eq!(StreamName::from_chunk_owner_key(&key), Some(name));
+        assert!(chunk_owner_key_matches_type(ChunkType::Stream, &key));
+        assert!(!chunk_owner_key_matches_type(ChunkType::Wal, &key));
+        assert!(!chunk_owner_key_matches_type(ChunkType::Stream, &[]));
+        assert!(chunk_owner_key_matches_type(ChunkType::Repo, &[]));
     }
 }
 

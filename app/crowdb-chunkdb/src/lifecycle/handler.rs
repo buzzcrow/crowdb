@@ -16,6 +16,7 @@ use quick_cache::sync::Cache;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tracing::{info, warn};
 
+use crowdb_protocol::chunk_stream::chunk_owner_key_matches_type;
 use crowdb_protocol::chunkdb::rpc::{
     Chunk, ChunkState as ProtoChunkState, ChunkStrip, ChunkType, Strip, StripCleanupIntent,
     StripReservationState, StripType as ProtoStripType,
@@ -271,6 +272,43 @@ impl LifecycleHandler {
         writer_epoch: u64,
         writer_lease_ms: u64,
     ) -> Result<Chunk, LifecycleError> {
+        self.allocate_chunk_owned(
+            chunk_id,
+            write_granularity_kb,
+            strip_count,
+            strip_type,
+            data_num,
+            code_num,
+            copy_count,
+            chunk_type,
+            writer_epoch,
+            writer_lease_ms,
+            Vec::new(),
+        )
+        .await
+    }
+
+    /// Allocate a new chunk with a stable logical owner identity.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn allocate_chunk_owned(
+        &self,
+        chunk_id: Option<ChunkId>,
+        write_granularity_kb: u32,
+        strip_count: u32,
+        strip_type: ProtoStripType,
+        data_num: u32,
+        code_num: u32,
+        copy_count: u32,
+        chunk_type: ChunkType,
+        writer_epoch: u64,
+        writer_lease_ms: u64,
+        owner_key: Vec<u8>,
+    ) -> Result<Chunk, LifecycleError> {
+        if !chunk_owner_key_matches_type(chunk_type, &owner_key) {
+            return Err(LifecycleError::InvalidRequest(
+                "chunk owner key does not match chunk type".into(),
+            ));
+        }
         let id = match chunk_id {
             Some(id) => id,
             None => self.generate_owned_chunk_id(chunk_type)?,
@@ -363,6 +401,7 @@ impl LifecycleHandler {
             next_strip_sequence: strip_count,
             cleanup_intents: Vec::new(),
             last_strip_replacement: None,
+            owner_key,
         };
         self.persist_active_chunk(&chunk).await?;
         self.commit_strip_segments_background(chunk.strips.clone());

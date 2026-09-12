@@ -222,6 +222,7 @@ impl ChunkAllocator for MockChunkAllocator {
             next_strip_sequence: req.strip_count,
             cleanup_intents: vec![],
             last_strip_replacement: None,
+            owner_key: req.owner_key,
         };
         st.chunks
             .insert((chunk_id.high, chunk_id.low), (strips, 0, false));

@@ -26,6 +26,7 @@ fn make_chunk_id(high: u64, low: u64) -> FBInt128 {
 fn chunkdb_advance_write_response_exposes_fenced_cursor_metadata() {
     let mut fbb = FlatBufferBuilder::new();
     let id = make_chunk_id(9, 8);
+    let owner_key = fbb.create_vector(b"stream/owner");
     let chunk = FBChunk::create(
         &mut fbb,
         &FBChunkArgs {
@@ -45,6 +46,7 @@ fn chunkdb_advance_write_response_exposes_fenced_cursor_metadata() {
             next_strip_sequence: 1,
             cleanup_intents: None,
             last_strip_replacement: None,
+            owner_key: Some(owner_key),
         },
     );
     let response = FBAdvanceChunkWriteResponse::create(
@@ -69,6 +71,7 @@ fn chunkdb_advance_write_response_exposes_fenced_cursor_metadata() {
     assert_eq!(chunk.acknowledged_cursor(), 4096);
     assert_eq!(chunk.closed_strip_sequence(), 0);
     assert_eq!(chunk.writer_lease_deadline_ms(), 1234);
+    assert_eq!(chunk.owner_key().unwrap().bytes(), b"stream/owner");
 }
 
 /// Build a mirror strip with one segment, wrapped in a chunk.
@@ -118,6 +121,7 @@ macro_rules! build_mirror_chunk {
                 next_strip_sequence: 1,
                 cleanup_intents: None,
                 last_strip_replacement: None,
+                owner_key: None,
             },
         )
     }};
@@ -290,6 +294,7 @@ fn ec_strip_union_variant() {
             next_strip_sequence: 2,
             cleanup_intents: None,
             last_strip_replacement: None,
+            owner_key: None,
         },
     );
     let resp = FBAllocateChunkResponse::create(

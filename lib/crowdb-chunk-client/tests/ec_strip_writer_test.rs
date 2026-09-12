@@ -90,6 +90,7 @@ fn make_chunk(unit_kb: u32, num_segments: usize) -> Arc<Chunk> {
         next_strip_sequence: 1,
         cleanup_intents: vec![],
         last_strip_replacement: None,
+        owner_key: Vec::new(),
     })
 }
 

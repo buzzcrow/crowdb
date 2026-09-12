@@ -231,6 +231,7 @@ pub(super) fn proto_chunk_type(fb: FBChunkType) -> Option<ProtoChunkType> {
         FBChunkType::Wal => Some(ProtoChunkType::Wal),
         FBChunkType::BtreePage => Some(ProtoChunkType::BtreePage),
         FBChunkType::PageIndex => Some(ProtoChunkType::PageIndex),
+        FBChunkType::Stream => Some(ProtoChunkType::Stream),
         _ => None,
     }
 }
@@ -704,6 +705,7 @@ pub(super) fn build_chunk_offset<'a>(
     let last_strip_replacement = chunk
         .last_strip_replacement
         .map(|id| FBInt128::new(id.high, id.low));
+    let owner_key = (!chunk.owner_key.is_empty()).then(|| fbb.create_vector(&chunk.owner_key));
     let state = ProtoChunkState::try_from(chunk.state).unwrap_or(ProtoChunkState::Init);
     let chunk_type = ProtoChunkType::try_from(chunk.chunk_type).unwrap_or(ProtoChunkType::Repo);
     FBChunk::create(
@@ -725,6 +727,7 @@ pub(super) fn build_chunk_offset<'a>(
             next_strip_sequence: chunk.next_strip_sequence,
             cleanup_intents,
             last_strip_replacement: last_strip_replacement.as_ref(),
+            owner_key,
         },
     )
 }
@@ -942,6 +945,7 @@ pub(super) fn fb_chunk_type(t: ProtoChunkType) -> FBChunkType {
         ProtoChunkType::Wal => FBChunkType::Wal,
         ProtoChunkType::BtreePage => FBChunkType::BtreePage,
         ProtoChunkType::PageIndex => FBChunkType::PageIndex,
+        ProtoChunkType::Stream => FBChunkType::Stream,
     }
 }
 

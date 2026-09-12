@@ -160,6 +160,7 @@ impl ChunkdbRpcTransport {
         let conn = self.conn_for(rpc_endpoint)?;
         let mut builder = FlatBufferBuilder::new();
         let chunk_id_off = req.chunk_id.as_ref().map(|id| FBInt128::new(id.high, id.low));
+        let owner_key = (!req.owner_key.is_empty()).then(|| builder.create_vector(&req.owner_key));
         let args = FBAllocateChunkRequestArgs {
             id: req_id,
             rpc_create_nano: 0,
@@ -177,6 +178,7 @@ impl ChunkdbRpcTransport {
             ),
             writer_epoch: req.writer_epoch,
             writer_lease_ms: req.writer_lease_ms,
+            owner_key,
         };
         let fb_req = FBAllocateChunkRequest::create(&mut builder, &args);
         builder.finish(fb_req, None);
@@ -1096,6 +1098,10 @@ fn parse_fb_chunk(fb: &crowdb_protocol::chunkdb_fb::FBChunk<'_>) -> Chunk {
             high: id.high(),
             low: id.low(),
         }),
+        owner_key: fb
+            .owner_key()
+            .map(|value| value.iter().collect())
+            .unwrap_or_default(),
     }
 }
 
@@ -1389,6 +1395,7 @@ fn chunk_type_to_fb(t: ProtoChunkType) -> FBChunkType {
         ProtoChunkType::Wal => FBChunkType::Wal,
         ProtoChunkType::BtreePage => FBChunkType::BtreePage,
         ProtoChunkType::PageIndex => FBChunkType::PageIndex,
+        ProtoChunkType::Stream => FBChunkType::Stream,
     }
 }
 
@@ -1397,6 +1404,7 @@ fn fb_chunk_type_to_proto(t: FBChunkType) -> ProtoChunkType {
         FBChunkType::Wal => ProtoChunkType::Wal,
         FBChunkType::BtreePage => ProtoChunkType::BtreePage,
         FBChunkType::PageIndex => ProtoChunkType::PageIndex,
+        FBChunkType::Stream => ProtoChunkType::Stream,
         _ => ProtoChunkType::Repo,
     }
 }

@@ -137,6 +137,7 @@ pub(crate) async fn allocate_new_chunk(
         chunk_type: ChunkType::Repo as i32,
         writer_epoch: 0,
         writer_lease_ms: 0,
+        owner_key: Vec::new(),
     };
     let resp = chunkdb.allocate_chunk(req).await?;
     resp.chunk

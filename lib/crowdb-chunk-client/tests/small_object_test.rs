@@ -108,6 +108,7 @@ impl ChunkAllocator for MockAllocator {
             next_strip_sequence: req.strip_count.max(1),
             cleanup_intents: vec![],
             last_strip_replacement: None,
+            owner_key: req.owner_key,
         };
         let mut state = self.state.lock().unwrap();
         state.allocations += 1;
@@ -1061,9 +1062,15 @@ async fn direct_mirror_chunk_writer_replicates_advances_and_seals() {
     let disk = Arc::new(RecordingDiskWriter::default());
     let allocator_trait: Arc<dyn ChunkAllocator> = allocator.clone();
     let disk_trait: Arc<dyn DiskWriter> = disk.clone();
-    let mut writer = MirrorChunkWriter::allocate(allocator_trait, disk_trait, 44, 30_000)
-        .await
-        .unwrap();
+    let mut writer = MirrorChunkWriter::allocate(
+        allocator_trait,
+        disk_trait,
+        crowdb_protocol::chunk_stream::StreamName { high: 1, low: 2 },
+        44,
+        30_000,
+    )
+    .await
+    .unwrap();
 
     assert_eq!(writer.cursor(), 0);
     assert_eq!(

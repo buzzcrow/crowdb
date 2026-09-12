@@ -72,6 +72,7 @@ impl ChunkAllocator for Allocator {
             writer_epoch: request.writer_epoch,
             writer_lease_deadline_ms: request.writer_lease_ms,
             next_strip_sequence: 1,
+            owner_key: request.owner_key,
             ..Chunk::default()
         };
         *self.chunk.lock().unwrap() = Some(chunk.clone());

@@ -83,10 +83,11 @@ without placing rollover metadata on the append hot path.
   bytes in admission/range accounting, and return the same ID in
   `AppendResult`. Files: `lib/crowdb-chunk-stream/src/`,
   `lib/crowdb-chunk-stream/tests/`.
-- [~] **Add stream ownership metadata**: generate time-ordered 128-bit stream
-  names, allocate chunks with the stream owner kind/key, report empty and
-  unreachable chunk candidates to R146, and keep superseded metadata on its
-  own watermark-driven cleanup path. Files: `lib/crowdb-protocol/src/`,
+- [x] **Add stream ownership metadata**: generate time-ordered 128-bit stream
+  names, allocate attributed `Stream` chunks with the stream owner kind/key,
+  preserve legacy unattributed records, expose ownership through chunk listing
+  for R146, and keep superseded metadata on its own watermark-driven cleanup
+  path. Files: `lib/crowdb-protocol/src/`,
   `lib/crowdb-chunk-client/src/`, `lib/crowdb-chunk-stream/src/`,
   `doc/backlog/R146-chunk-orphan-sealing.md`.
 - [x] **Implement metadata publication**: use R101 CAS for the stable

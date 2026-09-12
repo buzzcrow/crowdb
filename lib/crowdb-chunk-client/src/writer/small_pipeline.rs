@@ -759,6 +759,7 @@ impl OwnedChunk {
                 chunk_type: ChunkType::Repo as i32,
                 writer_epoch,
                 writer_lease_ms: lease_ms,
+                owner_key: Vec::new(),
             })
             .await?;
         let chunk = response
