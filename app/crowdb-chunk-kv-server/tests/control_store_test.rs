@@ -12,10 +12,10 @@ use crowdb_chunk_kv_server::{
 use crowdb_protocol::chunk_kv::{
     CatalogEntry, CatalogHead, CatalogPage, CatalogPageRef, CatalogPartitionState, DomainFailurePolicy,
     DomainMonitorDescriptor, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest, Id128, KeyRange,
-    OwnerDescriptor, PartitionArtifact,
+    OwnerDescriptor, PartitionArtifact, ServingAssignment, ServingGrant,
 };
 use crowdb_protocol::chunk_stream::StreamName;
-use crowdb_protocol::key::{ChunkKvCatalogHeadKey, TextKey};
+use crowdb_protocol::key::{ChunkKvCatalogHeadKey, ServingGrantKey, TextKey};
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
@@ -189,4 +189,41 @@ async fn group0_monitor_ensure_reconciles_races_and_rejects_conflicts() {
         registry.ensure(&conflict).await.unwrap(),
         EnsureDomainMonitorOutcome::DescriptorConflict
     );
+}
+
+#[tokio::test]
+async fn group0_serving_grant_load_rejects_invalid_authority() {
+    let kv = Arc::new(TestKv::default());
+    let store = Group0ControlStore::new(kv.clone());
+    let mut grant = ServingGrant {
+        instance_id: 7,
+        lease_sequence: 2,
+        catalog_generation: 3,
+        issued_at_ms: 1_000,
+        expires_at_ms: 13_000,
+        assignments: vec![ServingAssignment {
+            partition_id: Id128 { high: 4, low: 5 },
+            owner_epoch: 6,
+        }],
+        assignment_digest: [0; 32],
+    };
+    grant.seal();
+    let path = ServingGrantKey { instance_id: 7 }.to_path();
+    kv.put_cas(path.as_bytes(), &serde_json::to_vec(&grant).unwrap(), 0)
+        .await
+        .unwrap();
+    assert_eq!(store.load_serving_grant(7).await.unwrap(), Some(grant));
+
+    let invalid = ServingGrant {
+        assignment_digest: [9; 32],
+        ..store.load_serving_grant(7).await.unwrap().unwrap()
+    };
+    let revision = kv.get(path.as_bytes()).await.unwrap().unwrap().revision;
+    kv.put_cas(path.as_bytes(), &serde_json::to_vec(&invalid).unwrap(), revision)
+        .await
+        .unwrap();
+    assert!(matches!(
+        store.load_serving_grant(7).await,
+        Err(Group0KvError::Unavailable(_))
+    ));
 }

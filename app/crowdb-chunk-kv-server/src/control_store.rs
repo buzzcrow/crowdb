@@ -8,9 +8,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use crowdb_kv_client::{CrowdbKvClient, Error as KvClientError, GetOutcome, ReadMode};
 use crowdb_protocol::chunk_kv::{
-    CatalogHead, CatalogPage, DomainMonitorDescriptor, EnsureDomainMonitorOutcome,
+    CatalogHead, CatalogPage, DomainMonitorDescriptor, EnsureDomainMonitorOutcome, ServingGrant,
 };
-use crowdb_protocol::key::{ChunkKvCatalogHeadKey, ChunkKvCatalogPageKey, DomainMonitorKey, TextKey};
+use crowdb_protocol::key::{
+    ChunkKvCatalogHeadKey, ChunkKvCatalogPageKey, DomainMonitorKey, ServingGrantKey, TextKey,
+};
 use thiserror::Error;
 
 use crate::{CatalogError, CatalogStore, HeadWriteOutcome, MonitorDescriptorStore, MonitorError};
@@ -85,6 +87,27 @@ impl Group0ControlStore {
     #[must_use]
     pub fn from_client(kv: Arc<CrowdbKvClient>) -> Self {
         Self { kv }
+    }
+
+    /// Loads and validates the latest serving grant for one instance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an unavailable error for transport, decoding, or invalid grant
+    /// data. Absence is returned separately so callers remain fenced.
+    pub async fn load_serving_grant(&self, instance_id: u64) -> Result<Option<ServingGrant>, Group0KvError> {
+        let path = ServingGrantKey { instance_id }.to_path();
+        let grant = self
+            .read::<ServingGrant>(&path)
+            .await
+            .map_err(Group0KvError::Unavailable)?
+            .map(|(grant, _)| grant);
+        if grant.as_ref().is_some_and(|grant| grant.validate().is_err()) {
+            return Err(Group0KvError::Unavailable(format!(
+                "invalid serving grant {path}"
+            )));
+        }
+        Ok(grant)
     }
 
     async fn read<T: serde::de::DeserializeOwned>(&self, path: &str) -> Result<Option<(T, u64)>, String> {

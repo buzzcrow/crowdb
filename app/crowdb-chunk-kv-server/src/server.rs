@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use arc_swap::ArcSwap;
 use crowdb_chunk_kv::{
@@ -82,6 +83,7 @@ impl CatalogSnapshot {
 /// changes replace a snapshot; admitted partition operations retain their own
 /// handles until completion.
 pub struct ChunkKvService {
+    started: Instant,
     instance_id: u64,
     authority: Arc<ServingAuthority>,
     catalog: ArcSwap<CatalogSnapshot>,
@@ -118,6 +120,7 @@ impl ChunkKvService {
             ));
         }
         Ok(Self {
+            started: Instant::now(),
             instance_id,
             authority: Arc::new(ServingAuthority::new(instance_id)),
             catalog: ArcSwap::from_pointee(CatalogSnapshot::default()),
@@ -137,6 +140,12 @@ impl ChunkKvService {
     #[must_use]
     pub fn metrics(&self) -> &ServerMetrics {
         &self.metrics
+    }
+
+    /// Milliseconds elapsed on the process-local monotonic clock.
+    #[must_use]
+    pub fn monotonic_ms(&self) -> u64 {
+        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
 
     /// Stops new admission and clears serving authority. Operations already

@@ -4,7 +4,6 @@
 //! HTTP liveness, readiness, and metrics surface.
 
 use std::sync::Arc;
-use std::time::Instant;
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -17,20 +16,12 @@ use crate::{ChunkKvService, ServerLifecycle, ServerMetricsSnapshot};
 #[derive(Clone)]
 pub struct ManagementState {
     service: Arc<ChunkKvService>,
-    started: Instant,
 }
 
 impl ManagementState {
     #[must_use]
     pub fn new(service: Arc<ChunkKvService>) -> Self {
-        Self {
-            service,
-            started: Instant::now(),
-        }
-    }
-
-    fn monotonic_ms(&self) -> u64 {
-        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX)
+        Self { service }
     }
 }
 
@@ -70,7 +61,7 @@ async fn metrics(State(state): State<ManagementState>) -> Json<ServerMetricsSnap
 }
 
 fn health_response(state: &ManagementState) -> HealthResponse {
-    let health = state.service.health(state.monotonic_ms());
+    let health = state.service.health(state.service.monotonic_ms());
     HealthResponse {
         instance_id: health.instance_id,
         lifecycle: lifecycle_name(health.lifecycle),

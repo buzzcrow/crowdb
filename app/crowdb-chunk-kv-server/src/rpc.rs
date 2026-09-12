@@ -6,7 +6,7 @@
 //! crowdb-rpc point-operation server boundary.
 
 use std::sync::Arc;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crowdb_protocol::chunk_kv::{ChunkKvResponse, ChunkKvRpcErrorCode, RpcFailure};
 use crowdb_protocol::chunk_kv_ordered_wire::{decode_scan_request, decode_seek_request};
@@ -20,17 +20,12 @@ use crate::ChunkKvService;
 pub struct ChunkKvRpcService {
     service: Arc<ChunkKvService>,
     runtime: Handle,
-    started: Instant,
 }
 
 impl ChunkKvRpcService {
     #[must_use]
     pub fn new(service: Arc<ChunkKvService>, runtime: Handle) -> Self {
-        Self {
-            service,
-            runtime,
-            started: Instant::now(),
-        }
+        Self { service, runtime }
     }
 
     pub fn register_handlers(self: &Arc<Self>, server: &Arc<RpcServer>) {
@@ -54,14 +49,13 @@ impl ChunkKvRpcService {
     fn handle_point(&self, request: ServerRequest, server: &Arc<RpcServer>) {
         let service = Arc::clone(&self.service);
         let server = Arc::clone(server);
-        let started = self.started;
         self.runtime.spawn(async move {
             let rpc_request_id = request.request_id;
             let rpc_create_nano = request.rpc_create_nano;
             let response = match decode_point_request(request.control()) {
                 Ok(envelope) if envelope.rpc_request_id == rpc_request_id => {
                     service
-                        .handle_point(envelope.request, wall_time_ms(), monotonic_ms(started))
+                        .handle_point(envelope.request, wall_time_ms(), service.monotonic_ms())
                         .await
                 }
                 Ok(_) => invalid_response("RPC frame and control request IDs differ"),
@@ -80,14 +74,13 @@ impl ChunkKvRpcService {
     fn handle_seek(&self, request: ServerRequest, server: &Arc<RpcServer>) {
         let service = Arc::clone(&self.service);
         let server = Arc::clone(server);
-        let started = self.started;
         self.runtime.spawn(async move {
             let rpc_request_id = request.request_id;
             let rpc_create_nano = request.rpc_create_nano;
             let response = match decode_seek_request(request.control()) {
                 Ok(envelope) if envelope.rpc_request_id == rpc_request_id => {
                     service
-                        .handle_seek(envelope.request, wall_time_ms(), monotonic_ms(started))
+                        .handle_seek(envelope.request, wall_time_ms(), service.monotonic_ms())
                         .await
                 }
                 Ok(_) => invalid_response("RPC frame and control request IDs differ"),
@@ -106,14 +99,13 @@ impl ChunkKvRpcService {
     fn handle_scan(&self, request: ServerRequest, server: &Arc<RpcServer>) {
         let service = Arc::clone(&self.service);
         let server = Arc::clone(server);
-        let started = self.started;
         self.runtime.spawn(async move {
             let rpc_request_id = request.request_id;
             let rpc_create_nano = request.rpc_create_nano;
             let response = match decode_scan_request(request.control()) {
                 Ok(envelope) if envelope.rpc_request_id == rpc_request_id => {
                     service
-                        .handle_scan(envelope.request, wall_time_ms(), monotonic_ms(started))
+                        .handle_scan(envelope.request, wall_time_ms(), service.monotonic_ms())
                         .await
                 }
                 Ok(_) => invalid_response("RPC frame and control request IDs differ"),
@@ -170,8 +162,4 @@ fn wall_time_ms() -> u64 {
         .map_or(0, |duration| {
             u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
         })
-}
-
-fn monotonic_ms(started: Instant) -> u64 {
-    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
