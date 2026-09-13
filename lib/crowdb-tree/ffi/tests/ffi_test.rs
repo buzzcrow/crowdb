@@ -625,6 +625,49 @@ fn snapshot_export_import_round_trip() {
 }
 
 #[test]
+fn snapshot_sessions_stream_with_metadata_and_abort_without_installing() {
+    let source = Arc::new(Crowdbtree::open(&Config::default()).unwrap());
+    for i in 0..30usize {
+        source
+            .apply_put((i + 1) as u64, &key(i), format!("v{i}").as_bytes())
+            .unwrap();
+        source.flush().unwrap();
+    }
+
+    let mut export = source.snapshot_export_begin(19).unwrap();
+    let metadata = export.metadata();
+    assert_eq!(metadata.at_slot, 30);
+    assert_eq!(metadata.chunk_bytes, 19);
+    assert!(metadata.total_bytes > 19);
+    assert_ne!(metadata.final_crc32c, 0);
+    assert_eq!(export.read(1), Err(CtError::InvalidArgument));
+
+    let target = Arc::new(Crowdbtree::open(&Config::default()).unwrap());
+    let mut import = target.snapshot_import_begin().unwrap();
+    let mut offset = 0;
+    loop {
+        let chunk = export.read(offset).unwrap();
+        assert_eq!(chunk.offset, offset);
+        assert!(chunk.bytes.len() <= metadata.chunk_bytes);
+        import.feed(&chunk.bytes).unwrap();
+        offset += chunk.bytes.len() as u64;
+        if chunk.done {
+            break;
+        }
+    }
+    assert_eq!(offset, metadata.total_bytes);
+    assert_eq!(import.finish().unwrap(), metadata.at_slot);
+    assert_eq!(target.snapshot_view().unwrap(), source.snapshot_view().unwrap());
+
+    let empty_target = Arc::new(Crowdbtree::open(&Config::default()).unwrap());
+    let mut abandoned = empty_target.snapshot_import_begin().unwrap();
+    let mut second_export = source.snapshot_export_begin(19).unwrap();
+    abandoned.feed(&second_export.read(0).unwrap().bytes).unwrap();
+    abandoned.abort();
+    assert_eq!(empty_target.get(&key(0)).unwrap(), None);
+}
+
+#[test]
 fn io_failed_clean_on_healthy_engine() {
     let t = Crowdbtree::open(&Config::default()).unwrap();
     for i in 0..10usize {

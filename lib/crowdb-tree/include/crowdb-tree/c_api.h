@@ -589,8 +589,13 @@ void      ct_iter_release(ct_iter *it);
 void      ct_view_release(ct_view *v);
 
 // ── Snapshot export / import (portable stream) ────────────────────
-ct_status ct_snapshot_export_begin(ct_tree *t, ct_export **out);
-ct_status ct_snapshot_export_next(ct_export *e, ct_buf *chunk, int32_t *done);
+ct_status ct_snapshot_export_begin(ct_tree *t, size_t chunk_bytes, ct_export **out);
+uint64_t  ct_snapshot_export_at_slot(const ct_export *e);
+uint64_t  ct_snapshot_export_total_bytes(const ct_export *e);
+uint32_t  ct_snapshot_export_final_crc32c(const ct_export *e);
+size_t    ct_snapshot_export_chunk_bytes(const ct_export *e);
+uint64_t  ct_snapshot_export_offset(const ct_export *e);
+ct_status ct_snapshot_export_next(ct_export *e, uint64_t offset, ct_buf *chunk, int32_t *done);
 void      ct_snapshot_export_end(ct_export *e);
 
 ct_status ct_snapshot_import_begin(ct_tree *t, ct_import **out);

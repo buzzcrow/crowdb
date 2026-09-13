@@ -22,7 +22,7 @@ chunks and remove the whole-buffer peer snapshot path.
   `lib/crowdb-tree/include/crowdb-tree/snapshot/snapshot_io.h`,
   `lib/crowdb-tree/src/snapshot/snapshot_io.cpp`,
   `lib/crowdb-tree/tests/integration/snapshot_export_test.cpp`.
-- [~] **Extend the C session API**: add export metadata getters and an
+- [x] **Extend the C session API**: add export metadata getters and an
   offset-aware next operation; make import state explicit and keep both end
   functions null-safe/idempotent at the Rust ownership boundary. Relevant
   symbols: `ct_snapshot_export_begin`, `ct_snapshot_export_next`,
@@ -30,14 +30,14 @@ chunks and remove the whole-buffer peer snapshot path.
   `ct_snapshot_import_feed`, `ct_snapshot_import_finish`,
   `ct_snapshot_import_end`. Files: `lib/crowdb-tree/include/crowdb-tree/c_api.h`,
   `lib/crowdb-tree/src/c_api.cpp`.
-- [ ] **Add Rust RAII owners**: introduce `SnapshotExportSession` and
+- [x] **Add Rust RAII owners**: introduce `SnapshotExportSession` and
   `SnapshotImportSession` in crowdb-tree FFI. Export exposes `at_slot`, total
   bytes, final CRC32C, chunk bytes, current offset, and `read(offset)`;
   import exposes `feed`, `finish`, and `abort`, with `Drop` closing unfinished
   handles. The safe wrapper must not expose raw handle aliasing. Files:
   `lib/crowdb-tree/ffi/src/sys.rs`, `lib/crowdb-tree/ffi/src/snapshot.rs`,
   `lib/crowdb-tree/ffi/tests/ffi_test.rs`.
-- [ ] **Define engine-neutral sessions**: replace whole-buffer
+- [~] **Define engine-neutral sessions**: replace whole-buffer
   `KVEngine::snapshot_export` and `snapshot_import` with object-safe begin
   methods returning non-clone session owners and shared metadata/error types.
   Implement deterministic sessions for `InMemKV` and `CrowdbTreeEngine`; keep

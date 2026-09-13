@@ -443,8 +443,18 @@ extern "C" {
     ) -> c_int;
     pub fn ct_iter_release(it: *mut ct_iter);
     pub fn ct_view_release(v: *mut ct_view);
-    pub fn ct_snapshot_export_begin(t: *mut ct_tree, out: *mut *mut ct_export) -> c_int;
-    pub fn ct_snapshot_export_next(e: *mut ct_export, chunk: *mut ct_buf, done: *mut c_int) -> c_int;
+    pub fn ct_snapshot_export_begin(t: *mut ct_tree, chunk_bytes: usize, out: *mut *mut ct_export) -> c_int;
+    pub fn ct_snapshot_export_at_slot(e: *const ct_export) -> u64;
+    pub fn ct_snapshot_export_total_bytes(e: *const ct_export) -> u64;
+    pub fn ct_snapshot_export_final_crc32c(e: *const ct_export) -> u32;
+    pub fn ct_snapshot_export_chunk_bytes(e: *const ct_export) -> usize;
+    pub fn ct_snapshot_export_offset(e: *const ct_export) -> u64;
+    pub fn ct_snapshot_export_next(
+        e: *mut ct_export,
+        offset: u64,
+        chunk: *mut ct_buf,
+        done: *mut c_int,
+    ) -> c_int;
     pub fn ct_snapshot_export_end(e: *mut ct_export);
     pub fn ct_snapshot_import_begin(t: *mut ct_tree, out: *mut *mut ct_import) -> c_int;
     pub fn ct_snapshot_import_feed(im: *mut ct_import, chunk: *const u8, len: usize) -> c_int;

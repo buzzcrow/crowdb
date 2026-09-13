@@ -1490,13 +1490,13 @@ void ct_view_release(ct_view *v)
 
 // ── Snapshot export / import ──────────────────────────────────────
 
-ct_status ct_snapshot_export_begin(ct_tree *t, ct_export **out)
+ct_status ct_snapshot_export_begin(ct_tree *t, size_t chunk_bytes, ct_export **out)
 {
-    if (t == nullptr || out == nullptr) {
+    if (t == nullptr || out == nullptr || chunk_bytes == 0) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
     auto   e = std::make_unique<ct_export>();
-    Status s = snapshot_export_begin(*t->tree, snapshot_format::kPortable, kSnapshotChunkBytes, &e->exp);
+    Status s = snapshot_export_begin(*t->tree, snapshot_format::kPortable, chunk_bytes, &e->exp);
     if (!s.ok()) {
         return to_status(s);
     }
@@ -1504,9 +1504,37 @@ ct_status ct_snapshot_export_begin(ct_tree *t, ct_export **out)
     return static_cast<ct_status>(Code::kOk);
 }
 
-ct_status ct_snapshot_export_next(ct_export *e, ct_buf *chunk, int32_t *done)
+uint64_t ct_snapshot_export_at_slot(const ct_export *e)
+{
+    return e == nullptr ? 0 : e->exp->at_slot();
+}
+
+uint64_t ct_snapshot_export_total_bytes(const ct_export *e)
+{
+    return e == nullptr ? 0 : static_cast<uint64_t>(e->exp->total_bytes());
+}
+
+uint32_t ct_snapshot_export_final_crc32c(const ct_export *e)
+{
+    return e == nullptr ? 0 : e->exp->final_crc32c();
+}
+
+size_t ct_snapshot_export_chunk_bytes(const ct_export *e)
+{
+    return e == nullptr ? 0 : e->exp->chunk_bytes();
+}
+
+uint64_t ct_snapshot_export_offset(const ct_export *e)
+{
+    return e == nullptr ? 0 : static_cast<uint64_t>(e->exp->offset());
+}
+
+ct_status ct_snapshot_export_next(ct_export *e, uint64_t offset, ct_buf *chunk, int32_t *done)
 {
     if (e == nullptr || chunk == nullptr || done == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    if (offset != static_cast<uint64_t>(e->exp->offset())) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
     std::string out;

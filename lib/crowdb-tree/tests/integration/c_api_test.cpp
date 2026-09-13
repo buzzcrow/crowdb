@@ -381,17 +381,30 @@ TEST(CApi, SnapshotExportImport)
     ct_tree *b = nullptr;
     ASSERT_EQ(ct_open(&opt, &b), 0);
 
-    ct_export *e = nullptr;
-    ASSERT_EQ(ct_snapshot_export_begin(a, &e), 0);
+    constexpr size_t kChunkBytes = 17;
+    ct_export       *e           = nullptr;
+    ASSERT_EQ(ct_snapshot_export_begin(a, kChunkBytes, &e), 0);
+    EXPECT_EQ(ct_snapshot_export_at_slot(e), 40U);
+    EXPECT_GT(ct_snapshot_export_total_bytes(e), 0U);
+    EXPECT_NE(ct_snapshot_export_final_crc32c(e), 0U);
+    EXPECT_EQ(ct_snapshot_export_chunk_bytes(e), kChunkBytes);
+    EXPECT_EQ(ct_snapshot_export_offset(e), 0U);
     ct_import *im = nullptr;
     ASSERT_EQ(ct_snapshot_import_begin(b, &im), 0);
+    uint64_t offset       = 0;
+    ct_buf   skipped      = {};
+    int32_t  skipped_done = 0;
+    EXPECT_NE(ct_snapshot_export_next(e, 1, &skipped, &skipped_done), 0);
     while (true) {
         ct_buf  chunk = {};
         int32_t done  = 0;
-        ASSERT_EQ(ct_snapshot_export_next(e, &chunk, &done), 0);
+        ASSERT_EQ(ct_snapshot_export_next(e, offset, &chunk, &done), 0);
+        EXPECT_LE(chunk.len, kChunkBytes);
         if (chunk.len > 0) {
             ASSERT_EQ(ct_snapshot_import_feed(im, chunk.data, chunk.len), 0);
         }
+        offset += chunk.len;
+        EXPECT_EQ(ct_snapshot_export_offset(e), offset);
         ct_free_buf(&chunk);
         if (done != 0) {
             break;
