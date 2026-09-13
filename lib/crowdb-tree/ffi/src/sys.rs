@@ -34,6 +34,12 @@ pub struct ct_tree {
     _private: [u8; 0],
 }
 #[repr(C)]
+pub struct ct_uring {
+    _private: [u8; 0],
+}
+
+pub type ct_uring_callback = unsafe extern "C" fn(*mut std::ffi::c_void, i32);
+#[repr(C)]
 pub struct ct_page_store {
     _private: [u8; 0],
 }
@@ -488,6 +494,36 @@ extern "C" {
     ) -> c_int;
     pub fn ct_future_free(f: *mut ct_future);
     pub fn ct_uring_eventfds(t: *const ct_tree, out_fds: *mut i32, max_fds: usize) -> usize;
+    pub fn ct_uring_create(entries: u32) -> *mut ct_uring;
+    pub fn ct_uring_destroy(uring: *mut ct_uring);
+    pub fn ct_uring_register_fd(uring: *mut ct_uring, fd: i32) -> i32;
+    pub fn ct_uring_unregister_fd(uring: *mut ct_uring, fd: i32);
+    pub fn ct_uring_submit_read(
+        uring: *mut ct_uring,
+        fd: i32,
+        buf: *mut u8,
+        len: usize,
+        offset: u64,
+        callback: ct_uring_callback,
+        context: *mut std::ffi::c_void,
+    );
+    pub fn ct_uring_submit_writev(
+        uring: *mut ct_uring,
+        fd: i32,
+        bases: *const *const u8,
+        lengths: *const usize,
+        count: usize,
+        offset: u64,
+        callback: ct_uring_callback,
+        context: *mut std::ffi::c_void,
+    );
+    pub fn ct_uring_submit_sync(
+        uring: *mut ct_uring,
+        fd: i32,
+        data_only: i32,
+        callback: ct_uring_callback,
+        context: *mut std::ffi::c_void,
+    );
 
     // Metrics FFI
     pub fn ct_flush_metrics_str(

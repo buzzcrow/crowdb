@@ -149,11 +149,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the compiled set entirely when not found, mirroring
     // crowdb-common/cpp/CMakeLists.txt's CROWDB_HAVE_LIBURING gate exactly
     // (same reasoning: macOS dev-path note).
+    let disable_liburing = std::env::var("CROWDB_DISABLE_LIBURING").as_deref() == Ok("1");
     let liburing_dir = conda_prefix.as_ref().filter(|prefix| {
-        prefix.join("include").join("liburing.h").is_file()
+        !disable_liburing
+            && prefix.join("include").join("liburing.h").is_file()
             && (prefix.join("lib").join("liburing.so").is_file()
                 || prefix.join("lib").join("liburing.a").is_file())
     });
+    println!("cargo:rerun-if-env-changed=CROWDB_DISABLE_LIBURING");
     if liburing_dir.is_none() {
         files.retain(|f| {
             !matches!(

@@ -133,6 +133,15 @@ DiskIOUring::DiskIOUring(Topology topo)
 
 DiskIOUring::~DiskIOUring()
 {
+    // Every owner must unregister its descriptors first. Still drain any
+    // request that raced shutdown before stopping the CQ pollers, so callback
+    // storage and borrowed buffers are never abandoned.
+    while (total_in_flight_.load(std::memory_order_acquire) != 0) {
+        for (auto &pt : poll_threads_) {
+            wake_poll_thread(*pt);
+        }
+        std::this_thread::yield();
+    }
     // Stop all poll threads.
     for (auto &pt : poll_threads_) {
         pt->stopped.store(true, std::memory_order_release);
@@ -206,9 +215,15 @@ void DiskIOUring::unregister_fd(int fd)
         return;
     }
     cancel_fd(fd);
+    while (fd_in_flight_[fd].load(std::memory_order_acquire) != 0) {
+        size_t pi = fd_table_[fd].pipeline;
+        if (pi < pipelines_.size()) {
+            mark_pending(*pipelines_[pi]);
+        }
+        std::this_thread::yield();
+    }
     auto &entry      = fd_table_[fd];
     entry.registered = false;
-    fd_in_flight_[fd].store(0, std::memory_order_release);
 }
 
 int DiskIOUring::cancel_fd(int fd)
@@ -292,14 +307,76 @@ void DiskIOUring::submit_write(int fd, const void *buf, size_t len, off_t offset
     });
 }
 
-void DiskIOUring::submit_fsync(int fd, std::function<void(int)> on_complete)
+void DiskIOUring::submit_writev(int fd, const struct iovec *iov, size_t iov_count, off_t offset,
+                                std::function<void(int)> on_complete)
+{
+    if (iov_count == 0) {
+        on_complete(0);
+        return;
+    }
+    auto state = std::make_shared<WritevState>();
+    state->fd  = fd;
+    state->iov.assign(iov, iov + iov_count);
+    state->offset   = offset;
+    state->complete = std::move(on_complete);
+    submit_writev_step(state);
+}
+
+void DiskIOUring::submit_writev_step(const std::shared_ptr<WritevState> &state)
+{
+    if (state->fd < 0 || state->fd >= fd_table_size_ || !fd_table_[state->fd].registered) {
+        state->complete(-EBADF);
+        return;
+    }
+    size_t pi = fd_table_[state->fd].pipeline;
+    submit_lockfree(
+        *pipelines_[pi], state->fd,
+        [this, state](int res) {
+            if (res < 0) {
+                state->complete(res);
+                return;
+            }
+            if (res == 0) {
+                state->complete(-EIO);
+                return;
+            }
+            state->written += static_cast<size_t>(res);
+            auto remaining = static_cast<size_t>(res);
+            while (remaining > 0 && !state->iov.empty()) {
+                auto &front = state->iov.front();
+                if (remaining >= front.iov_len) {
+                    remaining -= front.iov_len;
+                    state->iov.erase(state->iov.begin());
+                }
+                else {
+                    front.iov_base = static_cast<char *>(front.iov_base) + remaining;
+                    front.iov_len -= remaining;
+                    remaining = 0;
+                }
+            }
+            state->offset += res;
+            if (state->iov.empty()) {
+                state->complete(static_cast<int>(state->written));
+            }
+            else {
+                submit_writev_step(state);
+            }
+        },
+        [state](struct io_uring_sqe *sqe) {
+            ::io_uring_prep_writev(sqe, state->fd, state->iov.data(), static_cast<unsigned>(state->iov.size()),
+                                   static_cast<__u64>(state->offset));
+        });
+}
+
+void DiskIOUring::submit_fsync(int fd, bool data_only, std::function<void(int)> on_complete)
 {
     if (fd < 0 || fd >= fd_table_size_ || !fd_table_[fd].registered) {
         if (fd >= 0 && fd < fd_table_size_ && !fd_table_[fd].registered) {
             CRB_LOG_WARN("DiskIOUring::submit_fsync: fd {} not registered, routing to pipeline 0", fd);
             if (!pipelines_.empty() && pipelines_[0]->valid) {
-                submit_lockfree(*pipelines_[0], fd, std::move(on_complete),
-                                [fd](struct io_uring_sqe *sqe) { ::io_uring_prep_fsync(sqe, fd, 0); });
+                submit_lockfree(*pipelines_[0], fd, std::move(on_complete), [fd, data_only](struct io_uring_sqe *sqe) {
+                    ::io_uring_prep_fsync(sqe, fd, data_only ? IORING_FSYNC_DATASYNC : 0);
+                });
                 return;
             }
         }
@@ -309,8 +386,9 @@ void DiskIOUring::submit_fsync(int fd, std::function<void(int)> on_complete)
         return;
     }
     size_t pi = fd_table_[fd].pipeline;
-    submit_lockfree(*pipelines_[pi], fd, std::move(on_complete),
-                    [fd](struct io_uring_sqe *sqe) { ::io_uring_prep_fsync(sqe, fd, 0); });
+    submit_lockfree(*pipelines_[pi], fd, std::move(on_complete), [fd, data_only](struct io_uring_sqe *sqe) {
+        ::io_uring_prep_fsync(sqe, fd, data_only ? IORING_FSYNC_DATASYNC : 0);
+    });
 }
 
 size_t DiskIOUring::eventfds(int32_t *out_fds, size_t max_fds) const

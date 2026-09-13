@@ -32,6 +32,8 @@ using ct_iter            = struct ct_iter;
 using ct_export          = struct ct_export;
 using ct_import          = struct ct_import;
 using ct_write_handle    = struct ct_write_handle;
+using ct_uring           = struct ct_uring;
+using ct_uring_callback  = void (*)(void *context, int32_t result);
 
 // Owned byte buffer handed back to the caller; free with ct_free_buf.
 using ct_buf = struct
@@ -534,6 +536,18 @@ void ct_future_free(ct_future *f);
 // Fills `out_fds` up to `max_fds` and returns the total count. Tree-owned;
 // callers must not close the descriptors.
 size_t ct_uring_eventfds(const ct_tree *t, int32_t *out_fds, size_t max_fds);
+
+// Standalone single-pipeline io_uring owner for buffered regular files.
+// Returns null when liburing is not compiled in or ring setup is rejected.
+ct_uring *ct_uring_create(uint32_t entries);
+void      ct_uring_destroy(ct_uring *uring);
+int32_t   ct_uring_register_fd(ct_uring *uring, int32_t fd);
+void      ct_uring_unregister_fd(ct_uring *uring, int32_t fd);
+void      ct_uring_submit_read(ct_uring *uring, int32_t fd, uint8_t *buf, size_t len, uint64_t offset,
+                               ct_uring_callback callback, void *context);
+void      ct_uring_submit_writev(ct_uring *uring, int32_t fd, const uint8_t *const *bases, const size_t *lengths,
+                                 size_t count, uint64_t offset, ct_uring_callback callback, void *context);
+void ct_uring_submit_sync(ct_uring *uring, int32_t fd, int32_t data_only, ct_uring_callback callback, void *context);
 
 // Range scan over `prefix` (empty = whole keyspace), up to `limit` (0 = all).
 // `start_after` (null or salen = 0 = start from beginning) is an exclusive

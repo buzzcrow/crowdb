@@ -172,6 +172,13 @@ struct ct_tree
 #endif
 };
 
+struct ct_uring
+{
+#ifdef CROWDB_HAVE_LIBURING
+    std::unique_ptr<crowdb::common::DiskIOUring> engine;
+#endif
+};
+
 // ── ct_future: opaque completion handle for the ct_*_async calls ──
 //
 // The public ct_future* handle is really a heap-allocated
@@ -1169,6 +1176,114 @@ size_t ct_uring_eventfds(const ct_tree *t, int32_t *out_fds, size_t max_fds)
     }
 #endif
     return total;
+}
+
+ct_uring *ct_uring_create(uint32_t entries)
+{
+#ifdef CROWDB_HAVE_LIBURING
+    auto                     handle = std::make_unique<ct_uring>();
+    crowdb::common::Topology topology;
+    topology.pipelines.push_back({.entries = entries == 0 ? 256U : entries});
+    handle->engine = std::make_unique<crowdb::common::DiskIOUring>(std::move(topology));
+    if (!handle->engine->valid()) {
+        return nullptr;
+    }
+    return handle.release();
+#else
+    (void)entries;
+    return nullptr;
+#endif
+}
+
+void ct_uring_destroy(ct_uring *uring)
+{
+    delete uring;
+}
+
+int32_t ct_uring_register_fd(ct_uring *uring, int32_t fd)
+{
+#ifdef CROWDB_HAVE_LIBURING
+    if (uring == nullptr || uring->engine == nullptr || fd < 0) {
+        return -EINVAL;
+    }
+    uring->engine->register_fd(fd);
+    return 0;
+#else
+    (void)uring;
+    (void)fd;
+    return -ENOSYS;
+#endif
+}
+
+void ct_uring_unregister_fd(ct_uring *uring, int32_t fd)
+{
+#ifdef CROWDB_HAVE_LIBURING
+    if (uring != nullptr && uring->engine != nullptr) {
+        uring->engine->unregister_fd(fd);
+    }
+#else
+    (void)uring;
+    (void)fd;
+#endif
+}
+
+void ct_uring_submit_read(ct_uring *uring, int32_t fd, uint8_t *buf, size_t len, uint64_t offset,
+                          ct_uring_callback callback, void *context)
+{
+#ifdef CROWDB_HAVE_LIBURING
+    if (uring != nullptr && uring->engine != nullptr) {
+        uring->engine->submit_read(fd, buf, len, static_cast<off_t>(offset),
+                                   [callback, context](int result) { callback(context, result); });
+        return;
+    }
+#else
+    (void)uring;
+    (void)fd;
+    (void)buf;
+    (void)len;
+    (void)offset;
+#endif
+    callback(context, -ENOSYS);
+}
+
+void ct_uring_submit_writev(ct_uring *uring, int32_t fd, const uint8_t *const *bases, const size_t *lengths,
+                            size_t count, uint64_t offset, ct_uring_callback callback, void *context)
+{
+#ifdef CROWDB_HAVE_LIBURING
+    if (uring != nullptr && uring->engine != nullptr) {
+        std::vector<struct iovec> iov(count);
+        for (size_t i = 0; i < count; ++i) {
+            iov[i].iov_base = const_cast<uint8_t *>(bases[i]);
+            iov[i].iov_len  = lengths[i];
+        }
+        uring->engine->submit_writev(fd, iov.data(), iov.size(), static_cast<off_t>(offset),
+                                     [callback, context](int result) { callback(context, result); });
+        return;
+    }
+#else
+    (void)uring;
+    (void)fd;
+    (void)bases;
+    (void)lengths;
+    (void)count;
+    (void)offset;
+#endif
+    callback(context, -ENOSYS);
+}
+
+void ct_uring_submit_sync(ct_uring *uring, int32_t fd, int32_t data_only, ct_uring_callback callback, void *context)
+{
+#ifdef CROWDB_HAVE_LIBURING
+    if (uring != nullptr && uring->engine != nullptr) {
+        uring->engine->submit_fsync(fd, data_only != 0, [callback, context](int result) { callback(context, result); });
+        return;
+    }
+#else
+    (void)uring;
+    (void)fd;
+    (void)data_only;
+#endif
+    callback(context, -ENOSYS);
 }
 
 ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_after, size_t salen,

@@ -17,6 +17,7 @@
 #endif
 
 #include <liburing.h>
+#include <sys/uio.h>
 
 #include <atomic>
 #include <cstdint>
@@ -114,6 +115,11 @@ class DiskIOUring
     DiskIOUring(const DiskIOUring &)            = delete;
     DiskIOUring &operator=(const DiskIOUring &) = delete;
 
+    [[nodiscard]] bool valid() const
+    {
+        return valid_;
+    }
+
     // --- fd → pipeline registration ---
     // register_fd(fd) — auto-assign: picks the pipeline with the lowest
     //   in-flight count and sticks the fd to it. Best for diskio where
@@ -157,7 +163,14 @@ class DiskIOUring
     // with a negative errno.
     void submit_read(int fd, void *buf, size_t len, off_t offset, std::function<void(int)> on_complete);
     void submit_write(int fd, const void *buf, size_t len, off_t offset, std::function<void(int)> on_complete);
-    void submit_fsync(int fd, std::function<void(int)> on_complete);
+    void submit_writev(int fd, const struct iovec *iov, size_t iov_count, off_t offset,
+                       std::function<void(int)> on_complete);
+    void submit_fsync(int fd, bool data_only, std::function<void(int)> on_complete);
+
+    void submit_fsync(int fd, std::function<void(int)> on_complete)
+    {
+        submit_fsync(fd, false, std::move(on_complete));
+    }
 
     // Returns one eventfd per pipeline, for the Rust FFI to register with
     // tokio::io::AsyncFd. Each eventfd becomes readable after the poll
@@ -227,6 +240,17 @@ class DiskIOUring
     };
 
     using Prep = std::function<void(struct io_uring_sqe *)>;
+
+    struct WritevState
+    {
+        int                       fd{-1};
+        std::vector<struct iovec> iov;
+        off_t                     offset{0};
+        size_t                    written{0};
+        std::function<void(int)>  complete;
+    };
+
+    void submit_writev_step(const std::shared_ptr<WritevState> &state);
 
     // Lock-free SQE claim on a specific pipeline.
     void submit_lockfree(Pipeline &p, int fd, std::function<void(int)> on_complete, const Prep &prep);

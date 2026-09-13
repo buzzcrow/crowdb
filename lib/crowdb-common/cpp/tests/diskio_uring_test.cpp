@@ -110,6 +110,50 @@ TEST(DiskIOUring, SinglePipelineSubmitWriteThenReadRoundTrips)
     std::remove(path.c_str());
 }
 
+TEST(DiskIOUring, VectoredWriteAndDataSyncComplete)
+{
+    std::string path = temp_path();
+    int         fd   = ::open(path.c_str(), O_RDWR);
+    ASSERT_GE(fd, 0);
+
+    Topology topo;
+    topo.pipelines.push_back({.entries = 32, .mode = PollingMode::Classic});
+    DiskIOUring uring(std::move(topo));
+    ASSERT_TRUE(uring.valid());
+    uring.register_fd(fd);
+
+    std::array<uint8_t, 3> left{1, 2, 3};
+    std::array<uint8_t, 4> right{4, 5, 6, 7};
+    std::array<iovec, 2>   iov{
+        {{left.data(), left.size()}, {right.data(), right.size()}}
+    };
+    std::atomic<bool> write_done{false};
+    std::atomic<int>  write_result{-1};
+    uring.submit_writev(fd, iov.data(), iov.size(), 11, [&](int result) {
+        write_result.store(result, std::memory_order_relaxed);
+        write_done.store(true, std::memory_order_release);
+    });
+    ASSERT_TRUE(wait_for([&] { return write_done.load(std::memory_order_acquire); }));
+    EXPECT_EQ(write_result.load(), 7);
+
+    std::atomic<bool> sync_done{false};
+    std::atomic<int>  sync_result{-1};
+    uring.submit_fsync(fd, true, [&](int result) {
+        sync_result.store(result, std::memory_order_relaxed);
+        sync_done.store(true, std::memory_order_release);
+    });
+    ASSERT_TRUE(wait_for([&] { return sync_done.load(std::memory_order_acquire); }));
+    EXPECT_EQ(sync_result.load(), 0);
+
+    std::array<uint8_t, 7> actual{};
+    ASSERT_EQ(::pread(fd, actual.data(), actual.size(), 11), static_cast<ssize_t>(actual.size()));
+    EXPECT_EQ(actual, (std::array<uint8_t, 7>{1, 2, 3, 4, 5, 6, 7}));
+
+    uring.unregister_fd(fd);
+    ::close(fd);
+    std::remove(path.c_str());
+}
+
 TEST(DiskIOUring, SinglePipelineFsyncCompletes)
 {
     std::string path = temp_path();

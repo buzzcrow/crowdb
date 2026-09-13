@@ -23,6 +23,7 @@ pub mod snapshot;
 pub mod stats;
 pub(crate) mod sys;
 pub mod tree;
+pub mod uring;
 pub mod write_handle;
 
 pub use async_tree::{AsyncCrowdbtree, GetOutcome, PinnedGetOutcome, ScanOutcome};
@@ -44,4 +45,5 @@ pub use tree::{
     ct_add_log_stderr, ct_flush_logging, ct_init_logging, ct_init_test_logging, ct_shutdown_logging,
     Crowdbtree,
 };
+pub use uring::{Uring, UringFile};
 pub use write_handle::WriteHandle;
