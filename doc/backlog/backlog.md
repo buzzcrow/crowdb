@@ -67,13 +67,6 @@ requirement is implemented.
   operator-manual `BindMapValue` write with automatic monitoring +
   rebinding. Monitor detects instance join/leave, rebalances disk-group
   assignments, migrates data during rebinding.
-- **[R79](R79-diskdb-free-batch.md)** — durable concurrent-free
-  coalescing — Area: diskdb — The existing API already batches all segments in
-  one request. Opportunistically combine concurrent same-bind requests behind
-  one lock-free drainer, with `free_flush_max_batch` as a maximum proposal size.
-  Flush singleton traffic immediately, await persistence before every success,
-  and preserve persist-only free and post-persist accounting. No timer, mutex,
-  success-before-persist, or shutdown-only durability.
 - **[R80](R80-diskdb-rebalance.md)** — diskdb space rebalance across
   disks + disk-groups — Area: diskdb — New/recovered disks enter
   `allocating_disks` empty while peers stay near-full; the round-robin
