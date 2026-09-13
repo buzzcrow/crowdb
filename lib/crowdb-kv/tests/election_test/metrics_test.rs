@@ -127,7 +127,7 @@ fn step_down_preserves_term_and_does_not_rebump_election_counter() {
     assert_eq!(
         counter_total(&registry, "s.1.g.1.paxos.step_downs.higher_term.c"),
         Some(0),
-        "the replica does not bump step-down counters; the group driver does"
+        "an admin request must not affect higher-term accounting"
     );
     assert_eq!(
         counter_total(&registry, "s.1.g.1.paxos.step_downs.lease.c"),
@@ -135,7 +135,8 @@ fn step_down_preserves_term_and_does_not_rebump_election_counter() {
     );
     assert_eq!(
         counter_total(&registry, "s.1.g.1.paxos.step_downs.admin.c"),
-        Some(0)
+        Some(1),
+        "the accepted admin request is accounted synchronously"
     );
 
     let view = replica.election_state_view(0, ElectionCounters::default());
@@ -148,5 +149,10 @@ fn step_down_preserves_term_and_does_not_rebump_election_counter() {
         reason: "second".into(),
     });
     assert!(!rejected.accepted, "already follower → reject");
+    assert_eq!(
+        counter_total(&registry, "s.1.g.1.paxos.step_downs.admin.c"),
+        Some(1),
+        "a rejected duplicate must not increment the counter"
+    );
     assert_eq!(election_total(&registry), 1);
 }
