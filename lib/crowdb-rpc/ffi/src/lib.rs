@@ -14,6 +14,7 @@
 mod buffer;
 mod client;
 pub mod co_bench;
+mod connection_pool;
 mod cpp_global_metrics;
 pub mod logging;
 mod owned_route;
@@ -22,6 +23,7 @@ pub mod sys;
 
 pub use buffer::{Buffer, BufferPool};
 pub use client::{noop_completion, CallFuture, ClientRequest, Response, RpcClient};
+pub use connection_pool::{ConnectionPoolError, ConnectionPoolIndex, SelectedConnection};
 pub use cpp_global_metrics::{cpp_global_metrics_max_name_len, flush_cpp_global_metrics};
 pub use logging::{
     add_log_stderr, flush_logging, init_logging, init_test_logging, metrics_start, metrics_stop,

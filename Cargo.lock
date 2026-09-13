@@ -991,6 +991,7 @@ dependencies = [
 name = "crowdb-rpc-ffi"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "bytes",
  "cc",
  "crowdb-common",
