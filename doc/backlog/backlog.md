@@ -201,12 +201,6 @@ chunkdb) are DONE. The post-migration KV server/library review is also complete.
 - **[R4](R4-bounded-mempool.md)** — Bounded memory pool — Area: crowdbtree engine — `buffer::allocate` uses
   unbounded `std::malloc`; a burst of large writes can spike RSS without
   backpressure.
-- **[R52](R52-reverse-scan.md)** — reverse ordinary-KV scan — Area: scan /
-  crowdb-tree / kv — Native synchronous and chunk-KV reverse scans are already
-  landed. Complete direction on the ordinary KV async engine, FlatBuffer RPC,
-  server, and client pagination paths while retaining keys-only, count-only,
-  bounded cutoff, deadline, cold-page, redirect, and byte-budget semantics.
-  Existing public scan methods and omitted wire direction remain forward.
 - **[R54](R54-kv-scan-engine-profiling.md)** — Scan engine profiling —
   Area: scan / crowdb-tree engine — both read modes saturate near ~38k
   scans/s at 32T:32C; the bottleneck moved to the C++ crowdb-tree merge
