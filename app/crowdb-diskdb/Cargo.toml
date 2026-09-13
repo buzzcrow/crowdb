@@ -44,6 +44,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 dashmap = "6"
 crossbeam-skiplist = "0.1"
+crossbeam-queue = "0.3"
 crc32fast = "1"
 bincode = "1"
 uuid = { version = "1", features = ["v4"] }
@@ -135,3 +136,7 @@ path = "tests/startup_sync_test.rs"
 [[test]]
 name = "request_metrics_test"
 path = "tests/request_metrics_test.rs"
+
+[[test]]
+name = "free_batch_test"
+path = "tests/free_batch_test.rs"

@@ -17,6 +17,7 @@ pub mod health;
 pub mod liveness;
 pub mod metrics;
 pub mod model;
+pub mod persistence;
 pub mod recovery;
 pub mod scanner;
 pub mod service;

@@ -347,6 +347,7 @@ async fn main() {
         Arc::clone(&recalc_engine),
         scan_state.clone(),
         Arc::new(metrics.clone()),
+        Arc::clone(&config),
         rpc_rt_handle,
     ));
     let rpc_workers = config.load().server.rpc_workers;
@@ -464,6 +465,7 @@ async fn main() {
     let rpc_server_stop = Arc::clone(&rpc_server);
     shutdown_signal().await;
     info!("received shutdown signal");
+    rpc_service.close_free_admission().await;
     rpc_server_stop.stop();
     stop.notify_waiters();
     http_stop.notify_waiters();

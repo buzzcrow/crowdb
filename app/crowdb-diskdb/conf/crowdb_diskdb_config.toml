@@ -23,7 +23,9 @@ miss_threshold = 3
 temp_failure_timeout_secs = 900
 
 [persistence]
+# Coalesce concurrent frees without delaying the first request.
 free_batch_enabled = false
+# Maximum records per KV proposal; one oversized RPC remains atomic.
 free_flush_max_batch = 256
 compaction_cadence_secs = 300
 snapshot_compaction_threshold = 4096

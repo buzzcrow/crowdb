@@ -48,7 +48,7 @@ use crowdb_rpc_ffi::{Buffer, RpcServer, ServerRequest};
 use flatbuffers::FlatBufferBuilder;
 use tokio::runtime::Handle;
 
-use crate::ddb_config::StorageDefaults;
+use crate::ddb_config::{DdbConfig, StorageDefaults};
 use crate::ddb_kv_client::DdbKvClient;
 use crate::metrics::{DiskGroupRecalcResult, DiskdbMetrics, RecalcEngine, RequestGuard, RequestKind};
 use crate::model::alloc::{self, FreeError};
@@ -56,6 +56,7 @@ use crate::model::disk::DdbDisk;
 use crate::model::disk_group::{AllocError, DdbDiskGroup, DiskGroupUsage};
 use crate::model::disk_group_container::DdbDiskGroupContainer;
 use crate::model::zone::{DdbZoneHealth, ZoneUsage};
+use crate::persistence::FreeBatcher;
 use crate::recovery::compaction::compact_zone;
 use crate::recovery::{unit_capacity_for_zone, ZoneLoader};
 use crate::scanner::{ScanState, ScanSummary};
@@ -77,6 +78,8 @@ pub struct DiskdbRpcService {
     recalc: Arc<RecalcEngine>,
     scan_state: ScanState,
     metrics: Arc<DiskdbMetrics>,
+    config: Arc<arc_swap::ArcSwap<DdbConfig>>,
+    free_batcher: Arc<FreeBatcher>,
     /// Tokio runtime handle for spawning async work from the C++ I/O
     /// thread callback.
     rt: Handle,
@@ -92,8 +95,10 @@ impl DiskdbRpcService {
         recalc: Arc<RecalcEngine>,
         scan_state: ScanState,
         metrics: Arc<DiskdbMetrics>,
+        config: Arc<arc_swap::ArcSwap<DdbConfig>>,
         rt: Handle,
     ) -> Self {
+        let free_batcher = Arc::new(FreeBatcher::new(Arc::clone(&kv), Arc::clone(&metrics)));
         Self {
             container,
             kv,
@@ -102,8 +107,15 @@ impl DiskdbRpcService {
             recalc,
             scan_state,
             metrics,
+            config,
+            free_batcher,
             rt,
         }
+    }
+
+    /// Close free admission and wait for every accepted free to finish.
+    pub async fn close_free_admission(&self) {
+        self.free_batcher.close().await;
     }
 
     /// Register all 11 diskdb request handlers into the `RpcServer`.

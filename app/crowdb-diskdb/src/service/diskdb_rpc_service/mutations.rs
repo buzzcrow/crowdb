@@ -224,13 +224,22 @@ impl DiskdbRpcService {
             }
         }
 
-        let kv = Arc::clone(&self.kv);
+        let free_batcher = Arc::clone(&self.free_batcher);
+        let persistence = self.config.load().persistence.clone();
         let metrics = Arc::clone(&self.metrics);
         let conn_handle_usize = req.conn_handle as usize;
         let server = Arc::clone(server);
         self.rt.spawn(async move {
             let mut request = request;
-            let result = alloc::free_blocks(&dg, &segments, &kv).await;
+            let result = match alloc::prepare_free(&dg, &segments) {
+                Ok(prepared) if persistence.free_batch_enabled => {
+                    free_batcher
+                        .submit(prepared, persistence.free_flush_max_batch as usize)
+                        .await
+                }
+                Ok(prepared) => free_batcher.submit_direct(prepared).await,
+                Err(error) => Err(error),
+            };
             let conn_handle = conn_handle_usize as *mut std::ffi::c_void;
             match result {
                 Ok(result) => {
