@@ -12,6 +12,7 @@ use bytes::Bytes;
 use crowdb_kv::kv::CrowdbTreeEngine;
 use crowdb_kv::paxos::learner::PxLearner;
 use crowdb_kv::paxos::roles::{DedupTag, Learner, PxBallot, PxLogEntry};
+use std::sync::{Arc, Barrier};
 
 fn tag(client_id: u64, seq: u64) -> [DedupTag; 1] {
     [DedupTag { client_id, seq }]
@@ -177,8 +178,6 @@ async fn learn_out_of_order_does_not_advance_contiguous_until_gap_filled() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_gap_fill_drains_both_frontiers() {
-    use std::sync::Arc;
-
     let learner = Arc::new(PxLearner::new());
     let mut tasks = Vec::new();
     for slot in (1..=128u64).rev() {
@@ -197,6 +196,54 @@ async fn concurrent_gap_fill_drains_both_frontiers() {
     assert_eq!(learner.contiguous_applied(), 128);
     assert_eq!(learner.last_chosen_slot(), 128);
     assert_eq!(learner.last_chosen_term(), 1);
+}
+
+#[test]
+fn delayed_chosen_duplicate_leaves_no_stale_gap() {
+    let learner = Arc::new(PxLearner::new());
+    let barrier = Arc::new(Barrier::new(2));
+    learner.set_chosen_insert_barrier_for_tests(Arc::clone(&barrier));
+    let delayed = {
+        let learner = Arc::clone(&learner);
+        std::thread::spawn(move || learner.update_chosen_frontier_for_tests(1, 1))
+    };
+
+    barrier.wait();
+    learner.update_chosen_frontier_for_tests(1, 1);
+    learner.update_chosen_frontier_for_tests(2, 1);
+    barrier.wait();
+    delayed.join().expect("delayed chosen update panicked");
+
+    assert_eq!(learner.contiguous_chosen(), 2);
+    assert!(learner.stale_chosen_gaps_for_tests().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn delayed_applied_duplicate_leaves_no_stale_gap_and_notifies_waiter() {
+    let learner = Arc::new(PxLearner::new());
+    let barrier = Arc::new(Barrier::new(2));
+    learner.set_applied_insert_barrier_for_tests(Arc::clone(&barrier));
+    let delayed = {
+        let learner = Arc::clone(&learner);
+        std::thread::spawn(move || learner.advance_applied_frontier_for_tests(1))
+    };
+
+    barrier.wait();
+    let waiter = {
+        let learner = Arc::clone(&learner);
+        tokio::spawn(async move { learner.await_applied(2).await })
+    };
+    learner.advance_applied_frontier_for_tests(1);
+    learner.advance_applied_frontier_for_tests(2);
+    tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
+        .await
+        .expect("applied waiter was not notified")
+        .expect("applied waiter panicked");
+    barrier.wait();
+    delayed.join().expect("delayed applied update panicked");
+
+    assert_eq!(learner.contiguous_applied(), 2);
+    assert!(learner.stale_applied_gaps_for_tests().is_empty());
 }
 
 #[tokio::test]

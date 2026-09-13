@@ -6,9 +6,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
+use crossbeam_skiplist::SkipMap;
 use dashmap::DashMap;
 #[cfg(feature = "test-util")]
 use parking_lot::Mutex;
+#[cfg(feature = "test-util")]
+use std::sync::Barrier;
 use tokio::sync::Notify;
 
 use crate::kv::{Batch, CrowdbTreeBackend, CrowdbTreeConfig, CrowdbTreeEngine, KVEngine};
@@ -89,7 +92,7 @@ pub struct PxLearner {
     /// Out-of-order chosen slots awaiting a gap-fill from a lower slot. Maps
     /// slot → term so the frontier advance step can also bump
     /// `last_chosen_term` if it crosses an out-of-order slot.
-    out_of_order: DashMap<SlotIndex, PxTerm>,
+    out_of_order: SkipMap<SlotIndex, PxTerm>,
     chosen_drain_owner: AtomicBool,
     /// Out-of-order **applied** slots awaiting a gap-fill from a lower slot.
     /// R17's `spawn_learn_chosen` defers the engine apply, and spawned
@@ -97,8 +100,15 @@ pub struct PxLearner {
     /// same drain pattern `out_of_order` gives `contiguous_chosen`. Empty in
     /// steady state on the leader (propose slots are sequential); populated
     /// only under spawn reordering.
-    applied_out_of_order: DashMap<SlotIndex, ()>,
+    applied_out_of_order: SkipMap<SlotIndex, ()>,
     applied_drain_owner: AtomicBool,
+    /// Test-only one-shot pause after the chosen frontier read and before
+    /// insertion, used to reproduce a delayed duplicate deterministically.
+    #[cfg(feature = "test-util")]
+    chosen_insert_barrier: Mutex<Option<Arc<Barrier>>>,
+    /// Test-only equivalent pause for applied-frontier insertion.
+    #[cfg(feature = "test-util")]
+    applied_insert_barrier: Mutex<Option<Arc<Barrier>>>,
     /// Per-`client_id` idempotency cache. Updated on every `learn` that
     /// carries a `(client_id, seq)`; consulted by the proposer to short-
     /// circuit a retried request to its prior commit slot without re-running
@@ -156,10 +166,14 @@ impl Default for PxLearner {
             last_chosen_slot: AtomicU64::new(0),
             last_chosen_term: AtomicU64::new(0),
             last_chosen_seq: AtomicU64::new(0),
-            out_of_order: DashMap::new(),
+            out_of_order: SkipMap::new(),
             chosen_drain_owner: AtomicBool::new(false),
-            applied_out_of_order: DashMap::new(),
+            applied_out_of_order: SkipMap::new(),
             applied_drain_owner: AtomicBool::new(false),
+            #[cfg(feature = "test-util")]
+            chosen_insert_barrier: Mutex::new(None),
+            #[cfg(feature = "test-util")]
+            applied_insert_barrier: Mutex::new(None),
             dedup: DashMap::new(),
             apply_notify: Notify::new(),
             #[cfg(feature = "test-util")]
@@ -188,10 +202,14 @@ impl PxLearner {
             last_chosen_slot: AtomicU64::new(0),
             last_chosen_term: AtomicU64::new(0),
             last_chosen_seq: AtomicU64::new(0),
-            out_of_order: DashMap::new(),
+            out_of_order: SkipMap::new(),
             chosen_drain_owner: AtomicBool::new(false),
-            applied_out_of_order: DashMap::new(),
+            applied_out_of_order: SkipMap::new(),
             applied_drain_owner: AtomicBool::new(false),
+            #[cfg(feature = "test-util")]
+            chosen_insert_barrier: Mutex::new(None),
+            #[cfg(feature = "test-util")]
+            applied_insert_barrier: Mutex::new(None),
             dedup: DashMap::new(),
             apply_notify: Notify::new(),
             #[cfg(feature = "test-util")]
@@ -366,7 +384,7 @@ impl PxLearner {
         if slot <= self.contiguous_chosen.load(Ordering::Acquire) {
             return true;
         }
-        self.out_of_order.contains_key(&slot)
+        self.out_of_order.get(&slot).is_some()
     }
 
     /// Term of the entry at [`Self::last_chosen_slot`].
@@ -439,7 +457,14 @@ impl PxLearner {
         // `last_chosen_slot` is the max ever seen (gaps allowed).
         self.update_last_chosen(slot, term);
         if slot > self.contiguous_chosen.load(Ordering::Acquire) {
-            self.out_of_order.insert(slot, term);
+            #[cfg(feature = "test-util")]
+            Self::pause_before_insert(&self.chosen_insert_barrier);
+            let entry = self.out_of_order.get_or_insert(slot, term);
+            if slot <= self.contiguous_chosen.load(Ordering::Acquire) {
+                entry.remove();
+                return;
+            }
+            drop(entry);
             self.drain_chosen_frontier();
         }
     }
@@ -454,9 +479,9 @@ impl PxLearner {
         }
         loop {
             let next = self.contiguous_chosen.load(Ordering::Relaxed) + 1;
-            if self.out_of_order.remove(&next).is_none() {
+            let Some(entry) = self.out_of_order.get(&next) else {
                 self.chosen_drain_owner.store(false, Ordering::Release);
-                if !self.out_of_order.contains_key(&next)
+                if self.out_of_order.get(&next).is_none()
                     || self
                         .chosen_drain_owner
                         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -465,7 +490,8 @@ impl PxLearner {
                     return;
                 }
                 continue;
-            }
+            };
+            entry.remove();
             self.contiguous_chosen.store(next, Ordering::Release);
         }
     }
@@ -481,7 +507,14 @@ impl PxLearner {
     /// Idempotent: re-advancing an already-applied slot is a no-op.
     pub(crate) fn advance_applied_frontier(&self, slot: SlotIndex) {
         if slot > self.contiguous_applied.load(Ordering::Acquire) {
-            self.applied_out_of_order.insert(slot, ());
+            #[cfg(feature = "test-util")]
+            Self::pause_before_insert(&self.applied_insert_barrier);
+            let entry = self.applied_out_of_order.get_or_insert(slot, ());
+            if slot <= self.contiguous_applied.load(Ordering::Acquire) {
+                entry.remove();
+                return;
+            }
+            drop(entry);
             self.drain_applied_frontier();
         }
     }
@@ -497,9 +530,9 @@ impl PxLearner {
         let mut advanced = false;
         loop {
             let next = self.contiguous_applied.load(Ordering::Relaxed) + 1;
-            if self.applied_out_of_order.remove(&next).is_none() {
+            let Some(entry) = self.applied_out_of_order.get(&next) else {
                 self.applied_drain_owner.store(false, Ordering::Release);
-                if !self.applied_out_of_order.contains_key(&next)
+                if self.applied_out_of_order.get(&next).is_none()
                     || self
                         .applied_drain_owner
                         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -511,10 +544,66 @@ impl PxLearner {
                     return;
                 }
                 continue;
-            }
+            };
+            entry.remove();
             self.contiguous_applied.store(next, Ordering::Release);
             advanced = true;
         }
+    }
+
+    #[cfg(feature = "test-util")]
+    fn pause_before_insert(gate: &Mutex<Option<Arc<Barrier>>>) {
+        let barrier = gate.lock().take();
+        if let Some(barrier) = barrier {
+            barrier.wait();
+            barrier.wait();
+        }
+    }
+
+    /// Pause one chosen update after its frontier read and before insertion.
+    #[cfg(feature = "test-util")]
+    pub fn set_chosen_insert_barrier_for_tests(&self, barrier: Arc<Barrier>) {
+        *self.chosen_insert_barrier.lock() = Some(barrier);
+    }
+
+    /// Advance the chosen frontier directly in integration tests.
+    #[cfg(feature = "test-util")]
+    pub fn update_chosen_frontier_for_tests(&self, slot: SlotIndex, term: PxTerm) {
+        self.update_chosen_frontier(slot, term);
+    }
+
+    /// Pause one applied update after its frontier read and before insertion.
+    #[cfg(feature = "test-util")]
+    pub fn set_applied_insert_barrier_for_tests(&self, barrier: Arc<Barrier>) {
+        *self.applied_insert_barrier.lock() = Some(barrier);
+    }
+
+    /// Advance the applied frontier directly in integration tests.
+    #[cfg(feature = "test-util")]
+    pub fn advance_applied_frontier_for_tests(&self, slot: SlotIndex) {
+        self.advance_applied_frontier(slot);
+    }
+
+    /// Return chosen gap slots that are stale relative to the frontier.
+    #[cfg(feature = "test-util")]
+    pub fn stale_chosen_gaps_for_tests(&self) -> Vec<SlotIndex> {
+        let frontier = self.contiguous_chosen();
+        self.out_of_order
+            .iter()
+            .map(|entry| *entry.key())
+            .filter(|slot| *slot <= frontier)
+            .collect()
+    }
+
+    /// Return applied gap slots that are stale relative to the frontier.
+    #[cfg(feature = "test-util")]
+    pub fn stale_applied_gaps_for_tests(&self) -> Vec<SlotIndex> {
+        let frontier = self.contiguous_applied();
+        self.applied_out_of_order
+            .iter()
+            .map(|entry| *entry.key())
+            .filter(|slot| *slot <= frontier)
+            .collect()
     }
 
     /// Fast-forward the chosen-slot frontier directly to `(slot, term)`,

@@ -20,8 +20,8 @@ Goal: remove correctness-sensitive and request-hot sharded locks, including the 
 
 ## Phase 3: Paxos concurrency
 
-- [~] **Close learner frontier races**: move chosen/applied gap tracking to ordered lock-free maps, recheck the frontier after insertion, and remove only the inserted identity when stale; add deterministic delayed-insert tests and waiter notification coverage. Files: `lib/crowdb-kv/src/paxos/learner.rs`, `lib/crowdb-kv/tests/paxos_test/*`.
-- [ ] **Replace dedup mutation**: add a lock-free client index with fixed 64-entry atomic windows preserving exact lookup and idempotent duplicate recording; test concurrent retention and misses. Files: `lib/crowdb-kv/src/paxos/learner.rs`, `lib/crowdb-kv/src/paxos/*`, `lib/crowdb-kv/tests/paxos_test/*`.
+- [x] **Close learner frontier races**: move chosen/applied gap tracking to ordered lock-free maps, recheck the frontier after insertion, and remove only the inserted identity when stale; add deterministic delayed-insert tests and waiter notification coverage. Files: `lib/crowdb-kv/src/paxos/learner.rs`, `lib/crowdb-kv/tests/paxos_test/learner_dedup_test.rs`.
+- [~] **Replace dedup mutation**: add a lock-free client index with fixed 64-entry atomic windows preserving exact lookup and idempotent duplicate recording; test concurrent retention and misses. Files: `lib/crowdb-kv/src/paxos/learner.rs`, `lib/crowdb-kv/src/paxos/*`, `lib/crowdb-kv/tests/paxos_test/*`.
 
 ## Phase 4: Atomic routing and ownership
 
