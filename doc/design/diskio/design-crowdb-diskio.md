@@ -662,33 +662,57 @@ Flatbuffer schemas (`diskio.fbs`):
 
 ## 9. Client Library
 
-`DiskIoClient` (Rust, in `crowdb-diskio-client`) wraps `crowdb-rpc-ffi`
-with typed methods:
+`DiskioClient` (Rust, in `crowdb-diskio-client`) is the routed semantic
+boundary for every production Rust caller. Callers provide an allocated
+`SegmentTarget`, a segment-relative byte range, a normal or priority traffic
+lane, one total deadline, and (for writes) buffered or fsync durability:
 
 ```
-async fn write(&self, segment: &Segment, data: Bytes) -> Result<(), IoError>
-async fn read(&self, segment: &Segment, test_pattern_offset: u64) -> Result<Bytes, IoError>
-async fn fsync(&self, disk_id: &DiskId) -> Result<(), IoError>
+async fn write(target, offset, data: Bytes, durability, options) -> Result<()>
+async fn read(target, offset, length, options) -> Result<Bytes>
+async fn fsync(disk_id, options) -> Result<()>
 ```
 
-The chunk client combines DiskIO service registrations with hardware disk-group
-ownership to build an immutable `disk_id -> endpoint + connection` snapshot.
-Every disk group must have exactly one live owner. Missing and duplicate owners
-fail discovery; there is no fallback endpoint. Refresh builds the snapshot away
-from the write path and publishes it atomically.
+The client constructs its control-plane handles from group-0 management seeds,
+or accepts injected `ServiceRegistryClient` and `HardwareClient` handles. It
+joins live DiskIO registrations with hardware disk-group ownership and publishes
+one immutable route generation mapping every `DiskId` to rack, node, disk group,
+DiskIO instance, and endpoint. Missing or duplicate ownership, missing hardware
+identity, an identity mismatch, a malformed endpoint, or either failed
+control-plane read rejects the entire candidate. There is no fallback endpoint
+and no partial generation.
 
-`DiskioClient::write_bytes` retains the caller's owned `Bytes` allocation in
+Each endpoint has independently bounded normal and priority connection groups.
+Unchanged refreshes reuse those groups. An endpoint or instance change creates
+a new generation before publication; operations retain the selected old
+connection through completion, and exact generation checks prevent a delayed
+old failure from invalidating its replacement. Removing a pool drops the
+client's references, while the final in-flight reference controls when its C++
+connection is closed. Selection and route/status snapshots use immutable RCU
+state and atomics, so request routing does not acquire a caller lock.
+
+The internal wire transport retains the caller's owned `Bytes` allocation in
 the RPC buffer until completion. This avoids a client-side `Bytes` to `Vec`
 payload copy. On the server, block-size-one and already aligned payloads can
 continue directly into `IoEngine::write`. Other writes are copied once into
 the server-owned aligned buffer that supplies padding and satisfies the
 `O_DIRECT` address-alignment requirement.
 
-A connection drop during a write is similar to a timeout: the client
-does not know the result (the I/O may still complete on the server —
-DiskIOUring submission is already in flight). The client treats it as a
-failure and retries; idempotent write to the same offset is safe for
-the same data.
+Input arithmetic, segment bounds, and wire-size limits are checked before RPC
+admission. Reads retry transient transport outcomes within the original
+deadline. Writes can retry only the same immutable bytes at the same allocated
+location; partial writes and permanent disk errors return immediately, while
+an unresolved admitted write is reported as ambiguous. Durable writes are not
+acknowledged until a successful disk fsync; an fsync can be repeated after an
+ambiguous response. The lifecycle no-reuse window is what makes an identical
+write retry safe.
+
+Status exposes route generation and age, topology and pool counts, healthy
+connections, operation/retry/backpressure/ambiguity counters, and operation
+latencies without exposing raw transport handles. The only production escape
+hatch is an opaque retained priority-lane route set for the native crowdb-tree
+page store. Wire-level methods remain available only to protocol tests through
+the crate's `test-util` feature.
 
 ## 10. Invariants
 

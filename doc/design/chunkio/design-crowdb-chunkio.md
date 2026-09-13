@@ -360,9 +360,10 @@ Edge cases:
   logic — it receives `Segment` placements and writes to them.
 - **diskio** — the writer writes data and parity blocks through the single
   durable-completion contract `DiskWriter::write`.
-  `RoutedDiskWriter` owns discovery and routes every segment by disk ID to the
-  unique live DiskIO owner. The fixed-connection `DiskioBlockWriter` remains a
-  low-level adapter for focused fixtures.
+  `RoutedDiskWriter` is a narrow foreground-policy adapter over the semantic
+  `crowdb-diskio-client`; it does not own discovery, endpoints, RPC transport,
+  or result decoding. Conversion and repair use that client's separately
+  bounded priority lane. Direct wire access exists only in protocol fixtures.
 - **crowdb-common EC** — `encode_parity_from_shards` is the shard-based +
   partial-encode entry point used by parity tasks.
 - **crowdb-protocol** — `ChunkId`, `*ChunkRequest` types, `Segment`,
@@ -399,19 +400,27 @@ consumes one. Queue depth is an application admission setting; the benchmark
 defaults to ten through `--prefetch-chunks`. Unused sessions are explicitly
 aborted so their Active chunks are deleted.
 
-The write and read hot paths read an immutable disk-ID route snapshot through
-`ArcSwap`. Every endpoint owns a fixed connection pool configured by
-`ChunkIoClientConfig::diskio_connections_per_endpoint`; an atomic counter
-selects the next connection without a route lock. Refresh constructs complete
-replacement pools off-path and publishes them atomically. Missing ownership
-and duplicate owners are topology errors; the client never chooses an
-arbitrary DiskIO endpoint. The application and CLI do not construct
-allocators, RPC servers, connections, chunks, strips, or parity workers.
+The write and read hot paths call the semantic DiskIO client with a checked
+segment-relative address, caller-owned `Bytes`, lane, durability policy, and
+deadline. That client reads immutable disk-ID route generations through RCU,
+owns fixed normal and priority connection groups, and selects healthy members
+without a caller lock. Refresh joins authoritative service and hardware
+records, constructs and prewarms a complete replacement off-path, and reuses
+unchanged endpoint groups. Missing or duplicate ownership rejects the whole
+candidate; no chunk caller chooses an arbitrary endpoint.
+
+`ChunkIoClientConfig::diskio_connections_per_endpoint` configures the normal
+foreground group. Conversion and repair use reserved priority resources, so
+their queue or connection pressure cannot consume the normal group. For the
+native crowdb-tree page store, `ChunkIoClient` passes through an opaque retained
+route set produced by the DiskIO client; neither application code nor the CLI
+assembles routes or constructs RPC servers and connections.
 
 Topology refresh follows server ownership. `refresh_chunkdb_routes` refreshes
-ChunkDB endpoints and range bindings; `refresh_diskio_routes` refreshes
-DiskIO service and disk-owner routes. Metrics wrappers only observe the two
-narrow seams and do not own scheduling or discovery.
+ChunkDB endpoints and range bindings; `refresh_diskio_routes` asks the DiskIO
+client to publish its next complete generation. Metrics wrappers only observe
+the two narrow seams and do not own scheduling, discovery, or connection
+lifetime.
 
 ## 11. Performance Workload
 

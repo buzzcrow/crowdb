@@ -76,23 +76,33 @@ struct ConnectionPool {
 }
 
 impl ConnectionPool {
-    fn select(&self) -> SelectedConnection {
-        let index = if self.connections.len() == 1 {
-            0
-        } else {
-            usize::try_from(self.cursor.fetch_add(1, Ordering::Relaxed)).unwrap_or(0) % self.connections.len()
-        };
-        SelectedConnection {
-            connection: self.connections[index].clone(),
-            generation: self.generation,
+    fn select(&self) -> Option<SelectedConnection> {
+        let start = usize::try_from(self.cursor.fetch_add(1, Ordering::Relaxed)).unwrap_or(0)
+            % self.connections.len();
+        for offset in 0..self.connections.len() {
+            let connection = &self.connections[(start + offset) % self.connections.len()];
+            if connection.is_open() {
+                return Some(SelectedConnection {
+                    connection: connection.clone(),
+                    generation: self.generation,
+                });
+            }
         }
+        None
     }
 
-    fn first(&self) -> SelectedConnection {
-        SelectedConnection {
-            connection: self.connections[0].clone(),
-            generation: self.generation,
-        }
+    fn first(&self) -> Option<SelectedConnection> {
+        self.connections
+            .iter()
+            .find(|connection| connection.is_open())
+            .map(|connection| SelectedConnection {
+                connection: connection.clone(),
+                generation: self.generation,
+            })
+    }
+
+    fn is_degraded(&self) -> bool {
+        self.connections.iter().any(|connection| !connection.is_open())
     }
 }
 
@@ -149,16 +159,51 @@ impl ConnectionPoolIndex {
         self.snapshot.load().pools.is_empty()
     }
 
+    /// Number of configured connections across published endpoint pools.
+    #[must_use]
+    pub fn connection_count(&self) -> usize {
+        self.snapshot
+            .load()
+            .pools
+            .values()
+            .map(|pool| pool.connections.len())
+            .sum()
+    }
+
+    /// Number of currently open connections across published endpoint pools.
+    #[must_use]
+    pub fn healthy_count(&self) -> usize {
+        self.snapshot
+            .load()
+            .pools
+            .values()
+            .map(|pool| {
+                pool.connections
+                    .iter()
+                    .filter(|connection| connection.is_open())
+                    .count()
+            })
+            .sum()
+    }
+
     /// Select from an existing complete endpoint pool.
     #[must_use]
     pub fn get(&self, endpoint: &str) -> Option<SelectedConnection> {
-        self.snapshot.load().pools.get(endpoint).map(|pool| pool.select())
+        self.snapshot
+            .load()
+            .pools
+            .get(endpoint)
+            .and_then(|pool| pool.select())
     }
 
     /// Select the first connection from an existing complete endpoint pool.
     #[must_use]
     pub fn get_first(&self, endpoint: &str) -> Option<SelectedConnection> {
-        self.snapshot.load().pools.get(endpoint).map(|pool| pool.first())
+        self.snapshot
+            .load()
+            .pools
+            .get(endpoint)
+            .and_then(|pool| pool.first())
     }
 
     /// Select an existing connection or build and atomically install a pool.
@@ -175,7 +220,9 @@ impl ConnectionPoolIndex {
         loop {
             let observed = self.snapshot.load_full();
             if let Some(pool) = observed.pools.get(endpoint) {
-                return Ok(pool.select());
+                if let Some(selected) = pool.select() {
+                    return Ok(selected);
+                }
             }
             self.check_capacity(&observed)?;
 
@@ -192,7 +239,9 @@ impl ConnectionPoolIndex {
             loop {
                 let current = self.snapshot.load_full();
                 if let Some(pool) = current.pools.get(endpoint) {
-                    return Ok(pool.select());
+                    if let Some(selected) = pool.select() {
+                        return Ok(selected);
+                    }
                 }
                 if current.clear_epoch != observed.clear_epoch {
                     break;
@@ -207,8 +256,67 @@ impl ConnectionPoolIndex {
                 });
                 let previous = self.snapshot.compare_and_swap(&current, replacement);
                 if Arc::ptr_eq(&previous, &current) {
-                    return Ok(candidate.select());
+                    return Ok(candidate
+                        .select()
+                        .expect("newly connected pool must have an open connection"));
                 }
+            }
+        }
+    }
+
+    /// Replace an exact degraded generation with a complete new pool.
+    ///
+    /// Connections are established before the compare-and-swap. If another
+    /// caller already replaced the pool, that current generation is used.
+    pub fn replace_if_degraded<E>(
+        &self,
+        endpoint: &str,
+        generation: u64,
+        mut connect: impl FnMut() -> Result<Connection, E>,
+    ) -> Result<SelectedConnection, ConnectionPoolError<E>> {
+        let observed = self.snapshot.load_full();
+        let Some(pool) = observed.pools.get(endpoint) else {
+            return self.get_or_try_install(endpoint, connect);
+        };
+        if pool.generation != generation || !pool.is_degraded() {
+            return pool
+                .select()
+                .map(Ok)
+                .unwrap_or_else(|| self.get_or_try_install(endpoint, connect));
+        }
+
+        let mut connections = Vec::with_capacity(self.pool_size);
+        for _ in 0..self.pool_size {
+            connections.push(connect().map_err(ConnectionPoolError::Connect)?);
+        }
+        let candidate = Arc::new(ConnectionPool {
+            generation: self.next_generation(),
+            connections,
+            cursor: AtomicU64::new(0),
+        });
+
+        loop {
+            let current = self.snapshot.load_full();
+            let Some(current_pool) = current.pools.get(endpoint) else {
+                return self.get_or_try_install(endpoint, connect);
+            };
+            if current_pool.generation != generation {
+                return current_pool
+                    .select()
+                    .map(Ok)
+                    .unwrap_or_else(|| self.get_or_try_install(endpoint, connect));
+            }
+            let mut pools = current.pools.clone();
+            pools.insert(endpoint.to_string(), Arc::clone(&candidate));
+            let replacement = Arc::new(PoolSnapshot {
+                clear_epoch: current.clear_epoch,
+                pools,
+            });
+            let previous = self.snapshot.compare_and_swap(&current, replacement);
+            if Arc::ptr_eq(&previous, &current) {
+                return Ok(candidate
+                    .select()
+                    .expect("newly connected pool must have an open connection"));
             }
         }
     }

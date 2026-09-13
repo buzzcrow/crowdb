@@ -58,6 +58,7 @@ fn start_diskio(disks: &[DiskArg]) -> DiskioProcess {
         kv_seeds: &[],
         disks,
         fault_error_rate: 0.0,
+        fault_latency_ms: None,
         no_o_direct: true,
     })
 }

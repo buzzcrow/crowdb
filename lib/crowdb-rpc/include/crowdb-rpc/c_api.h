@@ -194,6 +194,12 @@ crowdb_rpc_conn_t crowdb_rpc_connect(crowdb_rpc_server_t server, const char *add
 // are raw Connection* pointers, not crowdb_rpc_conn_t).
 void crowdb_rpc_conn_destroy(crowdb_rpc_conn_t conn);
 
+// Return non-zero while the underlying transport connection is open.
+int crowdb_rpc_conn_is_open(crowdb_rpc_conn_t conn);
+
+// Close the underlying transport connection. Safe to call repeatedly.
+void crowdb_rpc_conn_close(crowdb_rpc_conn_t conn);
+
 // ── Built-in handlers ─────────────────────────────────────────────
 
 // Register the built-in echo handler for the given msg_type. The echo

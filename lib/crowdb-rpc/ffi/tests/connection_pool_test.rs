@@ -85,3 +85,28 @@ fn endpoint_bound_is_enforced_at_publication() {
     ));
     server.stop();
 }
+
+#[test]
+fn closed_member_is_skipped_and_degraded_generation_is_replaced() {
+    let server = running_server();
+    let pool = ConnectionPoolIndex::new(2, None);
+    let first = pool
+        .get_or_try_install("server", || server.connect("127.0.0.1", server.port()))
+        .expect("initial pool failed");
+    let old_generation = first.generation();
+    first.close();
+
+    let survivor = pool.get("server").expect("healthy member should remain");
+    assert_eq!(survivor.generation(), old_generation);
+    assert!(survivor.is_open());
+
+    let replacement = pool
+        .replace_if_degraded("server", old_generation, || {
+            server.connect("127.0.0.1", server.port())
+        })
+        .expect("replace degraded pool");
+    assert_ne!(replacement.generation(), old_generation);
+    assert_eq!(pool.connection_count(), 2);
+    assert_eq!(pool.healthy_count(), 2);
+    server.stop();
+}

@@ -182,7 +182,10 @@ impl ChunkIoClient {
             .storage_route()
             .await
             .map_err(|error| crate::IoError::Topology(format!("resolve ChunkDB route: {error}")))?;
-        Ok((chunkdb, topology.disk_writer.storage_routes()))
+        Ok((
+            chunkdb,
+            topology.disk_writer.storage_routes()?.into_owned_routes(),
+        ))
     }
 
     /// Construct low-level seams with an explicit small-write policy.

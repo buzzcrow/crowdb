@@ -211,6 +211,8 @@ extern "C" {
     ) -> crowdb_rpc_conn_t;
 
     pub fn crowdb_rpc_conn_destroy(conn: crowdb_rpc_conn_t);
+    pub fn crowdb_rpc_conn_is_open(conn: crowdb_rpc_conn_t) -> c_int;
+    pub fn crowdb_rpc_conn_close(conn: crowdb_rpc_conn_t);
 
     pub fn crowdb_rpc_server_register_echo_handler(server: crowdb_rpc_server_t, msg_type: u16);
 

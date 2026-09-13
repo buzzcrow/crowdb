@@ -365,7 +365,10 @@ struct ConnectionInner {
 impl Drop for ConnectionInner {
     fn drop(&mut self) {
         if self.owned && !self.handle.is_null() {
-            unsafe { sys::crowdb_rpc_conn_destroy(self.handle) };
+            unsafe {
+                sys::crowdb_rpc_conn_close(self.handle);
+                sys::crowdb_rpc_conn_destroy(self.handle);
+            }
         }
     }
 }
@@ -386,6 +389,19 @@ impl std::fmt::Debug for Connection {
 impl Connection {
     pub fn handle(&self) -> sys::crowdb_rpc_conn_t {
         self.inner.handle
+    }
+
+    /// Whether the underlying transport connection is currently open.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        unsafe { sys::crowdb_rpc_conn_is_open(self.inner.handle) != 0 }
+    }
+
+    /// Close the underlying transport connection.
+    ///
+    /// Existing wrappers remain valid handles but subsequent sends fail.
+    pub fn close(&self) {
+        unsafe { sys::crowdb_rpc_conn_close(self.inner.handle) };
     }
 
     /// Construct a `Connection` wrapper from a raw `conn_handle`

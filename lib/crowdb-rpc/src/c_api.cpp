@@ -733,6 +733,27 @@ void crowdb_rpc_conn_destroy(crowdb_rpc_conn_t conn)
     }
 }
 
+int crowdb_rpc_conn_is_open(crowdb_rpc_conn_t conn)
+{
+    try {
+        return conn != nullptr && conn->conn != nullptr && conn->conn->is_open() ? 1 : 0;
+    }
+    catch (...) {
+        return 0;
+    }
+}
+
+void crowdb_rpc_conn_close(crowdb_rpc_conn_t conn)
+{
+    try {
+        if (conn != nullptr && conn->conn != nullptr) {
+            conn->conn->close();
+        }
+    }
+    catch (...) {
+    }
+}
+
 // ── Built-in echo handler ─────────────────────────────────────────
 
 // Echo handler: returns the request data as the response data, with a

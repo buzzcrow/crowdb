@@ -77,6 +77,15 @@ chunkdb manages chunk metadata and orchestrates background maintenance I/O
 through DiskIO clients. Foreground callers write allocated blocks themselves
 and tell chunkdb when chunks are sealed or deleted.
 
+ChunkDB conversion and EC repair share one `ConversionDiskIo` policy adapter
+over the routed semantic `crowdb-diskio-client`. The adapter selects the
+priority lane and expresses reads, buffered writes, and fsync barriers against
+checked segment targets. It does not parse DiskIO endpoints, join topology,
+construct RPC servers or connections, refresh connection vectors, or decode
+wire return codes. Those responsibilities and their immutable generations are
+owned by the DiskIO client; ChunkDB retains conversion/reconstruction policy
+and decides when a completed write group requires a durability barrier.
+
 **Language:** Rust. **Runtime:** tokio (async everywhere).
 
 **Core goals:**

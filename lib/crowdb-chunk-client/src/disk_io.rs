@@ -4,12 +4,11 @@
 //! Block-IO layer — the `DiskWriter` seam.
 //!
 //! `DiskWriter` is the single test-injection point for block IO.
-//! Production impl (`DiskioBlockWriter`) wraps `DiskioClient`. Test
-//! impls live in `tests/common/`. Replaces the old `BlockWriter`
-//! trait.
+//! Production routing is owned by `crowdb-diskio-client`; test impls live in
+//! `tests/common/`.
 
 pub mod disk_writer;
 pub mod routing;
 
-pub use disk_writer::{DiskWriter, DiskioBlockWriter};
+pub use disk_writer::DiskWriter;
 pub use routing::RoutedDiskWriter;

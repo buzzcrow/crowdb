@@ -232,6 +232,8 @@ async fn expired_instance_filtered() {
         last_heartbeat_ms: 0,
         extra: Some(ServiceExtra {
             diskdb: Some(DiskdbExtra {
+                rack_id: None,
+                node_id: None,
                 owned_dg_ids: vec![1],
                 group_usages: vec![],
             }),

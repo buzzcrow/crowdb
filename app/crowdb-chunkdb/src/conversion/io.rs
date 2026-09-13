@@ -1,17 +1,14 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! Lock-free DiskIO routing for background conversion.
+//! Priority-lane adapter for background conversion and repair DiskIO.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
 use bytes::Bytes;
-use crowdb_diskio_client::{DiskId, DiskIoRetCode, DiskioClient, SegmentWriteTarget};
+use crowdb_diskio_client::{DiskId, DiskioClient, DiskioClientConfig, Durability, SegmentTarget};
 use crowdb_kv_client::{HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::diskdb::rpc::Segment;
-use crowdb_rpc_ffi::{Connection, RpcServer};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConversionIoError {
@@ -21,94 +18,58 @@ pub enum ConversionIoError {
     Io(String),
 }
 
-#[derive(Clone)]
-struct Route {
-    endpoint: Arc<str>,
-    connection: Connection,
-}
-
+/// Conversion-specific policy adapter over the shared semantic client.
 pub struct ConversionDiskIo {
-    client: Arc<DiskioClient>,
-    server: Arc<RpcServer>,
-    routes: ArcSwap<HashMap<DiskId, Route>>,
+    client: Option<Arc<DiskioClient>>,
 }
 
 impl ConversionDiskIo {
     #[cfg(feature = "test-util")]
     #[must_use]
     pub fn empty_for_tests() -> Self {
-        Self {
-            client: Arc::new(DiskioClient::new()),
-            server: Arc::new(RpcServer::new(None)),
-            routes: ArcSwap::from_pointee(HashMap::new()),
-        }
+        Self { client: None }
     }
 
     pub async fn connect(
         service: &ServiceRegistryClient,
         hardware: &HardwareClient,
     ) -> Result<Self, ConversionIoError> {
-        let server = Arc::new(RpcServer::new(None));
-        server
-            .listen("127.0.0.1", 0)
-            .map_err(|error| ConversionIoError::Topology(format!("start RPC client: {error}")))?;
-        server.start();
-        let client = Arc::new(DiskioClient::new());
-        let routes = discover(service, hardware, &server, &client, None).await?;
+        let client = DiskioClient::connect_with_clients(
+            service.clone(),
+            hardware.clone(),
+            DiskioClientConfig {
+                normal_connections_per_endpoint: 1,
+                priority_connections_per_endpoint: 1,
+                ..DiskioClientConfig::default()
+            },
+        )
+        .await
+        .map_err(|error| ConversionIoError::Topology(error.to_string()))?;
         Ok(Self {
-            client,
-            server,
-            routes: ArcSwap::from_pointee(routes),
+            client: Some(Arc::new(client)),
         })
     }
 
     pub async fn refresh(
         &self,
-        service: &ServiceRegistryClient,
-        hardware: &HardwareClient,
+        _service: &ServiceRegistryClient,
+        _hardware: &HardwareClient,
     ) -> Result<(), ConversionIoError> {
-        let current = self.routes.load_full();
-        let routes = discover(
-            service,
-            hardware,
-            &self.server,
-            &self.client,
-            Some(current.as_ref()),
-        )
-        .await?;
-        self.routes.store(Arc::new(routes));
-        Ok(())
+        self.client()?
+            .refresh()
+            .await
+            .map(|_| ())
+            .map_err(|error| ConversionIoError::Topology(error.to_string()))
     }
 
     pub async fn read_segment(&self, segment: &Segment, unit_bytes: u64) -> Result<Bytes, ConversionIoError> {
-        let (id, route) = self.route(segment)?;
-        let size = u64::from(segment.unit_count)
-            .checked_mul(unit_bytes)
-            .and_then(|bytes| u32::try_from(bytes).ok())
-            .ok_or_else(|| ConversionIoError::Io("segment read size overflows u32".into()))?;
-        let future = self
-            .client
-            .read(
-                &self.server,
-                &route.connection,
-                id,
-                segment.zone_index,
-                segment.unit_offset.saturating_mul(unit_bytes),
-                size,
-                0,
-            )
-            .map_err(|error| ConversionIoError::Io(format!("{}: {error}", route.endpoint)))?;
-        let (code, data) = DiskioClient::await_read_response(future)
+        let target = target(segment, unit_bytes)?;
+        let length = u32::try_from(target.capacity())
+            .map_err(|_| ConversionIoError::Io("segment read size exceeds u32".into()))?;
+        self.client()?
+            .read(target, 0, length, self.client()?.normal_options().priority())
             .await
-            .map_err(|error| ConversionIoError::Io(format!("{}: {error}", route.endpoint)))?;
-        if code != DiskIoRetCode::Success {
-            return Err(ConversionIoError::Io(format!(
-                "{} returned {code:?}",
-                route.endpoint
-            )));
-        }
-        data.map(Bytes::from)
-            .ok_or_else(|| ConversionIoError::Io("successful read returned no payload".into()))
+            .map_err(|error| ConversionIoError::Io(error.to_string()))
     }
 
     pub async fn write_segment(
@@ -117,136 +78,50 @@ impl ConversionDiskIo {
         unit_bytes: u64,
         data: Bytes,
     ) -> Result<(), ConversionIoError> {
-        let (id, route) = self.route(segment)?;
-        let future = self
-            .client
-            .write_segment_bytes(
-                &self.server,
-                &route.connection,
-                SegmentWriteTarget {
-                    disk_id: id,
-                    zone_index: segment.zone_index,
-                    zone_offset: segment.unit_offset.saturating_mul(unit_bytes),
-                    ordering_zone_offset: segment.unit_offset.saturating_mul(unit_bytes),
-                },
+        let target = target(segment, unit_bytes)?;
+        self.client()?
+            .write(
+                target,
+                0,
                 data,
+                Durability::Buffered,
+                self.client()?.normal_options().priority(),
             )
-            .map_err(|error| ConversionIoError::Io(format!("{}: {error}", route.endpoint)))?;
-        let code = DiskioClient::await_write_response(future)
             .await
-            .map_err(|error| ConversionIoError::Io(format!("{}: {error}", route.endpoint)))?;
-        if code != DiskIoRetCode::Success {
-            return Err(ConversionIoError::Io(format!(
-                "{} returned {code:?}",
-                route.endpoint
-            )));
-        }
-        Ok(())
+            .map_err(|error| ConversionIoError::Io(error.to_string()))
     }
 
     pub async fn fsync_segment(&self, segment: &Segment) -> Result<(), ConversionIoError> {
-        let (id, route) = self.route(segment)?;
-        let future = self
-            .client
-            .fsync(&self.server, &route.connection, id)
-            .map_err(|error| ConversionIoError::Io(format!("{}: {error}", route.endpoint)))?;
-        let code = DiskioClient::await_fsync_response(future)
+        let disk_id = disk_id(segment)?;
+        self.client()?
+            .fsync(disk_id, self.client()?.normal_options().priority())
             .await
-            .map_err(|error| ConversionIoError::Io(format!("{}: {error}", route.endpoint)))?;
-        if code != DiskIoRetCode::Success {
-            return Err(ConversionIoError::Io(format!(
-                "{} returned {code:?}",
-                route.endpoint
-            )));
-        }
-        Ok(())
+            .map_err(|error| ConversionIoError::Io(error.to_string()))
     }
 
-    fn route(&self, segment: &Segment) -> Result<(DiskId, Route), ConversionIoError> {
-        let id = segment
-            .disk_id
-            .map(|id| DiskId::new(id.high, id.low))
-            .ok_or_else(|| ConversionIoError::Topology("segment has no disk id".into()))?;
-        let route = self.routes.load().get(&id).cloned().ok_or_else(|| {
-            ConversionIoError::Topology(format!("disk {}:{} has no route", id.high, id.low))
-        })?;
-        Ok((id, route))
+    fn client(&self) -> Result<&DiskioClient, ConversionIoError> {
+        self.client
+            .as_deref()
+            .ok_or_else(|| ConversionIoError::Topology("test DiskIO client is not connected".into()))
     }
 }
 
-async fn discover(
-    service: &ServiceRegistryClient,
-    hardware: &HardwareClient,
-    server: &RpcServer,
-    client: &DiskioClient,
-    current: Option<&HashMap<DiskId, Route>>,
-) -> Result<HashMap<DiskId, Route>, ConversionIoError> {
-    let instances = service
-        .read_all_diskio_instances()
-        .await
-        .map_err(|error| ConversionIoError::Topology(error.to_string()))?;
-    let mut owners = HashMap::<u64, String>::new();
-    for (_, instance) in instances {
-        let extra = instance.extra.and_then(|extra| extra.diskdb).ok_or_else(|| {
-            ConversionIoError::Topology(format!(
-                "DiskIO {} has no ownership metadata",
-                instance.rpc_endpoint
-            ))
-        })?;
-        for disk_group_id in extra.owned_dg_ids {
-            if owners
-                .insert(disk_group_id, instance.rpc_endpoint.clone())
-                .is_some()
-            {
-                return Err(ConversionIoError::Topology(format!(
-                    "disk group {disk_group_id} has duplicate DiskIO owners"
-                )));
-            }
-        }
-    }
-    let disks = hardware
-        .list_all_disks()
-        .await
-        .map_err(|error| ConversionIoError::Topology(error.to_string()))?;
-    let mut connections = current
-        .into_iter()
-        .flat_map(HashMap::values)
-        .map(|route| (route.endpoint.to_string(), route.connection.clone()))
-        .collect::<HashMap<_, _>>();
-    let mut routes = HashMap::with_capacity(disks.len());
-    for disk in disks {
-        let endpoint = owners.get(&disk.disk_group_id).ok_or_else(|| {
-            ConversionIoError::Topology(format!(
-                "disk group {} has no live DiskIO owner",
-                disk.disk_group_id
-            ))
-        })?;
-        if !connections.contains_key(endpoint) {
-            let (host, port) = parse_endpoint(endpoint)?;
-            let connection = server
-                .connect(host, port)
-                .map_err(|error| ConversionIoError::Topology(format!("connect {endpoint}: {error}")))?;
-            client.attach(&connection);
-            connections.insert(endpoint.clone(), connection);
-        }
-        routes.insert(
-            DiskId::new(disk.disk_id.high, disk.disk_id.low),
-            Route {
-                endpoint: Arc::from(endpoint.as_str()),
-                connection: connections[endpoint].clone(),
-            },
-        );
-    }
-    Ok(routes)
+fn target(segment: &Segment, unit_bytes: u64) -> Result<SegmentTarget, ConversionIoError> {
+    let unit_size = u32::try_from(unit_bytes)
+        .map_err(|_| ConversionIoError::Io("segment unit size exceeds u32".into()))?;
+    SegmentTarget::new(
+        disk_id(segment)?,
+        segment.zone_index,
+        segment.unit_offset,
+        segment.unit_count,
+        unit_size,
+    )
+    .map_err(|error| ConversionIoError::Io(error.to_string()))
 }
 
-fn parse_endpoint(endpoint: &str) -> Result<(&str, i32), ConversionIoError> {
-    let endpoint = endpoint.strip_prefix("http://").unwrap_or(endpoint);
-    let (host, port) = endpoint
-        .rsplit_once(':')
-        .ok_or_else(|| ConversionIoError::Topology(format!("invalid DiskIO endpoint {endpoint}")))?;
-    let port = port
-        .parse::<i32>()
-        .map_err(|error| ConversionIoError::Topology(format!("invalid DiskIO endpoint: {error}")))?;
-    Ok((host, port))
+fn disk_id(segment: &Segment) -> Result<DiskId, ConversionIoError> {
+    segment
+        .disk_id
+        .map(|disk_id| DiskId::new(disk_id.high, disk_id.low))
+        .ok_or_else(|| ConversionIoError::Topology("segment has no disk id".into()))
 }

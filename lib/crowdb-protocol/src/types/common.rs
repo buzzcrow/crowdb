@@ -268,6 +268,10 @@ pub struct ChunkKvPartitionLoad {
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct DiskdbExtra {
+    #[serde(default)]
+    pub rack_id: Option<u64>,
+    #[serde(default)]
+    pub node_id: Option<u64>,
     pub owned_dg_ids: Vec<u64>,
     pub group_usages: Vec<DiskGroupUsageSummary>,
 }

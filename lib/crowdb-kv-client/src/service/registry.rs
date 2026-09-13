@@ -249,6 +249,8 @@ impl ServiceRegistryClient {
     ) -> Result<()> {
         let extra = ServiceExtra {
             diskdb: Some(DiskdbExtra {
+                rack_id: None,
+                node_id: None,
                 owned_dg_ids: owned_dg_ids.to_vec(),
                 group_usages: group_usages.to_vec(),
             }),
@@ -297,6 +299,31 @@ impl ServiceRegistryClient {
     ) -> Result<()> {
         let extra = ServiceExtra {
             diskdb: Some(DiskdbExtra {
+                rack_id: None,
+                node_id: None,
+                owned_dg_ids: owned_dg_ids.to_vec(),
+                group_usages: group_usages.to_vec(),
+            }),
+            kv_server: None,
+            chunk_kv: None,
+        };
+        self.register("diskio", instance_id, rpc_endpoint, &extra).await
+    }
+
+    /// Register a diskio instance with its authoritative hardware identity.
+    pub async fn heartbeat_diskio_at(
+        &self,
+        instance_id: InstanceId,
+        rpc_endpoint: &str,
+        rack_id: u64,
+        node_id: u64,
+        owned_dg_ids: &[u64],
+        group_usages: &[DiskGroupUsageSummary],
+    ) -> Result<()> {
+        let extra = ServiceExtra {
+            diskdb: Some(DiskdbExtra {
+                rack_id: Some(rack_id),
+                node_id: Some(node_id),
                 owned_dg_ids: owned_dg_ids.to_vec(),
                 group_usages: group_usages.to_vec(),
             }),

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, SmallWritePolicy};
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
-use crowdb_diskio_client::{DiskId, DiskIoRetCode, DiskioClient};
+use crowdb_diskio_client::{DiskId, DiskIoRetCode, TestWireDiskioClient as DiskioClient};
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{Chunk, Location, QueryChunkRequest};
 use crowdb_protocol::common::DiskId as ProtoDiskId;
@@ -102,6 +102,7 @@ impl E2eStack {
             kv_seeds: &cluster.mgmt_endpoints,
             disks: &[],
             fault_error_rate: 0.0,
+            fault_latency_ms: None,
             no_o_direct: false,
         });
 

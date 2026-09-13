@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crowdb_diskio_client::{DiskId as DioDiskId, DiskioClient};
+use crowdb_diskio_client::{DiskId as DioDiskId, TestWireDiskioClient as DiskioClient};
 use crowdb_rpc_ffi::RpcServer;
 use crowdb_test_harness::cluster::KvCluster;
 use crowdb_test_harness::diskio::*;
@@ -47,6 +47,7 @@ async fn disk_io_e2e_full_flow() {
             kv_seeds: &cluster.mgmt_endpoints,
             disks: &[],
             fault_error_rate: 0.0,
+            fault_latency_ms: None,
             no_o_direct: false,
         });
 

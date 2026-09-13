@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! `DiskioClient`: async disk I/O via RPC.
+//! Internal `DiskIO` wire transport.
 
 use crowdb_common::RequestIdGen;
 use crowdb_protocol::diskio_fb::{
@@ -14,21 +14,10 @@ use crowdb_rpc_ffi::{Buffer, CallFuture, Connection, RpcClient, RpcClientHandle,
 use flatbuffers::FlatBufferBuilder;
 use thiserror::Error;
 
-/// 128-bit disk identifier (high + low 64-bit halves).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DiskId {
-    pub high: u64,
-    pub low: u64,
-}
+use crate::DiskId;
 
 impl DiskId {
-    #[must_use]
-    pub fn new(high: u64, low: u64) -> Self {
-        Self { high, low }
-    }
-
-    #[must_use]
-    pub fn to_fb(&self) -> FBDiskInt128 {
+    pub(crate) fn to_fb(self) -> FBDiskInt128 {
         let mut bytes = [0u8; 16];
         bytes[0..8].copy_from_slice(&self.high.to_le_bytes());
         bytes[8..16].copy_from_slice(&self.low.to_le_bytes());
@@ -38,7 +27,7 @@ impl DiskId {
 
 /// Physical write address plus the base used to order related writes.
 #[derive(Debug, Clone, Copy)]
-pub struct SegmentWriteTarget {
+pub struct WireWriteTarget {
     pub disk_id: DiskId,
     pub zone_index: u32,
     pub zone_offset: u64,
@@ -86,47 +75,48 @@ impl From<i16> for DiskIoRetCode {
 
 /// Error type for diskio client operations.
 #[derive(Debug, Error)]
-pub enum DiskioError {
+pub enum WireError {
     #[error("disk I/O error: {0:?}")]
     IoError(DiskIoRetCode),
     #[error("RPC error: {0}")]
-    Rpc(String),
+    Rpc(#[from] RpcError),
+    #[error("wire protocol error: {0}")]
+    Protocol(String),
 }
 
-impl From<RpcError> for DiskioError {
-    fn from(e: RpcError) -> Self {
-        Self::Rpc(format!("{e:?}"))
-    }
-}
+pub type WireResult<T> = std::result::Result<T, WireError>;
 
-pub type DiskioResult<T> = std::result::Result<T, DiskioError>;
-
-/// `DiskioClient` sends disk write/read/fsync requests via crowdb-rpc.
-pub struct DiskioClient {
+/// Sends `DiskIO` wire requests via crowdb-rpc.
+pub struct WireClient {
     rpc: RpcClient,
     req_id_gen: RequestIdGen,
 }
 
-impl RpcClientHandle for DiskioClient {
+impl RpcClientHandle for WireClient {
     fn rpc_client_handle(&self) -> *mut std::ffi::c_void {
         self.rpc.handle().cast()
     }
 }
 
-impl std::fmt::Debug for DiskioClient {
+impl std::fmt::Debug for WireClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DiskioClient")
+        f.debug_struct("WireClient")
             .field("req_id_gen", &"RequestIdGen")
             .finish_non_exhaustive()
     }
 }
 
-impl DiskioClient {
-    /// Create a new `DiskioClient`. Call `attach()` before issuing requests.
+impl WireClient {
+    /// Create a wire client. Call `attach()` before issuing requests.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_completion_capacity(1024)
+    }
+
+    #[must_use]
+    pub fn with_completion_capacity(capacity: usize) -> Self {
         let rpc = RpcClient::new();
-        rpc.set_completion_pool_size(1024);
+        rpc.set_completion_pool_size(u32::try_from(capacity.max(1)).unwrap_or(u32::MAX));
         rpc.start_reaper(5_000_000_000, 500_000_000);
         Self {
             rpc,
@@ -149,6 +139,7 @@ impl DiskioClient {
     /// # Errors
     ///
     /// Returns `DiskioError::Rpc` if the data is too large or the send fails.
+    #[cfg_attr(not(feature = "test-util"), allow(dead_code))]
     pub fn write(
         &self,
         server: &RpcServer,
@@ -157,8 +148,8 @@ impl DiskioClient {
         zone_index: u32,
         zone_offset: u64,
         data: Vec<u8>,
-    ) -> Result<CallFuture, DiskioError> {
-        let size = u32::try_from(data.len()).map_err(|_| DiskioError::Rpc("data too large".into()))?;
+    ) -> Result<CallFuture, WireError> {
+        let size = u32::try_from(data.len()).map_err(|_| WireError::Protocol("data too large".into()))?;
         self.write_buffer(
             server,
             conn,
@@ -179,6 +170,7 @@ impl DiskioClient {
     /// # Errors
     ///
     /// Returns `DiskioError::Rpc` if the data is too large or the send fails.
+    #[cfg_attr(not(feature = "test-util"), allow(dead_code))]
     pub fn write_bytes(
         &self,
         server: &RpcServer,
@@ -187,8 +179,8 @@ impl DiskioClient {
         zone_index: u32,
         zone_offset: u64,
         data: bytes::Bytes,
-    ) -> Result<CallFuture, DiskioError> {
-        let size = u32::try_from(data.len()).map_err(|_| DiskioError::Rpc("data too large".into()))?;
+    ) -> Result<CallFuture, WireError> {
+        let size = u32::try_from(data.len()).map_err(|_| WireError::Protocol("data too large".into()))?;
         self.write_buffer(
             server,
             conn,
@@ -213,10 +205,10 @@ impl DiskioClient {
         &self,
         server: &RpcServer,
         conn: &Connection,
-        target: SegmentWriteTarget,
+        target: WireWriteTarget,
         data: bytes::Bytes,
-    ) -> Result<CallFuture, DiskioError> {
-        let size = u32::try_from(data.len()).map_err(|_| DiskioError::Rpc("data too large".into()))?;
+    ) -> Result<CallFuture, WireError> {
+        let size = u32::try_from(data.len()).map_err(|_| WireError::Protocol("data too large".into()))?;
         self.write_buffer(
             server,
             conn,
@@ -237,7 +229,7 @@ impl DiskioClient {
         conn: &Connection,
         target: WriteTarget,
         data_buf: Buffer,
-    ) -> Result<CallFuture, DiskioError> {
+    ) -> Result<CallFuture, WireError> {
         let req_id = self.next_id();
         let mut fbb = FlatBufferBuilder::new();
         let fb_disk_id = target.disk_id.to_fb();
@@ -258,7 +250,7 @@ impl DiskioClient {
         let msg_type = FBMsgType::EDiskWriteRequest.0 as u16;
         self.rpc
             .call(server, conn, req_id, control, Some(data_buf), msg_type)
-            .map_err(DiskioError::from)
+            .map_err(WireError::from)
     }
 
     /// Send a disk read request. Returns a `CallFuture` that resolves to
@@ -282,7 +274,7 @@ impl DiskioClient {
         zone_offset: u64,
         size: u32,
         test_pattern_offset: u64,
-    ) -> Result<CallFuture, DiskioError> {
+    ) -> Result<CallFuture, WireError> {
         let req_id = self.next_id();
         let mut fbb = FlatBufferBuilder::new();
         let fb_disk_id = disk_id.to_fb();
@@ -303,7 +295,7 @@ impl DiskioClient {
         let msg_type = FBMsgType::EDiskReadRequest.0 as u16;
         self.rpc
             .call(server, conn, req_id, control, None, msg_type)
-            .map_err(DiskioError::from)
+            .map_err(WireError::from)
     }
 
     /// Send a disk fsync request. Returns a `CallFuture` that resolves to
@@ -317,7 +309,7 @@ impl DiskioClient {
         server: &RpcServer,
         conn: &Connection,
         disk_id: DiskId,
-    ) -> Result<CallFuture, DiskioError> {
+    ) -> Result<CallFuture, WireError> {
         let req_id = self.next_id();
         let mut fbb = FlatBufferBuilder::new();
         let fb_disk_id = disk_id.to_fb();
@@ -334,7 +326,7 @@ impl DiskioClient {
         let msg_type = FBMsgType::EDiskFsyncRequest.0 as u16;
         self.rpc
             .call(server, conn, req_id, control, None, msg_type)
-            .map_err(DiskioError::from)
+            .map_err(WireError::from)
     }
 
     /// Parse a write response from a completed `CallFuture`.
@@ -342,8 +334,8 @@ impl DiskioClient {
     /// # Errors
     ///
     /// Returns `DiskioError::Rpc` if the response is missing or invalid.
-    pub async fn await_write_response(fut: CallFuture) -> DiskioResult<DiskIoRetCode> {
-        let resp = fut.await.map_err(DiskioError::from)?;
+    pub async fn await_write_response(fut: CallFuture) -> WireResult<DiskIoRetCode> {
+        let resp = fut.await.map_err(WireError::from)?;
         parse_ret_code(&resp)
     }
 
@@ -353,8 +345,8 @@ impl DiskioClient {
     /// # Errors
     ///
     /// Returns `DiskioError::Rpc` if the response is missing or invalid.
-    pub async fn await_read_response(fut: CallFuture) -> DiskioResult<(DiskIoRetCode, Option<Vec<u8>>)> {
-        let resp = fut.await.map_err(DiskioError::from)?;
+    pub async fn await_read_response(fut: CallFuture) -> WireResult<(DiskIoRetCode, Option<Vec<u8>>)> {
+        let resp = fut.await.map_err(WireError::from)?;
         let code = parse_ret_code(&resp)?;
         let data = resp.data.map(|b| b.bytes().to_vec());
         Ok((code, data))
@@ -365,23 +357,24 @@ impl DiskioClient {
     /// # Errors
     ///
     /// Returns `DiskioError::Rpc` if the response is missing or invalid.
-    pub async fn await_fsync_response(fut: CallFuture) -> DiskioResult<DiskIoRetCode> {
+    #[cfg_attr(not(feature = "test-util"), allow(dead_code))]
+    pub async fn await_fsync_response(fut: CallFuture) -> WireResult<DiskIoRetCode> {
         Self::await_write_response(fut).await
     }
 }
 
-impl Default for DiskioClient {
+impl Default for WireClient {
     fn default() -> Self {
         Self::new()
     }
 }
 
 /// Parse the `ret_code` from a diskio response control buffer.
-fn parse_ret_code(resp: &crowdb_rpc_ffi::Response) -> DiskioResult<DiskIoRetCode> {
+fn parse_ret_code(resp: &crowdb_rpc_ffi::Response) -> WireResult<DiskIoRetCode> {
     let ctrl = resp
         .control
         .as_ref()
-        .ok_or_else(|| DiskioError::Rpc("missing control buffer in response".into()))?;
+        .ok_or_else(|| WireError::Protocol("missing control buffer in response".into()))?;
     let ctrl_bytes = ctrl.bytes();
     let raw = if let Ok(r) = flatbuffers::root::<FBDiskWriteResponse>(ctrl_bytes) {
         r.ret_code().0
@@ -390,12 +383,12 @@ fn parse_ret_code(resp: &crowdb_rpc_ffi::Response) -> DiskioResult<DiskIoRetCode
     } else if let Ok(r) = flatbuffers::root::<FBDiskFsyncResponse>(ctrl_bytes) {
         r.ret_code().0
     } else {
-        return Err(DiskioError::Rpc("invalid response flatbuffer".into()));
+        return Err(WireError::Protocol("invalid response flatbuffer".into()));
     };
     let code = DiskIoRetCode::from(raw);
     if code == DiskIoRetCode::Success {
         Ok(code)
     } else {
-        Err(DiskioError::IoError(code))
+        Err(WireError::IoError(code))
     }
 }
