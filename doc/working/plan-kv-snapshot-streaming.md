@@ -11,12 +11,12 @@ progress.
 
 ## Phase 1 — Bounded engine sessions
 
-- [~] **Stream crowdb-tree portable export**: replace the prebuilt serialized
+- [x] **Stream crowdb-tree portable export**: replace the prebuilt serialized
   string with an immutable snapshot cursor, incremental CRC32C encoder, stable
   total-length/final-CRC metadata, and a one-chunk retry cache. Preserve the
   existing byte format. Files: `lib/crowdb-tree/include/crowdb-tree/snapshot/snapshot_io.h`,
   `lib/crowdb-tree/src/snapshot/snapshot_io.cpp`, crowdb-tree snapshot tests.
-- [ ] **Stage crowdb-tree portable import**: incrementally parse header,
+- [~] **Stage crowdb-tree portable import**: incrementally parse header,
   entries, and trailer with bounded carry; maintain rolling CRC32C; keep parsed
   logical entries as staging state; reject truncation, trailing data, malformed
   lengths, and CRC mismatch before activation. Files: crowdb-tree snapshot I/O

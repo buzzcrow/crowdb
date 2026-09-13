@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 // PT7: snapshot export / import (portable stream + file wrappers).
+#include "crowdb-common/crc32c.h"
 #include "crowdb-tree/crowdb-tree.h"
 #include "crowdb-tree/snapshot/snapshot_io.h"
 #include "test_tmp.h"
@@ -231,6 +232,46 @@ TEST(SnapshotExport, ChunkBoundaryDeterminism)
             EXPECT_EQ(first[i].size(), 1024U);
         }
     }
+}
+
+TEST(SnapshotExport, PortableMetadataAndOversizedValueStayChunkBounded)
+{
+    Config      opt;
+    Crowdbtree  source(opt);
+    std::string value(32 * 1024, 'v');
+    ASSERT_TRUE(source.apply(1, put_one("large", value)).ok());
+    ASSERT_TRUE(source.flush().ok());
+
+    constexpr size_t                chunk_bytes = 257;
+    std::unique_ptr<SnapshotExport> exp;
+    ASSERT_TRUE(snapshot_export_begin(source, snapshot_format::kPortable, chunk_bytes, &exp).ok());
+    EXPECT_EQ(exp->at_slot(), 1U);
+    EXPECT_EQ(exp->chunk_bytes(), chunk_bytes);
+
+    std::string stream;
+    bool        done = false;
+    while (!done) {
+        std::string chunk;
+        ASSERT_TRUE(exp->next_chunk(&chunk, &done).ok());
+        EXPECT_LE(chunk.size(), chunk_bytes);
+        EXPECT_EQ(exp->offset(), stream.size() + chunk.size());
+        stream.append(chunk);
+    }
+    ASSERT_GE(stream.size(), 4U);
+    EXPECT_EQ(exp->total_bytes(), stream.size());
+    EXPECT_EQ(exp->final_crc32c(),
+              crowdb::common::crc32c(reinterpret_cast<const uint8_t *>(stream.data()), stream.size() - 4));
+
+    Crowdbtree     target(opt);
+    SnapshotImport imp(target);
+    ASSERT_TRUE(imp.feed(Slice(stream)).ok());
+    uint64_t imported_at = 0;
+    ASSERT_TRUE(imp.finish(&imported_at).ok());
+    EXPECT_EQ(imported_at, 1U);
+    std::string imported;
+    uint64_t    slot = 0;
+    ASSERT_TRUE(target.get(Slice("large"), &slot, &imported));
+    EXPECT_EQ(imported, value);
 }
 
 TEST(SnapshotExport, CrcTamperRejected)

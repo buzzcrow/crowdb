@@ -28,6 +28,7 @@ namespace crowdb::tree
 {
 
 class Crowdbtree;
+class Snapshot;
 
 enum class snapshot_format : uint8_t {
     kPortable = 0, // v1 default: portable tuple stream
@@ -43,10 +44,18 @@ inline constexpr size_t kSnapshotChunkBytes = 1U << 20;
 class SnapshotExport
 {
   public:
+    // Portable export: retain the immutable logical view and encode it
+    // incrementally. The constructor performs a metadata-only pass for the
+    // total length and CRC, but never materializes the serialized stream.
+    SnapshotExport(std::shared_ptr<Snapshot> snapshot, size_t chunk_bytes);
+
+    // Native export still uses an owned encoded stream. Native incremental
+    // frame export is separate work from the portable install protocol.
     SnapshotExport(std::string stream, size_t chunk_bytes, uint64_t at_slot)
         : stream_(std::move(stream)),
           chunk_bytes_(chunk_bytes == 0 ? kSnapshotChunkBytes : chunk_bytes),
-          at_slot_(at_slot)
+          at_slot_(at_slot),
+          total_bytes_(stream_.size())
     {
     }
 
@@ -62,14 +71,36 @@ class SnapshotExport
 
     [[nodiscard]] size_t total_bytes() const
     {
-        return stream_.size();
+        return total_bytes_;
+    }
+
+    [[nodiscard]] size_t chunk_bytes() const
+    {
+        return chunk_bytes_;
+    }
+
+    [[nodiscard]] uint32_t final_crc32c() const
+    {
+        return final_crc32c_;
+    }
+
+    [[nodiscard]] size_t offset() const
+    {
+        return pos_;
     }
 
   private:
-    std::string stream_;
-    size_t      pos_ = 0;
-    size_t      chunk_bytes_;
-    uint64_t    at_slot_;
+    Status next_portable_chunk(std::string *out, bool *done);
+
+    std::shared_ptr<Snapshot> snapshot_;
+    std::string               stream_;
+    size_t                    pos_ = 0;
+    size_t                    chunk_bytes_;
+    uint64_t                  at_slot_;
+    size_t                    total_bytes_  = 0;
+    uint32_t                  final_crc32c_ = 0;
+    size_t                    piece_index_  = 0;
+    size_t                    piece_offset_ = 0;
 };
 
 // Begin a snapshot export of `tree`: exports the current durable view (at the
