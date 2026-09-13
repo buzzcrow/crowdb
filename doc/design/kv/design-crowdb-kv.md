@@ -239,7 +239,12 @@ key is conditional.
 
 **Range reads (Scan):** same two modes. Linearizable scan waits for
 the leader's own contiguous applied frontier. This is the one
-latency cost of parallel slots.
+latency cost of parallel slots. Ordinary scans accept `Forward` (the
+FlatBuffer default) or `Reverse`. The legacy `start_after` wire bytes are an
+exclusive continuation in both modes: forward returns larger keys; reverse
+returns smaller keys. With no reverse continuation, `end_key` is the exclusive
+upper bound, or the prefix successor supplies that bound when `end_key` is
+empty.
 
 Full read-flow details: `design-crowdb-kv-leader-election.md`,
 `design-crowdb-kv-state-machine.md`.
@@ -351,7 +356,10 @@ Full design: `design-crowdb-kv-reconfiguration.md`, `design-crowdb-kv-server.md`
 - **Retry** — on timeout or `NotLeader`, client retries with backoff.
   `NotLeader` with hint → follow hint immediately.
 - **Scan pagination** — the unary `Scan` RPC uses S3-style pagination
-  (`start_after` + `truncated` + `limit`). The server applies a
+  (exclusive continuation + `truncated` + `limit`) in ascending or descending
+  order. Existing `scan*` methods and omitted wire direction remain forward;
+  explicit `scan*_reverse` methods name their public cursor `start_before`.
+  The server applies a
   per-page byte budget (`ServerConfig::scan_byte_budget`, default 3.5
   MiB, leaving ~0.5 MiB for flatbuffer framing under the 4 MiB default)
   to each response so every page is provably bounded regardless of
@@ -361,12 +369,12 @@ Full design: `design-crowdb-kv-reconfiguration.md`, `design-crowdb-kv-server.md`
   still makes progress). A warning is logged for any single entry
   whose key+value size alone exceeds the budget. The client
   transparently pages until `!truncated` or the caller's `limit` is
-  reached, using the last
-  returned key as the next page's `start_after`. On redirect or
-  transport error, pagination restarts from the beginning with the
-  (possibly new) endpoint. The byte budget is server-internal, not
-  on the wire, so `KvScanRequest` and the `kv_store::kv_scan` trait
-  are unchanged. The former `ScanStream` server-streaming RPC (which
+  reached, using the last returned key as the next exclusive continuation.
+  Pages must remain strictly monotonic in the requested direction; a repeated
+  or out-of-order key is rejected instead of looping. On redirect or transport
+  error, pagination resumes from the last returned key on the possibly new
+  endpoint. The byte budget is server-internal. The former `ScanStream`
+  server-streaming RPC (which
   was "fake streaming": it materialized the full result, then chunked
   it) has been deleted. The unary + pagination path is strictly
   simpler and provably bounded.

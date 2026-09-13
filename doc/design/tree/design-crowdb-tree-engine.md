@@ -332,6 +332,13 @@ get(key):
   and applies the limit without over-fetching the prefix range. O(limit)
   FFI + decode cost instead of O(prefix range) for a page near the end of a
   large prefix.
+- `scan_directional_async(..., Reverse)` is the descending order-dual. It
+  chooses the greatest live L0/L1 key below the exclusive continuation,
+  resolves collisions by highest slot, suppresses tombstones, and repeatedly
+  descends to predecessor leaves. Its probes never demand-load a cold page on
+  the caller thread: the page ID is returned to the same reactor retry loop as
+  forward scan. With an empty continuation, `end_key` or the prefix successor
+  supplies the exclusive upper bound. No previous-leaf pointer is required.
 - **Lazy leaf resolution (`LeafChainCursor`).** A leaf chain is *never*
   materialized for a scan. Every chain input is already key-sorted: each
   `BatchDelta`'s entries, and the terminal `LeafBase`'s main frame slots,
