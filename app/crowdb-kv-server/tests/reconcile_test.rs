@@ -40,7 +40,7 @@ fn registry_with_group(gid: u64, rid: u64, remotes: &[(u64, &str, bool)]) -> Arc
         );
     }
     store.add_group_without_election(group);
-    registry.add_store(0, Arc::new(store));
+    registry.add_store(0, &Arc::new(store));
     registry
 }
 

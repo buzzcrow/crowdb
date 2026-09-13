@@ -188,7 +188,7 @@ pub async fn load_local_groups(
             group_count = store.group_count(),
             "restore: PxKvStore started from disk"
         );
-        registry.add_store(store_id, store);
+        registry.add_store(store_id, &store);
     }
 }
 

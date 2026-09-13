@@ -563,7 +563,7 @@ async fn run_zone_load(
         };
         loaded.set_status(group_status);
         loaded.rebuild_allocating_disks();
-        if !container.replace_disk_group_if_current(&dg, bind, loaded) {
+        if !container.replace_disk_group_if_current(&dg, bind, &loaded) {
             info!(dg_id, "discarding stale disk-group load result");
             continue;
         }

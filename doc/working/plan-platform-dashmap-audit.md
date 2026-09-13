@@ -26,7 +26,7 @@ Goal: remove correctness-sensitive and request-hot sharded locks, including the 
 ## Phase 4: Atomic routing and ownership
 
 - [x] **Publish coherent KV topology**: merge leaders, replicas, read cursors, endpoint statistics, and write high-watermarks into generation-tagged route snapshots; use compare-and-swap hint updates and exact-generation eviction. Files: `lib/crowdb-kv-client/src/client/topology.rs`, `lib/crowdb-kv-client/src/client/core.rs`, `lib/crowdb-kv-client/src/client/admin.rs`, `lib/crowdb-kv-client/src/client/retry.rs`, `lib/crowdb-kv-client/src/service/watch_notify.rs`.
-- [~] **Publish store and group registries**: replace hot store/group/disk-group indices with RCU snapshots or ordered lock-free maps while preserving compare-if-current replacement and one-time tenure cancellation. Files: `app/crowdb-kv-server/src/store_registry.rs`, `lib/crowdb-kv/src/cluster/px_kv_store.rs`, `app/crowdb-diskdb/src/model/disk_group_container.rs`, affected tests.
+- [x] **Publish store and group registries**: replace hot store/group/disk-group indices with RCU snapshots or ordered lock-free maps while preserving compare-if-current replacement and one-time tenure cancellation. Files: `app/crowdb-kv-server/src/store_registry.rs`, `lib/crowdb-kv/src/cluster/px_kv_store.rs`, `app/crowdb-diskdb/src/model/disk_group_container.rs`, affected tests.
 - [ ] **Publish DiskDB disk membership**: rebuild and atomically publish `disk_index` with allocation routes after membership changes. Files: `app/crowdb-diskdb/src/model/disk_group.rs`, callers and tests.
 
 ## Phase 5: Lifecycle and bounded caches

@@ -521,11 +521,11 @@ async fn create_and_start_stores(
             group_count = group_ids.len(),
             "PxKvStore started successfully"
         );
-        registry.add_store(store_id, store);
+        registry.add_store(store_id, &store);
     }
 
     debug!(
-        store_count = registry.stores.len(),
+        store_count = registry.store_count(),
         "all stores started, management API ready"
     );
 }
@@ -535,7 +535,7 @@ async fn create_and_start_stores(
 /// Continues on errors; aggregates `critical:` messages to the operator.
 async fn graceful_shutdown(registry: Arc<KvStoreRegistry>) {
     info!(
-        store_count = registry.stores.len(),
+        store_count = registry.store_count(),
         "initiating graceful shutdown of crowdb-rpc stores"
     );
 
@@ -545,10 +545,8 @@ async fn graceful_shutdown(registry: Arc<KvStoreRegistry>) {
     crowdb_rpc_ffi::flush_logging();
 
     let mut total_errors = 0usize;
-    for entry in &registry.stores {
-        let store_id = *entry.key();
-        let report = entry
-            .value()
+    for (store_id, store) in registry.stores_snapshot().iter() {
+        let report = store
             .shutdown(std::time::Duration::from_millis(
                 ServerConfig::DEFAULT.shutdown_timeout_ms,
             ))
@@ -556,7 +554,7 @@ async fn graceful_shutdown(registry: Arc<KvStoreRegistry>) {
         if !report.is_clean() {
             total_errors += report.errors.len();
             for err in &report.errors {
-                tracing::error!(s = store_id, "{err}");
+                tracing::error!(s = *store_id, "{err}");
             }
         }
     }

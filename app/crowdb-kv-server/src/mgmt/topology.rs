@@ -22,7 +22,11 @@ use super::RegistryArc;
         responses((status = 200, description = "Cluster topology status", body = TopologyResponse))
     )]
 pub(super) async fn export_topology(State(state): State<RegistryArc>) -> impl IntoResponse {
-    let stores: Vec<StoreStatus> = state.stores.iter().map(|entry| entry.value().status()).collect();
+    let stores: Vec<StoreStatus> = state
+        .stores_snapshot()
+        .values()
+        .map(|store| store.status())
+        .collect();
     let body = serde_json::to_string_pretty(&TopologyResponse { stores }).unwrap();
     ([("content-type", "application/json")], body)
 }

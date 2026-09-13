@@ -4,8 +4,11 @@
 //! Multi-group KV store routing and missing-group error tests.
 
 use crowdb_kv::cluster::group::PxGroup;
+use crowdb_kv::cluster::group_election::LeaderElection;
 use crowdb_kv::cluster::kv_store::KvStore;
 use crowdb_kv::cluster::{PxKvStore, PxLocalReplica, PxLocalReplicaRole};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Barrier};
 
 fn leader_group(group_id: u64, node_id: u64) -> PxGroup {
     let local = PxLocalReplica::new(node_id, PxLocalReplicaRole::Leader);
@@ -103,4 +106,46 @@ async fn add_and_remove_group_dynamic() {
     let r = store.kv_put(1, b"k", b"v", 1, 2, 101, 1001).await;
     assert!(!r.ok);
     assert!(r.error.contains("no kv group"));
+}
+
+#[test]
+fn live_group_replacement_is_atomic_and_cancels_old_tenure() {
+    let store = Arc::new(PxKvStore::new(0, "127.0.0.1:0".parse().unwrap()));
+    store.add_group(leader_group(1, 10));
+    let old = store.get_group(1).expect("old group");
+    let old_tenure = old.tenure_cancel();
+
+    let started = Arc::new(Barrier::new(2));
+    let done = Arc::new(AtomicBool::new(false));
+    let reader_store = Arc::clone(&store);
+    let reader_old = Arc::clone(&old);
+    let reader_started = Arc::clone(&started);
+    let reader_done = Arc::clone(&done);
+    let reader = std::thread::spawn(move || {
+        reader_started.wait();
+        let mut observed = Vec::new();
+        while !reader_done.load(Ordering::Acquire) {
+            let group = reader_store
+                .get_group(1)
+                .expect("replacement must never expose a missing group");
+            observed.push(Arc::ptr_eq(&group, &reader_old));
+        }
+        observed.push(Arc::ptr_eq(
+            &reader_store.get_group(1).expect("new group remains published"),
+            &reader_old,
+        ));
+        observed
+    });
+
+    started.wait();
+    store.add_group(leader_group(1, 20));
+    done.store(true, Ordering::Release);
+
+    let observed = reader.join().expect("reader thread");
+    assert!(!observed.is_empty());
+    assert!(old_tenure.is_cancelled(), "old tenure must be cancelled");
+    let current = store.get_group(1).expect("replacement group");
+    assert!(!Arc::ptr_eq(&current, &old));
+    assert!(!observed.last().copied().expect("final observation"));
+    assert!(!current.tenure_cancel().is_cancelled());
 }

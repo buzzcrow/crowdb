@@ -13,8 +13,9 @@ use crate::cluster::status::{GroupStatus, StatusLevel, StoreStatus};
 use crate::common::config::ServerConfig;
 use crate::common::report::OperationReport;
 use crate::metrics::MetricsRegistry;
+use arc_swap::ArcSwap;
 use bytes::Bytes;
-use dashmap::DashMap;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -25,7 +26,7 @@ use tracing::{debug, info, info_span, Instrument};
 
 pub struct PxKvStore {
     pub store_id: u64,
-    pub(crate) groups: DashMap<u64, Arc<PxGroup>>,
+    groups: ArcSwap<HashMap<u64, Arc<PxGroup>>>,
     pub(crate) server_state: Mutex<RpcTaskState>,
     pub(crate) listen_addr: SocketAddr,
     /// crowdb-rpc server state (R32 migration). Holds the `RpcServer`
@@ -78,7 +79,7 @@ impl PxKvStore {
     pub fn new(store_id: u64, listen_addr: SocketAddr) -> Self {
         Self {
             store_id,
-            groups: DashMap::new(),
+            groups: ArcSwap::from_pointee(HashMap::new()),
             server_state: Mutex::new(RpcTaskState::default()),
             rpc_server_state: Mutex::new(RpcServerState::default()),
             client_rpc_server_state: Mutex::new(RpcServerState::default()),
@@ -212,7 +213,7 @@ impl PxKvStore {
         }
 
         info!(
-            group_count = self.groups.len(),
+            group_count = self.group_count(),
             timeout_ms = per_layer_timeout.as_millis() as u64,
             "PxKvStore shutdown starting"
         );
@@ -225,9 +226,7 @@ impl PxKvStore {
         }
 
         // 2. Cascade into each group. Continue on errors.
-        for entry in &self.groups {
-            let group_id = *entry.key();
-            let group = entry.value();
+        for (group_id, group) in self.groups.load().iter() {
             info!(g = group_id, "shutting down PxGroup");
             let sub = group.shutdown(per_layer_timeout).await;
             if !sub.is_clean() {
@@ -278,10 +277,10 @@ impl PxKvStore {
         let registry = metrics_guard.as_deref();
         let mut groups: Vec<GroupStatus> = self
             .groups
+            .load()
             .iter()
-            .map(|entry| {
-                let group_id = *entry.key();
-                let group = entry.value().status_with_metrics(self.store_id, registry);
+            .map(|(group_id, entry)| {
+                let group = entry.status_with_metrics(self.store_id, registry);
                 status = StatusLevel::worst(status, group.status);
                 messages.extend(
                     group
@@ -324,8 +323,8 @@ impl PxKvStore {
     fn add_group_inner(&self, group: PxGroup, spawn_driver: bool) {
         let group_id = group.group_id;
         let mut group = group;
-        if let Some(prior) = self.groups.get(&group_id) {
-            group.inherit_local_state_from(prior.value());
+        if let Some(prior) = self.get_group(group_id) {
+            group.inherit_local_state_from(&prior);
         }
         // Set the local replica's endpoint from the store's actual bound
         // address (if the server is running) or the configured listen addr,
@@ -393,13 +392,13 @@ impl PxKvStore {
         // and the new driver re-elects, producing split-brain at
         // `term=1` until both drivers eventually step down via
         // heartbeats and the cluster re-races.
-        if let Some(old_arc) = self.groups.insert(group_id, arc) {
+        if let Some(old_arc) = self.insert_group(group_id, &arc) {
             old_arc.tenure_cancel().cancel();
         }
     }
 
     pub fn get_group(&self, group_id: u64) -> Option<Arc<PxGroup>> {
-        self.groups.get(&group_id).map(|r| r.clone())
+        self.groups.load().get(&group_id).cloned()
     }
 
     /// Build the shared in-process operation facade for one hosted group.
@@ -470,14 +469,14 @@ impl PxKvStore {
     pub fn remove_group(&self, group_id: u64) -> bool {
         // Cancel the removed group's per-tenure token so its election
         // driver (and, if it is the leader, its heartbeat loop) stops.
-        // Dropping the `DashMap` entry alone is not enough: the running
+        // Dropping the published entry alone is not enough: the running
         // `run_leader_state` / `run_election_driver` task holds its own
         // strong `Arc<PxGroup>` for the duration of the tenure, so the
         // group is not dropped and a removed leader would keep sending
         // heartbeats forever — starving the surviving replicas' election
         // deadline so they can never re-elect. Mirror `add_group`'s
         // synchronous cancel on replacement.
-        if let Some((_, group)) = self.groups.remove(&group_id) {
+        if let Some(group) = self.remove_group_entry(group_id) {
             group.tenure_cancel().cancel();
             true
         } else {
@@ -486,12 +485,12 @@ impl PxKvStore {
     }
 
     pub fn group_count(&self) -> usize {
-        self.groups.len()
+        self.groups.load().len()
     }
 
     /// All hosted group IDs on this store.
     pub fn group_ids(&self) -> Vec<u64> {
-        self.groups.iter().map(|e| *e.key()).collect()
+        self.groups.load().keys().copied().collect()
     }
 
     /// Iterate all groups, calling `f` with each `Arc<PxGroup>`.
@@ -500,8 +499,8 @@ impl PxKvStore {
     where
         F: FnMut(&Arc<PxGroup>),
     {
-        for entry in &self.groups {
-            f(entry.value());
+        for group in self.groups.load().values() {
+            f(group);
         }
     }
 
@@ -510,9 +509,9 @@ impl PxKvStore {
     pub fn group_summaries(&self) -> Vec<(u64, u64, u64, usize)> {
         let mut out: Vec<(u64, u64, u64, usize)> = self
             .groups
-            .iter()
-            .map(|entry| {
-                let group = entry.value();
+            .load()
+            .values()
+            .map(|group| {
                 (
                     group.group_id,
                     group.local_replica().id,
@@ -523,6 +522,35 @@ impl PxKvStore {
             .collect();
         out.sort_by_key(|(gid, _, _, _)| *gid);
         out
+    }
+
+    pub(crate) fn groups_snapshot(&self) -> Arc<HashMap<u64, Arc<PxGroup>>> {
+        self.groups.load_full()
+    }
+
+    fn insert_group(&self, group_id: u64, group: &Arc<PxGroup>) -> Option<Arc<PxGroup>> {
+        loop {
+            let current = self.groups.load_full();
+            let mut replacement = (*current).clone();
+            let previous_group = replacement.insert(group_id, Arc::clone(group));
+            let previous = self.groups.compare_and_swap(&current, Arc::new(replacement));
+            if Arc::ptr_eq(&previous, &current) {
+                return previous_group;
+            }
+        }
+    }
+
+    fn remove_group_entry(&self, group_id: u64) -> Option<Arc<PxGroup>> {
+        loop {
+            let current = self.groups.load_full();
+            let group = current.get(&group_id)?.clone();
+            let mut replacement = (*current).clone();
+            replacement.remove(&group_id);
+            let previous = self.groups.compare_and_swap(&current, Arc::new(replacement));
+            if Arc::ptr_eq(&previous, &current) {
+                return Some(group);
+            }
+        }
     }
 
     // ── KV operations ─────────────────────────────────────────

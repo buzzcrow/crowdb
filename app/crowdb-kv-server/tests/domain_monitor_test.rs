@@ -76,7 +76,7 @@ fn registry_with_group_zero(role: PxLocalReplicaRole) -> (Arc<KvStoreRegistry>, 
     let registry = Arc::new(KvStoreRegistry::with_config(CrowDBConfig::for_tests()));
     let store = Arc::new(PxKvStore::new(0, "127.0.0.1:0".parse().unwrap()));
     store.add_group(PxGroup::new(0, PxLocalReplica::new(1, role)));
-    registry.add_store(0, Arc::clone(&store));
+    registry.add_store(0, &store);
     (registry, store)
 }
 

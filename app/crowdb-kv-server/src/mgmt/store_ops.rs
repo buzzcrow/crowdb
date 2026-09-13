@@ -26,16 +26,12 @@ use super::{err_json, ErrorResponse, RegistryArc};
     )]
 pub(super) async fn list_stores(State(state): State<RegistryArc>) -> Json<StoreListResponse> {
     let stores: Vec<StoreSummary> = state
-        .stores
+        .stores_snapshot()
         .iter()
-        .map(|entry| {
-            let store_id = *entry.key();
-            let store = entry.value();
-            StoreSummary {
-                store_id,
-                listen_addr: store.listen_addr().map(|a| a.to_string()),
-                group_count: store.group_count(),
-            }
+        .map(|(store_id, store)| StoreSummary {
+            store_id: *store_id,
+            listen_addr: store.listen_addr().map(|a| a.to_string()),
+            group_count: store.group_count(),
         })
         .collect();
     Json(StoreListResponse { stores })
@@ -95,7 +91,7 @@ pub(super) async fn add_store(
     State(state): State<RegistryArc>,
     Json(req): Json<AddStoreRequest>,
 ) -> Result<(StatusCode, Json<StoreSummary>), (StatusCode, Json<ErrorResponse>)> {
-    if state.stores.contains_key(&req.store_id) {
+    if state.contains_store(req.store_id) {
         return Err(err_json(
             StatusCode::CONFLICT,
             format!("store {} already exists", req.store_id),
@@ -148,7 +144,7 @@ pub(super) async fn add_store(
         group_count: 0,
     };
 
-    state.add_store(req.store_id, store);
+    state.add_store(req.store_id, &store);
     Ok((StatusCode::CREATED, Json(summary)))
 }
 

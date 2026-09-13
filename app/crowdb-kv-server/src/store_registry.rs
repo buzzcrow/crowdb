@@ -1,12 +1,13 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use arc_swap::ArcSwap;
 use crowdb_kv::cluster::px_kv_store::PxKvStore;
 use crowdb_kv::common::config::CrowDBConfig;
 use crowdb_kv::kv::CrowdbTreeBackend;
 use crowdb_kv::metrics::MetricsRegistry;
 use crowdb_kv::wal::IoBackend;
-use dashmap::DashMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -35,7 +36,7 @@ pub(crate) fn parse_crowtree_backend(s: &str) -> CrowdbTreeBackend {
 }
 
 pub struct KvStoreRegistry {
-    pub stores: DashMap<u64, Arc<PxKvStore>>,
+    stores: ArcSwap<HashMap<u64, Arc<PxKvStore>>>,
     /// Unified cluster configuration (all sub-configs + flags + paths).
     pub config: CrowDBConfig,
     /// Parsed WAL I/O backend (derived from `config.wal_backend`).
@@ -70,7 +71,7 @@ impl KvStoreRegistry {
         let crowtree_backend = parse_crowtree_backend(&config.crowtree_backend);
         let rpc_workers = config.server.rpc_workers;
         Self {
-            stores: DashMap::new(),
+            stores: ArcSwap::from_pointee(HashMap::new()),
             wal_backend,
             crowtree_backend,
             config,
@@ -131,23 +132,60 @@ impl KvStoreRegistry {
         self.port_pool.lock().unwrap().first().copied()
     }
 
-    pub fn add_store(&self, store_id: u64, store: Arc<PxKvStore>) {
-        self.stores.insert(store_id, store);
+    pub fn add_store(&self, store_id: u64, store: &Arc<PxKvStore>) {
+        loop {
+            let current = self.stores.load_full();
+            let mut replacement = (*current).clone();
+            replacement.insert(store_id, Arc::clone(store));
+            let previous = self.stores.compare_and_swap(&current, Arc::new(replacement));
+            if Arc::ptr_eq(&previous, &current) {
+                return;
+            }
+        }
     }
 
     #[must_use]
     pub fn get_store(&self, store_id: u64) -> Option<Arc<PxKvStore>> {
-        self.stores.get(&store_id).map(|r| r.clone())
+        self.stores.load().get(&store_id).cloned()
     }
 
     /// All hosted store IDs.
     #[must_use]
     pub(crate) fn store_ids(&self) -> Vec<u64> {
-        self.stores.iter().map(|e| *e.key()).collect()
+        self.stores.load().keys().copied().collect()
     }
 
     #[must_use]
     pub(crate) fn remove_store(&self, store_id: u64) -> Option<Arc<PxKvStore>> {
-        self.stores.remove(&store_id).map(|(_, v)| v)
+        loop {
+            let current = self.stores.load_full();
+            let store = current.get(&store_id)?.clone();
+            let mut replacement = (*current).clone();
+            replacement.remove(&store_id);
+            let previous = self.stores.compare_and_swap(&current, Arc::new(replacement));
+            if Arc::ptr_eq(&previous, &current) {
+                return Some(store);
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn stores_snapshot(&self) -> Arc<HashMap<u64, Arc<PxKvStore>>> {
+        self.stores.load_full()
+    }
+
+    #[must_use]
+    pub(crate) fn contains_store(&self, store_id: u64) -> bool {
+        self.stores.load().contains_key(&store_id)
+    }
+
+    #[must_use]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.stores.load().is_empty()
+    }
+
+    #[must_use]
+    pub fn store_count(&self) -> usize {
+        self.stores.load().len()
     }
 }
