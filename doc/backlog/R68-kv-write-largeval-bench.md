@@ -74,7 +74,7 @@ requirement.
   the 15-second case. If profile defaults change before implementation, the
   benchmark must set case-local maintenance thresholds rather than lengthen or
   weaken the election timeout.
-- R66 is independent: this case continues to use mem-block WAL and KV backends
+- WAL backend selection is independent: this case continues to use mem-block WAL and KV backends
   to isolate maintenance scheduling from physical disk latency.
 
 **Acceptance**:

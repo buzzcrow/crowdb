@@ -101,14 +101,6 @@ requirement is implemented.
   optimization, not correctness — the safety-net poller covers missed
   notifies.
 
-- **[R66](R66-kv-wal-io-uring.md)** — durable buffered-file WAL io_uring
-  backend — Area: kv / WAL / correctness — First replace the default `File`
-  backend's current no-op `fdatasync` with a real durability barrier. Then add
-  an explicitly selected Linux `Uring` backend using a standalone safe adapter
-  over `DiskIOUring` for vectored writes, reads, and sync completion. Retain
-  buffered arbitrary-offset WAL files and the portable default; defer
-  `O_DIRECT`, automatic selection, and sharing a tree-owned ring.
-
 ### Data Path (diskio + chunk object writers + read flow)
 
 Chunk reads, read repair, mirror-to-EC conversion, write error handling, and
