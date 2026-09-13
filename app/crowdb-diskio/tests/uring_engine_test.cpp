@@ -221,12 +221,17 @@ TEST(UringEngine, InFlightCountViaUringEngine)
     engine.uring().register_fd(disk.fd());
 
     EXPECT_EQ(engine.uring().in_flight_count(disk.fd()), 0u);
+    EXPECT_EQ(engine.uring().total_in_flight_count(), 0u);
 
     std::vector<uint8_t> in(4096, 0xCD);
     std::atomic<bool>    done{false};
-    engine.submit_write(&disk, 0, in.data(), in.size(), [&](int) { done.store(true, std::memory_order_release); });
+    engine.submit_write(&disk, 0, in.data(), in.size(), [&](int) {
+        EXPECT_EQ(engine.uring().total_in_flight_count(), 0u);
+        done.store(true, std::memory_order_release);
+    });
     ASSERT_TRUE(wait_for([&] { return done.load(std::memory_order_acquire); }));
     EXPECT_EQ(engine.uring().in_flight_count(disk.fd()), 0u);
+    EXPECT_EQ(engine.uring().total_in_flight_count(), 0u);
 
     std::remove(path.c_str());
 }

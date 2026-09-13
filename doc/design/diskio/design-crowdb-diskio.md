@@ -134,6 +134,13 @@ production path (if liburing is not available at build time).
 The `IoEngine` virtual base abstracts over both backends so the RPC
 layer is backend-agnostic.
 
+Read, write, and fsync latency is measured from engine submission through
+completion with the same `diskio.engine.*.lh` histograms for both backends.
+The io_uring backend additionally publishes current in-flight operations and
+SQ saturation as `diskio.uring.inflight.g` and `diskio.uring.sq_full.c`.
+RPC request and response send-queue pressure remains owned by crowdb-rpc's
+transport latency and rejection counters rather than being duplicated here.
+
 ### 3.3 Control + data separation in the RPC frame
 
 A diskio RPC frame carries a small flatbuffer control message

@@ -4,6 +4,7 @@
 #include "crowdb-common/diskio_uring.h"
 
 #include "crowdb-common/log.h"
+#include "crowdb-common/metrics/metrics.h"
 
 #include <sched.h>
 #include <sys/epoll.h>
@@ -18,8 +19,29 @@
 namespace crowdb::common
 {
 
+namespace
+{
+std::atomic<uint64_t> uring_in_flight{0};
+
+crowdb::common::metrics::Counter &uring_sq_full_metric()
+{
+    static auto *counter =
+        crowdb::common::metrics::MetricsRegistry::global().register_counter("diskio.uring.sq_full.c");
+    return *counter;
+}
+
+void register_uring_metrics()
+{
+    static auto *in_flight = crowdb::common::metrics::MetricsRegistry::global().register_callback_gauge(
+        "diskio.uring.inflight.g", [] { return uring_in_flight.load(std::memory_order_relaxed); });
+    (void)in_flight;
+    (void)uring_sq_full_metric();
+}
+} // namespace
+
 DiskIOUring::DiskIOUring(Topology topo)
 {
+    register_uring_metrics();
     if (topo.pipelines.empty()) {
         CRB_LOG_ERROR("DiskIOUring: empty topology (zero pipelines)");
         return;
@@ -142,6 +164,10 @@ DiskIOUring::~DiskIOUring()
             ::io_uring_queue_exit(&p->ring);
             ::close(p->eventfd);
         }
+    }
+    uint64_t abandoned = total_in_flight_.exchange(0, std::memory_order_relaxed);
+    if (abandoned != 0) {
+        uring_in_flight.fetch_sub(abandoned, std::memory_order_relaxed);
     }
 }
 
@@ -311,16 +337,24 @@ void DiskIOUring::submit_lockfree(Pipeline &p, int fd, std::function<void(int)> 
     if (fd >= 0 && fd < fd_table_size_) {
         fd_in_flight_[fd].fetch_add(1, std::memory_order_acq_rel);
     }
+    total_in_flight_.fetch_add(1, std::memory_order_relaxed);
+    uring_in_flight.fetch_add(1, std::memory_order_relaxed);
 
     auto *entry = new CallbackEntry{.cb = std::move(on_complete), .fd = fd, .next_free = {}};
 
     // CAS loop: check capacity BEFORE claiming a slot.
+    bool observed_full = false;
     for (int attempt = 0; attempt < 1000; ++attempt) {
         unsigned tail = p.sq_tail.load(std::memory_order_acquire);
         unsigned head = io_uring_load_sq_head(&p.ring);
 
         if (tail - head >= p.ring.sq.ring_entries) {
             // SQ full — wake poll thread, yield, retry.
+            if (!observed_full) {
+                uring_sq_full_metric().inc();
+                sq_full_count_.fetch_add(1, std::memory_order_relaxed);
+                observed_full = true;
+            }
             mark_pending(p);
             std::this_thread::yield();
             continue;
@@ -346,6 +380,8 @@ void DiskIOUring::submit_lockfree(Pipeline &p, int fd, std::function<void(int)> 
     if (fd >= 0 && fd < fd_table_size_) {
         fd_in_flight_[fd].fetch_sub(1, std::memory_order_acq_rel);
     }
+    total_in_flight_.fetch_sub(1, std::memory_order_relaxed);
+    uring_in_flight.fetch_sub(1, std::memory_order_relaxed);
 }
 
 void DiskIOUring::publish_ready_sqes(Pipeline &p)
@@ -555,11 +591,13 @@ void DiskIOUring::drain_cqes(Pipeline &p)
         ::io_uring_cqe_seen(&p.ring, cqe);
 
         if (entry != nullptr) {
-            if (entry->cb) {
-                entry->cb(res);
-            }
             if (entry->fd >= 0 && entry->fd < fd_table_size_) {
                 fd_in_flight_[entry->fd].fetch_sub(1, std::memory_order_acq_rel);
+            }
+            total_in_flight_.fetch_sub(1, std::memory_order_relaxed);
+            uring_in_flight.fetch_sub(1, std::memory_order_relaxed);
+            if (entry->cb) {
+                entry->cb(res);
             }
             entry->next_free = p.free_list;
             p.free_list      = entry;

@@ -141,6 +141,7 @@ async fn semantic_client_owns_route_transport_payload_and_durability() {
         client.read(target, 12_288, 16, client.normal_options()).await,
         Err(DiskioError::Backpressure(_))
     ));
+    assert_eq!(client.status().admission_rejections, 1);
     client
         .read(target, 12_288, 16, client.normal_options().priority())
         .await

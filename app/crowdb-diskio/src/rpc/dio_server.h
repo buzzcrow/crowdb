@@ -21,6 +21,11 @@
 #include <memory>
 #include <string>
 
+namespace crowdb::common::metrics
+{
+class LatencyHistogram;
+}
+
 namespace crowdb::diskio
 {
 
@@ -47,9 +52,12 @@ class DiskioServer
     void register_handlers(crowdb::rpc::RpcServer &server);
 
   private:
-    std::shared_ptr<DiskSet>      disk_set_;
-    crowdb::rpc::SocketTransport *transport_;
-    AlignedWriter                 aligned_writer_;
+    std::shared_ptr<DiskSet>                   disk_set_;
+    crowdb::rpc::SocketTransport              *transport_;
+    AlignedWriter                              aligned_writer_;
+    crowdb::common::metrics::LatencyHistogram *read_latency_;
+    crowdb::common::metrics::LatencyHistogram *write_latency_;
+    crowdb::common::metrics::LatencyHistogram *fsync_latency_;
 
     // Build a response control buffer for a diskio response msg_type.
     // ret_code is a proto::FBDiskIoRetCode value (int16_t to avoid

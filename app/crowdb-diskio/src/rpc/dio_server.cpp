@@ -3,6 +3,7 @@
 
 #include "rpc/dio_server.h"
 
+#include "crowdb-common/metrics/metrics.h"
 #include "crowdb-rpc/server/message.h"
 #include "crowdb-rpc/server/server.h"
 #include "disk/disk.h"
@@ -23,10 +24,44 @@ namespace crowdb::diskio
 namespace dproto = crowdb::diskio::proto;
 namespace rproto = crowdb::rpc::proto;
 
+namespace
+{
+crowdb::common::metrics::LatencyHistogram &engine_read_latency_metric()
+{
+    static auto *metric =
+        crowdb::common::metrics::MetricsRegistry::global().register_histogram("diskio.engine.read.lh");
+    return *metric;
+}
+
+crowdb::common::metrics::LatencyHistogram &engine_write_latency_metric()
+{
+    static auto *metric =
+        crowdb::common::metrics::MetricsRegistry::global().register_histogram("diskio.engine.write.lh");
+    return *metric;
+}
+
+crowdb::common::metrics::LatencyHistogram &engine_fsync_latency_metric()
+{
+    static auto *metric =
+        crowdb::common::metrics::MetricsRegistry::global().register_histogram("diskio.engine.fsync.lh");
+    return *metric;
+}
+
+uint64_t elapsed_nanos(std::chrono::steady_clock::time_point started)
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count());
+}
+
+} // namespace
+
 DiskioServer::DiskioServer(std::shared_ptr<DiskSet> disk_set, crowdb::rpc::SocketTransport *transport)
     : disk_set_(std::move(disk_set)),
       transport_(transport),
-      aligned_writer_()
+      aligned_writer_(),
+      read_latency_(&engine_read_latency_metric()),
+      write_latency_(&engine_write_latency_metric()),
+      fsync_latency_(&engine_fsync_latency_metric())
 {
 }
 
@@ -123,8 +158,10 @@ crowdb::rpc::OutFrame *DiskioServer::handle_write(crowdb::rpc::Frame *request, c
     }
 
     uint64_t ordering_phys_offset = zone->base_offset + ordering_zone_offset;
+    auto     started              = std::chrono::steady_clock::now();
     aligned_writer_.submit_ordered(disk, phys_offset, data_buf ? data_buf->data : nullptr, size, ordering_phys_offset,
-                                   [this, conn, req_id, create_nano, msg_type, data_buf, size](int res) {
+                                   [this, conn, req_id, create_nano, msg_type, data_buf, size, started](int res) {
+                                       write_latency_->observe(elapsed_nanos(started));
                                        int16_t ret_code = static_cast<int16_t>(dproto::FBDiskIoRetCode_Success);
                                        if (res < 0) {
                                            ret_code = static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError);
@@ -192,8 +229,10 @@ crowdb::rpc::OutFrame *DiskioServer::handle_read(crowdb::rpc::Frame *request, cr
     delete request;
 
     Disk *disk_ptr = disk.get();
+    auto  started  = std::chrono::steady_clock::now();
     disk_ptr->engine()->submit_read(disk_ptr, phys_offset, read_buf->data, size, test_pattern_offset,
-                                    [this, conn, req_id, create_nano, msg_type, read_buf, size](int res) {
+                                    [this, conn, req_id, create_nano, msg_type, read_buf, size, started](int res) {
+                                        read_latency_->observe(elapsed_nanos(started));
                                         int16_t ret_code = static_cast<int16_t>(dproto::FBDiskIoRetCode_Success);
                                         crowdb::rpc::Buffer *data = nullptr;
                                         if (res < 0) {
@@ -245,7 +284,9 @@ crowdb::rpc::OutFrame *DiskioServer::handle_fsync(crowdb::rpc::Frame *request, c
     delete request;
 
     Disk *disk_ptr = disk.get();
-    disk_ptr->engine()->submit_fsync(disk_ptr, [this, conn, req_id, create_nano, msg_type](int res) {
+    auto  started  = std::chrono::steady_clock::now();
+    disk_ptr->engine()->submit_fsync(disk_ptr, [this, conn, req_id, create_nano, msg_type, started](int res) {
+        fsync_latency_->observe(elapsed_nanos(started));
         int16_t ret_code = (res < 0) ? static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError)
                                      : static_cast<int16_t>(dproto::FBDiskIoRetCode_Success);
         auto   *pool     = conn->pool();

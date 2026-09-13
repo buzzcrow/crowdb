@@ -133,6 +133,20 @@ class DiskIOUring
     // Number of in-flight ops for a fd (for monitoring / testing).
     [[nodiscard]] uint32_t in_flight_count(int fd) const;
 
+    // Total operations submitted through this instance that have not yet
+    // completed. Includes requests retrying an exhausted SQ.
+    [[nodiscard]] uint64_t total_in_flight_count() const
+    {
+        return total_in_flight_.load(std::memory_order_relaxed);
+    }
+
+    // Number of submissions on this instance that observed an exhausted SQ
+    // before either acquiring a slot or returning an error.
+    [[nodiscard]] uint64_t sq_full_count() const
+    {
+        return sq_full_count_.load(std::memory_order_relaxed);
+    }
+
     // Unregister fd: cancel in-flight, wait for CQEs to drain, clear slot.
     void unregister_fd(int fd);
 
@@ -244,6 +258,8 @@ class DiskIOUring
     // fd_table: direct-indexed by fd, sized once to ulimit -n.
     std::vector<FdEntry>                     fd_table_;
     std::unique_ptr<std::atomic<uint32_t>[]> fd_in_flight_;
+    std::atomic<uint64_t>                    total_in_flight_{0};
+    std::atomic<uint64_t>                    sq_full_count_{0};
     int                                      fd_table_size_{0};
 
     // Pipelines and poll threads (unique_ptr because atomics are non-movable).

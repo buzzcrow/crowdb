@@ -176,7 +176,7 @@ struct Counters {
     normal_inflight: AtomicU64,
     priority_inflight: AtomicU64,
     retries: AtomicU64,
-    queue_rejections: AtomicU64,
+    admission_rejections: AtomicU64,
     ambiguous_writes: AtomicU64,
     connect_attempts: AtomicU64,
     reconnect_attempts: AtomicU64,
@@ -622,9 +622,8 @@ impl DiskioClient {
             priority_connections: self.priority.connection_count(),
             priority_healthy_connections: self.priority.healthy_count(),
             inflight: self.counters.inflight.load(Ordering::Relaxed),
-            queued: 0,
             retries: self.counters.retries.load(Ordering::Relaxed),
-            queue_rejections: self.counters.queue_rejections.load(Ordering::Relaxed),
+            admission_rejections: self.counters.admission_rejections.load(Ordering::Relaxed),
             ambiguous_writes: self.counters.ambiguous_writes.load(Ordering::Relaxed),
             connect_attempts: self.counters.connect_attempts.load(Ordering::Relaxed),
             reconnect_attempts: self.counters.reconnect_attempts.load(Ordering::Relaxed),
@@ -675,7 +674,7 @@ impl DiskioClient {
             (current < pending_limit).then_some(current + 1)
         });
         if admitted.is_err() {
-            self.counters.queue_rejections.fetch_add(1, Ordering::Relaxed);
+            self.counters.admission_rejections.fetch_add(1, Ordering::Relaxed);
             return Err(DiskioError::Backpressure(format!(
                 "semantic pending-call limit {} reached",
                 self.config.max_pending_calls
@@ -895,7 +894,6 @@ impl DiskioClient {
     fn classify_wire(&self, error: WireError, operation: OperationKind) -> DiskioError {
         match error {
             WireError::Rpc(RpcError::SendQueueFull) => {
-                self.counters.queue_rejections.fetch_add(1, Ordering::Relaxed);
                 DiskioError::Backpressure("RPC send queue is full".into())
             }
             WireError::Rpc(error) if error.is_retryable() => {
