@@ -1,12 +1,55 @@
 use super::{
-    hash_to_bucket, warn, Arc, Cache, CacheHint, Chunk, ChunkId, ChunkStore, DashMap, Duration,
-    LifecycleError, LifecycleMetrics, LockPolicy, Mutex, OwnedMutexGuard, StoreError,
+    hash_to_bucket, warn, Arc, Cache, CacheHint, Chunk, ChunkId, ChunkStore, Duration, LifecycleError,
+    LifecycleMetrics, LockPolicy, Mutex, OwnedMutexGuard, StoreError,
 };
+use crossbeam_skiplist::SkipMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
+
+const REAPING: usize = usize::MAX;
+
+struct ChunkLockEntry {
+    mutex: Arc<Mutex<()>>,
+    users: AtomicUsize,
+}
+
+impl ChunkLockEntry {
+    fn new() -> Self {
+        Self {
+            mutex: Arc::new(Mutex::new(())),
+            users: AtomicUsize::new(0),
+        }
+    }
+
+    fn try_retain(&self) -> bool {
+        self.users
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |users| {
+                (users != REAPING).then_some(users + 1)
+            })
+            .is_ok()
+    }
+
+    fn try_mark_reaping(&self) -> bool {
+        self.users
+            .compare_exchange(0, REAPING, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+}
+
+struct ChunkLockHandle {
+    entry: Arc<ChunkLockEntry>,
+}
+
+impl Drop for ChunkLockHandle {
+    fn drop(&mut self) {
+        let previous = self.entry.users.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous != 0 && previous != REAPING);
+    }
+}
 
 /// Per-chunk lock map + payload cache.
 pub struct ChunkLockMap {
-    locks: DashMap<ChunkId, Arc<Mutex<()>>>,
+    locks: SkipMap<(u64, u64), Arc<ChunkLockEntry>>,
     chunks: Arc<Cache<ChunkId, Chunk>>,
     metrics: Arc<LifecycleMetrics>,
     hold_warn_threshold: Duration,
@@ -17,7 +60,7 @@ impl ChunkLockMap {
     #[must_use]
     pub fn new(cache_capacity: usize, metrics: Arc<LifecycleMetrics>, hold_warn_threshold: Duration) -> Self {
         Self {
-            locks: DashMap::new(),
+            locks: SkipMap::new(),
             chunks: Arc::new(Cache::new(cache_capacity)),
             metrics,
             hold_warn_threshold,
@@ -33,9 +76,9 @@ impl ChunkLockMap {
         policy: &LockPolicy,
         hint: CacheHint,
     ) -> Result<ChunkGuard, LifecycleError> {
-        let mutex = self.get_or_create_lock(chunk_id);
+        let lock = self.get_or_create_lock(chunk_id);
         let wait_start = Instant::now();
-        let guard = self.acquire_lock(&mutex, policy).await?;
+        let guard = self.acquire_lock(&lock.entry.mutex, policy).await?;
         let wait_dur = wait_start.elapsed();
         self.metrics
             .record_lock_wait(u64::try_from(wait_dur.as_micros()).unwrap_or(u64::MAX));
@@ -57,6 +100,7 @@ impl ChunkLockMap {
             }
         };
         Ok(ChunkGuard {
+            lock,
             guard,
             chunk,
             hint,
@@ -76,13 +120,14 @@ impl ChunkLockMap {
         policy: &LockPolicy,
         hint: CacheHint,
     ) -> Result<ChunkGuard, LifecycleError> {
-        let mutex = self.get_or_create_lock(chunk_id);
+        let lock = self.get_or_create_lock(chunk_id);
         let wait_start = Instant::now();
-        let guard = self.acquire_lock(&mutex, policy).await?;
+        let guard = self.acquire_lock(&lock.entry.mutex, policy).await?;
         let wait_dur = wait_start.elapsed();
         self.metrics
             .record_lock_wait(u64::try_from(wait_dur.as_micros()).unwrap_or(u64::MAX));
         Ok(ChunkGuard {
+            lock,
             guard,
             chunk: None,
             hint,
@@ -100,11 +145,14 @@ impl ChunkLockMap {
         self.chunks.insert(*chunk_id, chunk);
     }
 
-    /// Reap uncontended lock entries (`Arc::strong_count == 1`).
+    /// Reap entries with no owner, waiter, or acquisition in progress.
     pub fn reap_idle(&self) {
-        let before = self.locks.len();
-        self.locks.retain(|_, arc| Arc::strong_count(arc) > 1);
-        let removed = before.saturating_sub(self.locks.len());
+        let mut removed = 0usize;
+        self.locks.iter().for_each(|entry| {
+            if entry.value().try_mark_reaping() && entry.remove() {
+                removed += 1;
+            }
+        });
         self.metrics
             .record_reap_idle(u64::try_from(removed).unwrap_or(u64::MAX));
     }
@@ -152,11 +200,25 @@ impl ChunkLockMap {
         self.metrics.snapshot(self.cache_len())
     }
 
-    fn get_or_create_lock(&self, chunk_id: &ChunkId) -> Arc<Mutex<()>> {
-        self.locks
-            .entry(*chunk_id)
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
+    fn get_or_create_lock(&self, chunk_id: &ChunkId) -> ChunkLockHandle {
+        let key = (chunk_id.high, chunk_id.low);
+        loop {
+            let entry = self.locks.get_or_insert(key, Arc::new(ChunkLockEntry::new()));
+            let lock = Arc::clone(entry.value());
+            if !lock.try_retain() {
+                std::hint::spin_loop();
+                continue;
+            }
+
+            let still_current = self
+                .locks
+                .get(&key)
+                .is_some_and(|current| Arc::ptr_eq(current.value(), &lock));
+            if still_current {
+                return ChunkLockHandle { entry: lock };
+            }
+            drop(ChunkLockHandle { entry: lock });
+        }
     }
 
     async fn acquire_lock(
@@ -188,6 +250,9 @@ impl ChunkLockMap {
 /// Guard — holds the per-chunk lock, carries the latest chunk record.
 /// Lock is released on drop; hold time is recorded into metrics.
 pub struct ChunkGuard {
+    #[allow(dead_code)]
+    // Retains this exact lock-map entry until the mutex guard is dropped.
+    lock: ChunkLockHandle,
     #[allow(dead_code)]
     // Held for Drop — releases the per-chunk lock. Never read directly.
     guard: OwnedMutexGuard<()>,

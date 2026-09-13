@@ -31,7 +31,7 @@ Goal: remove correctness-sensitive and request-hot sharded locks, including the 
 
 ## Phase 5: Lifecycle and bounded caches
 
-- [ ] **Make chunk locks lock-free**: use an ordered lock-free index and exact-entry idle removal so overlapping acquisition/reaping retains one mutex identity. Files: `app/crowdb-chunkdb/src/lifecycle/lock_map.rs`, `app/crowdb-chunkdb/src/lifecycle/handler.rs`, `app/crowdb-chunkdb/tests/lifecycle_test.rs`.
+- [x] **Make chunk locks lock-free**: use an ordered lock-free index and exact-entry idle removal so overlapping acquisition/reaping retains one mutex identity. Files: `app/crowdb-chunkdb/src/lifecycle/lock_map.rs`, `app/crowdb-chunkdb/src/lifecycle/handler.rs`, `app/crowdb-chunkdb/tests/lifecycle_test.rs`.
 - [ ] **Bound tentative allocations**: index tentative blocks by identity and allocation timestamp with an atomic budget, evict oldest incarnations, converge under concurrency, and retain durable fallback/exact removal. Files: `app/crowdb-diskdb/src/model/disk_group.rs`, allocation callers, `app/crowdb-diskdb/tests/disk_alloc_test.rs`.
 - [ ] **Single-flight discovery refresh**: retain the classified cache, replace mutable round-robin state with atomic cursors, and coalesce simultaneous per-service refreshes without holding a guard across I/O. Files: `lib/crowdb-kv-client/src/service/discovery.rs`, tests.
 

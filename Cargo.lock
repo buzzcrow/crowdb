@@ -698,6 +698,7 @@ dependencies = [
  "bincode",
  "bytes",
  "clap",
+ "crossbeam-skiplist",
  "crowdb-chunkdb",
  "crowdb-common",
  "crowdb-diskdb",
