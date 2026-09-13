@@ -36,7 +36,7 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 ## Phase 3: Server and RPC
 
-- [~] Add `crowdb-chunk-kv-server` config, logging, metrics, health,
+- [x] Add `crowdb-chunk-kv-server` config, logging, metrics, health,
   management, graceful shutdown, and zero/many partition hosting.
 - [x] Reopen each locally assigned latest tree root and stream manifest as
   `Prepared`, replay from the root's WAL offset through the durable tail, and
@@ -59,8 +59,8 @@ R142 partitions and publishes one complete group-0 range catalog.
 
 ## Phase 5: Gates and Documentation
 
-- [ ] Add protocol, catalog, lease, monitor, RPC, lifecycle, and fixture tests.
-- [ ] Run every required Rust and server gate through `pixi run`.
+- [x] Add protocol, catalog, lease, monitor, RPC, lifecycle, and fixture tests.
+- [x] Run every required Rust and server gate through `pixi run`.
 - [x] Fold stable behavior into a permanent server design and index entry.
 
 ## Gate Results
@@ -69,14 +69,13 @@ R142 partitions and publishes one complete group-0 range catalog.
 - `rs-lint`: passed for the full workspace.
 - `crowdb-kv-client`, `crowdb-chunk-kv`, `crowdb-chunk-kv-server`,
   `crowdb-chunkdb`, and `crowdb-diskdb` all-target test gates: passed.
-- The first aggregate `test-server` run failed only
-  `reconfig_via_api_remove_leader` on a transport timeout; the exact clean-env
-  retry passed.
-- The second aggregate run passed KV server, diskdb, diskdb-client, and chunkdb,
-  then exposed three chunk-client cross-test failures: one stale lifecycle state
-  and two fixture startup/port conflicts. Each exact test passed independently
-  after `clean-env`. These failures are pre-existing suite isolation behavior;
-  R143 changes do not touch those paths.
+- Clean aggregate `test-server`: passed KV server, diskdb, diskdb-client,
+  chunkdb, chunk-client, and diskio-client stages.
+- The real three-owner MemDisk production regression passed with 30,000
+  acknowledged writes and no errors. Automatic count and 5 MiB size splitting
+  converged to 13 partitions distributed 5/4/4, recorded 12 split fences and
+  12 commits, and recovered five assigned partitions plus an acknowledged key
+  after restart in 1,050 ms.
 
 ## Open Issues
 

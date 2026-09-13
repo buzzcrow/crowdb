@@ -54,7 +54,7 @@ impl ConversionDiskIo {
             .map_err(|error| ConversionIoError::Topology(format!("start RPC client: {error}")))?;
         server.start();
         let client = Arc::new(DiskioClient::new());
-        let routes = discover(service, hardware, &server, &client).await?;
+        let routes = discover(service, hardware, &server, &client, None).await?;
         Ok(Self {
             client,
             server,
@@ -67,7 +67,15 @@ impl ConversionDiskIo {
         service: &ServiceRegistryClient,
         hardware: &HardwareClient,
     ) -> Result<(), ConversionIoError> {
-        let routes = discover(service, hardware, &self.server, &self.client).await?;
+        let current = self.routes.load_full();
+        let routes = discover(
+            service,
+            hardware,
+            &self.server,
+            &self.client,
+            Some(current.as_ref()),
+        )
+        .await?;
         self.routes.store(Arc::new(routes));
         Ok(())
     }
@@ -171,6 +179,7 @@ async fn discover(
     hardware: &HardwareClient,
     server: &RpcServer,
     client: &DiskioClient,
+    current: Option<&HashMap<DiskId, Route>>,
 ) -> Result<HashMap<DiskId, Route>, ConversionIoError> {
     let instances = service
         .read_all_diskio_instances()
@@ -199,7 +208,11 @@ async fn discover(
         .list_all_disks()
         .await
         .map_err(|error| ConversionIoError::Topology(error.to_string()))?;
-    let mut connections = HashMap::<String, Connection>::new();
+    let mut connections = current
+        .into_iter()
+        .flat_map(HashMap::values)
+        .map(|route| (route.endpoint.to_string(), route.connection.clone()))
+        .collect::<HashMap<_, _>>();
     let mut routes = HashMap::with_capacity(disks.len());
     for disk in disks {
         let endpoint = owners.get(&disk.disk_group_id).ok_or_else(|| {

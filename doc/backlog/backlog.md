@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R150** — Bump this line in the same commit when adding a new item.
+**Next R number: R151** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -133,7 +133,14 @@ client, and physical chunk maintenance.
 Chunk reads, read repair, mirror-to-EC conversion, write error handling, and
 end-to-end Chunk IO performance workloads are landed. The RPC migration items
 (R115, R116, R117) are in a separate area (see RPC Migration section below);
-R32 depends on R115.
+R32 depends on R115. The remaining client-boundary consolidation is:
+
+- **[R150](R150-diskio-semantic-client.md)** — routed semantic DiskIO client —
+  Area: diskio / client / RPC / group 0 — Let callers submit a disk segment,
+  operation, data, durability, lane, and deadline while the client owns node
+  discovery, immutable disk routing, bounded connection groups, reconnect,
+  retry classification, and typed results. Replace the separate connection
+  managers in chunk-client and ChunkDB without weakening zero-copy I/O.
 
 ### Medium Priority
 

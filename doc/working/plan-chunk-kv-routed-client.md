@@ -37,7 +37,7 @@ identity, ordering, fencing, and partial-success semantics.
 ## Phase 4: Gates and Documentation
 
 - [x] Add unit and injected integration coverage for the available boundaries.
-- [ ] Add real-process client coverage after the server RPC process exists.
+- [x] Add real-process client coverage after the server RPC process exists.
 - [x] Run formatting, workspace lint, client/server tests, and aggregate server
   gates through `pixi run`.
 - [x] Fold stable behavior into a permanent client design and index entry.
@@ -46,15 +46,30 @@ identity, ordering, fencing, and partial-success semantics.
 
 - `cargo fmt --all -- --check`: passed.
 - `rs-lint`: passed for the full workspace.
-- `crowdb-chunk-kv-client` all-target tests: 12 passed.
-- `crowdb-chunk-kv-server` all-target tests: 24 passed.
+- `crowdb-chunk-kv-client` all-target tests: 14 passed.
+- `crowdb-chunk-kv-server` all-target tests: 45 passed.
 - Clean aggregate `test-server`: passed KV server, diskdb, diskdb-client,
   chunkdb, chunk-client, and diskio-client stages.
+- `bench-chunk-kv-regression.sh`: passed through the release CLI and three real
+  chunk-KV servers. It completed 30,000 routed 512-byte writes at 6,227 ops/s
+  with zero errors and 13.388 ms p99, converged to 13 partitions at 5/4/4,
+  recorded 715,874 us maximum split-fence duration, recovered five assigned
+  partitions in 1,050 ms, read back an acknowledged value, and increased
+  aggregate server RSS by 2,112 KiB. Evidence:
+  `bench-log/chunk-kv-regression-20260913-081906/results.tsv`.
+- Production defaults remain four partitions per owner and a 1 GiB size
+  threshold. The ratio converged directly; the same size-trigger algorithm was
+  exercised at a scaled 5 MiB threshold so both policies fired within a bounded
+  local run. The measurements justify no lower production size threshold.
 
 ## Open Issues
 
+- Review decision: `crowdb-diskio-client` currently exposes transport-shaped
+  calls and leaves topology plus connection ownership to each caller. R150 now
+  owns the semantic client redesign. R143/R145 keep only a bounded interim fix
+  that reuses unchanged ChunkDB DiskIO connections so the production regression
+  can finish without expanding these requirements into that redesign.
 - Review decision: the owner connection pool follows existing CROWDB RPC
   transports and uses a bounded `DashMap` keyed by endpoint. This introduces a
   sharded lock on connection lookup, outside the storage data path, in exchange
   for preventing duplicate connection storms and enforcing the owner cap.
-- R144 merge-specific continuation and retained-result cases stay skipped.
