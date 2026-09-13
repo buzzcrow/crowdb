@@ -822,6 +822,7 @@ dependencies = [
  "bytes",
  "clap",
  "crc32fast",
+ "crossbeam-skiplist",
  "crowdb-common",
  "crowdb-diskdb",
  "crowdb-kv-client",

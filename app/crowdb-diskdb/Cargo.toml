@@ -43,6 +43,7 @@ arc-swap = "1.9"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 dashmap = "6"
+crossbeam-skiplist = "0.1"
 crc32fast = "1"
 bincode = "1"
 uuid = { version = "1", features = ["v4"] }

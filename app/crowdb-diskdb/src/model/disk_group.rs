@@ -5,14 +5,14 @@
 //! allocatable-disk context, and the round-robin cursor.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 use arc_swap::ArcSwap;
+use crossbeam_skiplist::SkipMap;
 use crowdb_protocol::common::{DiskId, HwStatus};
 use crowdb_protocol::diskdb::rpc::BusyBlockValue;
 use crowdb_protocol::DiskGroupId;
-use dashmap::DashMap;
 
 use crate::metrics::DiskMetrics;
 use crate::model::disk::{DdbDisk, DiskUsage};
@@ -35,6 +35,9 @@ pub type AllocClaim = (Arc<DdbDisk>, Arc<DdbZone>, AllocatedRange);
 // Keeps abandoned tentative allocations from growing the process without
 // bound. Eviction is safe: commit falls back to the durable KV record.
 const MAX_TENTATIVE_BLOCKS: usize = 262_144;
+const TENTATIVE_PENDING: u8 = 0;
+const TENTATIVE_COUNTED: u8 = 1;
+const TENTATIVE_REMOVED: u8 = 2;
 
 /// Tentative allocation retained until the normal near-term commit arrives.
 #[derive(Clone)]
@@ -43,6 +46,11 @@ pub struct TentativeBlock {
     pub zone_index: u32,
     pub unit_offset: u64,
     pub value: BusyBlockValue,
+}
+
+struct TentativeEntry {
+    block: TentativeBlock,
+    state: std::sync::atomic::AtomicU8,
 }
 
 /// A disk-group manager — one per owned disk-group.
@@ -62,11 +70,23 @@ pub struct DdbDiskGroup {
     allocation_ts_source: AtomicU64,
     /// `allocation_ts -> tentative allocation`; recovery-safe KV reads are
     /// used when an entry is absent after restart or eviction.
-    tentative_blocks: DashMap<u64, TentativeBlock>,
+    tentative_blocks: SkipMap<u64, Arc<TentativeEntry>>,
+    tentative_count: AtomicUsize,
+    tentative_trim_owner: AtomicBool,
+    tentative_capacity: usize,
 }
 
 impl DdbDiskGroup {
     pub fn new(disk_group_id: DiskGroupId, node_id: u64, rack_id: u64) -> Self {
+        Self::with_tentative_capacity(disk_group_id, node_id, rack_id, MAX_TENTATIVE_BLOCKS)
+    }
+
+    fn with_tentative_capacity(
+        disk_group_id: DiskGroupId,
+        node_id: u64,
+        rack_id: u64,
+        tentative_capacity: usize,
+    ) -> Self {
         Self {
             disk_group_id,
             node_id,
@@ -79,28 +99,52 @@ impl DdbDiskGroup {
             membership: ArcSwap::from_pointee(DiskMembership::default()),
             pos_v_disk_ctx: AtomicU64::new(0),
             allocation_ts_source: AtomicU64::new(now_nanos()),
-            tentative_blocks: DashMap::new(),
+            tentative_blocks: SkipMap::new(),
+            tentative_count: AtomicUsize::new(0),
+            tentative_trim_owner: AtomicBool::new(false),
+            tentative_capacity,
         }
     }
 
     pub fn cache_tentative(&self, block: TentativeBlock) {
-        if self.tentative_blocks.len() >= MAX_TENTATIVE_BLOCKS {
-            let eviction_key = self.tentative_blocks.iter().next().map(|entry| *entry.key());
-            if let Some(allocation_ts) = eviction_key {
-                self.tentative_blocks.remove(&allocation_ts);
+        let allocation_ts = block.value.allocation_ts;
+        let candidate = Arc::new(TentativeEntry {
+            block,
+            state: std::sync::atomic::AtomicU8::new(TENTATIVE_PENDING),
+        });
+        let published = self
+            .tentative_blocks
+            .get_or_insert(allocation_ts, Arc::clone(&candidate));
+        if Arc::ptr_eq(published.value(), &candidate) {
+            self.tentative_count.fetch_add(1, Ordering::AcqRel);
+            if candidate
+                .state
+                .compare_exchange(
+                    TENTATIVE_PENDING,
+                    TENTATIVE_COUNTED,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                self.trim_tentative_blocks();
+            } else {
+                self.tentative_count.fetch_sub(1, Ordering::AcqRel);
             }
         }
-        self.tentative_blocks.insert(block.value.allocation_ts, block);
     }
 
     pub fn tentative(&self, allocation_ts: u64) -> Option<TentativeBlock> {
         self.tentative_blocks
             .get(&allocation_ts)
-            .map(|entry| entry.clone())
+            .map(|entry| entry.value().block.clone())
     }
 
     pub fn remove_tentative(&self, allocation_ts: u64) -> bool {
-        self.tentative_blocks.remove(&allocation_ts).is_some()
+        let Some(entry) = self.tentative_blocks.get(&allocation_ts) else {
+            return false;
+        };
+        self.retire_tentative_entry(&entry)
     }
 
     pub fn remove_matching_tentative(
@@ -110,11 +154,67 @@ impl DdbDiskGroup {
         zone_index: u32,
         unit_offset: u64,
     ) -> bool {
-        self.tentative_blocks
-            .remove_if(&allocation_ts, |_, block| {
-                block.disk_id == disk_id && block.zone_index == zone_index && block.unit_offset == unit_offset
-            })
-            .is_some()
+        let Some(entry) = self.tentative_blocks.get(&allocation_ts) else {
+            return false;
+        };
+        let block = &entry.value().block;
+        if block.disk_id != disk_id || block.zone_index != zone_index || block.unit_offset != unit_offset {
+            return false;
+        }
+        self.retire_tentative_entry(&entry)
+    }
+
+    fn trim_tentative_blocks(&self) {
+        loop {
+            if self.tentative_count.load(Ordering::Acquire) <= self.tentative_capacity {
+                return;
+            }
+            if self
+                .tentative_trim_owner
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return;
+            }
+
+            while self.tentative_count.load(Ordering::Acquire) > self.tentative_capacity {
+                let Some(oldest) = self.tentative_blocks.front() else {
+                    break;
+                };
+                self.retire_tentative_entry(&oldest);
+            }
+            self.tentative_trim_owner.store(false, Ordering::Release);
+        }
+    }
+
+    fn retire_tentative_entry(
+        &self,
+        entry: &crossbeam_skiplist::map::Entry<'_, u64, Arc<TentativeEntry>>,
+    ) -> bool {
+        if !entry.remove() {
+            return false;
+        }
+        if entry.value().state.swap(TENTATIVE_REMOVED, Ordering::AcqRel) == TENTATIVE_COUNTED {
+            self.tentative_count.fetch_sub(1, Ordering::AcqRel);
+        }
+        true
+    }
+
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn new_with_tentative_capacity(
+        disk_group_id: DiskGroupId,
+        node_id: u64,
+        rack_id: u64,
+        capacity: usize,
+    ) -> Self {
+        Self::with_tentative_capacity(disk_group_id, node_id, rack_id, capacity)
+    }
+
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn tentative_count(&self) -> usize {
+        self.tentative_count.load(Ordering::Acquire)
     }
 
     /// Add a disk to this disk-group. Rebuilds the allocatable disk set.
