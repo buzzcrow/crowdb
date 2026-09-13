@@ -757,6 +757,8 @@ pub struct LocalDiskdbDeployConfig {
     pub rpc_workers: Option<u32>,
     pub kv_connections: Option<usize>,
     pub kv_client_rpc_workers: Option<u32>,
+    pub free_batch_enabled: Option<bool>,
+    pub free_flush_max_batch: Option<u32>,
 }
 
 /// Summary of `ChunkDB` instances attached to a local deployment.
@@ -1334,6 +1336,8 @@ async fn deploy_diskdb_instances(
                 kv_connections: config.kv_connections,
                 kv_client_rpc_workers: config.kv_client_rpc_workers,
                 keepalive_interval_secs: None,
+                free_batch_enabled: config.free_batch_enabled,
+                free_flush_max_batch: config.free_flush_max_batch,
                 listen_port: ports.listen[index],
                 http_port: ports.http[index],
                 rpc_port: ports.rpc[index],

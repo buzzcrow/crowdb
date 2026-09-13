@@ -718,6 +718,10 @@ pub struct DiskdbDeployRequest {
     /// Keepalive and group-0 sync interval override in seconds.
     /// `None` preserves the `crowdb-diskdb` defaults.
     pub keepalive_interval_secs: Option<u32>,
+    /// Enable immediate concurrent-free coalescing in the generated config.
+    pub free_batch_enabled: Option<bool>,
+    /// Maximum free records per coalesced KV proposal.
+    pub free_flush_max_batch: Option<u32>,
     /// Main listener port (diskdb `listen_addr`).
     pub listen_port: u16,
     /// HTTP management port (diskdb `http_listen_addr`).
@@ -850,18 +854,13 @@ pub fn crowdb_rpc_fb_server_bin() -> Option<PathBuf> {
 /// kv-server management port.
 fn resolve_diskdb_config_path(
     workspace_dir: &std::path::Path,
-    listen_port: u16,
-    http_port: u16,
-    rpc_port: u16,
-    instance_id: Option<u64>,
-    kv_server_mgmt_seeds: &[String],
-    rpc_workers: Option<u32>,
+    request: &DiskdbDeployRequest,
 ) -> Result<PathBuf> {
     let conf = workspace_dir.join("conf");
     std::fs::create_dir_all(&conf).map_err(Error::Io)?;
     let path = conf.join("crowdb_diskdb_config.toml");
-    if path.exists() && kv_server_mgmt_seeds.is_empty() {
-        if let Some(workers) = rpc_workers {
+    if path.exists() && request.kv_server_mgmt_seeds.is_empty() {
+        if let Some(workers) = request.rpc_workers {
             let content = std::fs::read_to_string(&path).map_err(Error::Io)?;
             let mut config = toml::from_str::<toml::Value>(&content)
                 .map_err(|error| Error::Config(format!("failed to parse {}: {error}", path.display())))?;
@@ -876,10 +875,11 @@ fn resolve_diskdb_config_path(
         }
         return Ok(path);
     }
-    let seeds = if kv_server_mgmt_seeds.is_empty() {
+    let seeds = if request.kv_server_mgmt_seeds.is_empty() {
         format!("\"http://127.0.0.1:{}\"", crowdb_protocol::KV_SERVER_MGMT_BASE)
     } else {
-        kv_server_mgmt_seeds
+        request
+            .kv_server_mgmt_seeds
             .iter()
             .map(|s| format!("\"{s}\""))
             .collect::<Vec<_>>()
@@ -888,16 +888,31 @@ fn resolve_diskdb_config_path(
     // Minimal valid config — only [server] is required; all other
     // sections default via `#[serde(default)]` on `DdbConfig` fields
     // (values match `DdbConfig::default()`).
-    let instance_id = instance_id.map_or_else(String::new, |id| format!("instance_id = \"{id}\"\n"));
+    let instance_id = request
+        .instance_id
+        .map_or_else(String::new, |id| format!("instance_id = \"{id}\"\n"));
+    let persistence = if request.free_batch_enabled.is_some() || request.free_flush_max_batch.is_some() {
+        format!(
+            "\n[persistence]\nfree_batch_enabled = {}\nfree_flush_max_batch = {}\n",
+            request.free_batch_enabled.unwrap_or(false),
+            request.free_flush_max_batch.unwrap_or(256),
+        )
+    } else {
+        String::new()
+    };
     let config = format!(
         "[server]\n\
          rpc_workers = {}\n\
-         listen_addr = \"0.0.0.0:{listen_port}\"\n\
-         http_listen_addr = \"0.0.0.0:{http_port}\"\n\
-         rpc_listen_addr = \"0.0.0.0:{rpc_port}\"\n\
+         listen_addr = \"0.0.0.0:{}\"\n\
+         http_listen_addr = \"0.0.0.0:{}\"\n\
+         rpc_listen_addr = \"0.0.0.0:{}\"\n\
          {instance_id}\
-         kv_server_mgmt_seeds = [{seeds}]\n",
-        rpc_workers.unwrap_or(2),
+         kv_server_mgmt_seeds = [{seeds}]\n\
+         {persistence}",
+        request.rpc_workers.unwrap_or(2),
+        request.listen_port,
+        request.http_port,
+        request.rpc_port,
     );
     std::fs::write(&path, config).map_err(Error::Io)?;
     Ok(path)
@@ -1026,15 +1041,7 @@ pub async fn deploy_diskdb_local(
         stage_server_binary(&binary, workspace_dir)?
     };
 
-    let config_path = resolve_diskdb_config_path(
-        workspace_dir,
-        req.listen_port,
-        req.http_port,
-        req.rpc_port,
-        req.instance_id,
-        &req.kv_server_mgmt_seeds,
-        req.rpc_workers,
-    )?;
+    let config_path = resolve_diskdb_config_path(workspace_dir, req)?;
     // The public endpoint is the crowdb-rpc listener. The main listener is
     // an internal compatibility endpoint and is not exposed as DiskDB identity.
     let endpoint = format!("http://{}:{}", node.host, req.rpc_port);
