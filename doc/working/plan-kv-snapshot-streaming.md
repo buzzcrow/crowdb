@@ -16,12 +16,12 @@ progress.
   total-length/final-CRC metadata, and a one-chunk retry cache. Preserve the
   existing byte format. Files: `lib/crowdb-tree/include/crowdb-tree/snapshot/snapshot_io.h`,
   `lib/crowdb-tree/src/snapshot/snapshot_io.cpp`, crowdb-tree snapshot tests.
-- [~] **Stage crowdb-tree portable import**: incrementally parse header,
+- [x] **Stage crowdb-tree portable import**: incrementally parse header,
   entries, and trailer with bounded carry; maintain rolling CRC32C; keep parsed
   logical entries as staging state; reject truncation, trailing data, malformed
   lengths, and CRC mismatch before activation. Files: crowdb-tree snapshot I/O
   header/source and tests.
-- [ ] **Make successful activation atomic**: build the replacement tree off
+- [~] **Make successful activation atomic**: build the replacement tree off
   the published root and perform one fenced root/state publication so readers
   observe either the old or new engine, never a partly rebuilt tree. Retire old
   pages through the existing epoch mechanism and serialize with the existing

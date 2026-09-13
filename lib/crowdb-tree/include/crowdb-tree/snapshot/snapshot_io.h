@@ -119,9 +119,13 @@ Status snapshot_dump_to_file(Crowdbtree &tree, snapshot_format fmt, const std::s
 class SnapshotImport
 {
   public:
-    explicit SnapshotImport(Crowdbtree &tree) : tree_(tree)
-    {
-    }
+    explicit SnapshotImport(Crowdbtree &tree);
+    ~SnapshotImport();
+
+    SnapshotImport(const SnapshotImport &)            = delete;
+    SnapshotImport &operator=(const SnapshotImport &) = delete;
+    SnapshotImport(SnapshotImport &&)                 = delete;
+    SnapshotImport &operator=(SnapshotImport &&)      = delete;
 
     // feed the next chunk of bytes (order matters; chunks are concatenated).
     Status feed(Slice chunk);
@@ -131,9 +135,14 @@ class SnapshotImport
     Status finish(uint64_t *out_at_slot);
 
   private:
-    Status      finish_native(const uint8_t *p, size_t len, uint64_t *out_at_slot);
-    Crowdbtree &tree_;
-    std::string buf_;
+    struct PortableState;
+
+    Status                         finish_native(const uint8_t *p, size_t len, uint64_t *out_at_slot);
+    Crowdbtree                    &tree_;
+    std::unique_ptr<PortableState> portable_;
+    std::string                    buf_;
+    bool                           format_selected_ = false;
+    bool                           native_          = false;
 };
 
 // Convenience: load a `.ctsnap` file into `tree`.

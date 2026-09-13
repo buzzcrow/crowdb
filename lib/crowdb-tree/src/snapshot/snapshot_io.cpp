@@ -337,10 +337,209 @@ Status snapshot_dump_to_file(Crowdbtree &tree, snapshot_format fmt, const std::s
     return Status::Ok();
 }
 
+struct SnapshotImport::PortableState
+{
+    enum class Part : uint8_t { kKeyLen, kKey, kSlot, kKind, kValueLen, kValue, kTrailer, kComplete };
+
+    uint64_t                at_slot  = 0;
+    uint64_t                expected = 0;
+    uint64_t                parsed   = 0;
+    uint32_t                crc      = 0;
+    Part                    part     = Part::kKeyLen;
+    std::array<uint8_t, 8>  fixed{};
+    size_t                  fixed_used = 0;
+    uint32_t                key_len    = 0;
+    uint64_t                slot       = 0;
+    uint8_t                 kind       = 0;
+    uint32_t                value_len  = 0;
+    std::string             key;
+    std::string             value;
+    std::vector<leaf_entry> entries;
+
+    Status begin(const uint8_t *header)
+    {
+        if (get_u32(header) != kSnapMagic) {
+            return Status::corruption("snapshot: bad magic");
+        }
+        if (get_u32(header + 4) != kSnapVersion) {
+            return Status::not_supported("snapshot: version");
+        }
+        if (static_cast<snapshot_format>(header[8]) != snapshot_format::kPortable) {
+            return Status::not_supported("snapshot: unknown format");
+        }
+        at_slot  = get_u64(header + 9);
+        expected = get_u64(header + 17);
+        crc      = crowdb::common::crc32c_update(0, header, kSnapHeader);
+        part     = expected == 0 ? Part::kTrailer : Part::kKeyLen;
+        return Status::Ok();
+    }
+
+    void reset_fixed()
+    {
+        fixed_used = 0;
+    }
+
+    void consume_fixed(const uint8_t **data, size_t *len, size_t need, bool include_crc)
+    {
+        size_t take = std::min(*len, need - fixed_used);
+        std::copy_n(*data, take, fixed.data() + fixed_used);
+        if (include_crc) {
+            crc = crowdb::common::crc32c_update(crc, *data, take);
+        }
+        fixed_used += take;
+        *data += take;
+        *len -= take;
+    }
+
+    void consume_string(const uint8_t **data, size_t *len, std::string *out, size_t need)
+    {
+        size_t take = std::min(*len, need - out->size());
+        out->append(reinterpret_cast<const char *>(*data), take);
+        crc = crowdb::common::crc32c_update(crc, *data, take);
+        *data += take;
+        *len -= take;
+    }
+
+    Status feed(const uint8_t *data, size_t len)
+    {
+        while (len > 0) {
+            switch (part) {
+            case Part::kKeyLen:
+                consume_fixed(&data, &len, 4, true);
+                if (fixed_used == 4) {
+                    key_len = get_u32(fixed.data());
+                    key.clear();
+                    reset_fixed();
+                    part = key_len == 0 ? Part::kSlot : Part::kKey;
+                }
+                break;
+            case Part::kKey:
+                consume_string(&data, &len, &key, key_len);
+                if (key.size() == key_len) {
+                    part = Part::kSlot;
+                }
+                break;
+            case Part::kSlot:
+                consume_fixed(&data, &len, 8, true);
+                if (fixed_used == 8) {
+                    slot = get_u64(fixed.data());
+                    reset_fixed();
+                    part = Part::kKind;
+                }
+                break;
+            case Part::kKind:
+                consume_fixed(&data, &len, 1, true);
+                if (fixed_used == 1) {
+                    kind = fixed[0];
+                    reset_fixed();
+                    if (kind > 1) {
+                        return Status::corruption("snapshot: invalid cell kind");
+                    }
+                    part = Part::kValueLen;
+                }
+                break;
+            case Part::kValueLen:
+                consume_fixed(&data, &len, 4, true);
+                if (fixed_used == 4) {
+                    value_len = get_u32(fixed.data());
+                    value.clear();
+                    reset_fixed();
+                    part = Part::kValue;
+                }
+                break;
+            case Part::kValue:
+                consume_string(&data, &len, &value, value_len);
+                if (value.size() == value_len) {
+                    buffer cell = encode_cell_buf(slot, kind != 0 ? OpKind::kDelete : OpKind::kPut, Slice(value));
+                    entries.push_back({.key = std::move(key), .cell = std::move(cell)});
+                    value.clear();
+                    ++parsed;
+                    if (parsed > expected) {
+                        return Status::corruption("snapshot: entry count overflow");
+                    }
+                    part = parsed == expected ? Part::kTrailer : Part::kKeyLen;
+                }
+                break;
+            case Part::kTrailer:
+                consume_fixed(&data, &len, kSnapTrailer, false);
+                if (fixed_used == kSnapTrailer) {
+                    if (get_u32(fixed.data()) != crc) {
+                        return Status::corruption("snapshot: CRC mismatch");
+                    }
+                    reset_fixed();
+                    part = Part::kComplete;
+                }
+                break;
+            case Part::kComplete:
+                return Status::corruption("snapshot: trailing bytes");
+            }
+        }
+        return Status::Ok();
+    }
+
+    Status finish(Crowdbtree &tree, uint64_t *out_at_slot)
+    {
+        if (part != Part::kComplete || parsed != expected) {
+            return Status::invalid_argument("snapshot: stream truncated");
+        }
+        Status installed = tree.install_snapshot(std::move(entries), at_slot);
+        if (!installed.ok()) {
+            return installed;
+        }
+        if (out_at_slot != nullptr) {
+            *out_at_slot = at_slot;
+        }
+        return Status::Ok();
+    }
+};
+
+SnapshotImport::SnapshotImport(Crowdbtree &tree) : tree_(tree)
+{
+}
+
+SnapshotImport::~SnapshotImport() = default;
+
 Status SnapshotImport::feed(Slice chunk)
 {
-    buf_.append(chunk.data(), chunk.size());
-    return Status::Ok();
+    const auto *data = reinterpret_cast<const uint8_t *>(chunk.data());
+    size_t      len  = chunk.size();
+    if (!format_selected_) {
+        size_t take = std::min(len, kSnapHeader - buf_.size());
+        buf_.append(reinterpret_cast<const char *>(data), take);
+        data += take;
+        len -= take;
+        if (buf_.size() < kSnapHeader) {
+            return Status::Ok();
+        }
+        const auto *header = reinterpret_cast<const uint8_t *>(buf_.data());
+        if (get_u32(header) != kSnapMagic) {
+            return Status::corruption("snapshot: bad magic");
+        }
+        if (get_u32(header + 4) != kSnapVersion) {
+            return Status::not_supported("snapshot: version");
+        }
+        auto fmt         = static_cast<snapshot_format>(header[8]);
+        format_selected_ = true;
+        if (fmt == snapshot_format::kNative) {
+            native_ = true;
+        }
+        else if (fmt == snapshot_format::kPortable) {
+            portable_     = std::make_unique<PortableState>();
+            Status status = portable_->begin(header);
+            if (!status.ok()) {
+                return status;
+            }
+            buf_.clear();
+        }
+        else {
+            return Status::not_supported("snapshot: unknown format");
+        }
+    }
+    if (native_) {
+        buf_.append(reinterpret_cast<const char *>(data), len);
+        return Status::Ok();
+    }
+    return portable_->feed(data, len);
 }
 
 Status SnapshotImport::finish_native(const uint8_t *p, size_t len, uint64_t *out_at_slot)
@@ -392,6 +591,9 @@ Status SnapshotImport::finish_native(const uint8_t *p, size_t len, uint64_t *out
 
 Status SnapshotImport::finish(uint64_t *out_at_slot)
 {
+    if (portable_ != nullptr) {
+        return portable_->finish(tree_, out_at_slot);
+    }
     const size_t len = buf_.size();
     if (len < kSnapHeader + kSnapTrailer) {
         return Status::invalid_argument("snapshot: stream too short");
@@ -408,62 +610,7 @@ Status SnapshotImport::finish(uint64_t *out_at_slot)
     if (fmt == snapshot_format::kNative) {
         return finish_native(p, len, out_at_slot);
     }
-    if (fmt != snapshot_format::kPortable) {
-        return Status::not_supported("snapshot: unknown format");
-    }
-    // Verify the whole-stream CRC over everything but the trailing 4 bytes.
-    uint32_t want_crc = get_u32(p + (len - kSnapTrailer));
-    if (crowdb::common::crc32c(p, len - kSnapTrailer) != want_crc) {
-        return Status::corruption("snapshot: CRC mismatch");
-    }
-
-    uint64_t at_slot = get_u64(p + 9);
-    uint64_t count   = get_u64(p + 17);
-
-    std::vector<leaf_entry> entries;
-    entries.reserve(count);
-    size_t       pos      = kSnapHeader;
-    const size_t body_end = len - kSnapTrailer;
-    for (uint64_t i = 0; i < count; ++i) {
-        if (pos + 4 > body_end) {
-            return Status::corruption("snapshot: truncated key len");
-        }
-        uint32_t klen = get_u32(p + pos);
-        pos += 4;
-        if (pos + klen > body_end) {
-            return Status::corruption("snapshot: truncated key");
-        }
-        std::string key(reinterpret_cast<const char *>(p + pos), klen);
-        pos += klen;
-        if (pos + 8 + 1 + 4 > body_end) {
-            return Status::corruption("snapshot: truncated cell header");
-        }
-        uint64_t slot = get_u64(p + pos);
-        pos += 8;
-        uint8_t kind = p[pos];
-        pos += 1;
-        uint32_t vlen = get_u32(p + pos);
-        pos += 4;
-        if (pos + vlen > body_end) {
-            return Status::corruption("snapshot: truncated value");
-        }
-        Slice value(reinterpret_cast<const char *>(p + pos), vlen);
-        pos += vlen;
-        buffer cell = encode_cell_buf(slot, kind != 0 ? OpKind::kDelete : OpKind::kPut, value);
-        entries.push_back({.key = std::move(key), .cell = std::move(cell)});
-    }
-    if (pos != body_end) {
-        return Status::corruption("snapshot: trailing bytes");
-    }
-
-    Status is = tree_.install_snapshot(std::move(entries), at_slot);
-    if (!is.ok()) {
-        return is;
-    }
-    if (out_at_slot != nullptr) {
-        *out_at_slot = at_slot;
-    }
-    return Status::Ok();
+    return Status::not_supported("snapshot: unknown format");
 }
 
 Status snapshot_load_from_file(Crowdbtree &tree, const std::string &path)

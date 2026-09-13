@@ -295,8 +295,68 @@ TEST(SnapshotExport, CrcTamperRejected)
 
     Crowdbtree     b(opt);
     SnapshotImport imp(b);
-    ASSERT_TRUE(imp.feed(Slice(stream)).ok());
-    EXPECT_EQ(imp.finish(nullptr).code(), Code::kCorruption);
+    Status         status = imp.feed(Slice(stream));
+    if (status.ok()) {
+        status = imp.finish(nullptr);
+    }
+    EXPECT_EQ(status.code(), Code::kCorruption);
+}
+
+TEST(SnapshotExport, PortableImportParsesEveryByteBoundary)
+{
+    Config                             opt;
+    Crowdbtree                         source(opt);
+    std::map<std::string, std::string> live;
+    build_source(&source, &live);
+
+    std::unique_ptr<SnapshotExport> exp;
+    ASSERT_TRUE(snapshot_export_begin(source, snapshot_format::kPortable, 333, &exp).ok());
+    std::string stream;
+    bool        done = false;
+    while (!done) {
+        std::string chunk;
+        ASSERT_TRUE(exp->next_chunk(&chunk, &done).ok());
+        stream.append(chunk);
+    }
+
+    Crowdbtree     target(opt);
+    SnapshotImport imp(target);
+    for (char byte : stream) {
+        ASSERT_TRUE(imp.feed(Slice(&byte, 1)).ok());
+    }
+    uint64_t at_slot = 0;
+    ASSERT_TRUE(imp.finish(&at_slot).ok());
+    EXPECT_EQ(at_slot, source.last_applied_slot());
+    EXPECT_TRUE(source.snapshot_view()->compare(*target.snapshot_view()).empty());
+}
+
+TEST(SnapshotExport, PortableImportRejectsTrailingDataWithoutChangingPriorTree)
+{
+    Config     opt;
+    Crowdbtree source(opt);
+    ASSERT_TRUE(source.apply(1, put_one("new", "state")).ok());
+    ASSERT_TRUE(source.flush().ok());
+    std::unique_ptr<SnapshotExport> exp;
+    ASSERT_TRUE(snapshot_export_begin(source, snapshot_format::kPortable, 64, &exp).ok());
+    std::string stream;
+    bool        done = false;
+    while (!done) {
+        std::string chunk;
+        ASSERT_TRUE(exp->next_chunk(&chunk, &done).ok());
+        stream.append(chunk);
+    }
+    stream.push_back('x');
+
+    Crowdbtree target(opt);
+    ASSERT_TRUE(target.apply(1, put_one("old", "readable")).ok());
+    ASSERT_TRUE(target.flush().ok());
+    SnapshotImport imp(target);
+    EXPECT_EQ(imp.feed(Slice(stream)).code(), Code::kCorruption);
+    std::string value;
+    uint64_t    slot = 0;
+    EXPECT_TRUE(target.get(Slice("old"), &slot, &value));
+    EXPECT_EQ(value, "readable");
+    EXPECT_FALSE(target.get(Slice("new"), &slot, &value));
 }
 
 // plan-tree #16: native format (raw frame images, no cell decode/tuple
