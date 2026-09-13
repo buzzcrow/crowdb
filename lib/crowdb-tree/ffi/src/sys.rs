@@ -451,6 +451,7 @@ extern "C" {
     pub fn ct_get_async(t: *mut ct_tree, key: *const u8, klen: usize) -> *mut ct_future;
     pub fn ct_flush_async(t: *mut ct_tree) -> *mut ct_future;
     pub fn ct_snapshot_async(t: *mut ct_tree) -> *mut ct_future;
+    #[allow(dead_code)]
     pub fn ct_scan_async(
         t: *mut ct_tree,
         prefix: *const u8,
@@ -463,6 +464,20 @@ extern "C" {
         byte_budget: usize,
         keys_only: c_int,
         deadline_ms: u64,
+    ) -> *mut ct_future;
+    pub fn ct_scan_directional_async(
+        t: *mut ct_tree,
+        prefix: *const u8,
+        plen: usize,
+        start_after: *const u8,
+        salen: usize,
+        end_key: *const u8,
+        elen: usize,
+        limit: usize,
+        byte_budget: usize,
+        keys_only: c_int,
+        deadline_ms: u64,
+        direction: c_int,
     ) -> *mut ct_future;
     pub fn ct_future_poll(
         f: *mut ct_future,

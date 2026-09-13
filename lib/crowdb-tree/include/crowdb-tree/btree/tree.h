@@ -692,6 +692,14 @@ class Crowdbtree
     void scan_async(Slice prefix, Slice start_after, Slice end_key, size_t limit, size_t byte_budget, bool keys_only,
                     uint64_t deadline_ms, std::function<void(Status, ScanPackedBuf, bool truncated)> on_done) const;
 
+    // Directional form used by the ordinary KV API. `reverse` keeps
+    // `start_after` as an exclusive continuation, but walks toward smaller
+    // keys. With no continuation it begins below `end_key`, or below the
+    // prefix successor when `end_key` is empty.
+    void scan_directional_async(Slice prefix, Slice start_after, Slice end_key, size_t limit, size_t byte_budget,
+                                bool keys_only, uint64_t deadline_ms, bool reverse,
+                                std::function<void(Status, ScanPackedBuf, bool truncated)> on_done) const;
+
     // pin a consistent point-in-time view at `last_applied_slot` (the durable L1
     // state). Used for scan-at / compare / iter_all / snapshot export.
     // R6: returns a PinnedSnapshot (zero-copy, page refcount pins keep frames
@@ -892,6 +900,11 @@ class Crowdbtree
     [[nodiscard]] bool seek_reverse_guarded(Slice start_key, bool has_start_bound, bool inclusive, Slice begin_key,
                                             const std::vector<std::shared_ptr<MemTable>> &memtables,
                                             uint64_t root_page_id, uint64_t gc_floor, scan_entry *out) const;
+
+    [[nodiscard]] bool try_scan_reverse_no_load(Slice prefix, Slice start_after, Slice end_key, size_t limit,
+                                                size_t byte_budget, bool keys_only, uint64_t deadline_ms,
+                                                ScanPackedBuf *out_packed, size_t *out_count, bool *truncated,
+                                                uint64_t *out_pending_page_id) const;
     // apply a batch's ops into L0 at `slot` (intra-batch last-op-wins).
     void apply_batch(uint64_t slot, const Batch &batch);
     // Shared apply()/apply_encoded() tail: slot bookkeeping (max_seen_slot_,
@@ -1160,6 +1173,13 @@ class Crowdbtree
                             bool keys_only, uint64_t deadline_ms, std::shared_ptr<ScanPackedBuf> accumulated,
                             std::shared_ptr<std::string> last_key, size_t accumulated_count,
                             std::function<void(Status, ScanPackedBuf, bool)> on_done) const;
+
+    void scan_reverse_async_attempt(std::shared_ptr<std::string>        prefix_owned,
+                                    const std::shared_ptr<std::string> &start_after_owned,
+                                    const std::shared_ptr<std::string> &end_key_owned, size_t limit, size_t byte_budget,
+                                    bool keys_only, uint64_t deadline_ms, std::shared_ptr<ScanPackedBuf> accumulated,
+                                    std::shared_ptr<std::string> last_key, size_t accumulated_count,
+                                    std::function<void(Status, ScanPackedBuf, bool)> on_done) const;
 
     // Shared by snapshot() and snapshot_async() (persist.cpp,
     // #11 Phase 2, #14c/#14d): runs the segment scan / delta-fold /

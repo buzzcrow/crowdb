@@ -490,6 +490,12 @@ ct_future *ct_scan_async(ct_tree *t, const uint8_t *prefix, size_t plen, const u
                          const uint8_t *end_key, size_t elen, size_t limit, size_t byte_budget, int keys_only,
                          uint64_t deadline_ms);
 
+// Directional scan twin. direction: 0 = forward, 1 = reverse. The original
+// ct_scan_async remains a source-compatible forward wrapper.
+ct_future *ct_scan_directional_async(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_after,
+                                     size_t salen, const uint8_t *end_key, size_t elen, size_t limit,
+                                     size_t byte_budget, int keys_only, uint64_t deadline_ms, int direction);
+
 // Non-blocking poll.
 // *done == 0: still pending; f remains valid, poll again later (e.g. after
 //   the Rust side's AsyncFd wakes on ct_uring_eventfds()).

@@ -1041,15 +1041,23 @@ ct_future *ct_scan_async(ct_tree *t, const uint8_t *prefix, size_t plen, const u
                          const uint8_t *end_key, size_t elen, size_t limit, size_t byte_budget, int keys_only,
                          uint64_t deadline_ms)
 {
+    return ct_scan_directional_async(t, prefix, plen, start_after, salen, end_key, elen, limit, byte_budget, keys_only,
+                                     deadline_ms, 0);
+}
+
+ct_future *ct_scan_directional_async(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_after,
+                                     size_t salen, const uint8_t *end_key, size_t elen, size_t limit,
+                                     size_t byte_budget, int keys_only, uint64_t deadline_ms, int direction)
+{
     if (t == nullptr) {
         return nullptr;
     }
     auto impl  = std::make_shared<ct_future_impl>();
     impl->kind = ct_future_impl::Kind::kScan;
-    t->tree->scan_async(
+    t->tree->scan_directional_async(
         Slice(reinterpret_cast<const char *>(prefix), plen), Slice(reinterpret_cast<const char *>(start_after), salen),
         Slice(reinterpret_cast<const char *>(end_key), elen), limit, byte_budget, keys_only != 0, deadline_ms,
-        [impl, signal = t->completion](const Status &st, ScanPackedBuf packed, bool truncated) {
+        direction != 0, [impl, signal = t->completion](const Status &st, ScanPackedBuf packed, bool truncated) {
             impl->status = to_status(st);
             if (st.ok()) {
                 impl->scan_count     = count_packed_entries(packed.data(), packed.size());

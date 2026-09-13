@@ -5,6 +5,7 @@
 use crowdb_tree_ffi::{
     AsyncCrowdbtree, BatchOp, ChunkPageStoreOptions, ChunkRootCatalog, Config, Crowdbtree, CtError, ExtOp,
     KeyRange, PageStore, PageStoreBackend, PinnedGetOutcome, RootCatalogObject, RootCatalogStore,
+    ScanDirection,
 };
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -830,6 +831,44 @@ async fn async_scan_slow_path_completes_after_eviction() {
         assert_eq!(got.remove(&key(i)), Some(format!("v{i}").into_bytes()));
     }
     assert!(got.is_empty());
+}
+
+#[tokio::test]
+async fn async_reverse_scan_crosses_evicted_leaves_and_respects_cursor() {
+    let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-ffi");
+    let opt = Config {
+        path: Some(dir.path().to_string_lossy().into_owned()),
+        iu_size: 1,
+        frame_bytes: 4096,
+        ..Default::default()
+    };
+    let t = AsyncCrowdbtree::open(&opt).unwrap();
+    for i in 0..80usize {
+        t.handle()
+            .apply_put((i + 1) as u64, &key(i), &vec![b'v'; 128])
+            .unwrap();
+    }
+    t.flush().await.unwrap();
+    t.snapshot().await.unwrap();
+    t.handle().evict_clean_leaves(0);
+
+    let (entries, truncated) = t
+        .scan_directional(
+            b"key0".to_vec(),
+            b"key00070".to_vec(),
+            b"key00075".to_vec(),
+            5,
+            0,
+            true,
+            0,
+            ScanDirection::Reverse,
+        )
+        .await
+        .unwrap();
+    assert!(truncated);
+    let keys: Vec<_> = entries.iter().map(|entry| entry.key.to_vec()).collect();
+    assert_eq!(keys, (65..70).rev().map(key).collect::<Vec<_>>(),);
+    assert!(entries.iter().all(|entry| entry.value.is_empty()));
 }
 
 // A limit smaller than the matching key count truncates, matching scan's

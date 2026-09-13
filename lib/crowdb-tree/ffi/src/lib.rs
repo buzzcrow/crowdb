@@ -38,7 +38,7 @@ pub use cpp_global_metrics::{cpp_global_metrics_max_name_len, flush_cpp_global_m
 pub use crc::{crc32c, crc32c_update};
 pub use error::CtError;
 pub use reactor::PinnedValue;
-pub use scan::{ScanEntry, ViewEntry};
+pub use scan::{ScanDirection, ScanEntry, ViewEntry};
 pub use stats::{MergeGcStats, RangeRebuildStats, Stats};
 pub use tree::{
     ct_add_log_stderr, ct_flush_logging, ct_init_logging, ct_init_test_logging, ct_shutdown_logging,

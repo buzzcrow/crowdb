@@ -3415,6 +3415,255 @@ Status Crowdbtree::scan_reverse(Slice start_key, bool has_start_bound, bool star
     return Status::Ok();
 }
 
+bool Crowdbtree::try_scan_reverse_no_load(Slice prefix, Slice start_after, Slice end_key, size_t limit,
+                                          size_t byte_budget, bool keys_only, uint64_t deadline_ms,
+                                          ScanPackedBuf *out_packed, size_t *out_count, bool *truncated,
+                                          uint64_t *out_pending_page_id) const
+{
+    *out_packed          = ScanPackedBuf{};
+    *out_count           = 0;
+    *truncated           = false;
+    *out_pending_page_id = kInvalidPageId;
+
+    EpochManager::Guard guard        = epoch_.enter();
+    auto                memtables    = all_memtables();
+    const uint64_t      root_page_id = root_page_id_.load();
+    const uint64_t      gc_floor     = gc_floor_.load();
+    uint64_t            blocked      = kInvalidPageId;
+
+    auto probe = [this, &blocked](uint64_t page_id) -> PageBase * {
+        uint64_t word = mapping_.get_word(page_id);
+        if (slot_word::is_empty(word)) {
+            return nullptr;
+        }
+        if (slot_word::is_unloaded(word)) {
+            blocked = page_id;
+            return nullptr;
+        }
+        PageBase *page = slot_word::resident_ptr(word);
+        page->last_touch_tick.store(touch_tick_.fetch_add(1, std::memory_order_relaxed), std::memory_order_relaxed);
+        return page;
+    };
+    auto resolve_base = [](PageBase *head) {
+        while (head != nullptr && head->type == page_type::kBatchDelta) {
+            head = head->next;
+        }
+        return head;
+    };
+
+    struct ParentStep
+    {
+        InnerBase *page;
+        size_t     child_index;
+    };
+
+    auto l1_predecessor = [&](Slice bound, bool has_bound, Slice *key, Slice *cell) -> bool {
+        std::vector<ParentStep> path;
+        uint64_t                page_id = root_page_id;
+        while (page_id != kInvalidPageId) {
+            PageBase *head = probe(page_id);
+            if (blocked != kInvalidPageId) {
+                return false;
+            }
+            PageBase *base = resolve_base(head);
+            if (base == nullptr) {
+                return false;
+            }
+            if (base->type == page_type::kLeafBase) {
+                LeafChainCursor cursor(head, gc_floor);
+                if (has_bound) {
+                    cursor.seek_reverse(bound, false);
+                }
+                else {
+                    cursor.seek_last();
+                }
+                if (cursor.valid()) {
+                    *key  = cursor.key();
+                    *cell = cursor.cell();
+                    return true;
+                }
+                break;
+            }
+            auto  *inner = static_cast<InnerBase *>(base);
+            size_t index = has_bound ? inner->child_index_for(bound) : inner->num_children() - 1;
+            path.push_back({.page = inner, .child_index = index});
+            page_id = inner->child_at(index);
+        }
+        while (!path.empty()) {
+            ParentStep step = path.back();
+            path.pop_back();
+            if (step.child_index == 0) {
+                continue;
+            }
+            page_id = step.page->child_at(step.child_index - 1);
+            while (page_id != kInvalidPageId) {
+                PageBase *head = probe(page_id);
+                if (blocked != kInvalidPageId) {
+                    return false;
+                }
+                PageBase *base = resolve_base(head);
+                if (base == nullptr) {
+                    return false;
+                }
+                if (base->type == page_type::kLeafBase) {
+                    LeafChainCursor cursor(head, gc_floor);
+                    cursor.seek_last();
+                    if (cursor.valid()) {
+                        *key  = cursor.key();
+                        *cell = cursor.cell();
+                        return true;
+                    }
+                    break;
+                }
+                auto  *inner = static_cast<InnerBase *>(base);
+                size_t index = inner->num_children() - 1;
+                path.push_back({.page = inner, .child_index = index});
+                page_id = inner->child_at(index);
+            }
+        }
+        return false;
+    };
+
+    std::string bound;
+    bool        has_bound = false;
+    if (!start_after.empty()) {
+        bound     = start_after.to_string();
+        has_bound = true;
+    }
+    else if (!end_key.empty()) {
+        bound     = end_key.to_string();
+        has_bound = true;
+    }
+    else if (!prefix.empty()) {
+        bound = prefix.to_string();
+        for (size_t i = bound.size(); i > 0; --i) {
+            auto byte = static_cast<uint8_t>(bound[i - 1]);
+            if (byte != 0xff) {
+                bound[i - 1] = static_cast<char>(byte + 1);
+                bound.resize(i);
+                has_bound = true;
+                break;
+            }
+        }
+    }
+
+    size_t accumulated_bytes = 0;
+    size_t deadline_counter  = 0;
+    while (true) {
+        if (deadline_ms != 0 && ++deadline_counter >= 1024) {
+            deadline_counter = 0;
+            auto now_ms      = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                         std::chrono::system_clock::now().time_since_epoch())
+                                                         .count());
+            if (now_ms >= deadline_ms) {
+                *truncated = true;
+                return true;
+            }
+        }
+
+        Slice              winner_key;
+        const CellVersion *winner_l0 = nullptr;
+        Slice              winner_l1;
+        bool               have_winner = false;
+        for (const auto &memtable : memtables) {
+            auto cursor = memtable->cursor_reverse(Slice(bound), has_bound, false);
+            if (!cursor.valid()) {
+                continue;
+            }
+            uint64_t slot = cursor.cell_version() != nullptr ? cursor.cell_version()->slot : 0;
+            uint64_t winner_slot =
+                winner_l0 != nullptr ? winner_l0->slot : (winner_l1.empty() ? 0 : CellView{winner_l1}.slot());
+            int comparison = have_winner ? cursor.key().compare(winner_key) : 1;
+            if (comparison > 0 || (comparison == 0 && slot > winner_slot)) {
+                winner_key  = cursor.key();
+                winner_l0   = cursor.cell_version();
+                winner_l1   = {};
+                have_winner = true;
+            }
+        }
+        Slice l1_key;
+        Slice l1_cell;
+        if (l1_predecessor(Slice(bound), has_bound, &l1_key, &l1_cell)) {
+            uint64_t l1_slot = CellView{l1_cell}.slot();
+            uint64_t winner_slot =
+                winner_l0 != nullptr ? winner_l0->slot : (winner_l1.empty() ? 0 : CellView{winner_l1}.slot());
+            int comparison = have_winner ? l1_key.compare(winner_key) : 1;
+            if (comparison > 0 || (comparison == 0 && l1_slot > winner_slot)) {
+                winner_key  = l1_key;
+                winner_l0   = nullptr;
+                winner_l1   = l1_cell;
+                have_winner = true;
+            }
+        }
+        if (blocked != kInvalidPageId) {
+            *out_pending_page_id = blocked;
+            return false;
+        }
+        if (!have_winner || opt_.key_range.before(winner_key)) {
+            return true;
+        }
+        bound     = winner_key.to_string();
+        has_bound = true;
+
+        if ((!end_key.empty() && winner_key.compare(end_key) >= 0) || opt_.key_range.at_or_after_end(winner_key)) {
+            continue;
+        }
+        if (!prefix.empty() && !winner_key.starts_with(prefix)) {
+            if (winner_key.compare(prefix) < 0) {
+                return true;
+            }
+            continue;
+        }
+
+        buffer materialized;
+        Slice  winner_cell = winner_l1;
+        if (winner_l0 != nullptr) {
+            if (winner_l0->cell.ownership() != buffer::mode::kExternal) {
+                winner_cell = winner_l0->cell.slice();
+            }
+            else {
+                size_t value_len = winner_l0->cell.size();
+                materialized     = buffer::alloc(value_len, kCellHeaderSize);
+                uint8_t *data    = materialized.data();
+                for (int i = 0; i < 8; ++i) {
+                    data[i] = static_cast<uint8_t>((winner_l0->slot >> (8 * i)) & 0xff);
+                }
+                data[8] = winner_l0->flags;
+                if (value_len > 0) {
+                    std::memcpy(data + kCellHeaderSize, winner_l0->cell.data(), value_len);
+                }
+                winner_cell = materialized.slice();
+            }
+        }
+        CellView value{winner_cell};
+        if (value.is_tombstone()) {
+            continue;
+        }
+        if (limit != 0 && *out_count >= limit) {
+            *truncated = true;
+            return true;
+        }
+        std::string val;
+        if (!keys_only) {
+            val = value.is_overflow() ? assemble_overflow_value(value.overflow_head(), value.overflow_len())
+                                      : value.value().to_string();
+        }
+        size_t entry_bytes = winner_key.size() + val.size();
+        if (byte_budget != 0 && *out_count > 0 && accumulated_bytes + entry_bytes > byte_budget) {
+            *truncated = true;
+            return true;
+        }
+        out_packed->pack_u32(static_cast<uint32_t>(winner_key.size()));
+        out_packed->append(winner_key);
+        out_packed->pack_u64(value.slot());
+        out_packed->push_back(0);
+        out_packed->pack_u32(static_cast<uint32_t>(val.size()));
+        out_packed->append(val);
+        ++*out_count;
+        accumulated_bytes += entry_bytes;
+    }
+}
+
 bool Crowdbtree::try_scan_no_load(
     Slice prefix, Slice start_after, Slice end_key, size_t limit, size_t byte_budget, bool keys_only,
     uint64_t                 deadline_ms,
@@ -3868,6 +4117,20 @@ void Crowdbtree::scan_async(Slice prefix, Slice start_after, Slice end_key, size
                        std::make_shared<ScanPackedBuf>(), nullptr, 0, std::move(on_done));
 }
 
+void Crowdbtree::scan_directional_async(Slice prefix, Slice start_after, Slice end_key, size_t limit,
+                                        size_t byte_budget, bool keys_only, uint64_t deadline_ms, bool reverse,
+                                        std::function<void(Status, ScanPackedBuf, bool)> on_done) const
+{
+    if (!reverse) {
+        scan_async(prefix, start_after, end_key, limit, byte_budget, keys_only, deadline_ms, std::move(on_done));
+        return;
+    }
+    scan_reverse_async_attempt(std::make_shared<std::string>(prefix.to_string()),
+                               std::make_shared<std::string>(start_after.to_string()),
+                               std::make_shared<std::string>(end_key.to_string()), limit, byte_budget, keys_only,
+                               deadline_ms, std::make_shared<ScanPackedBuf>(), nullptr, 0, std::move(on_done));
+}
+
 // Extract the last key from a packed scan buffer (wire format:
 // [u32 klen][key][u64 slot][u8 tombstone][u32 vlen][value] per entry).
 // Used by scan_async_attempt to resume from the last resolved key.
@@ -3904,6 +4167,34 @@ static std::string last_key_from_packed(const uint8_t *data, size_t len)
     return last;
 }
 
+static size_t payload_bytes_from_packed(const uint8_t *data, size_t len)
+{
+    size_t pos   = 0;
+    size_t total = 0;
+    while (pos + 4 <= len) {
+        uint32_t key_len = 0;
+        for (int i = 0; i < 4; ++i) {
+            key_len |= static_cast<uint32_t>(data[pos + i]) << (8 * i);
+        }
+        pos += 4;
+        if (pos + key_len + 13 > len) {
+            break;
+        }
+        pos += key_len + 9;
+        uint32_t value_len = 0;
+        for (int i = 0; i < 4; ++i) {
+            value_len |= static_cast<uint32_t>(data[pos + i]) << (8 * i);
+        }
+        pos += 4;
+        if (pos + value_len > len) {
+            break;
+        }
+        pos += value_len;
+        total += key_len + value_len;
+    }
+    return total;
+}
+
 void Crowdbtree::scan_async_attempt(std::shared_ptr<std::string>        prefix_owned,
                                     const std::shared_ptr<std::string> &start_after_owned,
                                     const std::shared_ptr<std::string> &end_key_owned, size_t limit, size_t byte_budget,
@@ -3913,7 +4204,7 @@ void Crowdbtree::scan_async_attempt(std::shared_ptr<std::string>        prefix_o
 {
     // Adjust the byte budget by entries already accumulated across prior
     // cold-leaf retries, mirroring the remaining_limit adjustment below.
-    size_t accumulated_bytes = accumulated->size();
+    size_t accumulated_bytes = payload_bytes_from_packed(accumulated->data(), accumulated->size());
     if (byte_budget != 0) {
         if (accumulated_bytes >= byte_budget && accumulated_count > 0) {
             on_done(Status::Ok(), std::move(*accumulated), true);
@@ -4047,6 +4338,131 @@ void Crowdbtree::scan_async_attempt(std::shared_ptr<std::string>        prefix_o
     auto resume_after = make_resume_after(start_after_owned, last_key);
     scan_async_attempt(std::move(prefix_owned), resume_after, end_key_owned, remaining_limit, byte_budget, keys_only,
                        deadline_ms, std::move(accumulated), std::move(last_key), accumulated_count, std::move(on_done));
+}
+
+void Crowdbtree::scan_reverse_async_attempt(std::shared_ptr<std::string>        prefix_owned,
+                                            const std::shared_ptr<std::string> &start_after_owned,
+                                            const std::shared_ptr<std::string> &end_key_owned, size_t limit,
+                                            size_t byte_budget, bool keys_only, uint64_t deadline_ms,
+                                            std::shared_ptr<ScanPackedBuf> accumulated,
+                                            std::shared_ptr<std::string> last_key, size_t accumulated_count,
+                                            std::function<void(Status, ScanPackedBuf, bool)> on_done) const
+{
+    size_t accumulated_bytes = payload_bytes_from_packed(accumulated->data(), accumulated->size());
+    if (byte_budget != 0 && accumulated_bytes >= byte_budget && accumulated_count > 0) {
+        on_done(Status::Ok(), std::move(*accumulated), true);
+        return;
+    }
+    if (limit != 0 && accumulated_count >= limit) {
+        on_done(Status::Ok(), std::move(*accumulated), true);
+        return;
+    }
+    size_t remaining_byte_budget = byte_budget != 0 ? byte_budget - accumulated_bytes : 0;
+    if (deadline_ms != 0) {
+        auto now_ms = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
+        if (now_ms >= deadline_ms) {
+            on_done(Status::Ok(), std::move(*accumulated), true);
+            return;
+        }
+    }
+
+    auto          continuation = make_resume_after(start_after_owned, last_key);
+    ScanPackedBuf out_packed;
+    size_t        out_count       = 0;
+    bool          truncated       = false;
+    uint64_t      pending_page_id = kInvalidPageId;
+    size_t        attempt_limit   = limit == 0 ? 0 : (limit > accumulated_count ? limit - accumulated_count : 0);
+    if (try_scan_reverse_no_load(Slice(*prefix_owned), Slice(*continuation), Slice(*end_key_owned), attempt_limit,
+                                 remaining_byte_budget, keys_only, deadline_ms, &out_packed, &out_count, &truncated,
+                                 &pending_page_id)) {
+        if (out_count > 0) {
+            accumulated->append(out_packed.data(), out_packed.size());
+        }
+        on_done(Status::Ok(), std::move(*accumulated), truncated);
+        return;
+    }
+
+    if (out_count > 0) {
+        accumulated->append(out_packed.data(), out_packed.size());
+        accumulated_count += out_count;
+        last_key = std::make_shared<std::string>(last_key_from_packed(out_packed.data(), out_packed.size()));
+    }
+    if (opt_.async_page_store != nullptr) {
+        uint64_t addr           = 0;
+        uint32_t plen           = 0;
+        bool     still_unloaded = false;
+        Status   location_status;
+        {
+            std::scoped_lock lk(load_mutex_);
+            uint64_t         word = mapping_.get_word(pending_page_id);
+            if (slot_word::is_unloaded(word)) {
+                location_status = opt_.page_store->decode_mapping_location(word, &addr, &plen);
+                still_unloaded  = location_status.ok();
+            }
+        }
+        if (!location_status.ok()) {
+            io_failed_.store(true);
+            on_done(location_status, ScanPackedBuf{}, false);
+            return;
+        }
+        if (!still_unloaded) {
+            if (metrics_.scan_retry_c != nullptr) {
+                metrics_.scan_retry_c->inc();
+            }
+            scan_reverse_async_attempt(std::move(prefix_owned), start_after_owned, end_key_owned, limit, byte_budget,
+                                       keys_only, deadline_ms, std::move(accumulated), std::move(last_key),
+                                       accumulated_count, std::move(on_done));
+            return;
+        }
+        uint32_t iu   = opt_.page_store->iu_size();
+        auto     blob = std::make_shared<std::vector<uint8_t>>(round_up_to_iu(plen, iu));
+        demand_load_total_.fetch_add(1, std::memory_order_relaxed);
+        opt_.async_page_store->submit_read(
+            addr, blob->data(), blob->size(),
+            detail::own_async_completion([this, page_id = pending_page_id, addr, plen, blob,
+                                          prefix_owned = std::move(prefix_owned), start_after_owned, end_key_owned,
+                                          limit, byte_budget, keys_only, deadline_ms,
+                                          accumulated = std::move(accumulated), last_key = std::move(last_key),
+                                          accumulated_count, on_done = std::move(on_done)](Status status) mutable {
+                if (!status.ok()) {
+                    CRB_LOG_ERROR("[{}] scan_reverse_async: demand-load I/O fault: pid={} addr={} len={} status={}",
+                                  name_, page_id, addr, plen, status.to_string());
+                    io_failed_.store(true);
+                    on_done(status, ScanPackedBuf{}, false);
+                    return;
+                }
+                bool installed_ok = true;
+                {
+                    std::scoped_lock lk(load_mutex_);
+                    uint64_t         word = mapping_.get_word(page_id);
+                    if (slot_word::is_unloaded(word)) {
+                        installed_ok = install_loaded_page(page_id, addr, plen, *blob) != nullptr;
+                    }
+                }
+                if (!installed_ok) {
+                    io_failed_.store(true);
+                    on_done(Status::io_error("scan_reverse_async: demand-load decode/CRC failure"), ScanPackedBuf{},
+                            false);
+                    return;
+                }
+                if (metrics_.scan_retry_c != nullptr) {
+                    metrics_.scan_retry_c->inc();
+                }
+                scan_reverse_async_attempt(std::move(prefix_owned), start_after_owned, end_key_owned, limit,
+                                           byte_budget, keys_only, deadline_ms, std::move(accumulated),
+                                           std::move(last_key), accumulated_count, std::move(on_done));
+            }));
+        return;
+    }
+    (void)resident(pending_page_id);
+    if (metrics_.scan_retry_c != nullptr) {
+        metrics_.scan_retry_c->inc();
+    }
+    scan_reverse_async_attempt(std::move(prefix_owned), start_after_owned, end_key_owned, limit, byte_budget, keys_only,
+                               deadline_ms, std::move(accumulated), std::move(last_key), accumulated_count,
+                               std::move(on_done));
 }
 
 int Crowdbtree::height() const

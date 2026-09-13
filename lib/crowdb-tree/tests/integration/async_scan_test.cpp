@@ -365,3 +365,32 @@ TEST(AsyncScan, StartAfterMatchesSyncScan)
 
     ct_close(t);
 }
+
+TEST(AsyncScan, DirectionalReverseUsesExclusiveUpperCursor)
+{
+    ct_options opt = {};
+    ct_tree   *t   = nullptr;
+    ASSERT_EQ(ct_open(&opt, &t), 0);
+    for (int i = 0; i < 20; ++i) {
+        ASSERT_EQ(put_flush(t, i + 1, make_key(i), "v" + std::to_string(i)), 0);
+    }
+
+    std::string cursor = make_key(10);
+    ct_future  *f      = ct_scan_directional_async(t, nullptr, 0, reinterpret_cast<const uint8_t *>(cursor.data()),
+                                                   cursor.size(), nullptr, 0, 4, 0, 0, 0, 1);
+    ASSERT_NE(f, nullptr);
+    int32_t  truncated = 0;
+    uint64_t count     = 0;
+    ct_buf   entries   = {};
+    ASSERT_EQ(poll_scan_until_done(f, &truncated, &count, &entries), 0);
+    auto got = unpack_entries(entries, count);
+    ct_free_buf(&entries);
+
+    EXPECT_EQ(count, 4U);
+    EXPECT_EQ(truncated, 1);
+    EXPECT_TRUE(got.contains(make_key(9)));
+    EXPECT_TRUE(got.contains(make_key(8)));
+    EXPECT_TRUE(got.contains(make_key(7)));
+    EXPECT_TRUE(got.contains(make_key(6)));
+    ct_close(t);
+}

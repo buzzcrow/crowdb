@@ -18,6 +18,14 @@ pub struct ScanEntry {
     pub tombstone: bool,
 }
 
+/// Traversal order for the asynchronous packed scan surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScanDirection {
+    #[default]
+    Forward,
+    Reverse,
+}
+
 /// A snapshot-view entry (includes tombstones).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewEntry {
