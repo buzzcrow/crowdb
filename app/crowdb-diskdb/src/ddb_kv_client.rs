@@ -180,7 +180,7 @@ impl DdbKvClient {
         zone_index: u32,
         unit_offset: u64,
         value: &BusyBlockValue,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let busy_key = BusyBlockKey {
             disk_id: *disk_id,
             zone_index,
@@ -192,7 +192,10 @@ impl DdbKvClient {
             value: Bytes::from(busy_bytes),
         }];
         let (store_id, group_id) = bind;
-        self.kv.batch_write(store_id, group_id, &ops).await.map(|_| ())
+        self.kv
+            .batch_write(store_id, group_id, &ops)
+            .await
+            .map(|outcome| outcome.revision)
     }
 
     /// Replace one busy-block value only while its revision is unchanged.
@@ -225,7 +228,7 @@ impl DdbKvClient {
         &self,
         bind: Bind,
         records: &[(DiskId, u32, u64, BusyBlockValue)],
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let mut ops = Vec::with_capacity(records.len());
         for (disk_id, zone_index, unit_offset, value) in records {
             let busy_key = BusyBlockKey {
@@ -246,7 +249,11 @@ impl DdbKvClient {
                 .kv_client_batch_write_ops
                 .inc_by(u64::try_from(ops.len()).unwrap_or(u64::MAX));
         }
-        let result = self.kv.batch_write(store_id, group_id, &ops).await.map(|_| ());
+        let result = self
+            .kv
+            .batch_write(store_id, group_id, &ops)
+            .await
+            .map(|outcome| outcome.revision);
         if let Some(metrics) = &self.metrics {
             metrics.kv_client_inflight.dec();
             if result.is_err() {

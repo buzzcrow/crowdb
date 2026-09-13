@@ -46,6 +46,7 @@ pub struct TentativeBlock {
     pub zone_index: u32,
     pub unit_offset: u64,
     pub value: BusyBlockValue,
+    pub revision: u64,
 }
 
 struct TentativeEntry {

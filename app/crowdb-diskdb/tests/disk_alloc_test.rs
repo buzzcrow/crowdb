@@ -66,6 +66,7 @@ fn tentative_cache_removes_only_matching_block() {
             unit_count: 2,
             ..Default::default()
         },
+        revision: 7,
     };
     dg.cache_tentative(block);
 
@@ -100,6 +101,7 @@ fn concurrent_tentative_cache_evicts_oldest_and_converges_to_capacity() {
                             unit_count: 1,
                             ..Default::default()
                         },
+                        revision: allocation_ts,
                     });
                 }
             })

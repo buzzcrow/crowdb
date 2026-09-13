@@ -831,6 +831,7 @@ dependencies = [
  "crowdb-test-harness",
  "dashmap",
  "flatbuffers",
+ "futures",
  "rand 0.9.5",
  "reqwest",
  "serde",
