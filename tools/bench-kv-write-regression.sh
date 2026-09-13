@@ -15,7 +15,8 @@
 # sub-test starts from a data-empty cluster without a full redeploy.
 # Server tunables (max-inflight, coalesce) are deploy-time, so the
 # sweep groups sub-tests by shared tunables:
-#   Group A: win=32, coalesce=16  (5 sub-tests)
+#   Group A: win=32, coalesce=16  (5 scaling sub-tests)
+#   Large:  win=32, coalesce=16  (3 clean 16 KiB repetitions)
 #   Group B: win=64, coalesce=64  (2 sub-tests)
 # This cuts deploys from 7 to 2; clean is much cheaper than deploy.
 #
@@ -49,12 +50,22 @@ LOG_ROOT="${KV_WRITE_BENCH_LOG_ROOT:-$(pwd)/bench-log/kv-write-regression-$RUN_S
 RESULTS_FILE="${KV_WRITE_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
 REGRESSION_LOG_ROOT="$LOG_ROOT"
 source tools/bench-regression-common.sh
+source tools/bench-kv-write-sentinel.sh
 export CROWDB_LOG_ROOT="$LOG_ROOT"
 regression_init
 DURATION="${KV_WRITE_BENCH_DURATION:-20}"
 KEYSPACE="${KV_WRITE_BENCH_KEYSPACE:-1000000}"
 VALUE_SIZE="${KV_WRITE_BENCH_VALUE_SIZE:-512}"
 CASES="${KV_WRITE_BENCH_CASES:-}"
+SENTINEL_FAILED=0
+
+append_failed_row() {
+    local label="$1" duration="$2" keyspace="$3" value_size="$4"
+    echo -e "$label\t${WIN:-0}\t${COALESCE:-0}\t${RPC_WORKERS:-0}\t0\t0\t0\t0\t0\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t$duration\t$keyspace\t$value_size\t0\t0\t0\t0\t0" >> "$RESULTS_FILE"
+    if [[ "$label" == largeval_16k_run* ]]; then
+        SENTINEL_FAILED=1
+    fi
+}
 
 # sample_rss <config_file> <label>
 # Reads server PIDs from the config file and reports total RSS (MB)
@@ -78,12 +89,15 @@ sample_rss() {
     echo "$total_mb"
 }
 
-# run_bench <deploy_name> <threads> <conn> <label>
+# run_bench <deploy_name> <threads> <conn> <label> [duration] [keyspace] [value_size]
 # Assumes the deploy was already created with the right server tunables.
 # Cleans user data, then runs the write workload, parses JSON output.
 run_bench() {
     local deploy="$1" threads="$2" conn="$3" label="$4"
-    if [ -n "$CASES" ] && [[ " $CASES " != *" $label "* ]]; then
+    local duration="${5:-$DURATION}" keyspace="${6:-$KEYSPACE}" value_size="${7:-$VALUE_SIZE}"
+    if [ -n "$CASES" ] \
+        && [[ " $CASES " != *" $label "* ]] \
+        && ! { [[ "$label" == largeval_16k_run* ]] && [[ "$CASES" == *"largeval_16k"* ]]; }; then
         return
     fi
     echo ">>> $label ..."
@@ -91,7 +105,7 @@ run_bench() {
     config_file=$(cat "$LOG_ROOT/${deploy}.cfgpath" 2>/dev/null || echo "")
     if [ -z "$config_file" ] || [ ! -f "$config_file" ]; then
         echo "    ERROR: no config for deploy '$deploy'"
-        echo -e "$label\t0\t0\t0\t0\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0" >> "$RESULTS_FILE"
+        append_failed_row "$label" "$duration" "$keyspace" "$value_size"
         return
     fi
     # RSS before clean (measures leftover from prior sub-test).
@@ -103,37 +117,48 @@ run_bench() {
     local clean_json; clean_json=$(echo "$clean_out" | sed -n '/^{/,/^}/p')
     if [ -z "$clean_json" ] || ! echo "$clean_json" | jq -e '.new_leader' >/dev/null 2>&1; then
         echo "    ERROR: clean failed"; echo "$clean_out" | tail -5
-        echo -e "$label\t0\t0\t0\t0\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0" >> "$RESULTS_FILE"
+        append_failed_row "$label" "$duration" "$keyspace" "$value_size"
         return
     fi
     # RSS after clean (measures how much memory clean actually freed).
     local rss_post_clean; rss_post_clean=$(sample_rss "$config_file" "post-clean")
     local clean_delta=$((rss_pre_clean - rss_post_clean))
     echo "    rss clean delta: ${clean_delta}MB freed"
-    local output
+    local output bench_status=0
     output=$(pixi run -- cargo run --release -p crowdb-cli -- --config "$config_file" \
-        bench kv write --store 0 --group 1 --duration-secs "$DURATION" \
+        bench kv write --store 0 --group 1 --duration-secs "$duration" \
         --loader-num "$threads" --connections "$conn" \
-        --key-space "$KEYSPACE" --value-size "$VALUE_SIZE" \
+        --key-space "$keyspace" --value-size "$value_size" \
         --event-write --rpc-workers "${RPC_WORKERS:-2}" \
-        --verify-bytes 0 --json 2>&1)
+        --verify-bytes 0 --json 2>&1 | tee "$LOG_ROOT/$label-cli.log") || bench_status=$?
+    if [ "$bench_status" -ne 0 ]; then
+        echo "    ERROR: benchmark command exited with status $bench_status"
+        append_failed_row "$label" "$duration" "$keyspace" "$value_size"
+        return
+    fi
     local json; json=$(echo "$output" | sed -n '/^{/,/^}/p')
     if [ -z "$json" ]; then
         echo "    ERROR: no JSON output"; echo "$output" | tail -5
-        echo -e "$label\t0\t0\t0\t0\t1\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0\t0" >> "$RESULTS_FILE"
+        append_failed_row "$label" "$duration" "$keyspace" "$value_size"
         return
     fi
     # RSS after workload (measures how much the workload grew RSS).
     local rss_post_bench; rss_post_bench=$(sample_rss "$config_file" "post-bench")
     local bench_delta=$((rss_post_bench - rss_post_clean))
     echo "    rss bench delta: +${bench_delta}MB (post-bench - post-clean)"
-    local ops_s avg_us p50_us p99_us errors wal total_ops
+    local ops_s avg_us p50_us p99_us errors correctness_errors wal total_ops
     total_ops=$(echo "$json" | jq -r '.total_ops')
     ops_s=$(echo "$json" | jq -r '.total_ops * 1000 / .duration_ms' | awk '{printf "%.0f", $1}')
     avg_us=$(echo "$json" | jq -r '.by_op.write.latency_us.avg_us')
     p50_us=$(echo "$json" | jq -r '.by_op.write.latency_us.p50_us')
     p99_us=$(echo "$json" | jq -r '.by_op.write.latency_us.p99_us')
     errors=$(echo "$json" | jq -r '.total_errors')
+    correctness_errors=$(echo "$json" | jq -r '.correctness_errors // 0')
+    local snapshot_completed snapshot_failed snapshot_max_us election_delta
+    snapshot_completed=$(echo "$json" | jq -r '.server_metrics.snapshot.completed // 0')
+    snapshot_failed=$(echo "$json" | jq -r '.server_metrics.snapshot.failed // 0')
+    snapshot_max_us=$(echo "$json" | jq -r '.server_metrics.snapshot.max_latency_us // 0')
+    election_delta=$(echo "$json" | jq -r '.server_metrics.election_count // 0')
     # WAL append: aggregated across 3 nodes; per-node = wal/3 = accept rounds/s
     wal=$(echo "$json" | jq -r '.server_metrics.wal_append_count // 0')
     wal_per_node=$((wal / 3))
@@ -161,7 +186,13 @@ run_bench() {
     echo "    rpc_agg: srv sagg=${srv_sa} ragg=${srv_ra} s2w=${srv_s2w}us | cli sagg=${cli_sa} ragg=${cli_ra} s2w=${cli_s2w}us"
     echo "    replica: r2=${r2_avg}us/${r2_tps}tps r3=${r3_avg}us/${r3_tps}tps"
     echo "    inflight: enq=${inflight_enq} wait_avg=${inflight_wait}us"
-    echo -e "$label\t$WIN\t$COALESCE\t${RPC_WORKERS:-2}\t$ops_s\t$wal_per_node\t$avg_us\t$p50_us\t$p99_us\t$errors\t$srv_sa\t$srv_ra\t$cli_sa\t$cli_ra\t$r2_avg\t$r2_tps\t$r3_avg\t$r3_tps\t$inflight_enq\t$inflight_wait" >> "$RESULTS_FILE"
+    echo "    maintenance: snapshot=${snapshot_completed} failed=${snapshot_failed} max=${snapshot_max_us}us elections=${election_delta}"
+    echo -e "$label\t$WIN\t$COALESCE\t${RPC_WORKERS:-2}\t$ops_s\t$wal_per_node\t$avg_us\t$p50_us\t$p99_us\t$errors\t$srv_sa\t$srv_ra\t$cli_sa\t$cli_ra\t$r2_avg\t$r2_tps\t$r3_avg\t$r3_tps\t$inflight_enq\t$inflight_wait\t$duration\t$keyspace\t$value_size\t$correctness_errors\t$snapshot_completed\t$snapshot_failed\t$snapshot_max_us\t$election_delta" >> "$RESULTS_FILE"
+    if [[ "$label" == largeval_16k_run* ]] && ! validate_largeval_result \
+        "$errors" "$correctness_errors" "$election_delta" "$snapshot_completed" "$snapshot_failed"; then
+        echo "    ERROR: large-value snapshot sentinel contract failed"
+        SENTINEL_FAILED=1
+    fi
 }
 
 # deploy_group <name> <win> <coalesce> <rpc_workers>
@@ -295,7 +326,7 @@ teardown_group() {
 echo "=== building release (CROWDB_ASAN unset) ==="
 pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server 2>&1 | tail -3
 
-echo -e "label\twin\tcoalesce\tworkers\tops_s\twal_per_node\tavg_us\tp50_us\tp99_us\terrors\tsrv_sagg\tsrv_ragg\tcli_sagg\tcli_ragg\tr2_avg\tr2_tps\tr3_avg\tr3_tps\tinflight_enq\tinflight_wait_us" > "$RESULTS_FILE"
+echo -e "label\twin\tcoalesce\tworkers\tops_s\twal_per_node\tavg_us\tp50_us\tp99_us\terrors\tsrv_sagg\tsrv_ragg\tcli_sagg\tcli_ragg\tr2_avg\tr2_tps\tr3_avg\tr3_tps\tinflight_enq\tinflight_wait_us\tduration_s\tkeyspace\tvalue_size\tcorrectness_errors\tsnapshot_completed\tsnapshot_failed\tsnapshot_max_us\telection_delta" > "$RESULTS_FILE"
 
 # Group A: win=32, coalesce=16 (5 sub-tests, workers=2 except 128T+)
 if [ -z "$CASES" ] || [[ "$CASES" == *"win32_coales16"* ]]; then
@@ -308,6 +339,18 @@ if [ -z "$CASES" ] || [[ "$CASES" == *"win32_coales16"* ]]; then
     WIN=32 COALESCE=16 RPC_WORKERS=4 run_bench "$DEPLOY_A" 128 4 "write_128t_4c_win32_coales16"
     WIN=32 COALESCE=16 RPC_WORKERS=4 run_bench "$DEPLOY_A" 256 8 "write_256t_8c_win32_coales16"
     teardown_group "$DEPLOY_A"
+fi
+
+# Large-value sentinel: one deployment, three clean group repetitions.
+if [ -z "$CASES" ] || [[ "$CASES" == *"largeval_16k"* ]]; then
+    DEPLOY_LARGE="write-largeval-$$-$(date +%s)"
+    WIN=32 COALESCE=16 RPC_WORKERS=2 deploy_group "$DEPLOY_LARGE" 32 16 2
+    echo "=== large-value snapshot sentinel (16 KiB, 100k keys, 15s) ==="
+    for repetition in 1 2 3; do
+        WIN=32 COALESCE=16 RPC_WORKERS=2 run_bench \
+            "$DEPLOY_LARGE" 1 1 "largeval_16k_run${repetition}" 15 100000 16384
+    done
+    teardown_group "$DEPLOY_LARGE"
 fi
 
 # Group B: win=64, coalesce=64 (2 sub-tests, workers=4)
@@ -323,3 +366,7 @@ fi
 echo "=== DONE ==="
 echo "Results in $RESULTS_FILE"
 column -t -s$'\t' "$RESULTS_FILE"
+if [ "$SENTINEL_FAILED" -ne 0 ]; then
+    echo "Large-value sentinel failed; evidence retained in $LOG_ROOT" >&2
+    exit 1
+fi
