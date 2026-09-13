@@ -73,7 +73,10 @@ impl std::error::Error for FreeError {}
 
 impl From<crowdb_kv_client::Error> for FreeError {
     fn from(e: crowdb_kv_client::Error) -> Self {
-        Self::Kv(Arc::new(e))
+        match e {
+            crowdb_kv_client::Error::OutcomeUnknown => Self::OutcomeUnknown,
+            error => Self::Kv(Arc::new(error)),
+        }
     }
 }
 
