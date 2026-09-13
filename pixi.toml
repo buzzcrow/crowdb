@@ -100,7 +100,8 @@ find lib/crowdb-tree/src lib/crowdb-tree/include lib/crowdb-tree/tests lib/crowd
 tree-lint = "CPATH=$CONDA_PREFIX/include python3 tools/ct_lint.py"
 test-tree-link-isolation = "bash tools/test-tree-chunk-link-isolation.sh"
 rs-fmt = "cargo fmt --all"
-rs-lint = "cargo clippy --all-targets -- -D warnings"
+check-production-dashmap = "python3 tools/check-production-dashmap.py"
+rs-lint = { cmd = "cargo clippy --all-targets -- -D warnings", depends-on = ["check-production-dashmap"] }
 ts-lint = { cmd = "cd app/crowdb-web/ui && npx tsc --noEmit --project tsconfig.e2e.json", depends-on = ["install-ui-deps"] }
 # Full build: C++ libs + release Rust binaries + frontend. Used by
 # run/bench/profile. Tests use build-cpp (C++ tests) or nothing (Rust tests).

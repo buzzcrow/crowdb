@@ -37,7 +37,7 @@ Goal: remove correctness-sensitive and request-hot sharded locks, including the 
 
 ## Phase 6: Documentation, performance, and cleanup
 
-- [ ] **Freeze retained production inventory**: add a repository check whose allowlist records the purpose and bounded guard lifetime of every retained production `DashMap`; exclude tests and benchmarks and fail any unclassified new use. Files: `tools/check-production-dashmap.py`, `pixi.toml`, retained-use source files.
+- [x] **Freeze retained production inventory**: add a repository check whose allowlist records the purpose and bounded guard lifetime of every retained production `DashMap`; exclude tests and benchmarks and fail any unclassified new use. Files: `tools/check-production-dashmap.py`, `pixi.toml`, retained-use source files.
 - [ ] **Correct design claims**: update the affected permanent designs to describe RCU/ordered-map publication and explicitly bounded retained sharded locks. Files: `doc/design/kv/design-crowdb-kv.md`, `doc/design/kv/design-crowdb-kv-server.md`, `doc/design/kv/design-crowdb-kv-rpc.md`, `doc/design/kv/design-crowdb-kv-rpc-client.md`, `doc/design/rpc/design-crowdb-rpc-diskdb-migration.md`, `doc/design/diskdb/design-crowdb-diskdb-space-metrics.md`, `doc/design/chunkdb/design-crowdb-chunkdb.md`.
 - [ ] **Verify functional gates**: run the R149 acceptance commands for learner, RPC migration, multi-group store, KV/DiskDB/ChunkDB clients, lifecycle, and disk allocation. Files: none.
 - [ ] **Verify regression sentinels and lint**: run all five regression scripts, production inventory, Rust formatting, clippy, and tree lint; record any confirmed pre-existing failure. Files: none.
