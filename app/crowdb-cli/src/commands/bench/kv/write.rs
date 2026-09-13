@@ -21,7 +21,7 @@ use super::client::{build_kv_client, KvClientTunables};
 use crate::commands::bench::loader::{run_workload, BenchRecorder};
 use crate::commands::bench::metrics::BenchMetrics;
 use crate::commands::bench::result::{
-    BenchOps, BenchResult, ReplicaStats, ServerMetrics, ServerRpcLatency, TransportStats,
+    BenchOps, BenchResult, ReplicaStats, ServerMetrics, ServerRpcLatency, SnapshotStats, TransportStats,
 };
 use crate::commands::bench::verb::WriteArgs;
 use crate::commands::load_config;
@@ -55,6 +55,8 @@ pub async fn run(cli: &Cli, args: WriteArgs) -> ExitCode {
 
     let mut metrics = BenchMetrics::new(&cli.log_dir, args.metrics_interval);
     metrics.start();
+
+    let server_metrics_baseline = fetch_server_metrics(cli, store_id, group_id).await;
 
     let duration = Duration::from_secs(args.duration_secs);
     tracing::info!(
@@ -123,7 +125,12 @@ pub async fn run(cli: &Cli, args: WriteArgs) -> ExitCode {
 
     // Fetch server-side metrics from every node.
     tracing::info!("bench kv write: fetching server metrics");
-    let server_metrics = fetch_server_metrics(cli, store_id, group_id).await;
+    let server_metrics = fetch_server_metrics(cli, store_id, group_id)
+        .await
+        .map(|current| match server_metrics_baseline.as_ref() {
+            Some(baseline) => current.delta_since(baseline),
+            None => current,
+        });
     tracing::info!(
         elapsed_ms = start.elapsed().as_millis(),
         "bench kv write: server metrics fetched"
@@ -168,6 +175,7 @@ fn build_value(id: u64, size: usize) -> Vec<u8> {
 /// Fetch `/metrics` from every server in the config and aggregate into
 /// `ServerMetrics`. Metrics are summed across nodes except for averages
 /// (which are averaged across nodes that report them).
+#[allow(clippy::too_many_lines)]
 async fn fetch_server_metrics(cli: &Cli, store_id: u64, group_id: u64) -> Option<ServerMetrics> {
     let config = load_config(cli).ok()?;
     let group_prefix = format!("s.{store_id}.g.{group_id}.");
@@ -184,6 +192,10 @@ async fn fetch_server_metrics(cli: &Cli, store_id: u64, group_id: u64) -> Option
     let mut inflight_enqueued = 0u64;
     let mut inflight_wait_sum = 0u64;
     let mut inflight_wait_count = 0u64;
+    let mut election_count = 0u64;
+    let mut snapshot_completed = 0u64;
+    let mut snapshot_failed = 0u64;
+    let mut snapshot_max_latency_us = 0u64;
     let mut rpc_s2w_sum = 0u64;
     let mut rpc_s2w_count = 0u64;
     // Server-side per-op RPC latency accumulators (averaged across nodes).
@@ -204,8 +216,23 @@ async fn fetch_server_metrics(cli: &Cli, store_id: u64, group_id: u64) -> Option
                 let fields = field_map(&point.fields);
                 match point.name.as_str() {
                     // WAL append summary: `total` = cumulative count.
-                    n if n.ends_with(".wal.mem.append.l") || n.ends_with(".wal.file.append.l") => {
+                    n if n.ends_with(".wal.mem.append.l")
+                        || n.ends_with(".wal.file.append.l")
+                        || n.ends_with(".wal.uring.append.l") =>
+                    {
                         wal_append_count += get_u64(&fields, "total");
+                    }
+                    n if n.ends_with(".paxos.elections.c") => {
+                        election_count += get_u64(&fields, "total");
+                    }
+                    n if n.ends_with(".maintenance.snapshot.success.c") => {
+                        snapshot_completed += get_u64(&fields, "total");
+                    }
+                    n if n.ends_with(".maintenance.snapshot.failure.c") => {
+                        snapshot_failed += get_u64(&fields, "total");
+                    }
+                    n if n.ends_with(".maintenance.snapshot.max_us.g") => {
+                        snapshot_max_latency_us = snapshot_max_latency_us.max(get_u64(&fields, "value"));
                     }
                     n if n.ends_with(".write.inflight_enqueued.c") => {
                         inflight_enqueued += get_u64(&fields, "total");
@@ -267,6 +294,12 @@ async fn fetch_server_metrics(cli: &Cli, store_id: u64, group_id: u64) -> Option
         rpc_s2w_count,
         &rpc_lat,
         peer_totals,
+        election_count,
+        SnapshotStats {
+            completed: snapshot_completed,
+            failed: snapshot_failed,
+            max_latency_us: snapshot_max_latency_us,
+        },
     ))
 }
 
@@ -280,6 +313,8 @@ fn build_server_metrics(
     rpc_s2w_count: u64,
     rpc_lat: &RpcLatencyAcc,
     mut peer_totals: Vec<(u64, u64, u64)>,
+    election_count: u64,
+    snapshot: SnapshotStats,
 ) -> ServerMetrics {
     // Aggregate peer totals by peer_id (sum across nodes), then pick
     // the top 2 by total round-trips as r2/r3.
@@ -315,6 +350,8 @@ fn build_server_metrics(
         },
         inflight_enqueued,
         inflight_wait_avg_us,
+        election_count,
+        snapshot,
         rpc_latency: rpc_lat.finalize(),
     }
 }

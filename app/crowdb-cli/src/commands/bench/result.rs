@@ -114,8 +114,37 @@ pub struct ServerMetrics {
     pub replica: ReplicaStats,
     pub inflight_enqueued: u64,
     pub inflight_wait_avg_us: u64,
+    /// Election counter delta for the measured interval.
+    pub election_count: u64,
+    /// Maintenance snapshot evidence for the measured interval.
+    pub snapshot: SnapshotStats,
     /// Server-side per-op RPC latency (averaged across nodes).
     pub rpc_latency: Option<ServerRpcLatency>,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct SnapshotStats {
+    pub completed: u64,
+    pub failed: u64,
+    pub max_latency_us: u64,
+}
+
+impl ServerMetrics {
+    /// Convert cumulative counters into values for one measured interval.
+    #[must_use]
+    pub fn delta_since(mut self, baseline: &Self) -> Self {
+        self.wal_append_count = self.wal_append_count.saturating_sub(baseline.wal_append_count);
+        self.inflight_enqueued = self.inflight_enqueued.saturating_sub(baseline.inflight_enqueued);
+        self.election_count = self.election_count.saturating_sub(baseline.election_count);
+        self.snapshot.completed = self
+            .snapshot
+            .completed
+            .saturating_sub(baseline.snapshot.completed);
+        self.snapshot.failed = self.snapshot.failed.saturating_sub(baseline.snapshot.failed);
+        self.replica.r2_tps = self.replica.r2_tps.saturating_sub(baseline.replica.r2_tps);
+        self.replica.r3_tps = self.replica.r3_tps.saturating_sub(baseline.replica.r3_tps);
+        self
+    }
 }
 
 /// Server-side per-request-type RPC latency, averaged across nodes.
@@ -212,6 +241,11 @@ impl fmt::Display for BenchResult {
                 f,
                 "  replica: r2={}us/{}tps  r3={}us/{}tps",
                 sm.replica.r2, sm.replica.r2_tps, sm.replica.r3, sm.replica.r3_tps,
+            )?;
+            writeln!(
+                f,
+                "  maintenance: snapshots={} failed={} max={}us elections={}",
+                sm.snapshot.completed, sm.snapshot.failed, sm.snapshot.max_latency_us, sm.election_count,
             )?;
             if let Some(rl) = &sm.rpc_latency {
                 writeln!(f, "  server_rpc_latency (avg/p50/p99 us):")?;

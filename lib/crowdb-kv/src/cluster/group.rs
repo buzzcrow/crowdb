@@ -44,6 +44,14 @@ pub(crate) struct WriteRegistryHandles {
     pub(crate) accept_quorum_rpc: Arc<LatencySummary>,
 }
 
+/// Registry handles for maintenance snapshot completion observability.
+pub(crate) struct SnapshotRegistryHandles {
+    pub(crate) success: Arc<Counter>,
+    pub(crate) failure: Arc<Counter>,
+    pub(crate) latency: Arc<LatencySummary>,
+    pub(crate) max_us: Arc<Gauge>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CasOwnerToken {
     pub(crate) tenure: u64,
@@ -236,6 +244,8 @@ pub struct PxGroup {
     /// Optional registry handles for write-path metrics. Set via
     /// [`Self::set_metrics_registry`] when a registry is wired.
     pub(crate) write_handles: OnceLock<WriteRegistryHandles>,
+    /// Snapshot completion counters and latency, read lock-free by maintenance.
+    pub(crate) snapshot_handles: OnceLock<SnapshotRegistryHandles>,
     /// Pending `ReadIndex` barrier batch. `Some` only while a `ReadIndex`
     /// heartbeat round is in flight; concurrent reads that arrive during
     /// the round enqueue a waiter here instead of starting their own
@@ -403,6 +413,7 @@ impl PxGroup {
             flushes_since_snapshot: AtomicU64::new(0),
             read_handles: OnceLock::new(),
             write_handles: OnceLock::new(),
+            snapshot_handles: OnceLock::new(),
             pending_read_barrier: parking_lot::Mutex::new(None),
             #[cfg(feature = "test-util")]
             readindex_round_gate: parking_lot::Mutex::new(None),
@@ -640,6 +651,14 @@ impl PxGroup {
             accept_quorum_rpc: r.register_summary(format!("{prefix}.paxos.accept.quorum_rpc.l")),
         };
         let _ = self.write_handles.set(write_handles);
+        let snapshot_handles = SnapshotRegistryHandles {
+            success: r.register_counter(format!("{prefix}.maintenance.snapshot.success.c")),
+            failure: r.register_counter(format!("{prefix}.maintenance.snapshot.failure.c")),
+            latency: r.register_summary(format!("{prefix}.maintenance.snapshot.l")),
+            max_us: r.register_gauge(format!("{prefix}.maintenance.snapshot.max_us.g")),
+        };
+        snapshot_handles.max_us.set(0);
+        let _ = self.snapshot_handles.set(snapshot_handles);
     }
 
     /// Borrow optional registry handles for read-path metrics. Returns
