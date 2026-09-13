@@ -14,7 +14,7 @@ use crowdb_test_harness::hardware::{seed_hardware, standard_disk_ids_3, DG_ID, U
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn wrong_owner_free_is_rejected_before_compaction() {
+async fn wrong_owner_free_is_ignored_by_compaction() {
     require_binaries();
 
     // 1. Start kv cluster + seed hardware.
@@ -70,8 +70,8 @@ async fn wrong_owner_free_is_rejected_before_compaction() {
         seg.disk_id, seg.zone_index, seg.unit_offset
     );
 
-    // 5. A wrong-owner free is rejected before it can replace the current
-    // busy incarnation with a durable free fact.
+    // 5. A wrong-owner free is accepted as an immutable fact. Compaction
+    // rejects it because it does not match the current busy incarnation.
     let owner_b = make_chunk_id(0, 999);
     let wrong_seg = Segment {
         disk_id: seg.disk_id,
@@ -86,14 +86,9 @@ async fn wrong_owner_free_is_rejected_before_compaction() {
             segments: vec![wrong_seg],
         })
         .await
-        .expect("wrong-owner free returns a per-segment result");
-    assert_eq!(wrong_free.freed_count, 0);
-    assert_eq!(wrong_free.failures.len(), 1);
-    assert_eq!(wrong_free.failures[0].segment, wrong_seg);
-    assert_eq!(
-        wrong_free.failures[0].reason,
-        crowdb_protocol::diskdb::rpc::FreeFailureReason::IncarnationMismatch
-    );
+        .expect("wrong-owner free should persist");
+    assert_eq!(wrong_free.freed_count, 1);
+    assert!(wrong_free.failures.is_empty());
     let disk_id = seg.disk_id.expect("allocated segment has disk id");
     let wrong_compaction = client
         .compact_zone(CompactZoneRequest {
@@ -101,7 +96,7 @@ async fn wrong_owner_free_is_rejected_before_compaction() {
             zone_indices: vec![seg.zone_index],
         })
         .await
-        .expect("compact after rejected wrong-owner free");
+        .expect("compact after mismatched wrong-owner free");
     assert!(wrong_compaction.zones.iter().all(|zone| zone.success));
     let after_wrong = client
         .query_disk_group(DG_ID)

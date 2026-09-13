@@ -47,20 +47,31 @@ impl DomainMonitorClient {
         match self.read(&path).await? {
             Some(existing) if existing == request.descriptor => Ok(EnsureDomainMonitorOutcome::AlreadyExists),
             Some(_) => Ok(EnsureDomainMonitorOutcome::DescriptorConflict),
-            None => match self
-                .kv
-                .put_cas(GROUP_ZERO, GROUP_ZERO, path.as_bytes(), &value, 0)
-                .await
-            {
-                Ok(_) => Ok(EnsureDomainMonitorOutcome::Created),
-                Err(Error::CasFailed { .. }) => match self.read(&path).await? {
-                    Some(existing) if existing == request.descriptor => {
-                        Ok(EnsureDomainMonitorOutcome::AlreadyExists)
+            None => loop {
+                match self
+                    .kv
+                    .put_cas(GROUP_ZERO, GROUP_ZERO, path.as_bytes(), &value, 0)
+                    .await
+                {
+                    Ok(_) => break Ok(EnsureDomainMonitorOutcome::Created),
+                    Err(Error::CasBusy) => {
+                        // A concurrent create owns this key until its chosen
+                        // slot is applied. Retry the same guard; once that
+                        // owner finishes this either succeeds or reports the
+                        // winner's revision for reconciliation below.
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                     }
-                    Some(_) => Ok(EnsureDomainMonitorOutcome::DescriptorConflict),
-                    None => Err(Error::OutcomeUnknown),
-                },
-                Err(error) => Err(error),
+                    Err(Error::CasFailed { .. } | Error::OutcomeUnknown) => {
+                        break match self.read(&path).await? {
+                            Some(existing) if existing == request.descriptor => {
+                                Ok(EnsureDomainMonitorOutcome::AlreadyExists)
+                            }
+                            Some(_) => Ok(EnsureDomainMonitorOutcome::DescriptorConflict),
+                            None => Err(Error::OutcomeUnknown),
+                        };
+                    }
+                    Err(error) => break Err(error),
+                }
             },
         }
     }

@@ -21,7 +21,7 @@ use crowdb_diskdb::model::alloc;
 use crowdb_diskdb::model::disk_group_container::DdbDiskGroupContainer;
 use crowdb_kv_client::{GetOutcome, HardwareClient};
 use crowdb_protocol::common::{ChunkId, DiskId, HwStatus, NodeValue, RackValue};
-use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue};
+use crowdb_protocol::diskdb::rpc::{CommitState, DiskGroupValue, DiskType, DiskValue};
 use crowdb_protocol::key::{BinaryKey, BusyBlockKey, FreeBlockKey};
 use crowdb_protocol::DiskIdExt;
 
@@ -253,17 +253,40 @@ async fn diskdb_e2e_allocate_free() {
         bincode::deserialize(&busy_val.unwrap()).expect("deserialize BusyBlockValue");
     assert_eq!(busy_record.unit_count, 1);
     assert_eq!(busy_record.owner_chunk, Some(owner_chunk));
+    assert_eq!(busy_record.commit_state, CommitState::Tentative as i32);
     eprintln!("BusyBlockValue record verified in kv");
 
-    // 9. Free the block.
+    // 9. Commit from the tentative cache, then retry after the exact cache
+    // entry is gone. The retry takes the authoritative-read path and observes
+    // the already committed value.
+    assert_eq!(
+        alloc::commit_blocks(&dg, &[segment], &alloc_kv, &metrics)
+            .await
+            .expect("commit should succeed"),
+        1
+    );
+    assert_eq!(
+        alloc::commit_blocks(&dg, &[segment], &alloc_kv, &metrics)
+            .await
+            .expect("commit retry should be idempotent"),
+        1
+    );
+    let committed_val = kv_get(&kv_client, &busy_bytes)
+        .await
+        .expect("committed busy record");
+    let committed_record: crowdb_protocol::diskdb::rpc::BusyBlockValue =
+        bincode::deserialize(&committed_val).expect("deserialize committed BusyBlockValue");
+    assert_eq!(committed_record.commit_state, CommitState::Committed as i32);
+
+    // 10. Free the block.
     let free_kv = cluster.make_ddb_kv_client();
     alloc::free_block(&dg, &segment, &free_kv)
         .await
         .expect("free should succeed");
     eprintln!("freed segment");
 
-    // 10. Verify the FreeBlockValue record was persisted and the
-    //     BusyBlockKey is gone.
+    // 11. Verify the FreeBlockValue record was persisted and the
+    //     BusyBlockKey remains until compaction.
     let free_key = FreeBlockKey {
         disk_id: make_disk_id(0, 1),
         zone_index: segment.zone_index,
@@ -279,11 +302,11 @@ async fn diskdb_e2e_allocate_free() {
     assert_eq!(free_record.unit_count, 1);
     assert_eq!(free_record.previous_owner, Some(owner_chunk));
 
-    // Direct free atomically removes the busy record and retains the free fact.
+    // Busy remains until bounded compaction consumes the matching free fact.
     let busy_val2 = kv_get(&verify_kv2, &busy_bytes).await;
-    assert!(busy_val2.is_none(), "busy record should be removed by free CAS");
+    assert!(busy_val2.is_some(), "busy record should remain before compaction");
 
-    // 11. Allocate multiple blocks and verify.
+    // 12. Allocate multiple blocks and verify.
     let alloc_kv2 = cluster.make_ddb_kv_client();
     let segments = alloc::allocate_blocks(
         &dg,
@@ -310,7 +333,7 @@ async fn diskdb_e2e_allocate_free() {
         .expect("free 3 blocks should succeed");
     eprintln!("freed 3 blocks in batch");
 
-    // 13. Verify all three immutable free facts and removed busy records.
+    // 13. Verify all three immutable free facts and retained busy records.
     let verify_kv3 = cluster.make_ddb_kv_client();
     for seg in &segments {
         let bk = BusyBlockKey {
@@ -321,8 +344,8 @@ async fn diskdb_e2e_allocate_free() {
         let bk_bytes = bk.to_bytes();
         let result = kv_get(&verify_kv3, &bk_bytes).await;
         assert!(
-            result.is_none(),
-            "busy record should be removed for offset {}",
+            result.is_some(),
+            "busy record should remain for offset {}",
             seg.unit_offset
         );
 
@@ -347,7 +370,7 @@ async fn diskdb_e2e_allocate_free() {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn diskdb_e2e_free_validates_busy_incarnation() {
+async fn diskdb_e2e_blind_free_validation_at_compaction() {
     if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && crowdb_kv_server_bin().is_none() {
         eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
         return;
@@ -389,7 +412,7 @@ async fn diskdb_e2e_free_validates_busy_incarnation() {
         .await
         .expect("allocate should succeed");
 
-    // 1. A matching-owner conditional free succeeds.
+    // 1. A matching-owner blind free succeeds.
     let free_kv = cluster.make_ddb_kv_client();
     alloc::free_block(&dg, &segment, &free_kv)
         .await
@@ -409,7 +432,7 @@ async fn diskdb_e2e_free_validates_busy_incarnation() {
         "free record should exist after validated free"
     );
 
-    // 2. A wrong-owner free is rejected before mutation.
+    // 2. A wrong-owner free is persisted without a read; compaction rejects it.
     let alloc_kv2 = cluster.make_ddb_kv_client();
     let segment2 = alloc::allocate_block(
         &dg,
@@ -430,12 +453,9 @@ async fn diskdb_e2e_free_validates_busy_incarnation() {
 
     let free_kv2 = cluster.make_ddb_kv_client();
     let result = alloc::free_block(&dg, &wrong_segment, &free_kv2).await;
-    assert!(
-        matches!(result, Err(alloc::FreeError::IncarnationMismatch)),
-        "wrong incarnation must fail: {result:?}"
-    );
+    assert!(result.is_ok(), "blind free should persist: {result:?}");
 
-    // The guarded failure leaves the BusyBlockKey unchanged.
+    // The BusyBlockKey remains for compaction-time validation.
     let seg2_disk_id = segment2.disk_id.expect("segment2 should have disk_id");
     let busy_key = BusyBlockKey {
         disk_id: seg2_disk_id,
@@ -452,7 +472,7 @@ async fn diskdb_e2e_free_validates_busy_incarnation() {
         .await
         .expect("free with matching owner should succeed");
 
-    // 4. A non-busy free is rejected and creates no inert free fact.
+    // 4. A non-busy free is also an inert immutable fact.
     let fake_segment = crowdb_protocol::diskdb::rpc::Segment {
         disk_id: Some(seg2_disk_id),
         zone_index: segment2.zone_index,
@@ -463,25 +483,9 @@ async fn diskdb_e2e_free_validates_busy_incarnation() {
     };
     let free_kv4 = cluster.make_ddb_kv_client();
     let result = alloc::free_block(&dg, &fake_segment, &free_kv4).await;
-    assert!(
-        matches!(result, Err(alloc::FreeError::NotBusy { .. })),
-        "non-busy free must fail: {result:?}"
-    );
+    assert!(result.is_ok(), "blind non-busy free should persist: {result:?}");
 
-    // 5. Multi-free satisfies the valid/idempotent segment and reports the
-    // invalid segment without rolling the successful result back.
-    let partial = alloc::free_blocks(&dg, &[segment2, fake_segment], &free_kv4)
-        .await
-        .expect("partial free request should return per-segment results");
-    assert_eq!(partial.freed_count, 1);
-    assert_eq!(partial.failures.len(), 1);
-    assert_eq!(partial.failures[0].segment, fake_segment);
-    assert_eq!(
-        partial.failures[0].reason,
-        crowdb_protocol::diskdb::rpc::FreeFailureReason::NotBusy
-    );
-
-    eprintln!("diskdb_e2e_free_validates_busy_incarnation: ALL CHECKS PASSED");
+    eprintln!("diskdb_e2e_blind_free_validation_at_compaction: ALL CHECKS PASSED");
 }
 
 /// E2E: allocate ALL space across 3 disks × 4 zones × 128 units = 1536
@@ -673,7 +677,7 @@ async fn diskdb_e2e_allocate_all_free_all() {
     assert_eq!(usage.busy_bytes, total_cap_bytes);
     assert_eq!(usage.free_bytes, 0);
 
-    // Sample-verify: FreeBlockValue exists + BusyBlockKey is gone.
+    // Sample-verify: FreeBlockValue and BusyBlockKey both exist.
     let verify_kv2 = cluster.make_ddb_kv_client();
     for &idx in &sample_indices {
         let seg = &all_segments[idx];
@@ -694,7 +698,7 @@ async fn diskdb_e2e_allocate_all_free_all() {
             seg.unit_offset
         );
 
-        // Direct free removes the busy record before compaction.
+        // Busy record remains until compaction.
         let busy_key = BusyBlockKey {
             disk_id,
             zone_index: seg.zone_index,
@@ -702,8 +706,8 @@ async fn diskdb_e2e_allocate_all_free_all() {
         };
         let busy_val = kv_get(&verify_kv2, &busy_key.to_bytes()).await;
         assert!(
-            busy_val.is_none(),
-            "busy record should be removed for segment {idx} (disk={disk_id:?} zone={} offset={})",
+            busy_val.is_some(),
+            "busy record should remain for segment {idx} (disk={disk_id:?} zone={} offset={})",
             seg.zone_index,
             seg.unit_offset
         );

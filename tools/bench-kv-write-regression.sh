@@ -135,7 +135,7 @@ run_bench() {
     p99_us=$(echo "$json" | jq -r '.by_op.write.latency_us.p99_us')
     errors=$(echo "$json" | jq -r '.total_errors')
     # WAL append: aggregated across 3 nodes; per-node = wal/3 = accept rounds/s
-    wal=$(echo "$json" | jq -r '.server_metrics.wal_append_count')
+    wal=$(echo "$json" | jq -r '.server_metrics.wal_append_count // 0')
     wal_per_node=$((wal / 3))
     # RPC aggregation ratios: frames per syscall (sagg = frames_sent/writev_calls, ragg = frames_parsed/read_calls)
     local srv_sa srv_ra cli_sa cli_ra srv_s2w cli_s2w
@@ -156,7 +156,7 @@ run_bench() {
     inflight_enq=$(echo "$json" | jq -r '.server_metrics.inflight_enqueued // 0')
     inflight_wait=$(echo "$json" | jq -r '.server_metrics.inflight_wait_avg_us // 0')
     local co_factor
-    co_factor=$(awk "BEGIN { if ($wal_per_node > 0) printf \"%.1f\", $total_ops / $wal_per_node }")
+    co_factor=$(awk "BEGIN { if ($wal_per_node > 0) printf \"%.1f\", $total_ops / $wal_per_node; else printf \"0.0\" }")
     echo "    ops/s=$ops_s wal/node=$wal_per_node co=${co_factor}/${COALESCE} avg=${avg_us}us p50=${p50_us}us p99=${p99_us}us err=$errors"
     echo "    rpc_agg: srv sagg=${srv_sa} ragg=${srv_ra} s2w=${srv_s2w}us | cli sagg=${cli_sa} ragg=${cli_ra} s2w=${cli_s2w}us"
     echo "    replica: r2=${r2_avg}us/${r2_tps}tps r3=${r3_avg}us/${r3_tps}tps"

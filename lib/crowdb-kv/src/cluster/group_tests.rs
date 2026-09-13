@@ -123,4 +123,17 @@ impl PxGroup {
         self.coalesce_max_keys
             .store(max_keys, std::sync::atomic::Ordering::Relaxed);
     }
+
+    /// Hold one unrelated proposal-window permit while exercising coalescer
+    /// drain behavior.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the test has already exhausted the proposal window.
+    pub fn hold_inflight_permit_for_tests(&self) -> tokio::sync::SemaphorePermit<'_> {
+        self.inflight
+            .semaphore
+            .try_acquire()
+            .expect("test inflight permit")
+    }
 }

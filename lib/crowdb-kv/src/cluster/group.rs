@@ -267,6 +267,10 @@ pub struct PxGroup {
     /// round completion to start the next round, or on `max_keys`
     /// overflow to start a concurrent round.
     pub(crate) coalescer: parking_lot::Mutex<Option<PendingBatch>>,
+    /// Number of coalesced Paxos rounds currently executing. Conditional and
+    /// tenure-bound proposals bypass the coalescer and are intentionally not
+    /// counted, so they cannot suppress draining a pending ordinary batch.
+    pub(crate) coalesced_rounds_inflight: std::sync::atomic::AtomicU64,
     /// Fixed `max_keys` for coalescing batches. Set from config; 0 disables
     /// coalescing. When a batch fills to this size, it flushes as a
     /// concurrent round.
@@ -406,6 +410,7 @@ impl PxGroup {
             coalesce_round_gate: parking_lot::Mutex::new(None),
             self_weak: OnceLock::new(),
             coalescer: parking_lot::Mutex::new(None),
+            coalesced_rounds_inflight: std::sync::atomic::AtomicU64::new(0),
             coalesce_max_keys: std::sync::atomic::AtomicU16::new(0),
             coalesce_last_activity_us: std::sync::atomic::AtomicU64::new(0),
             coalesce_watchdog_handle: OnceLock::new(),

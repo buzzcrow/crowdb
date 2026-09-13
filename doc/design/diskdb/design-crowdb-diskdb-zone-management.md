@@ -154,7 +154,7 @@ are in `diskdb_type.fbs`.
     corresponding `BusyBlockValue.unit_count`).
   - `previous_owner: ChunkId` (192-bit) — the `owner_chunk` from the
     `BusyBlockValue` that was freed (carried in the `Segment` on the
-    free request and validated against BusyBlockValue). Carried for audit / scanner
+    free request; no KV read needed). Carried for audit / scanner
     cross-check. No `state` field — a free block has no data.
   - `free_ts: u64` — diagnostic time at which free was submitted. It is useful
     for logs and age metrics but never controls correctness or compaction.
@@ -175,18 +175,19 @@ are in `diskdb_type.fbs`.
 ### Record model
 
 - A busy/free entry can span multiple units (`unit_count` ≥ 1).
-- On free, DiskDB reads and validates the current busy incarnation, then CAS
-  deletes `BusyBlockKey` and writes `FreeBlockKey(..., allocation_ts)` in one
-  batch. A response-loss retry recognizes the matching free fact as success.
-- Compaction treats a self-consistent free fact with no busy record as direct
-  proof. A legacy matching busy+free pair is first migrated with the same CAS
-  batch; only a later scan clears its bitmap. A legacy mismatch is retained.
+- On free, DiskDB blindly writes `FreeBlockKey(..., allocation_ts)` and does
+  not delete `BusyBlockKey`. Retrying the same segment rewrites the same
+  logical fact; a stale retry targets only its old incarnation.
+- Compaction matches `FreeBlockValue.pre_allocation_ts`, `unit_count`, and
+  `previous_owner` against the current `BusyBlockValue`. Only a complete
+  match clears the bitmap and deletes the busy record. A mismatch is stale or
+  invalid and cannot change the busy state.
 - Re-allocation occurs only after compaction has cleared the bitmap and
   deleted the prior busy incarnation. It writes a higher `allocation_ts`.
 - Current durable state is derived from the current busy record plus any
-  incarnation-qualified free fact. Before compaction the free fact remains and
-  the bitmap conservatively stays busy; after compaction neither record remains
-  for a freed incarnation.
+  matching incarnation-qualified free fact. Before compaction both remain
+  durable and the bitmap conservatively stays busy; after compaction neither
+  remains for a freed incarnation.
 - `ZoneValue` carries a CRC32 checksum for integrity verification.
 
 ### Current state determination
@@ -196,10 +197,10 @@ The ideal approach on free would be to update the bitmap in the
 `ZoneValue` and write the whole `ZoneValue` to KV. But `ZoneValue` is
 large (full bitmap), and frees are random across all zones and disks,
 so a per-free `ZoneValue` write is too expensive. Instead, each free
-writes one small immutable incarnation-qualified fact while deleting the
-validated busy revision. Later, compaction bounded-scans busy and free records,
-clears only direct-free bitmap ranges, and atomically persists the updated
-snapshot plus the exact free-record deletions.
+writes one small immutable incarnation-qualified fact. Later, compaction
+bounded-scans busy and free records, validates matching incarnations, clears
+only matched bitmap ranges, and atomically persists the updated snapshot plus
+the exact record deletions.
 
 On crash/restart, diskdb reconstructs the in-memory zone state using
 three complementary strategies (§6).
@@ -294,9 +295,8 @@ data group (one async round-trip per group).
 
 ### Free (persist-only)
 
-The free path is **persist-only with respect to the bitmap**: read and validate
-the complete current `BusyBlockValue`, then CAS-delete that revision while
-putting one incarnation-qualified `FreeBlockValue`. The in-memory bitmap is **not**
+The free path is **persist-only**: blindly put one incarnation-qualified
+`FreeBlockValue`. It does not read or delete `BusyBlockKey`. The in-memory bitmap is **not**
 touched. The bit stays set, `used_count` is not decremented. The block
 is freed on disk but still shows busy in memory until compaction clears
 the bit (§5). This is the data-safety principle: the bitmap is a
@@ -309,14 +309,13 @@ no timer, no background flush loop. The free is a single durable
 operation, and the bitmap reconciliation is deferred to compaction.
 
 Free steps:
-1. **Validate**: read `BusyBlockKey` through the complete KV engine and require
-   allocation timestamp, unit count, and owner to match the segment.
-2. **Persist**: conditionally delete that busy revision and put
-   `FreeBlockValue` at `FreeBlockKey { disk_id,
+1. **Persist**: put `FreeBlockValue` at `FreeBlockKey { disk_id,
    zone_index, unit_offset, allocation_ts }`. The value carries
    `pre_allocation_ts = allocation_ts` from the segment and diagnostic
-   `free_ts` in one atomic batch. A forged or stale request fails without a
-   mutation; an ambiguous response is reconciled from busy and free keys.
+   `free_ts`. No read-before-write validation is required for correctness.
+2. **Defer validation**: compaction later compares allocation timestamp, unit
+   count, and owner with the current busy value. A forged or stale free cannot
+   clear the bitmap or delete a newer busy incarnation.
 3. **Post-persist (in-memory)**: increment
    `uncompacted_free_record_count` on the zone (lookup via zone-index →
    zone vec). No bitmap mutation, no `used_count` decrement.
@@ -399,30 +398,33 @@ compaction also skips active zones and uses the zone-level lock.
 ### Compaction algorithm
 
 `compact_zone` (strategy 3) is the background maintenance task. It uses a
-fixed contiguous-applied `compact_slot` boundary, then writes the new snapshot
-plus exact record deletions in one
+fixed contiguous-applied `compact_slot` boundary and allocation-incarnation
+matching, then writes the new snapshot plus exact record deletions in one
 atomic `batch_write`.
 
 1. **Bounded scan** free and busy records at one fixed
    contiguous-applied cutoff. Retain each record's `commit_slot`; an
    incomplete scan cannot advance the watermark.
-2. **Classify direct and legacy facts**. A self-consistent free with no busy
-   record is direct proof. A full legacy busy+free incarnation match is first
-   migrated by CAS-deleting the busy revision while retaining the free; it is
-   compacted only on a later scan. Mismatches remain untouched.
-3. **Acquire the zone-level lock**, clear only direct-free ranges,
+2. **Match incarnations** by physical range. Reconcile every scanned free
+   fact whose record revision is at or below the fixed cutoff, including a
+   surviving fact whose revision is below the prior `compact_slot`. A free is
+   effective only when its `pre_allocation_ts`, unit count, and previous owner
+   equal the current busy value. Mismatches are stale or invalid facts and
+   never clear bits.
+3. **Acquire the zone-level lock**, clear only ranges with a complete match,
    and recompute `used_count = popcount`. Release the lock before KV I/O.
 4. Build a new `ZoneValue` from the merged bitmap with `snapshot_slot` and
    `compact_slot` set to the fixed scan cutoff and compute its checksum.
-5. **One atomic `batch_write`**: Put the new `ZoneValue` and delete the exact
-   direct-free facts processed at or below the cutoff. This is a single
+5. **One atomic `batch_write`**: Put the new `ZoneValue`, delete busy records
+   for matched frees, and delete every processed free fact at or below the
+   cutoff. This is a single
    `batch_write` on the bound data group, atomic via crowdb-kv paxos.
    The snapshot and the free-record deletion succeed or fail together;
    there is no window where the snapshot is written but the free
    records survive (the race that caused double-free in the two-op
    design).
-6. Decrement `uncompacted_free_record_count` by the number of free records
-   deleted.
+6. Decrement `uncompacted_free_record_count` by the number of free
+   records deleted (both stale and new).
 
 Busy records without a matching free incarnation remain untouched.
 
@@ -500,8 +502,8 @@ one `batch_write`. The fixed-cutoff bounded scan is the only KV extension.
 ### How the strategies work together
 
 - **Steady state**: allocate writes `BusyBlockValue` with a new
-  `allocation_ts`. Free atomically replaces the validated busy revision with
-  an incarnation-qualified free fact. The bitmap is **not touched on free** — the bit stays set,
+  `allocation_ts`. Free blindly writes an incarnation-qualified free fact and
+  leaves the busy record intact. The bitmap is **not touched on free** — the bit stays set,
   `used_count` is not decremented. Compaction (strategy 3) runs
   periodically (and before rotation), merging free records into
   `ZoneValue`, clearing the freed bits, recomputing `used_count`, and
@@ -516,15 +518,15 @@ one `batch_write`. The fixed-cutoff bounded scan is the only KV extension.
 ### Crash-safety invariants
 
 The in-memory bitmap is a **conservative over-estimate** of busy
-blocks. It is never cleared on the free path. Free is a guarded immutable fact;
+blocks. It is never cleared on the free path. Free is an immutable blind put;
 the bitmap bit stays
 set until compaction clears it (§5). This means the bitmap may show a
 block as busy when it is actually freed on disk. This is intentional
 (data-safety principle: never show a block as free until compaction has
 confirmed it from records). The durable state is the set of
 `BusyBlockKey` / `FreeBlockKey` / `ZoneValue` records on the bound data
-group. Current state is derived from either a busy incarnation or its direct
-free fact. The invariants:
+group. Current state is derived from the busy incarnation plus a matching free
+fact. The invariants:
 
 - **Allocate ordering** — Phase 1 (bitmap CAS, set bit) happens before
   Phase 2 (`BusyBlockValue` persist). If diskdb crashes between Phase 1
@@ -534,16 +536,16 @@ free fact. The invariants:
   correctly free. This is a **ghost-busy** (bit set in-memory, no
   record) that is self-correcting on restart; the scanner also detects
   this drift during live operation.
-- **Free = guarded persist only** — free validates the busy incarnation, then
-  atomically deletes it and puts one immutable `FreeBlockKey` containing the
-  segment's `allocation_ts`. It never touches the bitmap. Retries recognize
-  the already-persisted free fact.
+- **Free = persist only** — free puts one immutable `FreeBlockKey` containing
+  the segment's `allocation_ts`. It neither reads nor deletes the busy record
+  and never touches the bitmap. Retries are the same blind logical event.
 - **Compaction reconciles the bitmap** — compaction (§5) is the sole
   mechanism for clearing freed bits in the bitmap. It partitions free
-  records through a fixed `compact_slot` cutoff, `range_clear`s only direct
-  free facts with no live busy record,
+  records through a fixed `compact_slot` cutoff, matches each free fact to the
+  current busy incarnation, `range_clear`s only complete matches,
   recomputes `used_count = popcount`, and writes the new `ZoneValue`
-  with the updated `compact_slot` and deletes processed free facts in
+  with the updated `compact_slot`, deletes matched busy records, and deletes
+  processed free facts in
   **one atomic `batch_write`**. After compaction, the bitmap
   accurately reflects the durable state. Compaction runs on non-active
   zones (before they enter the active set via the preparatory thread,
@@ -702,9 +704,9 @@ Allocate runs only on active zones (in the `active_zone_context`).
 
 ### Free (persist-only, no lock)
 
-Read and validate the current busy incarnation, then conditionally delete its
-revision and put the incarnation-qualified `FreeBlockValue` in one atomic
-batch. No bitmap touch, no `used_count` decrement, and no zone-level lock.
+Blindly put the incarnation-qualified `FreeBlockValue`; validation is deferred
+to compaction, which matches it against the current busy incarnation. No
+bitmap touch, no `used_count` decrement, and no zone-level lock.
 Free can run on any zone (active or not); successful frees increment
 `uncompacted_free_record_count`. The bitmap is reconciled later by compaction.
 
@@ -780,10 +782,11 @@ lock-free ordered index keyed by `allocation_ts`. The default capacity is
 atomic size budget exact when duplicate publication races removal. One atomic
 trim owner removes the oldest entries until the cache is within capacity.
 
-Commit always reads and conditionally updates the authoritative busy record in
-KV; the cache only contributes a hit/miss metric. Eviction therefore does not
-change correctness. Commit and free remove the exact incarnation entry, so a
-delayed reconciliation cannot remove a newer allocation.
+Commit uses an exact matching tentative-cache entry without a read. A miss
+after retry, restart, or eviction reads and validates the authoritative busy
+incarnation. Tentative values are changed to Committed in one ordinary batch
+write; an already Committed value is idempotent success. Commit and free remove
+only exact incarnation cache entries.
 
 ## 9. Background Scanner Coordination
 
@@ -812,8 +815,8 @@ with compaction via the zone-level lock (§8):
     `FreeBlockKey` — the block was never freed and never allocated
     (crash between allocate Phase 1 and Phase 2, or a bug). Records
     are authoritative → block is free → safe to clear the bit.
-  - **Normal uncompacted**: bit set, no `BusyBlockKey`, `FreeBlockKey`
-    exists — the block was freed (persist-only) but compaction hasn't
+  - **Normal uncompacted**: bit set, matching `BusyBlockKey` and `FreeBlockKey`
+    exist — the block was freed (persist-only) but compaction hasn't
     cleared the bit yet. This is **not drift** — it's the expected
     state. The scanner does not report it. (If the zone is not active
     and has a high `uncompacted_free_record_count`, the scanner may
@@ -832,8 +835,8 @@ with compaction via the zone-level lock (§8):
   the bit. Free is persist-only (no bitmap touch); compaction is the
   sole bit-clearer. `used_count` is only decremented by compaction
   (never by free).
-- **I2 — Records are the source of truth**: the current busy record or an
-  incarnation-qualified direct free fact determines whether a block is logically
+- **I2 — Records are the source of truth**: the current busy record and an
+  incarnation-matching free fact determine whether a block is logically
   busy. The bitmap is derived from records and may lag conservatively.
 - **I3 — Compaction is the sole bit-clearer**: no code path except
   compaction (and allocate rollback, which only clears Phase 1 claims
@@ -847,12 +850,11 @@ with compaction via the zone-level lock (§8):
   enters the active set. The preparatory thread pre-compacts the next
   batch; rotation publishes ready (pre-compacted) zones.
 - **I6 — Atomic snapshot + delete**: compaction writes the new
-  `ZoneValue` with its advanced `compact_slot` and deletes processed free facts
-  in one atomic `batch_write`.
-- **I7 — Incarnation CAS prevents stale free**: free deletes a busy record only
-  when its revision, allocation timestamp, unit count, and owner match. An old
-  retry cannot clear or delete a newer allocation. Legacy pairs require the
-  same match before migration.
+  `ZoneValue` with its advanced `compact_slot`, deletes matched busy records,
+  and deletes processed free facts in one atomic `batch_write`.
+- **I7 — Incarnation match prevents stale free**: compaction clears a range
+  only when `pre_allocation_ts`, unit count, and owner match the current busy
+  value. An old retry cannot clear or delete a newer allocation.
 - **I8 — `rollback_allocate` is allocate-only**: the bitmap CAS-clear
   method is used only by the allocate Phase 2 failure path to undo
   Phase 1's claim. It is never called by the free path.

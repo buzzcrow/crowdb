@@ -58,11 +58,6 @@ requirement is implemented.
   operator-manual `BindMapValue` write with automatic monitoring +
   rebinding. Monitor detects instance join/leave, rebalances disk-group
   assignments, migrates data during rebinding.
-- **[R149](R149-platform-dashmap-audit.md)** — DashMap correctness and hot-path
-  replacement — Area: platform / concurrency — Share cloned diskdb routing
-  state, repair learner frontier races, make RPC pools generation-safe, publish
-  routing snapshots atomically, and retain DashMap only for classified
-  low-frequency registries.
 - **[R79](R79-diskdb-free-batch.md)** — diskdb free batch
   (size-threshold, no timer) — Area: diskdb — Group frees into a
   batch and flush via one `batch_write` when the batch reaches a

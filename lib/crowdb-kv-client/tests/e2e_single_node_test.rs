@@ -22,7 +22,10 @@ use crowdb_kv::cluster::px_kv_store::PxKvStore;
 use crowdb_kv::metrics::MetricsRegistry;
 
 use bytes::Bytes;
-use crowdb_kv_client::{BatchOp, ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
+use crowdb_kv_client::{BatchOp, ClientConfig, CrowdbKvClient, DomainMonitorClient, GetOutcome, ReadMode};
+use crowdb_protocol::chunk_kv::{
+    DomainFailurePolicy, DomainMonitorDescriptor, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest,
+};
 
 const STORE_ID: u64 = 1;
 const GROUP_ID: u64 = 1;
@@ -49,6 +52,14 @@ async fn start_single_node_store() -> Arc<PxKvStore> {
     server.add_group(group);
     server.start().await.expect("failed to start KvStore");
     server
+}
+
+async fn start_group_zero_store() -> Arc<PxKvStore> {
+    let replica = PxLocalReplica::new(1, PxLocalReplicaRole::Leader);
+    let store = Arc::new(PxKvStore::new(0, "127.0.0.1:0".parse().unwrap()));
+    store.add_group(PxGroup::new(0, replica));
+    store.start().await.expect("failed to start group-0 store");
+    store
 }
 
 /// Serves `GET /topology` returning the live `store.status` each time,
@@ -154,6 +165,49 @@ async fn revision_cas_and_conditional_batch_round_trip() {
             .unwrap(),
         GetOutcome::Found { value, .. } if value.as_ref() == b"value"
     ));
+
+    store.stop();
+    store.join().await;
+}
+
+#[tokio::test]
+async fn concurrent_domain_monitor_ensure_reconciles_cas_busy() {
+    let store = start_group_zero_store().await;
+    let seed = spawn_topology_server(Arc::clone(&store)).await;
+    let client = Arc::new(CrowdbKvClient::new(ClientConfig::new(vec![seed])));
+    let request = Arc::new(EnsureDomainMonitorRequest {
+        descriptor: DomainMonitorDescriptor {
+            domain: "chunkdb".into(),
+            service_registry_name: "chunkdb".into(),
+            driver_version: 1,
+            capability_version: 1,
+            heartbeat_interval_ms: 5_000,
+            suspect_after_ms: 10_000,
+            dead_after_ms: 15_000,
+            lease_duration_ms: 20_000,
+            max_clock_skew_ms: 1_000,
+            self_fence_margin_ms: 1_000,
+            failure_policy: DomainFailurePolicy::AutomaticSharedStorage,
+            balance_policy: "uniform-1024-v1".into(),
+            chunk_kv_range_balance: None,
+        },
+    });
+
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..32 {
+        let monitor = DomainMonitorClient::from_shared(Arc::clone(&client));
+        let request = Arc::clone(&request);
+        tasks.spawn(async move { monitor.ensure(&request).await });
+    }
+    let mut created = 0;
+    while let Some(result) = tasks.join_next().await {
+        match result.unwrap().unwrap() {
+            EnsureDomainMonitorOutcome::Created => created += 1,
+            EnsureDomainMonitorOutcome::AlreadyExists => {}
+            outcome => panic!("unexpected ensure outcome: {outcome:?}"),
+        }
+    }
+    assert_eq!(created, 1);
 
     store.stop();
     store.join().await;

@@ -641,10 +641,10 @@ sends one request per DiskDB data group and runs those requests concurrently.
 DiskDB persists each allocated busy block as Tentative before responding.
 
 **Success boundary**: The Active chunk and every referenced Tentative busy
-block are durable before ChunkDB returns success. DiskDB commit overwrites
-each busy block as Committed after the response. A reconciliation scanner can
-later resolve a crash in this interval from the Active chunk reference and the
-allocation incarnation.
+block are durable before ChunkDB returns success. DiskDB commit changes the
+matching busy records to Committed in one ordinary batch write. A
+reconciliation scanner can resolve a crash in this interval from the Active
+chunk reference and allocation incarnation.
 
 **Rollback**: If allocation or Active metadata persistence fails, every known
 segment from every prior strip is freed through its exact DiskDB group before

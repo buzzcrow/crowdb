@@ -139,14 +139,15 @@ multiple distinct-disk passes in one atomic per-group request. The caller is
 responsible for validating that roles requiring mutual anti-affinity fit in
 the first pass. The caller (or a future placement service) picks the disk-group.
 
-### 3.3 Conditional lifecycle transitions
+### 3.3 Incarnation-safe lifecycle transitions
 
 Each disk-group is owned by exactly one diskdb instance at a time (map in group
-0). Allocation creates remain blind and are separated from reuse by the
-conservative bitmap. Free and commit read the authoritative BusyBlock value
-and revision from the complete KV engine, validate the physical incarnation,
-and use a single-key conditional mutation so a stale transition cannot cross a
-concurrent free or reuse.
+0). Allocation and free remain blind, batchable record writes; allocation
+incarnations and compaction-time validation make delayed frees safe. Commit
+uses an exact matching tentative cache entry when present; otherwise it reads
+the authoritative BusyBlock and validates its allocation incarnation. It
+changes Tentative to Committed with an ordinary batch write. An already
+Committed record is idempotent success.
 In-memory concurrency within one instance is handled by **per-bit CAS**
 on the usage bitmap (`compare_exchange` on 64-bit words), not a
 zone-level lock. Multiple threads can allocate from the same zone
@@ -159,15 +160,14 @@ state machine.
 For each allocate or free, diskdb **cannot** update the full zone
 bitmap in KV, as that would be a large write for the paxos group on every
 block. Instead, each allocate writes a small **`BusyBlockValue`** carrying a
-monotonic `allocation_ts` at the `BusyBlockKey`. Each free conditionally
-deletes that exact busy revision and writes an immutable **`FreeBlockValue`**
-at an incarnation-qualified `FreeBlockKey` in the same batch. The bitmap is
-**derived** from the records, never
+monotonic `allocation_ts` at the `BusyBlockKey`. Each free writes an immutable
+**`FreeBlockValue`** at an incarnation-qualified `FreeBlockKey`; it does not
+delete the busy record. The bitmap is **derived** from the records, never
 written directly as a full bitmap on the hot path. The free path is
 **persist-only**: the bitmap is not touched on free (the bit stays set,
 `used_count` is not decremented); compaction is the sole mechanism for
-clearing freed bits after observing the durable free fact without a busy
-record. This makes the bitmap a conservative over-estimate
+clearing freed bits after matching the free fact to the current busy
+incarnation. This makes the bitmap a conservative over-estimate
 that never shows freed space as available until compaction reconciles
 it from records.
 
@@ -613,15 +613,15 @@ visibility.
   clears a bit when records confidently say "free" (no `BusyBlockKey`,
   no `FreeBlockKey`, records intact and readable).
 - **Drift detection in the persist-only model** — the free path does
-  not touch the bitmap (zone-management §6), so "bit set, no `BusyBlockKey`" is
-  **normal** for freed-but-not-compacted blocks (a `FreeBlockKey`
-  exists). The scanner distinguishes:
+  not touch the bitmap (zone-management §6), so a bit set with matching busy
+  and free records is **normal** for freed-but-not-compacted blocks. The scanner
+  distinguishes:
   - **Real ghost-busy** (drift): bit set, no `BusyBlockKey`, no
     `FreeBlockKey` — the block was never freed and never allocated
     (crash between allocate Phase 1 and Phase 2, or a bug). Records
     are authoritative → block is free → safe to clear the bit.
-  - **Normal uncompacted**: bit set, no `BusyBlockKey`, `FreeBlockKey`
-    exists — the block was freed (persist-only) but compaction hasn't
+  - **Normal uncompacted**: bit set, matching `BusyBlockKey` and
+    `FreeBlockKey` exist — the block was freed (persist-only) but compaction hasn't
     cleared the bit yet. This is **not drift** — it's the expected
     state. The scanner counts it as `uncompacted_lag` (not drift) so
     operators can see compaction lag, but does not auto-correct it.
@@ -797,11 +797,11 @@ These design assumptions map cleanly onto CROWDB and need no design
 work, just implementation:
 
 - **Durability model**: crowdb-kv's WAL is the sole durable log. DiskDB's blind
-  allocation creates and conditional lifecycle batches become durable through
+  allocation/free writes and conditional commit batches become durable through
   the same Paxos/WAL path.
-- **Consensus semantics**: Multi-Paxos retains parallel blind allocation
-  throughput. Conditional free and commit serialize only on their one busy
-  key before proposing ordinary batches.
+- **Consensus semantics**: Multi-Paxos retains parallel blind allocation and
+  free throughput. Conditional commit serializes only on its one busy key
+  before proposing an ordinary batch.
 - **Async runtime**: tokio multi-threaded; diskdb's two-phase
   async allocation (sync bitmap-scan claim + async KV persist) maps
   directly.
@@ -826,8 +826,8 @@ hardcoded tunables in business logic). Defaults:
 - **Compaction** — snapshot compaction threshold (record count or
   time), compaction cadence (periodic interval for strategy 3)
 - **Disk** — block / unit size (default 1 MB), zone size
-- **Free validation** — full-engine busy lookup followed by one guarded
-  `Delete Busy + Put Free` batch; multi-free returns per-segment failures
+- **Free validation** — no read on the free path; compaction validates the
+  immutable free fact against the current busy incarnation
 - **Scanner** — `scan_interval_secs` (600), `ghost.detect` (true),
   `ghost.auto_correct` (false — manual review first; enable for
   self-healing), `integrity.verify` (true),

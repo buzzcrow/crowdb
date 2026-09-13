@@ -107,6 +107,36 @@ async fn coalesce_ops_during_round_share_next_slot() {
 }
 
 #[tokio::test]
+async fn unrelated_inflight_proposal_does_not_strand_pending_batch() {
+    let group = coalesce_group(32);
+    let unrelated = group.hold_inflight_permit_for_tests();
+    let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();
+    group.set_coalesce_round_gate_for_tests(gate_rx);
+
+    let g = Arc::clone(&group);
+    let first = tokio::spawn(async move { g.propose(encode_put(b"mixed-a", b"v1"), Some(1), Some(1)).await });
+    while !group.has_coalesce_pending_for_tests() {
+        tokio::task::yield_now().await;
+    }
+
+    let g = Arc::clone(&group);
+    let pending =
+        tokio::spawn(async move { g.propose(encode_put(b"mixed-b", b"v2"), Some(2), Some(1)).await });
+    while group.coalesce_pending_count_for_tests() < 1 {
+        tokio::task::yield_now().await;
+    }
+    let _ = gate_tx.send(());
+
+    assert!(matches!(first.await.unwrap(), ProposeResult::Chosen { .. }));
+    let result = tokio::time::timeout(tokio::time::Duration::from_millis(500), pending)
+        .await
+        .expect("pending batch waited for watchdog")
+        .unwrap();
+    assert!(matches!(result, ProposeResult::Chosen { .. }), "got {result:?}");
+    drop(unrelated);
+}
+
+#[tokio::test]
 async fn coalesce_dedup_tags_recorded() {
     let group = coalesce_group(32);
     let (gate_tx, gate_rx) = tokio::sync::oneshot::channel();

@@ -92,6 +92,9 @@ impl PxGroup {
         let Some(group) = self.self_weak.get().and_then(Weak::upgrade) else {
             return;
         };
+        group
+            .coalesced_rounds_inflight
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         tokio::spawn(
             async move {
                 #[cfg(feature = "test-util")]
@@ -100,6 +103,9 @@ impl PxGroup {
                 for waiter in waiters {
                     let _ = waiter.send(result.clone());
                 }
+                group
+                    .coalesced_rounds_inflight
+                    .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
                 group.coalesce_drain_after_round();
             }
             .instrument(tracing::Span::current()),
@@ -182,6 +188,9 @@ impl PxGroup {
         let Some(group) = self.self_weak.get().and_then(Weak::upgrade) else {
             return ProposeResult::Err("group dropped".to_string());
         };
+        group
+            .coalesced_rounds_inflight
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         tokio::spawn(
             async move {
                 #[cfg(feature = "test-util")]
@@ -190,6 +199,9 @@ impl PxGroup {
                 for waiter in round_waiters {
                     let _ = waiter.send(result.clone());
                 }
+                group
+                    .coalesced_rounds_inflight
+                    .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
                 group.coalesce_drain_after_round();
             }
             .instrument(tracing::Span::current()),
@@ -207,13 +219,11 @@ impl PxGroup {
     /// (coalescer → `None`) so the next op starts a 1-op round — the
     /// zero-latency-floor behavior at low load.
     ///
-    /// R45b drain threshold: if the in-flight slot-task count
-    /// (`occupied`) is at or above `coalesce_drain_threshold`, skip the
-    /// drain — the `max_keys` overflow path handles high load with full
-    /// batches, and draining here would fragment the batch (many
-    /// slot-tasks racing to take one shared batch). The permit is
-    /// already released before this call, so the last finisher always
-    /// sees a count below threshold and takes the batch.
+    /// R45b drain threshold: if the number of other coalesced rounds is at or
+    /// above `coalesce_drain_threshold`, skip the drain. The `max_keys`
+    /// overflow path handles high load with full batches, and the last
+    /// coalesced finisher drains the shared pending batch. Conditional and
+    /// tenure-bound proposals do not participate in this decision.
     ///
     /// The swap is atomic: the old batch is taken and a fresh empty
     /// batch is put back in a single locked section, so no concurrent
@@ -222,7 +232,12 @@ impl PxGroup {
     fn coalesce_drain_after_round(&self) {
         self.coalesce_touch_activity();
         let threshold = self.config.paxos.coalesce_drain_threshold;
-        if threshold > 0 && self.inflight.occupied() >= u64::try_from(threshold).unwrap_or(u64::MAX) {
+        if threshold > 0
+            && self
+                .coalesced_rounds_inflight
+                .load(std::sync::atomic::Ordering::Acquire)
+                >= u64::try_from(threshold).unwrap_or(u64::MAX)
+        {
             return;
         }
         let batch = {

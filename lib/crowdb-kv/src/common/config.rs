@@ -41,9 +41,9 @@ pub struct PaxosConfig {
     /// static: R45 max ops per coalesced batch. `0` disables coalescing
     /// (one proposal per key). Default 32.
     pub coalesce_max_keys: usize,
-    /// static: R45b drain threshold — skip draining the pending batch
-    /// in `coalesce_drain_after_round` when the in-flight slot-task
-    /// count (`occupied`) is at or above this value. Default `1`.
+    /// static: R45b drain threshold — skip draining the pending batch in
+    /// `coalesce_drain_after_round` when the number of other coalesced rounds
+    /// is at or above this value. Default `1`.
     pub coalesce_drain_threshold: usize,
 }
 
