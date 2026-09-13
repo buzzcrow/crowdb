@@ -847,7 +847,9 @@ dependencies = [
 name = "crowdb-diskdb-client"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "bytes",
+ "crowdb-diskdb-client",
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",

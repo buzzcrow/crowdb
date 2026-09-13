@@ -4,17 +4,16 @@
 //! `DiskdbClient` — full client library for CROWDB diskdb operations.
 //!
 //! Endpoint discovery + cache: `refresh_endpoints` reads all diskdb
-//! instances from the service registry, populates a `DashMap` cache
-//! (`disk_group_id -> rpc_endpoint`). On cache miss or
+//! instances from the service registry and atomically publishes the complete
+//! `disk_group_id -> rpc_endpoint` snapshot. On cache miss or
 //! `Unavailable`, lazily refreshes and retries.
 //!
 //! All RPCs go through the crowdb-rpc flatbuffer transport.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use std::{collections::HashMap, collections::HashSet};
 
-use dashmap::DashMap;
 use tracing::warn;
 
 use crowdb_kv_client::ServiceRegistryClient;
@@ -28,6 +27,7 @@ use crowdb_protocol::diskdb::rpc::{
 };
 use crowdb_protocol::DiskGroupId;
 
+use crate::routing::{DiskdbRoutingState, EndpointRoute};
 use crate::rpc_transport::DiskdbRpcTransport;
 use crate::{DiskdbClientError, Result};
 
@@ -51,11 +51,8 @@ impl Default for RetryConfig {
 #[derive(Clone)]
 pub struct DiskdbClient {
     svc: ServiceRegistryClient,
-    /// `disk_group_id -> rpc_endpoint` cache.
-    endpoint_cache: DashMap<DiskGroupId, String>,
-    /// `disk_id -> disk_group_id` reverse routing map (for
-    /// `free_blocks` across multiple disk-groups).
-    disk_to_dg: DashMap<DiskId, DiskGroupId>,
+    /// Shared endpoint snapshots and incrementally learned disk routes.
+    routing: Arc<DiskdbRoutingState>,
     /// crowdb-rpc transport.
     rpc_transport: Arc<DiskdbRpcTransport>,
     retry: RetryConfig,
@@ -66,8 +63,7 @@ impl DiskdbClient {
     pub fn new(svc: ServiceRegistryClient, rpc_transport: Arc<DiskdbRpcTransport>) -> Self {
         Self {
             svc,
-            endpoint_cache: DashMap::new(),
-            disk_to_dg: DashMap::new(),
+            routing: Arc::new(DiskdbRoutingState::new()),
             rpc_transport,
             retry: RetryConfig::default(),
         }
@@ -101,34 +97,25 @@ impl DiskdbClient {
                 }
             }
         }
-        let observed_ids: HashSet<_> = observed.keys().copied().collect();
-        self.endpoint_cache
-            .retain(|dg_id, _| observed_ids.contains(dg_id));
-        for (dg_id, endpoint) in observed {
-            self.endpoint_cache.insert(dg_id, endpoint);
-        }
-        self.disk_to_dg.retain(|_, dg_id| observed_ids.contains(dg_id));
+        self.routing.replace_endpoints(observed);
         Ok(())
     }
 
     /// Return the currently discovered disk-groups in stable order.
     #[must_use]
     pub fn disk_group_ids(&self) -> Vec<DiskGroupId> {
-        let mut ids: Vec<_> = self.endpoint_cache.iter().map(|entry| *entry.key()).collect();
-        ids.sort_unstable();
-        ids
+        self.routing.disk_group_ids()
     }
 
     /// Look up the endpoint for `dg_id`, refreshing on cache miss.
-    async fn endpoint_for(&self, dg_id: DiskGroupId) -> Result<String> {
-        if let Some(endpoint) = self.endpoint_cache.get(&dg_id) {
-            return Ok(endpoint.clone());
+    async fn endpoint_for(&self, dg_id: DiskGroupId) -> Result<EndpointRoute> {
+        if let Some(endpoint) = self.routing.endpoint_for(dg_id) {
+            return Ok(endpoint);
         }
         // Cache miss — refresh and retry.
         self.refresh_endpoints().await?;
-        self.endpoint_cache
-            .get(&dg_id)
-            .map(|e| e.clone())
+        self.routing
+            .endpoint_for(dg_id)
             .ok_or_else(|| DiskdbClientError::Unreachable(format!("no diskdb instance owns dg {dg_id}")))
     }
 
@@ -148,7 +135,7 @@ impl DiskdbClient {
             .await?;
         for segment in &response.segments {
             if let Some(disk_id) = segment.disk_id {
-                self.disk_to_dg.insert(disk_id, dg_id);
+                self.routing.learn_disk_route(disk_id, dg_id);
             }
         }
         Ok(response)
@@ -439,20 +426,16 @@ impl DiskdbClient {
     /// Return the first cached disk-group id, or `Unreachable` if the
     /// cache is empty.
     fn first_cached_dg(&self) -> Result<DiskGroupId> {
-        self.endpoint_cache
-            .iter()
-            .next()
-            .map(|r| *r.key())
-            .ok_or_else(|| {
-                DiskdbClientError::Unreachable("no cached endpoints; call refresh_endpoints".into())
-            })
+        self.routing.first_disk_group().ok_or_else(|| {
+            DiskdbClientError::Unreachable("no cached endpoints; call refresh_endpoints".into())
+        })
     }
 
     /// Look up which disk-group owns a `disk_id`. Refreshes the
     /// disk→dg reverse map on miss.
     async fn dg_for_disk(&self, disk_id: DiskId) -> Result<DiskGroupId> {
-        if let Some(dg_id) = self.disk_to_dg.get(&disk_id) {
-            return Ok(*dg_id);
+        if let Some(dg_id) = self.routing.disk_group_for(disk_id) {
+            return Ok(dg_id);
         }
         // Refresh the reverse map from the hardware hierarchy.
         self.refresh_endpoints().await?;
@@ -462,10 +445,7 @@ impl DiskdbClient {
         // try each cached endpoint's get_disk_group_info to find the
         // disk. This is O(groups) on first miss; subsequent calls hit
         // the cache.
-        for entry in &self.endpoint_cache {
-            let dg_id = *entry.key();
-            let endpoint = entry.value().clone();
-            drop(entry);
+        for (dg_id, endpoint) in self.routing.endpoint_entries() {
             let group_result = match self.rpc_transport.get_disk_group_info(&endpoint, dg_id).await {
                 Ok(resp) => resp.group,
                 Err(e) => {
@@ -475,7 +455,7 @@ impl DiskdbClient {
             };
             if let Some(group) = group_result {
                 if group.disk_ids.contains(&disk_id) {
-                    self.disk_to_dg.insert(disk_id, dg_id);
+                    self.routing.learn_disk_route(disk_id, dg_id);
                     return Ok(dg_id);
                 }
             }
@@ -496,7 +476,7 @@ impl DiskdbClient {
         let mut backoff = self.retry.initial_backoff;
         let mut last_err = None;
         for attempt in 0..=self.retry.max_retries {
-            let endpoint = match self.endpoint_for(dg_id).await {
+            let route = match self.endpoint_for(dg_id).await {
                 Ok(e) => e,
                 Err(e) => {
                     last_err = Some(e);
@@ -505,7 +485,7 @@ impl DiskdbClient {
                     continue;
                 }
             };
-            match op(endpoint, Arc::clone(&rpc)).await {
+            match op(route.endpoint().to_string(), Arc::clone(&rpc)).await {
                 Ok(result) => return Ok(result),
                 Err(e) => {
                     if matches!(
@@ -514,8 +494,7 @@ impl DiskdbClient {
                     ) {
                         warn!(dg_id, attempt, error = %e, "rpc transient error, retrying");
                         last_err = Some(e);
-                        self.endpoint_cache.remove(&dg_id);
-                        self.disk_to_dg.retain(|_, cached_dg_id| *cached_dg_id != dg_id);
+                        self.routing.evict_endpoint(dg_id, &route);
                         let _ = self.refresh_endpoints().await;
                         tokio::time::sleep(backoff).await;
                         backoff *= 2;
@@ -526,6 +505,31 @@ impl DiskdbClient {
             }
         }
         Err(last_err.unwrap_or_else(|| DiskdbClientError::Unreachable("max retries exhausted".into())))
+    }
+}
+
+#[cfg(feature = "test-util")]
+impl DiskdbClient {
+    /// Atomically replace discovered endpoints in integration tests.
+    pub fn replace_endpoints_for_tests(&self, endpoints: Vec<(DiskGroupId, String)>) {
+        self.routing.replace_endpoints(endpoints.into_iter().collect());
+    }
+
+    /// Return one complete endpoint generation in stable order.
+    #[must_use]
+    pub fn endpoint_snapshot_for_tests(&self) -> Vec<(DiskGroupId, String)> {
+        self.routing.endpoint_entries()
+    }
+
+    /// Record an incrementally learned disk route in integration tests.
+    pub fn learn_disk_route_for_tests(&self, disk_id: DiskId, disk_group_id: DiskGroupId) {
+        self.routing.learn_disk_route(disk_id, disk_group_id);
+    }
+
+    /// Resolve an incrementally learned disk route in integration tests.
+    #[must_use]
+    pub fn disk_group_for_tests(&self, disk_id: DiskId) -> Option<DiskGroupId> {
+        self.routing.disk_group_for(disk_id)
     }
 }
 

@@ -14,8 +14,8 @@ Goal: remove correctness-sensitive and request-hot sharded locks, including the 
 
 ## Phase 2: Client routing and transport
 
-- [~] **Share DiskDB routes**: make all `DiskdbClient` clones share one atomic endpoint snapshot and one lock-free incremental disk index; publish endpoint refreshes atomically and test clone visibility and complete snapshots. Files: `lib/crowdb-diskdb-client/src/client.rs`, `lib/crowdb-diskdb-client/Cargo.toml`, `lib/crowdb-diskdb-client/tests/*`.
-- [ ] **Publish chunk allocator endpoints**: replace endpoint retain/insert refresh with one `ArcSwap<HashMap<...>>` publication coherent with disk routing. Files: `app/crowdb-chunkdb/src/allocator/pool.rs`, affected tests.
+- [x] **Share DiskDB routes**: make all `DiskdbClient` clones share one atomic endpoint snapshot and one lock-free incremental disk index; publish endpoint refreshes atomically and test clone visibility and complete snapshots. Files: `lib/crowdb-diskdb-client/src/client.rs`, `lib/crowdb-diskdb-client/src/routing.rs`, `lib/crowdb-diskdb-client/Cargo.toml`, `lib/crowdb-diskdb-client/tests/routing_snapshot_test.rs`.
+- [~] **Publish chunk allocator endpoints**: replace endpoint retain/insert refresh with one `ArcSwap<HashMap<...>>` publication coherent with disk routing. Files: `app/crowdb-chunkdb/src/allocator/pool.rs`, affected tests.
 - [ ] **Consolidate RPC transport caches**: migrate KV client, Paxos, DiskDB client, ChunkDB client, KV forwarding, and the newly added chunk-KV client to the shared pool; propagate selected generations into retryable-error invalidation and preserve owner bounds. Files: `lib/crowdb-kv-client/src/transport/rpc_transport.rs`, `lib/crowdb-kv/src/rpc/px_rpc_transport.rs`, `lib/crowdb-diskdb-client/src/rpc_transport.rs`, `lib/crowdb-chunkdb-client/src/rpc_transport.rs`, `lib/crowdb-kv/src/rpc/kv_rpc_service.rs`, `lib/crowdb-chunk-kv-client/src/transport.rs`, crate manifests and transport tests.
 
 ## Phase 3: Paxos concurrency
