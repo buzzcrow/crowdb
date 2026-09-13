@@ -4,6 +4,7 @@
 //! `DdbDiskGroup` — per-disk-group manager: owns the disks, the RCU
 //! allocatable-disk context, and the round-robin cursor.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
@@ -21,6 +22,12 @@ use crate::model::zone::{AllocatedRange, DdbZone, ZoneUsage};
 /// disk-group, replaced via `Arc` swap on add/remove/status-change.
 pub type AllocateDiskContext = Vec<Arc<DdbDisk>>;
 pub type Bind = (u64, u64);
+
+#[derive(Default)]
+struct DiskMembership {
+    by_id: HashMap<DiskId, Arc<DdbDisk>>,
+    allocating: AllocateDiskContext,
+}
 
 /// Result of a successful allocation: `(disk, zone, range)`.
 pub type AllocClaim = (Arc<DdbDisk>, Arc<DdbZone>, AllocatedRange);
@@ -47,11 +54,9 @@ pub struct DdbDiskGroup {
     /// `(store_id, group_id)` for the bound paxos data group.
     bind: ArcSwap<Bind>,
     pub disks: RwLock<Vec<Arc<DdbDisk>>>,
-    /// O(1) disk-id → disk lookup for the free path.
-    disk_index: DashMap<DiskId, Arc<DdbDisk>>,
-    /// RCU context of allocatable disks within this disk-group.
-    allocating_disks: ArcSwap<AllocateDiskContext>,
-    /// Round-robin cursor over `allocating_disks`.
+    /// Coherent RCU snapshot of disk lookup and allocation routes.
+    membership: ArcSwap<DiskMembership>,
+    /// Round-robin cursor over the snapshot's allocatable disks.
     pos_v_disk_ctx: AtomicU64,
     /// Per-disk-group monotonic allocation-incarnation source.
     allocation_ts_source: AtomicU64,
@@ -71,8 +76,7 @@ impl DdbDiskGroup {
             status: AtomicI32::new(HwStatus::Init as i32),
             bind: ArcSwap::from_pointee((0, 0)),
             disks: RwLock::new(Vec::new()),
-            disk_index: DashMap::new(),
-            allocating_disks: ArcSwap::from_pointee(Vec::new()),
+            membership: ArcSwap::from_pointee(DiskMembership::default()),
             pos_v_disk_ctx: AtomicU64::new(0),
             allocation_ts_source: AtomicU64::new(now_nanos()),
             tentative_blocks: DashMap::new(),
@@ -115,12 +119,11 @@ impl DdbDiskGroup {
 
     /// Add a disk to this disk-group. Rebuilds the allocatable disk set.
     pub fn add_disk(&self, disk: Arc<DdbDisk>) {
-        self.disk_index.insert(disk.disk_id, Arc::clone(&disk));
         self.disks.write().unwrap().push(disk);
         self.rebuild_allocating_disks();
     }
 
-    /// Remove a disk from in-memory state (`disks` vec + `disk_index`).
+    /// Remove a disk from in-memory state and its published membership.
     /// Used when a disk is absent from sync and its status is
     /// `Offline`, `Maintenance`, or `Init` — the disk's `DiskKey` was
     /// deleted from group 0 (moved or removed), so absence means it's
@@ -130,15 +133,19 @@ impl DdbDiskGroup {
             let mut disks = self.disks.write().unwrap();
             disks.retain(|d| d.disk_id != *disk_id);
         }
-        self.disk_index.remove(disk_id);
         self.rebuild_allocating_disks();
     }
 
-    /// Rebuild the RCU-published allocatable disk set.
+    /// Rebuild and atomically publish disk lookup and allocation routes.
     pub fn rebuild_allocating_disks(&self) {
         let disks = self.disks.read().unwrap();
-        let new_ctx: Vec<Arc<DdbDisk>> = disks.iter().filter(|d| d.allocatable()).cloned().collect();
-        self.allocating_disks.store(Arc::new(new_ctx));
+        let by_id = disks
+            .iter()
+            .map(|disk| (disk.disk_id, Arc::clone(disk)))
+            .collect();
+        let allocating = disks.iter().filter(|d| d.allocatable()).cloned().collect();
+        self.membership
+            .store(Arc::new(DiskMembership { by_id, allocating }));
     }
 
     /// Generate the next monotonic allocation incarnation.
@@ -202,7 +209,8 @@ impl DdbDiskGroup {
         if !self.allocatable() {
             return Err(AllocError::NoSpace);
         }
-        let ctx = self.allocating_disks.load_full();
+        let membership = self.membership.load_full();
+        let ctx = &membership.allocating;
         if ctx.is_empty() {
             return Err(AllocError::NoSpace);
         }
@@ -254,7 +262,8 @@ impl DdbDiskGroup {
         }
 
         // Second pass: full scan (random start, skip excluded + used).
-        let ctx = self.allocating_disks.load_full();
+        let membership = self.membership.load_full();
+        let ctx = &membership.allocating;
         while results.len() < count as usize {
             let mut claimed = false;
             #[allow(clippy::cast_possible_truncation)]
@@ -346,10 +355,7 @@ impl DdbDiskGroup {
 
     /// Free a block by `(disk_id, zone_index, unit_offset, unit_count)`.
     pub fn free_block(&self, disk_id: &DiskId, zone_index: u32, unit_offset: u64, unit_count: u32) -> bool {
-        let disk = self
-            .disk_index
-            .get(disk_id)
-            .map(|entry| Arc::clone(entry.value()));
+        let disk = self.membership.load().by_id.get(disk_id).cloned();
         match disk {
             Some(d) => d.free(zone_index, unit_offset, unit_count),
             None => false,
@@ -377,7 +383,7 @@ impl DdbDiskGroup {
         #[allow(clippy::cast_possible_truncation)]
         let disk_count = disks_guard.len() as u32;
         #[allow(clippy::cast_possible_truncation)]
-        let allocatable_disk_count = self.allocating_disks.load().len() as u32;
+        let allocatable_disk_count = self.membership.load().allocating.len() as u32;
         let free_bytes = capacity_bytes.saturating_sub(busy_bytes);
         DiskGroupUsage {
             disk_group_id: self.disk_group_id,
@@ -394,10 +400,7 @@ impl DdbDiskGroup {
     /// Returns `None` for an unknown disk or out-of-range zone.
     #[must_use]
     pub fn zone_usage(&self, disk_id: DiskId, zone_index: u32) -> Option<ZoneUsage> {
-        let disk = self
-            .disk_index
-            .get(&disk_id)
-            .map(|entry| Arc::clone(entry.value()))?;
+        let disk = self.membership.load().by_id.get(&disk_id).cloned()?;
         let zones = disk.zones.load();
         let idx = zone_index as usize;
         if idx >= zones.len() {
@@ -412,7 +415,9 @@ impl DdbDiskGroup {
     /// attached (test disks).
     #[must_use]
     pub fn disk_metrics(&self, disk_id: DiskId) -> Option<Arc<DiskMetrics>> {
-        self.disk_index
+        self.membership
+            .load()
+            .by_id
             .get(&disk_id)
             .and_then(|disk| disk.metrics.clone())
     }
@@ -421,7 +426,8 @@ impl DdbDiskGroup {
     /// an unknown disk. Used by the free path to record byte counters.
     #[must_use]
     pub fn disk_unit_size(&self, disk_id: DiskId) -> Option<u32> {
-        let disk = self.disk_index.get(&disk_id)?;
+        let membership = self.membership.load();
+        let disk = membership.by_id.get(&disk_id)?;
         let unit_size = disk.disk_value.unit_size_bytes;
         Some(unit_size)
     }
@@ -430,9 +436,17 @@ impl DdbDiskGroup {
     /// Returns `None` for an unknown disk.
     #[must_use]
     pub fn get_disk(&self, disk_id: DiskId) -> Option<Arc<DdbDisk>> {
-        self.disk_index
-            .get(&disk_id)
-            .map(|entry| Arc::clone(entry.value()))
+        self.membership.load().by_id.get(&disk_id).cloned()
+    }
+
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn membership_snapshot_ids(&self) -> (Vec<DiskId>, Vec<DiskId>) {
+        let membership = self.membership.load();
+        (
+            membership.by_id.keys().copied().collect(),
+            membership.allocating.iter().map(|disk| disk.disk_id).collect(),
+        )
     }
 }
 

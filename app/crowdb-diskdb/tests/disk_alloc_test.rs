@@ -5,6 +5,7 @@
 //! rotation, multi-disk spread, free-by-disk-id.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crowdb_diskdb::model::disk::DdbDisk;
@@ -334,4 +335,32 @@ fn node_rebuild_allocating_disks_on_status_change() {
         picked_after.len() >= 2,
         "expected disks 2 and 3 to be picked, got {picked_after:?}"
     );
+}
+
+#[test]
+fn disk_membership_and_allocation_routes_publish_together() {
+    let dg = make_dg_with_disks(&[(1, 1, 128), (2, 1, 128)]);
+    let changing_disk = dg.get_disk(disk_id(2)).expect("disk 2");
+    let finished = Arc::new(AtomicBool::new(false));
+    let reader_dg = Arc::clone(&dg);
+    let reader_finished = Arc::clone(&finished);
+
+    let reader = std::thread::spawn(move || loop {
+        let (all, allocating) = reader_dg.membership_snapshot_ids();
+        assert_eq!(
+            all.contains(&disk_id(2)),
+            allocating.contains(&disk_id(2)),
+            "an Up disk must appear in both routes from one generation"
+        );
+        if reader_finished.load(Ordering::Acquire) {
+            break;
+        }
+    });
+
+    for _ in 0..1_000 {
+        dg.remove_disk_from_memory(&disk_id(2));
+        dg.add_disk(Arc::clone(&changing_disk));
+    }
+    finished.store(true, Ordering::Release);
+    reader.join().expect("membership reader");
 }
