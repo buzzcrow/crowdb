@@ -10,7 +10,7 @@ use bytes::Bytes;
 
 use crate::cluster::group::{CasOwnerToken, ProposeResult, PxGroup};
 use crate::cluster::local_replica::PxLocalReplicaRole;
-use crate::paxos::roles::DedupTag;
+use crate::paxos::roles::RequestIdentity;
 
 impl PxGroup {
     pub async fn propose_cas(
@@ -90,7 +90,7 @@ impl PxGroup {
         if client_id == 0 {
             return ProposeResult::Err("conditional write requires nonzero client_id".into());
         }
-        if let Some(slot) = self.local_replica.learner.dedup_lookup(client_id, seq) {
+        if let Some(slot) = self.local_replica.learner.request_result_lookup(client_id, seq) {
             return ProposeResult::Chosen { slot };
         }
 
@@ -123,7 +123,7 @@ impl PxGroup {
                 } else if !self.cas_admission_ready(tenure, required_term) {
                     self.cas_not_ready_result()
                 } else {
-                    let tag = [DedupTag { client_id, seq }];
+                    let tag = [RequestIdentity { client_id, seq }];
                     if let Some(required_term) = required_term {
                         self.propose_inner_conditional_in_tenure(
                             Bytes::from(payload),

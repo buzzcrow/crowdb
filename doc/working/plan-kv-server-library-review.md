@@ -43,13 +43,13 @@ resource, relevant counters, and same-CPU comparison before changing code.
   `PxLearner::record_dedup_tags`. Files: `lib/crowdb-kv/src/cluster/`,
   `lib/crowdb-kv/src/rpc/px_rpc_{transport,service}.rs`,
   `lib/crowdb-protocol/src/fbs/kv_consensus.fbs`.
-- [~] **Apply request-replay decision**: remove unused follower tag
+- [x] **Apply request-replay decision**: remove unused follower tag
   transport/state and rename the leader-local cache coherently without adding
   WAL/RPC work. Keep request identities attached to coalescer waiters only
   until the leader publishes the chosen result. Files:
   Phase 1 files plus `cluster/local_replica_apply.rs` and focused tests.
-  Follower Accept wire/state plumbing is removed; leader-local symbol naming
-  remains.
+  Follower Accept wire/state plumbing is removed and production names describe
+  request identities and the leader-local request-result cache.
 - [ ] **Test the selected retry boundary**: verify same-leader ordinary write
   retry returns the cached slot, leader-change ordinary retry remains data
   idempotent, and ambiguous CAS returns `OutcomeUnknown` for read

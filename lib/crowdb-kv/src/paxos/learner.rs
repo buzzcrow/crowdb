@@ -15,10 +15,10 @@ use std::sync::Barrier;
 use tokio::sync::Notify;
 
 use crate::kv::{Batch, CrowdbTreeBackend, CrowdbTreeConfig, CrowdbTreeEngine, KVEngine};
-use crate::paxos::roles::{DedupTag, Learner, PxLogEntry, SlotIndex};
+use crate::paxos::roles::{Learner, PxLogEntry, RequestIdentity, SlotIndex};
 use crate::paxos::PxTerm;
 
-/// Per-client dedup retention: the last `DEDUP_WINDOW` committed
+/// Per-client result retention: the last `REQUEST_RESULT_WINDOW` committed
 /// `(seq, slot)` mappings, in commit order. Exact-match lookup — a `seq`
 /// that was itself recorded returns its slot; an unrecorded `seq` (lower or
 /// otherwise) is a miss and falls into the "outside the window, outcome
@@ -26,9 +26,9 @@ use crate::paxos::PxTerm;
 /// `design.md` "≥ 64 requests per client" floor, generously above
 /// `max_inflight_proposals` (default 32) so a full window of concurrent
 /// same-client requests never evicts an unresolved entry prematurely.
-const DEDUP_WINDOW: usize = 64;
+const REQUEST_RESULT_WINDOW: usize = 64;
 
-/// Per-client bounded dedup window. `VecDeque` (not a hash map): N is tiny
+/// Per-client bounded request-result window. `VecDeque` (not a hash map): N is tiny
 /// and the common case is a retry of the most-recent seq, scanned first.
 #[derive(Clone, Debug, Default)]
 struct DedupSnapshot {
@@ -36,11 +36,11 @@ struct DedupSnapshot {
 }
 
 #[derive(Debug)]
-struct DedupWindow {
+struct RequestResultWindow {
     snapshot: ArcSwap<DedupSnapshot>,
 }
 
-impl Default for DedupWindow {
+impl Default for RequestResultWindow {
     fn default() -> Self {
         Self {
             snapshot: ArcSwap::from_pointee(DedupSnapshot::default()),
@@ -48,7 +48,7 @@ impl Default for DedupWindow {
     }
 }
 
-impl DedupWindow {
+impl RequestResultWindow {
     fn record(&self, seq: u64, slot: SlotIndex) {
         loop {
             let current = self.snapshot.load_full();
@@ -59,7 +59,7 @@ impl DedupWindow {
             }
             let mut replacement = (*current).clone();
             replacement.entries.push_back((seq, slot));
-            if replacement.entries.len() > DEDUP_WINDOW {
+            if replacement.entries.len() > REQUEST_RESULT_WINDOW {
                 replacement.entries.pop_front();
             }
             let previous = self.snapshot.compare_and_swap(&current, Arc::new(replacement));
@@ -131,15 +131,15 @@ pub struct PxLearner {
     /// Test-only equivalent pause for applied-frontier insertion.
     #[cfg(feature = "test-util")]
     applied_insert_barrier: Mutex<Option<Arc<Barrier>>>,
-    /// Per-`client_id` idempotency cache. Updated on every `learn` that
+    /// Per-`client_id` request-result cache. Updated on every `learn` that
     /// carries a `(client_id, seq)`; consulted by the proposer to short-
     /// circuit a retried request to its prior commit slot without re-running
     /// Paxos. In-memory only — lost on crash/restart; retried requests after
     /// a restart simply get a new Paxos slot (same value, no corruption).
-    /// Retains the last `DEDUP_WINDOW` (64) `(seq, slot)` mappings per client;
+    /// Retains the last `REQUEST_RESULT_WINDOW` (64) `(seq, slot)` mappings per client;
     /// exact-match lookup — an unrecorded `seq` is a miss, never a false
     /// positive against a higher committed seq's slot.
-    dedup: SkipMap<u64, Arc<DedupWindow>>,
+    request_results: SkipMap<u64, Arc<RequestResultWindow>>,
     /// R35 apply fence: woken whenever `contiguous_applied` advances, so a
     /// Linearizable read awaiting `contiguous_applied >= read_slot` (after
     /// the leadership barrier resolves) can block until the async R17
@@ -196,7 +196,7 @@ impl Default for PxLearner {
             chosen_insert_barrier: Mutex::new(None),
             #[cfg(feature = "test-util")]
             applied_insert_barrier: Mutex::new(None),
-            dedup: SkipMap::new(),
+            request_results: SkipMap::new(),
             apply_notify: Notify::new(),
             #[cfg(feature = "test-util")]
             apply_gate: Mutex::new(None),
@@ -232,7 +232,7 @@ impl PxLearner {
             chosen_insert_barrier: Mutex::new(None),
             #[cfg(feature = "test-util")]
             applied_insert_barrier: Mutex::new(None),
-            dedup: SkipMap::new(),
+            request_results: SkipMap::new(),
             apply_notify: Notify::new(),
             #[cfg(feature = "test-util")]
             apply_gate: Mutex::new(None),
@@ -654,43 +654,64 @@ impl PxLearner {
     /// otherwise) returns `None` — it falls into the "outside the window,
     /// outcome unknown" case from `design.md` §10 and is safe to re-propose.
     #[must_use]
-    pub fn dedup_lookup(&self, client_id: u64, seq: u64) -> Option<SlotIndex> {
+    pub fn request_result_lookup(&self, client_id: u64, seq: u64) -> Option<SlotIndex> {
         if client_id == 0 {
             return None;
         }
-        self.dedup
+        self.request_results
             .get(&client_id)
             .and_then(|entry| entry.value().lookup(seq))
     }
 
-    /// Record every dedup tag in `tags` against `slot`. A coalesced
-    /// multi-key batch passes one tag per client op; a single-key
-    /// propose passes one; repair/election pass none. `client_id == 0`
-    /// tags are skipped (sentinel).
-    pub(crate) fn record_dedup_tags(&self, tags: &[DedupTag], slot: SlotIndex) {
-        for tag in tags {
-            if tag.client_id == 0 {
+    /// Cache every request identity in `identities` against `slot`. A
+    /// coalesced multi-key batch passes one identity per client operation;
+    /// repair/election pass none. `client_id == 0` identities are skipped.
+    pub(crate) fn record_request_results(&self, identities: &[RequestIdentity], slot: SlotIndex) {
+        for identity in identities {
+            if identity.client_id == 0 {
                 continue;
             }
             let window = self
-                .dedup
-                .get_or_insert(tag.client_id, Arc::new(DedupWindow::default()));
-            window.value().record(tag.seq, slot);
+                .request_results
+                .get_or_insert(identity.client_id, Arc::new(RequestResultWindow::default()));
+            window.value().record(identity.seq, slot);
         }
     }
 
-    /// Record one dedup identity directly in integration tests.
+    /// Record one request result directly in integration tests.
     #[cfg(feature = "test-util")]
-    pub fn record_dedup_for_tests(&self, client_id: u64, seq: u64, slot: SlotIndex) {
-        self.record_dedup_tags(&[DedupTag { client_id, seq }], slot);
+    pub fn record_request_result_for_tests(&self, client_id: u64, seq: u64, slot: SlotIndex) {
+        self.record_request_results(&[RequestIdentity { client_id, seq }], slot);
     }
 
-    /// Return the currently retained dedup identities for one client.
+    /// Return the currently retained request results for one client.
     #[cfg(feature = "test-util")]
+    pub fn request_result_entries_for_tests(&self, client_id: u64) -> Vec<(u64, SlotIndex)> {
+        self.request_results
+            .get(&client_id)
+            .map_or_else(Vec::new, |entry| {
+                entry.value().snapshot.load().entries.iter().copied().collect()
+            })
+    }
+
+    /// Compatibility name for existing integration tests.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn dedup_lookup(&self, client_id: u64, seq: u64) -> Option<SlotIndex> {
+        self.request_result_lookup(client_id, seq)
+    }
+
+    /// Compatibility name for existing integration tests.
+    #[cfg(feature = "test-util")]
+    pub fn record_dedup_for_tests(&self, client_id: u64, seq: u64, slot: SlotIndex) {
+        self.record_request_result_for_tests(client_id, seq, slot);
+    }
+
+    /// Compatibility name for existing integration tests.
+    #[cfg(feature = "test-util")]
+    #[must_use]
     pub fn dedup_entries_for_tests(&self, client_id: u64) -> Vec<(u64, SlotIndex)> {
-        self.dedup.get(&client_id).map_or_else(Vec::new, |entry| {
-            entry.value().snapshot.load().entries.iter().copied().collect()
-        })
+        self.request_result_entries_for_tests(client_id)
     }
 
     /// Decode `payload` and apply it to the engine at `slot`.
@@ -781,9 +802,9 @@ impl PxLearner {
 }
 
 impl Learner for PxLearner {
-    async fn learn(&self, entry: PxLogEntry, dedup_tags: &[DedupTag]) {
+    async fn learn(&self, entry: PxLogEntry, request_identities: &[RequestIdentity]) {
         // V1 sync path (followers, restore, R17-off leader): apply, then
-        // advance both frontiers, then record dedup. With apply synchronous,
+        // advance both frontiers, then cache request results. With apply synchronous,
         // `contiguous_applied` tracks `contiguous_chosen` exactly — the R35
         // apply fence is a no-op fast path on this path.
         // Gap 2: only advance `contiguous_applied` if the apply succeeded.
@@ -794,6 +815,6 @@ impl Learner for PxLearner {
         if apply_ok {
             self.advance_applied_frontier(entry.slot);
         }
-        self.record_dedup_tags(dedup_tags, entry.slot);
+        self.record_request_results(request_identities, entry.slot);
     }
 }

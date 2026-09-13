@@ -6,7 +6,7 @@
 use std::sync::Weak;
 
 use crate::cluster::group::{PendingBatch, ProposeResult, PxGroup};
-use crate::paxos::roles::DedupTag;
+use crate::paxos::roles::RequestIdentity;
 use tracing::{info_span, Instrument};
 
 /// Coalescer watchdog interval in microseconds. The watchdog sleeps for
@@ -87,7 +87,7 @@ impl PxGroup {
         payload.extend_from_slice(&batch.op_count.to_le_bytes());
         payload.extend_from_slice(&batch.op_bodies);
         let payload = bytes::Bytes::from(payload);
-        let tags = batch.tags;
+        let identities = batch.identities;
         let waiters = batch.waiters;
         let Some(group) = self.self_weak.get().and_then(Weak::upgrade) else {
             return;
@@ -99,7 +99,7 @@ impl PxGroup {
             async move {
                 #[cfg(feature = "test-util")]
                 group.coalesce_await_round_gate().await;
-                let result = group.propose_inner(payload, &tags).await;
+                let result = group.propose_inner(payload, &identities).await;
                 for waiter in waiters {
                     let _ = waiter.send(result.clone());
                 }
@@ -122,7 +122,11 @@ impl PxGroup {
     /// A single activity-based watchdog task runs in the background — it
     /// only fires if there's no coalescer activity for `WATCHDOG_US`.
     #[allow(clippy::type_complexity)]
-    pub(crate) async fn coalesce_enqueue(&self, payload: Vec<u8>, tag: Option<DedupTag>) -> ProposeResult {
+    pub(crate) async fn coalesce_enqueue(
+        &self,
+        payload: Vec<u8>,
+        identity: Option<RequestIdentity>,
+    ) -> ProposeResult {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let request_op_count = payload
             .get(..2)
@@ -133,11 +137,11 @@ impl PxGroup {
         self.coalesce_start_watchdog();
 
         // The locked section returns:
-        //   Some((payload, tags, waiters)) → start a round now
+        //   Some((payload, identities, waiters)) → start a round now
         //   None → joined a batch, just await the oneshot
         let start_round: Option<(
             Vec<u8>,
-            Vec<DedupTag>,
+            Vec<RequestIdentity>,
             Vec<tokio::sync::oneshot::Sender<ProposeResult>>,
         )> = {
             let mut guard = self.coalescer.lock();
@@ -149,14 +153,14 @@ impl PxGroup {
                     let mut round_payload = Vec::with_capacity(2 + op_body.len());
                     round_payload.extend_from_slice(&request_op_count.to_le_bytes());
                     round_payload.extend_from_slice(op_body);
-                    let round_tags: Vec<DedupTag> = tag.into_iter().collect();
-                    Some((round_payload, round_tags, vec![tx]))
+                    let round_identities: Vec<RequestIdentity> = identity.into_iter().collect();
+                    Some((round_payload, round_identities, vec![tx]))
                 }
                 Some(batch) => {
                     batch.op_bodies.extend_from_slice(op_body);
                     batch.op_count = batch.op_count.saturating_add(request_op_count);
-                    if let Some(t) = tag {
-                        batch.tags.push(t);
+                    if let Some(identity) = identity {
+                        batch.identities.push(identity);
                     }
                     batch.waiters.push(tx);
                     if batch.op_count >= max_keys {
@@ -166,7 +170,7 @@ impl PxGroup {
                         let mut p = Vec::with_capacity(2 + taken.op_bodies.len());
                         p.extend_from_slice(&taken.op_count.to_le_bytes());
                         p.extend_from_slice(&taken.op_bodies);
-                        Some((p, taken.tags, taken.waiters))
+                        Some((p, taken.identities, taken.waiters))
                     } else {
                         None
                     }
@@ -175,7 +179,7 @@ impl PxGroup {
         };
 
         // If None, we joined a batch — just await the result.
-        let Some((payload, round_tags, round_waiters)) = start_round else {
+        let Some((payload, round_identities, round_waiters)) = start_round else {
             return match rx.await {
                 Ok(result) => result,
                 Err(_) => ProposeResult::Err("coalescer round dropped".to_string()),
@@ -195,7 +199,7 @@ impl PxGroup {
             async move {
                 #[cfg(feature = "test-util")]
                 group.coalesce_await_round_gate().await;
-                let result = group.propose_inner(payload, &round_tags).await;
+                let result = group.propose_inner(payload, &round_identities).await;
                 for waiter in round_waiters {
                     let _ = waiter.send(result.clone());
                 }

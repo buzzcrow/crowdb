@@ -7,7 +7,7 @@ use crate::cluster::local_replica::PxLocalReplica;
 use crate::metrics::Counter;
 use crate::paxos::acceptor::PxAcceptor;
 use crate::paxos::learner::PxLearner;
-use crate::paxos::roles::{Acceptor, DedupTag, Learner, PxBallot, PxLogEntry, SlotIndex};
+use crate::paxos::roles::{Acceptor, Learner, PxBallot, PxLogEntry, RequestIdentity, SlotIndex};
 use crate::paxos::PxTerm;
 use parking_lot::Mutex;
 use std::collections::BTreeSet;
@@ -26,33 +26,33 @@ const MAX_INFLIGHT_FETCHGAP: u64 = 16;
 
 impl PxLocalReplica {
     /// Learn a chosen entry (apply to state machine) and record each
-    /// dedup tag against the slot. A single-key propose passes one tag;
+    /// request identity against the slot. A single-key proposal passes one;
     /// a coalesced batch passes one per client op; repair/election pass
     /// none.
-    pub async fn learn_chosen(&self, entry: &PxLogEntry, dedup_tags: &[DedupTag]) {
-        self.learner.learn(entry.clone(), dedup_tags).await;
+    pub async fn learn_chosen(&self, entry: &PxLogEntry, request_identities: &[RequestIdentity]) {
+        self.learner.learn(entry.clone(), request_identities).await;
     }
 
     /// R17: defer the engine apply (`apply_entry` + applied-frontier
     /// advance) to a detached background task, while advancing the chosen
-    /// frontier and recording dedup **synchronously**. Used when
+    /// frontier and recording request results **synchronously**. Used when
     /// `async_engine_apply` is enabled — the value is already Paxos-chosen,
     /// so the FFI/memtable insert can happen asynchronously.
     ///
-    /// The chosen frontier (`contiguous_chosen`) and dedup must advance
+    /// The chosen frontier (`contiguous_chosen`) and request-result cache must advance
     /// before `propose` returns so a subsequent Linearizable read's
     /// `read_slot = contiguous_chosen` reflects this slot — the R35 apply
     /// fence then waits for `contiguous_applied >= read_slot` (the spawned
     /// apply) before serving the read, preserving read-your-writes. The
-    /// learner's `apply_entry` is idempotent, and the frontier/dedup
+    /// learner's `apply_entry` is idempotent, and the frontier/cache
     /// updates are atomic, so a delayed apply is safe.
-    pub fn spawn_learn_chosen(&self, entry: PxLogEntry, dedup_tags: &[DedupTag]) {
+    pub fn spawn_learn_chosen(&self, entry: PxLogEntry, request_identities: &[RequestIdentity]) {
         let slot = entry.slot;
         let learner = Arc::clone(&self.learner);
-        // Sync: chosen frontier + dedup (cheap atomics; must precede
+        // Sync: chosen frontier + request result (cheap atomics; must precede
         // `propose` returning `Chosen` for read-your-writes).
         learner.update_chosen_frontier(entry.slot, entry.term);
-        learner.record_dedup_tags(dedup_tags, entry.slot);
+        learner.record_request_results(request_identities, entry.slot);
         // Deferred: engine apply + applied frontier (the FFI/memtable insert
         // moved off the write critical path; the apply fence gates reads).
         // Gap 2: only advance `contiguous_applied` if the apply succeeded.

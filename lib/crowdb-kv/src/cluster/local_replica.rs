@@ -17,7 +17,7 @@ use crate::metrics::{Counter, Gauge, MetricsRegistry};
 use crate::paxos::acceptor::PxAcceptor;
 use crate::paxos::learner::PxLearner;
 #[cfg(feature = "test-util")]
-use crate::paxos::roles::DedupTag;
+use crate::paxos::roles::RequestIdentity;
 use crate::paxos::roles::{PxAcceptReply, PxBallot, PxLogEntry, PxPrepareReply, SlotIndex};
 use crate::paxos::{PxNodeId, PxTerm};
 use crate::wal::WalEngine;
@@ -509,13 +509,13 @@ impl PxLocalReplica {
     }
 
     /// R63 test-only: simulate the `handle_accept_inner` deferred-apply path
-    /// (advance chosen frontier + dedup + `known_commit_slot` + wake apply
+    /// (advance chosen frontier + request-result cache + `known_commit_slot` + wake apply
     /// loop) without going through the RPC handler. Used by the
     /// follower-wins-election deadlock regression test.
     #[cfg(feature = "test-util")]
-    pub fn simulate_accept_deferred_apply(&self, entry: &PxLogEntry, dedup_tags: &[DedupTag]) {
+    pub fn simulate_accept_deferred_apply(&self, entry: &PxLogEntry, identities: &[RequestIdentity]) {
         self.learner.update_chosen_frontier(entry.slot, entry.term);
-        self.learner.record_dedup_tags(dedup_tags, entry.slot);
+        self.learner.record_request_results(identities, entry.slot);
         self.advance_known_commit_slot(entry.slot);
         self.wake_apply_loop();
     }

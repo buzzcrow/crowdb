@@ -16,7 +16,7 @@ use crate::cluster::group_election::XorShift64;
 use crate::cluster::group_prepare::PrepareAttempt;
 use crate::common::config::PaxosConfig;
 use crate::paxos::error::PxPaxosError;
-use crate::paxos::roles::{DedupTag, PxLogEntry};
+use crate::paxos::roles::{PxLogEntry, RequestIdentity};
 
 impl PxGroup {
     /// Propose an opaque payload through Paxos. Returns the slot if chosen,
@@ -91,19 +91,19 @@ impl PxGroup {
         // window admission / coalescing so duplicates never consume a
         // window permit or enter a batch.
         if let (Some(cid), Some(s)) = (client_id, seq) {
-            if let Some(cached_slot) = replica.learner.dedup_lookup(cid, s) {
+            if let Some(cached_slot) = replica.learner.request_result_lookup(cid, s) {
                 debug!(
                     g = self.group_id,
                     client_id = cid,
                     seq = s,
                     slot = cached_slot,
-                    "dedup hit; returning cached commit without re-proposing"
+                    "request-result cache hit; returning prior commit without re-proposing"
                 );
                 return ProposeResult::Chosen { slot: cached_slot };
             }
         }
 
-        let tag = dedup_tag(client_id, seq);
+        let identity = request_identity(client_id, seq);
 
         // R45: event-driven coalescing. When `coalesce_max_keys > 0` and
         // self-weak is set, the first op starts a round immediately (no
@@ -112,29 +112,31 @@ impl PxGroup {
             && self.config.paxos.coalesce_max_keys > 0
             && self.self_weak.get().is_some();
         if coalesce_on {
-            self.coalesce_enqueue(payload, tag).await
+            self.coalesce_enqueue(payload, identity).await
         } else {
-            let tags: Vec<DedupTag> = tag.into_iter().collect();
+            let identities: Vec<RequestIdentity> = identity.into_iter().collect();
             // `Bytes::from(Vec<u8>)` reuses the allocation (no copy) and
             // gives cheap `Clone` for the slot-retry loop and Accept fanout.
-            self.propose_inner_impl(bytes::Bytes::from(payload), &tags, None, required_term)
+            self.propose_inner_impl(bytes::Bytes::from(payload), &identities, None, required_term)
                 .await
         }
     }
 
     /// Drive one Paxos proposal (single- or multi-key) through to a chosen
     /// slot. Holds one inflight permit for the whole round, allocates one
-    /// slot, and records every `dedup_tags` entry against the chosen slot
+    /// slot, and records every request identity against the chosen slot
     /// on the local learner. The leadership gate is re-checked here so a
     /// step-down between coalescer batch collection and flush surfaces as
     /// `NotLeader` instead of racing into Paxos with stale identity.
     pub(super) async fn propose_inner(
         &self,
         payload: bytes::Bytes,
-        dedup_tags: &[DedupTag],
+        request_identities: &[RequestIdentity],
     ) -> ProposeResult {
         let e2e_start = std::time::Instant::now();
-        let result = self.propose_inner_impl(payload, dedup_tags, None, None).await;
+        let result = self
+            .propose_inner_impl(payload, request_identities, None, None)
+            .await;
         if let Some(h) = self.write_handles.get() {
             h.propose_e2e
                 .observe(e2e_start.elapsed().as_nanos().try_into().unwrap_or(u64::MAX));
@@ -145,25 +147,25 @@ impl PxGroup {
     pub(crate) async fn propose_inner_conditional(
         &self,
         payload: bytes::Bytes,
-        dedup_tags: &[DedupTag],
+        request_identities: &[RequestIdentity],
         key: &[u8],
         expected_revision: u64,
     ) -> ProposeResult {
-        self.propose_inner_impl(payload, dedup_tags, Some((key, expected_revision)), None)
+        self.propose_inner_impl(payload, request_identities, Some((key, expected_revision)), None)
             .await
     }
 
     pub(crate) async fn propose_inner_conditional_in_tenure(
         &self,
         payload: bytes::Bytes,
-        dedup_tags: &[DedupTag],
+        request_identities: &[RequestIdentity],
         key: &[u8],
         expected_revision: u64,
         required_term: u64,
     ) -> ProposeResult {
         self.propose_inner_impl(
             payload,
-            dedup_tags,
+            request_identities,
             Some((key, expected_revision)),
             Some(required_term),
         )
@@ -173,7 +175,7 @@ impl PxGroup {
     async fn propose_inner_impl(
         &self,
         payload: bytes::Bytes,
-        dedup_tags: &[DedupTag],
+        request_identities: &[RequestIdentity],
         condition: Option<(&[u8], u64)>,
         required_term: Option<u64>,
     ) -> ProposeResult {
@@ -220,7 +222,7 @@ impl PxGroup {
         trace!(
             group_id,
             my_id = self.local_replica.id,
-            dedup_tags = dedup_tags.len(),
+            request_identities = request_identities.len(),
             peer_count = self.valid_replica_count,
             quorum,
             "start paxos proposal"
@@ -304,7 +306,7 @@ impl PxGroup {
                 }
 
                 let own_payload = !adopted_foreign_value && entry.payload == payload;
-                let entry_tags = if own_payload { dedup_tags } else { &[] };
+                let entry_identities = if own_payload { request_identities } else { &[] };
                 match self.run_accept_phase(replica, &entry, quorum).await {
                     AcceptAttempt::Chosen => {
                         // R17: when async_engine_apply is enabled, spawn
@@ -312,9 +314,9 @@ impl PxGroup {
                         // Chosen immediately. The fan_out_chosen_notice
                         // fires immediately too (non-blocking mpsc enqueue).
                         if self.config.async_engine_apply {
-                            replica.spawn_learn_chosen(entry.clone(), entry_tags);
+                            replica.spawn_learn_chosen(entry.clone(), entry_identities);
                         } else {
-                            replica.learn_chosen(&entry, entry_tags).await;
+                            replica.learn_chosen(&entry, entry_identities).await;
                         }
                         self.fan_out_chosen_notice(&entry, group_id);
                         trace!(
@@ -411,7 +413,7 @@ impl PxGroup {
                 if resolved.payload == payload {
                     // The abandoned attempt may have been accepted by a
                     // quorum before its reply was lost. It is now chosen, but
-                    // was intentionally repaired without the request's dedup
+                    // was intentionally repaired without the request identity,
                     // tag, so the only honest response is indeterminate.
                     return ProposeResult::OutcomeUnknown;
                 }
@@ -514,12 +516,11 @@ fn retry_jitter_multiplier() -> u64 {
     })
 }
 
-/// Build a dedup tag from the client-supplied `(client_id, seq)` options.
-/// `None` when either is absent or `client_id == 0` (the no-dedup sentinel
-/// matching `PxLearner::record_dedup_tags`).
-fn dedup_tag(client_id: Option<u64>, seq: Option<u64>) -> Option<DedupTag> {
+/// Build a request identity from the client-supplied `(client_id, seq)`.
+/// `None` when either is absent or `client_id == 0`.
+fn request_identity(client_id: Option<u64>, seq: Option<u64>) -> Option<RequestIdentity> {
     match (client_id, seq) {
-        (Some(cid), Some(s)) if cid != 0 => Some(DedupTag {
+        (Some(cid), Some(s)) if cid != 0 => Some(RequestIdentity {
             client_id: cid,
             seq: s,
         }),

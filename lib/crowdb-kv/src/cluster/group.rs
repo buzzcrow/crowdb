@@ -26,7 +26,7 @@ use crate::cluster::remote_replica::PxRemoteReplica;
 use crate::cluster::replica::Replica;
 use crate::common::config::{CrowDBConfig, PaxosConfig};
 use crate::metrics::{Counter, Gauge, LatencySummary};
-use crate::paxos::roles::{Acceptor, DedupTag, PxBallot, PxLogEntry, SlotIndex};
+use crate::paxos::roles::{Acceptor, PxBallot, PxLogEntry, RequestIdentity, SlotIndex};
 use crate::paxos::{PxGroupId, PxNodeId};
 
 pub(crate) use crate::cluster::group_accept::AcceptAttempt;
@@ -85,7 +85,7 @@ pub(crate) struct PendingReadBarrier {
 pub(crate) struct PendingBatch {
     pub(crate) op_bodies: Vec<u8>,
     pub(crate) op_count: u16,
-    pub(crate) tags: Vec<DedupTag>,
+    pub(crate) identities: Vec<RequestIdentity>,
     pub(crate) waiters: Vec<tokio::sync::oneshot::Sender<ProposeResult>>,
 }
 
