@@ -143,6 +143,31 @@ async fn dedup_ignores_entries_without_client_id() {
     assert!(learner.dedup_lookup(1, 1).is_none());
 }
 
+#[test]
+fn concurrent_dedup_records_keep_exact_bounded_window() {
+    let learner = Arc::new(PxLearner::new());
+    let mut threads = Vec::new();
+    for seq in 1..=128 {
+        let learner = Arc::clone(&learner);
+        threads.push(std::thread::spawn(move || {
+            for _ in 0..4 {
+                learner.record_dedup_for_tests(9, seq, seq * 10);
+            }
+        }));
+    }
+    for thread in threads {
+        thread.join().expect("dedup recording thread panicked");
+    }
+
+    let retained = learner.dedup_entries_for_tests(9);
+    assert_eq!(retained.len(), 64);
+    for (seq, slot) in retained {
+        assert_eq!(slot, seq * 10);
+        assert_eq!(learner.dedup_lookup(9, seq), Some(slot));
+    }
+    assert_eq!(learner.dedup_lookup(9, 1000), None);
+}
+
 // ── Contiguous watermark tracking ────────────────────────────
 
 #[tokio::test]

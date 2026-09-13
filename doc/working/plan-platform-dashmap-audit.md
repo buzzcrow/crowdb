@@ -21,11 +21,11 @@ Goal: remove correctness-sensitive and request-hot sharded locks, including the 
 ## Phase 3: Paxos concurrency
 
 - [x] **Close learner frontier races**: move chosen/applied gap tracking to ordered lock-free maps, recheck the frontier after insertion, and remove only the inserted identity when stale; add deterministic delayed-insert tests and waiter notification coverage. Files: `lib/crowdb-kv/src/paxos/learner.rs`, `lib/crowdb-kv/tests/paxos_test/learner_dedup_test.rs`.
-- [~] **Replace dedup mutation**: add a lock-free client index with fixed 64-entry atomic windows preserving exact lookup and idempotent duplicate recording; test concurrent retention and misses. Files: `lib/crowdb-kv/src/paxos/learner.rs`, `lib/crowdb-kv/src/paxos/*`, `lib/crowdb-kv/tests/paxos_test/*`.
+- [x] **Replace dedup mutation**: add a lock-free client index with fixed 64-entry atomic windows preserving exact lookup and idempotent duplicate recording; test concurrent retention and misses. Files: `lib/crowdb-kv/src/paxos/learner.rs`, `lib/crowdb-kv/tests/paxos_test/learner_dedup_test.rs`.
 
 ## Phase 4: Atomic routing and ownership
 
-- [ ] **Publish coherent KV topology**: merge leaders, replicas, read cursors, endpoint statistics, and write high-watermarks into generation-tagged route snapshots; use compare-and-swap hint updates and exact-generation eviction. Files: `lib/crowdb-kv-client/src/client/topology.rs`, `lib/crowdb-kv-client/src/client/core.rs`, callers and tests.
+- [~] **Publish coherent KV topology**: merge leaders, replicas, read cursors, endpoint statistics, and write high-watermarks into generation-tagged route snapshots; use compare-and-swap hint updates and exact-generation eviction. Files: `lib/crowdb-kv-client/src/client/topology.rs`, `lib/crowdb-kv-client/src/client/core.rs`, callers and tests.
 - [ ] **Publish store and group registries**: replace hot store/group/disk-group indices with RCU snapshots or ordered lock-free maps while preserving compare-if-current replacement and one-time tenure cancellation. Files: `app/crowdb-kv-server/src/store_registry.rs`, `lib/crowdb-kv/src/cluster/px_kv_store.rs`, `app/crowdb-diskdb/src/model/disk_group_container.rs`, affected tests.
 - [ ] **Publish DiskDB disk membership**: rebuild and atomically publish `disk_index` with allocation routes after membership changes. Files: `app/crowdb-diskdb/src/model/disk_group.rs`, callers and tests.
 

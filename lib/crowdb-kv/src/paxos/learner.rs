@@ -5,9 +5,9 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
+use arc_swap::ArcSwap;
 use bytes::Bytes;
 use crossbeam_skiplist::SkipMap;
-use dashmap::DashMap;
 #[cfg(feature = "test-util")]
 use parking_lot::Mutex;
 #[cfg(feature = "test-util")]
@@ -30,27 +30,49 @@ const DEDUP_WINDOW: usize = 64;
 
 /// Per-client bounded dedup window. `VecDeque` (not a hash map): N is tiny
 /// and the common case is a retry of the most-recent seq, scanned first.
-#[derive(Debug, Default)]
-struct DedupWindow {
+#[derive(Clone, Debug, Default)]
+struct DedupSnapshot {
     entries: VecDeque<(u64, SlotIndex)>,
 }
 
-impl DedupWindow {
-    fn record(&mut self, seq: u64, slot: SlotIndex) {
-        // Idempotent re-`learn` of an already-recorded seq (e.g. a duplicate
-        // `Chosen` notice): leave the existing entry in place — no duplicate,
-        // no slot overwrite.
-        if self.entries.iter().any(|(s, _)| *s == seq) {
-            return;
+#[derive(Debug)]
+struct DedupWindow {
+    snapshot: ArcSwap<DedupSnapshot>,
+}
+
+impl Default for DedupWindow {
+    fn default() -> Self {
+        Self {
+            snapshot: ArcSwap::from_pointee(DedupSnapshot::default()),
         }
-        self.entries.push_back((seq, slot));
-        if self.entries.len() > DEDUP_WINDOW {
-            self.entries.pop_front();
+    }
+}
+
+impl DedupWindow {
+    fn record(&self, seq: u64, slot: SlotIndex) {
+        loop {
+            let current = self.snapshot.load_full();
+            // Idempotent re-`learn` of an already-recorded seq leaves the
+            // existing slot in place and does not consume another cell.
+            if current.entries.iter().any(|(recorded, _)| *recorded == seq) {
+                return;
+            }
+            let mut replacement = (*current).clone();
+            replacement.entries.push_back((seq, slot));
+            if replacement.entries.len() > DEDUP_WINDOW {
+                replacement.entries.pop_front();
+            }
+            let previous = self.snapshot.compare_and_swap(&current, Arc::new(replacement));
+            if Arc::ptr_eq(&previous, &current) {
+                return;
+            }
         }
     }
 
     fn lookup(&self, seq: u64) -> Option<SlotIndex> {
-        self.entries
+        self.snapshot
+            .load()
+            .entries
             .iter()
             .rev()
             .find(|(s, _)| *s == seq)
@@ -117,7 +139,7 @@ pub struct PxLearner {
     /// Retains the last `DEDUP_WINDOW` (64) `(seq, slot)` mappings per client;
     /// exact-match lookup — an unrecorded `seq` is a miss, never a false
     /// positive against a higher committed seq's slot.
-    dedup: DashMap<u64, DedupWindow>,
+    dedup: SkipMap<u64, Arc<DedupWindow>>,
     /// R35 apply fence: woken whenever `contiguous_applied` advances, so a
     /// Linearizable read awaiting `contiguous_applied >= read_slot` (after
     /// the leadership barrier resolves) can block until the async R17
@@ -174,7 +196,7 @@ impl Default for PxLearner {
             chosen_insert_barrier: Mutex::new(None),
             #[cfg(feature = "test-util")]
             applied_insert_barrier: Mutex::new(None),
-            dedup: DashMap::new(),
+            dedup: SkipMap::new(),
             apply_notify: Notify::new(),
             #[cfg(feature = "test-util")]
             apply_gate: Mutex::new(None),
@@ -210,7 +232,7 @@ impl PxLearner {
             chosen_insert_barrier: Mutex::new(None),
             #[cfg(feature = "test-util")]
             applied_insert_barrier: Mutex::new(None),
-            dedup: DashMap::new(),
+            dedup: SkipMap::new(),
             apply_notify: Notify::new(),
             #[cfg(feature = "test-util")]
             apply_gate: Mutex::new(None),
@@ -636,7 +658,9 @@ impl PxLearner {
         if client_id == 0 {
             return None;
         }
-        self.dedup.get(&client_id).and_then(|w| w.lookup(seq))
+        self.dedup
+            .get(&client_id)
+            .and_then(|entry| entry.value().lookup(seq))
     }
 
     /// Record every dedup tag in `tags` against `slot`. A coalesced
@@ -648,15 +672,25 @@ impl PxLearner {
             if tag.client_id == 0 {
                 continue;
             }
-            self.dedup
-                .entry(tag.client_id)
-                .and_modify(|w| w.record(tag.seq, slot))
-                .or_insert_with(|| {
-                    let mut w = DedupWindow::default();
-                    w.record(tag.seq, slot);
-                    w
-                });
+            let window = self
+                .dedup
+                .get_or_insert(tag.client_id, Arc::new(DedupWindow::default()));
+            window.value().record(tag.seq, slot);
         }
+    }
+
+    /// Record one dedup identity directly in integration tests.
+    #[cfg(feature = "test-util")]
+    pub fn record_dedup_for_tests(&self, client_id: u64, seq: u64, slot: SlotIndex) {
+        self.record_dedup_tags(&[DedupTag { client_id, seq }], slot);
+    }
+
+    /// Return the currently retained dedup identities for one client.
+    #[cfg(feature = "test-util")]
+    pub fn dedup_entries_for_tests(&self, client_id: u64) -> Vec<(u64, SlotIndex)> {
+        self.dedup.get(&client_id).map_or_else(Vec::new, |entry| {
+            entry.value().snapshot.load().entries.iter().copied().collect()
+        })
     }
 
     /// Decode `payload` and apply it to the engine at `slot`.
