@@ -770,12 +770,12 @@ Status RpcChunkTransport::seal_chunk(ChunkId chunk_id, uint64_t owner_epoch, uin
         acknowledged_bytes > static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()) * kKiB) {
         return Status::unavailable("tree chunk RPC seal is fenced by owner epoch or cursor");
     }
-    const uint32_t seal_length_kib = static_cast<uint32_t>((acknowledged_bytes + kKiB - 1) / kKiB);
-    const uint64_t                 request_id = impl_->next_request_id();
+    const uint32_t                 seal_length_kib = static_cast<uint32_t>((acknowledged_bytes + kKiB - 1) / kKiB);
+    const uint64_t                 request_id      = impl_->next_request_id();
     const FBInt128                 id(chunk_id.high, chunk_id.low);
     flatbuffers::FlatBufferBuilder builder;
-    auto request = crowdb::chunkdb::proto::CreateFBSealChunkRequest(builder, request_id, monotonic_nanos(), &id,
-                                                                    seal_length_kib);
+    auto                           request =
+        crowdb::chunkdb::proto::CreateFBSealChunkRequest(builder, request_id, monotonic_nanos(), &id, seal_length_kib);
     builder.Finish(request);
     std::vector<uint8_t> control(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());
     RpcResult            result;

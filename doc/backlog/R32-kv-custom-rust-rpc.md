@@ -1,374 +1,291 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-### R32: kv — KV Consensus Hot Path → R104 RPC
+### R32: kv — KV Server and Core Library Review
 
 **Problem**
 
-legacy (tonic + h2) serializes concurrent writers on a connection-level
-userspace lock. HTTP/2's stream/HPACK/flow-control architecture
-inherently requires a connection-level lock for correctness — the
-shared HPACK table, frame output buffer, and flow-control windows are
-mutable state that demands serialization. When N threads submit to one
-legacy connection, they funnel through a single-threaded userspace
-critical section before any of them reach `write()`. The kernel's TCP
-coalescing never sees concurrent writers; h2 hands it one merged buffer
-from one thread.
+R32 originally migrated the KV replica-to-replica consensus path from
+tonic/gRPC to flatbuffer messages over `crowdb-rpc`. That migration is
+complete: `PxRpcService` and `PxRpcTransport` carry consensus
+traffic, the server registers consensus and client-facing handlers on the
+same `RpcServer`, and production `crowdb-kv` / `crowdb-kv-server` code no
+longer depends on tonic or prost.
 
-The measured cost is a **~17% throughput drop at 2T:1C** (read bench,
-`doc/design/kv/kv-read-flow-analysis.md` ≈L520-545). At 1T:1C the lock
-is uncontended and the cost is zero; the loss grows with
-thread:connection ratio.
+The original unfinished acceptance list is no longer a sound contract:
 
-This is a **design mismatch**, not a tuning problem — h2 cannot accept
-concurrent writers without a lock. The R104 RPC library
-(`doc/backlog/R104-protocol-flatbuffer-rpc.md`) provides the
-replacement transport: flatbuffer-over-TCP with a per-connection
-lock-free writer queue. R32 is the migration of the KV consensus hot
-path from legacy to R104.
+- A mixed gRPC/`crowdb-rpc` rollout is obsolete after removal of the gRPC
+  implementation. Reintroducing the old server only to test migration would
+  add dead compatibility code.
+- `NotLeaderHint` is a client-facing KV routing concern covered by R117, not a
+  replica-to-replica Paxos transport response.
+- Comparing against an unavailable legacy binary cannot be a repeatable
+  regression gate. The cited read-throughput loss also cannot be attributed
+  solely to the consensus RPC path without holding CPU, connection count,
+  storage, and workload constant.
+- The old file describes separate ports, a tonic-era `LearnerStream`, and
+  server-streaming snapshot machinery that no longer match the unified
+  server and follower-driven `FetchGap` architecture.
 
-**Current behavior + impact**: All internal KV RPC (replica-to-replica
-Paxos, LearnerStream, PxService) uses tonic/legacy. The h2 connection
-lock costs ~17% at 2T:1C and forces the production deployment to run
-1T:1C to avoid the loss. The management API (Axum HTTP) and
-client-facing surface are separate and unaffected.
+The useful remaining work is a cross-cutting review of the current
+`crowdb-kv` library and `crowdb-kv-server` application. The code has evolved
+across consensus, coalescing, CAS, WAL, recovery, membership, RPC, management,
+and observability changes. Reviewing each change in isolation does not prove
+that their boundaries preserve the system invariants under failover and
+load.
 
-**Design pointers**: KV RPC sub-design
-`doc/design/kv/design-crowdb-kv-rpc.md` covers the current legacy wire
-protocol (PxService, LearnerStream, error model). R32 swaps the
-transport layer; the protocol semantics (request/response shapes,
-error codes, `NotLeaderHint`) are preserved. The h2-lock analysis
-lives in `doc/design/kv/kv-read-flow-analysis.md` ≈L546-622.
+The initial review has already identified concrete examples of boundary
+risk:
 
-**Use scenarios**:
+- The code calls its client-request replay cache `dedup`, which is easily
+  confused with data or WAL deduplication. Permanent docs promise replication
+  and restart recovery, while implementation is leader-local/in-memory and
+  still carries unused tag fields through parts of Accept. The required retry
+  boundary is unclear and the unused plumbing adds hot-path complexity.
+- The RPC sender already defers a full primary send queue into a 256-entry
+  lock-free overflow queue and drains it first on writable events. Only when
+  both queues are full does it return `SendQueueFull`. KV currently
+  invalidates the selected connection generation for that terminal pressure
+  result even though the connection remains healthy, turning extreme bursts
+  into reconnect churn.
+- Transport failures and outer RPC deadlines collapse into
+  `PxReplicaError::Internal`, preventing callers and metrics from
+  distinguishing backpressure, timeout, and connection failure.
+- The Chosen RPC integration test checks `accepted_at` after Accept already
+  populated it, so it does not prove that Chosen advances the learner.
+- Migration-era comments, broad `dead_code` allowances, duplicate server
+  state, and stale port/stream descriptions obscure the runtime ownership
+  model.
 
-- **Paxos accept under concurrency**: 4 followers each submit accepts
-  to a leader over 2 connections (2T:1C). With legacy, the two threads on
-  each connection funnel through the h2 lock. With R104, each accept is
-  a framed message pushed to the per-connection MPSC queue — no
-  userspace lock. Expected: throughput recovers the ~17% loss; higher
-  thread:connection ratios scale linearly.
+These issues can affect retry behavior, overload behavior, failure diagnosis,
+and confidence in recovery. The root architecture is
+documented in `doc/design/kv/design-crowdb-kv.md`,
+`doc/design/kv/design-crowdb-kv-rpc.md`,
+`doc/design/kv/design-crowdb-kv-slot.md`, and
+`doc/design/kv/design-crowdb-kv-wal.md`.
 
-- **LearnerStream catch-up**: A follower catching up streams data from
-  the leader. The LearnerStream is a long-lived request-response
-  pattern. Under R104, it becomes a sequence of framed messages on a
-  persistent connection — no h2 stream management overhead. Expected:
-  identical catch-up semantics, lower per-message overhead.
+Concrete scenarios include:
 
-- **NotLeaderHint redirect**: A follower receives a request destined
-  for the leader, returns `NotLeaderHint`. Under R104, the error is a
-  flatbuffer response with the same `NotLeaderHint` payload. The
-  client's retry logic is unchanged. Expected: no contract change.
-
-- **Mixed workload**: Heartbeats and accepts share a connection. Under
-  legacy, heartbeats can be starved behind write backpressure (E5
-  reserves queue admission, not wire priority — tracked separately as
-  R53). Under R104, the lock-free queue does not starve heartbeats
-  behind accepts in the same way (both are cheap queue pushes).
-  Expected: reduced heartbeat starvation, though R53's separate-channel
-  mitigation is still the correctness fix.
+- A client times out and retries an ordinary write against the same leader.
+  The leader should suppress the immediate replay without consuming another
+  slot. If leadership changed, re-proposing Put/Delete/Batch is data-idempotent
+  and may be an acceptable simpler contract.
+- A peer's RPC send queue fills while the TCP connection remains healthy.
+  The caller must apply bounded backpressure without discarding the healthy
+  pool and reconnecting repeatedly.
+- A replica times out or disconnects during Prepare or Accept. The failed
+  connection generation must be invalidated, quorum progress must remain
+  bounded, and a later request must recover on a replacement connection.
+- A process restarts with accepted, chosen, and applied frontiers at different
+  points. WAL replay, gap recovery, and election must converge without serving
+  a stale linearizable read or losing an acknowledged mutation.
+- A store is created, restored, reconfigured, and shut down through the server
+  and management paths. RPC ownership, advertised endpoints, background
+  tasks, and persisted membership must agree throughout the lifecycle.
 
 **Solution**
 
-Migrate the KV consensus internal RPC from tonic/legacy to the R104
-`crowdb-rpc` library. The protocol semantics (request/response shapes,
-error codes, `NotLeaderHint`, LearnerStream) are preserved — only the
-transport changes. The existing `pxos.proto` is converted to a `.fbs`
-flatbuffer schema (full conversion — no prost bridge, consistent with
-R105/diskio and R115/diskdb; see Resolved Questions).
+Treat the gRPC replacement as completed history and perform a bounded,
+evidence-driven review and remediation of `lib/crowdb-kv` and
+`app/crowdb-kv-server`. Preserve the current `crowdb-rpc` architecture; do not
+restore a legacy transport or add compatibility switches.
 
-**One-line summary**: Replace legacy on the KV internal replica-to-
-replica path with the R104 flatbuffer RPC library, preserving protocol
-semantics and recovering the h2-lock throughput loss.
+Use risk-based disposition while reviewing:
 
-**Numbered work items**:
+- Fix a finding directly when the change is local, its intended semantics are
+  already established, it does not introduce a lock or alter a protocol /
+  durability contract, and a focused regression test can prove it.
+- Record a finding as a task when it spans components, requires fault or
+  performance evidence, or cannot be completed and verified as one small
+  coherent change.
+- Present design defects and alternatives for human agreement before changing
+  architecture. This includes retry ownership, metadata durability, RPC
+  isolation, acknowledgement semantics, and new synchronization.
+- Treat KV performance as a correctness-adjacent constraint. Flag allocation,
+  copying, lock contention, task fan-out, queueing, reconnect churn, cache-line
+  contention, blocking work, and extra WAL/RPC operations when found. Compare
+  performance only with the same CPU allocation, host, configuration, data,
+  and workload, and use stage latency/counters to explain a delta.
 
-1. **Flatbuffer schemas for consensus messages**
-   (`lib/crowdb-protocol/src/fbs/`) — convert the existing
-   `lib/crowdb-kv/src/rpc/proto/pxos.proto` (PxService + SnapshotService:
-   Prepare/Promise, Accept/Accepted, PreVote/RequestVote/Heartbeat/
-   StepDown, LearnerStream, StreamSnapshot, ChosenNotification,
-   FetchGap) to a `.fbs` schema. `NotLeaderHint` is carried as fields
-   on the response tables (leader endpoint + term + membership epoch),
-   not a separate wrapper. Register message type IDs in the 1000–1099
-   sub-range of `msg_type.fbs` (consensus range; R117 takes 1100–1199
-   for the client-facing path). Follow R115's codegen layout: a new
-   `kv_consensus.fbs`, a `kv_consensus_generated` module in
-   `lib/crowdb-protocol/src/lib.rs` re-exported as
-   `pub mod kv_consensus_fb`, and `build.rs` updated to invoke
-   `flatc --gen-all`.
+The review preserves these invariants:
 
-2. **Server-side migration** (`app/crowdb-kv-server/src/`) — replace the
-   tonic `PxService` + `SnapshotService` servers with an R104
-   `RpcServer` handler. Follow R115's pattern
-   (`app/crowdb-diskdb/src/service/diskdb_rpc_service.rs`): a new
-   `px_rpc_service.rs` module that registers handlers keyed by
-   `FBMsgType` and dispatches to the existing consensus logic
-   (`ConsensusHandler`, `LearnerStreamHandler`,
-   `SnapshotStreamHandler`). The response is built with
-   `FlatBufferBuilder` + `submit_response`. The crowdb-rpc server runs
-   alongside the existing Axum HTTP management server (which stays on
-   HTTP) on a new consensus port (`KV_RPC_BASE` — inter-KV-server
-   only; R117 later adds a separate client-facing port for outside
-   services). The legacy server remains temporarily for the
-   client-facing surface until R117 migrates it. Wiring lands in
-   `startup.rs` (where the existing tonic services are bound today).
+- The selected request-replay contract is explicit. A cached result is never
+  published before its value is chosen, and conditional-write ambiguity is
+  returned as `OutcomeUnknown` for read reconciliation rather than hidden by
+  automatic replay.
+- Ballot, term, membership epoch, chosen, durable, and applied frontiers never
+  regress and are not conflated.
+- An acknowledged write satisfies the configured durability contract before
+  success is returned.
+- Backpressure is bounded and does not masquerade as connection failure.
+  Actual connection failure invalidates only the generation used by the
+  failed request.
+- No blocking storage operation or contended lock is introduced into a hot
+  async/RPC path. Any existing hot-path lock retained by the review has a
+  documented owner, critical section, and measurement-based justification.
+- Startup, reconfiguration, recovery, and shutdown have one clear owner for
+  each RPC server and background task and remain idempotent.
+- Status and metrics distinguish queue pressure, in-flight work, transport
+  failure, consensus delay, WAL delay, and apply delay without inventing
+  unsupported queue semantics.
 
-3. **Client-side migration** (`lib/crowdb-kv/src/rpc/` +
-   `lib/crowdb-kv/src/cluster/learner_stream.rs`) — replace the tonic
-   `PxServiceClient` with an R104 `RpcClient` + connection pool. The
-   existing `lib/crowdb-kv/src/rpc/px_service.rs`,
-   `snapshot_service.rs`, `kv_response.rs`, and
-   `lib/crowdb-kv/src/cluster/learner_stream.rs` are the rewrite sites.
-   `NotLeaderHint` is parsed from the flatbuffer response (via the
-   zero-copy wrapper from work item 6) and fed into the existing
-   retry logic (`crowdb-kv-client` retry + topology cache). The
-   `LearnerStream` client becomes a persistent R104 connection with
-   pipelined unary `call()`s: `Accept`/`Heartbeat`/`FetchGap` are
-   request→response `call()`s with per-request correlation IDs;
-   `ChosenNotification`/`BatchChosenNotification` are fire-and-forget
-   sends (no response awaited, matching the current `reply_tx: None`
-   path). The `StreamSnapshot` client becomes an R114 server-streaming
-   `Stream` (one `SnapshotRequest`, many `SnapshotStreamItem`
-   responses). Follow R115's `DiskdbRpcTransport` structure
-   (`lib/crowdb-diskdb-client/src/rpc_transport.rs`): shared `RpcServer`
-   (connection owner) + `RpcClient` (completion pool) +
-   `DashMap<endpoint, Connection>` per-peer pool.
+Numbered work items:
 
-4. **Error model parity** (`lib/crowdb-kv/src/rpc/`) — map R104
-   transport errors to the existing KV error variants
-   (`NotLeaderHint`, `Unavailable`, `Timeout`). Reuse R115's
-   `RpcError::is_retryable()` helper
-   (`lib/crowdb-rpc/ffi/src/server.rs`): `ConnectionClosed`/`Timeout`/
-   `SendQueueFull`/`ConnectionError` are retryable;
-   `RegistrationFailed`/`AllDown`/`InvalidArg` are not. The client
-   retry logic must treat R104 errors the same as the equivalent
-   legacy status codes. `NotLeaderHint` is a protocol-level error
-   (carried in the response body as response fields, not a transport
-   error) — unchanged.
+1. **Consensus and request-replay correctness** — replace ambiguous `dedup`
+   terminology with request identity/result-cache terminology and define the
+   minimum required replay boundary. The selected low-complexity contract is
+   a bounded, leader-local, in-memory cache for immediate ordinary-write
+   retries. Leader change/restart may re-propose data-idempotent Put/Delete/
+   Batch; ambiguous CAS remains `OutcomeUnknown` plus read reconciliation.
+   Remove follower/WAL tag plumbing if it is not required by the agreed
+   contract. Separately verify ballot, term, epoch, Chosen, and frontier fences.
 
-5. **Benchmark + regression** (`tools/bench-kv-rpc.sh`, new) — a
-   benchmark script that runs the 2T:1C read bench (`crowdb-cli bench
-   kv`) against both the legacy path (baseline) and the R104 path.
-   Verifies the ~17% loss is recovered. Also runs 1T:1C to verify no
-   regression at the uncontended point. Added to the regression
-   sentinel suite alongside `bench-kv-read-regression.sh` and
-   `bench-kv-write-regression.sh`. Prerequisite: capture the legacy
-   baseline before starting the migration (todo_fb.md §6 — the
-   baseline goes in `doc/design/rpc/rpc-migration-baselines.md`, new,
-   or extends `rpc-flow-analysis.md`). Note:
-   `tools/bench-rpc-regression.sh` is the RPC-echo sentinel (R104
-   transport only, no KV layer) — distinct from this KV-path bench.
+2. **WAL, recovery, and acknowledgement contract** — trace a mutation from
+   admission through local/remote Accept, WAL persistence, chosen publication,
+   engine apply, snapshot, replay, and garbage collection. Fix any path where
+   acknowledgement can outrun its configured durability guarantee, replay can
+   reconstruct a different frontier, or a failure can strand progress.
 
-6. **Zero-copy wrapper classes** (`lib/crowdb-protocol/src/
-   fb_wrappers/kv_consensus.rs`, new) — define `FB<Type>Ref` wrappers
-   for the consensus response types (`FBPromiseResponseRef`,
-   `FBAcceptedResponseRef`, `FBHeartbeatResponseRef`,
-   `FBFetchGapResponseRef`, `FBLearnerStreamResponseRef`). Each
-   wrapper holds a `&[u8]` reference to the control buffer, parses
-   the root on construction, and exposes typed accessor methods that
-   read through the root pointer — no per-field copy, no owned
-   intermediate struct. Includes `NotLeaderHint` accessors (leader
-   endpoint + term + membership epoch) on response wrappers. Follows
-   `design-crowdb-rpc.md` §6.1 pattern. This is the design-doc-correct
-   approach that R115 deferred (R115 parses into owned proto types —
-   follow-up tasks tracked in todo_fb.md to fix R115's gaps). R32
-   implements it properly because the Paxos hot path is the
-   perf-critical path where per-response allocation would partially
-   offset the h2-lock recovery.
+3. **RPC transport and overload behavior** — review connection-pool
+   generation handling, request deadlines, queue saturation, fire-and-forget
+   completion, malformed frames, snapshot transfer, and retry ownership.
+   Keep the existing primary plus overflow queues and writable-event drain.
+   Preserve healthy connections on terminal `SendQueueFull`; invalidate failed
+   generations only on connection errors. KV-server-to-KV-server sends own
+   bounded deferred retry until success, deadline, or connection failure, so
+   an accepted internal message is not silently lost. Expose distinct
+   transport outcomes to callers and metrics.
+   Remove avoidable payload and metadata copies on measured hot paths.
 
-7. **Server→client send FFI helper** (`lib/crowdb-rpc/ffi/src/`) —
-   resolve the R114 open issue: `RpcClient::send()` takes
-   `&Connection`, but a server-side handler only has the raw
-   `conn_handle` from `ServerRequest`. Add a
-   `Connection::from_handle(raw_conn_handle)` constructor in
-   `lib/crowdb-rpc/ffi/src/server.rs` — `Connection` is already a
-   trivial wrapper around `sys::crowdb_rpc_conn_t` with a no-op `Drop`
-   (the transport owns the connection), so constructing one from the
-   raw pointer is safe and lets a server-side handler call
-   `RpcClient::call()`/`send()`. R32 itself does not
-   need this (LearnerStream's server side only sends responses via
-   `submit_response`), but R117's WatchNotify (server pushes
-   notifications to the client) does. R32 resolves it to unblock R117
-   rather than leaving it as an R114 carry-over. Also unblocks the
-   R114 E2E test gap (the `client_handler_dispatch_via_server_chain`
-   test that was dropped).
+4. **Concurrency and hot-path review** — inventory locks, atomics, channels,
+   semaphores, spawned tasks, and blocking calls in proposal, read, apply, WAL,
+   RPC, watch, and status paths. Check ordering, cancellation, lost-wakeup,
+   starvation, and shutdown behavior. Replace or narrow a lock only when the
+   call path and contention evidence justify it; any newly required lock is a
+   separate human decision under the repository rules.
 
-**Flow diagram**:
+5. **Server lifecycle, recovery, and management review** — review
+   `crowdb-kv-server` startup, port advertisement, store/group creation,
+   persisted topology reconciliation, dynamic membership, background
+   monitors, operation tracking, and graceful shutdown together with
+   `PxKvStore` ownership. Consolidate obsolete migration-era state and ensure
+   runtime-created and restored stores receive identical configuration and
+   RPC wiring.
 
-```
-                          Before (legacy)                          After (R104)
-                          ─────────────                          ────────────
+   Consensus and client RPC continue sharing the same `RpcServer` and worker
+   pool. Review queue fairness and handler latency within that architecture;
+   do not split listeners or dedicate separate worker pools.
 
-Follower A ─┐                       Follower A ─┐
-Follower B ─┼─► tonic Client ──►    Follower B ─┼─► RpcClient ──► MPSC queue
-Follower C ─┤    (h2 lock)          Follower C ─┤    (no lock)       │
-Follower D ─┘                       Follower D ─┘                    │
-                                                                     ▼
-                                                              Writer task
-                                                              writev() ──► TCP
-                                                                     │
-                                                                     ▼
-                                                              Server reader
-                                                              dispatch by type
-                                                              ConsensusHandler
-```
+6. **Observability and operational contract** — verify that existing status,
+   counters, and latency histograms cover admission, consensus, RPC,
+   persistence, apply, recovery, and maintenance with unambiguous names and
+   units. Add only counters needed to diagnose a confirmed blind spot and keep
+   collection off critical sections.
 
-**Edge cases at a glance**:
+7. **Focused regression coverage** — strengthen tests at the boundary where
+   each confirmed defect occurred rather than duplicating implementation
+   tests. Include real three-replica RPC paths for failover and recovery,
+   deterministic fault injection for timeout/backpressure/connection loss,
+   and lifecycle tests for create/restore/reconfigure/shutdown.
 
-- Connection to a removed replica → R104 reconnect fails; the replica
-  is removed from the connection pool via the membership change
-  callback. No retry to a dead endpoint.
-- `NotLeaderHint` with a stale leader hint → client's existing
-  topology-cache refresh handles this; no change.
-- LearnerStream mid-stream connection drop → R104 fails the in-flight
-  request; the learner reconnects and resumes from the last applied
-  slot. Same semantics as legacy stream reconnect.
-- Mixed legacy + R104 during rollout → both servers run simultaneously
-  during migration; clients switch via a config flag. After all
-  clients are migrated, the legacy server is removed.
-- Backpressure under burst → R104 `BackpressureError` maps to
-  `Unavailable`; the client retries on a different connection or
-  backs off. Same behavior as legacy `UNAVAILABLE`.
+8. **Cleanup and architecture reconciliation** — remove obsolete gRPC,
+   LearnerStream, port-offset, phase, and blanket-dead-code residue after the
+   relevant code is covered. Update permanent KV design documents only where
+   the implementation review confirms that the architecture has changed.
+   Record substantial out-of-scope discoveries as separate requirements
+   rather than expanding R32 indefinitely.
+
+   Snapshot streaming is split into R151. R32 records current single-frame
+   pressure evidence but does not duplicate the R151 implementation.
 
 **Dependencies**
 
-- **Depends on**: **R104** (flatbuffer RPC engine — finished) — uses
-  `crowdb-rpc` crate for framing, connection, pool, schedule.
-  **R114** (bidirectional request-response — finished) —
-  `StreamSnapshot` (server-streaming) uses R114's streaming
-  primitives. `LearnerStream` does NOT need R114 bidi — it is modeled
-  as pipelined unary `call()`s on a persistent connection (see
-  Resolved Questions). **R115** (diskdb migration — finished) is the
-  proof-of-pattern for the unary migration steps: `.fbs` schema +
-  `diskdb_rpc_service.rs` server handler + `DiskdbRpcTransport`
-  client + `is_retryable()` error mapping + port-offset mixed rollout.
-  R32 follows the same layout for the KV consensus path.
-- **Depended on by**: **R117** (KvService client-facing migration)
-  reuses the 1000s `msg_type` sub-range split, the `NotLeaderHint`
-  flatbuffer response-field model, and the zero-copy wrapper pattern
-  established here. R32's work item 7 (server→client send FFI helper)
-  unblocks R117's WatchNotify server-push path. R53 (heartbeat
-  channel) is separate and independent.
+- R104, R114, R115, R116, and R117 provide the current `crowdb-rpc` engine,
+  FFI, and service migration patterns and are treated as landed.
+- The review uses the current KV architecture documents and existing
+  regression scripts. It does not depend on reconstructing a gRPC baseline.
+- Changes inside `crowdb-rpc`, `crowdb-protocol`, or `crowdb-tree` are allowed
+  only when needed to repair a boundary used by KV; broader redesign becomes
+  a separate requirement.
+- Unrelated chunkdb, diskdb, diskio, and console work is out of scope except
+  where an integration test must exercise the public KV contract.
 
 **Acceptance**
 
-**Transport parity**:
-- A Paxos accept request over R104 produces the same consensus state
-  change as over legacy (same proposal accepted, same log entry
-  persisted). Integration test (run a 3-node cluster, submit accepts
-  via R104, verify log consistency).
-- `NotLeaderHint` response over R104 is parsed correctly by the
-  client → client redirects to the hinted leader. Integration test.
-- LearnerStream over R104: a follower joins, catches up via
-  LearnerStream, reaches `CaughtUp` state. Integration test.
+- Given an ordinary write that is chosen but whose response is retried against
+  the same leader with the same request identity, when the retry arrives, it
+  returns the original slot without another proposal/WAL entry. This proves
+  bounded request-replay suppression at the selected boundary.
+  Integration test.
 
-**Performance**:
-- 2T:1C read throughput over R104 is within 5% of the 1T:1C baseline
-  (i.e., the h2-lock loss is recovered). Benchmark test
-  (`tools/bench-kv-rpc.sh`, Linux only).
-- 1T:1C read throughput over R104 is within 5% of the legacy 1T:1C
-  baseline (no regression at the uncontended point). Benchmark test.
+- Given an ordinary write retry after leader change or restart, when the new
+  leader lacks the prior cache entry, re-proposal leaves the final key state
+  correct. Given an ambiguous conditional write, the client returns
+  `OutcomeUnknown` and does not automatically re-execute it. This proves the
+  simpler retry contract remains safe without replicated request metadata.
+  Integration test.
 
-**Error model**:
-- R104 `ConnectionError` → client retries on next connection (same as
-  legacy `UNAVAILABLE`). Integration test (kill a replica mid-call).
-- R104 `TimeoutError` → client returns `Timeout` to caller (same as
-  legacy deadline exceeded). Integration test.
-- R104 `BackpressureError` → client retries with backoff (same as
-  legacy `UNAVAILABLE` under load). Integration test.
+- Given an accepted entry on a follower, when a matching Chosen notification
+  arrives, its chosen frontier advances and the apply path makes the value
+  readable; without the notification or another convergence signal the same
+  assertion does not pass. This proves the test observes Chosen rather than
+  Accept. Integration test.
 
-**Mixed rollout**:
-- A cluster running both legacy and R104 servers: a legacy client can
-  still connect to the legacy server, an R104 client can connect to the
-  R104 server. Integration test (3-node cluster, 1 node on legacy, 2 on
-  R104, verify consensus works).
+- Given a live peer connection whose send queue is full, when consensus RPC
+  submission returns `SendQueueFull`, the same connection generation remains
+  cached, retry/backoff is bounded, and overload is reported distinctly from
+  a connection error. This proves backpressure does not trigger reconnect
+  churn. Unit test.
 
-**Test commands**: `pixi run cargo test -p crowdb-kv --test rpc_migration`
-(new test file), `pixi run tools/bench-kv-rpc.sh` (Linux),
-`pixi run cargo fmt --all -- --check`,
-`pixi run cargo clippy --all-targets -- -D warnings`.
+- Given a connection reset and a late failure from its old generation, when a
+  replacement connection is installed, the old completion cannot evict the
+  replacement and a subsequent RPC succeeds. This proves generation-safe
+  recovery. Integration test.
 
-**Resolved Questions**
+- Given a consensus RPC that exceeds its deadline, when the call completes,
+  the caller and metrics observe a timeout rather than an internal invariant
+  error, and no request remains indefinitely pending. This proves timeout
+  classification and bounded completion. Unit test.
 
-- **Schema conversion scope** — full `.fbs` conversion. R105 (diskio)
-  chose full `.fbs` conversion (`diskio_service.proto` is now
-  legacy/reserved); R115 (diskdb) and R116 (chunkdb) follow the same
-  approach. R32 converts `pxos.proto` to a `.fbs` schema in
-  `lib/crowdb-protocol/src/fbs/`. The prost-to-flatbuffer bridge is not
-  used — it would add a conversion step and a dual-schema maintenance
-  burden. The zero-copy wrapper convention (`design-crowdb-rpc.md` §6)
-  applies: `FB`-prefixed types, no owned intermediate structs, no
-  per-field copy.
-- **Streaming support** — R114 (bidirectional request-response) is
-  finished. `StreamSnapshot` (server-streaming) uses R114's streaming
-  primitive. `LearnerStream` does NOT need R114 bidi — see the
-  `LearnerStream` modeling decision below. R32 is unblocked.
-- **`.fbs` schema filename + module name** — `kv_consensus.fbs`,
-  re-exported as `pub mod kv_consensus_fb` (parallel to R117's
-  planned `kv_client.fbs` / `kv_client_fb`). R117's doc previously
-  referenced `kv_rpc.fbs` — updated to `kv_consensus.fbs` in R117's
-  Dependencies section.
-- **Zero-copy wrapper vs. R115's parse-into-owned pattern** —
-  zero-copy (option a). R32 defines true `FB<Type>Ref` wrappers in
-  `lib/crowdb-protocol/src/fb_wrappers/kv_consensus.rs` (work item 6).
-  R115's actual pattern (parse into owned proto types per call) is a
-  deferred gap — follow-up tasks tracked in todo_fb.md to retrofit
-  zero-copy wrappers onto R115's diskdb client transport. R32
-  implements it properly because the Paxos hot path is the
-  perf-critical path where per-response allocation would partially
-  offset the h2-lock recovery (the whole point of R32).
-- **R114 server→client send FFI gap** — resolved by R32 (work item
-  7). The fix is a `Connection::from_handle(raw_conn_handle)`
-  constructor in `lib/crowdb-rpc/ffi/src/server.rs`: `Connection` is
-  already a trivial wrapper around `sys::crowdb_rpc_conn_t` with a
-  no-op `Drop` (the transport owns the connection), so constructing
-  one from the raw `conn_handle` in `ServerRequest` is safe and lets
-  a server-side handler call `RpcClient::call()`/`send()`. R32
-  itself does not need it (confirmed: `LearnerStream`'s server side
-  only sends responses via `submit_response` — see code at
-  `lib/crowdb-kv/src/rpc/px_service.rs` L395-459, the server's
-  `learner_stream` handler only calls `tx.send(Ok(...))` in response
-  to inbound frames; `ChosenNotification`/`BatchChosenNotification`
-  get no reply at all). R32 resolves it to unblock R117's WatchNotify
-  (server pushes notifications to the client) and the R114 E2E test
-  gap (the dropped `client_handler_dispatch_via_server_chain` test).
-  Do not leave it as an R114 carry-over.
-- **`LearnerStream` modeling — R114 bidi vs. persistent-connection
-  request-response** — persistent-connection request-response. The
-  proto declares `LearnerStream` as bidi (`stream` request, `stream`
-  response), and semantically it is true bidi in the legacy sense (both
-  halves carry independently-framed messages). But the actual usage
-  is request→response over a long-lived connection: the leader is the
-  client (`PxLearnerStream` in `lib/crowdb-kv/src/cluster/
-  learner_stream.rs` opens the stream to the follower), the follower
-  is the server (only responds via `submit_response`).
-  `Accept`/`Heartbeat`/`FetchGap` are request→response `call()`s with
-  per-request correlation IDs; `ChosenNotification`/
-  `BatchChosenNotification` are fire-and-forget sends
-  (`reply_tx: None` in `OutboundCmd`). The server never initiates a
-  request to the client. The practical difference between "R114 bidi
-  `Stream`" and "pipelined unary `call()`s on a persistent
-  connection": the bidi `Stream` primitive maintains an
-  independently-initiated outbound channel (server can push unsolicited
-  frames); the persistent-connection unary model only has
-  client-initiated requests + server responses. Since the server never
-  initiates, the bidi primitive's extra machinery (independent
-  server→client send path, separate stream state machine) is unused
-  complexity. The persistent-connection unary model is simpler,
-  reuses R115's `RpcClient::call()` path directly, and still pays the
-  connection-setup cost once per leadership tenure (the original
-  rationale for the bidi stream). `StreamSnapshot` is genuinely
-  server-streaming (one `SnapshotRequest`, many `SnapshotStreamItem`
-  responses) — that one uses R114's server-streaming primitive.
-- **Mixed-rollout port scheme** — separate ports. R32 adds a
-  `KV_RPC_BASE` constant to `crowdb-protocol/src/ports.rs` for the
-  inter-KV-server consensus port (replica-to-replica Paxos). R117
-  later adds a separate client-facing port for outside services
-  (crowdb-kv-client, crowdb-diskio). Two crowdb-rpc servers in the same
-  `crowdb-kv-server` process, each on its own port, each with its own
-  `RpcServer` instance + handler map. Rationale: the consensus path
-  is internal-only (trusted peers, no client auth), the client-facing
-  path is exposed to outside services (different trust boundary,
-  different authz, different connection-pool sizing). Mixing them on
-  one port would couple their backpressure and security profiles.
+- Given an Accept request after the replay contract is applied, when it is
+  serialized and decoded, it carries no request-cache metadata that followers
+  do not consume, and it does not allocate an extra full payload-sized
+  temporary before the FlatBuffer copy. This proves wire simplicity and
+  removes identified hot-path overhead. Unit test.
+
+- Given WAL-backed writes followed by restart at each supported
+  acknowledgement mode, when replay and gap recovery finish, acknowledged
+  values, accepted/chosen/applied frontiers, and next-slot allocation match
+  the pre-crash durability contract. This proves recovery consistency.
+  Integration test.
+
+- Given a store created with an ephemeral listen port and another restored or
+  created through management, when peers are wired, each advertises and uses
+  the actual bound endpoint and the same effective runtime configuration.
+  This proves lifecycle wiring consistency. Integration test.
+
+- Given repeated start, stop, join, reconfiguration, and shutdown sequences,
+  when the server terminates, RPC servers and group background tasks have one
+  owner, stop idempotently, and leave no live task or listener. This proves
+  lifecycle ownership. Integration test.
+
+- Given focused read, write, mixed, coalesced, CAS, and recovery workloads on
+  the same host and CPU allocation, when the existing KV regression scripts
+  run before and after a confirmed hot-path change, throughput and latency
+  deltas are reported with RPC, consensus, WAL, and apply counters. Any
+  material regression is explained or fixed; no comparison to the removed
+  gRPC implementation is required. E2E test.
+
+- Given the completed review, all confirmed critical/high findings are fixed,
+  medium findings are fixed or split into an explicitly accepted follow-up,
+  and obsolete migration allowances/comments are removed. This proves R32 is
+  a bounded review rather than an open-ended cleanup item. Integration test.
+
+Exact verification commands:
+
+- `pixi run cargo test -p crowdb-kv`
+- `pixi run cargo test -p crowdb-kv-server`
+- `pixi run cargo fmt --all -- --check`
+- `pixi run cargo clippy -p crowdb-kv -p crowdb-kv-server --all-targets -- -D warnings`
+- `pixi run bash tools/bench-kv-read-regression.sh`
+- `pixi run bash tools/bench-kv-write-regression.sh`

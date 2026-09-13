@@ -1,102 +1,111 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-### R68: Large-Value Write Benchmark — Verify Maintenance-Loop Snapshot Stall Doesn't Cause Election Churn Under Write Load
+### R68: KV benchmark — Large-Value Write Snapshot Sentinel
 
-**Problem**: R67 fixed the 16 KiB scan error spike on Linux by wrapping
-the maintenance loop's `flush()`, `persist_snapshot()`, and
-`collect_garbage()` in `tokio::task::spawn_blocking` so they no longer
-hold the C++ `write_mutex_` on the async runtime and starve the election
-driver. The fix was verified **only on the scan path** — the
-`largeval_16k` config in `tools/bench-kv-scan-regression.sh` (100k × 16 KiB
-pre-populated values, 0 scan errors post-fix).
+**Problem**: R67 moved crowdb-tree flush, snapshot persistence, and sparse
+block compaction off Tokio worker threads in `group_maintenance::run_pass`.
+The regression evidence does not currently exercise the claimed large-value
+state. `tools/bench-kv-scan-regression.sh` preloads 64-byte values; its
+`largeval_16k` case changes only the scan command's expected value size and
+does not rewrite the stored data. The write sentinel likewise fixes
+`VALUE_SIZE=512` and has no case that builds a large snapshot while writes and
+election heartbeats are active.
 
-But the maintenance loop runs **identically under write load**. A
-write-heavy workload with large values accumulates live data at least as
-fast as the scan bench's pre-populate phase (writes are the source of
-the data the snapshot serializes), so it triggers the same
-`persist_snapshot` / `flush` / `collect_garbage` calls that stalled the
-election driver in R67. The write regression sentinel
-(`tools/bench-kv-write-regression.sh`) only exercises **512 B values**
-across 1T:1C → 256T:32C — there is **no large-value write config**, so
-the large-value write path is completely untested.
+The old requirement also asked for fields the benchmark does not emit:
+`put_errors`, `batch_write_errors`, `retries_exhausted`, and p999 latency are
+absent from `BenchResult`. More importantly, a zero-error run does not prove
+the maintenance path was exercised. With the E2E election profile, the
+time-triggered snapshot begins around nine seconds, so a ten-second run can
+finish before a large snapshot completes.
 
-If the R67 fix has a gap that only manifests under write load — e.g. a
-different code path that still holds `write_mutex_` synchronously, write
-backpressure interacting with the blocking pool, or the proposal/WAL
-path adding latency that compounds with the snapshot stall — it would
-surface as `NotLeader` **write** errors during election churn: the same
-symptom class as R67, just on writes instead of scans. The scan bench
-caught R67 because scans are acutely sensitive to leader changes (every
-in-flight scan returns `NotLeader` on leadership loss); writes may mask
-a brief stall differently (fewer in-flight ops per leader change, or the
-proposal path retries internally), so a dedicated write benchmark is
-needed to confirm the fix actually covers the write path.
+The result is a false-negative sentinel: it may be green without serializing
+large values at all. The relevant architecture and baseline are
+`doc/design/kv/design-crowdb-kv-wal.md`,
+`doc/design/tree/design-crowdb-tree-engine-snapshot-flow.md`, and
+`doc/design/kv/kv-write-flow-analysis.md`. The concrete failure scenario is a
+large snapshot monopolizing a C++ critical section or Tokio worker long enough
+for the 300–600 ms election timeout to fire, producing write errors or an
+election-count increase.
 
-**Hypothesis**: R67's fix is in the shared maintenance loop
-(`group_maintenance.rs::run_pass`), which is workload-agnostic. The
-write path should therefore be covered. This requirement verifies that
-hypothesis; if it holds, the bench becomes a regression sentinel. If it
-fails, the bench surfaces a real write-path correctness bug that needs
-its own RCA.
+**Solution**: Add a self-validating large-value write case that creates real
+16 KiB values, proves snapshot completion during the measurement window, and
+detects election churn.
 
-**Solution**: Add a `largeval_16k` config to
-`tools/bench-kv-write-regression.sh` mirroring the scan sentinel's
-large-value config, and verify 0 write errors across consecutive runs.
+1. Generalize `tools/bench-kv-write-regression.sh` so a case supplies its own
+   duration, keyspace, value size, and repetition count without changing the
+   existing 512-byte scaling cases. Add `largeval_16k` with 16 KiB values,
+   100,000-key space, 1 loader, 1 connection, the existing three-node
+   mem-block cluster shape, and a 15-second measured duration.
+2. Run the large-value case three times from clean group state in one selected
+   script invocation. Keep the same deployed cluster to exercise repeated
+   clean/restart-of-user-data behavior, but reset group data and metric
+   baselines before each repetition. Each run records total operations,
+   operations/s, avg/p50/p99 write latency, WAL append count, total errors,
+   correctness errors, completed snapshot count and maximum snapshot latency,
+   and election-count delta.
+3. Add explicit per-group maintenance snapshot metrics if current counters
+   cannot provide those fields: a completion count, success/failure result,
+   and latency summary updated around `persist_snapshot_blocking`. Extend the
+   write benchmark's server-metric collection only with the fields required by
+   this sentinel. Calculate per-run deltas so startup election and earlier
+   repetitions do not contaminate the assertion.
+4. Make the script fail when a repetition has any workload/correctness error,
+   no successful snapshot completion, a snapshot failure, or a positive
+   election-count delta after the pre-run baseline. Preserve complete CLI and
+   server logs as evidence. Do not weaken the workload, timeouts, or assertions
+   when a run fails; investigate the first divergence and file a separate fix
+   requirement if production code outside benchmark observability must change.
+5. Record the three reference runs, hardware/kernel identity, workload shape,
+   snapshot evidence, and result interpretation in
+   `doc/design/kv/kv-write-flow-analysis.md`. Keep raw TSV output in the
+   benchmark log directory rather than committing transient run files.
 
-1. **Bench config** — `--workload write --value-size 16384`, 100k key
-   space, 10s mem mode, 3-node cluster. Start at 1T:1C (isolate
-   per-write cost and the maintenance-loop interaction, matching the
-   scan sentinel's `largeval_16k` shape). Add a higher-thread config
-   (e.g. 32T:32C) only if 1T:1C is clean and a throughput ceiling is
-   worth recording.
-2. **Error budget** — the config must show **0 `total_errors`** (0
-   `put_errors` / `batch_write_errors`, 0 `retries_exhausted`) across
-   **3 consecutive runs** on Linux, matching R67's acceptance bar. If
-   errors appear, do **not** tune the bench to hide them — RCA into
-   whether the R67 fix has a write-path gap and file a follow-up
-   requirement with the evidence.
-3. **Reference results** — record ops/s, avg/p50/p99/p999 latency,
-   `wal_append_count`, and errors in the script's reference block with
-   the CPU model (absolute write throughput is platform-dependent, same
-   caveat as the existing 512 B configs).
-4. **Documentation** — the script header references
-   `doc/design/kv/kv-write-flow-analysis.md` for the benchmark section,
-   but that file does not yet cover large-value results. Either add a
-   large-value results section there, or record the results in the
-   script's reference block only (decide during implementation; the scan
-   sentinel uses `doc/design/kv/kv-scan-flow-analysis.md`, so the
-   parallel `kv-write-flow-analysis.md` is the consistent choice).
+Changing election timeouts, changing snapshot thresholds globally, fixing a
+newly discovered maintenance/write bug, adding p999 to the shared benchmark
+schema, and modifying the existing scan sentinel are not part of this
+requirement.
 
-**Scope** (expected changed files):
-- `tools/bench-kv-write-regression.sh` — add `largeval_16k` config(s);
-  record reference results in the reference block.
-- `doc/design/kv/kv-write-flow-analysis.md` — add a large-value
-  results section (if chosen) documenting the large-value write
-  results and CPU model.
-- No `crowdb-kv` / `crowdb-cli` code changes expected unless the bench
-  surfaces a real write-path stall, in which case scope expands to the
-  RCA fix and a follow-up requirement.
+**Dependencies**:
 
-**Complexity**: Low. Adding a bench config and running it 3×. If a real
-bug surfaces, complexity escalates to whatever the RCA demands (R67 was
-Low too — the fix itself was small, the RCA was the work).
-
-**Dependencies**: None. R67 is Done; this verifies its coverage extends
-to the write path. Independent of R66 (WAL io_uring) — the large-value
-write bench uses the existing `File` I/O backend.
+- R67's landed `spawn_blocking` maintenance changes are the behavior under
+  verification.
+- The E2E election profile must retain a deterministic snapshot trigger inside
+  the 15-second case. If profile defaults change before implementation, the
+  benchmark must set case-local maintenance thresholds rather than lengthen or
+  weaken the election timeout.
+- R66 is independent: this case continues to use mem-block WAL and KV backends
+  to isolate maintenance scheduling from physical disk latency.
 
 **Acceptance**:
-- `tools/bench-kv-write-regression.sh` includes a `largeval_16k` config
-  (`--value-size 16384`, 100k key space, 10s mem mode).
-- The config runs with **0 errors** across **3 consecutive runs** on
-  Linux (0 `total_errors`, 0 `retries_exhausted`).
-- Reference results (ops/s, latency percentiles, `wal_append_count`,
-  errors) recorded with the CPU model.
-- If errors appear: a follow-up requirement is filed with the RCA
-  evidence (server logs, `snapshot.apply.l` metrics, leader-change
-  count), and this requirement is kept open until the write-path gap is
-  fixed and the bench runs clean.
-- `cargo fmt --check` and `cargo clippy -- -D warnings` clean (only
-  relevant if any code change is needed; the bench script itself is not
-  linted by cargo).
+
+- Setup the large-value case and inspect the emitted command; run one
+  repetition; assert every write uses a 16,384-byte value, the keyspace is
+  100,000, the duration is 15 seconds, and existing cases retain their prior
+  defaults. Invariant: case-local parameters cannot leak between sentinel
+  configurations. Integration test.
+- Setup one clean three-node group with snapshot metrics baselined; run the
+  large-value workload; assert at least one successful snapshot completed in
+  the measured interval and its latency was recorded. Invariant: a green case
+  actually exercises large-value snapshot persistence. E2E test.
+- Setup the scripted three-repetition selection; run it; assert each row has
+  zero total and correctness errors, zero election delta, at least one
+  successful snapshot, and no snapshot failure, or that the script exits
+  nonzero while retaining evidence. Invariant: election churn and missing
+  coverage cannot pass silently. E2E test.
+- Setup synthetic benchmark JSON/metric snapshots with an error, election
+  increase, missing snapshot, and snapshot failure in turn; parse each; assert
+  every invalid result fails and a valid result passes. Invariant: the sentinel
+  enforces its contract independently of live-cluster variance. Unit test.
+- Setup a completed reference run on Linux; update the flow analysis; assert it
+  records hardware/kernel, all three measurements, snapshot evidence, and the
+  exact workload. Invariant: future comparisons have reproducible context.
+  E2E test.
+
+Verification commands:
+
+- `pixi run test-kv-core`
+- `pixi run -- cargo test -p crowdb-cli --all-targets`
+- `KV_WRITE_BENCH_CASES=largeval_16k pixi run -- bash tools/bench-kv-write-regression.sh`
+- `pixi run -- cargo fmt --all --check`
+- `pixi run rs-lint`

@@ -228,20 +228,35 @@ async fn main() {
             chunk_kv_range_balance: None,
         },
     };
-    match DomainMonitorClient::from_shared(Arc::clone(&kv_client))
-        .ensure(&monitor_request)
-        .await
-    {
-        Ok(EnsureDomainMonitorOutcome::Created | EnsureDomainMonitorOutcome::AlreadyExists) => {}
-        Ok(outcome) => {
-            error!(?outcome, "diskdb domain monitor registration rejected");
-            return;
+    // Domain monitor registration is retried in the background so the
+    // diskdb can start serving even when the KV server (group-0) is not
+    // yet ready — common during a cluster-wide restart where the diskdb
+    // and kv-server come up concurrently. The keepalive tick already
+    // tolerates group-0 unavailability, so the only startup dependency
+    // is this registration, which we detach as a retry loop.
+    let monitor_kv = Arc::clone(&kv_client);
+    tokio::spawn(async move {
+        let client = DomainMonitorClient::from_shared(monitor_kv);
+        let backoffs = [1u64, 2, 4, 8, 15, 30];
+        for (attempt, delay) in backoffs.iter().cycle().enumerate() {
+            match client.ensure(&monitor_request).await {
+                Ok(EnsureDomainMonitorOutcome::Created | EnsureDomainMonitorOutcome::AlreadyExists) => {
+                    info!(attempt, "diskdb domain monitor registered");
+                    return;
+                }
+                Ok(outcome) => {
+                    warn!(
+                        ?outcome,
+                        attempt, "diskdb domain monitor registration rejected; retrying"
+                    );
+                }
+                Err(error) => {
+                    warn!(%error, attempt, "diskdb domain monitor registration failed; retrying");
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(*delay)).await;
         }
-        Err(error) => {
-            error!(%error, "diskdb domain monitor registration failed");
-            return;
-        }
-    }
+    });
     // Register diskdb metrics (§11: `zone.allocate.retry.cms.bit`,
     // `disk.bad.impacted_blocks`). The CAS retry counter is attached
     // to each `Zone` during disk-add init so the allocate path can

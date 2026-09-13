@@ -1404,7 +1404,7 @@ TEST(ChunkPageStore, PadsPackTailWithoutChangingLogicalChecksum)
             .pack_bytes      = 16U * 1024U,
             .max_chunk_bytes = 64U * 1024U,
             .page_alignment  = 64U * 1024U,
-            .iu_size         = 64U * 1024U,
+            .iu_size         = 4096,
         },
         catalog, transport);
     std::vector<uint8_t> bytes(8196, 4);

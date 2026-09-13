@@ -1,94 +1,132 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-### R79: diskdb — Free Batch (Size-Threshold Grouping, No Timer)
+### R79: diskdb — Durable Concurrent-Free Coalescing
 
-**Problem**: R72 implements free as an immediate write — each free
-deletes the `BusyBlockKey` and writes one `FreeBlockValue` to the
-bound data group via one `batch_write` (per the record model in §3.4/§7:
-on free, `BusyBlockKey` is deleted and `FreeBlockValue` carrying
-`previous_owner` is written). This is simple and correct, but under
-high-free-throughput workloads (mass delete, object store teardown,
-chunk GC) each free is one KV round-trip, which limits free throughput.
+**Problem**: Current diskdb already batches all distinct segments in one
+`FreeBlocks` RPC into one `DdbKvClient::persist_free_batch` call. The remaining
+round-trip overhead is across concurrent RPCs, not within a request. The old
+requirement predates the persist-only free model and incorrectly says free
+clears the bitmap and deletes `BusyBlockKey`; current code only writes immutable,
+incarnation-qualified `FreeBlockKey` facts and increments the in-memory
+compaction backlog after persistence.
 
-The design doc (§8) originally specified a timer-based `FreeBatch`
-(default 500 ms flush). A timer-based flush has two drawbacks:
+The proposed minimum-size buffer was unsafe at the API boundary. It returned
+success before a free fact was durable, allowed a sub-threshold tail to remain
+forever because there was no timer, and re-enqueued failed writes behind an
+already successful response. A crash would not create scanner-repairable
+drift: both the busy record and conservative bitmap would still say busy, so
+the intended free would be indistinguishable from a live allocation and could
+leak permanently. Graceful shutdown cannot repair an acknowledgement already
+observed by a caller.
 
-- **Ghost-allocation window** — a crash between the local bitmap clear
-  and the batch flush leaves the block appearing busy in KV but free
-  in memory. The §12 scanner reconciles this, but it is a correctness
-  wart.
-- **Background task complexity** — a timer-driven flush loop is a
-  separate background task with its own lifecycle, error handling, and
-  shutdown ordering.
+It also proposed a `Mutex<Vec<_>>` on the hot free path, conflicting with the
+repository lock-free hot-path rule. The current configuration fields already
+exist but are unused and describe `free_flush_max_batch` as a minimum trigger.
+The root free and compaction contract is
+`doc/design/diskdb/design-crowdb-diskdb-zone-management.md` §4 and the summary
+in `doc/design/diskdb/design-crowdb-diskdb.md`.
 
-**Solution**: Add a **size-threshold** free batch — group frees into a
-batch and flush via one `batch_write` when the batch reaches a
-configurable size. **No timer.** The flush is synchronous on the free
-path, not a background loop.
+Concrete workloads are mass object deletion and chunk GC issuing many
+simultaneous `FreeBlocks` RPCs to the same bound data group. The optimization
+must reduce their KV proposals without weakening “successful response means
+all requested free facts are durable.”
 
-1. **`FreeBatch`** — create `app/crowdb-diskdb/src/persistence/free_batch.rs`:
+**Solution**: Opportunistically coalesce concurrently queued free RPCs into
+bounded KV batches. Flush immediately under a single lock-free drainer; use no
+timer and never acknowledge buffered state.
 
-   - `FreeBatch` — `inner: Mutex<Vec<FreeEntry>>` where `FreeEntry`
-     is `{ disk_id, zone_idx, unit_offset, unit_count,
-     previous_owner }`. `append(entry)`, `drain() -> Vec<FreeEntry>`,
-     `re_enqueue(items)`, `len()`, `is_empty()`.
-   - **No background flush loop.** No `FreeFlushLoop`, no
-     `tokio::spawn`, no `sleep(interval)`.
+1. Add a `FreeBatch` service component backed by a lock-free MPSC queue, an
+   atomic drainer-ownership flag, and per-request completion channels. A queued
+   request retains its disk group, bind, deduplicated segment/free records, and
+   completion sender. No mutex is acquired on enqueue, drain ownership, or
+   completion.
+2. Interpret `free_flush_max_batch` as the maximum number of free-record
+   operations in one KV proposal, not a minimum wait threshold. The caller
+   that wins the drainer CAS immediately removes queued work. It groups only
+   requests with the same current bind, preserves each request as an atomic
+   unit, and stops before the maximum unless one request alone exceeds it; an
+   oversized request is persisted alone rather than split.
+3. While one KV write is in flight, later RPCs accumulate naturally. The
+   drainer loops over that backlog without sleeping, then releases ownership
+   with a lost-wakeup-safe empty-check/CAS handoff. At low concurrency the
+   first request flushes immediately, so no request waits for a future free.
+4. Resolve every request in a successful combined proposal only after
+   `persist_free_batch` succeeds. Then, and only then, remove matching
+   tentative allocations, increment each zone's
+   `uncompacted_free_record_count`, and record disk/free metrics exactly once
+   per distinct segment. On KV error, resolve every covered request with the
+   error and do not mutate in-memory accounting or silently re-enqueue it;
+   caller retry remains idempotent because free facts are incarnation-qualified.
+5. When `free_batch_enabled` is false, retain the current direct request-level
+   batch path. A dynamic transition affects new submissions only; already
+   queued work completes under its captured policy. Rename configuration
+   comments and user-facing documentation to the maximum-batch semantics while
+   retaining the existing field names and defaults for config compatibility.
+6. During shutdown, close admission before stopping RPC/runtime services,
+   reject new submissions, and await the active drainer and queued request
+   completions. Shutdown does not provide missing durability—the normal
+   response contract already does—but it prevents accepted requests from being
+   abandoned during orderly service termination.
+7. Add counters for input requests/records, output KV batches/records,
+   coalescing ratio, queue depth, oversize requests, failures, and drain
+   latency. Add deterministic concurrency, failure, dynamic-config, and
+   shutdown tests plus a diskdb benchmark case that demonstrates fewer KV
+   proposals under concurrent frees.
 
-2. **Free path** — update `app/crowdb-diskdb/src/persistence/free.rs`
-   (from R72):
+Timer-based delay, success-before-persist, bitmap clearing on free, deleting
+busy records on free, cross-bind atomicity, splitting one RPC across proposals,
+and changing compaction semantics are not part of this requirement.
 
-   - `free_block(node, segment, free_batch, journal) -> Result<()>`:
-     a. `node.free_block(segment)` — clear bitmap locally (per-bit
-        CAS clear).
-     b. `free_batch.append(FreeEntry { ... })`.
-     c. If `free_batch.len() >= free_flush_max_batch` (default 256):
-        `drain()` the batch, group by `dg_id`, and for each affected
-        data group `await journal.persist_free_batch(...)` (deletes
-        each `BusyBlockKey` and writes each `FreeBlockValue` per the
-        record model in §3.4/§7). On failure: `re_enqueue(items)` for
-        retry on the next free that hits the threshold.
-     d. Return `Ok(())` — if the threshold was not hit, the free is
-        buffered and will flush on a later free that hits the
-        threshold.
+**Dependencies**:
 
-3. **Graceful shutdown** — update `app/crowdb-diskdb/src/main.rs`:
+- The landed persist-only free path, incarnation-qualified `FreeBlockKey`, and
+  `DdbKvClient::persist_free_batch` are required.
+- The existing `free_batch_enabled` and `free_flush_max_batch` fields are
+  reused with corrected semantics. No config migration is required because the
+  feature defaults off and has not been implemented.
+- Compaction remains the only bitmap clearer. If a disk group's bind changes
+  after enqueue, persistence uses the captured bind and normal KV/routing error
+  handling returns failure; a batch never mixes old and new binds.
 
-   - On graceful shutdown, drain and flush the `FreeBatch` before
-     exit (one final `batch_write` per affected data group). This
-     prevents ghost allocations on restart.
-   - On ungraceful shutdown, unflushed frees are left for the §12
-     ghost-allocation scanner to reconcile (the block appears busy in
-     KV but is free in memory; the scanner detects and corrects).
+**Acceptance**:
 
-4. **Configuration** — add to the diskdb config:
+- Setup one free request below the configured maximum with batching enabled;
+  submit and await it without any later request; assert one KV batch is issued
+  immediately and success arrives only after persistence. Invariant: no timer
+  or minimum threshold can strand a request. Integration test.
+- Setup many concurrent requests for one bind while the first persistence is
+  held in flight; release it; assert subsequent requests are combined up to the
+  maximum, no request is split, every free fact is present once, and all
+  waiters resolve. Invariant: concurrent work coalesces with bounded proposal
+  size and no lost wakeup. Integration test.
+- Setup concurrent requests for different binds and one oversized request;
+  drain them; assert no proposal crosses a bind and the oversized request is
+  sent alone and atomically. Invariant: data-group and request atomicity are
+  preserved. Integration test.
+- Setup a failed or outcome-unknown KV batch; await covered requests; assert
+  all return failure, none is secretly re-enqueued, and tentative state,
+  backlog counters, and free metrics remain unchanged until an idempotent retry
+  succeeds. Invariant: in-memory effects follow durable persistence exactly
+  once. Integration test.
+- Setup batching disabled, then toggle it on and off during queued work; assert
+  direct mode matches current behavior and captured submissions finish without
+  loss or duplicate accounting. Invariant: dynamic configuration changes only
+  new admission. Integration test.
+- Setup queued and in-flight frees, begin graceful shutdown, and race new
+  submissions; assert admitted requests finish, new requests are rejected, and
+  shutdown returns with queue depth and in-flight count at zero. Invariant:
+  orderly lifecycle never abandons admitted work. Integration test.
+- Setup the concurrent-free benchmark with batching disabled and enabled;
+  assert both persist identical free facts with zero errors and enabled mode
+  reduces KV batch proposals, then record the coalescing ratio and latency.
+  Invariant: batching is an evidenced optimization with identical semantics.
+  E2E test.
 
-   - `free_batch_enabled` (default false) — toggle between immediate
-     free (R72 behavior) and size-threshold batching (this
-     requirement). Default false so R72's immediate-free behavior is
-     preserved unless explicitly enabled.
-   - `free_flush_max_batch` (default 256) — the size threshold that
-     triggers a flush.
+Verification commands:
 
-**Scope** (expected changed files):
-
-- `app/crowdb-diskdb/src/persistence/free_batch.rs` — `FreeBatch` struct.
-- `app/crowdb-diskdb/src/persistence/free.rs` — size-threshold flush on
-  the free path.
-- `app/crowdb-diskdb/src/main.rs` — graceful-shutdown drain + flush.
-- `app/crowdb-diskdb/src/config.rs` — `free_batch_enabled`,
-  `free_flush_max_batch`.
-
-**Dependencies**: R72 (free path, `DataGroupClient`).
-
-**Non-goals**:
-
-- **No timer-based flush.** The flush is triggered by batch size only,
-  not by a periodic timer. This avoids the ghost-allocation window
-  and the background-task complexity.
-- **No cross-group batching.** Each flush is one `batch_write` per
-  affected data group (frees within one disk-group batch together;
-  frees across disk-groups are separate batch_writes).
-- **Not in v1.** v1 ships with immediate free (R72). This requirement
-  is a follow-up for high-free-throughput workloads.
+- `pixi run test-diskdb`
+- `pixi run test-diskdb-client`
+- `pixi run -- bash tools/bench-diskdb-regression.sh`
+- `pixi run -- cargo fmt --all --check`
+- `pixi run rs-lint`

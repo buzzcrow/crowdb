@@ -475,7 +475,7 @@ impl DiskioClient {
             ) {
                 Ok(future) => future,
                 Err(error) => {
-                    let error = self.classify_wire(error, OperationKind::Read);
+                    let error = Self::classify_wire(error, OperationKind::Read);
                     if error.is_retryable_read() && attempt + 1 < self.config.retry_attempts {
                         self.prepare_retry(&route, options.lane, &selected, &mut backoff, options.deadline)
                             .await?;
@@ -534,7 +534,7 @@ impl DiskioClient {
             ) {
                 Ok(future) => future,
                 Err(error) => {
-                    let error = self.classify_wire(error, OperationKind::Write);
+                    let error = Self::classify_wire(error, OperationKind::Write);
                     only_backpressure &= matches!(error, DiskioError::Backpressure(_));
                     last_error = Some(error);
                     if attempt + 1 < self.config.retry_attempts {
@@ -792,7 +792,7 @@ impl DiskioClient {
             let future = match self.wire.fsync(&self.server, &selected, disk_id) {
                 Ok(future) => future,
                 Err(error) => {
-                    last_error = Some(self.classify_wire(error, OperationKind::Fsync));
+                    last_error = Some(Self::classify_wire(error, OperationKind::Fsync));
                     if attempt + 1 < self.config.retry_attempts {
                         if self
                             .prepare_retry(&route, options.lane, &selected, &mut backoff, options.deadline)
@@ -859,7 +859,7 @@ impl DiskioClient {
         .map_err(|_| DiskioError::DeadlineExceeded)?;
         result
             .map(|_| ())
-            .map_err(|error| self.classify_wire(error, operation))
+            .map_err(|error| Self::classify_wire(error, operation))
     }
 
     async fn await_read(
@@ -877,7 +877,7 @@ impl DiskioClient {
         )
         .await
         .map_err(|_| DiskioError::DeadlineExceeded)?
-        .map_err(|error| self.classify_wire(error, OperationKind::Read))?;
+        .map_err(|error| Self::classify_wire(error, OperationKind::Read))?;
         if code != DiskIoRetCode::Success {
             return Err(DiskioError::Protocol(format!("unexpected read result {code:?}")));
         }
@@ -891,7 +891,7 @@ impl DiskioClient {
         Ok(Bytes::from(data))
     }
 
-    fn classify_wire(&self, error: WireError, operation: OperationKind) -> DiskioError {
+    fn classify_wire(error: WireError, operation: OperationKind) -> DiskioError {
         match error {
             WireError::Rpc(RpcError::SendQueueFull) => {
                 DiskioError::Backpressure("RPC send queue is full".into())

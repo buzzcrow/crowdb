@@ -415,7 +415,10 @@ TEST(RangeRebuild, RetryAtomicallyReplacesAnAlreadyPublishedChunkChild)
         {.tree_id = 63, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1}, catalog, transport);
     child_options.page_store = &retry_child_store;
     ASSERT_TRUE(rebuild_range(source, KeyRange::unbounded(), child_options, &child).ok());
-    EXPECT_EQ(live_entries(*child), (std::map<std::string, std::string>{{"a", "first"}, {"b", "second"}}));
+    EXPECT_EQ(live_entries(*child), (std::map<std::string, std::string>{
+                                        {"a", "first" },
+                                        {"b", "second"}
+    }));
     const auto retry_manifest = catalog->load(63);
     ASSERT_NE(retry_manifest, nullptr);
     EXPECT_GT(retry_manifest->generation, first_manifest->generation);

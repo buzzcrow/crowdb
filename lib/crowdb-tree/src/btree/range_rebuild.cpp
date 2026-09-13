@@ -304,7 +304,7 @@ Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destinati
     std::vector<NativeFrame> source_frames;
     bool                     iteration_complete = false;
     bool                     all_contained      = local.subtrees_skipped == 0;
-    bool                     saw_source_frame = false;
+    bool                     saw_source_frame   = false;
     if (source.opt_.frame_bytes != destination_options.frame_bytes) {
         return Status::invalid_argument("range rebuild requires matching fixed frame sizes");
     }
@@ -315,7 +315,7 @@ Status rebuild_range(Crowdbtree &source, const KeyRange &range, Config destinati
             return native_status;
         }
         for (NativeFrame &frame : batch) {
-            saw_source_frame = true;
+            saw_source_frame     = true;
             const page_type type = frame_page_type(frame.frame.data());
             if (type == page_type::kLeafBase) {
                 LeafFrameView leaf(frame.frame.data(), static_cast<uint32_t>(frame.frame.size()));

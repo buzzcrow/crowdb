@@ -64,16 +64,24 @@ fn start_diskio(disks: &[DiskArg]) -> DiskioProcess {
 }
 
 async fn register_diskio(cluster: &KvCluster, diskio: &DiskioProcess) {
-    cluster
-        .make_service_registry_client()
-        .heartbeat_diskio(
-            INSTANCE_ID,
-            &format!("127.0.0.1:{}", diskio.port),
-            &[100, 101, 102],
-            &[],
-        )
-        .await
-        .expect("register block-backed diskio");
+    let endpoint = format!("127.0.0.1:{}", diskio.port);
+    let registry = cluster.make_service_registry_client();
+    for index in 0..3_u64 {
+        let rack_id = index + 1;
+        let node_id = index + 10;
+        let disk_group_id = index + 100;
+        registry
+            .heartbeat_diskio_at(
+                INSTANCE_ID + index,
+                &endpoint,
+                rack_id,
+                node_id,
+                &[disk_group_id],
+                &[],
+            )
+            .await
+            .expect("register block-backed diskio");
+    }
 }
 
 async fn seed_restart_hardware(hardware: &HardwareClient) {

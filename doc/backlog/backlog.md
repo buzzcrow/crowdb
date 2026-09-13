@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R151** — Bump this line in the same commit when adding a new item.
+**Next R number: R152** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -41,6 +41,15 @@ requirement is implemented.
 
 ### High Priority
 
+- **[R151](R151-kv-snapshot-streaming.md)** — resumable chunked KV snapshot
+  streaming — Area: kv / crowdb-tree / RPC — Replace the current whole-`Vec`,
+  single-frame, 64 MiB-limited snapshot install with a receiver-pulled stream
+  of bounded deterministic chunks. Expose crowdb-tree incremental export /
+  import through Rust RAII, resume after reconnect from the last acknowledged
+  offset, activate atomically after integrity/fence checks, and select snapshot
+  streaming only for large gaps while retaining `FetchGap` for small tails.
+  Consensus and client traffic continue sharing one RPC server/worker pool.
+
 - **[R103](R103-chunkdb-range-migration.md)** — chunkdb range ownership
   migration — Area: chunkdb / kv — Implement the full
   `Copying`/`Cutover`/`Complete` migration flow for transferring chunkdb
@@ -58,13 +67,13 @@ requirement is implemented.
   operator-manual `BindMapValue` write with automatic monitoring +
   rebinding. Monitor detects instance join/leave, rebalances disk-group
   assignments, migrates data during rebinding.
-- **[R79](R79-diskdb-free-batch.md)** — diskdb free batch
-  (size-threshold, no timer) — Area: diskdb — Group frees into a
-  batch and flush via one `batch_write` when the batch reaches a
-  configurable size (default 256). No timer — the flush is
-  synchronous on the free path, not a background loop. v1 ships with
-  immediate free (R72); this is a follow-up for high-free-throughput
-  workloads.
+- **[R79](R79-diskdb-free-batch.md)** — durable concurrent-free
+  coalescing — Area: diskdb — The existing API already batches all segments in
+  one request. Opportunistically combine concurrent same-bind requests behind
+  one lock-free drainer, with `free_flush_max_batch` as a maximum proposal size.
+  Flush singleton traffic immediately, await persistence before every success,
+  and preserve persist-only free and post-persist accounting. No timer, mutex,
+  success-before-persist, or shutdown-only durability.
 - **[R80](R80-diskdb-rebalance.md)** — diskdb space rebalance across
   disks + disk-groups — Area: diskdb — New/recovered disks enter
   `allocating_disks` empty while peers stay near-full; the round-robin
@@ -92,20 +101,13 @@ requirement is implemented.
   optimization, not correctness — the safety-net poller covers missed
   notifies.
 
-- **[R66](R66-kv-wal-io-uring.md)** — WAL io_uring backend — eliminate
-  `spawn_blocking` on the durability path. The WAL's production I/O
-  backend (`File` / `BlockDevice`) routes `fdatasync` and file writes
-  through `tokio::fs` / `std::fs`, both of which use `spawn_blocking`
-  internally (thread hop + blocking pool saturation under burst load).
-  Add `IoBackend::Uring` variant that reuses `DiskIOUring` in
-  `crowdb-common` (already proven for B-tree page I/O) for WAL segment
-  I/O via `io_uring` SQE/CQE. Expose `DiskIOUring`'s submit API
-  (`submit_read`/`submit_write`/`submit_fsync`) via FFI as Rust async
-  functions. `WalFileInner::Uring` implements all `WalFile` operations
-  via `DiskIOUring` SQEs — no `spawn_blocking`, no thread hop.
-  Fallback to `File` on non-Linux / no-liburing. `O_DIRECT` aligned
-  writes. No `pipeline_writer` or `segment` API changes (drop-in async
-  fn replacement). Linux + liburing only; tests skip on other platforms.
+- **[R66](R66-kv-wal-io-uring.md)** — durable buffered-file WAL io_uring
+  backend — Area: kv / WAL / correctness — First replace the default `File`
+  backend's current no-op `fdatasync` with a real durability barrier. Then add
+  an explicitly selected Linux `Uring` backend using a standalone safe adapter
+  over `DiskIOUring` for vectored writes, reads, and sync completion. Retain
+  buffered arbitrary-offset WAL files and the portable default; defer
+  `O_DIRECT`, automatic selection, and sharing a tree-owned ring.
 
 ### Data Path (diskio + chunk object writers + read flow)
 
@@ -152,42 +154,26 @@ R32 depends on R115.
   rebuild. Triggered on move via watch/notify (R78) with a periodic
   safety net. Blocked on the chunkdb server component (unlanded) and
   R81 Part 2.
-- **[R32](R32-kv-custom-rust-rpc.md)** — KV consensus hot path →
-  `crowdb-rpc` — Area: kv / RPC — Migrate the internal replica-to-replica
-  Paxos path from the legacy tonic/h2 stack to the `crowdb-rpc` flatbuffer RPC library.
-  Recovers the ~17% h2-lock throughput loss at 2T:1C
-  (measured in `kv-read-flow-analysis.md`). Protocol semantics
-  preserved (same request/response shapes, `NotLeaderHint`, error
-  codes); only the transport changes. Depends on R104 (finished) +
-  R114 (finished — bidirectional request-response for LearnerStream +
-  StreamSnapshot). Management
-  API stays on Axum/HTTP. Open Question resolved: full `.fbs`
-  conversion (no prost bridge — the rejected approach), consistent with R105/diskio.
+- **[R32](R32-kv-custom-rust-rpc.md)** — KV server and core library review —
+  Area: kv / correctness / operations — The original gRPC-to-`crowdb-rpc`
+  migration is complete. Review and remediate the current `crowdb-kv` and
+  `crowdb-kv-server` boundaries across consensus/request replay, WAL/recovery, RPC
+  overload behavior, concurrency, lifecycle, observability, and focused
+  regression coverage. Obsolete mixed-gRPC rollout and unavailable legacy
+  benchmark requirements are intentionally retired.
 
 ### RPC Migration (legacy → crowdb-rpc)
 
-Dependency order: R115 → R116 (unary); R117 (streaming) depends on
-R114 (finished) + R32. R115 lands first to validate the
-migration pattern (schema, server, client, error mapping, mixed
-rollout) before the streaming services. All four items follow the
+Historical migration order: R115 → R116 (unary); R117 (streaming) followed
+R114 plus the original R32 consensus migration. R115 first validated the
+migration pattern (schema, server, client, and error mapping) before the
+streaming services. All four migrations follow the
 zero-copy wrapper convention (`design-crowdb-rpc.md` §6): `FB`-prefixed
 flatbuffer types, wrapper classes in `crowdb-protocol`, no owned
-intermediate structs, no per-field copy. All four items (R115 diskdb,
-R32 KV consensus, R117 KV client-facing, R116 chunkdb) are DONE.
+intermediate structs, no per-field copy. The four transport migrations (R115
+diskdb, the original R32 KV consensus scope, R117 KV client-facing, and R116
+chunkdb) are DONE. R32 now tracks the post-migration KV server/library review.
 
-- **[R68](R68-kv-write-largeval-bench.md)** — Large-value write
-  benchmark — Area: cluster / maintenance / bench — R67 fixed the 16 KiB
-  scan error spike by wrapping the maintenance loop's `flush` /
-  `persist_snapshot` / `collect_garbage` in `spawn_blocking`, but
-  verified it only on the scan path. The maintenance loop runs
-  identically under write load, yet the write regression sentinel
-  (`bench-kv-write-regression.sh`) only exercises 512 B values — there is
-  no large-value write config. Add a `largeval_16k` write config
-  (`--value-size 16384`, 100k keys, 10s mem mode) and verify 0 write
-  errors across 3 consecutive runs on Linux. If errors appear, RCA into
-  whether the R67 fix has a write-path gap and file a follow-up
-  requirement. Low complexity; verifies R67's coverage extends to
-  writes.
 - **[R33](R33-crowdb-tree-rename.md)** — Extract crowdb-tree to separate repo and rename — Area:
   workspace — Move `crowdbtree/` into its own git repository (preserving
   history), wire `crowdb-kv` to depend on `crowdb-tree-ffi` as an external
@@ -224,19 +210,12 @@ R32 KV consensus, R117 KV client-facing, R116 chunkdb) are DONE.
 - **[R4](R4-bounded-mempool.md)** — Bounded memory pool — Area: crowdbtree engine — `buffer::allocate` uses
   unbounded `std::malloc`; a burst of large writes can spike RSS without
   backpressure.
-- **[R52](R52-reverse-scan.md)** — Reverse scan — Area: scan / crowdb-tree
-  engine — `scan` is forward-only today (ascending key order). Reverse
-  scan (descending order, `start_before` instead of `start_after`) is a
-  distinct cost shape: the B+tree descent targets the leaf containing
-  `start_before`, the merge loop walks cursors backward, and the
-  `LeafChainCursor` needs a reverse seek/advance. The skip-list L0
-  cursor (R50) is forward-only — a reverse cursor would need
-  `prev()` links or a separate reverse traversal path. Client API:
-  `KvScanRequest` gains a `direction` field; the S3-style pagination
-  uses the first key of each page as the next `start_before`. Needs
-  its own scan perf baseline (reverse scans have different cache
-  behavior — backward leaf traversal touches pages in reverse
-  allocation order).
+- **[R52](R52-reverse-scan.md)** — reverse ordinary-KV scan — Area: scan /
+  crowdb-tree / kv — Native synchronous and chunk-KV reverse scans are already
+  landed. Complete direction on the ordinary KV async engine, FlatBuffer RPC,
+  server, and client pagination paths while retaining keys-only, count-only,
+  bounded cutoff, deadline, cold-page, redirect, and byte-budget semantics.
+  Existing public scan methods and omitted wire direction remain forward.
 - **[R54](R54-kv-scan-engine-profiling.md)** — Scan engine profiling —
   Area: scan / crowdb-tree engine — both read modes saturate near ~38k
   scans/s at 32T:32C; the bottleneck moved to the C++ crowdb-tree merge
@@ -259,19 +238,11 @@ R32 KV consensus, R117 KV client-facing, R116 chunkdb) are DONE.
   the reactor submission (small readahead window, default 1). Win is
   zero on mem-mode (leaves resident); needs a cold/disk bench config to
   validate. Medium complexity.
-- **[R68](R68-kv-write-largeval-bench.md)** — Large-value write
-  benchmark — Area: cluster / maintenance / bench — R67 fixed the 16 KiB
-  scan error spike by wrapping the maintenance loop's `flush` /
-  `persist_snapshot` / `collect_garbage` in `spawn_blocking`, but
-  verified it only on the scan path. The maintenance loop runs
-  identically under write load, yet the write regression sentinel
-  (`bench-kv-write-regression.sh`) only exercises 512 B values — there is
-  no large-value write config. Add a `largeval_16k` write config
-  (`--value-size 16384`, 100k keys, 10s mem mode) and verify 0 write
-  errors across 3 consecutive runs on Linux. If errors appear, RCA into
-  whether the R67 fix has a write-path gap and file a follow-up
-  requirement. Low complexity; verifies R67's coverage extends to
-  writes.
+- **[R68](R68-kv-write-largeval-bench.md)** — large-value write snapshot
+  sentinel — Area: cluster / maintenance / bench — Add a self-validating true
+  16 KiB write workload and require snapshot completion, zero errors, and zero
+  election churn across three clean repetitions. Record reproducible snapshot
+  and latency evidence; do not allow a run that missed maintenance to pass.
 ---
 
 ## Implementation Process
