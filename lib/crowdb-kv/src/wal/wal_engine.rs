@@ -450,6 +450,7 @@ impl WalEngine {
     pub fn backend_label(&self) -> &'static str {
         match self.backend.as_ref() {
             IoBackend::File => "file",
+            IoBackend::Uring(_) => "uring",
             IoBackend::MemBlock(_) => "mem",
             IoBackend::BlockDevice(_) => "block",
         }
@@ -490,7 +491,7 @@ impl WalEngine {
             IoBackend::MemBlock(dev) => Some(BlockDeviceSnapshot {
                 rmw_count: dev.rmw_count(),
             }),
-            IoBackend::File => None,
+            IoBackend::File | IoBackend::Uring(_) => None,
         }
     }
 

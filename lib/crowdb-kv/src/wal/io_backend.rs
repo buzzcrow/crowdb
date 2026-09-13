@@ -15,6 +15,7 @@ use tracing::info;
 
 use super::block_backend;
 use super::file_backend;
+use super::uring_backend;
 
 /// Chosen I/O backend for the process lifetime.
 ///
@@ -23,6 +24,8 @@ use super::file_backend;
 pub enum IoBackend {
     /// `tokio::fs` + `spawn_blocking` for fdatasync. Works everywhere.
     File,
+    /// Buffered regular files with data I/O and sync submitted through `io_uring`.
+    Uring(std::sync::Arc<crowdb_tree_ffi::Uring>),
     /// In-memory block device (test harness, error/corruption injection).
     MemBlock(block_backend::MemBlockDevice),
     /// Real file-backed block device (aligned I/O, configurable `O_DIRECT`).
@@ -33,6 +36,7 @@ impl fmt::Debug for IoBackend {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::File => write!(f, "File"),
+            Self::Uring(_) => write!(f, "Uring"),
             Self::MemBlock(_) => write!(f, "MemBlock"),
             Self::BlockDevice(_) => write!(f, "BlockDevice"),
         }
@@ -125,6 +129,14 @@ impl IoBackend {
         Self::BlockDevice(block_backend::BlockDevice::ssd())
     }
 
+    /// Explicit buffered-file `io_uring` backend.
+    ///
+    /// # Errors
+    /// Returns `Unsupported` when liburing or kernel ring setup is unavailable.
+    pub fn uring() -> io::Result<Self> {
+        crowdb_tree_ffi::Uring::new(256).map(Self::Uring)
+    }
+
     /// Returns `true` if the backend is `BlockDevice` or `MemBlock`
     /// (i.e. has block device counters worth exposing).
     #[must_use]
@@ -152,6 +164,12 @@ impl IoBackend {
                     inner: super::WalFileInner::File(f),
                 })
             }
+            Self::Uring(ring) => {
+                let f = uring_backend::UringBackendFile::open(ring, path.as_ref(), &opts)?;
+                Ok(super::WalFile {
+                    inner: super::WalFileInner::Uring(f),
+                })
+            }
             Self::MemBlock(disk) => {
                 let f = disk.open_segment(path.as_ref(), &opts)?;
                 Ok(super::WalFile {
@@ -173,7 +191,7 @@ impl IoBackend {
     /// Returns IO error if the rename fails.
     pub async fn rename(&self, from: impl AsRef<Path>, to: impl AsRef<Path>) -> io::Result<()> {
         match self {
-            Self::File => tokio::fs::rename(from, to).await,
+            Self::File | Self::Uring(_) => tokio::fs::rename(from, to).await,
             Self::MemBlock(disk) => disk.rename_segment(from.as_ref(), to.as_ref()),
             Self::BlockDevice(disk) => disk.rename_segment(from.as_ref(), to.as_ref()),
         }
@@ -185,7 +203,7 @@ impl IoBackend {
     /// Returns IO error if the file cannot be removed.
     pub async fn unlink(&self, path: impl AsRef<Path>) -> io::Result<()> {
         match self {
-            Self::File => tokio::fs::remove_file(path).await,
+            Self::File | Self::Uring(_) => tokio::fs::remove_file(path).await,
             Self::MemBlock(disk) => disk.unlink_segment(path.as_ref()),
             Self::BlockDevice(disk) => disk.unlink_segment(path.as_ref()),
         }
@@ -197,7 +215,7 @@ impl IoBackend {
     /// Returns IO error if the directory cannot be read.
     pub async fn read_dir(&self, path: impl AsRef<Path>) -> io::Result<Vec<PathBuf>> {
         match self {
-            Self::File => {
+            Self::File | Self::Uring(_) => {
                 let mut entries = Vec::new();
                 let mut rd = tokio::fs::read_dir(path).await?;
                 while let Some(e) = rd.next_entry().await? {
@@ -216,7 +234,7 @@ impl IoBackend {
     /// Returns IO error if the directory cannot be created.
     pub async fn create_dir_all(&self, path: impl AsRef<Path>) -> io::Result<()> {
         match self {
-            Self::File => tokio::fs::create_dir_all(path).await,
+            Self::File | Self::Uring(_) => tokio::fs::create_dir_all(path).await,
             Self::MemBlock(disk) => disk.create_layout(path.as_ref()),
             Self::BlockDevice(disk) => disk.create_layout(path.as_ref()),
         }
@@ -225,7 +243,7 @@ impl IoBackend {
     /// Check if a path exists.
     pub async fn exists(&self, path: impl AsRef<Path>) -> bool {
         match self {
-            Self::File => tokio::fs::try_exists(path).await.unwrap_or(false),
+            Self::File | Self::Uring(_) => tokio::fs::try_exists(path).await.unwrap_or(false),
             Self::MemBlock(disk) => disk.contains_path(path.as_ref()),
             Self::BlockDevice(disk) => disk.contains_path(path.as_ref()),
         }
@@ -244,7 +262,7 @@ impl IoBackend {
     pub async fn remove_dir_all(&self, path: impl AsRef<Path>) -> io::Result<()> {
         match self {
             Self::MemBlock(disk) => disk.remove_prefix(path.as_ref()),
-            Self::File | Self::BlockDevice(_) => tokio::fs::remove_dir_all(path).await,
+            Self::File | Self::Uring(_) | Self::BlockDevice(_) => tokio::fs::remove_dir_all(path).await,
         }
     }
 }

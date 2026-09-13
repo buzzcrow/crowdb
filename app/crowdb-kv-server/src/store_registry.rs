@@ -12,14 +12,14 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 /// Parse the `--wal-backend` CLI value (`clap`'s `value_parser` already
-/// restricts it to `["file", "mem-block", "block-device"]`) into the
+/// restricts it to `["file", "uring", "mem-block", "block-device"]`) into the
 /// WAL's [`IoBackend`].
-#[must_use]
-pub(crate) fn parse_wal_backend(s: &str) -> IoBackend {
+fn parse_wal_backend(s: &str) -> std::io::Result<IoBackend> {
     match s {
-        "mem-block" => IoBackend::mem_block(),
-        "block-device" => IoBackend::block_device(),
-        _ => IoBackend::File,
+        "uring" => IoBackend::uring(),
+        "mem-block" => Ok(IoBackend::mem_block()),
+        "block-device" => Ok(IoBackend::block_device()),
+        _ => Ok(IoBackend::File),
     }
 }
 
@@ -65,12 +65,31 @@ impl KvStoreRegistry {
         Self::with_config(CrowDBConfig::default())
     }
 
+    /// Construct a registry from an already validated configuration.
+    ///
+    /// # Panics
+    /// Panics when the configured backend cannot initialize. Startup code
+    /// should use [`Self::try_with_config`] to return an actionable error.
     #[must_use]
     pub fn with_config(config: CrowDBConfig) -> Self {
-        let wal_backend = Arc::new(parse_wal_backend(&config.wal_backend));
+        Self::try_with_config(config).expect("default WAL backend must initialize")
+    }
+
+    /// Construct a registry and validate the explicitly selected WAL backend.
+    ///
+    /// # Errors
+    /// Returns an actionable initialization error when `uring` was explicitly
+    /// selected but liburing or the running kernel cannot create a ring.
+    pub fn try_with_config(config: CrowDBConfig) -> std::io::Result<Self> {
+        let wal_backend = Arc::new(parse_wal_backend(&config.wal_backend).map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!("requested WAL backend '{}': {error}", config.wal_backend),
+            )
+        })?);
         let crowtree_backend = parse_crowtree_backend(&config.crowtree_backend);
         let rpc_workers = config.server.rpc_workers;
-        Self {
+        Ok(Self {
             stores: ArcSwap::from_pointee(HashMap::new()),
             wal_backend,
             crowtree_backend,
@@ -78,7 +97,7 @@ impl KvStoreRegistry {
             port_pool: Mutex::new(Vec::new()),
             metrics_registry: None,
             rpc_workers,
-        }
+        })
     }
 
     /// Builder-style setter for the metrics registry.

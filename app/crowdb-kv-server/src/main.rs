@@ -138,12 +138,12 @@ async fn main() {
         .unwrap_or_else(|e| panic!("invalid config after CLI overrides: {e}"));
 
     let registry = Arc::new(
-        KvStoreRegistry::with_config(config.clone()).with_metrics_registry(
-            metrics_runner.as_ref().map_or_else(
+        KvStoreRegistry::try_with_config(config.clone())
+            .unwrap_or_else(|error| panic!("failed to initialize WAL backend: {error}"))
+            .with_metrics_registry(metrics_runner.as_ref().map_or_else(
                 || Arc::new(std::sync::Mutex::new(crowdb_kv::metrics::MetricsRegistry::new())),
                 |r| r.registry().clone(),
-            ),
-        ),
+            )),
     );
 
     // Spawn a config file watcher for diff logging. Only when --config is
