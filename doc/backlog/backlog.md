@@ -15,30 +15,15 @@ complexity, and dependency. Before implementation, follow the
 
 ### Next Milestone — Chunk-backed range KV
 
-Dependency order: R143 builds on the completed R142 chunk-KV library; R145
-depends on R143. R144 is a deferred follow-up after R145 and after split and
-transfer are proven. R146 and R147 are deferred chunk lifecycle follow-ups,
-and R148 defers stream metadata scale-out and sealed-chunk EC until the R145
-production benchmark measures the mirror-only baseline. The milestone
-deliberately separates the embeddable KV library, server process, routed
-client, and physical chunk maintenance.
-- **[R143](R143-chunk-kv-server.md)** — `crowdb-chunk-kv-server` service —
-  Area: KV / server / group 0 — Add the standalone process, protocol/server
-  surface, range router, lifecycle, owner leases, failover/balance, and
-  service-requested group-0 monitor supervision around `crowdb-chunk-kv`. It
-  supports object-name to object-metadata workloads while keeping the
-  underlying KV API generic and the KV server free of service-library
-  dependencies.
+R144 is a deferred merge follow-up to the completed chunk-KV server and routed
+client split/transfer baseline. R146 and R147 are deferred chunk lifecycle
+follow-ups. R148 follows the now-measured mirror-only production baseline and
+keeps stream metadata scale-out and sealed-chunk EC disabled until that
+requirement is implemented.
 - **[R144](R144-chunk-kv-partition-merge.md)** — adjacent partition merge —
   Area: crowdb-tree / KV / server / group 0 — Deferred follow-up that composes
   two adjacent chunk-backed trees, fences both owners, reconciles their WAL
   sequences, and atomically replaces both parent ranges with one destination.
-- **[R145](R145-chunk-kv-routed-client.md)** — routed multi-partition
-  `crowdb-chunk-kv-client` — Area: KV / client / RPC / group 0 — Wrap the R143
-  RPC surface with catalog-aware point routing, durable client request
-  identities, multi-get, non-transactional batch mutation, multi-partition
-  forward/reverse scan, bounded retry, client-facing E2E coverage, and retained
-  production benchmark evidence.
 - **[R146](R146-chunk-orphan-sealing.md)** — seal abandoned chunks across all chunk users
   chunks — Area: crowdb-tree / chunkdb — Renew durable writer leases while a
   tree owns its active chunk, allocate a fresh chunk after process restart, and
@@ -52,8 +37,7 @@ client, and physical chunk maintenance.
 - **[R148](R148-chunk-stream-scale-out.md)** — partition metadata scale-out and
   sealed-chunk EC — Area: chunk-stream / chunk-kv / KV / chunkdb — Move the
   stream namespace and tree root catalog as one fenced binding generation,
-  optionally shard their indexes, and convert sealed mirror chunks to EC. All
-  remain disabled until the R141/R142/R143 production baseline is measured.
+  optionally shard their indexes, and convert sealed mirror chunks to EC.
 
 ### High Priority
 
