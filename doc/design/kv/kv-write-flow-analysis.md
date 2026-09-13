@@ -263,3 +263,41 @@ sysdata:
 Perf: the 256T config is fixed (22K→181K ops/s, 256→0 errors). `cluster
 clean` now frees RSS between sub-tests instead of increasing it. Peak
 throughput is within noise of the prior run (240K vs 264K at 512T).
+
+### Large-value snapshot sentinel (2026-09-14)
+
+The write regression now has a self-validating large-value case. It uses one
+loader and one connection to write real 16,384-byte values into a 100,000-key
+space for 15 seconds, then repeats from clean group state three times on one
+three-node mem-block deployment. The command was:
+
+```bash
+KV_WRITE_BENCH_CASES=largeval_16k pixi run -- bash tools/bench-kv-write-regression.sh
+```
+
+Reference host: Intel Core i9-7960X (16 cores / 32 threads), x86_64, Linux
+6.11.0-29, XFS on `/dev/nvme1n1p1`. The deployed shape used window 32,
+coalesce limit 16, two RPC workers, event-write, and a four-connection peer
+pool. WAL and KV storage remained mem-block so the run isolates maintenance
+scheduling from physical WAL latency.
+
+| Run | ops/s | WAL/node | Avg us | p50 us | p99 us | Errors | Correctness | Snapshots | Snapshot failures | Snapshot max us | Election delta |
+| ---: | ----: | -------: | -----: | -----: | -----: | -----: | ----------: | --------: | ----------------: | --------------: | -------------: |
+|   1 |   612 |    9,175 | 1,613.0 |  1,638 |  2,023 |      0 |           0 |         3 |                 0 |         300,979 |              0 |
+|   2 |   619 |    9,286 | 1,593.7 |  1,622 |  1,998 |      0 |           0 |         3 |                 0 |         267,081 |              0 |
+|   3 |   612 |    9,181 | 1,611.2 |  1,630 |  1,998 |      0 |           0 |         3 |                 0 |         252,019 |              0 |
+
+Each repetition observed one successful snapshot on every node while writes
+and heartbeats remained active. No workload error, correctness error,
+snapshot failure, or post-baseline election occurred, so the large snapshot
+did not monopolize a Tokio worker long enough to disturb consensus on this
+host. The transient evidence is under
+`bench-log/kv-write-regression-20260914-002651/` and is intentionally ignored
+by version control.
+
+Open observation: aggregate server RSS retained more memory after each clean
+and repetition (post-clean totals were approximately 615 MiB, 1,946 MiB, and
+3,304 MiB). This run does not distinguish allocator retention from reachable
+engine state, and it produced no correctness or election failure. A future
+memory-specific investigation should measure allocator-resident and live
+engine bytes separately before treating the RSS pattern as a storage leak.
