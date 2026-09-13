@@ -32,10 +32,10 @@ fn matching_tentative(dg: &DdbDiskGroup, segment: &Segment, disk_id: DiskId) -> 
 }
 
 /// Errors from the free path.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum FreeError {
     /// KV client error during lookup or persist.
-    Kv(crowdb_kv_client::Error),
+    Kv(Arc<crowdb_kv_client::Error>),
     /// Block is not busy (no `BusyBlockKey` exists) — double-free or
     /// never allocated.
     NotBusy {
@@ -46,6 +46,7 @@ pub enum FreeError {
     IncarnationMismatch,
     Conflict,
     OutcomeUnknown,
+    Closed,
 }
 
 impl std::fmt::Display for FreeError {
@@ -63,6 +64,7 @@ impl std::fmt::Display for FreeError {
             Self::IncarnationMismatch => write!(f, "block incarnation does not match"),
             Self::Conflict => write!(f, "busy block changed concurrently"),
             Self::OutcomeUnknown => write!(f, "free outcome is unknown"),
+            Self::Closed => write!(f, "free admission is closed"),
         }
     }
 }
@@ -71,7 +73,7 @@ impl std::error::Error for FreeError {}
 
 impl From<crowdb_kv_client::Error> for FreeError {
     fn from(e: crowdb_kv_client::Error) -> Self {
-        Self::Kv(e)
+        Self::Kv(Arc::new(e))
     }
 }
 
@@ -376,10 +378,10 @@ pub async fn free_block(
     kv: &DdbKvClient,
 ) -> std::result::Result<(), FreeError> {
     let disk_id = segment.disk_id.ok_or_else(|| {
-        FreeError::Kv(crowdb_kv_client::Error::SysdataDecode {
+        FreeError::Kv(Arc::new(crowdb_kv_client::Error::SysdataDecode {
             key: "segment.disk_id".to_string(),
             reason: "missing disk_id in Segment".to_string(),
-        })
+        }))
     })?;
     let bind: Bind = dg.bind();
 
@@ -448,7 +450,47 @@ pub async fn free_blocks(
     segments: &[Segment],
     kv: &DdbKvClient,
 ) -> std::result::Result<FreeBatchResult, FreeError> {
-    let bind = dg.bind();
+    let prepared = prepare_free(dg, segments)?;
+    kv.persist_free_batch(prepared.bind, &prepared.records).await?;
+    let result = prepared.result();
+    commit_prepared_batch(&[&prepared]);
+    Ok(result)
+}
+
+/// A validated, deduplicated free request with no in-memory side effects.
+pub type FreeRecord = (DiskId, u32, u64, FreeBlockValue);
+
+pub struct PreparedFree {
+    pub(crate) dg: Arc<DdbDiskGroup>,
+    pub(crate) bind: Bind,
+    pub(crate) records: Vec<FreeRecord>,
+    pub(crate) segments: Vec<Segment>,
+}
+
+impl PreparedFree {
+    #[must_use]
+    pub fn bind(&self) -> Bind {
+        self.bind
+    }
+
+    #[must_use]
+    pub fn record_count(&self) -> usize {
+        self.records.len()
+    }
+
+    pub(crate) fn result(&self) -> FreeBatchResult {
+        FreeBatchResult {
+            freed_count: u32::try_from(self.segments.len()).unwrap_or(u32::MAX),
+            failures: Vec::new(),
+        }
+    }
+}
+
+/// Validate and deduplicate a free request without mutating accounting state.
+pub fn prepare_free(
+    dg: &Arc<DdbDiskGroup>,
+    segments: &[Segment],
+) -> std::result::Result<PreparedFree, FreeError> {
     let mut seen = std::collections::HashSet::with_capacity(segments.len());
     let mut unique = Vec::with_capacity(segments.len());
     for segment in segments {
@@ -464,15 +506,20 @@ pub async fn free_blocks(
         unique.push(*segment);
     }
     if unique.is_empty() {
-        return Ok(FreeBatchResult::default());
+        return Ok(PreparedFree {
+            dg: Arc::clone(dg),
+            bind: dg.bind(),
+            records: Vec::new(),
+            segments: Vec::new(),
+        });
     }
     let mut records = Vec::with_capacity(unique.len());
     for segment in &unique {
         let disk_id = segment.disk_id.ok_or_else(|| {
-            FreeError::Kv(crowdb_kv_client::Error::SysdataDecode {
+            FreeError::Kv(Arc::new(crowdb_kv_client::Error::SysdataDecode {
                 key: "segment.disk_id".to_string(),
                 reason: "missing disk_id in Segment".to_string(),
-            })
+            }))
         })?;
         records.push((
             disk_id,
@@ -486,38 +533,59 @@ pub async fn free_blocks(
             },
         ));
     }
-    kv.persist_free_batch(bind, &records).await?;
+    Ok(PreparedFree {
+        dg: Arc::clone(dg),
+        bind: dg.bind(),
+        records,
+        segments: unique,
+    })
+}
 
-    for segment in &unique {
-        let disk_id = segment.disk_id.expect("validated segment disk id");
-        let _ = dg.remove_matching_tentative(
-            segment.allocation_ts,
-            disk_id,
-            segment.zone_index,
-            segment.unit_offset,
-        );
-        if !dg.free_block(
-            &disk_id,
-            segment.zone_index,
-            segment.unit_offset,
-            segment.unit_count,
-        ) {
-            tracing::warn!(
-                "free persist succeeded but in-memory zone not found for disk {disk_id:?} zone {} offset {} — backlog counter not bumped",
+/// Apply tentative, backlog, and metric effects after one durable KV batch.
+/// Duplicate incarnations across combined requests are accounted once.
+pub(crate) fn commit_prepared_batch(requests: &[&PreparedFree]) {
+    let total = requests.iter().map(|request| request.segments.len()).sum();
+    let mut seen = std::collections::HashSet::with_capacity(total);
+    for request in requests {
+        for segment in &request.segments {
+            let identity = (
+                segment.disk_id,
                 segment.zone_index,
-                segment.unit_offset
+                segment.unit_offset,
+                segment.allocation_ts,
             );
-        }
-        let unit_size = dg.disk_unit_size(disk_id).unwrap_or(0);
-        if let Some(metrics) = dg.disk_metrics(disk_id) {
-            metrics.record_free(segment.unit_count, unit_size);
+            if !seen.insert(identity) {
+                continue;
+            }
+            commit_prepared_segment(&request.dg, segment);
         }
     }
+}
 
-    Ok(FreeBatchResult {
-        freed_count: u32::try_from(unique.len()).unwrap_or(u32::MAX),
-        failures: Vec::new(),
-    })
+fn commit_prepared_segment(dg: &DdbDiskGroup, segment: &Segment) {
+    let disk_id = segment.disk_id.expect("validated segment disk id");
+    let _ = dg.remove_matching_tentative(
+        segment.allocation_ts,
+        disk_id,
+        segment.zone_index,
+        segment.unit_offset,
+    );
+    if !dg.free_block(
+        &disk_id,
+        segment.zone_index,
+        segment.unit_offset,
+        segment.unit_count,
+    ) {
+        tracing::warn!(
+            "free persist succeeded but in-memory zone not found for disk {disk_id:?} zone {} offset {} — backlog counter not bumped",
+            segment.zone_index,
+            segment.unit_offset
+        );
+    }
+    let unit_size = dg.disk_unit_size(disk_id).unwrap_or(0);
+    if let Some(metrics) = dg.disk_metrics(disk_id) {
+        metrics.record_free(segment.unit_count, unit_size);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -547,10 +615,10 @@ pub async fn commit_blocks(
     let mut unique = Vec::with_capacity(segments.len());
     for seg in segments {
         let disk_id = seg.disk_id.ok_or_else(|| {
-            FreeError::Kv(crowdb_kv_client::Error::SysdataDecode {
+            FreeError::Kv(Arc::new(crowdb_kv_client::Error::SysdataDecode {
                 key: "segment.disk_id".to_string(),
                 reason: "missing disk_id in Segment".to_string(),
-            })
+            }))
         })?;
         if !seen.insert((disk_id, seg.zone_index, seg.unit_offset, seg.allocation_ts)) {
             continue;

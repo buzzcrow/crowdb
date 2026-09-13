@@ -192,8 +192,8 @@ impl DdbKvClient {
     }
 
     /// Persist a batch of free records in one `batch_write` (one
-    /// round-trip per data group). Reused by R79's size-threshold
-    /// batch.
+    /// round-trip per data group). Reused by immediate concurrent-free
+    /// coalescing.
     pub async fn persist_free_batch(
         &self,
         bind: Bind,

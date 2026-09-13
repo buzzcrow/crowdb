@@ -59,7 +59,9 @@ pub(super) fn map_free_error(e: &FreeError) -> (FBDiskdbRetCode, String) {
         FreeError::IncarnationMismatch | FreeError::Conflict => {
             (FBDiskdbRetCode::InvalidArgument, format!("free failed: {e}"))
         }
-        FreeError::OutcomeUnknown => (FBDiskdbRetCode::Unavailable, format!("free failed: {e}")),
+        FreeError::OutcomeUnknown | FreeError::Closed => {
+            (FBDiskdbRetCode::Unavailable, format!("free failed: {e}"))
+        }
         FreeError::Kv(_) => (FBDiskdbRetCode::Internal, format!("free persist failed: {e}")),
     }
 }
