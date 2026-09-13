@@ -34,7 +34,7 @@ use crate::cluster::replica::{
     FetchGapReply, HeartbeatReply, HeartbeatRequestPayload, PxReplicaError, StepDownReply,
     StepDownRequestPayload, VoteReply, VoteRequestPayload,
 };
-use crate::paxos::roles::{DedupTag, PxAcceptReply, PxBallot, PxLogEntry, PxPrepareReply};
+use crate::paxos::roles::{PxAcceptReply, PxBallot, PxLogEntry, PxPrepareReply};
 
 /// crowdb-rpc transport for the KV consensus service. Holds the
 /// client-side `RpcServer` (manages connections), `RpcClient`
@@ -214,7 +214,6 @@ impl PxRpcTransport {
         &self,
         rpc_endpoint: &str,
         entry: &PxLogEntry,
-        dedup_tags: &[DedupTag],
         group_id: u64,
         membership_epoch: u64,
     ) -> Result<PxAcceptReply, PxReplicaError> {
@@ -232,7 +231,6 @@ impl PxRpcTransport {
                 payload: Some(payload),
             },
         );
-        let (legacy_client_id, legacy_seq) = dedup_tags.first().map_or((0, 0), |t| (t.client_id, t.seq));
         let args = FBAcceptRequestArgs {
             id: req_id,
             rpc_create_nano: 0,
@@ -242,11 +240,8 @@ impl PxRpcTransport {
             leader_id: entry.ballot.leader_id,
             term: entry.term,
             value: Some(value),
-            client_id: legacy_client_id,
-            seq: legacy_seq,
             group_id,
             membership_epoch,
-            dedup_tags: None, // TODO: build dedup_tags vector
         };
         let req = FBAcceptRequest::create(&mut builder, &args);
         builder.finish(req, None);

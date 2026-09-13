@@ -142,11 +142,8 @@ async fn malformed_accept_request_is_rejected_by_rpc_boundary() {
         leader_id: 0,
         term: 0,
         value: None,
-        client_id: 0,
-        seq: 0,
         group_id: 1,
         membership_epoch: 0,
-        dedup_tags: None,
     };
     let req = FBAcceptRequest::create(&mut builder, &args);
     builder.finish(req, None);

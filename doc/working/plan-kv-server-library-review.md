@@ -48,6 +48,8 @@ resource, relevant counters, and same-CPU comparison before changing code.
   WAL/RPC work. Keep request identities attached to coalescer waiters only
   until the leader publishes the chosen result. Files:
   Phase 1 files plus `cluster/local_replica_apply.rs` and focused tests.
+  Follower Accept wire/state plumbing is removed; leader-local symbol naming
+  remains.
 - [ ] **Test the selected retry boundary**: verify same-leader ordinary write
   retry returns the cached slot, leader-change ordinary retry remains data
   idempotent, and ambiguous CAS returns `OutcomeUnknown` for read
@@ -87,7 +89,7 @@ resource, relevant counters, and same-CPU comparison before changing code.
   pending-call cleanup, and recovery. Files:
   `lib/crowdb-kv/tests/rpc_migration_test.rs`; `lib/crowdb-rpc/ffi/tests/`
   only if the boundary requires it.
-- [~] **Remove avoidable copies**: directly remove the Accept payload
+- [x] **Remove avoidable copies**: directly remove the Accept payload
   `to_vec()` temporary and round-trip-test multi-tag payloads; inspect Prepare,
   FetchGap, snapshot, and client handlers for other full-buffer temporaries.
   Required async-lifetime copies remain explicit. Files: `lib/crowdb-kv/src/rpc/`,

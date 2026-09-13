@@ -305,7 +305,7 @@ impl PxGroup {
 
                 let own_payload = !adopted_foreign_value && entry.payload == payload;
                 let entry_tags = if own_payload { dedup_tags } else { &[] };
-                match self.run_accept_phase(replica, &entry, entry_tags, quorum).await {
+                match self.run_accept_phase(replica, &entry, quorum).await {
                     AcceptAttempt::Chosen => {
                         // R17: when async_engine_apply is enabled, spawn
                         // the engine apply as a background task and return
@@ -466,7 +466,7 @@ impl PxGroup {
                 }
                 PrepareAttempt::Fail { .. } => return None,
             };
-            match self.run_accept_phase(replica, &entry, &[], quorum).await {
+            match self.run_accept_phase(replica, &entry, quorum).await {
                 AcceptAttempt::Chosen => {
                     replica.learn_chosen(&entry, &[]).await;
                     self.fan_out_chosen_notice(&entry, self.group_id);

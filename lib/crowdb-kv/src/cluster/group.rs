@@ -764,7 +764,7 @@ impl PxGroup {
             }
         };
 
-        match self.run_accept_phase(replica, &entry, &[], quorum).await {
+        match self.run_accept_phase(replica, &entry, quorum).await {
             AcceptAttempt::Chosen => {
                 replica.learn_chosen(&entry, &[]).await;
                 self.fan_out_chosen_notice(&entry, group_id);

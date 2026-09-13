@@ -16,7 +16,7 @@ use crate::cluster::group::{PxGroup, RemoteFoldCtx, RemoteReplicaKind, ReplyFold
 use crate::cluster::local_replica::PxLocalReplica;
 use crate::cluster::replica::{PxReplicaError, Replica, ReplicaClient, ReplicaHandler};
 use crate::paxos::error::{PxPaxosError, PxPaxosPhase, PxRetryAction};
-use crate::paxos::roles::{DedupTag, PxAcceptReply, PxBallot, PxLogEntry};
+use crate::paxos::roles::{PxAcceptReply, PxBallot, PxLogEntry};
 use crate::paxos::PxNodeId;
 
 /// Outcome of an accept-phase attempt for one slot.
@@ -50,7 +50,6 @@ impl PxGroup {
         &self,
         replica: &PxLocalReplica,
         entry: &PxLogEntry,
-        dedup_tags: &[DedupTag],
         quorum: usize,
     ) -> AcceptAttempt {
         let quorum_rpc_start = std::time::Instant::now();
@@ -73,18 +72,11 @@ impl PxGroup {
         if let Some(group) = self.self_weak.get().and_then(Weak::upgrade) {
             let membership_epoch = self.membership_epoch();
             let entry_owned = entry.clone();
-            let dedup_tags_owned = dedup_tags.to_vec();
             let slot = entry.slot;
 
             if self.config.wal_early_ack && self.cached_quorum > 1 {
                 // R16b: split path — CAS only, persist deferred.
-                let mut futs = build_accept_remote_futs(
-                    &group,
-                    &entry_owned,
-                    &dedup_tags_owned,
-                    group_id,
-                    membership_epoch,
-                );
+                let mut futs = build_accept_remote_futs(&group, &entry_owned, group_id, membership_epoch);
                 // Local CAS (infallible → wrapped in Ok to normalize).
                 {
                     let group = group.clone();
@@ -162,13 +154,7 @@ impl PxGroup {
                 }
             } else {
                 // R16a: default path — local on_accept (CAS + WAL persist).
-                let mut futs = build_accept_remote_futs(
-                    &group,
-                    &entry_owned,
-                    &dedup_tags_owned,
-                    group_id,
-                    membership_epoch,
-                );
+                let mut futs = build_accept_remote_futs(&group, &entry_owned, group_id, membership_epoch);
                 {
                     let group = group.clone();
                     let entry = entry_owned.clone();
@@ -257,7 +243,7 @@ impl PxGroup {
                 .iter()
                 .filter_map(|remote| {
                     if let RemoteReplicaKind::Real(remote) = remote {
-                        Some(remote.send_accept(entry, dedup_tags, group_id, self.membership_epoch()))
+                        Some(remote.send_accept(entry, group_id, self.membership_epoch()))
                     } else {
                         None
                     }
@@ -436,7 +422,6 @@ fn accept_drain_side_effect(group: &Arc<PxGroup>, slot: u64, tagged: TaggedAccep
 fn build_accept_remote_futs(
     group: &Arc<PxGroup>,
     entry: &PxLogEntry,
-    dedup_tags: &[DedupTag],
     group_id: u64,
     membership_epoch: u64,
 ) -> FuturesUnordered<Pin<Box<dyn Future<Output = TaggedAcceptReply> + Send + 'static>>> {
@@ -449,12 +434,10 @@ fn build_accept_remote_futs(
             let endpoint = remote.endpoint.clone();
             let group = group.clone();
             let entry = entry.clone();
-            let dedup_tags = dedup_tags.to_owned();
             futs.push(Box::pin(async move {
                 let reply = match group.remote_replicas.get(idx) {
                     Some(RemoteReplicaKind::Real(r)) => {
-                        r.send_accept(&entry, &dedup_tags, group_id, membership_epoch)
-                            .await
+                        r.send_accept(&entry, group_id, membership_epoch).await
                     }
                     _ => Err(PxReplicaError::Internal(
                         "accept: remote vanished mid-fanout".to_string(),

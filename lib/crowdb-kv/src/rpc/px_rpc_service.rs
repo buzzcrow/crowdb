@@ -46,7 +46,7 @@ use crate::cluster::px_kv_store::PxKvStore;
 use crate::cluster::replica::{
     HeartbeatRequestPayload, PxReplicaError, ReplicaHandler, StepDownRequestPayload, VoteRequestPayload,
 };
-use crate::paxos::roles::{DedupTag, PxAcceptReply, PxBallot, PxLogEntry, PxPrepareReply};
+use crate::paxos::roles::{PxAcceptReply, PxBallot, PxLogEntry, PxPrepareReply};
 
 /// crowdb-rpc handler set for the KV consensus service. Holds the same
 /// dependencies as the former `PxReplicaService` plus a tokio `Handle`
@@ -418,24 +418,6 @@ impl PxRpcService {
                 payload: payload_bytes.into(),
             };
 
-            // Dedup tags: prefer repeated dedup_tags, fall back to legacy client_id/seq.
-            let dedup_tags: Vec<DedupTag> = if let Some(tags) = fb_req.dedup_tags() {
-                tags.iter()
-                    .map(|t| DedupTag {
-                        client_id: t.client_id(),
-                        seq: t.seq(),
-                    })
-                    .collect()
-            } else {
-                let cid = fb_req.client_id();
-                let seq = fb_req.seq();
-                if cid != 0 || seq != 0 {
-                    vec![DedupTag { client_id: cid, seq }]
-                } else {
-                    Vec::new()
-                }
-            };
-
             let Some(group) = store.get_group(group_id) else {
                 submit_error(
                     &server,
@@ -492,11 +474,6 @@ impl PxRpcService {
 
             let replica = group.local_replica();
             let reply = <PxLocalReplica as ReplicaHandler>::on_accept(replica, &entry, group_id).await;
-            // An Accepted value is not yet known chosen. Recording dedup here
-            // could make a later leader report success for a value that was
-            // superseded by a higher ballot. Dedup is published only by the
-            // learner after a chosen value is applied.
-            drop(dedup_tags);
             let (rejected, rejected_round, rejected_leader_id, term_stale, reply_term) = match reply {
                 Ok(PxAcceptReply::Accepted { .. }) => (false, 0, 0, false, replica.current_term_snapshot()),
                 Ok(PxAcceptReply::Rejected { current_promised, .. }) => {

@@ -116,7 +116,7 @@ async fn crowdb_rpc_prepare_accept_roundtrip() {
         term: 0,
         payload: bytes::Bytes::from_static(b"hello-crowdb-rpc"),
     };
-    let accept_result = follower_remote.send_accept(&entry, &[], 1, 0).await;
+    let accept_result = follower_remote.send_accept(&entry, 1, 0).await;
     assert!(
         accept_result.is_ok(),
         "accept should succeed over crowdb-rpc: {:?}",
@@ -163,10 +163,7 @@ async fn crowdb_rpc_chosen_notification_fire_and_forget() {
         .send_prepare(1, ballot, 0, 1, 0)
         .await
         .expect("prepare");
-    follower_remote
-        .send_accept(&entry, &[], 1, 0)
-        .await
-        .expect("accept");
+    follower_remote.send_accept(&entry, 1, 0).await.expect("accept");
 
     let follower_group = cluster.follower.get_group(1).expect("follower group");
     let follower_replica = follower_group.local_replica();
@@ -259,7 +256,7 @@ async fn crowdb_rpc_fetch_gap() {
         .await
         .expect("follower prepare");
     follower_remote
-        .send_accept(&entry, &[], 1, 0)
+        .send_accept(&entry, 1, 0)
         .await
         .expect("follower accept");
 

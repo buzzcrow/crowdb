@@ -20,7 +20,7 @@ use crate::cluster::status::{RemoteStatus, StatusLevel};
 use crate::common::config::PxElectionConfig;
 use crate::common::report::OperationReport;
 use crate::metrics::{Counter, LatencySummary, MetricPoint, MetricsRegistry};
-use crate::paxos::roles::{DedupTag, PxAcceptReply, PxBallot, PxLogEntry, PxPrepareReply};
+use crate::paxos::roles::{PxAcceptReply, PxBallot, PxLogEntry, PxPrepareReply};
 use crate::paxos::PxNodeId;
 use crate::rpc::PxRpcTransport;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -93,7 +93,6 @@ impl ReplicaClient for PxRemoteReplica {
     async fn send_accept(
         &self,
         entry: &PxLogEntry,
-        dedup_tags: &[DedupTag],
         group_id: u64,
         membership_epoch: u64,
     ) -> Result<PxAcceptReply, PxReplicaError> {
@@ -101,7 +100,7 @@ impl ReplicaClient for PxRemoteReplica {
         let started = Instant::now();
         let result = tokio::time::timeout(
             self.rpc_timeout,
-            transport.send_accept(&self.endpoint, entry, dedup_tags, group_id, membership_epoch),
+            transport.send_accept(&self.endpoint, entry, group_id, membership_epoch),
         )
         .await;
         self.finish_rpc(started, "accept", result)

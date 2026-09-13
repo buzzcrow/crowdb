@@ -2,8 +2,7 @@ include "common_type.fbs";
 
 namespace crowdb.kv_consensus.proto;
 
-// KV consensus service flatbuffer control messages (R32: legacy →
-// crowdb-rpc migration). Mirrors pxos.proto (PxService + SnapshotService).
+// KV consensus service flatbuffer control messages.
 //
 // Conventions (design-crowdb-rpc.md §6, todo_fb.md "Rules to Follow"):
 // - Every request/response table carries `id` (request_id, matched by
@@ -28,12 +27,6 @@ enum FBKvRetCode : int16 {
     Unavailable = 2,
     Internal = 3,
     InvalidArgument = 4,
-}
-
-// ── Dedup tag (R36: inline struct, two uint64 fields) ────────────
-struct FBDedupTag {
-    client_id:uint64;
-    seq:uint64;
 }
 
 // ── Accepted value (table — has a payload vector) ────────────────
@@ -89,14 +82,8 @@ table FBAcceptRequest {
     leader_id:uint64;
     term:uint64;
     value:FBAcceptedValue;
-    // Legacy single dedup tag (fields 9/10 in proto). Kept for
-    // backward-compat with older followers during rolling upgrade.
-    client_id:uint64;
-    seq:uint64;
     group_id:uint64;
     membership_epoch:uint64;
-    // R36: one (client_id, seq) dedup tag per coalesced client op.
-    dedup_tags:[FBDedupTag];
 }
 
 table FBAcceptedResponse {
