@@ -23,6 +23,7 @@ use crate::model::disk_group::{AllocClaim, AllocError, DdbDiskGroup, TentativeBl
 use crate::recovery::compaction::compact_zone;
 
 const MAX_CONCURRENT_BLOCK_CAS: usize = 16;
+const MAX_BLOCK_CAS_ATTEMPTS: usize = 4;
 
 fn matching_tentative(dg: &DdbDiskGroup, segment: &Segment, disk_id: DiskId) -> Option<TentativeBlock> {
     dg.tentative(segment.allocation_ts).filter(|entry| {
@@ -396,65 +397,64 @@ pub async fn free_block(
         pre_allocation_ts: segment.allocation_ts,
         free_ts: crate::model::disk_group::now_nanos(),
     };
-    let cached = matching_tentative(dg, segment, disk_id);
-    let (busy, revision) = if let Some(cached) = cached {
-        (cached.value, cached.revision)
-    } else {
-        let Some(current) = kv
-            .get_busy(bind, &disk_id, segment.zone_index, segment.unit_offset)
-            .await?
-        else {
-            let existing = kv
-                .get_free(
-                    bind,
-                    &disk_id,
+    let mut cached = matching_tentative(dg, segment, disk_id);
+    for attempt in 0..MAX_BLOCK_CAS_ATTEMPTS {
+        let current = if let Some(cached) = cached.take() {
+            Some((cached.value, cached.revision))
+        } else {
+            kv.get_busy(bind, &disk_id, segment.zone_index, segment.unit_offset)
+                .await?
+        };
+        let Some((busy, revision)) = current else {
+            let confirmed = confirm_free_fact(kv, bind, segment, disk_id).await;
+            if confirmed.is_ok() {
+                let _ = dg.remove_matching_tentative(
+                    segment.allocation_ts,
+                    disk_id,
                     segment.zone_index,
                     segment.unit_offset,
-                    segment.allocation_ts,
-                )
-                .await?;
-            return if existing.as_ref().is_some_and(|free| {
-                free.unit_count == segment.unit_count
-                    && free.previous_owner == segment.owner_chunk
-                    && free.pre_allocation_ts == segment.allocation_ts
-            }) {
-                Ok(())
-            } else {
-                Err(FreeError::NotBusy {
-                    disk_id,
-                    zone_index: segment.zone_index,
-                    unit_offset: segment.unit_offset,
-                })
-            };
+                );
+            }
+            return confirmed;
         };
-        current
-    };
-    if busy.allocation_ts != segment.allocation_ts
-        || busy.unit_count != segment.unit_count
-        || busy.owner_chunk != segment.owner_chunk
-    {
-        // A newer busy incarnation means the block was already freed,
-        // compacted, and reallocated. The original free succeeded; a
-        // delayed retry is idempotent and must not touch the new owner.
-        if busy.allocation_ts > segment.allocation_ts {
-            return Ok(());
+        if busy.allocation_ts != segment.allocation_ts
+            || busy.unit_count != segment.unit_count
+            || busy.owner_chunk != segment.owner_chunk
+        {
+            // A newer busy incarnation means the block was already freed,
+            // compacted, and reallocated. The original free succeeded; a
+            // delayed retry is idempotent and must not touch the new owner.
+            if busy.allocation_ts > segment.allocation_ts {
+                return Ok(());
+            }
+            return Err(FreeError::IncarnationMismatch);
         }
-        return Err(FreeError::IncarnationMismatch);
+        match kv
+            .free_busy_cas(
+                bind,
+                &disk_id,
+                segment.zone_index,
+                segment.unit_offset,
+                revision,
+                &value,
+            )
+            .await
+        {
+            Ok(()) => break,
+            Err(
+                crowdb_kv_client::Error::CasFailed { .. }
+                | crowdb_kv_client::Error::CasBusy
+                | crowdb_kv_client::Error::OutcomeUnknown,
+            ) if attempt + 1 < MAX_BLOCK_CAS_ATTEMPTS => {
+                tokio::time::sleep(std::time::Duration::from_millis((attempt + 1) as u64)).await;
+            }
+            Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => {
+                return Err(FreeError::Conflict);
+            }
+            Err(crowdb_kv_client::Error::OutcomeUnknown) => return Err(FreeError::OutcomeUnknown),
+            Err(other) => return Err(FreeError::Kv(other)),
+        }
     }
-    kv.free_busy_cas(
-        bind,
-        &disk_id,
-        segment.zone_index,
-        segment.unit_offset,
-        revision,
-        &value,
-    )
-    .await
-    .map_err(|error| match error {
-        crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy => FreeError::Conflict,
-        crowdb_kv_client::Error::OutcomeUnknown => FreeError::OutcomeUnknown,
-        other => FreeError::Kv(other),
-    })?;
     if dg.remove_matching_tentative(
         segment.allocation_ts,
         disk_id,
@@ -493,6 +493,36 @@ pub async fn free_block(
     }
 
     Ok(())
+}
+
+async fn confirm_free_fact(
+    kv: &DdbKvClient,
+    bind: Bind,
+    segment: &Segment,
+    disk_id: DiskId,
+) -> std::result::Result<(), FreeError> {
+    let existing = kv
+        .get_free(
+            bind,
+            &disk_id,
+            segment.zone_index,
+            segment.unit_offset,
+            segment.allocation_ts,
+        )
+        .await?;
+    if existing.as_ref().is_some_and(|free| {
+        free.unit_count == segment.unit_count
+            && free.previous_owner == segment.owner_chunk
+            && free.pre_allocation_ts == segment.allocation_ts
+    }) {
+        Ok(())
+    } else {
+        Err(FreeError::NotBusy {
+            disk_id,
+            zone_index: segment.zone_index,
+            unit_offset: segment.unit_offset,
+        })
+    }
 }
 
 /// Free multiple blocks (one `batch_write` per data group).
@@ -616,47 +646,55 @@ async fn commit_block(
             reason: "missing disk_id in Segment".to_string(),
         })
     })?;
-    let cached = matching_tentative(dg, seg, disk_id);
+    let mut cached = matching_tentative(dg, seg, disk_id);
     if cached.is_some() {
         metrics.tentative_cache_hits.inc();
     } else {
         metrics.tentative_cache_misses.inc();
     }
-    let (mut busy, revision) = if let Some(cached) = &cached {
-        (cached.value.clone(), cached.revision)
-    } else {
-        let Some(current) = kv
-            .get_busy(bind, &disk_id, seg.zone_index, seg.unit_offset)
-            .await?
-        else {
+    for attempt in 0..MAX_BLOCK_CAS_ATTEMPTS {
+        let current = if let Some(cached) = cached.take() {
+            Some((cached.value, cached.revision))
+        } else {
+            kv.get_busy(bind, &disk_id, seg.zone_index, seg.unit_offset)
+                .await?
+        };
+        let Some((mut busy, revision)) = current else {
             return Err(FreeError::NotBusy {
                 disk_id,
                 zone_index: seg.zone_index,
                 unit_offset: seg.unit_offset,
             });
         };
-        current
-    };
-    if busy.allocation_ts != seg.allocation_ts
-        || busy.unit_count != seg.unit_count
-        || busy.owner_chunk != seg.owner_chunk
-    {
-        return Err(FreeError::IncarnationMismatch);
-    }
-    if busy.commit_state != CommitState::Committed as i32 {
+        if busy.allocation_ts != seg.allocation_ts
+            || busy.unit_count != seg.unit_count
+            || busy.owner_chunk != seg.owner_chunk
+        {
+            return Err(FreeError::IncarnationMismatch);
+        }
+        if busy.commit_state == CommitState::Committed as i32 {
+            break;
+        }
         busy.commit_state = CommitState::Committed as i32;
-        kv.persist_busy_cas(bind, &disk_id, seg.zone_index, seg.unit_offset, &busy, revision)
+        match kv
+            .persist_busy_cas(bind, &disk_id, seg.zone_index, seg.unit_offset, &busy, revision)
             .await
-            .map_err(|error| match error {
-                crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy => {
-                    FreeError::Conflict
-                }
-                crowdb_kv_client::Error::OutcomeUnknown => FreeError::OutcomeUnknown,
-                other => FreeError::Kv(other),
-            })?;
+        {
+            Ok(()) => break,
+            Err(
+                crowdb_kv_client::Error::CasFailed { .. }
+                | crowdb_kv_client::Error::CasBusy
+                | crowdb_kv_client::Error::OutcomeUnknown,
+            ) if attempt + 1 < MAX_BLOCK_CAS_ATTEMPTS => {
+                tokio::time::sleep(std::time::Duration::from_millis((attempt + 1) as u64)).await;
+            }
+            Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => {
+                return Err(FreeError::Conflict);
+            }
+            Err(crowdb_kv_client::Error::OutcomeUnknown) => return Err(FreeError::OutcomeUnknown),
+            Err(other) => return Err(FreeError::Kv(other)),
+        }
     }
-    if cached.is_some() {
-        let _ = dg.remove_tentative(seg.allocation_ts);
-    }
+    let _ = dg.remove_tentative(seg.allocation_ts);
     Ok(())
 }
