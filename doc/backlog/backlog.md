@@ -113,8 +113,7 @@ requirement is implemented.
 
 Chunk reads, read repair, mirror-to-EC conversion, write error handling, and
 end-to-end Chunk IO performance workloads are landed. The RPC migration items
-(R115, R116, R117) are in a separate area (see RPC Migration section below);
-R32 depends on R115.
+(R115, R116, R117) are in a separate area (see RPC Migration section below).
 
 ### Medium Priority
 
@@ -154,14 +153,6 @@ R32 depends on R115.
   rebuild. Triggered on move via watch/notify (R78) with a periodic
   safety net. Blocked on the chunkdb server component (unlanded) and
   R81 Part 2.
-- **[R32](R32-kv-custom-rust-rpc.md)** — KV server and core library review —
-  Area: kv / correctness / operations — The original gRPC-to-`crowdb-rpc`
-  migration is complete. Review and remediate the current `crowdb-kv` and
-  `crowdb-kv-server` boundaries across consensus/request replay, WAL/recovery, RPC
-  overload behavior, concurrency, lifecycle, observability, and focused
-  regression coverage. Obsolete mixed-gRPC rollout and unavailable legacy
-  benchmark requirements are intentionally retired.
-
 ### RPC Migration (legacy → crowdb-rpc)
 
 Historical migration order: R115 → R116 (unary); R117 (streaming) followed
@@ -172,7 +163,7 @@ zero-copy wrapper convention (`design-crowdb-rpc.md` §6): `FB`-prefixed
 flatbuffer types, wrapper classes in `crowdb-protocol`, no owned
 intermediate structs, no per-field copy. The four transport migrations (R115
 diskdb, the original R32 KV consensus scope, R117 KV client-facing, and R116
-chunkdb) are DONE. R32 now tracks the post-migration KV server/library review.
+chunkdb) are DONE. The post-migration KV server/library review is also complete.
 
 - **[R33](R33-crowdb-tree-rename.md)** — Extract crowdb-tree to separate repo and rename — Area:
   workspace — Move `crowdbtree/` into its own git repository (preserving
