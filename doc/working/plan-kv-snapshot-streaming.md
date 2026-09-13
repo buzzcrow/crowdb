@@ -21,7 +21,7 @@ progress.
   logical entries as staging state; reject truncation, trailing data, malformed
   lengths, and CRC mismatch before activation. Files: crowdb-tree snapshot I/O
   header/source and tests.
-- [~] **Make successful activation atomic**: build the replacement tree off
+- [ ] **Make successful activation atomic**: build the replacement tree off
   the published root and perform one fenced root/state publication so readers
   observe either the old or new engine, never a partly rebuilt tree. Retire old
   pages through the existing epoch mechanism and serialize with the existing
@@ -155,3 +155,25 @@ progress.
 - E2E: concurrent writes, Heartbeats, Accepts, and large snapshot installation
   on shared workers with bounded retained transfer memory and observable
   consensus progress.
+
+## Blocked
+
+- Atomic live-engine activation cannot be implemented from the current
+  crowdb-tree publication primitives. `install_snapshot` explicitly permits a
+  transient empty/partial tree; root, memtables, and watermarks publish
+  separately; and `apply` does not use `write_mutex_`.
+- Attempted analysis: a detached tree built with fresh page IDs can make the
+  root swap atomic, but cannot atomically pair that root with active/frozen
+  memtables and watermarks. Reusing native frames also collides with published
+  page IDs. A seqlock would make synchronous readers spin for the full O(N)
+  install and does not preserve the prior readable state.
+- Choices requiring user direction:
+  - Add an immutable engine-generation descriptor and atomically publish root,
+    memtables, and watermarks together. This is the correctness-preserving,
+    lock-free option and the recommended continuation, but expands R151 into a
+    foundational crowdb-tree publication redesign.
+  - Limit streaming activation to fresh/quiescent join and defer live large-gap
+    fallback. This narrows scope but fails two stated acceptance cases.
+  - Approve a new install lock on apply/read hot paths with an explicit
+    contention budget. This is mechanically smaller but conflicts with project
+    rules and the requirement's fairness intent.

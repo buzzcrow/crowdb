@@ -3,6 +3,13 @@
 
 ### R151: kv — Resumable Chunked Snapshot Streaming
 
+**Status**
+
+Blocked on the atomic live-engine publication choice in Open Questions. The
+bounded portable exporter and incremental importer are implemented, but the
+current engine cannot publish a successful live install atomically without a
+broader state-generation change or a new hot-path lock.
+
 **Problem**
 
 KV snapshot installation currently materializes an entire engine snapshot as
@@ -186,6 +193,26 @@ Numbered work items:
 - Given a membership epoch or install generation change during transfer, when
   the receiver reaches the next fence check, it aborts the stale session and
   does not activate it. This proves topology fencing. Integration test.
+
+**Open Questions**
+
+- How should crowdb-tree atomically publish a successful snapshot over a live
+  engine? The current `install_snapshot` clears the published root, releases
+  `write_mutex_`, incrementally rebuilds through L0, and flushes; its own API
+  contract permits lock-free readers to observe a transient empty or partial
+  tree. Root, active/frozen memtables, and watermarks are separate publication
+  points, and normal `apply` deliberately does not acquire `write_mutex_`.
+  Options:
+  - Introduce one immutable engine-generation descriptor containing the root,
+    memtable set, and watermarks, build a detached generation, then publish it
+    with one atomic swap. This preserves lock-free hot paths and fully meets
+    R151, but is a foundational crowdb-tree state-publication redesign.
+  - Restrict snapshot activation to fresh, quiescent engines and keep live
+    followers on `FetchGap`. This is substantially smaller but drops R151's
+    automatic large-gap fallback and live atomicity acceptance cases.
+  - Serialize apply/read with an install lock. This is the smallest mechanical
+    change, but violates the repository's lock-free hot-path rule and needs
+    explicit approval plus an accepted contention budget.
 
 Exact verification commands:
 
