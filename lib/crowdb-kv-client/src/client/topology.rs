@@ -5,66 +5,119 @@
 //! `crowdb-kv-server`'s HTTP management API (`GET /topology`). There is no crowdb-rpc
 //! `DescribeCluster` RPC — this is the only discovery mechanism.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use dashmap::DashMap;
+use arc_swap::ArcSwap;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crowdb_protocol::mgmt::TopologyResponse;
 
 use crate::error::{Error, Result};
+use crate::ReadEndpointPolicy;
 
-/// Eviction hook: called with the set of `(store_id, group_id)` keys
-/// that disappeared from the fresh `/topology` body. Used by
-/// `CrowdbKvClient` to evict stale `write_slot_highwater` entries.
-pub type EvictionHook = Arc<dyn Fn(&HashSet<(u64, u64)>) + Send + Sync>;
+type GroupKey = (u64, u64);
+
+/// Per-endpoint read statistics owned by one published route generation.
+#[derive(Debug, Default)]
+pub(super) struct EndpointStats {
+    in_flight: AtomicI64,
+    rtt_ewma_us: AtomicU64,
+}
+
+impl EndpointStats {
+    pub(super) fn increment_in_flight(&self) {
+        self.in_flight.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn decrement_in_flight(&self) {
+        self.in_flight.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    fn in_flight_count(&self) -> i64 {
+        self.in_flight.load(Ordering::Relaxed)
+    }
+
+    fn rtt_ewma(&self) -> u64 {
+        self.rtt_ewma_us.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn record_rtt(&self, rtt_us: u64) {
+        let mut old = self.rtt_ewma_us.load(Ordering::Relaxed);
+        loop {
+            let new = if old == 0 {
+                rtt_us
+            } else {
+                old / 4 * 3 + rtt_us / 4
+            };
+            match self
+                .rtt_ewma_us
+                .compare_exchange_weak(old, new, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => return,
+                Err(actual) => old = actual,
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RouteEndpoint {
+    endpoint: String,
+    stats: Arc<EndpointStats>,
+}
+
+#[derive(Debug, Default)]
+struct GroupRouteState {
+    read_cursor: AtomicU64,
+    write_slot_highwater: AtomicU64,
+}
+
+#[derive(Debug)]
+struct GroupRoute {
+    leader: Option<Arc<RouteEndpoint>>,
+    replicas: Vec<Arc<RouteEndpoint>>,
+    state: Arc<GroupRouteState>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct TopologySnapshot {
+    generation: u64,
+    groups: HashMap<GroupKey, Arc<GroupRoute>>,
+}
+
+struct FreshRoute {
+    key: GroupKey,
+    leader: Option<String>,
+    replicas: Vec<String>,
+}
 
 pub struct TopologyCache {
     seeds: RwLock<Vec<String>>,
     http: reqwest::Client,
-    leaders: DashMap<(u64, u64), String>,
-    /// Per-`(store_id, group_id)` full replica endpoint list (local +
-    /// remotes), populated from the same `/topology` fetch as `leaders`.
-    /// Used by the `AnyReplica` read-endpoint selector; `Leader` policy
-    /// never reads it. Refreshed only by `refresh()` — `set_leader` (the
-    /// `NotLeaderHint` fast path) does not touch it, since a hint only
-    /// carries the leader endpoint.
-    replicas: DashMap<(u64, u64), Vec<String>>,
+    snapshot: ArcSwap<TopologySnapshot>,
+    next_generation: AtomicU64,
     min_refresh_interval: Duration,
     /// Single-flight guard: while held, a fetch is either in flight or was
     /// just completed within `min_refresh_interval`. Concurrent `refresh`
     /// callers queue on this lock rather than each issuing their own HTTP
     /// request (: "not a storm").
     refresh_gate: AsyncMutex<Instant>,
-    /// Optional eviction hook called with groups that disappeared from
-    /// a fresh `/topology` body. Set by `CrowdbKvClient::new` to evict
-    /// stale `write_slot_highwater` entries.
-    eviction_hook: Option<EvictionHook>,
 }
 
 impl TopologyCache {
     #[must_use]
-    #[cfg(test)]
     pub fn new(seeds: Vec<String>, min_refresh_interval: Duration) -> Self {
-        Self::with_eviction_hook(seeds, min_refresh_interval, None)
-    }
-
-    #[must_use]
-    pub fn with_eviction_hook(
-        seeds: Vec<String>,
-        min_refresh_interval: Duration,
-        eviction_hook: Option<EvictionHook>,
-    ) -> Self {
         Self {
             seeds: RwLock::new(seeds),
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(5))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
-            leaders: DashMap::new(),
-            replicas: DashMap::new(),
+            snapshot: ArcSwap::from_pointee(TopologySnapshot::default()),
+            next_generation: AtomicU64::new(1),
             min_refresh_interval,
             // Far enough in the past that the first `refresh` always fetches.
             refresh_gate: AsyncMutex::new(
@@ -72,14 +125,18 @@ impl TopologyCache {
                     .checked_sub(Duration::from_secs(3600))
                     .unwrap_or_else(Instant::now),
             ),
-            eviction_hook,
         }
     }
 
     /// Cached leader endpoint for a group, if known. Never performs I/O.
     #[must_use]
     pub fn leader(&self, store_id: u64, group_id: u64) -> Option<String> {
-        self.leaders.get(&(store_id, group_id)).map(|v| v.clone())
+        self.snapshot
+            .load()
+            .groups
+            .get(&(store_id, group_id))
+            .and_then(|route| route.leader.as_ref())
+            .map(|leader| leader.endpoint.clone())
     }
 
     /// Test-only: get the current seed list.
@@ -100,14 +157,42 @@ impl TopologyCache {
     /// `refresh()` lands a `/topology` body that includes this group.
     #[must_use]
     pub fn replicas(&self, store_id: u64, group_id: u64) -> Option<Vec<String>> {
-        self.replicas.get(&(store_id, group_id)).map(|v| v.clone())
+        self.snapshot
+            .load()
+            .groups
+            .get(&(store_id, group_id))
+            .map(|route| {
+                route
+                    .replicas
+                    .iter()
+                    .map(|replica| replica.endpoint.clone())
+                    .collect()
+            })
     }
 
     /// Directly seed the cache with a leader endpoint learned from a
     /// `NotLeaderHint` on a KV response. Cheaper and more precise than a
     /// full `/topology` refresh since the hint is already the answer.
-    pub fn set_leader(&self, store_id: u64, group_id: u64, endpoint: String) {
-        self.leaders.insert((store_id, group_id), endpoint);
+    pub fn set_leader(&self, store_id: u64, group_id: u64, endpoint: &str) {
+        let key = (store_id, group_id);
+        loop {
+            let current = self.snapshot.load_full();
+            let old_route = current.groups.get(&key);
+            let leader = Self::reuse_endpoint(old_route, endpoint);
+            let route = Arc::new(GroupRoute {
+                leader: Some(leader),
+                replicas: old_route.map_or_else(Vec::new, |route| route.replicas.clone()),
+                state: old_route.map_or_else(
+                    || Arc::new(GroupRouteState::default()),
+                    |route| Arc::clone(&route.state),
+                ),
+            });
+            let mut groups = current.groups.clone();
+            groups.insert(key, route);
+            if self.publish(&current, groups) {
+                return;
+            }
+        }
     }
 
     /// Replace the seed list used for future `/topology` fetches. Lets a
@@ -132,12 +217,13 @@ impl TopologyCache {
         if last.elapsed() < self.min_refresh_interval {
             return Ok(());
         }
-        let result = self.fetch_and_merge().await;
+        let base_generation = self.snapshot.load().generation;
+        let result = self.fetch_and_merge(base_generation).await;
         *last = Instant::now();
         result
     }
 
-    async fn fetch_and_merge(&self) -> Result<()> {
+    async fn fetch_and_merge(&self, base_generation: u64) -> Result<()> {
         let seeds = self.seeds.read().unwrap().clone();
         if seeds.is_empty() {
             return Err(Error::NoSeeds);
@@ -148,7 +234,7 @@ impl TopologyCache {
             match self.http.get(&url).send().await {
                 Ok(resp) => match resp.json::<TopologyResponse>().await {
                     Ok(body) => {
-                        self.merge(body);
+                        self.merge_from_generation(body, base_generation);
                         return Ok(());
                     }
                     Err(e) => last_err = Some(format!("{seed}: decode error: {e}")),
@@ -161,37 +247,23 @@ impl TopologyCache {
         ))
     }
 
+    #[cfg(test)]
     fn merge(&self, body: TopologyResponse) {
-        // Collect the set of (store_id, group_id) present in the fresh
-        // body so we can evict stale entries after the insert loop.
-        let mut fresh_keys: HashSet<(u64, u64)> = HashSet::new();
-        // Collect store_ids present in the fresh body so eviction only
-        // fires for stores the seed actually hosts — a seed that doesn't
-        // host a store shouldn't evict groups in it (see eviction below).
-        let fresh_stores: HashSet<u64> = body.stores.iter().map(|s| s.store_id).collect();
-        for store in &body.stores {
-            for group in &store.groups {
-                fresh_keys.insert((store.store_id, group.group_id));
-            }
-        }
+        let base_generation = self.snapshot.load().generation;
+        self.merge_from_generation(body, base_generation);
+    }
 
+    fn merge_from_generation(&self, body: TopologyResponse, base_generation: u64) {
+        let fresh_stores: HashSet<u64> = body.stores.iter().map(|s| s.store_id).collect();
+        let mut fresh_routes = Vec::new();
         for store in body.stores {
-            // `listen_addr` is the local replica's crowdb-rpc endpoint; it is
-            // `None` only for a server that hasn't bound its listener yet,
-            // in which case this store contributes no endpoints.
             let local_endpoint = store.listen_addr.clone();
             for group in store.groups {
                 let leader_id = group.leader_id;
                 let key = (store.store_id, group.group_id);
-                if leader_id == 0 {
-                    // No leader elected (mid-election). Remove any stale
-                    // cached endpoint so the client doesn't keep sending to
-                    // a replica that stepped down. The client's retry loop
-                    // will refresh until a new leader appears.
-                    self.leaders.remove(&key);
-                    continue;
-                }
-                let endpoint = if group.local_replica.id == leader_id {
+                let leader = if leader_id == 0 {
+                    None
+                } else if group.local_replica.id == leader_id {
                     local_endpoint.clone()
                 } else {
                     group
@@ -200,15 +272,6 @@ impl TopologyCache {
                         .find(|r| r.id == leader_id)
                         .map(|r| r.endpoint.clone())
                 };
-                if let Some(endpoint) = endpoint {
-                    self.leaders.insert(key, endpoint);
-                }
-
-                // Full replica endpoint list for the `AnyReplica`
-                // read-endpoint selector: the local replica (via
-                // `listen_addr`) plus every remote's `endpoint`. Skip the
-                // local entry when `listen_addr` is `None` (server not
-                // bound yet) — a partial list would mis-route reads.
                 let mut replicas: Vec<String> = Vec::with_capacity(group.remotes.len() + 1);
                 if let Some(addr) = &local_endpoint {
                     replicas.push(addr.clone());
@@ -216,46 +279,193 @@ impl TopologyCache {
                 for r in &group.remotes {
                     replicas.push(r.endpoint.clone());
                 }
-                if !replicas.is_empty() {
-                    self.replicas.insert((store.store_id, group.group_id), replicas);
-                }
+                fresh_routes.push(FreshRoute {
+                    key,
+                    leader,
+                    replicas,
+                });
             }
         }
 
-        // Evict stale entries: groups present in the cache but absent
-        // from the fresh body. A removed group's stale leader endpoint
-        // self-heals via `NotLeaderHint`, but evicting keeps the cache
-        // clean. The eviction hook lets `CrowdbKvClient` evict stale
-        // `write_slot_highwater` entries — a stale `min_slot`
-        // high-watermark does NOT self-heal (silent empty reads forever).
-        //
-        // Only evict groups for stores that ARE present in the fresh body.
-        // A seed that doesn't host a store shouldn't be authoritative for
-        // evicting groups in that store — otherwise a topology refresh
-        // from a non-store-0 seed would evict group 0's leader, causing
-        // "no known leader" on the next sysdata write.
-        let evicted: Vec<(u64, u64)> = self
-            .leaders
-            .iter()
-            .filter_map(|e| {
-                let (sid, _gid) = *e.key();
-                if fresh_keys.contains(e.key()) || !fresh_stores.contains(&sid) {
-                    None
+        loop {
+            let current = self.snapshot.load_full();
+            let stale_refresh = current.generation != base_generation;
+            let mut groups = current.groups.clone();
+            if !stale_refresh {
+                groups.retain(|(store_id, _), _| !fresh_stores.contains(store_id));
+            }
+            for fresh in &fresh_routes {
+                let old_route = current.groups.get(&fresh.key);
+                let leader_endpoint = if stale_refresh {
+                    old_route.map_or_else(
+                        || fresh.leader.clone(),
+                        |route| route.leader.as_ref().map(|leader| leader.endpoint.clone()),
+                    )
                 } else {
-                    Some(*e.key())
-                }
+                    fresh.leader.clone()
+                };
+                let (leader, replicas) =
+                    Self::build_endpoints(old_route, leader_endpoint.as_deref(), &fresh.replicas);
+                let state = old_route.map_or_else(
+                    || Arc::new(GroupRouteState::default()),
+                    |route| Arc::clone(&route.state),
+                );
+                groups.insert(
+                    fresh.key,
+                    Arc::new(GroupRoute {
+                        leader,
+                        replicas,
+                        state,
+                    }),
+                );
+            }
+            if self.publish(&current, groups) {
+                return;
+            }
+        }
+    }
+
+    pub(super) fn select_replica(
+        &self,
+        store_id: u64,
+        group_id: u64,
+        policy: ReadEndpointPolicy,
+    ) -> Option<String> {
+        let snapshot = self.snapshot.load();
+        let route = snapshot.groups.get(&(store_id, group_id))?;
+        if route.replicas.is_empty() {
+            return None;
+        }
+        let cursor = route.state.read_cursor.fetch_add(1, Ordering::Relaxed);
+        let rr_index = usize::try_from(cursor).unwrap_or(0) % route.replicas.len();
+        let index = match policy {
+            ReadEndpointPolicy::Leader | ReadEndpointPolicy::AnyReplica => rr_index,
+            ReadEndpointPolicy::LeastConnections => Self::least_loaded(route, rr_index),
+            ReadEndpointPolicy::Latency => Self::lowest_latency(route, rr_index),
+        };
+        Some(route.replicas[index].endpoint.clone())
+    }
+
+    pub(super) fn endpoint_stats(&self, store_id: u64, group_id: u64, endpoint: &str) -> Arc<EndpointStats> {
+        let snapshot = self.snapshot.load();
+        snapshot
+            .groups
+            .get(&(store_id, group_id))
+            .and_then(|route| Self::find_endpoint(route, endpoint))
+            .map_or_else(
+                || Arc::new(EndpointStats::default()),
+                |route| Arc::clone(&route.stats),
+            )
+    }
+
+    pub(super) fn record_endpoint_rtt(&self, store_id: u64, group_id: u64, endpoint: &str, rtt_us: u64) {
+        let snapshot = self.snapshot.load();
+        if let Some(route) = snapshot
+            .groups
+            .get(&(store_id, group_id))
+            .and_then(|route| Self::find_endpoint(route, endpoint))
+        {
+            route.stats.record_rtt(rtt_us);
+        }
+    }
+
+    pub(super) fn record_write(&self, store_id: u64, group_id: u64, revision: u64) {
+        if let Some(route) = self.snapshot.load().groups.get(&(store_id, group_id)) {
+            route
+                .state
+                .write_slot_highwater
+                .fetch_max(revision, Ordering::Relaxed);
+        }
+    }
+
+    pub(super) fn write_slot_highwater(&self, store_id: u64, group_id: u64) -> u64 {
+        self.snapshot
+            .load()
+            .groups
+            .get(&(store_id, group_id))
+            .map_or(0, |route| {
+                route.state.write_slot_highwater.load(Ordering::Relaxed)
             })
-            .collect();
-        if evicted.is_empty() {
-            return;
+    }
+
+    fn least_loaded(route: &GroupRoute, rr_index: usize) -> usize {
+        let mut best_index = rr_index;
+        let mut best_count = route.replicas[rr_index].stats.in_flight_count();
+        for (index, endpoint) in route.replicas.iter().enumerate() {
+            let count = endpoint.stats.in_flight_count();
+            if count < best_count {
+                best_count = count;
+                best_index = index;
+            }
         }
-        let evicted_set: HashSet<(u64, u64)> = evicted.iter().copied().collect();
-        for key in &evicted {
-            self.leaders.remove(key);
-            self.replicas.remove(key);
+        best_index
+    }
+
+    fn lowest_latency(route: &GroupRoute, rr_index: usize) -> usize {
+        let mut best_index = rr_index;
+        let mut best_rtt = route.replicas[rr_index].stats.rtt_ewma();
+        for (index, endpoint) in route.replicas.iter().enumerate() {
+            let rtt = endpoint.stats.rtt_ewma();
+            if rtt > 0 && best_rtt > 0 && rtt < best_rtt {
+                best_rtt = rtt;
+                best_index = index;
+            }
         }
-        if let Some(hook) = &self.eviction_hook {
-            hook(&evicted_set);
+        best_index
+    }
+
+    fn find_endpoint<'a>(route: &'a GroupRoute, endpoint: &str) -> Option<&'a Arc<RouteEndpoint>> {
+        route
+            .leader
+            .iter()
+            .chain(route.replicas.iter())
+            .find(|candidate| candidate.endpoint == endpoint)
+    }
+
+    fn reuse_endpoint(old_route: Option<&Arc<GroupRoute>>, endpoint: &str) -> Arc<RouteEndpoint> {
+        old_route
+            .and_then(|route| Self::find_endpoint(route, endpoint))
+            .cloned()
+            .unwrap_or_else(|| {
+                Arc::new(RouteEndpoint {
+                    endpoint: endpoint.to_string(),
+                    stats: Arc::new(EndpointStats::default()),
+                })
+            })
+    }
+
+    fn build_endpoints(
+        old_route: Option<&Arc<GroupRoute>>,
+        leader: Option<&str>,
+        replicas: &[String],
+    ) -> (Option<Arc<RouteEndpoint>>, Vec<Arc<RouteEndpoint>>) {
+        let mut endpoints = HashMap::<String, Arc<RouteEndpoint>>::new();
+        let mut resolve = |endpoint: &str| {
+            endpoints
+                .entry(endpoint.to_string())
+                .or_insert_with(|| Self::reuse_endpoint(old_route, endpoint))
+                .clone()
+        };
+        let leader = leader.map(&mut resolve);
+        let replicas = replicas.iter().map(|endpoint| resolve(endpoint)).collect();
+        (leader, replicas)
+    }
+
+    fn publish(&self, current: &Arc<TopologySnapshot>, groups: HashMap<GroupKey, Arc<GroupRoute>>) -> bool {
+        let replacement = Arc::new(TopologySnapshot {
+            generation: self.next_generation(),
+            groups,
+        });
+        let previous = self.snapshot.compare_and_swap(current, replacement);
+        Arc::ptr_eq(&previous, current)
+    }
+
+    fn next_generation(&self) -> u64 {
+        loop {
+            let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
+            if generation != 0 {
+                return generation;
+            }
         }
     }
 }
@@ -404,7 +614,7 @@ mod tests {
     #[tokio::test]
     async fn set_leader_overrides_cache_without_io() {
         let cache = TopologyCache::new(vec!["http://unused:1".to_string()], Duration::from_secs(60));
-        cache.set_leader(3, 9, "http://leader:8080".to_string());
+        cache.set_leader(3, 9, "http://leader:8080");
         assert_eq!(cache.leader(3, 9), Some("http://leader:8080".to_string()));
     }
 
@@ -476,15 +686,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn merge_eviction_hook_fires_for_evicted_groups() {
-        let evicted: Arc<std::sync::Mutex<HashSet<(u64, u64)>>> =
-            Arc::new(std::sync::Mutex::new(HashSet::new()));
-        let evicted_clone = Arc::clone(&evicted);
-        let hook: EvictionHook = Arc::new(move |keys| {
-            let mut guard = evicted_clone.lock().unwrap();
-            guard.extend(keys.iter().copied());
-        });
-
+    async fn merge_eviction_retires_group_highwater() {
         let counter = Arc::new(AtomicUsize::new(0));
         let seed_full = spawn_topology_server(
             multi_group_topology(1, &[1, 2, 3], "http://10.0.0.1:9001"),
@@ -494,9 +696,10 @@ mod tests {
         let seed_partial =
             spawn_topology_server(multi_group_topology(1, &[1, 2], "http://10.0.0.1:9001"), counter).await;
 
-        let cache = TopologyCache::with_eviction_hook(vec![seed_full], Duration::from_millis(50), Some(hook));
+        let cache = TopologyCache::new(vec![seed_full], Duration::from_millis(50));
         cache.refresh().await.unwrap();
-        assert!(evicted.lock().unwrap().is_empty());
+        cache.record_write(1, 3, 99);
+        assert_eq!(cache.write_slot_highwater(1, 3), 99);
 
         {
             let mut seeds = cache.seeds_for_test();
@@ -506,8 +709,41 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(60)).await;
         cache.refresh().await.unwrap();
 
-        let evicted_guard = evicted.lock().unwrap();
-        assert_eq!(evicted_guard.len(), 1);
-        assert!(evicted_guard.contains(&(1, 3)));
+        assert_eq!(cache.write_slot_highwater(1, 3), 0);
+        cache.set_leader(1, 3, "http://replacement:1");
+        assert_eq!(cache.write_slot_highwater(1, 3), 0);
+    }
+
+    #[test]
+    fn stale_refresh_does_not_overwrite_newer_leader_hint() {
+        let cache = TopologyCache::new(Vec::new(), Duration::from_secs(1));
+        let first: TopologyResponse = serde_json::from_value(sample_topology(1, 1, "http://old:1")).unwrap();
+        cache.merge(first);
+        let stale_base = cache.snapshot.load().generation;
+        cache.set_leader(1, 1, "http://hint:2");
+
+        let stale: TopologyResponse =
+            serde_json::from_value(sample_topology(1, 1, "http://stale:3")).unwrap();
+        cache.merge_from_generation(stale, stale_base);
+
+        assert_eq!(cache.leader(1, 1).as_deref(), Some("http://hint:2"));
+    }
+
+    #[test]
+    fn leader_and_replicas_are_read_from_one_snapshot() {
+        let cache = TopologyCache::new(Vec::new(), Duration::from_secs(1));
+        let old: TopologyResponse = serde_json::from_value(sample_topology(1, 1, "http://old:1")).unwrap();
+        cache.merge(old);
+        let snapshot = cache.snapshot.load_full();
+        let route = snapshot.groups.get(&(1, 1)).unwrap();
+        let leader = route.leader.as_ref().unwrap().endpoint.clone();
+        let replicas: Vec<_> = route
+            .replicas
+            .iter()
+            .map(|endpoint| endpoint.endpoint.clone())
+            .collect();
+
+        assert_eq!(leader, "http://old:1");
+        assert_eq!(replicas, vec!["http://old:1"]);
     }
 }

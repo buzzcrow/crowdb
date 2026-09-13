@@ -27,7 +27,7 @@ impl CrowdbKvClient {
             return None;
         }
         self.topology
-            .set_leader(store_id, group_id, resp.not_leader_hint.clone());
+            .set_leader(store_id, group_id, &resp.not_leader_hint);
         Some(resp.not_leader_hint.clone())
     }
 

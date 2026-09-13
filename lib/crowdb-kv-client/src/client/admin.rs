@@ -32,7 +32,7 @@ impl CrowdbKvClient {
             endpoint: endpoint.clone(),
             status: "rpc transport not set".into(),
         })?;
-        let _in_flight = self.incr_in_flight(&endpoint);
+        let _in_flight = self.incr_in_flight(store_id, group_id, &endpoint);
         t.send_create_snapshot(&endpoint, group_id, read_mode, min_slot)
             .await
     }
@@ -51,7 +51,7 @@ impl CrowdbKvClient {
             endpoint: endpoint.clone(),
             status: "rpc transport not set".into(),
         })?;
-        let _in_flight = self.incr_in_flight(&endpoint);
+        let _in_flight = self.incr_in_flight(store_id, group_id, &endpoint);
         let resp = t.send_list_snapshots(&endpoint, group_id).await?;
         Ok(resp.snapshots)
     }
@@ -82,7 +82,7 @@ impl CrowdbKvClient {
             endpoint: endpoint.clone(),
             status: "rpc transport not set".into(),
         })?;
-        let _in_flight = self.incr_in_flight(&endpoint);
+        let _in_flight = self.incr_in_flight(store_id, group_id, &endpoint);
         t.send_snapshot_scan(&endpoint, snapshot_handle, prefix, start_after, limit, group_id)
             .await
     }
@@ -106,7 +106,7 @@ impl CrowdbKvClient {
             endpoint: endpoint.clone(),
             status: "rpc transport not set".into(),
         })?;
-        let _in_flight = self.incr_in_flight(&endpoint);
+        let _in_flight = self.incr_in_flight(store_id, group_id, &endpoint);
         t.send_release_snapshot(&endpoint, snapshot_handle, group_id)
             .await
     }

@@ -7,17 +7,16 @@
 
 #![allow(clippy::cast_possible_truncation)]
 
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
-use dashmap::DashMap;
 
 use crowdb_common::RequestIdGen;
 use crowdb_kv::rpc::{KvBatchItem, KvErrorCode, ReadMode};
 
-use super::topology::TopologyCache;
+use super::topology::{EndpointStats, TopologyCache};
 use crate::config::{ClientConfig, ReadEndpointPolicy, RetryConfig};
 use crate::error::{Error, Result};
 use crate::metrics::ClientMetrics;
@@ -81,78 +80,24 @@ pub enum BatchOp {
     Delete { key: Bytes },
 }
 
-/// Per-endpoint statistics for `LeastConnections` / `Latency` read
-/// routing. Stored in a `DashMap<String, EndpointStats>` keyed by
-/// endpoint string. All fields are lock-free atomics — updated on the
-/// hot path with `Relaxed` ordering (no locks, no allocation).
-#[derive(Debug, Default)]
-struct EndpointStats {
-    /// In-flight read count for this endpoint. Incremented before the
-    /// crowdb-rpc send, decremented when the response arrives (via
-    /// [`InFlightGuard`] drop). Used by `LeastConnections` selection.
-    in_flight: AtomicI64,
-    /// EWMA of get RTT in microseconds, updated on each `Ok` response.
-    /// `0` means no history yet (treated as a tie by `Latency`
-    /// selection). Updated via CAS loop with `alpha = 0.25`.
-    rtt_ewma_us: AtomicU64,
-}
-
-impl EndpointStats {
-    /// Update the RTT EWMA with a new sample. `alpha = 0.25`: the new
-    /// sample gets a quarter weight, so a single spike moves the EWMA
-    /// by 25% and decays over ~4 samples. The first sample initializes
-    /// the EWMA directly.
-    fn record_rtt(&self, rtt_us: u64) {
-        let mut old = self.rtt_ewma_us.load(Ordering::Relaxed);
-        loop {
-            let new = if old == 0 {
-                rtt_us
-            } else {
-                old / 4 * 3 + rtt_us / 4
-            };
-            match self
-                .rtt_ewma_us
-                .compare_exchange_weak(old, new, Ordering::Relaxed, Ordering::Relaxed)
-            {
-                Ok(_) => break,
-                Err(actual) => old = actual,
-            }
-        }
-    }
-
-    /// Current in-flight count, loaded `Relaxed` — used only for
-    /// selection comparison, not for ordering guarantees.
-    #[must_use]
-    fn in_flight_count(&self) -> i64 {
-        self.in_flight.load(Ordering::Relaxed)
-    }
-
-    /// Current RTT EWMA in micros. `0` means no history.
-    #[must_use]
-    fn rtt_ewma(&self) -> u64 {
-        self.rtt_ewma_us.load(Ordering::Relaxed)
-    }
-}
-
 /// RAII guard that decrements the endpoint's in-flight count on drop.
 /// Created before the crowdb-rpc send; dropped at the end of the retry-loop
 /// iteration (covers all exit paths: success, error, redirect, `?`).
-/// Holds an `Arc<EndpointStats>` so it can live across `.await` points
-/// (a `DashMap` entry guard is not `Send`).
+/// Holds an `Arc<EndpointStats>` so it can live across `.await` points.
 pub(crate) struct InFlightGuard {
     stats: Arc<EndpointStats>,
 }
 
 impl InFlightGuard {
     fn new(stats: Arc<EndpointStats>) -> Self {
-        stats.in_flight.fetch_add(1, Ordering::Relaxed);
+        stats.increment_in_flight();
         Self { stats }
     }
 }
 
 impl Drop for InFlightGuard {
     fn drop(&mut self) {
-        self.stats.in_flight.fetch_sub(1, Ordering::Relaxed);
+        self.stats.decrement_in_flight();
     }
 }
 
@@ -167,31 +112,11 @@ pub struct CrowdbKvClient {
     next_seq: AtomicU64,
     request_ids: RequestIdGen,
     pub(crate) metrics: Arc<ClientMetrics>,
-    /// Per-`(store_id, group_id)` high-watermark of the last write's
-    /// paxos slot, auto-attached as `min_slot` on `MinSlot` reads.
-    /// Bounded by the number of groups this client has written to, not by
-    /// keyspace size. Evicted when a group disappears from the topology
-    /// (via `TopologyCache`'s eviction hook) — a stale `min_slot`
-    /// high-watermark does not self-heal and causes silent empty reads
-    /// on a reused group ID.
-    write_slot_highwater: Arc<DashMap<(u64, u64), u64>>,
     /// `MinSlot` read-endpoint selection policy. `Leader` (default)
     /// preserves the pre-R26 behavior; `AnyReplica` distributes `MinSlot`
     /// reads round-robin across the topology cache's replica list.
     /// Linearizable reads always target the leader regardless of this.
     read_endpoint_policy: ReadEndpointPolicy,
-    /// Per-`(store_id, group_id)` round-robin cursor for the
-    /// `AnyReplica` `MinSlot` selector. Lock-free `fetch_add`; one entry
-    /// per group the client has read from.
-    read_rr: DashMap<(u64, u64), AtomicU64>,
-    /// Per-endpoint statistics for `LeastConnections` / `Latency`
-    /// selection. Keyed by endpoint string (same keys as the topology
-    /// cache's replica list). Entries are created lazily on first
-    /// selection and never evicted — stale entries (replica removed
-    /// from topology) simply accumulate zero in-flight and zero RTT,
-    /// never selected again. `Arc` values so `InFlightGuard` can hold
-    /// a clone across `.await` points.
-    endpoint_stats: DashMap<String, Arc<EndpointStats>>,
     /// Optional crowdb-rpc transport (R117). When set via
     /// `with_rpc_transport`, the KV methods (`put`/`get`/`delete`/
     /// `batch_write`/`scan`/`scan_count`/`journal_scan`) send via
@@ -230,32 +155,14 @@ impl CrowdbKvClient {
                 "CrowdbKvClient: new shared instance created"
             );
         }
-        // The eviction hook removes stale `write_slot_highwater` entries
-        // when a group disappears from the topology. The hook captures a
-        // raw pointer pattern via `Arc<DashMap>` — we create the DashMap
-        // first, then build the hook referencing it, then the cache.
-        let write_slot_highwater: Arc<DashMap<(u64, u64), u64>> = Arc::new(DashMap::new());
-        let eviction_hook_map = Arc::clone(&write_slot_highwater);
-        let eviction_hook: super::topology::EvictionHook = Arc::new(move |evicted| {
-            for key in evicted {
-                eviction_hook_map.remove(key);
-            }
-        });
         Self {
-            topology: TopologyCache::with_eviction_hook(
-                config.mgmt_seeds,
-                config.topology_min_refresh_interval,
-                Some(eviction_hook),
-            ),
+            topology: TopologyCache::new(config.mgmt_seeds, config.topology_min_refresh_interval),
             retry: config.retry,
             client_id: new_client_id(),
             next_seq: AtomicU64::new(1),
             request_ids: RequestIdGen::new(),
             metrics: Arc::new(ClientMetrics::default()),
-            write_slot_highwater,
             read_endpoint_policy: config.read_endpoint_policy,
-            read_rr: DashMap::new(),
-            endpoint_stats: DashMap::new(),
             rpc_transport: Some(transport.unwrap_or_else(|| {
                 std::sync::Arc::new(crate::KvRpcTransport::with_pool_size(
                     config.pool_size_per_endpoint,
@@ -367,8 +274,9 @@ impl CrowdbKvClient {
     /// already resolved an endpoint through some other discovery path
     /// (e.g. `crowdb-console`'s own management API) and just want
     /// `CrowdbKvClient`'s retry/pool machinery on top of it.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn seed_leader(&self, store_id: u64, group_id: u64, endpoint: String) {
-        self.topology.set_leader(store_id, group_id, endpoint);
+        self.topology.set_leader(store_id, group_id, &endpoint);
     }
 
     /// The system KV group's store id (always 0). Group 0 of store 0
@@ -456,84 +364,14 @@ impl CrowdbKvClient {
             self.metrics.record_topology_refresh();
             let _ = self.topology.refresh().await;
         }
-        let replicas = match self.topology.replicas(store_id, group_id) {
-            Some(r) if !r.is_empty() => r,
-            _ => {
-                // No replica list available (single-replica group, or
-                // every seed unreachable): fall back to the leader
-                // rather than failing the read.
-                return self.resolve_leader(store_id, group_id).await;
-            }
-        };
-        let idx = self.select_replica_index(store_id, group_id, &replicas);
-        self.metrics.record_read_endpoint_distributed();
-        Ok(replicas[idx].clone())
-    }
-
-    /// Select a replica index from the list according to the active
-    /// distributed policy. `AnyReplica` → round-robin;
-    /// `LeastConnections` → min in-flight (ties → round-robin);
-    /// `Latency` → min RTT EWMA (no history / ties → round-robin).
-    /// The round-robin cursor (`read_rr`) is always advanced so tie-
-    /// breaks are evenly distributed.
-    fn select_replica_index(&self, store_id: u64, group_id: u64, replicas: &[String]) -> usize {
-        let cursor = self
-            .read_rr
-            .entry((store_id, group_id))
-            .or_insert_with(|| AtomicU64::new(0))
-            .fetch_add(1, Ordering::Relaxed);
-        let rr_idx = (cursor as usize) % replicas.len();
-        match self.read_endpoint_policy {
-            ReadEndpointPolicy::Leader | ReadEndpointPolicy::AnyReplica => rr_idx,
-            ReadEndpointPolicy::LeastConnections => {
-                // Start with the round-robin candidate's count so ties
-                // keep the round-robin index (even distribution).
-                let mut best_idx = rr_idx;
-                let mut best_count = self
-                    .endpoint_stats
-                    .entry(replicas[rr_idx].clone())
-                    .or_default()
-                    .in_flight_count();
-                for (i, ep) in replicas.iter().enumerate() {
-                    if i == rr_idx {
-                        continue;
-                    }
-                    let count = self
-                        .endpoint_stats
-                        .entry(ep.clone())
-                        .or_default()
-                        .in_flight_count();
-                    if count < best_count {
-                        best_count = count;
-                        best_idx = i;
-                    }
-                }
-                best_idx
-            }
-            ReadEndpointPolicy::Latency => {
-                // Start with the round-robin candidate's RTT so ties
-                // (including all-zero / no history) keep the round-robin
-                // index. A non-zero RTT only wins over another non-zero
-                // RTT that is higher — `0` (no history) is never
-                // preferred over the round-robin candidate.
-                let mut best_idx = rr_idx;
-                let mut best_rtt = self
-                    .endpoint_stats
-                    .entry(replicas[rr_idx].clone())
-                    .or_default()
-                    .rtt_ewma();
-                for (i, ep) in replicas.iter().enumerate() {
-                    if i == rr_idx {
-                        continue;
-                    }
-                    let rtt = self.endpoint_stats.entry(ep.clone()).or_default().rtt_ewma();
-                    if rtt > 0 && best_rtt > 0 && rtt < best_rtt {
-                        best_rtt = rtt;
-                        best_idx = i;
-                    }
-                }
-                best_idx
-            }
+        if let Some(endpoint) = self
+            .topology
+            .select_replica(store_id, group_id, self.read_endpoint_policy)
+        {
+            self.metrics.record_read_endpoint_distributed();
+            Ok(endpoint)
+        } else {
+            self.resolve_leader(store_id, group_id).await
         }
     }
 
@@ -541,30 +379,21 @@ impl CrowdbKvClient {
     /// `InFlightGuard` that decrements the in-flight count on drop.
     /// Used in the get/scan retry loops to track per-endpoint load for
     /// `LeastConnections` selection.
-    pub(crate) fn incr_in_flight(&self, endpoint: &str) -> InFlightGuard {
-        let entry = self
-            .endpoint_stats
-            .entry(endpoint.to_string())
-            .or_insert_with(|| Arc::new(EndpointStats::default()))
-            .clone();
-        InFlightGuard::new(entry)
+    pub(crate) fn incr_in_flight(&self, store_id: u64, group_id: u64, endpoint: &str) -> InFlightGuard {
+        InFlightGuard::new(self.topology.endpoint_stats(store_id, group_id, endpoint))
     }
 
     /// Record the RTT for `endpoint` into its EWMA. Called on every
     /// `Ok` response (success, not-found, `NotLeader` redirect); not
     /// called on transport errors (a timeout doesn't reflect the
     /// endpoint's serving latency). Used by `Latency` selection.
-    fn record_endpoint_rtt(&self, endpoint: &str, rtt_us: u64) {
-        if let Some(entry) = self.endpoint_stats.get(endpoint) {
-            entry.record_rtt(rtt_us);
-        }
+    fn record_endpoint_rtt(&self, store_id: u64, group_id: u64, endpoint: &str, rtt_us: u64) {
+        self.topology
+            .record_endpoint_rtt(store_id, group_id, endpoint, rtt_us);
     }
 
     fn record_write(&self, store_id: u64, group_id: u64, revision: u64) {
-        self.write_slot_highwater
-            .entry((store_id, group_id))
-            .and_modify(|w| *w = (*w).max(revision))
-            .or_insert(revision);
+        self.topology.record_write(store_id, group_id, revision);
     }
 
     /// Cached `min_slot` for `MinSlot` reads against this group:
@@ -572,9 +401,7 @@ impl CrowdbKvClient {
     /// or `0` if it has never written to this group.
     #[must_use]
     pub fn read_your_writes_slot(&self, store_id: u64, group_id: u64) -> u64 {
-        self.write_slot_highwater
-            .get(&(store_id, group_id))
-            .map_or(0, |v| *v)
+        self.topology.write_slot_highwater(store_id, group_id)
     }
 
     /// `Put` a single key/value.
@@ -752,7 +579,7 @@ impl CrowdbKvClient {
             let request_id = self.request_ids.next().as_u64();
             let request_create_ms = now_ms();
             let t0 = Instant::now();
-            let _in_flight = self.incr_in_flight(&endpoint);
+            let _in_flight = self.incr_in_flight(store_id, group_id, &endpoint);
             let send_result: std::result::Result<crowdb_kv::rpc::KvResponse, String> = t
                 .send_get(
                     &endpoint,
@@ -778,7 +605,7 @@ impl CrowdbKvClient {
                             "kv get: slow response"
                         );
                     }
-                    self.record_endpoint_rtt(&endpoint, t0.elapsed().as_micros() as u64);
+                    self.record_endpoint_rtt(store_id, group_id, &endpoint, t0.elapsed().as_micros() as u64);
                     // Follow a `NotLeaderHint` before checking `not_found`/`ok`:
                     // a linearizable read forwarded from a stale leader can
                     // return `not_found=true` alongside a hint (the server
@@ -1280,7 +1107,7 @@ impl CrowdbKvClient {
             let request_id = self.request_ids.next().as_u64();
             let request_create_ms = now_ms();
             let t0 = Instant::now();
-            let _in_flight = self.incr_in_flight(&endpoint);
+            let _in_flight = self.incr_in_flight(store_id, group_id, &endpoint);
             let send_result: std::result::Result<crowdb_kv::rpc::KvScanResponse, String> = t
                 .send_scan(
                     &endpoint,
@@ -1303,7 +1130,7 @@ impl CrowdbKvClient {
                 .map_err(|e| e.to_string());
             match send_result {
                 Ok(resp) => {
-                    self.record_endpoint_rtt(&endpoint, t0.elapsed().as_micros() as u64);
+                    self.record_endpoint_rtt(store_id, group_id, &endpoint, t0.elapsed().as_micros() as u64);
                     // Follow a `not_leader_hint` before honoring `ok`: a
                     // linearizable scan that fails mid-forward to the leader
                     // falls back to a stale local read + hint (see
@@ -1325,7 +1152,7 @@ impl CrowdbKvClient {
                             "not_leader_hint",
                         );
                         self.topology
-                            .set_leader(store_id, group_id, resp.not_leader_hint.clone());
+                            .set_leader(store_id, group_id, &resp.not_leader_hint);
                         endpoint = resp.not_leader_hint;
                         // Resume from the last received key (S3-style
                         // pagination is keyed on `start_after`, so no
@@ -1479,7 +1306,7 @@ impl CrowdbKvClient {
             let request_id = self.request_ids.next().as_u64();
             let request_create_ms = now_ms();
             let t0 = Instant::now();
-            let _in_flight = self.incr_in_flight(&endpoint);
+            let _in_flight = self.incr_in_flight(store_id, group_id, &endpoint);
             let send_result: std::result::Result<crowdb_kv::rpc::KvScanResponse, String> = t
                 .send_scan(
                     &endpoint,
@@ -1502,7 +1329,7 @@ impl CrowdbKvClient {
                 .map_err(|e| e.to_string());
             match send_result {
                 Ok(resp) => {
-                    self.record_endpoint_rtt(&endpoint, t0.elapsed().as_micros() as u64);
+                    self.record_endpoint_rtt(store_id, group_id, &endpoint, t0.elapsed().as_micros() as u64);
                     if resp.ok {
                         self.metrics.record_scan_latency(t0.elapsed().as_micros() as u64);
                         return Ok(resp.count);
@@ -1513,7 +1340,7 @@ impl CrowdbKvClient {
                             self.metrics.record_read_endpoint_fallback();
                         }
                         self.topology
-                            .set_leader(store_id, group_id, resp.not_leader_hint.clone());
+                            .set_leader(store_id, group_id, &resp.not_leader_hint);
                         endpoint = resp.not_leader_hint;
                         continue;
                     }
@@ -1591,7 +1418,7 @@ impl CrowdbKvClient {
             let request_id = self.request_ids.next().as_u64();
             let request_create_ms = now_ms();
             let t0 = Instant::now();
-            let _in_flight = self.incr_in_flight(&endpoint);
+            let _in_flight = self.incr_in_flight(store_id, group_id, &endpoint);
             let send_result: std::result::Result<crowdb_kv::rpc::KvJournalScanResponse, String> = t
                 .send_journal_scan(
                     &endpoint,
@@ -1608,7 +1435,7 @@ impl CrowdbKvClient {
                 .map_err(|e| e.to_string());
             match send_result {
                 Ok(resp) => {
-                    self.record_endpoint_rtt(&endpoint, t0.elapsed().as_micros() as u64);
+                    self.record_endpoint_rtt(store_id, group_id, &endpoint, t0.elapsed().as_micros() as u64);
                     if resp.ok {
                         self.metrics.record_scan_latency(t0.elapsed().as_micros() as u64);
                         if page1_read_slot.is_none() {
@@ -1666,7 +1493,7 @@ impl CrowdbKvClient {
                             self.metrics.record_read_endpoint_fallback();
                         }
                         self.topology
-                            .set_leader(store_id, group_id, resp.not_leader_hint.clone());
+                            .set_leader(store_id, group_id, &resp.not_leader_hint);
                         endpoint = resp.not_leader_hint;
                         continue;
                     }

@@ -312,7 +312,7 @@ fn register_crowdb_rpc_handlers(
                     leader = %hint,
                     "watch_notify(crowdb-rpc): not_leader_hint, reconnecting"
                 );
-                kv.topology.set_leader(store_id, fb.group_id(), hint);
+                kv.topology.set_leader(store_id, fb.group_id(), &hint);
                 let tx = reconnect_tx_h.clone();
                 reconnect_runtime.spawn(async move {
                     let _ = tx.send(()).await;
