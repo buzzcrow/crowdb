@@ -215,11 +215,6 @@ chunkdb) are DONE. The post-migration KV server/library review is also complete.
   the reactor submission (small readahead window, default 1). Win is
   zero on mem-mode (leaves resident); needs a cold/disk bench config to
   validate. Medium complexity.
-- **[R68](R68-kv-write-largeval-bench.md)** — large-value write snapshot
-  sentinel — Area: cluster / maintenance / bench — Add a self-validating true
-  16 KiB write workload and require snapshot completion, zero errors, and zero
-  election churn across three clean repetitions. Record reproducible snapshot
-  and latency evidence; do not allow a run that missed maintenance to pass.
 ---
 
 ## Implementation Process
