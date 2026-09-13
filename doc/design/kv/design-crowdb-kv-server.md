@@ -96,11 +96,12 @@ store still starts with its other groups.
 
 ### 2.3 Concurrency model
 
-`KvStoreRegistry` holds stores in a `DashMap` (lock-free concurrent map).
-`PxKvStore` uses `DashMap` for groups. `PxGroup` supports
-`add_remote_replica` / `remove_remote_replica` for mutable remote
-management. No additional synchronization is needed; all shared state
-is already thread-safe via these structures.
+`KvStoreRegistry` and each `PxKvStore` publish immutable store/group maps
+through `ArcSwap`. Readers clone an `Arc` from one snapshot without taking a
+shard lock. Replacement uses compare-and-swap, so a reader sees the old or new
+group and never a missing intermediate entry; successful replacement cancels
+the retired group's tenure exactly once. `PxGroup` rebuilds and republishes a
+group when remote membership changes.
 
 ### 2.4 HTTP framework: axum
 

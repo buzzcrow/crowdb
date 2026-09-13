@@ -169,14 +169,16 @@ File: `lib/crowdb-chunkdb-client/src/rpc_transport.rs`
 pub struct ChunkdbRpcTransport {
     server: Arc<RpcServer>,
     rpc: Arc<RpcClient>,
-    connections: DashMap<String, Connection>,
+    connections: ConnectionPoolIndex,
     next_req_id: AtomicU64,
 }
 ```
 
 The `RpcServer` is the client-side transport — it does not listen but
-establishes connections to remote endpoints. `conn_for(endpoint)`
-normalizes the endpoint, connects, and caches the `Connection`.
+establishes connections to remote endpoints. `conn_for(endpoint)` normalizes
+the endpoint and selects from an immutable generated pool. Cold connections
+are established outside the index and installed with compare-and-swap;
+retryable failures invalidate only the selected generation.
 
 12 `send_*` methods (one per RPC): build request flatbuffer →
 `rpc.call(&server, &conn, req_id, control, None, msg_type)` →

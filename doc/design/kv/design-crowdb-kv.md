@@ -307,8 +307,9 @@ Full design: `design-crowdb-kv-wal.md`, `design-crowdb-kv-state-machine.md`,
   behavior for backward compatibility. A `GET
   /stores/:sid/groups/:gid/ready` endpoint checks cluster readiness
   (leader elected, quorum reachable, applied-slot lag). The operation
-  registry is an in-memory `DashMap` in `crowdb-kv-server`; background
-  tasks poll group status until a new leader appears or timeout.
+  registry is an in-memory sharded-lock map in `crowdb-kv-server`;
+  this retained use is limited to low-frequency management work, and
+  entry guards are dropped before background polling or other awaits.
 
 Full design: `design-crowdb-kv-reconfiguration.md`, `design-crowdb-kv-server.md`.
 
@@ -342,11 +343,11 @@ Full design: `design-crowdb-kv-reconfiguration.md`, `design-crowdb-kv-server.md`
     Same `NotLeader` fallback as `AnyReplica`.
   - All distributed policies (`AnyReplica`, `LeastConnections`,
     `Latency`) increment `read_endpoint_distributed` on selection and
-    `read_endpoint_fallback` on `NotLeader` redirect. Per-endpoint
-    statistics live in a `DashMap<String, Arc<EndpointStats>>` keyed by
-    endpoint string; entries are created lazily and never evicted
-    (stale entries are harmless: zero in-flight, zero RTT, never
-    selected).
+    `read_endpoint_fallback` on `NotLeader` redirect. Each immutable
+    group route owns its read cursor, write high-watermark, and `Arc`
+    endpoint objects containing atomic in-flight and RTT statistics.
+    Publishing or evicting the route retires those values as one
+    topology generation.
 - **Retry** — on timeout or `NotLeader`, client retries with backoff.
   `NotLeader` with hint → follow hint immediately.
 - **Scan pagination** — the unary `Scan` RPC uses S3-style pagination
@@ -373,8 +374,9 @@ Full design: `design-crowdb-kv-reconfiguration.md`, `design-crowdb-kv-server.md`
   PxLogEntry stream (survives leader change). Per-client retention of
   the last 64 committed `(seq, slot)` mappings, exact-match lookup: a
   recorded `seq` returns its own commit slot; an unrecorded `seq`
-  (lower or otherwise) is a miss. Outside the window, outcome is
-  unknown, safe to re-propose.
+  (lower or otherwise) is a miss. A lock-free ordered client index
+  points to immutable 64-entry windows replaced by atomic compare-and-
+  swap. Outside the window, outcome is unknown, safe to re-propose.
 
 ## 11. Module Decomposition
 

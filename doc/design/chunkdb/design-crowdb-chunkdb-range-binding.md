@@ -558,10 +558,11 @@ for the full five-step flow + edge cases.
 
 `allocator/pool.rs` `free_blocks` groups segments by disk-group (via
 `disk_id → dg_id` reverse lookup) and sends each group's free RPC to
-the owning instance only. A `disk_id_to_dg: DashMap<DiskId, u64>`
-cache is populated from the topology cache's `DiskGroupEntry` list
-(each entry has `disk_ids`). `update_disk_id_lookup` is called by the
-topology refresh loop.
+the owning instance only. The `disk_id_to_dg` reverse map is rebuilt from the
+topology cache's `DiskGroupEntry` list (each entry has `disk_ids`) and
+atomically published through `ArcSwap`. `update_disk_id_lookup` is called by
+the topology refresh loop, so readers see the old or new complete map and
+never a partial refresh.
 
 Fallback: if the reverse lookup misses (cache cold or `disk_id`
 unknown), the segments are broadcast to all channels (preserves

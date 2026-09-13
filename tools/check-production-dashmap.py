@@ -33,7 +33,7 @@ ALLOWED: dict[tuple[str, str], str] = {
     (
         "lib/crowdb-kv-client/src/service/discovery.rs",
         "services",
-    ): "bounded service-name cache; lookup clones Arc<ServiceState> before refresh I/O",
+    ): "service-name cache; lookup clones Arc<ServiceState> before refresh I/O",
 }
 
 

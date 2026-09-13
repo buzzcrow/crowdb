@@ -83,14 +83,15 @@ transport layer is crowdb-rpc.
 
 ### 2.2 Structure
 
-`DiskdbClient` keeps `svc: ServiceRegistryClient` + endpoint cache
-(`DashMap<DiskGroupId, String>`) + `disk_to_dg` reverse map. The
-`with_rpc_transport()` builder sets an `Option<Arc<DiskdbRpcTransport>>`;
-when set, all 11 RPC methods dispatch via crowdb-rpc.
+`DiskdbClient` keeps `svc: ServiceRegistryClient`, an `Arc`-shared
+`DiskdbRoutingState`, and a `DiskdbRpcTransport`. The routing state atomically
+publishes complete endpoint snapshots and generation-tags incrementally learned
+disk routes, so every client clone observes the same updates.
 
-`DiskdbRpcTransport` holds a shared `RpcServer` (connection owner), a
-shared `RpcClient` (completion pool), and a `DashMap<String,
-Connection>` per-endpoint connection pool. Each RPC method:
+`DiskdbRpcTransport` holds a shared `RpcServer` (connection owner), a shared
+`RpcClient` (completion pool), and a generation-aware `ConnectionPoolIndex`.
+Connections are created outside the index, and concurrent cold installers use
+compare-and-swap so only one complete pool becomes current. Each RPC method:
 a. Resolve endpoint for `disk_group_id` (cache → refresh on miss).
 b. Get/create the `Connection` for that endpoint via `conn_for()`.
 c. Build the request flatbuffer (`FlatBufferBuilder` → `finish` →
@@ -109,6 +110,8 @@ g. On `ret_code != Success` (protocol error): map to
   refresh cache, retry once.
 - Connection dropped mid-call → `ConnectionClosed` → retry on a fresh
   connection (reconnect).
+- A retryable failure invalidates only the selected pool generation; an old
+  failure cannot clear a newer pool.
 - All endpoints down → `AllDown` → `DiskdbClientError::Unreachable`.
 
 ## 3. Error model

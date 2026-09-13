@@ -416,8 +416,11 @@ clean shutdown.
 ### 4.4 Client discovery
 
 `ServiceDiscoveryClient` (in `crowdb-kv-client`) wraps
-`ServiceRegistryClient` with a per-service `DashMap` cache and
-TTL-based refresh. Clients call `discover_all(service)` or
+`ServiceRegistryClient` with a per-service state map and TTL-based
+refresh. Each state contains an atomically published cached result, an atomic
+round-robin cursor, and an async single-flight refresh gate. The sharded-map
+guard is dropped immediately after cloning the state and never crosses I/O.
+Clients call `discover_all(service)` or
 `discover_one(service)` to find living service instances by service
 name without hardcoding addresses. The cache is poll-on-demand: the
 first call queries group-0, subsequent calls within the cache TTL
@@ -425,7 +428,10 @@ first call queries group-0, subsequent calls within the cache TTL
 `invalidate(service)` forces a re-query on the next call; called
 after known topology changes (e.g. `cluster_init`, `deploy_diskdb`).
 
-Instance selection is round-robin among live instances. The
+Simultaneous expiry for one service produces one group-0 refresh; waiters
+recheck the freshly published result after acquiring the gate. Instance
+selection uses the service state's atomic cursor to round-robin among live
+instances. The
 `DiskdbClient` and `ChunkdbClient` retain their per-disk-group /
 per-range routing caches (they have routing requirements that
 round-robin doesn't cover); the generic discovery client handles the

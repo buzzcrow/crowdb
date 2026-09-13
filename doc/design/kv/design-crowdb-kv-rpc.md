@@ -128,9 +128,11 @@ port with a dedicated schema. The client library
 
 **Connection model:** Each `PxKvStore` runs one `RpcServer` on the
 crowdb-rpc port (derived from the base port via a fixed offset, see
-§12). The shared `PxRpcTransport` holds one `RpcClient` + a
-`DashMap<endpoint, Connection>` connection cache. All `PxRemoteReplica`
-instances in the store share the same transport.
+§12). The shared `PxRpcTransport` holds one `RpcClient` and a lock-free RCU
+connection-pool index. Each endpoint entry is an immutable generated pool;
+connections are established outside the index and installed with
+compare-and-swap. All `PxRemoteReplica` instances in the store share the same
+transport.
 
 ---
 
@@ -192,8 +194,9 @@ consensus RPCs. It holds:
 - `server: Arc<RpcServer>` — the local server handle (for connection
   attachment).
 - `rpc: RpcClient` — the client facade for `call()` / `send()`.
-- `connections: DashMap<String, Connection>` — per-endpoint
-  connection cache. `conn_for(endpoint)` lazily connects and caches.
+- `connections: ConnectionPoolIndex` — per-endpoint immutable connection
+  pools carrying a generation. `conn_for(endpoint)` lazily connects outside
+  the index and atomically installs one completed pool.
 
 **Request-response path (`send_prepare`, `send_accept`, etc.):**
 Builds the flatbuffer request via `FlatBufferBuilder`, calls
@@ -211,6 +214,10 @@ observability but treated as best-effort.
 
 **Port derivation:** `conn_for(endpoint)` parses the server endpoint
 (host:port) and connects to `port + RPC_PORT_OFFSET` (see §12).
+
+Retryable failures invalidate only the exact generation selected for the
+failed request. A late failure from an older connection therefore cannot
+discard a replacement pool.
 
 ---
 

@@ -701,7 +701,7 @@ instance. The per-chunk lock assumes that one-owner invariant.
 
 ```rust
 pub struct ChunkLockMap {
-    locks: DashMap<ChunkId, Arc<Mutex<()>>>,
+    locks: SkipMap<(u64, u64), Arc<ChunkLockEntry>>,
     chunks: Arc<quick_cache::Cache<ChunkId, Chunk>>,
     metrics: Arc<LifecycleMetrics>,
     hold_warn_threshold: Duration,
@@ -709,10 +709,11 @@ pub struct ChunkLockMap {
 ```
 
 - `new(cache_capacity, metrics, hold_warn_threshold) -> Self` — creates
-  an empty `DashMap` and a `Cache::new(cache_capacity)`.
+  an empty ordered lock-free index and a `Cache::new(cache_capacity)`.
 - `acquire(&self, chunk_id, store, policy, hint) -> Result<ChunkGuard,
   LifecycleError>` — for existing chunks (append/seal/delete). Steps:
-  1. `entry().or_default()` to get-or-create the `Arc<Mutex<()>>`.
+  1. `get_or_insert` an immutable `ChunkLockEntry`, atomically retain its user
+     count, and recheck that the exact entry is still current.
   2. Record lock-wait start time.
   3. Acquire the mutex per `policy`:
      - `TryLock` → `try_lock_owned()`. On `Err`, increment
@@ -727,7 +728,8 @@ pub struct ChunkLockMap {
      `cache_miss_count`), `store.get_chunk(chunk_id)`. On
      `StoreError::ChunkNotFound` → return `ChunkNotFound`. On success,
      if `hint == Cache`, `self.chunks.insert(chunk_id, chunk.clone())`.
-  6. Return `ChunkGuard` with the chunk, hint, hold_start, metrics.
+  6. Return `ChunkGuard` with the exact retained lock entry, mutex guard,
+     chunk, hint, hold start, and metrics.
 - `acquire_for_create(&self, chunk_id, policy, hint) -> Result<ChunkGuard,
   LifecycleError>` — for `allocate_chunk` with caller-supplied ID. Same
   lock acquisition as `acquire` but does NOT fetch from store (chunk
@@ -735,11 +737,12 @@ pub struct ChunkLockMap {
   `refresh()` after creating the chunk.
 - `populate_cache(&self, chunk_id, chunk)` — for `allocate_chunk` with
   auto-generated ID (skips the lock; UUID collision negligible).
-- `reap_idle(&self)` — iterates `self.locks.retain(|_, arc|
-  Arc::strong_count(arc) > 1)`. Entries where only the map holds a
-  clone (`strong_count == 1`) are removed. Increments `reap_idle_count`
-  and `reap_idle_entries_removed` by the number removed. Payload cache
-  is untouched (bounded by its own capacity).
+- `reap_idle(&self)` — scans the ordered index and changes an entry's user
+  state from zero to `REAPING` before removing that exact entry. An owner,
+  waiter, or acquisition in progress has already retained the entry and
+  prevents this transition. Increments `reap_idle_count` and
+  `reap_idle_entries_removed`; the separately bounded payload cache is
+  untouched.
 - `invalidate_chunk(&self, chunk_id) -> bool` — calls
   `self.chunks.remove(&chunk_id).is_some()`. Increments
   `invalidate_count`. Used by range migration.
@@ -787,6 +790,7 @@ These are internal in v1, not exposed in the RPC API.
 
 ```rust
 pub struct ChunkGuard {
+    lock: ChunkLockHandle,       // retains the exact index entry
     guard: OwnedMutexGuard<()>,  // held for Drop — releases the lock
     chunk: Option<Chunk>,
     hint: CacheHint,
@@ -831,8 +835,8 @@ the map bounded by concurrent locks, not by chunks-ever-touched.
 `main.rs` spawns a background task (`run_sweep_loop`) that calls
 `locks.reap_idle()` every `lifecycle.sweep_chunk_lock_interval_secs`
 (default 60s). Uses the same `watch::channel(false)` stop signal
-pattern as the topology refresh loop. `reap_idle` is a single
-`DashMap::retain` call, no allocation, no blocking.
+pattern as the topology refresh loop. `reap_idle` performs a lock-free ordered
+scan with exact-entry removal and does not block request tasks.
 
 ### 10.6 LifecycleHandler integration
 
@@ -970,14 +974,15 @@ remain ready with an empty guard.
 
 ### 10.9 Edge cases
 
-- Lock map entry does not exist → created on first `acquire` via
-  `DashMap::entry().or_default()`.
+- Lock map entry does not exist → created on first `acquire` through the
+  ordered index's `get_or_insert` operation.
 - Lock holder panics → `tokio::sync::Mutex<()>` auto-releases (no
   poisoning for `Mutex<()>`); cache slot may be stale but next
   `acquire` re-fetches on miss.
-- `reap_idle` runs while an acquirer holds a clone →
-  `Arc::strong_count > 1`, entry is retained. No race:
-  `DashMap::retain` holds the shard lock.
+- `reap_idle` races an acquirer → either the acquirer increments the exact
+  entry's user count first and reaping skips it, or reaping marks the entry
+  first and the acquirer retries against its replacement. Overlapping callers
+  cannot split across mutex identities.
 - Process crash → all in-memory state lost; KV store is source of
   truth.
 - Cache evicts a chunk between two operations → next `acquire` is a

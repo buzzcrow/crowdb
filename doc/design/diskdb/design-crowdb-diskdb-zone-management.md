@@ -757,9 +757,9 @@ RCU-published alongside the allocate context on add/remove/status-change:
   validates the full-engine busy value and revision before the guarded batch;
   compaction consumes only the resulting self-consistent fact.
 
-Node-level `add_disk` / `remove_disk` acquire a write lock on the disk
-list; allocation/free acquire a read lock (concurrent with each other,
-exclusive with add/remove).
+Disk membership changes acquire the disk-list write lock only while rebuilding
+the immutable membership snapshot. Allocation and free load that snapshot and
+do not acquire the disk-list lock.
 
 ### Monotonic allocation incarnation source
 
@@ -768,8 +768,22 @@ source is an `AtomicU64` initialized above every durable busy and free
 incarnation discovered during recovery. It is an identity token and does not
 order compaction. `FreeBlockValue.free_ts` is independently diagnostic.
 
-Ownership is immutable in R130. R102 must reconstruct or transfer the
-allocation high-water mark before enabling a future owner.
+Ownership is currently immutable. Any future ownership transfer must
+reconstruct or transfer the allocation high-water mark before enabling the new
+owner.
+
+### Bounded tentative allocation cache
+
+Each disk group keeps recently allocated `TentativeBlock` values in a
+lock-free ordered index keyed by `allocation_ts`. The default capacity is
+262,144 unique incarnations. A per-entry pending/count/removed state makes the
+atomic size budget exact when duplicate publication races removal. One atomic
+trim owner removes the oldest entries until the cache is within capacity.
+
+Commit always reads and conditionally updates the authoritative busy record in
+KV; the cache only contributes a hit/miss metric. Eviction therefore does not
+change correctness. Commit and free remove the exact incarnation entry, so a
+delayed reconciliation cannot remove a newer allocation.
 
 ## 9. Background Scanner Coordination
 
