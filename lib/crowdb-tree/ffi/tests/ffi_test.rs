@@ -845,7 +845,7 @@ async fn async_reverse_scan_crosses_evicted_leaves_and_respects_cursor() {
     let t = AsyncCrowdbtree::open(&opt).unwrap();
     for i in 0..80usize {
         t.handle()
-            .apply_put((i + 1) as u64, &key(i), &vec![b'v'; 128])
+            .apply_put((i + 1) as u64, &key(i), &[b'v'; 128])
             .unwrap();
     }
     t.flush().await.unwrap();

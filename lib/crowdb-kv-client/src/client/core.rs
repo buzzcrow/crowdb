@@ -1067,6 +1067,9 @@ impl CrowdbKvClient {
 
     /// Descending counterpart to [`Self::scan`]. `start_before` is an
     /// exclusive upper continuation key.
+    ///
+    /// # Errors
+    /// Returns transport, topology, or server errors.
     #[allow(clippy::too_many_arguments)]
     pub async fn scan_reverse(
         &self,
@@ -1100,6 +1103,9 @@ impl CrowdbKvClient {
     }
 
     /// Descending bounded scan which captures its cutoff on page one.
+    ///
+    /// # Errors
+    /// Returns transport, topology, or server errors.
     #[allow(clippy::too_many_arguments)]
     pub async fn scan_bounded_reverse(
         &self,
@@ -1131,6 +1137,9 @@ impl CrowdbKvClient {
     }
 
     /// Descending bounded scan at an established cutoff.
+    ///
+    /// # Errors
+    /// Returns transport, topology, or server errors, including a changed cutoff.
     #[allow(clippy::too_many_arguments)]
     pub async fn scan_bounded_at_reverse(
         &self,
@@ -1295,7 +1304,7 @@ impl CrowdbKvClient {
                         }
                         let mut previous_key = all_items.last().map(|(key, _)| key.as_ref());
                         for item in &resp.items {
-                            let monotonic = previous_key.is_none_or(|previous| match direction {
+                            let monotonic = previous_key.map_or(true, |previous| match direction {
                                 ScanDirection::Forward => previous < item.key.as_ref(),
                                 ScanDirection::Reverse => previous > item.key.as_ref(),
                             });
