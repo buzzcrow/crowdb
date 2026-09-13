@@ -47,9 +47,9 @@ use crowdb_protocol::fb_wrappers::kv_client::{
 use crowdb_protocol::kv_client_fb::{
     FBCreateSnapshotResponse, FBCreateSnapshotResponseArgs, FBKvClientRetCode, FBKvJournalOp,
     FBKvJournalOpArgs, FBKvJournalScanRequest, FBKvJournalScanRequestArgs, FBKvJournalScanResponse,
-    FBKvJournalScanResponseArgs, FBKvResponse, FBKvResponseArgs, FBKvScanItem, FBKvScanItemArgs,
-    FBKvScanRequest, FBKvScanRequestArgs, FBKvScanResponse, FBKvScanResponseArgs, FBReadMode,
-    FBReleaseSnapshotResponse, FBReleaseSnapshotResponseArgs, FBSnapshotInfo, FBSnapshotInfoArgs,
+    FBKvJournalScanResponseArgs, FBKvResponse, FBKvResponseArgs, FBKvScanDirection, FBKvScanItem,
+    FBKvScanItemArgs, FBKvScanRequest, FBKvScanRequestArgs, FBKvScanResponse, FBKvScanResponseArgs,
+    FBReadMode, FBReleaseSnapshotResponse, FBReleaseSnapshotResponseArgs, FBSnapshotInfo, FBSnapshotInfoArgs,
     FBSnapshotScanResponse, FBSnapshotScanResponseArgs, FBWatchNotifyError, FBWatchNotifyErrorArgs,
     FBWatchSubscribe, FBWatchUnsubscribe,
 };
@@ -207,6 +207,7 @@ impl KvClientRpcForwarder {
             forwarded: true,
             bounded: req.bounded(),
             scan_cutoff: req.scan_cutoff(),
+            direction: req.direction(),
         };
         let fb_req = FBKvScanRequest::create(&mut builder, &args);
         builder.finish(fb_req, None);
@@ -861,6 +862,22 @@ impl KvRpcService {
             let keys_only = fb_req.keys_only();
             let count_only = fb_req.count_only();
             let deadline_ms = fb_req.deadline_ms();
+            let direction = match fb_req.direction() {
+                FBKvScanDirection::Forward => crate::kv::ScanDirection::Forward,
+                FBKvScanDirection::Reverse => crate::kv::ScanDirection::Reverse,
+                _ => {
+                    submit_scan_error(
+                        &server_clone,
+                        conn_handle_usize as *mut std::ffi::c_void,
+                        req_id,
+                        create_nano,
+                        msg_type,
+                        FBKvClientRetCode::InvalidArgument,
+                        "invalid scan direction",
+                    );
+                    return;
+                }
+            };
             let request_id = fb_req.request_id();
             let request_create_ms = fb_req.request_create_ms();
 
@@ -899,6 +916,7 @@ impl KvRpcService {
                         deadline_ms,
                         fb_req.bounded(),
                         fb_req.scan_cutoff(),
+                        direction,
                         request_id,
                         request_create_ms,
                     )
@@ -939,6 +957,7 @@ impl KvRpcService {
                     deadline_ms,
                     fb_req.bounded(),
                     fb_req.scan_cutoff(),
+                    direction,
                     request_id,
                     request_create_ms,
                 )

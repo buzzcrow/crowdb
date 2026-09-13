@@ -333,9 +333,10 @@ impl PxLearner {
         byte_budget: usize,
         keys_only: bool,
         deadline_ms: u64,
+        direction: crate::kv::ScanDirection,
     ) -> Result<(Vec<(bytes::Bytes, SlotIndex, bytes::Bytes)>, bool), String> {
         self.engine
-            .scan(
+            .scan_directional(
                 prefix,
                 start_after,
                 end_key,
@@ -343,6 +344,7 @@ impl PxLearner {
                 byte_budget,
                 keys_only,
                 deadline_ms,
+                direction,
             )
             .await
     }

@@ -6,7 +6,7 @@
 
 #[cfg(feature = "test-util")]
 use super::op::Cell;
-use super::{Batch, KVEngine, KVFuture, Op, SnapshotViewEntry};
+use super::{Batch, KVEngine, KVFuture, Op, ScanDirection, SnapshotViewEntry};
 use bytes::Bytes;
 use crowdb_tree_ffi::{
     AsyncCrowdbtree, Crowdbtree, CtError, ExtOp, GetOutcome, PinnedGetOutcome, ScanOutcome,
@@ -220,7 +220,7 @@ impl KVEngine for CrowdbTreeEngine {
         }
     }
 
-    fn scan(
+    fn scan_directional(
         &self,
         prefix: &[u8],
         start_after: &[u8],
@@ -229,6 +229,7 @@ impl KVEngine for CrowdbTreeEngine {
         byte_budget: usize,
         keys_only: bool,
         deadline_ms: u64,
+        direction: ScanDirection,
     ) -> KVFuture<Result<(Vec<(Bytes, u64, Bytes)>, bool), String>> {
         // start_after is pushed down into the C++ engine: the descent targets
         // the leaf containing start_after (instead of the prefix start), and
@@ -252,7 +253,11 @@ impl KVEngine for CrowdbTreeEngine {
         let start_after_owned = start_after.to_vec();
         let end_key_owned = end_key.to_vec();
 
-        match self.inner.try_scan(
+        let ffi_direction = match direction {
+            ScanDirection::Forward => crowdb_tree_ffi::ScanDirection::Forward,
+            ScanDirection::Reverse => crowdb_tree_ffi::ScanDirection::Reverse,
+        };
+        match self.inner.try_scan_directional(
             prefix_owned,
             start_after_owned,
             end_key_owned,
@@ -260,6 +265,7 @@ impl KVEngine for CrowdbTreeEngine {
             byte_budget,
             keys_only,
             deadline_ms,
+            ffi_direction,
         ) {
             ScanOutcome::Ready(result) => KVFuture::ready(decode_scan(result)),
             ScanOutcome::Pending(fut) => KVFuture::Pending(Box::pin(async move { decode_scan(fut.await) })),

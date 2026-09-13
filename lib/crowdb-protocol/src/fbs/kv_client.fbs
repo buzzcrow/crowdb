@@ -50,6 +50,11 @@ enum FBReadMode : int16 {
     MinSlot = 1,
 }
 
+enum FBKvScanDirection : int8 {
+    Forward = 0,
+    Reverse = 1,
+}
+
 // ── Wrapper for a byte vector (flatbuffers rejects [[ubyte]]) ────
 // Used by FBWatchNotify to carry multiple keys/values per push.
 table FBBytes {
@@ -166,6 +171,7 @@ table FBKvScanRequest {
     forwarded:bool;
     bounded:bool;
     scan_cutoff:uint64;
+    direction:FBKvScanDirection = Forward;
 }
 
 table FBKvScanItem {

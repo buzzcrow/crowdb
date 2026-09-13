@@ -26,6 +26,6 @@ mod kv_future;
 mod op;
 
 pub use crowdb_tree_engine::{CrowdbTreeBackend, CrowdbTreeConfig, CrowdbTreeEngine, CrowdbTreeStats};
-pub use kv_engine::{KVEngine, SnapshotViewEntry};
+pub use kv_engine::{KVEngine, ScanDirection, SnapshotViewEntry};
 pub use kv_future::KVFuture;
 pub use op::{Batch, BatchOp, Cell, EngineDiff, Op};

@@ -153,7 +153,7 @@ impl TestKvClient {
     pub async fn scan(&self, req: KvScanRequest) -> Result<TestResponse<KvScanResponse>, TestRpcStatus> {
         let r = self
             .transport
-            .send_scan(
+            .send_scan_directional(
                 &self.endpoint,
                 &req.prefix,
                 &req.start_after,
@@ -169,6 +169,10 @@ impl TestKvClient {
                 req.deadline_ms,
                 false,
                 0,
+                match req.direction {
+                    crowdb_kv::rpc::KvScanDirection::Forward => crowdb_kv_client::ScanDirection::Forward,
+                    crowdb_kv::rpc::KvScanDirection::Reverse => crowdb_kv_client::ScanDirection::Reverse,
+                },
             )
             .await
             .map_err(status)?;

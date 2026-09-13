@@ -11,7 +11,7 @@
 
 use crate::test_util::{compare_dyn, iter_all_dyn};
 use bytes::Bytes;
-use crowdb_kv::kv::{Batch, BatchOp, Cell, KVEngine, Op};
+use crowdb_kv::kv::{Batch, BatchOp, Cell, KVEngine, Op, ScanDirection};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ms() -> u64 {
@@ -125,6 +125,45 @@ pub fn scan_is_ordered_prefix_filtered_and_truncates(e: &dyn KVEngine) {
     assert_eq!(page2.len(), 1);
     assert_eq!(page2[0].0.as_ref(), b"a:3");
     assert!(!trunc2);
+}
+
+pub fn reverse_scan_is_descending_exclusive_and_prefix_bounded(e: &dyn KVEngine) {
+    e.apply(
+        1,
+        &batch(vec![
+            put(b"p:1", b"one"),
+            put(b"p:2", b"two"),
+            put(b"p:3", b"three"),
+            put(b"q:1", b"outside"),
+        ]),
+    )
+    .into_ready()
+    .unwrap();
+    e.apply(2, &batch(vec![del(b"p:2")])).into_ready().unwrap();
+
+    let (items, truncated) = e
+        .scan_directional(b"p:", b"p:4", b"q:", 1, 0, false, 0, ScanDirection::Reverse)
+        .into_ready()
+        .unwrap();
+    assert!(truncated);
+    assert_eq!(items[0].0.as_ref(), b"p:3");
+
+    let (items, truncated) = e
+        .scan_directional(b"p:", b"p:3", b"q:", 0, 0, true, 0, ScanDirection::Reverse)
+        .into_ready()
+        .unwrap();
+    assert!(!truncated);
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].0.as_ref(), b"p:1");
+    assert!(items[0].2.is_empty());
+
+    let (items, truncated) = e
+        .scan_directional(b"p:", b"", b"q:", 0, 6, false, 0, ScanDirection::Reverse)
+        .into_ready()
+        .unwrap();
+    assert_eq!(items.len(), 1, "one oversized item must still make progress");
+    assert_eq!(items[0].0.as_ref(), b"p:3");
+    assert!(truncated);
 }
 
 pub fn scan_reports_each_live_records_commit_slot(e: &dyn KVEngine) {

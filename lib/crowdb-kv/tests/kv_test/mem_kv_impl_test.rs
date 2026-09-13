@@ -8,7 +8,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use std::collections::BTreeMap;
 
-use crowdb_kv::kv::{Batch, BatchOp, Cell, KVEngine, KVFuture, Op};
+use crowdb_kv::kv::{Batch, BatchOp, Cell, KVEngine, KVFuture, Op, ScanDirection};
 
 /// In-memory, single-version engine backed by a sharded `DashMap` so
 /// reads proceed concurrent with `apply` (no global write lock). `scan`
@@ -92,7 +92,7 @@ impl KVEngine for InMemKV {
         KVFuture::ready(result)
     }
 
-    fn scan(
+    fn scan_directional(
         &self,
         prefix: &[u8],
         start_after: &[u8],
@@ -101,6 +101,7 @@ impl KVEngine for InMemKV {
         byte_budget: usize,
         keys_only: bool,
         _deadline_ms: u64,
+        direction: ScanDirection,
     ) -> KVFuture<Result<(Vec<(Bytes, u64, Bytes)>, bool), String>> {
         // DashMap is not ordered — collect matching live entries, sort,
         // then apply the start_after/end_key bounds, limit, and byte_budget.
@@ -117,8 +118,14 @@ impl KVEngine for InMemKV {
                 if !r.key().starts_with(prefix) {
                     return None;
                 }
-                if !start_after.is_empty() && r.key().as_slice() <= start_after {
-                    return None;
+                if !start_after.is_empty() {
+                    let excluded = match direction {
+                        ScanDirection::Forward => r.key().as_slice() <= start_after,
+                        ScanDirection::Reverse => r.key().as_slice() >= start_after,
+                    };
+                    if excluded {
+                        return None;
+                    }
                 }
                 if !end_key.is_empty() && r.key().as_slice() >= end_key {
                     return None;
@@ -137,6 +144,9 @@ impl KVEngine for InMemKV {
             })
             .collect();
         items.sort_by(|a, b| a.0.cmp(&b.0));
+        if direction == ScanDirection::Reverse {
+            items.reverse();
+        }
         let mut truncated = false;
         if limit != 0 && items.len() > limit {
             truncated = true;

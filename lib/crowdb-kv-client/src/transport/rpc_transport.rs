@@ -36,8 +36,8 @@ use crowdb_protocol::kv_client_fb::{
     FBCreateSnapshotRequest, FBCreateSnapshotRequestArgs, FBKvBatchItem, FBKvBatchItemArgs,
     FBKvBatchWriteRequest, FBKvBatchWriteRequestArgs, FBKvClientRetCode, FBKvDeleteRequest,
     FBKvDeleteRequestArgs, FBKvGetRequest, FBKvGetRequestArgs, FBKvJournalScanRequest,
-    FBKvJournalScanRequestArgs, FBKvRevisionPrecondition, FBKvRevisionPreconditionArgs, FBKvScanRequest,
-    FBKvScanRequestArgs, FBKvSetRequest, FBKvSetRequestArgs, FBListSnapshotsRequest,
+    FBKvJournalScanRequestArgs, FBKvRevisionPrecondition, FBKvRevisionPreconditionArgs, FBKvScanDirection,
+    FBKvScanRequest, FBKvScanRequestArgs, FBKvSetRequest, FBKvSetRequestArgs, FBListSnapshotsRequest,
     FBListSnapshotsRequestArgs, FBReadMode, FBReleaseSnapshotRequest, FBReleaseSnapshotRequestArgs,
     FBSnapshotScanRequest, FBSnapshotScanRequestArgs,
 };
@@ -47,6 +47,7 @@ use crowdb_rpc_ffi::{
 };
 
 use crate::error::{Error, Result};
+use crate::ScanDirection;
 
 /// crowdb-rpc transport for the KV client-facing service. Holds the
 /// client-side `RpcServer` (manages connections), `RpcClient`
@@ -569,6 +570,48 @@ impl KvRpcTransport {
         bounded: bool,
         scan_cutoff: u64,
     ) -> Result<KvScanResponse> {
+        self.send_scan_directional(
+            rpc_endpoint,
+            prefix,
+            start_after,
+            end_key,
+            limit,
+            request_id,
+            request_create_ms,
+            group_id,
+            read_mode,
+            min_slot,
+            keys_only,
+            count_only,
+            deadline_ms,
+            bounded,
+            scan_cutoff,
+            ScanDirection::Forward,
+        )
+        .await
+    }
+
+    /// Send a directional `Scan` request via crowdb-rpc.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn send_scan_directional(
+        &self,
+        rpc_endpoint: &str,
+        prefix: &[u8],
+        start_after: &[u8],
+        end_key: &[u8],
+        limit: u32,
+        request_id: u64,
+        request_create_ms: u64,
+        group_id: u64,
+        read_mode: ReadMode,
+        min_slot: u64,
+        keys_only: bool,
+        count_only: bool,
+        deadline_ms: u64,
+        bounded: bool,
+        scan_cutoff: u64,
+        direction: ScanDirection,
+    ) -> Result<KvScanResponse> {
         let req_id = self.next_id();
         let conn = self.conn_for(rpc_endpoint)?;
         let mut builder = FlatBufferBuilder::new();
@@ -594,6 +637,10 @@ impl KvRpcTransport {
             forwarded: false,
             bounded,
             scan_cutoff,
+            direction: match direction {
+                ScanDirection::Forward => FBKvScanDirection::Forward,
+                ScanDirection::Reverse => FBKvScanDirection::Reverse,
+            },
         };
         let req = FBKvScanRequest::create(&mut builder, &args);
         builder.finish(req, None);

@@ -108,6 +108,7 @@ async fn snapshot_scan_is_point_in_time_consistent() {
             0,
             false,
             0,
+            crowdb_kv::kv::ScanDirection::Forward,
             200,
             2000,
         )

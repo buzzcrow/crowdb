@@ -222,6 +222,7 @@ impl KvStore for PxKvStore {
         deadline_ms: u64,
         bounded: bool,
         requested_scan_cutoff: u64,
+        direction: crate::kv::ScanDirection,
         request_id: u64,
         request_create_ms: u64,
     ) -> crate::rpc::KvScanResponse {
@@ -244,6 +245,7 @@ impl KvStore for PxKvStore {
             deadline_ms,
             bounded,
             requested_scan_cutoff,
+            direction,
         };
         match operations.scan(&request).await {
             Ok(scan) => crate::rpc::KvScanResponse {

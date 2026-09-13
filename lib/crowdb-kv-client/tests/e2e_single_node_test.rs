@@ -260,6 +260,53 @@ async fn batch_write_and_scan() {
 }
 
 #[tokio::test]
+async fn reverse_scan_paginates_without_repeating_boundaries() {
+    let replica = PxLocalReplica::new(STORE_ID, PxLocalReplicaRole::Leader);
+    let mut store = PxKvStore::new(STORE_ID, "127.0.0.1:0".parse().unwrap());
+    store.set_scan_byte_budget(12);
+    let store = Arc::new(store);
+    store.add_group(PxGroup::new(GROUP_ID, replica));
+    store.start().await.expect("start store");
+    let seed = spawn_topology_server(store.clone()).await;
+    let client = CrowdbKvClient::new(ClientConfig::new(vec![seed]));
+
+    for i in 0..8 {
+        let key = format!("r:{i}");
+        client
+            .put(STORE_ID, GROUP_ID, key.as_bytes(), b"value", None)
+            .await
+            .unwrap();
+    }
+    let scanned = client
+        .scan_reverse(
+            STORE_ID,
+            GROUP_ID,
+            b"r:",
+            &[],
+            &[],
+            0,
+            ReadMode::Linearizable,
+            None,
+            true,
+            None,
+        )
+        .await
+        .unwrap();
+    let keys: Vec<_> = scanned.items.iter().map(|(key, _)| key.to_vec()).collect();
+    assert_eq!(
+        keys,
+        (0..8)
+            .rev()
+            .map(|i| format!("r:{i}").into_bytes())
+            .collect::<Vec<_>>()
+    );
+    assert!(scanned.items.iter().all(|(_, value)| value.is_empty()));
+
+    store.stop();
+    store.join().await;
+}
+
+#[tokio::test]
 async fn read_your_writes_uses_auto_tracked_watermark() {
     let store = start_single_node_store().await;
     let seed = spawn_topology_server(store.clone()).await;

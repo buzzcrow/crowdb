@@ -341,6 +341,14 @@ impl KvResponse {
 /// replica writes lagging behind the leader. The handler iterates the
 /// `DashMap` keys, filters by `prefix`, sorts, then truncates to
 /// `limit`. `limit == 0` means "no limit".
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[repr(i32)]
+pub enum KvScanDirection {
+    #[default]
+    Forward = 0,
+    Reverse = 1,
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct KvScanRequest {
     pub version: u32,
@@ -376,6 +384,8 @@ pub struct KvScanRequest {
     pub bounded: bool,
     /// Zero captures the first page's cutoff; later pages retain it.
     pub scan_cutoff: u64,
+    /// Traversal order. Forward is the wire and API default.
+    pub direction: KvScanDirection,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]

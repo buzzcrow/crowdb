@@ -91,6 +91,7 @@ impl Group0ControlPlane {
                 deadline_ms: 0,
                 bounded: true,
                 requested_scan_cutoff: scan_cutoff,
+                direction: crowdb_kv::kv::ScanDirection::Forward,
             })
             .await?;
         Ok((scan.items, scan.truncated, scan.scan_cutoff))

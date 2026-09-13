@@ -6,6 +6,14 @@ use super::Batch;
 
 use bytes::Bytes;
 
+/// Ordered scan traversal direction.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScanDirection {
+    #[default]
+    Forward,
+    Reverse,
+}
+
 /// Storage engine surface. All reads are non-mutating and may run concurrently
 /// with `apply`.
 ///
@@ -104,6 +112,33 @@ pub trait KVEngine: Send + Sync {
         byte_budget: usize,
         keys_only: bool,
         deadline_ms: u64,
+    ) -> KVFuture<Result<(Vec<(Bytes, u64, Bytes)>, bool), String>> {
+        self.scan_directional(
+            prefix,
+            start_after,
+            end_key,
+            limit,
+            byte_budget,
+            keys_only,
+            deadline_ms,
+            ScanDirection::Forward,
+        )
+    }
+
+    /// Directional scan; reverse treats `start_after` as an exclusive upper
+    /// continuation while retaining the legacy wire field name.
+    #[allow(clippy::type_complexity)]
+    #[allow(clippy::too_many_arguments)]
+    fn scan_directional(
+        &self,
+        prefix: &[u8],
+        start_after: &[u8],
+        end_key: &[u8],
+        limit: usize,
+        byte_budget: usize,
+        keys_only: bool,
+        deadline_ms: u64,
+        direction: ScanDirection,
     ) -> KVFuture<Result<(Vec<(Bytes, u64, Bytes)>, bool), String>>;
 
     /// Drop all state. Used by snapshot-install reset (before importing a

@@ -200,6 +200,7 @@ async fn discover_descriptors(
                 deadline_ms: 0,
                 bounded: true,
                 requested_scan_cutoff: scan_cutoff,
+                direction: crowdb_kv::kv::ScanDirection::Forward,
             })
             .await?;
         scan_cutoff = scan.scan_cutoff;

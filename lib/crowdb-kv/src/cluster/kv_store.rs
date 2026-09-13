@@ -87,6 +87,7 @@ pub trait KvStore {
         deadline_ms: u64,
         bounded: bool,
         scan_cutoff: u64,
+        direction: crate::kv::ScanDirection,
         request_id: u64,
         request_create_ms: u64,
     ) -> KvScanResponse;

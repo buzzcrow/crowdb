@@ -9,6 +9,6 @@ pub mod retry;
 pub mod topology;
 
 pub use core::{
-    new_client_id, BatchOp, CrowdbKvClient, GetOutcome, JournalOp, JournalScanOutcome, ScanOutcome,
-    WriteOutcome,
+    new_client_id, BatchOp, CrowdbKvClient, GetOutcome, JournalOp, JournalScanOutcome, ScanDirection,
+    ScanOutcome, WriteOutcome,
 };

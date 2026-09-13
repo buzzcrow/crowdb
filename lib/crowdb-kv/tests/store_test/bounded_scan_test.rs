@@ -6,6 +6,7 @@
 use crowdb_kv::cluster::group::PxGroup;
 use crowdb_kv::cluster::kv_store::KvStore;
 use crowdb_kv::cluster::{PxKvStore, PxLocalReplica, PxLocalReplicaRole};
+use crowdb_kv::kv::ScanDirection;
 use crowdb_kv::rpc::ReadMode;
 
 fn store() -> PxKvStore {
@@ -37,6 +38,7 @@ async fn bounded_scan(
             0,
             true,
             cutoff,
+            ScanDirection::Forward,
             100,
             1000,
         )

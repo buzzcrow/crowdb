@@ -70,6 +70,11 @@ fn scan_is_ordered_prefix_filtered_and_truncates() {
 }
 
 #[test]
+fn reverse_scan_is_descending_exclusive_and_prefix_bounded() {
+    conformance::reverse_scan_is_descending_exclusive_and_prefix_bounded(&open());
+}
+
+#[test]
 fn scan_reports_each_live_records_commit_slot() {
     conformance::scan_reports_each_live_records_commit_slot(&open());
 }

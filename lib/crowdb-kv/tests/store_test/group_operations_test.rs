@@ -57,6 +57,7 @@ async fn rpc_and_internal_operations_share_applied_reads_writes_and_scans() {
             deadline_ms: 0,
             bounded: true,
             requested_scan_cutoff: 0,
+            direction: crowdb_kv::kv::ScanDirection::Forward,
         })
         .await
         .unwrap();

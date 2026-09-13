@@ -36,8 +36,8 @@ pub use binding::{
     MonitorTickResult, RangeBindingClient, RangeRouteError, RouteWithFallback, DEFAULT_SUB_RANGE_COUNT,
 };
 pub use client::{
-    new_client_id, BatchOp, CrowdbKvClient, GetOutcome, JournalOp, JournalScanOutcome, ScanOutcome,
-    WriteOutcome,
+    new_client_id, BatchOp, CrowdbKvClient, GetOutcome, JournalOp, JournalScanOutcome, ScanDirection,
+    ScanOutcome, WriteOutcome,
 };
 pub use config::{ClientConfig, ReadEndpointPolicy, RetryConfig};
 pub use error::{Error, Result};

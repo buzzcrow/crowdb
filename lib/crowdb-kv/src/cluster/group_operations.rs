@@ -18,6 +18,7 @@ use thiserror::Error;
 use crate::cluster::group::{ProposeResult, PxGroup};
 use crate::cluster::group_election::{LeaderElection, ReadBarrierOutcome};
 use crate::cluster::local_replica::PxLocalReplicaRole;
+use crate::kv::ScanDirection;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KvReadConsistency {
@@ -69,6 +70,7 @@ pub struct KvGroupScanRequest {
     pub deadline_ms: u64,
     pub bounded: bool,
     pub requested_scan_cutoff: u64,
+    pub direction: ScanDirection,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -276,6 +278,7 @@ impl KvGroupOperations {
                 engine_byte_budget,
                 engine_keys_only,
                 request.deadline_ms,
+                request.direction,
             )
             .await
             .map_err(|error| KvGroupOperationError::Internal(format!("scan engine error: {error}")))?;

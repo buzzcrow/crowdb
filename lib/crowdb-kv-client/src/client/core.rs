@@ -21,6 +21,14 @@ use crate::config::{ClientConfig, ReadEndpointPolicy, RetryConfig};
 use crate::error::{Error, Result};
 use crate::metrics::ClientMetrics;
 
+/// Ordered scan traversal direction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ScanDirection {
+    #[default]
+    Forward,
+    Reverse,
+}
+
 /// Outcome of a successful `put`/`delete`/`batch_write`.
 #[derive(Debug, Clone)]
 pub struct WriteOutcome {
@@ -982,6 +990,7 @@ impl CrowdbKvClient {
             deadline,
             false,
             0,
+            ScanDirection::Forward,
         )
         .await
     }
@@ -1016,6 +1025,7 @@ impl CrowdbKvClient {
             deadline,
             true,
             0,
+            ScanDirection::Forward,
         )
         .await
     }
@@ -1050,6 +1060,104 @@ impl CrowdbKvClient {
             deadline,
             true,
             scan_cutoff,
+            ScanDirection::Forward,
+        )
+        .await
+    }
+
+    /// Descending counterpart to [`Self::scan`]. `start_before` is an
+    /// exclusive upper continuation key.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn scan_reverse(
+        &self,
+        store_id: u64,
+        group_id: u64,
+        prefix: &[u8],
+        start_before: &[u8],
+        end_key: &[u8],
+        limit: u32,
+        read_mode: ReadMode,
+        min_slot: Option<u64>,
+        keys_only: bool,
+        deadline: Option<u64>,
+    ) -> Result<ScanOutcome> {
+        self.scan_impl(
+            store_id,
+            group_id,
+            prefix,
+            start_before,
+            end_key,
+            limit,
+            read_mode,
+            min_slot,
+            keys_only,
+            deadline,
+            false,
+            0,
+            ScanDirection::Reverse,
+        )
+        .await
+    }
+
+    /// Descending bounded scan which captures its cutoff on page one.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn scan_bounded_reverse(
+        &self,
+        store_id: u64,
+        group_id: u64,
+        prefix: &[u8],
+        start_before: &[u8],
+        end_key: &[u8],
+        limit: u32,
+        keys_only: bool,
+        deadline: Option<u64>,
+    ) -> Result<ScanOutcome> {
+        self.scan_impl(
+            store_id,
+            group_id,
+            prefix,
+            start_before,
+            end_key,
+            limit,
+            ReadMode::Linearizable,
+            None,
+            keys_only,
+            deadline,
+            true,
+            0,
+            ScanDirection::Reverse,
+        )
+        .await
+    }
+
+    /// Descending bounded scan at an established cutoff.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn scan_bounded_at_reverse(
+        &self,
+        store_id: u64,
+        group_id: u64,
+        prefix: &[u8],
+        start_before: &[u8],
+        end_key: &[u8],
+        limit: u32,
+        keys_only: bool,
+        deadline: Option<u64>,
+        scan_cutoff: u64,
+    ) -> Result<ScanOutcome> {
+        self.scan_impl(
+            store_id,
+            group_id,
+            prefix,
+            start_before,
+            end_key,
+            limit,
+            ReadMode::Linearizable,
+            None,
+            keys_only,
+            deadline,
+            true,
+            scan_cutoff,
+            ScanDirection::Reverse,
         )
         .await
     }
@@ -1069,6 +1177,7 @@ impl CrowdbKvClient {
         deadline: Option<u64>,
         bounded: bool,
         scan_cutoff: u64,
+        direction: ScanDirection,
     ) -> Result<ScanOutcome> {
         let min_slot = self.resolve_min_slot(store_id, group_id, read_mode, min_slot);
         let mut endpoint = self.resolve_read_endpoint(store_id, group_id, read_mode).await?;
@@ -1109,7 +1218,7 @@ impl CrowdbKvClient {
             let t0 = Instant::now();
             let _in_flight = self.incr_in_flight(store_id, group_id, &endpoint);
             let send_result: std::result::Result<crowdb_kv::rpc::KvScanResponse, String> = t
-                .send_scan(
+                .send_scan_directional(
                     &endpoint,
                     prefix,
                     &page_start_after,
@@ -1125,6 +1234,7 @@ impl CrowdbKvClient {
                     deadline.unwrap_or(0),
                     bounded,
                     fixed_scan_cutoff,
+                    direction,
                 )
                 .await
                 .map_err(|e| e.to_string());
@@ -1182,6 +1292,20 @@ impl CrowdbKvClient {
                                 });
                             }
                             fixed_scan_cutoff = resp.scan_cutoff;
+                        }
+                        let mut previous_key = all_items.last().map(|(key, _)| key.as_ref());
+                        for item in &resp.items {
+                            let monotonic = previous_key.is_none_or(|previous| match direction {
+                                ScanDirection::Forward => previous < item.key.as_ref(),
+                                ScanDirection::Reverse => previous > item.key.as_ref(),
+                            });
+                            if !monotonic {
+                                return Err(Error::Transport {
+                                    endpoint: endpoint.clone(),
+                                    status: "scan page is repeated or non-monotonic".into(),
+                                });
+                            }
+                            previous_key = Some(item.key.as_ref());
                         }
                         for item in resp.items {
                             all_items.push((item.key, item.value));
