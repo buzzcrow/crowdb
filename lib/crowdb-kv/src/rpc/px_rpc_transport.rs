@@ -2,14 +2,10 @@
 // Licensed under the Apache License, Version 2.0.
 
 #![allow(clippy::missing_errors_doc)]
-#![allow(dead_code)] // Wired in Phase 6 (LearnerStream + RemoteReplica)
-
-//! crowdb-rpc client transport for the KV consensus service (R32
-//! migration). Builds flatbuffer requests, sends via `RpcClient::call`,
+//! crowdb-rpc client transport for the KV consensus service. Builds
+//! flatbuffer requests, sends via `RpcClient::call`,
 //! awaits `CallFuture`, and parses flatbuffer responses via the
-//! zero-copy `Ref` wrappers. Replaced the legacy transport during
-//! the mixed-rollout window; `PxRemoteReplica` selects the transport
-//! based on whether `with_rpc_transport` was called.
+//! zero-copy `Ref` wrappers.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -30,8 +26,8 @@ use crowdb_protocol::kv_consensus_fb::{
     FBStepDownRequestArgs,
 };
 use crowdb_rpc_ffi::{
-    noop_completion, Buffer, Connection, ConnectionPoolError, ConnectionPoolIndex, RpcClient, RpcError,
-    RpcServer, SelectedConnection,
+    noop_completion, Buffer, ConnectionPoolError, ConnectionPoolIndex, RpcClient, RpcError, RpcServer,
+    SelectedConnection,
 };
 
 use crate::cluster::replica::{
@@ -128,10 +124,10 @@ impl PxRpcTransport {
     }
 
     /// Convert an `RpcError` to `PxReplicaError`, dropping cached
-    /// connections for `endpoint` on retryable transport errors so
-    /// the next call reconnects.
+    /// connections only when the connection itself failed. Timeout and
+    /// queue pressure do not prove that the selected generation is dead.
     fn map_rpc_err(&self, e: RpcError, endpoint: &str, generation: u64) -> PxReplicaError {
-        if e.is_retryable() {
+        if rpc_error_invalidates_connection(e) {
             self.connections
                 .invalidate(&normalize_endpoint(endpoint), generation);
         }
@@ -225,8 +221,7 @@ impl PxRpcTransport {
         let req_id = self.next_id();
         let conn = self.conn_for(rpc_endpoint)?;
         let mut builder = FlatBufferBuilder::new();
-        let payload_vec = entry.payload.to_vec();
-        let payload = builder.create_vector(&payload_vec);
+        let payload = builder.create_vector(entry.payload.as_ref());
         let value = FBAcceptedValue::create(
             &mut builder,
             &FBAcceptedValueArgs {
@@ -674,36 +669,6 @@ impl PxRpcTransport {
         })
     }
 
-    /// Get the underlying `RpcServer` (for the `LearnerStream` to share
-    /// the connection pool).
-    pub(crate) fn server(&self) -> &Arc<RpcServer> {
-        &self.server
-    }
-
-    /// Get the underlying `RpcClient` (for the `LearnerStream` to share
-    /// the response correlation).
-    pub(crate) fn rpc(&self) -> &Arc<RpcClient> {
-        &self.rpc
-    }
-
-    /// Get or create a connection for an endpoint (exposed for the
-    /// `LearnerStream` to share the connection pool). Always returns
-    /// the first connection (index 0) so the learner stream stays on
-    /// one connection.
-    pub(crate) fn get_conn(&self, rpc_endpoint: &str) -> Result<Connection, PxReplicaError> {
-        let normalized = normalize_endpoint(rpc_endpoint);
-        if let Some(selected) = self.connections.get_first(&normalized) {
-            return Ok(selected.into_connection());
-        }
-        self.conn_for(rpc_endpoint)
-            .map(SelectedConnection::into_connection)
-    }
-
-    /// Allocate a new request ID (exposed for the `LearnerStream`).
-    pub(crate) fn alloc_id(&self) -> u64 {
-        self.next_id()
-    }
-
     /// Test-only: send a frame with arbitrary control bytes and a
     /// caller-chosen `msg_type`, bypassing the flatbuffer build step.
     /// Returns the raw `Response` so the test can inspect the control
@@ -727,6 +692,20 @@ impl PxRpcTransport {
             .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         Ok(resp)
     }
+
+    /// Classify a transport error without requiring a live connection.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn classify_error_for_tests(error: RpcError) -> PxReplicaError {
+        rpc_error_to_px(error)
+    }
+
+    /// Report whether a transport error proves the selected connection dead.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn error_invalidates_connection_for_tests(error: RpcError) -> bool {
+        rpc_error_invalidates_connection(error)
+    }
 }
 
 impl Default for PxRpcTransport {
@@ -747,7 +726,20 @@ pub struct SnapshotReply {
 // ── Error mapping ────────────────────────────────────────────────
 
 fn rpc_error_to_px(e: RpcError) -> PxReplicaError {
-    PxReplicaError::Internal(format!("crowdb-rpc error: {e:?}"))
+    match e {
+        RpcError::Timeout => PxReplicaError::Timeout("crowdb-rpc deadline expired".into()),
+        RpcError::SendQueueFull => PxReplicaError::Backpressure("crowdb-rpc send queues are full".into()),
+        RpcError::ConnectionClosed | RpcError::ConnectionError | RpcError::AllDown => {
+            PxReplicaError::Transport(format!("crowdb-rpc error: {e:?}"))
+        }
+        RpcError::Ok | RpcError::RegistrationFailed | RpcError::InvalidArg | RpcError::Unknown(_) => {
+            PxReplicaError::Internal(format!("crowdb-rpc error: {e:?}"))
+        }
+    }
+}
+
+fn rpc_error_invalidates_connection(e: RpcError) -> bool {
+    matches!(e, RpcError::ConnectionClosed | RpcError::ConnectionError)
 }
 
 fn check_ret_code(code: FBKvRetCode, msg: Option<&str>) -> Result<(), PxReplicaError> {

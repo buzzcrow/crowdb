@@ -53,7 +53,7 @@ resource, relevant counters, and same-CPU comparison before changing code.
   idempotent, and ambiguous CAS returns `OutcomeUnknown` for read
   reconciliation. Files: `lib/crowdb-kv/tests/store_test/`,
   `lib/crowdb-kv-client/tests/`, and `tests/common/`.
-- [ ] **Make Chosen coverage causal**: assert chosen/applied frontiers and
+- [x] **Make Chosen coverage causal**: assert chosen/applied frontiers and
   engine visibility before/after the notice; cover stale ballot and missing
   value. This is a direct fix once expected frontier behavior is confirmed.
   Files: `lib/crowdb-kv/tests/rpc_migration_test.rs`,
@@ -73,11 +73,11 @@ resource, relevant counters, and same-CPU comparison before changing code.
   until success, deadline, or connection failure. Record retained bytes and
   queue time so the retry path cannot become hidden unbounded memory. Files:
   `lib/crowdb-rpc/src/transport/`, `rpc/px_rpc_transport.rs`.
-- [ ] **Preserve healthy queue-full connections**: stop invalidating a pool
+- [x] **Preserve healthy queue-full connections**: stop invalidating a pool
   generation for `SendQueueFull`, while retaining generation-safe eviction for
   actual connection failure. Add focused coverage for `map_rpc_err` and pool
   generation. Files: `lib/crowdb-kv/src/rpc/px_rpc_transport.rs` and tests.
-- [ ] **Keep transport outcomes typed**: distinguish connection failure,
+- [x] **Keep transport outcomes typed**: distinguish connection failure,
   timeout, backpressure, protocol rejection, and internal invariant errors in
   `PxReplicaError`, proposal/election decisions, and metrics. Files:
   `cluster/replica.rs`, `cluster/remote_replica.rs`,
@@ -87,7 +87,7 @@ resource, relevant counters, and same-CPU comparison before changing code.
   pending-call cleanup, and recovery. Files:
   `lib/crowdb-kv/tests/rpc_migration_test.rs`; `lib/crowdb-rpc/ffi/tests/`
   only if the boundary requires it.
-- [ ] **Remove avoidable copies**: directly remove the Accept payload
+- [~] **Remove avoidable copies**: directly remove the Accept payload
   `to_vec()` temporary and round-trip-test multi-tag payloads; inspect Prepare,
   FetchGap, snapshot, and client handlers for other full-buffer temporaries.
   Required async-lifetime copies remain explicit. Files: `lib/crowdb-kv/src/rpc/`,

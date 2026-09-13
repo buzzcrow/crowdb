@@ -1221,6 +1221,9 @@ fn px_error_to_ret_code(e: &PxReplicaError) -> (FBKvRetCode, String) {
     match e {
         PxReplicaError::GroupNotFound(_) => (FBKvRetCode::NotFound, e.to_string()),
         PxReplicaError::ShuttingDown => (FBKvRetCode::Unavailable, e.to_string()),
+        PxReplicaError::Transport(_) | PxReplicaError::Timeout(_) | PxReplicaError::Backpressure(_) => {
+            (FBKvRetCode::Unavailable, e.to_string())
+        }
         PxReplicaError::Internal(_) => (FBKvRetCode::Internal, e.to_string()),
     }
 }

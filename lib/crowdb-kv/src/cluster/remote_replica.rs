@@ -341,7 +341,7 @@ impl PxRemoteReplica {
                 // The transport reaper invalidates the exact connection-pool
                 // generation used by a failed request. This outer deadline
                 // must not discard a replacement installed in the meantime.
-                Err(PxReplicaError::Internal(format!(
+                Err(PxReplicaError::Timeout(format!(
                     "{} rpc timeout after {} ms at peer {}",
                     rpc_name,
                     self.rpc_timeout.as_millis(),

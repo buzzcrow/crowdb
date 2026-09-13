@@ -10,9 +10,12 @@ use std::sync::Arc;
 
 use crowdb_kv::cluster::group::PxGroup;
 use crowdb_kv::cluster::kv_server::KvServer;
+use crowdb_kv::cluster::replica::PxReplicaError;
 use crowdb_kv::cluster::replica::ReplicaClient;
 use crowdb_kv::cluster::{PxKvStore, PxLocalReplica, PxLocalReplicaRole, PxRemoteReplica};
 use crowdb_kv::paxos::roles::{PxBallot, PxPrepareReply};
+use crowdb_kv::rpc::PxRpcTransport;
+use crowdb_rpc_ffi::RpcError;
 
 use common::logging::init_test_subscriber;
 use common::net_lock::lock;
@@ -165,6 +168,11 @@ async fn crowdb_rpc_chosen_notification_fire_and_forget() {
         .await
         .expect("accept");
 
+    let follower_group = cluster.follower.get_group(1).expect("follower group");
+    let follower_replica = follower_group.local_replica();
+    assert_eq!(follower_replica.learner.contiguous_chosen(), 0);
+    assert_eq!(follower_replica.learner.contiguous_applied(), 0);
+
     // Send a fire-and-forget ChosenNotification.
     let result = follower_remote.send_chosen_notice(1, 0, 1, 1, ballot.round);
     assert!(
@@ -173,26 +181,45 @@ async fn crowdb_rpc_chosen_notification_fire_and_forget() {
         result.err()
     );
 
-    // Poll until the follower has processed the chosen notification
-    // and recorded slot 1 as accepted.
-    let follower_group = cluster.follower.get_group(1).expect("follower group");
-    let follower_replica = follower_group.local_replica();
+    // Accept alone leaves both frontiers at zero. The notification must
+    // causally advance chosen and wake the apply path.
     let poll_start = std::time::Instant::now();
-    let accepted = loop {
-        if let Some(a) = follower_replica.accepted_at(1).await {
-            break Some(a);
+    loop {
+        if follower_replica.learner.contiguous_applied() >= 1 {
+            break;
         }
-        if poll_start.elapsed() >= std::time::Duration::from_secs(5) {
-            break None;
-        }
+        assert!(
+            poll_start.elapsed() < std::time::Duration::from_secs(5),
+            "chosen notice did not advance frontiers: chosen={}, applied={}",
+            follower_replica.learner.contiguous_chosen(),
+            follower_replica.learner.contiguous_applied()
+        );
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    };
-    assert!(
-        accepted.is_some(),
-        "follower should have accepted slot 1 after chosen notification"
-    );
+    }
+    assert_eq!(follower_replica.learner.contiguous_chosen(), 1);
 
     cluster.shutdown().await;
+}
+
+#[test]
+fn crowdb_rpc_errors_preserve_pressure_and_connection_health() {
+    assert!(matches!(
+        PxRpcTransport::classify_error_for_tests(RpcError::SendQueueFull),
+        PxReplicaError::Backpressure(_)
+    ));
+    assert!(!PxRpcTransport::error_invalidates_connection_for_tests(
+        RpcError::SendQueueFull
+    ));
+    assert!(!PxRpcTransport::error_invalidates_connection_for_tests(
+        RpcError::Timeout
+    ));
+    assert!(PxRpcTransport::error_invalidates_connection_for_tests(
+        RpcError::ConnectionClosed
+    ));
+    assert!(matches!(
+        PxRpcTransport::classify_error_for_tests(RpcError::Timeout),
+        PxReplicaError::Timeout(_)
+    ));
 }
 
 #[tokio::test]

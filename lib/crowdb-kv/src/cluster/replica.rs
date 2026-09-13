@@ -32,6 +32,12 @@ pub enum PxReplicaError {
     GroupNotFound(PxGroupId),
     #[error("replica is shutting down")]
     ShuttingDown,
+    #[error("replica transport failed: {0}")]
+    Transport(String),
+    #[error("replica rpc timed out: {0}")]
+    Timeout(String),
+    #[error("replica rpc backpressure: {0}")]
+    Backpressure(String),
     #[error("internal invariant violation: {0}")]
     Internal(String),
 }
@@ -187,8 +193,8 @@ pub trait ReplicaHandler: Replica {
 /// Client-side sender trait for remote replicas.
 ///
 /// All errors are transport-neutral ([`PxReplicaError`]); transport-level crowdb-rpc
-/// failures fold into [`PxReplicaError::Internal`] inside the crowdb-rpc client
-/// adapter.
+/// failures retain their transport, timeout, or backpressure classification
+/// inside the crowdb-rpc client adapter.
 #[allow(async_fn_in_trait)]
 pub trait ReplicaClient: Replica {
     async fn send_prepare(
