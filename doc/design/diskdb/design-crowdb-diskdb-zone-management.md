@@ -303,10 +303,10 @@ the bit (§5). This is the data-safety principle: the bitmap is a
 conservative over-estimate that never shows freed space as available
 until compaction reconciles it from records.
 
-The free path increments `uncompacted_free_record_count` (an atomic
-counter per zone) so compaction knows there is work to do. No `FreeBatch`,
-no timer, no background flush loop. The free is a single durable
-operation, and the bitmap reconciliation is deferred to compaction.
+After durable persistence, the free path increments
+`uncompacted_free_record_count` (an atomic counter per zone) so compaction
+knows there is work to do. The bitmap reconciliation remains deferred to
+compaction.
 
 Free steps:
 1. **Persist**: put `FreeBlockValue` at `FreeBlockKey { disk_id,
@@ -328,11 +328,22 @@ caller can retry safely. If the persist succeeds, the block is free on
 disk; the in-memory bitmap still shows it busy (conservative over-
 estimate) until compaction reconciles.
 
-Free batching (grouping many frees into one `batch_write` per flush,
-triggered by batch size, no timer) is an optimization for high-free-
-throughput workloads, tracked as a future optimization. With persist-only
-free, batching does not change the bitmap contract. The bitmap is never
-touched on free, regardless of batching.
+When concurrent-free coalescing is enabled, preparation first deduplicates and
+captures each request's disk-group bind without changing tentative or zone
+state. Enqueue uses a lock-free MPSC queue and an atomic single-drainer claim.
+The drainer starts immediately—there is no minimum threshold or timer—and
+combines whole requests for the same bind up to the smallest captured maximum.
+One oversized request is persisted alone rather than split. Requests arriving
+while a KV write is in flight form the next natural batch.
+
+Every covered waiter resolves only after its combined `batch_write` completes.
+Success applies tentative removal, compaction-backlog increments, and free
+metrics once per distinct incarnation across the batch. Failure resolves all
+covered waiters without accounting changes or automatic re-enqueue; an
+idempotent caller retry writes the same incarnation-qualified fact. Shutdown
+closes admission, drains both direct and coalesced accepted frees, and only
+then stops the RPC server. The disabled path retains one durable KV batch per
+request under the same lifecycle tracker.
 
 **`rollback_allocate` — allocate-only bitmap clear:** the
 `DdbZone::rollback_allocate` method (CAS-clear bits, decrement
@@ -889,10 +900,11 @@ with compaction via the zone-level lock (§8):
   from the data group first and validates `owner_chunk` (one extra paxos
   round-trip, doubles free latency).
 - `free_batch_enabled` — free batching toggle (default false). When
-  false, frees are immediate (one `batch_write` per free). When true,
-  frees are grouped and flushed via one `batch_write` when the batch
-  reaches `free_flush_max_batch` (no timer).
-- `free_flush_max_batch` — free batch max size before forced flush
-  (default 256). Used when batching is enabled.
+  false, each request immediately issues one durable `batch_write`. When true,
+  the first queued request still drains immediately, while concurrent requests
+  accumulated during an in-flight write are coalesced by bind with no timer.
+- `free_flush_max_batch` — maximum record operations in one coalesced KV
+  proposal (default 256). Requests are never split; one oversized request is
+  persisted alone.
 - `recovery_concurrency` — max concurrent zone recoveries in
   `recover_node` (default 16).

@@ -533,8 +533,8 @@ intervals.
 - per-disk: `allocate.count`, `free.count`
 - per-disk-group: `allocate.count`, `free.count`
 - per-instance: `sync.count`, `sync.error.count`,
-  `compaction.count`, `compaction.error.count`,
-  `free_batch.flush.count` (when batching enabled)
+  `compaction.count`, `compaction.error.count`, and free-batch input request/
+  record, output KV batch/record, oversize, and failure counters
 
 **2. Gauges (internal status, current state snapshot):**
 - per-disk: `capacity_bytes`, `used_bytes`, `free_bytes`, `used_pct`,
@@ -545,7 +545,7 @@ intervals.
 - per-disk-group: `disk_count`, `allocatable_disk_count`,
   `capacity_bytes`, `used_bytes`, `free_bytes`
 - per-instance: `owned_disk_group_count`, `degraded` (0/1),
-  `free_batch_len` (current pending frees),
+  `free_batch.queue_depth` and `free_batch.coalescing_ratio_x1000`,
   `uncompacted_free_record_count` (per zone — compaction backlog),
   `last_sync_slot` (group-0 sync frontier),
   `last_sync_age_secs` (time since last successful sync)
@@ -820,9 +820,10 @@ hardcoded tunables in business logic). Defaults:
 - **Sync** — sync interval (10 s, fixed — same on success and failure),
   degraded miss threshold (3), temp-failure timeout (900 s)
 - **Allocator** — `zone_rotate_count`, CAS retry limit (100)
-- **Free** — `free_batch_enabled` (default false — v1 immediate free;
-  size-threshold batching when true), `free_flush_max_batch` (256,
-  used when batching is enabled)
+- **Free** — `free_batch_enabled` (default false — one durable KV batch per
+  request; immediate concurrent-request coalescing when true),
+  `free_flush_max_batch` (256, maximum records in one coalesced KV proposal;
+  one oversized request remains atomic)
 - **Compaction** — snapshot compaction threshold (record count or
   time), compaction cadence (periodic interval for strategy 3)
 - **Disk** — block / unit size (default 1 MB), zone size
