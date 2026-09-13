@@ -13,10 +13,12 @@
 //!
 //! See `doc/design/kv/design-crowdb-kv-group0.md` §4.4.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::future::Future;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use arc_swap::ArcSwapOption;
 use dashmap::DashMap;
 
 use crowdb_protocol::common::InstanceValue;
@@ -48,6 +50,13 @@ struct CachedEntry {
     refreshed_at_ms: u64,
 }
 
+#[derive(Default)]
+struct ServiceState {
+    cache: ArcSwapOption<CachedEntry>,
+    rr_cursor: AtomicUsize,
+    refresh: tokio::sync::Mutex<()>,
+}
+
 /// Client for discovering living service instances via the group-0
 /// service registry. Caches results per service with a configurable
 /// TTL. Round-robin selection for `discover_one`.
@@ -59,12 +68,10 @@ struct CachedEntry {
 #[derive(Clone)]
 pub struct ServiceDiscoveryClient {
     svc: ServiceRegistryClient,
-    /// `service_name -> CachedEntry`.
-    cache: Arc<DashMap<String, CachedEntry>>,
+    /// Per-service cache, atomic cursor, and refresh single-flight state.
+    services: Arc<DashMap<String, Arc<ServiceState>>>,
     /// Cache TTL in milliseconds.
     cache_ttl_ms: Arc<AtomicU64>,
-    /// Round-robin cursor per service: `service_name -> next_index`.
-    rr_cursor: Arc<DashMap<String, usize>>,
 }
 
 impl ServiceDiscoveryClient {
@@ -73,9 +80,8 @@ impl ServiceDiscoveryClient {
     pub fn new(svc: ServiceRegistryClient) -> Self {
         Self {
             svc,
-            cache: Arc::new(DashMap::new()),
+            services: Arc::new(DashMap::new()),
             cache_ttl_ms: Arc::new(AtomicU64::new(DEFAULT_CACHE_TTL_MS)),
-            rr_cursor: Arc::new(DashMap::new()),
         }
     }
 
@@ -102,22 +108,45 @@ impl ServiceDiscoveryClient {
     /// stale cache is returned if available, otherwise the error
     /// propagates.
     pub async fn discover_all(&self, service: &str) -> Result<Vec<(InstanceId, InstanceValue)>> {
+        self.discover_all_with(service, || self.svc.read_all_instances(service))
+            .await
+    }
+
+    async fn discover_all_with<F, Fut>(
+        &self,
+        service: &str,
+        refresh: F,
+    ) -> Result<Vec<(InstanceId, InstanceValue)>>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<Vec<(InstanceId, InstanceValue)>>>,
+    {
+        let state = self.service_state(service);
         let ttl_ms = self.cache_ttl_ms.load(Ordering::Relaxed);
         let now = now_ms();
 
         // Fast path: cache hit within TTL.
-        if let Some(entry) = self.cache.get(service) {
+        if let Some(entry) = state.cache.load_full() {
             if now.saturating_sub(entry.refreshed_at_ms) < ttl_ms {
                 return Ok(entry.instances.clone());
             }
         }
 
-        // Slow path: query group-0.
-        let instances = match self.svc.read_all_instances(service).await {
+        // Slow path: one in-flight group-0 query per service. No DashMap
+        // guard survives the `service_state` lookup above.
+        let _refresh_guard = state.refresh.lock().await;
+        let now = now_ms();
+        if let Some(entry) = state.cache.load_full() {
+            if now.saturating_sub(entry.refreshed_at_ms) < ttl_ms {
+                return Ok(entry.instances.clone());
+            }
+        }
+
+        let instances = match refresh().await {
             Ok(v) => v,
             Err(e) => {
                 // On failure, return stale cache if available.
-                if let Some(entry) = self.cache.get(service) {
+                if let Some(entry) = state.cache.load_full() {
                     return Ok(entry.instances.clone());
                 }
                 return Err(Error::DiscoveryUnreachable {
@@ -127,14 +156,10 @@ impl ServiceDiscoveryClient {
             }
         };
 
-        // Update cache.
-        self.cache.insert(
-            service.to_string(),
-            CachedEntry {
-                instances: instances.clone(),
-                refreshed_at_ms: now,
-            },
-        );
+        state.cache.store(Some(Arc::new(CachedEntry {
+            instances: instances.clone(),
+            refreshed_at_ms: now_ms(),
+        })));
 
         Ok(instances)
     }
@@ -152,12 +177,11 @@ impl ServiceDiscoveryClient {
 
         // Round-robin: atomically increment the cursor and pick the
         // instance at `cursor % len`.
-        let idx = {
-            let mut cursor = self.rr_cursor.entry(service.to_string()).or_insert(0);
-            let i = *cursor % instances.len();
-            *cursor = (*cursor + 1) % instances.len().max(1);
-            i
-        };
+        let idx = self
+            .service_state(service)
+            .rr_cursor
+            .fetch_add(1, Ordering::Relaxed)
+            % instances.len();
 
         Ok(instances[idx].1.clone())
     }
@@ -183,10 +207,12 @@ impl ServiceDiscoveryClient {
     pub fn invalidate(&self, service: Option<&str>) {
         match service {
             Some(s) => {
-                self.cache.remove(s);
+                if let Some(state) = self.services.get(s) {
+                    state.cache.store(None);
+                }
             }
             None => {
-                self.cache.clear();
+                self.services.iter().for_each(|state| state.cache.store(None));
             }
         }
     }
@@ -196,6 +222,13 @@ impl ServiceDiscoveryClient {
     #[must_use]
     pub fn registry(&self) -> &ServiceRegistryClient {
         &self.svc
+    }
+
+    fn service_state(&self, service: &str) -> Arc<ServiceState> {
+        self.services
+            .entry(service.to_string())
+            .or_insert_with(|| Arc::new(ServiceState::default()))
+            .clone()
     }
 }
 
@@ -226,23 +259,19 @@ mod tests {
         let client = ServiceDiscoveryClient::new(ServiceRegistryClient::new(CrowdbKvClient::new(
             ClientConfig::new(vec!["http://127.0.0.1:10000".into()]),
         )));
-        client.cache.insert(
-            "diskdb".into(),
-            CachedEntry {
-                instances: vec![],
-                refreshed_at_ms: 0,
-            },
-        );
-        client.cache.insert(
-            "chunkdb".into(),
-            CachedEntry {
-                instances: vec![],
-                refreshed_at_ms: 0,
-            },
-        );
+        let diskdb = client.service_state("diskdb");
+        diskdb.cache.store(Some(Arc::new(CachedEntry {
+            instances: vec![],
+            refreshed_at_ms: 0,
+        })));
+        let chunkdb = client.service_state("chunkdb");
+        chunkdb.cache.store(Some(Arc::new(CachedEntry {
+            instances: vec![],
+            refreshed_at_ms: 0,
+        })));
         client.invalidate(Some("diskdb"));
-        assert!(client.cache.get("diskdb").is_none());
-        assert!(client.cache.get("chunkdb").is_some());
+        assert!(diskdb.cache.load().is_none());
+        assert!(chunkdb.cache.load().is_some());
     }
 
     #[test]
@@ -250,14 +279,45 @@ mod tests {
         let client = ServiceDiscoveryClient::new(ServiceRegistryClient::new(CrowdbKvClient::new(
             ClientConfig::new(vec!["http://127.0.0.1:10000".into()]),
         )));
-        client.cache.insert(
-            "diskdb".into(),
-            CachedEntry {
-                instances: vec![],
-                refreshed_at_ms: 0,
-            },
-        );
+        let diskdb = client.service_state("diskdb");
+        diskdb.cache.store(Some(Arc::new(CachedEntry {
+            instances: vec![],
+            refreshed_at_ms: 0,
+        })));
         client.invalidate(None);
-        assert!(client.cache.is_empty());
+        assert!(diskdb.cache.load().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn simultaneous_expiry_uses_one_refresh() {
+        let client = ServiceDiscoveryClient::new(ServiceRegistryClient::new(CrowdbKvClient::new(
+            ClientConfig::new(vec!["http://127.0.0.1:10000".into()]),
+        )))
+        .with_cache_ttl(Duration::from_secs(1));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(tokio::sync::Barrier::new(16));
+        let tasks: Vec<_> = (0..16)
+            .map(|_| {
+                let client = client.clone();
+                let calls = Arc::clone(&calls);
+                let start = Arc::clone(&start);
+                tokio::spawn(async move {
+                    start.wait().await;
+                    client
+                        .discover_all_with("diskdb", || async move {
+                            calls.fetch_add(1, Ordering::Relaxed);
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                            Ok(vec![(1, InstanceValue::default())])
+                        })
+                        .await
+                })
+            })
+            .collect();
+
+        for task in tasks {
+            let instances = task.await.expect("discovery task").expect("discovery result");
+            assert_eq!(instances.len(), 1);
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 }
