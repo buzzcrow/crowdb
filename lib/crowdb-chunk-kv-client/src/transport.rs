@@ -16,8 +16,9 @@ use crowdb_protocol::chunk_kv_group_wire::{
 use crowdb_protocol::chunk_kv_ordered_wire::{encode_scan_request, encode_seek_request};
 use crowdb_protocol::chunk_kv_wire::{decode_point_response, encode_point_request, ChunkKvWireError};
 use crowdb_protocol::fb::FBMsgType;
-use crowdb_rpc_ffi::{Buffer, Connection, RpcClient, RpcServer};
-use dashmap::DashMap;
+use crowdb_rpc_ffi::{
+    Buffer, ConnectionPoolError, ConnectionPoolIndex, RpcClient, RpcError, RpcServer, SelectedConnection,
+};
 
 use crate::{ClientError, Result};
 
@@ -80,10 +81,7 @@ pub trait ChunkKvTransport: Send + Sync {
 pub struct ChunkKvRpcTransport {
     server: Arc<RpcServer>,
     rpc: RpcClient,
-    connections: DashMap<String, Vec<Connection>>,
-    pool_size: usize,
-    max_owners: usize,
-    connection_round_robin: AtomicU64,
+    connections: ConnectionPoolIndex,
     next_rpc_request_id: AtomicU64,
 }
 
@@ -99,10 +97,7 @@ impl ChunkKvRpcTransport {
         Self {
             server,
             rpc,
-            connections: DashMap::new(),
-            pool_size: pool_size.max(1),
-            max_owners: max_owners.max(1),
-            connection_round_robin: AtomicU64::new(0),
+            connections: ConnectionPoolIndex::new(pool_size, Some(max_owners)),
             next_rpc_request_id: AtomicU64::new(1),
         }
     }
@@ -116,29 +111,23 @@ impl ChunkKvRpcTransport {
         }
     }
 
-    fn connection(&self, endpoint: &str) -> Result<Connection> {
+    fn connection(&self, endpoint: &str) -> Result<SelectedConnection> {
         let endpoint = normalize_endpoint(endpoint);
-        if let Some(connections) = self.connections.get(&endpoint) {
-            if connections.len() == self.pool_size {
-                return Ok(
-                    connections[round_robin_index(&self.connection_round_robin, connections.len())].clone(),
-                );
-            }
-        }
-        if !self.connections.contains_key(&endpoint) && self.connections.len() >= self.max_owners {
-            return Err(ClientError::Transport("owner connection limit reached".into()));
-        }
         let (host, port) = parse_endpoint(&endpoint)?;
-        let mut connections = self.connections.entry(endpoint).or_default();
-        while connections.len() < self.pool_size {
-            let connection = self
-                .server
-                .connect(&host, port)
-                .map_err(|error| ClientError::Transport(format!("connect to {host}:{port}: {error:?}")))?;
-            self.rpc.attach(&connection);
-            connections.push(connection);
-        }
-        Ok(connections[round_robin_index(&self.connection_round_robin, connections.len())].clone())
+        self.connections
+            .get_or_try_install(&endpoint, || {
+                let connection = self.server.connect(&host, port).map_err(|error| {
+                    ClientError::Transport(format!("connect to {host}:{port}: {error:?}"))
+                })?;
+                self.rpc.attach(&connection);
+                Ok(connection)
+            })
+            .map_err(|error| match error {
+                ConnectionPoolError::Connect(error) => error,
+                ConnectionPoolError::Capacity { .. } => {
+                    ClientError::Transport("owner connection limit reached".into())
+                }
+            })
     }
 
     async fn call_control(
@@ -149,12 +138,19 @@ impl ChunkKvRpcTransport {
         message_type: u16,
     ) -> Result<Buffer> {
         let connection = self.connection(endpoint)?;
+        let normalized = normalize_endpoint(endpoint);
+        let map_error = |error: RpcError| {
+            if error.is_retryable() {
+                self.connections.invalidate(&normalized, connection.generation());
+            }
+            ClientError::Transport(error.to_string())
+        };
         let response = self
             .rpc
             .call(&self.server, &connection, request_id, control, None, message_type)
-            .map_err(|error| ClientError::Transport(error.to_string()))?
+            .map_err(&map_error)?
             .await
-            .map_err(|error| ClientError::Transport(error.to_string()))?;
+            .map_err(map_error)?;
         response
             .control
             .ok_or_else(|| ClientError::Transport("RPC response omitted its control buffer".into()))
@@ -285,11 +281,6 @@ fn parse_endpoint(endpoint: &str) -> Result<(String, i32)> {
         )));
     }
     Ok((host.into(), port))
-}
-
-fn round_robin_index(counter: &AtomicU64, len: usize) -> usize {
-    let len = u64::try_from(len).unwrap_or(u64::MAX);
-    usize::try_from(counter.fetch_add(1, Ordering::Relaxed) % len).unwrap_or(0)
 }
 
 fn wall_time_ns() -> u64 {

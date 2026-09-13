@@ -36,7 +36,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use dashmap::DashMap;
 use flatbuffers::FlatBufferBuilder;
 use tokio::runtime::Handle;
 use tracing::{debug, field, info_span, warn, Instrument, Span};
@@ -54,7 +53,10 @@ use crowdb_protocol::kv_client_fb::{
     FBSnapshotScanResponse, FBSnapshotScanResponseArgs, FBWatchNotifyError, FBWatchNotifyErrorArgs,
     FBWatchSubscribe, FBWatchUnsubscribe,
 };
-use crowdb_rpc_ffi::{noop_completion, Buffer, Connection, RpcClient, RpcError, RpcServer};
+use crowdb_rpc_ffi::{
+    noop_completion, Buffer, Connection, ConnectionPoolError, ConnectionPoolIndex, Response, RpcClient,
+    RpcError, RpcServer, SelectedConnection,
+};
 
 use crate::cluster::kv_store::KvStore;
 use crate::cluster::px_kv_store::PxKvStore;
@@ -75,7 +77,7 @@ use crate::rpc::{
 pub(crate) struct KvClientRpcForwarder {
     pub(crate) server: Arc<RpcServer>,
     pub(crate) rpc: Arc<RpcClient>,
-    connections: DashMap<String, Connection>,
+    connections: ConnectionPoolIndex,
     next_req_id: AtomicU64,
 }
 
@@ -93,7 +95,7 @@ impl KvClientRpcForwarder {
         Self {
             server,
             rpc,
-            connections: DashMap::new(),
+            connections: ConnectionPoolIndex::new(1, None),
             next_req_id: AtomicU64::new(1),
         }
     }
@@ -105,16 +107,41 @@ impl KvClientRpcForwarder {
     /// Get or create a `Connection` for the given endpoint. The
     /// crowdb-rpc server listens on the same port as the crowdb-rpc endpoint
     /// (no port derivation).
-    fn conn_for(&self, rpc_endpoint: &str) -> Result<Connection, RpcError> {
+    fn conn_for(&self, rpc_endpoint: &str) -> Result<SelectedConnection, RpcError> {
         let normalized = normalize_endpoint(rpc_endpoint);
-        if let Some(conn) = self.connections.get(&normalized) {
-            return Ok(conn.clone());
-        }
         let (host, port) = parse_endpoint(&normalized).map_err(|_| RpcError::InvalidArg)?;
-        let conn = self.server.connect(&host, port)?;
-        self.rpc.attach(&conn);
-        self.connections.insert(normalized, conn.clone());
-        Ok(conn)
+        self.connections
+            .get_or_try_install(&normalized, || {
+                let conn = self.server.connect(&host, port)?;
+                self.rpc.attach(&conn);
+                Ok(conn)
+            })
+            .map_err(|error| match error {
+                ConnectionPoolError::Connect(error) => error,
+                ConnectionPoolError::Capacity { .. } => RpcError::AllDown,
+            })
+    }
+
+    async fn call(
+        &self,
+        rpc_endpoint: &str,
+        selected: &SelectedConnection,
+        req_id: u64,
+        control: Buffer,
+        msg_type: u16,
+    ) -> Result<Response, RpcError> {
+        let normalized = normalize_endpoint(rpc_endpoint);
+        let map_error = |error: RpcError| {
+            if error.is_retryable() {
+                self.connections.invalidate(&normalized, selected.generation());
+            }
+            error
+        };
+        let future = self
+            .rpc
+            .call(&self.server, selected, req_id, control, None, msg_type)
+            .map_err(&map_error)?;
+        future.await.map_err(map_error)
     }
 
     /// Forward a `Get` request to the leader. Returns the leader's
@@ -144,10 +171,7 @@ impl KvClientRpcForwarder {
         builder.finish(fb_req, None);
         let control = Buffer::from_bytes(builder.finished_data());
         let msg_type = FBMsgType::EKvGetRequest.0 as u16;
-        let fut = self
-            .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)?;
-        let resp = fut.await?;
+        let resp = self.call(rpc_endpoint, &conn, req_id, control, msg_type).await?;
         let ctrl = resp.control.ok_or(RpcError::ConnectionError)?;
         Ok(ctrl.bytes().to_vec())
     }
@@ -188,10 +212,7 @@ impl KvClientRpcForwarder {
         builder.finish(fb_req, None);
         let control = Buffer::from_bytes(builder.finished_data());
         let msg_type = FBMsgType::EKvScanRequest.0 as u16;
-        let fut = self
-            .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)?;
-        let resp = fut.await?;
+        let resp = self.call(rpc_endpoint, &conn, req_id, control, msg_type).await?;
         let ctrl = resp.control.ok_or(RpcError::ConnectionError)?;
         Ok(ctrl.bytes().to_vec())
     }
@@ -224,10 +245,7 @@ impl KvClientRpcForwarder {
         builder.finish(fb_req, None);
         let control = Buffer::from_bytes(builder.finished_data());
         let msg_type = FBMsgType::EKvJournalScanRequest.0 as u16;
-        let fut = self
-            .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)?;
-        let resp = fut.await?;
+        let resp = self.call(rpc_endpoint, &conn, req_id, control, msg_type).await?;
         let ctrl = resp.control.ok_or(RpcError::ConnectionError)?;
         Ok(ctrl.bytes().to_vec())
     }

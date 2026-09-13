@@ -4,7 +4,7 @@
 //! `ChunkdbClient` — client library for CROWDB chunkdb operations.
 //!
 //! Endpoint discovery + cache: `refresh_endpoints` reads all chunkdb
-//! instances from the service registry, populates a `DashMap` cache
+//! instances from the service registry, atomically publishes an endpoint cache
 //! (`instance_id -> rpc_endpoint`). On cache miss, lazily refreshes.
 //! Retry: exponential backoff on transient errors, up to `max_retries`.
 

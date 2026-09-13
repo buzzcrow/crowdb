@@ -60,6 +60,14 @@ impl SelectedConnection {
     }
 }
 
+impl std::ops::Deref for SelectedConnection {
+    type Target = Connection;
+
+    fn deref(&self) -> &Self::Target {
+        &self.connection
+    }
+}
+
 #[derive(Debug)]
 struct ConnectionPool {
     generation: u64,
@@ -76,6 +84,13 @@ impl ConnectionPool {
         };
         SelectedConnection {
             connection: self.connections[index].clone(),
+            generation: self.generation,
+        }
+    }
+
+    fn first(&self) -> SelectedConnection {
+        SelectedConnection {
+            connection: self.connections[0].clone(),
             generation: self.generation,
         }
     }
@@ -138,6 +153,12 @@ impl ConnectionPoolIndex {
     #[must_use]
     pub fn get(&self, endpoint: &str) -> Option<SelectedConnection> {
         self.snapshot.load().pools.get(endpoint).map(|pool| pool.select())
+    }
+
+    /// Select the first connection from an existing complete endpoint pool.
+    #[must_use]
+    pub fn get_first(&self, endpoint: &str) -> Option<SelectedConnection> {
+        self.snapshot.load().pools.get(endpoint).map(|pool| pool.first())
     }
 
     /// Select an existing connection or build and atomically install a pool.

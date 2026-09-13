@@ -20,7 +20,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use bytes::Bytes;
-use dashmap::DashMap;
 use flatbuffers::FlatBufferBuilder;
 
 use crowdb_kv::rpc::{
@@ -42,7 +41,10 @@ use crowdb_protocol::kv_client_fb::{
     FBListSnapshotsRequestArgs, FBReadMode, FBReleaseSnapshotRequest, FBReleaseSnapshotRequestArgs,
     FBSnapshotScanRequest, FBSnapshotScanRequestArgs,
 };
-use crowdb_rpc_ffi::{Buffer, Connection, RpcClient, RpcError, RpcServer};
+use crowdb_rpc_ffi::{
+    Buffer, Connection, ConnectionPoolError, ConnectionPoolIndex, RpcClient, RpcError, RpcServer,
+    SelectedConnection,
+};
 
 use crate::error::{Error, Result};
 
@@ -53,9 +55,7 @@ use crate::error::{Error, Result};
 pub struct KvRpcTransport {
     server: Arc<RpcServer>,
     rpc: Arc<RpcClient>,
-    connections: DashMap<String, Vec<Connection>>,
-    pool_size: usize,
-    conn_rr: AtomicU64,
+    connections: ConnectionPoolIndex,
     next_req_id: AtomicU64,
 }
 
@@ -95,9 +95,7 @@ impl KvRpcTransport {
         Self {
             server,
             rpc,
-            connections: DashMap::new(),
-            pool_size: pool_size.max(1),
-            conn_rr: AtomicU64::new(0),
+            connections: ConnectionPoolIndex::new(pool_size, None),
             next_req_id: AtomicU64::new(1),
         }
     }
@@ -119,18 +117,6 @@ impl KvRpcTransport {
         self.connections.clear();
     }
 
-    /// Remove all cached connections for `rpc_endpoint` so the next
-    /// `conn_for` re-establishes a fresh connection. Called when an
-    /// RPC fails with a retryable transport error (`SendQueueFull`,
-    /// `ConnectionClosed`, etc.) — the cached connection is dead and
-    /// must be replaced.
-    fn drop_endpoint(&self, rpc_endpoint: &str) {
-        let normalized = normalize_endpoint(rpc_endpoint);
-        if let Some(mut entry) = self.connections.get_mut(&normalized) {
-            entry.value_mut().clear();
-        }
-    }
-
     /// Convert an `RpcError` to `Error`, dropping cached connections
     /// for `endpoint` on connection-level errors (closed/reset) and
     /// `Timeout`. `Timeout` can indicate a dead connection whose TCP
@@ -142,12 +128,13 @@ impl KvRpcTransport {
     /// `SendQueueFull` is truly transient (the connection is alive but
     /// the send queue is full) so the pool is preserved. Preserves the
     /// endpoint in the error message.
-    fn map_rpc_err(&self, e: RpcError, endpoint: &str) -> Error {
+    fn map_rpc_err(&self, e: RpcError, endpoint: &str, generation: u64) -> Error {
         if matches!(
             e,
             RpcError::ConnectionClosed | RpcError::ConnectionError | RpcError::Timeout
         ) {
-            self.drop_endpoint(endpoint);
+            self.connections
+                .invalidate(&normalize_endpoint(endpoint), generation);
         }
         Error::Transport {
             endpoint: endpoint.to_string(),
@@ -158,46 +145,28 @@ impl KvRpcTransport {
     /// Get or create a `Connection` for the given endpoint, round-
     /// robining across the pool. The crowdb-rpc server listens on the
     /// same port as the crowdb-rpc endpoint (no port derivation).
-    fn conn_for(&self, rpc_endpoint: &str) -> Result<Connection> {
+    fn conn_for(&self, rpc_endpoint: &str) -> Result<SelectedConnection> {
         let normalized = normalize_endpoint(rpc_endpoint);
-        if let Some(entry) = self.connections.get(&normalized) {
-            let pool = entry.value();
-            if pool.is_empty() {
-                // Pool was cleared (e.g. via clear_connections after a
-                // server restart). Fall through to re-populate below.
-            } else if pool.len() == 1 {
-                return Ok(pool[0].clone());
-            } else {
-                let idx =
-                    usize::try_from(self.conn_rr.fetch_add(1, Ordering::Relaxed)).unwrap_or(0) % pool.len();
-                return Ok(pool[idx].clone());
-            }
-        }
-        // Slow path: create the pool under a per-entry lock to avoid
-        // duplicate connections from concurrent callers.
-        let mut entry = self.connections.entry(normalized.clone()).or_default();
-        let pool = entry.value_mut();
-        if !pool.is_empty() {
-            // Another thread won the race.
-            if pool.len() == 1 {
-                return Ok(pool[0].clone());
-            }
-            let idx = usize::try_from(self.conn_rr.fetch_add(1, Ordering::Relaxed)).unwrap_or(0) % pool.len();
-            return Ok(pool[idx].clone());
-        }
         let (host, port) = parse_endpoint(&normalized).map_err(|e| Error::InvalidEndpoint {
             endpoint: rpc_endpoint.to_string(),
             reason: e,
         })?;
-        for _ in 0..self.pool_size {
-            let conn = self.server.connect(&host, port).map_err(|e| Error::Transport {
-                endpoint: rpc_endpoint.to_string(),
-                status: format!("rpc connect to {host}:{port}: {e:?}"),
-            })?;
-            self.rpc.attach(&conn);
-            pool.push(conn);
-        }
-        Ok(pool[0].clone())
+        self.connections
+            .get_or_try_install(&normalized, || {
+                let conn = self.server.connect(&host, port).map_err(|e| Error::Transport {
+                    endpoint: rpc_endpoint.to_string(),
+                    status: format!("rpc connect to {host}:{port}: {e:?}"),
+                })?;
+                self.rpc.attach(&conn);
+                Ok(conn)
+            })
+            .map_err(|error| match error {
+                ConnectionPoolError::Connect(error) => error,
+                ConnectionPoolError::Capacity { max_endpoints } => Error::Transport {
+                    endpoint: rpc_endpoint.to_string(),
+                    status: format!("endpoint connection limit {max_endpoints} reached"),
+                },
+            })
     }
 
     /// Send a `Put` request via crowdb-rpc. Returns the
@@ -241,8 +210,10 @@ impl KvRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp.control.ok_or_else(|| Error::Transport {
             endpoint: rpc_endpoint.to_string(),
             status: "put response missing control buffer".into(),
@@ -307,10 +278,10 @@ impl KvRpcTransport {
                 None,
                 FBMsgType::EKvSetRequest.0 as u16,
             )
-            .map_err(|error| self.map_rpc_err(error, rpc_endpoint))?;
+            .map_err(|error| self.map_rpc_err(error, rpc_endpoint, conn.generation()))?;
         let response = future
             .await
-            .map_err(|error| self.map_rpc_err(error, rpc_endpoint))?;
+            .map_err(|error| self.map_rpc_err(error, rpc_endpoint, conn.generation()))?;
         let control = response.control.ok_or_else(|| Error::Transport {
             endpoint: rpc_endpoint.to_string(),
             status: "put CAS response missing control buffer".into(),
@@ -379,8 +350,10 @@ impl KvRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp.control.ok_or_else(|| Error::Transport {
             endpoint: rpc_endpoint.to_string(),
             status: "get response missing control buffer".into(),
@@ -423,8 +396,10 @@ impl KvRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp.control.ok_or_else(|| Error::Transport {
             endpoint: rpc_endpoint.to_string(),
             status: "delete response missing control buffer".into(),
@@ -483,8 +458,10 @@ impl KvRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp.control.ok_or_else(|| Error::Transport {
             endpoint: rpc_endpoint.to_string(),
             status: "batch_write response missing control buffer".into(),
@@ -561,10 +538,10 @@ impl KvRpcTransport {
                 None,
                 FBMsgType::EKvBatchWriteRequest.0 as u16,
             )
-            .map_err(|error| self.map_rpc_err(error, rpc_endpoint))?;
+            .map_err(|error| self.map_rpc_err(error, rpc_endpoint, conn.generation()))?;
         let response = future
             .await
-            .map_err(|error| self.map_rpc_err(error, rpc_endpoint))?;
+            .map_err(|error| self.map_rpc_err(error, rpc_endpoint, conn.generation()))?;
         let control = response.control.ok_or_else(|| Error::Transport {
             endpoint: rpc_endpoint.to_string(),
             status: "batch CAS response missing control buffer".into(),
@@ -625,8 +602,10 @@ impl KvRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp.control.ok_or_else(|| Error::Transport {
             endpoint: rpc_endpoint.to_string(),
             status: "scan response missing control buffer".into(),
@@ -673,8 +652,10 @@ impl KvRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp.control.ok_or_else(|| Error::Transport {
             endpoint: rpc_endpoint.to_string(),
             status: "journal_scan response missing control buffer".into(),
@@ -711,8 +692,10 @@ impl KvRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp.control.ok_or_else(|| Error::Transport {
             endpoint: rpc_endpoint.to_string(),
             status: "create_snapshot response missing control buffer".into(),
@@ -756,8 +739,10 @@ impl KvRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp.control.ok_or_else(|| Error::Transport {
             endpoint: rpc_endpoint.to_string(),
             status: "list_snapshots response missing control buffer".into(),
@@ -821,8 +806,10 @@ impl KvRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp.control.ok_or_else(|| Error::Transport {
             endpoint: rpc_endpoint.to_string(),
             status: "snapshot_scan response missing control buffer".into(),
@@ -880,8 +867,10 @@ impl KvRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp.control.ok_or_else(|| Error::Transport {
             endpoint: rpc_endpoint.to_string(),
             status: "release_snapshot response missing control buffer".into(),
@@ -906,15 +895,13 @@ impl KvRpcTransport {
     /// (index 0) so the watch subscription stays on one connection.
     pub fn get_conn(&self, rpc_endpoint: &str) -> Result<Connection> {
         let normalized = normalize_endpoint(rpc_endpoint);
-        if let Some(entry) = self.connections.get(&normalized) {
-            let pool = entry.value();
-            if let Some(conn) = pool.first() {
-                return Ok(conn.clone());
-            }
+        if let Some(selected) = self.connections.get_first(&normalized) {
+            return Ok(selected.into_connection());
         }
         // Pool not yet created — fall through to conn_for which will
         // create it and return index 0.
         self.conn_for(rpc_endpoint)
+            .map(SelectedConnection::into_connection)
     }
 
     /// The client-side `RpcServer` (public — used by

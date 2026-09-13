@@ -14,7 +14,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use flatbuffers::FlatBufferBuilder;
 
 use crowdb_protocol::fb::FBMsgType;
@@ -30,7 +29,10 @@ use crowdb_protocol::kv_consensus_fb::{
     FBRequestVoteRequestArgs, FBSnapshotRequest, FBSnapshotRequestArgs, FBStepDownRequest,
     FBStepDownRequestArgs,
 };
-use crowdb_rpc_ffi::{noop_completion, Buffer, Connection, RpcClient, RpcError, RpcServer};
+use crowdb_rpc_ffi::{
+    noop_completion, Buffer, Connection, ConnectionPoolError, ConnectionPoolIndex, RpcClient, RpcError,
+    RpcServer, SelectedConnection,
+};
 
 use crate::cluster::replica::{
     FetchGapReply, HeartbeatReply, HeartbeatRequestPayload, PxReplicaError, StepDownReply,
@@ -45,9 +47,7 @@ use crate::paxos::roles::{DedupTag, PxAcceptReply, PxBallot, PxLogEntry, PxPrepa
 pub struct PxRpcTransport {
     server: Arc<RpcServer>,
     rpc: Arc<RpcClient>,
-    connections: DashMap<String, Vec<Connection>>,
-    pool_size: usize,
-    conn_rr: AtomicU64,
+    connections: ConnectionPoolIndex,
     next_req_id: AtomicU64,
 }
 
@@ -94,9 +94,7 @@ impl PxRpcTransport {
         Self {
             server,
             rpc,
-            connections: DashMap::new(),
-            pool_size: pool_size.max(1),
-            conn_rr: AtomicU64::new(0),
+            connections: ConnectionPoolIndex::new(pool_size, None),
             next_req_id: AtomicU64::new(1),
         }
     }
@@ -108,61 +106,34 @@ impl PxRpcTransport {
     /// Get or create a `Connection` for the given endpoint, round-
     /// robining across the pool. The crowdb-rpc server listens on the
     /// same port as the crowdb-rpc endpoint (no port derivation).
-    fn conn_for(&self, rpc_endpoint: &str) -> Result<Connection, PxReplicaError> {
+    fn conn_for(&self, rpc_endpoint: &str) -> Result<SelectedConnection, PxReplicaError> {
         let normalized = normalize_endpoint(rpc_endpoint);
-        if let Some(entry) = self.connections.get(&normalized) {
-            let pool = entry.value();
-            if pool.is_empty() {
-                // Pool was cleared (e.g. via clear_connections after a
-                // server restart). Fall through to re-populate below.
-            } else if pool.len() == 1 {
-                return Ok(pool[0].clone());
-            } else {
-                let idx =
-                    usize::try_from(self.conn_rr.fetch_add(1, Ordering::Relaxed)).unwrap_or(0) % pool.len();
-                return Ok(pool[idx].clone());
-            }
-        }
-        let mut entry = self.connections.entry(normalized.clone()).or_default();
-        let pool = entry.value_mut();
-        if !pool.is_empty() {
-            if pool.len() == 1 {
-                return Ok(pool[0].clone());
-            }
-            let idx = usize::try_from(self.conn_rr.fetch_add(1, Ordering::Relaxed)).unwrap_or(0) % pool.len();
-            return Ok(pool[idx].clone());
-        }
         let (host, port) = parse_endpoint(&normalized)
             .map_err(|e| PxReplicaError::Internal(format!("rpc connect parse endpoint: {e}")))?;
-        for _ in 0..self.pool_size {
-            let conn = self
-                .server
-                .connect(&host, port)
-                .map_err(|e| PxReplicaError::Internal(format!("rpc connect to {host}:{port}: {e:?}")))?;
-            self.rpc.attach(&conn);
-            pool.push(conn);
-        }
-        Ok(pool[0].clone())
-    }
-
-    /// Remove all cached connections for `rpc_endpoint` so the next
-    /// `conn_for` re-establishes a fresh connection. Called when an
-    /// RPC fails with a retryable transport error (`SendQueueFull`,
-    /// `ConnectionClosed`, etc.) — the cached connection is dead and
-    /// must be replaced.
-    pub(crate) fn drop_endpoint(&self, rpc_endpoint: &str) {
-        let normalized = normalize_endpoint(rpc_endpoint);
-        if let Some(mut entry) = self.connections.get_mut(&normalized) {
-            entry.value_mut().clear();
-        }
+        self.connections
+            .get_or_try_install(&normalized, || {
+                let conn = self
+                    .server
+                    .connect(&host, port)
+                    .map_err(|e| PxReplicaError::Internal(format!("rpc connect to {host}:{port}: {e:?}")))?;
+                self.rpc.attach(&conn);
+                Ok(conn)
+            })
+            .map_err(|error| match error {
+                ConnectionPoolError::Connect(error) => error,
+                ConnectionPoolError::Capacity { max_endpoints } => {
+                    PxReplicaError::Internal(format!("endpoint connection limit {max_endpoints} reached"))
+                }
+            })
     }
 
     /// Convert an `RpcError` to `PxReplicaError`, dropping cached
     /// connections for `endpoint` on retryable transport errors so
     /// the next call reconnects.
-    fn map_rpc_err(&self, e: RpcError, endpoint: &str) -> PxReplicaError {
+    fn map_rpc_err(&self, e: RpcError, endpoint: &str, generation: u64) -> PxReplicaError {
         if e.is_retryable() {
-            self.drop_endpoint(endpoint);
+            self.connections
+                .invalidate(&normalize_endpoint(endpoint), generation);
         }
         rpc_error_to_px(e)
     }
@@ -198,8 +169,10 @@ impl PxRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp
             .control
             .ok_or_else(|| PxReplicaError::Internal("prepare response missing control buffer".into()))?;
@@ -287,8 +260,10 @@ impl PxRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp
             .control
             .ok_or_else(|| PxReplicaError::Internal("accept response missing control buffer".into()))?;
@@ -346,8 +321,10 @@ impl PxRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp
             .control
             .ok_or_else(|| PxReplicaError::Internal("pre_vote response missing control buffer".into()))?;
@@ -392,8 +369,10 @@ impl PxRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp
             .control
             .ok_or_else(|| PxReplicaError::Internal("request_vote response missing control buffer".into()))?;
@@ -441,8 +420,10 @@ impl PxRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp
             .control
             .ok_or_else(|| PxReplicaError::Internal("heartbeat response missing control buffer".into()))?;
@@ -489,8 +470,10 @@ impl PxRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp
             .control
             .ok_or_else(|| PxReplicaError::Internal("step_down response missing control buffer".into()))?;
@@ -534,8 +517,10 @@ impl PxRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp
             .control
             .ok_or_else(|| PxReplicaError::Internal("fetch_gap response missing control buffer".into()))?;
@@ -594,7 +579,7 @@ impl PxRpcTransport {
                 noop_completion(),
                 std::ptr::null_mut(),
             )
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))
     }
 
     /// Send a fire-and-forget `BatchChosenNotification` via crowdb-rpc.
@@ -638,7 +623,7 @@ impl PxRpcTransport {
                 noop_completion(),
                 std::ptr::null_mut(),
             )
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))
     }
 
     /// Request a snapshot from a peer via crowdb-rpc. The response carries
@@ -664,8 +649,10 @@ impl PxRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp
             .control
             .ok_or_else(|| PxReplicaError::Internal("snapshot response missing control buffer".into()))?;
@@ -705,13 +692,11 @@ impl PxRpcTransport {
     /// one connection.
     pub(crate) fn get_conn(&self, rpc_endpoint: &str) -> Result<Connection, PxReplicaError> {
         let normalized = normalize_endpoint(rpc_endpoint);
-        if let Some(entry) = self.connections.get(&normalized) {
-            let pool = entry.value();
-            if let Some(conn) = pool.first() {
-                return Ok(conn.clone());
-            }
+        if let Some(selected) = self.connections.get_first(&normalized) {
+            return Ok(selected.into_connection());
         }
         self.conn_for(rpc_endpoint)
+            .map(SelectedConnection::into_connection)
     }
 
     /// Allocate a new request ID (exposed for the `LearnerStream`).
@@ -736,8 +721,10 @@ impl PxRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         Ok(resp)
     }
 }
