@@ -4,7 +4,8 @@
 
 - **What**: Multi-threaded WAL append throughput with durable flush ack.
 - **Payload**: 1 KB per record (fixed).
-- **Backends**: `mem` (in-memory `BlockDevice`), `file` (real disk `fdatasync`).
+- **Backends**: `mem` (in-memory `BlockDevice`), `file` (Tokio buffered file),
+  `uring` (buffered file with CQE-backed write/read/sync), and aligned `block`.
 - **Thread counts**: 1, 32, 128 concurrent loader tasks.
 - **Duration**: 5 seconds per case (time-based, not fixed record count).
 - **Metrics**: records, TPS, per-record avg latency, per-batch avg latency, avg batch size.
@@ -89,3 +90,27 @@ cargo bench --bench wal -- file_128
 - **macOS has much larger durable flush latency**: the earlier macOS run showed about **3.05 ms** batch flush latency on the file backend, while this Linux NVMe run stayed around **0.58-0.73 ms**. That is the main reason Linux file TPS is about **4.2x-5.3x** higher.
 - **Batching is the main throughput multiplier for the file backend**: on Linux, `file_128` reached **83,368 TPS** vs **1,737 TPS** for `file_1`, driven by average batch size growing from **1** to **60** records.
 - **The mem backend is not flush-limited, but still capped by the single pipeline writer**: adding concurrency improves throughput, but much less dramatically than the file backend.
+
+---
+
+## Run 3 — 2026-09-14
+
+### Hardware / OS
+
+| Item      | Value                                             |
+|-----------|---------------------------------------------------|
+| CPU       | Intel Core i9-7960X @ 2.80 GHz                    |
+| Disk      | `/dev/nvme1n1p1`, XFS                             |
+| OS        | Linux 6.11.0-29-generic x86_64                    |
+| Workload  | 32 writers, 1 KiB payload, durable sync, 5 seconds |
+
+### Buffered backend comparison
+
+| case      | records | TPS    | lat_us | batch_lat_us | avg_batch |
+|-----------|--------:|-------:|-------:|-------------:|----------:|
+| file_32   | 52,606  | 10,514 | 95.1   | 1,522.6      | 16.0      |
+| uring_32  | 51,330  | 10,259 | 97.5   | 1,560.1      | 16.0      |
+
+The buffered io_uring path preserved durability and recovery but was 2.4%
+slower in this single run. Durable device flush latency dominates, so `uring`
+remains explicit rather than becoming the automatic default.

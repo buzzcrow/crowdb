@@ -227,11 +227,17 @@ Crucially, the leader's **own** durable flush is not on the critical path of rem
 ### 4.6 I/O backend abstraction
 
 The WAL dispatches all file operations through `IoBackend`, a process-lifetime
-enum with three variants:
+enum with four variants:
 
-- **`File`** — `tokio::fs` + `spawn_blocking` for `fdatasync`. The production
-  default; works everywhere. `fdatasync` is a no-op (only `fsync` on close
-  calls `sync_all`).
+- **`File`** — `tokio::fs` with an awaited `sync_data` durability barrier. The
+  production default; works everywhere. A batch acknowledgement is not released
+  until this barrier succeeds.
+- **`Uring`** — explicitly selected buffered regular files. Positional reads,
+  vectored writes, `fdatasync`, and `fsync` are submitted to one process-shared
+  single-pipeline io_uring owner; namespace and metadata operations remain on
+  the portable filesystem path. Ring setup failure rejects explicit selection
+  rather than falling back. Borrowed buffers and descriptors remain live until
+  the CQE is drained, including when a Rust operation future is dropped.
 - **`MemBlock(MemBlockDevice)`** — in-memory test harness. Stores segments as
   `BTreeMap<PathBuf, Vec<u8>>` with error injection (`inject_io_error`,
   `inject_sync_error`, `set_full`), corruption injection
@@ -261,12 +267,13 @@ enum with three variants:
 Both `BlockDevice` and `MemBlockDevice` track write counts, fdatasync counts,
 logical/physical bytes written, and RMW counts for observability. The
 `WalEngine::backend_label()` method returns a short string (`"file"`,
-`"mem"`, `"block"`) for metric names. `WalEngine::block_device_snapshot()`
+`"uring"`, `"mem"`, `"block"`) for metric names. `WalEngine::block_device_snapshot()`
 reads cumulative counters for the engine collector to compute per-window
 deltas.
 
-The WAL bench (`lib/crowdb-kv/benches/wal.rs`) exercises three backends: `Mem`
-(in-memory `MemBlockDevice`), `File` (`tokio::fs`), and `Block`
+The WAL bench (`lib/crowdb-kv/benches/wal.rs`) exercises four backends: `Mem`
+(in-memory `MemBlockDevice`), `File` (`tokio::fs`), `Uring` (buffered
+CQE-backed file I/O), and `Block`
 (`BlockDevice::new()` with `wal_skip_fsync: true`). The `Block` case hits all
 block code paths (alignment planning, RMW, amplification tracking,
 `pwrite`/`pread` syscalls) at high TPS since `fdatasync` is skipped per

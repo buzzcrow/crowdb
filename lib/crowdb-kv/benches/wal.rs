@@ -5,7 +5,7 @@
 //!
 //! Measures append throughput with N concurrent loader tasks, each writing KV
 //! records sequentially (wait-for-ack before next append). Tests both real
-//! file I/O and in-memory `BlockDevice` backends to isolate bottlenecks.
+//! file, buffered `io_uring`, and in-memory backends to isolate bottlenecks.
 //!
 //! Loaders run for a fixed duration (default 5 s) per case. TPS, batch count,
 //! and average batch size are reported in a summary table.
@@ -89,6 +89,7 @@ fn runtime() -> tokio::runtime::Runtime {
 enum Backend {
     Mem,
     File,
+    Uring,
     Block,
 }
 
@@ -139,6 +140,24 @@ const CASES: &[Case] = &[
         payload_size: 1024,
     },
     Case {
+        name: "uring_1",
+        backend: Backend::Uring,
+        threads: 1,
+        payload_size: 1024,
+    },
+    Case {
+        name: "uring_32",
+        backend: Backend::Uring,
+        threads: 32,
+        payload_size: 1024,
+    },
+    Case {
+        name: "uring_128",
+        backend: Backend::Uring,
+        threads: 128,
+        payload_size: 1024,
+    },
+    Case {
         name: "block_1",
         backend: Backend::Block,
         threads: 1,
@@ -184,6 +203,17 @@ fn run_case(rt: &tokio::runtime::Runtime, case: &Case) -> CaseResult {
         Backend::File => {
             let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("wal-bench-file");
             let backend = Arc::new(IoBackend::File);
+            let config = WalConfig {
+                wal_disks: vec![tmp.path().to_path_buf()],
+                wal_segment_size: 64 * 1024 * 1024,
+                ..Default::default()
+            };
+            let wal = rt.block_on(async { WalEngine::create(backend, config, 1).await.unwrap() });
+            (wal, Some(tmp))
+        }
+        Backend::Uring => {
+            let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("wal-bench-uring");
+            let backend = Arc::new(IoBackend::uring().expect("io_uring unavailable for requested benchmark"));
             let config = WalConfig {
                 wal_disks: vec![tmp.path().to_path_buf()],
                 wal_segment_size: 64 * 1024 * 1024,
