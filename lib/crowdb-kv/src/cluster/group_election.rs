@@ -422,9 +422,8 @@ impl PxGroup {
                 }
             }
             StepDownReason::Admin => {
-                if let Some(h) = handles {
-                    h.step_downs_admin.inc();
-                }
+                // Counted synchronously when the strict-fence request is
+                // accepted so status agrees with the API response.
             }
         }
         tenure_cancel.cancel();
