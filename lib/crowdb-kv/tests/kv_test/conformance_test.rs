@@ -370,7 +370,7 @@ pub fn compare_is_empty_for_identical_state_and_detects_divergence(a: &dyn KVEng
     assert_eq!(diff[0].key, b"x".to_vec());
 }
 
-/// `KVEngine::snapshot_export`/`snapshot_import` round trip
+/// `KVEngine` snapshot session round trip
 /// (exporting `source`'s state and importing it into a fresh `target` of the
 /// same engine kind must reproduce `source`'s exact logical state
 /// (`compare` empty) and report the same `at_slot`. `target` must be freshly
@@ -387,17 +387,33 @@ pub fn snapshot_export_import_round_trip(source: &dyn KVEngine, target: &dyn KVE
         .into_ready()
         .unwrap();
 
-    let (export_at_slot, stream) = source.snapshot_export().expect("snapshot_export should succeed");
+    let mut exporter = source
+        .snapshot_export_begin(17)
+        .expect("snapshot export session should begin");
+    let metadata = exporter.metadata();
     assert_eq!(
-        export_at_slot, 3,
+        metadata.at_slot, 3,
         "at_slot should reflect the highest applied slot"
     );
-
-    let import_at_slot = target
-        .snapshot_import(&stream)
-        .expect("snapshot_import should succeed");
+    assert_eq!(metadata.chunk_bytes, 17);
+    let mut importer = target
+        .snapshot_import_begin()
+        .expect("snapshot import session should begin");
+    let mut offset = 0_u64;
+    loop {
+        let chunk = exporter.read(offset).expect("snapshot chunk should read");
+        assert_eq!(chunk.offset, offset);
+        assert!(chunk.bytes.len() <= metadata.chunk_bytes);
+        importer.feed(&chunk.bytes).expect("snapshot chunk should feed");
+        offset += chunk.bytes.len() as u64;
+        if chunk.done {
+            break;
+        }
+    }
+    assert_eq!(offset, metadata.total_bytes);
+    let import_at_slot = importer.finish().expect("snapshot import should finish");
     assert_eq!(
-        import_at_slot, export_at_slot,
+        import_at_slot, metadata.at_slot,
         "import must report the same at_slot as export"
     );
 

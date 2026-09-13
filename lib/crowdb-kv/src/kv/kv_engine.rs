@@ -6,6 +6,56 @@ use super::Batch;
 
 use bytes::Bytes;
 
+/// Stable tag for an engine's snapshot byte format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SnapshotFormat {
+    CrowdbTreePortable = 1,
+    InMemoryTest = 2,
+}
+
+/// Immutable properties of one pinned snapshot export.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SnapshotMetadata {
+    pub format: SnapshotFormat,
+    pub at_slot: u64,
+    pub total_bytes: u64,
+    pub final_crc32c: u32,
+    pub chunk_bytes: usize,
+}
+
+/// One bounded piece of a snapshot byte stream.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SnapshotChunk {
+    pub offset: u64,
+    pub bytes: Vec<u8>,
+    pub done: bool,
+}
+
+/// Unique sequential owner of a pinned snapshot export.
+pub trait SnapshotExporter: Send {
+    fn metadata(&self) -> SnapshotMetadata;
+    fn offset(&self) -> u64;
+
+    /// # Errors
+    /// Returns an error when `offset` is not the next sequential position or
+    /// the underlying encoder cannot produce the chunk.
+    fn read(&mut self, offset: u64) -> Result<SnapshotChunk, String>;
+}
+
+/// Unique sequential owner of a staged snapshot import.
+pub trait SnapshotImporter: Send {
+    /// # Errors
+    /// Returns an error when the bytes violate the engine snapshot format.
+    fn feed(&mut self, chunk: &[u8]) -> Result<(), String>;
+
+    /// # Errors
+    /// Returns an error when the stream is incomplete, corrupt, or cannot be
+    /// installed into the target engine.
+    fn finish(self: Box<Self>) -> Result<u64, String>;
+    fn abort(self: Box<Self>);
+}
+
 /// Ordered scan traversal direction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ScanDirection {
@@ -242,6 +292,25 @@ pub trait KVEngine: Send + Sync {
     /// durability barrier fails.
     fn compact_sparse_blocks(&self) -> Result<(), String> {
         Ok(())
+    }
+
+    /// Begin a bounded export from one stable engine view.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid chunk limit, an unsupported engine, or
+    /// failure to pin and inspect the source view.
+    fn snapshot_export_begin(&self, chunk_bytes: usize) -> Result<Box<dyn SnapshotExporter>, String> {
+        let _ = chunk_bytes;
+        Err("snapshot export not supported by this engine".to_string())
+    }
+
+    /// Begin staging an import into a fresh, unpublished engine.
+    ///
+    /// # Errors
+    /// Returns an error when this engine does not support streaming import or
+    /// cannot allocate its parser state.
+    fn snapshot_import_begin(&self) -> Result<Box<dyn SnapshotImporter>, String> {
+        Err("snapshot import not supported by this engine".to_string())
     }
 
     /// Export this engine's entire current state as an opaque,

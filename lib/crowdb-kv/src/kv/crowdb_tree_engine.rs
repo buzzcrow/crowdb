@@ -6,7 +6,10 @@
 
 #[cfg(feature = "test-util")]
 use super::op::Cell;
-use super::{Batch, KVEngine, KVFuture, Op, ScanDirection, SnapshotViewEntry};
+use super::{
+    Batch, KVEngine, KVFuture, Op, ScanDirection, SnapshotChunk, SnapshotExporter, SnapshotFormat,
+    SnapshotImporter, SnapshotMetadata, SnapshotViewEntry,
+};
 use bytes::Bytes;
 use crowdb_tree_ffi::{
     AsyncCrowdbtree, Crowdbtree, CtError, ExtOp, GetOutcome, PinnedGetOutcome, ScanOutcome,
@@ -371,6 +374,25 @@ impl KVEngine for CrowdbTreeEngine {
             .map_err(|error| error.to_string())
     }
 
+    fn snapshot_export_begin(&self, chunk_bytes: usize) -> Result<Box<dyn SnapshotExporter>, String> {
+        self.inner.handle().flush().map_err(|error| error.to_string())?;
+        let session = self
+            .inner
+            .handle()
+            .snapshot_export_begin(chunk_bytes)
+            .map_err(|error| error.to_string())?;
+        Ok(Box::new(CrowdbTreeSnapshotExporter { session }))
+    }
+
+    fn snapshot_import_begin(&self) -> Result<Box<dyn SnapshotImporter>, String> {
+        let session = self
+            .inner
+            .handle()
+            .snapshot_import_begin()
+            .map_err(|error| error.to_string())?;
+        Ok(Box::new(CrowdbTreeSnapshotImporter { session }))
+    }
+
     fn snapshot_export(&self) -> Result<(u64, Vec<u8>), String> {
         // Flush first so the export reflects every `apply` up to now, not
         // just whatever an earlier `flush` already moved into L1 --
@@ -411,6 +433,56 @@ impl KVEngine for CrowdbTreeEngine {
 
     // `compare` uses the trait's default implementation (diffs `iter_all`
     // of both sides); no override needed.
+}
+
+struct CrowdbTreeSnapshotExporter {
+    session: crowdb_tree_ffi::SnapshotExportSession,
+}
+
+impl SnapshotExporter for CrowdbTreeSnapshotExporter {
+    fn metadata(&self) -> SnapshotMetadata {
+        let metadata = self.session.metadata();
+        SnapshotMetadata {
+            format: SnapshotFormat::CrowdbTreePortable,
+            at_slot: metadata.at_slot,
+            total_bytes: metadata.total_bytes,
+            final_crc32c: metadata.final_crc32c,
+            chunk_bytes: metadata.chunk_bytes,
+        }
+    }
+
+    fn offset(&self) -> u64 {
+        self.session.offset()
+    }
+
+    fn read(&mut self, offset: u64) -> Result<SnapshotChunk, String> {
+        self.session
+            .read(offset)
+            .map(|chunk| SnapshotChunk {
+                offset: chunk.offset,
+                bytes: chunk.bytes,
+                done: chunk.done,
+            })
+            .map_err(|error| error.to_string())
+    }
+}
+
+struct CrowdbTreeSnapshotImporter {
+    session: crowdb_tree_ffi::SnapshotImportSession,
+}
+
+impl SnapshotImporter for CrowdbTreeSnapshotImporter {
+    fn feed(&mut self, chunk: &[u8]) -> Result<(), String> {
+        self.session.feed(chunk).map_err(|error| error.to_string())
+    }
+
+    fn finish(self: Box<Self>) -> Result<u64, String> {
+        self.session.finish().map_err(|error| error.to_string())
+    }
+
+    fn abort(self: Box<Self>) {
+        self.session.abort();
+    }
 }
 
 /// Shared tail of [`CrowdbTreeEngine::scan`]'s `Ready`/`Pending` arms:

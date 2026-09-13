@@ -37,7 +37,7 @@ chunks and remove the whole-buffer peer snapshot path.
   handles. The safe wrapper must not expose raw handle aliasing. Files:
   `lib/crowdb-tree/ffi/src/sys.rs`, `lib/crowdb-tree/ffi/src/snapshot.rs`,
   `lib/crowdb-tree/ffi/tests/ffi_test.rs`.
-- [~] **Define engine-neutral sessions**: replace whole-buffer
+- [x] **Define engine-neutral sessions**: replace whole-buffer
   `KVEngine::snapshot_export` and `snapshot_import` with object-safe begin
   methods returning non-clone session owners and shared metadata/error types.
   Implement deterministic sessions for `InMemKV` and `CrowdbTreeEngine`; keep
@@ -49,7 +49,7 @@ chunks and remove the whole-buffer peer snapshot path.
 
 ## Phase 2 — Snapshot RPC protocol and source registry
 
-- [ ] **Define bounded unary messages**: replace the two legacy snapshot
+- [~] **Define bounded unary messages**: replace the two legacy snapshot
   message types with Begin, Read, Finish, and Abort pairs. Use two `u64`
   fields for boot nonce/session number; carry group, engine-format tag,
   source slot/term/epoch, chunk limit, total length, final CRC, echoed offset,
