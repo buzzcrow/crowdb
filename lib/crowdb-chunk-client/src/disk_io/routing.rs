@@ -175,14 +175,17 @@ fn disk_id(segment: &Segment) -> std::result::Result<DiskId, DiskioError> {
         .ok_or_else(|| DiskioError::InvalidInput("segment missing disk_id".into()))
 }
 
+#[allow(clippy::needless_pass_by_value, reason = "used directly as a map_err adapter")]
 fn map_topology_error(error: DiskioError) -> IoError {
     IoError::Topology(error.to_string())
 }
 
+#[allow(clippy::needless_pass_by_value, reason = "used directly as a map_err adapter")]
 fn map_write_error(error: DiskioError) -> IoError {
     IoError::WriteFailed(error.to_string())
 }
 
+#[allow(clippy::needless_pass_by_value, reason = "used directly as a map_err adapter")]
 fn map_read_error(error: DiskioError) -> IoError {
     match error {
         DiskioError::TopologyUnavailable(_)

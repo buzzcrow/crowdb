@@ -29,9 +29,9 @@ Goal: make `crowdb-diskio-client` own authoritative routing, bounded connection 
 ## Phase 4: Design, gates, and cleanup
 
 - [x] **Update permanent ownership designs**: document semantic addresses, authoritative immutable routes, fixed lane pools, generation lifetime, retries, durability, and the DiskIO/chunk/native boundary. Files: `doc/design/diskio/design-crowdb-diskio.md`, `doc/design/chunkio/design-crowdb-chunkio.md`, `doc/design/chunkdb/design-crowdb-chunkdb.md`, `doc/design/rpc/design-crowdb-rpc.md`.
-- [~] **Run focused and migration gates**: run DiskIO client, chunk client, ChunkDB, RPC FFI/C++ and server acceptance commands, with `clean-env` for server-spawning tests. Files: none.
-- [ ] **Run production regression and lint**: run chunk-KV regression, rustfmt, rs-lint, Clippy, tree-lint, and diff checks; diagnose ordinary failures up to the workflow limit. Files: none.
-- [ ] **Remove completed requirement artifacts**: delete the R150 detail, backlog entry, and this plan only after every acceptance gate passes. Files: `doc/backlog/R150-diskio-semantic-client.md`, `doc/backlog/backlog.md`, `doc/working/plan-diskio-semantic-client.md`.
+- [x] **Run focused and migration gates**: run DiskIO client, chunk client, ChunkDB, RPC FFI/C++ and server acceptance commands, with `clean-env` for server-spawning tests. Files: none.
+- [x] **Run production regression and lint**: run chunk-KV regression, rustfmt, rs-lint, Clippy, tree-lint, and diff checks; diagnose ordinary failures up to the workflow limit. Files: none.
+- [~] **Remove completed requirement artifacts**: delete the R150 detail, backlog entry, and this plan only after every acceptance gate passes. Files: `doc/backlog/R150-diskio-semantic-client.md`, `doc/backlog/backlog.md`, `doc/working/plan-diskio-semantic-client.md`.
 
 ## Consolidated Files
 
