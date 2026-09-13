@@ -803,18 +803,15 @@ impl PxGroup {
 
     /// Best-effort fan-out of a `ChosenNotification` to every real
     /// remote in this group after a slot has been chosen. The notice is
-    /// fire-and-forget over the per-peer bidi `PxLearnerStream`; failures
+    /// fire-and-forget over the shared per-peer RPC connection; failures
     /// are logged at `debug!` and never propagated, since the next
     /// heartbeat (carrying `committed_safe_slot`) will re-converge
     /// peer frontiers regardless.
     ///
     /// `leader_id` is taken from `entry.ballot.leader_id`, matching the
     /// proposer that chose the value. Sequential await rather than
-    /// `JoinSet` fan-out is fine for now: each `send_chosen_notice` is
-    /// just an mpsc enqueue (capacity = `learner_stream_window_frames`)
-    /// once the per-peer bg task is running, so it returns near-
-    /// instantly except when a peer is down (in which case it fast-
-    /// fails via the connect-retry drain in `learner_stream.rs`).
+    /// `JoinSet` fan-out is unnecessary: each `send_chosen_notice` is one
+    /// bounded transport submission and returns immediately.
     pub(crate) fn fan_out_chosen_notice(&self, entry: &PxLogEntry, group_id: u64) {
         let slot = entry.slot;
         let term = entry.term;

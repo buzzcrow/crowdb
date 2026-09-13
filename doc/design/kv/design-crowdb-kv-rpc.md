@@ -283,7 +283,7 @@ Each `send_*` method wraps its `CallFuture` await with
 `tokio::time::timeout(rpc_timeout)`. On expiry the caller surfaces a
 typed retryable error. A connected-yet-unresponsive peer (GC pause,
 half-open socket, overloaded server) is surfaced as a retryable
-failure within `learner_stream_rpc_timeout_ms` (default 2000 ms,
+failure within `peer_rpc_timeout_ms` (default 2000 ms,
 aligned with the 2 s election max) rather than blocking the fan-out
 indefinitely.
 
@@ -373,7 +373,8 @@ proven by R115:
   `rpc_create_nano` as its first two fields.
 - `FBAcceptedValue` is a table (has a `payload: [ubyte]` vector,
   which requires a vtable).
-- `FBDedupTag` is an inline struct (fixed-layout, two `uint64` fields).
+- `FBAcceptRequest` carries consensus value and fence fields only. Client
+  request identities remain leader-local and are not follower wire metadata.
 - `NotLeaderHint` is NOT a separate message — it is fields on the
   response tables (`not_leader_hint:string` + `term:uint64` +
   `membership_epoch:uint64`).
@@ -401,10 +402,10 @@ ESnapshotRequest = 1016,
 ESnapshotResponse = 1017,
 ```
 
-No separate LearnerStream request/response msg_types — each frame type
-has its own msg_type. The persistent connection carries a mix of these
-msg_types; the server dispatches each frame independently by its
-msg_type.
+Each consensus operation has its own message type. Unary operations use
+`RpcClient::call`; chosen notifications use fire-and-forget
+`RpcClient::send`. The shared peer connection carries the mixed message types,
+and the server dispatches each frame independently by its `msg_type`.
 
 **Build integration:** `lib/crowdb-protocol/build.rs` compiles
 `kv_consensus.fbs` via `flatc --rust --gen-all` (inlines

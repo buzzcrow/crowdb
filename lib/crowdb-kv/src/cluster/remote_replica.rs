@@ -34,7 +34,7 @@ pub struct PxRemoteReplica {
     pub(crate) endpoint: String,
     /// Per-RPC deadline for the crowdb-rpc unary calls (`Prepare`, `Accept`,
     /// `PreVote`, `RequestVote`, `Heartbeat`, `StepDown`, `FetchGap`). Snapshot of
-    /// `PxElectionConfig::learner_stream_rpc_timeout_ms`.
+    /// `PxElectionConfig::peer_rpc_timeout_ms`.
     rpc_timeout: Duration,
     pub(crate) voting: bool,
     /// Optional registry handles mirroring RPC stats to the metrics log.
@@ -173,7 +173,7 @@ impl PxRemoteReplica {
         Self {
             node_id,
             endpoint,
-            rpc_timeout: Duration::from_millis(PxElectionConfig::DEFAULT.learner_stream_rpc_timeout_ms),
+            rpc_timeout: Duration::from_millis(PxElectionConfig::DEFAULT.peer_rpc_timeout_ms),
             voting: true,
             rpc_handles: OnceLock::new(),
             shutdown_started: AtomicBool::new(false),
@@ -182,13 +182,13 @@ impl PxRemoteReplica {
     }
 
     /// Construct a remote replica with the given election config snapshot.
-    /// Consumes `learner_stream_rpc_timeout_ms` (per-RPC deadline); other
+    /// Consumes `peer_rpc_timeout_ms` (per-RPC deadline); other
     /// fields stay configurable per-call.
     #[must_use]
     #[allow(dead_code)]
     pub(crate) fn with_config(node_id: PxNodeId, endpoint: String, cfg: &PxElectionConfig) -> Self {
         let mut r = Self::new(node_id, endpoint);
-        r.rpc_timeout = Duration::from_millis(cfg.learner_stream_rpc_timeout_ms);
+        r.rpc_timeout = Duration::from_millis(cfg.peer_rpc_timeout_ms);
         r
     }
 
@@ -441,9 +441,8 @@ impl PxRemoteReplica {
         }
     }
 
-    /// Cascade shutdown: stop the legacy `PxLearnerStream` background task
-    /// (if it was ever initialized). The crowdb-rpc transport is shared and
-    /// owned by the store, so it is not torn down here. Idempotent.
+    /// Mark this remote stopped. The crowdb-rpc transport is shared and owned
+    /// by the store, so it is not torn down here. Idempotent.
     #[tracing::instrument(level = "debug", skip_all, fields(peer = self.node_id))]
     #[allow(clippy::unused_async)] // async kept for cascade uniformity
     pub(crate) async fn shutdown(&self, _per_layer_timeout: Duration) -> OperationReport {

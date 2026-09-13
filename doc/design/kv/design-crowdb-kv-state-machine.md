@@ -192,7 +192,7 @@ bytes) yield empty `Bytes` for that field, matching the previous
 
 `learn` is the learner's apply entry point: `apply_entry` (the FFI +
 memtable insert) → advance the chosen frontier → advance the applied
-frontier → record dedup. Two frontiers are tracked:
+frontier → cache the leader's request result. Two frontiers are tracked:
 
 - `contiguous_chosen` — highest slot `S` such that every slot in `[1, S]`
   is chosen.
@@ -205,7 +205,7 @@ in `learn` right after the synchronous `apply_entry`, so
 
 **`async_engine_apply`** defers the engine apply off the write critical
 path.** The leader's propose path splits `learn`: the chosen-frontier
-advance and dedup record run **synchronously** (cheap atomics, before
+advance and request-result record run **synchronously** (cheap atomics, before
 `propose` returns `Chosen`), and only `apply_entry` + the applied-frontier
 advance are `tokio::spawn`'d. This keeps `contiguous_chosen` current: a
 subsequent read's `read_slot = contiguous_chosen` reflects the

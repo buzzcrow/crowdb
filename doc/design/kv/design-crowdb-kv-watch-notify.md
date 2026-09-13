@@ -15,8 +15,8 @@ the group-0 leader and subscribes to prefixes, and the leader pushes
 notifies over that stream. No separate notify-endpoint registration is
 needed for notify delivery. Polling stays as a safety net at a raised
 interval. Architecture decisions and rationale live here; the root
-design context is `design-crowdb-diskdb.md` §8 and `design-crowdb-kv-rpc.md`
-§3 (LearnerStream pattern).
+design context is `design-crowdb-diskdb.md` §8 and
+`design-crowdb-kv-rpc.md` §3.
 
 ## Table of Contents
 
@@ -60,11 +60,9 @@ crowdb-kv has no watch/notify capability without this extension. The only
 change-detection mechanism available to external components is polling
 (prefix scans of group 0). A push mechanism requires a long-lived
 stream from the group-0 leader to each watcher, fired when a watched
-prefix is written. The `LearnerStream` bidi pattern is the existing
-precedent for a long-lived crowdb-rpc bidi stream multiplexing frames between
-a leader and a peer. `WatchNotify` follows the same shape but serves
-client-to-leader watch subscriptions rather than replica-to-leader
-consensus traffic.
+prefix is written. `WatchNotify` uses a persistent crowdb-rpc connection:
+the client submits a fire-and-forget subscription frame and registers push
+handlers for notify and error frames on that connection.
 
 ### 1.2 Schema
 
@@ -149,38 +147,12 @@ Add to the `KvService` service:
 
 ### 1.3 Server-side handler
 
-Implemented in `lib/crowdb-kv/src/rpc/kv_service.rs`, mirroring
-`learner_stream`:
-
-```rust
-type WatchNotifyStream =
-    Pin<Box<dyn Stream<Item = Result<WatchNotifyResponse, Status>> + Send + 'static>>;
-
-async fn watch_notify(
-    &self,
-    request: Request<Streaming<WatchNotifyRequest>>,
-) -> Result<Response<Self::WatchNotifyStream>, Status>
-```
-
-a. On stream open, allocate an `mpsc::channel::<Result<WatchNotifyResponse, Status>>(64)`
-   (`tx`, `rx`) — the outbound frame queue, same capacity as
-   `LearnerStream`.
-b. Spawn a task that reads inbound frames in a loop:
-   - `WatchSubscribe { group_id, prefix }` — look up the `PxGroup` for
-     `group_id` via `self.store`. If this node is not the leader of
-     that group (`local_replica.is_leader()`), send
-     `WatchNotifyError { not_leader_hint }` and `continue` (do not
-     close the stream — the client may subscribe to other groups). If
-     leader, register a `Watcher { prefix, tx }` in the group's
-     `WatchRegistry` and record the `watcher_id` for cleanup on stream
-     end.
-   - `WatchUnsubscribe { group_id, prefix }` — remove the matching
-     watcher from the group registry.
-c. On inbound stream end (client disconnect or error), remove all
-   watchers registered by this stream from their group registries
-   (`registry.remove_all(&watcher_ids)`).
-d. The outbound stream is `ReceiverStream::new(rx)` boxed, returned to
-   the crowdb-rpc server.
+`KvRpcService` registers fire-and-forget handlers for `FBWatchSubscribe` and
+`FBWatchUnsubscribe`. Subscribe resolves the group, checks leadership, and
+registers the connection plus prefix in `WatchRegistry`. A non-leader sends
+`FBWatchNotifyError` with the current leader hint. Apply-path notifications
+are pushed with `RpcClient::send_to_handle`; disconnect cleanup removes the
+connection's registrations.
 
 - **Leader check** — uses `local_replica.is_leader()`, the same atomic
   role check the propose path uses for its leadership gate. A
@@ -518,8 +490,7 @@ f. `WatchSubscription::drop` sends `WatchUnsubscribe` (if the stream
   multiple `WatchSubscribe` frames on one stream, so a future
   optimization can multiplex subscriptions over a shared stream with
   no schema change.
-- **Reconnect backoff** — capped exponential (50 ms → 2 s), matching
-  `LearnerStream`'s reconnect policy (`design-crowdb-kv-rpc.md` §6).
+- **Reconnect backoff** — capped exponential (50 ms → 2 s).
 - **Proactive topology refresh on reconnect** — the reader loop calls
   `topology.refresh()` unconditionally at the top of every (re)connect
   iteration, before looking up the leader endpoint, instead of only

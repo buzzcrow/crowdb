@@ -84,7 +84,7 @@ handler replies (the ack contract, §5). The mapping is exhaustive:
 | Handler (`PxLocalReplica`) | Trigger | Record | Payload |
 | --- | --- | --- | --- |
 | `on_prepare` | acceptor grants a promise | `Promised` | none (slot + ballot + term in header) |
-| `on_accept` | acceptor accepts a value | `Accepted` | the `PxLogEntry` (kind + KV batch + `client_id`/`seq`) |
+| `on_accept` | acceptor accepts a value | `Accepted` | the `PxLogEntry` (kind + KV batch) |
 | `handle_request_vote` | acceptor grants a vote | `VoteGranted` | `voted_for` node id (term in header) |
 
 **`learn()` writes nothing.** Applying a chosen value to the `KVEngine` is a pure
@@ -348,10 +348,6 @@ The split matters: replay/restore are purely *local* (this node's WAL), but `Acc
    `Promised` / `Accepted` per slot (later/higher-ballot records win, Paxos rule).
 4. `current_term` = max `term` across all records.
 5. `voted_for` = the node from the latest `VoteGranted` whose `term == current_term`. This is election safety state, not just debug metadata: after crash, the node must not grant a second vote in the same term.
-6. Dedup cache = the `(client_id, seq)` of every `Accepted` record (in-memory only, rebuilt from WAL on restart).
-
-**Dedup meaning:** client writes carry `(client_id, seq)` so a retried request can be recognized after timeout or leader change. The dedup cache stores the highest sequence and result slot already accepted for each client. It is an exactly-once / idempotency aid for client-visible behavior; it is not part of Paxos safety, but losing it can cause duplicate client operations after retry.
-
 Output: `ReplayResult { records, max_segment_id, current_term, voted_for }`.
 
 ### 6.2 Restore — rebuild live acceptor state (`restore_from_replay`)

@@ -207,9 +207,7 @@ impl PxRpcTransport {
         }
     }
 
-    /// Send an `Accept` request via crowdb-rpc (unary — the `LearnerStream`
-    /// rewrite in Phase 6 routes through `send` for fire-and-forget
-    /// frames, but Accept is request-response).
+    /// Send a unary `Accept` request via crowdb-rpc.
     pub async fn send_accept(
         &self,
         rpc_endpoint: &str,

@@ -260,7 +260,7 @@ Full read-flow details: `design-crowdb-kv-leader-election.md`,
 
 Full design: `design-crowdb-kv-slot.md` (parallel slots, gap repair,
 correctness proof), `design-crowdb-kv-leader-election.md` (election, lease,
-ReadIndex), `design-crowdb-kv-rpc.md` (wire protocol, LearnerStream).
+ReadIndex), `design-crowdb-kv-rpc.md` (wire protocol and peer transport).
 
 ## 8. Storage and Durability
 
@@ -370,13 +370,13 @@ Full design: `design-crowdb-kv-reconfiguration.md`, `design-crowdb-kv-server.md`
   was "fake streaming": it materialized the full result, then chunked
   it) has been deleted. The unary + pagination path is strictly
   simpler and provably bounded.
-- **Idempotency** — `(client_id, seq)` dedup, persisted into the
-  PxLogEntry stream (survives leader change). Per-client retention of
-  the last 64 committed `(seq, slot)` mappings, exact-match lookup: a
-  recorded `seq` returns its own commit slot; an unrecorded `seq`
-  (lower or otherwise) is a miss. A lock-free ordered client index
-  points to immutable 64-entry windows replaced by atomic compare-and-
-  swap. Outside the window, outcome is unknown, safe to re-propose.
+- **Request replay** — the active leader keeps the last 64 chosen
+  `(seq, slot)` results per `client_id`. Exact-match lookup suppresses an
+  immediate ordinary-write retry without allocating another slot. The cache
+  is lock-free, in-memory, leader-local, and absent from Accept/WAL records;
+  leader change or restart may therefore re-propose idempotent Put/Delete/
+  Batch operations. Ambiguous conditional writes return `OutcomeUnknown` for
+  read reconciliation instead of being automatically replayed.
 
 ## 11. Module Decomposition
 
