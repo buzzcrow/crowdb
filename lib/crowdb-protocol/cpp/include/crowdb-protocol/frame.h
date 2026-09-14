@@ -154,7 +154,7 @@ inline void append_u64_be(std::vector<uint8_t> *out, uint64_t value)
         (SIZE_MAX - (tail == 0 ? 0 : tail + kFrameHeaderPrefixBytes + kFrameFooterBytes)) / kMaxFrameBytes) {
         return 0;
     }
-    return full_frames * kMaxFrameBytes + (tail == 0 ? 0 : tail + kFrameHeaderPrefixBytes + kFrameFooterBytes);
+    return (full_frames * kMaxFrameBytes) + (tail == 0 ? 0 : tail + kFrameHeaderPrefixBytes + kFrameFooterBytes);
 }
 
 [[nodiscard]] inline FrameError encode_frames(FrameMagic magic, FrameChunkId chunk_id, std::span<const uint8_t> payload,
@@ -256,6 +256,36 @@ inline void append_u64_be(std::vector<uint8_t> *out, uint64_t value)
         offset += frame.physical_length;
     }
     return payload->size() == logical_length ? FrameError::Ok : FrameError::Incomplete;
+}
+
+/// Validates a concatenated sequence whose first frame already identifies its
+/// public kind. DiskIO uses this boundary check without needing caller-private
+/// location metadata: each footer supplies the expected chunk ID for parsing.
+[[nodiscard]] inline FrameError validate_frame_sequence(std::span<const uint8_t> bytes)
+{
+    size_t offset = 0;
+    while (offset < bytes.size()) {
+        const auto remaining = bytes.subspan(offset);
+        if (remaining.size() < kFrameHeaderPrefixBytes) {
+            return FrameError::Incomplete;
+        }
+        const size_t physical_length = static_cast<size_t>(read_u16_le(remaining.data() + 2)) +
+                                       read_u16_le(remaining.data() + 4) + kFrameFooterBytes;
+        if (physical_length > remaining.size() || physical_length < kFrameHeaderPrefixBytes + kFrameFooterBytes) {
+            return FrameError::Incomplete;
+        }
+        const size_t     footer_start = physical_length - kFrameFooterBytes;
+        ParsedFrame      frame;
+        const FrameError error = parse_frame(remaining.first(physical_length),
+                                             {.high = read_u64_be(remaining.data() + footer_start + 4),
+                                              .low  = read_u64_be(remaining.data() + footer_start + 12)},
+                                             &frame);
+        if (error != FrameError::Ok) {
+            return error;
+        }
+        offset += frame.physical_length;
+    }
+    return FrameError::Ok;
 }
 
 } // namespace crowdb::protocol

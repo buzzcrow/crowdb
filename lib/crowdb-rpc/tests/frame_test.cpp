@@ -48,5 +48,21 @@ TEST(FrameTest, MatchesCrossLanguageVector)
     EXPECT_TRUE(std::equal(decoded.payload.begin(), decoded.payload.end(), payload.begin(), payload.end()));
 }
 
+TEST(FrameTest, ValidatesConcatenatedPublicFramesWithoutLocationMetadata)
+{
+    const FrameChunkId           chunk{.high = 17, .low = 19};
+    const std::array<uint8_t, 2> first{1, 2};
+    const std::array<uint8_t, 3> second{3, 4, 5};
+    std::vector<uint8_t>         encoded;
+    ASSERT_EQ(encode_frame(FrameMagic::StreamV1, chunk, first, 1, &encoded), FrameError::Ok);
+    std::vector<uint8_t> next;
+    ASSERT_EQ(encode_frame(FrameMagic::StreamV1, chunk, second, 2, &next), FrameError::Ok);
+    encoded.insert(encoded.end(), next.begin(), next.end());
+    EXPECT_EQ(validate_frame_sequence(encoded), FrameError::Ok);
+
+    encoded.back() ^= 1U;
+    EXPECT_EQ(validate_frame_sequence(encoded), FrameError::ChecksumMismatch);
+}
+
 } // namespace
 } // namespace crowdb::protocol

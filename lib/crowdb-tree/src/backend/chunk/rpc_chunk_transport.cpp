@@ -384,6 +384,12 @@ struct RpcChunkTransport::Impl
         return cached(chunk_id, out) && monotonic_millis() < out->valid_until_ms;
     }
 
+    void fence_liveness(RemoteChunk chunk) const
+    {
+        chunk.self_fence_deadline_ms = monotonic_millis();
+        cache(std::move(chunk));
+    }
+
     void renew_due_liveness() const
     {
         const auto current = chunks.load(std::memory_order_acquire);
@@ -412,12 +418,15 @@ struct RpcChunkTransport::Impl
                 status.ok() ? verified_response<crowdb::chunkdb::proto::FBAdvanceChunkWriteResponse>(result.control)
                             : nullptr;
             if (response == nullptr || !chunkdb_status(response->ret_code(), response->error_msg()).ok()) {
+                fence_liveness(chunk);
                 continue;
             }
             RemoteChunk renewed;
             if (parse_chunk(response->chunk(), &renewed).ok()) {
                 renewed.self_fence_deadline_ms = monotonic_millis() + kLivenessSelfFenceMs;
                 cache(std::move(renewed));
+            } else {
+                fence_liveness(chunk);
             }
         }
     }

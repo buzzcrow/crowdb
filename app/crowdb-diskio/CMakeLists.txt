@@ -56,6 +56,7 @@ target_include_directories(crowdb-diskio-lib
          ${CMAKE_CURRENT_SOURCE_DIR}/../../lib/crowdb-rpc/include
          ${CROWDB_KV_CLIENT_DIR}/include
   PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/crowdb-rpc-build/generated
+          ${CMAKE_CURRENT_SOURCE_DIR}/../../lib/crowdb-protocol/cpp/include
 )
 find_package(Threads REQUIRED)
 find_package(tomlplusplus CONFIG REQUIRED)

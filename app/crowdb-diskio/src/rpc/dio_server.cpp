@@ -4,6 +4,7 @@
 #include "rpc/dio_server.h"
 
 #include "crowdb-common/metrics/metrics.h"
+#include "crowdb-protocol/frame.h"
 #include "crowdb-rpc/server/message.h"
 #include "crowdb-rpc/server/server.h"
 #include "disk/disk.h"
@@ -177,6 +178,17 @@ crowdb::rpc::OutFrame *DiskioServer::handle_write(crowdb::rpc::Frame *request, c
     if (data_buf == nullptr && size > 0) {
         send_error_response(conn, req_id, create_nano, msg_type, static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError));
         return nullptr;
+    }
+    if (data_buf != nullptr && size >= 2 &&
+        crowdb::protocol::valid_magic(crowdb::protocol::read_u16_le(data_buf->data))) {
+        const auto frame_status =
+            crowdb::protocol::validate_frame_sequence(std::span<const uint8_t>(data_buf->data, size));
+        if (frame_status != crowdb::protocol::FrameError::Ok) {
+            data_buf->release();
+            send_error_response(conn, req_id, create_nano, msg_type,
+                                static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError));
+            return nullptr;
+        }
     }
 
     uint64_t ordering_phys_offset = zone->base_offset + ordering_zone_offset;
