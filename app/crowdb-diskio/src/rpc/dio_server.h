@@ -6,6 +6,7 @@
 // the transport when I/O completes.
 #pragma once
 
+#include "crowdb-protocol/timing.h"
 #include "crowdb-rpc/buffer.h"
 #include "crowdb-rpc/connection.h"
 #include "crowdb-rpc/framing.h"
@@ -39,7 +40,8 @@ class DiskioServer
 {
   public:
     DiskioServer(std::shared_ptr<DiskSet> disk_set, crowdb::rpc::SocketTransport *transport,
-                 uint64_t max_write_request_age_ms = 30'000, uint64_t max_clock_skew_ms = 1'000);
+                 uint64_t max_write_request_age_ms = protocol::kDefaultMaxWriteRequestAgeMs,
+                 uint64_t max_clock_skew_ms        = protocol::kDefaultMaxClockSkewMs);
 
     // Handler functions (registered with RpcServer::register_handler).
     // Each parses the flatbuffer control from the Frame, looks up the

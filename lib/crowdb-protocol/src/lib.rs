@@ -276,6 +276,7 @@ pub mod chunk_task_fb {
 }
 
 pub mod chunk_task_value;
+pub mod timing;
 pub use chunk_task_value::{decode_chunk_task_value, encode_chunk_task_value, ChunkTaskValueError};
 
 /// Zero-copy flatbuffer wrapper classes (design-crowdb-rpc.md §6).
