@@ -364,7 +364,8 @@ async fn consecutive_conversion_groups_keep_one_mibibyte_shard_geometry() {
     let stack = E2eStack::start(configured).await;
     let mut locations = Vec::new();
     for value in 0_u8..16 {
-        locations.push(write_object(&stack.client, Bytes::from(vec![value; MIB])).await);
+        let group = write_full_small_strip(&stack.client, value).await;
+        locations.push(group[0].1.clone());
     }
     let chunk = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
@@ -399,13 +400,17 @@ async fn chunkdb_takes_over_durable_conversion_task_after_client_io_failure() {
     let fault = Arc::new(FailWritesFromCall {
         inner: disk_writer,
         calls: AtomicUsize::new(0),
-        first_failed_call: 9,
+        first_failed_call: 8 * FRAMES_PER_MIB_STRIP + 1,
     });
     let client = ChunkIoClient::from_parts_with_small_policy(allocator, fault, configured).unwrap();
-    let mut locations = Vec::new();
+    let mut object_groups = Vec::new();
     for value in 0_u8..8 {
-        locations.push(write_object(&client, Bytes::from(vec![value + 1; MIB])).await);
+        object_groups.push(write_full_small_strip(&client, value + 1).await);
     }
+    let locations: Vec<Location> = object_groups
+        .iter()
+        .flat_map(|group| group.iter().map(|(_, location)| location.clone()))
+        .collect();
     let location = locations[0].clone();
     let failed_fast_path = stack.query_chunk(&location).await;
     assert_eq!(failed_fast_path.strips.len(), 8);
@@ -431,14 +436,18 @@ async fn chunkdb_takes_over_durable_conversion_task_after_client_io_failure() {
     assert_eq!((ec.data_num, ec.code_num, ec.segments.len()), (8, 4, 12));
     assert_eq!(ec.ec_state, crowdb_protocol::chunkdb::rpc::EcState::Parity as i32);
     let unit_bytes = u64::from(converted.strips[0].unit_kb) * KIB as u64;
-    let expected_data: Vec<Vec<u8>> = (1_u8..=8).map(|value| vec![value; MIB]).collect();
+    let before = failed_fast_path;
+    let mut expected_data = Vec::with_capacity(object_groups.len());
+    for group in &object_groups {
+        expected_data.push(read_mirror_strip(&stack, &before, &group[0].1).await);
+    }
     for (segment, expected) in ec.segments[..8].iter().zip(&expected_data) {
         let actual = stack
             .read_segment(segment, unit_bytes, 0, u32::try_from(MIB).unwrap())
             .await;
         assert_eq!(&actual, expected);
     }
-    let refs: Vec<&[u8]> = expected_data.iter().map(Vec::as_slice).collect();
+    let refs: Vec<&[u8]> = expected_data.iter().map(Bytes::as_ref).collect();
     let parity = encode_parity_from_shards(EcScheme::new(8, 4), &refs).unwrap();
     for (segment, expected) in ec.segments[8..].iter().zip(parity) {
         let actual = stack
@@ -459,13 +468,14 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
     configured.chunk_capacity = 16 * MIB as u64;
     configured.conversion_enabled = false;
     let stack = E2eStack::start(configured).await;
-    let mut data = Vec::new();
-    let mut locations = Vec::new();
+    let mut object_groups = Vec::new();
     for value in 11_u8..19 {
-        let shard = Bytes::from(vec![value; MIB]);
-        locations.push(write_object(&stack.client, shard.clone()).await);
-        data.push(shard);
+        object_groups.push(write_full_small_strip(&stack.client, value).await);
     }
+    let locations: Vec<Location> = object_groups
+        .iter()
+        .flat_map(|group| group.iter().map(|(_, location)| location.clone()))
+        .collect();
     let location = &locations[0];
     let before = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -485,6 +495,10 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
         .strips
         .iter()
         .all(|strip| matches!(strip.strip, Some(Strip::MirrorStrip(_)))));
+    let mut data = Vec::with_capacity(object_groups.len());
+    for group in &object_groups {
+        data.push(read_mirror_strip(&stack, &before, &group[0].1).await);
+    }
 
     let (chunkdb, _) = real_write_parts(&stack).await;
     let triggered = chunkdb
@@ -526,7 +540,7 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
             .await;
         assert_eq!(actual, expected);
     }
-    let appended_data = Bytes::from(vec![0xd3; MIB]);
+    let appended_data = Bytes::from(vec![0xd3; MAX_FRAME_PAYLOAD_BYTES]);
     let appended = write_object(&stack.client, appended_data.clone()).await;
     assert_eq!(appended.chunk_id, location.chunk_id);
     assert_eq!(appended.offset, 8 * MIB as u64);
@@ -544,15 +558,17 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
     assert_eq!(after_append.strips.len(), 2);
     assert!(matches!(after_append.strips[0].strip, Some(Strip::EcStrip(_))));
     assert_mirror_data(&stack, &after_append, &appended, &appended_data).await;
-    for (location, expected) in locations.iter().zip(&data) {
-        assert_eq!(
-            stack
-                .client
-                .read_object(std::slice::from_ref(location))
-                .await
-                .unwrap(),
-            *expected
-        );
+    for group in &object_groups {
+        for (expected, location) in group {
+            assert_eq!(
+                stack
+                    .client
+                    .read_object(std::slice::from_ref(location))
+                    .await
+                    .unwrap(),
+                *expected
+            );
+        }
     }
     assert_eq!(
         stack
@@ -585,16 +601,22 @@ async fn automatic_chunkdb_scan_converts_three_groups_and_preserves_tail() {
         },
     )
     .await;
-    let mut data = Vec::new();
-    let mut locations = Vec::new();
+    let mut object_groups = Vec::new();
     for value in 31_u8..57 {
-        let shard = Bytes::from(vec![value; MIB]);
-        locations.push(write_object(&stack.client, shard.clone()).await);
-        data.push(shard);
+        object_groups.push(write_full_small_strip(&stack.client, value).await);
     }
+    let locations: Vec<Location> = object_groups
+        .iter()
+        .flat_map(|group| group.iter().map(|(_, location)| location.clone()))
+        .collect();
     assert!(locations
         .iter()
         .all(|location| location.chunk_id == locations[0].chunk_id));
+    let before = stack.query_chunk(&locations[0]).await;
+    let mut data = Vec::with_capacity(object_groups.len());
+    for group in &object_groups {
+        data.push(read_mirror_strip(&stack, &before, &group[0].1).await);
+    }
     stack.client.shutdown_small_writes().await.unwrap();
     let (chunkdb, _) = real_write_parts(&stack).await;
     let too_young = chunkdb
@@ -653,18 +675,22 @@ async fn automatic_chunkdb_scan_converts_three_groups_and_preserves_tail() {
             assert_eq!(actual, expected);
         }
     }
-    for (location, expected) in locations[24..].iter().zip(&data[24..]) {
-        assert_mirror_data(&stack, &converted, location, expected).await;
+    for group in &object_groups[24..] {
+        for (expected, location) in group {
+            assert_mirror_data(&stack, &converted, location, expected).await;
+        }
     }
-    for (location, expected) in locations.iter().zip(&data) {
-        assert_eq!(
-            stack
-                .client
-                .read_object(std::slice::from_ref(location))
-                .await
-                .unwrap(),
-            *expected
-        );
+    for group in &object_groups {
+        for (expected, location) in group {
+            assert_eq!(
+                stack
+                    .client
+                    .read_object(std::slice::from_ref(location))
+                    .await
+                    .unwrap(),
+                *expected
+            );
+        }
     }
 }
 
