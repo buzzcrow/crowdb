@@ -903,11 +903,12 @@ async fn finalizer_reclaims_an_empty_active_chunk() {
     let bindings = BindingCache::new();
     bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
     let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
-    let task = tasks
+    let mut task = tasks
         .get(&chunk_id, TASK_KIND_FINALIZE_CHUNK, &chunk_id)
         .await
         .unwrap()
         .unwrap();
+    task.eligible_at_ms = 0;
     let finalizer = FinalizeChunkTaskHandler::new(
         Arc::clone(&harness.handler),
         Arc::new(ConversionDiskIo::empty_for_tests()),

@@ -4,6 +4,7 @@
 //! Finalization of abandoned Active chunks.
 
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crowdb_protocol::chunk_task::{ChunkTaskValue, FINALIZE_CHUNK_KIND_VERSION, TASK_KIND_FINALIZE_CHUNK};
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, ChunkStrip, Strip};
@@ -42,6 +43,23 @@ impl TaskHandler for FinalizeChunkTaskHandler {
 
     fn execute<'a>(&'a self, task: &'a ChunkTaskValue) -> TaskFuture<'a> {
         Box::pin(async move {
+            let safe_at = task
+                .eligible_at_ms
+                .saturating_add(crowdb_protocol::timing::DEFAULT_MAX_WRITE_REQUEST_AGE_MS)
+                .saturating_add(crowdb_protocol::timing::DEFAULT_MAX_CLOCK_SKEW_MS)
+                .saturating_add(crowdb_protocol::timing::DEFAULT_FINALIZER_SCANNER_MARGIN_MS);
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| {
+                    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+                });
+            if now_ms < safe_at {
+                return TaskOutcome::Retry {
+                    delay_ms: safe_at.saturating_sub(now_ms),
+                    error_code: 0,
+                    error: "waiting for pre-expiry writes to age out".into(),
+                };
+            }
             let chunk_id = task.partition_id;
             let chunk = match self.lifecycle.query_chunk(&chunk_id).await {
                 Ok(chunk) => chunk,
