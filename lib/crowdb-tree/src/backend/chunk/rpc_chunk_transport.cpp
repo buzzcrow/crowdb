@@ -425,7 +425,8 @@ struct RpcChunkTransport::Impl
             if (parse_chunk(response->chunk(), &renewed).ok()) {
                 renewed.self_fence_deadline_ms = monotonic_millis() + kLivenessSelfFenceMs;
                 cache(std::move(renewed));
-            } else {
+            }
+            else {
                 fence_liveness(chunk);
             }
         }
@@ -654,10 +655,7 @@ Status RpcChunkTransport::write_mirror(ChunkId chunk_id, uint32_t mirror_index, 
     }
     Impl::RemoteChunk chunk;
     if (!impl_->cached(chunk_id, &chunk)) {
-        Status status = impl_->query_remote(chunk_id, &chunk);
-        if (!status.ok()) {
-            return status;
-        }
+        return Status::unavailable("tree chunk write has no local liveness authority");
     }
     if (chunk.self_fence_deadline_ms != 0 && monotonic_millis() >= chunk.self_fence_deadline_ms) {
         return Status::unavailable("tree chunk liveness authority has self-fenced");
@@ -716,7 +714,7 @@ void RpcChunkTransport::submit_write_mirror(ChunkId chunk_id, uint32_t mirror_in
     }
     Impl::RemoteChunk chunk;
     if (!impl_->cached(chunk_id, &chunk)) {
-        ChunkTransport::submit_write_mirror(chunk_id, mirror_index, offset, data, length, completion);
+        completion.complete(Status::unavailable("tree chunk write has no local liveness authority"));
         return;
     }
     if (chunk.self_fence_deadline_ms != 0 && monotonic_millis() >= chunk.self_fence_deadline_ms) {
@@ -729,11 +727,19 @@ void RpcChunkTransport::submit_write_mirror(ChunkId chunk_id, uint32_t mirror_in
 Status RpcChunkTransport::advance_write(ChunkId chunk_id, uint64_t expected_bytes, uint64_t acknowledged_bytes)
 {
     Impl::RemoteChunk chunk;
-    if (!impl_->cached(chunk_id, &chunk) || chunk.layout.acknowledged_bytes != expected_bytes) {
-        Status status = impl_->query_remote(chunk_id, &chunk);
+    if (!impl_->cached(chunk_id, &chunk)) {
+        return Status::unavailable("tree chunk advance has no local liveness authority");
+    }
+    if (chunk.self_fence_deadline_ms != 0 && monotonic_millis() >= chunk.self_fence_deadline_ms) {
+        return Status::unavailable("tree chunk liveness authority has self-fenced");
+    }
+    if (chunk.layout.acknowledged_bytes != expected_bytes) {
+        const uint64_t self_fence_deadline_ms = chunk.self_fence_deadline_ms;
+        Status         status                 = impl_->query_remote(chunk_id, &chunk);
         if (!status.ok()) {
             return status;
         }
+        chunk.self_fence_deadline_ms = self_fence_deadline_ms;
     }
     const uint64_t                 request_id = impl_->next_request_id();
     const FBInt128                 id(chunk_id.high, chunk_id.low);
