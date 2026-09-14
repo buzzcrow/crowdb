@@ -44,8 +44,8 @@ use crowdb_chunkdb_client::ChunkdbRpcTransport;
 use crowdb_common::metrics::MetricsRegistry;
 use crowdb_protocol::chunk_task::{
     ChunkTaskState, ChunkTaskValue, RelocateSegmentTaskDisposition, RelocateSegmentTaskPayload,
-    CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_MIRROR_TO_EC, TASK_KIND_RELOCATE_SEGMENT,
-    TASK_KIND_REPAIR_PLACEMENT, TASK_KIND_REPAIR_STRIP,
+    CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_FINALIZE_CHUNK, TASK_KIND_MIRROR_TO_EC,
+    TASK_KIND_RELOCATE_SEGMENT, TASK_KIND_REPAIR_PLACEMENT, TASK_KIND_REPAIR_STRIP,
 };
 use crowdb_protocol::chunkdb::rpc::{
     Chunk, ChunkState, ChunkStrip, ChunkType, EcState, EcStrip, PlacementAssessment,
@@ -822,6 +822,55 @@ fn task_value() -> ChunkTaskValue {
 }
 
 struct CompleteTaskHandler;
+
+#[tokio::test]
+async fn active_chunk_creates_one_deadline_indexed_finalizer() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let chunk = harness
+        .handler
+        .allocate_chunk(
+            None,
+            1,
+            1,
+            StripType::Mirror,
+            0,
+            0,
+            3,
+            ChunkType::Repo,
+            17,
+            60_000,
+        )
+        .await
+        .unwrap();
+    let chunk_id = chunk.id.unwrap();
+    let bindings = BindingCache::new();
+    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let tasks = TaskStore::new(cluster.make_crowdb_client(), bindings);
+
+    let task = tasks
+        .get(&chunk_id, TASK_KIND_FINALIZE_CHUNK, &chunk_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.source_revision, 17);
+    assert_eq!(task.state, ChunkTaskState::Pending);
+    assert_eq!(
+        tasks
+            .scan_finalize_due(task.eligible_at_ms, 8)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(tasks.scan_ready(task.eligible_at_ms, 8).await.unwrap().is_empty());
+}
 
 impl TaskHandler for CompleteTaskHandler {
     fn kind(&self) -> u16 {
