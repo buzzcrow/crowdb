@@ -333,6 +333,11 @@ Each strip tracks:
   written (1 bit per granularity, e.g., 16 KB).
 - **EC state** (EC strips only): `NotStarted` → `Complete`.
 - **Block state**: Per-block health (Good, Suspicious, Bad).
+- **Placement intent and assessment**: The selected `rack_first` or
+  `node_first` priority and the creation-time maximum fragment count for each
+  rack, node, and physical disk. The assessment records whether each domain
+  satisfies the strip loss budget. EC strips that do not do so carry a durable
+  placement-repair marker.
 
 ### 5.3 Chunk
 
@@ -571,6 +576,14 @@ Site (data center)
 - `racks`: Map<rack_id, RackInfo>
 - `nodes`: Map<node_uuid, NodeInfo>
 - `disk_groups`: Map<disk_group_id, DiskGroupInfo>
+- healthy physical-disk locations, allocatable capacity observations, and a
+  monotonic publication generation.
+
+Usage observations include only allocatable disks and carry their sample time.
+Missing or stale observations remove capacity ranking information; they never
+relax a rack, node, or disk safety constraint. Per-disk-group in-flight bytes
+are atomic reservations shared by snapshot generations, so concurrent
+allocations account for projected utilization without a placement lock.
 
 **TopologyRefresh**: Hybrid approach combining periodic refresh with watch/notify:
 - **Periodic refresh**: Background task that periodically (configurable,
@@ -590,6 +603,25 @@ Periodic refresh balances freshness and performance.
 
 ## 7. Placement Strategy
 
+Placement has two independent parts: safety and ranking. Safety first limits
+how many fragments one failure domain may contain. Ranking then compares
+projected usable utilization, `(used + in_flight + planned) / capacity`, only
+among candidates that meet that safety constraint. Equal scores use stable
+topology identifiers, making retries deterministic.
+
+For an EC `data_num + code_num` strip, a protected rack, node, or physical
+disk contains at most `code_num` fragments. For a mirror strip, losing a
+protected domain leaves at least one copy. A single-copy mirror is explicitly
+non-redundant and remains allocatable while its assessment reports no domain
+protection.
+
+`placement.failure_domain_priority` selects `rack_first` (the default) or
+`node_first`. It orders safe candidates lexicographically; it does not change
+the safety definition. `placement.allow_degraded_failure_domains` is required
+before a placement may publish an unmet rack or node guarantee. EC placement
+that also exceeds its node or disk recovery budget additionally requires
+`placement.allow_unsafe_ec`.
+
 ### 7.1 Mirror placement
 
 Mirror placement aims to place replicas on **distinct racks** to survive
@@ -598,14 +630,17 @@ rack failures:
 1. Select N nodes (copy count) from online nodes
 2. Prefer nodes on different racks
 3. If not enough distinct racks, place multiple copies on same rack
-4. For each node, select the disk-group with most free space
-5. Return placement plan with node/disk-group assignments
+4. Rank racks, nodes, then disk-groups by projected allocatable utilization
+5. Return a plan containing its policy, topology generation, usage freshness,
+   and planned rack/node protection
 
 **Negative hints**: Nodes can be excluded from placement (e.g., during
 recovery to avoid re-using failed nodes).
 
 **Example**: 3-copy mirror on 3-rack cluster → 3 replicas on 3 distinct racks.
-On 2-rack cluster → 2 replicas on distinct racks, 1 replica on either rack.
+On insufficient topology, normal placement returns a typed failure before any
+DiskDB allocation. An explicitly degraded result identifies the missing
+protection instead of claiming rack safety.
 
 ### 7.2 EC placement
 
@@ -615,9 +650,10 @@ with per-node block limits:
 1. Calculate total blocks = data_num + code_num
 2. Select nodes such that:
    - No node has > code_num blocks (safe mode)
-   - Blocks are distributed across ≥3 racks when possible
-3. For each node, select disk-group with most free space
-4. Return placement plan with block assignments
+   - Each protected rack and physical disk also has at most `code_num` blocks
+3. Rank the requested primary domain, secondary domain, and disk-group by
+   projected allocatable utilization
+4. Return a plan with the requested policy and planned protection assessment
 
 **Safe mode**: Ensures no single node failure exceeds code_num, guaranteeing
 recoverability. Requires enough nodes to satisfy constraints.
@@ -629,6 +665,25 @@ error without allocating blocks.
 
 **Example**: 8+4 EC on 12-node cluster → 12 blocks across ≥3 racks, max 4
 blocks per node. On 3-node cluster (unsafe mode) → 12 blocks, 4 per node.
+
+### 7.3 Physical validation and degraded-placement repair
+
+DiskDB remains the authority for physical allocation. After every allocation,
+ChunkDB resolves returned `disk_id`s through the same immutable topology and
+computes the actual rack, node, and disk maxima. A physical-disk violation is
+rolled back and retried against an alternative disk-group; it is never silently
+published. The assessment, effective policy, and any EC repair marker are
+persisted with the strip and carried through the RPC and storage codecs.
+
+Every marked EC strip has one deterministic persistent placement task. Task
+admission happens after foreground publication and a bounded metadata scan
+recreates a missing task after an interrupted admission. The task waits with
+backoff while topology cannot improve; it does not become terminal merely
+because the cluster is undersized. Once a better destination exists, it reads
+one source fragment, writes and fsyncs one replacement fragment, validates the
+new physical layout, and atomically replaces only that fragment. The old
+fragment remains under the normal layout-validity cleanup fence. The marker is
+cleared only after all recorded guarantees are satisfied.
 
 ## 8. Allocation Flow
 
@@ -1085,8 +1140,11 @@ behind `ChunkdbRpcService`.
 ## 13. Concurrency Model
 
 - **Async everywhere**: All public APIs are async (`async fn`).
-- **Shared state**: `Arc<RwLock<T>>` for topology cache, allocator state.
-- **Lock scoping**: Acquire locks in `{}` blocks, drop before `.await`.
+- **Shared state**: Immutable topology is published through `ArcSwap`; placement
+  reservations use per-disk-group atomics. Lifecycle's existing bounded
+  per-chunk guards protect metadata mutation, not allocation ranking.
+- **Lock scoping**: Existing lifecycle guards are acquired in `{}` blocks and
+  dropped before `.await`; placement introduces no hot-path lock.
 - **Parallel allocation**: Use `futures::join_all` for parallel strip/block
   allocation.
 - **Background tasks**: `tokio::spawn` for topology refresh, rollback cleanup.
@@ -1105,6 +1163,10 @@ Key configuration parameters:
 | default_ec_scheme                        | 6+3     | Default EC scheme (data+parity)                         |
 | topology_refresh_interval                | 30 s    | Topology cache refresh interval                         |
 | placement.allow_unsafe_ec                | false   | Permit explicit degraded EC placement                   |
+| placement.allow_degraded_failure_domains  | false   | Permit an explicit unmet rack or node guarantee         |
+| placement.failure_domain_priority         | rack_first | Prefer rack or node protection when ranking safe plans |
+| placement_repair.max_concurrency          | 2       | Maximum concurrent degraded-EC repair tasks             |
+| placement_repair.scan_interval_secs       | 1       | Marker reconciliation interval                           |
 | max_allocation_parallelism               | 10      | Max parallel strip allocations                          |
 | lifecycle.cache_capacity                 | 10_000  | Per-chunk payload cache capacity (§10)                   |
 | lifecycle.sweep_chunk_lock_interval_secs | 60      | Idle lock reap interval (§10)                           |

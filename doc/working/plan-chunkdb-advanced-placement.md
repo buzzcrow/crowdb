@@ -75,10 +75,11 @@ of temporarily degraded EC strips.
 
 ## Phase 5 — Rebalancing and E2E
 
-- [ ] **Cross-domain rebalance planner**: detect sustained normalized skew,
-  apply hysteresis, and emit bounded protection-preserving moves without
-  duplicating R80's within-disk-group work. Files: new chunkdb placement
-  rebalance module, task integration, tests.
+- [~] **Cross-domain rebalance planner**: passive capacity-aware balancing is
+  complete. Active movement is deliberately pending R80's disk-level
+  relocation contract and durable owner handoff; R97 records the required task
+  ownership/fencing decision in its open question rather than introducing a
+  competing mover.
 - [~] **EC topology matrix**: cover 10+2, 20+2, and 40+4 on two racks with a
   four-node/two-node split under both policies, interrupted admission/restart,
   insufficient-topology waiting, and convergence after adding six or eleven
@@ -86,8 +87,9 @@ of temporarily degraded EC strips.
 
 ## Phase 6 — Documentation and cleanup
 
-- [ ] **Permanent architecture**: merge final placement, assessment, repair,
-  and rebalance behavior into `doc/design/chunkdb/design-crowdb-chunkdb.md`.
+- [x] **Permanent architecture**: merge implemented placement, assessment,
+  and repair behavior into `doc/design/chunkdb/design-crowdb-chunkdb.md`; the
+  active-rebalance dependency remains explicitly deferred in R97.
 - [ ] **Final cleanup**: run every gate, remove R97 from the backlog and delete
   this plan after all acceptance cases pass.
 

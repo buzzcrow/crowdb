@@ -279,3 +279,13 @@ Verification commands:
 - `pixi run test-diskdb`
 - `pixi run rs-fmt -- --check`
 - `pixi run rs-lint`
+
+**Open question — active cross-domain rebalance**: R97's passive balancing and
+temporary degraded-EC repair are implemented. The active cross-disk-group
+planner remains pending R80's disk-level relocation contract and its durable
+handoff record. Once R80 defines the ownership/fencing boundary for a segment
+that is simultaneously being moved within a disk-group and replaced by
+ChunkDB, decide whether ChunkDB emits a separate rebalance task kind or an
+R80-owned handoff task. Until that boundary exists, do not schedule an active
+cross-domain move: a second planner could race R80 and weaken the one-segment
+transition guarantee.

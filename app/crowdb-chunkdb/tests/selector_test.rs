@@ -378,6 +378,28 @@ fn ec_40_4_two_rack_matrix_reports_exact_degraded_maxima() {
 }
 
 #[test]
+fn two_rack_ec_matrix_runs_every_scheme_under_both_priorities() {
+    let cache = build_topology(&[(1, &[10, 11, 12, 13]), (2, &[20, 21])]);
+    for (data_num, code_num) in [(10, 2), (20, 2), (40, 4)] {
+        for priority in [FailureDomainPriority::RackFirst, FailureDomainPriority::NodeFirst] {
+            let plan = EcPlacement::select(
+                &cache.snapshot(),
+                data_num,
+                code_num,
+                &PlacementConstraints::new()
+                    .allow_unsafe_ec()
+                    .allow_degraded_failure_domains()
+                    .with_failure_domain_priority(priority),
+            )
+            .unwrap();
+            assert_eq!(plan.priority, priority);
+            assert_eq!(plan.total_blocks(), u32::try_from(data_num + code_num).unwrap());
+            assert!(!plan.protection.rack_protected);
+        }
+    }
+}
+
+#[test]
 fn mirror_one_rack_requires_degraded_permission() {
     let cache = build_topology(&[(1, &[10, 11, 12])]);
     let result = MirrorPlacement::select(&cache.snapshot(), 3, &PlacementConstraints::new());
