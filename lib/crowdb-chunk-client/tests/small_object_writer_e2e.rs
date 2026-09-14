@@ -716,12 +716,18 @@ async fn chunkdb_restart_recovers_an_inflight_conversion_claim() {
         },
     )
     .await;
-    let mut data = Vec::new();
-    let mut locations = Vec::new();
+    let mut object_groups = Vec::new();
     for value in 71_u8..87 {
-        let shard = Bytes::from(vec![value; MIB]);
-        locations.push(write_object(&stack.client, shard.clone()).await);
-        data.push(shard);
+        object_groups.push(write_full_small_strip(&stack.client, value).await);
+    }
+    let locations: Vec<Location> = object_groups
+        .iter()
+        .flat_map(|group| group.iter().map(|(_, location)| location.clone()))
+        .collect();
+    let before = stack.query_chunk(&locations[0]).await;
+    let mut data = Vec::with_capacity(object_groups.len());
+    for group in &object_groups {
+        data.push(read_mirror_strip(&stack, &before, &group[0].1).await);
     }
     stack.client.shutdown_small_writes().await.unwrap();
     stack.wait_for_conversion_active().await;
@@ -782,7 +788,7 @@ async fn small_write_repairs_failed_replica_through_real_chunkdb_and_diskio() {
         failed_disk: Mutex::new(None),
     });
     let client = ChunkIoClient::from_parts_with_small_policy(allocator, fault.clone(), policy()).unwrap();
-    let data = Bytes::from(vec![0x5a; 96 * KIB]);
+    let data = Bytes::from(vec![0x5a; MAX_FRAME_PAYLOAD_BYTES]);
     let location = write_object(&client, data.clone()).await;
     let failed_disk = fault.failed_disk.lock().unwrap().expect("injected disk identity");
     client.shutdown_small_writes().await.unwrap();
@@ -819,8 +825,8 @@ async fn small_write_repair_preserves_acknowledged_prefix_in_open_block() {
         failed_disk: Mutex::new(None),
     });
     let client = ChunkIoClient::from_parts_with_small_policy(allocator, fault, policy()).unwrap();
-    let prefix_data = Bytes::from(vec![0x31; 64 * KIB]);
-    let patch_data = Bytes::from(vec![0x72; 80 * KIB]);
+    let prefix_data = Bytes::from(vec![0x31; MAX_FRAME_PAYLOAD_BYTES - KIB]);
+    let patch_data = Bytes::from(vec![0x72; MAX_FRAME_PAYLOAD_BYTES]);
     let prefix = write_object(&client, prefix_data.clone()).await;
     let patch = write_object(&client, patch_data.clone()).await;
     assert_eq!(prefix.chunk_id, patch.chunk_id);
@@ -870,12 +876,12 @@ async fn small_write_rotates_strips_and_chunks_without_splitting_objects() {
         return;
     }
     let stack = E2eStack::start(policy()).await;
-    let first_data = Bytes::from(vec![3; 700 * KIB]);
-    let second_data = Bytes::from(vec![5; 400 * KIB]);
-    let third_data = Bytes::from(vec![7; 700 * KIB]);
-    let first = write_object(&stack.client, first_data.clone()).await;
-    let second = write_object(&stack.client, second_data.clone()).await;
-    let third = write_object(&stack.client, third_data.clone()).await;
+    let first_group = write_full_small_strip(&stack.client, 3).await;
+    let second_group = write_full_small_strip(&stack.client, 5).await;
+    let third_group = write_full_small_strip(&stack.client, 7).await;
+    let first = first_group[0].1.clone();
+    let second = second_group[0].1.clone();
+    let third = third_group[0].1.clone();
 
     assert_eq!(first.chunk_id, second.chunk_id);
     assert_eq!(first.offset, 0);
@@ -885,12 +891,18 @@ async fn small_write_rotates_strips_and_chunks_without_splitting_objects() {
     let first_chunk = stack.query_chunk(&first).await;
     assert_eq!(first_chunk.state, ChunkState::Sealed as i32);
     assert_eq!(first_chunk.strips.len(), 2);
-    assert_eq!(first_chunk.acknowledged_cursor, (MIB + 400 * KIB) as u64);
+    assert_eq!(first_chunk.acknowledged_cursor, 2 * MIB as u64);
     assert_eq!(first_chunk.closed_strip_sequence, Some(1));
-    assert_mirror_data(&stack, &first_chunk, &first, &first_data).await;
-    assert_mirror_data(&stack, &first_chunk, &second, &second_data).await;
+    for (data, location) in &first_group {
+        assert_mirror_data(&stack, &first_chunk, location, data).await;
+    }
+    for (data, location) in &second_group {
+        assert_mirror_data(&stack, &first_chunk, location, data).await;
+    }
     let third_chunk = stack.query_chunk(&third).await;
-    assert_mirror_data(&stack, &third_chunk, &third, &third_data).await;
+    for (data, location) in &third_group {
+        assert_mirror_data(&stack, &third_chunk, location, data).await;
+    }
 
     stack.client.shutdown_small_writes().await.unwrap();
     let third_chunk = stack.query_chunk(&third).await;
@@ -909,7 +921,7 @@ async fn small_write_scales_out_on_queued_bytes_then_scales_in_when_empty() {
     configured.scale_out_queue_bytes = 64 * KIB;
     configured.scale_out_queue_objects = configured.queue_capacity;
     let stack = E2eStack::start(configured).await;
-    let completed = concurrent_writes(&stack, 64, 64 * KIB).await;
+    let completed = concurrent_writes(&stack, 64, MAX_FRAME_PAYLOAD_BYTES).await;
 
     wait_for_metrics(&stack.client, || stack.client.small_write_metrics().scale_out > 0).await;
     assert_eq!(completed.len(), 64);
