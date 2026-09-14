@@ -32,6 +32,7 @@ use crate::range_guard::RangeGuard;
 use crate::routing::hash_to_bucket;
 use crate::selector::PlacementConstraints;
 use crate::storage::{ChunkStore, StoreError};
+use crate::task::TaskStore;
 use crate::topology::TopologyCache;
 
 use super::state::{ChunkState, StateTransitionError};
@@ -133,6 +134,7 @@ pub struct LifecycleHandler {
     metrics: Option<Arc<ChunkdbMetrics>>,
     layout_validity_ms: u64,
     reservation_admission: Arc<admission::ReservationAdmission>,
+    placement_tasks: Option<Arc<TaskStore>>,
 }
 
 struct AllocationMetricGuard {
@@ -186,7 +188,14 @@ impl LifecycleHandler {
             metrics: None,
             layout_validity_ms: DEFAULT_LAYOUT_VALIDITY_MS,
             reservation_admission: Arc::new(admission::ReservationAdmission::new(u64::MAX, u64::MAX, None)),
+            placement_tasks: None,
         }
+    }
+
+    /// Immutable topology used by background placement reconciliation.
+    #[must_use]
+    pub fn topology_snapshot(&self) -> crate::topology::TopologySnapshot {
+        self.topology.snapshot()
     }
 
     #[must_use]
@@ -213,6 +222,13 @@ impl LifecycleHandler {
     #[must_use]
     pub fn with_allow_unsafe_ec(mut self, allow: bool) -> Self {
         self.allow_unsafe_ec = allow;
+        self
+    }
+
+    /// Attach the persistent task store used for foreground degraded EC admission.
+    #[must_use]
+    pub fn with_placement_tasks(mut self, tasks: Arc<TaskStore>) -> Self {
+        self.placement_tasks = Some(tasks);
         self
     }
 
@@ -305,6 +321,7 @@ impl LifecycleHandler {
 
     /// Allocate a new chunk with a stable logical owner identity.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
     pub async fn allocate_chunk_owned(
         &self,
         chunk_id: Option<ChunkId>,
@@ -419,6 +436,7 @@ impl LifecycleHandler {
             owner_key,
         };
         self.persist_active_chunk(&chunk).await?;
+        self.admit_placement_repairs(&chunk);
         self.commit_strip_segments_background(chunk.strips.clone());
 
         // Update cache.
@@ -676,6 +694,7 @@ impl LifecycleHandler {
             self.allocator.rollback_strips(&appended).await?;
             return Err(error.into());
         }
+        self.admit_placement_repairs(&chunk);
 
         if let Some(ref mut g) = guard {
             g.refresh(chunk.clone());
@@ -1611,6 +1630,20 @@ impl LifecycleHandler {
             constraints = constraints.allow_degraded_failure_domains();
         }
         constraints
+    }
+
+    fn admit_placement_repairs(&self, chunk: &Chunk) {
+        let Some(tasks) = self.placement_tasks.clone() else {
+            return;
+        };
+        let chunk = chunk.clone();
+        tokio::spawn(async move {
+            if let Err(error) =
+                crate::placement_repair::admit_placement_chunk(&tasks, &chunk, unix_time_ms()).await
+            {
+                warn!(%error, "placement repair admission deferred to reconciliation");
+            }
+        });
     }
 }
 

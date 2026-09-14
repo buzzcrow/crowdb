@@ -21,6 +21,7 @@ use crowdb_chunkdb::lifecycle::{
     ReserveGroupSpec,
 };
 use crowdb_chunkdb::metrics::{ChunkdbMetrics, LifecycleMetrics};
+use crowdb_chunkdb::placement_repair::PlacementRepairCoordinator;
 use crowdb_chunkdb::range_guard::{OwnedRange, RangeGuard};
 use crowdb_chunkdb::repair::{decode_payload as decode_repair_payload, RepairCoordinator};
 use crowdb_chunkdb::routing::{default_binding_table, hash_to_bucket, BindingCache};
@@ -30,10 +31,12 @@ use crowdb_chunkdb::task::{
 };
 use crowdb_common::metrics::MetricsRegistry;
 use crowdb_protocol::chunk_task::{
-    ChunkTaskState, ChunkTaskValue, CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_MIRROR_TO_EC, TASK_KIND_REPAIR_STRIP,
+    ChunkTaskState, ChunkTaskValue, CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_MIRROR_TO_EC,
+    TASK_KIND_REPAIR_PLACEMENT, TASK_KIND_REPAIR_STRIP,
 };
 use crowdb_protocol::chunkdb::rpc::{
-    ChunkState, ChunkType, Strip, StripReservationAction, StripReservationState, StripType,
+    Chunk, ChunkState, ChunkStrip, ChunkType, EcState, EcStrip, PlacementAssessment, Strip,
+    StripReservationAction, StripReservationState, StripType,
 };
 use crowdb_protocol::common::ChunkId;
 
@@ -239,6 +242,65 @@ async fn unavailable_strip_survives_crash_gap_and_is_admitted_as_repair_task() {
     assert_eq!(revived.state, ChunkTaskState::Pending);
     assert_eq!(revived.revision, completed.revision.saturating_add(1));
     assert_eq!(revived.attempt, 0);
+}
+
+#[tokio::test]
+async fn degraded_ec_strip_is_admitted_as_a_persistent_placement_task() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let bindings = BindingCache::new();
+    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let coordinator = PlacementRepairCoordinator::new(Arc::clone(&harness.handler), Arc::clone(&tasks));
+    let chunk_id = ChunkId { high: 41, low: 42 };
+    let strip = ChunkStrip {
+        strip_sequence: 7,
+        strip_type: StripType::Ec as i32,
+        strip: Some(Strip::EcStrip(EcStrip {
+            data_num: 2,
+            code_num: 1,
+            ec_state: EcState::Parity as i32,
+            segments: Vec::new(),
+        })),
+        placement_assessment: Some(PlacementAssessment {
+            loss_budget: 1,
+            max_fragments_per_rack: 2,
+            max_fragments_per_node: 1,
+            max_fragments_per_disk: 1,
+            rack_protected: false,
+            node_protected: true,
+            disk_protected: true,
+            topology_generation: 1,
+            usage_fresh: true,
+        }),
+        placement_repair_required: true,
+        ..ChunkStrip::default()
+    };
+    let chunk = Chunk {
+        id: Some(chunk_id),
+        modify_ts: 9,
+        strips: vec![strip],
+        ..Chunk::default()
+    };
+
+    assert_eq!(coordinator.admit_chunk(&chunk, 100).await.unwrap(), 1);
+    assert_eq!(coordinator.admit_chunk(&chunk, 101).await.unwrap(), 0);
+    let ready = tasks.scan_ready(101, 16).await.unwrap();
+    assert_eq!(ready.len(), 1);
+    assert_eq!(ready[0].kind, TASK_KIND_REPAIR_PLACEMENT);
+    let task = tasks
+        .get(&chunk_id, TASK_KIND_REPAIR_PLACEMENT, &ready[0].task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.source_revision, 9);
+    assert_eq!(task.max_attempts, u32::MAX);
 }
 
 #[tokio::test]

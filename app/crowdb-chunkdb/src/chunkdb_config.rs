@@ -29,6 +29,8 @@ pub struct ChunkdbConfig {
     #[serde(default)]
     pub repair: RepairConfig,
     #[serde(default)]
+    pub placement_repair: PlacementRepairConfig,
+    #[serde(default)]
     pub reservation: ReservationConfig,
 }
 
@@ -77,7 +79,35 @@ impl BaseConfig for ChunkdbConfig {
         self.lifecycle.validate()?;
         self.conversion.validate()?;
         self.repair.validate()?;
+        self.placement_repair.validate()?;
         self.reservation.validate()?;
+        Ok(())
+    }
+}
+
+/// Bounded background convergence for temporarily degraded EC placement.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlacementRepairConfig {
+    pub enabled: bool,
+    pub max_concurrency: usize,
+    pub scan_interval_secs: u64,
+}
+
+impl Default for PlacementRepairConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_concurrency: 2,
+            scan_interval_secs: 1,
+        }
+    }
+}
+
+impl PlacementRepairConfig {
+    fn validate(&self) -> Result<(), String> {
+        if self.max_concurrency == 0 || self.scan_interval_secs == 0 {
+            return Err("placement_repair concurrency and scan_interval_secs must be > 0".into());
+        }
         Ok(())
     }
 }
