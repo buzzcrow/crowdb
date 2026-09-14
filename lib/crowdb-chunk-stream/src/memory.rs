@@ -12,6 +12,7 @@ use crowdb_protocol::chunk_stream::{
     ActiveChunkDescriptor, StreamBinding, StreamExtentPage, StreamManifest, StreamName,
 };
 use crowdb_protocol::common::ChunkId;
+use crowdb_protocol::frame::{FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES};
 use tokio::sync::{Mutex, Notify};
 
 use crate::{
@@ -75,7 +76,9 @@ pub struct MemoryStreamStore {
 }
 
 impl MemoryStreamStore {
-    /// Creates a test store with fixed-capacity chunks.
+    /// Creates a test store with fixed logical-payload capacity chunks. The
+    /// backing capacity includes one public frame header and footer, so tiny
+    /// rollover tests retain their payload-oriented meaning.
     ///
     /// # Panics
     ///
@@ -85,7 +88,9 @@ impl MemoryStreamStore {
         assert!(chunk_capacity > 0);
         Self {
             state: Mutex::new(MemoryState::default()),
-            chunk_capacity,
+            chunk_capacity: chunk_capacity.saturating_add(
+                u64::try_from(FRAME_HEADER_PREFIX_BYTES + FRAME_FOOTER_BYTES).unwrap_or(u64::MAX),
+            ),
             next_chunk: AtomicU64::new(1),
             metadata_publishes: AtomicU64::new(0),
             extent_page_loads: AtomicU64::new(0),

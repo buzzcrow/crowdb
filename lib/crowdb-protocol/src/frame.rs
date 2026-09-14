@@ -337,7 +337,13 @@ pub fn validate_contiguous_locations(locations: &[ChunkLocation]) -> Result<(), 
     Ok(())
 }
 
-fn framed_physical_length(logical_length: u64) -> Result<u64, FrameError> {
+/// Return the physical bytes required by the consecutive canonical frames for
+/// one logical payload sequence.
+///
+/// # Errors
+///
+/// Returns an error when the result overflows.
+pub fn framed_physical_length(logical_length: u64) -> Result<u64, FrameError> {
     if logical_length == 0 {
         return Ok(0);
     }
