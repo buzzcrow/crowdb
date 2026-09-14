@@ -1,7 +1,7 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-### R97: chunkdb — Console/CLI Integration
+### R96: chunkdb — Console/CLI Integration
 
 **Problem**: chunkdb has no management interface for operators. There is no way to view chunk status, query chunk distribution, or manage chunk lifecycle via web UI or CLI.
 

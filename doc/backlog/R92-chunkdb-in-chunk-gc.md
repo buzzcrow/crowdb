@@ -1,7 +1,7 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-### R87: chunkdb — In-Chunk GC Operations
+### R92: chunkdb — In-Chunk GC Operations
 
 **Problem**: Shared chunks accumulate unused space as objects are deleted.
 Without in-chunk GC, this space is never reclaimed, leading to storage
