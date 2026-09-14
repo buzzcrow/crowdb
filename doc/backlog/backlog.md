@@ -93,6 +93,15 @@ end-to-end Chunk IO performance workloads are landed. The RPC migration items
 
 ### Medium Priority
 
+- **[R97](R97-chunkdb-advanced-placement-strategies.md)** — configurable
+  failure-domain placement and cross-domain balancing — Area: chunkdb / diskdb
+  / group 0 — Add `rack_first` and `node_first` policies with explicit rack,
+  node, and physical-disk protection assessments. Rank safe candidates by
+  projected normalized utilization so uneven racks, nodes, disk-groups, and
+  disks converge without weakening the selected failure guarantee. Validate
+  DiskDB's returned physical disks, keep policy changes non-retroactive, create
+  durable background repair tasks for every temporarily degraded EC strip,
+  and add a protection-preserving cross-disk-group rebalance planner.
 - **[R83](R83-chunkdb-complete-recovery-flow.md)** — chunkdb
   complete recovery flow (real data recovery + speed control) —
   Area: chunkdb / diskdb / diskio — diskdb's recovery is disk-layer
@@ -177,28 +186,22 @@ chunkdb) are DONE. The post-migration KV server/library review is also complete.
 - **[R4](R4-bounded-mempool.md)** — Bounded memory pool — Area: crowdbtree engine — `buffer::allocate` uses
   unbounded `std::malloc`; a burst of large writes can spike RSS without
   backpressure.
-- **[R54](R54-kv-scan-engine-profiling.md)** — Scan engine profiling —
-  Area: scan / crowdb-tree engine — both read modes saturate near ~38k
-  scans/s at 32T:32C; the bottleneck moved to the C++ crowdb-tree merge
-  loop (L0 skip-list + L1 B+tree cursor) but the specific hot spot is
-  unknown. Add `tools/profile-scan.sh` (mirroring
-  `tools/profile-write.sh`), profile the 32T:32C scan bench, and
-  document the top hot stacks. Investigation only — no scan-path code
-  changes. If a clear optimization target emerges, file a follow-up
-  requirement with the profiling evidence. Low complexity.
 - **[R60](R60-tree-scan-sibling-leaf-readahead.md)** — Sibling-leaf
-  readahead on cold scans — Area: scan / crowdb-tree engine — the scan
+  readahead on cold scans — **Deferred pending cold file/block-backed
+  measurement.** Area: scan / crowdb-tree engine — the scan
   path demand-loads each L1 leaf inline (sync) or one pending page per
   reactor round trip (async), so a cold multi-leaf range pays one
   stall/round-trip per leaf, serialized with merge work on prior
-  leaves. The scan knows `right_sibling` (`crowdb-tree.cpp:1822/2074`)
-  before finishing the current leaf — issue a readahead for the next
+  leaves. The scan knows `right_sibling` before finishing the current
+  leaf — issue a readahead for the next
   leaf to overlap I/O with merging. Sync path: prefetch the
   right-sibling page id via a page-cache async-resolve seam. Async
-  path: batch the right-sibling read with the current leaf's read in
-  the reactor submission (small readahead window, default 1). Win is
-  zero on mem-mode (leaves resident); needs a cold/disk bench config to
-  validate. Medium complexity.
+  path: use a fixed one-leaf lookahead to overlap the next leaf read with
+  merge and packing of the current resident leaf. Readahead is scan-only and
+  conditional on the range, remaining limits, deadline, residency, and async
+  disk backend. Win is zero on mem-mode (leaves resident); implement only if
+  a cold benchmark with eviction shows a material latency or throughput
+  improvement. Medium complexity.
 ---
 
 ## Implementation Process
