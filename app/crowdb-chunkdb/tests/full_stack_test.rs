@@ -3126,6 +3126,20 @@ async fn chunkdb_shared_writer_cursor_is_fenced_and_orphan_is_sealed() {
         .expect("advance cursor");
     assert_eq!(advanced.acknowledged_cursor, 1024 * 1024);
     assert_eq!(advanced.closed_strip_sequence, Some(0));
+    let renewed = harness
+        .handler
+        .advance_chunk_write(
+            &chunk_id,
+            99,
+            advanced.modify_ts,
+            advanced.acknowledged_cursor,
+            None,
+            20,
+        )
+        .await
+        .expect("renew liveness without advancing cursor");
+    assert_eq!(renewed.modify_ts, advanced.modify_ts);
+    assert_eq!(renewed.acknowledged_cursor, advanced.acknowledged_cursor);
     assert!(matches!(
         harness
             .handler
