@@ -58,6 +58,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|path| path.parent())
         .ok_or("crowdb-tree must be under the repository lib directory")?;
     let rpc = repository.join("lib").join("crowdb-rpc");
+    let protocol_cpp_include = repository
+        .join("lib")
+        .join("crowdb-protocol")
+        .join("cpp")
+        .join("include");
     let protocol_fbs = repository
         .join("lib")
         .join("crowdb-protocol")
@@ -103,6 +108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .include(&src)
         .include(&common_include)
         .include(rpc.join("include"))
+        .include(&protocol_cpp_include)
         .include(&rpc_generated)
         .flag(format!("-isystem{}", stdexec_include.display()))
         .warnings(false);

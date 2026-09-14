@@ -22,7 +22,7 @@
 namespace crowdb::tree::detail
 {
 
-inline constexpr uint32_t kChunkManifestFormat = 4;
+inline constexpr uint32_t kChunkManifestFormat = 5;
 
 class ChunkAsyncExecutor;
 class ChunkPackPipeline;
@@ -30,10 +30,11 @@ class ChunkPackPipelineImpl;
 
 struct ChunkPageRef
 {
+    // Public frame location. Integrity belongs to the frame footer, never to
+    // this high-cardinality manifest entry.
     ChunkId  chunk_id;
-    uint64_t offset   = 0;
-    uint32_t length   = 0;
-    uint32_t checksum = 0;
+    uint64_t offset = 0;
+    uint32_t length = 0;
 };
 
 struct ChunkPagePack
@@ -259,7 +260,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     {
         uint64_t tree_id                        = 0;
         uint64_t owner_epoch                    = 0;
-        size_t   pack_bytes                     = 4U * 1024U * 1024U;
+        size_t   pack_bytes                     = 64U * 1024U - 34U;
         uint64_t max_chunk_bytes                = 256U * 1024U * 1024U;
         uint32_t page_alignment                 = 64U * 1024U;
         uint32_t iu_size                        = 64U * 1024U;
@@ -349,9 +350,8 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     static Status         validate_manifest(const ChunkManifest &manifest, const RootCatalog &catalog);
     Status                persist_reference_segments(ChunkManifest *manifest, const ChunkManifest *reuse_base);
     [[nodiscard]] std::shared_ptr<const ChunkManifest> reuse_base_manifest() const;
-    [[nodiscard]] const ChunkPagePack        *find_reusable_pack(const ChunkManifest &base, uint64_t logical_offset,
-                                                                 uint32_t length, uint32_t checksum,
-                                                                 ChunkCancellation cancellation = {}) const;
+    [[nodiscard]] const ChunkPagePack *find_reusable_pack(const ChunkManifest &base, uint64_t logical_offset,
+                                                          uint32_t length, ChunkCancellation cancellation = {}) const;
     [[nodiscard]] static const ChunkPagePack *find_pack_at(const ChunkManifest &base, uint64_t logical_offset,
                                                            uint32_t length);
     static uint32_t                           reference_segment_checksum(const ChunkReferenceSegmentImage &segment);

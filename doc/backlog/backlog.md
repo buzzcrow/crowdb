@@ -16,19 +16,14 @@ complexity, and dependency. Before implementation, follow the
 ### Next Milestone — Chunk-backed range KV
 
 R144 is a deferred merge follow-up to the completed chunk-KV server and routed
-client split/transfer baseline. R146 and R147 are deferred chunk lifecycle
-follow-ups. R148 follows the now-measured mirror-only production baseline and
+client split/transfer baseline. R147 is the remaining deferred chunk lifecycle
+follow-up. R148 follows the now-measured mirror-only production baseline and
 keeps stream metadata scale-out and sealed-chunk EC disabled until that
 requirement is implemented.
 - **[R144](R144-chunk-kv-partition-merge.md)** — adjacent partition merge —
   Area: crowdb-tree / KV / server / group 0 — Deferred follow-up that composes
   two adjacent chunk-backed trees, fences both owners, reconciles their WAL
   sequences, and atomically replaces both parent ranges with one destination.
-- **[R146](R146-chunk-orphan-sealing.md)** — seal abandoned chunks across all chunk users
-  chunks — Area: crowdb-tree / chunkdb — Renew durable writer leases while a
-  tree owns its active chunk, allocate a fresh chunk after process restart, and
-  extend chunkdb's restart-safe expired-writer sweep to seal abandoned B+tree
-  chunks at their acknowledged cursors.
 - **[R147](R147-tree-chunk-gc.md)** — reclaim B+tree chunk strips — Area:
   crowdb-tree / chunkdb / diskdb — Turn tree logical-GC results into durable,
   manifest-fenced reclaim candidates. Repack mixed live strips, then use an

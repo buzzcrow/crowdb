@@ -5,6 +5,7 @@
 
 #include "crowdb-common/crc32c.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -145,6 +146,37 @@ inline void append_u64_be(std::vector<uint8_t> *out, uint64_t value)
     return FrameError::Ok;
 }
 
+[[nodiscard]] inline size_t framed_physical_length(size_t payload_size)
+{
+    const size_t full_frames = payload_size / kMaxFramePayloadBytes;
+    const size_t tail        = payload_size % kMaxFramePayloadBytes;
+    if (full_frames >
+        (SIZE_MAX - (tail == 0 ? 0 : tail + kFrameHeaderPrefixBytes + kFrameFooterBytes)) / kMaxFrameBytes) {
+        return 0;
+    }
+    return full_frames * kMaxFrameBytes + (tail == 0 ? 0 : tail + kFrameHeaderPrefixBytes + kFrameFooterBytes);
+}
+
+[[nodiscard]] inline FrameError encode_frames(FrameMagic magic, FrameChunkId chunk_id, std::span<const uint8_t> payload,
+                                              uint64_t write_time_ms, std::vector<uint8_t> *out)
+{
+    if (out == nullptr || (framed_physical_length(payload.size()) == 0 && !payload.empty())) {
+        return FrameError::FrameTooLarge;
+    }
+    out->clear();
+    out->reserve(framed_physical_length(payload.size()));
+    for (size_t offset = 0; offset < payload.size(); offset += kMaxFramePayloadBytes) {
+        std::vector<uint8_t> frame;
+        const size_t         length = std::min(kMaxFramePayloadBytes, payload.size() - offset);
+        const FrameError error = encode_frame(magic, chunk_id, payload.subspan(offset, length), write_time_ms, &frame);
+        if (error != FrameError::Ok) {
+            return error;
+        }
+        out->insert(out->end(), frame.begin(), frame.end());
+    }
+    return FrameError::Ok;
+}
+
 [[nodiscard]] inline FrameError parse_frame(std::span<const uint8_t> bytes, FrameChunkId expected_chunk_id,
                                             ParsedFrame *out)
 {
@@ -199,6 +231,31 @@ inline void append_u64_be(std::vector<uint8_t> *out, uint64_t value)
         };
     }
     return FrameError::Ok;
+}
+
+[[nodiscard]] inline FrameError parse_frames(std::span<const uint8_t> bytes, FrameChunkId expected_chunk_id,
+                                             FrameMagic expected_magic, size_t logical_length,
+                                             std::vector<uint8_t> *payload)
+{
+    if (payload == nullptr || framed_physical_length(logical_length) != bytes.size()) {
+        return FrameError::Incomplete;
+    }
+    payload->clear();
+    payload->reserve(logical_length);
+    size_t offset = 0;
+    while (offset < bytes.size()) {
+        ParsedFrame      frame;
+        const FrameError error = parse_frame(bytes.subspan(offset), expected_chunk_id, &frame);
+        if (error != FrameError::Ok) {
+            return error;
+        }
+        if (frame.header.magic != expected_magic || frame.physical_length > bytes.size() - offset) {
+            return FrameError::UnknownMagic;
+        }
+        payload->insert(payload->end(), frame.payload.begin(), frame.payload.end());
+        offset += frame.physical_length;
+    }
+    return payload->size() == logical_length ? FrameError::Ok : FrameError::Incomplete;
 }
 
 } // namespace crowdb::protocol
