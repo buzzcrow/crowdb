@@ -850,21 +850,26 @@ async fn small_write_new_chunk_repair_exhaustion_preserves_sealed_predecessor() 
     let fault = Arc::new(FailWritesFromCall {
         inner: disk_writer,
         calls: AtomicUsize::new(0),
-        first_failed_call: 2,
+        first_failed_call: FRAMES_PER_MIB_STRIP + 1,
     });
     let client = ChunkIoClient::from_parts_with_small_policy(allocator, fault, configured).unwrap();
-    let predecessor_data = Bytes::from(vec![0x29; 700 * KIB]);
-    let predecessor = write_object(&client, predecessor_data.clone()).await;
-    let mut failed = client.prepare_small_write(400 * KIB).await.unwrap();
-    failed.on_data(Bytes::from(vec![0x81; 400 * KIB])).await.unwrap();
+    let predecessor_group = write_full_small_strip(&client, 0x29).await;
+    let predecessor = predecessor_group[0].1.clone();
+    let mut failed = client.prepare_small_write(MAX_FRAME_PAYLOAD_BYTES).await.unwrap();
+    failed
+        .on_data(Bytes::from(vec![0x81; MAX_FRAME_PAYLOAD_BYTES]))
+        .await
+        .unwrap();
     assert!(matches!(failed.on_finish().await, Err(IoError::WriteFailed(_))));
 
     let predecessor_chunk = stack.query_chunk(&predecessor).await;
     assert_eq!(predecessor_chunk.state, ChunkState::Sealed as i32);
-    assert_eq!(predecessor_chunk.acknowledged_cursor, 700 * KIB as u64);
-    assert_mirror_data(&stack, &predecessor_chunk, &predecessor, &predecessor_data).await;
+    assert_eq!(predecessor_chunk.acknowledged_cursor, MIB as u64);
+    for (data, location) in &predecessor_group {
+        assert_mirror_data(&stack, &predecessor_chunk, location, data).await;
+    }
     let metrics = client.small_write_metrics();
-    assert_eq!(metrics.completed, 1);
+    assert_eq!(metrics.completed, FRAMES_PER_MIB_STRIP as u64);
     assert_eq!(metrics.failed, 1);
     assert_eq!(metrics.exhausted_repairs, 1);
     let _ = client.shutdown_small_writes().await;
