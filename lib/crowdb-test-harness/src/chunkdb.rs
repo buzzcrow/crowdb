@@ -60,6 +60,7 @@ pub struct ChunkdbProcess {
 #[allow(clippy::struct_excessive_bools)]
 pub struct ChunkdbStartOptions {
     pub allow_unsafe_ec: bool,
+    pub allow_degraded_failure_domains: bool,
     pub conversion_enabled: bool,
     pub conversion_min_seal_age_secs: u64,
     pub conversion_scan_interval_secs: u64,
@@ -76,6 +77,7 @@ impl Default for ChunkdbStartOptions {
     fn default() -> Self {
         Self {
             allow_unsafe_ec: false,
+            allow_degraded_failure_domains: false,
             conversion_enabled: false,
             conversion_min_seal_age_secs: 3_600,
             conversion_scan_interval_secs: 30,
@@ -107,6 +109,7 @@ impl ChunkdbProcess {
             kv_seeds,
             ChunkdbStartOptions {
                 allow_unsafe_ec,
+                allow_degraded_failure_domains: allow_unsafe_ec,
                 ..ChunkdbStartOptions::default()
             },
         )
@@ -154,6 +157,7 @@ allow_all_when_empty = true
 
 [placement]
 allow_unsafe_ec = {allow_unsafe_ec}
+allow_degraded_failure_domains = {allow_degraded_failure_domains}
 
 [conversion]
 enabled = {conversion_enabled}
@@ -179,6 +183,7 @@ sweep_chunk_lock_interval_secs = 10
 lock_hold_warn_threshold_ms = 1000
 "#,
             allow_unsafe_ec = options.allow_unsafe_ec,
+            allow_degraded_failure_domains = options.allow_degraded_failure_domains,
             conversion_enabled = options.conversion_enabled,
             conversion_min_seal_age_secs = options.conversion_min_seal_age_secs,
             conversion_scan_interval_secs = options.conversion_scan_interval_secs,

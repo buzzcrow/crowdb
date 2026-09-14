@@ -191,6 +191,7 @@ fn start_chunkdb(cluster: &KvCluster) -> ChunkdbProcess {
         &cluster.mgmt_endpoints,
         ChunkdbStartOptions {
             allow_unsafe_ec: true,
+            allow_degraded_failure_domains: true,
             repair_allow_unsafe_placement: true,
             ..ChunkdbStartOptions::default()
         },

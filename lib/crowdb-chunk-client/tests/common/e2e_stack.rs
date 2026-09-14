@@ -57,6 +57,7 @@ impl E2eStack {
             "mem",
             ChunkdbStartOptions {
                 allow_unsafe_ec: true,
+                allow_degraded_failure_domains: true,
                 repair_allow_unsafe_placement: true,
                 ..ChunkdbStartOptions::default()
             },
@@ -71,6 +72,7 @@ impl E2eStack {
             "null",
             ChunkdbStartOptions {
                 allow_unsafe_ec: true,
+                allow_degraded_failure_domains: true,
                 repair_allow_unsafe_placement: true,
                 ..ChunkdbStartOptions::default()
             },

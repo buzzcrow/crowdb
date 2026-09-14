@@ -275,6 +275,7 @@ async fn partial_read_preserves_healthy_ec_shard_ranges_around_data_loss() {
         small_policy(1),
         ChunkdbStartOptions {
             allow_unsafe_ec: true,
+            allow_degraded_failure_domains: true,
             repair_enabled: false,
             ..ChunkdbStartOptions::default()
         },
@@ -409,6 +410,7 @@ async fn chunkdb_restart_admits_durable_read_failure_and_repairs_full_shard() {
     }
     let mut options = ChunkdbStartOptions {
         allow_unsafe_ec: true,
+        allow_degraded_failure_domains: true,
         repair_enabled: false,
         ..ChunkdbStartOptions::default()
     };

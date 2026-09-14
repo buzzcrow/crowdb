@@ -528,6 +528,7 @@ async fn automatic_chunkdb_scan_converts_three_groups_and_preserves_tail() {
         configured,
         ChunkdbStartOptions {
             allow_unsafe_ec: true,
+            allow_degraded_failure_domains: true,
             conversion_enabled: true,
             conversion_min_seal_age_secs: 10,
             conversion_scan_interval_secs: 1,
@@ -630,6 +631,7 @@ async fn chunkdb_restart_recovers_an_inflight_conversion_claim() {
         configured,
         ChunkdbStartOptions {
             allow_unsafe_ec: true,
+            allow_degraded_failure_domains: true,
             conversion_enabled: true,
             conversion_min_seal_age_secs: 5,
             conversion_scan_interval_secs: 1,

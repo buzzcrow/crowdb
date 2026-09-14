@@ -1168,7 +1168,7 @@ pub async fn deploy_chunkdb_local(
         .collect::<Vec<_>>()
         .join(", ");
     let config = format!(
-        "[server]\nrpc_workers = {}\nhttp_listen_addr = \"{}:{}\"\nrpc_listen_addr = \"{}:{}\"\ninstance_id = \"{}\"\nkv_server_mgmt_seeds = [{}]\nkeepalive_interval_secs = 1\nkv_pool_size = {}\nkv_rpc_workers = {}\ndiskdb_pool_size = {}\ndiskdb_rpc_workers = {}\n\n[topology]\nrefresh_interval_secs = 1\n\n[range_guard]\nallow_all_when_empty = false\n\n[lifecycle]\ncache_capacity = 10000\nsweep_chunk_lock_interval_secs = 60\nlock_hold_warn_threshold_ms = 1000\n\n[placement]\nallow_unsafe_ec = {}\n",
+        "[server]\nrpc_workers = {}\nhttp_listen_addr = \"{}:{}\"\nrpc_listen_addr = \"{}:{}\"\ninstance_id = \"{}\"\nkv_server_mgmt_seeds = [{}]\nkeepalive_interval_secs = 1\nkv_pool_size = {}\nkv_rpc_workers = {}\ndiskdb_pool_size = {}\ndiskdb_rpc_workers = {}\n\n[topology]\nrefresh_interval_secs = 1\n\n[range_guard]\nallow_all_when_empty = false\n\n[lifecycle]\ncache_capacity = 10000\nsweep_chunk_lock_interval_secs = 60\nlock_hold_warn_threshold_ms = 1000\n\n[placement]\nallow_unsafe_ec = {}\nallow_degraded_failure_domains = {}\n",
         req.rpc_workers.unwrap_or(2),
         node.host,
         req.http_port,
@@ -1180,6 +1180,7 @@ pub async fn deploy_chunkdb_local(
         req.kv_client_rpc_workers.unwrap_or(2),
         req.diskdb_connections.unwrap_or(1),
         req.diskdb_client_rpc_workers.unwrap_or(2),
+        req.allow_unsafe_ec,
         req.allow_unsafe_ec,
     );
     std::fs::write(&config_path, config)?;
