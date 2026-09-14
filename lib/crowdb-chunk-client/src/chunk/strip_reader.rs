@@ -141,16 +141,11 @@ impl StripReader {
                 push_unique(&mut failed_segments, *segment);
                 continue;
             }
-            for attempt in 0..3 {
-                match self.disk_io.read(segment, unit_bytes, offset, length).await {
-                    Ok(data) => return Ok((data, failed_segments, vec![*segment])),
-                    Err(error) => {
-                        failures.push(error.to_string());
-                        push_durable_failure(&mut failed_segments, *segment, &error);
-                        if matches!(error, crate::IoError::Topology(_)) || attempt == 2 {
-                            break;
-                        }
-                    }
+            match self.read_target(segment, unit_bytes, offset, length).await {
+                Ok(data) => return Ok((data, failed_segments, vec![*segment])),
+                Err(error) => {
+                    failures.push(error.to_string());
+                    push_durable_failure(&mut failed_segments, *segment, &error);
                 }
             }
         }
@@ -198,8 +193,7 @@ impl StripReader {
             let result = if unavailable {
                 Err(crate::IoError::ReadFailed("segment is unavailable".into()))
             } else {
-                self.disk_io
-                    .read(&segment, unit_bytes, local_start, read_len)
+                self.read_target(&segment, unit_bytes, local_start, read_len)
                     .await
             };
             pieces.push((order, shard_index, local_start, read_len, result));
@@ -378,7 +372,7 @@ impl StripReader {
                 let segment = segments[index];
                 let physical_len = u64::from(length).min(actual - offset) as u32;
                 reads.spawn(async move {
-                    let result = disk_io.read(&segment, unit_bytes, offset, physical_len).await;
+                    let result = read_target(&*disk_io, &segment, unit_bytes, offset, physical_len).await;
                     (index, result)
                 });
             }
@@ -406,6 +400,39 @@ impl StripReader {
             failed_segments,
         })
     }
+
+    async fn read_target(
+        &self,
+        segment: &Segment,
+        unit_bytes: u64,
+        offset: u64,
+        length: u32,
+    ) -> crate::Result<Bytes> {
+        read_target(&*self.disk_io, segment, unit_bytes, offset, length).await
+    }
+}
+
+async fn read_target(
+    disk_io: &dyn DiskWriter,
+    segment: &Segment,
+    unit_bytes: u64,
+    offset: u64,
+    length: u32,
+) -> crate::Result<Bytes> {
+    let mut last_error = None;
+    for attempt in 0..3 {
+        match disk_io.read(segment, unit_bytes, offset, length).await {
+            Ok(data) => return Ok(data),
+            Err(error) => {
+                let connection_failure = matches!(error, crate::IoError::Topology(_));
+                last_error = Some(error);
+                if connection_failure || attempt == 2 {
+                    break;
+                }
+            }
+        }
+    }
+    Err(last_error.expect("read target executes at least once"))
 }
 
 fn decode_recoverable(

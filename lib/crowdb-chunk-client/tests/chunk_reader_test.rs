@@ -314,9 +314,9 @@ async fn ec_recovery_reads_only_the_minimum_surviving_shards() {
             .unwrap(),
         data[97..97 + 16 * KIB]
     );
-    // One failed direct read plus exactly data_num recovery reads. The second
-    // parity shard is not touched.
-    assert_eq!(reads.load(Ordering::Relaxed), 5);
+    // A connected failed target is tried at most three times, followed by
+    // exactly data_num recovery reads. The second parity shard is not touched.
+    assert_eq!(reads.load(Ordering::Relaxed), 7);
 }
 
 #[tokio::test]
