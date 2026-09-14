@@ -908,7 +908,10 @@ async fn finalizer_reclaims_an_empty_active_chunk() {
         .await
         .unwrap()
         .unwrap();
-    let finalizer = FinalizeChunkTaskHandler::new(Arc::clone(&harness.handler));
+    let finalizer = FinalizeChunkTaskHandler::new(
+        Arc::clone(&harness.handler),
+        Arc::new(ConversionDiskIo::empty_for_tests()),
+    );
     assert!(matches!(finalizer.execute(&task).await, TaskOutcome::Complete));
     assert_eq!(
         harness.handler.query_chunk(&chunk_id).await.unwrap().state,

@@ -605,7 +605,10 @@ async fn main() {
                 Arc::clone(&workflow_metrics.placement),
             ));
             let task_handlers: Vec<Arc<dyn TaskHandler>> = vec![
-                Arc::new(FinalizeChunkTaskHandler::new(Arc::clone(&handler))),
+                Arc::new(FinalizeChunkTaskHandler::new(
+                    Arc::clone(&handler),
+                    Arc::clone(&io),
+                )),
                 conversion_task_handler,
                 repair_task_handler,
                 placement_repair_task_handler,
