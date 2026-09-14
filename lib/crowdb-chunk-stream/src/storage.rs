@@ -86,6 +86,10 @@ pub trait StreamChunkStore: Send + Sync {
         checksum: u32,
     ) -> Result<CursorAdvance>;
     async fn durable_cursor(&self, chunk_id: ChunkId, writer_epoch: u64) -> Result<DurableCursor>;
+    /// Renews the one Active-chunk liveness task without advancing its cursor.
+    async fn renew_liveness(&self, _chunk_id: ChunkId, _writer_epoch: u64) -> Result<()> {
+        Ok(())
+    }
     async fn seal(&self, chunk_id: ChunkId, writer_epoch: u64, cursor: u64) -> Result<()>;
     async fn read(&self, chunk_id: ChunkId, physical_offset: u64, length: usize) -> Result<Bytes>;
     /// Reads and validates a public stream frame before its payload is exposed.

@@ -18,6 +18,7 @@
 #include <memory>
 #include <new>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -103,6 +104,9 @@ uint64_t monotonic_millis()
 {
     return monotonic_nanos() / 1'000'000;
 }
+
+inline constexpr uint64_t kLivenessRenewalMs   = 12U * 60U * 1000U;
+inline constexpr uint64_t kLivenessSelfFenceMs = 13U * 60U * 1000U;
 
 void rpc_complete(uint64_t /*unused*/, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data, crowdb_rpc_status status,
                   void *context)
@@ -225,9 +229,10 @@ struct RpcChunkTransport::Impl
     struct RemoteChunk
     {
         ChunkLayout        layout;
-        uint64_t           owner_epoch    = 0;
-        uint64_t           modify_ts      = 0;
-        uint64_t           valid_until_ms = 0;
+        uint64_t           owner_epoch            = 0;
+        uint64_t           modify_ts              = 0;
+        uint64_t           valid_until_ms         = 0;
+        uint64_t           self_fence_deadline_ms = 0;
         std::vector<Strip> strips;
     };
 
@@ -256,6 +261,16 @@ struct RpcChunkTransport::Impl
                 }
             }
         }
+        liveness_thread = std::jthread([this](std::stop_token stop) {
+            while (!stop.stop_requested()) {
+                for (uint32_t second = 0; second != 60 && !stop.stop_requested(); ++second) {
+                    std::this_thread::sleep_for(std::chrono::seconds(1));
+                }
+                if (!stop.stop_requested()) {
+                    renew_due_liveness();
+                }
+            }
+        });
     }
 
     [[nodiscard]] bool valid() const
@@ -338,6 +353,9 @@ struct RpcChunkTransport::Impl
                 next->push_back(chunk);
             }
             else {
+                if (chunk.self_fence_deadline_ms == 0) {
+                    chunk.self_fence_deadline_ms = found->self_fence_deadline_ms;
+                }
                 *found = chunk;
             }
             if (chunks.compare_exchange_weak(current, next, std::memory_order_release, std::memory_order_acquire)) {
@@ -364,6 +382,44 @@ struct RpcChunkTransport::Impl
     [[nodiscard]] bool cached_valid(ChunkId chunk_id, RemoteChunk *out) const
     {
         return cached(chunk_id, out) && monotonic_millis() < out->valid_until_ms;
+    }
+
+    void renew_due_liveness() const
+    {
+        const auto current = chunks.load(std::memory_order_acquire);
+        if (current == nullptr) {
+            return;
+        }
+        const uint64_t now = monotonic_millis();
+        for (const RemoteChunk &chunk : *current) {
+            if (chunk.layout.sealed || chunk.self_fence_deadline_ms == 0 ||
+                now + (kLivenessSelfFenceMs - kLivenessRenewalMs) < chunk.self_fence_deadline_ms) {
+                continue;
+            }
+            const uint64_t                 request_id = next_request_id();
+            const FBInt128                 id(chunk.layout.chunk_id.high, chunk.layout.chunk_id.low);
+            flatbuffers::FlatBufferBuilder builder;
+            auto                           request = crowdb::chunkdb::proto::CreateFBAdvanceChunkWriteRequest(
+                builder, request_id, monotonic_nanos(), &id, chunk.owner_epoch, chunk.modify_ts,
+                chunk.layout.acknowledged_bytes, std::numeric_limits<uint32_t>::max(), options.writer_lease_ms);
+            builder.Finish(request);
+            std::vector<uint8_t> control(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());
+            RpcResult            result;
+            Status               status =
+                call_rpc(options.chunkdb, request_id, crowdb::rpc::proto::FBMsgType_EAdvanceChunkWriteRequest, control,
+                         nullptr, 0, &result);
+            const auto *response =
+                status.ok() ? verified_response<crowdb::chunkdb::proto::FBAdvanceChunkWriteResponse>(result.control)
+                            : nullptr;
+            if (response == nullptr || !chunkdb_status(response->ret_code(), response->error_msg()).ok()) {
+                continue;
+            }
+            RemoteChunk renewed;
+            if (parse_chunk(response->chunk(), &renewed).ok()) {
+                renewed.self_fence_deadline_ms = monotonic_millis() + kLivenessSelfFenceMs;
+                cache(std::move(renewed));
+            }
+        }
     }
 
     void submit_write(RemoteChunk chunk, uint32_t mirror_index, uint64_t offset, const uint8_t *data, size_t length,
@@ -406,6 +462,7 @@ struct RpcChunkTransport::Impl
     std::vector<ct_chunk_rpc_disk_route>                     disk_routes;
     mutable std::atomic<uint64_t>                            request_ids{1};
     mutable std::atomic<std::shared_ptr<const RemoteChunks>> chunks;
+    std::jthread                                             liveness_thread;
 };
 
 struct RpcChunkTransport::Impl::AsyncWrite
@@ -573,8 +630,9 @@ Status RpcChunkTransport::allocate_mirror_chunk(uint64_t logical_capacity, uint6
         remote.layout.logical_capacity < logical_capacity) {
         return status.ok() ? Status::corruption("ChunkDB allocation metadata mismatch") : status;
     }
-    remote.valid_until_ms = std::numeric_limits<uint64_t>::max();
-    *chunk_id             = remote.layout.chunk_id;
+    remote.valid_until_ms         = std::numeric_limits<uint64_t>::max();
+    remote.self_fence_deadline_ms = monotonic_millis() + kLivenessSelfFenceMs;
+    *chunk_id                     = remote.layout.chunk_id;
     impl_->cache(std::move(remote));
     return Status::Ok();
 }
@@ -591,6 +649,9 @@ Status RpcChunkTransport::write_mirror(ChunkId chunk_id, uint32_t mirror_index, 
         if (!status.ok()) {
             return status;
         }
+    }
+    if (chunk.self_fence_deadline_ms != 0 && monotonic_millis() >= chunk.self_fence_deadline_ms) {
+        return Status::unavailable("tree chunk liveness authority has self-fenced");
     }
     size_t consumed = 0;
     while (consumed < length) {
@@ -647,6 +708,10 @@ void RpcChunkTransport::submit_write_mirror(ChunkId chunk_id, uint32_t mirror_in
     Impl::RemoteChunk chunk;
     if (!impl_->cached(chunk_id, &chunk)) {
         ChunkTransport::submit_write_mirror(chunk_id, mirror_index, offset, data, length, completion);
+        return;
+    }
+    if (chunk.self_fence_deadline_ms != 0 && monotonic_millis() >= chunk.self_fence_deadline_ms) {
+        completion.complete(Status::unavailable("tree chunk liveness authority has self-fenced"));
         return;
     }
     impl_->submit_write(std::move(chunk), mirror_index, offset, data, length, completion);

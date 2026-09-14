@@ -288,6 +288,31 @@ impl StreamChunkStore for ProductionStreamChunkStore {
         })
     }
 
+    async fn renew_liveness(&self, chunk_id: ChunkId, writer_epoch: u64) -> Result<()> {
+        let state = self.state(chunk_id).await?;
+        let cursor = state.cursor.load(Ordering::Acquire);
+        let response = self
+            .allocator
+            .advance_chunk_write(AdvanceChunkWriteRequest {
+                chunk_id: Some(chunk_id),
+                writer_epoch,
+                expected_modify_ts: state.modify_ts.load(Ordering::Acquire),
+                acknowledged_cursor: cursor,
+                closed_strip_sequence: None,
+                writer_lease_ms: self.writer_lease_ms,
+            })
+            .await
+            .map_err(io_error)?;
+        let chunk = response
+            .chunk
+            .ok_or_else(|| StreamError::Corruption("liveness renewal returned no chunk".into()))?;
+        if chunk.writer_epoch != writer_epoch || chunk.acknowledged_cursor != cursor {
+            return Err(StreamError::StaleWriter);
+        }
+        state.modify_ts.store(chunk.modify_ts, Ordering::Release);
+        Ok(())
+    }
+
     async fn seal(&self, chunk_id: ChunkId, writer_epoch: u64, cursor: u64) -> Result<()> {
         let state = self.state(chunk_id).await?;
         if state.chunk.writer_epoch > writer_epoch || state.cursor.load(Ordering::Acquire) != cursor {

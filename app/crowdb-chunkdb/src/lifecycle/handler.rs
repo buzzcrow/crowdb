@@ -557,9 +557,9 @@ impl LifecycleHandler {
             return Err(LifecycleError::StateConflict);
         }
         let capacity_bytes = u64::from(chunk.capacity).saturating_mul(1024);
-        if acknowledged_cursor <= chunk.acknowledged_cursor || acknowledged_cursor > capacity_bytes {
+        if acknowledged_cursor < chunk.acknowledged_cursor || acknowledged_cursor > capacity_bytes {
             return Err(LifecycleError::InvalidRequest(format!(
-                "acknowledged cursor {acknowledged_cursor} must advance beyond {} within capacity {capacity_bytes}",
+                "acknowledged cursor {acknowledged_cursor} must not move behind {} within capacity {capacity_bytes}",
                 chunk.acknowledged_cursor
             )));
         }
@@ -588,6 +588,9 @@ impl LifecycleHandler {
             }
         }
         let now_ms = self.renew_liveness_if_due(chunk_id, writer_epoch).await?;
+        if acknowledged_cursor == chunk.acknowledged_cursor && closed_strip_sequence.is_none() {
+            return Ok(chunk);
+        }
         if let Some(sequence) = closed_strip_sequence {
             for strip in &mut chunk.strips {
                 if strip.strip_sequence <= sequence && strip.sealed_ts_ms == 0 {
@@ -613,10 +616,13 @@ impl LifecycleHandler {
         writer_epoch: u64,
     ) -> Result<u64, LifecycleError> {
         let now_ms = unix_time_ms();
+        // The durable task, not this bounded process-local cache, is the
+        // source of liveness. A restarted chunkdb must be able to renew an
+        // owner that is still within its task deadline.
         let renewed_at = self
             .liveness_renewed_at
             .get(chunk_id)
-            .ok_or(LifecycleError::StateConflict)?;
+            .unwrap_or_else(|| now_ms.saturating_sub(FINALIZE_CHUNK_RENEWAL_MS));
         let liveness_age = now_ms.saturating_sub(renewed_at);
         if liveness_age >= FINALIZE_CHUNK_SELF_FENCE_MS {
             return Err(LifecycleError::StateConflict);

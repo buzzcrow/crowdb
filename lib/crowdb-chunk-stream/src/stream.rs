@@ -977,12 +977,24 @@ impl StreamReader {
 
 async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<Command>) {
     let mut pending = None;
+    let mut liveness = tokio::time::interval(Duration::from_secs(12 * 60));
+    liveness.tick().await;
     loop {
         let command = match pending.take() {
             Some(command) => command,
-            None => match receiver.recv().await {
-                Some(command) => command,
-                None => break,
+            None => tokio::select! {
+                command = receiver.recv() => match command {
+                    Some(command) => command,
+                    None => break,
+                },
+                _ = liveness.tick() => {
+                    if let Some(active) = &state.manifest.active {
+                        if state.chunks.renew_liveness(active.chunk_id, state.writer_epoch).await.is_err() {
+                            state.stalled = true;
+                        }
+                    }
+                    continue;
+                }
             },
         };
         match command {
