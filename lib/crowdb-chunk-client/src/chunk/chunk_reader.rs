@@ -3,6 +3,7 @@
 
 //! Object and range reads over current chunk layouts.
 
+use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -273,6 +274,29 @@ impl ChunkReader {
             .map_err(|error| ReadError::InvalidLocations(error.to_string()))?;
         let selected_logical_start =
             (local_start / MAX_FRAME_PAYLOAD_BYTES as u64) * MAX_FRAME_PAYLOAD_BYTES as u64;
+        let payload = self.read_verified_framed_bytes(chunk_id, physical_range).await?;
+        let start = usize::try_from(local_start - selected_logical_start)
+            .map_err(|_| ReadError::InvalidLocations("logical range exceeds addressable memory".into()))?;
+        let end = start
+            .checked_add(usize::try_from(length).map_err(|_| {
+                ReadError::InvalidLocations("logical range exceeds addressable memory".into())
+            })?)
+            .ok_or_else(|| ReadError::InvalidLocations("logical range overflows".into()))?;
+        Ok(PartialReadResult {
+            ranges: vec![ReadRangeData {
+                start: logical_start,
+                end: logical_start + length,
+                data: payload.slice(start..end),
+            }],
+            failures: Vec::new(),
+        })
+    }
+
+    async fn read_verified_framed_bytes(
+        &self,
+        chunk_id: ChunkId,
+        physical_range: Range<u64>,
+    ) -> ReadResult<Bytes> {
         for _ in 0..self.policy.max_layout_retries {
             let query_started = Instant::now();
             let response = self
@@ -295,6 +319,26 @@ impl ChunkReader {
                     0,
                 )
                 .await?;
+            let bytes = assemble_ranges(
+                physical.ranges,
+                0,
+                usize::try_from(physical_range.end - physical_range.start).map_err(|_| {
+                    ReadError::InvalidLocations("framed location exceeds addressable memory".into())
+                })?,
+            )?;
+            let payload = match decode_selected_frames(&bytes, chunk_id) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    let corrupt = mark_served_segments_corrupt(observations);
+                    if corrupt.is_empty()
+                        || Instant::now() >= deadline
+                        || self.mark_observed_failures(&mut chunk, corrupt).await.is_err()
+                    {
+                        return Err(error);
+                    }
+                    continue;
+                }
+            };
             if Instant::now() >= deadline {
                 continue;
             }
@@ -305,30 +349,7 @@ impl ChunkReader {
             {
                 continue;
             }
-            let bytes = assemble_ranges(
-                physical.ranges,
-                0,
-                usize::try_from(physical_range.end - physical_range.start).map_err(|_| {
-                    ReadError::InvalidLocations("framed location exceeds addressable memory".into())
-                })?,
-            )?;
-            let payload = decode_selected_frames(&bytes, chunk_id)?;
-            let start = usize::try_from(local_start - selected_logical_start).map_err(|_| {
-                ReadError::InvalidLocations("logical range exceeds addressable memory".into())
-            })?;
-            let end = start
-                .checked_add(usize::try_from(length).map_err(|_| {
-                    ReadError::InvalidLocations("logical range exceeds addressable memory".into())
-                })?)
-                .ok_or_else(|| ReadError::InvalidLocations("logical range overflows".into()))?;
-            return Ok(PartialReadResult {
-                ranges: vec![ReadRangeData {
-                    start: logical_start,
-                    end: logical_start + length,
-                    data: payload.slice(start..end),
-                }],
-                failures: Vec::new(),
-            });
+            return Ok(payload);
         }
         Err(ReadError::LayoutExpired)
     }
@@ -386,6 +407,13 @@ impl ChunkReader {
                     observations.push(StripFailureObservation {
                         strip_sequence: strip.strip_sequence,
                         failed_segments: observed.failed_segments,
+                        served_segments: observed.served_segments,
+                    });
+                } else if !observed.served_segments.is_empty() {
+                    observations.push(StripFailureObservation {
+                        strip_sequence: strip.strip_sequence,
+                        failed_segments: Vec::new(),
+                        served_segments: observed.served_segments,
                     });
                 }
                 match observed.result {
@@ -497,6 +525,21 @@ fn decode_selected_frames(bytes: &Bytes, chunk_id: ChunkId) -> ReadResult<Bytes>
 struct StripFailureObservation {
     strip_sequence: u32,
     failed_segments: Vec<Segment>,
+    served_segments: Vec<Segment>,
+}
+
+fn mark_served_segments_corrupt(
+    mut observations: Vec<StripFailureObservation>,
+) -> Vec<StripFailureObservation> {
+    for observation in &mut observations {
+        for segment in std::mem::take(&mut observation.served_segments) {
+            if !observation.failed_segments.contains(&segment) {
+                observation.failed_segments.push(segment);
+            }
+        }
+    }
+    observations.retain(|observation| !observation.failed_segments.is_empty());
+    observations
 }
 
 /// Pull-based stream whose emitted item never exceeds the configured window.
