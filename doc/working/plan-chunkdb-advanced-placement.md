@@ -60,16 +60,16 @@ of temporarily degraded EC strips.
 
 ## Phase 4 — Durable degraded-placement repair
 
-- [ ] **Placement repair task contract**: add a versioned deterministic task
+- [x] **Placement repair task contract**: add a versioned deterministic task
   identity and payload plus marker reconciliation for interrupted admission.
   Files: `lib/crowdb-protocol/src/types/chunk_task.rs`,
   `app/crowdb-chunkdb/src/placement_repair.rs`, task/store tests.
-- [ ] **Placement repair execution**: re-evaluate topology, wait without
+- [x] **Placement repair execution**: re-evaluate topology, wait without
   terminal failure when domains are unavailable, wake on topology generation,
   and move the minimum fragments one at a time through fenced replacement.
   Files: placement repair, task runtime wiring, lifecycle/storage, integration
   tests.
-- [ ] **Placement repair controls and metrics**: add bounded concurrency,
+- [~] **Placement repair controls and metrics**: add bounded concurrency,
   bandwidth, backoff, protection/degradation counters, and status reporting.
   Files: config, metrics, service wiring, tests.
 
@@ -79,7 +79,7 @@ of temporarily degraded EC strips.
   apply hysteresis, and emit bounded protection-preserving moves without
   duplicating R80's within-disk-group work. Files: new chunkdb placement
   rebalance module, task integration, tests.
-- [ ] **EC topology matrix**: cover 10+2, 20+2, and 40+4 on two racks with a
+- [~] **EC topology matrix**: cover 10+2, 20+2, and 40+4 on two racks with a
   four-node/two-node split under both policies, interrupted admission/restart,
   insufficient-topology waiting, and convergence after adding six or eleven
   racks as required. Files: `app/crowdb-chunkdb/tests/` and test helpers.

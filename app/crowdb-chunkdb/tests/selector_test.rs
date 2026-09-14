@@ -352,6 +352,32 @@ fn ec_20_2_two_racks_reports_node_and_rack_degradation() {
 }
 
 #[test]
+fn ec_40_4_two_rack_matrix_reports_exact_degraded_maxima() {
+    let cache = build_topology(&[(1, &[10, 11, 12, 13]), (2, &[20, 21])]);
+    let constraints = PlacementConstraints::new()
+        .allow_unsafe_ec()
+        .allow_degraded_failure_domains();
+
+    let rack_first = EcPlacement::select(&cache.snapshot(), 40, 4, &constraints).unwrap();
+    assert_eq!(rack_first.protection.max_fragments_per_rack, 22);
+    assert_eq!(rack_first.protection.max_fragments_per_node, 11);
+    assert!(!rack_first.protection.rack_protected);
+    assert!(!rack_first.protection.node_protected);
+
+    let node_first = EcPlacement::select(
+        &cache.snapshot(),
+        40,
+        4,
+        &constraints.with_failure_domain_priority(FailureDomainPriority::NodeFirst),
+    )
+    .unwrap();
+    assert_eq!(node_first.protection.max_fragments_per_rack, 28);
+    assert_eq!(node_first.protection.max_fragments_per_node, 8);
+    assert!(!node_first.protection.rack_protected);
+    assert!(!node_first.protection.node_protected);
+}
+
+#[test]
 fn mirror_one_rack_requires_degraded_permission() {
     let cache = build_topology(&[(1, &[10, 11, 12])]);
     let result = MirrorPlacement::select(&cache.snapshot(), 3, &PlacementConstraints::new());
