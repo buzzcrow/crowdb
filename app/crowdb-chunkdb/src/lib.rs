@@ -14,6 +14,7 @@
 pub mod allocator;
 pub mod chunkdb_config;
 pub mod conversion;
+pub mod finalize;
 pub mod lifecycle;
 pub mod metrics;
 pub mod migration;

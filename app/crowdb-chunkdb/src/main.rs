@@ -12,6 +12,7 @@ use crowdb_chunkdb::allocator::{ChunkAllocator, DiskdbClientPool};
 use crowdb_chunkdb::chunkdb_config::ChunkdbConfig;
 use crowdb_chunkdb::conversion::io::ConversionDiskIo;
 use crowdb_chunkdb::conversion::{ConversionCoordinator, MirrorToEcTaskHandler};
+use crowdb_chunkdb::finalize::FinalizeChunkTaskHandler;
 use crowdb_chunkdb::lifecycle::{ChunkLockMap, LifecycleHandler};
 use crowdb_chunkdb::metrics::ChunkdbMetrics;
 use crowdb_chunkdb::metrics::LifecycleMetrics;
@@ -604,6 +605,7 @@ async fn main() {
                 Arc::clone(&workflow_metrics.placement),
             ));
             let task_handlers: Vec<Arc<dyn TaskHandler>> = vec![
+                Arc::new(FinalizeChunkTaskHandler::new(Arc::clone(&handler))),
                 conversion_task_handler,
                 repair_task_handler,
                 placement_repair_task_handler,
