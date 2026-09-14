@@ -459,6 +459,18 @@ impl LargeAsyncObjectWriter {
                 });
             let frame = encode_frame(FrameMagic::RepoLargeV1, chunk_id, &payload, write_time_ms)
                 .map_err(|error| IoError::WriteFailed(error.to_string()))?;
+            let remaining = self
+                .chunk_writer
+                .as_ref()
+                .ok_or_else(|| IoError::Internal("large async writer has no chunk writer".into()))?
+                .remaining_capacity();
+            if frame.len() as u64 > remaining {
+                if frame.len() as u64 > self.config.max_chunk_size {
+                    return Err(IoError::WriteFailed("large frame exceeds chunk capacity".into()));
+                }
+                self.rotate_chunk().await?;
+                continue;
+            }
             let status = self
                 .chunk_writer
                 .as_mut()

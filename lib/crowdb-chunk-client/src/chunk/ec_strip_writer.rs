@@ -95,6 +95,17 @@ impl EcStripWriter {
         self.next_block >= self.ec_scheme.data_num
     }
 
+    /// Bytes this strip can still accept before it must be finalized.
+    pub fn remaining_capacity(&self) -> u64 {
+        let capacity = self.unit_bytes().saturating_mul(self.ec_scheme.data_num as u64);
+        capacity.saturating_sub(self.bytes_written)
+    }
+
+    /// Bytes accepted by this strip, including an unfinished tail.
+    pub fn accepted_bytes(&self) -> u64 {
+        self.bytes_written
+    }
+
     /// The current `ChunkStrip` protobuf (the strip being written).
     fn strip(&self) -> Result<&crowdb_protocol::chunkdb::rpc::ChunkStrip> {
         self.chunk

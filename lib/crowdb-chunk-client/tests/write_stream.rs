@@ -40,6 +40,9 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::DiskId as ProtoDiskId;
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_protocol::frame::{
+    parse_frame, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_PAYLOAD_BYTES,
+};
 
 use common::LocalFileDiskWriter;
 use tokio::io::AsyncReadExt;
@@ -48,6 +51,33 @@ const UNIT_BYTES: u64 = 4096;
 const DATA_NUM: usize = 4;
 const CODE_NUM: usize = 1;
 const TOTAL: usize = DATA_NUM + CODE_NUM;
+
+fn framed_bytes(logical_bytes: usize) -> u64 {
+    if logical_bytes == 0 {
+        return 0;
+    }
+    let frames = logical_bytes.div_ceil(MAX_FRAME_PAYLOAD_BYTES);
+    u64::try_from(logical_bytes + frames * (FRAME_HEADER_PREFIX_BYTES + FRAME_FOOTER_BYTES)).unwrap()
+}
+
+fn framed_io_bytes(logical_bytes: usize) -> u64 {
+    let data_bytes = framed_bytes(logical_bytes);
+    let strip_bytes = UNIT_BYTES * DATA_NUM as u64;
+    let parity_bytes = data_bytes.div_ceil(strip_bytes) * UNIT_BYTES * CODE_NUM as u64;
+    data_bytes + parity_bytes
+}
+
+fn decode_repo_large_frames(bytes: &[u8], chunk_id: crowdb_protocol::common::ChunkId) -> Vec<u8> {
+    let mut payload = Vec::new();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let frame = parse_frame(&bytes[offset..], chunk_id).expect("durable RepoLarge frame");
+        assert_eq!(frame.header.magic, FrameMagic::RepoLargeV1);
+        payload.extend_from_slice(frame.payload);
+        offset += frame.physical_length;
+    }
+    payload
+}
 
 struct ErrorReader {
     emitted: bool,
@@ -400,16 +430,18 @@ fn read_parity_shard(diskio: &LocalFileDiskWriter, strip: usize, parity_idx: usi
         .unwrap_or_default()
 }
 
-fn reconstruct_sealed_chunk(diskio: &LocalFileDiskWriter, state: &MockChunkState) -> Vec<u8> {
-    let (strips, sealed_length) = state
+fn reconstruct_sealed_chunk(
+    diskio: &LocalFileDiskWriter,
+    state: &MockChunkState,
+    physical_bytes: u64,
+) -> Vec<u8> {
+    let strips = state
         .chunks
         .values()
-        .find_map(|(strips, sealed_length, deleted)| {
-            (*sealed_length > 0 && !deleted).then_some((strips, *sealed_length))
-        })
+        .find_map(|(strips, sealed_length, deleted)| (*sealed_length > 0 && !deleted).then_some(strips))
         .expect("sealed chunk");
     let mut reconstructed = Vec::new();
-    let mut remaining = sealed_length as usize * 1024;
+    let mut remaining = usize::try_from(physical_bytes).expect("physical chunk length");
     for strip in strips {
         if remaining == 0 {
             break;
@@ -469,18 +501,19 @@ async fn write_stream_single_block_4mb() {
     assert_eq!(locs.len(), 1);
     let loc = &locs[0];
     assert_eq!(loc.offset, 0);
-    assert_eq!(loc.length, 4 * 4096);
+    assert_eq!(loc.length, framed_bytes(4 * 4096));
     assert_eq!(loc.logical_offset, 0);
     assert_eq!(loc.logical_length, 4 * 4096);
 
     let st = chunkdb.snapshot();
     assert!(st.allocate_calls <= 1 + test_config(1024 * 1024).chunk_preparation_depth);
-    assert_eq!(st.append_calls, 0);
+    assert_eq!(st.append_calls, 1);
     assert_eq!(st.seal_calls, 1);
     assert_eq!(st.delete_calls, 0);
 
-    // 4 data writes + 1 parity write = 5 writes.
-    assert_eq!(diskio.write_count(), 5);
+    // The frame crosses one 4+1 EC strip: four full data writes and a
+    // header/footer tail with its parity write.
+    assert_eq!(diskio.write_count(), 7);
 }
 
 #[tokio::test]
@@ -498,10 +531,10 @@ async fn write_stream_partial_strip_3_blocks() {
         .unwrap();
 
     assert_eq!(locs.len(), 1);
-    assert_eq!(locs[0].length, 3 * 4096);
+    assert_eq!(locs[0].length, framed_bytes(3 * 4096));
 
-    // 3 data writes + 1 parity write = 4 writes.
-    assert_eq!(diskio.write_count(), 4);
+    // Three data blocks plus the frame footer tail require two parity groups.
+    assert_eq!(diskio.write_count(), 5);
 }
 
 #[tokio::test]
@@ -522,7 +555,7 @@ async fn write_stream_pads_only_parity_for_unaligned_tail() {
         .await
         .unwrap();
 
-    assert_eq!(locs[0].length, data.len() as u64);
+    assert_eq!(locs[0].length, framed_bytes(data.len()));
     assert_eq!(diskio.write_count(), 3);
     let state = chunkdb.snapshot();
     assert!(state
@@ -635,13 +668,20 @@ async fn write_stream_parity_correctness() {
     let tmp = test_dirs::tempdir_in_test_data("chunk-client");
     let diskio = LocalFileDiskWriter::new(tmp.path());
     let ec = ec_4_1();
-    let mut writer = make_writer(chunkdb, diskio.clone(), ec, test_config(1024 * 1024));
+    let mut writer = make_writer(chunkdb.clone(), diskio.clone(), ec, test_config(1024 * 1024));
 
     let data = vec![0x55u8; 4 * 4096];
-    writer
+    let locations = writer
         .write_stream(data.as_slice(), Some(data.len() as u64))
         .await
         .unwrap();
+
+    let state = chunkdb.snapshot();
+    let encoded = reconstruct_sealed_chunk(&diskio, &state, locations[0].length);
+    assert_eq!(
+        decode_repo_large_frames(&encoded, locations[0].chunk_id.unwrap()),
+        data
+    );
 
     // Read back data shards + parity shard from disk.
     let data_shards: Vec<Vec<u8>> = {
@@ -658,7 +698,7 @@ async fn write_stream_parity_correctness() {
     let expected_parity = encode_parity_from_shards(ec, &shard_refs).unwrap();
     assert_eq!(parity_shard, expected_parity[0]);
 
-    // Decode round-trip: lose data shard 0, reconstruct.
+    // Decode round-trip: lose data shard 0, reconstruct the encoded frame.
     let mut blocks: Vec<Option<Vec<u8>>> = data_shards.into_iter().map(Some).collect();
     blocks.push(Some(parity_shard));
     blocks[0] = None;
@@ -667,7 +707,7 @@ async fn write_stream_parity_correctness() {
     for shard in recovered.iter().take(DATA_NUM) {
         reconstructed.extend_from_slice(shard);
     }
-    assert_eq!(reconstructed, data);
+    assert_eq!(reconstructed, encoded[..reconstructed.len()]);
 }
 
 #[tokio::test]
@@ -685,7 +725,7 @@ async fn write_stream_uses_one_write_per_data_and_parity_block() {
         .unwrap();
 
     // One EC 4+1 strip uses five writes and no separate fsync phase.
-    assert_eq!(diskio.write_count(), 5);
+    assert_eq!(diskio.write_count(), 7);
 }
 
 // ── Push mode (ChunkIoWriter) tests ──────────────────────────────
@@ -709,7 +749,7 @@ async fn push_mode_basic_one_strip() {
     }
     let locs = writer.on_finish().await.unwrap();
     assert_eq!(locs.len(), 1);
-    assert_eq!(locs[0].length, 4 * 4096);
+    assert_eq!(locs[0].length, framed_bytes(4 * 4096));
     assert!(!writer.require_data());
 
     let st = chunkdb.snapshot();
@@ -781,13 +821,13 @@ async fn push_mode_on_error_after_sealed_chunk() {
         writer.on_data(block(i, 4096)).await.unwrap();
     }
     let locs = writer.on_error().await.unwrap();
-    assert_eq!(locs.len(), 2);
-    assert_eq!(locs[0].length, 4 * 4096);
-    assert_eq!(locs[1].length, 4 * 4096);
+    // A public frame is not emitted until it is complete; the buffered
+    // sub-frame input has no sealed chunk to return on cancellation.
+    assert!(locs.is_empty());
 
     let st = chunkdb.snapshot();
-    assert_eq!(st.seal_calls, 2);
-    assert_eq!(st.delete_calls, 1);
+    assert_eq!(st.seal_calls, 0);
+    assert_eq!(st.delete_calls, 0);
 }
 
 #[tokio::test]
@@ -806,12 +846,15 @@ async fn push_mode_data_integrity() {
     }
     let locs = writer.on_finish().await.unwrap();
     assert_eq!(locs.len(), 1);
-    assert_eq!(locs[0].length, 8 * 4096);
+    assert_eq!(locs[0].length, framed_bytes(8 * 4096));
 
     // Read back data shards from 2 strips and reconstruct.
     let state = chunkdb.snapshot();
-    let reconstructed = reconstruct_sealed_chunk(&diskio, &state);
-    assert_eq!(reconstructed, data);
+    let reconstructed = reconstruct_sealed_chunk(&diskio, &state, locs[0].length);
+    assert_eq!(
+        decode_repo_large_frames(&reconstructed, locs[0].chunk_id.unwrap()),
+        data
+    );
 }
 
 #[tokio::test]
@@ -837,7 +880,7 @@ async fn push_mode_backpressure() {
     }
     let locs = writer.on_finish().await.unwrap();
     assert_eq!(locs.len(), 1);
-    assert_eq!(locs[0].length, 6 * 4096);
+    assert_eq!(locs[0].length, framed_bytes(6 * 4096));
 }
 
 // ── Size hint mismatch tests ─────────────────────────────────────
@@ -857,7 +900,7 @@ async fn write_stream_size_hint_fewer_bytes() {
         .unwrap();
 
     assert_eq!(locs.len(), 1);
-    assert_eq!(locs[0].length, 5 * 4096);
+    assert_eq!(locs[0].length, framed_bytes(5 * 4096));
 }
 
 #[tokio::test]
@@ -875,9 +918,9 @@ async fn write_stream_size_hint_more_bytes() {
         .unwrap();
 
     assert_eq!(locs.len(), 1);
-    assert_eq!(locs[0].length, 8 * 4096);
+    assert_eq!(locs[0].length, framed_bytes(8 * 4096));
     let st = chunkdb.snapshot();
-    assert_eq!(st.append_calls, 1);
+    assert_eq!(st.append_calls, 2);
 }
 
 #[tokio::test]
@@ -895,10 +938,10 @@ async fn write_stream_exact_strip_capacity() {
         .unwrap();
 
     assert_eq!(locs.len(), 1);
-    assert_eq!(locs[0].length, 4 * 4096);
+    assert_eq!(locs[0].length, framed_bytes(4 * 4096));
     let st = chunkdb.snapshot();
     assert_eq!(st.allocate_calls, 1);
-    assert_eq!(st.append_calls, 0);
+    assert_eq!(st.append_calls, 1);
     assert_eq!(st.seal_calls, 1);
 }
 
@@ -929,10 +972,10 @@ async fn write_stream_bounded_prealloc() {
         .unwrap();
 
     assert_eq!(locs.len(), 1);
-    assert_eq!(locs[0].length, 48 * 4096);
+    assert_eq!(locs[0].length, framed_bytes(48 * 4096));
     let st = chunkdb.snapshot();
     assert_eq!(st.allocate_calls, 1);
-    assert_eq!(st.append_calls, 11);
+    assert_eq!(st.append_calls, 12);
     assert_eq!(st.seal_calls, 1);
 }
 
@@ -1041,13 +1084,16 @@ async fn benchmark_runner_aggregates_concurrent_large_writes() {
     assert_eq!(result.incomplete_objects, 0);
     assert_eq!(result.stop_reason, "complete");
     assert_eq!(result.logical_bytes, 8 * UNIT_BYTES);
-    assert_eq!(result.physical_bytes, 10 * UNIT_BYTES);
+    assert_eq!(
+        result.physical_bytes,
+        2 * framed_io_bytes(usize::try_from(4 * UNIT_BYTES).unwrap())
+    );
     assert_eq!(result.source_reads, 8);
     assert_eq!(result.assembly_copies, 0);
     assert_eq!(result.assembly_copy_bytes, 0);
     assert!(result.objects_per_sec > 0.0);
     assert!(result.latency_p50_us > 0);
-    assert_eq!(result.preparation_stalls, 0);
+    assert_eq!(result.preparation_stalls, 2);
     assert!(result.error_messages.is_empty());
     let state = chunkdb.snapshot();
     assert!(state.allocate_calls >= 2);
@@ -1083,7 +1129,10 @@ async fn benchmark_direct_buffers_bypass_fetch_copy() {
     assert_eq!(result.objects, 1);
     assert_eq!(result.errors, 0);
     assert_eq!(result.logical_bytes, object_size);
-    assert_eq!(result.physical_bytes, object_size + UNIT_BYTES);
+    assert_eq!(
+        result.physical_bytes,
+        framed_io_bytes(usize::try_from(object_size).unwrap())
+    );
     assert_eq!(result.source_reads, 0);
     assert_eq!(result.assembly_copies, 0);
     assert_eq!(result.assembly_copy_bytes, 0);

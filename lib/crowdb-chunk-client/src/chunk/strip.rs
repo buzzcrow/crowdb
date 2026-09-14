@@ -79,4 +79,20 @@ impl StripWriter {
             Self::Mirror(w) => w.has_data(),
         }
     }
+
+    /// Bytes this strip can accept without crossing into the next strip.
+    pub fn remaining_capacity(&self) -> u64 {
+        match self {
+            Self::Ec(w) => w.remaining_capacity(),
+            // Mirror strips are not a large-object write target yet.
+            Self::Mirror(_) => 0,
+        }
+    }
+
+    pub fn accepted_bytes(&self) -> u64 {
+        match self {
+            Self::Ec(w) => w.accepted_bytes(),
+            Self::Mirror(_) => 0,
+        }
+    }
 }

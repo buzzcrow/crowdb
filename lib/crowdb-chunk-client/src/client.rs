@@ -689,19 +689,20 @@ fn build_large_write_result(
     locations: Vec<Location>,
     elapsed: Duration,
 ) -> LargeWriteResult {
-    let logical_bytes: u64 = locations.iter().map(|location| location.length).sum();
+    let logical_bytes: u64 = locations.iter().map(|location| location.logical_length).sum();
+    let data_bytes: u64 = locations.iter().map(|location| location.length).sum();
     let block_bytes = policy.client.read_buffer_size as u64;
     let strip_data_bytes = block_bytes * policy.ec_scheme.data_num as u64;
-    let full_strips = logical_bytes / strip_data_bytes;
-    let tail_bytes = logical_bytes % strip_data_bytes;
+    let full_strips = data_bytes / strip_data_bytes;
+    let tail_bytes = data_bytes % strip_data_bytes;
     let strips = full_strips + u64::from(tail_bytes > 0);
-    let parity_bytes =
-        (full_strips * block_bytes + tail_bytes.min(block_bytes)) * policy.ec_scheme.code_num as u64;
+    let parity_blocks = full_strips + u64::from(tail_bytes > 0);
+    let parity_bytes = parity_blocks * block_bytes * policy.ec_scheme.code_num as u64;
     LargeWriteResult {
         chunks: locations.len(),
         locations,
         logical_bytes,
-        physical_bytes: logical_bytes + parity_bytes,
+        physical_bytes: data_bytes + parity_bytes,
         strips,
         elapsed,
         preparation_stalls: writer.preparation_stalls(),
