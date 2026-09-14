@@ -10,6 +10,7 @@ use thiserror::Error;
 use crate::common::ChunkId;
 
 pub const FRAME_HEADER_PREFIX_BYTES: usize = 14;
+const FRAME_HEADER_PREFIX_BYTES_U16: u16 = 14;
 pub const FRAME_FOOTER_BYTES: usize = 20;
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
 pub const MAX_FRAME_PAYLOAD_BYTES: usize = MAX_FRAME_BYTES - FRAME_HEADER_PREFIX_BYTES - FRAME_FOOTER_BYTES;
@@ -79,6 +80,10 @@ pub struct ParsedFrame<'a> {
 }
 
 /// Encode a canonical v1 frame without header extensions.
+///
+/// # Errors
+///
+/// Returns [`FrameError::PayloadTooLarge`] when `payload` cannot fit one frame.
 pub fn encode_frame(
     magic: FrameMagic,
     chunk_id: ChunkId,
@@ -88,7 +93,7 @@ pub fn encode_frame(
     let payload_size = u16::try_from(payload.len()).map_err(|_| FrameError::PayloadTooLarge)?;
     let header = FrameHeaderPrefix {
         magic,
-        payload_offset: u16::try_from(FRAME_HEADER_PREFIX_BYTES).expect("header prefix fits u16"),
+        payload_offset: FRAME_HEADER_PREFIX_BYTES_U16,
         payload_size,
         write_time_ms,
     };
@@ -108,7 +113,12 @@ pub fn encode_frame(
 
 /// Parse and verify one complete frame. The expected chunk ID is mandatory so
 /// a valid frame copied from a different chunk is rejected.
-pub fn parse_frame<'a>(bytes: &'a [u8], expected_chunk_id: ChunkId) -> Result<ParsedFrame<'a>, FrameError> {
+///
+/// # Errors
+///
+/// Returns an error when the frame is incomplete, malformed, belongs to a
+/// different chunk, or fails its CRC32C verification.
+pub fn parse_frame(bytes: &[u8], expected_chunk_id: ChunkId) -> Result<ParsedFrame<'_>, FrameError> {
     let header = parse_header(bytes)?;
     let length = frame_length(header)?;
     if bytes.len() < length {
@@ -151,16 +161,25 @@ pub fn parse_frame<'a>(bytes: &'a [u8], expected_chunk_id: ChunkId) -> Result<Pa
     })
 }
 
+///
+/// # Errors
+///
+/// Returns an error when the prefix is incomplete, has an unknown magic, or
+/// declares a payload before the fixed prefix.
 pub fn parse_header(bytes: &[u8]) -> Result<FrameHeaderPrefix, FrameError> {
     if bytes.len() < FRAME_HEADER_PREFIX_BYTES {
         return Err(FrameError::Incomplete {
             required_bytes: FRAME_HEADER_PREFIX_BYTES,
         });
     }
-    let magic = FrameMagic::try_from(u16::from_le_bytes(
-        bytes[0..2].try_into().expect("fixed header slice"),
-    ))?;
-    let payload_offset = u16::from_le_bytes(bytes[2..4].try_into().expect("fixed header slice"));
+    let magic = FrameMagic::try_from(u16::from_le_bytes(bytes[0..2].try_into().map_err(|_| {
+        FrameError::Incomplete {
+            required_bytes: FRAME_HEADER_PREFIX_BYTES,
+        }
+    })?))?;
+    let payload_offset = u16::from_le_bytes(bytes[2..4].try_into().map_err(|_| FrameError::Incomplete {
+        required_bytes: FRAME_HEADER_PREFIX_BYTES,
+    })?);
     if usize::from(payload_offset) < FRAME_HEADER_PREFIX_BYTES {
         return Err(FrameError::InvalidPayloadOffset {
             offset: payload_offset,
@@ -169,11 +188,19 @@ pub fn parse_header(bytes: &[u8]) -> Result<FrameHeaderPrefix, FrameError> {
     Ok(FrameHeaderPrefix {
         magic,
         payload_offset,
-        payload_size: u16::from_le_bytes(bytes[4..6].try_into().expect("fixed header slice")),
-        write_time_ms: u64::from_le_bytes(bytes[6..14].try_into().expect("fixed header slice")),
+        payload_size: u16::from_le_bytes(bytes[4..6].try_into().map_err(|_| FrameError::Incomplete {
+            required_bytes: FRAME_HEADER_PREFIX_BYTES,
+        })?),
+        write_time_ms: u64::from_le_bytes(bytes[6..14].try_into().map_err(|_| FrameError::Incomplete {
+            required_bytes: FRAME_HEADER_PREFIX_BYTES,
+        })?),
     })
 }
 
+///
+/// # Errors
+///
+/// Returns an error when the encoded length overflows or exceeds 64 KiB.
 pub fn frame_length(header: FrameHeaderPrefix) -> Result<usize, FrameError> {
     let length = usize::from(header.payload_offset)
         .checked_add(usize::from(header.payload_size))
@@ -193,16 +220,31 @@ pub struct ChunkLocation {
 }
 
 impl ChunkLocation {
+    /// Return the total bytes occupied by this location's frames.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the calculated byte count overflows.
     pub fn physical_length(self) -> Result<u64, FrameError> {
         framed_physical_length(self.logical_length)
     }
 
+    /// Return the exclusive physical end offset.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the frame length or end offset overflows.
     pub fn end_offset(self) -> Result<u64, FrameError> {
         self.frame_offset
             .checked_add(self.physical_length()?)
             .ok_or(FrameError::LengthOverflow)
     }
 
+    /// Map a logical subrange to the minimal complete-frame physical range.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid subrange or an arithmetic overflow.
     pub fn physical_range_for_subrange(self, range: Range<u64>) -> Result<Range<u64>, FrameError> {
         if range.start > range.end || range.end > self.logical_length {
             return Err(FrameError::InvalidLocationRange);
@@ -235,6 +277,11 @@ impl ChunkLocation {
     }
 }
 
+/// Merge physically adjacent, frame-aligned locations.
+///
+/// # Errors
+///
+/// Returns an error when a location length or end offset overflows.
 pub fn merge_adjacent_locations(locations: &[ChunkLocation]) -> Result<Vec<ChunkLocation>, FrameError> {
     let mut merged: Vec<ChunkLocation> = Vec::with_capacity(locations.len());
     for location in locations {
@@ -255,6 +302,11 @@ pub fn merge_adjacent_locations(locations: &[ChunkLocation]) -> Result<Vec<Chunk
     Ok(merged)
 }
 
+/// Validate that every location has a nonempty logical payload.
+///
+/// # Errors
+///
+/// Returns [`FrameError::NonContiguousLocation`] for an empty location.
 pub fn validate_contiguous_locations(locations: &[ChunkLocation]) -> Result<(), FrameError> {
     for pair in locations.windows(2) {
         if pair[0].logical_length == 0 || pair[1].logical_length == 0 {
