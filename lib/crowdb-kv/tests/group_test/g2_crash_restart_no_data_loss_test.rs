@@ -394,7 +394,16 @@ async fn assert_offline_replay_has_values(node_id: u64, wal_dir: PathBuf, kvs: &
 #[tokio::test]
 async fn cluster_survives_leader_kill_and_restart_with_no_data_loss() {
     let mut cluster = start_wal_cluster(&[1, 2, 3]).await;
-    let leader_id = cluster
+    // Wait for an initial leader so commit_writes has a target, but capture
+    // the *current* leader only after all writes have committed. With the
+    // aggressive for_tests election timings (30–60 ms), a spurious leader
+    // change can occur during the write phase on a slow CI runner. Killing
+    // the original (now stepped-down) node would test a follower restart,
+    // not the intended leader-kill scenario, and that follower's WAL may
+    // not yet carry every accepted slot if it was briefly in a higher term
+    // than the new leader. Capturing the leader post-commit guarantees the
+    // killed node was the proposer that durably logged every chosen slot.
+    cluster
         .wait_for_leader(Duration::from_secs(3))
         .await
         .expect("initial leader elected");
@@ -403,6 +412,7 @@ async fn cluster_survives_leader_kill_and_restart_with_no_data_loss() {
     commit_writes(&cluster, &kvs).await;
     assert_cluster_reads(&cluster, &kvs, "key should be readable before the crash").await;
 
+    let leader_id = cluster.elected_leader().expect("leader present after writes").id;
     let dead_wal_dir = cluster.kill(leader_id).await;
     assert_eq!(cluster.nodes.len(), 2, "two replicas survive the crash");
 
