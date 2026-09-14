@@ -12,12 +12,14 @@
 
 use std::collections::{HashMap, HashSet};
 
-use rand::seq::SliceRandom;
 use tracing::warn;
 
 use crowdb_protocol::{NodeId, RackId};
 
-use super::{healthy_dgs, PlacementConstraints, PlacementEntry, PlacementError, PlacementPlan};
+use super::{
+    finish_plan, healthy_dgs, FailureDomainPriority, PlacementConstraints, PlacementEntry, PlacementError,
+    PlacementPlan,
+};
 use crate::topology::TopologySnapshot;
 
 /// EC placement selector.
@@ -57,12 +59,19 @@ impl EcPlacement {
         let node_count = dgs.iter().map(|dg| dg.node_id).collect::<HashSet<_>>().len();
 
         // Try safe mode first: max `code_num` blocks per node.
-        let safe_plan = try_distribute(&by_rack, total_blocks, code_num);
+        let safe_plan = try_distribute(
+            &by_rack,
+            total_blocks,
+            code_num,
+            constraints.failure_domain_priority,
+        );
         if let Some(entries) = safe_plan {
-            return Ok(PlacementPlan {
+            return finish_plan(
                 entries,
-                safe_mode: true,
-            });
+                u32::try_from(code_num).unwrap_or(u32::MAX),
+                constraints,
+                true,
+            );
         }
 
         if !constraints.allow_unsafe_ec {
@@ -78,11 +87,18 @@ impl EcPlacement {
             "EC placement: safe mode failed, falling back to unsafe mode"
         );
         let unsafe_limit = total_blocks;
-        if let Some(entries) = try_distribute(&by_rack, total_blocks, unsafe_limit) {
-            return Ok(PlacementPlan {
+        if let Some(entries) = try_distribute(
+            &by_rack,
+            total_blocks,
+            unsafe_limit,
+            constraints.failure_domain_priority,
+        ) {
+            return finish_plan(
                 entries,
-                safe_mode: false,
-            });
+                u32::try_from(code_num).unwrap_or(u32::MAX),
+                constraints,
+                true,
+            );
         }
 
         // Not enough nodes even for unsafe mode.
@@ -100,33 +116,59 @@ fn try_distribute(
     by_rack: &HashMap<RackId, Vec<&crowdb_protocol::sysdata::DiskGroupEntry>>,
     total_blocks: usize,
     max_per_node: usize,
+    priority: FailureDomainPriority,
 ) -> Option<Vec<PlacementEntry>> {
     let mut rack_ids: Vec<RackId> = by_rack.keys().copied().collect();
-    rack_ids.shuffle(&mut rand::thread_rng());
+    rack_ids.sort_unstable();
 
     let mut node_load: HashMap<NodeId, u32> = HashMap::new();
+    let mut rack_load: HashMap<RackId, u32> = HashMap::new();
     let mut entries: Vec<PlacementEntry> = Vec::new();
     let mut placed = 0;
     let mut rack_index = 0;
 
     while placed < total_blocks {
-        let rack = rack_ids[rack_index];
-        rack_index = (rack_index + 1) % rack_ids.len();
-
-        let dgs_in_rack = by_rack.get(&rack)?;
-        // Pick the least-loaded node in this rack. Selecting the first node
-        // repeatedly would concentrate an unsafe one-rack plan on one
-        // DiskDB group even when the remaining nodes have capacity.
-        let candidate = dgs_in_rack
-            .iter()
-            .filter(|dg| {
-                let load = node_load.get(&dg.node_id).copied().unwrap_or(0);
-                (load as usize) < max_per_node
-            })
-            .min_by_key(|dg| (node_load.get(&dg.node_id).copied().unwrap_or(0), dg.node_id));
+        let candidate = match priority {
+            FailureDomainPriority::RackFirst => {
+                let rack = rack_ids[rack_index];
+                rack_index = (rack_index + 1) % rack_ids.len();
+                by_rack
+                    .get(&rack)?
+                    .iter()
+                    .copied()
+                    .filter(|dg| {
+                        let load = node_load.get(&dg.node_id).copied().unwrap_or(0);
+                        (load as usize) < max_per_node
+                    })
+                    .min_by_key(|dg| {
+                        (
+                            node_load.get(&dg.node_id).copied().unwrap_or(0),
+                            dg.node_id,
+                            dg.dg_id,
+                        )
+                    })
+            }
+            FailureDomainPriority::NodeFirst => by_rack
+                .values()
+                .flatten()
+                .copied()
+                .filter(|dg| {
+                    let load = node_load.get(&dg.node_id).copied().unwrap_or(0);
+                    (load as usize) < max_per_node
+                })
+                .min_by_key(|dg| {
+                    (
+                        node_load.get(&dg.node_id).copied().unwrap_or(0),
+                        rack_load.get(&dg.rack_id).copied().unwrap_or(0),
+                        dg.node_id,
+                        dg.dg_id,
+                    )
+                }),
+        };
 
         if let Some(dg) = candidate {
             *node_load.entry(dg.node_id).or_insert(0) += 1;
+            *rack_load.entry(dg.rack_id).or_insert(0) += 1;
             entries.push(PlacementEntry {
                 rack_id: dg.rack_id,
                 node_id: dg.node_id,

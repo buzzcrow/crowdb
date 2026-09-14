@@ -9,12 +9,13 @@
 
 use std::collections::HashSet;
 
-use rand::seq::SliceRandom;
 use tracing::warn;
 
 use crowdb_protocol::{DiskGroupId, NodeId, RackId};
 
-use super::{healthy_dgs, PlacementConstraints, PlacementError, PlacementPlan};
+use super::{
+    finish_plan, healthy_dgs, FailureDomainPriority, PlacementConstraints, PlacementError, PlacementPlan,
+};
 use crate::topology::TopologySnapshot;
 
 /// Mirror placement selector.
@@ -51,7 +52,10 @@ impl MirrorPlacement {
         }
 
         let mut rack_ids: Vec<RackId> = by_rack.keys().copied().collect();
-        rack_ids.shuffle(&mut rand::thread_rng());
+        rack_ids.sort_unstable();
+        for dgs in by_rack.values_mut() {
+            dgs.sort_unstable_by_key(|dg| (dg.node_id, dg.dg_id));
+        }
 
         // Phase 1: pick one node per rack (round-robin through racks).
         let mut selected: Vec<(RackId, NodeId, DiskGroupId)> = Vec::new();
@@ -61,15 +65,41 @@ impl MirrorPlacement {
         for _ in 0..copy_count {
             // Try to find a rack with an unused node.
             let mut found = false;
-            for _ in 0..rack_ids.len() {
-                let rack = rack_ids[rack_index];
-                rack_index = (rack_index + 1) % rack_ids.len();
-                if let Some(dgs_in_rack) = by_rack.get(&rack) {
-                    if let Some(dg) = dgs_in_rack.iter().find(|dg| !used_nodes.contains(&dg.node_id)) {
+            match constraints.failure_domain_priority {
+                FailureDomainPriority::RackFirst => {
+                    for _ in 0..rack_ids.len() {
+                        let rack = rack_ids[rack_index];
+                        rack_index = (rack_index + 1) % rack_ids.len();
+                        if let Some(dgs_in_rack) = by_rack.get(&rack) {
+                            if let Some(dg) = dgs_in_rack.iter().find(|dg| !used_nodes.contains(&dg.node_id))
+                            {
+                                used_nodes.insert(dg.node_id);
+                                selected.push((rack, dg.node_id, dg.dg_id));
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                FailureDomainPriority::NodeFirst => {
+                    let mut rack_load = std::collections::HashMap::<RackId, usize>::new();
+                    for (rack, _, _) in &selected {
+                        *rack_load.entry(*rack).or_default() += 1;
+                    }
+                    if let Some(dg) = dgs
+                        .iter()
+                        .filter(|dg| !used_nodes.contains(&dg.node_id))
+                        .min_by_key(|dg| {
+                            (
+                                rack_load.get(&dg.rack_id).copied().unwrap_or(0),
+                                dg.node_id,
+                                dg.dg_id,
+                            )
+                        })
+                    {
                         used_nodes.insert(dg.node_id);
-                        selected.push((rack, dg.node_id, dg.dg_id));
+                        selected.push((dg.rack_id, dg.node_id, dg.dg_id));
                         found = true;
-                        break;
                     }
                 }
             }
@@ -117,9 +147,11 @@ impl MirrorPlacement {
             })
             .collect();
 
-        Ok(PlacementPlan {
+        finish_plan(
             entries,
-            safe_mode: true,
-        })
+            u32::try_from(copy_count.saturating_sub(1)).unwrap_or(u32::MAX),
+            constraints,
+            false,
+        )
     }
 }

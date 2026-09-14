@@ -35,10 +35,10 @@ of temporarily degraded EC strips.
 
 ## Phase 2 — Placement selectors
 
-- [ ] **Failure-domain evaluator**: calculate mirror/EC loss budgets and
+- [x] **Failure-domain evaluator**: calculate mirror/EC loss budgets and
   planned/actual rack, node, and disk protection without relying on capacity
   metrics. Files: `app/crowdb-chunkdb/src/selector.rs`, selector tests.
-- [ ] **Capacity-aware rack-first selector**: replace random rack rotation with
+- [~] **Capacity-aware rack-first selector**: replace random rack rotation with
   deterministic safe-set selection and projected-utilization ranking. Files:
   `app/crowdb-chunkdb/src/selector/mirror.rs`,
   `app/crowdb-chunkdb/src/selector/ec.rs`, selector tests.

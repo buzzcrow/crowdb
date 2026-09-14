@@ -5,7 +5,9 @@
 
 #![allow(clippy::cast_possible_truncation)]
 
-use crowdb_chunkdb::selector::{EcPlacement, MirrorPlacement, PlacementConstraints};
+use crowdb_chunkdb::selector::{
+    EcPlacement, FailureDomainPriority, MirrorPlacement, PlacementConstraints, PlacementError,
+};
 use crowdb_chunkdb::topology::TopologyCache;
 use crowdb_protocol::common::HwStatus;
 use crowdb_protocol::diskdb::rpc::DiskGroupValue;
@@ -130,7 +132,15 @@ fn ec_select_8_4_unsafe_fallback_3_nodes() {
 
     // 8+4 = 12 blocks, 2 nodes, safe mode max 4 per node = 8 capacity
     // → unsafe mode needed (max 12 per node).
-    let plan = EcPlacement::select(&snap, 8, 4, &PlacementConstraints::new().allow_unsafe_ec()).unwrap();
+    let plan = EcPlacement::select(
+        &snap,
+        8,
+        4,
+        &PlacementConstraints::new()
+            .allow_unsafe_ec()
+            .allow_degraded_failure_domains(),
+    )
+    .unwrap();
     assert_eq!(plan.entries.len(), 12);
     assert!(!plan.safe_mode);
 }
@@ -142,7 +152,9 @@ fn ec_select_4_1_unsafe_one_rack_balances_nodes() {
         &cache.snapshot(),
         4,
         1,
-        &PlacementConstraints::new().allow_unsafe_ec(),
+        &PlacementConstraints::new()
+            .allow_unsafe_ec()
+            .allow_degraded_failure_domains(),
     )
     .unwrap();
     let mut node_load = std::collections::HashMap::new();
@@ -161,7 +173,15 @@ fn ec_select_unsafe_mode_succeeds_with_single_node() {
     // 8+4 = 12 blocks, 1 node. Safe mode fails (max 4 per node = 4
     // capacity < 12), but unsafe mode sets max_per_node = 12, so 1
     // node can hold all 12 blocks.
-    let plan = EcPlacement::select(&snap, 8, 4, &PlacementConstraints::new().allow_unsafe_ec()).unwrap();
+    let plan = EcPlacement::select(
+        &snap,
+        8,
+        4,
+        &PlacementConstraints::new()
+            .allow_unsafe_ec()
+            .allow_degraded_failure_domains(),
+    )
+    .unwrap();
     assert_eq!(plan.entries.len(), 12);
     assert!(!plan.safe_mode);
 }
@@ -197,6 +217,16 @@ fn selectors_reject_zero_width_shapes() {
 }
 
 #[test]
+fn single_copy_mirror_is_allocatable_but_reports_no_domain_protection() {
+    let cache = build_topology(&[(1, &[10])]);
+    let plan = MirrorPlacement::select(&cache.snapshot(), 1, &PlacementConstraints::new()).unwrap();
+
+    assert!(!plan.safe_mode);
+    assert!(!plan.protection.rack_protected);
+    assert!(!plan.protection.node_protected);
+}
+
+#[test]
 fn mirror_select_no_healthy_dgs() {
     let cache = TopologyCache::new();
     let snap = cache.snapshot();
@@ -220,4 +250,61 @@ fn ec_select_with_excluded_node() {
 
     // No entry should be on node 10.
     assert!(plan.entries.iter().all(|e| e.node_id != 10));
+}
+
+#[test]
+fn ec_10_2_two_racks_requires_explicit_degraded_placement() {
+    let cache = build_topology(&[(1, &[10, 11, 12, 13]), (2, &[20, 21])]);
+    let result = EcPlacement::select(&cache.snapshot(), 10, 2, &PlacementConstraints::new());
+    assert!(matches!(
+        result,
+        Err(PlacementError::RackProtectionUnavailable { .. })
+    ));
+
+    let plan = EcPlacement::select(
+        &cache.snapshot(),
+        10,
+        2,
+        &PlacementConstraints::new().allow_degraded_failure_domains(),
+    )
+    .unwrap();
+    assert!(!plan.safe_mode);
+    assert!(!plan.protection.rack_protected);
+    assert!(plan.protection.node_protected);
+    assert_eq!(plan.protection.loss_budget, 2);
+    assert_eq!(plan.protection.max_fragments_per_rack, 8);
+    assert_eq!(plan.protection.max_fragments_per_node, 2);
+}
+
+#[test]
+fn ec_20_2_two_racks_reports_node_and_rack_degradation() {
+    let cache = build_topology(&[(1, &[10, 11, 12, 13]), (2, &[20, 21])]);
+    let constraints = PlacementConstraints::new()
+        .allow_unsafe_ec()
+        .allow_degraded_failure_domains()
+        .with_failure_domain_priority(FailureDomainPriority::NodeFirst);
+    let plan = EcPlacement::select(&cache.snapshot(), 20, 2, &constraints).unwrap();
+    assert_eq!(plan.priority, FailureDomainPriority::NodeFirst);
+    assert!(!plan.protection.rack_protected);
+    assert!(!plan.protection.node_protected);
+    assert_eq!(plan.protection.max_fragments_per_node, 4);
+}
+
+#[test]
+fn mirror_one_rack_requires_degraded_permission() {
+    let cache = build_topology(&[(1, &[10, 11, 12])]);
+    let result = MirrorPlacement::select(&cache.snapshot(), 3, &PlacementConstraints::new());
+    assert!(matches!(
+        result,
+        Err(PlacementError::RackProtectionUnavailable { .. })
+    ));
+
+    let plan = MirrorPlacement::select(
+        &cache.snapshot(),
+        3,
+        &PlacementConstraints::new().allow_degraded_failure_domains(),
+    )
+    .unwrap();
+    assert!(!plan.protection.rack_protected);
+    assert!(plan.protection.node_protected);
 }

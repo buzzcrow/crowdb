@@ -9,6 +9,8 @@
 pub mod ec;
 pub mod mirror;
 
+use std::collections::HashMap;
+
 use crowdb_protocol::{DiskGroupId, NodeId, RackId};
 use serde::{Deserialize, Serialize};
 
@@ -117,13 +119,32 @@ pub struct PlacementEntry {
 #[derive(Debug, Clone)]
 pub struct PlacementPlan {
     pub entries: Vec<PlacementEntry>,
-    /// Whether safe mode was used (EC only; mirror always "safe").
+    /// Whether every failure domain assessable before disk allocation is protected.
     pub safe_mode: bool,
+    pub priority: FailureDomainPriority,
+    pub protection: PlacementProtection,
 }
 
 impl PlacementPlan {
     pub fn total_blocks(&self) -> u32 {
         self.entries.iter().map(|e| e.block_count).sum()
+    }
+}
+
+/// Rack and node protection assessed before DiskDB chooses physical disks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PlacementProtection {
+    pub loss_budget: u32,
+    pub max_fragments_per_rack: u32,
+    pub max_fragments_per_node: u32,
+    pub rack_protected: bool,
+    pub node_protected: bool,
+}
+
+impl PlacementProtection {
+    #[must_use]
+    pub fn degraded(self) -> bool {
+        !self.rack_protected || !self.node_protected
     }
 }
 
@@ -138,8 +159,65 @@ pub enum PlacementError {
     NoHealthyDiskGroups,
     #[error("safe EC placement is unavailable and unsafe placement was not enabled")]
     UnsafePlacementRequired,
+    #[error("rack protection is unavailable: loss budget {loss_budget}, maximum fragments {actual}")]
+    RackProtectionUnavailable { loss_budget: u32, actual: u32 },
+    #[error("node protection is unavailable: loss budget {loss_budget}, maximum fragments {actual}")]
+    NodeProtectionUnavailable { loss_budget: u32, actual: u32 },
+    #[error("disk protection is unavailable: loss budget {loss_budget}, maximum fragments {actual}")]
+    DiskProtectionUnavailable { loss_budget: u32, actual: u32 },
     #[error("invalid placement shape: {0}")]
     InvalidShape(String),
+}
+
+pub(super) fn assess_entries(entries: &[PlacementEntry], loss_budget: u32) -> PlacementProtection {
+    let mut rack_counts = HashMap::<RackId, u32>::new();
+    let mut node_counts = HashMap::<NodeId, u32>::new();
+    for entry in entries {
+        *rack_counts.entry(entry.rack_id).or_default() += entry.block_count;
+        *node_counts.entry(entry.node_id).or_default() += entry.block_count;
+    }
+    let max_fragments_per_rack = rack_counts.values().copied().max().unwrap_or(0);
+    let max_fragments_per_node = node_counts.values().copied().max().unwrap_or(0);
+    PlacementProtection {
+        loss_budget,
+        max_fragments_per_rack,
+        max_fragments_per_node,
+        rack_protected: max_fragments_per_rack <= loss_budget,
+        node_protected: max_fragments_per_node <= loss_budget,
+    }
+}
+
+pub(super) fn finish_plan(
+    entries: Vec<PlacementEntry>,
+    loss_budget: u32,
+    constraints: &PlacementConstraints,
+    ec_shape: bool,
+) -> Result<PlacementPlan, PlacementError> {
+    let protection = assess_entries(&entries, loss_budget);
+    if ec_shape && protection.max_fragments_per_node > loss_budget && !constraints.allow_unsafe_ec {
+        return Err(PlacementError::UnsafePlacementRequired);
+    }
+    // A single-copy mirror has no recoverable domain-loss budget. It still
+    // reports unprotected domains, but must remain allocatable as an explicit
+    // non-redundant shape.
+    if loss_budget > 0 && protection.degraded() && !constraints.allow_degraded_failure_domains {
+        if !protection.rack_protected {
+            return Err(PlacementError::RackProtectionUnavailable {
+                loss_budget,
+                actual: protection.max_fragments_per_rack,
+            });
+        }
+        return Err(PlacementError::NodeProtectionUnavailable {
+            loss_budget,
+            actual: protection.max_fragments_per_node,
+        });
+    }
+    Ok(PlacementPlan {
+        entries,
+        safe_mode: !protection.degraded(),
+        priority: constraints.failure_domain_priority,
+        protection,
+    })
 }
 
 /// Filter healthy disk-groups from the snapshot, applying exclusion hints.

@@ -114,6 +114,8 @@ impl ChunkAllocator {
         let plan = PlacementPlan {
             entries,
             safe_mode: ec_plan.safe_mode,
+            priority: ec_plan.priority,
+            protection: ec_plan.protection,
         };
         let mut blocks_by_group = HashMap::<u64, usize>::new();
         for entry in &plan.entries {
