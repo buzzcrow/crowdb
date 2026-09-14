@@ -26,7 +26,7 @@ use crate::disk_io::DiskWriter;
 use crate::io::FeedStatus;
 use crate::worker::EcWorker;
 use crate::{IoError, Result};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use crowdb_common::ec::EcScheme;
 use crowdb_diskio_client::DiskId;
 use crowdb_protocol::chunkdb::rpc::Strip as StripOneof;
@@ -46,6 +46,7 @@ pub struct EcStripWriter {
     pub(crate) partial: bool,
     pub(crate) finished: bool,
     pub(crate) data_handles: Vec<SegmentWriteHandle>,
+    pub(crate) pending: BytesMut,
 }
 
 impl EcStripWriter {
@@ -69,6 +70,7 @@ impl EcStripWriter {
             partial: false,
             finished: false,
             data_handles: Vec::with_capacity(ec_scheme.data_num),
+            pending: BytesMut::new(),
         }
     }
 
@@ -142,6 +144,7 @@ impl EcStripWriter {
     ///
     /// Returns `Continue` if the strip has room for more blocks,
     /// `Pause` if the strip is now full.
+    #[allow(clippy::needless_pass_by_value)] // matches the `StripWriter` owned-buffer interface
     pub fn push(&mut self, buffer: Bytes) -> Result<FeedStatus> {
         if self.finished {
             return Err(IoError::Finished);
@@ -152,30 +155,12 @@ impl EcStripWriter {
             ));
         }
 
-        let unit_bytes = self.unit_bytes();
-        let block_len = u64::try_from(buffer.len()).unwrap_or(0);
-        let is_partial = block_len < unit_bytes;
-
-        // Feed to EcWorker for streaming compute.
-        self.ec_worker.push(&buffer)?;
-
-        // Submit the independent durable write without serializing the next
-        // shard on its completion. A strip owns at most data_num handles.
-        let strip_sequence = self.strip()?.strip_sequence;
-        let seg = *self.segment(self.next_block)?;
-        self.data_handles.push(spawn_segment_write(
-            self.disk_writer.clone(),
-            strip_sequence,
-            seg,
-            unit_bytes,
-            buffer,
-        ));
-
-        self.next_block += 1;
-        self.data_blocks_written += 1;
-        self.bytes_written += block_len;
-        if is_partial {
-            self.partial = true;
+        self.bytes_written = self.bytes_written.saturating_add(buffer.len() as u64);
+        self.pending.extend_from_slice(&buffer);
+        let unit_bytes = usize::try_from(self.unit_bytes()).unwrap_or(usize::MAX);
+        while self.pending.len() >= unit_bytes && !self.is_full() {
+            let block = self.pending.split_to(unit_bytes).freeze();
+            self.flush_block(block)?;
         }
 
         let status = if self.is_full() {
@@ -184,6 +169,22 @@ impl EcStripWriter {
             FeedStatus::Continue
         };
         Ok(status)
+    }
+
+    fn flush_block(&mut self, block: Bytes) -> Result<()> {
+        self.ec_worker.push(&block)?;
+        let strip_sequence = self.strip()?.strip_sequence;
+        let seg = *self.segment(self.next_block)?;
+        self.data_handles.push(spawn_segment_write(
+            self.disk_writer.clone(),
+            strip_sequence,
+            seg,
+            self.unit_bytes(),
+            block,
+        ));
+        self.next_block += 1;
+        self.data_blocks_written += 1;
+        Ok(())
     }
 
     /// End of strip: spawn parity writes in parallel (no
@@ -197,6 +198,11 @@ impl EcStripWriter {
             return Err(IoError::Finished);
         }
         self.finished = true;
+        if !self.pending.is_empty() {
+            self.partial = true;
+            let block = self.pending.split().freeze();
+            self.flush_block(block)?;
+        }
 
         // Finalize EC compute — get parity shards.
         let encode_started = Instant::now();
