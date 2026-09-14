@@ -3,8 +3,8 @@
 
 // CT14: concurrent readers while a single writer applies/flushes/splits/merges.
 // Run under TSan/ASan to catch races and use-after-free in epoch reclamation.
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
 
 #include <gtest/gtest.h>
 
@@ -37,7 +37,7 @@ std::string make_key(int i)
 TEST(Stress, ConcurrentDemandLoadAfterRecovery)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.max_delta_len    = 1;
     opt.leaf_split_bytes = 160;
@@ -86,7 +86,7 @@ TEST(Stress, ConcurrentDemandLoadAfterRecovery)
 
 TEST(Stress, ConcurrentReadersSingleWriter)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len    = 2;
     opt.leaf_split_bytes = 160;
     opt.leaf_merge_bytes = 50;
@@ -184,7 +184,7 @@ TEST(Stress, ConcurrentReadersSingleWriter)
 // (run under TSan/ASan).
 TEST(Stress, ConcurrentScanDuringChurnNoCorruption)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len    = 2;
     opt.leaf_split_bytes = 160;
     opt.leaf_merge_bytes = 50;
@@ -270,7 +270,7 @@ TEST(Stress, ConcurrentScanDuringChurnNoCorruption)
 // that couldn't have existed at any real point in time).
 TEST(Stress, ConcurrentSnapshotViewDuringChurnNoCorruption)
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len    = 2;
     opt.leaf_split_bytes = 160;
     opt.leaf_merge_bytes = 50;

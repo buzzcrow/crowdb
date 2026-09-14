@@ -15,7 +15,7 @@ use std::sync::Arc;
 use crowdb_kv_client::RangeBindingClient;
 use crowdb_protocol::common::{HwStatus, NodeValue, RackValue, ReplicaValue};
 use crowdb_protocol::mgmt::{RemoteReplicaInfo, SystemInitRequest};
-use crowdb_protocol::port_alloc::{self, PortAllocConfig};
+use crowdb_protocol::port::alloc::{self as port_alloc, PortAllocConfig};
 use crowdb_protocol::ServicePort;
 
 use crate::clients::http::ServerClient;
@@ -389,14 +389,8 @@ pub async fn topology(ctx: &OpContext, node_id: u64) -> Result<Vec<crate::snapsh
 pub async fn destroy(ctx: &OpContext) -> Result<()> {
     let cfg = ctx.config().clone();
 
-    // Phase 1: stop all running servers (Kv, Diskdb, Rpc).
-    for server in &cfg.servers {
-        if let Some(pid) = server.pid {
-            let _ = crate::lifecycle::stop_pid(pid);
-        }
-    }
-
-    // Phase 2: remove all non-system groups from each KV node.
+    // Phase 1: remove all non-system groups while the KV management APIs are
+    // still reachable.
     for server in &cfg.servers {
         if server.service_type != crate::config::ServiceType::Kv {
             continue;
@@ -411,17 +405,39 @@ pub async fn destroy(ctx: &OpContext) -> Result<()> {
                         let _ = client.remove_store(s.store_id).await;
                     }
                 }
-                // Remove group 0 last.
+            }
+        }
+    }
+
+    // Phase 2: clear sysdata, then remove group 0 last (best-effort).
+    let sysmd = ctx.sysmd();
+    let stores = sysmd.list_stores().await.unwrap_or_default();
+    for s in &stores {
+        let _ = sysmd.remove_store(s.store_id).await;
+    }
+    for server in &cfg.servers {
+        if server.service_type != crate::config::ServiceType::Kv {
+            continue;
+        }
+        if let Some(node_id) = server.node_id {
+            if let Ok(client) = server_client(ctx, node_id) {
                 let _ = client.remove_group(0, 0).await;
             }
         }
     }
 
-    // Phase 3: clear sysdata (best-effort).
-    let sysmd = ctx.sysmd();
-    let stores = sysmd.list_stores().await.unwrap_or_default();
-    for s in &stores {
-        let _ = sysmd.remove_store(s.store_id).await;
+    // Phase 3: stop all running services concurrently. A graceful stop may
+    // consume the full per-process timeout, so serial waits can exceed the
+    // CLI lifecycle bound and leave the persisted config pointing at dead
+    // processes.
+    let mut stop_handles = Vec::with_capacity(cfg.servers.len());
+    for pid in cfg.servers.iter().filter_map(|server| server.pid) {
+        stop_handles.push(tokio::task::spawn_blocking(move || {
+            let _ = crate::lifecycle::stop_pid(pid);
+        }));
+    }
+    for handle in stop_handles {
+        let _ = handle.await;
     }
 
     // Phase 4: clear local config.
@@ -741,6 +757,8 @@ pub struct LocalDiskdbDeployConfig {
     pub rpc_workers: Option<u32>,
     pub kv_connections: Option<usize>,
     pub kv_client_rpc_workers: Option<u32>,
+    pub free_batch_enabled: Option<bool>,
+    pub free_flush_max_batch: Option<u32>,
 }
 
 /// Summary of `ChunkDB` instances attached to a local deployment.
@@ -783,14 +801,21 @@ pub async fn local_deploy_combined(
     tunables: Option<&KvDeployTunables>,
     disk: &LocalDiskdbDeployConfig,
     chunk: &LocalChunkdbDeployConfig,
+    diskio_dummy_disk_type: &str,
 ) -> Result<LocalCombinedDeploySummary> {
     local_deploy(ctx, 3, Some(workspace), tunables).await?;
     for group_id in &disk.data_groups {
         crate::ops::kv_logical::add_group(ctx, 0, *group_id, 100 + *group_id, &[1, 2, 3]).await?;
     }
     let diskdb = local_deploy_diskdb(ctx, workspace, disk).await?;
-    let diskio =
-        local_deploy_diskio(ctx, workspace, chunk.diskio_rpc_workers, chunk.metrics_interval).await?;
+    let diskio = local_deploy_diskio(
+        ctx,
+        workspace,
+        chunk.diskio_rpc_workers,
+        chunk.metrics_interval,
+        diskio_dummy_disk_type,
+    )
+    .await?;
     let chunkdb = local_deploy_chunkdb(ctx, workspace, chunk).await?;
     Ok(LocalCombinedDeploySummary {
         kv_nodes: 3,
@@ -806,7 +831,14 @@ async fn local_deploy_diskio(
     workspace: &std::path::Path,
     rpc_workers: Option<u32>,
     metrics_interval: Option<u64>,
+    dummy_disk_type: &str,
 ) -> Result<usize> {
+    if !matches!(dummy_disk_type, "null" | "mem") {
+        return Err(Error::Validation {
+            field: "diskio_dummy_disk_type".into(),
+            message: "must be null or mem".into(),
+        });
+    }
     let mut nodes = ctx.config().nodes.clone();
     nodes.sort_by_key(|node| node.id);
     let seeds = ctx
@@ -846,6 +878,7 @@ async fn local_deploy_diskio(
                 node_id: node.id,
                 disk_group_id: node.id * 100 + 1,
                 kv_server_mgmt_seeds: vec![leader_seed.clone()],
+                dummy_disk_type: dummy_disk_type.to_owned(),
                 rpc_workers,
                 metrics_interval,
             },
@@ -1303,6 +1336,8 @@ async fn deploy_diskdb_instances(
                 kv_connections: config.kv_connections,
                 kv_client_rpc_workers: config.kv_client_rpc_workers,
                 keepalive_interval_secs: None,
+                free_batch_enabled: config.free_batch_enabled,
+                free_flush_max_batch: config.free_flush_max_batch,
                 listen_port: ports.listen[index],
                 http_port: ports.http[index],
                 rpc_port: ports.rpc[index],

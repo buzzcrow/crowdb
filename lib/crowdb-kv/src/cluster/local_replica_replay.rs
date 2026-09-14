@@ -4,7 +4,7 @@
 #![allow(clippy::cast_possible_truncation)]
 
 use crate::cluster::local_replica::{PxLocalReplica, PxLocalReplicaRole};
-use crate::kv::{CrowdbTreeBackend, CrowdbTreeEngine, CrowdbTreeOptions, KVEngine};
+use crate::kv::{CrowdbTreeBackend, CrowdbTreeConfig, CrowdbTreeEngine, KVEngine};
 use crate::paxos::learner::PxLearner;
 use crate::paxos::roles::{Acceptor, Learner};
 use crate::wal::replay::ReplayResult;
@@ -27,7 +27,7 @@ impl PxLocalReplica {
         role: PxLocalReplicaRole,
         replay: &ReplayResult,
     ) -> io::Result<Self> {
-        let opt = CrowdbTreeOptions {
+        let opt = CrowdbTreeConfig {
             backend: CrowdbTreeBackend::MemBlock,
             ..Default::default()
         };

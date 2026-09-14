@@ -165,6 +165,7 @@ impl LifecycleHandler {
             return Ok(ReservationRecovery::Active);
         }
 
+        let reuse_not_before_ms = group.lease_deadline_ms.saturating_add(self.layout_validity_ms);
         let mut rollback = Vec::new();
         for index in 0..group.strips.len() {
             let state = StripReservationState::try_from(group.states[index])
@@ -175,12 +176,11 @@ impl LifecycleHandler {
                     rollback.push(group.strips[index].clone());
                 }
                 StripReservationState::Consumed => {
-                    if group.planned_cursors[index] != 0 {
+                    if group.planned_cursors[index] != 0 && now_ms >= reuse_not_before_ms {
                         // Consume is durable before data I/O, so a crashed
                         // writer cannot prove the mirrors reached stable
-                        // storage. New reservations carry a planned cursor and
-                        // use the DiskIO allocation-incarnation fence, making
-                        // reclamation safe against a late old write.
+                        // storage. Keep its blocks allocated beyond the RPC
+                        // retry window before allowing physical reuse.
                         group.states[index] = StripReservationState::Cancelled as i32;
                         rollback.push(group.strips[index].clone());
                     }
@@ -197,9 +197,8 @@ impl LifecycleHandler {
                 self.reservation_admission.release(usage.0, usage.1);
             }
         }
-        // Legacy consumed reservations have no allocation-incarnation fence.
-        // Retain them fail-safe instead of reusing blocks that may receive a
-        // delayed write from the old owner.
+        // Retain legacy consumed reservations indefinitely and newer consumed
+        // reservations until their reuse grace period has elapsed.
         if group.states.contains(&(StripReservationState::Consumed as i32)) {
             return Ok(ReservationRecovery::Reconciled);
         }
@@ -578,6 +577,7 @@ impl LifecycleHandler {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn publish_conversion_group(
         &self,
         chunk: &mut Chunk,
@@ -620,14 +620,45 @@ impl LifecycleHandler {
         {
             return Err(LifecycleError::StateConflict);
         }
-        let selected = select_conversion_survivors(
-            &self.topology.snapshot(),
-            self.allocator.pool(),
-            group,
-            self.allow_unsafe_ec,
-        )?;
+        let topology = self.topology.snapshot();
+        let selected =
+            select_conversion_survivors(&topology, self.allocator.pool(), group, self.allow_unsafe_ec)?;
         let mut segments = selected.clone();
         segments.extend_from_slice(&group.parity_segments);
+        let usage_fresh = group.strips.iter().all(|strip| {
+            strip
+                .placement_assessment
+                .as_ref()
+                .is_some_and(|assessment| assessment.usage_fresh)
+        });
+        let assessment = crate::allocator::assess_physical_placement(
+            &topology,
+            &segments,
+            group.code_num,
+            topology.generation(),
+            usage_fresh,
+        );
+        let placement_repair_required =
+            !assessment.rack_protected || !assessment.node_protected || !assessment.disk_protected;
+        if placement_repair_required && !(self.allow_unsafe_ec && self.allow_degraded_failure_domains) {
+            let error = if !assessment.rack_protected {
+                crate::selector::PlacementError::RackProtectionUnavailable {
+                    loss_budget: assessment.loss_budget,
+                    actual: assessment.max_fragments_per_rack,
+                }
+            } else if !assessment.node_protected {
+                crate::selector::PlacementError::NodeProtectionUnavailable {
+                    loss_budget: assessment.loss_budget,
+                    actual: assessment.max_fragments_per_node,
+                }
+            } else {
+                crate::selector::PlacementError::DiskProtectionUnavailable {
+                    loss_budget: assessment.loss_budget,
+                    actual: assessment.max_fragments_per_disk,
+                }
+            };
+            return Err(crate::allocator::AllocError::Placement(error).into());
+        }
         self.allocator
             .pool()
             .commit_blocks(group.parity_segments.clone())
@@ -651,6 +682,9 @@ impl LifecycleHandler {
             })),
             usage_bitmap: Vec::new(),
             unavailable_segments: Vec::new(),
+            placement_priority: first.placement_priority,
+            placement_assessment: Some(assessment),
+            placement_repair_required,
         };
         let selected_set: HashSet<_> = selected.into_iter().collect();
         let retired_segments = group

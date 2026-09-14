@@ -12,6 +12,7 @@
 TEST(LogTest, ConcurrentThreadNamePublicationAndFormatting)
 {
     std::vector<std::thread> threads;
+    threads.reserve(8);
     for (int i = 0; i < 8; ++i) {
         threads.emplace_back([i] {
             const std::string name = "log-test-" + std::to_string(i);

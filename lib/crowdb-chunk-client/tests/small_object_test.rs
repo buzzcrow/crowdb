@@ -9,12 +9,13 @@ use std::time::Duration;
 use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_chunk_client::{
-    ChunkAllocator, ChunkIoClient, ChunkIoWriter, DiskWriter, IoError, Result, SmallWritePolicy,
+    ChunkAllocator, ChunkIoClient, ChunkIoWriter, DiskWriter, IoError, MirrorChunkWriter, Result,
+    SmallWritePolicy,
 };
 use crowdb_protocol::chunkdb::rpc::{
     AdvanceChunkWriteRequest, AdvanceChunkWriteResponse, AllocateChunkRequest, AllocateChunkResponse,
     AllocateReplacementSegmentRequest, AllocateReplacementSegmentResponse, AppendChunkRequest,
-    AppendChunkResponse, Chunk, ChunkState, ChunkStrip, ChunkType, DeleteChunkRequest, DeleteChunkResponse,
+    AppendChunkResponse, Chunk, ChunkState, ChunkStrip, DeleteChunkRequest, DeleteChunkResponse,
     DiscardReplacementSegmentRequest, DiscardReplacementSegmentResponse, MirrorStrip,
     MutateStripReservationRequest, MutateStripReservationResponse, QueryChunkRequest, QueryChunkResponse,
     ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse, ReserveStripGroupRequest,
@@ -99,7 +100,7 @@ impl ChunkAllocator for MockAllocator {
             capacity: strips.iter().map(|strip| strip.capacity).sum(),
             sealed_length: 0,
             strips,
-            chunk_type: ChunkType::Repo as i32,
+            chunk_type: req.chunk_type,
             writer_epoch: req.writer_epoch,
             acknowledged_cursor: 0,
             closed_strip_sequence: None,
@@ -107,6 +108,7 @@ impl ChunkAllocator for MockAllocator {
             next_strip_sequence: req.strip_count.max(1),
             cleanup_intents: vec![],
             last_strip_replacement: None,
+            owner_key: req.owner_key,
         };
         let mut state = self.state.lock().unwrap();
         state.allocations += 1;
@@ -404,6 +406,9 @@ fn make_strip(chunk_id: ChunkId, sequence: u32, copies: u32) -> ChunkStrip {
         strip: Some(Strip::MirrorStrip(MirrorStrip { segments })),
         usage_bitmap: Vec::new(),
         unavailable_segments: Vec::new(),
+        placement_priority: 0,
+        placement_assessment: None,
+        placement_repair_required: false,
     }
 }
 
@@ -447,12 +452,20 @@ impl DiskWriter for RecordingDiskWriter {
         byte_offset: u64,
         data: Bytes,
     ) -> Result<()> {
-        if byte_offset % unit_bytes == 0 {
-            return self.write_at(seg, unit_bytes, byte_offset, data).await;
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let delay_ms = self.delay_ms.load(Ordering::Relaxed);
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
         }
-        Err(IoError::WriteFailed(
-            "byte-offset writes not supported by this writer".into(),
-        ))
+        if self.fail.load(Ordering::Relaxed) {
+            return Err(IoError::WriteFailed("injected failure".into()));
+        }
+        let disk = seg.disk_id.unwrap_or_default().high;
+        self.writes
+            .lock()
+            .unwrap()
+            .push((disk, seg.unit_offset * unit_bytes + byte_offset, data));
+        Ok(())
     }
 }
 
@@ -1044,4 +1057,33 @@ async fn small_object_initialization_failure_retires_prepared_pipelines() {
     ));
     assert_eq!(allocator.snapshot().0, 1);
     assert_eq!(allocator.snapshot().4, 1);
+}
+
+#[tokio::test]
+async fn direct_mirror_chunk_writer_replicates_advances_and_seals() {
+    let allocator = Arc::new(MockAllocator::default());
+    let disk = Arc::new(RecordingDiskWriter::default());
+    let allocator_trait: Arc<dyn ChunkAllocator> = allocator.clone();
+    let disk_trait: Arc<dyn DiskWriter> = disk.clone();
+    let mut writer = MirrorChunkWriter::allocate(
+        allocator_trait,
+        disk_trait,
+        crowdb_protocol::chunk_stream::StreamName { high: 1, low: 2 },
+        44,
+        30_000,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(writer.cursor(), 0);
+    assert_eq!(
+        writer.append(Bytes::from_static(b"stream")).await.unwrap(),
+        (0, 6)
+    );
+    assert_eq!(writer.cursor(), 6);
+    assert_eq!(disk.calls(), 3);
+    assert_eq!(allocator.snapshot().2, 1);
+
+    writer.seal().await.unwrap();
+    assert_eq!(allocator.snapshot().3, 1);
 }

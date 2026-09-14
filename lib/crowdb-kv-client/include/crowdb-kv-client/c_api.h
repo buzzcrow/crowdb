@@ -70,6 +70,12 @@ void crowdb_svc_heartbeat_diskio(crowdb_svc_client_t client, uint64_t instance_i
                                const char *group_usages_json, crowdb_kv_on_complete callback,
                                void *user_data);
 
+// Heartbeat with the authoritative hardware rack/node identity.
+void crowdb_svc_heartbeat_diskio_at(crowdb_svc_client_t client, uint64_t instance_id,
+                                  const char *rpc_endpoint, uint64_t rack_id, uint64_t node_id,
+                                  const char *owned_dg_ids_json, const char *group_usages_json,
+                                  crowdb_kv_on_complete callback, void *user_data);
+
 // ── Runtime lifecycle ─────────────────────────────────────────────
 
 // Shut down the FFI tokio runtime. Call before process exit.

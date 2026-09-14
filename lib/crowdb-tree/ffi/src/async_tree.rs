@@ -9,10 +9,10 @@ use crate::error::CtError;
 use crate::reactor::{
     drive_ct_future, try_poll_ct_future, try_poll_ct_future_pinned, FutureGuard, FutureKind, PinnedValue,
 };
-use crate::scan::{decode_scan, ScanEntry};
+use crate::scan::{decode_scan, ScanDirection, ScanEntry};
 use crate::sys;
 use crate::tree::Crowdbtree;
-use crate::Options;
+use crate::Config;
 
 /// Async facade. `get`/`flush`/`snapshot`/`scan` drive the engine's io_uring
 /// reactor directly via [`drive_ct_future`] -- no thread pool hop. The
@@ -25,7 +25,7 @@ pub struct AsyncCrowdbtree {
 }
 
 impl AsyncCrowdbtree {
-    pub fn open(opt: &Options) -> Result<Self, CtError> {
+    pub fn open(opt: &Config) -> Result<Self, CtError> {
         Ok(Self {
             inner: Arc::new(Crowdbtree::open(opt)?),
         })
@@ -129,8 +129,35 @@ impl AsyncCrowdbtree {
         keys_only: bool,
         deadline_ms: u64,
     ) -> Result<(Vec<ScanEntry>, bool), CtError> {
+        self.scan_directional(
+            prefix,
+            start_after,
+            end_key,
+            limit,
+            byte_budget,
+            keys_only,
+            deadline_ms,
+            ScanDirection::Forward,
+        )
+        .await
+    }
+
+    /// Directional asynchronous scan. Reverse mode interprets the legacy
+    /// continuation bytes as an exclusive upper cursor.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn scan_directional(
+        &self,
+        prefix: Vec<u8>,
+        start_after: Vec<u8>,
+        end_key: Vec<u8>,
+        limit: usize,
+        byte_budget: usize,
+        keys_only: bool,
+        deadline_ms: u64,
+        direction: ScanDirection,
+    ) -> Result<(Vec<ScanEntry>, bool), CtError> {
         let fut = unsafe {
-            sys::ct_scan_async(
+            sys::ct_scan_directional_async(
                 self.inner.as_ptr(),
                 prefix.as_ptr(),
                 prefix.len(),
@@ -142,6 +169,7 @@ impl AsyncCrowdbtree {
                 byte_budget,
                 if keys_only { 1 } else { 0 },
                 deadline_ms,
+                i32::from(direction == ScanDirection::Reverse),
             )
         };
         let out = drive_ct_future(FutureGuard(fut), &self.inner, FutureKind::Scan).await?;
@@ -166,8 +194,33 @@ impl AsyncCrowdbtree {
         keys_only: bool,
         deadline_ms: u64,
     ) -> ScanOutcome {
+        self.try_scan_directional(
+            prefix,
+            start_after,
+            end_key,
+            limit,
+            byte_budget,
+            keys_only,
+            deadline_ms,
+            ScanDirection::Forward,
+        )
+    }
+
+    /// Nonallocating-fast-path directional scan.
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_scan_directional(
+        &self,
+        prefix: Vec<u8>,
+        start_after: Vec<u8>,
+        end_key: Vec<u8>,
+        limit: usize,
+        byte_budget: usize,
+        keys_only: bool,
+        deadline_ms: u64,
+        direction: ScanDirection,
+    ) -> ScanOutcome {
         let fut = unsafe {
-            sys::ct_scan_async(
+            sys::ct_scan_directional_async(
                 self.inner.as_ptr(),
                 prefix.as_ptr(),
                 prefix.len(),
@@ -179,6 +232,7 @@ impl AsyncCrowdbtree {
                 byte_budget,
                 if keys_only { 1 } else { 0 },
                 deadline_ms,
+                i32::from(direction == ScanDirection::Reverse),
             )
         };
         let mut guard = FutureGuard(fut);

@@ -6,9 +6,6 @@
 #include "crowdb-common/log.h"
 #include "disk/disk.h"
 
-#include <fcntl.h>
-#include <unistd.h>
-
 #include <algorithm>
 #include <cerrno>
 #include <cstdlib>
@@ -22,22 +19,6 @@ namespace crowdb::diskio
 namespace
 {
 alignas(4096) const std::array<uint8_t, AlignedWriter::MAX_ZERO_BYTES> ZERO_BYTES{};
-constexpr uint64_t GENERATION_RECORD_MAGIC = 0x43524F5744424746ULL;
-
-struct GenerationRecord
-{
-    uint64_t magic;
-    uint64_t disk_high;
-    uint64_t disk_low;
-    uint64_t phys_offset;
-    uint64_t allocation_ts;
-    uint64_t checksum;
-};
-
-uint64_t generation_checksum(const GenerationRecord &record)
-{
-    return record.magic ^ record.disk_high ^ record.disk_low ^ record.phys_offset ^ record.allocation_ts;
-}
 
 bool is_power_of_two(size_t value)
 {
@@ -58,30 +39,16 @@ AlignedWriter::Shard::Shard() : pending(1024)
 {
 }
 
-AlignedWriter::AlignedWriter(std::string generation_journal_path)
+AlignedWriter::AlignedWriter()
 {
     for (auto &shard : shards_) {
         shard = std::make_unique<Shard>();
-    }
-    generation_journal_required_ = !generation_journal_path.empty();
-    if (generation_journal_required_) {
-        generation_journal_fd_ = ::open(generation_journal_path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0640);
-        if (generation_journal_fd_ < 0) {
-            CRB_LOG_ERROR("failed to open allocation generation journal: path={} errno={}", generation_journal_path,
-                          errno);
-        }
-        else {
-            load_generations();
-        }
     }
 }
 
 AlignedWriter::~AlignedWriter()
 {
     stop();
-    if (generation_journal_fd_ >= 0) {
-        ::close(generation_journal_fd_);
-    }
 }
 
 void AlignedWriter::stop()
@@ -104,30 +71,20 @@ size_t AlignedWriter::CacheKeyHash::operator()(const CacheKey &key) const
     return static_cast<size_t>(hash);
 }
 
-size_t AlignedWriter::AllocationKeyHash::operator()(const AllocationKey &key) const
-{
-    uint64_t hash = key.disk_id.high ^ (key.disk_id.low * 0x9E3779B97F4A7C15ULL);
-    hash ^= key.phys_offset + 0x9E3779B97F4A7C15ULL + (hash << 6) + (hash >> 2);
-    return static_cast<size_t>(hash);
-}
-
 size_t AlignedWriter::shard_index(const Request &request) const
 {
-    uint64_t offset =
-        request.allocation_ts == 0 ? static_cast<uint64_t>(request.phys_offset) : request.allocation_phys_offset;
-    return AllocationKeyHash{}(AllocationKey{request.disk->id(), offset}) % SHARD_COUNT;
+    return CacheKeyHash{}(CacheKey{request.disk->id(), request.ordering_phys_offset}) % SHARD_COUNT;
 }
 
 void AlignedWriter::submit(std::shared_ptr<Disk> disk, off_t phys_offset, const uint8_t *data, size_t size,
                            std::function<void(int)> on_complete)
 {
-    submit_fenced(std::move(disk), phys_offset, data, size, 0, static_cast<uint64_t>(phys_offset),
-                  std::move(on_complete));
+    submit_ordered(std::move(disk), phys_offset, data, size, static_cast<uint64_t>(phys_offset),
+                   std::move(on_complete));
 }
 
-void AlignedWriter::submit_fenced(std::shared_ptr<Disk> disk, off_t phys_offset, const uint8_t *data, size_t size,
-                                  uint64_t allocation_ts, uint64_t allocation_phys_offset,
-                                  std::function<void(int)> on_complete)
+void AlignedWriter::submit_ordered(std::shared_ptr<Disk> disk, off_t phys_offset, const uint8_t *data, size_t size,
+                                   uint64_t ordering_phys_offset, std::function<void(int)> on_complete)
 {
     if (stopping_.load(std::memory_order_acquire)) {
         if (on_complete) {
@@ -141,7 +98,7 @@ void AlignedWriter::submit_fenced(std::shared_ptr<Disk> disk, off_t phys_offset,
         }
         return;
     }
-    if (allocation_ts == 0 && (disk->block_size() == 1 || size == 0)) {
+    if (disk->block_size() == 1 || size == 0) {
         Disk     *disk_ptr = disk.get();
         IoEngine *engine   = disk_ptr->engine();
         engine->submit_write(disk_ptr, phys_offset, data, size,
@@ -152,9 +109,8 @@ void AlignedWriter::submit_fenced(std::shared_ptr<Disk> disk, off_t phys_offset,
                              });
         return;
     }
-    auto  *request = new Request{std::move(disk),        phys_offset,           data, size, allocation_ts,
-                                 allocation_phys_offset, std::move(on_complete)};
-    size_t index   = shard_index(*request);
+    auto *request = new Request{std::move(disk), phys_offset, data, size, ordering_phys_offset, std::move(on_complete)};
+    size_t index  = shard_index(*request);
     if (!shards_[index]->pending.try_push(request)) {
         if (request->on_complete) {
             request->on_complete(-EAGAIN);
@@ -198,11 +154,6 @@ void AlignedWriter::process_next(size_t index)
 
 void AlignedWriter::process(size_t index, Request *request)
 {
-    int generation_result = admit_generation(index, *request);
-    if (generation_result != 0) {
-        finish(index, request, generation_result);
-        return;
-    }
     size_t block_size = request->disk->block_size();
     if (block_size == 0) {
         finish(index, request, -EINVAL);
@@ -292,80 +243,6 @@ void AlignedWriter::process(size_t index, Request *request)
             std::memcpy(buffer.get() + (request->phys_offset - aligned_offset), request->data, request->size);
             submit_buffer(index, request, buffer, aligned_offset, aligned_size, block_size);
         });
-}
-
-int AlignedWriter::admit_generation(size_t index, const Request &request)
-{
-    if (request.allocation_ts == 0) {
-        return 0;
-    }
-    AllocationKey key{request.disk->id(), request.allocation_phys_offset};
-    auto         &generations = shards_[index]->allocation_generations;
-    auto          current     = generations.find(key);
-    if (current != generations.end() && request.allocation_ts < current->second) {
-        return -ESTALE;
-    }
-    if (current != generations.end() && request.allocation_ts == current->second) {
-        return 0;
-    }
-    if (!append_generation(key, request.allocation_ts)) {
-        return -EIO;
-    }
-    generations[key] = request.allocation_ts;
-    return 0;
-}
-
-bool AlignedWriter::append_generation(const AllocationKey &key, uint64_t allocation_ts)
-{
-    if (!generation_journal_required_) {
-        return true;
-    }
-    if (generation_journal_fd_ < 0) {
-        return false;
-    }
-    GenerationRecord record{GENERATION_RECORD_MAGIC, key.disk_id.high, key.disk_id.low,
-                            key.phys_offset,         allocation_ts,    0};
-    record.checksum  = generation_checksum(record);
-    uint64_t offset  = generation_journal_offset_.fetch_add(sizeof(record), std::memory_order_acq_rel);
-    ssize_t  written = ::pwrite(generation_journal_fd_, &record, sizeof(record), static_cast<off_t>(offset));
-    if (written != static_cast<ssize_t>(sizeof(record)) || ::fdatasync(generation_journal_fd_) != 0) {
-        CRB_LOG_ERROR("failed to persist allocation generation: disk_high={} disk_low={} offset={} generation={} "
-                      "errno={}",
-                      key.disk_id.high, key.disk_id.low, key.phys_offset, allocation_ts, errno);
-        return false;
-    }
-    return true;
-}
-
-void AlignedWriter::load_generations()
-{
-    off_t end = ::lseek(generation_journal_fd_, 0, SEEK_END);
-    if (end < 0) {
-        CRB_LOG_ERROR("failed to size allocation generation journal: errno={}", errno);
-        ::close(generation_journal_fd_);
-        generation_journal_fd_ = -1;
-        return;
-    }
-    generation_journal_offset_.store(static_cast<uint64_t>(end), std::memory_order_release);
-    for (off_t offset = 0; offset + static_cast<off_t>(sizeof(GenerationRecord)) <= end;
-         offset += static_cast<off_t>(sizeof(GenerationRecord))) {
-        GenerationRecord record{};
-        if (::pread(generation_journal_fd_, &record, sizeof(record), offset) != static_cast<ssize_t>(sizeof(record)) ||
-            record.magic != GENERATION_RECORD_MAGIC || record.checksum != generation_checksum(record)) {
-            CRB_LOG_WARN("skipping invalid allocation generation record: offset={}", offset);
-            continue;
-        }
-        AllocationKey key{
-            {record.disk_high, record.disk_low},
-            record.phys_offset
-        };
-        size_t index       = AllocationKeyHash{}(key) % SHARD_COUNT;
-        auto  &generations = shards_[index]->allocation_generations;
-        auto   current     = generations.find(key);
-        if (current == generations.end() || record.allocation_ts > current->second) {
-            generations[key] = record.allocation_ts;
-        }
-    }
 }
 
 void AlignedWriter::submit_buffer(size_t index, Request *request, std::shared_ptr<uint8_t> buffer, off_t aligned_offset,

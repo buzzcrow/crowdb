@@ -5,7 +5,7 @@
 
 use bytes::Bytes;
 use crowdb_kv::cluster::local_replica::{PxLocalReplica, PxLocalReplicaRole};
-use crowdb_kv::kv::{Batch, CrowdbTreeEngine, CrowdbTreeOptions, KVEngine};
+use crowdb_kv::kv::{Batch, CrowdbTreeConfig, CrowdbTreeEngine, KVEngine};
 use crowdb_kv::paxos::roles::{PxBallot, PxLogEntry};
 use crowdb_kv::wal::record::WALRecord;
 use crowdb_kv::wal::replay::replay_group;
@@ -282,7 +282,7 @@ async fn restore_from_replay_with_engine_uses_injected_engine() {
     // `path: None` selects an in-memory crowdb-tree store -- same restore path
     // crowdb-kv-server's `--kv-engine crowdb-tree` uses, minus the on-disk file.
     let engine =
-        CrowdbTreeEngine::open(&CrowdbTreeOptions::default()).expect("open in-memory crowdb-tree engine");
+        CrowdbTreeEngine::open(&CrowdbTreeConfig::default()).expect("open in-memory crowdb-tree engine");
     let restored = PxLocalReplica::restore_from_replay_with_engine(
         7,
         PxLocalReplicaRole::Follower,
@@ -337,7 +337,7 @@ async fn restore_from_replay_with_engine_resumes_from_last_applied_slot() {
 
     // Pre-apply + flush slot 1 directly, matching what a durably-recovered
     // CrowdbTreeEngine reports via `resume_from_slot()` on a real restart.
-    let engine = CrowdbTreeEngine::open(&CrowdbTreeOptions::default()).expect("open crowdb-tree engine");
+    let engine = CrowdbTreeEngine::open(&CrowdbTreeConfig::default()).expect("open crowdb-tree engine");
     engine
         .apply(1, &Batch::decode(&Bytes::from(encode_put_payload(b"k1", b"v1"))))
         .into_ready()
@@ -417,7 +417,7 @@ async fn restore_from_replay_with_engine_falls_back_when_resume_slot_has_no_acce
     // too -- modeling an engine that durably has extra data at slot 2 with
     // no independent WAL corroboration (e.g. a lost/truncated WAL record),
     // rather than an outright-impossible-via-the-API state.
-    let engine = CrowdbTreeEngine::open(&CrowdbTreeOptions::default()).expect("open crowdb-tree engine");
+    let engine = CrowdbTreeEngine::open(&CrowdbTreeConfig::default()).expect("open crowdb-tree engine");
     engine
         .apply(
             1,

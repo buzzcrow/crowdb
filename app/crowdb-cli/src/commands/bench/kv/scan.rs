@@ -18,7 +18,9 @@ use super::client::{build_kv_client, KvClientTunables};
 use crate::commands::bench::loader::{run_workload, BenchRecorder};
 use crate::commands::bench::metrics::BenchMetrics;
 use crate::commands::bench::result::{BenchOps, BenchResult};
-use crate::commands::bench::verb::{BenchMinSlot, BenchReadEndpoint, BenchReadMode, ScanArgs};
+use crate::commands::bench::verb::{
+    BenchMinSlot, BenchReadEndpoint, BenchReadMode, BenchScanDirection, ScanArgs,
+};
 use crate::Cli;
 
 #[allow(clippy::too_many_lines)]
@@ -52,6 +54,7 @@ pub async fn run(cli: &Cli, args: ScanArgs) -> ExitCode {
     let min_slot_arg = args.min_slot;
     let value_size = args.value_size;
     let value_size_mix = parse_value_size_mix(args.value_size_mix.as_deref());
+    let direction = args.scan_direction;
 
     let mut metrics = BenchMetrics::new(&cli.log_dir, args.metrics_interval);
     metrics.start();
@@ -72,27 +75,48 @@ pub async fn run(cli: &Cli, args: ScanArgs) -> ExitCode {
             let min_slot_arg = min_slot_arg;
             let value_size = value_size;
             let value_size_mix = value_size_mix.clone();
+            let direction = direction;
             async move {
                 let min_slot = match min_slot_arg {
                     BenchMinSlot::Auto => None,
                     BenchMinSlot::Zero => Some(0),
                 };
                 let t0 = Instant::now();
-                match client
-                    .scan(
-                        store_id,
-                        group_id,
-                        &prefix,
-                        &start_after,
-                        &[],
-                        limit,
-                        read_mode,
-                        min_slot,
-                        false,
-                        None,
-                    )
-                    .await
-                {
+                let scan = match direction {
+                    BenchScanDirection::Forward => {
+                        client
+                            .scan(
+                                store_id,
+                                group_id,
+                                &prefix,
+                                &start_after,
+                                &[],
+                                limit,
+                                read_mode,
+                                min_slot,
+                                false,
+                                None,
+                            )
+                            .await
+                    }
+                    BenchScanDirection::Reverse => {
+                        client
+                            .scan_reverse(
+                                store_id,
+                                group_id,
+                                &prefix,
+                                &start_after,
+                                &[],
+                                limit,
+                                read_mode,
+                                min_slot,
+                                false,
+                                None,
+                            )
+                            .await
+                    }
+                };
+                match scan {
                     Ok(outcome) => {
                         // Touch value bytes to prevent lazy-load optimization
                         // skewing latency. Both --value-size and --value-size-mix

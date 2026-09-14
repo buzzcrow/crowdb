@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 
+use bytes::Bytes;
+use crossbeam_skiplist::SkipMap;
 use dashmap::DashMap;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
@@ -24,7 +26,7 @@ use crate::cluster::remote_replica::PxRemoteReplica;
 use crate::cluster::replica::Replica;
 use crate::common::config::{CrowDBConfig, PaxosConfig};
 use crate::metrics::{Counter, Gauge, LatencySummary};
-use crate::paxos::roles::{Acceptor, DedupTag, PxBallot, PxLogEntry, SlotIndex};
+use crate::paxos::roles::{Acceptor, PxBallot, PxLogEntry, RequestIdentity, SlotIndex};
 use crate::paxos::{PxGroupId, PxNodeId};
 
 pub(crate) use crate::cluster::group_accept::AcceptAttempt;
@@ -40,6 +42,31 @@ pub(crate) struct WriteRegistryHandles {
     pub(crate) propose_e2e: Arc<LatencySummary>,
     pub(crate) prepare_phase: Arc<LatencySummary>,
     pub(crate) accept_quorum_rpc: Arc<LatencySummary>,
+}
+
+/// Registry handles for maintenance snapshot completion observability.
+pub(crate) struct SnapshotRegistryHandles {
+    pub(crate) success: Arc<Counter>,
+    pub(crate) failure: Arc<Counter>,
+    pub(crate) latency: Arc<LatencySummary>,
+    pub(crate) max_us: Arc<Gauge>,
+}
+
+pub(crate) struct SnapshotJoinRegistryHandles {
+    pub(crate) bytes: Arc<Counter>,
+    pub(crate) chunks: Arc<Counter>,
+    pub(crate) reconnect_retries: Arc<Counter>,
+    pub(crate) resumed_offsets: Arc<Counter>,
+    pub(crate) restarts: Arc<Counter>,
+    pub(crate) integrity_failures: Arc<Counter>,
+    pub(crate) aborted: Arc<Counter>,
+    pub(crate) latency: Arc<LatencySummary>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CasOwnerToken {
+    pub(crate) tenure: u64,
+    pub(crate) nonce: u64,
 }
 
 /// Registry-based metric handles for read-path instrumentation.
@@ -77,7 +104,7 @@ pub(crate) struct PendingReadBarrier {
 pub(crate) struct PendingBatch {
     pub(crate) op_bodies: Vec<u8>,
     pub(crate) op_count: u16,
-    pub(crate) tags: Vec<DedupTag>,
+    pub(crate) identities: Vec<RequestIdentity>,
     pub(crate) waiters: Vec<tokio::sync::oneshot::Sender<ProposeResult>>,
 }
 
@@ -135,6 +162,8 @@ pub struct PxGroup {
     /// restore must first finish bulk Phase 1 recovery and locally relearn the
     /// chosen prefix before it can safely serve reads.
     pub(crate) leader_read_ready: AtomicBool,
+    pub(crate) cas_transient_map: SkipMap<Bytes, CasOwnerToken>,
+    pub(crate) cas_request_nonce: AtomicU64,
     /// Last-known `contiguous_applied` per voting peer, refreshed from
     /// heartbeat replies. Peers never heard from are absent (treated as
     /// `0`), which keeps [`Self::group_safe_slot`] conservative until every
@@ -226,6 +255,9 @@ pub struct PxGroup {
     /// Optional registry handles for write-path metrics. Set via
     /// [`Self::set_metrics_registry`] when a registry is wired.
     pub(crate) write_handles: OnceLock<WriteRegistryHandles>,
+    /// Snapshot completion counters and latency, read lock-free by maintenance.
+    pub(crate) snapshot_handles: OnceLock<SnapshotRegistryHandles>,
+    pub(crate) snapshot_join_handles: OnceLock<SnapshotJoinRegistryHandles>,
     /// Pending `ReadIndex` barrier batch. `Some` only while a `ReadIndex`
     /// heartbeat round is in flight; concurrent reads that arrive during
     /// the round enqueue a waiter here instead of starting their own
@@ -257,6 +289,10 @@ pub struct PxGroup {
     /// round completion to start the next round, or on `max_keys`
     /// overflow to start a concurrent round.
     pub(crate) coalescer: parking_lot::Mutex<Option<PendingBatch>>,
+    /// Number of coalesced Paxos rounds currently executing. Conditional and
+    /// tenure-bound proposals bypass the coalescer and are intentionally not
+    /// counted, so they cannot suppress draining a pending ordinary batch.
+    pub(crate) coalesced_rounds_inflight: std::sync::atomic::AtomicU64,
     /// Fixed `max_keys` for coalescing batches. Set from config; 0 disables
     /// coalescing. When a batch fills to this size, it flushes as a
     /// concurrent round.
@@ -357,6 +393,8 @@ impl PxGroup {
             pending_leader_handoff: parking_lot::Mutex::new(None),
             proposing_term: AtomicU64::new(0),
             leader_read_ready: AtomicBool::new(true),
+            cas_transient_map: SkipMap::new(),
+            cas_request_nonce: AtomicU64::new(1),
             peer_applied: parking_lot::Mutex::new(HashMap::new()),
             group_safe_slot: AtomicU64::new(0),
             peer_durable: parking_lot::Mutex::new(HashMap::new()),
@@ -387,6 +425,8 @@ impl PxGroup {
             flushes_since_snapshot: AtomicU64::new(0),
             read_handles: OnceLock::new(),
             write_handles: OnceLock::new(),
+            snapshot_handles: OnceLock::new(),
+            snapshot_join_handles: OnceLock::new(),
             pending_read_barrier: parking_lot::Mutex::new(None),
             #[cfg(feature = "test-util")]
             readindex_round_gate: parking_lot::Mutex::new(None),
@@ -394,6 +434,7 @@ impl PxGroup {
             coalesce_round_gate: parking_lot::Mutex::new(None),
             self_weak: OnceLock::new(),
             coalescer: parking_lot::Mutex::new(None),
+            coalesced_rounds_inflight: std::sync::atomic::AtomicU64::new(0),
             coalesce_max_keys: std::sync::atomic::AtomicU16::new(0),
             coalesce_last_activity_us: std::sync::atomic::AtomicU64::new(0),
             coalesce_watchdog_handle: OnceLock::new(),
@@ -623,6 +664,25 @@ impl PxGroup {
             accept_quorum_rpc: r.register_summary(format!("{prefix}.paxos.accept.quorum_rpc.l")),
         };
         let _ = self.write_handles.set(write_handles);
+        let snapshot_handles = SnapshotRegistryHandles {
+            success: r.register_counter(format!("{prefix}.maintenance.snapshot.success.c")),
+            failure: r.register_counter(format!("{prefix}.maintenance.snapshot.failure.c")),
+            latency: r.register_summary(format!("{prefix}.maintenance.snapshot.l")),
+            max_us: r.register_gauge(format!("{prefix}.maintenance.snapshot.max_us.g")),
+        };
+        snapshot_handles.max_us.set(0);
+        let _ = self.snapshot_handles.set(snapshot_handles);
+        let snapshot_join_handles = SnapshotJoinRegistryHandles {
+            bytes: r.register_counter(format!("{prefix}.snapshot.join.bytes.c")),
+            chunks: r.register_counter(format!("{prefix}.snapshot.join.chunks.c")),
+            reconnect_retries: r.register_counter(format!("{prefix}.snapshot.join.reconnect_retries.c")),
+            resumed_offsets: r.register_counter(format!("{prefix}.snapshot.join.resumed_offsets.c")),
+            restarts: r.register_counter(format!("{prefix}.snapshot.join.restarts.c")),
+            integrity_failures: r.register_counter(format!("{prefix}.snapshot.join.integrity_failures.c")),
+            aborted: r.register_counter(format!("{prefix}.snapshot.join.aborted.c")),
+            latency: r.register_summary(format!("{prefix}.snapshot.join.import.l")),
+        };
+        let _ = self.snapshot_join_handles.set(snapshot_join_handles);
     }
 
     /// Borrow optional registry handles for read-path metrics. Returns
@@ -630,6 +690,10 @@ impl PxGroup {
     #[must_use]
     pub(crate) fn read_handles(&self) -> Option<&ReadRegistryHandles> {
         self.read_handles.get()
+    }
+
+    pub(crate) fn snapshot_join_handles(&self) -> Option<&SnapshotJoinRegistryHandles> {
+        self.snapshot_join_handles.get()
     }
 
     pub fn force_classic(&self) -> bool {
@@ -747,7 +811,7 @@ impl PxGroup {
             }
         };
 
-        match self.run_accept_phase(replica, &entry, &[], quorum).await {
+        match self.run_accept_phase(replica, &entry, quorum).await {
             AcceptAttempt::Chosen => {
                 replica.learn_chosen(&entry, &[]).await;
                 self.fan_out_chosen_notice(&entry, group_id);
@@ -786,18 +850,15 @@ impl PxGroup {
 
     /// Best-effort fan-out of a `ChosenNotification` to every real
     /// remote in this group after a slot has been chosen. The notice is
-    /// fire-and-forget over the per-peer bidi `PxLearnerStream`; failures
+    /// fire-and-forget over the shared per-peer RPC connection; failures
     /// are logged at `debug!` and never propagated, since the next
     /// heartbeat (carrying `committed_safe_slot`) will re-converge
     /// peer frontiers regardless.
     ///
     /// `leader_id` is taken from `entry.ballot.leader_id`, matching the
     /// proposer that chose the value. Sequential await rather than
-    /// `JoinSet` fan-out is fine for now: each `send_chosen_notice` is
-    /// just an mpsc enqueue (capacity = `learner_stream_window_frames`)
-    /// once the per-peer bg task is running, so it returns near-
-    /// instantly except when a peer is down (in which case it fast-
-    /// fails via the connect-retry drain in `learner_stream.rs`).
+    /// `JoinSet` fan-out is unnecessary: each `send_chosen_notice` is one
+    /// bounded transport submission and returns immediately.
     pub(crate) fn fan_out_chosen_notice(&self, entry: &PxLogEntry, group_id: u64) {
         let slot = entry.slot;
         let term = entry.term;
@@ -911,6 +972,11 @@ pub enum ProposeResult {
     /// The proposer sliding window is full; the caller should retry shortly.
     /// Distinct from `Err` so the KV layer can surface a retryable signal.
     Busy,
+    CasFailed {
+        current_revision: u64,
+    },
+    CasBusy,
+    OutcomeUnknown,
     Err(String),
 }
 

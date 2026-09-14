@@ -22,7 +22,7 @@ Batch put_one(const std::string &k, const std::string &v)
 
 TEST(OversizedKey, RejectedAtApplyWithDefaultLimit)
 {
-    Options opt;
+    Config opt;
     opt.frame_bytes = 4096; // default limit = frame_bytes / 2 = 2048
     Crowdbtree t(opt);
 
@@ -39,7 +39,7 @@ TEST(OversizedKey, RejectedAtApplyWithDefaultLimit)
 
 TEST(OversizedKey, KeyAtLimitAccepted)
 {
-    Options opt;
+    Config opt;
     opt.frame_bytes = 4096; // limit = 2048
     Crowdbtree t(opt);
 
@@ -54,7 +54,7 @@ TEST(OversizedKey, KeyAtLimitAccepted)
 
 TEST(OversizedKey, ConfigurableLimit)
 {
-    Options opt;
+    Config opt;
     opt.max_key_size = 8; // explicit override
     Crowdbtree t(opt);
 
@@ -64,13 +64,13 @@ TEST(OversizedKey, ConfigurableLimit)
 
 TEST(OversizedKey, BatchRejectedAtomicallyIfAnyKeyTooLarge)
 {
-    Options opt;
+    Config opt;
     opt.max_key_size = 8;
     Crowdbtree t(opt);
 
     const std::string big(9, 'z');
     Batch             b{
-        {{.key = "small", .kind = OpKind::kPut, .value = "a"}, {.key = big, .kind = OpKind::kPut, .value = "b"}}
+        {{.key = "small", .kind = OpKind::kPut, .value = "a"}, {.key = big, .kind = OpKind::kPut, .value = "b"}},
     };
     EXPECT_EQ(t.apply(1, b).code(), Code::kInvalidArgument);
     // No op from the rejected batch landed, not even the small one.
@@ -79,7 +79,7 @@ TEST(OversizedKey, BatchRejectedAtomicallyIfAnyKeyTooLarge)
 
 TEST(OversizedKey, PutAndDelConvenienceRespectLimit)
 {
-    Options opt;
+    Config opt;
     opt.max_key_size = 4;
     Crowdbtree t(opt);
 

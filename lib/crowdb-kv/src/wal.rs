@@ -24,6 +24,7 @@
 mod block_backend;
 mod file_backend;
 pub mod io_backend;
+mod uring_backend;
 
 pub mod gc;
 pub mod index;

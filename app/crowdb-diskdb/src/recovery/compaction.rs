@@ -98,7 +98,7 @@ pub async fn compact_zone(
         return Ok(());
     }
 
-    let free_keys: Vec<Vec<u8>> = records.free.iter().map(|r| r.key.to_bytes()).collect();
+    let free_keys: Vec<Vec<u8>> = records.free.iter().map(|record| record.key.to_bytes()).collect();
     #[allow(clippy::cast_possible_truncation)]
     let free_count = free_keys.len() as u32;
 
@@ -139,8 +139,11 @@ pub async fn compact_zone(
 
     // Step 5: decrement uncompacted_free_record_count by the total
     // free records processed (both stale and new were deleted).
-    zone.uncompacted_free_record_count
-        .fetch_sub(free_count, Ordering::AcqRel);
+    let _ = zone
+        .uncompacted_free_record_count
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            Some(count.saturating_sub(free_count))
+        });
 
     // Step 6: mark the zone as compacted and ready for rotation.
     zone.mark_compacted_ready();

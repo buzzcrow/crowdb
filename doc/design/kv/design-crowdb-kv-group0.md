@@ -14,7 +14,7 @@ Satisfies: [`design-crowdb-kv.md`](design-crowdb-kv.md) §3.3
 
 - [1. Overview](#1-overview)
 - [2. Design Decisions](#2-design-decisions)
-  - [2.1 `crowdb-kv-client` is the single sysdata API surface](#21-crowdb-kv-client-is-the-single-sysdata-api-surface)
+  - [2.1 External and in-process group-0 API surfaces](#21-external-and-in-process-group-0-api-surfaces)
   - [2.2 `crowdb-kv-server` mgmt API is internal](#22-crowdb-kv-server-mgmt-api-is-internal)
   - [2.3 Unified key concept with two encodings](#23-unified-key-concept-with-two-encodings)
   - [2.4 All cross-component protocol types live in `crowdb-protocol`](#24-all-cross-component-protocol-types-live-in-crowdb-protocol)
@@ -70,12 +70,17 @@ how the circular-dependency between kv-server and group 0 is handled.
 
 ## 2. Design Decisions
 
-### 2.1 `crowdb-kv-client` is the single sysdata API surface
+### 2.1 External and in-process group-0 API surfaces
 
-Group-0 sysdata is owned by `crowdb-kv-client`, not `crowdb-kv-server`.
-The server is a generic KV store; it must not know domain concepts
-(rack/node/disk/disk-group). `crowdb-kv-client` provides multiple
-service classes, each wrapping a `CrowdbClient` pinned to group 0:
+External processes use `crowdb-kv-client` for group-0 sysdata. Code already
+running inside `crowdb-kv-server` uses `KvGroupOperations` and the fixed
+`Group0ControlPlane` facade instead of opening a loopback RPC connection to
+itself. RPC handlers also delegate to `KvGroupOperations`, so internal and
+external paths share the same read fences, conditional-write semantics, and
+error mapping without coupling a monitor to the RPC transport.
+
+`crowdb-kv-client` provides service classes wrapping a client pinned to group
+0:
 
 - **`HardwareClient`** — hardware hierarchy + per-disk-group maps
   (rack/node/disk-group/disk CRUD, ownership map, binding map).
@@ -411,8 +416,11 @@ clean shutdown.
 ### 4.4 Client discovery
 
 `ServiceDiscoveryClient` (in `crowdb-kv-client`) wraps
-`ServiceRegistryClient` with a per-service `DashMap` cache and
-TTL-based refresh. Clients call `discover_all(service)` or
+`ServiceRegistryClient` with a per-service state map and TTL-based
+refresh. Each state contains an atomically published cached result, an atomic
+round-robin cursor, and an async single-flight refresh gate. The sharded-map
+guard is dropped immediately after cloning the state and never crosses I/O.
+Clients call `discover_all(service)` or
 `discover_one(service)` to find living service instances by service
 name without hardcoding addresses. The cache is poll-on-demand: the
 first call queries group-0, subsequent calls within the cache TTL
@@ -420,7 +428,10 @@ first call queries group-0, subsequent calls within the cache TTL
 `invalidate(service)` forces a re-query on the next call; called
 after known topology changes (e.g. `cluster_init`, `deploy_diskdb`).
 
-Instance selection is round-robin among live instances. The
+Simultaneous expiry for one service produces one group-0 refresh; waiters
+recheck the freshly published result after acquiring the gate. Instance
+selection uses the service state's atomic cursor to round-robin among live
+instances. The
 `DiskdbClient` and `ChunkdbClient` retain their per-disk-group /
 per-range routing caches (they have routing requirements that
 round-robin doesn't cover); the generic discovery client handles the

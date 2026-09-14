@@ -566,6 +566,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-queue"
+version = "0.3.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03e8bd762f7479489c70ed6c768ddca99d7296857de437a68dcb2a94365b3fae"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-skiplist"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -606,6 +615,90 @@ dependencies = [
 ]
 
 [[package]]
+name = "crowdb-chunk-kv"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bincode",
+ "bytes",
+ "crowdb-chunk-kv",
+ "crowdb-chunk-stream",
+ "crowdb-tree-ffi",
+ "serde",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "crowdb-chunk-kv-client"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "bytes",
+ "clap",
+ "crowdb-chunk-kv-server",
+ "crowdb-kv-client",
+ "crowdb-protocol",
+ "crowdb-rpc-ffi",
+ "futures",
+ "rand 0.8.6",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "crowdb-chunk-kv-server"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "axum",
+ "bytes",
+ "clap",
+ "crowdb-chunk-client",
+ "crowdb-chunk-kv",
+ "crowdb-chunk-stream",
+ "crowdb-common",
+ "crowdb-kv-client",
+ "crowdb-protocol",
+ "crowdb-rpc-ffi",
+ "crowdb-tree-ffi",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tower",
+ "tracing",
+]
+
+[[package]]
+name = "crowdb-chunk-stream"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "bincode",
+ "bytes",
+ "crc32fast",
+ "crossbeam-skiplist",
+ "crowdb-chunk-client",
+ "crowdb-chunk-stream",
+ "crowdb-kv-client",
+ "crowdb-protocol",
+ "crowdb-test-harness",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "crowdb-chunkdb"
 version = "0.1.0"
 dependencies = [
@@ -614,6 +707,7 @@ dependencies = [
  "bincode",
  "bytes",
  "clap",
+ "crossbeam-skiplist",
  "crowdb-chunkdb",
  "crowdb-common",
  "crowdb-diskdb",
@@ -648,7 +742,6 @@ dependencies = [
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
- "dashmap",
  "flatbuffers",
  "thiserror 2.0.18",
  "tokio",
@@ -738,6 +831,8 @@ dependencies = [
  "bytes",
  "clap",
  "crc32fast",
+ "crossbeam-queue",
+ "crossbeam-skiplist",
  "crowdb-common",
  "crowdb-diskdb",
  "crowdb-kv-client",
@@ -746,6 +841,7 @@ dependencies = [
  "crowdb-test-harness",
  "dashmap",
  "flatbuffers",
+ "futures",
  "rand 0.9.5",
  "reqwest",
  "serde",
@@ -762,12 +858,13 @@ dependencies = [
 name = "crowdb-diskdb-client"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "bytes",
+ "crowdb-diskdb-client",
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
- "dashmap",
  "flatbuffers",
  "reqwest",
  "serde_json",
@@ -780,8 +877,10 @@ dependencies = [
 name = "crowdb-diskio-client"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "bytes",
  "crowdb-common",
+ "crowdb-diskio-client",
  "crowdb-kv-client",
  "crowdb-protocol",
  "crowdb-rpc-ffi",
@@ -870,6 +969,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tracing",
  "utoipa",
@@ -894,6 +994,8 @@ dependencies = [
  "fs2",
  "getrandom 0.2.17",
  "serde",
+ "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "utoipa",
  "xxhash-rust",
@@ -903,6 +1005,7 @@ dependencies = [
 name = "crowdb-rpc-ffi"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "bytes",
  "cc",
  "crowdb-common",
@@ -936,6 +1039,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "cc",
+ "crowdb-rpc-ffi",
  "crowdb-test-harness",
  "crowdb-tree-ffi",
  "tokio",

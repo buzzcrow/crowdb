@@ -192,7 +192,7 @@ bytes) yield empty `Bytes` for that field, matching the previous
 
 `learn` is the learner's apply entry point: `apply_entry` (the FFI +
 memtable insert) → advance the chosen frontier → advance the applied
-frontier → record dedup. Two frontiers are tracked:
+frontier → cache the leader's request result. Two frontiers are tracked:
 
 - `contiguous_chosen` — highest slot `S` such that every slot in `[1, S]`
   is chosen.
@@ -205,7 +205,7 @@ in `learn` right after the synchronous `apply_entry`, so
 
 **`async_engine_apply`** defers the engine apply off the write critical
 path.** The leader's propose path splits `learn`: the chosen-frontier
-advance and dedup record run **synchronously** (cheap atomics, before
+advance and request-result record run **synchronously** (cheap atomics, before
 `propose` returns `Chosen`), and only `apply_entry` + the applied-frontier
 advance are `tokio::spawn`'d. This keeps `contiguous_chosen` current: a
 subsequent read's `read_slot = contiguous_chosen` reflects the
@@ -411,6 +411,16 @@ Two engine implementations satisfy the surface above. Each is appropriate for a 
 
 The trait surface is engine-agnostic; switching engines is a configuration choice. Both pass the same `compare`-based equivalence tests.
 
+### 9.3 New-member snapshot sessions
+
+Snapshot transfer is exposed as unique, non-clone export and import session
+owners. An exporter pins one stable view and reports its format, covered slot,
+encoded length, body CRC32C, and chunk limit. Reads are sequential by byte
+offset. An importer accepts arbitrary bounded feeds and changes the fresh
+target engine only after `finish` validates the complete portable stream.
+Dropping either owner aborts it. Production transfer supports only the
+crowdb-tree portable format; cross-engine transfer is not supported.
+
 ---
 
 ## 10. Tunables and Defaults
@@ -418,7 +428,7 @@ The trait surface is engine-agnostic; switching engines is a configuration choic
 | Parameter | Default | Range | Notes |
 | --- | --- | --- | --- |
 | `compaction_tick` | 5 min | 10 s – 24 h | Background tombstone sweep cadence |
-| `snapshot_chunk_bytes` | 1 MiB | 64 KiB – 64 MiB | Streaming snapshot chunk size |
+| `snapshot_chunk_bytes` | 1 MiB | 1 B – 1 MiB | New-member snapshot Read payload limit; kept below the 4 MiB RPC frame ceiling |
 | `engine_apply_concurrency` | 1 | 1 – ∞ | Apply is serialized by slot anyway; >1 makes sense only if apply is non-overlapping per-key |
 | `engine_read_concurrency` | unbounded | — | Reads do not contend with apply at the engine level |
 | `tombstone_grace_slots` | 0 | 0 – ∞ | Optional minimum number of slots to keep a tombstone past the GC watermark, for forensics |

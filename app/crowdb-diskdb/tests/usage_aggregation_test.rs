@@ -96,6 +96,9 @@ fn disk_group_aggregate_usage_sums_disks() {
     assert_eq!(u.allocatable_disk_count, 2);
     assert_eq!(u.busy_bytes, 5u64 * u64::from(UNIT_SIZE));
     assert_eq!(u.capacity_bytes, (4u64 * 128) * u64::from(UNIT_SIZE));
+    assert_eq!(u.allocatable_capacity_bytes, u.capacity_bytes);
+    assert_eq!(u.allocatable_busy_bytes, u.busy_bytes);
+    assert_eq!(u.allocatable_free_bytes, u.free_bytes);
     assert_eq!(u.disks.len(), 2);
 }
 
@@ -113,6 +116,9 @@ fn disk_group_aggregate_excludes_bad_from_allocatable() {
     assert_eq!(u.allocatable_disk_count, 1);
     // Bad disk's capacity still counts in the total.
     assert_eq!(u.capacity_bytes, (4u64 * 128) * u64::from(UNIT_SIZE));
+    assert_eq!(u.allocatable_capacity_bytes, (2u64 * 128) * u64::from(UNIT_SIZE));
+    assert_eq!(u.allocatable_busy_bytes, 0);
+    assert_eq!(u.allocatable_free_bytes, u.allocatable_capacity_bytes);
 }
 
 #[test]

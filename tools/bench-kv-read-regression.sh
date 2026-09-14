@@ -130,6 +130,28 @@ run_subtest() {
 #   minslot_16t_verify minslot      16:16 228800   66      100     500     0     corr=0
 #
 # Analysis: doc/design/kv/kv-read-flow-analysis.md § Latest Benchmark Results.
+#
+# Intel i9-7960X (2026-09-10, 16c/32t, Linux 6.11, x86_64):
+#   Same build/config as AMD 2026-09-02. mem-block backend, 10s, 100k
+#   pre-populated keys (group 1), 64B values, 3-node cluster. Zero errors
+#   across all configs (lin_1t startup lease burst is gone on Intel).
+#   Low-concurrency (1T, 6T) 50-83% slower than AMD — per-op overhead is
+#   much higher on Intel. 16T-32T within 6-28% (within 30% gap). minslot
+#   scales better on Intel: minslot_16t is 24% faster than lin_16t (vs
+#   ~equal on AMD). Gaps > 30% documented in
+#   doc/working/regression-perf-review.md.
+#
+#   label              mode        T:C   ops/s    avg_us  p50_us  p99_us  err   notes
+#   lin_1t             linearizable 1:1   6380     151     135     540     0
+#   minslot_1t         minslot      1:1   2157     454     471     712     0
+#   lin_6t             linearizable 6:6   34334    167     161     321     0
+#   minslot_6t         minslot      6:6   33634    170     164     325     0
+#   lin_16t            linearizable 16:16 168911   90      85      175     0
+#   minslot_16t        minslot      16:16 209008   72      70      126     0     +24% vs lin
+#   lin_32t            linearizable 32:32 205674   151     144     321     0
+#   minslot_32t        minslot      32:32 244649   126     124     216     0     +19% vs lin
+#   lin_16t_verify     linearizable 16:16 168670   90      85      175     0     corr=0
+#   minslot_16t_verify minslot      16:16 207835   73      70      129     0     corr=0
 
 echo -e "label\tread_mode\tT:C\tverify\tops_s\tavg_us\tp50_us\tp99_us\tp999_us\terrors\tcorrectness_errors" > "$RESULTS_FILE"
 

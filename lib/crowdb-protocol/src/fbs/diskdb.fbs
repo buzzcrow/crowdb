@@ -224,12 +224,26 @@ table FBFreeBlocksRequest {
     segments:[FBSegment];
 }
 
+enum FBFreeFailureReason : uint8 {
+    NotBusy = 0,
+    IncarnationMismatch = 1,
+    Conflict = 2,
+    Unavailable = 3,
+    OutcomeUnknown = 4,
+}
+
+table FBFreeFailure {
+    segment:FBSegment;
+    reason:FBFreeFailureReason;
+}
+
 table FBFreeResponse {
     id:uint64;
     rpc_create_nano:uint64;
     ret_code:FBDiskdbRetCode;
     error_msg:string;
     freed_count:uint32;
+    failures:[FBFreeFailure];
 }
 
 // ── Commit (two-phase allocate → persist) ────────────────────────

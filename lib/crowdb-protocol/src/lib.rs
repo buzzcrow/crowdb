@@ -6,9 +6,15 @@
 //! Hosts hand-written Rust types (`common`, `diskdb.rpc`, `chunkdb.rpc`,
 //! `diskio.rpc`), the flatbuffer control-message schemas for crowdb-rpc
 //! (`fb`), and utility functions/extension traits for diskdb types
-//! (`diskdb_type_util`).
+//! (`types::diskdb_util`).
 
 mod types;
+
+pub mod chunk_kv;
+pub mod chunk_kv_group_wire;
+pub mod chunk_kv_ordered_wire;
+pub mod chunk_kv_wire;
+pub mod chunk_stream;
 
 pub mod common {
     pub use crate::types::common::*;
@@ -144,6 +150,17 @@ mod chunkdb_generated {
     )]
     include!(concat!(env!("OUT_DIR"), "/chunkdb_generated.rs"));
 }
+mod chunk_kv_generated {
+    #![allow(
+        unsafe_code,
+        clippy::all,
+        clippy::pedantic,
+        dead_code,
+        non_camel_case_types,
+        non_snake_case
+    )]
+    include!(concat!(env!("OUT_DIR"), "/chunk_kv_generated.rs"));
+}
 mod chunk_task_generated {
     #![allow(
         unsafe_code,
@@ -245,6 +262,12 @@ pub mod chunkdb_fb {
     pub use crate::chunkdb_generated::crowdb::rpc::proto::FBInt128;
 }
 
+/// Flatbuffer chunk-KV data-plane control-message types.
+pub mod chunk_kv_fb {
+    pub use crate::chunk_kv_generated::crowdb::chunk_kv::proto::*;
+    pub use crate::chunk_kv_generated::crowdb::rpc::proto::FBInt128;
+}
+
 /// Flatbuffer persistent task value types.
 pub mod chunk_task_fb {
     pub use crate::chunk_task_generated::crowdb::chunkdb::task::*;
@@ -260,8 +283,7 @@ pub use chunk_task_value::{decode_chunk_task_value, encode_chunk_task_value, Chu
 /// pointer — no per-field copy, no owned intermediate struct.
 pub mod fb_wrappers;
 
-pub mod diskdb_type_util;
-pub use diskdb_type_util::{
+pub use crate::types::diskdb_util::{
     disk_id, effective_status, DiskIdExt, HwStatusExt, RecoveryScanProgressValueExt, ZoneAllocationStateExt,
     ZoneValueExt,
 };
@@ -297,12 +319,10 @@ pub use mgmt::{
 pub mod bitmap;
 pub use bitmap::{create_usage_bitmap, UsageBitmap};
 
-pub mod ports;
-pub use ports::{
-    ServicePort, CHUNKDB_HTTP_BASE, CHUNKDB_LISTEN_BASE, CHUNKDB_RPC_BASE, DISKDB_HTTP_BASE,
-    DISKDB_LISTEN_BASE, DISKDB_RPC_BASE, DISKIO_RPC_BASE, KV_SERVER_LISTEN_BASE, KV_SERVER_MGMT_BASE,
-    WEB_BASE,
+pub mod port;
+pub use port::alloc::{PortAllocConfig, PortAllocError};
+pub use port::ports::{
+    ServicePort, CHUNKDB_HTTP_BASE, CHUNKDB_LISTEN_BASE, CHUNKDB_RPC_BASE, CHUNK_KV_HTTP_BASE,
+    CHUNK_KV_RPC_BASE, DISKDB_HTTP_BASE, DISKDB_LISTEN_BASE, DISKDB_RPC_BASE, DISKIO_RPC_BASE,
+    KV_SERVER_LISTEN_BASE, KV_SERVER_MGMT_BASE, WEB_BASE,
 };
-
-pub mod port_alloc;
-pub use port_alloc::{PortAllocConfig, PortAllocError};

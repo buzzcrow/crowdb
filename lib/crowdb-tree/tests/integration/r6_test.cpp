@@ -5,9 +5,9 @@
 // (1) get_async slow path returns a borrowed Slice (no copy),
 // (2) PinnedSnapshot stays consistent across install_snapshot,
 // (3) stale-root pages are freed when the last pin drops (refcount GC).
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
-#include "crowdb-tree/snapshot.h"
+#include "crowdb-tree/snapshot/snapshot.h"
 
 #include <gtest/gtest.h>
 
@@ -41,7 +41,7 @@ std::string make_key(int i)
 TEST(R6, GetAsyncSlowPathReturnsBorrowedSlice)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.leaf_split_bytes = 160;
     opt.frame_bytes      = 4096;
@@ -62,7 +62,8 @@ TEST(R6, GetAsyncSlowPathReturnsBorrowedSlice)
     std::atomic<bool> borrowed{false};
     std::atomic<bool> found{false};
 
-    t.get_async(Slice(k), [&](GetView v) {
+    t.get_async(Slice(k), [&](Status status, GetView v) {
+        EXPECT_TRUE(status.ok()) << status.to_string();
         found.store(v.found(), std::memory_order_relaxed);
         // frame_base() != nullptr iff the value is borrowed from a frame
         // (not an owned copy). The slow path must return a borrowed value.
@@ -85,7 +86,7 @@ TEST(R6, GetAsyncSlowPathReturnsBorrowedSlice)
 TEST(R6, PinnedSnapshotStaysConsistentAcrossInstallSnapshot)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.leaf_split_bytes = 160;
     opt.frame_bytes      = 4096;
@@ -138,7 +139,7 @@ TEST(R6, PinnedSnapshotStaysConsistentAcrossInstallSnapshot)
 TEST(R6, ConcurrentReadersAndInstallSnapshotNoUAF)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.leaf_split_bytes = 160;
     opt.frame_bytes      = 4096;
@@ -190,7 +191,7 @@ TEST(R6, ConcurrentReadersAndInstallSnapshotNoUAF)
             for (int j = 0; j < 20; ++j) {
                 std::string k = make_key(j);
                 std::string v = "v" + std::to_string(i) + "_" + std::to_string(j);
-                entries.push_back({k, encode_cell_buf((i * 100) + j, OpKind::kPut, Slice(v))});
+                entries.push_back({.key = k, .cell = encode_cell_buf((i * 100) + j, OpKind::kPut, Slice(v))});
             }
             if (!t.install_snapshot(std::move(entries), (i * 100) + 20).ok()) {
                 bad.store(true, std::memory_order_relaxed);

@@ -17,7 +17,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use flatbuffers::FlatBufferBuilder;
 
 use crowdb_protocol::chunkdb::rpc::{
@@ -25,9 +24,9 @@ use crowdb_protocol::chunkdb::rpc::{
     AppendChunkResponse, Chunk, ChunkState as ProtoChunkState, ChunkStrip, ChunkType as ProtoChunkType,
     CompleteMirrorToEcConversionResponse, DeleteChunkRangeResponse, DeleteChunkResponse,
     DiscardReplacementSegmentResponse, ListChunksResponse, MutateStripReservationResponse,
-    PrepareMirrorToEcConversionResponse, QueryChunkResponse, ReplaceChunkStripRangeResponse,
-    ReserveStripGroupResponse, SealChunkResponse, StripCleanupIntent, StripReservationAction,
-    StripReservationGroup, StripReservationState, StripType as ProtoStripType,
+    PlacementAssessment, PlacementPriority, PrepareMirrorToEcConversionResponse, QueryChunkResponse,
+    ReplaceChunkStripRangeResponse, ReserveStripGroupResponse, SealChunkResponse, StripCleanupIntent,
+    StripReservationAction, StripReservationGroup, StripReservationState, StripType as ProtoStripType,
     TriggerConversionBatchResponse, TriggerConversionResponse, UpdateChunkStripResponse,
 };
 use crowdb_protocol::chunkdb::rpc::{EcState as ProtoEcState, EcStrip, MirrorStrip, Strip as ProtoStrip};
@@ -40,15 +39,16 @@ use crowdb_protocol::chunkdb_fb::{
     FBDeleteChunkRequest, FBDeleteChunkRequestArgs, FBDiscardReplacementSegmentRequest,
     FBDiscardReplacementSegmentRequestArgs, FBDiscardReplacementSegmentResponse, FBInt128,
     FBListChunksRequest, FBListChunksRequestArgs, FBMutateStripReservationRequest,
-    FBMutateStripReservationRequestArgs, FBMutateStripReservationResponse,
-    FBPrepareMirrorToEcConversionRequest, FBPrepareMirrorToEcConversionRequestArgs,
-    FBPrepareMirrorToEcConversionResponse, FBQueryChunkRequest, FBQueryChunkRequestArgs,
-    FBReplaceChunkStripRangeRequest, FBReplaceChunkStripRangeRequestArgs, FBReserveStripGroupRequest,
-    FBReserveStripGroupRequestArgs, FBReserveStripGroupResponse, FBSealChunkRequest, FBSealChunkRequestArgs,
-    FBSegment, FBStripBody, FBStripReservationAction, FBStripReservationGroup, FBStripReservationState,
-    FBStripType, FBTriggerConversionBatchRequest, FBTriggerConversionBatchRequestArgs,
-    FBTriggerConversionBatchResponse, FBTriggerConversionRequest, FBTriggerConversionRequestArgs,
-    FBTriggerConversionResponse, FBUpdateChunkStripRequest, FBUpdateChunkStripRequestArgs,
+    FBMutateStripReservationRequestArgs, FBMutateStripReservationResponse, FBPlacementAssessment,
+    FBPlacementAssessmentArgs, FBPlacementPriority, FBPrepareMirrorToEcConversionRequest,
+    FBPrepareMirrorToEcConversionRequestArgs, FBPrepareMirrorToEcConversionResponse, FBQueryChunkRequest,
+    FBQueryChunkRequestArgs, FBReplaceChunkStripRangeRequest, FBReplaceChunkStripRangeRequestArgs,
+    FBReserveStripGroupRequest, FBReserveStripGroupRequestArgs, FBReserveStripGroupResponse,
+    FBSealChunkRequest, FBSealChunkRequestArgs, FBSegment, FBStripBody, FBStripReservationAction,
+    FBStripReservationGroup, FBStripReservationState, FBStripType, FBTriggerConversionBatchRequest,
+    FBTriggerConversionBatchRequestArgs, FBTriggerConversionBatchResponse, FBTriggerConversionRequest,
+    FBTriggerConversionRequestArgs, FBTriggerConversionResponse, FBUpdateChunkStripRequest,
+    FBUpdateChunkStripRequestArgs,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::fb::FBMsgType;
@@ -56,7 +56,10 @@ use crowdb_protocol::fb_wrappers::chunkdb::{
     FBAdvanceChunkWriteResponseRef, FBAllocateChunkResponseRef, FBAppendChunkResponseRef,
     FBDeleteChunkRangeResponseRef, FBListChunksResponseRef, FBQueryChunkResponseRef,
 };
-use crowdb_rpc_ffi::{Buffer, Connection, RpcClient, RpcError, RpcServer};
+use crowdb_rpc_ffi::{
+    Buffer, ConnectionPoolError, ConnectionPoolIndex, OwnedClientRoute, RpcClient, RpcError, RpcServer,
+    SelectedConnection,
+};
 
 use crate::{ChunkdbClientError, Result};
 
@@ -66,9 +69,7 @@ use crate::{ChunkdbClientError, Result};
 pub struct ChunkdbRpcTransport {
     server: Arc<RpcServer>,
     rpc: Arc<RpcClient>,
-    connections: DashMap<String, Vec<Connection>>,
-    pool_size: usize,
-    conn_rr: AtomicU64,
+    connections: ConnectionPoolIndex,
     next_req_id: AtomicU64,
 }
 
@@ -112,9 +113,7 @@ impl ChunkdbRpcTransport {
         Self {
             server,
             rpc,
-            connections: DashMap::new(),
-            pool_size: pool_size.max(1),
-            conn_rr: AtomicU64::new(0),
+            connections: ConnectionPoolIndex::new(pool_size, None),
             next_req_id: AtomicU64::new(1),
         }
     }
@@ -124,27 +123,36 @@ impl ChunkdbRpcTransport {
     }
 
     /// Get or create a `Connection` for the given rpc endpoint.
-    fn conn_for(&self, rpc_endpoint: &str) -> Result<Connection> {
+    fn conn_for(&self, rpc_endpoint: &str) -> Result<SelectedConnection> {
         let normalized = normalize_endpoint(rpc_endpoint);
-        if let Some(conns) = self.connections.get(&normalized) {
-            if conns.len() == self.pool_size {
-                let index = rr_index(&self.conn_rr, conns.len());
-                return Ok(conns[index].clone());
-            }
-        }
         let (host, port) = parse_endpoint(&normalized).map_err(|reason| {
             ChunkdbClientError::Unreachable(format!("invalid endpoint {rpc_endpoint}: {reason}"))
         })?;
-        let mut entry = self.connections.entry(normalized).or_default();
-        while entry.len() < self.pool_size {
-            let conn = self.server.connect(&host, port).map_err(|e| {
-                ChunkdbClientError::Unreachable(format!("rpc connect to {host}:{port}: {e:?}"))
-            })?;
-            self.rpc.attach(&conn);
-            entry.push(conn);
-        }
-        let index = rr_index(&self.conn_rr, entry.len());
-        Ok(entry[index].clone())
+        self.connections
+            .get_or_try_install(&normalized, || {
+                let conn = self.server.connect(&host, port).map_err(|error| {
+                    ChunkdbClientError::Unreachable(format!("rpc connect to {host}:{port}: {error:?}"))
+                })?;
+                self.rpc.attach(&conn);
+                Ok(conn)
+            })
+            .map_err(|error| match error {
+                ConnectionPoolError::Connect(error) => error,
+                ConnectionPoolError::Capacity { max_endpoints } => ChunkdbClientError::Unreachable(format!(
+                    "endpoint connection limit {max_endpoints} reached"
+                )),
+            })
+    }
+
+    /// Resolve an endpoint and retain every crowdb-rpc owner needed by a
+    /// higher-level FFI transport.
+    pub fn owned_route(&self, rpc_endpoint: &str) -> Result<OwnedClientRoute> {
+        let connection = self.conn_for(rpc_endpoint)?;
+        Ok(OwnedClientRoute::new(
+            Arc::clone(&self.rpc),
+            Arc::clone(&self.server),
+            connection.into_connection(),
+        ))
     }
 
     // ── AllocateChunk ─────────────────────────────────────────────
@@ -160,6 +168,7 @@ impl ChunkdbRpcTransport {
         let conn = self.conn_for(rpc_endpoint)?;
         let mut builder = FlatBufferBuilder::new();
         let chunk_id_off = req.chunk_id.as_ref().map(|id| FBInt128::new(id.high, id.low));
+        let owner_key = (!req.owner_key.is_empty()).then(|| builder.create_vector(&req.owner_key));
         let args = FBAllocateChunkRequestArgs {
             id: req_id,
             rpc_create_nano: 0,
@@ -177,21 +186,13 @@ impl ChunkdbRpcTransport {
             ),
             writer_epoch: req.writer_epoch,
             writer_lease_ms: req.writer_lease_ms,
+            owner_key,
         };
         let fb_req = FBAllocateChunkRequest::create(&mut builder, &args);
         builder.finish(fb_req, None);
         let control = Buffer::from_bytes(builder.finished_data());
         let msg_type = FBMsgType::EAllocateChunkRequest.0 as u16;
-        let resp = call_rpc(
-            &self.rpc,
-            &self.server,
-            &conn,
-            req_id,
-            control,
-            msg_type,
-            rpc_endpoint,
-        )
-        .await?;
+        let resp = call_rpc(self, &conn, req_id, control, msg_type, rpc_endpoint).await?;
         let r = FBAllocateChunkResponseRef::new(resp.bytes());
         if !r.valid() {
             return Err(ChunkdbClientError::Rpc(
@@ -229,8 +230,7 @@ impl ChunkdbRpcTransport {
         );
         builder.finish(fb_req, None);
         let response = call_rpc(
-            &self.rpc,
-            &self.server,
+            self,
             &conn,
             req_id,
             Buffer::from_bytes(builder.finished_data()),
@@ -280,16 +280,7 @@ impl ChunkdbRpcTransport {
         builder.finish(fb_req, None);
         let control = Buffer::from_bytes(builder.finished_data());
         let msg_type = FBMsgType::EAppendChunkRequest.0 as u16;
-        let resp = call_rpc(
-            &self.rpc,
-            &self.server,
-            &conn,
-            req_id,
-            control,
-            msg_type,
-            rpc_endpoint,
-        )
-        .await?;
+        let resp = call_rpc(self, &conn, req_id, control, msg_type, rpc_endpoint).await?;
         let r = FBAppendChunkResponseRef::new(resp.bytes());
         if !r.valid() {
             return Err(ChunkdbClientError::Rpc("append_chunk response malformed".into()));
@@ -335,8 +326,7 @@ impl ChunkdbRpcTransport {
         );
         builder.finish(request, None);
         let response = call_rpc(
-            &self.rpc,
-            &self.server,
+            self,
             &conn,
             req_id,
             Buffer::from_bytes(builder.finished_data()),
@@ -394,8 +384,7 @@ impl ChunkdbRpcTransport {
         );
         builder.finish(request, None);
         let response = call_rpc(
-            &self.rpc,
-            &self.server,
+            self,
             &conn,
             req_id,
             Buffer::from_bytes(builder.finished_data()),
@@ -433,16 +422,7 @@ impl ChunkdbRpcTransport {
         builder.finish(fb_req, None);
         let control = Buffer::from_bytes(builder.finished_data());
         let msg_type = FBMsgType::EQueryChunkRequest.0 as u16;
-        let resp = call_rpc(
-            &self.rpc,
-            &self.server,
-            &conn,
-            req_id,
-            control,
-            msg_type,
-            rpc_endpoint,
-        )
-        .await?;
+        let resp = call_rpc(self, &conn, req_id, control, msg_type, rpc_endpoint).await?;
         let r = FBQueryChunkResponseRef::new(resp.bytes());
         if !r.valid() {
             return Err(ChunkdbClientError::Rpc("query_chunk response malformed".into()));
@@ -476,16 +456,7 @@ impl ChunkdbRpcTransport {
         builder.finish(fb_req, None);
         let control = Buffer::from_bytes(builder.finished_data());
         let msg_type = FBMsgType::ESealChunkRequest.0 as u16;
-        let resp = call_rpc(
-            &self.rpc,
-            &self.server,
-            &conn,
-            req_id,
-            control,
-            msg_type,
-            rpc_endpoint,
-        )
-        .await?;
+        let resp = call_rpc(self, &conn, req_id, control, msg_type, rpc_endpoint).await?;
         let r = FBAllocateChunkResponseRef::new(resp.bytes());
         if !r.valid() {
             return Err(ChunkdbClientError::Rpc("seal_chunk response malformed".into()));
@@ -517,16 +488,7 @@ impl ChunkdbRpcTransport {
         builder.finish(fb_req, None);
         let control = Buffer::from_bytes(builder.finished_data());
         let msg_type = FBMsgType::EDeleteChunkRequest.0 as u16;
-        let resp = call_rpc(
-            &self.rpc,
-            &self.server,
-            &conn,
-            req_id,
-            control,
-            msg_type,
-            rpc_endpoint,
-        )
-        .await?;
+        let resp = call_rpc(self, &conn, req_id, control, msg_type, rpc_endpoint).await?;
         let r = FBAllocateChunkResponseRef::new(resp.bytes());
         if !r.valid() {
             return Err(ChunkdbClientError::Rpc("delete_chunk response malformed".into()));
@@ -560,16 +522,7 @@ impl ChunkdbRpcTransport {
         builder.finish(fb_req, None);
         let control = Buffer::from_bytes(builder.finished_data());
         let msg_type = FBMsgType::EDeleteChunkRangeRequest.0 as u16;
-        let resp = call_rpc(
-            &self.rpc,
-            &self.server,
-            &conn,
-            req_id,
-            control,
-            msg_type,
-            rpc_endpoint,
-        )
-        .await?;
+        let resp = call_rpc(self, &conn, req_id, control, msg_type, rpc_endpoint).await?;
         let r = FBDeleteChunkRangeResponseRef::new(resp.bytes());
         if !r.valid() {
             return Err(ChunkdbClientError::Rpc(
@@ -607,16 +560,7 @@ impl ChunkdbRpcTransport {
         builder.finish(fb_req, None);
         let control = Buffer::from_bytes(builder.finished_data());
         let msg_type = FBMsgType::EUpdateChunkStripRequest.0 as u16;
-        let resp = call_rpc(
-            &self.rpc,
-            &self.server,
-            &conn,
-            req_id,
-            control,
-            msg_type,
-            rpc_endpoint,
-        )
-        .await?;
+        let resp = call_rpc(self, &conn, req_id, control, msg_type, rpc_endpoint).await?;
         let r = FBAllocateChunkResponseRef::new(resp.bytes());
         if !r.valid() {
             return Err(ChunkdbClientError::Rpc(
@@ -660,8 +604,7 @@ impl ChunkdbRpcTransport {
         );
         builder.finish(request, None);
         let response = call_rpc(
-            &self.rpc,
-            &self.server,
+            self,
             &conn,
             req_id,
             Buffer::from_bytes(builder.finished_data()),
@@ -698,8 +641,7 @@ impl ChunkdbRpcTransport {
         );
         builder.finish(request, None);
         let response = call_rpc(
-            &self.rpc,
-            &self.server,
+            self,
             &conn,
             req_id,
             Buffer::from_bytes(builder.finished_data()),
@@ -750,8 +692,7 @@ impl ChunkdbRpcTransport {
         );
         builder.finish(request, None);
         let response = call_rpc(
-            &self.rpc,
-            &self.server,
+            self,
             &conn,
             req_id,
             Buffer::from_bytes(builder.finished_data()),
@@ -801,8 +742,7 @@ impl ChunkdbRpcTransport {
         );
         builder.finish(request, None);
         let response = call_rpc(
-            &self.rpc,
-            &self.server,
+            self,
             &conn,
             req_id,
             Buffer::from_bytes(builder.finished_data()),
@@ -850,8 +790,7 @@ impl ChunkdbRpcTransport {
         );
         builder.finish(request, None);
         let response = call_rpc(
-            &self.rpc,
-            &self.server,
+            self,
             &conn,
             req_id,
             Buffer::from_bytes(builder.finished_data()),
@@ -890,8 +829,7 @@ impl ChunkdbRpcTransport {
         );
         builder.finish(request, None);
         let response = call_rpc(
-            &self.rpc,
-            &self.server,
+            self,
             &conn,
             req_id,
             Buffer::from_bytes(builder.finished_data()),
@@ -926,8 +864,7 @@ impl ChunkdbRpcTransport {
         );
         builder.finish(request, None);
         let response = call_rpc(
-            &self.rpc,
-            &self.server,
+            self,
             &conn,
             req_id,
             Buffer::from_bytes(builder.finished_data()),
@@ -966,16 +903,7 @@ impl ChunkdbRpcTransport {
         builder.finish(fb_req, None);
         let control = Buffer::from_bytes(builder.finished_data());
         let msg_type = FBMsgType::EListChunksRequest.0 as u16;
-        let resp = call_rpc(
-            &self.rpc,
-            &self.server,
-            &conn,
-            req_id,
-            control,
-            msg_type,
-            rpc_endpoint,
-        )
-        .await?;
+        let resp = call_rpc(self, &conn, req_id, control, msg_type, rpc_endpoint).await?;
         let r = FBListChunksResponseRef::new(resp.bytes());
         if !r.valid() {
             return Err(ChunkdbClientError::Rpc("list_chunks response malformed".into()));
@@ -993,11 +921,6 @@ impl ChunkdbRpcTransport {
     }
 }
 
-fn rr_index(counter: &AtomicU64, len: usize) -> usize {
-    let len_u64 = u64::try_from(len).unwrap_or(u64::MAX);
-    usize::try_from(counter.fetch_add(1, Ordering::Relaxed) % len_u64).unwrap_or(0)
-}
-
 impl Default for ChunkdbRpcTransport {
     fn default() -> Self {
         Self::new()
@@ -1008,18 +931,34 @@ impl Default for ChunkdbRpcTransport {
 
 /// Execute a crowdb-rpc call and return the control buffer.
 async fn call_rpc(
-    rpc: &RpcClient,
-    server: &RpcServer,
-    conn: &Connection,
+    transport: &ChunkdbRpcTransport,
+    selected: &SelectedConnection,
     req_id: u64,
     control: Buffer,
     msg_type: u16,
     rpc_endpoint: &str,
 ) -> Result<Buffer> {
-    let fut = rpc
-        .call(server, conn, req_id, control, None, msg_type)
-        .map_err(rpc_error_to_client)?;
-    let resp = fut.await.map_err(rpc_error_to_client)?;
+    let normalized = normalize_endpoint(rpc_endpoint);
+    let map_error = |error: RpcError| {
+        if error.is_retryable() {
+            transport
+                .connections
+                .invalidate(&normalized, selected.generation());
+        }
+        rpc_error_to_client(error)
+    };
+    let fut = transport
+        .rpc
+        .call(
+            &transport.server,
+            selected.connection(),
+            req_id,
+            control,
+            None,
+            msg_type,
+        )
+        .map_err(&map_error)?;
+    let resp = fut.await.map_err(map_error)?;
     resp.control.ok_or_else(|| {
         ChunkdbClientError::Rpc(format!("response missing control buffer from {rpc_endpoint}"))
     })
@@ -1096,6 +1035,10 @@ fn parse_fb_chunk(fb: &crowdb_protocol::chunkdb_fb::FBChunk<'_>) -> Chunk {
             high: id.high(),
             low: id.low(),
         }),
+        owner_key: fb
+            .owner_key()
+            .map(|value| value.iter().collect())
+            .unwrap_or_default(),
     }
 }
 
@@ -1194,6 +1137,22 @@ fn parse_fb_chunk_strip(fb: &FBChunkStrip<'_>) -> ChunkStrip {
         strip,
         usage_bitmap,
         unavailable_segments: parse_fb_segments(fb.unavailable_segments()),
+        placement_priority: match fb.placement_priority() {
+            FBPlacementPriority::NodeFirst => PlacementPriority::NodeFirst as i32,
+            _ => PlacementPriority::RackFirst as i32,
+        },
+        placement_assessment: fb.placement_assessment().map(|assessment| PlacementAssessment {
+            loss_budget: assessment.loss_budget(),
+            max_fragments_per_rack: assessment.max_fragments_per_rack(),
+            max_fragments_per_node: assessment.max_fragments_per_node(),
+            max_fragments_per_disk: assessment.max_fragments_per_disk(),
+            rack_protected: assessment.rack_protected(),
+            node_protected: assessment.node_protected(),
+            disk_protected: assessment.disk_protected(),
+            topology_generation: assessment.topology_generation(),
+            usage_fresh: assessment.usage_fresh(),
+        }),
+        placement_repair_required: fb.placement_repair_required(),
     }
 }
 
@@ -1273,6 +1232,22 @@ fn build_chunk_strip_offset<'a>(
     let unavailable_values: Vec<_> = strip.unavailable_segments.iter().map(build_fb_segment).collect();
     let unavailable_segments =
         (!unavailable_values.is_empty()).then(|| fbb.create_vector(&unavailable_values));
+    let placement_assessment = strip.placement_assessment.as_ref().map(|assessment| {
+        FBPlacementAssessment::create(
+            fbb,
+            &FBPlacementAssessmentArgs {
+                loss_budget: assessment.loss_budget,
+                max_fragments_per_rack: assessment.max_fragments_per_rack,
+                max_fragments_per_node: assessment.max_fragments_per_node,
+                max_fragments_per_disk: assessment.max_fragments_per_disk,
+                rack_protected: assessment.rack_protected,
+                node_protected: assessment.node_protected,
+                disk_protected: assessment.disk_protected,
+                topology_generation: assessment.topology_generation,
+                usage_fresh: assessment.usage_fresh,
+            },
+        )
+    });
     FBChunkStrip::create(
         fbb,
         &FBChunkStripArgs {
@@ -1288,6 +1263,13 @@ fn build_chunk_strip_offset<'a>(
             strip_body: body_off,
             usage_bitmap: usage_bitmap_off,
             unavailable_segments,
+            placement_priority: if strip.placement_priority == PlacementPriority::NodeFirst as i32 {
+                FBPlacementPriority::NodeFirst
+            } else {
+                FBPlacementPriority::RackFirst
+            },
+            placement_assessment,
+            placement_repair_required: strip.placement_repair_required,
         },
     )
 }
@@ -1389,6 +1371,7 @@ fn chunk_type_to_fb(t: ProtoChunkType) -> FBChunkType {
         ProtoChunkType::Wal => FBChunkType::Wal,
         ProtoChunkType::BtreePage => FBChunkType::BtreePage,
         ProtoChunkType::PageIndex => FBChunkType::PageIndex,
+        ProtoChunkType::Stream => FBChunkType::Stream,
     }
 }
 
@@ -1397,6 +1380,7 @@ fn fb_chunk_type_to_proto(t: FBChunkType) -> ProtoChunkType {
         FBChunkType::Wal => ProtoChunkType::Wal,
         FBChunkType::BtreePage => ProtoChunkType::BtreePage,
         FBChunkType::PageIndex => ProtoChunkType::PageIndex,
+        FBChunkType::Stream => ProtoChunkType::Stream,
         _ => ProtoChunkType::Repo,
     }
 }

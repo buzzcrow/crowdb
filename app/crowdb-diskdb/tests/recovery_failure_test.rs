@@ -20,7 +20,7 @@ async fn failed_recovery_does_not_return_writable_disk_group() {
         backoff_max: Duration::from_millis(10),
     };
     let kv = CrowdbKvClient::new(config);
-    let port = crowdb_protocol::port_alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerListen);
+    let port = crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerListen);
     kv.seed_leader(0, 999, format!("127.0.0.1:{port}"));
     let loader = ZoneLoader::new(Arc::new(DdbKvClient::new(kv)), 1);
     let disk = DiskValue {

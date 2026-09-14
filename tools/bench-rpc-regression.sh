@@ -87,6 +87,27 @@
 #   1    1T:1C      tokio      off    28,062       34     100    100     null   0
 #   4    64T:4C     tokio      off    492,924      126    500    500     null   0
 #   16   1,000T:32C tokio      off    988,956      999    1000   5000    null   0
+#
+# Intel i9-7960X (2026-09-10, 16c/32t, Linux 6.11, x86_64):
+#   Same build/config as AMD 2026-09-02. 128B, 20s, standalone server
+#   over epoll loopback. Zero errors across all configs. 1T:1C 42-63%
+#   slower (per-op overhead higher on Intel). 64T+ within 3-25%, with
+#   512T/1000T coroutine nagle-off and 1000T tokio actually FASTER on
+#   Intel (higher memory bandwidth at saturation). p50/p99 are exact
+#   (not coarser 100/500us buckets like AMD). Gaps > 30% documented in
+#   doc/working/regression-perf-review.md.
+#
+#   Wkr  Load       Mode       Nagle  ops/s        avg    p50    p99     p999   err
+#   1    1T:1C      coroutine  off    29,231       32     65     66      null   0
+#   1    1T:1C      tokio      off    10,411       90     88     146     null   0
+#   4    64T:4C     coroutine  off    455,572      139    112    372     null   0
+#   4    64T:4C     tokio      off    369,145      169    139    610     null   0
+#   8    512T:8C    coroutine  off    891,668      572    475    1310    null   0
+#   16   1,000T:32C coroutine  off    1,422,928    699    342    5734    null   0
+#   16   1,000T:32C tokio      off    1,045,067    950    749    3719    null   0
+#   4    64T:4C     coroutine  on     762,575      82     71     225     null   0
+#   8    512T:8C    coroutine  on     1,501,914    338    268    1171    null   0
+#   16   1,000T:32C coroutine  on     2,056,895    482    364    1720    null   0
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

@@ -35,6 +35,7 @@ TEST(HandlerRegistryTest, ConcurrentLookupAndLateRegistrationSeeCompleteTables)
     std::atomic<bool>        stop{false};
     std::atomic<bool>        missing_initial{false};
     std::vector<std::thread> readers;
+    readers.reserve(8);
     for (int i = 0; i < 8; ++i) {
         readers.emplace_back([&] {
             while (!stop.load(std::memory_order_acquire)) {
@@ -104,7 +105,7 @@ TEST(RpcServerTest, FullLoopbackHandlerDispatch)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     EXPECT_TRUE(handler_called.load(std::memory_order_acquire));
-    EXPECT_EQ(recv_msg_type, 100u);
+    EXPECT_EQ(recv_msg_type, 100U);
 
     ::close(client_fd);
     server.stop();
@@ -129,14 +130,14 @@ TEST(RpcServerTest, MultipleConnections)
 
     // Connect 3 clients and send a frame from each.
     int fds[3];
-    for (int i = 0; i < 3; i++) {
-        fds[i] = ::socket(AF_INET, SOCK_STREAM, 0);
-        ASSERT_GE(fds[i], 0);
+    for (int &fd : fds) {
+        fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        ASSERT_GE(fd, 0);
         struct sockaddr_in addr{};
         addr.sin_family      = AF_INET;
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         addr.sin_port        = htons(static_cast<uint16_t>(port));
-        ASSERT_EQ(::connect(fds[i], reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr)), 0);
+        ASSERT_EQ(::connect(fd, reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr)), 0);
 
         Header h;
         h.msg_type  = 200;
@@ -145,7 +146,7 @@ TEST(RpcServerTest, MultipleConnections)
         uint8_t buf[crowdb::rpc::HEADER_SIZE + 8];
         crowdb::rpc::serialize_header(buf, h);
         std::memset(buf + crowdb::rpc::HEADER_SIZE, 0xCD, 8);
-        ::write(fds[i], buf, sizeof(buf));
+        ::write(fd, buf, sizeof(buf));
     }
 
     // Wait for all 3 handlers to fire.
@@ -154,8 +155,8 @@ TEST(RpcServerTest, MultipleConnections)
     }
     EXPECT_EQ(handler_count.load(std::memory_order_acquire), 3);
 
-    for (int i = 0; i < 3; i++) {
-        ::close(fds[i]);
+    for (int fd : fds) {
+        ::close(fd);
     }
     server.stop();
 }

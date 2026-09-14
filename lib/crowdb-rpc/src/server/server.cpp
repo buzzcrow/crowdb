@@ -159,7 +159,7 @@ void RpcServer::handle_accept(int listen_fd)
 
         int nodelay = transport_->tcp_nodelay() ? 1 : 0;
         ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
-#if defined(__linux__)
+#ifdef __linux__
         // TCP_QUICKACK breaks the Nagle + delayed-ACK deadlock (40ms
         // stalls per round). Controlled by set_quickack() — independent
         // of Nagle. QUICKACK is not sticky — re-armed after each read.

@@ -25,7 +25,7 @@ inline std::string test_tmp_root()
     // the crowdb-tree root is two levels up from the test source dir.
     // At runtime we use a fixed path relative to the repo for determinism.
     static const char *env = std::getenv("CROWDB_TREE_TEST_TMP");
-    if (env && env[0] != '\0') {
+    if ((env != nullptr) && env[0] != '\0') {
         return env;
     }
     return ".test-tmp";

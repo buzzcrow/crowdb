@@ -52,7 +52,7 @@ void set_current_thread_name(const char *name)
             break;
         }
     }
-#    if defined(__APPLE__)
+#    ifdef __APPLE__
     pthread_setname_np(name);
 #    elif defined(__linux__)
     pthread_setname_np(pthread_self(), name);
@@ -96,13 +96,13 @@ bool logging_enabled()
 
 bool logger_initialized()
 {
-    std::lock_guard<std::mutex> lk(g_log_mu);
+    std::scoped_lock lk(g_log_mu);
     return g_logger != nullptr;
 }
 
 void flush_logging()
 {
-    std::lock_guard<std::mutex> lk(g_log_mu);
+    std::scoped_lock lk(g_log_mu);
     if (g_logger) {
         g_logger->flush();
     }
@@ -110,7 +110,7 @@ void flush_logging()
 
 void shutdown_logging()
 {
-    std::lock_guard<std::mutex> lk(g_log_mu);
+    std::scoped_lock lk(g_log_mu);
     if (!g_enabled.exchange(false)) {
         return; // never initialized (or already shut down)
     }
@@ -133,7 +133,7 @@ void init_logging(const std::string &log_dir, const std::string &level, size_t m
     // Reset any prior logger so a fresh init (e.g. a second open() with a
     // different dir) rebinds cleanly.
     shutdown_logging();
-    std::lock_guard<std::mutex> lk(g_log_mu);
+    std::scoped_lock lk(g_log_mu);
     try {
         if (log_dir.empty()) {
             // No log dir configured: log to stderr so output is visible (tests, CLI).
@@ -189,7 +189,7 @@ void init_logging(const std::string &log_dir, const std::string &level, size_t m
 
 void add_log_file(const std::string &log_dir, size_t max_file_mb, size_t max_files, const std::string &file_prefix)
 {
-    std::lock_guard<std::mutex> lk(g_log_mu);
+    std::scoped_lock lk(g_log_mu);
     if (!g_logger) {
         return; // never initialized — no-op
     }
@@ -220,7 +220,7 @@ void add_log_file(const std::string &log_dir, size_t max_file_mb, size_t max_fil
 
 void add_log_stderr(const std::string &level)
 {
-    std::lock_guard<std::mutex> lk(g_log_mu);
+    std::scoped_lock lk(g_log_mu);
     if (!g_logger) {
         return;
     }

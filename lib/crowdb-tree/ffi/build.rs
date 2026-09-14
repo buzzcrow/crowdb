@@ -7,6 +7,7 @@
 // to identity (stored raw) and the build needs no system LZ4.
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn collect_cc(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     for entry in fs::read_dir(dir)? {
@@ -45,6 +46,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .join("cpp");
     let common_src = common.join("src");
     let common_include = common.join("include");
+    let stdexec_include = engine
+        .parent()
+        .and_then(|p| p.parent())
+        .ok_or("crowdb-tree must be under the repository lib directory")?
+        .join("third-party")
+        .join("stdexec")
+        .join("include");
+    let repository = engine
+        .parent()
+        .and_then(|path| path.parent())
+        .ok_or("crowdb-tree must be under the repository lib directory")?;
+    let rpc = repository.join("lib").join("crowdb-rpc");
+    let protocol_fbs = repository
+        .join("lib")
+        .join("crowdb-protocol")
+        .join("src")
+        .join("fbs");
+    let rpc_generated = PathBuf::from(std::env::var("OUT_DIR")?).join("crowdb-tree-rpc-generated");
+    fs::create_dir_all(&rpc_generated)?;
+    let schemas = [
+        "ret_code.fbs",
+        "msg_type.fbs",
+        "common_type.fbs",
+        "common_msg.fbs",
+        "diskdb.fbs",
+        "diskio.fbs",
+        "chunkdb.fbs",
+    ];
+    let mut flatc = Command::new("flatc");
+    flatc.arg("--cpp").arg("-o").arg(&rpc_generated);
+    for schema in schemas {
+        let path = protocol_fbs.join(schema);
+        flatc.arg(&path);
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+    if !flatc.status()?.success() {
+        return Err("flatc --cpp failed for crowdb-tree chunk RPC schemas".into());
+    }
 
     let mut files = Vec::new();
     collect_cc(&src, &mut files)?;
@@ -61,7 +100,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .debug(false)
         .flag("-g1")
         .include(&include)
+        .include(&src)
         .include(&common_include)
+        .include(rpc.join("include"))
+        .include(&rpc_generated)
+        .flag(format!("-isystem{}", stdexec_include.display()))
         .warnings(false);
 
     // The engine now includes Abseil headers (absl::btree_map in the MemTable,
@@ -106,11 +149,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the compiled set entirely when not found, mirroring
     // crowdb-common/cpp/CMakeLists.txt's CROWDB_HAVE_LIBURING gate exactly
     // (same reasoning: macOS dev-path note).
+    let disable_liburing = std::env::var("CROWDB_DISABLE_LIBURING").as_deref() == Ok("1");
     let liburing_dir = conda_prefix.as_ref().filter(|prefix| {
-        prefix.join("include").join("liburing.h").is_file()
+        !disable_liburing
+            && prefix.join("include").join("liburing.h").is_file()
             && (prefix.join("lib").join("liburing.so").is_file()
                 || prefix.join("lib").join("liburing.a").is_file())
     });
+    println!("cargo:rerun-if-env-changed=CROWDB_DISABLE_LIBURING");
     if liburing_dir.is_none() {
         files.retain(|f| {
             !matches!(
@@ -214,6 +260,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}");
     }
     println!("cargo:rerun-if-changed={}", include.display());
+    println!("cargo:rerun-if-changed={}", stdexec_include.display());
     println!("cargo:rerun-if-env-changed=CROWDB_TREE_LZ4_LIB");
     println!("cargo:rerun-if-env-changed=CONDA_PREFIX");
     Ok(())

@@ -112,12 +112,12 @@ pub async fn start_test_server_at(
 ) -> std_io::Result<ServerHandle> {
     // Allocate ports via the flock-coordinated port allocator.
     // Port 0 is not allowed — allocate from the service ranges.
-    let mgmt_port = crowdb_protocol::port_alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerMgmt);
+    let mgmt_port = crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerMgmt);
     let alloc_ports: Vec<u16> = ports
         .iter()
         .map(|&p| {
             if p == 0 {
-                crowdb_protocol::port_alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerListen)
+                crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerListen)
             } else {
                 p
             }

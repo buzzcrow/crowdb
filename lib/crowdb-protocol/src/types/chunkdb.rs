@@ -73,14 +73,31 @@ impl_enum_conversions!(StripType, Mirror = 0, Ec = 1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default)]
 #[repr(i32)]
+pub enum PlacementPriority {
+    #[default]
+    RackFirst = 0,
+    NodeFirst = 1,
+}
+impl_enum_conversions!(PlacementPriority, RackFirst = 0, NodeFirst = 1);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[repr(i32)]
 pub enum ChunkType {
     #[default]
     Repo = 0,
     Wal = 1,
     BtreePage = 2,
     PageIndex = 3,
+    Stream = 4,
 }
-impl_enum_conversions!(ChunkType, Repo = 0, Wal = 1, BtreePage = 2, PageIndex = 3);
+impl_enum_conversions!(
+    ChunkType,
+    Repo = 0,
+    Wal = 1,
+    BtreePage = 2,
+    PageIndex = 3,
+    Stream = 4
+);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[repr(i32)]
@@ -140,6 +157,19 @@ pub enum Strip {
     EcStrip(EcStrip),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PlacementAssessment {
+    pub loss_budget: u32,
+    pub max_fragments_per_rack: u32,
+    pub max_fragments_per_node: u32,
+    pub max_fragments_per_disk: u32,
+    pub rack_protected: bool,
+    pub node_protected: bool,
+    pub disk_protected: bool,
+    pub topology_generation: u64,
+    pub usage_fresh: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct ChunkStrip {
     pub chunk_offset: u32,
@@ -154,6 +184,15 @@ pub struct ChunkStrip {
     pub usage_bitmap: Vec<u8>,
     /// Replica identities known unavailable until background recovery.
     pub unavailable_segments: Vec<Segment>,
+    /// Policy selected when the strip was created. Legacy strips default to rack-first.
+    #[serde(default)]
+    pub placement_priority: i32,
+    /// Creation-time physical failure-domain assessment.
+    #[serde(default)]
+    pub placement_assessment: Option<PlacementAssessment>,
+    /// A durable placement task must improve this temporary EC layout.
+    #[serde(default)]
+    pub placement_repair_required: bool,
 }
 
 // ── Chunk ───────────────────────────────────────────────────────
@@ -184,6 +223,8 @@ pub struct Chunk {
     pub cleanup_intents: Vec<StripCleanupIntent>,
     /// Most recently committed fenced replacement operation.
     pub last_strip_replacement: Option<ChunkId>,
+    /// Stable logical owner identity. Empty only for legacy unattributed chunks.
+    pub owner_key: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -227,6 +268,8 @@ pub struct AllocateChunkRequest {
     pub writer_epoch: u64,
     /// Lease duration installed for a nonzero writer epoch.
     pub writer_lease_ms: u64,
+    /// Stable logical owner identity for attributed shared chunks.
+    pub owner_key: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]

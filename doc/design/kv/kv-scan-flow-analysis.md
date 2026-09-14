@@ -10,7 +10,7 @@ crowdb-tree cursors. The benchmark sentinel is
 ## 1. Flow
 
 ```text
-CrowdbClient::scan(prefix, start_after, end_key, limit, read_mode, min_slot?)
+CrowdbClient::scan[_reverse](prefix, continuation, end_key, limit, read_mode, min_slot?)
   -> resolve_min_slot and resolve_read_endpoint
   -> paginated KvScanRequest
      server byte budget: 3.5 MiB per page
@@ -20,11 +20,12 @@ CrowdbClient::scan(prefix, start_after, end_key, limit, read_mode, min_slot?)
      Linearizable: forward to leader once
      MinSlot: serve locally
   -> PxKvStore::kv_scan -> resolve_read_point
-  -> KVEngine::scan -> CrowdbTreeEngine::scan -> try_scan
+  -> KVEngine::scan_directional -> CrowdbTreeEngine -> try_scan_directional
   -> crowdb-tree scan cursors
      L0: lock-free skip-list cursor
-     L1: lazy LeafChainCursor over delta chain and base frame
-     merge sources, discard collisions by highest slot, stop at end_key
+     L1 forward: lazy LeafChainCursor over delta chain and base frame
+     L1 reverse: nonblocking predecessor descent
+     merge sources, discard collisions by highest slot, stop at range bound
   -> pack only returned entries into the wire buffer
   -> client decodes Bytes and requests the next page when needed
 ```
@@ -33,6 +34,13 @@ CrowdbClient::scan(prefix, start_after, end_key, limit, read_mode, min_slot?)
 returned range rather than the whole prefix. The common L0+L1 case uses a
 two-source merge; larger source sets use a loser tree. Cold leaves return
 `Pending` and resume from the last resolved key after demand-load.
+
+Reverse retains `start_after` as the wire field for compatibility while the
+public client calls it `start_before`. It returns keys strictly below that
+cursor. Empty-cursor reverse scans begin below `end_key`, or below the prefix
+successor when the explicit end is empty. Client pagination validates strict
+descending order across page boundaries and retains the same continuation
+through transport retries and leader redirects.
 
 A normal scan is S3-style pagination: each page is consistent, but pages do
 not form one cross-page snapshot. Snapshot scans use the separate snapshot
@@ -43,6 +51,24 @@ FFI as owned bytes without per-entry `Vec<u8>` allocations. RPC serialization
 and the kernel socket copy remain unavoidable.
 
 ## 2. Latest Benchmark Results
+
+### Reverse validation — 2026-09-13
+
+Intel i9-7960X, x86_64 Linux, 3-node mem-block cluster, 1,000 keys, 64B
+values, 2-second smoke runs. These short runs validate the maintained
+directional cases and zero-error contract; they are not replacements for the
+100k-key reference runs below.
+
+| Config           | Direction | Limit | Cursor                  | T:C | scans/s | avg us | p99 us | errors |
+| ---------------- | --------- | ----: | ----------------------- | --- | -------: | -----: | -----: | -----: |
+| bounded_1k       | forward   | 1,000 | empty                   | 1:1 |      405 |  2,334 |  3,031 |      0 |
+| reverse_1k       | reverse   | 1,000 | empty                   | 1:1 |      303 |  3,175 |  3,915 |      0 |
+| reverse_deep_10  | reverse   |    10 | `k00000000000000000010` | 1:1 |    2,566 |    386 |    729 |      0 |
+
+Reverse full-page throughput is 25% below forward in this smoke run because
+the predecessor implementation descends through the tree for each emitted
+key. The maintained sentinel makes that cost visible while preserving bounded
+work, native ordering, and nonblocking cold-page completion.
 
 Both runs use a 3-node cluster, 100k pre-populated keys, and mem mode. Linux
 ran for 20s; macOS is the retained 10s baseline. Values are 64B except the

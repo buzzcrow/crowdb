@@ -9,13 +9,27 @@
 pub mod ec;
 pub mod mirror;
 
+use std::collections::HashMap;
+
 use crowdb_protocol::{DiskGroupId, NodeId, RackId};
+use serde::{Deserialize, Serialize};
 
 use crate::topology::TopologySnapshot;
 
 /// Re-export the placement selector trait + implementations.
 pub use ec::EcPlacement;
 pub use mirror::MirrorPlacement;
+
+/// Lexicographic failure-domain priority for new placement decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureDomainPriority {
+    /// Protect and balance racks before considering nodes within them.
+    #[default]
+    RackFirst,
+    /// Protect and balance nodes before using rack diversity as a tie-breaker.
+    NodeFirst,
+}
 
 /// Placement constraints — negative hints for exclusion.
 #[derive(Debug, Clone, Default)]
@@ -28,6 +42,12 @@ pub struct PlacementConstraints {
     pub exclude_disk_groups: Vec<DiskGroupId>,
     /// Permit EC placement that exceeds the safe per-node failure bound.
     pub allow_unsafe_ec: bool,
+    /// Permit a plan that cannot satisfy every requested failure domain.
+    pub allow_degraded_failure_domains: bool,
+    /// Ordering used to choose among otherwise eligible domains.
+    pub failure_domain_priority: FailureDomainPriority,
+    /// Bytes added by one planned fragment for projected-utilization ranking.
+    pub planned_bytes_per_block: u64,
 }
 
 impl PlacementConstraints {
@@ -60,6 +80,24 @@ impl PlacementConstraints {
         self
     }
 
+    #[must_use]
+    pub fn allow_degraded_failure_domains(mut self) -> Self {
+        self.allow_degraded_failure_domains = true;
+        self
+    }
+
+    #[must_use]
+    pub fn with_failure_domain_priority(mut self, priority: FailureDomainPriority) -> Self {
+        self.failure_domain_priority = priority;
+        self
+    }
+
+    #[must_use]
+    pub fn with_planned_bytes_per_block(mut self, bytes: u64) -> Self {
+        self.planned_bytes_per_block = bytes;
+        self
+    }
+
     /// Check if a rack is excluded.
     pub fn is_rack_excluded(&self, rack: RackId) -> bool {
         self.exclude_racks.contains(&rack)
@@ -89,13 +127,34 @@ pub struct PlacementEntry {
 #[derive(Debug, Clone)]
 pub struct PlacementPlan {
     pub entries: Vec<PlacementEntry>,
-    /// Whether safe mode was used (EC only; mirror always "safe").
+    /// Whether every failure domain assessable before disk allocation is protected.
     pub safe_mode: bool,
+    pub priority: FailureDomainPriority,
+    pub protection: PlacementProtection,
+    pub topology_generation: u64,
+    pub usage_fresh: bool,
 }
 
 impl PlacementPlan {
     pub fn total_blocks(&self) -> u32 {
         self.entries.iter().map(|e| e.block_count).sum()
+    }
+}
+
+/// Rack and node protection assessed before DiskDB chooses physical disks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PlacementProtection {
+    pub loss_budget: u32,
+    pub max_fragments_per_rack: u32,
+    pub max_fragments_per_node: u32,
+    pub rack_protected: bool,
+    pub node_protected: bool,
+}
+
+impl PlacementProtection {
+    #[must_use]
+    pub fn degraded(self) -> bool {
+        !self.rack_protected || !self.node_protected
     }
 }
 
@@ -110,8 +169,85 @@ pub enum PlacementError {
     NoHealthyDiskGroups,
     #[error("safe EC placement is unavailable and unsafe placement was not enabled")]
     UnsafePlacementRequired,
+    #[error("rack protection is unavailable: loss budget {loss_budget}, maximum fragments {actual}")]
+    RackProtectionUnavailable { loss_budget: u32, actual: u32 },
+    #[error("node protection is unavailable: loss budget {loss_budget}, maximum fragments {actual}")]
+    NodeProtectionUnavailable { loss_budget: u32, actual: u32 },
+    #[error("disk protection is unavailable: loss budget {loss_budget}, maximum fragments {actual}")]
+    DiskProtectionUnavailable { loss_budget: u32, actual: u32 },
     #[error("invalid placement shape: {0}")]
     InvalidShape(String),
+}
+
+pub(super) fn assess_entries(entries: &[PlacementEntry], loss_budget: u32) -> PlacementProtection {
+    let mut rack_counts = HashMap::<RackId, u32>::new();
+    let mut node_counts = HashMap::<NodeId, u32>::new();
+    for entry in entries {
+        *rack_counts.entry(entry.rack_id).or_default() += entry.block_count;
+        *node_counts.entry(entry.node_id).or_default() += entry.block_count;
+    }
+    let max_fragments_per_rack = rack_counts.values().copied().max().unwrap_or(0);
+    let max_fragments_per_node = node_counts.values().copied().max().unwrap_or(0);
+    PlacementProtection {
+        loss_budget,
+        max_fragments_per_rack,
+        max_fragments_per_node,
+        rack_protected: max_fragments_per_rack <= loss_budget,
+        node_protected: max_fragments_per_node <= loss_budget,
+    }
+}
+
+pub(super) fn finish_plan(
+    snap: &TopologySnapshot,
+    entries: Vec<PlacementEntry>,
+    loss_budget: u32,
+    constraints: &PlacementConstraints,
+    ec_shape: bool,
+) -> Result<PlacementPlan, PlacementError> {
+    let protection = assess_entries(&entries, loss_budget);
+    if ec_shape && protection.max_fragments_per_node > loss_budget && !constraints.allow_unsafe_ec {
+        return Err(PlacementError::UnsafePlacementRequired);
+    }
+    // A single-copy mirror has no recoverable domain-loss budget. It still
+    // reports unprotected domains, but must remain allocatable as an explicit
+    // non-redundant shape.
+    if loss_budget > 0 && protection.degraded() && !constraints.allow_degraded_failure_domains {
+        if !protection.rack_protected {
+            return Err(PlacementError::RackProtectionUnavailable {
+                loss_budget,
+                actual: protection.max_fragments_per_rack,
+            });
+        }
+        return Err(PlacementError::NodeProtectionUnavailable {
+            loss_budget,
+            actual: protection.max_fragments_per_node,
+        });
+    }
+    let usage_fresh = entries_have_fresh_usage(snap, &entries);
+    Ok(PlacementPlan {
+        entries,
+        safe_mode: !protection.degraded(),
+        priority: constraints.failure_domain_priority,
+        protection,
+        topology_generation: snap.generation(),
+        usage_fresh,
+    })
+}
+
+fn entries_have_fresh_usage(snap: &TopologySnapshot, entries: &[PlacementEntry]) -> bool {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        });
+    entries.iter().all(|entry| {
+        snap.disk_group_capacity(entry.disk_group_id)
+            .is_some_and(|usage| {
+                usage.sampled_at_ms > 0
+                    && now_ms.saturating_sub(usage.sampled_at_ms) <= 30_000
+                    && usage.capacity_bytes > 0
+            })
+    })
 }
 
 /// Filter healthy disk-groups from the snapshot, applying exclusion hints.

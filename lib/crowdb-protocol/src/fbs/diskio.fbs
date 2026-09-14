@@ -11,6 +11,7 @@ enum FBDiskIoRetCode : int16 {
     PartialWrite = 4,
     InvalidAlignment = 5,
     ConnectionError = 6,
+    // Retired response value kept so mixed-version peers do not reuse code 7.
     StaleAllocation = 7,
 }
 
@@ -27,8 +28,9 @@ table FBDiskWriteRequest {
     zone_index:uint32;
     zone_offset:uint64;
     size:uint32;
-    allocation_ts:uint64;
-    allocation_zone_offset:uint64;
+    // Retired allocation-fence field; keep its slot for wire compatibility.
+    allocation_ts:uint64 (deprecated);
+    ordering_zone_offset:uint64;
 }
 
 table FBDiskWriteResponse {

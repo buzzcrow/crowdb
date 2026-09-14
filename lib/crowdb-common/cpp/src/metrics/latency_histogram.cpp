@@ -29,7 +29,7 @@ static constexpr uint32_t SUB_BUCKET_BITS  = 7;   // log2(SUB_BUCKET_COUNT)
 static constexpr uint64_t SUB_BUCKET_MASK  = 127; // SUB_BUCKET_COUNT - 1
 static constexpr size_t   NUM_MAGNITUDES   = 18;  // magnitudes 0..17 → up to 2^34
 // 1 underflow + NUM_MAGNITUDES * SUB_BUCKET_COUNT regular + 1 overflow.
-static constexpr size_t NUM_BUCKETS = 1 + NUM_MAGNITUDES * SUB_BUCKET_COUNT + 1;
+static constexpr size_t NUM_BUCKETS = 1 + (NUM_MAGNITUDES * SUB_BUCKET_COUNT) + 1;
 static constexpr size_t UNDERFLOW   = 0;
 static constexpr size_t OVERFLOW    = NUM_BUCKETS - 1;
 
@@ -49,7 +49,7 @@ static size_t bucket_index(uint64_t v)
         return OVERFLOW;
     }
     uint64_t sub_bucket = (v >> (highest_bit - SUB_BUCKET_BITS)) & SUB_BUCKET_MASK;
-    return 1 + static_cast<size_t>(magnitude) * SUB_BUCKET_COUNT + static_cast<size_t>(sub_bucket);
+    return 1 + (static_cast<size_t>(magnitude) * SUB_BUCKET_COUNT) + static_cast<size_t>(sub_bucket);
 }
 
 // Upper bound (exclusive) of the bucket at `index`, in nanoseconds.
@@ -68,7 +68,7 @@ static uint64_t bucket_upper_bound(size_t index)
     size_t   sub_bucket       = linear % SUB_BUCKET_COUNT;
     uint64_t magnitude_base   = 1ULL << (UNIT_MAGNITUDE + static_cast<uint32_t>(magnitude));
     uint64_t sub_bucket_width = 1ULL << (UNIT_MAGNITUDE + static_cast<uint32_t>(magnitude) - SUB_BUCKET_BITS);
-    return magnitude_base + (static_cast<uint64_t>(sub_bucket) + 1) * sub_bucket_width;
+    return magnitude_base + ((static_cast<uint64_t>(sub_bucket) + 1) * sub_bucket_width);
 }
 
 // Compute the p-th percentile from bucket counts. Returns the upper

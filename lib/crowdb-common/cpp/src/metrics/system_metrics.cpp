@@ -300,8 +300,7 @@ struct SystemCollector::DramBwImpl
 
     // Aggregate request-with-data events exported by Linux perf for Zen 3.
     static constexpr std::array<uint64_t, 8> AMD_DF_TOTAL_EVENTS = {
-        0x3807, 0x3847, 0x3887, 0x38c7, 0x100003807ULL, 0x100003847ULL, 0x100003887ULL, 0x1000038c7ULL,
-    };
+        0x3807, 0x3847, 0x3887, 0x38c7, 0x100003807ULL, 0x100003847ULL, 0x100003887ULL, 0x1000038c7ULL};
 
     void init()
     {
@@ -327,7 +326,7 @@ struct SystemCollector::DramBwImpl
                 return false;
             }
             perf_enable(fd);
-            totals.push_back({fd, {}});
+            totals.push_back({.fd = fd, .prev = {}});
         }
         total_fds = std::move(totals);
         // Each tick = 64 bytes of DRAM data.
@@ -358,18 +357,20 @@ struct SystemCollector::DramBwImpl
             int rfd = perf_open(*pmu_type, *read_cfg, cpu);
             int wfd = perf_open(*pmu_type, *write_cfg, cpu);
             if (rfd < 0 || wfd < 0) {
-                if (rfd >= 0)
+                if (rfd >= 0) {
                     close(rfd);
-                if (wfd >= 0)
+                }
+                if (wfd >= 0) {
                     close(wfd);
+                }
                 close_fds(reads);
                 close_fds(writes);
                 return false;
             }
             perf_enable(rfd);
             perf_enable(wfd);
-            reads.push_back({rfd, {}});
-            writes.push_back({wfd, {}});
+            reads.push_back({.fd = rfd, .prev = {}});
+            writes.push_back({.fd = wfd, .prev = {}});
         }
         read_fds  = std::move(reads);
         write_fds = std::move(writes);
@@ -399,7 +400,7 @@ struct SystemCollector::DramBwImpl
             commit_samples(total_fds, sample->second);
             prev_time_us   = cur_time;
             double elapsed = static_cast<double>(elapsed_us) / 1'000'000.0;
-            return Bandwidth{std::nullopt, std::nullopt, sample->first * scale / elapsed};
+            return Bandwidth{.read = std::nullopt, .write = std::nullopt, .total = sample->first * scale / elapsed};
         }
         if (read_fds.empty() || write_fds.empty()) {
             return std::nullopt;
@@ -424,7 +425,7 @@ struct SystemCollector::DramBwImpl
         double write_bytes  = write_sample->first * scale;
         double read_bw      = read_bytes / elapsed_secs;
         double write_bw     = write_bytes / elapsed_secs;
-        return Bandwidth{read_bw, write_bw, read_bw + write_bw};
+        return Bandwidth{.read = read_bw, .write = write_bw, .total = read_bw + write_bw};
     }
 
   private:
@@ -461,8 +462,9 @@ struct SystemCollector::DramBwImpl
     static void close_fds(std::vector<Fd> &fds)
     {
         for (auto &fd : fds) {
-            if (fd.fd >= 0)
+            if (fd.fd >= 0) {
                 close(fd.fd);
+            }
             fd.fd = -1;
         }
     }
@@ -513,7 +515,10 @@ SystemCollector::SystemCollector()
 #endif
 }
 
-SystemCollector::~SystemCollector() = default;
+SystemCollector::~SystemCollector()
+{
+    delete dram_bw_;
+}
 
 SystemCollector::SystemCollector(SystemCollector &&other) noexcept
     : prev_cpu_user_us_(other.prev_cpu_user_us_),

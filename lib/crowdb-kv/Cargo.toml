@@ -43,11 +43,11 @@ crowdb-protocol = { path = "../crowdb-protocol", features = ["schema"] }
 crowdb-tree-ffi = { path = "../crowdb-tree/ffi" }
 crowdb-rpc-ffi = { path = "../crowdb-rpc/ffi" }
 flatbuffers = { workspace = true }
+crossbeam-skiplist = "0.1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "test-util"] }
 criterion = { version = "0.8", features = ["html_reports"] }
-crossbeam-skiplist = "0.1"
 # Self dev-dependency: turns on the `test-util` feature for this crate's own
 # test/bench build so integration tests can reach the test-only hooks under
 # plain `cargo test` (no `--features` needed).

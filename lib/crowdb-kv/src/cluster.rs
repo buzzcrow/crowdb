@@ -5,6 +5,7 @@
 
 pub mod group;
 pub mod group_accept;
+pub mod group_cas;
 pub mod group_coalesce;
 pub mod group_config;
 pub mod group_election;
@@ -14,6 +15,7 @@ pub mod group_fetchgap;
 pub mod group_inflight;
 pub mod group_maintenance;
 pub mod group_membership;
+pub mod group_operations;
 pub mod group_prepare;
 pub mod group_propose;
 #[cfg(feature = "test-util")]

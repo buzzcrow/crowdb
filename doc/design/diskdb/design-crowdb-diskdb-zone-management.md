@@ -303,10 +303,10 @@ the bit (§5). This is the data-safety principle: the bitmap is a
 conservative over-estimate that never shows freed space as available
 until compaction reconciles it from records.
 
-The free path increments `uncompacted_free_record_count` (an atomic
-counter per zone) so compaction knows there is work to do. No `FreeBatch`,
-no timer, no background flush loop. The free is a single durable
-operation, and the bitmap reconciliation is deferred to compaction.
+After durable persistence, the free path increments
+`uncompacted_free_record_count` (an atomic counter per zone) so compaction
+knows there is work to do. The bitmap reconciliation remains deferred to
+compaction.
 
 Free steps:
 1. **Persist**: put `FreeBlockValue` at `FreeBlockKey { disk_id,
@@ -328,11 +328,22 @@ caller can retry safely. If the persist succeeds, the block is free on
 disk; the in-memory bitmap still shows it busy (conservative over-
 estimate) until compaction reconciles.
 
-Free batching (grouping many frees into one `batch_write` per flush,
-triggered by batch size, no timer) is an optimization for high-free-
-throughput workloads, tracked as a future optimization. With persist-only
-free, batching does not change the bitmap contract. The bitmap is never
-touched on free, regardless of batching.
+When concurrent-free coalescing is enabled, preparation first deduplicates and
+captures each request's disk-group bind without changing tentative or zone
+state. Enqueue uses a lock-free MPSC queue and an atomic single-drainer claim.
+The drainer starts immediately—there is no minimum threshold or timer—and
+combines whole requests for the same bind up to the smallest captured maximum.
+One oversized request is persisted alone rather than split. Requests arriving
+while a KV write is in flight form the next natural batch.
+
+Every covered waiter resolves only after its combined `batch_write` completes.
+Success applies tentative removal, compaction-backlog increments, and free
+metrics once per distinct incarnation across the batch. Failure resolves all
+covered waiters without accounting changes or automatic re-enqueue; an
+idempotent caller retry writes the same incarnation-qualified fact. Shutdown
+closes admission, drains both direct and coalesced accepted frees, and only
+then stops the RPC server. The disabled path retains one durable KV batch per
+request under the same lifecycle tracker.
 
 **`rollback_allocate` — allocate-only bitmap clear:** the
 `DdbZone::rollback_allocate` method (CAS-clear bits, decrement
@@ -704,11 +715,11 @@ Allocate runs only on active zones (in the `active_zone_context`).
 
 ### Free (persist-only, no lock)
 
-One blind Put of an incarnation-qualified `FreeBlockValue`. No bitmap touch,
-no `used_count` decrement, no zone-level lock. Free can
-run on any zone (active or not) without coordination. It only writes
-to the KV store and increments `uncompacted_free_record_count`. The
-bitmap is reconciled later by compaction.
+Blindly put the incarnation-qualified `FreeBlockValue`; validation is deferred
+to compaction, which matches it against the current busy incarnation. No
+bitmap touch, no `used_count` decrement, and no zone-level lock.
+Free can run on any zone (active or not); successful frees increment
+`uncompacted_free_record_count`. The bitmap is reconciled later by compaction.
 
 ### Zone-level lock for non-allocate operations
 
@@ -755,12 +766,13 @@ RCU-published alongside the allocate context on add/remove/status-change:
   `uncompacted_free_record_count` increment; no bitmap mutation.)
 - **KV free path:** the incarnation-qualified `FreeBlockKey` is constructed
   directly from the `Segment`. `owner_chunk` and `allocation_ts` are carried
-  in the segment and become `previous_owner` and `pre_allocation_ts`. Free is
-  one blind put; compaction performs authoritative validation.
+  in the segment and become `previous_owner` and `pre_allocation_ts`. Free
+  validates the full-engine busy value and revision before the guarded batch;
+  compaction consumes only the resulting self-consistent fact.
 
-Node-level `add_disk` / `remove_disk` acquire a write lock on the disk
-list; allocation/free acquire a read lock (concurrent with each other,
-exclusive with add/remove).
+Disk membership changes acquire the disk-list write lock only while rebuilding
+the immutable membership snapshot. Allocation and free load that snapshot and
+do not acquire the disk-list lock.
 
 ### Monotonic allocation incarnation source
 
@@ -769,8 +781,23 @@ source is an `AtomicU64` initialized above every durable busy and free
 incarnation discovered during recovery. It is an identity token and does not
 order compaction. `FreeBlockValue.free_ts` is independently diagnostic.
 
-Ownership is immutable in R130. R102 must reconstruct or transfer the
-allocation high-water mark before enabling a future owner.
+Ownership is currently immutable. Any future ownership transfer must
+reconstruct or transfer the allocation high-water mark before enabling the new
+owner.
+
+### Bounded tentative allocation cache
+
+Each disk group keeps recently allocated `TentativeBlock` values in a
+lock-free ordered index keyed by `allocation_ts`. The default capacity is
+262,144 unique incarnations. A per-entry pending/count/removed state makes the
+atomic size budget exact when duplicate publication races removal. One atomic
+trim owner removes the oldest entries until the cache is within capacity.
+
+Commit uses an exact matching tentative-cache entry without a read. A miss
+after retry, restart, or eviction reads and validates the authoritative busy
+incarnation. Tentative values are changed to Committed in one ordinary batch
+write; an already Committed value is idempotent success. Commit and free remove
+only exact incarnation cache entries.
 
 ## 9. Background Scanner Coordination
 
@@ -799,8 +826,8 @@ with compaction via the zone-level lock (§8):
     `FreeBlockKey` — the block was never freed and never allocated
     (crash between allocate Phase 1 and Phase 2, or a bug). Records
     are authoritative → block is free → safe to clear the bit.
-  - **Normal uncompacted**: bit set, no `BusyBlockKey`, `FreeBlockKey`
-    exists — the block was freed (persist-only) but compaction hasn't
+  - **Normal uncompacted**: bit set, matching `BusyBlockKey` and `FreeBlockKey`
+    exist — the block was freed (persist-only) but compaction hasn't
     cleared the bit yet. This is **not drift** — it's the expected
     state. The scanner does not report it. (If the zone is not active
     and has a high `uncompacted_free_record_count`, the scanner may
@@ -873,10 +900,11 @@ with compaction via the zone-level lock (§8):
   from the data group first and validates `owner_chunk` (one extra paxos
   round-trip, doubles free latency).
 - `free_batch_enabled` — free batching toggle (default false). When
-  false, frees are immediate (one `batch_write` per free). When true,
-  frees are grouped and flushed via one `batch_write` when the batch
-  reaches `free_flush_max_batch` (no timer).
-- `free_flush_max_batch` — free batch max size before forced flush
-  (default 256). Used when batching is enabled.
+  false, each request immediately issues one durable `batch_write`. When true,
+  the first queued request still drains immediately, while concurrent requests
+  accumulated during an in-flight write are coalesced by bind with no timer.
+- `free_flush_max_batch` — maximum record operations in one coalesced KV
+  proposal (default 256). Requests are never split; one oversized request is
+  persisted alone.
 - `recovery_concurrency` — max concurrent zone recoveries in
   `recover_node` (default 16).

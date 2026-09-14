@@ -577,7 +577,7 @@ impl PxGroup {
     // ── New-member snapshot join ────────────────────
 
     /// New-member snapshot join: pull a snapshot for this group from
-    /// `peer_endpoint`'s [`crate::rpc::SnapshotService`], import it into
+    /// `peer_endpoint`'s snapshot-session handlers, import it into
     /// the local engine, and seed the local learner's frontier so the
     /// group's normal repair/heartbeat catch-up only needs to stream the
     /// WAL tail above the snapshot's `at_slot` -- instead of replaying full
@@ -597,42 +597,235 @@ impl PxGroup {
     /// Returns an error string on any transport, decode, or engine-import
     /// failure.
     pub async fn join_via_snapshot(&self, peer_endpoint: &str) -> Result<u64, String> {
+        self.join_via_snapshot_with_config(peer_endpoint, 1024 * 1024, 3)
+            .await
+    }
+
+    /// Configured form of [`Self::join_via_snapshot`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the transfer configuration, remote protocol,
+    /// snapshot integrity, or local engine import is invalid.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the internal importer lifecycle invariant is violated.
+    #[allow(clippy::too_many_lines)]
+    pub async fn join_via_snapshot_with_config(
+        &self,
+        peer_endpoint: &str,
+        chunk_bytes: usize,
+        restart_attempts: usize,
+    ) -> Result<u64, String> {
+        use crate::kv::SnapshotFormat;
+        use crate::rpc::px_rpc_transport::SnapshotTransferError;
         use crate::rpc::PxRpcTransport;
 
-        let transport = PxRpcTransport::new();
-        let resp = transport
-            .send_snapshot(peer_endpoint, self.group_id)
-            .await
-            .map_err(|e| format!("snapshot join: rpc to {peer_endpoint} failed: {e}"))?;
-
-        let at_slot = self
-            .local_replica
-            .learner
-            .engine()
-            .snapshot_import(&resp.data)
-            .map_err(|e| format!("snapshot join: engine import failed: {e}"))?;
-
-        if at_slot != resp.at_slot {
-            return Err(format!(
-                "snapshot join: at_slot mismatch (server reported {}, import returned {})",
-                resp.at_slot, at_slot
-            ));
+        if chunk_bytes == 0 || chunk_bytes > 1024 * 1024 || restart_attempts == 0 {
+            return Err("snapshot join: invalid transfer configuration".to_string());
         }
-
-        info!(
-            g = self.group_id,
-            peer_endpoint,
-            at_slot,
-            term_at_slot = resp.term_at_slot,
-            membership_epoch = resp.membership_epoch,
-            stream_bytes = resp.data.len(),
-            "snapshot join: imported snapshot, seeding learner frontier"
-        );
-        self.local_replica
-            .learner
-            .seed_resume_frontier(at_slot, resp.term_at_slot);
-        self.set_membership_epoch(resp.membership_epoch);
-        Ok(at_slot)
+        let import_started = std::time::Instant::now();
+        let transport = PxRpcTransport::new();
+        'restart: for attempt in 0..restart_attempts {
+            let begin = transport
+                .snapshot_begin(peer_endpoint, self.group_id, chunk_bytes as u32)
+                .await
+                .map_err(|error| format!("snapshot join: Begin failed: {error}"))?;
+            if begin.group_id != self.group_id
+                || begin.engine_format != SnapshotFormat::CrowdbTreePortable as u8
+                || begin.chunk_bytes == 0
+                || begin.chunk_bytes as usize > chunk_bytes
+            {
+                if let Some(metrics) = self.snapshot_join_handles() {
+                    metrics.integrity_failures.inc();
+                    metrics.aborted.inc();
+                }
+                transport.snapshot_abort(peer_endpoint, begin.identity).await;
+                return Err("snapshot join: invalid Begin metadata".to_string());
+            }
+            let mut importer = match self.local_replica.learner.engine().snapshot_import_begin() {
+                Ok(importer) => Some(importer),
+                Err(error) => {
+                    if let Some(metrics) = self.snapshot_join_handles() {
+                        metrics.aborted.inc();
+                    }
+                    transport.snapshot_abort(peer_endpoint, begin.identity).await;
+                    return Err(format!("snapshot join: importer begin failed: {error}"));
+                }
+            };
+            let mut offset = 0_u64;
+            let mut final_crc32c = 0_u32;
+            let mut crc_tail = Vec::with_capacity(4);
+            let mut done = false;
+            while !done {
+                let mut transport_retries = 0;
+                let read = loop {
+                    match transport
+                        .snapshot_read(peer_endpoint, begin.identity, offset)
+                        .await
+                    {
+                        Ok(read) => {
+                            if transport_retries > 0 {
+                                if let Some(metrics) = self.snapshot_join_handles() {
+                                    metrics.resumed_offsets.inc();
+                                }
+                            }
+                            break read;
+                        }
+                        Err(SnapshotTransferError::Transport(_)) if transport_retries < 3 => {
+                            transport_retries += 1;
+                            if let Some(metrics) = self.snapshot_join_handles() {
+                                metrics.reconnect_retries.inc();
+                            }
+                            tokio::task::yield_now().await;
+                        }
+                        Err(
+                            SnapshotTransferError::Expired(_)
+                            | SnapshotTransferError::NotFound(_)
+                            | SnapshotTransferError::TopologyChanged(_),
+                        ) => {
+                            importer.take().expect("importer is active").abort();
+                            if let Some(metrics) = self.snapshot_join_handles() {
+                                metrics.restarts.inc();
+                                metrics.aborted.inc();
+                            }
+                            transport.snapshot_abort(peer_endpoint, begin.identity).await;
+                            if attempt + 1 == restart_attempts {
+                                return Err(
+                                    "snapshot join: source session restart budget exhausted".to_string()
+                                );
+                            }
+                            continue 'restart;
+                        }
+                        Err(error) => {
+                            importer.take().expect("importer is active").abort();
+                            if let Some(metrics) = self.snapshot_join_handles() {
+                                metrics.aborted.inc();
+                            }
+                            transport.snapshot_abort(peer_endpoint, begin.identity).await;
+                            return Err(format!("snapshot join: Read failed: {error}"));
+                        }
+                    }
+                };
+                if read.identity != begin.identity
+                    || read.offset != offset
+                    || read.data.len() > begin.chunk_bytes as usize
+                    || crowdb_tree_ffi::crc32c(&read.data) != read.payload_crc32c
+                    || (read.data.is_empty() && !read.done)
+                {
+                    importer.take().expect("importer is active").abort();
+                    if let Some(metrics) = self.snapshot_join_handles() {
+                        metrics.integrity_failures.inc();
+                        metrics.aborted.inc();
+                    }
+                    transport.snapshot_abort(peer_endpoint, begin.identity).await;
+                    return Err("snapshot join: invalid chunk identity, offset, size, or CRC".to_string());
+                }
+                if let Err(error) = importer.as_mut().expect("importer is active").feed(&read.data) {
+                    importer.take().expect("importer is active").abort();
+                    if let Some(metrics) = self.snapshot_join_handles() {
+                        metrics.integrity_failures.inc();
+                        metrics.aborted.inc();
+                    }
+                    transport.snapshot_abort(peer_endpoint, begin.identity).await;
+                    return Err(format!("snapshot join: importer feed failed: {error}"));
+                }
+                crc_tail.extend_from_slice(&read.data);
+                if crc_tail.len() > 4 {
+                    let covered = crc_tail.len() - 4;
+                    final_crc32c = crowdb_tree_ffi::crc32c_update(final_crc32c, &crc_tail[..covered]);
+                    crc_tail.drain(..covered);
+                }
+                offset = offset.saturating_add(read.data.len() as u64);
+                done = read.done;
+                if let Some(metrics) = self.snapshot_join_handles() {
+                    metrics.bytes.inc_by(read.data.len() as u64);
+                    metrics.chunks.inc();
+                }
+            }
+            let trailer_crc = crc_tail
+                .as_slice()
+                .try_into()
+                .map(u32::from_le_bytes)
+                .unwrap_or_default();
+            if offset != begin.total_bytes
+                || crc_tail.len() != 4
+                || final_crc32c != begin.final_crc32c
+                || trailer_crc != begin.final_crc32c
+            {
+                importer.take().expect("importer is active").abort();
+                if let Some(metrics) = self.snapshot_join_handles() {
+                    metrics.integrity_failures.inc();
+                    metrics.aborted.inc();
+                }
+                transport.snapshot_abort(peer_endpoint, begin.identity).await;
+                return Err("snapshot join: final length or CRC mismatch".to_string());
+            }
+            match transport
+                .snapshot_finish(peer_endpoint, begin.identity, offset)
+                .await
+            {
+                Ok(()) => {}
+                Err(
+                    SnapshotTransferError::Expired(_)
+                    | SnapshotTransferError::NotFound(_)
+                    | SnapshotTransferError::TopologyChanged(_),
+                ) => {
+                    importer.take().expect("importer is active").abort();
+                    if let Some(metrics) = self.snapshot_join_handles() {
+                        metrics.restarts.inc();
+                        metrics.aborted.inc();
+                    }
+                    if attempt + 1 == restart_attempts {
+                        return Err("snapshot join: source session restart budget exhausted".to_string());
+                    }
+                    continue 'restart;
+                }
+                Err(error) => {
+                    importer.take().expect("importer is active").abort();
+                    if let Some(metrics) = self.snapshot_join_handles() {
+                        metrics.aborted.inc();
+                    }
+                    return Err(format!("snapshot join: Finish failed: {error}"));
+                }
+            }
+            let at_slot = importer
+                .take()
+                .expect("importer is active")
+                .finish()
+                .map_err(|error| format!("snapshot join: engine finish failed: {error}"))?;
+            if at_slot != begin.at_slot {
+                if let Some(metrics) = self.snapshot_join_handles() {
+                    metrics.integrity_failures.inc();
+                    metrics.aborted.inc();
+                }
+                return Err(format!(
+                    "snapshot join: at_slot mismatch (server reported {}, import returned {at_slot})",
+                    begin.at_slot
+                ));
+            }
+            info!(
+                g = self.group_id,
+                peer_endpoint,
+                at_slot,
+                term_at_slot = begin.term_at_slot,
+                membership_epoch = begin.membership_epoch,
+                stream_bytes = offset,
+                "snapshot join: imported snapshot, seeding learner frontier"
+            );
+            self.local_replica
+                .learner
+                .seed_resume_frontier(at_slot, begin.term_at_slot);
+            self.set_membership_epoch(begin.membership_epoch);
+            if let Some(metrics) = self.snapshot_join_handles() {
+                metrics
+                    .latency
+                    .observe(import_started.elapsed().as_nanos().try_into().unwrap_or(u64::MAX));
+            }
+            return Ok(at_slot);
+        }
+        Err("snapshot join: source session restart budget exhausted".to_string())
     }
 
     // ── Add/Remove ────────────────────────────────────────────────

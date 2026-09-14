@@ -3,26 +3,30 @@
 
 #![allow(clippy::cast_possible_truncation)]
 
-use crate::cluster::group::{ProposeResult, PxGroup};
-use crate::cluster::group_election::{LeaderElection, ReadBarrierOutcome};
+use crate::cluster::group::PxGroup;
+use crate::cluster::group_election::LeaderElection;
+use crate::cluster::group_operations::{
+    KvGroupOperationError, KvGroupOperations, KvReadConsistency, KvRequestIdentity,
+};
 use crate::cluster::kv_server::{RpcServerState, RpcTaskState};
 use crate::cluster::status::{GroupStatus, StatusLevel, StoreStatus};
 use crate::common::config::ServerConfig;
 use crate::common::report::OperationReport;
 use crate::metrics::MetricsRegistry;
-use crate::rpc::ReadMode;
-use dashmap::DashMap;
+use arc_swap::ArcSwap;
+use bytes::Bytes;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use parking_lot::Mutex;
 use tracing::{debug, info, info_span, Instrument};
 
 pub struct PxKvStore {
     pub store_id: u64,
-    pub(crate) groups: DashMap<u64, Arc<PxGroup>>,
+    groups: ArcSwap<HashMap<u64, Arc<PxGroup>>>,
     pub(crate) server_state: Mutex<RpcTaskState>,
     pub(crate) listen_addr: SocketAddr,
     /// crowdb-rpc server state (R32 migration). Holds the `RpcServer`
@@ -63,6 +67,9 @@ pub struct PxKvStore {
     /// `ServerConfig::DEFAULT.send_queue_capacity`; overridden via
     /// `set_send_queue_capacity` before `start()`.
     pub(crate) send_queue_capacity: u32,
+    pub(crate) snapshot_chunk_bytes: usize,
+    pub(crate) snapshot_source_sessions: usize,
+    pub(crate) snapshot_session_lease_ms: u64,
     /// Test-only delay injected into `kv_get` before `resolve_read_point`.
     /// Set via `set_get_delay_for_tests` under the `test-util` feature;
     /// `None` in production.
@@ -75,7 +82,7 @@ impl PxKvStore {
     pub fn new(store_id: u64, listen_addr: SocketAddr) -> Self {
         Self {
             store_id,
-            groups: DashMap::new(),
+            groups: ArcSwap::from_pointee(HashMap::new()),
             server_state: Mutex::new(RpcTaskState::default()),
             rpc_server_state: Mutex::new(RpcServerState::default()),
             client_rpc_server_state: Mutex::new(RpcServerState::default()),
@@ -89,6 +96,9 @@ impl PxKvStore {
             quickack: ServerConfig::DEFAULT.quickack,
             event_write: ServerConfig::DEFAULT.event_write,
             send_queue_capacity: ServerConfig::DEFAULT.send_queue_capacity,
+            snapshot_chunk_bytes: ServerConfig::DEFAULT.snapshot_chunk_bytes,
+            snapshot_source_sessions: ServerConfig::DEFAULT.snapshot_source_sessions,
+            snapshot_session_lease_ms: ServerConfig::DEFAULT.snapshot_session_lease_ms,
             #[cfg(feature = "test-util")]
             get_delay: Mutex::new(None),
         }
@@ -134,6 +144,13 @@ impl PxKvStore {
     /// `CrowDBConfig.server.send_queue_capacity`. Called before `start()`.
     pub fn set_send_queue_capacity(&mut self, capacity: u32) {
         self.send_queue_capacity = capacity;
+    }
+
+    /// Override bounded source snapshot settings before `start()`.
+    pub fn set_snapshot_source_config(&mut self, chunk_bytes: usize, sessions: usize, lease_ms: u64) {
+        self.snapshot_chunk_bytes = chunk_bytes;
+        self.snapshot_source_sessions = sessions;
+        self.snapshot_session_lease_ms = lease_ms;
     }
 
     /// Reap expired snapshot handles from a group's registry. Called
@@ -209,7 +226,7 @@ impl PxKvStore {
         }
 
         info!(
-            group_count = self.groups.len(),
+            group_count = self.group_count(),
             timeout_ms = per_layer_timeout.as_millis() as u64,
             "PxKvStore shutdown starting"
         );
@@ -222,9 +239,7 @@ impl PxKvStore {
         }
 
         // 2. Cascade into each group. Continue on errors.
-        for entry in &self.groups {
-            let group_id = *entry.key();
-            let group = entry.value();
+        for (group_id, group) in self.groups.load().iter() {
             info!(g = group_id, "shutting down PxGroup");
             let sub = group.shutdown(per_layer_timeout).await;
             if !sub.is_clean() {
@@ -275,10 +290,10 @@ impl PxKvStore {
         let registry = metrics_guard.as_deref();
         let mut groups: Vec<GroupStatus> = self
             .groups
+            .load()
             .iter()
-            .map(|entry| {
-                let group_id = *entry.key();
-                let group = entry.value().status_with_metrics(self.store_id, registry);
+            .map(|(group_id, entry)| {
+                let group = entry.status_with_metrics(self.store_id, registry);
                 status = StatusLevel::worst(status, group.status);
                 messages.extend(
                     group
@@ -321,8 +336,8 @@ impl PxKvStore {
     fn add_group_inner(&self, group: PxGroup, spawn_driver: bool) {
         let group_id = group.group_id;
         let mut group = group;
-        if let Some(prior) = self.groups.get(&group_id) {
-            group.inherit_local_state_from(prior.value());
+        if let Some(prior) = self.get_group(group_id) {
+            group.inherit_local_state_from(&prior);
         }
         // Set the local replica's endpoint from the store's actual bound
         // address (if the server is running) or the configured listen addr,
@@ -390,13 +405,20 @@ impl PxKvStore {
         // and the new driver re-elects, producing split-brain at
         // `term=1` until both drivers eventually step down via
         // heartbeats and the cluster re-races.
-        if let Some(old_arc) = self.groups.insert(group_id, arc) {
+        if let Some(old_arc) = self.insert_group(group_id, &arc) {
             old_arc.tenure_cancel().cancel();
         }
     }
 
     pub fn get_group(&self, group_id: u64) -> Option<Arc<PxGroup>> {
-        self.groups.get(&group_id).map(|r| r.clone())
+        self.groups.load().get(&group_id).cloned()
+    }
+
+    /// Build the shared in-process operation facade for one hosted group.
+    #[must_use]
+    pub fn group_operations(&self, group_id: u64) -> Option<KvGroupOperations> {
+        self.get_group(group_id)
+            .map(|group| KvGroupOperations::new(group, self.scan_byte_budget))
     }
 
     /// Decide whether a KV read on `group_id` should be forwarded to the
@@ -438,82 +460,36 @@ impl PxKvStore {
         read_mode: i32,
         min_slot: u64,
     ) -> ReadDecision {
-        let replica = group.local_replica();
-        let safe_slot = group.group_safe_slot();
-        let contiguous_applied = replica.contiguous_applied();
-        if let Some(h) = group.read_handles() {
-            h.safe_slot.set(safe_slot);
-        }
-        let mode = ReadMode::try_from(read_mode).unwrap_or(ReadMode::Linearizable);
-        match mode {
-            ReadMode::Linearizable => {
-                if replica.is_leader() {
-                    match group.linearizable_read_barrier().await {
-                        ReadBarrierOutcome::Ready { read_slot } => {
-                            // R35 apply fence: with R17 (`async_engine_apply`)
-                            // on, a just-chosen slot may not yet be applied
-                            // when the barrier resolves, so a linearizable
-                            // read could miss a just-written value. Wait for
-                            // the local applied frontier to reach `read_slot`
-                            // before serving the engine get. With R17 off the
-                            // frontier already equals `read_slot` and this is
-                            // a single atomic load + compare (no wait).
-                            let fence_start = Instant::now();
-                            replica.await_apply_fence(read_slot).await;
-                            if let Some(h) = group.read_handles() {
-                                h.apply_fence.observe(fence_start.elapsed().as_nanos() as u64);
-                            }
-                            ReadDecision::Serve { read_slot, safe_slot }
-                        }
-                        // Lost leadership during the barrier: redirect to the
-                        // current leader rather than serving stale local state.
-                        ReadBarrierOutcome::NotLeader => ReadDecision::NotLeader {
-                            hint: group.leader_endpoint().unwrap_or_default(),
-                        },
-                        ReadBarrierOutcome::NoQuorum => ReadDecision::Unavailable {
-                            msg: "linearizable read: leadership quorum unavailable".to_string(),
-                        },
-                    }
-                } else {
-                    // Non-leader: a linearizable read cannot be proven fresh
-                    // here. `kv_service` forwards linearizable reads to the
-                    // leader before reaching the store; arriving here means
-                    // forwarding was unavailable or the loop-guard is set.
-                    // Redirect instead of serving a stale local value.
-                    ReadDecision::NotLeader {
-                        hint: group.leader_endpoint().unwrap_or_default(),
-                    }
-                }
+        let consistency =
+            match crate::rpc::ReadMode::try_from(read_mode).unwrap_or(crate::rpc::ReadMode::Linearizable) {
+                crate::rpc::ReadMode::Linearizable => KvReadConsistency::Linearizable,
+                crate::rpc::ReadMode::MinSlot => KvReadConsistency::MinAppliedSlot(min_slot),
+            };
+        match KvGroupOperations::new(Arc::clone(group), self.scan_byte_budget)
+            .resolve_read_point(consistency)
+            .await
+        {
+            Ok((read_slot, _)) => ReadDecision::Serve { read_slot },
+            Err(KvGroupOperationError::NotLeader { leader_hint }) => {
+                ReadDecision::NotLeader { hint: leader_hint }
             }
-            ReadMode::MinSlot => {
-                if contiguous_applied >= min_slot {
-                    ReadDecision::Serve {
-                        read_slot: contiguous_applied,
-                        safe_slot,
-                    }
-                } else {
-                    if let Some(h) = group.read_handles() {
-                        h.minslot_fallback.inc();
-                    }
-                    ReadDecision::NotLeader {
-                        hint: group.leader_endpoint().unwrap_or_default(),
-                    }
-                }
-            }
+            Err(error) => ReadDecision::Unavailable {
+                msg: error.to_string(),
+            },
         }
     }
 
     pub fn remove_group(&self, group_id: u64) -> bool {
         // Cancel the removed group's per-tenure token so its election
         // driver (and, if it is the leader, its heartbeat loop) stops.
-        // Dropping the `DashMap` entry alone is not enough: the running
+        // Dropping the published entry alone is not enough: the running
         // `run_leader_state` / `run_election_driver` task holds its own
         // strong `Arc<PxGroup>` for the duration of the tenure, so the
         // group is not dropped and a removed leader would keep sending
         // heartbeats forever — starving the surviving replicas' election
         // deadline so they can never re-elect. Mirror `add_group`'s
         // synchronous cancel on replacement.
-        if let Some((_, group)) = self.groups.remove(&group_id) {
+        if let Some(group) = self.remove_group_entry(group_id) {
             group.tenure_cancel().cancel();
             true
         } else {
@@ -522,12 +498,12 @@ impl PxKvStore {
     }
 
     pub fn group_count(&self) -> usize {
-        self.groups.len()
+        self.groups.load().len()
     }
 
     /// All hosted group IDs on this store.
     pub fn group_ids(&self) -> Vec<u64> {
-        self.groups.iter().map(|e| *e.key()).collect()
+        self.groups.load().keys().copied().collect()
     }
 
     /// Iterate all groups, calling `f` with each `Arc<PxGroup>`.
@@ -536,8 +512,8 @@ impl PxKvStore {
     where
         F: FnMut(&Arc<PxGroup>),
     {
-        for entry in &self.groups {
-            f(entry.value());
+        for group in self.groups.load().values() {
+            f(group);
         }
     }
 
@@ -546,9 +522,9 @@ impl PxKvStore {
     pub fn group_summaries(&self) -> Vec<(u64, u64, u64, usize)> {
         let mut out: Vec<(u64, u64, u64, usize)> = self
             .groups
-            .iter()
-            .map(|entry| {
-                let group = entry.value();
+            .load()
+            .values()
+            .map(|group| {
                 (
                     group.group_id,
                     group.local_replica().id,
@@ -561,36 +537,97 @@ impl PxKvStore {
         out
     }
 
+    pub(crate) fn groups_snapshot(&self) -> Arc<HashMap<u64, Arc<PxGroup>>> {
+        self.groups.load_full()
+    }
+
+    fn insert_group(&self, group_id: u64, group: &Arc<PxGroup>) -> Option<Arc<PxGroup>> {
+        loop {
+            let current = self.groups.load_full();
+            let mut replacement = (*current).clone();
+            let previous_group = replacement.insert(group_id, Arc::clone(group));
+            let previous = self.groups.compare_and_swap(&current, Arc::new(replacement));
+            if Arc::ptr_eq(&previous, &current) {
+                return previous_group;
+            }
+        }
+    }
+
+    fn remove_group_entry(&self, group_id: u64) -> Option<Arc<PxGroup>> {
+        loop {
+            let current = self.groups.load_full();
+            let group = current.get(&group_id)?.clone();
+            let mut replacement = (*current).clone();
+            replacement.remove(&group_id);
+            let previous = self.groups.compare_and_swap(&current, Arc::new(replacement));
+            if Arc::ptr_eq(&previous, &current) {
+                return Some(group);
+            }
+        }
+    }
+
     // ── KV operations ─────────────────────────────────────────
 
-    pub(crate) async fn propose_and_respond(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn propose_cas_and_respond(
         &self,
         group_id: u64,
         payload: Vec<u8>,
-        client_id: Option<u64>,
-        seq: Option<u64>,
+        precondition_key: Bytes,
+        expected_revision: u64,
+        client_id: u64,
+        seq: u64,
         request_id: u64,
         request_create_ms: u64,
     ) -> crate::rpc::KvResponse {
-        let Some(group) = self.get_group(group_id) else {
+        let Some(operations) = self.group_operations(group_id) else {
             return missing_group_response(request_id, request_create_ms);
         };
-
-        match group.propose(payload, client_id, seq).await {
-            ProposeResult::Chosen { slot } => {
-                crate::rpc::KvResponse::ok_chosen(slot, request_id, request_create_ms)
-            }
-            ProposeResult::NotLeader { leader_hint } => {
+        match operations
+            .compare_encoded(
+                payload,
+                precondition_key,
+                expected_revision,
+                KvRequestIdentity {
+                    client_id,
+                    sequence: seq,
+                },
+            )
+            .await
+        {
+            Ok(write) => crate::rpc::KvResponse::ok_chosen(write.chosen_slot, request_id, request_create_ms),
+            Err(KvGroupOperationError::NotLeader { leader_hint }) => {
                 crate::rpc::KvResponse::not_leader(leader_hint, request_id, request_create_ms)
             }
-            // Window-full: surface a retryable error keyword so clients back
-            // off and retry rather than treating it as a hard failure.
-            ProposeResult::Busy => crate::rpc::KvResponse::err(
-                crate::paxos::error::PxPaxosError::Busy.keyword().to_string(),
+            Err(KvGroupOperationError::CompareFailed { current_revision }) => {
+                crate::rpc::KvResponse::cas_error(
+                    crate::rpc::KvErrorCode::KvErrorCasFailed,
+                    current_revision,
+                    "compare-and-set precondition failed",
+                    request_id,
+                    request_create_ms,
+                )
+            }
+            Err(KvGroupOperationError::Busy | KvGroupOperationError::CompareBusy) => {
+                crate::rpc::KvResponse::cas_error(
+                    crate::rpc::KvErrorCode::KvErrorCasBusy,
+                    0,
+                    "compare-and-set admission busy",
+                    request_id,
+                    request_create_ms,
+                )
+            }
+            Err(
+                KvGroupOperationError::OutcomeUnknown
+                | KvGroupOperationError::Unavailable(_)
+                | KvGroupOperationError::Internal(_),
+            ) => crate::rpc::KvResponse::cas_error(
+                crate::rpc::KvErrorCode::KvErrorOutcomeUnknown,
+                0,
+                "compare-and-set outcome is unknown",
                 request_id,
                 request_create_ms,
             ),
-            ProposeResult::Err(msg) => crate::rpc::KvResponse::err(msg, request_id, request_create_ms),
         }
     }
 
@@ -674,9 +711,8 @@ pub(crate) fn scan_err(
 /// Outcome of [`PxKvStore::resolve_read_point`]: whether a read may be served
 /// from local state (and at which slots) or must be redirected / failed.
 pub(crate) enum ReadDecision {
-    /// Serve from local applied state. `read_slot` is the serving frontier;
-    /// `safe_slot` is the group safe-slot for bounded-stale reporting.
-    Serve { read_slot: u64, safe_slot: u64 },
+    /// Serve from local applied state at `read_slot`.
+    Serve { read_slot: u64 },
     /// Redirect the client to the leader (`hint` may be empty if unknown).
     NotLeader { hint: String },
     /// The read cannot currently be served with the requested consistency.

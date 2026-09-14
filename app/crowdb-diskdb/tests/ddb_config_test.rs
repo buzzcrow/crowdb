@@ -85,6 +85,25 @@ fn config_defaults_match_design() {
 }
 
 #[test]
+fn partial_persistence_config_keeps_defaults() {
+    let config: DdbConfig = toml::from_str(
+        r#"
+        [server]
+        listen_addr = "127.0.0.1:1"
+
+        [persistence]
+        free_batch_enabled = true
+        free_flush_max_batch = 32
+        "#,
+    )
+    .unwrap();
+    assert!(config.persistence.free_batch_enabled);
+    assert_eq!(config.persistence.free_flush_max_batch, 32);
+    assert_eq!(config.persistence.compaction_cadence_secs, 300);
+    assert_eq!(config.persistence.snapshot_compaction_threshold, 4096);
+}
+
+#[test]
 fn config_rejects_zero_server_rpc_workers() {
     let mut config = DdbConfig::default();
     config.server.rpc_workers = 0;

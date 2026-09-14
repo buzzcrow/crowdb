@@ -167,13 +167,12 @@ route, and retires its chunks.
 Chunkdb periodically scans Active shared chunks. When a persisted writer lease
 has expired, it acquires the normal lifecycle guard, rechecks the record, seals
 at the persisted cursor, cancels and frees never-consumed reservations, closes
-only acknowledged strips, persists, and refreshes the cache. New consumed
-reservations persist each planned cursor and send the segment allocation
-generation with DiskIO writes. Recovery can therefore cancel and recycle them:
-DiskIO durably advances the allocation generation before reuse and rejects a
-delayed old write. Legacy consumed reservations without planned cursors remain
-allocated fail-safe. The old writer can no longer renew or advance the sealed
-chunk.
+only acknowledged strips, persists, and refreshes the cache. Recovery retains
+consumed reservations until the writer lease deadline plus the configured
+reuse grace has elapsed, so a timed-out write cannot reach a recycled extent.
+Consumed reservations without planned cursors remain allocated fail-safe. The
+old writer can no longer renew or advance the sealed chunk. DiskIO performs raw
+I/O and does not validate allocation ownership.
 
 ## 7. Elasticity, Failure, and Shutdown
 

@@ -415,6 +415,9 @@ pub struct ScanArgs {
     /// Exclusive lower bound (empty = start from beginning).
     #[arg(long, default_value = "")]
     pub scan_start_after: String,
+    /// Scan traversal direction.
+    #[arg(long, value_enum, default_value_t = BenchScanDirection::Forward)]
+    pub scan_direction: BenchScanDirection,
     #[arg(long, default_value_t = 64)]
     pub value_size: usize,
     #[arg(long, default_value_t = 100_000)]
@@ -458,6 +461,12 @@ pub enum BenchMinSlot {
 pub enum BenchReadEndpoint {
     Leader,
     AnyReplica,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum BenchScanDirection {
+    Forward,
+    Reverse,
 }
 
 pub async fn run_bench_verb(cli: &Cli, verb: BenchVerb) -> ExitCode {

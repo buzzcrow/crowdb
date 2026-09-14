@@ -11,11 +11,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use dashmap::DashMap;
 use quick_cache::sync::Cache;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tracing::{info, warn};
 
+use crowdb_protocol::chunk_stream::chunk_owner_key_matches_type;
 use crowdb_protocol::chunkdb::rpc::{
     Chunk, ChunkState as ProtoChunkState, ChunkStrip, ChunkType, Strip, StripCleanupIntent,
     StripReservationState, StripType as ProtoStripType,
@@ -32,6 +32,7 @@ use crate::range_guard::RangeGuard;
 use crate::routing::hash_to_bucket;
 use crate::selector::PlacementConstraints;
 use crate::storage::{ChunkStore, StoreError};
+use crate::task::TaskStore;
 use crate::topology::TopologyCache;
 
 use super::state::{ChunkState, StateTransitionError};
@@ -128,9 +129,12 @@ pub struct LifecycleHandler {
     /// configured (no lifecycle section in config).
     locks: Option<Arc<ChunkLockMap>>,
     allow_unsafe_ec: bool,
+    allow_degraded_failure_domains: bool,
+    failure_domain_priority: crate::selector::FailureDomainPriority,
     metrics: Option<Arc<ChunkdbMetrics>>,
     layout_validity_ms: u64,
     reservation_admission: Arc<admission::ReservationAdmission>,
+    placement_tasks: Option<Arc<TaskStore>>,
 }
 
 struct AllocationMetricGuard {
@@ -179,10 +183,19 @@ impl LifecycleHandler {
             range_guard: None,
             locks: None,
             allow_unsafe_ec: false,
+            allow_degraded_failure_domains: false,
+            failure_domain_priority: crate::selector::FailureDomainPriority::default(),
             metrics: None,
             layout_validity_ms: DEFAULT_LAYOUT_VALIDITY_MS,
             reservation_admission: Arc::new(admission::ReservationAdmission::new(u64::MAX, u64::MAX, None)),
+            placement_tasks: None,
         }
+    }
+
+    /// Immutable topology used by background placement reconciliation.
+    #[must_use]
+    pub fn topology_snapshot(&self) -> crate::topology::TopologySnapshot {
+        self.topology.snapshot()
     }
 
     #[must_use]
@@ -209,6 +222,25 @@ impl LifecycleHandler {
     #[must_use]
     pub fn with_allow_unsafe_ec(mut self, allow: bool) -> Self {
         self.allow_unsafe_ec = allow;
+        self
+    }
+
+    /// Attach the persistent task store used for foreground degraded EC admission.
+    #[must_use]
+    pub fn with_placement_tasks(mut self, tasks: Arc<TaskStore>) -> Self {
+        self.placement_tasks = Some(tasks);
+        self
+    }
+
+    /// Configure failure-domain ordering and explicit degraded placement.
+    #[must_use]
+    pub fn with_placement_policy(
+        mut self,
+        priority: crate::selector::FailureDomainPriority,
+        allow_degraded_failure_domains: bool,
+    ) -> Self {
+        self.failure_domain_priority = priority;
+        self.allow_degraded_failure_domains = allow_degraded_failure_domains;
         self
     }
 
@@ -271,6 +303,44 @@ impl LifecycleHandler {
         writer_epoch: u64,
         writer_lease_ms: u64,
     ) -> Result<Chunk, LifecycleError> {
+        self.allocate_chunk_owned(
+            chunk_id,
+            write_granularity_kb,
+            strip_count,
+            strip_type,
+            data_num,
+            code_num,
+            copy_count,
+            chunk_type,
+            writer_epoch,
+            writer_lease_ms,
+            Vec::new(),
+        )
+        .await
+    }
+
+    /// Allocate a new chunk with a stable logical owner identity.
+    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_lines)]
+    pub async fn allocate_chunk_owned(
+        &self,
+        chunk_id: Option<ChunkId>,
+        write_granularity_kb: u32,
+        strip_count: u32,
+        strip_type: ProtoStripType,
+        data_num: u32,
+        code_num: u32,
+        copy_count: u32,
+        chunk_type: ChunkType,
+        writer_epoch: u64,
+        writer_lease_ms: u64,
+        owner_key: Vec<u8>,
+    ) -> Result<Chunk, LifecycleError> {
+        if !chunk_owner_key_matches_type(chunk_type, &owner_key) {
+            return Err(LifecycleError::InvalidRequest(
+                "chunk owner key does not match chunk type".into(),
+            ));
+        }
         let id = match chunk_id {
             Some(id) => id,
             None => self.generate_owned_chunk_id(chunk_type)?,
@@ -363,8 +433,10 @@ impl LifecycleHandler {
             next_strip_sequence: strip_count,
             cleanup_intents: Vec::new(),
             last_strip_replacement: None,
+            owner_key,
         };
         self.persist_active_chunk(&chunk).await?;
+        self.admit_placement_repairs(&chunk);
         self.commit_strip_segments_background(chunk.strips.clone());
 
         // Update cache.
@@ -622,6 +694,7 @@ impl LifecycleHandler {
             self.allocator.rollback_strips(&appended).await?;
             return Err(error.into());
         }
+        self.admit_placement_repairs(&chunk);
 
         if let Some(ref mut g) = guard {
             g.refresh(chunk.clone());
@@ -739,6 +812,7 @@ impl LifecycleHandler {
             chunk
                 .cleanup_intents
                 .retain(|intent| intent.operation_id != Some(operation_id));
+            chunk.modify_ts = chunk.modify_ts.saturating_add(1);
             self.store.put_chunk(&chunk).await?;
             if let Some(ref mut g) = guard {
                 g.refresh(chunk.clone());
@@ -785,6 +859,7 @@ impl LifecycleHandler {
                 .map_err(LifecycleError::Cleanup)?;
             chunk.strips.clear();
             chunk.capacity = 0;
+            chunk.modify_ts = chunk.modify_ts.saturating_add(1);
             self.store.put_chunk(&chunk).await?;
             if let Some(ref mut g) = guard {
                 g.refresh(chunk.clone());
@@ -844,6 +919,7 @@ impl LifecycleHandler {
         }
         chunk.strips.clear();
         chunk.capacity = 0;
+        chunk.modify_ts = chunk.modify_ts.saturating_add(1);
         self.store.put_chunk(&chunk).await?;
         if let Some(ref mut g) = guard {
             g.refresh(chunk.clone());
@@ -1425,6 +1501,7 @@ impl LifecycleHandler {
                     }
                     chunk.cleanup_intents = pending;
                     if chunk.cleanup_intents.len() != intent_count {
+                        chunk.modify_ts = chunk.modify_ts.saturating_add(1);
                         self.store.put_chunk(&chunk).await?;
                         if let (Some(locks), Some(chunk_id)) = (&self.locks, chunk.id) {
                             locks.populate_cache(&chunk_id, chunk.clone());
@@ -1436,6 +1513,7 @@ impl LifecycleHandler {
                     ChunkState::Init => {
                         self.commit_strip_segments(&chunk.strips).await?;
                         chunk.state = ProtoChunkState::Active as i32;
+                        chunk.modify_ts = chunk.modify_ts.saturating_add(1);
                     }
                     ChunkState::Deleted if !chunk.strips.is_empty() => {
                         let segments = chunk.strips.iter().flat_map(extract_segments).collect();
@@ -1446,6 +1524,7 @@ impl LifecycleHandler {
                             .map_err(LifecycleError::Cleanup)?;
                         chunk.strips.clear();
                         chunk.capacity = 0;
+                        chunk.modify_ts = chunk.modify_ts.saturating_add(1);
                     }
                     _ => continue,
                 }
@@ -1542,12 +1621,29 @@ impl LifecycleHandler {
     }
 
     fn placement_constraints(&self) -> PlacementConstraints {
-        let constraints = PlacementConstraints::new();
+        let mut constraints =
+            PlacementConstraints::new().with_failure_domain_priority(self.failure_domain_priority);
         if self.allow_unsafe_ec {
-            constraints.allow_unsafe_ec()
-        } else {
-            constraints
+            constraints = constraints.allow_unsafe_ec();
         }
+        if self.allow_degraded_failure_domains {
+            constraints = constraints.allow_degraded_failure_domains();
+        }
+        constraints
+    }
+
+    fn admit_placement_repairs(&self, chunk: &Chunk) {
+        let Some(tasks) = self.placement_tasks.clone() else {
+            return;
+        };
+        let chunk = chunk.clone();
+        tokio::spawn(async move {
+            if let Err(error) =
+                crate::placement_repair::admit_placement_chunk(&tasks, &chunk, unix_time_ms()).await
+            {
+                warn!(%error, "placement repair admission deferred to reconciliation");
+            }
+        });
     }
 }
 

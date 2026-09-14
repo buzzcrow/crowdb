@@ -41,9 +41,9 @@ pub struct PaxosConfig {
     /// static: R45 max ops per coalesced batch. `0` disables coalescing
     /// (one proposal per key). Default 32.
     pub coalesce_max_keys: usize,
-    /// static: R45b drain threshold — skip draining the pending batch
-    /// in `coalesce_drain_after_round` when the in-flight slot-task
-    /// count (`occupied`) is at or above this value. Default `1`.
+    /// static: R45b drain threshold — skip draining the pending batch in
+    /// `coalesce_drain_after_round` when the number of other coalesced rounds
+    /// is at or above this value. Default `1`.
     pub coalesce_drain_threshold: usize,
 }
 
@@ -109,6 +109,14 @@ pub struct ServerConfig {
     /// static: per-connection send queue capacity (backpressure bound).
     /// Default 4096. Raise if `enqueue_send` failures appear under load.
     pub send_queue_capacity: u32,
+    /// Maximum snapshot payload bytes returned by one Read RPC.
+    pub snapshot_chunk_bytes: usize,
+    /// Maximum number of pinned snapshot exports owned by this store.
+    pub snapshot_source_sessions: usize,
+    /// Idle lifetime of a source snapshot session.
+    pub snapshot_session_lease_ms: u64,
+    /// Maximum number of fresh Begin attempts during a new-member join.
+    pub snapshot_restart_attempts: usize,
 }
 
 impl ServerConfig {
@@ -121,6 +129,10 @@ impl ServerConfig {
         quickack: false,
         event_write: false,
         send_queue_capacity: 4096,
+        snapshot_chunk_bytes: 1024 * 1024,
+        snapshot_source_sessions: 4,
+        snapshot_session_lease_ms: 30_000,
+        snapshot_restart_attempts: 3,
     };
 }
 
@@ -258,15 +270,6 @@ pub struct PxElectionConfig {
     /// spawned. Used by `testkit::cluster::start_cluster` to keep legacy M1/M2
     /// tests deterministic (pinned leader via `set_leader_id`).
     pub election_driver_disabled: bool,
-    /// Bounded capacity of the per-peer `PxLearnerStream` outbound mpsc.
-    /// Full mpsc surfaces as `PxPaxosError::Busy` on the proposer side
-    /// (already classified `FailRetryable`).
-    ///
-    /// Derived as `max_inflight_proposals * LEARNER_WINDOW_MULTIPLIER` (4×) so
-    /// that the learner channel always has headroom over the proposer
-    /// admission gate. Only `max_inflight_proposals` needs to be tuned; this
-    /// field follows automatically.
-    pub learner_stream_window_frames: usize,
     /// Tick interval for the per-group engine-durability + WAL-GC
     /// maintenance loop (follow-up; see
     /// `cluster::group_maintenance`). Previously hardcoded as
@@ -293,15 +296,10 @@ pub struct PxElectionConfig {
     /// persisted even with `--no-fsync`. `0` disables periodic WAL
     /// flush (WAL is still flushed on shutdown).
     pub wal_flush_interval_ms: u64,
-    /// Per-RPC deadline for unary `prepare`, the bidi `accept`
-    /// learner-stream call, and the unary `heartbeat` RPC, in
-    /// milliseconds. On expiry the caller gets a retryable
-    /// `PxReplicaError` and the pending-map entry (bidi path) is removed
-    /// so it cannot leak. Paired with h2 keepalive on the connect-time
-    /// `Endpoint` so a hung peer (accepts connection but never replies)
-    /// is detected within the deadline rather than stalling the proposer
-    /// indefinitely.
-    pub learner_stream_rpc_timeout_ms: u64,
+    /// Per-RPC deadline for peer consensus calls, in milliseconds. A hung
+    /// peer cannot stall proposal, election, or recovery indefinitely.
+    #[serde(alias = "learner_stream_rpc_timeout_ms")]
+    pub peer_rpc_timeout_ms: u64,
     /// Cadence for block-level merge GC (R129): wall-clock interval
     /// between `compact_sparse_blocks` passes in the maintenance loop.
     /// `0` disables the cadence (snapshot folding still runs). The
@@ -311,21 +309,12 @@ pub struct PxElectionConfig {
 }
 
 impl PxElectionConfig {
-    /// Multiplier applied to `PaxosConfig::max_inflight_proposals` to derive
-    /// `learner_stream_window_frames`. Gives the learner channel 4×
-    /// headroom over the proposer admission gate.
-    pub(crate) const LEARNER_WINDOW_MULTIPLIER: usize = 4;
-
     /// Production / single-DC default.
     ///
     /// Heartbeat 150 ms / election 1–2 s / lease 3 s. Follows etcd's
     /// production defaults (100 ms heartbeat, 1 s election) with a slightly
     /// conservative heartbeat for disk-fsync jitter. Lease ≥ `election_max`
     /// + `clock_skew` (2000 + 500 = 2500) ensures leader-lease safety.
-    ///
-    /// `learner_stream_window_frames` is derived as
-    /// `PaxosConfig::DEFAULT.max_inflight_proposals * LEARNER_WINDOW_MULTIPLIER`
-    /// (= 32 × 4 = 128).
     pub const DEFAULT: Self = Self {
         prevote_enabled: true,
         heartbeat_interval_ms: 150,
@@ -336,8 +325,6 @@ impl PxElectionConfig {
         bulk_prepare_window: 1024,
         catchup_snapshot_threshold: 1024,
         election_driver_disabled: false,
-        learner_stream_window_frames: PaxosConfig::DEFAULT.max_inflight_proposals
-            * Self::LEARNER_WINDOW_MULTIPLIER,
         // Maintenance loop tick: pure watchdog now that flush and snapshot
         // are event-driven (auto-trigger on freeze / dirty-page count). Only
         // catches idle/low-write tails — sub-threshold memtables and dirty
@@ -348,7 +335,7 @@ impl PxElectionConfig {
         snapshot_time_threshold_ms: 600_000,
         snapshot_flush_count_threshold: 10,
         wal_flush_interval_ms: 60_000,
-        learner_stream_rpc_timeout_ms: 2000,
+        peer_rpc_timeout_ms: 2000,
         merge_gc_interval_ms: 0,
     };
 
@@ -368,14 +355,12 @@ impl PxElectionConfig {
             bulk_prepare_window: 1024,
             catchup_snapshot_threshold: 1024,
             election_driver_disabled: false,
-            learner_stream_window_frames: PaxosConfig::DEFAULT.max_inflight_proposals
-                * Self::LEARNER_WINDOW_MULTIPLIER,
             maintenance_tick_ms: 500,
             snapshot_slot_threshold: 1000,
             snapshot_time_threshold_ms: 1_000,
             snapshot_flush_count_threshold: 2,
             wal_flush_interval_ms: 0,
-            learner_stream_rpc_timeout_ms: 500,
+            peer_rpc_timeout_ms: 500,
             merge_gc_interval_ms: 0,
         }
     }
@@ -386,8 +371,7 @@ impl PxElectionConfig {
     /// Election 300–600 ms / heartbeat 100 ms / lease 800 ms. Matches the
     /// Raft paper's 150–300 ms suggestion with a 2× margin for localhost
     /// parallel-test load. Lease ≥ `election_max` + `clock_skew` (600 + 100
-    /// = 700) ensures leader-lease safety. `learner_stream_window_frames`
-    /// = 32 × 4 = 128. Maintenance tick 3 s, snapshot time threshold 9 s
+    /// = 700) ensures leader-lease safety. Maintenance tick 3 s, snapshot time threshold 9 s
     /// so a 15 s bench triggers exactly one time-threshold snapshot
     /// (at the third tick, t≈9 s) while exercising more flush/GC passes.
     /// Slot threshold 1,000,000 avoids slot-triggered snapshots firing
@@ -404,25 +388,14 @@ impl PxElectionConfig {
             bulk_prepare_window: 1024,
             catchup_snapshot_threshold: 1024,
             election_driver_disabled: false,
-            learner_stream_window_frames: PaxosConfig::DEFAULT.max_inflight_proposals
-                * Self::LEARNER_WINDOW_MULTIPLIER,
             maintenance_tick_ms: 3_000,
             snapshot_slot_threshold: 1_000_000,
             snapshot_time_threshold_ms: 9_000,
             snapshot_flush_count_threshold: 0, // disabled for bench (slot threshold is high)
             wal_flush_interval_ms: 0,
-            learner_stream_rpc_timeout_ms: 1000,
+            peer_rpc_timeout_ms: 1000,
             merge_gc_interval_ms: 0,
         }
-    }
-
-    /// Derive the learner stream window for a given max-inflight-proposals
-    /// count. Call this when customizing `max_inflight_proposals` at runtime
-    /// so the learner channel stays in sync.
-    #[must_use]
-    #[allow(dead_code)]
-    pub(crate) const fn learner_window_for(max_inflight_proposals: usize) -> usize {
-        max_inflight_proposals * Self::LEARNER_WINDOW_MULTIPLIER
     }
 }
 
@@ -518,6 +491,18 @@ impl BaseConfig for CrowDBConfig {
         }
         if self.server.send_queue_capacity == 0 {
             return Err("server.send_queue_capacity must be > 0".to_string());
+        }
+        if self.server.snapshot_chunk_bytes == 0 || self.server.snapshot_chunk_bytes > 1024 * 1024 {
+            return Err("server.snapshot_chunk_bytes must be in 1..=1048576".to_string());
+        }
+        if self.server.snapshot_source_sessions == 0 {
+            return Err("server.snapshot_source_sessions must be > 0".to_string());
+        }
+        if self.server.snapshot_session_lease_ms == 0 {
+            return Err("server.snapshot_session_lease_ms must be > 0".to_string());
+        }
+        if self.server.snapshot_restart_attempts == 0 {
+            return Err("server.snapshot_restart_attempts must be > 0".to_string());
         }
         if self.paxos.max_inflight_proposals == 0 {
             return Err("paxos.max_inflight_proposals must be > 0".to_string());
@@ -693,6 +678,23 @@ mod tests {
         assert_eq!(
             config.validate(),
             Err("server.send_queue_capacity must be > 0".to_string())
+        );
+    }
+
+    #[test]
+    fn snapshot_transfer_defaults_are_bounded_and_validate() {
+        let config = CrowDBConfig::default();
+        assert_eq!(config.server.snapshot_chunk_bytes, 1024 * 1024);
+        assert_eq!(config.server.snapshot_source_sessions, 4);
+        assert_eq!(config.server.snapshot_session_lease_ms, 30_000);
+        assert_eq!(config.server.snapshot_restart_attempts, 3);
+        assert_eq!(config.validate(), Ok(()));
+
+        let mut invalid = config;
+        invalid.server.snapshot_chunk_bytes = 1024 * 1024 + 1;
+        assert_eq!(
+            invalid.validate(),
+            Err("server.snapshot_chunk_bytes must be in 1..=1048576".to_string())
         );
     }
 

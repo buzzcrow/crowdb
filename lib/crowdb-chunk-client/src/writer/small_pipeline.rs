@@ -759,6 +759,7 @@ impl OwnedChunk {
                 chunk_type: ChunkType::Repo as i32,
                 writer_epoch,
                 writer_lease_ms: lease_ms,
+                owner_key: Vec::new(),
             })
             .await?;
         let chunk = response
@@ -1877,13 +1878,24 @@ impl OwnedChunk {
                 .await?;
         } else {
             let seal_length = u32::try_from(self.cursor.div_ceil(1024)).unwrap_or(u32::MAX);
-            self.allocator
+            if let Err(error) = self
+                .allocator
                 .seal_chunk(SealChunkRequest {
                     chunk_id: Some(chunk_id),
                     seal_length,
                 })
                 .await
-                .map_err(|error| IoError::MetadataConflict(format!("seal reserved chunk failed: {error}")))?;
+            {
+                // The chunkdb background sealer (`seal_expired_writer_chunks`)
+                // may have already sealed this chunk when our writer lease
+                // expired during a conversion fault. Treat an already-sealed
+                // chunk as success; otherwise propagate the original error.
+                if !self.accept_external_seal().await? {
+                    return Err(IoError::MetadataConflict(format!(
+                        "seal reserved chunk failed: {error}"
+                    )));
+                }
+            }
         }
         Ok(())
     }

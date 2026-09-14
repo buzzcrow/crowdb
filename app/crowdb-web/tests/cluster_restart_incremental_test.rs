@@ -574,9 +574,9 @@ async fn setup_cluster(tag: &str, rack_nodes: &[(u64, u64)], bin: &Path, electio
     // guarantees no TOCTOU between concurrent deploys.
     let n = u16::try_from(node_ids.len()).unwrap_or(u16::MAX);
     let rest_ports =
-        crowdb_protocol::port_alloc::alloc_test_port_range(crowdb_protocol::ServicePort::KvServerMgmt, n);
+        crowdb_protocol::port::alloc::alloc_test_port_range(crowdb_protocol::ServicePort::KvServerMgmt, n);
     let rpc_ports =
-        crowdb_protocol::port_alloc::alloc_test_port_range(crowdb_protocol::ServicePort::KvServerListen, n);
+        crowdb_protocol::port::alloc::alloc_test_port_range(crowdb_protocol::ServicePort::KvServerListen, n);
     // Deploy all nodes concurrently — each deploy polls /health until
     // ready, so parallel deploy overlaps the readiness waits.
     let deploy_futs: Vec<_> = node_ids

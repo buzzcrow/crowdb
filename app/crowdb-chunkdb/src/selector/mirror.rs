@@ -9,12 +9,13 @@
 
 use std::collections::HashSet;
 
-use rand::seq::SliceRandom;
 use tracing::warn;
 
 use crowdb_protocol::{DiskGroupId, NodeId, RackId};
 
-use super::{healthy_dgs, PlacementConstraints, PlacementError, PlacementPlan};
+use super::{
+    finish_plan, healthy_dgs, FailureDomainPriority, PlacementConstraints, PlacementError, PlacementPlan,
+};
 use crate::topology::TopologySnapshot;
 
 /// Mirror placement selector.
@@ -28,6 +29,7 @@ impl MirrorPlacement {
     /// pass the health + exclusion filters, or
     /// `PlacementError::InsufficientNodes` if fewer healthy nodes than
     /// `copy_count`.
+    #[allow(clippy::too_many_lines)]
     pub fn select(
         snap: &TopologySnapshot,
         copy_count: usize,
@@ -51,7 +53,10 @@ impl MirrorPlacement {
         }
 
         let mut rack_ids: Vec<RackId> = by_rack.keys().copied().collect();
-        rack_ids.shuffle(&mut rand::thread_rng());
+        rack_ids.sort_by_key(|rack_id| (snap.rack_capacity_score(*rack_id, 0), *rack_id));
+        for dgs in by_rack.values_mut() {
+            dgs.sort_unstable_by_key(|dg| (dg.node_id, dg.dg_id));
+        }
 
         // Phase 1: pick one node per rack (round-robin through racks).
         let mut selected: Vec<(RackId, NodeId, DiskGroupId)> = Vec::new();
@@ -61,15 +66,53 @@ impl MirrorPlacement {
         for _ in 0..copy_count {
             // Try to find a rack with an unused node.
             let mut found = false;
-            for _ in 0..rack_ids.len() {
-                let rack = rack_ids[rack_index];
-                rack_index = (rack_index + 1) % rack_ids.len();
-                if let Some(dgs_in_rack) = by_rack.get(&rack) {
-                    if let Some(dg) = dgs_in_rack.iter().find(|dg| !used_nodes.contains(&dg.node_id)) {
+            match constraints.failure_domain_priority {
+                FailureDomainPriority::RackFirst => {
+                    for _ in 0..rack_ids.len() {
+                        let rack = rack_ids[rack_index];
+                        rack_index = (rack_index + 1) % rack_ids.len();
+                        if let Some(dgs_in_rack) = by_rack.get(&rack) {
+                            if let Some(dg) = dgs_in_rack
+                                .iter()
+                                .filter(|dg| !used_nodes.contains(&dg.node_id))
+                                .min_by_key(|dg| {
+                                    (
+                                        snap.capacity_score(dg.dg_id, constraints.planned_bytes_per_block),
+                                        dg.node_id,
+                                        dg.dg_id,
+                                    )
+                                })
+                            {
+                                used_nodes.insert(dg.node_id);
+                                selected.push((rack, dg.node_id, dg.dg_id));
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                FailureDomainPriority::NodeFirst => {
+                    let mut rack_load = std::collections::HashMap::<RackId, usize>::new();
+                    for (rack, _, _) in &selected {
+                        *rack_load.entry(*rack).or_default() += 1;
+                    }
+                    if let Some(dg) = dgs
+                        .iter()
+                        .filter(|dg| !used_nodes.contains(&dg.node_id))
+                        .min_by_key(|dg| {
+                            (
+                                snap.node_capacity_score(dg.node_id, constraints.planned_bytes_per_block),
+                                rack_load.get(&dg.rack_id).copied().unwrap_or(0),
+                                snap.rack_capacity_score(dg.rack_id, constraints.planned_bytes_per_block),
+                                snap.capacity_score(dg.dg_id, constraints.planned_bytes_per_block),
+                                dg.node_id,
+                                dg.dg_id,
+                            )
+                        })
+                    {
                         used_nodes.insert(dg.node_id);
-                        selected.push((rack, dg.node_id, dg.dg_id));
+                        selected.push((dg.rack_id, dg.node_id, dg.dg_id));
                         found = true;
-                        break;
                     }
                 }
             }
@@ -89,7 +132,16 @@ impl MirrorPlacement {
                 remaining,
                 "mirror placement: not enough distinct racks, placing remaining copies on distinct nodes"
             );
-            for dg in &dgs {
+            let mut remaining_dgs: Vec<_> = dgs.iter().collect();
+            remaining_dgs.sort_by_key(|dg| {
+                (
+                    snap.capacity_score(dg.dg_id, constraints.planned_bytes_per_block),
+                    dg.rack_id,
+                    dg.node_id,
+                    dg.dg_id,
+                )
+            });
+            for dg in remaining_dgs {
                 if selected.len() >= copy_count {
                     break;
                 }
@@ -117,9 +169,12 @@ impl MirrorPlacement {
             })
             .collect();
 
-        Ok(PlacementPlan {
+        finish_plan(
+            snap,
             entries,
-            safe_mode: true,
-        })
+            u32::try_from(copy_count.saturating_sub(1)).unwrap_or(u32::MAX),
+            constraints,
+            false,
+        )
     }
 }

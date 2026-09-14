@@ -20,7 +20,7 @@ use crate::cluster::status::{RemoteStatus, StatusLevel};
 use crate::common::config::PxElectionConfig;
 use crate::common::report::OperationReport;
 use crate::metrics::{Counter, LatencySummary, MetricPoint, MetricsRegistry};
-use crate::paxos::roles::{DedupTag, PxAcceptReply, PxBallot, PxLogEntry, PxPrepareReply};
+use crate::paxos::roles::{PxAcceptReply, PxBallot, PxLogEntry, PxPrepareReply};
 use crate::paxos::PxNodeId;
 use crate::rpc::PxRpcTransport;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,7 +34,7 @@ pub struct PxRemoteReplica {
     pub(crate) endpoint: String,
     /// Per-RPC deadline for the crowdb-rpc unary calls (`Prepare`, `Accept`,
     /// `PreVote`, `RequestVote`, `Heartbeat`, `StepDown`, `FetchGap`). Snapshot of
-    /// `PxElectionConfig::learner_stream_rpc_timeout_ms`.
+    /// `PxElectionConfig::peer_rpc_timeout_ms`.
     rpc_timeout: Duration,
     pub(crate) voting: bool,
     /// Optional registry handles mirroring RPC stats to the metrics log.
@@ -93,7 +93,6 @@ impl ReplicaClient for PxRemoteReplica {
     async fn send_accept(
         &self,
         entry: &PxLogEntry,
-        dedup_tags: &[DedupTag],
         group_id: u64,
         membership_epoch: u64,
     ) -> Result<PxAcceptReply, PxReplicaError> {
@@ -101,7 +100,7 @@ impl ReplicaClient for PxRemoteReplica {
         let started = Instant::now();
         let result = tokio::time::timeout(
             self.rpc_timeout,
-            transport.send_accept(&self.endpoint, entry, dedup_tags, group_id, membership_epoch),
+            transport.send_accept(&self.endpoint, entry, group_id, membership_epoch),
         )
         .await;
         self.finish_rpc(started, "accept", result)
@@ -174,7 +173,7 @@ impl PxRemoteReplica {
         Self {
             node_id,
             endpoint,
-            rpc_timeout: Duration::from_millis(PxElectionConfig::DEFAULT.learner_stream_rpc_timeout_ms),
+            rpc_timeout: Duration::from_millis(PxElectionConfig::DEFAULT.peer_rpc_timeout_ms),
             voting: true,
             rpc_handles: OnceLock::new(),
             shutdown_started: AtomicBool::new(false),
@@ -183,13 +182,13 @@ impl PxRemoteReplica {
     }
 
     /// Construct a remote replica with the given election config snapshot.
-    /// Consumes `learner_stream_rpc_timeout_ms` (per-RPC deadline); other
+    /// Consumes `peer_rpc_timeout_ms` (per-RPC deadline); other
     /// fields stay configurable per-call.
     #[must_use]
     #[allow(dead_code)]
     pub(crate) fn with_config(node_id: PxNodeId, endpoint: String, cfg: &PxElectionConfig) -> Self {
         let mut r = Self::new(node_id, endpoint);
-        r.rpc_timeout = Duration::from_millis(cfg.learner_stream_rpc_timeout_ms);
+        r.rpc_timeout = Duration::from_millis(cfg.peer_rpc_timeout_ms);
         r
     }
 
@@ -338,13 +337,10 @@ impl PxRemoteReplica {
             }
             Err(_) => {
                 self.record_err();
-                // Drop the endpoint's cached connections so the next
-                // call creates a fresh connection instead of reusing
-                // a stale one that will never receive a response.
-                if let Some(t) = self.rpc_transport.get() {
-                    t.drop_endpoint(&self.endpoint);
-                }
-                Err(PxReplicaError::Internal(format!(
+                // The transport reaper invalidates the exact connection-pool
+                // generation used by a failed request. This outer deadline
+                // must not discard a replacement installed in the meantime.
+                Err(PxReplicaError::Timeout(format!(
                     "{} rpc timeout after {} ms at peer {}",
                     rpc_name,
                     self.rpc_timeout.as_millis(),
@@ -445,9 +441,8 @@ impl PxRemoteReplica {
         }
     }
 
-    /// Cascade shutdown: stop the legacy `PxLearnerStream` background task
-    /// (if it was ever initialized). The crowdb-rpc transport is shared and
-    /// owned by the store, so it is not torn down here. Idempotent.
+    /// Mark this remote stopped. The crowdb-rpc transport is shared and owned
+    /// by the store, so it is not torn down here. Idempotent.
     #[tracing::instrument(level = "debug", skip_all, fields(peer = self.node_id))]
     #[allow(clippy::unused_async)] // async kept for cascade uniformity
     pub(crate) async fn shutdown(&self, _per_layer_timeout: Duration) -> OperationReport {

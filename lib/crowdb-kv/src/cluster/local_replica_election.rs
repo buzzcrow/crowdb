@@ -311,8 +311,13 @@ impl PxLocalReplica {
             // wakeup. We still flip the role here so any concurrent
             // proposer leadership check observes Follower without
             // needing the driver to advance first.
+            if let Some(handles) = self.election_registry_handles() {
+                handles.step_downs_admin.inc();
+            }
             self.become_follower(snapshot.current_term);
-            self.admin_step_down_signal.notify_waiters();
+            // Preserve a permit if the leader loop is between select calls;
+            // `notify_waiters` would lose that edge when no waiter exists.
+            self.admin_step_down_signal.notify_one();
         } else {
             debug!(
                 replica = self.id,

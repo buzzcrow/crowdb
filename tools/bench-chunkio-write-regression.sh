@@ -8,18 +8,18 @@
 #   CHUNKIO_BENCH_TIMEOUT     seconds allowed per case (default: 120)
 #   CHUNKIO_PREFETCH_CHUNKS   chunks warmed before timed load (default: 10)
 #
-# Reference run (2026-09-08): Intel Core i9-7960X, 4 memory channels,
+# Reference run (2026-09-10): Intel Core i9-7960X, 4 memory channels,
 # Linux 6.11, three-node loopback deployment, three NullDisk instances,
-# EC 8+4, 1 MiB blocks, 1 GiB chunks, and 16 MiB objects.
+# EC 8+4, 1 MiB blocks, 1 GiB chunks, 16 MiB objects, prefetch 1 strip.
 # (AMD Ryzen 9 5950X runs use 2 memory channels; results differ.)
 #
-# Case        Obj    C  logical  physical  p50 us  p99 us  dram_read  dram_write  dram_total  errors
-# stream_1t   204    1   162.5    243.8     99191  111225    2496.6     1393.0      3889.6       0
-# direct_1t   288    1   229.1    343.7     69191   85641    1996.1     1228.7      3224.8       0
-# stream_4t  2467    4  1965.6   2948.5     31917   51806   12699.7    10943.0     23642.7       0
-# direct_4t  3352    4  2672.1   4008.1     22811   40000   11799.6    12051.5     23851.1       0
-# stream_32t 4089   32  3249.3   4873.9    151716  267992   19562.5    15603.7     35166.2       0
-# direct_32t 4495   32  3547.9   5321.9    138654  261388   14816.5    12766.6     27583.1       0
+# Case        Obj    C  logical  physical  avg us  p50 us  p99 us  dram_read  dram_write  dram_total  errors
+# stream_1t   891    1   710.2   1065.3     22465   20624    39736    5205.7     4561.7      9767.4       0
+# direct_1t  1373    1  1095.6   1643.4     14562   12743    30234    4728.8     5079.7      9808.5       0
+# stream_4t  3808    4  3044.5   4566.7     21001   20808    36399   18307.0    17573.5     35880.5       0
+# direct_4t  6303    4  5039.7   7559.6     12686   11332    22302   21144.7    23993.7     45138.4       0
+# stream_32t 5741   32  4584.3   6876.5    111569  113152   169263   31044.1    27876.5     58920.6       0
+# direct_32t 7126   32  5693.1   8539.7     89832   91569   141482   29660.9    28507.6     58168.5       0
 #
 # Host memory-counter samples are retained as diagnostic data, not hard
 # thresholds. The sentinel gates accounting, errors, stop reason, and metrics.
@@ -120,7 +120,7 @@ run_case() {
         --object-size "$object_size" \
         --concurrency "$concurrency" --diskio-connections 8 --data-num 8 --code-num 4 \
         --block-size 1048576 --chunk-size 1073741824 --seed 1 \
-        --prefetch-chunks "$PREFETCH_CHUNKS" --prefetch-strips-per-chunk 2 \
+        --prefetch-chunks "$PREFETCH_CHUNKS" --prefetch-strips-per-chunk 1 \
         "${input_args[@]}" \
         --metrics-interval 1 2>&1)
     status=$?

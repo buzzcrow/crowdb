@@ -1,9 +1,6 @@
 ---
 name: doc-working-design
-description: Write a temporary implementation design for a requirement.
-triggers:
-  - user
-  - model
+description: Write a temporary design exploration only when the user explicitly requests a separate draft; not for normal requirement implementation.
 ---
 
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
@@ -11,8 +8,11 @@ triggers:
 
 # Working Design
 
-Write `doc/working/design-<topic>.md` during `/implement-requirement`. Link
-the backlog and root design; do not repeat their problem, dependencies,
+Write `doc/working/design-<topic>.md` only for an explicitly requested design
+exploration. Normal `/implement-requirement` work uses the requirement as its
+high-level design and records implementation detail in the working plan.
+
+Link the backlog and root design; do not repeat their problem, dependencies,
 architecture, or rationale.
 
 Include:

@@ -16,6 +16,7 @@ pub mod chunk_prefetch;
 pub mod chunk_reader;
 pub mod chunk_writer;
 pub mod ec_strip_writer;
+pub mod mirror_chunk_writer;
 pub mod mirror_strip_writer;
 pub mod parity_writer;
 pub(crate) mod segment_writer;
@@ -28,6 +29,7 @@ pub use chunk_reader::{
 };
 pub use chunk_writer::ChunkWriter;
 pub use ec_strip_writer::EcStripWriter;
+pub use mirror_chunk_writer::{MirrorChunkWriter, STREAM_CHUNK_BYTES};
 pub use mirror_strip_writer::MirrorStripWriter;
 pub use strip::{StripResult, StripWriter};
 pub use strip_reader::StripReader;

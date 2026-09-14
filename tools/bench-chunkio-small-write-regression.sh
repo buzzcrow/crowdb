@@ -30,6 +30,31 @@
 # Historical A/B baseline (60s, mirror vs EC): EC/mirror ratios were 100.23%
 # (32t) and 92.01% (128t). Sources: bench-log/chunkio-small-write-20260910-081757
 # and bench-log/chunkio-small-write-128-repro-20260910.
+# A fresh-deployment lifecycle verification passed all ten 20-second cases;
+# every KV process began at 0.16 GiB RSS and exited before the next case.
+# Source: bench-log/chunkio-small-write-rss-reset-20260910.
+#
+# Intel i9-7960X (2026-09-10, same hw, rerun later same day):
+#   Same build/config as the 2026-09-10 reference. All ten cases passed
+#   with zero errors, incomplete, and batch watchdog expirations. 1 KiB
+#   128t/256t now pass (prior rerun failed with diskdb accounting
+#   mismatch, resolved by per-case fresh deployments). 8 KiB 256t passes
+#   (excluded in reference due to 7 watchdog expirations). 128t/256t is
+#   23-77% faster than reference; 32t within 12%; low concurrency
+#   (1t/4t) 12-27% slower. Not strictly better — reference NOT updated.
+#   Gaps > 30% documented in doc/working/regression-perf-review.md.
+#
+#   size    threads    objects/s    MiB/s    avg us    p50 us    p99 us
+#   1 KiB        1     2,927.05      2.9      340       312       651
+#   1 KiB        4     5,581.71      5.5      715       637     1,240
+#   1 KiB       32    45,591.55     44.5      699       558     5,756
+#   1 KiB      128   227,520.38    222.2      560       304     8,366
+#   1 KiB      256   349,640.96    341.4      729       359    10,441
+#   8 KiB        1     2,300.58     18.0      433       350       802
+#   8 KiB        4     3,786.83     29.6    1,054       746     9,066
+#   8 KiB       32    14,375.97    112.3    2,223       799    23,748
+#   8 KiB      128    39,893.45    311.7    3,204       643    29,811
+#   8 KiB      256    64,593.90    504.6    3,957       693    33,873
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -87,8 +112,10 @@ run_case() {
         queue_objects="$SCALE_OUT_QUEUE_OBJECTS"
     fi
     if [ "$CASE_NUMBER" -gt 0 ]; then
-        regression_reset_stack 1
+        destroy_cluster
     fi
+    CURRENT_CONFIG="$REGRESSION_CONFIG"
+    regression_cli "${deploy_args[@]}"
     CASE_NUMBER=$((CASE_NUMBER + 1))
     echo ">>> $label (size=$size concurrency=$concurrency)"
     local output status line requested completed errors incomplete stop scale_out parity_bytes first_reservation_us
@@ -162,7 +189,6 @@ deploy_args=(cluster local-deploy -t combined --metrics-interval 1 --allow-unsaf
 if [ -n "$SERVER_RPC_WORKERS" ]; then
     deploy_args+=(--diskio-rpc-workers "$SERVER_RPC_WORKERS")
 fi
-regression_cli "${deploy_args[@]}"
 run_case small_1k_1t 1024 1 128
 run_case small_1k_4t 1024 4 128
 run_case small_1k_32t 1024 32 16

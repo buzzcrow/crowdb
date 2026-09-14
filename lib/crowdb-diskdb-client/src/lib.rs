@@ -10,6 +10,7 @@
 //! miss or `Unavailable`.
 
 pub mod client;
+mod routing;
 pub mod rpc_transport;
 
 pub use client::{normalize_endpoint, DiskdbClient, RetryConfig};

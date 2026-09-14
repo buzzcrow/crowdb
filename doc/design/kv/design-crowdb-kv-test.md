@@ -219,7 +219,7 @@ Fill gaps bottom-up so a new failure is always attributable to the lowest
 layer:
 1. Unit + WAL/slot + Election — cheap, deterministic.
 2. Replica layer — highest-value gap; unblocks confident group debugging.
-3. Group reconfiguration + LearnerStream.
+3. Group reconfiguration + peer RPC transport.
 4. Multi-node store and deployment re-enables, after repair-correctness
    fixes tracked in [`plan-test.md`](../working/plan-test.md).
 

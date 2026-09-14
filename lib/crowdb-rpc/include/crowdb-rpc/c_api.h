@@ -3,8 +3,7 @@
 
 #pragma once
 
-#include <stddef.h>
-
+#include <cstddef>
 #include <cstdint>
 
 #ifdef __cplusplus
@@ -168,6 +167,13 @@ crowdb_rpc_status crowdb_rpc_client_send(crowdb_rpc_client_t client, crowdb_rpc_
                                          uint64_t request_id, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data,
                                          uint16_t msg_type, crowdb_rpc_on_complete on_complete, void *user_data);
 
+// Strictly bounded callback call. Unlike crowdb_rpc_client_send, this never
+// falls back to the pending map when the indexed completion slot is occupied.
+crowdb_rpc_status crowdb_rpc_client_send_slab(crowdb_rpc_client_t client, crowdb_rpc_server_t server,
+                                              crowdb_rpc_conn_t conn, uint64_t request_id, crowdb_rpc_buffer_t control,
+                                              crowdb_rpc_buffer_t data, uint16_t msg_type,
+                                              crowdb_rpc_on_complete on_complete, void *user_data);
+
 // Variant for server-handler use: conn_handle is a raw Connection* (as
 // passed to the dispatch callback), NOT a crowdb_rpc_conn_t. Use this from
 // server handlers that need to send a request (server→client direction)
@@ -187,6 +193,12 @@ crowdb_rpc_conn_t crowdb_rpc_connect(crowdb_rpc_server_t server, const char *add
 // No-op on null. Do NOT call this on handler conn_handle values (those
 // are raw Connection* pointers, not crowdb_rpc_conn_t).
 void crowdb_rpc_conn_destroy(crowdb_rpc_conn_t conn);
+
+// Return non-zero while the underlying transport connection is open.
+int crowdb_rpc_conn_is_open(crowdb_rpc_conn_t conn);
+
+// Close the underlying transport connection. Safe to call repeatedly.
+void crowdb_rpc_conn_close(crowdb_rpc_conn_t conn);
 
 // ── Built-in handlers ─────────────────────────────────────────────
 

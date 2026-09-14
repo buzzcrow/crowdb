@@ -7,7 +7,10 @@
 
 use std::time::{Duration, Instant};
 
-use crowdb_diskio_client::{DiskId as DioDiskId, DiskIoRetCode, DiskioClient, DiskioError};
+use crowdb_diskio_client::{
+    DiskId as DioDiskId, DiskIoRetCode, DiskioClient as SemanticDiskioClient, DiskioClientConfig, Durability,
+    SegmentTarget, TestWireDiskioClient as DiskioClient, TestWireDiskioError as DiskioError,
+};
 use crowdb_protocol::common::HwStatus;
 use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue};
 use crowdb_test_harness::cluster::KvCluster;
@@ -39,6 +42,7 @@ async fn disk_io_e2e_group0_sync() {
         kv_seeds: &cluster.mgmt_endpoints,
         disks: &[],
         fault_error_rate: 0.0,
+        fault_latency_ms: None,
         no_o_direct: false,
     });
     let (rpc_server, conn, dio_client) = connect_to_diskio(&diskio);
@@ -68,6 +72,48 @@ async fn disk_io_e2e_group0_sync() {
         "diskio should heartbeat to the service registry within 15s"
     );
     eprintln!("  heartbeat verified");
+
+    let semantic = SemanticDiskioClient::connect_with_clients(
+        svc.clone(),
+        hw.clone(),
+        DiskioClientConfig {
+            normal_connections_per_endpoint: 2,
+            priority_connections_per_endpoint: 1,
+            ..DiskioClientConfig::default()
+        },
+    )
+    .await
+    .expect("semantic client should discover authoritative routes");
+    assert_eq!(semantic.status().disks, 4);
+    for _ in 0..100 {
+        semantic
+            .refresh()
+            .await
+            .expect("unchanged semantic route refresh");
+    }
+    assert_eq!(semantic.status().normal_connections, 2);
+    assert_eq!(semantic.status().priority_connections, 1);
+
+    let stable = semantic.status();
+    svc.heartbeat_diskio_at(
+        INSTANCE_ID + 1,
+        "malformed-endpoint",
+        RACK_ID,
+        NODE_ID,
+        &[DG_ID],
+        &[],
+    )
+    .await
+    .expect("inject malformed owner observation");
+    assert!(semantic.refresh().await.is_err());
+    let rejected = semantic.status();
+    assert_eq!(rejected.route_generation, stable.route_generation);
+    assert_eq!(rejected.disks, stable.disks);
+    assert_eq!(rejected.normal_connections, stable.normal_connections);
+    assert_eq!(rejected.priority_connections, stable.priority_connections);
+    svc.unregister("diskio", INSTANCE_ID + 1)
+        .await
+        .expect("remove malformed owner observation");
 
     eprintln!("=== group0-sync: adding new disk to group-0 ===");
     let new_disk_id = make_disk_id(0, 42);
@@ -137,6 +183,26 @@ async fn disk_io_e2e_group0_sync() {
         diskio.log_content()
     );
     eprintln!("  new disk reconciled and writable");
+
+    semantic.refresh().await.expect("refresh semantic routes");
+    assert_eq!(semantic.status().disks, 5);
+    let semantic_target =
+        SegmentTarget::new(new_disk_dio, 0, 0, 1, UNIT_SIZE_BYTES).expect("semantic target");
+    semantic
+        .write(
+            semantic_target,
+            8192,
+            bytes::Bytes::from_static(b"semantic-group0"),
+            Durability::Fsync,
+            semantic.normal_options(),
+        )
+        .await
+        .expect("semantic routed durable write");
+    let semantic_read = semantic
+        .read(semantic_target, 8192, 15, semantic.normal_options())
+        .await
+        .expect("semantic routed read");
+    assert_eq!(semantic_read.as_ref(), b"semantic-group0");
 
     let rf = dio_client
         .read(&rpc_server, &conn, new_disk_dio, 0, 0, 4096, 0)

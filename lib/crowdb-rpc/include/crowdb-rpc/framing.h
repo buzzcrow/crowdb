@@ -5,6 +5,7 @@
 
 #include "crowdb-rpc/buffer.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -130,7 +131,7 @@ class FrameParser
         pool_ = p;
     }
 
-    ParseState state() const
+    [[nodiscard]] ParseState state() const
     {
         return state_;
     }
@@ -163,9 +164,7 @@ class FrameParser
                 break;
             }
             uint32_t to_copy = target.len;
-            if (to_copy > len - consumed) {
-                to_copy = len - consumed;
-            }
+            to_copy          = std::min(to_copy, len - consumed);
             std::memcpy(target.ptr, data + consumed, to_copy);
             consumed += to_copy;
             Frame *frame = advance(to_copy);
@@ -179,7 +178,7 @@ class FrameParser
     // Reset to ReadingHeader (after a frame is yielded or on error).
     void reset();
 
-    FramingError last_error() const
+    [[nodiscard]] FramingError last_error() const
     {
         return error_;
     }
@@ -213,7 +212,7 @@ class FrameParser
     Frame *frame_ = nullptr;
 
     // Validate the parsed header; returns FramingError::None if ok.
-    FramingError validate_header() const;
+    [[nodiscard]] FramingError validate_header() const;
 
     // Build and return the completed Frame; reset state for next frame.
     Frame *yield_frame();

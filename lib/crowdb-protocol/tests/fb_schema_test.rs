@@ -10,6 +10,7 @@ use crowdb_protocol::diskio_fb::{
 use crowdb_protocol::fb::{
     ConnectionPingRequest, ConnectionPingRequestArgs, FBDiskIoRetCode, FBInt128, FBMsgType, FBRetCode,
 };
+use crowdb_protocol::kv_client_fb::{FBKvScanDirection, FBKvScanRequest, FBKvScanRequestArgs};
 use flatbuffers::FlatBufferBuilder;
 
 #[test]
@@ -111,8 +112,7 @@ fn disk_write_request_round_trip() {
             zone_index: 2,
             zone_offset: 4096,
             size: 4096,
-            allocation_ts: 77,
-            allocation_zone_offset: 2048,
+            ordering_zone_offset: 2048,
         },
     );
     fbb.finish(req, None);
@@ -125,8 +125,7 @@ fn disk_write_request_round_trip() {
     assert_eq!(parsed.zone_index(), 2);
     assert_eq!(parsed.zone_offset(), 4096);
     assert_eq!(parsed.size(), 4096);
-    assert_eq!(parsed.allocation_ts(), 77);
-    assert_eq!(parsed.allocation_zone_offset(), 2048);
+    assert_eq!(parsed.ordering_zone_offset(), 2048);
 }
 
 #[test]
@@ -183,4 +182,25 @@ fn disk_fsync_request_round_trip() {
     assert_eq!(parsed_id.high(), 99);
     assert_eq!(parsed_id.low(), 100);
     assert_eq!(parsed.id(), 3003);
+}
+
+#[test]
+fn kv_scan_direction_defaults_forward_and_round_trips_reverse() {
+    let mut fbb = FlatBufferBuilder::new();
+    let request = FBKvScanRequest::create(&mut fbb, &FBKvScanRequestArgs::default());
+    fbb.finish(request, None);
+    let decoded = flatbuffers::root::<FBKvScanRequest>(fbb.finished_data()).unwrap();
+    assert_eq!(decoded.direction(), FBKvScanDirection::Forward);
+
+    let mut fbb = FlatBufferBuilder::new();
+    let request = FBKvScanRequest::create(
+        &mut fbb,
+        &FBKvScanRequestArgs {
+            direction: FBKvScanDirection::Reverse,
+            ..Default::default()
+        },
+    );
+    fbb.finish(request, None);
+    let decoded = flatbuffers::root::<FBKvScanRequest>(fbb.finished_data()).unwrap();
+    assert_eq!(decoded.direction(), FBKvScanDirection::Reverse);
 }

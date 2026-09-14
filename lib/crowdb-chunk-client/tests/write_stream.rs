@@ -160,6 +160,9 @@ impl ChunkAllocator for MockChunkAllocator {
             strip: Some(strip),
             usage_bitmap: Vec::new(),
             unavailable_segments: Vec::new(),
+            placement_priority: 0,
+            placement_assessment: None,
+            placement_repair_required: false,
         };
 
         let chunk = Chunk {
@@ -179,6 +182,7 @@ impl ChunkAllocator for MockChunkAllocator {
             next_strip_sequence: 1,
             cleanup_intents: vec![],
             last_strip_replacement: None,
+            owner_key: req.owner_key,
         };
 
         st.chunks
@@ -251,6 +255,9 @@ impl ChunkAllocator for MockChunkAllocator {
             strip: Some(strip),
             usage_bitmap: Vec::new(),
             unavailable_segments: Vec::new(),
+            placement_priority: 0,
+            placement_assessment: None,
+            placement_repair_required: false,
         };
 
         let entry = st

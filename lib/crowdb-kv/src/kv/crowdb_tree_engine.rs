@@ -6,14 +6,17 @@
 
 #[cfg(feature = "test-util")]
 use super::op::Cell;
-use super::{Batch, KVEngine, KVFuture, Op, SnapshotViewEntry};
+use super::{
+    Batch, KVEngine, KVFuture, Op, ScanDirection, SnapshotChunk, SnapshotExporter, SnapshotFormat,
+    SnapshotImporter, SnapshotMetadata, SnapshotViewEntry,
+};
 use bytes::Bytes;
 use crowdb_tree_ffi::{
     AsyncCrowdbtree, Crowdbtree, CtError, ExtOp, GetOutcome, PinnedGetOutcome, ScanOutcome,
 };
 use std::sync::Arc;
 
-pub use crowdb_tree_ffi::Options as CrowdbTreeOptions;
+pub use crowdb_tree_ffi::Config as CrowdbTreeConfig;
 pub use crowdb_tree_ffi::PageStoreBackend as CrowdbTreeBackend;
 pub use crowdb_tree_ffi::Stats as CrowdbTreeStats;
 
@@ -46,14 +49,14 @@ impl CrowdbTreeEngine {
     /// # Errors
     /// Returns the underlying [`CtError`] if the engine fails to open (e.g. a
     /// corrupt or unreadable durable file).
-    pub fn open(opt: &CrowdbTreeOptions) -> Result<Self, CtError> {
+    pub fn open(opt: &CrowdbTreeConfig) -> Result<Self, CtError> {
         Ok(Self {
             inner: AsyncCrowdbtree::open(opt)?,
         })
     }
 
     /// Borrow the underlying FFI handle for engine-specific operations
-    /// (`flush`/`snapshot`/`snapshot_export`/`snapshot_import`/GC watermark)
+    /// (`flush`/`snapshot`/snapshot sessions/GC watermark)
     /// that aren't part of the [`KVEngine`] trait surface. Cheap: an `Arc`
     /// clone, sharing the same tree `get`/`scan`/`apply` above operate on.
     #[must_use]
@@ -205,7 +208,22 @@ impl KVEngine for CrowdbTreeEngine {
         }
     }
 
-    fn scan(
+    fn get_versioned(&self, key: &[u8]) -> KVFuture<Result<Option<(u64, Bytes)>, String>> {
+        match self.inner.try_get_pinned(key) {
+            PinnedGetOutcome::Ready(result) => KVFuture::ready(
+                result
+                    .map(|value| value.map(|(slot, pinned)| (slot, pinned.into_bytes())))
+                    .map_err(|error| error.to_string()),
+            ),
+            PinnedGetOutcome::Pending(fut) => KVFuture::Pending(Box::pin(async move {
+                fut.await
+                    .map(|value| value.map(|(slot, bytes)| (slot, Bytes::from(bytes))))
+                    .map_err(|error| error.to_string())
+            })),
+        }
+    }
+
+    fn scan_directional(
         &self,
         prefix: &[u8],
         start_after: &[u8],
@@ -214,6 +232,7 @@ impl KVEngine for CrowdbTreeEngine {
         byte_budget: usize,
         keys_only: bool,
         deadline_ms: u64,
+        direction: ScanDirection,
     ) -> KVFuture<Result<(Vec<(Bytes, u64, Bytes)>, bool), String>> {
         // start_after is pushed down into the C++ engine: the descent targets
         // the leaf containing start_after (instead of the prefix start), and
@@ -237,7 +256,11 @@ impl KVEngine for CrowdbTreeEngine {
         let start_after_owned = start_after.to_vec();
         let end_key_owned = end_key.to_vec();
 
-        match self.inner.try_scan(
+        let ffi_direction = match direction {
+            ScanDirection::Forward => crowdb_tree_ffi::ScanDirection::Forward,
+            ScanDirection::Reverse => crowdb_tree_ffi::ScanDirection::Reverse,
+        };
+        match self.inner.try_scan_directional(
             prefix_owned,
             start_after_owned,
             end_key_owned,
@@ -245,6 +268,7 @@ impl KVEngine for CrowdbTreeEngine {
             byte_budget,
             keys_only,
             deadline_ms,
+            ffi_direction,
         ) {
             ScanOutcome::Ready(result) => KVFuture::ready(decode_scan(result)),
             ScanOutcome::Pending(fut) => KVFuture::Pending(Box::pin(async move { decode_scan(fut.await) })),
@@ -259,7 +283,7 @@ impl KVEngine for CrowdbTreeEngine {
         // tree before loading imported entries -- not a bespoke reset.
         // Not durable by itself: a caller that needs the wipe to survive a
         // crash must still call `persist_snapshot`/`handle.flush`
-        // afterward, same as `snapshot_import`'s own contract.
+        // afterward, same as snapshot import's own contract.
         //
         // `unwrap`: the only failure mode `Crowdbtree::clear` has is an
         // invalid-argument on a null tree pointer, which can't happen
@@ -350,21 +374,23 @@ impl KVEngine for CrowdbTreeEngine {
             .map_err(|error| error.to_string())
     }
 
-    fn snapshot_export(&self) -> Result<(u64, Vec<u8>), String> {
-        // Flush first so the export reflects every `apply` up to now, not
-        // just whatever an earlier `flush` already moved into L1 --
-        // same reasoning as `iter_all`/`persist_snapshot` above.
-        let _ = self.inner.handle().flush();
-        let stream = self.inner.handle().snapshot_export().map_err(|e| e.to_string())?;
-        let at_slot = crowdb_tree_snapshot_at_slot(&stream)?;
-        Ok((at_slot, stream))
+    fn snapshot_export_begin(&self, chunk_bytes: usize) -> Result<Box<dyn SnapshotExporter>, String> {
+        self.inner.handle().flush().map_err(|error| error.to_string())?;
+        let session = self
+            .inner
+            .handle()
+            .snapshot_export_begin(chunk_bytes)
+            .map_err(|error| error.to_string())?;
+        Ok(Box::new(CrowdbTreeSnapshotExporter { session }))
     }
 
-    fn snapshot_import(&self, stream: &[u8]) -> Result<u64, String> {
-        self.inner
+    fn snapshot_import_begin(&self) -> Result<Box<dyn SnapshotImporter>, String> {
+        let session = self
+            .inner
             .handle()
-            .snapshot_import(stream)
-            .map_err(|e| e.to_string())
+            .snapshot_import_begin()
+            .map_err(|error| error.to_string())?;
+        Ok(Box::new(CrowdbTreeSnapshotImporter { session }))
     }
 
     fn snapshot_view(&self) -> Result<(u64, Vec<SnapshotViewEntry>), String> {
@@ -392,6 +418,56 @@ impl KVEngine for CrowdbTreeEngine {
     // of both sides); no override needed.
 }
 
+struct CrowdbTreeSnapshotExporter {
+    session: crowdb_tree_ffi::SnapshotExportSession,
+}
+
+impl SnapshotExporter for CrowdbTreeSnapshotExporter {
+    fn metadata(&self) -> SnapshotMetadata {
+        let metadata = self.session.metadata();
+        SnapshotMetadata {
+            format: SnapshotFormat::CrowdbTreePortable,
+            at_slot: metadata.at_slot,
+            total_bytes: metadata.total_bytes,
+            final_crc32c: metadata.final_crc32c,
+            chunk_bytes: metadata.chunk_bytes,
+        }
+    }
+
+    fn offset(&self) -> u64 {
+        self.session.offset()
+    }
+
+    fn read(&mut self, offset: u64) -> Result<SnapshotChunk, String> {
+        self.session
+            .read(offset)
+            .map(|chunk| SnapshotChunk {
+                offset: chunk.offset,
+                bytes: chunk.bytes,
+                done: chunk.done,
+            })
+            .map_err(|error| error.to_string())
+    }
+}
+
+struct CrowdbTreeSnapshotImporter {
+    session: crowdb_tree_ffi::SnapshotImportSession,
+}
+
+impl SnapshotImporter for CrowdbTreeSnapshotImporter {
+    fn feed(&mut self, chunk: &[u8]) -> Result<(), String> {
+        self.session.feed(chunk).map_err(|error| error.to_string())
+    }
+
+    fn finish(self: Box<Self>) -> Result<u64, String> {
+        self.session.finish().map_err(|error| error.to_string())
+    }
+
+    fn abort(self: Box<Self>) {
+        self.session.abort();
+    }
+}
+
 /// Shared tail of [`CrowdbTreeEngine::scan`]'s `Ready`/`Pending` arms:
 /// converts a raw `crowdb_tree_ffi::ScanEntry` result (keys/values are
 /// already zero-copy `Bytes` slices into the packed buffer) into the
@@ -410,22 +486,4 @@ fn decode_scan(result: Result<(Vec<crowdb_tree_ffi::ScanEntry>, bool), CtError>)
         }
         Err(e) => Err(e.to_string()),
     }
-}
-
-/// Parse the `at_slot` field out of a crowdb-tree portable-format snapshot
-/// export stream's header, without waiting on a second FFI round-trip
-/// ([`crowdb_tree_ffi::Crowdbtree::last_applied_slot`]) that could race a
-/// concurrent `apply`/`flush` between the two calls.
-///
-/// Portable header layout (`crowdb-tree/src/snapshot_io.cpp`'s `kSnapHeader`,
-/// little-endian): `[magic:u32][version:u32][format:u8][at_slot:u64]
-/// [entry_count:u64]`. `ct_snapshot_export_begin` always uses
-/// `snapshot_format::kPortable` (`crowdb-tree/src/c_api.cpp`) -- crowdb-tree's C
-/// API has no format parameter, so this layout is the only one
-/// [`crowdb_tree_ffi::Crowdbtree::snapshot_export`] can ever produce.
-fn crowdb_tree_snapshot_at_slot(stream: &[u8]) -> Result<u64, String> {
-    stream
-        .get(9..17)
-        .map(|b| u64::from_le_bytes(b.try_into().expect("slice len checked by get(9..17)")))
-        .ok_or_else(|| "crowdb-tree snapshot export: stream too short for header".to_string())
 }

@@ -332,10 +332,16 @@ impl ChunkWriter {
                     break;
                 };
                 let runway = strips_per_chunk.saturating_sub(next_strip_index);
-                let requested = u32::try_from(config.prefetch_strips_per_chunk).unwrap_or(u32::MAX);
                 let remaining =
                     strips_remaining.map_or(u32::MAX, |value| u32::try_from(value).unwrap_or(u32::MAX));
-                let strip_count = requested.min(runway).min(remaining);
+                // For larger objects (more strips to allocate), batch 2
+                // strips per append to reduce RPC count. For smaller objects,
+                // allocate 1 at a time so the first strip is ready sooner.
+                let batch = match strips_remaining.as_ref() {
+                    Some(total) if *total > 4 => 2u32,
+                    _ => 1u32,
+                };
+                let strip_count = batch.min(runway).min(remaining);
                 if strip_count == 0 {
                     break;
                 }

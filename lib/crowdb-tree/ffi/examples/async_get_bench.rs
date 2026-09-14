@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crowdb_tree_ffi::{AsyncCrowdbtree, Crowdbtree, Options};
+use crowdb_tree_ffi::{AsyncCrowdbtree, Config, Crowdbtree};
 
 const N: usize = 2000;
 
@@ -88,7 +88,7 @@ fn main() {
 async fn run_bench(value_len: usize, frame_bytes: u32) {
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-bench");
     let path = dir.path().join("bench.ct");
-    let opt = Options {
+    let opt = Config {
         path: Some(path.to_string_lossy().into_owned()),
         iu_size: 4096,
         frame_bytes,

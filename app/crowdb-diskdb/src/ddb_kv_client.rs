@@ -73,7 +73,7 @@ impl DdbKvClient {
         disk_id: &DiskId,
         zone_index: u32,
         unit_offset: u64,
-    ) -> Result<Option<BusyBlockValue>> {
+    ) -> Result<Option<(BusyBlockValue, u64)>> {
         let key = BusyBlockKey {
             disk_id: *disk_id,
             zone_index,
@@ -85,13 +85,13 @@ impl DdbKvClient {
             .get(store_id, group_id, &key.to_bytes(), ReadMode::Linearizable, None)
             .await?;
         match outcome {
-            GetOutcome::Found { value, .. } => {
+            GetOutcome::Found { value, revision } => {
                 let bv =
                     bincode::deserialize(&value).map_err(|e| crowdb_kv_client::Error::SysdataDecode {
                         key: format!("{:02x?}", key.to_bytes()),
                         reason: e.to_string(),
                     })?;
-                Ok(Some(bv))
+                Ok(Some((bv, revision)))
             }
             GetOutcome::NotFound => Ok(None),
         }
@@ -108,7 +108,7 @@ impl DdbKvClient {
         zone_index: u32,
         unit_offset: u64,
         value: &BusyBlockValue,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let busy_key = BusyBlockKey {
             disk_id: *disk_id,
             zone_index,
@@ -120,7 +120,10 @@ impl DdbKvClient {
             value: Bytes::from(busy_bytes),
         }];
         let (store_id, group_id) = bind;
-        self.kv.batch_write(store_id, group_id, &ops).await.map(|_| ())
+        self.kv
+            .batch_write(store_id, group_id, &ops)
+            .await
+            .map(|outcome| outcome.revision)
     }
 
     /// Persist a batch of busy-block records in one `batch_write`
@@ -129,7 +132,7 @@ impl DdbKvClient {
         &self,
         bind: Bind,
         records: &[(DiskId, u32, u64, BusyBlockValue)],
-    ) -> Result<()> {
+    ) -> Result<u64> {
         let mut ops = Vec::with_capacity(records.len());
         for (disk_id, zone_index, unit_offset, value) in records {
             let busy_key = BusyBlockKey {
@@ -150,7 +153,11 @@ impl DdbKvClient {
                 .kv_client_batch_write_ops
                 .inc_by(u64::try_from(ops.len()).unwrap_or(u64::MAX));
         }
-        let result = self.kv.batch_write(store_id, group_id, &ops).await.map(|_| ());
+        let result = self
+            .kv
+            .batch_write(store_id, group_id, &ops)
+            .await
+            .map(|outcome| outcome.revision);
         if let Some(metrics) = &self.metrics {
             metrics.kv_client_inflight.dec();
             if result.is_err() {
@@ -185,8 +192,8 @@ impl DdbKvClient {
     }
 
     /// Persist a batch of free records in one `batch_write` (one
-    /// round-trip per data group). Reused by R79's size-threshold
-    /// batch.
+    /// round-trip per data group). Reused by immediate concurrent-free
+    /// coalescing.
     pub async fn persist_free_batch(
         &self,
         bind: Bind,

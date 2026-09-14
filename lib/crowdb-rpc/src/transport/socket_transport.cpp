@@ -3,7 +3,7 @@
 
 #include "crowdb-rpc/transport/socket_transport.h"
 
-#if defined(__linux__)
+#ifdef __linux__
 #    include "crowdb-rpc/transport/epoll/epoll_engine.h"
 #elif defined(__APPLE__)
 #    include "crowdb-rpc/transport/kqueue/kqueue_engine.h"
@@ -36,6 +36,23 @@ static void on_readable_impl(Connection *conn, int fd, uint8_t *recv_buf, size_t
                              std::vector<Connection *> &pending_writes);
 static bool on_writable_impl(Connection *conn, int fd, TransportStats *stats);
 
+static void close_connection_fds(SocketEngine *engine, Connection *conn)
+{
+    int read_fd  = static_cast<int>(conn->transport_handle);
+    int write_fd = conn->write_fd;
+    if (read_fd < 0) {
+        return;
+    }
+
+    engine->remove_connection(read_fd, write_fd);
+    conn->transport_handle = static_cast<uint64_t>(-1);
+    conn->write_fd         = -1;
+    ::close(read_fd);
+    if (write_fd >= 0 && write_fd != read_fd) {
+        ::close(write_fd);
+    }
+}
+
 static inline uint64_t now_nano()
 {
     return static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
@@ -54,16 +71,16 @@ Worker::Worker(int id, SocketEngine *engine, TransportStats *stats, SocketTransp
 Worker::~Worker()
 {
     stop();
-    // Close dup'd write fds. The read fds are closed by the caller
-    // (server/client shutdown). The engine may already be destroyed
-    // (engines_ is destroyed before workers_ in SocketTransport), so
-    // we only close the fds — no epoll_ctl calls.
-    std::lock_guard<std::mutex> lock(conns_mu_);
+    close_connections();
+}
+
+void Worker::close_connections()
+{
+    std::scoped_lock lock(conns_mu_);
     for (auto &[fd, conn] : connections_) {
-        if (conn->write_fd >= 0 && conn->write_fd != fd) {
-            ::close(conn->write_fd);
-            conn->write_fd = -1;
-        }
+        (void)fd;
+        conn->close();
+        close_connection_fds(engine_, conn.get());
     }
     connections_.clear();
 }
@@ -115,7 +132,7 @@ void Worker::add_connection(int read_fd, int write_fd, std::shared_ptr<Connectio
     conn->io_engine = engine_;
     conn->io_worker = this;
     {
-        std::lock_guard<std::mutex> lock(conns_mu_);
+        std::scoped_lock lock(conns_mu_);
         connections_[read_fd] = std::move(conn);
     }
     engine_->add_connection(read_fd, write_fd, connections_.at(read_fd).get());
@@ -157,7 +174,7 @@ void Worker::run_loop()
                     {
                         std::vector<Connection *> pending;
                         {
-                            std::lock_guard<std::mutex> lock(transport_->cross_thread_mu_);
+                            std::scoped_lock lock(transport_->cross_thread_mu_);
                             pending.swap(transport_->cross_thread_pending_);
                             transport_->cross_thread_notified_.store(false, std::memory_order_release);
                         }
@@ -187,13 +204,7 @@ void Worker::run_loop()
                             // flush to avoid dangling raw pointers.
                             CRB_LOG_INFO("rpc transport: connection closed (read) fd={} conn_id={} peer={}", ev.fd,
                                          static_cast<long long>(ev.conn->id()), ev.conn->name());
-                            int wfd = ev.conn->write_fd;
-                            engine_->remove_connection(ev.fd, wfd);
-                            ::close(ev.fd);
-                            if (wfd >= 0 && wfd != ev.fd) {
-                                ::close(wfd);
-                            }
-                            ev.conn->write_fd = -1;
+                            close_connection_fds(engine_, ev.conn);
                             closed_fds.push_back(ev.fd);
                         }
                         else if (engine_->oneshot()) {
@@ -213,12 +224,7 @@ void Worker::run_loop()
                             CRB_LOG_INFO("rpc transport: connection closed (write) fd={} conn_id={} peer={}", ev.fd,
                                          static_cast<long long>(ev.conn->id()), ev.conn->name());
                             int rfd = static_cast<int>(ev.conn->transport_handle);
-                            engine_->remove_connection(rfd, ev.fd);
-                            ::close(ev.fd);
-                            if (rfd != ev.fd) {
-                                // read fd will be closed by the map erase below
-                            }
-                            ev.conn->write_fd = -1;
+                            close_connection_fds(engine_, ev.conn);
                             closed_fds.push_back(rfd);
                         }
                         else if (all_sent) {
@@ -242,14 +248,8 @@ void Worker::run_loop()
                         CRB_LOG_WARN("worker: socket error event fd={} conn_id={} name={}", ev.fd,
                                      static_cast<long long>(ev.conn->id()), ev.conn->name());
                         int rfd = static_cast<int>(ev.conn->transport_handle);
-                        int wfd = ev.conn->write_fd;
                         ev.conn->close();
-                        engine_->remove_connection(rfd, wfd);
-                        ::close(ev.fd);
-                        if (wfd >= 0 && wfd != ev.fd && wfd != rfd) {
-                            ::close(wfd);
-                        }
-                        ev.conn->write_fd = -1;
+                        close_connection_fds(engine_, ev.conn);
                         closed_fds.push_back(rfd);
                     }
                     break;
@@ -278,12 +278,7 @@ void Worker::run_loop()
                         engine_->arm_write(wfd, conn);
                     }
                     if (!conn->is_open()) {
-                        engine_->remove_connection(rfd, wfd);
-                        ::close(rfd);
-                        if (wfd >= 0 && wfd != rfd) {
-                            ::close(wfd);
-                        }
-                        conn->write_fd = -1;
+                        close_connection_fds(engine_, conn);
                         closed_fds.push_back(rfd);
                     }
                 }
@@ -293,7 +288,7 @@ void Worker::run_loop()
             // Now safe to release closed connections — pending_write_conns_
             // has been flushed and won't access the raw pointers.
             if (!closed_fds.empty()) {
-                std::lock_guard<std::mutex> lock(conns_mu_);
+                std::scoped_lock lock(conns_mu_);
                 for (int fd : closed_fds) {
                     connections_.erase(fd);
                 }
@@ -374,7 +369,7 @@ static void on_readable_impl(Connection *conn, int fd, uint8_t *recv_buf, size_t
             break;
         }
         bw_read().observe(static_cast<uint64_t>(n));
-#if defined(__linux__)
+#ifdef __linux__
         // Re-arm TCP_QUICKACK — the kernel resets it after sending each
         // ACK. Without this, delayed ACKs stall Nagle's send (40ms/round).
         if (conn->quickack) {
@@ -443,7 +438,7 @@ SocketTransport::SocketTransport(uint32_t io_engines, uint32_t io_workers, Buffe
         SocketEngine *engine_ptr = engine.get();
         engines_.push_back(std::move(engine));
         for (uint32_t w = 0; w < workers_per_engine; w++) {
-            int  worker_id = static_cast<int>(e * workers_per_engine + w);
+            int  worker_id = static_cast<int>((e * workers_per_engine) + w);
             auto worker    = std::make_unique<Worker>(worker_id, engine_ptr, &stats_, this);
             workers_.push_back(std::move(worker));
         }
@@ -476,6 +471,9 @@ void SocketTransport::stop()
     }
     for (auto &w : workers_) {
         w->join();
+    }
+    for (auto &w : workers_) {
+        w->close_connections();
     }
 }
 
@@ -522,13 +520,6 @@ bool SocketTransport::submit(Connection *conn, OutFrame *frame)
     if (tl_current_worker != nullptr) {
         if (!conn->is_open()) {
             CRB_LOG_WARN("submit: closed conn on worker thread conn_id={}", static_cast<long long>(conn->id()));
-            if (frame->control != nullptr) {
-                frame->control->release();
-            }
-            if (frame->data != nullptr) {
-                frame->data->release();
-            }
-            delete frame;
             return false;
         }
     }
@@ -539,14 +530,7 @@ bool SocketTransport::submit(Connection *conn, OutFrame *frame)
         if (lookup.has_value()) {
             auto &conn_ptr = lookup.value();
             if (conn_ptr == nullptr) {
-                CRB_LOG_WARN("submit: stale handle, dropping frame conn_id={}", static_cast<long long>(conn->id()));
-                if (frame->control != nullptr) {
-                    frame->control->release();
-                }
-                if (frame->data != nullptr) {
-                    frame->data->release();
-                }
-                delete frame;
+                CRB_LOG_WARN("submit: stale connection handle");
                 return false;
             }
             conn = conn_ptr.get();
@@ -567,17 +551,13 @@ bool SocketTransport::submit(Connection *conn, OutFrame *frame)
             }
             return true;
         }
-        // Overflow also full — drop the frame (last resort).
+        // Overflow also full — reject the frame (last resort). Ownership
+        // remains with the caller on every false return.
         cnt_send_queue_full().inc();
         stats_.send_queue_rejects.fetch_add(1, std::memory_order_relaxed);
         CRB_LOG_WARN("submit: enqueue_send + overflow failed (backpressure) conn_id={} name={} request_id={}",
                      static_cast<long long>(conn->id()), conn->name(),
                      static_cast<unsigned long long>(frame->request_id));
-        if (frame->control != nullptr)
-            frame->control->release();
-        if (frame->data != nullptr)
-            frame->data->release();
-        delete frame;
         return false;
     }
 
@@ -588,7 +568,7 @@ bool SocketTransport::submit(Connection *conn, OutFrame *frame)
         auto *engine = static_cast<SocketEngine *>(conn->io_engine);
         if (engine != nullptr) {
             {
-                std::lock_guard<std::mutex> lock(cross_thread_mu_);
+                std::scoped_lock lock(cross_thread_mu_);
                 cross_thread_pending_.push_back(conn);
             }
             bool expected = false;
@@ -633,10 +613,12 @@ bool SocketTransport::submit_inline(Connection *conn, OutFrame *frame)
     stats_.send_queue_rejects.fetch_add(1, std::memory_order_relaxed);
     CRB_LOG_WARN("submit_inline: enqueue + overflow failed conn_id={} request_id={}",
                  static_cast<long long>(conn->id()), static_cast<unsigned long long>(frame->request_id));
-    if (frame->control != nullptr)
+    if (frame->control != nullptr) {
         frame->control->release();
-    if (frame->data != nullptr)
+    }
+    if (frame->data != nullptr) {
         frame->data->release();
+    }
     delete frame;
     return false;
 }
@@ -680,20 +662,20 @@ std::shared_ptr<Connection> SocketTransport::create_connection(int fd, const std
 
 void SocketTransport::register_conn(const std::shared_ptr<Connection> &conn)
 {
-    std::lock_guard<std::mutex> lock(live_conns_mu_);
+    std::scoped_lock lock(live_conns_mu_);
     live_conns_[conn.get()] = conn;
 }
 
 void SocketTransport::unregister_conn(Connection *conn)
 {
-    std::lock_guard<std::mutex> lock(live_conns_mu_);
+    std::scoped_lock lock(live_conns_mu_);
     live_conns_.erase(conn);
 }
 
 std::optional<std::shared_ptr<Connection>> SocketTransport::lookup_conn(Connection *conn)
 {
-    std::lock_guard<std::mutex> lock(live_conns_mu_);
-    auto                        it = live_conns_.find(conn);
+    std::scoped_lock lock(live_conns_mu_);
+    auto             it = live_conns_.find(conn);
     if (it == live_conns_.end()) {
         return std::nullopt; // not registered (test/direct connection)
     }
@@ -702,7 +684,7 @@ std::optional<std::shared_ptr<Connection>> SocketTransport::lookup_conn(Connecti
 
 size_t SocketTransport::connection_count() const
 {
-    std::lock_guard<std::mutex> lock(live_conns_mu_);
+    std::scoped_lock lock(live_conns_mu_);
     return live_conns_.size();
 }
 
@@ -736,7 +718,7 @@ std::shared_ptr<Connection> SocketTransport::connect(const std::string &addr, in
 
     int nodelay = tcp_nodelay_ ? 1 : 0;
     ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
-#if defined(__linux__)
+#ifdef __linux__
     if (quickack_) {
         int quickack = 1;
         ::setsockopt(fd, IPPROTO_TCP, TCP_QUICKACK, &quickack, sizeof(quickack));
@@ -752,7 +734,7 @@ std::shared_ptr<Connection> SocketTransport::connect(const std::string &addr, in
 
 std::unique_ptr<SocketEngine> SocketTransport::create_engine()
 {
-#if defined(__linux__)
+#ifdef __linux__
     return std::make_unique<EpollEngine>();
 #elif defined(__APPLE__)
     return std::make_unique<KqueueEngine>();

@@ -13,8 +13,8 @@
 #ifndef CROWDB_TREE_C_API_H
 #define CROWDB_TREE_C_API_H
 
-#include <stddef.h>
-#include <stdint.h>
+#include <cstddef>
+#include <cstdint>
 
 #ifdef __cplusplus
 extern "C" {
@@ -23,12 +23,17 @@ extern "C" {
 using ct_status = int32_t; // 0 = ok; negative mirrors crowdb::tree::Code
 
 // Opaque handles.
-using ct_tree         = struct ct_tree;
-using ct_view         = struct ct_view;
-using ct_iter         = struct ct_iter;
-using ct_export       = struct ct_export;
-using ct_import       = struct ct_import;
-using ct_write_handle = struct ct_write_handle;
+using ct_tree            = struct ct_tree;
+using ct_page_store      = struct ct_page_store;
+using ct_root_catalog    = struct ct_root_catalog;
+using ct_chunk_transport = struct ct_chunk_transport;
+using ct_view            = struct ct_view;
+using ct_iter            = struct ct_iter;
+using ct_export          = struct ct_export;
+using ct_import          = struct ct_import;
+using ct_write_handle    = struct ct_write_handle;
+using ct_uring           = struct ct_uring;
+using ct_uring_callback  = void (*)(void *context, int32_t result);
 
 // Owned byte buffer handed back to the caller; free with ct_free_buf.
 using ct_buf = struct
@@ -47,6 +52,16 @@ using ct_merge_gc_stats = struct
     uint64_t pages_relocated;
     uint64_t bytes_relocated;
     uint64_t blocks_deleted;
+};
+
+using ct_range_rebuild_stats = struct
+{
+    uint64_t entries_examined;
+    uint64_t entries_emitted;
+    uint64_t entries_filtered;
+    uint64_t pages_reused;
+    uint64_t pages_rebuilt;
+    uint64_t subtrees_skipped;
 };
 
 // Batched diagnostics snapshot; mirrors crowdb::tree::EngineStats. Every field
@@ -98,6 +113,15 @@ enum ct_sync_mode : uint8_t {
 // store. Zero numeric fields take engine defaults.
 using ct_options = struct
 {
+    // Optional injected backend. The tree retains shared ownership; callers
+    // may release their handle after ct_open returns. When non-null, path and
+    // backend are ignored.
+    ct_page_store    *page_store;
+    uint8_t           range_bounded; // 0 = unbounded; 1 = use endpoints below
+    const uint8_t    *range_start;   // null = minimum-unbounded; non-null empty is an empty key
+    size_t            range_start_len;
+    const uint8_t    *range_end; // null = maximum-unbounded; exclusive when present
+    size_t            range_end_len;
     const char       *path;              // durable file path; null/empty => in-memory
     uint32_t          iu_size;           // 0 => default (1 for mem, 4096 for file)
     uint32_t          frame_bytes;       // 0 => default
@@ -117,7 +141,119 @@ using ct_options = struct
 };
 
 // ── Lifecycle + durability ────────────────────────────────────────
+ct_status ct_page_store_open_mem(uint32_t iu_size, ct_page_store **out);
+void      ct_page_store_free(ct_page_store *store);
+
+using ct_chunk_page_store_options = struct
+{
+    uint64_t tree_id;
+    uint64_t owner_epoch;
+    size_t   pack_bytes;
+    uint32_t iu_size;                        // 0 => 64 KiB page framing
+    size_t   max_concurrent_packs;           // 0 => 8
+    uint64_t materialization_bytes_per_pass; // 0 => 64 MiB; clamped to one pack
+};
+
+using ct_chunk_page_store_stats = struct
+{
+    uint64_t generations_published;
+    uint64_t packs_written;
+    uint64_t pack_bytes_written;
+    uint64_t packs_reused;
+    uint64_t pack_bytes_reused;
+    uint64_t pack_reads;
+    uint64_t cache_hits;
+    uint64_t layout_queries;
+    uint64_t mirror_write_attempts;
+    uint64_t mirror_write_failures;
+    uint64_t retained_manifests;
+    uint64_t pinned_bytes;
+    uint64_t oldest_pin_age_ms;
+    uint64_t orphan_bytes;
+    uint64_t materialization_passes;
+    uint64_t materialization_failures;
+    uint64_t materialization_packs_written;
+    uint64_t materialization_bytes_written;
+    uint64_t shared_packs;
+    uint64_t rpc_operations;
+    uint64_t rpc_latency_ns;
+    uint64_t diskio_operations;
+    uint64_t diskio_latency_ns;
+    uint64_t coalesced_reads;
+    uint64_t coalesced_read_bytes;
+    uint64_t completion_wakeups;
+    uint64_t materialization_scan_bytes;
+    uint64_t shared_metadata_segments;
+    uint64_t materialized_metadata_segments;
+    uint64_t manifest_publication_latency_ns;
+    uint64_t recovery_latency_ns;
+};
+
+struct ct_chunk_rpc_route
+{
+    void *client;
+    void *server;
+    void *connection;
+};
+
+struct ct_chunk_rpc_disk_route
+{
+    uint64_t           disk_id_high;
+    uint64_t           disk_id_low;
+    ct_chunk_rpc_route route;
+};
+
+struct ct_chunk_rpc_transport_options
+{
+    ct_chunk_rpc_route             chunkdb;
+    const ct_chunk_rpc_disk_route *disk_routes;
+    size_t                         disk_route_count;
+    uint64_t                       writer_lease_ms;
+    uint64_t                       rpc_timeout_ms; // 0 => 30 seconds
+    uint32_t                       completion_capacity;
+};
+
+ct_status ct_memory_root_catalog_open(uint64_t owner_epoch, ct_root_catalog **out);
+
+enum ct_root_catalog_object_kind {
+    CT_ROOT_CATALOG_CURRENT_MANIFEST  = 1,
+    CT_ROOT_CATALOG_MANIFEST          = 2,
+    CT_ROOT_CATALOG_REFERENCE_SEGMENT = 3,
+};
+
+struct ct_root_catalog_callbacks
+{
+    ct_status (*load)(void *context, int32_t kind, uint64_t tree_id, uint64_t object_id, const uint8_t **out,
+                      size_t *len);
+    void (*free_blob)(void *context, const uint8_t *data, size_t len);
+    ct_status (*store)(void *context, int32_t kind, uint64_t tree_id, uint64_t object_id, const uint8_t *data,
+                       size_t len);
+    ct_status (*publish)(void *context, uint64_t tree_id, uint64_t expected_generation, uint64_t owner_epoch,
+                         uint64_t generation, const uint8_t *data, size_t len);
+    ct_status (*allocate_reference_segment_id)(void *context, uint64_t tree_id, uint64_t *out);
+    uint64_t (*discard_reference_segments)(void *context, uint64_t tree_id, const uint64_t *object_ids,
+                                           size_t object_count);
+    uint64_t (*reclaim_before)(void *context, uint64_t tree_id, uint64_t generation);
+    void (*drop_context)(void *context);
+};
+
+ct_status ct_callback_root_catalog_open(const ct_root_catalog_callbacks *callbacks, void *context,
+                                        ct_root_catalog **out);
+void      ct_root_catalog_free(ct_root_catalog *catalog);
+ct_status ct_chunk_page_store_open(const ct_chunk_page_store_options *options, ct_root_catalog *catalog,
+                                   ct_page_store **out);
+ct_status ct_chunk_page_store_open_with_transport(const ct_chunk_page_store_options *options, ct_root_catalog *catalog,
+                                                  ct_chunk_transport *transport, ct_page_store **out);
+ct_status ct_rpc_chunk_transport_open(const ct_chunk_rpc_transport_options *options, ct_chunk_transport **out);
+void      ct_chunk_transport_free(ct_chunk_transport *transport);
+ct_status ct_chunk_page_store_get_stats(const ct_page_store *store, ct_chunk_page_store_stats *out);
+ct_status ct_chunk_page_store_set_wal_replay_offset(ct_page_store *store, uint64_t offset);
+ct_status ct_chunk_page_store_get_wal_replay_offset(const ct_page_store *store, uint64_t *offset);
+uint64_t  ct_chunk_page_store_reclaim_orphans(ct_page_store *store);
+uint64_t  ct_root_catalog_reclaim_before(ct_root_catalog *catalog, uint64_t tree_id, uint64_t generation);
 ct_status ct_open(const ct_options *opt, ct_tree **out);
+ct_status ct_rebuild_range(ct_tree *source, const ct_options *destination_options, ct_tree **out,
+                           ct_range_rebuild_stats *stats);
 void      ct_close(ct_tree *t);
 
 // Process-global logging control (not bound to any ct_tree instance).
@@ -132,6 +268,9 @@ void      ct_add_log_stderr(const char *level);
 void      ct_flush_logging();
 void      ct_shutdown_logging();
 ct_status ct_snapshot(ct_tree *t, uint64_t *out_last_applied);
+ct_status ct_snapshot_info(ct_tree *t, uint64_t *out_snapshot_seq, uint64_t *out_last_applied);
+ct_status ct_snapshot_state(const ct_tree *t, uint64_t *out_snapshot_seq, uint64_t *out_last_applied);
+ct_status ct_materialize_ownership(ct_tree *t, uint64_t *bytes_written, int32_t *complete);
 uint64_t  ct_last_applied_slot(const ct_tree *t);
 size_t    ct_frozen_table_count(const ct_tree *t);
 // gc_slot = min(snapshot_slot, safe_slot); see crowdb::tree::set_gc_watermark.
@@ -353,6 +492,12 @@ ct_future *ct_scan_async(ct_tree *t, const uint8_t *prefix, size_t plen, const u
                          const uint8_t *end_key, size_t elen, size_t limit, size_t byte_budget, int keys_only,
                          uint64_t deadline_ms);
 
+// Directional scan twin. direction: 0 = forward, 1 = reverse. The original
+// ct_scan_async remains a source-compatible forward wrapper.
+ct_future *ct_scan_directional_async(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_after,
+                                     size_t salen, const uint8_t *end_key, size_t elen, size_t limit,
+                                     size_t byte_budget, int keys_only, uint64_t deadline_ms, int direction);
+
 // Non-blocking poll.
 // *done == 0: still pending; f remains valid, poll again later (e.g. after
 //   the Rust side's AsyncFd wakes on ct_uring_eventfds()).
@@ -386,16 +531,23 @@ ct_status ct_future_poll(ct_future *f, int32_t *done, int32_t *out_found, uint64
 // this after a resolved poll, never before).
 void ct_future_free(ct_future *f);
 
-// The tree's DiskIOUring eventfds, for the Rust side to register with
-// tokio::io::AsyncFd: each becomes readable after the poll thread
-// dispatches a batch of completions on its pipeline, so re-polling every
-// pending future at that point will observe any that just finished.
-// Fills `out_fds` (caller-allocated, up to `max_fds`) and returns the
-// count. Returns 0 if this tree has no DiskIOUring wired (in-memory tree,
-// or a build without liburing) -- ct_*_async calls still work in that
-// case, they just always complete synchronously (nothing to wait on).
-// DiskIOUring-owned; do not close the fds.
+// Completion descriptors for all async backends. The backend-independent
+// future eventfd comes first; local DiskIOUring pipeline eventfds follow it.
+// Fills `out_fds` up to `max_fds` and returns the total count. Tree-owned;
+// callers must not close the descriptors.
 size_t ct_uring_eventfds(const ct_tree *t, int32_t *out_fds, size_t max_fds);
+
+// Standalone single-pipeline io_uring owner for buffered regular files.
+// Returns null when liburing is not compiled in or ring setup is rejected.
+ct_uring *ct_uring_create(uint32_t entries);
+void      ct_uring_destroy(ct_uring *uring);
+int32_t   ct_uring_register_fd(ct_uring *uring, int32_t fd);
+void      ct_uring_unregister_fd(ct_uring *uring, int32_t fd);
+void      ct_uring_submit_read(ct_uring *uring, int32_t fd, uint8_t *buf, size_t len, uint64_t offset,
+                               ct_uring_callback callback, void *context);
+void      ct_uring_submit_writev(ct_uring *uring, int32_t fd, const uint8_t *const *bases, const size_t *lengths,
+                                 size_t count, uint64_t offset, ct_uring_callback callback, void *context);
+void ct_uring_submit_sync(ct_uring *uring, int32_t fd, int32_t data_only, ct_uring_callback callback, void *context);
 
 // Range scan over `prefix` (empty = whole keyspace), up to `limit` (0 = all).
 // `start_after` (null or salen = 0 = start from beginning) is an exclusive
@@ -413,6 +565,18 @@ ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t 
                   const uint8_t *end_key, size_t elen, size_t limit, size_t byte_budget, int keys_only,
                   uint64_t deadline_ms, int include_tombstones, ct_buf *out_entries, uint64_t *out_count,
                   int32_t *truncated);
+// Inclusive/exclusive lower-bound variant used by ordered seek. Existing
+// ct_scan remains the exclusive ABI.
+ct_status ct_scan_from(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_key, size_t sklen,
+                       int start_inclusive, const uint8_t *end_key, size_t elen, size_t limit, size_t byte_budget,
+                       int keys_only, uint64_t deadline_ms, int include_tombstones, ct_buf *out_entries,
+                       uint64_t *out_count, int32_t *truncated);
+ct_status ct_seek_reverse(ct_tree *t, const uint8_t *start_key, size_t sklen, int start_inclusive,
+                          const uint8_t *begin_key, size_t bklen, int32_t *found, ct_buf *out_key, uint64_t *out_slot,
+                          ct_buf *out_value);
+ct_status ct_scan_reverse(ct_tree *t, const uint8_t *start_key, size_t sklen, int has_start_bound, int start_inclusive,
+                          const uint8_t *begin_key, size_t bklen, size_t limit, size_t byte_budget, ct_buf *out_entries,
+                          uint64_t *out_count, int32_t *truncated);
 
 // ── Consistent view (compare / iterate) ───────────────────────────
 ct_status ct_snapshot_view(ct_tree *t, ct_view **out);
@@ -425,8 +589,13 @@ void      ct_iter_release(ct_iter *it);
 void      ct_view_release(ct_view *v);
 
 // ── Snapshot export / import (portable stream) ────────────────────
-ct_status ct_snapshot_export_begin(ct_tree *t, ct_export **out);
-ct_status ct_snapshot_export_next(ct_export *e, ct_buf *chunk, int32_t *done);
+ct_status ct_snapshot_export_begin(ct_tree *t, size_t chunk_bytes, ct_export **out);
+uint64_t  ct_snapshot_export_at_slot(const ct_export *e);
+uint64_t  ct_snapshot_export_total_bytes(const ct_export *e);
+uint32_t  ct_snapshot_export_final_crc32c(const ct_export *e);
+size_t    ct_snapshot_export_chunk_bytes(const ct_export *e);
+uint64_t  ct_snapshot_export_offset(const ct_export *e);
+ct_status ct_snapshot_export_next(ct_export *e, uint64_t offset, ct_buf *chunk, int32_t *done);
 void      ct_snapshot_export_end(ct_export *e);
 
 ct_status ct_snapshot_import_begin(ct_tree *t, ct_import **out);

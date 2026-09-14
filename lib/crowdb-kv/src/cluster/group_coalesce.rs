@@ -6,7 +6,7 @@
 use std::sync::Weak;
 
 use crate::cluster::group::{PendingBatch, ProposeResult, PxGroup};
-use crate::paxos::roles::DedupTag;
+use crate::paxos::roles::RequestIdentity;
 use tracing::{info_span, Instrument};
 
 /// Coalescer watchdog interval in microseconds. The watchdog sleeps for
@@ -87,19 +87,25 @@ impl PxGroup {
         payload.extend_from_slice(&batch.op_count.to_le_bytes());
         payload.extend_from_slice(&batch.op_bodies);
         let payload = bytes::Bytes::from(payload);
-        let tags = batch.tags;
+        let identities = batch.identities;
         let waiters = batch.waiters;
         let Some(group) = self.self_weak.get().and_then(Weak::upgrade) else {
             return;
         };
+        group
+            .coalesced_rounds_inflight
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         tokio::spawn(
             async move {
                 #[cfg(feature = "test-util")]
                 group.coalesce_await_round_gate().await;
-                let result = group.propose_inner(payload, &tags).await;
+                let result = group.propose_inner(payload, &identities).await;
                 for waiter in waiters {
                     let _ = waiter.send(result.clone());
                 }
+                group
+                    .coalesced_rounds_inflight
+                    .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
                 group.coalesce_drain_after_round();
             }
             .instrument(tracing::Span::current()),
@@ -116,7 +122,11 @@ impl PxGroup {
     /// A single activity-based watchdog task runs in the background — it
     /// only fires if there's no coalescer activity for `WATCHDOG_US`.
     #[allow(clippy::type_complexity)]
-    pub(crate) async fn coalesce_enqueue(&self, payload: Vec<u8>, tag: Option<DedupTag>) -> ProposeResult {
+    pub(crate) async fn coalesce_enqueue(
+        &self,
+        payload: Vec<u8>,
+        identity: Option<RequestIdentity>,
+    ) -> ProposeResult {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let request_op_count = payload
             .get(..2)
@@ -127,11 +137,11 @@ impl PxGroup {
         self.coalesce_start_watchdog();
 
         // The locked section returns:
-        //   Some((payload, tags, waiters)) → start a round now
+        //   Some((payload, identities, waiters)) → start a round now
         //   None → joined a batch, just await the oneshot
         let start_round: Option<(
             Vec<u8>,
-            Vec<DedupTag>,
+            Vec<RequestIdentity>,
             Vec<tokio::sync::oneshot::Sender<ProposeResult>>,
         )> = {
             let mut guard = self.coalescer.lock();
@@ -143,14 +153,14 @@ impl PxGroup {
                     let mut round_payload = Vec::with_capacity(2 + op_body.len());
                     round_payload.extend_from_slice(&request_op_count.to_le_bytes());
                     round_payload.extend_from_slice(op_body);
-                    let round_tags: Vec<DedupTag> = tag.into_iter().collect();
-                    Some((round_payload, round_tags, vec![tx]))
+                    let round_identities: Vec<RequestIdentity> = identity.into_iter().collect();
+                    Some((round_payload, round_identities, vec![tx]))
                 }
                 Some(batch) => {
                     batch.op_bodies.extend_from_slice(op_body);
                     batch.op_count = batch.op_count.saturating_add(request_op_count);
-                    if let Some(t) = tag {
-                        batch.tags.push(t);
+                    if let Some(identity) = identity {
+                        batch.identities.push(identity);
                     }
                     batch.waiters.push(tx);
                     if batch.op_count >= max_keys {
@@ -160,7 +170,7 @@ impl PxGroup {
                         let mut p = Vec::with_capacity(2 + taken.op_bodies.len());
                         p.extend_from_slice(&taken.op_count.to_le_bytes());
                         p.extend_from_slice(&taken.op_bodies);
-                        Some((p, taken.tags, taken.waiters))
+                        Some((p, taken.identities, taken.waiters))
                     } else {
                         None
                     }
@@ -169,7 +179,7 @@ impl PxGroup {
         };
 
         // If None, we joined a batch — just await the result.
-        let Some((payload, round_tags, round_waiters)) = start_round else {
+        let Some((payload, round_identities, round_waiters)) = start_round else {
             return match rx.await {
                 Ok(result) => result,
                 Err(_) => ProposeResult::Err("coalescer round dropped".to_string()),
@@ -182,14 +192,20 @@ impl PxGroup {
         let Some(group) = self.self_weak.get().and_then(Weak::upgrade) else {
             return ProposeResult::Err("group dropped".to_string());
         };
+        group
+            .coalesced_rounds_inflight
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         tokio::spawn(
             async move {
                 #[cfg(feature = "test-util")]
                 group.coalesce_await_round_gate().await;
-                let result = group.propose_inner(payload, &round_tags).await;
+                let result = group.propose_inner(payload, &round_identities).await;
                 for waiter in round_waiters {
                     let _ = waiter.send(result.clone());
                 }
+                group
+                    .coalesced_rounds_inflight
+                    .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
                 group.coalesce_drain_after_round();
             }
             .instrument(tracing::Span::current()),
@@ -207,13 +223,11 @@ impl PxGroup {
     /// (coalescer → `None`) so the next op starts a 1-op round — the
     /// zero-latency-floor behavior at low load.
     ///
-    /// R45b drain threshold: if the in-flight slot-task count
-    /// (`occupied`) is at or above `coalesce_drain_threshold`, skip the
-    /// drain — the `max_keys` overflow path handles high load with full
-    /// batches, and draining here would fragment the batch (many
-    /// slot-tasks racing to take one shared batch). The permit is
-    /// already released before this call, so the last finisher always
-    /// sees a count below threshold and takes the batch.
+    /// R45b drain threshold: if the number of other coalesced rounds is at or
+    /// above `coalesce_drain_threshold`, skip the drain. The `max_keys`
+    /// overflow path handles high load with full batches, and the last
+    /// coalesced finisher drains the shared pending batch. Conditional and
+    /// tenure-bound proposals do not participate in this decision.
     ///
     /// The swap is atomic: the old batch is taken and a fresh empty
     /// batch is put back in a single locked section, so no concurrent
@@ -222,7 +236,12 @@ impl PxGroup {
     fn coalesce_drain_after_round(&self) {
         self.coalesce_touch_activity();
         let threshold = self.config.paxos.coalesce_drain_threshold;
-        if threshold > 0 && self.inflight.occupied() >= u64::try_from(threshold).unwrap_or(u64::MAX) {
+        if threshold > 0
+            && self
+                .coalesced_rounds_inflight
+                .load(std::sync::atomic::Ordering::Acquire)
+                >= u64::try_from(threshold).unwrap_or(u64::MAX)
+        {
             return;
         }
         let batch = {

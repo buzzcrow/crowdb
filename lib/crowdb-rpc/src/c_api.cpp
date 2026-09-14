@@ -8,8 +8,8 @@
 #include "crowdb-rpc/buffer.h"
 #include "crowdb-rpc/c_api_internal.h"
 #include "crowdb-rpc/client/client.h"
+#include "crowdb-rpc/client/co_client.h"
 #include "crowdb-rpc/client/rpc_client_metrics.h"
-#include "crowdb-rpc/co_client.h"
 #include "crowdb-rpc/rpc_metrics.h"
 #include "crowdb-rpc/server/message.h"
 #include "crowdb-rpc/server/server.h"
@@ -43,6 +43,14 @@ struct crowdb_rpc_pool_s
 
 // Opaque handle struct definitions are in c_api_internal.h (shared
 // with co_client.cpp).
+
+static crowdb_rpc_status submit_status(bool submitted, const crowdb::rpc::Connection *conn)
+{
+    if (submitted) {
+        return CROWDB_RPC_OK;
+    }
+    return conn != nullptr && !conn->is_open() ? CROWDB_RPC_ERR_CONN_CLOSED : CROWDB_RPC_ERR_SEND_QUEUE;
+}
 
 // ── Buffer ────────────────────────────────────────────────────────
 
@@ -189,7 +197,7 @@ crowdb_rpc_pool_t crowdb_rpc_pool_create(uint32_t max_buffers)
 {
     try {
         auto *pool = new crowdb::rpc::SystemBufferPool(max_buffers);
-        return new crowdb_rpc_pool_s{pool, true};
+        return new crowdb_rpc_pool_s{.pool = pool, .owns = true};
     }
     catch (...) {
         return nullptr;
@@ -419,7 +427,7 @@ int crowdb_rpc_server_port(crowdb_rpc_server_t server)
 crowdb_rpc_client_t crowdb_rpc_client_create(void)
 {
     try {
-        return new crowdb_rpc_client_s{new crowdb::rpc::RpcClient()};
+        return new crowdb_rpc_client_s{.client = new crowdb::rpc::RpcClient()};
     }
     catch (...) {
         return nullptr;
@@ -593,10 +601,12 @@ crowdb_rpc_status crowdb_rpc_client_send(crowdb_rpc_client_t client, crowdb_rpc_
         crowdb::rpc::Buffer *data_buf = (data != nullptr) ? data->buf : nullptr;
 
         // Bump refcount so the client's handle stays valid after submit.
-        if (ctrl_buf != nullptr)
+        if (ctrl_buf != nullptr) {
             ctrl_buf->ref_clone();
-        if (data_buf != nullptr)
+        }
+        if (data_buf != nullptr) {
             data_buf->ref_clone();
+        }
 
         bool ok = client->client->send(server->server->transport(), conn->conn.get(), request_id, ctrl_buf, data_buf,
                                        msg_type, on_complete, user_data);
@@ -608,7 +618,39 @@ crowdb_rpc_status crowdb_rpc_client_send(crowdb_rpc_client_t client, crowdb_rpc_
             crowdb_rpc_buffer_release(data);
         }
 
-        return ok ? CROWDB_RPC_OK : CROWDB_RPC_ERR_SEND_QUEUE;
+        return submit_status(ok, conn->conn.get());
+    }
+    catch (...) {
+        return CROWDB_RPC_ERR_CONN_ERROR;
+    }
+}
+
+crowdb_rpc_status crowdb_rpc_client_send_slab(crowdb_rpc_client_t client, crowdb_rpc_server_t server,
+                                              crowdb_rpc_conn_t conn, uint64_t request_id, crowdb_rpc_buffer_t control,
+                                              crowdb_rpc_buffer_t data, uint16_t msg_type,
+                                              crowdb_rpc_on_complete on_complete, void *user_data)
+{
+    try {
+        if (client == nullptr || server == nullptr || conn == nullptr || control == nullptr || on_complete == nullptr) {
+            return CROWDB_RPC_ERR_INVALID_ARG;
+        }
+
+        crowdb::rpc::Buffer *ctrl_buf = control->buf;
+        crowdb::rpc::Buffer *data_buf = (data != nullptr) ? data->buf : nullptr;
+        if (ctrl_buf != nullptr) {
+            ctrl_buf->ref_clone();
+        }
+        if (data_buf != nullptr) {
+            data_buf->ref_clone();
+        }
+
+        bool ok = client->client->send_slab_only(server->server->transport(), conn->conn.get(), request_id, ctrl_buf,
+                                                 data_buf, msg_type, on_complete, user_data);
+        crowdb_rpc_buffer_release(control);
+        if (data != nullptr) {
+            crowdb_rpc_buffer_release(data);
+        }
+        return submit_status(ok, conn->conn.get());
     }
     catch (...) {
         return CROWDB_RPC_ERR_CONN_ERROR;
@@ -691,6 +733,27 @@ void crowdb_rpc_conn_destroy(crowdb_rpc_conn_t conn)
     }
 }
 
+int crowdb_rpc_conn_is_open(crowdb_rpc_conn_t conn)
+{
+    try {
+        return conn != nullptr && conn->conn != nullptr && conn->conn->is_open() ? 1 : 0;
+    }
+    catch (...) {
+        return 0;
+    }
+}
+
+void crowdb_rpc_conn_close(crowdb_rpc_conn_t conn)
+{
+    try {
+        if (conn != nullptr && conn->conn != nullptr) {
+            conn->conn->close();
+        }
+    }
+    catch (...) {
+    }
+}
+
 // ── Built-in echo handler ─────────────────────────────────────────
 
 // Echo handler: returns the request data as the response data, with a
@@ -753,7 +816,7 @@ void crowdb::rpc::invoke_c_handler(crowdb_rpc_handler_fn callback, void *user_da
     uint64_t       create_nano = request->rpc_create_nano;
     uint16_t       msg_type    = request->header.msg_type;
     const uint8_t *ctrl_ptr    = request->control.empty() ? nullptr : request->control.data();
-    uint32_t       ctrl_len    = static_cast<uint32_t>(request->control.size());
+    auto           ctrl_len    = static_cast<uint32_t>(request->control.size());
     const uint8_t *data_ptr    = nullptr;
     uint32_t       data_len    = 0;
     if (request->data_buf != nullptr && request->data_buf->len > 0) {
@@ -830,10 +893,12 @@ crowdb_rpc_status crowdb_rpc_server_submit_response(crowdb_rpc_server_t server, 
 
         auto *frame = crowdb::rpc::build_out_frame(request_id, msg_type, resp_ctrl, resp_data);
         if (!server->server->transport()->submit(conn, frame)) {
-            if (frame->control != nullptr)
+            if (frame->control != nullptr) {
                 frame->control->release();
-            if (frame->data != nullptr)
+            }
+            if (frame->data != nullptr) {
                 frame->data->release();
+            }
             delete frame;
             return CROWDB_RPC_ERR_SEND_QUEUE;
         }
@@ -853,10 +918,12 @@ crowdb_rpc_status crowdb_rpc_server_submit_response_buffer(crowdb_rpc_server_t s
     try {
         if (server == nullptr || conn_handle == nullptr) {
             // Release any provided buffers to avoid leaks.
-            if (control != nullptr)
+            if (control != nullptr) {
                 crowdb_rpc_buffer_release(control);
-            if (data != nullptr)
+            }
+            if (data != nullptr) {
                 crowdb_rpc_buffer_release(data);
+            }
             return CROWDB_RPC_ERR_INVALID_ARG;
         }
 
@@ -879,10 +946,12 @@ crowdb_rpc_status crowdb_rpc_server_submit_response_buffer(crowdb_rpc_server_t s
 
         auto *frame = crowdb::rpc::build_out_frame(request_id, msg_type, resp_ctrl, resp_data);
         if (!server->server->transport()->submit(conn, frame)) {
-            if (frame->control != nullptr)
+            if (frame->control != nullptr) {
                 frame->control->release();
-            if (frame->data != nullptr)
+            }
+            if (frame->data != nullptr) {
                 frame->data->release();
+            }
             delete frame;
             return CROWDB_RPC_ERR_SEND_QUEUE;
         }
@@ -1015,7 +1084,7 @@ void crowdb_rpc_server_register_conn_count_gauge(crowdb_rpc_server_t server, con
         // the server is deleted.
         auto alive = srv->alive_flag();
         crowdb::common::metrics::MetricsRegistry::global().register_callback_gauge(
-            std::string(name), [transport, alive]() {
+            std::string(name), [transport, alive] {
                 if (!alive->load(std::memory_order_acquire)) {
                     return uint64_t{0};
                 }

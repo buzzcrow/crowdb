@@ -12,7 +12,7 @@ use crowdb_kv::cluster::group::PxGroup;
 use crowdb_kv::cluster::local_replica::{PxLocalReplica, PxLocalReplicaRole};
 use crowdb_kv::cluster::px_kv_store::PxKvStore;
 use crowdb_kv::common::config::CrowDBConfig;
-use crowdb_kv_server::reconcile::{plan_reconcile, ReplicaRecord};
+use crowdb_kv_server::recovery::reconcile::{plan_reconcile, ReplicaRecord};
 use crowdb_kv_server::store_registry::KvStoreRegistry;
 
 fn client() -> reqwest::Client {
@@ -40,7 +40,7 @@ fn registry_with_group(gid: u64, rid: u64, remotes: &[(u64, &str, bool)]) -> Arc
         );
     }
     store.add_group_without_election(group);
-    registry.add_store(0, Arc::new(store));
+    registry.add_store(0, &Arc::new(store));
     registry
 }
 

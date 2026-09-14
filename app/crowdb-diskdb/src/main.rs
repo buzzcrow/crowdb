@@ -22,7 +22,11 @@ use crowdb_diskdb::recovery::ZoneLoader;
 use crowdb_diskdb::scanner::{ScanState, ScannerTask};
 use crowdb_diskdb::service::DiskdbRpcService;
 use crowdb_kv_client::{
-    ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient, WatchNotifyClient,
+    ClientConfig, CrowdbKvClient, DomainMonitorClient, HardwareClient, ServiceRegistryClient,
+    WatchNotifyClient,
+};
+use crowdb_protocol::chunk_kv::{
+    DomainFailurePolicy, DomainMonitorDescriptor, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest,
 };
 use tracing::{error, info, warn};
 
@@ -207,6 +211,52 @@ async fn main() {
     );
     let hw = HardwareClient::from_shared(Arc::clone(&kv_client));
     let svc = ServiceRegistryClient::from_shared(Arc::clone(&kv_client));
+    let monitor_request = EnsureDomainMonitorRequest {
+        descriptor: DomainMonitorDescriptor {
+            domain: "diskdb".into(),
+            service_registry_name: "diskdb".into(),
+            driver_version: 1,
+            capability_version: 1,
+            heartbeat_interval_ms: 5_000,
+            suspect_after_ms: 10_000,
+            dead_after_ms: 15_000,
+            lease_duration_ms: 20_000,
+            max_clock_skew_ms: 1_000,
+            self_fence_margin_ms: 1_000,
+            failure_policy: DomainFailurePolicy::OperatorOnly,
+            balance_policy: "operator-only-v1".into(),
+            chunk_kv_range_balance: None,
+        },
+    };
+    // Domain monitor registration is retried in the background so the
+    // diskdb can start serving even when the KV server (group-0) is not
+    // yet ready — common during a cluster-wide restart where the diskdb
+    // and kv-server come up concurrently. The keepalive tick already
+    // tolerates group-0 unavailability, so the only startup dependency
+    // is this registration, which we detach as a retry loop.
+    let monitor_kv = Arc::clone(&kv_client);
+    tokio::spawn(async move {
+        let client = DomainMonitorClient::from_shared(monitor_kv);
+        let backoffs = [1u64, 2, 4, 8, 15, 30];
+        for (attempt, delay) in backoffs.iter().cycle().enumerate() {
+            match client.ensure(&monitor_request).await {
+                Ok(EnsureDomainMonitorOutcome::Created | EnsureDomainMonitorOutcome::AlreadyExists) => {
+                    info!(attempt, "diskdb domain monitor registered");
+                    return;
+                }
+                Ok(outcome) => {
+                    warn!(
+                        ?outcome,
+                        attempt, "diskdb domain monitor registration rejected; retrying"
+                    );
+                }
+                Err(error) => {
+                    warn!(%error, attempt, "diskdb domain monitor registration failed; retrying");
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(*delay)).await;
+        }
+    });
     // Register diskdb metrics (§11: `zone.allocate.retry.cms.bit`,
     // `disk.bad.impacted_blocks`). The CAS retry counter is attached
     // to each `Zone` during disk-add init so the allocate path can
@@ -297,6 +347,7 @@ async fn main() {
         Arc::clone(&recalc_engine),
         scan_state.clone(),
         Arc::new(metrics.clone()),
+        Arc::clone(&config),
         rpc_rt_handle,
     ));
     let rpc_workers = config.load().server.rpc_workers;
@@ -414,6 +465,7 @@ async fn main() {
     let rpc_server_stop = Arc::clone(&rpc_server);
     shutdown_signal().await;
     info!("received shutdown signal");
+    rpc_service.close_free_admission().await;
     rpc_server_stop.stop();
     stop.notify_waiters();
     http_stop.notify_waiters();
@@ -528,7 +580,7 @@ async fn run_zone_load(
         };
         loaded.set_status(group_status);
         loaded.rebuild_allocating_disks();
-        if !container.replace_disk_group_if_current(&dg, bind, loaded) {
+        if !container.replace_disk_group_if_current(&dg, bind, &loaded) {
             info!(dg_id, "discarding stale disk-group load result");
             continue;
         }

@@ -55,7 +55,7 @@ static Frame *feed_all(FrameParser &parser, const std::vector<uint8_t> &bytes)
         std::memcpy(target.ptr, bytes.data() + offset, to_read);
         offset += to_read;
         frame = parser.advance(to_read);
-        if (frame) {
+        if (frame != nullptr) {
             break;
         }
     }
@@ -75,11 +75,11 @@ TEST(FramingTest, HeaderRoundTrip)
     Header parsed = parse_header(buf);
 
     EXPECT_EQ(parsed.magic, MAGIC);
-    EXPECT_EQ(parsed.msg_type, 42u);
-    EXPECT_EQ(parsed.msg_size, 128u);
-    EXPECT_EQ(parsed.data_size, 1024u * 1024u);
+    EXPECT_EQ(parsed.msg_type, 42U);
+    EXPECT_EQ(parsed.msg_size, 128U);
+    EXPECT_EQ(parsed.data_size, 1024U * 1024U);
     EXPECT_EQ(parsed.msg_offset, HEADER_SIZE);
-    EXPECT_EQ(parsed.flags, 0x01u);
+    EXPECT_EQ(parsed.flags, 0x01U);
 }
 
 TEST(FramingTest, ControlOnlyFrame)
@@ -91,8 +91,8 @@ TEST(FramingTest, ControlOnlyFrame)
     Frame      *frame = feed_all(parser, bytes);
 
     ASSERT_NE(frame, nullptr);
-    EXPECT_EQ(frame->header.msg_type, 3u);
-    EXPECT_EQ(frame->header.data_size, 0u);
+    EXPECT_EQ(frame->header.msg_type, 3U);
+    EXPECT_EQ(frame->header.data_size, 0U);
     EXPECT_EQ(frame->data_buf, nullptr);
     delete frame;
 }
@@ -111,11 +111,11 @@ TEST(FramingTest, FullFrameWithData)
     Frame *frame = feed_all(parser, bytes);
 
     ASSERT_NE(frame, nullptr);
-    EXPECT_EQ(frame->header.msg_type, 7u);
-    EXPECT_EQ(frame->header.msg_size, 128u);
-    EXPECT_EQ(frame->header.data_size, 1024u * 1024u);
+    EXPECT_EQ(frame->header.msg_type, 7U);
+    EXPECT_EQ(frame->header.msg_size, 128U);
+    EXPECT_EQ(frame->header.data_size, 1024U * 1024U);
     ASSERT_NE(frame->data_buf, nullptr);
-    EXPECT_EQ(frame->data_buf->len, 1024u * 1024u);
+    EXPECT_EQ(frame->data_buf->len, 1024U * 1024U);
     EXPECT_EQ(std::memcmp(frame->data_buf->data, data.data(), 1024 * 1024), 0);
     delete frame;
 }
@@ -152,17 +152,17 @@ TEST(FramingTest, PartialHeader)
 
     // Feed remaining header bytes
     auto t2 = parser.next_read_target();
-    ASSERT_EQ(t2.len, HEADER_SIZE - 6u);
+    ASSERT_EQ(t2.len, HEADER_SIZE - 6U);
     std::memcpy(t2.ptr, bytes.data() + 6, HEADER_SIZE - 6);
     EXPECT_EQ(parser.advance(HEADER_SIZE - 6), nullptr); // header done, need control
 
     // Feed control
     auto t3 = parser.next_read_target();
-    ASSERT_EQ(t3.len, 16u);
+    ASSERT_EQ(t3.len, 16U);
     std::memcpy(t3.ptr, bytes.data() + HEADER_SIZE, 16);
     Frame *frame = parser.advance(16);
     ASSERT_NE(frame, nullptr);
-    EXPECT_EQ(frame->header.msg_type, 1u);
+    EXPECT_EQ(frame->header.msg_type, 1U);
     delete frame;
 }
 

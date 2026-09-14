@@ -195,13 +195,14 @@ pub struct NotifyConfig {
 
 /// Free batch flush + snapshot compaction + recovery configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PersistenceConfig {
     /// dynamic: free batching toggle (default: false). When false,
-    /// frees are immediate (one `batch_write` per free). When true,
-    /// frees are grouped and flushed via one `batch_write` when the
-    /// batch reaches `free_flush_max_batch` (R79; no timer).
+    /// frees use one `batch_write` per request. When true, concurrently
+    /// queued requests are coalesced and drained immediately with no timer.
     pub free_batch_enabled: bool,
-    /// dynamic: free batch max size before forced flush (default: 256).
+    /// dynamic: maximum free records per coalesced KV batch (default: 256).
+    /// One oversized request remains atomic and is persisted alone.
     pub free_flush_max_batch: u32,
     /// dynamic: periodic compaction interval in seconds (default: 300).
     /// The compaction loop sleeps this long between cycles.

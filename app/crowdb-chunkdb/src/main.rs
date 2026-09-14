@@ -15,6 +15,7 @@ use crowdb_chunkdb::conversion::{ConversionCoordinator, MirrorToEcTaskHandler};
 use crowdb_chunkdb::lifecycle::{ChunkLockMap, LifecycleHandler};
 use crowdb_chunkdb::metrics::ChunkdbMetrics;
 use crowdb_chunkdb::metrics::LifecycleMetrics;
+use crowdb_chunkdb::placement_repair::{PlacementRepairCoordinator, PlacementRepairTaskHandler};
 use crowdb_chunkdb::range_guard::RangeGuard;
 use crowdb_chunkdb::repair::{RepairCoordinator, RepairStripTaskHandler};
 use crowdb_chunkdb::routing::{default_binding_table, BindingCache};
@@ -26,8 +27,8 @@ use crowdb_chunkdb::topology::{
 };
 use crowdb_common::metrics::{MetricsRegistry, MetricsRunner};
 use crowdb_kv_client::{
-    ClientConfig, CrowdbKvClient, HardwareClient, RangeBindingClient, ServiceRegistryClient,
-    WatchNotifyClient,
+    ClientConfig, CrowdbKvClient, DomainMonitorClient, HardwareClient, RangeBindingClient,
+    ServiceRegistryClient, WatchNotifyClient,
 };
 use tracing::{error, info, warn};
 
@@ -181,6 +182,40 @@ async fn main() {
         error!("initial topology refresh failed; refusing readiness");
         return;
     };
+    let monitor_request = crowdb_protocol::chunk_kv::EnsureDomainMonitorRequest {
+        descriptor: crowdb_protocol::chunk_kv::DomainMonitorDescriptor {
+            domain: "chunkdb".into(),
+            service_registry_name: "chunkdb".into(),
+            driver_version: 1,
+            capability_version: 1,
+            heartbeat_interval_ms: 5_000,
+            suspect_after_ms: 10_000,
+            dead_after_ms: 15_000,
+            lease_duration_ms: 20_000,
+            max_clock_skew_ms: 1_000,
+            self_fence_margin_ms: 1_000,
+            failure_policy: crowdb_protocol::chunk_kv::DomainFailurePolicy::AutomaticSharedStorage,
+            balance_policy: "uniform-1024-v1".into(),
+            chunk_kv_range_balance: None,
+        },
+    };
+    match DomainMonitorClient::from_shared(Arc::clone(&kv))
+        .ensure(&monitor_request)
+        .await
+    {
+        Ok(
+            crowdb_protocol::chunk_kv::EnsureDomainMonitorOutcome::Created
+            | crowdb_protocol::chunk_kv::EnsureDomainMonitorOutcome::AlreadyExists,
+        ) => {}
+        Ok(outcome) => {
+            error!(?outcome, "chunkdb domain monitor registration rejected");
+            return;
+        }
+        Err(error) => {
+            error!(%error, "chunkdb domain monitor registration failed");
+            return;
+        }
+    }
     cache.replace(initial_topology);
 
     let refresh_cache = cache.clone();
@@ -309,11 +344,16 @@ async fn main() {
     // Lifecycle handler.
     let handler = Arc::new(
         LifecycleHandler::new(Arc::clone(&store), allocator, cache)
+            .with_placement_tasks(Arc::clone(&task_store))
             .with_range_guard(Arc::clone(&range_guard))
             .with_locks(Arc::clone(&lock_map))
             .with_metrics(Arc::clone(&workflow_metrics))
             .with_reservation_limits(reservation_blocks, reservation_bytes)
             .with_allow_unsafe_ec(config.placement.allow_unsafe_ec)
+            .with_placement_policy(
+                config.placement.failure_domain_priority,
+                config.placement.allow_degraded_failure_domains,
+            )
             .with_layout_validity(Duration::from_millis(config.lifecycle.layout_validity_ms)),
     );
     match handler.rebuild_reservation_admission().await {
@@ -443,6 +483,34 @@ async fn main() {
             .with_wake(task_manager.wake_handle())
             .with_metrics(Arc::clone(&workflow_metrics.repair)),
     );
+    let placement_repair = Arc::new(
+        PlacementRepairCoordinator::new(Arc::clone(&handler), Arc::clone(&task_store))
+            .with_wake(task_manager.wake_handle())
+            .with_metrics(Arc::clone(&workflow_metrics.placement)),
+    );
+    let placement_repair_scan_handle = config.placement_repair.enabled.then(|| {
+        let placement_repair = Arc::clone(&placement_repair);
+        let mut stop = stop_rx.clone();
+        let interval = Duration::from_secs(config.placement_repair.scan_interval_secs);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        if let Err(error) = placement_repair.scan_batch(256, unix_time_ms()).await {
+                            warn!(%error, "placement repair reconciliation failed");
+                        }
+                    }
+                    changed = stop.changed() => {
+                        if changed.is_err() || *stop.borrow() {
+                            return;
+                        }
+                    }
+                }
+            }
+        })
+    });
     let repair_scan_handle = config.repair.enabled.then(|| {
         let repair = Arc::clone(&repair);
         let mut stop = stop_rx.clone();
@@ -494,14 +562,24 @@ async fn main() {
                 config.repair.allow_unsafe_placement,
                 Arc::clone(&workflow_metrics.repair),
             ));
-            let task_handlers: Vec<Arc<dyn TaskHandler>> = vec![conversion_task_handler, repair_task_handler];
+            let placement_repair_task_handler = Arc::new(PlacementRepairTaskHandler::new(
+                Arc::clone(&handler),
+                Arc::clone(&io),
+                Arc::clone(&workflow_metrics.placement),
+            ));
+            let task_handlers: Vec<Arc<dyn TaskHandler>> = vec![
+                conversion_task_handler,
+                repair_task_handler,
+                placement_repair_task_handler,
+            ];
             let executor = Arc::new(
                 TaskExecutor::new(
                     Arc::clone(&task_manager),
                     config
                         .conversion
                         .max_concurrency
-                        .saturating_add(config.repair.max_concurrency),
+                        .saturating_add(config.repair.max_concurrency)
+                        .saturating_add(config.placement_repair.max_concurrency),
                     task_handlers,
                 )
                 .expect("unique conversion task handler"),
@@ -603,6 +681,9 @@ async fn main() {
         let _ = handle.await;
     }
     if let Some(handle) = repair_scan_handle {
+        let _ = handle.await;
+    }
+    if let Some(handle) = placement_repair_scan_handle {
         let _ = handle.await;
     }
     let _ = range_refresh_handle.await;

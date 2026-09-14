@@ -38,17 +38,16 @@ pub(super) async fn health_check(State(state): State<RegistryArc>) -> (StatusCod
     let mut overall = StatusLevel::Ok;
     let mut messages: Vec<String> = Vec::new();
     let stores: Vec<StoreStatus> = state
-        .stores
-        .iter()
-        .map(|entry| {
-            let store = entry.value();
+        .stores_snapshot()
+        .values()
+        .map(|store| {
             let s = store.status();
             overall = StatusLevel::worst(overall, s.status);
             s
         })
         .collect();
 
-    if state.stores.is_empty() {
+    if state.is_empty() {
         messages.push("no stores configured".to_string());
     }
 
@@ -106,7 +105,7 @@ pub(super) async fn system_init(
     // store 0 consumes the port pool port deterministically — using
     // `0.0.0.0:0` here lets the OS pick a random port that may collide with
     // a future pool allocation (e.g. `add_store` for store 1).
-    if !state.stores.contains_key(&SYSTEM_STORE_ID) {
+    if !state.contains_store(SYSTEM_STORE_ID) {
         let port = super::resolve_store_port(&state, None, SYSTEM_STORE_ID).await;
         let addr: SocketAddr = format!("0.0.0.0:{port}")
             .parse()
@@ -122,6 +121,11 @@ pub(super) async fn system_init(
         store.set_quickack(state.config.server.quickack);
         store.set_event_write(state.config.server.event_write);
         store.set_send_queue_capacity(state.config.server.send_queue_capacity);
+        store.set_snapshot_source_config(
+            state.config.server.snapshot_chunk_bytes,
+            state.config.server.snapshot_source_sessions,
+            state.config.server.snapshot_session_lease_ms,
+        );
         let store = Arc::new(store);
         store.start().await.map_err(|e| {
             err_json(
@@ -130,7 +134,7 @@ pub(super) async fn system_init(
             )
         })?;
         store.wire_rpc_transport();
-        state.add_store(SYSTEM_STORE_ID, store);
+        state.add_store(SYSTEM_STORE_ID, &store);
         info!(s = SYSTEM_STORE_ID, "system store 0 created via /system/init");
     }
 
@@ -149,7 +153,7 @@ pub(super) async fn system_init(
         ));
     }
 
-    let group = crate::startup::create_group_with_wal(
+    let group = crate::recovery::startup::create_group_with_wal(
         SYSTEM_STORE_ID,
         SYSTEM_GROUP_ID,
         req.replica_id,

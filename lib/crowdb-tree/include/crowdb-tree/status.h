@@ -12,13 +12,15 @@ namespace crowdb::tree
 {
 
 enum class Code : int8_t {
-    kOk              = 0,
-    kNotFound        = -1,
-    kInvalidArgument = -2,
-    kCorruption      = -3,
-    kIoError         = -4,
-    kNotSupported    = -5,
-    kInternal        = -6,
+    kOk                = 0,
+    kNotFound          = -1,
+    kInvalidArgument   = -2,
+    kCorruption        = -3,
+    kIoError           = -4,
+    kNotSupported      = -5,
+    kInternal          = -6,
+    kResourceExhausted = -7,
+    kUnavailable       = -8,
 };
 
 class Status
@@ -61,6 +63,16 @@ class Status
     static Status internal_error(std::string m = {})
     {
         return {Code::kInternal, std::move(m)};
+    }
+
+    static Status resource_exhausted(std::string m = {})
+    {
+        return {Code::kResourceExhausted, std::move(m)};
+    }
+
+    static Status unavailable(std::string m = {})
+    {
+        return {Code::kUnavailable, std::move(m)};
     }
 
     [[nodiscard]] bool ok() const

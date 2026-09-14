@@ -84,7 +84,7 @@ handler replies (the ack contract, §5). The mapping is exhaustive:
 | Handler (`PxLocalReplica`) | Trigger | Record | Payload |
 | --- | --- | --- | --- |
 | `on_prepare` | acceptor grants a promise | `Promised` | none (slot + ballot + term in header) |
-| `on_accept` | acceptor accepts a value | `Accepted` | the `PxLogEntry` (kind + KV batch + `client_id`/`seq`) |
+| `on_accept` | acceptor accepts a value | `Accepted` | the `PxLogEntry` (kind + KV batch) |
 | `handle_request_vote` | acceptor grants a vote | `VoteGranted` | `voted_for` node id (term in header) |
 
 **`learn()` writes nothing.** Applying a chosen value to the `KVEngine` is a pure
@@ -227,11 +227,17 @@ Crucially, the leader's **own** durable flush is not on the critical path of rem
 ### 4.6 I/O backend abstraction
 
 The WAL dispatches all file operations through `IoBackend`, a process-lifetime
-enum with three variants:
+enum with four variants:
 
-- **`File`** — `tokio::fs` + `spawn_blocking` for `fdatasync`. The production
-  default; works everywhere. `fdatasync` is a no-op (only `fsync` on close
-  calls `sync_all`).
+- **`File`** — `tokio::fs` with an awaited `sync_data` durability barrier. The
+  production default; works everywhere. A batch acknowledgement is not released
+  until this barrier succeeds.
+- **`Uring`** — explicitly selected buffered regular files. Positional reads,
+  vectored writes, `fdatasync`, and `fsync` are submitted to one process-shared
+  single-pipeline io_uring owner; namespace and metadata operations remain on
+  the portable filesystem path. Ring setup failure rejects explicit selection
+  rather than falling back. Borrowed buffers and descriptors remain live until
+  the CQE is drained, including when a Rust operation future is dropped.
 - **`MemBlock(MemBlockDevice)`** — in-memory test harness. Stores segments as
   `BTreeMap<PathBuf, Vec<u8>>` with error injection (`inject_io_error`,
   `inject_sync_error`, `set_full`), corruption injection
@@ -261,12 +267,13 @@ enum with three variants:
 Both `BlockDevice` and `MemBlockDevice` track write counts, fdatasync counts,
 logical/physical bytes written, and RMW counts for observability. The
 `WalEngine::backend_label()` method returns a short string (`"file"`,
-`"mem"`, `"block"`) for metric names. `WalEngine::block_device_snapshot()`
+`"uring"`, `"mem"`, `"block"`) for metric names. `WalEngine::block_device_snapshot()`
 reads cumulative counters for the engine collector to compute per-window
 deltas.
 
-The WAL bench (`lib/crowdb-kv/benches/wal.rs`) exercises three backends: `Mem`
-(in-memory `MemBlockDevice`), `File` (`tokio::fs`), and `Block`
+The WAL bench (`lib/crowdb-kv/benches/wal.rs`) exercises four backends: `Mem`
+(in-memory `MemBlockDevice`), `File` (`tokio::fs`), `Uring` (buffered
+CQE-backed file I/O), and `Block`
 (`BlockDevice::new()` with `wal_skip_fsync: true`). The `Block` case hits all
 block code paths (alignment planning, RMW, amplification tracking,
 `pwrite`/`pread` syscalls) at high TPS since `fdatasync` is skipped per
@@ -348,10 +355,6 @@ The split matters: replay/restore are purely *local* (this node's WAL), but `Acc
    `Promised` / `Accepted` per slot (later/higher-ballot records win, Paxos rule).
 4. `current_term` = max `term` across all records.
 5. `voted_for` = the node from the latest `VoteGranted` whose `term == current_term`. This is election safety state, not just debug metadata: after crash, the node must not grant a second vote in the same term.
-6. Dedup cache = the `(client_id, seq)` of every `Accepted` record (in-memory only, rebuilt from WAL on restart).
-
-**Dedup meaning:** client writes carry `(client_id, seq)` so a retried request can be recognized after timeout or leader change. The dedup cache stores the highest sequence and result slot already accepted for each client. It is an exactly-once / idempotency aid for client-visible behavior; it is not part of Paxos safety, but losing it can cause duplicate client operations after retry.
-
 Output: `ReplayResult { records, max_segment_id, current_term, voted_for }`.
 
 ### 6.2 Restore — rebuild live acceptor state (`restore_from_replay`)

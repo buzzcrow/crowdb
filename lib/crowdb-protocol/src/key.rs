@@ -19,6 +19,8 @@
 //! Binary key layouts are frozen once shipped. New key kinds are added
 //! with a new type tag; existing layouts are never changed.
 
+pub mod chunk_kv;
+pub mod chunk_stream;
 pub mod chunk_task;
 pub mod chunkdb;
 pub mod common;
@@ -29,6 +31,11 @@ pub mod kv_cluster;
 #[cfg(test)]
 mod key_tests;
 
+pub use chunk_kv::{
+    ChunkKvRangeCatalogHeadKey, ChunkKvRangeCatalogPageKey, ChunkKvSplitKey, ChunkKvTransferKey,
+    DomainMonitorKey, ServingGrantKey,
+};
+pub use chunk_stream::{StreamBindingKey, StreamExtentPageKey, StreamManifestHeadKey, StreamManifestKey};
 pub use chunk_task::{ChunkTaskKey, LeasedChunkTaskKey, ReadyChunkTaskKey};
 pub use chunkdb::{ChunkdbRangeBindingKey, ChunkdbRangeMigrationKey};
 pub use common::{NodeKey, RackKey};

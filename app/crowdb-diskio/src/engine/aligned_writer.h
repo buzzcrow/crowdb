@@ -13,7 +13,6 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -27,7 +26,7 @@ class AlignedWriter
   public:
     static constexpr size_t MAX_ZERO_BYTES = 2 * 1024 * 1024;
 
-    explicit AlignedWriter(std::string generation_journal_path = {});
+    explicit AlignedWriter();
     ~AlignedWriter();
 
     AlignedWriter(const AlignedWriter &)            = delete;
@@ -35,8 +34,8 @@ class AlignedWriter
 
     void submit(std::shared_ptr<Disk> disk, off_t phys_offset, const uint8_t *data, size_t size,
                 std::function<void(int)> on_complete);
-    void submit_fenced(std::shared_ptr<Disk> disk, off_t phys_offset, const uint8_t *data, size_t size,
-                       uint64_t allocation_ts, uint64_t allocation_phys_offset, std::function<void(int)> on_complete);
+    void submit_ordered(std::shared_ptr<Disk> disk, off_t phys_offset, const uint8_t *data, size_t size,
+                        uint64_t ordering_phys_offset, std::function<void(int)> on_complete);
     void stop();
 
   private:
@@ -46,8 +45,7 @@ class AlignedWriter
         off_t                    phys_offset;
         const uint8_t           *data;
         size_t                   size;
-        uint64_t                 allocation_ts;
-        uint64_t                 allocation_phys_offset;
+        uint64_t                 ordering_phys_offset;
         std::function<void(int)> on_complete;
     };
 
@@ -73,47 +71,24 @@ class AlignedWriter
         std::vector<uint8_t> bytes;
     };
 
-    struct AllocationKey
-    {
-        DiskId   disk_id;
-        uint64_t phys_offset;
-
-        bool operator==(const AllocationKey &other) const
-        {
-            return disk_id == other.disk_id && phys_offset == other.phys_offset;
-        }
-    };
-
-    struct AllocationKeyHash
-    {
-        size_t operator()(const AllocationKey &key) const;
-    };
-
     struct Shard
     {
         Shard();
 
-        crowdb::common::MpscQueue<Request *>                           pending;
-        std::atomic<bool>                                              active{false};
-        std::unordered_map<CacheKey, CachedBlock, CacheKeyHash>        partial_blocks;
-        std::unordered_map<AllocationKey, uint64_t, AllocationKeyHash> allocation_generations;
+        crowdb::common::MpscQueue<Request *>                    pending;
+        std::atomic<bool>                                       active{false};
+        std::unordered_map<CacheKey, CachedBlock, CacheKeyHash> partial_blocks;
     };
 
     static constexpr size_t                         SHARD_COUNT                 = 64;
     static constexpr size_t                         MAX_CACHED_BLOCKS_PER_SHARD = 64;
     std::array<std::unique_ptr<Shard>, SHARD_COUNT> shards_;
     std::atomic<bool>                               stopping_{false};
-    int                                             generation_journal_fd_{-1};
-    bool                                            generation_journal_required_{false};
-    std::atomic<uint64_t>                           generation_journal_offset_{0};
 
     size_t shard_index(const Request &request) const;
     void   try_start(size_t shard_index);
     void   process_next(size_t shard_index);
     void   process(size_t shard_index, Request *request);
-    int    admit_generation(size_t shard_index, const Request &request);
-    bool   append_generation(const AllocationKey &key, uint64_t allocation_ts);
-    void   load_generations();
     void   submit_buffer(size_t shard_index, Request *request, std::shared_ptr<uint8_t> buffer, off_t aligned_offset,
                          size_t aligned_size, size_t block_size);
     void   finish(size_t shard_index, Request *request, int result);

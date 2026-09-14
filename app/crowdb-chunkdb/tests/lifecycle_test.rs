@@ -11,6 +11,7 @@ use crowdb_chunkdb::lifecycle::{CacheHint, ChunkLockMap, LifecycleError, LockPol
 use crowdb_chunkdb::metrics::LifecycleMetrics;
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState as ProtoChunkState};
 use crowdb_protocol::common::ChunkId;
+use tokio::sync::Notify;
 
 fn make_lock_map(capacity: usize) -> Arc<ChunkLockMap> {
     Arc::new(ChunkLockMap::new(
@@ -38,6 +39,7 @@ fn make_chunk(id: ChunkId, state: i32) -> Chunk {
         next_strip_sequence: 0,
         cleanup_intents: vec![],
         last_strip_replacement: None,
+        owner_key: Vec::new(),
     }
 }
 
@@ -296,6 +298,45 @@ async fn reap_idle_retains_contended() {
         .await
         .unwrap_err();
     assert!(matches!(err, LifecycleError::LockBusy));
+}
+
+#[tokio::test]
+async fn concurrent_lookup_and_reaping_keep_one_mutex_identity() {
+    let locks = make_lock_map(100);
+    let id = make_chunk_id(22, 0);
+    let first = locks
+        .acquire_for_create(&id, &LockPolicy::default(), CacheHint::Cache)
+        .await
+        .expect("first acquire");
+
+    let acquired = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let waiter_locks = Arc::clone(&locks);
+    let waiter_acquired = Arc::clone(&acquired);
+    let waiter_release = Arc::clone(&release);
+    let waiter = tokio::spawn(async move {
+        let _guard = waiter_locks
+            .acquire_for_create(&id, &LockPolicy::default(), CacheHint::Cache)
+            .await
+            .expect("waiter acquire");
+        waiter_acquired.notify_one();
+        waiter_release.notified().await;
+    });
+
+    tokio::task::yield_now().await;
+    locks.reap_idle();
+    drop(first);
+    acquired.notified().await;
+
+    locks.reap_idle();
+    let error = locks
+        .acquire_for_create(&id, &LockPolicy::TryLock, CacheHint::Cache)
+        .await
+        .expect_err("overlapping acquisition must use the waiter's mutex");
+    assert!(matches!(error, LifecycleError::LockBusy));
+
+    release.notify_one();
+    waiter.await.expect("waiter task");
 }
 
 // ── metrics tests ────────────────────────────────────────────────

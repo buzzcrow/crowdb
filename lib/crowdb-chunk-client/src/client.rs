@@ -23,6 +23,7 @@ use crowdb_protocol::chunkdb::rpc::{
     UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_rpc_ffi::OwnedClientRoute;
 
 use crate::metrics::SmallWriteMetrics;
 use crate::negative_list::FailedDiskList;
@@ -96,7 +97,15 @@ struct ClientTopology {
 impl ChunkIoClient {
     /// Discover services and build lock-free DiskIO routing.
     pub async fn connect(config: ChunkIoClientConfig) -> Result<Self> {
-        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(config.management_seeds)));
+        let kv = Arc::new(CrowdbKvClient::new(ClientConfig::new(
+            config.management_seeds.clone(),
+        )));
+        Self::connect_with_kv(config, kv).await
+    }
+
+    /// Discover services using an existing KV topology client shared with the
+    /// embedding process.
+    pub async fn connect_with_kv(config: ChunkIoClientConfig, kv: Arc<CrowdbKvClient>) -> Result<Self> {
         let service = ServiceRegistryClient::from_shared(kv.clone());
         let hardware = HardwareClient::from_shared(kv.clone());
         let range_binding = discover_current_range_bindings(&service, kv.clone()).await?;
@@ -147,6 +156,36 @@ impl ChunkIoClient {
     pub fn from_parts(allocator: Arc<dyn crate::ChunkAllocator>, disk_writer: Arc<dyn DiskWriter>) -> Self {
         Self::from_parts_with_small_policy(allocator, disk_writer, SmallWritePolicy::default())
             .unwrap_or_else(|_| unreachable!("default small-write policy is valid"))
+    }
+
+    /// Returns shared low-level seams for embedded storage adapters that need
+    /// the same discovered chunk and disk routes as this client.
+    #[must_use]
+    pub fn storage_parts(&self) -> (Arc<dyn crate::ChunkAllocator>, Arc<dyn DiskWriter>) {
+        (Arc::clone(&self.allocator), Arc::clone(&self.disk_writer))
+    }
+
+    /// Export retained ChunkDB and DiskIO routes for the native tree page
+    /// store. Clients assembled from test seams do not have production routes.
+    pub async fn native_storage_routes(
+        &self,
+    ) -> Result<(
+        OwnedClientRoute,
+        Vec<(crowdb_diskio_client::DiskId, OwnedClientRoute)>,
+    )> {
+        let topology = self
+            .topology
+            .as_ref()
+            .ok_or_else(|| crate::IoError::Topology("client has no discovered production topology".into()))?;
+        let chunkdb = topology
+            .chunkdb
+            .storage_route()
+            .await
+            .map_err(|error| crate::IoError::Topology(format!("resolve ChunkDB route: {error}")))?;
+        Ok((
+            chunkdb,
+            topology.disk_writer.storage_routes()?.into_owned_routes(),
+        ))
     }
 
     /// Construct low-level seams with an explicit small-write policy.

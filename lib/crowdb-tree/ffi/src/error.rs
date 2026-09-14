@@ -14,6 +14,8 @@ pub enum CtError {
     IoError,
     NotSupported,
     Internal,
+    ResourceExhausted,
+    Unavailable,
     Unknown(i32),
 }
 
@@ -33,6 +35,8 @@ pub(crate) fn check(code: c_int) -> Result<(), CtError> {
         -4 => Err(CtError::IoError),
         -5 => Err(CtError::NotSupported),
         -6 => Err(CtError::Internal),
+        -7 => Err(CtError::ResourceExhausted),
+        -8 => Err(CtError::Unavailable),
         other => Err(CtError::Unknown(other)),
     }
 }

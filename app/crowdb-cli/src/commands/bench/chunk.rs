@@ -262,6 +262,7 @@ async fn allocate(client: &ChunkdbClient, args: &ChunkdbArgs) -> crowdb_chunkdb_
             chunk_type: ChunkType::Repo as i32,
             writer_epoch: 0,
             writer_lease_ms: 0,
+            owner_key: Vec::new(),
         })
         .await
     {
@@ -480,13 +481,8 @@ async fn busy_bytes(client: &DiskdbClient) -> Result<u64, DiskdbClientError> {
     let mut total = 0u64;
     for group in client.disk_group_ids() {
         let response = client.query_disk_group(group).await?;
-        total = total.saturating_add(
-            response
-                .disk_groups
-                .iter()
-                .map(|entry| entry.busy_bytes)
-                .sum::<u64>(),
-        );
+        let group_busy: u64 = response.disk_groups.iter().map(|entry| entry.busy_bytes).sum();
+        total = total.saturating_add(group_busy);
     }
     Ok(total)
 }

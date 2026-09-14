@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use dashmap::DashMap;
 
 use crowdb_diskdb_client::{DiskdbClientError, DiskdbRpcTransport};
 use crowdb_kv_client::ServiceRegistryClient;
@@ -23,8 +22,8 @@ use crowdb_protocol::diskdb::rpc::{
 /// Pool of diskdb crowdb-rpc transports, keyed by disk-group ID.
 pub struct DiskdbClientPool {
     svc: ServiceRegistryClient,
-    /// `disk_group_id -> rpc_endpoint` cache.
-    endpoints: DashMap<u64, String>,
+    /// Atomically published `disk_group_id -> rpc_endpoint` snapshot.
+    endpoints: ArcSwap<HashMap<u64, String>>,
     /// `disk_id -> disk_group_id` reverse lookup cache (GAP-4).
     /// Populated from the topology cache's `DiskGroupEntry` list.
     /// Used for precise `free_blocks` routing.
@@ -44,7 +43,7 @@ impl DiskdbClientPool {
     pub fn with_transport(svc: ServiceRegistryClient, pool_size: usize, workers: u32) -> Self {
         Self {
             svc,
-            endpoints: DashMap::new(),
+            endpoints: ArcSwap::from_pointee(HashMap::new()),
             disk_id_to_dg: ArcSwap::from_pointee(HashMap::new()),
             transport: Arc::new(DiskdbRpcTransport::with_pool_size(pool_size, workers)),
         }
@@ -71,14 +70,14 @@ impl DiskdbClientPool {
     /// `disk_group_id`.
     async fn endpoint_for_dg(&self, dg_id: u64) -> Result<String, String> {
         // Check endpoint cache.
-        if let Some(endpoint) = self.endpoints.get(&dg_id) {
-            return Ok(endpoint.value().clone());
+        if let Some(endpoint) = self.endpoints.load().get(&dg_id) {
+            return Ok(endpoint.clone());
         }
 
         // Cache miss — refresh from service registry and retry.
         self.refresh_endpoints().await?;
-        if let Some(endpoint) = self.endpoints.get(&dg_id) {
-            return Ok(endpoint.value().clone());
+        if let Some(endpoint) = self.endpoints.load().get(&dg_id) {
+            return Ok(endpoint.clone());
         }
         Err(format!("no endpoint cached for disk_group {dg_id}"))
     }
@@ -105,10 +104,7 @@ impl DiskdbClientPool {
                 }
             }
         }
-        self.endpoints.retain(|dg_id, _| refreshed.contains_key(dg_id));
-        for (dg_id, endpoint) in refreshed {
-            self.endpoints.insert(dg_id, endpoint);
-        }
+        self.endpoints.store(Arc::new(refreshed));
         Ok(())
     }
 
@@ -260,5 +256,25 @@ impl DiskdbClientPool {
             grouped.entry(dg_id).or_insert_with(Vec::new).push(segment);
         }
         Ok(grouped)
+    }
+}
+
+#[cfg(feature = "test-util")]
+impl DiskdbClientPool {
+    /// Replace the endpoint snapshot atomically in integration tests.
+    pub fn replace_endpoints_for_tests(&self, endpoints: Vec<(u64, String)>) {
+        self.endpoints.store(Arc::new(endpoints.into_iter().collect()));
+    }
+
+    /// Return one complete endpoint snapshot in stable order.
+    pub fn endpoint_snapshot_for_tests(&self) -> Vec<(u64, String)> {
+        let mut entries: Vec<_> = self
+            .endpoints
+            .load()
+            .iter()
+            .map(|(disk_group_id, endpoint)| (*disk_group_id, endpoint.clone()))
+            .collect();
+        entries.sort_unstable_by_key(|(disk_group_id, _)| *disk_group_id);
+        entries
     }
 }

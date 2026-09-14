@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use crowdb_console_shared::config::{ConsoleConfig, NodeEntry, RackEntry, ServerEntry, ServiceType};
 use crowdb_console_shared::lifecycle::{crowdb_diskdb_bin, stop_pid_with_timeout};
-use crowdb_protocol::port_alloc;
+use crowdb_protocol::port::alloc as port_alloc;
 use crowdb_protocol::ServicePort;
 use crowdb_web::mgmt::startup_topology_check;
 use crowdb_web::AppState;

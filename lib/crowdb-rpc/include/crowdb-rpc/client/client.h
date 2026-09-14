@@ -122,6 +122,11 @@ class RpcClient
     bool send(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control, Buffer *data,
               uint16_t msg_type, crowdb_rpc_on_complete cb, void *user_data);
 
+    // Bounded variant for callers that must never allocate a pending-map
+    // fallback entry. Returns false when the indexed slab slot is occupied.
+    bool send_slab_only(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control, Buffer *data,
+                        uint16_t msg_type, crowdb_rpc_on_complete cb, void *user_data);
+
     // Attach this caller to a connection's on_frame callback. The
     // callback tries response routing first (on_response); if the
     // frame's request_id is not in the pending map, it dispatches as
@@ -150,7 +155,7 @@ class RpcClient
     // to break reference cycles (Rust handler closures capture Arcs).
     void clear_handlers()
     {
-        std::lock_guard<std::mutex> lock(handler_mu_);
+        std::scoped_lock lock(handler_mu_);
         request_handlers_.clear();
     }
 
@@ -193,6 +198,9 @@ class RpcClient
     void stop_reaper();
 
   private:
+    bool send_impl(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control, Buffer *data,
+                   uint16_t msg_type, crowdb_rpc_on_complete cb, void *user_data, bool slab_only);
+
     // Handler registry for incoming requests (server→client direction).
     // Maps msg_type → (C callback, user_data). Same trampoline pattern
     // as the server-side handler dispatch.
@@ -228,7 +236,7 @@ class RpcClient
 
     // Build an OutFrame for submission. The RpcClient owns the OutFrame;
     // the transport takes it and releases buffers after send.
-    OutFrame *build_frame(uint64_t request_id, Buffer *control, Buffer *data, uint16_t msg_type, uint8_t flags);
+    static OutFrame *build_frame(uint64_t request_id, Buffer *control, Buffer *data, uint16_t msg_type, uint8_t flags);
 
     // Reaper loop: scans slab pool + pending map for timed-out entries.
     void reaper_loop();

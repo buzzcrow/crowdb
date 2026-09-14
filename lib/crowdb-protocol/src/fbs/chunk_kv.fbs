@@ -1,0 +1,183 @@
+include "common_type.fbs";
+
+namespace crowdb.chunk_kv.proto;
+
+enum FBChunkKvOperation : int8 {
+    Get = 0,
+    Put = 1,
+    Delete = 2,
+    PutIfAbsent = 3,
+    CompareExchange = 4,
+    ConditionalDelete = 5,
+}
+
+enum FBChunkKvCondition : int8 {
+    None = 0,
+    Revision = 1,
+    Value = 2,
+}
+
+enum FBChunkKvResult : int8 {
+    Value = 0,
+    Mutation = 1,
+    Scan = 2,
+}
+
+enum FBChunkKvSeekKind : int8 {
+    Ceiling = 0,
+    Higher = 1,
+    Floor = 2,
+    Lower = 3,
+}
+
+enum FBChunkKvScanDirection : int8 {
+    Forward = 0,
+    Reverse = 1,
+}
+
+enum FBChunkKvRetCode : int16 {
+    Success = 0,
+    Overloaded = 1,
+    WriteStalled = 2,
+    Recovering = 3,
+    LeaseExpired = 4,
+    RequestExpired = 5,
+    RequestConflict = 6,
+    NotMyRange = 7,
+    RefreshRequired = 8,
+    InvalidRequest = 9,
+    Internal = 10,
+}
+
+table FBChunkKvPointRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    client_instance_high:uint64;
+    client_instance_low:uint64;
+    client_sequence:uint64;
+    map_revision:uint64;
+    partition_high:uint64;
+    partition_low:uint64;
+    owner_epoch:uint64;
+    has_min_journal_position:bool;
+    min_stream_high:uint64;
+    min_stream_low:uint64;
+    min_journal_offset:uint64;
+    has_deadline:bool;
+    deadline_ms:uint64;
+    operation:FBChunkKvOperation;
+    key:[ubyte];
+    value:[ubyte];
+    condition:FBChunkKvCondition;
+    condition_revision:uint64;
+    condition_value:[ubyte];
+}
+
+table FBChunkKvSeekRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    client_instance_high:uint64;
+    client_instance_low:uint64;
+    client_sequence:uint64;
+    map_revision:uint64;
+    partition_high:uint64;
+    partition_low:uint64;
+    owner_epoch:uint64;
+    has_min_journal_position:bool;
+    min_stream_high:uint64;
+    min_stream_low:uint64;
+    min_journal_offset:uint64;
+    has_deadline:bool;
+    deadline_ms:uint64;
+    key:[ubyte];
+    kind:FBChunkKvSeekKind;
+}
+
+table FBChunkKvScanRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    client_instance_high:uint64;
+    client_instance_low:uint64;
+    client_sequence:uint64;
+    map_revision:uint64;
+    partition_high:uint64;
+    partition_low:uint64;
+    owner_epoch:uint64;
+    has_min_journal_position:bool;
+    min_stream_high:uint64;
+    min_stream_low:uint64;
+    min_journal_offset:uint64;
+    has_deadline:bool;
+    deadline_ms:uint64;
+    has_start:bool;
+    start:[ubyte];
+    has_end:bool;
+    end:[ubyte];
+    direction:FBChunkKvScanDirection;
+    limit:uint32;
+    has_continuation:bool;
+    continuation_direction:FBChunkKvScanDirection;
+    continuation_last_key:[ubyte];
+    continuation_partition_high:uint64;
+    continuation_partition_low:uint64;
+    continuation_owner_epoch:uint64;
+    continuation_map_revision:uint64;
+}
+
+table FBChunkKvGroupRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    payload:[ubyte];
+}
+
+table FBChunkKvGroupResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    payload:[ubyte];
+}
+
+table FBChunkKvValue {
+    key:[ubyte];
+    value:[ubyte];
+    revision:uint64;
+}
+
+table FBChunkKvPointResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    ret_code:FBChunkKvRetCode;
+    error_msg:string;
+    map_revision:uint64;
+    has_journal_position:bool;
+    journal_stream_high:uint64;
+    journal_stream_low:uint64;
+    journal_offset:uint64;
+    result:FBChunkKvResult;
+    found:bool;
+    key:[ubyte];
+    value:[ubyte];
+    value_revision:uint64;
+    mutation_applied:bool;
+    has_mutation_revision:bool;
+    mutation_revision:uint64;
+    has_observed:bool;
+    observed_key:[ubyte];
+    observed_value:[ubyte];
+    observed_revision:uint64;
+    scan_items:[FBChunkKvValue];
+    has_continuation:bool;
+    continuation_direction:FBChunkKvScanDirection;
+    continuation_last_key:[ubyte];
+    continuation_partition_high:uint64;
+    continuation_partition_low:uint64;
+    continuation_owner_epoch:uint64;
+    continuation_map_revision:uint64;
+    has_retry_after:bool;
+    retry_after_ms:uint64;
+    has_latest_map_revision:bool;
+    latest_map_revision:uint64;
+    has_owner_hint:bool;
+    owner_instance_id:uint64;
+    owner_rpc_endpoint:string;
+    owner_epoch:uint64;
+}

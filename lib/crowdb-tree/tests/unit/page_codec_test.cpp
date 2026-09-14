@@ -2,9 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 // PT2: PageCodec round-trip + CRC validation tests.
-#include "crowdb-tree/cell.h"
-#include "crowdb-tree/page.h"
-#include "crowdb-tree/page_codec.h"
+#include "crowdb-tree/btree/cell.h"
+#include "crowdb-tree/maptable/page.h"
+#include "crowdb-tree/maptable/page_codec.h"
 
 #include <gtest/gtest.h>
 

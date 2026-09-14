@@ -1,10 +1,6 @@
 ---
 name: review
-description: Review CROWDB Rust changes for correctness and hot-path cost.
-subagent: true
-triggers:
-  - user
-  - model
+description: Review a CROWDB diff when code review or pre-push review is requested; not an automatic coding handoff step.
 ---
 
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
@@ -13,7 +9,8 @@ triggers:
 # Review
 
 Review the diff, callers, and tests. Report concrete findings before style.
-Apply `/coding` layout and test rules.
+Apply repository code, test-placement, and module-ownership rules without
+loading another skill solely for review.
 
 Treat `propose`, `accept`, `learn`, `kv_get`, `kv_put`, `kv_delete`,
 and `kv_batch_write` as hot paths:
@@ -35,6 +32,10 @@ exposure, dead code, dependencies, visibility, `Debug`, module cohesion,
 integration-test placement, and performance regressions. Avoid non-test panic.
 Prefer enum dispatch unless implementations are open across crates. Use
 `get_or_try_init` for fallible initialization.
+
+For module cohesion, flag implementation left at roots, catch-all folders,
+inconsistent Rust/C++ ownership, or unclear names. Recommend a concrete owner,
+but keep relocation findings scoped to the changed area.
 
 `async_fn_in_trait` is the only documented clippy exception. Add any new
 exception here before suppressing it.

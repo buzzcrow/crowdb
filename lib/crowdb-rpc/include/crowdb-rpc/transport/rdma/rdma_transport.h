@@ -65,10 +65,10 @@ class RdmaTransport : public Transport
 
     // RDMA-specific: connect to a peer endpoint.
     // Returns a new Connection on success, nullptr on failure.
-    std::shared_ptr<Connection> connect(const std::string &addr, int port);
+    static std::shared_ptr<Connection> connect(const std::string &addr, int port);
 
     // RDMA-specific: listen on an endpoint (server side).
-    bool listen(const std::string &addr, int port);
+    static bool listen(const std::string &addr, int port);
 
     // Start the CQ poll loop on worker threads.
     void start();

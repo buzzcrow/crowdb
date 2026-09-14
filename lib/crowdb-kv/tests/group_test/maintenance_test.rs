@@ -10,7 +10,7 @@
 //! Also covers `PxLocalReplica::shutdown` flush + `persist_snapshot` (R20).
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -18,12 +18,58 @@ use crowdb_kv::cluster::group::PxGroup;
 use crowdb_kv::cluster::group_election::LeaderElection;
 use crowdb_kv::cluster::local_replica::{PxLocalReplica, PxLocalReplicaRole};
 use crowdb_kv::common::config::PxElectionConfig;
-use crowdb_kv::kv::{CrowdbTreeEngine, CrowdbTreeOptions, KVEngine};
+use crowdb_kv::kv::{Batch, CrowdbTreeConfig, CrowdbTreeEngine, KVEngine, KVFuture, ScanDirection};
+use crowdb_kv::metrics::MetricsRegistry;
 use crowdb_kv::paxos::roles::{Learner, PxBallot, PxLogEntry};
 use crowdb_kv::wal::record::WALRecord;
 use crowdb_kv::wal::replay::replay_group;
 use crowdb_kv::wal::wal_engine::WalEngine;
 use crowdb_kv::wal::{IoBackend, MemBlockDevice, WalConfig};
+
+use super::mem_kv::InMemKV;
+
+struct FailingSnapshotEngine(InMemKV);
+
+impl KVEngine for FailingSnapshotEngine {
+    fn apply(&self, slot: u64, batch: &Batch) -> KVFuture<Result<(), String>> {
+        self.0.apply(slot, batch)
+    }
+
+    fn get(&self, key: &[u8]) -> KVFuture<Option<(u64, Vec<u8>)>> {
+        self.0.get(key)
+    }
+
+    fn scan_directional(
+        &self,
+        prefix: &[u8],
+        start_after: &[u8],
+        end_key: &[u8],
+        limit: usize,
+        byte_budget: usize,
+        keys_only: bool,
+        deadline_ms: u64,
+        direction: ScanDirection,
+    ) -> KVFuture<Result<(Vec<(Bytes, u64, Bytes)>, bool), String>> {
+        self.0.scan_directional(
+            prefix,
+            start_after,
+            end_key,
+            limit,
+            byte_budget,
+            keys_only,
+            deadline_ms,
+            direction,
+        )
+    }
+
+    fn clear(&self) {
+        self.0.clear();
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
 
 fn sim_backend() -> Arc<IoBackend> {
     Arc::new(IoBackend::MemBlock(MemBlockDevice::new()))
@@ -36,7 +82,7 @@ fn sim_backend() -> Arc<IoBackend> {
 fn open_file_engine(dir: &std::path::Path) -> CrowdbTreeEngine {
     let path = dir.join("data");
     std::fs::create_dir_all(&path).unwrap();
-    CrowdbTreeEngine::open(&CrowdbTreeOptions {
+    CrowdbTreeEngine::open(&CrowdbTreeConfig {
         path: Some(path.display().to_string()),
         ..Default::default()
     })
@@ -131,6 +177,8 @@ async fn maintenance_pass_persists_snapshot_and_gcs_wal_segments_once_safe() {
     // contiguous_applied as the group safe-slot.
     group.note_peer_applied_for_tests(999, 999);
     assert_eq!(group.group_safe_slot(), 15);
+    let metrics = Arc::new(Mutex::new(MetricsRegistry::new()));
+    group.set_metrics_registry(&metrics, 0);
 
     group.run_maintenance_pass_for_tests().await;
 
@@ -150,6 +198,64 @@ async fn maintenance_pass_persists_snapshot_and_gcs_wal_segments_once_safe() {
     // Replay after GC should still work (only surviving segments).
     let result = replay_group(&backend, &disks, 1).await.unwrap();
     assert!(!result.records.is_empty());
+
+    let snapshot_metrics = metrics.lock().unwrap().snapshot("s.0.g.1.maintenance.snapshot");
+    assert!(snapshot_metrics
+        .iter()
+        .any(|(name, value)| { name.ends_with(".success.c") && value == "c:1:1" }));
+    assert!(snapshot_metrics
+        .iter()
+        .any(|(name, value)| { name.ends_with(".failure.c") && value == "c:0:0" }));
+    assert!(snapshot_metrics
+        .iter()
+        .any(|(name, value)| { name == "s.0.g.1.maintenance.snapshot.l" && value.starts_with("l:1:") }));
+    assert!(snapshot_metrics.iter().any(|(name, value)| {
+        name.ends_with(".max_us.g")
+            && value
+                .strip_prefix("g:")
+                .is_some_and(|v| v.parse::<u64>().is_ok_and(|v| v > 0))
+    }));
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn maintenance_snapshot_metrics_count_zero_result_as_failure() {
+    let backend = sim_backend();
+    let empty_replay = replay_group(&backend, &[PathBuf::from("/empty")], 1)
+        .await
+        .unwrap();
+    let replica = PxLocalReplica::restore_from_replay_with_engine(
+        1,
+        PxLocalReplicaRole::Leader,
+        &empty_replay,
+        Box::new(FailingSnapshotEngine(InMemKV::new())),
+    )
+    .await
+    .unwrap();
+    apply_through_with_engine(&replica, 1).await;
+
+    let mut group = PxGroup::new(1, replica);
+    group.set_election_config(PxElectionConfig {
+        snapshot_slot_threshold: 1,
+        ..PxElectionConfig::for_tests()
+    });
+    let metrics = Arc::new(Mutex::new(MetricsRegistry::new()));
+    group.set_metrics_registry(&metrics, 0);
+
+    group.run_maintenance_pass_for_tests().await;
+
+    let snapshot_metrics = metrics.lock().unwrap().snapshot("s.0.g.1.maintenance.snapshot");
+    assert!(
+        snapshot_metrics
+            .iter()
+            .any(|(name, value)| { name.ends_with(".success.c") && value == "c:0:0" }),
+        "unexpected snapshot metrics: {snapshot_metrics:?}"
+    );
+    assert!(snapshot_metrics
+        .iter()
+        .any(|(name, value)| { name.ends_with(".failure.c") && value == "c:1:1" }));
+    assert!(snapshot_metrics
+        .iter()
+        .any(|(name, value)| { name == "s.0.g.1.maintenance.snapshot.l" && value.starts_with("l:1:") }));
 }
 
 /// follow-up: the maintenance loop's tick interval is a
@@ -297,7 +403,7 @@ async fn shutdown_persists_engine_snapshot() {
         .await
         .unwrap();
 
-    let engine = CrowdbTreeEngine::open(&CrowdbTreeOptions {
+    let engine = CrowdbTreeEngine::open(&CrowdbTreeConfig {
         path: Some(engine_path.display().to_string()),
         ..Default::default()
     })
@@ -326,7 +432,7 @@ async fn shutdown_persists_engine_snapshot() {
 
     // Reopen the engine from the same directory. The snapshot persisted
     // by shutdown should make resume_from_slot non-zero.
-    let reopened = CrowdbTreeEngine::open(&CrowdbTreeOptions {
+    let reopened = CrowdbTreeEngine::open(&CrowdbTreeConfig {
         path: Some(engine_path.display().to_string()),
         ..Default::default()
     })

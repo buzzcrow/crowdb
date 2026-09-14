@@ -43,9 +43,9 @@ void expect_parity(Crowdbtree &t, const std::map<std::string, std::string> &orac
     }
 }
 
-Options small_tree()
+Config small_tree()
 {
-    Options opt;
+    Config opt;
     opt.max_delta_len    = 2;
     opt.leaf_split_bytes = 160;
     opt.leaf_merge_bytes = 50;

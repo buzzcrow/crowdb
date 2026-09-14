@@ -5,8 +5,9 @@
 
 #![allow(clippy::cast_possible_truncation)]
 
+use crowdb_chunkdb::selector::PlacementEntry;
 use crowdb_chunkdb::topology::TopologyCache;
-use crowdb_protocol::common::HwStatus;
+use crowdb_protocol::common::{DiskGroupUsageSummary, HwStatus};
 use crowdb_protocol::diskdb::rpc::DiskGroupValue;
 use crowdb_protocol::sysdata::DiskGroupEntry;
 
@@ -133,4 +134,44 @@ fn rack_ids() {
     let mut racks = snap.rack_ids();
     racks.sort_unstable();
     assert_eq!(racks, vec![1, 2]);
+}
+
+#[test]
+fn in_flight_reservation_is_lock_free_and_released_on_drop() {
+    let cache = TopologyCache::new();
+    setup_healthy_rack_node(&cache, 1, 10, vec![100]);
+    cache.update_disk_group(make_dg_entry(100, 1, 10, HwStatus::Up));
+    cache.update_disk_group_usage(
+        100,
+        &DiskGroupUsageSummary {
+            disk_group_id: 100,
+            allocatable_capacity_bytes: 1_000,
+            allocatable_free_bytes: 900,
+            allocatable_used_bytes: 100,
+            allocatable_disk_count: 1,
+            sampled_at_ms: 1,
+            ..DiskGroupUsageSummary::default()
+        },
+    );
+    let snapshot = cache.snapshot();
+    let entry = PlacementEntry {
+        rack_id: 1,
+        node_id: 10,
+        disk_group_id: 100,
+        block_count: 2,
+    };
+
+    {
+        let _reservation = snapshot.reserve_plan(&[entry], 50);
+        assert_eq!(snapshot.disk_group_capacity(100).unwrap().in_flight_bytes(), 100);
+    }
+    assert_eq!(snapshot.disk_group_capacity(100).unwrap().in_flight_bytes(), 0);
+}
+
+#[test]
+fn topology_generation_advances_on_publication() {
+    let cache = TopologyCache::new();
+    let initial = cache.snapshot().generation();
+    cache.update_rack(1, HwStatus::Up as i32, vec![10]);
+    assert!(cache.snapshot().generation() > initial);
 }

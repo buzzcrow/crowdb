@@ -177,6 +177,17 @@ pub struct DiskdbMetrics {
     pub kv_client_inflight: Arc<Gauge>,
     pub kv_client_errors: Arc<Counter>,
 
+    // ── Concurrent-free coalescing ───────────────────────────────
+    pub free_batch_input_requests: Arc<Counter>,
+    pub free_batch_input_records: Arc<Counter>,
+    pub free_batch_output_batches: Arc<Counter>,
+    pub free_batch_output_records: Arc<Counter>,
+    pub free_batch_queue_depth: Arc<Gauge>,
+    pub free_batch_oversize_requests: Arc<Counter>,
+    pub free_batch_failures: Arc<Counter>,
+    pub free_batch_coalescing_ratio_x1000: Arc<Gauge>,
+    pub free_batch_drain_latency: Arc<LatencySummary>,
+
     // ── R74 §11 latency summaries (cold paths) ───────────────────
     pub allocate_zone_rotate_latency: Arc<LatencySummary>,
     pub sync_latency: Arc<LatencySummary>,
@@ -235,6 +246,15 @@ impl DiskdbMetrics {
             kv_client_batch_write_ops: registry.register_counter("kv_client.batch_write.ops.c"),
             kv_client_inflight: registry.register_gauge("kv_client.inflight.g"),
             kv_client_errors: registry.register_counter("kv_client.errors.c"),
+            free_batch_input_requests: registry.register_counter("free_batch.input.requests.c"),
+            free_batch_input_records: registry.register_counter("free_batch.input.records.c"),
+            free_batch_output_batches: registry.register_counter("free_batch.output.kv_batches.c"),
+            free_batch_output_records: registry.register_counter("free_batch.output.records.c"),
+            free_batch_queue_depth: registry.register_gauge("free_batch.queue_depth.g"),
+            free_batch_oversize_requests: registry.register_counter("free_batch.oversize_requests.c"),
+            free_batch_failures: registry.register_counter("free_batch.failures.c"),
+            free_batch_coalescing_ratio_x1000: registry.register_gauge("free_batch.coalescing_ratio_x1000.g"),
+            free_batch_drain_latency: registry.register_summary("free_batch.drain.l"),
             // R74 latency summaries (cold paths).
             allocate_zone_rotate_latency: registry.register_summary("allocate.zone_rotate.latency_us"),
             sync_latency: registry.register_summary("sync.latency_us"),

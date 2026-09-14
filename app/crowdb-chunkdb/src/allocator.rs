@@ -16,7 +16,9 @@ use futures::future::join_all;
 use tracing::{info, warn};
 
 use crowdb_protocol::chunkdb::rpc::StripType as ProtoStripType;
-use crowdb_protocol::chunkdb::rpc::{ChunkStrip, EcStrip, MirrorStrip};
+use crowdb_protocol::chunkdb::rpc::{
+    ChunkStrip, EcStrip, MirrorStrip, PlacementAssessment, PlacementPriority,
+};
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
 
@@ -91,7 +93,9 @@ impl ChunkAllocator {
             .into());
         }
         self.pool.update_disk_id_lookup(&snap.disk_groups());
-        let ec_plan = EcPlacement::select(snap, data_num, code_num, constraints)?;
+        let bytes_per_block = u64::from(unit_count).saturating_mul(u64::from(snap.unit_size_bytes()));
+        let constraints = constraints.clone().with_planned_bytes_per_block(bytes_per_block);
+        let ec_plan = EcPlacement::select(snap, data_num, code_num, &constraints)?;
         let mut ec_blocks_by_group = HashMap::<u64, usize>::new();
         for entry in &ec_plan.entries {
             *ec_blocks_by_group.entry(entry.disk_group_id).or_default() += entry.block_count as usize;
@@ -114,7 +118,12 @@ impl ChunkAllocator {
         let plan = PlacementPlan {
             entries,
             safe_mode: ec_plan.safe_mode,
+            priority: ec_plan.priority,
+            protection: ec_plan.protection,
+            topology_generation: ec_plan.topology_generation,
+            usage_fresh: ec_plan.usage_fresh,
         };
+        let _reservation = snap.reserve_plan(&plan.entries, bytes_per_block);
         let mut blocks_by_group = HashMap::<u64, usize>::new();
         for entry in &plan.entries {
             *blocks_by_group.entry(entry.disk_group_id).or_default() += 1;
@@ -143,6 +152,14 @@ impl ChunkAllocator {
                 start_sequence.saturating_add(u32::try_from(index).unwrap_or(u32::MAX)),
                 unit_count,
                 (snap.unit_size_bytes() / 1024).max(1),
+                placement_priority(ec_plan.priority),
+                assess_physical_placement(
+                    snap,
+                    &mirror_segments,
+                    u32::try_from(copy_count.saturating_sub(1)).unwrap_or(u32::MAX),
+                    ec_plan.topology_generation,
+                    ec_plan.usage_fresh,
+                ),
             ));
         }
         Ok(ConversionGroupAllocation {
@@ -184,36 +201,77 @@ impl ChunkAllocator {
         constraints: &PlacementConstraints,
     ) -> Result<ChunkStrip, AllocError> {
         self.pool.update_disk_id_lookup(&snap.disk_groups());
-        let plan = match strip_type {
-            StripAllocType::Mirror { copy_count } => MirrorPlacement::select(snap, copy_count, constraints)?,
-            StripAllocType::Ec { data_num, code_num } => {
-                EcPlacement::select(snap, data_num, code_num, constraints)?
+        let bytes_per_block = u64::from(unit_count).saturating_mul(u64::from(snap.unit_size_bytes()));
+        let mut retry_constraints = constraints.clone().with_planned_bytes_per_block(bytes_per_block);
+        for attempt in 0..=MAX_ALLOC_RETRIES {
+            let plan = match strip_type {
+                StripAllocType::Mirror { copy_count } => {
+                    MirrorPlacement::select(snap, copy_count, &retry_constraints)?
+                }
+                StripAllocType::Ec { data_num, code_num } => {
+                    EcPlacement::select(snap, data_num, code_num, &retry_constraints)?
+                }
+            };
+            let _reservation = snap.reserve_plan(&plan.entries, bytes_per_block);
+            if let Some(metrics) = &self.metrics {
+                metrics
+                    .allocate_diskdb_calls
+                    .inc_by(u64::try_from(plan.entries.len()).unwrap_or(u64::MAX));
             }
-        };
-        if let Some(metrics) = &self.metrics {
-            metrics
-                .allocate_diskdb_calls
-                .inc_by(u64::try_from(plan.entries.len()).unwrap_or(u64::MAX));
+            let segments = self
+                .allocate_blocks_parallel(owner_chunk, &plan, unit_count)
+                .await?;
+            let assessment = assess_physical_placement(
+                snap,
+                &segments,
+                plan.protection.loss_budget,
+                plan.topology_generation,
+                plan.usage_fresh,
+            );
+            let disk_degraded = plan.protection.loss_budget > 0 && !assessment.disk_protected;
+            let degradation_allowed = retry_constraints.allow_degraded_failure_domains
+                && (!matches!(strip_type, StripAllocType::Ec { .. }) || retry_constraints.allow_unsafe_ec);
+            if disk_degraded && !degradation_allowed {
+                if attempt == MAX_ALLOC_RETRIES {
+                    return self
+                        .rollback_or_error(
+                            &segments,
+                            crate::selector::PlacementError::DiskProtectionUnavailable {
+                                loss_budget: assessment.loss_budget,
+                                actual: assessment.max_fragments_per_disk,
+                            }
+                            .into(),
+                        )
+                        .await;
+                }
+                self.free_all(&segments).await?;
+                let rejected_group = plan
+                    .entries
+                    .iter()
+                    .max_by_key(|entry| entry.block_count)
+                    .map(|entry| entry.disk_group_id)
+                    .ok_or(crate::selector::PlacementError::NoHealthyDiskGroups)?;
+                retry_constraints.exclude_disk_groups.push(rejected_group);
+                self.record_diskdb_retry();
+                continue;
+            }
+            if let Some(metrics) = &self.metrics {
+                metrics
+                    .allocate_blocks
+                    .inc_by(u64::try_from(segments.len()).unwrap_or(u64::MAX));
+                metrics.allocate_strips.inc();
+            }
+            return Ok(assemble_strip(
+                &segments,
+                strip_type,
+                strip_sequence,
+                unit_count,
+                (snap.unit_size_bytes() / 1024).max(1),
+                placement_priority(plan.priority),
+                assessment,
+            ));
         }
-
-        let segments = self
-            .allocate_blocks_parallel(owner_chunk, &plan, unit_count)
-            .await?;
-        if let Some(metrics) = &self.metrics {
-            metrics
-                .allocate_blocks
-                .inc_by(u64::try_from(segments.len()).unwrap_or(u64::MAX));
-            metrics.allocate_strips.inc();
-        }
-
-        let strip = assemble_strip(
-            &segments,
-            strip_type,
-            strip_sequence,
-            unit_count,
-            (snap.unit_size_bytes() / 1024).max(1),
-        );
-        Ok(strip)
+        unreachable!("disk validation retry loop always returns")
     }
 
     /// Allocate independent strips concurrently from one topology snapshot.
@@ -263,6 +321,8 @@ impl ChunkAllocator {
     ) -> Result<Segment, AllocError> {
         self.pool.update_disk_id_lookup(&snap.disk_groups());
         let mut constraints = constraints.clone();
+        let bytes_per_block = u64::from(unit_count).saturating_mul(u64::from(snap.unit_size_bytes()));
+        constraints.planned_bytes_per_block = bytes_per_block;
         constraints.exclude_disk_groups.extend(
             snap.disk_groups()
                 .into_iter()
@@ -277,6 +337,7 @@ impl ChunkAllocator {
                 .map(|disk_group| disk_group.dg_id),
         );
         let plan = MirrorPlacement::select(snap, 1, &constraints)?;
+        let _reservation = snap.reserve_plan(&plan.entries, bytes_per_block);
         let entry = plan
             .entries
             .first()
@@ -675,6 +736,8 @@ fn assemble_strip(
     strip_sequence: u32,
     unit_count: u32,
     unit_kb: u32,
+    placement_priority: PlacementPriority,
+    placement_assessment: PlacementAssessment,
 ) -> ChunkStrip {
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -695,6 +758,9 @@ fn assemble_strip(
             })),
             usage_bitmap: Vec::new(),
             unavailable_segments: Vec::new(),
+            placement_priority: placement_priority as i32,
+            placement_repair_required: false,
+            placement_assessment: Some(placement_assessment),
         },
         StripAllocType::Ec { data_num, code_num } => ChunkStrip {
             chunk_offset: 0,
@@ -715,6 +781,89 @@ fn assemble_strip(
             })),
             usage_bitmap: Vec::new(),
             unavailable_segments: Vec::new(),
+            placement_priority: placement_priority as i32,
+            placement_repair_required: !placement_assessment.rack_protected
+                || !placement_assessment.node_protected
+                || !placement_assessment.disk_protected,
+            placement_assessment: Some(placement_assessment),
         },
+    }
+}
+
+fn placement_priority(priority: crate::selector::FailureDomainPriority) -> PlacementPriority {
+    match priority {
+        crate::selector::FailureDomainPriority::RackFirst => PlacementPriority::RackFirst,
+        crate::selector::FailureDomainPriority::NodeFirst => PlacementPriority::NodeFirst,
+    }
+}
+
+pub(crate) fn assess_physical_placement(
+    snap: &TopologySnapshot,
+    segments: &[Segment],
+    loss_budget: u32,
+    topology_generation: u64,
+    usage_fresh: bool,
+) -> PlacementAssessment {
+    let mut rack_counts = HashMap::<u64, u32>::new();
+    let mut node_counts = HashMap::<u64, u32>::new();
+    let mut disk_counts = HashMap::<DiskId, u32>::new();
+    let mut all_locations_known = true;
+    for segment in segments {
+        let Some(disk_id) = segment.disk_id else {
+            all_locations_known = false;
+            continue;
+        };
+        *disk_counts.entry(disk_id).or_default() += 1;
+        let Some(location) = snap.disk_location(disk_id) else {
+            all_locations_known = false;
+            continue;
+        };
+        *rack_counts.entry(location.rack_id).or_default() += 1;
+        *node_counts.entry(location.node_id).or_default() += 1;
+    }
+    let max_fragments_per_rack = rack_counts.values().copied().max().unwrap_or(0);
+    let max_fragments_per_node = node_counts.values().copied().max().unwrap_or(0);
+    let max_fragments_per_disk = disk_counts.values().copied().max().unwrap_or(0);
+    PlacementAssessment {
+        loss_budget,
+        max_fragments_per_rack,
+        max_fragments_per_node,
+        max_fragments_per_disk,
+        rack_protected: all_locations_known && max_fragments_per_rack <= loss_budget,
+        node_protected: all_locations_known && max_fragments_per_node <= loss_budget,
+        disk_protected: all_locations_known && max_fragments_per_disk <= loss_budget,
+        topology_generation,
+        usage_fresh,
+    }
+}
+
+#[cfg(test)]
+mod placement_assessment_tests {
+    use super::*;
+    use crate::topology::{DiskLocation, TopologyCache};
+
+    #[test]
+    fn duplicate_physical_disk_is_reported_independently() {
+        let cache = TopologyCache::new();
+        let disk = DiskId { high: 1, low: 2 };
+        cache.update_disk_location(
+            disk,
+            DiskLocation {
+                rack_id: 1,
+                node_id: 10,
+                disk_group_id: 100,
+            },
+        );
+        let segment = Segment {
+            disk_id: Some(disk),
+            ..Segment::default()
+        };
+        let assessment = assess_physical_placement(&cache.snapshot(), &[segment, segment], 1, 7, true);
+
+        assert_eq!(assessment.max_fragments_per_disk, 2);
+        assert!(!assessment.rack_protected);
+        assert!(!assessment.node_protected);
+        assert!(!assessment.disk_protected);
+        assert_eq!(assessment.topology_generation, 7);
     }
 }

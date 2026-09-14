@@ -5,9 +5,121 @@
 
 use std::os::raw::{c_char, c_int};
 
+pub type ct_root_catalog_load_fn = unsafe extern "C" fn(
+    context: *mut std::ffi::c_void,
+    kind: i32,
+    tree_id: u64,
+    object_id: u64,
+    out: *mut *const u8,
+    len: *mut usize,
+) -> c_int;
+
+#[repr(C)]
+pub struct ct_root_catalog_callbacks {
+    pub load: Option<ct_root_catalog_load_fn>,
+    pub free_blob: Option<unsafe extern "C" fn(*mut std::ffi::c_void, *const u8, usize)>,
+    pub store: Option<unsafe extern "C" fn(*mut std::ffi::c_void, i32, u64, u64, *const u8, usize) -> c_int>,
+    pub publish:
+        Option<unsafe extern "C" fn(*mut std::ffi::c_void, u64, u64, u64, u64, *const u8, usize) -> c_int>,
+    pub allocate_reference_segment_id:
+        Option<unsafe extern "C" fn(*mut std::ffi::c_void, u64, *mut u64) -> c_int>,
+    pub discard_reference_segments:
+        Option<unsafe extern "C" fn(*mut std::ffi::c_void, u64, *const u64, usize) -> u64>,
+    pub reclaim_before: Option<unsafe extern "C" fn(*mut std::ffi::c_void, u64, u64) -> u64>,
+    pub drop_context: Option<unsafe extern "C" fn(*mut std::ffi::c_void)>,
+}
+
 #[repr(C)]
 pub struct ct_tree {
     _private: [u8; 0],
+}
+#[repr(C)]
+pub struct ct_uring {
+    _private: [u8; 0],
+}
+
+pub type ct_uring_callback = unsafe extern "C" fn(*mut std::ffi::c_void, i32);
+#[repr(C)]
+pub struct ct_page_store {
+    _private: [u8; 0],
+}
+#[repr(C)]
+pub struct ct_root_catalog {
+    _private: [u8; 0],
+}
+#[repr(C)]
+pub struct ct_chunk_transport {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct ct_chunk_page_store_options {
+    pub tree_id: u64,
+    pub owner_epoch: u64,
+    pub pack_bytes: usize,
+    pub iu_size: u32,
+    pub max_concurrent_packs: usize,
+    pub materialization_bytes_per_pass: u64,
+}
+
+#[repr(C)]
+pub struct ct_chunk_rpc_route {
+    pub client: *mut std::ffi::c_void,
+    pub server: *mut std::ffi::c_void,
+    pub connection: *mut std::ffi::c_void,
+}
+
+#[repr(C)]
+pub struct ct_chunk_rpc_disk_route {
+    pub disk_id_high: u64,
+    pub disk_id_low: u64,
+    pub route: ct_chunk_rpc_route,
+}
+
+#[repr(C)]
+pub struct ct_chunk_rpc_transport_options {
+    pub chunkdb: ct_chunk_rpc_route,
+    pub disk_routes: *const ct_chunk_rpc_disk_route,
+    pub disk_route_count: usize,
+    pub writer_lease_ms: u64,
+    pub rpc_timeout_ms: u64,
+    pub completion_capacity: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub struct ct_chunk_page_store_stats {
+    pub generations_published: u64,
+    pub packs_written: u64,
+    pub pack_bytes_written: u64,
+    pub packs_reused: u64,
+    pub pack_bytes_reused: u64,
+    pub pack_reads: u64,
+    pub cache_hits: u64,
+    pub layout_queries: u64,
+    pub mirror_write_attempts: u64,
+    pub mirror_write_failures: u64,
+    pub retained_manifests: u64,
+    pub pinned_bytes: u64,
+    pub oldest_pin_age_ms: u64,
+    pub orphan_bytes: u64,
+    pub materialization_passes: u64,
+    pub materialization_failures: u64,
+    pub materialization_packs_written: u64,
+    pub materialization_bytes_written: u64,
+    pub shared_packs: u64,
+    pub rpc_operations: u64,
+    pub rpc_latency_ns: u64,
+    pub diskio_operations: u64,
+    pub diskio_latency_ns: u64,
+    pub coalesced_reads: u64,
+    pub coalesced_read_bytes: u64,
+    pub completion_wakeups: u64,
+    pub materialization_scan_bytes: u64,
+    pub shared_metadata_segments: u64,
+    pub materialized_metadata_segments: u64,
+    pub manifest_publication_latency_ns: u64,
+    pub recovery_latency_ns: u64,
 }
 #[repr(C)]
 pub struct ct_view {
@@ -87,6 +199,17 @@ pub struct ct_merge_gc_stats {
 
 #[repr(C)]
 #[derive(Default)]
+pub struct ct_range_rebuild_stats {
+    pub entries_examined: u64,
+    pub entries_emitted: u64,
+    pub entries_filtered: u64,
+    pub pages_reused: u64,
+    pub pages_rebuilt: u64,
+    pub subtrees_skipped: u64,
+}
+
+#[repr(C)]
+#[derive(Default)]
 pub struct ct_stats {
     pub last_applied_slot: u64,
     pub contiguous_slot: u64,
@@ -115,6 +238,12 @@ pub struct ct_stats {
 
 #[repr(C)]
 pub struct ct_options {
+    pub page_store: *mut ct_page_store,
+    pub range_bounded: u8,
+    pub range_start: *const u8,
+    pub range_start_len: usize,
+    pub range_end: *const u8,
+    pub range_end_len: usize,
     pub path: *const c_char,
     pub iu_size: u32,
     pub frame_bytes: u32,
@@ -135,7 +264,52 @@ pub struct ct_options {
 
 extern "C" {
     pub fn ct_free_buf(buf: *mut ct_buf);
+    pub fn ct_page_store_open_mem(iu_size: u32, out: *mut *mut ct_page_store) -> c_int;
+    pub fn ct_page_store_free(store: *mut ct_page_store);
+    pub fn ct_memory_root_catalog_open(owner_epoch: u64, out: *mut *mut ct_root_catalog) -> c_int;
+    pub fn ct_callback_root_catalog_open(
+        callbacks: *const ct_root_catalog_callbacks,
+        context: *mut std::ffi::c_void,
+        out: *mut *mut ct_root_catalog,
+    ) -> c_int;
+    pub fn ct_root_catalog_free(catalog: *mut ct_root_catalog);
+    pub fn ct_chunk_page_store_open(
+        options: *const ct_chunk_page_store_options,
+        catalog: *mut ct_root_catalog,
+        out: *mut *mut ct_page_store,
+    ) -> c_int;
+    pub fn ct_chunk_page_store_open_with_transport(
+        options: *const ct_chunk_page_store_options,
+        catalog: *mut ct_root_catalog,
+        transport: *mut ct_chunk_transport,
+        out: *mut *mut ct_page_store,
+    ) -> c_int;
+    pub fn ct_rpc_chunk_transport_open(
+        options: *const ct_chunk_rpc_transport_options,
+        out: *mut *mut ct_chunk_transport,
+    ) -> c_int;
+    pub fn ct_chunk_transport_free(transport: *mut ct_chunk_transport);
+    pub fn ct_chunk_page_store_get_stats(
+        store: *const ct_page_store,
+        out: *mut ct_chunk_page_store_stats,
+    ) -> c_int;
+    pub fn ct_chunk_page_store_set_wal_replay_offset(store: *mut ct_page_store, offset: u64) -> c_int;
+    pub fn ct_chunk_page_store_get_wal_replay_offset(store: *const ct_page_store, offset: *mut u64) -> c_int;
+    pub fn ct_chunk_page_store_reclaim_orphans(store: *mut ct_page_store) -> u64;
+    pub fn ct_materialize_ownership(tree: *mut ct_tree, bytes_written: *mut u64, complete: *mut i32)
+        -> c_int;
+    pub fn ct_root_catalog_reclaim_before(
+        catalog: *mut ct_root_catalog,
+        tree_id: u64,
+        generation: u64,
+    ) -> u64;
     pub fn ct_open(opt: *const ct_options, out: *mut *mut ct_tree) -> c_int;
+    pub fn ct_rebuild_range(
+        source: *mut ct_tree,
+        destination_options: *const ct_options,
+        out: *mut *mut ct_tree,
+        stats: *mut ct_range_rebuild_stats,
+    ) -> c_int;
     pub fn ct_close(t: *mut ct_tree);
     pub fn ct_init_logging(
         log_dir: *const c_char,
@@ -148,6 +322,13 @@ extern "C" {
     pub fn ct_add_log_stderr(level: *const c_char);
     pub fn ct_shutdown_logging();
     pub fn ct_snapshot(t: *mut ct_tree, out_last_applied: *mut u64) -> c_int;
+    pub fn ct_snapshot_info(t: *mut ct_tree, out_snapshot_seq: *mut u64, out_last_applied: *mut u64)
+        -> c_int;
+    pub fn ct_snapshot_state(
+        t: *const ct_tree,
+        out_snapshot_seq: *mut u64,
+        out_last_applied: *mut u64,
+    ) -> c_int;
     pub fn ct_last_applied_slot(t: *const ct_tree) -> u64;
     pub fn ct_frozen_table_count(t: *const ct_tree) -> usize;
     pub fn ct_set_gc_watermark(t: *mut ct_tree, snapshot_slot: u64, safe_slot: u64);
@@ -205,6 +386,50 @@ extern "C" {
         out_count: *mut u64,
         truncated: *mut c_int,
     ) -> c_int;
+    pub fn ct_scan_from(
+        t: *mut ct_tree,
+        prefix: *const u8,
+        plen: usize,
+        start_key: *const u8,
+        sklen: usize,
+        start_inclusive: c_int,
+        end_key: *const u8,
+        elen: usize,
+        limit: usize,
+        byte_budget: usize,
+        keys_only: c_int,
+        deadline_ms: u64,
+        include_tombstones: c_int,
+        out_entries: *mut ct_buf,
+        out_count: *mut u64,
+        truncated: *mut c_int,
+    ) -> c_int;
+    pub fn ct_seek_reverse(
+        t: *mut ct_tree,
+        start_key: *const u8,
+        sklen: usize,
+        start_inclusive: c_int,
+        begin_key: *const u8,
+        bklen: usize,
+        found: *mut c_int,
+        out_key: *mut ct_buf,
+        out_slot: *mut u64,
+        out_value: *mut ct_buf,
+    ) -> c_int;
+    pub fn ct_scan_reverse(
+        t: *mut ct_tree,
+        start_key: *const u8,
+        sklen: usize,
+        has_start_bound: c_int,
+        start_inclusive: c_int,
+        begin_key: *const u8,
+        bklen: usize,
+        limit: usize,
+        byte_budget: usize,
+        out_entries: *mut ct_buf,
+        out_count: *mut u64,
+        truncated: *mut c_int,
+    ) -> c_int;
     pub fn ct_snapshot_view(t: *mut ct_tree, out: *mut *mut ct_view) -> c_int;
     pub fn ct_view_at_slot(v: *const ct_view) -> u64;
     pub fn ct_view_iter(v: *mut ct_view, out: *mut *mut ct_iter) -> c_int;
@@ -218,8 +443,18 @@ extern "C" {
     ) -> c_int;
     pub fn ct_iter_release(it: *mut ct_iter);
     pub fn ct_view_release(v: *mut ct_view);
-    pub fn ct_snapshot_export_begin(t: *mut ct_tree, out: *mut *mut ct_export) -> c_int;
-    pub fn ct_snapshot_export_next(e: *mut ct_export, chunk: *mut ct_buf, done: *mut c_int) -> c_int;
+    pub fn ct_snapshot_export_begin(t: *mut ct_tree, chunk_bytes: usize, out: *mut *mut ct_export) -> c_int;
+    pub fn ct_snapshot_export_at_slot(e: *const ct_export) -> u64;
+    pub fn ct_snapshot_export_total_bytes(e: *const ct_export) -> u64;
+    pub fn ct_snapshot_export_final_crc32c(e: *const ct_export) -> u32;
+    pub fn ct_snapshot_export_chunk_bytes(e: *const ct_export) -> usize;
+    pub fn ct_snapshot_export_offset(e: *const ct_export) -> u64;
+    pub fn ct_snapshot_export_next(
+        e: *mut ct_export,
+        offset: u64,
+        chunk: *mut ct_buf,
+        done: *mut c_int,
+    ) -> c_int;
     pub fn ct_snapshot_export_end(e: *mut ct_export);
     pub fn ct_snapshot_import_begin(t: *mut ct_tree, out: *mut *mut ct_import) -> c_int;
     pub fn ct_snapshot_import_feed(im: *mut ct_import, chunk: *const u8, len: usize) -> c_int;
@@ -232,6 +467,7 @@ extern "C" {
     pub fn ct_get_async(t: *mut ct_tree, key: *const u8, klen: usize) -> *mut ct_future;
     pub fn ct_flush_async(t: *mut ct_tree) -> *mut ct_future;
     pub fn ct_snapshot_async(t: *mut ct_tree) -> *mut ct_future;
+    #[allow(dead_code)]
     pub fn ct_scan_async(
         t: *mut ct_tree,
         prefix: *const u8,
@@ -245,6 +481,20 @@ extern "C" {
         keys_only: c_int,
         deadline_ms: u64,
     ) -> *mut ct_future;
+    pub fn ct_scan_directional_async(
+        t: *mut ct_tree,
+        prefix: *const u8,
+        plen: usize,
+        start_after: *const u8,
+        salen: usize,
+        end_key: *const u8,
+        elen: usize,
+        limit: usize,
+        byte_budget: usize,
+        keys_only: c_int,
+        deadline_ms: u64,
+        direction: c_int,
+    ) -> *mut ct_future;
     pub fn ct_future_poll(
         f: *mut ct_future,
         done: *mut c_int,
@@ -254,6 +504,36 @@ extern "C" {
     ) -> c_int;
     pub fn ct_future_free(f: *mut ct_future);
     pub fn ct_uring_eventfds(t: *const ct_tree, out_fds: *mut i32, max_fds: usize) -> usize;
+    pub fn ct_uring_create(entries: u32) -> *mut ct_uring;
+    pub fn ct_uring_destroy(uring: *mut ct_uring);
+    pub fn ct_uring_register_fd(uring: *mut ct_uring, fd: i32) -> i32;
+    pub fn ct_uring_unregister_fd(uring: *mut ct_uring, fd: i32);
+    pub fn ct_uring_submit_read(
+        uring: *mut ct_uring,
+        fd: i32,
+        buf: *mut u8,
+        len: usize,
+        offset: u64,
+        callback: ct_uring_callback,
+        context: *mut std::ffi::c_void,
+    );
+    pub fn ct_uring_submit_writev(
+        uring: *mut ct_uring,
+        fd: i32,
+        bases: *const *const u8,
+        lengths: *const usize,
+        count: usize,
+        offset: u64,
+        callback: ct_uring_callback,
+        context: *mut std::ffi::c_void,
+    );
+    pub fn ct_uring_submit_sync(
+        uring: *mut ct_uring,
+        fd: i32,
+        data_only: i32,
+        callback: ct_uring_callback,
+        context: *mut std::ffi::c_void,
+    );
 
     // Metrics FFI
     pub fn ct_flush_metrics_str(

@@ -1,0 +1,1812 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
+use std::sync::Arc;
+
+use crowdb_chunk_kv::memory::MemoryPartitionTree;
+use crowdb_chunk_kv::{
+    Checkpoint, ChunkKvError, CompareCondition, MutationOperation, MutationResult, Partition,
+    PartitionConfig, PartitionId, PartitionJournal, PartitionManager, PartitionRange, PartitionTree,
+    PreparedChildArtifact, RequestId, SplitAbortProof, SplitArtifact, SplitChild, SplitChildTarget,
+    SplitCommitProof, SplitPlan, StreamPartitionJournal, TransitionId,
+};
+use crowdb_chunk_stream::memory::MemoryStreamStore;
+use crowdb_chunk_stream::{
+    ChunkId, ChunkStream, CursorAdvance, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig,
+    StreamMetadataStore, StreamName, StreamRegistry,
+};
+use crowdb_tree_ffi::{ChunkPageStoreOptions, ChunkRootCatalog, PageStore};
+
+fn request(sequence: u64) -> RequestId {
+    RequestId {
+        client_high: 11,
+        client_low: 12,
+        client_sequence: sequence,
+    }
+}
+
+fn split_plan(parent_id: PartitionId, parent_epoch: u64) -> SplitPlan {
+    SplitPlan {
+        transition_id: TransitionId { high: 44, low: 55 },
+        parent_id,
+        parent_range: PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        parent_epoch,
+        split_key: b"g".to_vec(),
+        left: SplitChild {
+            partition_id: PartitionId { high: 21, low: 1 },
+            range: PartitionRange {
+                start: Some(b"a".to_vec()),
+                end: Some(b"g".to_vec()),
+            },
+            ownership_epoch: parent_epoch + 1,
+        },
+        right: SplitChild {
+            partition_id: PartitionId { high: 21, low: 2 },
+            range: PartitionRange {
+                start: Some(b"g".to_vec()),
+                end: Some(b"m".to_vec()),
+            },
+            ownership_epoch: parent_epoch + 1,
+        },
+    }
+}
+
+fn split_artifact(plan: &SplitPlan, cutover_seq: u64) -> SplitArtifact {
+    let child = |spec: &SplitChild, low| PreparedChildArtifact {
+        partition_id: spec.partition_id,
+        range: spec.range.clone(),
+        ownership_epoch: spec.ownership_epoch,
+        tree_id: 100 + low,
+        tree_manifest: cutover_seq + low,
+        stream_name: StreamName { high: 90, low },
+        applied_seq: cutover_seq,
+    };
+    SplitArtifact {
+        transition_id: plan.transition_id,
+        parent_id: plan.parent_id,
+        parent_epoch: plan.parent_epoch,
+        cutover_seq,
+        left: child(&plan.left, 1),
+        right: child(&plan.right, 2),
+    }
+}
+
+async fn partition(
+    store: &Arc<MemoryStreamStore>,
+    tree: Arc<MemoryPartitionTree>,
+    stream_name: StreamName,
+    epoch: u64,
+    config: PartitionConfig,
+) -> Partition {
+    let binding = StreamBinding {
+        stream_name,
+        metadata_group_id: 7,
+        binding_generation: 1,
+        state: StreamBindingState::Active,
+        owner_kind: Some("chunk-kv-partition".into()),
+    };
+    let registry: Arc<dyn StreamRegistry> = store.clone();
+    let metadata: Arc<dyn StreamMetadataStore> = store.clone();
+    let chunks: Arc<dyn StreamChunkStore> = store.clone();
+    let stream = ChunkStream::create(
+        binding,
+        epoch,
+        StreamConfig::default(),
+        registry,
+        metadata,
+        chunks,
+    )
+    .await
+    .unwrap();
+    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
+    let tree: Arc<dyn PartitionTree> = tree;
+    Partition::open(
+        PartitionId {
+            high: stream_name.high,
+            low: stream_name.low,
+        },
+        PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        epoch,
+        config,
+        tree,
+        journal,
+    )
+    .unwrap()
+}
+
+async fn empty_journal(
+    store: &Arc<MemoryStreamStore>,
+    stream_name: StreamName,
+    epoch: u64,
+) -> Arc<dyn PartitionJournal> {
+    let stream = ChunkStream::create(
+        StreamBinding {
+            stream_name,
+            metadata_group_id: 7,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("chunk-kv-partition".into()),
+        },
+        epoch,
+        StreamConfig::default(),
+        store.clone() as Arc<dyn StreamRegistry>,
+        store.clone() as Arc<dyn StreamMetadataStore>,
+        store.clone() as Arc<dyn StreamChunkStore>,
+    )
+    .await
+    .unwrap();
+    Arc::new(StreamPartitionJournal::new(stream, stream_name))
+}
+
+fn chunk_page_store(tree_id: u64, owner_epoch: u64) -> Arc<PageStore> {
+    let catalog = Arc::new(ChunkRootCatalog::open_memory(owner_epoch).unwrap());
+    Arc::new(
+        PageStore::open_chunk(
+            ChunkPageStoreOptions {
+                tree_id,
+                owner_epoch,
+                pack_bytes: 4_096,
+                iu_size: 1,
+                max_concurrent_packs: 2,
+                materialization_bytes_per_pass: 4_096,
+            },
+            catalog,
+            None,
+        )
+        .unwrap(),
+    )
+}
+
+async fn finish_materialization(partition: &Partition, ownership_epoch: u64) -> u64 {
+    let mut passes = 0;
+    loop {
+        let progress = partition
+            .materialize_split_ownership(ownership_epoch)
+            .await
+            .unwrap();
+        passes += 1;
+        if progress.complete {
+            return passes;
+        }
+        assert!(progress.bytes_written > 0);
+        assert!(passes < 8);
+    }
+}
+
+async fn assert_prepared_tree_identity_mismatch(
+    artifact: &PreparedChildArtifact,
+    journal: Arc<dyn PartitionJournal>,
+) {
+    let result = Partition::recover_prepared(
+        artifact.clone(),
+        Checkpoint {
+            tree_id: artifact.tree_id + 1,
+            tree_manifest: artifact.tree_manifest,
+            applied_seq: artifact.applied_seq,
+            stream_name: artifact.stream_name,
+            stream_manifest_generation: 1,
+            replay_offset: 0,
+        },
+        PartitionConfig::default(),
+        Arc::new(MemoryPartitionTree::with_tree_id(artifact.tree_id)),
+        journal,
+    )
+    .await;
+    assert!(matches!(result, Err(ChunkKvError::InvalidRequest(_))));
+}
+
+#[tokio::test]
+async fn pending_mutation_is_invisible_until_durable_and_applied() {
+    let store = Arc::new(MemoryStreamStore::new(1_024));
+    let tree = Arc::new(MemoryPartitionTree::default());
+    let partition = partition(
+        &store,
+        tree,
+        StreamName { high: 1, low: 1 },
+        4,
+        PartitionConfig::default(),
+    )
+    .await;
+    partition
+        .mutate(
+            4,
+            request(1),
+            MutationOperation::Put {
+                key: b"key".to_vec(),
+                value: b"old".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+
+    store.pause_writes();
+    let writer = partition.clone();
+    let pending = tokio::spawn(async move {
+        writer
+            .mutate(
+                4,
+                request(2),
+                MutationOperation::Put {
+                    key: b"key".to_vec(),
+                    value: b"new".to_vec(),
+                },
+            )
+            .await
+    });
+    store.wait_for_write().await;
+    assert_eq!(
+        partition.get(4, b"key", None).await.unwrap().unwrap().value,
+        b"old"
+    );
+    store.resume_writes();
+    let response = pending.await.unwrap().unwrap();
+    assert_eq!(
+        partition
+            .get(4, b"key", Some(response.journal_position))
+            .await
+            .unwrap()
+            .unwrap()
+            .value,
+        b"new"
+    );
+}
+
+#[tokio::test]
+async fn native_partition_constructor_owns_tree_and_stream_storage() {
+    let stream_name = StreamName { high: 1, low: 9 };
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let stream = ChunkStream::create(
+        StreamBinding {
+            stream_name,
+            metadata_group_id: 7,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("chunk-kv-partition".into()),
+        },
+        4,
+        StreamConfig::default(),
+        store.clone() as Arc<dyn StreamRegistry>,
+        store.clone() as Arc<dyn StreamMetadataStore>,
+        store as Arc<dyn StreamChunkStore>,
+    )
+    .await
+    .unwrap();
+    let partition = Partition::open_native(
+        PartitionId { high: 1, low: 9 },
+        PartitionRange {
+            start: Some(Vec::new()),
+            end: Some(b"m".to_vec()),
+        },
+        4,
+        PartitionConfig::default(),
+        44,
+        crowdb_tree_ffi::Config::default(),
+        Arc::new(crowdb_tree_ffi::PageStore::open_mem(1).unwrap()),
+        stream,
+    )
+    .unwrap();
+    partition
+        .mutate(
+            4,
+            request(8),
+            MutationOperation::Put {
+                key: Vec::new(),
+                value: b"lower-bound".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    partition
+        .mutate(
+            4,
+            request(9),
+            MutationOperation::Put {
+                key: b"b".to_vec(),
+                value: b"native".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    let page = partition
+        .scan_forward(4, None, None, 8, 1024, None)
+        .await
+        .unwrap();
+    assert_eq!(page.entries[0].key.as_ref(), b"");
+    assert_eq!(
+        partition.get(4, b"b", None).await.unwrap().unwrap().value,
+        b"native"
+    );
+    partition.fence_mutations(4).await.unwrap();
+    assert_eq!(partition.checkpoint_fenced(4).await.unwrap().tree_id, 44);
+}
+
+#[tokio::test]
+async fn native_partition_reopens_the_latest_tree_root() {
+    let page_store = Arc::new(crowdb_tree_ffi::PageStore::open_mem(1).unwrap());
+    let tree = crowdb_tree_ffi::Crowdbtree::open(&crowdb_tree_ffi::Config {
+        page_store: Some(Arc::clone(&page_store)),
+        key_range: crowdb_tree_ffi::KeyRange::Bounded {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        ..crowdb_tree_ffi::Config::default()
+    })
+    .unwrap();
+    tree.apply_put(1, b"b", b"persisted").unwrap();
+    tree.flush().unwrap();
+    tree.snapshot_info().unwrap();
+    drop(tree);
+
+    let stream_name = StreamName { high: 1, low: 10 };
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let stream = ChunkStream::create(
+        StreamBinding {
+            stream_name,
+            metadata_group_id: 7,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("chunk-kv-partition".into()),
+        },
+        4,
+        StreamConfig::default(),
+        store.clone() as Arc<dyn StreamRegistry>,
+        store.clone() as Arc<dyn StreamMetadataStore>,
+        store as Arc<dyn StreamChunkStore>,
+    )
+    .await
+    .unwrap();
+    let partition = Partition::recover_native_latest_prepared_assignment(
+        PartitionId { high: 1, low: 10 },
+        PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        4,
+        44,
+        PartitionConfig::default(),
+        crowdb_tree_ffi::Config::default(),
+        page_store,
+        stream,
+    )
+    .await
+    .unwrap();
+    partition.activate_recovered(4).unwrap();
+    assert_eq!(
+        partition.get(4, b"b", None).await.unwrap().unwrap().value,
+        b"persisted"
+    );
+}
+
+#[tokio::test]
+async fn chunk_root_checkpoint_supplies_the_wal_replay_offset() {
+    let stream_name = StreamName { high: 1, low: 11 };
+    let stream_store = Arc::new(MemoryStreamStore::new(4_096));
+    let stream = ChunkStream::create(
+        StreamBinding {
+            stream_name,
+            metadata_group_id: 7,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("chunk-kv-partition".into()),
+        },
+        4,
+        StreamConfig::default(),
+        stream_store.clone() as Arc<dyn StreamRegistry>,
+        stream_store.clone() as Arc<dyn StreamMetadataStore>,
+        stream_store.clone() as Arc<dyn StreamChunkStore>,
+    )
+    .await
+    .unwrap();
+    let catalog = Arc::new(ChunkRootCatalog::open_memory(4).unwrap());
+    let options = ChunkPageStoreOptions {
+        tree_id: 45,
+        owner_epoch: 4,
+        pack_bytes: 4_096,
+        iu_size: 1,
+        max_concurrent_packs: 2,
+        materialization_bytes_per_pass: 4_096,
+    };
+    let page_store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
+    let config = PartitionConfig {
+        retained_results: 1,
+        ..PartitionConfig::default()
+    };
+    let partition = Partition::open_native(
+        PartitionId { high: 1, low: 11 },
+        PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        4,
+        config.clone(),
+        45,
+        crowdb_tree_ffi::Config::default(),
+        Arc::clone(&page_store),
+        stream,
+    )
+    .unwrap();
+    for sequence in [1, 2] {
+        partition
+            .mutate(
+                4,
+                request(sequence),
+                MutationOperation::Put {
+                    key: b"b".to_vec(),
+                    value: sequence.to_string().into_bytes(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    partition.fence_mutations(4).await.unwrap();
+    let checkpoint = partition.checkpoint_fenced(4).await.unwrap();
+    assert!(checkpoint.replay_offset > 0);
+    assert_eq!(page_store.wal_replay_offset().unwrap(), checkpoint.replay_offset);
+    drop(partition);
+
+    let stream = ChunkStream::open(
+        stream_name,
+        4,
+        StreamConfig::default(),
+        stream_store.clone() as Arc<dyn StreamRegistry>,
+        stream_store.clone() as Arc<dyn StreamMetadataStore>,
+        stream_store as Arc<dyn StreamChunkStore>,
+    )
+    .await
+    .unwrap();
+    let page_store = Arc::new(PageStore::open_chunk(options, catalog, None).unwrap());
+    let recovered = Partition::recover_native_latest_prepared_assignment(
+        PartitionId { high: 1, low: 11 },
+        PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        4,
+        45,
+        config,
+        crowdb_tree_ffi::Config::default(),
+        page_store,
+        stream,
+    )
+    .await
+    .unwrap();
+    recovered.activate_recovered(4).unwrap();
+    assert_eq!(recovered.get(4, b"b", None).await.unwrap().unwrap().value, b"2");
+}
+
+#[tokio::test]
+async fn same_batch_conditions_observe_preceding_staged_mutations() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        StreamName { high: 2, low: 2 },
+        5,
+        PartitionConfig::default(),
+    )
+    .await;
+    store.pause_writes();
+    let blocker_partition = partition.clone();
+    let blocker = tokio::spawn(async move {
+        blocker_partition
+            .mutate(
+                5,
+                request(10),
+                MutationOperation::Put {
+                    key: b"b".to_vec(),
+                    value: b"block".to_vec(),
+                },
+            )
+            .await
+    });
+    store.wait_for_write().await;
+
+    let first_partition = partition.clone();
+    let first = tokio::spawn(async move {
+        first_partition
+            .mutate(
+                5,
+                request(11),
+                MutationOperation::PutIfAbsent {
+                    key: b"k".to_vec(),
+                    value: b"one".to_vec(),
+                },
+            )
+            .await
+    });
+    tokio::task::yield_now().await;
+    let second_partition = partition.clone();
+    let second = tokio::spawn(async move {
+        second_partition
+            .mutate(
+                5,
+                request(12),
+                MutationOperation::PutIfAbsent {
+                    key: b"k".to_vec(),
+                    value: b"two".to_vec(),
+                },
+            )
+            .await
+    });
+    tokio::task::yield_now().await;
+    store.resume_writes();
+    blocker.await.unwrap().unwrap();
+    let first = first.await.unwrap().unwrap();
+    let second = second.await.unwrap().unwrap();
+    assert!(matches!(first.result, MutationResult::Applied { .. }));
+    assert!(matches!(
+        second.result,
+        MutationResult::ConditionFailed {
+            observed: Some(ref value)
+        } if value.value == b"one" && value.revision == first.mutation_seq
+    ));
+    assert_eq!(second.mutation_seq, first.mutation_seq + 1);
+    assert_eq!(partition.get(5, b"k", None).await.unwrap().unwrap().value, b"one");
+}
+
+#[tokio::test]
+async fn forward_scan_is_bounded_and_clipped_to_the_partition() {
+    let store = Arc::new(MemoryStreamStore::new(16_384));
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        StreamName { high: 2, low: 20 },
+        4,
+        PartitionConfig::default(),
+    )
+    .await;
+    for (sequence, key) in [(1, b"b".as_slice()), (2, b"c"), (3, b"d"), (4, b"e")] {
+        partition
+            .mutate(
+                4,
+                request(200 + sequence),
+                MutationOperation::Put {
+                    key: key.to_vec(),
+                    value: key.to_vec(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let page = partition
+        .scan_forward(4, Some(b"a"), Some(b"z"), 2, 1024, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        page.entries
+            .iter()
+            .map(|entry| entry.key.as_ref())
+            .collect::<Vec<_>>(),
+        vec![b"b".as_slice(), b"c".as_slice()]
+    );
+    assert!(page.truncated);
+    assert_eq!(partition.metrics().snapshot().forward_scans, 1);
+    assert_eq!(partition.metrics().snapshot().scan_entries, 2);
+
+    let inclusive = partition
+        .scan_forward(4, Some(b"b"), Some(b"d"), 10, 1024, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        inclusive
+            .entries
+            .iter()
+            .map(|entry| entry.key.as_ref())
+            .collect::<Vec<_>>(),
+        vec![b"b".as_slice(), b"c".as_slice()]
+    );
+    let continued = partition
+        .scan_forward_after(4, b"b", Some(b"d"), 10, 1024, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        continued
+            .entries
+            .iter()
+            .map(|entry| entry.key.as_ref())
+            .collect::<Vec<_>>(),
+        vec![b"c".as_slice()]
+    );
+
+    let empty = partition
+        .scan_forward(4, Some(b"z"), None, 10, 1024, None)
+        .await
+        .unwrap();
+    assert!(empty.entries.is_empty());
+    assert!(!empty.truncated);
+
+    let reverse = partition
+        .scan_reverse(4, Some(b"z"), Some(b"a"), 2, 1024, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        reverse
+            .entries
+            .iter()
+            .map(|entry| entry.key.as_ref())
+            .collect::<Vec<_>>(),
+        vec![b"e".as_slice(), b"d".as_slice()]
+    );
+    assert!(reverse.truncated);
+    let continued = partition
+        .scan_reverse(4, Some(b"d"), None, 10, 1024, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        continued
+            .entries
+            .iter()
+            .map(|entry| entry.key.as_ref())
+            .collect::<Vec<_>>(),
+        vec![b"c".as_slice(), b"b".as_slice()]
+    );
+    assert_eq!(partition.metrics().snapshot().reverse_scans, 2);
+    assert_eq!(partition.metrics().snapshot().scan_entries, 9);
+}
+
+#[tokio::test]
+async fn ordered_seeks_return_nearest_key_from_one_tree_view() {
+    let store = Arc::new(MemoryStreamStore::new(16_384));
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        StreamName { high: 2, low: 21 },
+        4,
+        PartitionConfig::default(),
+    )
+    .await;
+    for (sequence, key) in [(1, b"b".as_slice()), (2, b"d")] {
+        partition
+            .mutate(
+                4,
+                request(220 + sequence),
+                MutationOperation::Put {
+                    key: key.to_vec(),
+                    value: key.to_vec(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(
+        partition.ceiling(4, b"b", None).await.unwrap().unwrap().key,
+        b"b".as_slice()
+    );
+    assert_eq!(
+        partition.higher(4, b"b", None).await.unwrap().unwrap().key,
+        b"d".as_slice()
+    );
+    assert_eq!(
+        partition.ceiling(4, b"c", None).await.unwrap().unwrap().key,
+        b"d".as_slice()
+    );
+    assert!(partition.higher(4, b"d", None).await.unwrap().is_none());
+    assert_eq!(partition.metrics().snapshot().forward_seeks, 4);
+    assert_eq!(
+        partition.floor(4, b"d", None).await.unwrap().unwrap().key,
+        b"d".as_slice()
+    );
+    assert_eq!(
+        partition.lower(4, b"d", None).await.unwrap().unwrap().key,
+        b"b".as_slice()
+    );
+    assert_eq!(
+        partition.floor(4, b"c", None).await.unwrap().unwrap().key,
+        b"b".as_slice()
+    );
+    assert!(partition.lower(4, b"b", None).await.unwrap().is_none());
+    assert_eq!(partition.metrics().snapshot().reverse_seeks, 4);
+    assert_eq!(
+        partition.ceiling(4, b"m", None).await,
+        Err(ChunkKvError::OutOfRange)
+    );
+}
+
+#[tokio::test]
+async fn retry_returns_original_result_and_digest_conflict_does_no_io() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        StreamName { high: 3, low: 3 },
+        6,
+        PartitionConfig::default(),
+    )
+    .await;
+    let operation = MutationOperation::CompareExchange {
+        key: b"k".to_vec(),
+        condition: CompareCondition::Revision(99),
+        value: b"never".to_vec(),
+    };
+    let original = partition.mutate(6, request(20), operation.clone()).await.unwrap();
+    assert!(matches!(
+        original.result,
+        MutationResult::ConditionFailed { observed: None }
+    ));
+    partition
+        .mutate(
+            6,
+            request(21),
+            MutationOperation::Put {
+                key: b"k".to_vec(),
+                value: b"later".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    let writes = store.chunk_write_count();
+    assert_eq!(
+        partition.mutate(6, request(20), operation).await.unwrap(),
+        original
+    );
+    assert_eq!(store.chunk_write_count(), writes);
+    assert_eq!(
+        partition
+            .mutate(6, request(20), MutationOperation::Delete { key: b"k".to_vec() })
+            .await,
+        Err(ChunkKvError::RequestConflict)
+    );
+    assert_eq!(store.chunk_write_count(), writes);
+}
+
+#[tokio::test]
+async fn range_and_epoch_reject_before_journaling() {
+    let store = Arc::new(MemoryStreamStore::new(1_024));
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        StreamName { high: 4, low: 4 },
+        7,
+        PartitionConfig::default(),
+    )
+    .await;
+    let writes = store.chunk_write_count();
+    assert_eq!(
+        partition
+            .mutate(
+                6,
+                request(30),
+                MutationOperation::Put {
+                    key: b"b".to_vec(),
+                    value: b"v".to_vec()
+                }
+            )
+            .await,
+        Err(ChunkKvError::StaleEpoch)
+    );
+    assert_eq!(
+        partition
+            .mutate(
+                7,
+                request(31),
+                MutationOperation::Put {
+                    key: b"m".to_vec(),
+                    value: b"v".to_vec()
+                }
+            )
+            .await,
+        Err(ChunkKvError::OutOfRange)
+    );
+    assert_eq!(store.chunk_write_count(), writes);
+    let metrics = partition.metrics().snapshot();
+    assert_eq!(metrics.mutation_requests, 2);
+    assert_eq!(metrics.stale_epochs, 1);
+    assert_eq!(metrics.range_rejects, 1);
+}
+
+#[tokio::test]
+async fn journal_uncertainty_stalls_only_writes_and_keeps_applied_reads() {
+    let store = Arc::new(MemoryStreamStore::new(1_024));
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        StreamName { high: 5, low: 5 },
+        8,
+        PartitionConfig::default(),
+    )
+    .await;
+    partition
+        .mutate(
+            8,
+            request(40),
+            MutationOperation::Put {
+                key: b"k".to_vec(),
+                value: b"safe".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    store.queue_cursor_outcome(CursorAdvance::Ambiguous, false).await;
+    assert_eq!(
+        partition
+            .mutate(
+                8,
+                request(41),
+                MutationOperation::Put {
+                    key: b"k".to_vec(),
+                    value: b"unsafe".to_vec(),
+                },
+            )
+            .await,
+        Err(ChunkKvError::WriteStalled)
+    );
+    assert_eq!(
+        partition.snapshot().lifecycle,
+        crowdb_chunk_kv::PartitionLifecycle::WriteStalled
+    );
+    assert_eq!(
+        partition.get(8, b"k", None).await.unwrap().unwrap().value,
+        b"safe"
+    );
+}
+
+#[tokio::test]
+async fn recovery_replays_recorded_results_and_restores_deduplication() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let stream_name = StreamName { high: 6, low: 6 };
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        stream_name,
+        9,
+        PartitionConfig::default(),
+    )
+    .await;
+    let operation = MutationOperation::PutIfAbsent {
+        key: b"key".to_vec(),
+        value: b"value".to_vec(),
+    };
+    let original = partition.mutate(9, request(50), operation.clone()).await.unwrap();
+    partition
+        .mutate(
+            9,
+            request(51),
+            MutationOperation::PutIfAbsent {
+                key: b"key".to_vec(),
+                value: b"other".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    drop(partition);
+    tokio::task::yield_now().await;
+
+    let registry: Arc<dyn StreamRegistry> = store.clone();
+    let metadata: Arc<dyn StreamMetadataStore> = store.clone();
+    let chunks: Arc<dyn StreamChunkStore> = store.clone();
+    let stream = ChunkStream::open(
+        stream_name,
+        9,
+        StreamConfig::default(),
+        registry,
+        metadata,
+        chunks,
+    )
+    .await
+    .unwrap();
+    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
+    let recovered = Partition::recover_prepared_assignment(
+        PartitionId { high: 6, low: 6 },
+        PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        9,
+        Checkpoint {
+            tree_id: 1,
+            tree_manifest: 0,
+            applied_seq: 0,
+            stream_name,
+            stream_manifest_generation: 1,
+            replay_offset: 0,
+        },
+        PartitionConfig::default(),
+        Arc::new(MemoryPartitionTree::default()),
+        journal,
+    )
+    .await
+    .unwrap();
+    assert_eq!(recovered.snapshot().applied_seq, 2);
+    assert_eq!(
+        recovered.snapshot().lifecycle,
+        crowdb_chunk_kv::PartitionLifecycle::Prepared
+    );
+    assert!(matches!(
+        recovered.get(9, b"key", None).await,
+        Err(ChunkKvError::NotServing(_))
+    ));
+    assert!(matches!(
+        recovered
+            .mutate(9, request(52), MutationOperation::Delete { key: b"key".to_vec() })
+            .await,
+        Err(ChunkKvError::NotServing(_))
+    ));
+    recovered.activate_recovered(9).unwrap();
+    assert_eq!(
+        recovered.get(9, b"key", None).await.unwrap().unwrap().value,
+        b"value"
+    );
+    let writes = store.chunk_write_count();
+    assert_eq!(
+        recovered.mutate(9, request(50), operation).await.unwrap(),
+        original
+    );
+    assert_eq!(store.chunk_write_count(), writes);
+}
+
+#[tokio::test]
+async fn recovery_rejects_a_tree_root_other_than_the_checkpoint() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let stream_name = StreamName { high: 6, low: 7 };
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        stream_name,
+        9,
+        PartitionConfig::default(),
+    )
+    .await;
+    drop(partition);
+
+    let registry: Arc<dyn StreamRegistry> = store.clone();
+    let metadata: Arc<dyn StreamMetadataStore> = store.clone();
+    let chunks: Arc<dyn StreamChunkStore> = store.clone();
+    let stream = ChunkStream::open(
+        stream_name,
+        9,
+        StreamConfig::default(),
+        registry,
+        metadata,
+        chunks,
+    )
+    .await
+    .unwrap();
+    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
+    let result = Partition::recover_prepared_assignment(
+        PartitionId { high: 6, low: 7 },
+        PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        9,
+        Checkpoint {
+            tree_id: 1,
+            tree_manifest: 1,
+            applied_seq: 0,
+            stream_name,
+            stream_manifest_generation: 1,
+            replay_offset: 0,
+        },
+        PartitionConfig::default(),
+        Arc::new(MemoryPartitionTree::default()),
+        journal,
+    )
+    .await;
+    assert!(matches!(result, Err(ChunkKvError::TreeCorruption(_))));
+}
+
+#[tokio::test]
+async fn recovery_rejects_a_frame_bound_to_another_physical_chunk() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let stream_name = StreamName { high: 60, low: 60 };
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        stream_name,
+        9,
+        PartitionConfig::default(),
+    )
+    .await;
+    partition
+        .mutate(
+            9,
+            request(500),
+            MutationOperation::Put {
+                key: b"key".to_vec(),
+                value: b"value".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(partition.snapshot().applied_seq, 1);
+    drop(partition);
+    tokio::task::yield_now().await;
+
+    let registry: Arc<dyn StreamRegistry> = store.clone();
+    let metadata: Arc<dyn StreamMetadataStore> = store.clone();
+    let chunks: Arc<dyn StreamChunkStore> = store.clone();
+    let stream = ChunkStream::open(
+        stream_name,
+        9,
+        StreamConfig::default(),
+        registry,
+        metadata,
+        chunks,
+    )
+    .await
+    .unwrap();
+    let durable_tail = stream.tail();
+    store
+        .flip_durable_byte(
+            ChunkId { high: 0, low: 1 },
+            usize::try_from(durable_tail - 1).unwrap(),
+        )
+        .await;
+    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
+    let result = Partition::recover(
+        PartitionId { high: 60, low: 60 },
+        PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        9,
+        Checkpoint {
+            tree_id: 1,
+            tree_manifest: 0,
+            applied_seq: 0,
+            stream_name,
+            stream_manifest_generation: 1,
+            replay_offset: 0,
+        },
+        PartitionConfig::default(),
+        Arc::new(MemoryPartitionTree::default()),
+        journal,
+    )
+    .await;
+    assert!(matches!(result, Err(ChunkKvError::JournalCorruption(_))));
+}
+
+#[tokio::test]
+async fn mutation_fence_drains_admitted_work_and_rejects_later_writes() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    store.pause_writes();
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        StreamName { high: 7, low: 7 },
+        10,
+        PartitionConfig::default(),
+    )
+    .await;
+    let writer_partition = partition.clone();
+    let writer = tokio::spawn(async move {
+        writer_partition
+            .mutate(
+                10,
+                request(60),
+                MutationOperation::Put {
+                    key: b"key".to_vec(),
+                    value: b"value".to_vec(),
+                },
+            )
+            .await
+    });
+    store.wait_for_write().await;
+    let fence_partition = partition.clone();
+    let fence = tokio::spawn(async move { fence_partition.fence_mutations(10).await });
+    tokio::task::yield_now().await;
+    assert_eq!(
+        partition
+            .mutate(
+                10,
+                request(61),
+                MutationOperation::Delete { key: b"key".to_vec() }
+            )
+            .await,
+        Err(ChunkKvError::NotServing("SplitFenced".into()))
+    );
+    assert!(!fence.is_finished());
+    store.resume_writes();
+    writer.await.unwrap().unwrap();
+    fence.await.unwrap().unwrap();
+
+    let checkpoint = partition.checkpoint_fenced(10).await.unwrap();
+    assert_eq!(checkpoint.applied_seq, 1);
+    assert_eq!(checkpoint.tree_manifest, 1);
+    assert_eq!(checkpoint.replay_offset, 0);
+    let mut unsafe_watermark = checkpoint.clone();
+    unsafe_watermark.replay_offset = 1;
+    assert!(matches!(
+        partition.trim_published_checkpoint(10, &unsafe_watermark).await,
+        Err(ChunkKvError::InvalidRequest(_))
+    ));
+    let reclaimed = partition
+        .reclaim_published_checkpoint(10, &checkpoint)
+        .await
+        .unwrap();
+    assert_eq!(reclaimed.tree_bytes, 0);
+    assert_eq!(reclaimed.orphan_bytes, 0);
+    let metrics = partition.metrics().snapshot();
+    assert_eq!(metrics.checkpoints, 1);
+    assert_eq!(metrics.reclaimed_tree_bytes, 0);
+}
+
+#[tokio::test]
+async fn serving_checkpoint_captures_a_recoverable_tree_frontier() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        StreamName { high: 7, low: 8 },
+        10,
+        PartitionConfig::default(),
+    )
+    .await;
+    partition
+        .mutate(
+            10,
+            request(62),
+            MutationOperation::Put {
+                key: b"key".to_vec(),
+                value: b"value".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let checkpoint = partition.checkpoint(10).await.unwrap();
+    assert_eq!(
+        partition.lifecycle(),
+        crowdb_chunk_kv::PartitionLifecycle::Serving
+    );
+    assert_eq!(checkpoint.tree_manifest, checkpoint.applied_seq);
+    assert_eq!(checkpoint.applied_seq, 1);
+    assert_eq!(checkpoint.replay_offset, 0);
+}
+
+#[tokio::test]
+async fn manager_hosts_more_than_one_independent_partition() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let first = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        StreamName { high: 8, low: 1 },
+        11,
+        PartitionConfig::default(),
+    )
+    .await;
+    let second = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        StreamName { high: 8, low: 2 },
+        12,
+        PartitionConfig::default(),
+    )
+    .await;
+    let manager = PartitionManager::new(8).unwrap();
+    manager.insert(first.clone()).await.unwrap();
+    manager.insert(second.clone()).await.unwrap();
+    assert_eq!(manager.len().await, 2);
+    assert_ne!(first.snapshot().stream_name, second.snapshot().stream_name);
+
+    first
+        .mutate(
+            11,
+            request(70),
+            MutationOperation::Put {
+                key: b"key".to_vec(),
+                value: b"first".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    second
+        .mutate(
+            12,
+            request(71),
+            MutationOperation::Put {
+                key: b"key".to_vec(),
+                value: b"second".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        first.get(11, b"key", None).await.unwrap().unwrap().value,
+        b"first"
+    );
+    assert_eq!(
+        second.get(12, b"key", None).await.unwrap().unwrap().value,
+        b"second"
+    );
+}
+
+#[tokio::test]
+async fn evicted_request_identity_returns_expired_instead_of_reexecuting() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        StreamName { high: 9, low: 9 },
+        13,
+        PartitionConfig {
+            retained_results: 1,
+            ..PartitionConfig::default()
+        },
+    )
+    .await;
+    let first = MutationOperation::Put {
+        key: b"key".to_vec(),
+        value: b"first".to_vec(),
+    };
+    partition.mutate(13, request(80), first.clone()).await.unwrap();
+    partition
+        .mutate(
+            13,
+            request(81),
+            MutationOperation::Put {
+                key: b"key".to_vec(),
+                value: b"second".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    let writes = store.chunk_write_count();
+    assert_eq!(
+        partition.mutate(13, request(80), first).await,
+        Err(ChunkKvError::RequestExpired)
+    );
+    assert_eq!(store.chunk_write_count(), writes);
+}
+
+#[tokio::test]
+async fn unknown_post_journal_apply_recovers_only_that_partition() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let failing_tree = Arc::new(MemoryPartitionTree::default());
+    let failing = partition(
+        &store,
+        Arc::clone(&failing_tree),
+        StreamName { high: 10, low: 1 },
+        14,
+        PartitionConfig::default(),
+    )
+    .await;
+    let healthy = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        StreamName { high: 10, low: 2 },
+        15,
+        PartitionConfig::default(),
+    )
+    .await;
+    failing_tree.fail_next_apply();
+    assert_eq!(
+        failing
+            .mutate(
+                14,
+                request(90),
+                MutationOperation::Put {
+                    key: b"key".to_vec(),
+                    value: b"uncertain".to_vec()
+                }
+            )
+            .await,
+        Err(ChunkKvError::ApplyStateUnknown)
+    );
+    assert_eq!(
+        failing.snapshot().lifecycle,
+        crowdb_chunk_kv::PartitionLifecycle::Recovering
+    );
+    assert_eq!(
+        failing
+            .mutate(
+                14,
+                request(91),
+                MutationOperation::Delete { key: b"key".to_vec() }
+            )
+            .await,
+        Err(ChunkKvError::Recovering)
+    );
+    healthy
+        .mutate(
+            15,
+            request(92),
+            MutationOperation::Put {
+                key: b"key".to_vec(),
+                value: b"healthy".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        healthy.get(15, b"key", None).await.unwrap().unwrap().value,
+        b"healthy"
+    );
+}
+
+#[tokio::test]
+async fn transfer_reuses_tree_and_stream_under_higher_epoch() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let tree = Arc::new(MemoryPartitionTree::default());
+    let stream_name = StreamName { high: 11, low: 11 };
+    let old = partition(
+        &store,
+        Arc::clone(&tree),
+        stream_name,
+        16,
+        PartitionConfig::default(),
+    )
+    .await;
+    old.mutate(
+        16,
+        request(100),
+        MutationOperation::Put {
+            key: b"key".to_vec(),
+            value: b"before".to_vec(),
+        },
+    )
+    .await
+    .unwrap();
+    old.fence_mutations(16).await.unwrap();
+    let checkpoint = old.checkpoint_fenced(16).await.unwrap();
+
+    let registry: Arc<dyn StreamRegistry> = store.clone();
+    let metadata: Arc<dyn StreamMetadataStore> = store.clone();
+    let chunks: Arc<dyn StreamChunkStore> = store.clone();
+    let stream = ChunkStream::open(
+        stream_name,
+        17,
+        StreamConfig::default(),
+        registry,
+        metadata,
+        chunks,
+    )
+    .await
+    .unwrap();
+    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
+    let tree_for_new: Arc<dyn PartitionTree> = tree;
+    let new = Partition::recover(
+        PartitionId { high: 11, low: 11 },
+        PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        17,
+        checkpoint,
+        PartitionConfig::default(),
+        tree_for_new,
+        journal,
+    )
+    .await
+    .unwrap();
+    assert_eq!(new.get(17, b"key", None).await.unwrap().unwrap().value, b"before");
+    new.mutate(
+        17,
+        request(101),
+        MutationOperation::Put {
+            key: b"key".to_vec(),
+            value: b"after".to_vec(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(new.get(17, b"key", None).await.unwrap().unwrap().value, b"after");
+    assert_eq!(
+        old.mutate(
+            16,
+            request(102),
+            MutationOperation::Delete { key: b"key".to_vec() }
+        )
+        .await,
+        Err(ChunkKvError::NotServing("SplitFenced".into()))
+    );
+}
+
+#[tokio::test]
+async fn prepared_child_serves_only_after_exact_catalog_proof() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let stream_name = StreamName { high: 12, low: 12 };
+    let stream = ChunkStream::create(
+        StreamBinding {
+            stream_name,
+            metadata_group_id: 7,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("chunk-kv-partition".into()),
+        },
+        20,
+        StreamConfig::default(),
+        store.clone() as Arc<dyn StreamRegistry>,
+        store.clone() as Arc<dyn StreamMetadataStore>,
+        store as Arc<dyn StreamChunkStore>,
+    )
+    .await
+    .unwrap();
+    let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
+    let artifact = PreparedChildArtifact {
+        partition_id: PartitionId { high: 12, low: 1 },
+        range: PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        ownership_epoch: 20,
+        tree_id: 1,
+        tree_manifest: 0,
+        stream_name,
+        applied_seq: 0,
+    };
+    assert_prepared_tree_identity_mismatch(&artifact, Arc::clone(&journal)).await;
+    let prepared = Partition::recover_prepared(
+        artifact.clone(),
+        Checkpoint {
+            tree_id: 1,
+            tree_manifest: 0,
+            applied_seq: 0,
+            stream_name,
+            stream_manifest_generation: 1,
+            replay_offset: 0,
+        },
+        PartitionConfig::default(),
+        Arc::new(MemoryPartitionTree::default()),
+        journal,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        prepared.lifecycle(),
+        crowdb_chunk_kv::PartitionLifecycle::Prepared
+    );
+    assert!(matches!(
+        prepared.get(20, b"b", None).await,
+        Err(ChunkKvError::NotServing(_))
+    ));
+
+    let other = PreparedChildArtifact {
+        partition_id: PartitionId { high: 12, low: 2 },
+        range: PartitionRange {
+            start: Some(b"m".to_vec()),
+            end: Some(b"z".to_vec()),
+        },
+        ownership_epoch: 20,
+        tree_id: 2,
+        tree_manifest: 0,
+        stream_name: StreamName { high: 12, low: 13 },
+        applied_seq: 0,
+    };
+    let proof = SplitCommitProof {
+        catalog_revision: 7,
+        artifact: SplitArtifact {
+            transition_id: TransitionId { high: 70, low: 71 },
+            parent_id: PartitionId { high: 10, low: 1 },
+            parent_epoch: 19,
+            cutover_seq: 0,
+            left: artifact,
+            right: other,
+        },
+    };
+    prepared.activate_prepared(&proof).unwrap();
+    assert_eq!(prepared.lifecycle(), crowdb_chunk_kv::PartitionLifecycle::Serving);
+    prepared
+        .mutate(
+            20,
+            request(700),
+            MutationOperation::Put {
+                key: b"b".to_vec(),
+                value: b"ready".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn split_control_is_idempotent_and_commits_only_an_exact_artifact() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let stream_name = StreamName { high: 12, low: 12 };
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        stream_name,
+        18,
+        PartitionConfig::default(),
+    )
+    .await;
+    let plan = split_plan(PartitionId { high: 12, low: 12 }, 18);
+    partition.begin_split(plan.clone()).await.unwrap();
+    partition.begin_split(plan.clone()).await.unwrap();
+    assert_eq!(
+        partition.lifecycle(),
+        crowdb_chunk_kv::PartitionLifecycle::SplitPreparing
+    );
+
+    partition
+        .mutate(
+            18,
+            request(110),
+            MutationOperation::Put {
+                key: b"key".to_vec(),
+                value: b"during-prepare".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    partition.fence_split(plan.transition_id).await.unwrap();
+    let artifact = split_artifact(&plan, 1);
+    partition.record_split_artifact(artifact.clone()).await.unwrap();
+    assert_eq!(
+        partition.prepared_split_artifact(plan.transition_id).await,
+        Some(artifact.clone())
+    );
+
+    let mut wrong = artifact.clone();
+    wrong.right.tree_manifest += 1;
+    assert!(partition
+        .commit_split(&SplitCommitProof {
+            catalog_revision: 3,
+            artifact: wrong,
+        })
+        .await
+        .is_err());
+    assert_eq!(
+        partition.lifecycle(),
+        crowdb_chunk_kv::PartitionLifecycle::SplitFenced
+    );
+    partition
+        .commit_split(&SplitCommitProof {
+            catalog_revision: 4,
+            artifact,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        partition.lifecycle(),
+        crowdb_chunk_kv::PartitionLifecycle::Retired
+    );
+}
+
+#[tokio::test]
+async fn online_split_rebuilds_both_ranges_and_replays_serving_deltas() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let tree = Arc::new(MemoryPartitionTree::with_tree_id(90));
+    let parent = partition(
+        &store,
+        Arc::clone(&tree),
+        StreamName { high: 12, low: 12 },
+        18,
+        PartitionConfig::default(),
+    )
+    .await;
+    for (sequence, key) in [(1, b"b".as_slice()), (2, b"h".as_slice())] {
+        parent
+            .mutate(
+                18,
+                request(sequence),
+                MutationOperation::Put {
+                    key: key.to_vec(),
+                    value: key.to_vec(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    tree.pause_rebuild();
+    let plan = split_plan(PartitionId { high: 12, low: 12 }, 18);
+    let left_target = SplitChildTarget {
+        tree_id: 91,
+        tree_config: crowdb_tree_ffi::Config::default(),
+        journal: empty_journal(&store, StreamName { high: 91, low: 1 }, 19).await,
+    };
+    let right_target = SplitChildTarget {
+        tree_id: 92,
+        tree_config: crowdb_tree_ffi::Config::default(),
+        journal: empty_journal(&store, StreamName { high: 92, low: 1 }, 19).await,
+    };
+    let split_parent = parent.clone();
+    let split_plan = plan.clone();
+    let split = tokio::spawn(async move {
+        split_parent
+            .prepare_split(split_plan, left_target, right_target, 8)
+            .await
+    });
+    tree.wait_for_rebuild().await;
+    for (sequence, key) in [(3, b"d".as_slice()), (4, b"i".as_slice())] {
+        parent
+            .mutate(
+                18,
+                request(sequence),
+                MutationOperation::Put {
+                    key: key.to_vec(),
+                    value: key.to_vec(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    tree.resume_rebuild();
+
+    let prepared = split.await.unwrap().unwrap();
+    assert_eq!(prepared.artifact.cutover_seq, 4);
+    assert_eq!(prepared.delta_records, 2);
+    assert_eq!(
+        parent.lifecycle(),
+        crowdb_chunk_kv::PartitionLifecycle::SplitFenced
+    );
+    let metrics = parent.metrics().snapshot();
+    assert_eq!(metrics.split_entries_examined, 4);
+    assert_eq!(metrics.split_entries_emitted, 2);
+    assert_eq!(metrics.split_delta_records, 2);
+    assert!(metrics.split_fence_lag_records <= 8);
+    assert!(metrics.split_fence_duration_us > 0);
+    let proof = SplitCommitProof {
+        catalog_revision: 7,
+        artifact: prepared.artifact.clone(),
+    };
+    let left = prepared.left.open(PartitionConfig::default()).await.unwrap();
+    let right = prepared.right.open(PartitionConfig::default()).await.unwrap();
+    left.activate_prepared(&proof).unwrap();
+    right.activate_prepared(&proof).unwrap();
+    assert_eq!(
+        left.materialize_split_ownership(19).await.unwrap(),
+        crowdb_chunk_kv::MaterializationProgress {
+            bytes_written: 0,
+            complete: true,
+        }
+    );
+    assert_eq!(left.metrics().snapshot().materialization_passes, 1);
+    for key in [b"b".as_slice(), b"d".as_slice()] {
+        assert_eq!(left.get(19, key, None).await.unwrap().unwrap().value, key);
+    }
+    for key in [b"h".as_slice(), b"i".as_slice()] {
+        assert_eq!(right.get(19, key, None).await.unwrap().unwrap().value, key);
+    }
+    assert!(matches!(
+        left.get(19, b"h", None).await,
+        Err(ChunkKvError::OutOfRange)
+    ));
+    parent.commit_split(&proof).await.unwrap();
+    assert_eq!(parent.lifecycle(), crowdb_chunk_kv::PartitionLifecycle::Retired);
+}
+
+#[tokio::test]
+async fn native_online_split_reopens_one_manifest_for_both_child_rebuilds() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let parent_stream_name = StreamName { high: 120, low: 120 };
+    let parent_stream = ChunkStream::create(
+        StreamBinding {
+            stream_name: parent_stream_name,
+            metadata_group_id: 7,
+            binding_generation: 1,
+            state: StreamBindingState::Active,
+            owner_kind: Some("chunk-kv-partition".into()),
+        },
+        18,
+        StreamConfig::default(),
+        store.clone() as Arc<dyn StreamRegistry>,
+        store.clone() as Arc<dyn StreamMetadataStore>,
+        store.clone() as Arc<dyn StreamChunkStore>,
+    )
+    .await
+    .unwrap();
+    let parent = Partition::open_native(
+        PartitionId { high: 120, low: 120 },
+        PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        18,
+        PartitionConfig::default(),
+        190,
+        crowdb_tree_ffi::Config::default(),
+        chunk_page_store(190, 18),
+        parent_stream,
+    )
+    .unwrap();
+    for (sequence, key) in [(1, b"b".as_slice()), (2, b"h".as_slice())] {
+        parent
+            .mutate(
+                18,
+                request(sequence + 200),
+                MutationOperation::Put {
+                    key: key.to_vec(),
+                    value: key.to_vec(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let plan = SplitPlan {
+        parent_id: PartitionId { high: 120, low: 120 },
+        ..split_plan(PartitionId { high: 120, low: 120 }, 18)
+    };
+    let prepared = parent
+        .prepare_split(
+            plan,
+            SplitChildTarget {
+                tree_id: 191,
+                tree_config: crowdb_tree_ffi::Config {
+                    page_store: Some(chunk_page_store(191, 19)),
+                    ..crowdb_tree_ffi::Config::default()
+                },
+                journal: empty_journal(&store, StreamName { high: 191, low: 1 }, 19).await,
+            },
+            SplitChildTarget {
+                tree_id: 192,
+                tree_config: crowdb_tree_ffi::Config {
+                    page_store: Some(chunk_page_store(192, 19)),
+                    ..crowdb_tree_ffi::Config::default()
+                },
+                journal: empty_journal(&store, StreamName { high: 192, low: 1 }, 19).await,
+            },
+            8,
+        )
+        .await
+        .unwrap();
+    assert_eq!(prepared.artifact.cutover_seq, 2);
+    assert_eq!(
+        prepared.left.artifact().tree_manifest,
+        prepared.right.artifact().tree_manifest
+    );
+    assert!(prepared.left.artifact().tree_manifest > 0);
+    assert_eq!(prepared.left_rebuild.entries_emitted, 1);
+    assert_eq!(prepared.right_rebuild.entries_emitted, 1);
+    let proof = SplitCommitProof {
+        catalog_revision: 8,
+        artifact: prepared.artifact.clone(),
+    };
+    let left = prepared.left.open(PartitionConfig::default()).await.unwrap();
+    let right = prepared.right.open(PartitionConfig::default()).await.unwrap();
+    left.activate_prepared(&proof).unwrap();
+    right.activate_prepared(&proof).unwrap();
+    for child in [&left, &right] {
+        let passes = finish_materialization(child, 19).await;
+        assert_eq!(child.metrics().snapshot().materialization_passes, passes);
+        assert_eq!(child.chunk_storage_stats().unwrap().unwrap().shared_packs, 0);
+    }
+}
+
+#[tokio::test]
+async fn split_abort_requires_exact_nonpublication_proof_before_resuming() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        StreamName { high: 13, low: 13 },
+        19,
+        PartitionConfig::default(),
+    )
+    .await;
+    let plan = split_plan(PartitionId { high: 13, low: 13 }, 19);
+    partition.begin_split(plan.clone()).await.unwrap();
+    let mut wrong_transition = plan.transition_id;
+    wrong_transition.low += 1;
+    assert!(partition
+        .abort_split(&SplitAbortProof {
+            catalog_revision: 8,
+            transition_id: wrong_transition,
+            parent_id: plan.parent_id,
+            parent_epoch: plan.parent_epoch,
+        })
+        .await
+        .is_err());
+    partition
+        .abort_split(&SplitAbortProof {
+            catalog_revision: 9,
+            transition_id: plan.transition_id,
+            parent_id: plan.parent_id,
+            parent_epoch: plan.parent_epoch,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        partition.lifecycle(),
+        crowdb_chunk_kv::PartitionLifecycle::Serving
+    );
+    partition
+        .mutate(
+            19,
+            request(120),
+            MutationOperation::Put {
+                key: b"key".to_vec(),
+                value: b"resumed".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+}

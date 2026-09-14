@@ -14,8 +14,10 @@ use std::sync::Arc;
 use tracing::warn;
 
 use crowdb_kv_client::{CrowdbKvClient, GetOutcome, ReadMode, ScanOutcome};
-use crowdb_protocol::chunkdb::rpc::Chunk;
+use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkStrip, Strip, StripCleanupIntent};
 use crowdb_protocol::common::ChunkId;
+use crowdb_protocol::diskdb::rpc::Segment;
+use serde::Deserialize;
 
 use crate::routing::{route, BindingCache, MigrationState, Route};
 
@@ -26,6 +28,8 @@ pub enum StoreError {
     ChunkNotFound,
     #[error("chunk already exists")]
     ChunkAlreadyExists,
+    #[error("chunk changed concurrently")]
+    Conflict,
     #[error("routing error: {0}")]
     Route(#[from] crate::routing::RouteError),
     #[error("kv client error: {0}")]
@@ -43,37 +47,212 @@ pub struct ChunkStore {
     pub(super) bindings: BindingCache,
 }
 
+#[derive(Deserialize)]
+struct LegacyChunk {
+    id: Option<ChunkId>,
+    modify_ts: u64,
+    state: i32,
+    create_ts_ms: u64,
+    sealed_ts_ms: u64,
+    capacity: u32,
+    sealed_length: u32,
+    strips: Vec<LegacyChunkStrip>,
+    chunk_type: i32,
+    writer_epoch: u64,
+    acknowledged_cursor: u64,
+    closed_strip_sequence: Option<u32>,
+    writer_lease_deadline_ms: u64,
+    next_strip_sequence: u32,
+    cleanup_intents: Vec<StripCleanupIntent>,
+    last_strip_replacement: Option<ChunkId>,
+}
+
+#[derive(Deserialize)]
+struct PreviousChunk {
+    id: Option<ChunkId>,
+    modify_ts: u64,
+    state: i32,
+    create_ts_ms: u64,
+    sealed_ts_ms: u64,
+    capacity: u32,
+    sealed_length: u32,
+    strips: Vec<LegacyChunkStrip>,
+    chunk_type: i32,
+    writer_epoch: u64,
+    acknowledged_cursor: u64,
+    closed_strip_sequence: Option<u32>,
+    writer_lease_deadline_ms: u64,
+    next_strip_sequence: u32,
+    cleanup_intents: Vec<StripCleanupIntent>,
+    last_strip_replacement: Option<ChunkId>,
+    owner_key: Vec<u8>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct LegacyChunkStrip {
+    chunk_offset: u32,
+    strip_sequence: u32,
+    unit_kb: u32,
+    capacity: u32,
+    create_ts_ms: u64,
+    sealed_ts_ms: u64,
+    sealed_length: u32,
+    strip_type: i32,
+    strip: Option<Strip>,
+    usage_bitmap: Vec<u8>,
+    unavailable_segments: Vec<Segment>,
+}
+
+impl From<LegacyChunkStrip> for ChunkStrip {
+    fn from(strip: LegacyChunkStrip) -> Self {
+        Self {
+            chunk_offset: strip.chunk_offset,
+            strip_sequence: strip.strip_sequence,
+            unit_kb: strip.unit_kb,
+            capacity: strip.capacity,
+            create_ts_ms: strip.create_ts_ms,
+            sealed_ts_ms: strip.sealed_ts_ms,
+            sealed_length: strip.sealed_length,
+            strip_type: strip.strip_type,
+            strip: strip.strip,
+            usage_bitmap: strip.usage_bitmap,
+            unavailable_segments: strip.unavailable_segments,
+            placement_priority: 0,
+            placement_assessment: None,
+            placement_repair_required: false,
+        }
+    }
+}
+
+impl From<LegacyChunk> for Chunk {
+    fn from(chunk: LegacyChunk) -> Self {
+        Self {
+            id: chunk.id,
+            modify_ts: chunk.modify_ts,
+            state: chunk.state,
+            create_ts_ms: chunk.create_ts_ms,
+            sealed_ts_ms: chunk.sealed_ts_ms,
+            capacity: chunk.capacity,
+            sealed_length: chunk.sealed_length,
+            strips: chunk.strips.into_iter().map(ChunkStrip::from).collect(),
+            chunk_type: chunk.chunk_type,
+            writer_epoch: chunk.writer_epoch,
+            acknowledged_cursor: chunk.acknowledged_cursor,
+            closed_strip_sequence: chunk.closed_strip_sequence,
+            writer_lease_deadline_ms: chunk.writer_lease_deadline_ms,
+            next_strip_sequence: chunk.next_strip_sequence,
+            cleanup_intents: chunk.cleanup_intents,
+            last_strip_replacement: chunk.last_strip_replacement,
+            owner_key: Vec::new(),
+        }
+    }
+}
+
+impl From<PreviousChunk> for Chunk {
+    fn from(chunk: PreviousChunk) -> Self {
+        Self {
+            id: chunk.id,
+            modify_ts: chunk.modify_ts,
+            state: chunk.state,
+            create_ts_ms: chunk.create_ts_ms,
+            sealed_ts_ms: chunk.sealed_ts_ms,
+            capacity: chunk.capacity,
+            sealed_length: chunk.sealed_length,
+            strips: chunk.strips.into_iter().map(ChunkStrip::from).collect(),
+            chunk_type: chunk.chunk_type,
+            writer_epoch: chunk.writer_epoch,
+            acknowledged_cursor: chunk.acknowledged_cursor,
+            closed_strip_sequence: chunk.closed_strip_sequence,
+            writer_lease_deadline_ms: chunk.writer_lease_deadline_ms,
+            next_strip_sequence: chunk.next_strip_sequence,
+            cleanup_intents: chunk.cleanup_intents,
+            last_strip_replacement: chunk.last_strip_replacement,
+            owner_key: chunk.owner_key,
+        }
+    }
+}
+
 impl ChunkStore {
     #[must_use]
     pub fn new(kv: Arc<CrowdbKvClient>, bindings: BindingCache) -> Self {
         Self { kv, bindings }
     }
 
-    /// Write a chunk record (overwrite if exists).
+    /// Publish one logical chunk transition with KV revision CAS. New chunks
+    /// use create-if-absent; updates must advance `modify_ts` exactly once.
+    /// An ambiguous response is reconciled by reading the current record.
     pub async fn put_chunk(&self, chunk: &Chunk) -> Result<()> {
         let id = chunk.id.as_ref().expect("chunk has id");
         let r = route(&self.bindings, id)?;
         let key = chunk_key(id);
         let value = encode_chunk(chunk);
 
+        self.put_chunk_at(r.kv_store_id, r.kv_group_id, &key, &value, chunk)
+            .await?;
         if r.migration_state == MigrationState::Copying || r.migration_state == MigrationState::Cutover {
-            // Dual-write: write to both new and old groups.
-            self.kv
-                .put(r.kv_store_id, r.kv_group_id, &key, &value, None)
-                .await
-                .map_err(|e| StoreError::Kv(e.to_string()))?;
+            // The new route is authoritative. Mirror the same guarded logical
+            // transition to the old route during migration.
             if let (Some(old_store), Some(old_group)) = (r.old_kv_store_id, r.old_kv_group_id) {
-                if let Err(e) = self.kv.put(old_store, old_group, &key, &value, None).await {
+                if let Err(e) = self.put_chunk_at(old_store, old_group, &key, &value, chunk).await {
                     warn!(error = %e, "dual-write: old group write failed (new group has data)");
                 }
             }
-        } else {
-            self.kv
-                .put(r.kv_store_id, r.kv_group_id, &key, &value, None)
-                .await
-                .map_err(|e| StoreError::Kv(e.to_string()))?;
         }
         Ok(())
+    }
+
+    async fn put_chunk_at(
+        &self,
+        store_id: u64,
+        group_id: u64,
+        key: &[u8],
+        value: &[u8],
+        chunk: &Chunk,
+    ) -> Result<()> {
+        let observed = self
+            .kv
+            .get(store_id, group_id, key, ReadMode::Linearizable, None)
+            .await
+            .map_err(|error| StoreError::Kv(error.to_string()))?;
+        let expected_revision = match observed {
+            GetOutcome::NotFound => 0,
+            GetOutcome::Found {
+                value: current,
+                revision,
+            } => {
+                let current = decode_chunk(&current)?;
+                if current == *chunk {
+                    return Ok(());
+                }
+                if chunk.modify_ts != current.modify_ts.saturating_add(1) {
+                    return Err(StoreError::Conflict);
+                }
+                revision
+            }
+        };
+        match self
+            .kv
+            .put_cas(store_id, group_id, key, value, expected_revision)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(
+                crowdb_kv_client::Error::CasFailed { .. }
+                | crowdb_kv_client::Error::CasBusy
+                | crowdb_kv_client::Error::OutcomeUnknown,
+            ) => {
+                match self
+                    .kv
+                    .get(store_id, group_id, key, ReadMode::Linearizable, None)
+                    .await
+                {
+                    Ok(GetOutcome::Found { value, .. }) if decode_chunk(&value)? == *chunk => Ok(()),
+                    Ok(_) => Err(StoreError::Conflict),
+                    Err(error) => Err(StoreError::Kv(error.to_string())),
+                }
+            }
+            Err(error) => Err(StoreError::Kv(error.to_string())),
+        }
     }
 
     /// Read a chunk by ID.
@@ -208,5 +387,13 @@ pub(super) fn encode_chunk(chunk: &Chunk) -> Vec<u8> {
 
 /// Decode a `Chunk` from bytes (bincode).
 fn decode_chunk(data: &[u8]) -> Result<Chunk> {
-    bincode::deserialize(data).map_err(|e| StoreError::Serde(e.to_string()))
+    bincode::deserialize(data)
+        .or_else(|_| bincode::deserialize::<PreviousChunk>(data).map(Chunk::from))
+        .or_else(|_| bincode::deserialize::<LegacyChunk>(data).map(Chunk::from))
+        .map_err(|e| StoreError::Serde(e.to_string()))
+}
+
+#[cfg(feature = "test-util")]
+pub fn decode_chunk_for_tests(data: &[u8]) -> Result<Chunk> {
+    decode_chunk(data)
 }

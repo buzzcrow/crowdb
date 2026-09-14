@@ -23,7 +23,7 @@ use crowdb_kv::metrics::MetricsRunner;
 
 use crowdb_kv_server::cli::{parse_id_list, parse_port_list, Cli};
 use crowdb_kv_server::mgmt::{self, persisted_port_for_store};
-use crowdb_kv_server::startup::create_group_with_wal;
+use crowdb_kv_server::recovery::startup::create_group_with_wal;
 use crowdb_kv_server::store_registry::KvStoreRegistry;
 
 #[tokio::main]
@@ -138,12 +138,12 @@ async fn main() {
         .unwrap_or_else(|e| panic!("invalid config after CLI overrides: {e}"));
 
     let registry = Arc::new(
-        KvStoreRegistry::with_config(config.clone()).with_metrics_registry(
-            metrics_runner.as_ref().map_or_else(
+        KvStoreRegistry::try_with_config(config.clone())
+            .unwrap_or_else(|error| panic!("failed to initialize WAL backend: {error}"))
+            .with_metrics_registry(metrics_runner.as_ref().map_or_else(
                 || Arc::new(std::sync::Mutex::new(crowdb_kv::metrics::MetricsRegistry::new())),
                 |r| r.registry().clone(),
-            ),
-        ),
+            )),
     );
 
     // Spawn a config file watcher for diff logging. Only when --config is
@@ -189,7 +189,7 @@ async fn main() {
             std::process::exit(1);
         });
 
-    let router = mgmt::router(crowdb_kv_server::operation_registry::AppState::new(
+    let router = mgmt::router(crowdb_kv_server::mgmt::operation_registry::AppState::new(
         registry.clone(),
     ));
     let listener = tokio::net::TcpListener::bind(mgmt_addr)
@@ -226,13 +226,13 @@ async fn main() {
     // - First-boot mode: no group 0 on disk. Use --stores/--groups CLI
     //   args (if given) to create stores; otherwise boot empty so the
     //   operator can call POST /system/init.
-    let local_groups = crowdb_kv_server::restore::scan_local_groups(&registry.config.wal_root)
+    let local_groups = crowdb_kv_server::recovery::restore::scan_local_groups(&registry.config.wal_root)
         .await
         .unwrap_or_else(|e| {
             warn!(error = %e, wal_root = %registry.config.wal_root.display(), "scan_local_groups failed; treating as empty");
             Vec::new()
         });
-    if crowdb_kv_server::restore::group0_exists(&registry.config.wal_root) {
+    if crowdb_kv_server::recovery::restore::group0_exists(&registry.config.wal_root) {
         info!(
             local_count = local_groups.len(),
             "restore mode: group 0 present on disk, loading local stores/groups"
@@ -240,8 +240,8 @@ async fn main() {
         if bootstrap.is_some() {
             warn!("restore mode: --stores/--groups ignored (local disk is the source of truth)");
         }
-        crowdb_kv_server::restore::load_local_groups(&local_groups, args.replica, &registry).await;
-        crowdb_kv_server::reconcile::reconcile_with_group0(&registry).await;
+        crowdb_kv_server::recovery::restore::load_local_groups(&local_groups, args.replica, &registry).await;
+        crowdb_kv_server::recovery::reconcile::reconcile_with_group0(&registry).await;
     } else {
         info!("first-boot mode: no group 0 on disk");
         if let Some(b) = bootstrap.as_ref() {
@@ -277,7 +277,7 @@ async fn main() {
             .and_then(|s| s.listen_addr().map(|a| a.to_string()))
             .or_else(|| registry.first_port().map(|p| format!("{display_ip}:{p}")))
             .unwrap_or_else(|| format!("http://{display_addr}"));
-        Some(crowdb_kv_server::keepalive::KeepAliveLoop::spawn(
+        Some(crowdb_kv_server::background::keepalive::KeepAliveLoop::spawn(
             registry.clone(),
             instance_id,
             mgmt_endpoint,
@@ -294,23 +294,23 @@ async fn main() {
         None
     };
 
-    // Start the chunkdb range binding monitor (leader-gated on group-0).
-    // Reuses the keep-alive group-0 endpoint derivation. Only the
-    // group-0 leader writes the binding table; followers compute only.
-    let binding_monitor = if args.binding_monitor_interval > 0 {
-        let group0_ep = registry
-            .get_store(0)
-            .and_then(|s| s.listen_addr().map(|a| a.to_string()))
-            .or_else(|| registry.first_port().map(|p| format!("{display_ip}:{p}")))
-            .unwrap_or_else(|| format!("http://{display_addr}"));
-        Some(
-            crowdb_kv_server::binding_monitor_wiring::spawn_chunkdb_binding_monitor(
-                &registry,
-                group0_ep,
-                format!("http://{display_addr}"),
-                args.binding_monitor_interval,
-            ),
-        )
+    // Every group-0 replica discovers persisted monitor descriptors and keeps
+    // their compiled drivers prepared. Driver ticks acquire an exact local
+    // leader tenure, so followers remain idle without loopback RPC.
+    let domain_monitors = if args.binding_monitor_interval > 0 {
+        use crowdb_kv_server::background::domain_monitor::{
+            spawn_domain_monitor_supervisor, ChunkKvRangeMonitorDriver, ChunkdbRangeMonitorDriver,
+            DiskdbOwnershipMonitorDriver, DomainMonitorDrivers,
+        };
+        Some(spawn_domain_monitor_supervisor(
+            Arc::clone(&registry),
+            DomainMonitorDrivers::new(vec![
+                Arc::new(ChunkdbRangeMonitorDriver::new()),
+                Arc::new(ChunkKvRangeMonitorDriver::new()),
+                Arc::new(DiskdbOwnershipMonitorDriver::new()),
+            ]),
+            std::time::Duration::from_secs(args.binding_monitor_interval),
+        ))
     } else {
         None
     };
@@ -343,9 +343,9 @@ async fn main() {
         ka.stop().await;
         info!("keep-alive loop stopped");
     }
-    if let Some(bm) = binding_monitor {
-        bm.stop();
-        info!("chunkdb binding monitor stopped");
+    if let Some(monitors) = domain_monitors {
+        monitors.stop_and_wait().await;
+        info!("domain monitor supervisor stopped");
     }
     graceful_shutdown(registry).await;
 }
@@ -477,6 +477,11 @@ async fn create_and_start_stores(
         store.set_quickack(registry.config.server.quickack);
         store.set_event_write(registry.config.server.event_write);
         store.set_send_queue_capacity(registry.config.server.send_queue_capacity);
+        store.set_snapshot_source_config(
+            registry.config.server.snapshot_chunk_bytes,
+            registry.config.server.snapshot_source_sessions,
+            registry.config.server.snapshot_session_lease_ms,
+        );
         let store = Arc::new(store);
 
         // Create groups with the single local replica for this store, if group_ids provided.
@@ -521,11 +526,11 @@ async fn create_and_start_stores(
             group_count = group_ids.len(),
             "PxKvStore started successfully"
         );
-        registry.add_store(store_id, store);
+        registry.add_store(store_id, &store);
     }
 
     debug!(
-        store_count = registry.stores.len(),
+        store_count = registry.store_count(),
         "all stores started, management API ready"
     );
 }
@@ -535,7 +540,7 @@ async fn create_and_start_stores(
 /// Continues on errors; aggregates `critical:` messages to the operator.
 async fn graceful_shutdown(registry: Arc<KvStoreRegistry>) {
     info!(
-        store_count = registry.stores.len(),
+        store_count = registry.store_count(),
         "initiating graceful shutdown of crowdb-rpc stores"
     );
 
@@ -545,10 +550,8 @@ async fn graceful_shutdown(registry: Arc<KvStoreRegistry>) {
     crowdb_rpc_ffi::flush_logging();
 
     let mut total_errors = 0usize;
-    for entry in &registry.stores {
-        let store_id = *entry.key();
-        let report = entry
-            .value()
+    for (store_id, store) in registry.stores_snapshot().iter() {
+        let report = store
             .shutdown(std::time::Duration::from_millis(
                 ServerConfig::DEFAULT.shutdown_timeout_ms,
             ))
@@ -556,7 +559,7 @@ async fn graceful_shutdown(registry: Arc<KvStoreRegistry>) {
         if !report.is_clean() {
             total_errors += report.errors.len();
             for err in &report.errors {
-                tracing::error!(s = store_id, "{err}");
+                tracing::error!(s = *store_id, "{err}");
             }
         }
     }

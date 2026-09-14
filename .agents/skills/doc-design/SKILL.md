@@ -1,9 +1,6 @@
 ---
 name: doc-design
-description: Write or refine a permanent CROWDB design document.
-triggers:
-  - user
-  - model
+description: Write or refine permanent CROWDB architecture when that document itself is in scope; not a mandatory requirement cleanup step.
 ---
 
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
@@ -26,6 +23,6 @@ before/after prose, file paths, and line numbers. Refer to searchable symbols.
 Keep architecture in root docs, detail in sub-designs, and operations in the
 user guide; link rather than repeat.
 
-When folding a working design, remove temporary scaffolding and requirement
-references, rewrite as current state, renumber the doc and TOC, update
-`doc/doc_index.md`, and delete the draft.
+When explicitly promoting a working draft, remove temporary scaffolding and
+requirement references, rewrite as current state, update `doc/doc_index.md`,
+and delete the draft.

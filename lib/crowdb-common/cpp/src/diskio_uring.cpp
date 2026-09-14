@@ -4,6 +4,7 @@
 #include "crowdb-common/diskio_uring.h"
 
 #include "crowdb-common/log.h"
+#include "crowdb-common/metrics/metrics.h"
 
 #include <sched.h>
 #include <sys/epoll.h>
@@ -18,8 +19,29 @@
 namespace crowdb::common
 {
 
+namespace
+{
+std::atomic<uint64_t> uring_in_flight{0};
+
+crowdb::common::metrics::Counter &uring_sq_full_metric()
+{
+    static auto *counter =
+        crowdb::common::metrics::MetricsRegistry::global().register_counter("diskio.uring.sq_full.c");
+    return *counter;
+}
+
+void register_uring_metrics()
+{
+    static auto *in_flight = crowdb::common::metrics::MetricsRegistry::global().register_callback_gauge(
+        "diskio.uring.inflight.g", [] { return uring_in_flight.load(std::memory_order_relaxed); });
+    (void)in_flight;
+    (void)uring_sq_full_metric();
+}
+} // namespace
+
 DiskIOUring::DiskIOUring(Topology topo)
 {
+    register_uring_metrics();
     if (topo.pipelines.empty()) {
         CRB_LOG_ERROR("DiskIOUring: empty topology (zero pipelines)");
         return;
@@ -105,12 +127,21 @@ DiskIOUring::DiskIOUring(Topology topo)
 
     // Start poll threads.
     for (auto &pt : poll_threads_) {
-        pt->thread = std::thread([this, ptp = pt.get()]() { poll_thread_run(*ptp); });
+        pt->thread = std::thread([this, ptp = pt.get()] { poll_thread_run(*ptp); });
     }
 }
 
 DiskIOUring::~DiskIOUring()
 {
+    // Every owner must unregister its descriptors first. Still drain any
+    // request that raced shutdown before stopping the CQ pollers, so callback
+    // storage and borrowed buffers are never abandoned.
+    while (total_in_flight_.load(std::memory_order_acquire) != 0) {
+        for (auto &pt : poll_threads_) {
+            wake_poll_thread(*pt);
+        }
+        std::this_thread::yield();
+    }
     // Stop all poll threads.
     for (auto &pt : poll_threads_) {
         pt->stopped.store(true, std::memory_order_release);
@@ -142,6 +173,10 @@ DiskIOUring::~DiskIOUring()
             ::io_uring_queue_exit(&p->ring);
             ::close(p->eventfd);
         }
+    }
+    uint64_t abandoned = total_in_flight_.exchange(0, std::memory_order_relaxed);
+    if (abandoned != 0) {
+        uring_in_flight.fetch_sub(abandoned, std::memory_order_relaxed);
     }
 }
 
@@ -180,9 +215,15 @@ void DiskIOUring::unregister_fd(int fd)
         return;
     }
     cancel_fd(fd);
+    while (fd_in_flight_[fd].load(std::memory_order_acquire) != 0) {
+        size_t pi = fd_table_[fd].pipeline;
+        if (pi < pipelines_.size()) {
+            mark_pending(*pipelines_[pi]);
+        }
+        std::this_thread::yield();
+    }
     auto &entry      = fd_table_[fd];
     entry.registered = false;
-    fd_in_flight_[fd].store(0, std::memory_order_release);
 }
 
 int DiskIOUring::cancel_fd(int fd)
@@ -266,14 +307,76 @@ void DiskIOUring::submit_write(int fd, const void *buf, size_t len, off_t offset
     });
 }
 
-void DiskIOUring::submit_fsync(int fd, std::function<void(int)> on_complete)
+void DiskIOUring::submit_writev(int fd, const struct iovec *iov, size_t iov_count, off_t offset,
+                                std::function<void(int)> on_complete)
+{
+    if (iov_count == 0) {
+        on_complete(0);
+        return;
+    }
+    auto state = std::make_shared<WritevState>();
+    state->fd  = fd;
+    state->iov.assign(iov, iov + iov_count);
+    state->offset   = offset;
+    state->complete = std::move(on_complete);
+    submit_writev_step(state);
+}
+
+void DiskIOUring::submit_writev_step(const std::shared_ptr<WritevState> &state)
+{
+    if (state->fd < 0 || state->fd >= fd_table_size_ || !fd_table_[state->fd].registered) {
+        state->complete(-EBADF);
+        return;
+    }
+    size_t pi = fd_table_[state->fd].pipeline;
+    submit_lockfree(
+        *pipelines_[pi], state->fd,
+        [this, state](int res) {
+            if (res < 0) {
+                state->complete(res);
+                return;
+            }
+            if (res == 0) {
+                state->complete(-EIO);
+                return;
+            }
+            state->written += static_cast<size_t>(res);
+            auto remaining = static_cast<size_t>(res);
+            while (remaining > 0 && !state->iov.empty()) {
+                auto &front = state->iov.front();
+                if (remaining >= front.iov_len) {
+                    remaining -= front.iov_len;
+                    state->iov.erase(state->iov.begin());
+                }
+                else {
+                    front.iov_base = static_cast<char *>(front.iov_base) + remaining;
+                    front.iov_len -= remaining;
+                    remaining = 0;
+                }
+            }
+            state->offset += res;
+            if (state->iov.empty()) {
+                state->complete(static_cast<int>(state->written));
+            }
+            else {
+                submit_writev_step(state);
+            }
+        },
+        [state](struct io_uring_sqe *sqe) {
+            ::io_uring_prep_writev(sqe, state->fd, state->iov.data(), static_cast<unsigned>(state->iov.size()),
+                                   static_cast<__u64>(state->offset));
+        });
+}
+
+void DiskIOUring::submit_fsync(int fd, bool data_only, std::function<void(int)> on_complete)
 {
     if (fd < 0 || fd >= fd_table_size_ || !fd_table_[fd].registered) {
         if (fd >= 0 && fd < fd_table_size_ && !fd_table_[fd].registered) {
             CRB_LOG_WARN("DiskIOUring::submit_fsync: fd {} not registered, routing to pipeline 0", fd);
             if (!pipelines_.empty() && pipelines_[0]->valid) {
-                submit_lockfree(*pipelines_[0], fd, std::move(on_complete),
-                                [fd](struct io_uring_sqe *sqe) { ::io_uring_prep_fsync(sqe, fd, 0); });
+                submit_lockfree(*pipelines_[0], fd, std::move(on_complete), [fd, data_only](struct io_uring_sqe *sqe) {
+                    ::io_uring_prep_fsync(sqe, fd, data_only ? IORING_FSYNC_DATASYNC : 0);
+                });
                 return;
             }
         }
@@ -283,8 +386,9 @@ void DiskIOUring::submit_fsync(int fd, std::function<void(int)> on_complete)
         return;
     }
     size_t pi = fd_table_[fd].pipeline;
-    submit_lockfree(*pipelines_[pi], fd, std::move(on_complete),
-                    [fd](struct io_uring_sqe *sqe) { ::io_uring_prep_fsync(sqe, fd, 0); });
+    submit_lockfree(*pipelines_[pi], fd, std::move(on_complete), [fd, data_only](struct io_uring_sqe *sqe) {
+        ::io_uring_prep_fsync(sqe, fd, data_only ? IORING_FSYNC_DATASYNC : 0);
+    });
 }
 
 size_t DiskIOUring::eventfds(int32_t *out_fds, size_t max_fds) const
@@ -311,16 +415,24 @@ void DiskIOUring::submit_lockfree(Pipeline &p, int fd, std::function<void(int)> 
     if (fd >= 0 && fd < fd_table_size_) {
         fd_in_flight_[fd].fetch_add(1, std::memory_order_acq_rel);
     }
+    total_in_flight_.fetch_add(1, std::memory_order_relaxed);
+    uring_in_flight.fetch_add(1, std::memory_order_relaxed);
 
-    auto *entry = new CallbackEntry{std::move(on_complete), fd, {}};
+    auto *entry = new CallbackEntry{.cb = std::move(on_complete), .fd = fd, .next_free = {}};
 
     // CAS loop: check capacity BEFORE claiming a slot.
+    bool observed_full = false;
     for (int attempt = 0; attempt < 1000; ++attempt) {
         unsigned tail = p.sq_tail.load(std::memory_order_acquire);
         unsigned head = io_uring_load_sq_head(&p.ring);
 
         if (tail - head >= p.ring.sq.ring_entries) {
             // SQ full — wake poll thread, yield, retry.
+            if (!observed_full) {
+                uring_sq_full_metric().inc();
+                sq_full_count_.fetch_add(1, std::memory_order_relaxed);
+                observed_full = true;
+            }
             mark_pending(p);
             std::this_thread::yield();
             continue;
@@ -346,6 +458,8 @@ void DiskIOUring::submit_lockfree(Pipeline &p, int fd, std::function<void(int)> 
     if (fd >= 0 && fd < fd_table_size_) {
         fd_in_flight_[fd].fetch_sub(1, std::memory_order_acq_rel);
     }
+    total_in_flight_.fetch_sub(1, std::memory_order_relaxed);
+    uring_in_flight.fetch_sub(1, std::memory_order_relaxed);
 }
 
 void DiskIOUring::publish_ready_sqes(Pipeline &p)
@@ -365,7 +479,7 @@ void DiskIOUring::publish_ready_sqes(Pipeline &p)
     io_uring_smp_store_release(p.ring.sq.ktail, p.sqe_head);
 
     if (p.mode == PollingMode::Sqpoll) {
-        if (p.ring.sq.kflags != nullptr && (*p.ring.sq.kflags & IORING_SQ_NEED_WAKEUP)) {
+        if (p.ring.sq.kflags != nullptr && ((*p.ring.sq.kflags & IORING_SQ_NEED_WAKEUP) != 0U)) {
             ::io_uring_enter(p.ring.ring_fd, 0, 0, IORING_ENTER_SQ_WAKEUP, nullptr);
         }
     }
@@ -508,7 +622,7 @@ void DiskIOUring::poll_thread_run(PollThread &pt)
 
 bool DiskIOUring::wait_classic(Pipeline &p, struct io_uring_cqe *&cqe)
 {
-    struct __kernel_timespec ts{0, 50'000'000}; // 50ms
+    struct __kernel_timespec ts{.tv_sec = 0, .tv_nsec = 50'000'000}; // 50ms
     int                      rc = ::io_uring_wait_cqe_timeout(&p.ring, &cqe, &ts);
     return rc == 0;
 }
@@ -526,7 +640,7 @@ bool DiskIOUring::wait_hybrid(Pipeline &p, struct io_uring_cqe *&cqe, unsigned &
         std::this_thread::yield();
         return false;
     }
-    struct __kernel_timespec ts{0, 50'000'000};
+    struct __kernel_timespec ts{.tv_sec = 0, .tv_nsec = 50'000'000};
     int                      rc = ::io_uring_wait_cqe_timeout(&p.ring, &cqe, &ts);
     if (rc == 0) {
         busy_poll_count = 0;
@@ -537,10 +651,10 @@ bool DiskIOUring::wait_hybrid(Pipeline &p, struct io_uring_cqe *&cqe, unsigned &
 
 bool DiskIOUring::wait_sqpoll(Pipeline &p, struct io_uring_cqe *&cqe)
 {
-    if (p.ring.sq.kflags != nullptr && (*p.ring.sq.kflags & IORING_SQ_NEED_WAKEUP)) {
+    if (p.ring.sq.kflags != nullptr && ((*p.ring.sq.kflags & IORING_SQ_NEED_WAKEUP) != 0U)) {
         ::io_uring_enter(p.ring.ring_fd, 0, 0, IORING_ENTER_SQ_WAKEUP, nullptr);
     }
-    struct __kernel_timespec ts{0, 50'000'000};
+    struct __kernel_timespec ts{.tv_sec = 0, .tv_nsec = 50'000'000};
     int                      rc = ::io_uring_wait_cqe_timeout(&p.ring, &cqe, &ts);
     return rc == 0;
 }
@@ -555,11 +669,13 @@ void DiskIOUring::drain_cqes(Pipeline &p)
         ::io_uring_cqe_seen(&p.ring, cqe);
 
         if (entry != nullptr) {
-            if (entry->cb) {
-                entry->cb(res);
-            }
             if (entry->fd >= 0 && entry->fd < fd_table_size_) {
                 fd_in_flight_[entry->fd].fetch_sub(1, std::memory_order_acq_rel);
+            }
+            total_in_flight_.fetch_sub(1, std::memory_order_relaxed);
+            uring_in_flight.fetch_sub(1, std::memory_order_relaxed);
+            if (entry->cb) {
+                entry->cb(res);
             }
             entry->next_free = p.free_list;
             p.free_list      = entry;

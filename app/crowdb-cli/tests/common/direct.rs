@@ -23,13 +23,13 @@ use crowdb_test_harness::test_dirs;
 /// Allocate a free mgmt port for a kv-server.
 #[must_use]
 pub fn pick_mgmt_port() -> u16 {
-    crowdb_protocol::port_alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerMgmt)
+    crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerMgmt)
 }
 
 /// Allocate a free listen port for a kv-server.
 #[must_use]
 pub fn pick_rpc_port() -> u16 {
-    crowdb_protocol::port_alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerListen)
+    crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerListen)
 }
 
 /// Grab two distinct ephemeral TCP ports (mgmt + listen).

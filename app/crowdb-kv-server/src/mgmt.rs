@@ -11,6 +11,7 @@
 //! - [`topology`] — topology export + metrics endpoints
 
 mod group_ops;
+pub mod operation_registry;
 mod replica_ops;
 mod store_ops;
 mod system_init;
@@ -30,9 +31,9 @@ use crowdb_protocol::mgmt::{
     StoreListResponse, StoreSummary, SystemInitRequest, SystemInitResponse, TopologyResponse, WipeResult,
 };
 
-use crate::operation_registry::OperationTarget;
+use self::operation_registry::OperationTarget;
 
-pub(crate) type RegistryArc = crate::operation_registry::AppState;
+pub(crate) type RegistryArc = self::operation_registry::AppState;
 
 // ── Server-local JSON types (no external caller) ────────────────
 

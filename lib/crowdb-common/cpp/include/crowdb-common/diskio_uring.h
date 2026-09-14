@@ -17,6 +17,7 @@
 #endif
 
 #include <liburing.h>
+#include <sys/uio.h>
 
 #include <atomic>
 #include <cstdint>
@@ -114,6 +115,11 @@ class DiskIOUring
     DiskIOUring(const DiskIOUring &)            = delete;
     DiskIOUring &operator=(const DiskIOUring &) = delete;
 
+    [[nodiscard]] bool valid() const
+    {
+        return valid_;
+    }
+
     // --- fd → pipeline registration ---
     // register_fd(fd) — auto-assign: picks the pipeline with the lowest
     //   in-flight count and sticks the fd to it. Best for diskio where
@@ -131,7 +137,21 @@ class DiskIOUring
     int cancel_fd(int fd);
 
     // Number of in-flight ops for a fd (for monitoring / testing).
-    uint32_t in_flight_count(int fd) const;
+    [[nodiscard]] uint32_t in_flight_count(int fd) const;
+
+    // Total operations submitted through this instance that have not yet
+    // completed. Includes requests retrying an exhausted SQ.
+    [[nodiscard]] uint64_t total_in_flight_count() const
+    {
+        return total_in_flight_.load(std::memory_order_relaxed);
+    }
+
+    // Number of submissions on this instance that observed an exhausted SQ
+    // before either acquiring a slot or returning an error.
+    [[nodiscard]] uint64_t sq_full_count() const
+    {
+        return sq_full_count_.load(std::memory_order_relaxed);
+    }
 
     // Unregister fd: cancel in-flight, wait for CQEs to drain, clear slot.
     void unregister_fd(int fd);
@@ -143,7 +163,14 @@ class DiskIOUring
     // with a negative errno.
     void submit_read(int fd, void *buf, size_t len, off_t offset, std::function<void(int)> on_complete);
     void submit_write(int fd, const void *buf, size_t len, off_t offset, std::function<void(int)> on_complete);
-    void submit_fsync(int fd, std::function<void(int)> on_complete);
+    void submit_writev(int fd, const struct iovec *iov, size_t iov_count, off_t offset,
+                       std::function<void(int)> on_complete);
+    void submit_fsync(int fd, bool data_only, std::function<void(int)> on_complete);
+
+    void submit_fsync(int fd, std::function<void(int)> on_complete)
+    {
+        submit_fsync(fd, false, std::move(on_complete));
+    }
 
     // Returns one eventfd per pipeline, for the Rust FFI to register with
     // tokio::io::AsyncFd. Each eventfd becomes readable after the poll
@@ -214,26 +241,37 @@ class DiskIOUring
 
     using Prep = std::function<void(struct io_uring_sqe *)>;
 
+    struct WritevState
+    {
+        int                       fd{-1};
+        std::vector<struct iovec> iov;
+        off_t                     offset{0};
+        size_t                    written{0};
+        std::function<void(int)>  complete;
+    };
+
+    void submit_writev_step(const std::shared_ptr<WritevState> &state);
+
     // Lock-free SQE claim on a specific pipeline.
     void submit_lockfree(Pipeline &p, int fd, std::function<void(int)> on_complete, const Prep &prep);
 
     // Publish contiguous filled SQE slots to the kernel for one pipeline.
-    void publish_ready_sqes(Pipeline &p);
+    static void publish_ready_sqes(Pipeline &p);
 
     // Poll thread body: drains CQs for all assigned pipelines.
     void poll_thread_run(PollThread &pt);
 
     // Mode-specific wait for one pipeline.
-    bool wait_classic(Pipeline &p, struct io_uring_cqe *&cqe);
-    bool wait_hybrid(Pipeline &p, struct io_uring_cqe *&cqe, unsigned &busy_poll_count);
-    bool wait_sqpoll(Pipeline &p, struct io_uring_cqe *&cqe);
+    static bool wait_classic(Pipeline &p, struct io_uring_cqe *&cqe);
+    static bool wait_hybrid(Pipeline &p, struct io_uring_cqe *&cqe, unsigned &busy_poll_count);
+    static bool wait_sqpoll(Pipeline &p, struct io_uring_cqe *&cqe);
 
     // Drain all ready CQEs for one pipeline and dispatch callbacks.
     void drain_cqes(Pipeline &p);
 
     // Wake a sleeping poll thread through its private eventfd. Pipeline
     // eventfds are reserved for external completion consumers.
-    void wake_poll_thread(PollThread &pt);
+    static void wake_poll_thread(PollThread &pt);
 
     // Publish the idle-to-pending transition and wake the owning poll thread.
     void mark_pending(Pipeline &p);
@@ -244,6 +282,8 @@ class DiskIOUring
     // fd_table: direct-indexed by fd, sized once to ulimit -n.
     std::vector<FdEntry>                     fd_table_;
     std::unique_ptr<std::atomic<uint32_t>[]> fd_in_flight_;
+    std::atomic<uint64_t>                    total_in_flight_{0};
+    std::atomic<uint64_t>                    sq_full_count_{0};
     int                                      fd_table_size_{0};
 
     // Pipelines and poll threads (unique_ptr because atomics are non-movable).

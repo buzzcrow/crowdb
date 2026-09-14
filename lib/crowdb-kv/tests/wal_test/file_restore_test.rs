@@ -54,6 +54,47 @@ async fn create_file_wal(wal_dir: PathBuf) -> Arc<WalEngine> {
         .expect("create file-backed wal")
 }
 
+async fn create_wal(backend: Arc<IoBackend>, wal_dir: PathBuf) -> Arc<WalEngine> {
+    let mut config = WalConfig::with_root(wal_dir);
+    config.wal_record_format = WalRecordFormat::Binary;
+    WalEngine::create(backend, config, GROUP)
+        .await
+        .expect("create wal")
+}
+
+#[tokio::test]
+async fn uring_wal_matches_file_recovery_format() {
+    let Ok(uring) = IoBackend::uring() else {
+        return;
+    };
+    let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("uring-restore");
+    let wal_dir = tmp.path().join("wal");
+    let disks = vec![wal_dir.clone()];
+    let backend = Arc::new(uring);
+
+    {
+        let wal = create_wal(Arc::clone(&backend), wal_dir).await;
+        for slot in 1..=3 {
+            let entry = accepted_write(slot, 8, b"large-key", &[0x5a; 16 * 1024]);
+            wal.append(&WALRecord::from_accepted(GROUP, &entry))
+                .await
+                .expect("append through uring");
+        }
+        wal.seal_all().await.expect("seal uring WAL");
+    }
+
+    let replay = replay_group(&backend, &disks, GROUP)
+        .await
+        .expect("replay uring WAL");
+    let accepted_slots: Vec<u64> = replay
+        .records
+        .iter()
+        .filter(|record| matches!(record.record_type, RecordType::Accepted))
+        .map(|record| record.slot)
+        .collect();
+    assert_eq!(accepted_slots, vec![1, 2, 3]);
+}
+
 #[tokio::test]
 async fn file_backed_wal_recovers_state_after_reopen() {
     let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("file-restore");

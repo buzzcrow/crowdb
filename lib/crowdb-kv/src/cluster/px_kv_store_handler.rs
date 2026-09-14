@@ -3,17 +3,88 @@
 
 #![allow(clippy::cast_possible_truncation)]
 
+use crate::cluster::group_operations::{
+    KvGroupMutation, KvGroupOperationError, KvGroupOperations, KvGroupScanRequest, KvReadConsistency,
+    KvRequestIdentity,
+};
 use crate::cluster::kv_store::KvStore;
 use crate::cluster::px_kv_store::{
     journal_scan_err, missing_group_response, scan_err, PxKvStore, ReadDecision,
 };
-use crate::common::optional_u64;
 use crate::kv::{Batch, Op};
 use bytes::Bytes;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::debug;
+
+fn read_consistency(read_mode: i32, min_slot: u64) -> KvReadConsistency {
+    match crate::rpc::ReadMode::try_from(read_mode).unwrap_or(crate::rpc::ReadMode::Linearizable) {
+        crate::rpc::ReadMode::Linearizable => KvReadConsistency::Linearizable,
+        crate::rpc::ReadMode::MinSlot => KvReadConsistency::MinAppliedSlot(min_slot),
+    }
+}
+
+fn request_identity(client_id: u64, sequence: u64) -> Option<KvRequestIdentity> {
+    (client_id != 0).then_some(KvRequestIdentity { client_id, sequence })
+}
+
+async fn write_and_respond(
+    operations: Option<KvGroupOperations>,
+    mutations: Vec<KvGroupMutation>,
+    identity: Option<KvRequestIdentity>,
+    request_id: u64,
+    request_create_ms: u64,
+) -> crate::rpc::KvResponse {
+    let Some(operations) = operations else {
+        return missing_group_response(request_id, request_create_ms);
+    };
+    match operations.write(&mutations, identity).await {
+        Ok(write) => crate::rpc::KvResponse::ok_chosen(write.chosen_slot, request_id, request_create_ms),
+        Err(error) => operation_error_response(error, request_id, request_create_ms),
+    }
+}
+
+fn operation_error_response(
+    error: KvGroupOperationError,
+    request_id: u64,
+    request_create_ms: u64,
+) -> crate::rpc::KvResponse {
+    match error {
+        KvGroupOperationError::NotLeader { leader_hint } => {
+            crate::rpc::KvResponse::not_leader(leader_hint, request_id, request_create_ms)
+        }
+        KvGroupOperationError::Busy => crate::rpc::KvResponse::err(
+            crate::paxos::error::PxPaxosError::Busy.keyword().to_string(),
+            request_id,
+            request_create_ms,
+        ),
+        KvGroupOperationError::CompareFailed { current_revision } => crate::rpc::KvResponse::cas_error(
+            crate::rpc::KvErrorCode::KvErrorCasFailed,
+            current_revision,
+            "compare-and-set precondition failed",
+            request_id,
+            request_create_ms,
+        ),
+        KvGroupOperationError::CompareBusy => crate::rpc::KvResponse::cas_error(
+            crate::rpc::KvErrorCode::KvErrorCasBusy,
+            0,
+            "compare-and-set admission busy",
+            request_id,
+            request_create_ms,
+        ),
+        KvGroupOperationError::OutcomeUnknown => crate::rpc::KvResponse::cas_error(
+            crate::rpc::KvErrorCode::KvErrorOutcomeUnknown,
+            0,
+            "compare-and-set outcome is unknown",
+            request_id,
+            request_create_ms,
+        ),
+        KvGroupOperationError::Unavailable(message) | KvGroupOperationError::Internal(message) => {
+            crate::rpc::KvResponse::err(message, request_id, request_create_ms)
+        }
+    }
+}
 
 impl KvStore for PxKvStore {
     async fn kv_get(
@@ -32,35 +103,32 @@ impl KvStore for PxKvStore {
         if let Some(delay) = test_delay {
             tokio::time::sleep(delay).await;
         }
-        let Some(group) = self.get_group(group_id) else {
+        let Some(operations) = self.group_operations(group_id) else {
             return missing_group_response(request_id, request_create_ms);
         };
-
-        let result = match self.resolve_read_point(&group, read_mode, min_slot).await {
-            ReadDecision::Serve { read_slot, safe_slot } => {
-                let engine_start = Instant::now();
-                let value = group.local_replica().learner.engine_get_bytes(key).await;
-                if let Some(h) = group.read_handles() {
-                    h.engine_get.observe(engine_start.elapsed().as_nanos() as u64);
-                }
-                match value {
-                    Some((slot, v)) => {
-                        crate::rpc::KvResponse::ok_value_with_revision(v, slot, request_id, request_create_ms)
-                            .with_read_slots(read_slot, safe_slot)
-                    }
-                    None => crate::rpc::KvResponse::not_found(request_id, request_create_ms)
-                        .with_read_slots(read_slot, safe_slot),
-                }
-            }
-            ReadDecision::NotLeader { hint } => {
-                crate::rpc::KvResponse::not_leader(hint, request_id, request_create_ms)
-            }
-            ReadDecision::Unavailable { msg } => {
-                crate::rpc::KvResponse::err(msg, request_id, request_create_ms)
-            }
+        let consistency = read_consistency(read_mode, min_slot);
+        let result = match operations.get(key, consistency).await {
+            Ok(read) => read.value.map_or_else(
+                || {
+                    crate::rpc::KvResponse::not_found(request_id, request_create_ms)
+                        .with_read_slots(read.read_slot, read.safe_slot)
+                },
+                |value| {
+                    crate::rpc::KvResponse::ok_value_with_revision(
+                        value,
+                        read.revision,
+                        request_id,
+                        request_create_ms,
+                    )
+                    .with_read_slots(read.read_slot, read.safe_slot)
+                },
+            ),
+            Err(error) => operation_error_response(error, request_id, request_create_ms),
         };
-        if let Some(h) = group.read_handles() {
-            h.e2e.observe(e2e_start.elapsed().as_nanos() as u64);
+        if let Some(group) = self.get_group(group_id) {
+            if let Some(h) = group.read_handles() {
+                h.e2e.observe(e2e_start.elapsed().as_nanos() as u64);
+            }
         }
         result
     }
@@ -75,12 +143,13 @@ impl KvStore for PxKvStore {
         request_id: u64,
         request_create_ms: u64,
     ) -> crate::rpc::KvResponse {
-        let payload = Self::encode_kv_payload(&[(key, Some(value))]);
-        self.propose_and_respond(
-            group_id,
-            payload,
-            optional_u64(client_id),
-            Some(seq),
+        write_and_respond(
+            self.group_operations(group_id),
+            vec![KvGroupMutation::Put {
+                key: Bytes::copy_from_slice(key),
+                value: Bytes::copy_from_slice(value),
+            }],
+            request_identity(client_id, seq),
             request_id,
             request_create_ms,
         )
@@ -95,12 +164,12 @@ impl KvStore for PxKvStore {
         request_id: u64,
         request_create_ms: u64,
     ) -> crate::rpc::KvResponse {
-        let payload = Self::encode_kv_payload(&[(key, None)]);
-        self.propose_and_respond(
-            group_id,
-            payload,
-            optional_u64(client_id),
-            Some(seq),
+        write_and_respond(
+            self.group_operations(group_id),
+            vec![KvGroupMutation::Delete {
+                key: Bytes::copy_from_slice(key),
+            }],
+            request_identity(client_id, seq),
             request_id,
             request_create_ms,
         )
@@ -115,12 +184,23 @@ impl KvStore for PxKvStore {
         request_id: u64,
         request_create_ms: u64,
     ) -> crate::rpc::KvResponse {
-        let payload = Self::encode_kv_batch_items(&items);
-        self.propose_and_respond(
-            group_id,
-            payload,
-            optional_u64(client_id),
-            Some(seq),
+        let mutations = items
+            .into_iter()
+            .map(|item| {
+                if item.is_delete {
+                    KvGroupMutation::Delete { key: item.key }
+                } else {
+                    KvGroupMutation::Put {
+                        key: item.key,
+                        value: item.value,
+                    }
+                }
+            })
+            .collect();
+        write_and_respond(
+            self.group_operations(group_id),
+            mutations,
+            request_identity(client_id, seq),
             request_id,
             request_create_ms,
         )
@@ -128,7 +208,6 @@ impl KvStore for PxKvStore {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_lines)]
     async fn kv_scan(
         &self,
         group_id: u64,
@@ -143,10 +222,11 @@ impl KvStore for PxKvStore {
         deadline_ms: u64,
         bounded: bool,
         requested_scan_cutoff: u64,
+        direction: crate::kv::ScanDirection,
         request_id: u64,
         request_create_ms: u64,
     ) -> crate::rpc::KvScanResponse {
-        let Some(group) = self.get_group(group_id) else {
+        let Some(operations) = self.group_operations(group_id) else {
             return scan_err(
                 format!("group {group_id} not found in store {}", self.store_id),
                 String::new(),
@@ -154,155 +234,50 @@ impl KvStore for PxKvStore {
                 request_create_ms,
             );
         };
-
-        // Scans pass `min_slot` through to the read resolver; for
-        // linearizable scans it is ignored, for MinSlot scans it sets
-        // the freshness floor.
-        let read_slot = match self.resolve_read_point(&group, read_mode, min_slot).await {
-            ReadDecision::Serve { read_slot, .. } => read_slot,
-            ReadDecision::NotLeader { hint } => {
-                return scan_err("not leader".to_string(), hint, request_id, request_create_ms);
-            }
-            ReadDecision::Unavailable { msg } => {
-                return scan_err(msg, String::new(), request_id, request_create_ms);
-            }
+        let request = KvGroupScanRequest {
+            prefix: Bytes::copy_from_slice(prefix),
+            start_after: Bytes::copy_from_slice(start_after),
+            end_key: Bytes::copy_from_slice(end_key),
+            limit: limit as usize,
+            consistency: read_consistency(read_mode, min_slot),
+            keys_only,
+            count_only,
+            deadline_ms,
+            bounded,
+            requested_scan_cutoff,
+            direction,
         };
-        let scan_cutoff = if bounded {
-            if requested_scan_cutoff == 0 {
-                read_slot
-            } else if requested_scan_cutoff > read_slot {
-                return scan_err(
-                    format!(
-                        "bounded scan cutoff {requested_scan_cutoff} exceeds contiguous applied {read_slot}"
-                    ),
-                    String::new(),
-                    request_id,
-                    request_create_ms,
-                );
-            } else {
-                requested_scan_cutoff
-            }
-        } else {
-            0
-        };
-
-        // Ordered prefix scan from the engine. The engine returns the
-        // `limit` smallest matching live keys (no tombstones) in key order
-        // plus a `truncated` flag; `limit == 0` means unlimited. Sorted
-        // output keeps pagination via `prefix` extension predictable.
-        // `keys_only` is pushed down so the engine skips value materialization
-        // (no overflow-chain assembly); `count_only` reuses that keys_only pass
-        // with no byte budget (count all matching keys in one pass) and ships
-        // zero items + a count instead of the keys. Engine errors (e.g.
-        // Corruption) propagate as scan_err instead of being silently
-        // swallowed as an empty ok result.
-        let engine_keys_only = keys_only || count_only;
-        let engine_byte_budget = if count_only || bounded {
-            0
-        } else {
-            self.scan_byte_budget
-        };
-        let engine_limit = if bounded { 0 } else { limit as usize };
-        let (scanned, truncated) = match group
-            .local_replica()
-            .learner
-            .engine_scan(
-                prefix,
-                start_after,
-                end_key,
-                engine_limit,
-                engine_byte_budget,
-                engine_keys_only,
-                deadline_ms,
-            )
-            .await
-        {
-            Ok(result) => result,
-            Err(msg) => {
-                return scan_err(
-                    format!("scan engine error: {msg}"),
-                    String::new(),
-                    request_id,
-                    request_create_ms,
-                );
-            }
-        };
-
-        // count_only: discard the keys, report the matched count, ship zero
-        // items. The engine already excluded tombstones (default), so the
-        // count is the live matching key count.
-        if count_only {
-            let count = scanned.len() as u64;
-            debug!(
-                s = self.store_id,
-                group_id,
-                prefix_len = prefix.len(),
-                limit,
-                count,
-                truncated,
-                "kv_scan count_only local-replica read"
-            );
-            return crate::rpc::KvScanResponse {
+        match operations.scan(&request).await {
+            Ok(scan) => crate::rpc::KvScanResponse {
                 version: 1,
                 ok: true,
                 error: String::new(),
-                truncated,
-                items: Vec::new(),
+                truncated: scan.truncated,
+                items: scan
+                    .items
+                    .into_iter()
+                    .map(|item| crate::rpc::KvScanItem {
+                        key: item.key,
+                        value: item.value,
+                        commit_slot: item.revision,
+                    })
+                    .collect(),
                 request_id,
                 request_create_ms,
-                read_slot,
+                read_slot: scan.read_slot,
                 not_leader_hint: String::new(),
                 error_code: crate::rpc::KvErrorCode::KvErrorNone as i32,
-                count,
-                timed_out: deadline_ms != 0 && truncated,
-                scan_cutoff,
-            };
-        }
-
-        let mut items: Vec<crate::rpc::KvScanItem> = Vec::with_capacity(scanned.len());
-        for (key, commit_slot, value) in scanned {
-            if bounded && commit_slot > scan_cutoff {
-                continue;
-            }
-            // Key and value are already zero-copy Bytes from the
-            // engine's packed scan buffer — assign directly, no conversion.
-            // For keys_only scans the value is an empty Bytes.
-            items.push(crate::rpc::KvScanItem {
-                key,
-                value,
-                commit_slot,
-            });
-        }
-        let bounded_truncated = limit != 0 && items.len() > limit as usize;
-        if bounded_truncated {
-            items.truncate(limit as usize);
-        }
-
-        debug!(
-            s = self.store_id,
-            group_id,
-            prefix_len = prefix.len(),
-            limit,
-            keys_only,
-            returned = items.len(),
-            truncated = if bounded { bounded_truncated } else { truncated },
-            "kv_scan local-replica read"
-        );
-
-        crate::rpc::KvScanResponse {
-            version: 1,
-            ok: true,
-            error: String::new(),
-            truncated: if bounded { bounded_truncated } else { truncated },
-            items,
-            request_id,
-            request_create_ms,
-            read_slot,
-            not_leader_hint: String::new(),
-            error_code: crate::rpc::KvErrorCode::KvErrorNone as i32,
-            count: 0,
-            timed_out: deadline_ms != 0 && if bounded { bounded_truncated } else { truncated },
-            scan_cutoff,
+                count: scan.count,
+                timed_out: scan.timed_out,
+                scan_cutoff: scan.scan_cutoff,
+            },
+            Err(KvGroupOperationError::NotLeader { leader_hint }) => scan_err(
+                "not leader".to_string(),
+                leader_hint,
+                request_id,
+                request_create_ms,
+            ),
+            Err(error) => scan_err(error.to_string(), String::new(), request_id, request_create_ms),
         }
     }
 
@@ -544,7 +519,7 @@ impl KvStore for PxKvStore {
         // leader barrier; min_slot serves locally once the applied
         // frontier has caught up to `min_slot`.
         let read_slot = match self.resolve_read_point(&group, read_mode, min_slot).await {
-            ReadDecision::Serve { read_slot, .. } => read_slot,
+            ReadDecision::Serve { read_slot } => read_slot,
             ReadDecision::NotLeader { hint } => {
                 return journal_scan_err(
                     "not leader".to_string(),

@@ -4,7 +4,7 @@
 //! `ChunkdbClient` — client library for CROWDB chunkdb operations.
 //!
 //! Endpoint discovery + cache: `refresh_endpoints` reads all chunkdb
-//! instances from the service registry, populates a `DashMap` cache
+//! instances from the service registry, atomically publishes an endpoint cache
 //! (`instance_id -> rpc_endpoint`). On cache miss, lazily refreshes.
 //! Retry: exponential backoff on transient errors, up to `max_retries`.
 
@@ -32,6 +32,7 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::InstanceId;
+use crowdb_rpc_ffi::OwnedClientRoute;
 
 use crate::{ChunkdbClientError, ChunkdbRpcTransport, Result};
 
@@ -142,6 +143,13 @@ impl ChunkdbClient {
             .next()
             .cloned()
             .ok_or_else(|| ChunkdbClientError::Unreachable("no chunkdb instances registered".into()))
+    }
+
+    /// Return an owned route to a live `ChunkDB` endpoint for storage engines
+    /// whose allocation RPCs are not tied to an existing chunk identifier.
+    pub async fn storage_route(&self) -> Result<OwnedClientRoute> {
+        let endpoint = self.first_endpoint().await?;
+        self.rpc_transport.owned_route(&endpoint)
     }
 
     async fn endpoints_for_chunk(&self, chunk_id: Option<&ChunkId>) -> Result<Vec<String>> {

@@ -156,12 +156,46 @@ underlying KV ceiling or changing the number of DiskDB operations represented
 by one KV client write. Any such batching must preserve durable acknowledgement
 and exact rollback semantics.
 
+### Concurrent-free coalescing reference (2026-09-14)
+
+The immediate-drain free coalescer was compared with the direct path using:
+
+```bash
+DISKDB_BENCH_DURATION=10 DISKDB_BENCH_CASES='free_batch_off_mem free_batch_on_mem' pixi run -- bash tools/bench-diskdb-regression.sh
+```
+
+Reference host: Intel Core i9-7960X (16 cores / 32 threads), x86_64,
+Linux 6.11.0-29, XFS on `/dev/nvme1n1p1`. Both cases used one KV data group,
+three KV nodes, three DiskDB instances, 128 workload tasks, one block per RPC,
+four connections/workers at each RPC layer, memory KV/WAL, and a 10-second
+70/30 allocate/free workload.
+
+| Free batch | ops/s | Avg us | p50 us | p99 us | Free requests | KV proposals | Requests/proposal | Errors | Space |
+| ---------- | ----: | -----: | -----: | -----: | ------------: | -----------: | ----------------: | -----: | ----- |
+| off        | 112,319 |  1,138 |  1,110 |  1,766 |       337,596 |      337,596 |              1.00 |      0 | exact |
+| on         | 118,794 |  1,076 |  1,013 |  1,953 |       356,984 |       40,209 |              8.88 |      0 | exact |
+
+Enabled mode reduced KV proposals per free record by 88.7%, improved aggregate
+throughput by 5.8%, and reduced average latency by 5.4%. Both paths completed
+with zero errors and exact post-compaction space accounting. The deterministic
+coalescer tests additionally feed the same incarnation-qualified records
+through direct and combined persistence and verify whole-request atomicity,
+cross-request duplicate suppression, failure fan-out, and explicit retry.
+
+Open observation: enabled-mode p99 was 10.6% higher in this single comparison
+even though average and p50 improved. A repeated latency-focused run is needed
+to separate normal run variance from the expected queueing tail of requests
+that join an in-flight KV batch; this does not affect durability or proposal
+reduction.
+
 ## 6. Retained Logs
 
 Reference run roots:
 
 - `bench-log/diskdb-regression-20260905-133409`: complete current allocation
   and mixed-workload matrix.
+- `bench-log/diskdb-regression-20260914-010652`: direct versus enabled
+  concurrent-free coalescing comparison.
 
 Each root retains command output and configuration plus three KV metrics/RPC
 log pairs, three DiskDB metrics/RPC log pairs, and one CLI metrics/RPC pair per

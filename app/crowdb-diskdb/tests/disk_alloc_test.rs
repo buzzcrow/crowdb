@@ -5,7 +5,8 @@
 //! rotation, multi-disk spread, free-by-disk-id.
 
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Barrier};
 
 use crowdb_diskdb::model::disk::DdbDisk;
 use crowdb_diskdb::model::disk_group::{AllocError, DdbDiskGroup, TentativeBlock};
@@ -65,6 +66,7 @@ fn tentative_cache_removes_only_matching_block() {
             unit_count: 2,
             ..Default::default()
         },
+        revision: 7,
     };
     dg.cache_tentative(block);
 
@@ -73,6 +75,54 @@ fn tentative_cache_removes_only_matching_block() {
     assert!(dg.tentative(99).is_some());
     assert!(dg.remove_matching_tentative(99, disk_id(7), 3, 11));
     assert!(dg.tentative(99).is_none());
+}
+
+#[test]
+fn concurrent_tentative_cache_evicts_oldest_and_converges_to_capacity() {
+    const CAPACITY: usize = 64;
+    const SEQUENCES: u64 = 128;
+    const WRITERS: usize = 4;
+
+    let dg = Arc::new(DdbDiskGroup::new_with_tentative_capacity(DG, 1, 1, CAPACITY));
+    let start = Arc::new(Barrier::new(WRITERS));
+    let writers: Vec<_> = (0..WRITERS)
+        .map(|_| {
+            let dg = Arc::clone(&dg);
+            let start = Arc::clone(&start);
+            std::thread::spawn(move || {
+                start.wait();
+                for allocation_ts in 0..SEQUENCES {
+                    dg.cache_tentative(TentativeBlock {
+                        disk_id: disk_id(allocation_ts),
+                        zone_index: 0,
+                        unit_offset: allocation_ts,
+                        value: BusyBlockValue {
+                            allocation_ts,
+                            unit_count: 1,
+                            ..Default::default()
+                        },
+                        revision: allocation_ts,
+                    });
+                }
+            })
+        })
+        .collect();
+
+    for writer in writers {
+        writer.join().expect("tentative writer");
+    }
+
+    assert_eq!(dg.tentative_count(), CAPACITY);
+    for allocation_ts in 0..(SEQUENCES - CAPACITY as u64) {
+        assert!(
+            dg.tentative(allocation_ts).is_none(),
+            "old allocation {allocation_ts} should be evicted"
+        );
+    }
+    for allocation_ts in (SEQUENCES - CAPACITY as u64)..SEQUENCES {
+        let retained = dg.tentative(allocation_ts).expect("newest allocation retained");
+        assert_eq!(retained.value.allocation_ts, allocation_ts);
+    }
 }
 
 // ── DdbDisk ────────────────────────────────────────────────────
@@ -334,4 +384,32 @@ fn node_rebuild_allocating_disks_on_status_change() {
         picked_after.len() >= 2,
         "expected disks 2 and 3 to be picked, got {picked_after:?}"
     );
+}
+
+#[test]
+fn disk_membership_and_allocation_routes_publish_together() {
+    let dg = make_dg_with_disks(&[(1, 1, 128), (2, 1, 128)]);
+    let changing_disk = dg.get_disk(disk_id(2)).expect("disk 2");
+    let finished = Arc::new(AtomicBool::new(false));
+    let reader_dg = Arc::clone(&dg);
+    let reader_finished = Arc::clone(&finished);
+
+    let reader = std::thread::spawn(move || loop {
+        let (all, allocating) = reader_dg.membership_snapshot_ids();
+        assert_eq!(
+            all.contains(&disk_id(2)),
+            allocating.contains(&disk_id(2)),
+            "an Up disk must appear in both routes from one generation"
+        );
+        if reader_finished.load(Ordering::Acquire) {
+            break;
+        }
+    });
+
+    for _ in 0..1_000 {
+        dg.remove_disk_from_memory(&disk_id(2));
+        dg.add_disk(Arc::clone(&changing_disk));
+    }
+    finished.store(true, Ordering::Release);
+    reader.join().expect("membership reader");
 }

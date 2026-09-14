@@ -21,7 +21,7 @@ use crowdb_chunkdb::routing::{default_binding_table, BindingCache};
 use crowdb_chunkdb::storage::ChunkStore;
 use crowdb_chunkdb::topology::{refresh::run_refresh_loop, TopologyCache};
 use crowdb_common::metrics::MetricsRegistry;
-use crowdb_diskdb::ddb_config::{KeepAliveConfig, StorageDefaults};
+use crowdb_diskdb::ddb_config::{DdbConfig, KeepAliveConfig, StorageDefaults};
 use crowdb_diskdb::ddb_kv_client::DdbKvClient;
 use crowdb_diskdb::liveness::keepalive::KeepAlive;
 use crowdb_diskdb::liveness::lifecycle::StartupPhase;
@@ -35,7 +35,7 @@ use crowdb_diskdb_client::DiskdbRpcTransport;
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, RetryConfig, ServiceRegistryClient};
 use crowdb_protocol::common::{DiskId, HwStatus, NodeValue, RackValue};
 use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue};
-use crowdb_protocol::port_alloc;
+use crowdb_protocol::port::alloc as port_alloc;
 use crowdb_protocol::ServicePort;
 use serde_json::Value;
 
@@ -556,6 +556,7 @@ impl DiskdbServer {
             )),
             ScanState::new(),
             metrics,
+            Arc::new(arc_swap::ArcSwap::from_pointee(DdbConfig::default())),
             rt_handle,
         ));
         let rpc_server = Arc::new(crowdb_rpc_ffi::RpcServer::new(None));

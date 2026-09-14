@@ -23,24 +23,28 @@ pub trait Acceptor {
     fn trim_slot(&self) -> SlotIndex;
 }
 
-/// One `(client_id, seq)` dedup tag for a chosen slot. `client_id == 0`
-/// is the no-dedup sentinel (matches `PxLearner::record_dedup`). A
-/// coalesced multi-key batch carries one tag per client op, all mapping
+/// One client request identity associated with a chosen slot. `client_id == 0`
+/// disables replay suppression. A coalesced multi-key batch carries one
+/// identity per client operation, all mapping
 /// to the same slot; a single-key propose carries one; repair/election
 /// entries carry none.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DedupTag {
+pub struct RequestIdentity {
     pub client_id: u64,
     pub seq: u64,
 }
 
+/// Compatibility alias for existing integration tests.
+#[cfg(feature = "test-util")]
+pub type DedupTag = RequestIdentity;
+
 #[allow(async_fn_in_trait)]
 pub trait Learner {
-    /// Apply a chosen log entry to the state machine and record each
-    /// `dedup_tags` entry against the slot. Tags are runtime dedup
-    /// metadata (not persisted in WAL). Empty slice = no dedup
+    /// Apply a chosen log entry to the state machine and cache each request
+    /// identity against the result slot. Identities are leader-local runtime
+    /// metadata (not persisted in WAL). An empty slice disables caching
     /// (repair/election/restore catch-up).
-    async fn learn(&self, entry: PxLogEntry, dedup_tags: &[DedupTag]);
+    async fn learn(&self, entry: PxLogEntry, request_identities: &[RequestIdentity]);
 }
 
 /// Paxos proposal number, ordered first by `round`, then by `leader_id`.

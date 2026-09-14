@@ -54,6 +54,9 @@ pub enum ClusterVerb {
         /// [diskio] RPC I/O worker threads. 0 = server default (4).
         #[arg(long, default_value_t = 0)]
         diskio_rpc_workers: u32,
+        /// [diskio] Backend for auto-discovered local disks (null|mem).
+        #[arg(long, default_value = "null", value_parser = ["null", "mem"])]
+        diskio_dummy_disk_type: String,
         /// [kv] `--peer-pool-size` for the spawned server. 0 = server default (2).
         #[arg(long, default_value_t = 0)]
         peer_pool_size: usize,
@@ -107,6 +110,12 @@ pub enum ClusterVerb {
         /// [diskdb] KV client crowdb-rpc I/O workers. 0 = server default (2).
         #[arg(long, default_value_t = 0)]
         kv_client_rpc_workers: u32,
+        /// [diskdb] Coalesce concurrently queued free requests.
+        #[arg(long, default_value_t = false)]
+        free_batch: bool,
+        /// [diskdb] Maximum free records per coalesced KV proposal. 0 = default (256).
+        #[arg(long, default_value_t = 0)]
+        free_flush_max_batch: u32,
         /// [chunkdb] `DiskDB` client connections kept per endpoint. 0 = server default (1).
         #[arg(long, default_value_t = 0)]
         diskdb_connections: usize,
@@ -214,6 +223,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             enable_nagle,
             rpc_workers,
             diskio_rpc_workers,
+            diskio_dummy_disk_type,
             peer_pool_size,
             max_inflight,
             coalesce_max_keys,
@@ -231,6 +241,8 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             data_groups,
             kv_connections,
             kv_client_rpc_workers,
+            free_batch,
+            free_flush_max_batch,
             diskdb_connections,
             diskdb_client_rpc_workers,
             chunkdb_instances,
@@ -265,6 +277,8 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     rpc_workers: nonzero(rpc_workers),
                     kv_connections: nonzero(kv_connections),
                     kv_client_rpc_workers: nonzero(kv_client_rpc_workers),
+                    free_batch_enabled: free_batch.then_some(true),
+                    free_flush_max_batch: nonzero(free_flush_max_batch),
                 };
                 let chunk = crowdb_console_shared::ops::cluster::LocalChunkdbDeployConfig {
                     instance_count: chunkdb_instances,
@@ -283,6 +297,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     Some(&tunables),
                     &disk,
                     &chunk,
+                    &diskio_dummy_disk_type,
                 )
                 .await
                 {
@@ -428,6 +443,8 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     rpc_workers: nonzero(rpc_workers),
                     kv_connections: nonzero(kv_connections),
                     kv_client_rpc_workers: nonzero(kv_client_rpc_workers),
+                    free_batch_enabled: free_batch.then_some(true),
+                    free_flush_max_batch: nonzero(free_flush_max_batch),
                 };
                 match crowdb_console_shared::ops::cluster::local_deploy_diskdb(&ctx, &workspace, &config)
                     .await

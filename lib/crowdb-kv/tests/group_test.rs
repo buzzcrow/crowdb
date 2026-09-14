@@ -34,6 +34,9 @@ mod group_config;
 #[path = "group_test/group_propose_test.rs"]
 mod group_propose;
 
+#[path = "group_test/cas_test.rs"]
+mod cas;
+
 #[path = "group_test/kv_test.rs"]
 mod kv;
 

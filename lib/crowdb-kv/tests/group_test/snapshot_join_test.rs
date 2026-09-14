@@ -3,8 +3,8 @@
 
 //! New-member snapshot join (`PxGroup::join_via_snapshot`):
 //! a fresh, still-empty replica pulls
-//! a snapshot from an existing cluster's leader over the real
-//! `SnapshotService` crowdb-rpc, instead of replaying full Paxos history from
+//! a snapshot from an existing cluster's leader over bounded crowdb-rpc
+//! requests, instead of replaying full Paxos history from
 //! slot 1.
 
 use crate::common::cluster::start_cluster;
@@ -12,6 +12,7 @@ use crate::test_util::compare_dyn;
 use bytes::Bytes;
 use crowdb_kv::cluster::group::PxGroup;
 use crowdb_kv::cluster::{KvServer, PxLocalReplica, PxLocalReplicaRole};
+use crowdb_kv::kv::{Batch, BatchOp, Op};
 use crowdb_kv::rpc::KvSetRequest;
 
 #[tokio::test]
@@ -97,6 +98,63 @@ async fn fresh_replica_joins_via_snapshot_and_matches_leader_state() {
         leader_group.local_replica().contiguous_applied(),
     );
     assert!(new_group.local_replica().contiguous_applied() > 0);
+
+    cluster.shutdown().await;
+}
+
+#[tokio::test]
+async fn snapshot_larger_than_64_mib_joins_through_bounded_reads() {
+    const VALUE_BYTES: usize = 1024 * 1024;
+    const ENTRY_COUNT: usize = 65;
+
+    let cluster = start_cluster(&[0], 0).await;
+    let leader = cluster.leader();
+    let leader_group = leader.get_group(1).expect("leader group exists");
+    let value = Bytes::from(vec![0x5a; VALUE_BYTES]);
+    let batch = Batch {
+        ops: (0..ENTRY_COUNT)
+            .map(|index| BatchOp {
+                key: Bytes::from(format!("large-{index:03}")),
+                op: Op::Put(value.clone()),
+            })
+            .collect(),
+    };
+    leader_group
+        .local_replica()
+        .learner
+        .engine()
+        .apply(1, &batch)
+        .await
+        .expect("large source batch applies");
+    drop(batch);
+
+    let new_group = PxGroup::new(1, PxLocalReplica::new(99, PxLocalReplicaRole::Follower));
+    let endpoint = leader.listen_addr().expect("leader started").to_string();
+    assert_eq!(
+        new_group
+            .join_via_snapshot_with_config(&endpoint, 1024 * 1024, 3)
+            .await
+            .expect("large snapshot join succeeds"),
+        1
+    );
+    let (keys, truncated) = new_group
+        .local_replica()
+        .learner
+        .engine()
+        .scan(b"large-", b"", b"", 0, 0, true, 0)
+        .await
+        .expect("scan imported keys");
+    assert!(!truncated);
+    assert_eq!(keys.len(), ENTRY_COUNT);
+    assert_eq!(
+        new_group
+            .local_replica()
+            .learner
+            .engine_get(b"large-064")
+            .await
+            .map(|(_, bytes)| bytes.len()),
+        Some(VALUE_BYTES)
+    );
 
     cluster.shutdown().await;
 }

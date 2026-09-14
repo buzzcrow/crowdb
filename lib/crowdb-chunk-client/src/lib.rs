@@ -40,14 +40,14 @@ pub use benchmark::{
 };
 pub use chunk::{
     ChunkPrefetch, ChunkReadPolicy, ChunkReadStream, ChunkReader, ChunkWriter, EcStripWriter,
-    FailedReadRange, MirrorStripWriter, PartialReadResult, ReadRangeData, StripReader, StripResult,
-    StripWriter,
+    FailedReadRange, MirrorChunkWriter, MirrorStripWriter, PartialReadResult, ReadRangeData, StripReader,
+    StripResult, StripWriter, STREAM_CHUNK_BYTES,
 };
 pub use client::{
     ChunkIoClient, ChunkIoClientConfig, LargeWritePolicy, LargeWriteResult, PreparedLargeWrite,
 };
 pub use config::{ChunkClientConfig, SmallWritePolicy};
-pub use disk_io::{DiskWriter, DiskioBlockWriter, RoutedDiskWriter};
+pub use disk_io::{DiskWriter, RoutedDiskWriter};
 pub use error::{IoError, ReadError, ReadResult, Result};
 pub use io::{BackpressurePolicy, ChunkIoWriter, FeedStatus};
 pub use metrics::{ChunkClientMetrics, LargeWriteRepairMetricsSnapshot, SmallWriteMetricsSnapshot};

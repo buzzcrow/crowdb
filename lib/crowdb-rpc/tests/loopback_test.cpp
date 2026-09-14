@@ -98,7 +98,7 @@ TEST(LoopbackTest, SimplePing)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     EXPECT_TRUE(state.got_response.load(std::memory_order_acquire));
-    EXPECT_EQ(state.recv_request_id, 42u);
+    EXPECT_EQ(state.recv_request_id, 42U);
 
     client_transport.stop();
     server.stop();

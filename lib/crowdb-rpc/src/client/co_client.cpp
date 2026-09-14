@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-#include "crowdb-rpc/co_client.h"
+#include "crowdb-rpc/client/co_client.h"
 
 #include "crowdb-rpc/buffer.h"
 #include "crowdb-rpc/c_api.h"
@@ -12,6 +12,7 @@
 #include "crowdb-rpc/rpc_metrics.h"
 #include "crowdb-rpc/transport.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <coroutine>
@@ -120,12 +121,12 @@ struct CoAwait
 {
     CoState *state;
 
-    constexpr bool await_ready() const noexcept
+    [[nodiscard]] constexpr bool await_ready() const noexcept
     {
         return false;
     }
 
-    bool await_suspend(std::coroutine_handle<> h) noexcept
+    bool await_suspend(std::coroutine_handle<> h) const noexcept
     {
         state->handle = h;
         // Try to transition RUNNING → SUSPENDED. If successful, the
@@ -142,7 +143,7 @@ struct CoAwait
         return false; // don't suspend — resume inline
     }
 
-    void await_resume() noexcept
+    void await_resume() const noexcept
     {
         // Coroutine is about to continue — mark it as running.
         state->co_state.store(CO_RUNNING, std::memory_order_release);
@@ -207,7 +208,7 @@ static CoTask co_run(CoState *s)
         crowdb_rpc_buffer_t data    = nullptr;
         // Per-coroutine request_id: slot_index + N * pool_size.
         // Guarantees no slab slot collision between coroutines.
-        uint64_t req_id = s->slot_index + s->next_req_id * (s->pool_mask + 1);
+        uint64_t req_id = s->slot_index + (s->next_req_id * (s->pool_mask + 1));
         s->next_req_id++;
         if (!s->build_fn(s->rust_ctx, req_id, &control, &data)) {
             break;
@@ -222,16 +223,26 @@ static CoTask co_run(CoState *s)
 
         // 3. Submit via send(). user_data = s (CoState*).
         //    co_on_complete will fill s->resp_* and resume.
-        bool ok = s->client->send(s->transport, s->conn, req_id, (control != nullptr) ? control->buf : nullptr,
-                                  (data != nullptr) ? data->buf : nullptr, s->msg_type, co_on_complete, s);
+        //    Extract the inner Buffer* and free the wrapper struct —
+        //    send() takes ownership of the Buffer* (the frame holds the
+        //    only ref and release_frame frees it). The wrapper would
+        //    leak if kept, and releasing it after send would double-free
+        //    the inner Buffer (send already released it on failure).
+        Buffer *ctrl_buf = (control != nullptr) ? control->buf : nullptr;
+        Buffer *data_buf = (data != nullptr) ? data->buf : nullptr;
+        if (control != nullptr) {
+            control->buf = nullptr;
+            delete control;
+        }
+        if (data != nullptr) {
+            data->buf = nullptr;
+            delete data;
+        }
+        bool ok = s->client->send(s->transport, s->conn, req_id, ctrl_buf, data_buf, s->msg_type, co_on_complete, s);
 
         if (!ok) {
-            // Submit failed (send queue full) — release buffers, yield
-            // to let I/O workers drain, then retry.
-            if (control != nullptr)
-                crowdb_rpc_buffer_release(control);
-            if (data != nullptr)
-                crowdb_rpc_buffer_release(data);
+            // Submit failed (send queue full) — send() already released
+            // the inner Buffer* via release_frame. Just yield and retry.
             s->total_errors++;
             rpc_submit_retry().inc();
             // Yield this thread — suspend until resumed. We use a
@@ -257,10 +268,12 @@ static CoTask co_run(CoState *s)
             s->on_response_fn(s->rust_ctx, req_id, s->resp_control, s->resp_data, s->resp_status, elapsed_ns);
 
         // Release the response buffers.
-        if (s->resp_control != nullptr)
+        if (s->resp_control != nullptr) {
             crowdb_rpc_buffer_release(s->resp_control);
-        if (s->resp_data != nullptr)
+        }
+        if (s->resp_data != nullptr) {
             crowdb_rpc_buffer_release(s->resp_data);
+        }
 
         // Update stats.
         s->total_ops++;
@@ -268,10 +281,8 @@ static CoTask co_run(CoState *s)
             s->total_errors++;
         }
         s->total_latency_ns += elapsed_ns;
-        if (elapsed_ns < s->min_latency_ns)
-            s->min_latency_ns = elapsed_ns;
-        if (elapsed_ns > s->max_latency_ns)
-            s->max_latency_ns = elapsed_ns;
+        s->min_latency_ns = std::min(elapsed_ns, s->min_latency_ns);
+        s->max_latency_ns = std::max(elapsed_ns, s->max_latency_ns);
 
         if (!keep_going) {
             break;
@@ -389,10 +400,8 @@ extern "C" void crowdb_rpc_co_spawn(crowdb_rpc_client_t client, crowdb_rpc_serve
         total_ops += state->total_ops;
         total_errors += state->total_errors;
         total_latency_ns += state->total_latency_ns;
-        if (state->min_latency_ns < min_latency_ns)
-            min_latency_ns = state->min_latency_ns;
-        if (state->max_latency_ns > max_latency_ns)
-            max_latency_ns = state->max_latency_ns;
+        min_latency_ns = std::min(state->min_latency_ns, min_latency_ns);
+        max_latency_ns = std::max(state->max_latency_ns, max_latency_ns);
     }
     client->co_stats.total_ops        = total_ops;
     client->co_stats.total_errors     = total_errors;

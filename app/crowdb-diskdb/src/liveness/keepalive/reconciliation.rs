@@ -18,7 +18,7 @@ impl KeepAlive {
                     entry.owner.rack_id,
                 ));
                 dg.set_bind(entry.bind);
-                self.container.add_disk_group(dg);
+                self.container.add_disk_group(&dg);
                 groups_added += 1;
             } else if let Some(dg) = self.container.get_disk_group(entry.owner.dg_id) {
                 if dg.bind() != entry.bind {

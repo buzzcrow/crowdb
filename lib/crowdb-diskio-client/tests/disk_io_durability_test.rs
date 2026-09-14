@@ -4,7 +4,7 @@
 //! E2E durability test: write + fsync + process restart + read with
 //! `BlockDisk` on a temp file (I2 durability invariant).
 
-use crowdb_diskio_client::{DiskId as DioDiskId, DiskIoRetCode, DiskioClient};
+use crowdb_diskio_client::{DiskId as DioDiskId, DiskIoRetCode, TestWireDiskioClient as DiskioClient};
 use crowdb_test_harness::diskio::*;
 use crowdb_test_harness::test_dirs;
 
@@ -40,6 +40,7 @@ async fn disk_io_e2e_durability() {
         kv_seeds: &[],
         disks: std::slice::from_ref(&disk_arg),
         fault_error_rate: 0.0,
+        fault_latency_ms: None,
         no_o_direct: true,
     });
     let (rpc_server1, conn1, dio_client1) = connect_to_diskio(&diskio1);
@@ -68,6 +69,7 @@ async fn disk_io_e2e_durability() {
         kv_seeds: &[],
         disks: &[disk_arg],
         fault_error_rate: 0.0,
+        fault_latency_ms: None,
         no_o_direct: true,
     });
     let (rpc_server2, conn2, dio_client2) = connect_to_diskio(&diskio2);

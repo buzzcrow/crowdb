@@ -77,6 +77,15 @@ chunkdb manages chunk metadata and orchestrates background maintenance I/O
 through DiskIO clients. Foreground callers write allocated blocks themselves
 and tell chunkdb when chunks are sealed or deleted.
 
+ChunkDB conversion and EC repair share one `ConversionDiskIo` policy adapter
+over the routed semantic `crowdb-diskio-client`. The adapter selects the
+priority lane and expresses reads, buffered writes, and fsync barriers against
+checked segment targets. It does not parse DiskIO endpoints, join topology,
+construct RPC servers or connections, refresh connection vectors, or decode
+wire return codes. Those responsibilities and their immutable generations are
+owned by the DiskIO client; ChunkDB retains conversion/reconstruction policy
+and decides when a completed write group requires a durability barrier.
+
 **Language:** Rust. **Runtime:** tokio (async everywhere).
 
 **Core goals:**
@@ -324,6 +333,11 @@ Each strip tracks:
   written (1 bit per granularity, e.g., 16 KB).
 - **EC state** (EC strips only): `NotStarted` → `Complete`.
 - **Block state**: Per-block health (Good, Suspicious, Bad).
+- **Placement intent and assessment**: The selected `rack_first` or
+  `node_first` priority and the creation-time maximum fragment count for each
+  rack, node, and physical disk. The assessment records whether each domain
+  satisfies the strip loss budget. EC strips that do not do so carry a durable
+  placement-repair marker.
 
 ### 5.3 Chunk
 
@@ -562,6 +576,14 @@ Site (data center)
 - `racks`: Map<rack_id, RackInfo>
 - `nodes`: Map<node_uuid, NodeInfo>
 - `disk_groups`: Map<disk_group_id, DiskGroupInfo>
+- healthy physical-disk locations, allocatable capacity observations, and a
+  monotonic publication generation.
+
+Usage observations include only allocatable disks and carry their sample time.
+Missing or stale observations remove capacity ranking information; they never
+relax a rack, node, or disk safety constraint. Per-disk-group in-flight bytes
+are atomic reservations shared by snapshot generations, so concurrent
+allocations account for projected utilization without a placement lock.
 
 **TopologyRefresh**: Hybrid approach combining periodic refresh with watch/notify:
 - **Periodic refresh**: Background task that periodically (configurable,
@@ -581,6 +603,25 @@ Periodic refresh balances freshness and performance.
 
 ## 7. Placement Strategy
 
+Placement has two independent parts: safety and ranking. Safety first limits
+how many fragments one failure domain may contain. Ranking then compares
+projected usable utilization, `(used + in_flight + planned) / capacity`, only
+among candidates that meet that safety constraint. Equal scores use stable
+topology identifiers, making retries deterministic.
+
+For an EC `data_num + code_num` strip, a protected rack, node, or physical
+disk contains at most `code_num` fragments. For a mirror strip, losing a
+protected domain leaves at least one copy. A single-copy mirror is explicitly
+non-redundant and remains allocatable while its assessment reports no domain
+protection.
+
+`placement.failure_domain_priority` selects `rack_first` (the default) or
+`node_first`. It orders safe candidates lexicographically; it does not change
+the safety definition. `placement.allow_degraded_failure_domains` is required
+before a placement may publish an unmet rack or node guarantee. EC placement
+that also exceeds its node or disk recovery budget additionally requires
+`placement.allow_unsafe_ec`.
+
 ### 7.1 Mirror placement
 
 Mirror placement aims to place replicas on **distinct racks** to survive
@@ -589,14 +630,17 @@ rack failures:
 1. Select N nodes (copy count) from online nodes
 2. Prefer nodes on different racks
 3. If not enough distinct racks, place multiple copies on same rack
-4. For each node, select the disk-group with most free space
-5. Return placement plan with node/disk-group assignments
+4. Rank racks, nodes, then disk-groups by projected allocatable utilization
+5. Return a plan containing its policy, topology generation, usage freshness,
+   and planned rack/node protection
 
 **Negative hints**: Nodes can be excluded from placement (e.g., during
 recovery to avoid re-using failed nodes).
 
 **Example**: 3-copy mirror on 3-rack cluster → 3 replicas on 3 distinct racks.
-On 2-rack cluster → 2 replicas on distinct racks, 1 replica on either rack.
+On insufficient topology, normal placement returns a typed failure before any
+DiskDB allocation. An explicitly degraded result identifies the missing
+protection instead of claiming rack safety.
 
 ### 7.2 EC placement
 
@@ -606,9 +650,10 @@ with per-node block limits:
 1. Calculate total blocks = data_num + code_num
 2. Select nodes such that:
    - No node has > code_num blocks (safe mode)
-   - Blocks are distributed across ≥3 racks when possible
-3. For each node, select disk-group with most free space
-4. Return placement plan with block assignments
+   - Each protected rack and physical disk also has at most `code_num` blocks
+3. Rank the requested primary domain, secondary domain, and disk-group by
+   projected allocatable utilization
+4. Return a plan with the requested policy and planned protection assessment
 
 **Safe mode**: Ensures no single node failure exceeds code_num, guaranteeing
 recoverability. Requires enough nodes to satisfy constraints.
@@ -620,6 +665,25 @@ error without allocating blocks.
 
 **Example**: 8+4 EC on 12-node cluster → 12 blocks across ≥3 racks, max 4
 blocks per node. On 3-node cluster (unsafe mode) → 12 blocks, 4 per node.
+
+### 7.3 Physical validation and degraded-placement repair
+
+DiskDB remains the authority for physical allocation. After every allocation,
+ChunkDB resolves returned `disk_id`s through the same immutable topology and
+computes the actual rack, node, and disk maxima. A physical-disk violation is
+rolled back and retried against an alternative disk-group; it is never silently
+published. The assessment, effective policy, and any EC repair marker are
+persisted with the strip and carried through the RPC and storage codecs.
+
+Every marked EC strip has one deterministic persistent placement task. Task
+admission happens after foreground publication and a bounded metadata scan
+recreates a missing task after an interrupted admission. The task waits with
+backoff while topology cannot improve; it does not become terminal merely
+because the cluster is undersized. Once a better destination exists, it reads
+one source fragment, writes and fsyncs one replacement fragment, validates the
+new physical layout, and atomically replaces only that fragment. The old
+fragment remains under the normal layout-validity cleanup fence. The marker is
+cleared only after all recorded guarantees are satisfied.
 
 ## 8. Allocation Flow
 
@@ -641,10 +705,10 @@ sends one request per DiskDB data group and runs those requests concurrently.
 DiskDB persists each allocated busy block as Tentative before responding.
 
 **Success boundary**: The Active chunk and every referenced Tentative busy
-block are durable before ChunkDB returns success. DiskDB commit overwrites
-each busy block as Committed after the response. A reconciliation scanner can
-later resolve a crash in this interval from the Active chunk reference and the
-allocation incarnation.
+block are durable before ChunkDB returns success. DiskDB commit changes the
+matching busy records to Committed in one ordinary batch write. A
+reconciliation scanner can resolve a crash in this interval from the Active
+chunk reference and allocation incarnation.
 
 **Rollback**: If allocation or Active metadata persistence fails, every known
 segment from every prior strip is freed through its exact DiskDB group before
@@ -701,7 +765,7 @@ instance. The per-chunk lock assumes that one-owner invariant.
 
 ```rust
 pub struct ChunkLockMap {
-    locks: DashMap<ChunkId, Arc<Mutex<()>>>,
+    locks: SkipMap<(u64, u64), Arc<ChunkLockEntry>>,
     chunks: Arc<quick_cache::Cache<ChunkId, Chunk>>,
     metrics: Arc<LifecycleMetrics>,
     hold_warn_threshold: Duration,
@@ -709,10 +773,11 @@ pub struct ChunkLockMap {
 ```
 
 - `new(cache_capacity, metrics, hold_warn_threshold) -> Self` — creates
-  an empty `DashMap` and a `Cache::new(cache_capacity)`.
+  an empty ordered lock-free index and a `Cache::new(cache_capacity)`.
 - `acquire(&self, chunk_id, store, policy, hint) -> Result<ChunkGuard,
   LifecycleError>` — for existing chunks (append/seal/delete). Steps:
-  1. `entry().or_default()` to get-or-create the `Arc<Mutex<()>>`.
+  1. `get_or_insert` an immutable `ChunkLockEntry`, atomically retain its user
+     count, and recheck that the exact entry is still current.
   2. Record lock-wait start time.
   3. Acquire the mutex per `policy`:
      - `TryLock` → `try_lock_owned()`. On `Err`, increment
@@ -727,7 +792,8 @@ pub struct ChunkLockMap {
      `cache_miss_count`), `store.get_chunk(chunk_id)`. On
      `StoreError::ChunkNotFound` → return `ChunkNotFound`. On success,
      if `hint == Cache`, `self.chunks.insert(chunk_id, chunk.clone())`.
-  6. Return `ChunkGuard` with the chunk, hint, hold_start, metrics.
+  6. Return `ChunkGuard` with the exact retained lock entry, mutex guard,
+     chunk, hint, hold start, and metrics.
 - `acquire_for_create(&self, chunk_id, policy, hint) -> Result<ChunkGuard,
   LifecycleError>` — for `allocate_chunk` with caller-supplied ID. Same
   lock acquisition as `acquire` but does NOT fetch from store (chunk
@@ -735,11 +801,12 @@ pub struct ChunkLockMap {
   `refresh()` after creating the chunk.
 - `populate_cache(&self, chunk_id, chunk)` — for `allocate_chunk` with
   auto-generated ID (skips the lock; UUID collision negligible).
-- `reap_idle(&self)` — iterates `self.locks.retain(|_, arc|
-  Arc::strong_count(arc) > 1)`. Entries where only the map holds a
-  clone (`strong_count == 1`) are removed. Increments `reap_idle_count`
-  and `reap_idle_entries_removed` by the number removed. Payload cache
-  is untouched (bounded by its own capacity).
+- `reap_idle(&self)` — scans the ordered index and changes an entry's user
+  state from zero to `REAPING` before removing that exact entry. An owner,
+  waiter, or acquisition in progress has already retained the entry and
+  prevents this transition. Increments `reap_idle_count` and
+  `reap_idle_entries_removed`; the separately bounded payload cache is
+  untouched.
 - `invalidate_chunk(&self, chunk_id) -> bool` — calls
   `self.chunks.remove(&chunk_id).is_some()`. Increments
   `invalidate_count`. Used by range migration.
@@ -787,6 +854,7 @@ These are internal in v1, not exposed in the RPC API.
 
 ```rust
 pub struct ChunkGuard {
+    lock: ChunkLockHandle,       // retains the exact index entry
     guard: OwnedMutexGuard<()>,  // held for Drop — releases the lock
     chunk: Option<Chunk>,
     hint: CacheHint,
@@ -831,8 +899,8 @@ the map bounded by concurrent locks, not by chunks-ever-touched.
 `main.rs` spawns a background task (`run_sweep_loop`) that calls
 `locks.reap_idle()` every `lifecycle.sweep_chunk_lock_interval_secs`
 (default 60s). Uses the same `watch::channel(false)` stop signal
-pattern as the topology refresh loop. `reap_idle` is a single
-`DashMap::retain` call, no allocation, no blocking.
+pattern as the topology refresh loop. `reap_idle` performs a lock-free ordered
+scan with exact-entry removal and does not block request tasks.
 
 ### 10.6 LifecycleHandler integration
 
@@ -898,11 +966,14 @@ Reservation reconciliation scans reservation records in bounded rotating
 pages, so an old prefix cannot starve later records. It deterministically
 admits a completed special group to the normal conversion task path. An
 expired incomplete group is cancelled and reclaimed when its consumed strips
-carry persisted planned cursors, because those writes use the DiskIO allocation
-generation fence. Legacy consumed records without planned cursors remain
-allocated fail-safe. Terminal reservation records release their quota only
-after the durable record has been removed; ambiguous persistence retains the
-permit unless a linearizable read proves that no record exists.
+carry persisted planned cursors and the writer lease deadline plus
+`lifecycle.layout_validity_ms` has elapsed. This reuse grace exceeds the data
+RPC retry window, so a delayed write finishes or times out before DiskDB can
+reallocate the extent. Consumed records without planned cursors remain allocated
+fail-safe. DiskIO does not validate allocation ownership. Terminal reservation
+records release their quota only after the durable record has been removed;
+ambiguous persistence retains the permit unless a linearizable read proves that
+no record exists.
 
 ### 10.7 Error variants + service mapping
 
@@ -967,14 +1038,15 @@ remain ready with an empty guard.
 
 ### 10.9 Edge cases
 
-- Lock map entry does not exist → created on first `acquire` via
-  `DashMap::entry().or_default()`.
+- Lock map entry does not exist → created on first `acquire` through the
+  ordered index's `get_or_insert` operation.
 - Lock holder panics → `tokio::sync::Mutex<()>` auto-releases (no
   poisoning for `Mutex<()>`); cache slot may be stale but next
   `acquire` re-fetches on miss.
-- `reap_idle` runs while an acquirer holds a clone →
-  `Arc::strong_count > 1`, entry is retained. No race:
-  `DashMap::retain` holds the shard lock.
+- `reap_idle` races an acquirer → either the acquirer increments the exact
+  entry's user count first and reaping skips it, or reaping marks the entry
+  first and the acquirer retries against its replacement. Overlapping callers
+  cannot split across mutex identities.
 - Process crash → all in-memory state lost; KV store is source of
   truth.
 - Cache evicts a chunk between two operations → next `acquire` is a
@@ -1068,8 +1140,11 @@ behind `ChunkdbRpcService`.
 ## 13. Concurrency Model
 
 - **Async everywhere**: All public APIs are async (`async fn`).
-- **Shared state**: `Arc<RwLock<T>>` for topology cache, allocator state.
-- **Lock scoping**: Acquire locks in `{}` blocks, drop before `.await`.
+- **Shared state**: Immutable topology is published through `ArcSwap`; placement
+  reservations use per-disk-group atomics. Lifecycle's existing bounded
+  per-chunk guards protect metadata mutation, not allocation ranking.
+- **Lock scoping**: Existing lifecycle guards are acquired in `{}` blocks and
+  dropped before `.await`; placement introduces no hot-path lock.
 - **Parallel allocation**: Use `futures::join_all` for parallel strip/block
   allocation.
 - **Background tasks**: `tokio::spawn` for topology refresh, rollback cleanup.
@@ -1088,11 +1163,15 @@ Key configuration parameters:
 | default_ec_scheme                        | 6+3     | Default EC scheme (data+parity)                         |
 | topology_refresh_interval                | 30 s    | Topology cache refresh interval                         |
 | placement.allow_unsafe_ec                | false   | Permit explicit degraded EC placement                   |
+| placement.allow_degraded_failure_domains  | false   | Permit an explicit unmet rack or node guarantee         |
+| placement.failure_domain_priority         | rack_first | Prefer rack or node protection when ranking safe plans |
+| placement_repair.max_concurrency          | 2       | Maximum concurrent degraded-EC repair tasks             |
+| placement_repair.scan_interval_secs       | 1       | Marker reconciliation interval                           |
 | max_allocation_parallelism               | 10      | Max parallel strip allocations                          |
 | lifecycle.cache_capacity                 | 10_000  | Per-chunk payload cache capacity (§10)                   |
 | lifecycle.sweep_chunk_lock_interval_secs | 60      | Idle lock reap interval (§10)                           |
 | lifecycle.lock_hold_warn_threshold_ms    | 1000    | Lock hold warn threshold (§10)                          |
-| lifecycle.layout_validity_ms             | 30_000  | Minimum retired-layout lifetime before segment reuse    |
+| lifecycle.layout_validity_ms             | 30_000  | Minimum retired-layout and expired-writer reuse grace   |
 | server.keepalive_interval_secs           | 10      | Service-registry heartbeat interval                     |
 | server.rpc_workers                       | 2       | Inbound RPC workers; static and must be positive        |
 

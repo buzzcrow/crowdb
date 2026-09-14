@@ -6,12 +6,12 @@
 //! `InMemKV` satisfy the identical `KVEngine` contract.
 
 use crate::test_util::{compare_dyn, iter_all_dyn};
-use crowdb_kv::kv::{CrowdbTreeEngine, CrowdbTreeOptions};
+use crowdb_kv::kv::{CrowdbTreeConfig, CrowdbTreeEngine};
 
 use super::conformance;
 
 fn open() -> CrowdbTreeEngine {
-    CrowdbTreeEngine::open(&CrowdbTreeOptions::default()).unwrap()
+    CrowdbTreeEngine::open(&CrowdbTreeConfig::default()).unwrap()
 }
 
 #[test]
@@ -22,6 +22,36 @@ fn highest_slot_wins_regardless_of_apply_order() {
 #[test]
 fn equal_slot_is_idempotent_noop() {
     conformance::equal_slot_is_idempotent_noop(&open());
+}
+
+#[tokio::test]
+async fn versioned_lookup_reads_cold_tree_and_respects_newer_tombstone() {
+    use crowdb_kv::kv::KVEngine;
+
+    let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("crowdb-tree-cas-lookup");
+    let opt = CrowdbTreeConfig {
+        path: Some(tmp.path().to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let engine = CrowdbTreeEngine::open(&opt).expect("open durable engine");
+    engine
+        .apply(1, &conformance::batch(vec![conformance::put(b"key", b"tree")]))
+        .into_ready()
+        .unwrap();
+    engine.flush();
+    assert_eq!(engine.persist_snapshot(), 1);
+    drop(engine);
+
+    let reopened = CrowdbTreeEngine::open(&opt).expect("reopen durable engine");
+    assert_eq!(
+        reopened.get_versioned(b"key").await.unwrap(),
+        Some((1, bytes::Bytes::from_static(b"tree")))
+    );
+    reopened
+        .apply(2, &conformance::batch(vec![conformance::del(b"key")]))
+        .into_ready()
+        .unwrap();
+    assert_eq!(reopened.get_versioned(b"key").await.unwrap(), None);
 }
 
 #[test]
@@ -37,6 +67,11 @@ fn intra_batch_last_occurrence_wins() {
 #[test]
 fn scan_is_ordered_prefix_filtered_and_truncates() {
     conformance::scan_is_ordered_prefix_filtered_and_truncates(&open());
+}
+
+#[test]
+fn reverse_scan_is_descending_exclusive_and_prefix_bounded() {
+    conformance::reverse_scan_is_descending_exclusive_and_prefix_bounded(&open());
 }
 
 #[test]
@@ -89,7 +124,7 @@ fn is_healthy_is_true_on_a_freshly_opened_engine() {
 
 /// Regression guard: an in-memory
 /// `CrowdbTreeEngine` (`opt.path: None`, no page store, no reactor -- see
-/// `CrowdbTreeOptions::default`) has no I/O path *at all*, so `get`/`scan`/
+/// `CrowdbTreeConfig::default`) has no I/O path *at all*, so `get`/`scan`/
 /// `apply` must always resolve `Ready` -- proves the "fast path stays fast"
 /// property holds for the durable engine's in-memory mode too, not just
 /// `InMemKV`.
@@ -109,21 +144,15 @@ fn get_scan_apply_always_resolve_ready() {
     ));
 }
 
-/// Regression guard : unlike the in-memory case
-/// above, a *durable* (file-backed) `CrowdbTreeEngine`'s `get` genuinely
-/// constructs `KVFuture::Pending` for a demand-load miss -- evict the
-/// key's leaf (forcing it unloaded) after a snapshot has made it clean,
-/// mirroring `async_get_test.cpp`'s `MissAfterEvictionCompletesViaReactor`
-/// one layer up. Awaiting that `Pending` future still resolves to the
-/// correct value either way (via the reactor on a liburing build, or a
-/// synchronous fallback otherwise), proving the `Pending`
-/// path is correct, not just that it exists.
+/// A durable engine reloads an evicted leaf and returns the correct value.
+/// The `io_uring` completion can race the first Rust poll, so either `Ready` or
+/// `Pending` is valid after the miss has submitted asynchronous I/O.
 #[tokio::test]
-async fn get_constructs_pending_for_genuine_demand_load_miss() {
-    use crowdb_kv::kv::{KVEngine, KVFuture};
+async fn get_reloads_an_evicted_leaf() {
+    use crowdb_kv::kv::KVEngine;
 
     let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("crowdb-tree-engine");
-    let e = CrowdbTreeEngine::open(&CrowdbTreeOptions {
+    let e = CrowdbTreeEngine::open(&CrowdbTreeConfig {
         path: Some(tmp.path().to_string_lossy().into_owned()),
         ..Default::default()
     })
@@ -140,35 +169,17 @@ async fn get_constructs_pending_for_genuine_demand_load_miss() {
         "snapshot should have made the leaf clean and evictable"
     );
 
-    // On builds/platforms without the io_uring reactor (e.g. macOS, or Linux
-    // without liburing) ct_get_async completes synchronously, so there is no
-    // genuine Pending path to observe. Verify the value is still correct and
-    // skip the Pending-only assertion in that case.
-    if !e.handle().is_reactor_available() {
-        assert_eq!(e.get(b"k").into_ready(), Some((1, b"v".to_vec())));
-        return;
-    }
-
-    match e.get(b"k") {
-        KVFuture::Ready(_) => panic!("expected a genuine Pending after evicting the resident leaf"),
-        KVFuture::Pending(fut) => {
-            assert_eq!(fut.await, Some((1, b"v".to_vec())));
-        }
-    }
+    let value = e.get(b"k").await;
+    assert_eq!(value, Some((1, b"v".to_vec())));
 }
 
-/// Same regression guard as
-/// [`get_constructs_pending_for_genuine_demand_load_miss`], for `scan`:
-/// `CrowdbTreeEngine::scan` now goes through `AsyncCrowdbtree::try_scan`
-/// instead of the old always-synchronous
-/// `Crowdbtree::scan`, so a scan over an evicted leaf must genuinely
-/// construct `KVFuture::Pending` too, not just `get`.
+/// Same reload guard as [`get_reloads_an_evicted_leaf`], for `scan`.
 #[tokio::test]
-async fn scan_constructs_pending_for_genuine_demand_load_miss() {
-    use crowdb_kv::kv::{KVEngine, KVFuture};
+async fn scan_reloads_an_evicted_leaf() {
+    use crowdb_kv::kv::KVEngine;
 
     let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("crowdb-tree-engine");
-    let e = CrowdbTreeEngine::open(&CrowdbTreeOptions {
+    let e = CrowdbTreeEngine::open(&CrowdbTreeConfig {
         path: Some(tmp.path().to_string_lossy().into_owned()),
         ..Default::default()
     })
@@ -185,29 +196,14 @@ async fn scan_constructs_pending_for_genuine_demand_load_miss() {
         "snapshot should have made the leaf clean and evictable"
     );
 
-    if !e.handle().is_reactor_available() {
-        let (items, truncated) = e.scan(b"", b"", b"", 0, 0, false, 0).into_ready().unwrap();
-        let items_vec: Vec<(Vec<u8>, u64, Vec<u8>)> = items
-            .into_iter()
-            .map(|(k, s, v)| (k.to_vec(), s, v.to_vec()))
-            .collect();
-        assert_eq!(items_vec, vec![(b"k".to_vec(), 1, b"v".to_vec())]);
-        assert!(!truncated);
-        return;
-    }
-
-    match e.scan(b"", b"", b"", 0, 0, false, 0) {
-        KVFuture::Ready(_) => panic!("expected a genuine Pending after evicting the resident leaf"),
-        KVFuture::Pending(fut) => {
-            let (items, truncated) = fut.await.unwrap();
-            let items_vec: Vec<(Vec<u8>, u64, Vec<u8>)> = items
-                .into_iter()
-                .map(|(k, s, v)| (k.to_vec(), s, v.to_vec()))
-                .collect();
-            assert_eq!(items_vec, vec![(b"k".to_vec(), 1, b"v".to_vec())]);
-            assert!(!truncated);
-        }
-    }
+    let result = e.scan(b"", b"", b"", 0, 0, false, 0).await;
+    let (items, truncated) = result.unwrap();
+    let items_vec: Vec<(Vec<u8>, u64, Vec<u8>)> = items
+        .into_iter()
+        .map(|(k, s, v)| (k.to_vec(), s, v.to_vec()))
+        .collect();
+    assert_eq!(items_vec, vec![(b"k".to_vec(), 1, b"v".to_vec())]);
+    assert!(!truncated);
 }
 
 /// `KVEngine::clear`: mirrors `mem_kv_test.rs`'s
@@ -259,7 +255,7 @@ async fn clear_then_persist_survives_reopen() {
     use crowdb_kv::kv::KVEngine;
 
     let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("crowdb-tree-engine");
-    let opt = CrowdbTreeOptions {
+    let opt = CrowdbTreeConfig {
         path: Some(tmp.path().to_string_lossy().into_owned()),
         ..Default::default()
     };
@@ -435,7 +431,7 @@ async fn noop_slot_does_not_block_contiguous_slot_advancement() {
     use crowdb_kv::kv::KVEngine;
 
     let tmp = crowdb_test_harness::test_dirs::tempdir_in_test_data("crowdb-tree-engine");
-    let opt = CrowdbTreeOptions {
+    let opt = CrowdbTreeConfig {
         path: Some(tmp.path().to_string_lossy().into_owned()),
         ..Default::default()
     };

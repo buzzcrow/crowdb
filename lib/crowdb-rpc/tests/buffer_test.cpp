@@ -16,8 +16,8 @@ TEST(BufferTest, AllocReturnsValidBuffer)
     SystemBufferPool pool;
     Buffer          *buf = pool.alloc(1024);
     ASSERT_NE(buf, nullptr);
-    EXPECT_GE(buf->capacity, 1024u);
-    EXPECT_EQ(buf->len, 0u);
+    EXPECT_GE(buf->capacity, 1024U);
+    EXPECT_EQ(buf->len, 0U);
     EXPECT_EQ(buf->type, BufferType::System);
     // ref == 1 after alloc
     EXPECT_EQ(buf->ref->load(), 1);
@@ -32,7 +32,7 @@ TEST(BufferTest, WriteSetsLenAndBytes)
 
     const uint8_t data[] = {1, 2, 3, 4, 5};
     buf->write(data, 5);
-    EXPECT_EQ(buf->len, 5u);
+    EXPECT_EQ(buf->len, 5U);
     EXPECT_EQ(std::memcmp(buf->data, data, 5), 0);
     buf->release();
 }
@@ -79,6 +79,6 @@ TEST(BufferTest, ExactCapacityNoBucketing)
     SystemBufferPool pool;
     Buffer          *buf = pool.alloc(200);
     ASSERT_NE(buf, nullptr);
-    EXPECT_EQ(buf->capacity, 200u); // exact, not bucketed to 256
+    EXPECT_EQ(buf->capacity, 200U); // exact, not bucketed to 256
     buf->release();
 }

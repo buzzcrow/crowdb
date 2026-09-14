@@ -57,6 +57,9 @@ pub enum KvErrorCode {
     /// JournalScan asked for slots already GC'd below the WAL trim point.
     /// The caller falls back to a full-scan rebuild (diskdb strategy 1).
     KvErrorJournalScanGcGap = 4,
+    KvErrorCasFailed = 5,
+    KvErrorCasBusy = 6,
+    KvErrorOutcomeUnknown = 7,
 }
 impl_enum_conversions!(
     KvErrorCode,
@@ -64,7 +67,10 @@ impl_enum_conversions!(
     KvErrorNotLeader = 1,
     KvErrorUnavailable = 2,
     KvErrorInternal = 3,
-    KvErrorJournalScanGcGap = 4
+    KvErrorJournalScanGcGap = 4,
+    KvErrorCasFailed = 5,
+    KvErrorCasBusy = 6,
+    KvErrorOutcomeUnknown = 7
 );
 
 /// Point-read consistency mode. Applies to both KvGetRequest and (with the
@@ -144,6 +150,12 @@ pub struct KvBatchWriteRequest {
     pub request_id: u64,
     pub request_create_ms: u64,
     pub group_id: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct KvRevisionPrecondition {
+    pub key: Bytes,
+    pub expected_revision: u64,
 }
 
 /// Unified mutation response.
@@ -308,6 +320,20 @@ impl KvResponse {
             error_code: KvErrorCode::KvErrorInternal as i32,
         }
     }
+
+    #[must_use]
+    pub fn cas_error(
+        code: KvErrorCode,
+        revision: u64,
+        msg: impl Into<String>,
+        request_id: u64,
+        request_create_ms: u64,
+    ) -> Self {
+        let mut response = Self::err(msg.into(), request_id, request_create_ms);
+        response.revision = revision;
+        response.error_code = code as i32;
+        response
+    }
 }
 
 /// Prefix scan over the learner store. V1: local-replica read like
@@ -315,6 +341,14 @@ impl KvResponse {
 /// replica writes lagging behind the leader. The handler iterates the
 /// `DashMap` keys, filters by `prefix`, sorts, then truncates to
 /// `limit`. `limit == 0` means "no limit".
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[repr(i32)]
+pub enum KvScanDirection {
+    #[default]
+    Forward = 0,
+    Reverse = 1,
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct KvScanRequest {
     pub version: u32,
@@ -350,6 +384,8 @@ pub struct KvScanRequest {
     pub bounded: bool,
     /// Zero captures the first page's cutoff; later pages retain it.
     pub scan_cutoff: u64,
+    /// Traversal order. Forward is the wire and API default.
+    pub direction: KvScanDirection,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]

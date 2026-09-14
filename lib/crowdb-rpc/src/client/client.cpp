@@ -9,6 +9,7 @@
 #include "crowdb-rpc/server/handler.h"
 #include "crowdb-rpc/server/message.h"
 
+#include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <vector>
@@ -72,6 +73,18 @@ OutFrame *RpcClient::build_frame(uint64_t request_id, Buffer *control, Buffer *d
 bool RpcClient::send(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control, Buffer *data,
                      uint16_t msg_type, crowdb_rpc_on_complete cb, void *user_data)
 {
+    return send_impl(transport, conn, request_id, control, data, msg_type, cb, user_data, false);
+}
+
+bool RpcClient::send_slab_only(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control,
+                               Buffer *data, uint16_t msg_type, crowdb_rpc_on_complete cb, void *user_data)
+{
+    return send_impl(transport, conn, request_id, control, data, msg_type, cb, user_data, true);
+}
+
+bool RpcClient::send_impl(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control, Buffer *data,
+                          uint16_t msg_type, crowdb_rpc_on_complete cb, void *user_data, bool slab_only)
+{
     try {
         uint64_t timeout  = default_timeout_ns_.load(std::memory_order_relaxed);
         uint64_t deadline = (timeout > 0) ? steady_now_ns() + timeout : 0;
@@ -81,6 +94,15 @@ bool RpcClient::send(Transport *transport, Connection *conn, uint64_t request_id
         // slab (e.g. when per-call heap alloc already makes the slab's
         // zero-alloc advantage marginal).
         if (completion_pool_ == nullptr) {
+            if (slab_only) {
+                if (control != nullptr) {
+                    control->release();
+                }
+                if (data != nullptr) {
+                    data->release();
+                }
+                return false;
+            }
             goto map_path;
         }
 
@@ -106,10 +128,12 @@ bool RpcClient::send(Transport *transport, Connection *conn, uint64_t request_id
                     OutFrame *frame = build_frame(request_id, control, data, msg_type, 0);
                     if (!transport->submit(conn, frame)) {
                         slot.state.store(SLOT_FREE, std::memory_order_release);
-                        if (frame->control != nullptr)
+                        if (frame->control != nullptr) {
                             frame->control->release();
-                        if (frame->data != nullptr)
+                        }
+                        if (frame->data != nullptr) {
                             frame->data->release();
+                        }
                         delete frame;
                         // submit() already incremented rpc.send.queue.full.c
                         CRB_LOG_WARN("send: submit failed (slab) request_id={} conn_id={}",
@@ -123,6 +147,16 @@ bool RpcClient::send(Transport *transport, Connection *conn, uint64_t request_id
             }
         } // end slab block
 
+        if (slab_only) {
+            if (control != nullptr) {
+                control->release();
+            }
+            if (data != nullptr) {
+                data->release();
+            }
+            return false;
+        }
+
     map_path:
         // Slab slot occupied (PENDING_CLAIMED/PENDING_READY/PROCESSING), rare
         // CAS race, or no slab pool sized — fall back to the pending map. One
@@ -131,17 +165,20 @@ bool RpcClient::send(Transport *transport, Connection *conn, uint64_t request_id
         auto wrapped = [cb, user_data, request_id](Frame *resp, RpcError err) {
             invoke_c_complete(cb, user_data, request_id, resp, err);
         };
-        pending_.insert_or_assign(request_id, PendingEntry{std::move(wrapped), deadline, conn});
+        pending_.insert_or_assign(request_id,
+                                  PendingEntry{.cb = std::move(wrapped), .deadline_ns = deadline, .conn = conn});
 
         OutFrame *frame = build_frame(request_id, control, data, msg_type, 0);
         if (!transport->submit(conn, frame)) {
             // Submit failed — remove from map. Callback NOT invoked (caller
             // handles the error, same as the slab path).
             pending_.erase(request_id);
-            if (frame->control != nullptr)
+            if (frame->control != nullptr) {
                 frame->control->release();
-            if (frame->data != nullptr)
+            }
+            if (frame->data != nullptr) {
                 frame->data->release();
+            }
             delete frame;
             // submit() already incremented rpc.send.queue.full.c
             CRB_LOG_WARN("send: submit failed (map) request_id={} conn_id={}",
@@ -172,7 +209,7 @@ void RpcClient::attach(Connection *conn)
 
 void RpcClient::register_handler(uint16_t msg_type, crowdb_rpc_handler_fn callback, void *user_data)
 {
-    std::lock_guard<std::mutex> lock(handler_mu_);
+    std::scoped_lock lock(handler_mu_);
     request_handlers_[msg_type] = {callback, user_data};
 }
 
@@ -184,8 +221,8 @@ void RpcClient::dispatch_request(Frame *frame, Connection *conn)
     crowdb_rpc_handler_fn cb        = nullptr;
     void                 *user_data = nullptr;
     {
-        std::lock_guard<std::mutex> lock(handler_mu_);
-        auto                        it = request_handlers_.find(msg_type);
+        std::scoped_lock lock(handler_mu_);
+        auto             it = request_handlers_.find(msg_type);
         if (it != request_handlers_.end()) {
             cb        = it->second.first;
             user_data = it->second.second;
@@ -235,7 +272,7 @@ bool RpcClient::on_response(uint64_t request_id, Frame *response)
         uint8_t st   = slot.state.load(std::memory_order_acquire);
         if (st == SLOT_PENDING_READY && slot.request_id == request_id) {
             auto    cb       = slot.cb;
-            auto    ud       = slot.user_data;
+            auto   *ud       = slot.user_data;
             uint8_t expected = SLOT_PENDING_READY;
             if (slot.state.compare_exchange_strong(expected, SLOT_DONE, std::memory_order_acq_rel)) {
                 invoke_c_complete(cb, ud, request_id, response, RpcError::Ok);
@@ -282,9 +319,9 @@ void RpcClient::fail_all(Connection *conn, RpcError err)
             if (conn != nullptr && slot.conn != conn) {
                 continue;
             }
-            auto cb  = slot.cb;
-            auto ud  = slot.user_data;
-            auto rid = slot.request_id;
+            auto  cb  = slot.cb;
+            auto *ud  = slot.user_data;
+            auto  rid = slot.request_id;
             if (slot.state.compare_exchange_strong(expected, SLOT_FREE, std::memory_order_acq_rel)) {
                 invoke_c_complete(cb, ud, rid, nullptr, err);
             }
@@ -341,14 +378,11 @@ void RpcClient::dump_pending()
                 uint64_t rid      = completion_pool_[i].request_id;
                 uint64_t deadline = completion_pool_[i].deadline_ns.load(std::memory_order_relaxed);
                 uint64_t age      = (deadline > 0) ? now - (deadline - timeout_ns) : 0;
-                int64_t  conn_id  = completion_pool_[i].conn ? completion_pool_[i].conn->id() : -1;
+                int64_t  conn_id  = (completion_pool_[i].conn != nullptr) ? completion_pool_[i].conn->id() : -1;
                 bool     expired  = (deadline > 0 && now >= deadline);
-                if (rid < min_id)
-                    min_id = rid;
-                if (rid > max_id)
-                    max_id = rid;
-                if (age > max_age_ns)
-                    max_age_ns = age;
+                min_id            = std::min(rid, min_id);
+                max_id            = std::max(rid, max_id);
+                max_age_ns        = std::max(age, max_age_ns);
                 ++slab_pending;
                 CRB_LOG_INFO("dump_pending: slot={} state={} rid={} conn_id={} age_us={} expired={}", i,
                              static_cast<int>(s), static_cast<unsigned long long>(rid), static_cast<long long>(conn_id),
@@ -358,13 +392,11 @@ void RpcClient::dump_pending()
     }
 
     // Map: iterate entries.
-    for (auto &kv : pending_) {
-        uint64_t rid = kv.first;
-        if (rid < min_id)
-            min_id = rid;
-        if (rid > max_id)
-            max_id = rid;
-        int64_t  conn_id  = kv.second.conn ? kv.second.conn->id() : -1;
+    for (const auto &kv : pending_) {
+        uint64_t rid      = kv.first;
+        min_id            = std::min(rid, min_id);
+        max_id            = std::max(rid, max_id);
+        int64_t  conn_id  = (kv.second.conn != nullptr) ? kv.second.conn->id() : -1;
         uint64_t deadline = kv.second.deadline_ns;
         uint64_t age      = (deadline > 0) ? now - (deadline - timeout_ns) : 0;
         bool     expired  = (deadline > 0 && now >= deadline);
@@ -393,7 +425,7 @@ void RpcClient::stop_reaper()
         return;
     }
     {
-        std::lock_guard<std::mutex> lock(reaper_mu_);
+        std::scoped_lock lock(reaper_mu_);
         reaper_running_.store(false, std::memory_order_release);
     }
     reaper_cv_.notify_all();
@@ -427,7 +459,7 @@ void RpcClient::reaper_loop()
                 continue; // no timeout or not yet expired
             }
             auto    cb       = slot.cb;
-            auto    ud       = slot.user_data;
+            auto   *ud       = slot.user_data;
             auto    rid      = slot.request_id;
             uint8_t expected = SLOT_PENDING_READY;
             if (slot.state.compare_exchange_strong(expected, SLOT_FREE, std::memory_order_acq_rel)) {

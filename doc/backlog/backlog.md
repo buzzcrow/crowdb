@@ -11,7 +11,110 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R140** — Bump this line in the same commit when adding a new item.
+**Next R number: R171** — Bump this line in the same commit when adding a new item.
+
+### Next Milestone — Chunk-backed range KV
+
+R144 is a deferred merge follow-up to the completed chunk-KV server and routed
+client split/transfer baseline. R146 and R147 are deferred chunk lifecycle
+follow-ups. R148 follows the now-measured mirror-only production baseline and
+keeps stream metadata scale-out and sealed-chunk EC disabled until that
+requirement is implemented.
+- **[R144](R144-chunk-kv-partition-merge.md)** — adjacent partition merge —
+  Area: crowdb-tree / KV / server / group 0 — Deferred follow-up that composes
+  two adjacent chunk-backed trees, fences both owners, reconciles their WAL
+  sequences, and atomically replaces both parent ranges with one destination.
+- **[R146](R146-chunk-orphan-sealing.md)** — seal abandoned chunks across all chunk users
+  chunks — Area: crowdb-tree / chunkdb — Renew durable writer leases while a
+  tree owns its active chunk, allocate a fresh chunk after process restart, and
+  extend chunkdb's restart-safe expired-writer sweep to seal abandoned B+tree
+  chunks at their acknowledged cursors.
+- **[R147](R147-tree-chunk-gc.md)** — reclaim B+tree chunk strips — Area:
+  crowdb-tree / chunkdb / diskdb — Turn tree logical-GC results into durable,
+  manifest-fenced reclaim candidates. Repack mixed live strips, then use an
+  idempotent generic in-chunk operation to release whole unreachable strips or
+  chunks without racing retained manifests, snapshot pins, or layout readers.
+- **[R148](R148-chunk-stream-scale-out.md)** — partition metadata scale-out and
+  sealed-chunk EC — Area: chunk-stream / chunk-kv / KV / chunkdb — Move the
+  stream namespace and tree root catalog as one fenced binding generation,
+  optionally shard their indexes, and convert sealed mirror chunks to EC.
+
+### Planned — S3 data access service
+
+R152–R166 deliver the deliberately limited basic S3 service. R162 authentication
+is a separate deferred step after the basic request flows stabilize. R167–R169
+defer multipart upload and shared-storage GC without blocking basic large-object
+deletion. R170 separately adds optional cuObject/RDMA acceleration after the TCP
+baseline is correct and measured.
+
+- **[R152](R152-s3-scope-compatibility.md)** — basic S3 scope and compatibility
+  contract — Area: access server / S3 — Establish the independent S3 library,
+  access-server and pinned Hyper fork, basic bucket management, six object
+  operations, explicit exclusions, and reserved authentication hook.
+- **[R153](R153-s3-object-metadata-schema.md)** — bucket namespace and object
+  metadata schema — Area: access server / S3 / Chunk-KV — Define binary-safe
+  ordered keys, stable bucket IDs, immutable generations, visibility records,
+  and fenced bucket lifecycle.
+- **[R154](R154-s3-atomic-publication-recovery.md)** — atomic object publication
+  and upload recovery — Area: access server / S3 / chunk — Publish only complete
+  sealed data through one visibility compare and reconcile durable upload
+  identities after ambiguous outcomes or restart.
+- **[R155](R155-s3-streaming-put-object.md)** — streaming PutObject — Area:
+  access server / S3 / Hyper / chunk / RPC — Receive payload into bounded
+  native pools, preserve owned buffer chains through chunk/EC/RPC, and propagate
+  storage pressure to HTTP.
+- **[R156](R156-s3-head-object.md)** — HeadObject and object attributes — Area:
+  data access / S3 / Chunk-KV — Return one immutable generation's metadata and
+  conditions without reading chunks or exposing physical layout.
+- **[R157](R157-s3-streaming-get-range.md)** — streaming GetObject and
+  single-range reads — Area: access server / S3 / Hyper / chunk — Stream native
+  storage views with explicit completion ownership, bounded prefetch, and the
+  standard single-contiguous-range S3 contract.
+- **[R158](R158-s3-list-objects-v2.md)** — ListObjectsV2 and continuation tokens
+  — Area: access server / S3 / Chunk-KV — Provide stateless ordered pagination
+  across routed partitions with explicit non-snapshot concurrency semantics.
+- **[R159](R159-s3-delete-object.md)** — DeleteObject and owned-chunk
+  reclamation — Area: access server / S3 / chunk — Remove visibility first,
+  reclaim dedicated whole chunks asynchronously, and record shared-range
+  cleanup without blocking logical deletion.
+- **[R160](R160-s3-stateless-routing-scaleout.md)** — stateless access-server
+  routing and scale-out — Area: access server / routing — Give each protocol
+  an isolated listener and keep all S3 authority portable across frontend
+  instances.
+- **[R161](R161-s3-admission-backpressure.md)** — admission control, memory
+  bounds, and backpressure — Area: access server / S3 / RPC — Bound native bytes,
+  views, queues, and work across every pipeline stage with configurable limits
+  below transport hard caps.
+- **[R162](R162-s3-sigv4.md)** — AWS Signature Version 4 authentication — Area:
+  access server / S3 / security — **Deferred.** Fill the reserved hook with
+  standard SigV4 verification and a selected scale-out credential authority.
+- **[R163](R163-s3-error-http-compatibility.md)** — S3 error and HTTP
+  compatibility — Area: access server / S3 — Map lower-layer failures to stable,
+  bounded S3 responses without topology leakage or unsafe retry advice.
+- **[R164](R164-s3-integrity-etag.md)** — object integrity, checksum, and ETag —
+  Area: access server / S3 / chunk — Define streaming checksums and physical-
+  layout-independent single-part ETags shared by PUT, HEAD, GET, and conditions.
+- **[R165](R165-s3-observability.md)** — metrics, tracing, and operational status
+  — Area: access server / S3 / operations — Make latency, retries, memory, copies,
+  backpressure, and cleanup auditable with bounded cardinality.
+- **[R166](R166-s3-e2e-suite.md)** — compatibility, correctness, and performance
+  E2E suite — Area: access server / S3 / testing — Validate SDK compatibility,
+  crash recovery, storage boundaries, copy accounting, and horizontal scale.
+- **[R167](R167-s3-multipart-upload.md)** — multipart upload — Area: access
+  server / S3 — **Deferred.** Add durable part state, atomic completion, cleanup,
+  and multipart integrity after the basic milestone stabilizes.
+- **[R168](R168-s3-shared-object-reclamation.md)** — shared small-object
+  reclamation — Area: access server / S3 / chunkdb — **Deferred on R95.** Turn
+  exact pending shared ranges into qualified, restart-safe physical deletion.
+- **[R169](R169-s3-shared-chunk-tree-gc.md)** — B+tree and shared-chunk garbage
+  collection — Area: access server / S3 / crowdb-tree / chunkdb — **Deferred on
+  measurement, R147, and R168.** Compact fragmented shared chunks and retire
+  obsolete S3 metadata without erasing reader or recovery authority.
+- **[R170](R170-s3-cuobject-rdma.md)** — optional cuObject RDMA data plane —
+  Area: access server / S3 / DiskIO / RDMA — **Deferred until basic TCP S3 is
+  stable.** Keep acceleration in a separate optional library and requirement;
+  AccessServer coordinates while DiskIO-owned cuObjServer endpoints transfer
+  parallel logical spans directly to or from client registered memory.
 
 ### High Priority
 
@@ -32,17 +135,6 @@ complexity, and dependency. Before implementation, follow the
   operator-manual `BindMapValue` write with automatic monitoring +
   rebinding. Monitor detects instance join/leave, rebalances disk-group
   assignments, migrates data during rebinding.
-- **[R101](R101-kv-put-cas.md)** — KV compare-and-set on Put — Area: kv —
-  deferred pending an ordered-application design. Leader-side
-  read-before-propose is not atomic with concurrent proposals, while
-  replica-local apply-time predicates can diverge under out-of-order apply.
-- **[R79](R79-diskdb-free-batch.md)** — diskdb free batch
-  (size-threshold, no timer) — Area: diskdb — Group frees into a
-  batch and flush via one `batch_write` when the batch reaches a
-  configurable size (default 256). No timer — the flush is
-  synchronous on the free path, not a background loop. v1 ships with
-  immediate free (R72); this is a follow-up for high-free-throughput
-  workloads.
 - **[R80](R80-diskdb-rebalance.md)** — diskdb space rebalance across
   disks + disk-groups — Area: diskdb — New/recovered disks enter
   `allocating_disks` empty while peers stay near-full; the round-robin
@@ -70,30 +162,23 @@ complexity, and dependency. Before implementation, follow the
   optimization, not correctness — the safety-net poller covers missed
   notifies.
 
-- **[R66](R66-kv-wal-io-uring.md)** — WAL io_uring backend — eliminate
-  `spawn_blocking` on the durability path. The WAL's production I/O
-  backend (`File` / `BlockDevice`) routes `fdatasync` and file writes
-  through `tokio::fs` / `std::fs`, both of which use `spawn_blocking`
-  internally (thread hop + blocking pool saturation under burst load).
-  Add `IoBackend::Uring` variant that reuses `DiskIOUring` in
-  `crowdb-common` (already proven for B-tree page I/O) for WAL segment
-  I/O via `io_uring` SQE/CQE. Expose `DiskIOUring`'s submit API
-  (`submit_read`/`submit_write`/`submit_fsync`) via FFI as Rust async
-  functions. `WalFileInner::Uring` implements all `WalFile` operations
-  via `DiskIOUring` SQEs — no `spawn_blocking`, no thread hop.
-  Fallback to `File` on non-Linux / no-liburing. `O_DIRECT` aligned
-  writes. No `pipeline_writer` or `segment` API changes (drop-in async
-  fn replacement). Linux + liburing only; tests skip on other platforms.
-
 ### Data Path (diskio + chunk object writers + read flow)
 
 Chunk reads, read repair, mirror-to-EC conversion, write error handling, and
 end-to-end Chunk IO performance workloads are landed. The RPC migration items
-(R115, R116, R117) are in a separate area (see RPC Migration section below);
-R32 depends on R115.
+(R115, R116, R117) are in a separate area (see RPC Migration section below).
 
 ### Medium Priority
 
+- **[R97](R97-chunkdb-advanced-placement-strategies.md)** — configurable
+  failure-domain placement and cross-domain balancing — Area: chunkdb / diskdb
+  / group 0 — Add `rack_first` and `node_first` policies with explicit rack,
+  node, and physical-disk protection assessments. Rank safe candidates by
+  projected normalized utilization so uneven racks, nodes, disk-groups, and
+  disks converge without weakening the selected failure guarantee. Validate
+  DiskDB's returned physical disks, keep policy changes non-retroactive, create
+  durable background repair tasks for every temporarily degraded EC strip,
+  and add a protection-preserving cross-disk-group rebalance planner.
 - **[R83](R83-chunkdb-complete-recovery-flow.md)** — chunkdb
   complete recovery flow (real data recovery + speed control) —
   Area: chunkdb / diskdb / diskio — diskdb's recovery is disk-layer
@@ -130,42 +215,18 @@ R32 depends on R115.
   rebuild. Triggered on move via watch/notify (R78) with a periodic
   safety net. Blocked on the chunkdb server component (unlanded) and
   R81 Part 2.
-- **[R32](R32-kv-custom-rust-rpc.md)** — KV consensus hot path →
-  `crowdb-rpc` — Area: kv / RPC — Migrate the internal replica-to-replica
-  Paxos path from the legacy tonic/h2 stack to the `crowdb-rpc` flatbuffer RPC library.
-  Recovers the ~17% h2-lock throughput loss at 2T:1C
-  (measured in `kv-read-flow-analysis.md`). Protocol semantics
-  preserved (same request/response shapes, `NotLeaderHint`, error
-  codes); only the transport changes. Depends on R104 (finished) +
-  R114 (finished — bidirectional request-response for LearnerStream +
-  StreamSnapshot). Management
-  API stays on Axum/HTTP. Open Question resolved: full `.fbs`
-  conversion (no prost bridge — the rejected approach), consistent with R105/diskio.
-
 ### RPC Migration (legacy → crowdb-rpc)
 
-Dependency order: R115 → R116 (unary); R117 (streaming) depends on
-R114 (finished) + R32. R115 lands first to validate the
-migration pattern (schema, server, client, error mapping, mixed
-rollout) before the streaming services. All four items follow the
+Historical migration order: R115 → R116 (unary); R117 (streaming) followed
+R114 plus the original R32 consensus migration. R115 first validated the
+migration pattern (schema, server, client, and error mapping) before the
+streaming services. All four migrations follow the
 zero-copy wrapper convention (`design-crowdb-rpc.md` §6): `FB`-prefixed
 flatbuffer types, wrapper classes in `crowdb-protocol`, no owned
-intermediate structs, no per-field copy. All four items (R115 diskdb,
-R32 KV consensus, R117 KV client-facing, R116 chunkdb) are DONE.
+intermediate structs, no per-field copy. The four transport migrations (R115
+diskdb, the original R32 KV consensus scope, R117 KV client-facing, and R116
+chunkdb) are DONE. The post-migration KV server/library review is also complete.
 
-- **[R68](R68-kv-write-largeval-bench.md)** — Large-value write
-  benchmark — Area: cluster / maintenance / bench — R67 fixed the 16 KiB
-  scan error spike by wrapping the maintenance loop's `flush` /
-  `persist_snapshot` / `collect_garbage` in `spawn_blocking`, but
-  verified it only on the scan path. The maintenance loop runs
-  identically under write load, yet the write regression sentinel
-  (`bench-kv-write-regression.sh`) only exercises 512 B values — there is
-  no large-value write config. Add a `largeval_16k` write config
-  (`--value-size 16384`, 100k keys, 10s mem mode) and verify 0 write
-  errors across 3 consecutive runs on Linux. If errors appear, RCA into
-  whether the R67 fix has a write-path gap and file a follow-up
-  requirement. Low complexity; verifies R67's coverage extends to
-  writes.
 - **[R33](R33-crowdb-tree-rename.md)** — Extract crowdb-tree to separate repo and rename — Area:
   workspace — Move `crowdbtree/` into its own git repository (preserving
   history), wire `crowdb-kv` to depend on `crowdb-tree-ffi` as an external
@@ -202,54 +263,22 @@ R32 KV consensus, R117 KV client-facing, R116 chunkdb) are DONE.
 - **[R4](R4-bounded-mempool.md)** — Bounded memory pool — Area: crowdbtree engine — `buffer::allocate` uses
   unbounded `std::malloc`; a burst of large writes can spike RSS without
   backpressure.
-- **[R52](R52-reverse-scan.md)** — Reverse scan — Area: scan / crowdb-tree
-  engine — `scan` is forward-only today (ascending key order). Reverse
-  scan (descending order, `start_before` instead of `start_after`) is a
-  distinct cost shape: the B+tree descent targets the leaf containing
-  `start_before`, the merge loop walks cursors backward, and the
-  `LeafChainCursor` needs a reverse seek/advance. The skip-list L0
-  cursor (R50) is forward-only — a reverse cursor would need
-  `prev()` links or a separate reverse traversal path. Client API:
-  `KvScanRequest` gains a `direction` field; the S3-style pagination
-  uses the first key of each page as the next `start_before`. Needs
-  its own scan perf baseline (reverse scans have different cache
-  behavior — backward leaf traversal touches pages in reverse
-  allocation order).
-- **[R54](R54-kv-scan-engine-profiling.md)** — Scan engine profiling —
-  Area: scan / crowdb-tree engine — both read modes saturate near ~38k
-  scans/s at 32T:32C; the bottleneck moved to the C++ crowdb-tree merge
-  loop (L0 skip-list + L1 B+tree cursor) but the specific hot spot is
-  unknown. Add `tools/profile-scan.sh` (mirroring
-  `tools/profile-write.sh`), profile the 32T:32C scan bench, and
-  document the top hot stacks. Investigation only — no scan-path code
-  changes. If a clear optimization target emerges, file a follow-up
-  requirement with the profiling evidence. Low complexity.
 - **[R60](R60-tree-scan-sibling-leaf-readahead.md)** — Sibling-leaf
-  readahead on cold scans — Area: scan / crowdb-tree engine — the scan
+  readahead on cold scans — **Deferred pending cold file/block-backed
+  measurement.** Area: scan / crowdb-tree engine — the scan
   path demand-loads each L1 leaf inline (sync) or one pending page per
   reactor round trip (async), so a cold multi-leaf range pays one
   stall/round-trip per leaf, serialized with merge work on prior
-  leaves. The scan knows `right_sibling` (`crowdb-tree.cpp:1822/2074`)
-  before finishing the current leaf — issue a readahead for the next
+  leaves. The scan knows `right_sibling` before finishing the current
+  leaf — issue a readahead for the next
   leaf to overlap I/O with merging. Sync path: prefetch the
   right-sibling page id via a page-cache async-resolve seam. Async
-  path: batch the right-sibling read with the current leaf's read in
-  the reactor submission (small readahead window, default 1). Win is
-  zero on mem-mode (leaves resident); needs a cold/disk bench config to
-  validate. Medium complexity.
-- **[R68](R68-kv-write-largeval-bench.md)** — Large-value write
-  benchmark — Area: cluster / maintenance / bench — R67 fixed the 16 KiB
-  scan error spike by wrapping the maintenance loop's `flush` /
-  `persist_snapshot` / `collect_garbage` in `spawn_blocking`, but
-  verified it only on the scan path. The maintenance loop runs
-  identically under write load, yet the write regression sentinel
-  (`bench-kv-write-regression.sh`) only exercises 512 B values — there is
-  no large-value write config. Add a `largeval_16k` write config
-  (`--value-size 16384`, 100k keys, 10s mem mode) and verify 0 write
-  errors across 3 consecutive runs on Linux. If errors appear, RCA into
-  whether the R67 fix has a write-path gap and file a follow-up
-  requirement. Low complexity; verifies R67's coverage extends to
-  writes.
+  path: use a fixed one-leaf lookahead to overlap the next leaf read with
+  merge and packing of the current resident leaf. Readahead is scan-only and
+  conditional on the range, remaining limits, deadline, residency, and async
+  disk backend. Win is zero on mem-mode (leaves resident); implement only if
+  a cold benchmark with eviction shows a material latency or throughput
+  improvement. Medium complexity.
 ---
 
 ## Implementation Process

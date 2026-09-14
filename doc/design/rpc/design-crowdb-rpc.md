@@ -155,6 +155,22 @@ select and copy a connection handle; reconnect and network I/O happen after
 release. Replica sets are small, so immutable snapshot publication would add
 control-plane complexity without a measured dispatch-path benefit.
 
+The Rust FFI also provides `ConnectionPoolIndex` for clients whose routing key
+is an externally discovered endpoint identity. It publishes immutable endpoint
+maps with `ArcSwap`; request-path `get` skips closed members and performs only
+atomic round-robin selection. Cold installation and degraded replacement build
+a complete fixed-size group before compare-and-swap publication. A selected
+connection carries its pool generation, so invalidation and replacement are
+exact: a delayed failure from an old group cannot remove a newer one.
+
+Owned Rust `Connection` clones share one safe handle lifetime. Explicit
+`is_open` and `close` operations expose health without raw-handle access. When
+an endpoint generation is removed, the pool releases its clones, but the C++
+connection is closed and destroyed only after the last selected/in-flight or
+native-route clone retires. Thus topology refresh can atomically hand off
+generations without use-after-free or permanently retaining removed
+connections.
+
 ### 4.2 Request/Response Correlation
 
 `RpcClient` tracks pending requests in a per-connection

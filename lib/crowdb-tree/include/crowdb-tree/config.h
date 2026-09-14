@@ -1,0 +1,200 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
+// Config: tunables for consolidation, flush triggers, and page split/merge.
+// Defaults follow the core engine design.
+#pragma once
+
+#include "crowdb-tree/btree/key_range.h"
+#include "crowdb-tree/maptable/compressor.h"
+
+#ifdef CROWDB_HAVE_LIBURING
+#    include "crowdb-common/diskio_uring.h"
+#endif
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+
+namespace crowdb::tree
+{
+
+class PageStore;
+class AsyncPageStore;
+
+struct Config
+{
+    // ── Consolidation (core doc §7) ──
+    // Fold a leaf's delta chain into a fresh base when either threshold trips.
+    // O3: max_delta_len raised from 16 to 64 — with flush_notify draining
+    // small batches (1-2 frozen tables per flush), the chain grows slowly.
+    // 64 gives headroom for sustained write bursts before consolidation
+    // fires. max_delta_bytes stays at 512 KiB. The snapshot's
+    // prepare_snapshot_locked folds chains, so deferring the fold is safe.
+    uint32_t max_delta_len   = 64;
+    size_t   max_delta_bytes = 512ULL * 1024; // 512 KiB
+
+    // ── Leaf split / merge (core doc §8) ──
+    // Split when a consolidated leaf exceeds leaf_split_bytes; merge when it
+    // drops below leaf_merge_bytes. Hysteresis: merge threshold is well below
+    // split to avoid oscillation.
+    size_t leaf_split_bytes = 64ULL * 1024; // 64 KiB target page size
+    size_t leaf_merge_bytes = 16ULL * 1024; // split/4
+
+    // Inner-page fanout bound (separator count) before an inner split.
+    uint32_t inner_max_keys = 256;
+    // Inner-page underflow threshold: when a non-root inner page drops below this
+    // many separators (after a child merge), it is merged with its left sibling so
+    // delete-heavy workloads don't leave a sparse upper tree. 0 = derive
+    // max(1, inner_max_keys / 4) (well below the post-split size for hysteresis).
+    uint32_t inner_merge_keys = 0;
+
+    // ── Overflow pages (PT11) ──
+    // A value larger than this spills out of its leaf into a chain of fixed
+    // overflow frames; the leaf keeps a small fixed pointer cell, so every base
+    // page stays <= frame_bytes (pool-resident + evictable). 0 = derive a default
+    // of frame_bytes / 4 at engine construction.
+    size_t max_inline_value = 0;
+
+    // ── Key size limit (plan-tree #15) ──
+    // A key larger than this is rejected at apply() with kInvalidArgument (an
+    // oversized key is assumed to be a caller bug: keys are copied into every
+    // delta and inner separator, so a huge key would blow up the tree). 0 =
+    // derive a default of frame_bytes / 2 at engine construction, which keeps a
+    // key comfortably within a single leaf/inner frame alongside its cell.
+    size_t max_key_size = 0;
+
+    // ── In-frame delta region (PT12) ──
+    // When enabled, a small flush appends its mutations as in-frame deltas via a
+    // cheap frame COW (memcpy + append) instead of building a fresh sorted base or
+    // a heap delta node; the leaf folds to a fresh base once delta_count reaches
+    // max_inframe_delta or the deltas no longer fit. default_env off (the heap delta
+    // overlay already works; this is an optimization measured against COW-rebuild).
+    bool     inframe_delta     = false;
+    uint32_t max_inframe_delta = 8;
+
+    // ── MemTable flush triggers ──
+    // 16 MiB: large enough that a single flush captures a meaningful batch
+    // (reducing flush frequency), but small enough to bound active_ memory
+    // under sustained write load. With max_memtable_count=10, worst-case
+    // memory is ~160 MiB of un-drained memtables before backpressure kicks in.
+    size_t   memtable_flush_bytes   = 16ULL * 1024 * 1024; // 16 MiB
+    uint32_t memtable_flush_entries = 100000;
+
+    // ── MemTable double buffering (plan-tree #3) ──
+    // Once active_ crosses memtable_flush_bytes/_entries, it is frozen (no
+    // longer accepts writes) and a fresh, empty MemTable takes over as
+    // active_; the frozen table is drained into L1 by flush() (explicit call
+    // from the upper-layer maintenance loop). This bounds how large any *one*
+    // buffer can grow and lets new writes proceed without contending with an
+    // in-progress drain (they land in a different MemTable object entirely).
+    // This is the count of buffers total: 1 active_ + up to
+    // (max_memtable_count - 1) queued frozen buffers. Must be >= 2 (2 = the
+    // common active_/flushing_ case); values are not currently validated by
+    // the engine. When the frozen queue is already at (max_memtable_count -
+    // 1), a further threshold-triggered freeze is skipped (active_ is allowed
+    // to keep growing past its threshold) rather than stalling the writer --
+    // an explicit flush() is expected to catch up and free a slot. See
+    // Crowdbtree's active_/frozen_ member comment for the full design,
+    // including how non-contiguous (slot > the current contiguous frontier)
+    // leftovers are handled when a frozen buffer is drained. Default 10
+    // (1 active + 9 frozen) gives the maintenance loop enough headroom to
+    // absorb writes during a multi-second flush/snapshot without active_
+    // growing unbounded. With 16 MiB memtables, worst-case un-drained
+    // memory is ~160 MiB before backpressure kicks in.
+    uint32_t max_memtable_count = 10;
+
+    // ── Mapping table redesign (plan-tree #14) ──
+    // Packed slot words per segment.
+    // Fixed for the lifetime of a tree. Not yet consumed by MappingTable --
+    // it still hardcodes MappingTable::kSegmentSize (#14c follow-up: plumb
+    // this through as the runtime segment size) -- present now so
+    // callers/tests can start tuning it ahead of that wiring.
+    uint32_t mapping_segment_slots = 1024;
+
+    // ── Persistence ──
+    // Durable backend. Non-owning; nullptr = pure in-memory engine (no
+    // snapshot/recovery). When set, snapshot() writes the materialized L1
+    // state and open() recovers it.
+    PageStore *page_store = nullptr;
+
+    // ── Async I/O ──
+    // Non-owning; the caller owns and outlives the Crowdbtree. When null,
+    // async entry points complete synchronous storage work in the caller's
+    // stack frame. The store must address the same durable image as
+    // `page_store`. This contract is independent of io_uring so RPC-backed
+    // stores work on builds without liburing.
+    AsyncPageStore *async_page_store = nullptr;
+#ifdef CROWDB_HAVE_LIBURING
+    // Optional local reactor used only by BlockAsyncPageStore.
+    ::crowdb::common::DiskIOUring *async_uring = nullptr;
+#endif
+
+    // ── Buffer pool ──
+    // The arena that holds base-page frames is a flat array of equal-size frames.
+    // `frame_bytes` is that fixed size; a base page larger than a frame (rare;
+    // overflow pages are PT11) or built when the pool is full falls back to a
+    // heap buffer, so correctness is independent of these knobs. `frame_bytes`
+    // should be >= leaf_split_bytes so normal leaves are pool-resident.
+    uint32_t frame_bytes       = 64ULL * 1024;        // fixed arena frame size
+    size_t   buffer_pool_bytes = 64ULL * 1024 * 1024; // arena capacity (frames * frame_bytes)
+
+    // ── Page compression (PT10) ──
+    // On-disk only: each durable base page is wrapped in a self-describing blob
+    // ([algo][raw_len][stored_len][crc][stored]); the buffer pool always holds
+    // uncompressed frames. The algo is recorded per page, so a page is decoded
+    // correctly regardless of the option in force when it is read back (mixed
+    // pages across incremental snapshots decode fine). default_env kNone keeps the
+    // stored bytes equal to the raw frame; kLz4 compresses when it shrinks the
+    // page (falling back to stored-raw when LZ4 is unavailable or unhelpful).
+    compress_algo compression = compress_algo::kNone;
+
+    // ── Engine identity (logging context) ──
+    // store_id / group_id from the caller (CrowdbKV passes its Paxos store/group
+    // ids). Used solely to build `name` for CT_LOG context — not for file naming
+    // (the PageStore handles that) or any logic.
+    uint32_t store_id = 0;
+    uint32_t group_id = 0;
+    // Human-readable label prepended to every CT_LOG line, e.g. "s1.g1".
+    // If empty, logs show "[unnamed]".
+    std::string name;
+
+    // Short backend label for metric names (e.g. "file", "block", "mem").
+    // Set by the caller before open(); included in the init_metrics prefix
+    // so C++ metrics are tagged with their storage backend.
+    std::string backend_label;
+
+    // Immutable public key policy. Chunk-KV partitions use a bounded range;
+    // ordinary KV trees retain the unbounded default.
+    KeyRange key_range = KeyRange::unbounded();
+
+    // ── Block compaction (R129) ──
+    // Cadence-driven merge GC reclaims sparse array-of-blocks source blocks
+    // by relocating their live extents during a snapshot. Defaults: disabled
+    // cadence (interval 0), 70% free-ratio threshold, one block of relocation
+    // per pass. See design-crowdb-tree-storage.md §2.5.
+    // merge_gc_interval_ms: wall-clock cadence for compact_sparse_blocks; 0
+    // disables the cadence-driven pass (snapshot folding still runs).
+    uint64_t merge_gc_interval_ms = 0;
+    // merge_gc_block_free_threshold: shared by allocation gap filtering and
+    // source-block selection. A block whose free ratio is strictly greater
+    // than this value is a compaction candidate. (0.0, 1.0).
+    double merge_gc_block_free_threshold = 0.70;
+    // merge_gc_max_relocation_bytes: per-pass byte budget; 0 disables
+    // relocation (selection returns empty). The first eligible block is
+    // always allowed even when it exceeds the budget so progress is possible.
+    uint64_t merge_gc_max_relocation_bytes = 0;
+
+    // ── Logging ──
+    // These fields are no longer used by Crowdbtree::open() — logging is now
+    // process-global and must be initialized by the application via
+    // init_logging() (or ct_init_logging in the C API) before any open().
+    // They are retained for API compatibility.
+    std::string log_dir;                         // unused (see init_logging)
+    std::string log_level       = "info";        // unused (see init_logging)
+    std::string log_file_prefix = "crowdb-tree"; // unused (see init_logging)
+    size_t      log_max_file_mb = 30;            // unused (see init_logging)
+    size_t      log_max_files   = 5;             // unused (see init_logging)
+};
+
+} // namespace crowdb::tree

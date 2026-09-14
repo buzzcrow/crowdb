@@ -345,7 +345,7 @@ void MetricsRegistry::start(const std::string &log_path, double interval_secs, s
     max_files_      = max_files;
     console_        = console;
     running_.store(true, std::memory_order_relaxed);
-    flush_thread_ = std::thread([this]() {
+    flush_thread_ = std::thread([this] {
         set_current_thread_name("ct-metrics");
         std::unique_lock<std::mutex> lk(flush_mutex_);
         while (running_.load(std::memory_order_relaxed)) {

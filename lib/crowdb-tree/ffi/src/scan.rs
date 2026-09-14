@@ -18,6 +18,14 @@ pub struct ScanEntry {
     pub tombstone: bool,
 }
 
+/// Traversal order for the asynchronous packed scan surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScanDirection {
+    #[default]
+    Forward,
+    Reverse,
+}
+
 /// A snapshot-view entry (includes tombstones).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewEntry {
@@ -77,6 +85,81 @@ pub(crate) fn decode_scan(bytes: Vec<u8>, count: usize) -> Result<Vec<ScanEntry>
 }
 
 impl Crowdbtree {
+    /// Returns the greatest live key at or before the supplied upper bound.
+    pub fn seek_reverse(
+        &self,
+        start_key: &[u8],
+        start_inclusive: bool,
+        begin_key: &[u8],
+    ) -> Result<Option<ScanEntry>, CtError> {
+        let mut found: c_int = 0;
+        let mut key = sys::ct_buf {
+            data: std::ptr::null_mut(),
+            len: 0,
+        };
+        let mut value = sys::ct_buf {
+            data: std::ptr::null_mut(),
+            len: 0,
+        };
+        let mut slot = 0_u64;
+        check(unsafe {
+            sys::ct_seek_reverse(
+                self.as_ptr(),
+                start_key.as_ptr(),
+                start_key.len(),
+                if start_inclusive { 1 } else { 0 },
+                begin_key.as_ptr(),
+                begin_key.len(),
+                &mut found,
+                &mut key,
+                &mut slot,
+                &mut value,
+            )
+        })?;
+        let key = take_buf(key);
+        let value = take_buf(value);
+        Ok((found != 0).then(|| ScanEntry {
+            key: Bytes::from(key),
+            slot,
+            value: Bytes::from(value),
+            tombstone: false,
+        }))
+    }
+
+    /// Returns a bounded page in descending key order.
+    pub fn scan_reverse(
+        &self,
+        start_key: Option<&[u8]>,
+        start_inclusive: bool,
+        begin_key: &[u8],
+        limit: usize,
+        byte_budget: usize,
+    ) -> Result<(Vec<ScanEntry>, bool), CtError> {
+        let mut entries = sys::ct_buf {
+            data: std::ptr::null_mut(),
+            len: 0,
+        };
+        let mut count = 0_u64;
+        let mut truncated: c_int = 0;
+        check(unsafe {
+            sys::ct_scan_reverse(
+                self.as_ptr(),
+                start_key.unwrap_or_default().as_ptr(),
+                start_key.map_or(0, <[u8]>::len),
+                if start_key.is_some() { 1 } else { 0 },
+                if start_inclusive { 1 } else { 0 },
+                begin_key.as_ptr(),
+                begin_key.len(),
+                limit,
+                byte_budget,
+                &mut entries,
+                &mut count,
+                &mut truncated,
+            )
+        })?;
+        Ok((decode_scan(take_buf(entries), count as usize)?, truncated != 0))
+    }
+
     /// Range scan over `prefix` (empty = whole keyspace).
     /// When `include_tombstones` is true, tombstone entries are included.
     /// `start_after` (empty = start from beginning) is an exclusive lower
@@ -97,31 +180,109 @@ impl Crowdbtree {
         deadline_ms: u64,
         include_tombstones: bool,
     ) -> Result<(Vec<ScanEntry>, bool), CtError> {
+        self.scan_bound(
+            prefix,
+            start_after,
+            !start_after.is_empty(),
+            false,
+            end_key,
+            limit,
+            byte_budget,
+            keys_only,
+            deadline_ms,
+            include_tombstones,
+        )
+    }
+
+    /// Range scan with an explicitly inclusive or exclusive lower bound.
+    #[allow(clippy::too_many_arguments)]
+    pub fn scan_from(
+        &self,
+        prefix: &[u8],
+        start_key: &[u8],
+        start_inclusive: bool,
+        end_key: &[u8],
+        limit: usize,
+        byte_budget: usize,
+        keys_only: bool,
+        deadline_ms: u64,
+        include_tombstones: bool,
+    ) -> Result<(Vec<ScanEntry>, bool), CtError> {
+        self.scan_bound(
+            prefix,
+            start_key,
+            true,
+            start_inclusive,
+            end_key,
+            limit,
+            byte_budget,
+            keys_only,
+            deadline_ms,
+            include_tombstones,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn scan_bound(
+        &self,
+        prefix: &[u8],
+        start_key: &[u8],
+        has_start_bound: bool,
+        start_inclusive: bool,
+        end_key: &[u8],
+        limit: usize,
+        byte_budget: usize,
+        keys_only: bool,
+        deadline_ms: u64,
+        include_tombstones: bool,
+    ) -> Result<(Vec<ScanEntry>, bool), CtError> {
         let mut buf = sys::ct_buf {
             data: std::ptr::null_mut(),
             len: 0,
         };
         let mut count = 0u64;
         let mut truncated: c_int = 0;
-        check(unsafe {
-            sys::ct_scan(
-                self.as_ptr(),
-                prefix.as_ptr(),
-                prefix.len(),
-                start_after.as_ptr(),
-                start_after.len(),
-                end_key.as_ptr(),
-                end_key.len(),
-                limit,
-                byte_budget,
-                if keys_only { 1 } else { 0 },
-                deadline_ms,
-                if include_tombstones { 1 } else { 0 },
-                &mut buf,
-                &mut count,
-                &mut truncated,
-            )
-        })?;
+        let status = unsafe {
+            if has_start_bound {
+                sys::ct_scan_from(
+                    self.as_ptr(),
+                    prefix.as_ptr(),
+                    prefix.len(),
+                    start_key.as_ptr(),
+                    start_key.len(),
+                    if start_inclusive { 1 } else { 0 },
+                    end_key.as_ptr(),
+                    end_key.len(),
+                    limit,
+                    byte_budget,
+                    if keys_only { 1 } else { 0 },
+                    deadline_ms,
+                    if include_tombstones { 1 } else { 0 },
+                    &mut buf,
+                    &mut count,
+                    &mut truncated,
+                )
+            } else {
+                sys::ct_scan(
+                    self.as_ptr(),
+                    prefix.as_ptr(),
+                    prefix.len(),
+                    start_key.as_ptr(),
+                    start_key.len(),
+                    end_key.as_ptr(),
+                    end_key.len(),
+                    limit,
+                    byte_budget,
+                    if keys_only { 1 } else { 0 },
+                    deadline_ms,
+                    if include_tombstones { 1 } else { 0 },
+                    &mut buf,
+                    &mut count,
+                    &mut truncated,
+                )
+            }
+        };
+        check(status)?;
         let bytes = take_buf(buf);
         let entries = decode_scan(bytes, count as usize)?;
         Ok((entries, truncated != 0))

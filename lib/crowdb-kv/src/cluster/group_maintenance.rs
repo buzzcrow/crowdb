@@ -151,6 +151,21 @@ async fn persist_snapshot_blocking(
             0
         });
     let elapsed_ms = u64::try_from(snap_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    if let Some(handles) = group.snapshot_handles.get() {
+        let elapsed = snap_start.elapsed();
+        handles
+            .latency
+            .observe(u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX));
+        let snapshot_latency_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        handles
+            .max_us
+            .set(handles.max_us.snapshot().max(snapshot_latency_us));
+        if at > 0 {
+            handles.success.inc();
+        } else {
+            handles.failure.inc();
+        }
+    }
     if elapsed_ms > 100 {
         info!(
             elapsed_ms,

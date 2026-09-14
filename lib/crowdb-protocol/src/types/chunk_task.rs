@@ -10,6 +10,18 @@ use crate::common::ChunkId;
 pub const CHUNK_TASK_SCHEMA_VERSION: u16 = 1;
 pub const TASK_KIND_MIRROR_TO_EC: u16 = 1;
 pub const TASK_KIND_REPAIR_STRIP: u16 = 2;
+pub const TASK_KIND_REPAIR_PLACEMENT: u16 = 3;
+pub const PLACEMENT_REPAIR_KIND_VERSION: u16 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacementRepairTaskPayload {
+    pub chunk_id: ChunkId,
+    pub strip_sequence: u32,
+    pub placement_priority: i32,
+    pub repair_rack: bool,
+    pub repair_node: bool,
+    pub repair_disk: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[repr(u8)]

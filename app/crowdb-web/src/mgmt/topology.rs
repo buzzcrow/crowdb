@@ -314,6 +314,8 @@ async fn ensure_diskdb_running(
         kv_connections: None,
         kv_client_rpc_workers: None,
         keepalive_interval_secs: state.test_mode.then_some(1),
+        free_batch_enabled: None,
+        free_flush_max_batch: None,
         server_id: server.id.clone(),
         listen_port,
         http_port,

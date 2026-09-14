@@ -36,9 +36,9 @@ For one EC 8+4 strip, the success path is:
    client. The client does not wait for block commit.
 5. Each DiskDB commit validates the physical identity, owner, and allocation
    timestamp. A tentative-cache hit supplies the value without a KV read; a
-   miss reads it from KV. DiskDB changes only `commit_state=Committed`,
-   batch-overwrites the four busy-block values in KV, and removes their cache
-   entries after the write succeeds.
+   miss reads it from KV. DiskDB changes `commit_state` to Committed, writes
+   all changed busy-block values in one batch, and removes exact cache entries
+   after success. An already Committed value is idempotent success.
 
 At client success, all twelve busy blocks and the referencing Active chunk are
 durable. The blocks may remain Tentative until background commit completes. A
@@ -75,6 +75,26 @@ The selected 256-thread confirmation samples are 12,707, 12,460, and
 1.4%, within the 10% stability bound. Every sample has zero errors and exact
 space accounting.
 
+An R149 validation run on an Intel Core i9-7960X (16 cores / 32 threads)
+confirmed the cache-assisted batched commit path after removing per-block
+BusyBlock CAS. These numbers are a same-host regression sentinel and are not
+directly comparable with the AMD baseline above.
+
+| Threads | Chunk/s | Block/s | Average us | p50 us | p99 us | Errors | Space |
+|--------:|--------:|--------:|-----------:|-------:|-------:|-------:|:------|
+|       1 |     238 |   2,856 |      4,195 |  4,188 |  5,408 |      0 | exact |
+|      16 |   7,015 |  84,180 |      2,279 |  2,194 |  3,773 |      0 | exact |
+|     128 |   9,795 | 117,540 |     13,046 | 12,647 | 22,392 |      0 | exact |
+|     256 |  10,441 | 125,292 |     24,474 | 23,307 | 47,543 |      0 | exact |
+|     512 |   9,702 | 116,424 |     52,647 | 48,765 | 112,289 |      0 | exact |
+
+The retained artifact is
+`bench-log/chunkdb-regression-20260913-132220`. A focused same-host comparison
+measured 151 chunk/s at one thread and 150 chunk/s at 16 threads with
+per-block CAS, including a 4.24-second p99 at 16 threads. Restoring one
+ordinary batched commit write per data group reached 249 and 6,920 chunk/s in
+the focused run and removed the seconds-scale tail.
+
 ## Bottleneck
 
 The peak is 12,734 chunks/s, or 152,808 physical blocks/s, at 512 threads.
@@ -82,12 +102,12 @@ Increasing from 256 to 512 threads adds only 0.4% throughput while p99 grows
 from 49 ms to 92 ms, so 256 threads remains the better latency/throughput
 operating point.
 
-DiskDB now retains each freshly persisted tentative `BusyBlockValue` in a
-bounded per-data-group cache keyed by `allocation_ts`. Commit validates the
-cached physical identity and owner, changes the state, and overwrites the KV
-record without a preceding read. A miss after restart or eviction safely
-falls back to KV. At 512 threads, the three DiskDB servers reported 3,153,276
-cache hits, exactly 262,773 chunks times twelve blocks, and zero misses.
+DiskDB retains each freshly persisted tentative `BusyBlockValue` in a bounded
+per-data-group cache keyed by `allocation_ts`. Commit validates the cached
+physical identity and owner and builds one batch write without a preceding
+read. A miss after restart or eviction falls back to KV. The historical
+512-thread run reported 3,153,276 cache hits, exactly 262,773 chunks times
+twelve blocks, and zero misses.
 
 At 256 threads, weighted ChunkDB metrics show:
 

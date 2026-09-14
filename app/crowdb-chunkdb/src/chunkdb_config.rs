@@ -9,6 +9,8 @@ use crowdb_common::config::BaseConfig;
 use crowdb_protocol::{CHUNKDB_HTTP_BASE, CHUNKDB_RPC_BASE, KV_SERVER_MGMT_BASE};
 use serde::{Deserialize, Serialize};
 
+use crate::selector::FailureDomainPriority;
+
 /// Top-level configuration for a chunkdb instance.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChunkdbConfig {
@@ -27,14 +29,21 @@ pub struct ChunkdbConfig {
     #[serde(default)]
     pub repair: RepairConfig,
     #[serde(default)]
+    pub placement_repair: PlacementRepairConfig,
+    #[serde(default)]
     pub reservation: ReservationConfig,
 }
 
 /// Placement safety policy.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PlacementConfig {
     /// Permit EC layouts that exceed the safe per-node failure bound.
     pub allow_unsafe_ec: bool,
+    /// Permit placement when one or more requested failure domains are not protected.
+    pub allow_degraded_failure_domains: bool,
+    /// Failure-domain ordering for new strips and policy-less replacements.
+    pub failure_domain_priority: FailureDomainPriority,
 }
 
 impl BaseConfig for ChunkdbConfig {
@@ -70,7 +79,35 @@ impl BaseConfig for ChunkdbConfig {
         self.lifecycle.validate()?;
         self.conversion.validate()?;
         self.repair.validate()?;
+        self.placement_repair.validate()?;
         self.reservation.validate()?;
+        Ok(())
+    }
+}
+
+/// Bounded background convergence for temporarily degraded EC placement.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlacementRepairConfig {
+    pub enabled: bool,
+    pub max_concurrency: usize,
+    pub scan_interval_secs: u64,
+}
+
+impl Default for PlacementRepairConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_concurrency: 2,
+            scan_interval_secs: 1,
+        }
+    }
+}
+
+impl PlacementRepairConfig {
+    fn validate(&self) -> Result<(), String> {
+        if self.max_concurrency == 0 || self.scan_interval_secs == 0 {
+            return Err("placement_repair concurrency and scan_interval_secs must be > 0".into());
+        }
         Ok(())
     }
 }

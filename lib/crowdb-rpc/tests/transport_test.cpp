@@ -76,6 +76,40 @@ TEST_F(TransportLoopbackTest, StopWakesIdleWorker)
     EXPECT_LT(elapsed, std::chrono::milliseconds(500));
 }
 
+TEST_F(TransportLoopbackTest, StopClosesRegisteredConnectionDescriptors)
+{
+    SocketTransport transport(1, 1);
+    transport.start();
+
+    int client_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GE(client_fd, 0);
+    struct sockaddr_in addr{};
+    addr.sin_family      = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port        = htons(port_);
+    ASSERT_EQ(::connect(client_fd, reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr)), 0);
+
+    int server_fd = ::accept(listen_fd_, nullptr, nullptr);
+    ASSERT_GE(server_fd, 0);
+    auto server_conn = transport.create_connection(server_fd, "server");
+
+    transport.stop();
+
+    EXPECT_FALSE(server_conn->is_open());
+    errno = 0;
+    EXPECT_EQ(fcntl(server_fd, F_GETFL), -1);
+    EXPECT_EQ(errno, EBADF);
+
+    auto *control     = transport.pool()->alloc(1);
+    auto *rejected    = new OutFrame();
+    rejected->control = control;
+    EXPECT_FALSE(transport.submit(server_conn.get(), rejected));
+    control->release();
+    delete rejected;
+
+    ::close(client_fd);
+}
+
 TEST_F(TransportLoopbackTest, SendAndReceiveFrame)
 {
     // Start the transport with 1 worker.
@@ -136,8 +170,8 @@ TEST_F(TransportLoopbackTest, SendAndReceiveFrame)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     EXPECT_TRUE(got_frame.load(std::memory_order_acquire));
-    EXPECT_EQ(recv_msg_type, 42u);
-    EXPECT_EQ(recv_msg_size, 16u);
+    EXPECT_EQ(recv_msg_type, 42U);
+    EXPECT_EQ(recv_msg_size, 16U);
 
     transport.stop();
     ::close(client_fd);
@@ -314,7 +348,7 @@ TEST_F(TransportLoopbackTest, LargeDataPayloadDirectRead)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     EXPECT_TRUE(got_frame.load(std::memory_order_acquire));
-    EXPECT_EQ(recv_msg_type, 99u);
+    EXPECT_EQ(recv_msg_type, 99U);
     EXPECT_EQ(recv_data_size, DATA_SIZE);
     ASSERT_EQ(recv_data.size(), DATA_SIZE);
 

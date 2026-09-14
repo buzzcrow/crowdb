@@ -56,8 +56,8 @@ class EpollEngine : public SocketEngine
     std::mutex                            conn_mu_;
     std::unordered_map<int, Connection *> connections_;
 
-    void mod_fd(int fd, uint32_t events, Connection *conn);
-    void mod_fd_write(int fd, uint32_t events, Connection *conn);
+    void mod_fd(int fd, uint32_t events, Connection *conn) const;
+    void mod_fd_write(int fd, uint32_t events, Connection *conn) const;
 };
 
 } // namespace crowdb::rpc

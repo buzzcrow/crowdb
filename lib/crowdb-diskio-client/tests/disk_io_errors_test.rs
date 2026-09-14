@@ -5,7 +5,10 @@
 //! `DiskNotExist` (write/read/fsync), `ZoneNotExist`, and `IoError`
 //! (via fault injection with `--fault-error-rate 1.0`).
 
-use crowdb_diskio_client::{DiskId as DioDiskId, DiskIoRetCode, DiskioClient, DiskioError};
+use crowdb_diskio_client::{
+    DiskId as DioDiskId, DiskIoRetCode, TestWireDiskioClient as DiskioClient,
+    TestWireDiskioError as DiskioError,
+};
 use crowdb_test_harness::cluster::KvCluster;
 use crowdb_test_harness::diskio::*;
 use crowdb_test_harness::hardware::{seed_hardware, standard_disk_ids_4};
@@ -30,6 +33,7 @@ async fn disk_io_e2e_error_paths() {
         kv_seeds: &cluster.mgmt_endpoints,
         disks: &[],
         fault_error_rate: 0.0,
+        fault_latency_ms: None,
         no_o_direct: false,
     });
     let (rpc_server, conn, dio_client) = connect_to_diskio(&diskio);
@@ -102,6 +106,7 @@ async fn disk_io_e2e_error_paths() {
         kv_seeds: &cluster.mgmt_endpoints,
         disks: &[],
         fault_error_rate: 1.0,
+        fault_latency_ms: None,
         no_o_direct: false,
     });
     let (rpc_server2, conn2, dio_client2) = connect_to_diskio(&diskio_fault);

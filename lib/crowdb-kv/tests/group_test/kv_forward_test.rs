@@ -168,6 +168,7 @@ async fn follower_scan_forwards_to_leader_after_local_clear() {
             deadline_ms: 0,
             bounded: false,
             scan_cutoff: 0,
+            direction: crowdb_kv::rpc::KvScanDirection::Forward,
         })
         .await
         .expect("kv scan on follower")
@@ -181,6 +182,31 @@ async fn follower_scan_forwards_to_leader_after_local_clear() {
         vec![b"a1".to_vec(), b"a2".to_vec()],
         "scan forward must return leader's prefix-matching keys in sorted order"
     );
+
+    let reverse = follower_client
+        .scan(KvScanRequest {
+            version: 1,
+            group_id: 1,
+            prefix: Bytes::from_static(b"a"),
+            limit: 0,
+            request_id: 202,
+            request_create_ms: 1102,
+            read_mode: 0,
+            start_after: Bytes::new(),
+            min_slot: 0,
+            end_key: Bytes::new(),
+            keys_only: false,
+            count_only: false,
+            deadline_ms: 0,
+            bounded: false,
+            scan_cutoff: 0,
+            direction: crowdb_kv::rpc::KvScanDirection::Reverse,
+        })
+        .await
+        .expect("reverse kv scan on follower")
+        .into_inner();
+    let keys: Vec<Vec<u8>> = reverse.items.iter().map(|item| item.key.to_vec()).collect();
+    assert_eq!(keys, vec![b"a2".to_vec(), b"a1".to_vec()]);
 
     drop(leader_client);
     drop(follower_client);

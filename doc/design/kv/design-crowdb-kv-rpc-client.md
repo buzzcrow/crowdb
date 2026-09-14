@@ -173,11 +173,11 @@ safety-net poller covers missed notifications during the gap.
 
 ## 8. Client-Side Transport (KvRpcTransport)
 
-`KvRpcTransport` (in `lib/crowdb-kv-client/src/kv_rpc_transport.rs`)
-mirrors `PxRpcTransport`: holds `Arc<RpcServer>` + `Arc<RpcClient>` +
-`DashMap<String, Connection>` + `AtomicU64` next_req_id. `conn_for`
-derives the client-facing crowdb-rpc port from the base port via the
-`KV_CLIENT_RPC_BASE` offset.
+`KvRpcTransport` mirrors `PxRpcTransport`: it holds `Arc<RpcServer>`,
+`Arc<RpcClient>`, a shared `ConnectionPoolIndex`, and an atomic request-ID
+source. `conn_for` derives the client-facing crowdb-rpc port from the base
+port via the `KV_CLIENT_RPC_BASE` offset. Pool selection returns its
+generation, and retryable errors invalidate only that generation.
 
 Unary methods (`send_put`, `send_get`, `send_delete`, `send_batch_write`,
 `send_scan`, `send_journal_scan`): build request flatbuffer →
@@ -257,12 +257,12 @@ convention.
 
 ## 13. Topology cache eviction
 
-`TopologyCache::merge` evicts entries from `leaders` and `replicas`
-that are absent from the fresh topology body. `CrowdbClient` wires an
-`eviction_hook` into `TopologyCache::new` so that evicted
-`(store_id, group_id)` keys are also removed from
-`write_slot_highwater` — a stale high-watermark does not self-heal
-and would cause silent empty results against a reused group ID.
+`TopologyCache` publishes one immutable `TopologySnapshot`. Every group route
+contains its leader, replica endpoints, read cursor, endpoint statistics, and
+write-slot high-watermark. A refresh builds a complete replacement snapshot;
+leader hints and refreshes use compare-and-swap so stale work cannot overwrite
+a newer route generation. Eviction retires the complete group route, so a
+reused group ID starts with fresh high-watermark and selection state.
 
-- **I1 — Cache eviction on topology change**: When a group disappears
-  from topology, its `write_slot_highwater` entry is evicted.
+- **I1 — Cache eviction on topology change**: When a group disappears from
+  topology, its complete route generation is evicted atomically.

@@ -1,0 +1,15 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
+//! Catalog store and scan validation.
+
+mod scan;
+mod store;
+mod transition;
+
+pub use scan::{validate_and_clip_scan, ClippedScan, ScanValidationError};
+pub use store::{
+    ChunkKvRangeCatalogError, ChunkKvRangeCatalogPublisher, ChunkKvRangeCatalogStore, HeadWriteOutcome,
+    MemoryChunkKvRangeCatalogStore,
+};
+pub use transition::ChunkKvRangeCatalogCutover;

@@ -24,6 +24,10 @@ impl KeepAlive {
                     free_bytes: u.free_bytes,
                     disk_count: u.disk_count,
                     allocatable_disk_count: u.allocatable_disk_count,
+                    allocatable_capacity_bytes: u.allocatable_capacity_bytes,
+                    allocatable_used_bytes: u.allocatable_busy_bytes,
+                    allocatable_free_bytes: u.allocatable_free_bytes,
+                    sampled_at_ms: unix_time_ms(),
                 })
             })
             .collect();
@@ -41,4 +45,12 @@ impl KeepAlive {
         }
         true
     }
+}
+
+fn unix_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }

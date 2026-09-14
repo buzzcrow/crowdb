@@ -17,6 +17,8 @@ use super::{
 };
 use crate::conversion::{ConversionError, PreparedConversion};
 use crate::lifecycle::ReservationMutation;
+use crowdb_protocol::chunkdb::rpc::{PlacementAssessment, PlacementPriority};
+use crowdb_protocol::chunkdb_fb::{FBPlacementAssessment, FBPlacementAssessmentArgs, FBPlacementPriority};
 
 // ── Error mapping + submission helpers ────────────────────────────
 
@@ -231,6 +233,7 @@ pub(super) fn proto_chunk_type(fb: FBChunkType) -> Option<ProtoChunkType> {
         FBChunkType::Wal => Some(ProtoChunkType::Wal),
         FBChunkType::BtreePage => Some(ProtoChunkType::BtreePage),
         FBChunkType::PageIndex => Some(ProtoChunkType::PageIndex),
+        FBChunkType::Stream => Some(ProtoChunkType::Stream),
         _ => None,
     }
 }
@@ -287,6 +290,22 @@ pub(super) fn parse_fb_chunk_strip(fb: &FBChunkStrip<'_>) -> Option<ChunkStrip> 
             .map(|v| v.iter().collect::<Vec<u8>>())
             .unwrap_or_default(),
         unavailable_segments: parse_fb_segments(fb.unavailable_segments()),
+        placement_priority: match fb.placement_priority() {
+            FBPlacementPriority::NodeFirst => PlacementPriority::NodeFirst as i32,
+            _ => PlacementPriority::RackFirst as i32,
+        },
+        placement_assessment: fb.placement_assessment().map(|assessment| PlacementAssessment {
+            loss_budget: assessment.loss_budget(),
+            max_fragments_per_rack: assessment.max_fragments_per_rack(),
+            max_fragments_per_node: assessment.max_fragments_per_node(),
+            max_fragments_per_disk: assessment.max_fragments_per_disk(),
+            rack_protected: assessment.rack_protected(),
+            node_protected: assessment.node_protected(),
+            disk_protected: assessment.disk_protected(),
+            topology_generation: assessment.topology_generation(),
+            usage_fresh: assessment.usage_fresh(),
+        }),
+        placement_repair_required: fb.placement_repair_required(),
     })
 }
 
@@ -704,6 +723,7 @@ pub(super) fn build_chunk_offset<'a>(
     let last_strip_replacement = chunk
         .last_strip_replacement
         .map(|id| FBInt128::new(id.high, id.low));
+    let owner_key = (!chunk.owner_key.is_empty()).then(|| fbb.create_vector(&chunk.owner_key));
     let state = ProtoChunkState::try_from(chunk.state).unwrap_or(ProtoChunkState::Init);
     let chunk_type = ProtoChunkType::try_from(chunk.chunk_type).unwrap_or(ProtoChunkType::Repo);
     FBChunk::create(
@@ -725,6 +745,7 @@ pub(super) fn build_chunk_offset<'a>(
             next_strip_sequence: chunk.next_strip_sequence,
             cleanup_intents,
             last_strip_replacement: last_strip_replacement.as_ref(),
+            owner_key,
         },
     )
 }
@@ -834,6 +855,22 @@ pub(super) fn build_chunk_strip_offset<'a>(
         .collect();
     let unavailable_segments =
         (!unavailable_values.is_empty()).then(|| fbb.create_vector(&unavailable_values));
+    let placement_assessment = strip.placement_assessment.as_ref().map(|assessment| {
+        FBPlacementAssessment::create(
+            fbb,
+            &FBPlacementAssessmentArgs {
+                loss_budget: assessment.loss_budget,
+                max_fragments_per_rack: assessment.max_fragments_per_rack,
+                max_fragments_per_node: assessment.max_fragments_per_node,
+                max_fragments_per_disk: assessment.max_fragments_per_disk,
+                rack_protected: assessment.rack_protected,
+                node_protected: assessment.node_protected,
+                disk_protected: assessment.disk_protected,
+                topology_generation: assessment.topology_generation,
+                usage_fresh: assessment.usage_fresh,
+            },
+        )
+    });
     FBChunkStrip::create(
         fbb,
         &FBChunkStripArgs {
@@ -849,6 +886,13 @@ pub(super) fn build_chunk_strip_offset<'a>(
             strip_body: body_off,
             usage_bitmap: usage_bitmap_off,
             unavailable_segments,
+            placement_priority: if strip.placement_priority == PlacementPriority::NodeFirst as i32 {
+                FBPlacementPriority::NodeFirst
+            } else {
+                FBPlacementPriority::RackFirst
+            },
+            placement_assessment,
+            placement_repair_required: strip.placement_repair_required,
         },
     )
 }
@@ -942,6 +986,7 @@ pub(super) fn fb_chunk_type(t: ProtoChunkType) -> FBChunkType {
         ProtoChunkType::Wal => FBChunkType::Wal,
         ProtoChunkType::BtreePage => FBChunkType::BtreePage,
         ProtoChunkType::PageIndex => FBChunkType::PageIndex,
+        ProtoChunkType::Stream => FBChunkType::Stream,
     }
 }
 

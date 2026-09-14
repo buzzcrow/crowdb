@@ -41,7 +41,7 @@ class LatencyHistogram
 
     Snapshot flush();
 
-    const std::string &name() const
+    [[nodiscard]] const std::string &name() const
     {
         return name_;
     }

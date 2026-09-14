@@ -44,19 +44,19 @@ class Counter
         return {.count = w, .total = t};
     }
 
-    const std::string &name() const
+    [[nodiscard]] const std::string &name() const
     {
         return name_;
     }
 
     // Read current window value without resetting (for ad-hoc debugging).
-    uint64_t window() const
+    [[nodiscard]] uint64_t window() const
     {
         return window_.load(std::memory_order_relaxed);
     }
 
     // Read cumulative total without flushing.
-    uint64_t total() const
+    [[nodiscard]] uint64_t total() const
     {
         return total_.load(std::memory_order_relaxed);
     }

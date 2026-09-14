@@ -4,8 +4,8 @@
 // Edge-case durability: empty values, binary keys/values with NULs, an oversized
 // key (heap fallback), and zero/boundary-sized overflow values — all through the
 // compression + overflow + snapshot + reopen path.
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
 
 #include <gtest/gtest.h>
 
@@ -23,9 +23,9 @@ Batch put_one(const std::string &k, const std::string &v)
     return Batch{{{.key = k, .kind = OpKind::kPut, .value = v}}};
 }
 
-Options edge_opts(PageStore *s)
+Config edge_opts(PageStore *s)
 {
-    Options o;
+    Config o;
     o.page_store       = s;
     o.compression      = compress_algo::kLz4;
     o.frame_bytes      = 4096;
@@ -49,7 +49,7 @@ void check_all(Crowdbtree *t, const std::map<std::string, std::string> &oracle)
 TEST(DurableEdgeCases, EmptyAndBinaryValuesReopen)
 {
     MemPageStore store(1);
-    Options      opt = edge_opts(&store);
+    Config       opt = edge_opts(&store);
 
     std::map<std::string, std::string> oracle;
     uint64_t                           slot = 0;
@@ -81,7 +81,7 @@ TEST(DurableEdgeCases, EmptyAndBinaryValuesReopen)
 TEST(DurableEdgeCases, OversizedKeyRejectedNormalKeysDurable)
 {
     MemPageStore store(1);
-    Options      opt = edge_opts(&store);
+    Config       opt = edge_opts(&store);
 
     // plan-tree #15: a key larger than max_key_size (default frame_bytes/2) is now
     // rejected at apply() as a caller bug, rather than heap-fell-back into an
@@ -113,20 +113,22 @@ TEST(DurableEdgeCases, OversizedKeyRejectedNormalKeysDurable)
 TEST(DurableEdgeCases, OverflowChunkBoundarySizes)
 {
     MemPageStore store(1);
-    Options      opt = edge_opts(&store);
+    Config       opt = edge_opts(&store);
 
     // Values exactly at, one below, and one above an overflow chunk boundary.
     const uint32_t                     cap = overflow_chunk_cap(opt.frame_bytes); // payload per frame
     std::map<std::string, std::string> oracle;
     {
         Crowdbtree          t(opt);
-        std::vector<size_t> sizes = {cap - 1,
-                                     cap,
-                                     cap + 1,
-                                     static_cast<size_t>(2) * cap,
-                                     (static_cast<size_t>(2) * cap) + 1,
-                                     static_cast<size_t>(3) * cap};
-        uint64_t            slot  = 0;
+        std::vector<size_t> sizes = {
+            cap - 1,
+            cap,
+            cap + 1,
+            static_cast<size_t>(2) * cap,
+            (static_cast<size_t>(2) * cap) + 1,
+            static_cast<size_t>(3) * cap,
+        };
+        uint64_t slot = 0;
         for (size_t i = 0; i < sizes.size(); ++i) {
             ++slot;
             std::string key = "k" + std::to_string(i);

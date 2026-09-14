@@ -246,7 +246,7 @@ fn validate_disk_input(
     crowdb_protocol::common::DiskId,
     crowdb_protocol::diskdb::rpc::DiskValue,
 )> {
-    use crowdb_protocol::diskdb_type_util::DiskIdExt;
+    use crowdb_protocol::DiskIdExt;
 
     let disk_id_proto =
         crowdb_protocol::common::DiskId::from_display_string(&input.disk_id).map_err(|e| {
@@ -436,7 +436,7 @@ pub async fn add_disks_batch(
 /// # Errors
 /// Returns [`Error::NotFound`] if the disk does not exist.
 pub async fn remove_disk(ctx: &OpContext, node_id: u64, dg_id: u64, disk_id: &str) -> Result<DiskEntry> {
-    use crowdb_protocol::diskdb_type_util::DiskIdExt;
+    use crowdb_protocol::DiskIdExt;
 
     let (rack_id, entry) = {
         let cfg = ctx.config();
@@ -486,7 +486,7 @@ pub async fn set_disk_status(
     disk_id: &str,
     status: HwStatus,
 ) -> Result<()> {
-    use crowdb_protocol::diskdb_type_util::DiskIdExt;
+    use crowdb_protocol::DiskIdExt;
 
     let rack_id = {
         let cfg = ctx.config();

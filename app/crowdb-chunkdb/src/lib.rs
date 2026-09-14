@@ -17,6 +17,7 @@ pub mod conversion;
 pub mod lifecycle;
 pub mod metrics;
 pub mod migration;
+pub mod placement_repair;
 pub mod range_guard;
 pub mod repair;
 pub mod routing;

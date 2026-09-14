@@ -14,24 +14,24 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use flatbuffers::FlatBufferBuilder;
 
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::{
-    AllocateResponse, CompactZoneResponse, DiskInfo, DiskType, FreeResponse, GetDiskGroupInfoResponse,
-    GetDiskInfoResponse, GetScanStatusResponse, QueryCapacityStatsResponse, RebuildZoneBitmapResponse,
-    RecalcDiskUsageResponse, Segment, TriggerScanResponse, ZoneAllocationState, ZoneUsage,
+    AllocateResponse, CompactZoneResponse, DiskInfo, DiskType, FreeFailure, FreeFailureReason, FreeResponse,
+    GetDiskGroupInfoResponse, GetDiskInfoResponse, GetScanStatusResponse, QueryCapacityStatsResponse,
+    RebuildZoneBitmapResponse, RecalcDiskUsageResponse, Segment, TriggerScanResponse, ZoneAllocationState,
+    ZoneUsage,
 };
 use crowdb_protocol::diskdb_fb::{
     FBAllocateBlocksRequest, FBAllocateBlocksRequestArgs, FBCommitBlocksRequest, FBCommitBlocksRequestArgs,
     FBCompactZoneRequest, FBCompactZoneRequestArgs, FBDiskGroupInfo, FBDiskInfo, FBDiskType, FBDiskdbRetCode,
-    FBFreeBlocksRequest, FBFreeBlocksRequestArgs, FBGetDiskGroupInfoRequest, FBGetDiskGroupInfoRequestArgs,
-    FBGetDiskInfoRequest, FBGetDiskInfoRequestArgs, FBGetScanStatusRequest, FBGetScanStatusRequestArgs,
-    FBHwStatus, FBInt128, FBQueryCapacityStatsRequest, FBQueryCapacityStatsRequestArgs,
-    FBRebuildZoneBitmapRequest, FBRebuildZoneBitmapRequestArgs, FBRecalcDiskUsageRequest,
-    FBRecalcDiskUsageRequestArgs, FBScanSummary, FBSegment, FBTriggerScanRequest, FBTriggerScanRequestArgs,
-    FBZoneAllocationState, FBZoneUsage,
+    FBFreeBlocksRequest, FBFreeBlocksRequestArgs, FBFreeFailureReason, FBGetDiskGroupInfoRequest,
+    FBGetDiskGroupInfoRequestArgs, FBGetDiskInfoRequest, FBGetDiskInfoRequestArgs, FBGetScanStatusRequest,
+    FBGetScanStatusRequestArgs, FBHwStatus, FBInt128, FBQueryCapacityStatsRequest,
+    FBQueryCapacityStatsRequestArgs, FBRebuildZoneBitmapRequest, FBRebuildZoneBitmapRequestArgs,
+    FBRecalcDiskUsageRequest, FBRecalcDiskUsageRequestArgs, FBScanSummary, FBSegment, FBTriggerScanRequest,
+    FBTriggerScanRequestArgs, FBZoneAllocationState, FBZoneUsage,
 };
 use crowdb_protocol::fb::FBMsgType;
 use crowdb_protocol::fb_wrappers::diskdb::{
@@ -40,7 +40,10 @@ use crowdb_protocol::fb_wrappers::diskdb::{
     FBQueryCapacityStatsResponseRef, FBRebuildZoneBitmapResponseRef, FBRecalcDiskUsageResponseRef,
     FBTriggerScanResponseRef,
 };
-use crowdb_rpc_ffi::{Buffer, Connection, RpcClient, RpcError, RpcServer};
+use crowdb_rpc_ffi::{
+    Buffer, ConnectionPoolError, ConnectionPoolIndex, Response, RpcClient, RpcError, RpcServer,
+    SelectedConnection,
+};
 
 use crate::{DiskdbClientError, Result};
 
@@ -50,9 +53,7 @@ use crate::{DiskdbClientError, Result};
 pub struct DiskdbRpcTransport {
     server: Arc<RpcServer>,
     rpc: RpcClient,
-    connections: DashMap<String, Vec<Connection>>,
-    pool_size: usize,
-    conn_rr: AtomicU64,
+    connections: ConnectionPoolIndex,
     next_req_id: AtomicU64,
 }
 
@@ -96,9 +97,7 @@ impl DiskdbRpcTransport {
         Self {
             server,
             rpc,
-            connections: DashMap::new(),
-            pool_size: pool_size.max(1),
-            conn_rr: AtomicU64::new(0),
+            connections: ConnectionPoolIndex::new(pool_size, None),
             next_req_id: AtomicU64::new(1),
         }
     }
@@ -108,25 +107,56 @@ impl DiskdbRpcTransport {
     }
 
     /// Get or create a `Connection` for the given rpc endpoint.
-    fn conn_for(&self, rpc_endpoint: &str) -> Result<Connection> {
+    fn conn_for(&self, rpc_endpoint: &str) -> Result<SelectedConnection> {
         let normalized = normalize_endpoint(rpc_endpoint);
-        if let Some(conns) = self.connections.get(&normalized) {
-            if conns.len() == self.pool_size {
-                let index = rr_index(&self.conn_rr, conns.len());
-                return Ok(conns[index].clone());
-            }
-        }
         let (host, port) = parse_endpoint(&normalized)?;
-        let mut entry = self.connections.entry(normalized).or_default();
-        while entry.len() < self.pool_size {
-            let conn = self.server.connect(&host, port).map_err(|e| {
-                DiskdbClientError::Unreachable(format!("rpc connect to {host}:{port}: {e:?}"))
-            })?;
-            self.rpc.attach(&conn);
-            entry.push(conn);
+        self.connections
+            .get_or_try_install(&normalized, || {
+                let conn = self.server.connect(&host, port).map_err(|e| {
+                    DiskdbClientError::Unreachable(format!("rpc connect to {host}:{port}: {e:?}"))
+                })?;
+                self.rpc.attach(&conn);
+                Ok(conn)
+            })
+            .map_err(|error| match error {
+                ConnectionPoolError::Connect(error) => error,
+                ConnectionPoolError::Capacity { max_endpoints } => DiskdbClientError::Unreachable(format!(
+                    "endpoint connection limit {max_endpoints} reached"
+                )),
+            })
+    }
+
+    async fn call(
+        &self,
+        rpc_endpoint: &str,
+        req_id: u64,
+        control: Buffer,
+        msg_type: u16,
+    ) -> Result<Response> {
+        let normalized = normalize_endpoint(rpc_endpoint);
+        let selected = self.conn_for(&normalized)?;
+        let generation = selected.generation();
+        let future = self
+            .rpc
+            .call(
+                &self.server,
+                selected.connection(),
+                req_id,
+                control,
+                None,
+                msg_type,
+            )
+            .map_err(|error| self.map_rpc_error(error, &normalized, generation))?;
+        future
+            .await
+            .map_err(|error| self.map_rpc_error(error, &normalized, generation))
+    }
+
+    fn map_rpc_error(&self, error: RpcError, endpoint: &str, generation: u64) -> DiskdbClientError {
+        if error.is_retryable() {
+            self.connections.invalidate(endpoint, generation);
         }
-        let index = rr_index(&self.conn_rr, entry.len());
-        Ok(entry[index].clone())
+        DiskdbClientError::from(error)
     }
 
     // ── Public RPC methods ─────────────────────────────────────
@@ -138,14 +168,9 @@ impl DiskdbRpcTransport {
         req: &crowdb_protocol::diskdb::rpc::AllocateBlocksRequest,
     ) -> Result<AllocateResponse> {
         let req_id = self.next_id();
-        let conn = self.conn_for(rpc_endpoint)?;
         let control = build_allocate_request(req_id, req);
         let msg_type = FBMsgType::EAllocateBlocksRequest.0 as u16;
-        let fut = self
-            .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(DiskdbClientError::from)?;
-        let resp = fut.await.map_err(DiskdbClientError::from)?;
+        let resp = self.call(rpc_endpoint, req_id, control, msg_type).await?;
         parse_allocate_response(&resp)
     }
 
@@ -156,14 +181,9 @@ impl DiskdbRpcTransport {
         req: &crowdb_protocol::diskdb::rpc::FreeBlocksRequest,
     ) -> Result<FreeResponse> {
         let req_id = self.next_id();
-        let conn = self.conn_for(rpc_endpoint)?;
         let control = build_free_request(req_id, req);
         let msg_type = FBMsgType::EFreeBlocksRequest.0 as u16;
-        let fut = self
-            .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(DiskdbClientError::from)?;
-        let resp = fut.await.map_err(DiskdbClientError::from)?;
+        let resp = self.call(rpc_endpoint, req_id, control, msg_type).await?;
         parse_free_response(&resp)
     }
 
@@ -174,14 +194,9 @@ impl DiskdbRpcTransport {
         req: &crowdb_protocol::diskdb::rpc::CommitBlocksRequest,
     ) -> Result<crowdb_protocol::diskdb::rpc::CommitBlocksResponse> {
         let req_id = self.next_id();
-        let conn = self.conn_for(rpc_endpoint)?;
         let control = build_commit_request(req_id, req);
         let msg_type = FBMsgType::ECommitBlocksRequest.0 as u16;
-        let fut = self
-            .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(DiskdbClientError::from)?;
-        let resp = fut.await.map_err(DiskdbClientError::from)?;
+        let resp = self.call(rpc_endpoint, req_id, control, msg_type).await?;
         parse_commit_response(&resp)
     }
 
@@ -192,14 +207,9 @@ impl DiskdbRpcTransport {
         req: &crowdb_protocol::diskdb::rpc::QueryCapacityStatsRequest,
     ) -> Result<QueryCapacityStatsResponse> {
         let req_id = self.next_id();
-        let conn = self.conn_for(rpc_endpoint)?;
         let control = build_query_capacity_request(req_id, req);
         let msg_type = FBMsgType::EQueryCapacityStatsRequest.0 as u16;
-        let fut = self
-            .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(DiskdbClientError::from)?;
-        let resp = fut.await.map_err(DiskdbClientError::from)?;
+        let resp = self.call(rpc_endpoint, req_id, control, msg_type).await?;
         parse_query_capacity_response(&resp)
     }
 
@@ -210,14 +220,9 @@ impl DiskdbRpcTransport {
         dg_id: u64,
     ) -> Result<GetDiskGroupInfoResponse> {
         let req_id = self.next_id();
-        let conn = self.conn_for(rpc_endpoint)?;
         let control = build_get_disk_group_info_request(req_id, dg_id);
         let msg_type = FBMsgType::EGetDiskGroupInfoRequest.0 as u16;
-        let fut = self
-            .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(DiskdbClientError::from)?;
-        let resp = fut.await.map_err(DiskdbClientError::from)?;
+        let resp = self.call(rpc_endpoint, req_id, control, msg_type).await?;
         parse_get_disk_group_info_response(&resp)
     }
 
@@ -229,14 +234,9 @@ impl DiskdbRpcTransport {
         disk_id: DiskId,
     ) -> Result<GetDiskInfoResponse> {
         let req_id = self.next_id();
-        let conn = self.conn_for(rpc_endpoint)?;
         let control = build_get_disk_info_request(req_id, dg_id, disk_id);
         let msg_type = FBMsgType::EGetDiskInfoRequest.0 as u16;
-        let fut = self
-            .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(DiskdbClientError::from)?;
-        let resp = fut.await.map_err(DiskdbClientError::from)?;
+        let resp = self.call(rpc_endpoint, req_id, control, msg_type).await?;
         parse_get_disk_info_response(&resp)
     }
 
@@ -248,14 +248,9 @@ impl DiskdbRpcTransport {
         zone_index: u32,
     ) -> Result<RebuildZoneBitmapResponse> {
         let req_id = self.next_id();
-        let conn = self.conn_for(rpc_endpoint)?;
         let control = build_rebuild_zone_bitmap_request(req_id, disk_id, zone_index);
         let msg_type = FBMsgType::ERebuildZoneBitmapRequest.0 as u16;
-        let fut = self
-            .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(DiskdbClientError::from)?;
-        let resp = fut.await.map_err(DiskdbClientError::from)?;
+        let resp = self.call(rpc_endpoint, req_id, control, msg_type).await?;
         parse_rebuild_zone_bitmap_response(&resp)
     }
 
@@ -266,14 +261,9 @@ impl DiskdbRpcTransport {
         req: &crowdb_protocol::diskdb::rpc::RecalcDiskUsageRequest,
     ) -> Result<RecalcDiskUsageResponse> {
         let req_id = self.next_id();
-        let conn = self.conn_for(rpc_endpoint)?;
         let control = build_recalc_request(req_id, req);
         let msg_type = FBMsgType::ERecalcDiskUsageRequest.0 as u16;
-        let fut = self
-            .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(DiskdbClientError::from)?;
-        let resp = fut.await.map_err(DiskdbClientError::from)?;
+        let resp = self.call(rpc_endpoint, req_id, control, msg_type).await?;
         parse_recalc_response(&resp)
     }
 
@@ -284,49 +274,29 @@ impl DiskdbRpcTransport {
         req: &crowdb_protocol::diskdb::rpc::CompactZoneRequest,
     ) -> Result<CompactZoneResponse> {
         let req_id = self.next_id();
-        let conn = self.conn_for(rpc_endpoint)?;
         let control = build_compact_zone_request(req_id, req);
         let msg_type = FBMsgType::ECompactZoneRequest.0 as u16;
-        let fut = self
-            .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(DiskdbClientError::from)?;
-        let resp = fut.await.map_err(DiskdbClientError::from)?;
+        let resp = self.call(rpc_endpoint, req_id, control, msg_type).await?;
         parse_compact_zone_response(&resp)
     }
 
     /// Trigger scan via crowdb-rpc.
     pub async fn trigger_scan(&self, rpc_endpoint: &str) -> Result<TriggerScanResponse> {
         let req_id = self.next_id();
-        let conn = self.conn_for(rpc_endpoint)?;
         let control = build_trigger_scan_request(req_id);
         let msg_type = FBMsgType::ETriggerScanRequest.0 as u16;
-        let fut = self
-            .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(DiskdbClientError::from)?;
-        let resp = fut.await.map_err(DiskdbClientError::from)?;
+        let resp = self.call(rpc_endpoint, req_id, control, msg_type).await?;
         parse_trigger_scan_response(&resp)
     }
 
     /// Get scan status via crowdb-rpc.
     pub async fn get_scan_status(&self, rpc_endpoint: &str) -> Result<GetScanStatusResponse> {
         let req_id = self.next_id();
-        let conn = self.conn_for(rpc_endpoint)?;
         let control = build_get_scan_status_request(req_id);
         let msg_type = FBMsgType::EGetScanStatusRequest.0 as u16;
-        let fut = self
-            .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(DiskdbClientError::from)?;
-        let resp = fut.await.map_err(DiskdbClientError::from)?;
+        let resp = self.call(rpc_endpoint, req_id, control, msg_type).await?;
         parse_get_scan_status_response(&resp)
     }
-}
-
-fn rr_index(counter: &AtomicU64, len: usize) -> usize {
-    let len_u64 = u64::try_from(len).unwrap_or(u64::MAX);
-    usize::try_from(counter.fetch_add(1, Ordering::Relaxed) % len_u64).unwrap_or(0)
 }
 
 impl Default for DiskdbRpcTransport {
@@ -623,8 +593,45 @@ fn parse_free_response(resp: &crowdb_rpc_ffi::Response) -> Result<FreeResponse> 
         return Err(DiskdbClientError::Rpc("invalid free response".into()));
     }
     check_ret_code(r.ret_code(), r.error_msg())?;
+    let failures = r
+        .failures()
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|failure| {
+                    let segment = failure.segment()?;
+                    Some(FreeFailure {
+                        segment: Segment {
+                            disk_id: Some(DiskId {
+                                high: segment.disk_id().high(),
+                                low: segment.disk_id().low(),
+                            }),
+                            owner_chunk: Some(ChunkId {
+                                high: segment.owner_chunk().high(),
+                                low: segment.owner_chunk().low(),
+                            }),
+                            unit_offset: segment.unit_offset(),
+                            zone_index: segment.zone_index(),
+                            unit_count: segment.unit_count(),
+                            allocation_ts: segment.allocation_ts(),
+                        },
+                        reason: match failure.reason() {
+                            FBFreeFailureReason::NotBusy => FreeFailureReason::NotBusy,
+                            FBFreeFailureReason::IncarnationMismatch => {
+                                FreeFailureReason::IncarnationMismatch
+                            }
+                            FBFreeFailureReason::Conflict => FreeFailureReason::Conflict,
+                            FBFreeFailureReason::OutcomeUnknown => FreeFailureReason::OutcomeUnknown,
+                            _ => FreeFailureReason::Unavailable,
+                        },
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Ok(FreeResponse {
         freed_count: r.freed_count(),
+        failures,
     })
 }
 

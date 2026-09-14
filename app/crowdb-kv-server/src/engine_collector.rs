@@ -122,9 +122,8 @@ pub fn setup_engine_collector(
     let mut rpc_handles: Vec<(u64, Arc<RpcTransportHandles>)> = Vec::new();
     {
         let mut reg = registry.lock().expect("metrics registry poisoned");
-        for entry in &store_registry.stores {
-            let store_id = *entry.key();
-            let store = entry.value();
+        for (store_id, store) in store_registry.stores_snapshot().iter() {
+            let store_id = *store_id;
             store.for_each_group(|group| {
                 handles.push((
                     (store_id, group.group_id()),
@@ -151,9 +150,8 @@ pub fn setup_engine_collector(
             current_handles.iter().map(|(key, _)| *key).collect();
         let new_keys: Vec<Key> = {
             let mut scan: Vec<Key> = Vec::new();
-            for entry in &stores.stores {
-                let store_id = *entry.key();
-                let store = entry.value();
+            for (store_id, store) in stores.stores_snapshot().iter() {
+                let store_id = *store_id;
                 store.for_each_group(|group| {
                     let key = (store_id, group.group_id());
                     if !known_keys.contains(&key) {
@@ -180,9 +178,9 @@ pub fn setup_engine_collector(
             .collect();
         let new_rpc_stores: Vec<u64> = {
             stores
-                .stores
-                .iter()
-                .map(|e| *e.key())
+                .stores_snapshot()
+                .keys()
+                .copied()
                 .filter(|sid| !known_rpc_stores.contains(sid))
                 .collect()
         };
@@ -271,8 +269,7 @@ pub fn setup_engine_collector(
     let stores2 = Arc::clone(store_registry);
     runner.set_cpp_flush(
         move |writer, window_secs, timestamp, rust_width, count_w, tps_w| {
-            for entry in &stores2.stores {
-                let store = entry.value();
+            for store in stores2.stores_snapshot().values() {
                 store.for_each_group(|group| {
                     let replica = group.local_replica();
                     let engine = replica.learner.engine();
@@ -311,11 +308,10 @@ pub fn setup_engine_collector(
     runner.set_cpp_negotiate(move || {
         let mut result = (7, 7);
         let mut found = false;
-        for entry in &stores3.stores {
+        for store in stores3.stores_snapshot().values() {
             if found {
                 break;
             }
-            let store = entry.value();
             store.for_each_group(|group| {
                 if found {
                     return;

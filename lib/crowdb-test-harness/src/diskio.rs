@@ -9,7 +9,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crowdb_diskio_client::{DiskId as DioDiskId, DiskIoRetCode, DiskioClient, DiskioError};
+use crowdb_diskio_client::{
+    DiskId as DioDiskId, DiskIoRetCode, TestWireDiskioClient as DiskioClient,
+    TestWireDiskioError as DiskioError,
+};
 use crowdb_rpc_ffi::RpcServer;
 
 use crate::hardware::{DG_ID, INSTANCE_ID, NODE_ID, RACK_ID};
@@ -104,6 +107,8 @@ pub struct DiskioStartOpts<'a> {
     pub disks: &'a [DiskArg],
     /// Fault error rate (0.0 = none). Injects `--fault-error-rate`.
     pub fault_error_rate: f64,
+    /// Optional inclusive dummy-disk latency range in milliseconds.
+    pub fault_latency_ms: Option<(u32, u32)>,
     /// Disable `O_DIRECT` for `BlockDisk`.
     pub no_o_direct: bool,
 }
@@ -170,9 +175,7 @@ impl DiskioProcess {
             cmd.arg("--no-o-direct");
         }
 
-        if opts.fault_error_rate > 0.0 {
-            cmd.args(["--fault-error-rate", &opts.fault_error_rate.to_string()]);
-        }
+        apply_fault_options(&mut cmd, opts);
 
         if !opts.disks.is_empty() {
             for d in opts.disks {
@@ -278,6 +281,15 @@ impl DiskioProcess {
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+}
+
+fn apply_fault_options(command: &mut Command, opts: &DiskioStartOpts<'_>) {
+    if opts.fault_error_rate > 0.0 {
+        command.args(["--fault-error-rate", &opts.fault_error_rate.to_string()]);
+    }
+    if let Some((minimum, maximum)) = opts.fault_latency_ms {
+        command.args(["--fault-latency", &format!("{minimum}:{maximum}")]);
     }
 }
 

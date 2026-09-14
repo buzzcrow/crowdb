@@ -8,6 +8,7 @@
 use clap::Parser;
 use crowdb_kv::common::config::CrowDBConfig;
 use crowdb_kv_server::cli::{parse_id_list, parse_port_list, Cli};
+use crowdb_kv_server::store_registry::KvStoreRegistry;
 
 #[test]
 fn parse_single() {
@@ -86,6 +87,33 @@ fn parse_root_is_required() {
 fn management_port_rejects_zero() {
     let result = Cli::try_parse_from(["crowdb-kv-server", "--root", "/tmp/n1", "--management-port", "0"]);
     assert!(result.is_err());
+}
+
+#[test]
+fn wal_backend_accepts_explicit_uring() {
+    let cli = Cli::parse_from(["crowdb-kv-server", "--root", "/tmp/n1", "--wal-backend", "uring"]);
+    assert_eq!(cli.wal_backend, "uring");
+    let invalid = Cli::try_parse_from([
+        "crowdb-kv-server",
+        "--root",
+        "/tmp/n1",
+        "--wal-backend",
+        "automatic",
+    ]);
+    assert!(invalid.is_err());
+}
+
+#[test]
+fn explicit_uring_initialization_never_silently_falls_back() {
+    let mut config = CrowDBConfig::for_tests();
+    config.wal_backend = "uring".to_owned();
+    match KvStoreRegistry::try_with_config(config) {
+        Ok(registry) => assert_eq!(format!("{:?}", registry.wal_backend), "Uring"),
+        Err(error) => assert!(
+            error.to_string().contains("requested WAL backend 'uring'"),
+            "unexpected startup error: {error}"
+        ),
+    }
 }
 
 #[test]

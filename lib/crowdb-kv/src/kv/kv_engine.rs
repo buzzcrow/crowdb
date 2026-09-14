@@ -6,6 +6,64 @@ use super::Batch;
 
 use bytes::Bytes;
 
+/// Stable tag for an engine's snapshot byte format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SnapshotFormat {
+    CrowdbTreePortable = 1,
+    InMemoryTest = 2,
+}
+
+/// Immutable properties of one pinned snapshot export.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SnapshotMetadata {
+    pub format: SnapshotFormat,
+    pub at_slot: u64,
+    pub total_bytes: u64,
+    pub final_crc32c: u32,
+    pub chunk_bytes: usize,
+}
+
+/// One bounded piece of a snapshot byte stream.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnapshotChunk {
+    pub offset: u64,
+    pub bytes: Vec<u8>,
+    pub done: bool,
+}
+
+/// Unique sequential owner of a pinned snapshot export.
+pub trait SnapshotExporter: Send {
+    fn metadata(&self) -> SnapshotMetadata;
+    fn offset(&self) -> u64;
+
+    /// # Errors
+    /// Returns an error when `offset` is not the next sequential position or
+    /// the underlying encoder cannot produce the chunk.
+    fn read(&mut self, offset: u64) -> Result<SnapshotChunk, String>;
+}
+
+/// Unique sequential owner of a staged snapshot import.
+pub trait SnapshotImporter: Send {
+    /// # Errors
+    /// Returns an error when the bytes violate the engine snapshot format.
+    fn feed(&mut self, chunk: &[u8]) -> Result<(), String>;
+
+    /// # Errors
+    /// Returns an error when the stream is incomplete, corrupt, or cannot be
+    /// installed into the target engine.
+    fn finish(self: Box<Self>) -> Result<u64, String>;
+    fn abort(self: Box<Self>);
+}
+
+/// Ordered scan traversal direction.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ScanDirection {
+    #[default]
+    Forward,
+    Reverse,
+}
+
 /// Storage engine surface. All reads are non-mutating and may run concurrently
 /// with `apply`.
 ///
@@ -65,6 +123,15 @@ pub trait KVEngine: Send + Sync {
         }
     }
 
+    /// Fallible live value lookup used by conditional admission. Unlike the
+    /// legacy read surface, storage errors must not be interpreted as absence.
+    fn get_versioned(&self, key: &[u8]) -> KVFuture<Result<Option<(u64, Bytes)>, String>> {
+        match self.get_bytes(key) {
+            KVFuture::Ready(v) => KVFuture::ready(Ok(v.flatten())),
+            KVFuture::Pending(fut) => KVFuture::Pending(Box::pin(async move { Ok(fut.await) })),
+        }
+    }
+
     /// Live entries (no tombstones) whose key starts with `prefix`, in key
     /// order, capped at `limit` (`0` = unlimited). Returns `(items, truncated)`
     /// where `truncated` is set when more matches existed than were returned.
@@ -95,6 +162,33 @@ pub trait KVEngine: Send + Sync {
         byte_budget: usize,
         keys_only: bool,
         deadline_ms: u64,
+    ) -> KVFuture<Result<(Vec<(Bytes, u64, Bytes)>, bool), String>> {
+        self.scan_directional(
+            prefix,
+            start_after,
+            end_key,
+            limit,
+            byte_budget,
+            keys_only,
+            deadline_ms,
+            ScanDirection::Forward,
+        )
+    }
+
+    /// Directional scan; reverse treats `start_after` as an exclusive upper
+    /// continuation while retaining the legacy wire field name.
+    #[allow(clippy::type_complexity)]
+    #[allow(clippy::too_many_arguments)]
+    fn scan_directional(
+        &self,
+        prefix: &[u8],
+        start_after: &[u8],
+        end_key: &[u8],
+        limit: usize,
+        byte_budget: usize,
+        keys_only: bool,
+        deadline_ms: u64,
+        direction: ScanDirection,
     ) -> KVFuture<Result<(Vec<(Bytes, u64, Bytes)>, bool), String>>;
 
     /// Drop all state. Used by snapshot-install reset (before importing a
@@ -200,44 +294,22 @@ pub trait KVEngine: Send + Sync {
         Ok(())
     }
 
-    /// Export this engine's entire current state as an opaque,
-    /// engine-specific byte stream, for the new-member join flow: a fresh/far-lagging
-    /// replica pulls this over [`crate::rpc::SnapshotService`] instead of
-    /// replaying full Paxos history. Returns `(at_slot, stream)`: `at_slot`
-    /// is the highest slot durably reflected in `stream` (same contract as
-    /// [`Self::resume_from_slot`]/[`Self::persist_snapshot`]); `stream` is
-    /// only ever meaningful fed back into **this same engine kind's**
-    /// [`Self::snapshot_import`] — never across engine kinds.
-    ///
-    /// Default: unsupported (`InMemKV` and [`super::CrowdbTreeEngine`] both
-    /// override this with a real implementation; a future engine kind that
-    /// doesn't gets a clear error instead of silently returning empty
-    /// state).
+    /// Begin a bounded export from one stable engine view.
     ///
     /// # Errors
-    /// Returns an error string if this engine kind does not support
-    /// snapshot export, or if the underlying export fails.
-    fn snapshot_export(&self) -> Result<(u64, Vec<u8>), String> {
+    /// Returns an error for an invalid chunk limit, an unsupported engine, or
+    /// failure to pin and inspect the source view.
+    fn snapshot_export_begin(&self, chunk_bytes: usize) -> Result<Box<dyn SnapshotExporter>, String> {
+        let _ = chunk_bytes;
         Err("snapshot export not supported by this engine".to_string())
     }
 
-    /// Import a byte stream produced by [`Self::snapshot_export`] on
-    /// **another replica's same-kind engine**, replacing this engine's
-    /// entire state. Returns the `at_slot` the imported snapshot covers
-    /// (the same value the exporter returned).
-    ///
-    /// Only ever called on a freshly-constructed, still-empty engine — the
-    /// join flow's contract, mirroring [`Self::resume_from_slot`]'s "before
-    /// any `apply` calls in this process" precondition. Never called on a
-    /// live engine with existing local state.
-    ///
-    /// Default: unsupported.
+    /// Begin staging an import into a fresh, unpublished engine.
     ///
     /// # Errors
-    /// Returns an error string if this engine kind does not support
-    /// snapshot import, or if `stream` is malformed / fails to decode.
-    fn snapshot_import(&self, stream: &[u8]) -> Result<u64, String> {
-        let _ = stream;
+    /// Returns an error when this engine does not support streaming import or
+    /// cannot allocate its parser state.
+    fn snapshot_import_begin(&self) -> Result<Box<dyn SnapshotImporter>, String> {
         Err("snapshot import not supported by this engine".to_string())
     }
 

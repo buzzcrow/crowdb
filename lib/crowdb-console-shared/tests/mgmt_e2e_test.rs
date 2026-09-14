@@ -15,11 +15,11 @@ use crowdb_console_shared::lifecycle::{self, crowdb_kv_server_bin, DeployRequest
 use crowdb_console_shared::mgmt::{AddGroupRequest, AddStoreRequest, RemoteReplicaInfo};
 
 fn pick_mgmt_port() -> u16 {
-    crowdb_protocol::port_alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerMgmt)
+    crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerMgmt)
 }
 
 fn pick_rpc_port() -> u16 {
-    crowdb_protocol::port_alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerListen)
+    crowdb_protocol::port::alloc::alloc_test_port(crowdb_protocol::ServicePort::KvServerListen)
 }
 
 async fn spawn_server() -> Option<(u32, ServerClient)> {

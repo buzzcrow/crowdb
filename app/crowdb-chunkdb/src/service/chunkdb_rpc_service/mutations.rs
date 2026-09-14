@@ -575,7 +575,7 @@ impl ChunkdbRpcService {
             let copy_count = fb_req.copy_count();
 
             let result = handler
-                .allocate_chunk(
+                .allocate_chunk_owned(
                     chunk_id,
                     write_granularity,
                     strip_count,
@@ -586,6 +586,10 @@ impl ChunkdbRpcService {
                     chunk_type,
                     fb_req.writer_epoch(),
                     fb_req.writer_lease_ms(),
+                    fb_req
+                        .owner_key()
+                        .map(|value| value.iter().collect())
+                        .unwrap_or_default(),
                 )
                 .await;
             if result.is_ok() {

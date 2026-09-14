@@ -36,7 +36,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use dashmap::DashMap;
 use flatbuffers::FlatBufferBuilder;
 use tokio::runtime::Handle;
 use tracing::{debug, field, info_span, warn, Instrument, Span};
@@ -48,13 +47,16 @@ use crowdb_protocol::fb_wrappers::kv_client::{
 use crowdb_protocol::kv_client_fb::{
     FBCreateSnapshotResponse, FBCreateSnapshotResponseArgs, FBKvClientRetCode, FBKvJournalOp,
     FBKvJournalOpArgs, FBKvJournalScanRequest, FBKvJournalScanRequestArgs, FBKvJournalScanResponse,
-    FBKvJournalScanResponseArgs, FBKvResponse, FBKvResponseArgs, FBKvScanItem, FBKvScanItemArgs,
-    FBKvScanRequest, FBKvScanRequestArgs, FBKvScanResponse, FBKvScanResponseArgs, FBReadMode,
-    FBReleaseSnapshotResponse, FBReleaseSnapshotResponseArgs, FBSnapshotInfo, FBSnapshotInfoArgs,
+    FBKvJournalScanResponseArgs, FBKvResponse, FBKvResponseArgs, FBKvScanDirection, FBKvScanItem,
+    FBKvScanItemArgs, FBKvScanRequest, FBKvScanRequestArgs, FBKvScanResponse, FBKvScanResponseArgs,
+    FBReadMode, FBReleaseSnapshotResponse, FBReleaseSnapshotResponseArgs, FBSnapshotInfo, FBSnapshotInfoArgs,
     FBSnapshotScanResponse, FBSnapshotScanResponseArgs, FBWatchNotifyError, FBWatchNotifyErrorArgs,
     FBWatchSubscribe, FBWatchUnsubscribe,
 };
-use crowdb_rpc_ffi::{noop_completion, Buffer, Connection, RpcClient, RpcError, RpcServer};
+use crowdb_rpc_ffi::{
+    noop_completion, Buffer, Connection, ConnectionPoolError, ConnectionPoolIndex, Response, RpcClient,
+    RpcError, RpcServer, SelectedConnection,
+};
 
 use crate::cluster::kv_store::KvStore;
 use crate::cluster::px_kv_store::PxKvStore;
@@ -75,7 +77,7 @@ use crate::rpc::{
 pub(crate) struct KvClientRpcForwarder {
     pub(crate) server: Arc<RpcServer>,
     pub(crate) rpc: Arc<RpcClient>,
-    connections: DashMap<String, Connection>,
+    connections: ConnectionPoolIndex,
     next_req_id: AtomicU64,
 }
 
@@ -93,7 +95,7 @@ impl KvClientRpcForwarder {
         Self {
             server,
             rpc,
-            connections: DashMap::new(),
+            connections: ConnectionPoolIndex::new(1, None),
             next_req_id: AtomicU64::new(1),
         }
     }
@@ -105,16 +107,41 @@ impl KvClientRpcForwarder {
     /// Get or create a `Connection` for the given endpoint. The
     /// crowdb-rpc server listens on the same port as the crowdb-rpc endpoint
     /// (no port derivation).
-    fn conn_for(&self, rpc_endpoint: &str) -> Result<Connection, RpcError> {
+    fn conn_for(&self, rpc_endpoint: &str) -> Result<SelectedConnection, RpcError> {
         let normalized = normalize_endpoint(rpc_endpoint);
-        if let Some(conn) = self.connections.get(&normalized) {
-            return Ok(conn.clone());
-        }
         let (host, port) = parse_endpoint(&normalized).map_err(|_| RpcError::InvalidArg)?;
-        let conn = self.server.connect(&host, port)?;
-        self.rpc.attach(&conn);
-        self.connections.insert(normalized, conn.clone());
-        Ok(conn)
+        self.connections
+            .get_or_try_install(&normalized, || {
+                let conn = self.server.connect(&host, port)?;
+                self.rpc.attach(&conn);
+                Ok(conn)
+            })
+            .map_err(|error| match error {
+                ConnectionPoolError::Connect(error) => error,
+                ConnectionPoolError::Capacity { .. } => RpcError::AllDown,
+            })
+    }
+
+    async fn call(
+        &self,
+        rpc_endpoint: &str,
+        selected: &SelectedConnection,
+        req_id: u64,
+        control: Buffer,
+        msg_type: u16,
+    ) -> Result<Response, RpcError> {
+        let normalized = normalize_endpoint(rpc_endpoint);
+        let map_error = |error: RpcError| {
+            if error.is_retryable() {
+                self.connections.invalidate(&normalized, selected.generation());
+            }
+            error
+        };
+        let future = self
+            .rpc
+            .call(&self.server, selected, req_id, control, None, msg_type)
+            .map_err(&map_error)?;
+        future.await.map_err(map_error)
     }
 
     /// Forward a `Get` request to the leader. Returns the leader's
@@ -144,10 +171,7 @@ impl KvClientRpcForwarder {
         builder.finish(fb_req, None);
         let control = Buffer::from_bytes(builder.finished_data());
         let msg_type = FBMsgType::EKvGetRequest.0 as u16;
-        let fut = self
-            .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)?;
-        let resp = fut.await?;
+        let resp = self.call(rpc_endpoint, &conn, req_id, control, msg_type).await?;
         let ctrl = resp.control.ok_or(RpcError::ConnectionError)?;
         Ok(ctrl.bytes().to_vec())
     }
@@ -183,15 +207,13 @@ impl KvClientRpcForwarder {
             forwarded: true,
             bounded: req.bounded(),
             scan_cutoff: req.scan_cutoff(),
+            direction: req.direction(),
         };
         let fb_req = FBKvScanRequest::create(&mut builder, &args);
         builder.finish(fb_req, None);
         let control = Buffer::from_bytes(builder.finished_data());
         let msg_type = FBMsgType::EKvScanRequest.0 as u16;
-        let fut = self
-            .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)?;
-        let resp = fut.await?;
+        let resp = self.call(rpc_endpoint, &conn, req_id, control, msg_type).await?;
         let ctrl = resp.control.ok_or(RpcError::ConnectionError)?;
         Ok(ctrl.bytes().to_vec())
     }
@@ -224,10 +246,7 @@ impl KvClientRpcForwarder {
         builder.finish(fb_req, None);
         let control = Buffer::from_bytes(builder.finished_data());
         let msg_type = FBMsgType::EKvJournalScanRequest.0 as u16;
-        let fut = self
-            .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)?;
-        let resp = fut.await?;
+        let resp = self.call(rpc_endpoint, &conn, req_id, control, msg_type).await?;
         let ctrl = resp.control.ok_or(RpcError::ConnectionError)?;
         Ok(ctrl.bytes().to_vec())
     }
@@ -428,17 +447,49 @@ impl KvRpcService {
             let seq = fb_req.seq();
             let request_id = fb_req.request_id();
             let request_create_ms = fb_req.request_create_ms();
-            let resp = store
-                .kv_put(
-                    group_id,
-                    key,
-                    value,
-                    client_id,
-                    seq,
-                    request_id,
-                    request_create_ms,
+            let precondition = fb_req.precondition().map(|condition| {
+                (
+                    bytes::Bytes::copy_from_slice(condition.key().map_or(&[], |key| key.bytes())),
+                    condition.expected_revision(),
                 )
-                .await;
+            });
+            let resp = if let Some((precondition_key, expected_revision)) = precondition {
+                if precondition_key.as_ref() != key || client_id == 0 {
+                    crate::rpc::KvResponse::cas_error(
+                        crate::rpc::KvErrorCode::KvErrorCasFailed,
+                        0,
+                        "invalid conditional put precondition",
+                        request_id,
+                        request_create_ms,
+                    )
+                } else {
+                    let payload = PxKvStore::encode_kv_payload(&[(key, Some(value))]);
+                    store
+                        .propose_cas_and_respond(
+                            group_id,
+                            payload,
+                            precondition_key,
+                            expected_revision,
+                            client_id,
+                            seq,
+                            request_id,
+                            request_create_ms,
+                        )
+                        .await
+                }
+            } else {
+                store
+                    .kv_put(
+                        group_id,
+                        key,
+                        value,
+                        client_id,
+                        seq,
+                        request_id,
+                        request_create_ms,
+                    )
+                    .await
+            };
             let ctrl = build_kv_response(req_id, create_nano, &resp);
             submit_fb_response(
                 &server,
@@ -694,9 +745,41 @@ impl KvRpcService {
             let seq = fb_req.seq();
             let request_id = fb_req.request_id();
             let request_create_ms = fb_req.request_create_ms();
-            let resp = store
-                .kv_batch_write(group_id, items, client_id, seq, request_id, request_create_ms)
-                .await;
+            let precondition = fb_req.precondition().map(|condition| {
+                (
+                    bytes::Bytes::copy_from_slice(condition.key().map_or(&[], |key| key.bytes())),
+                    condition.expected_revision(),
+                )
+            });
+            let resp = if let Some((precondition_key, expected_revision)) = precondition {
+                if client_id == 0 || !items.iter().any(|item| item.key == precondition_key) {
+                    crate::rpc::KvResponse::cas_error(
+                        crate::rpc::KvErrorCode::KvErrorCasFailed,
+                        0,
+                        "conditional batch must mutate its precondition key",
+                        request_id,
+                        request_create_ms,
+                    )
+                } else {
+                    let payload = PxKvStore::encode_kv_batch_items(&items);
+                    store
+                        .propose_cas_and_respond(
+                            group_id,
+                            payload,
+                            precondition_key,
+                            expected_revision,
+                            client_id,
+                            seq,
+                            request_id,
+                            request_create_ms,
+                        )
+                        .await
+                }
+            } else {
+                store
+                    .kv_batch_write(group_id, items, client_id, seq, request_id, request_create_ms)
+                    .await
+            };
             let ctrl = build_kv_response(req_id, create_nano, &resp);
             submit_fb_response(
                 &server,
@@ -779,6 +862,22 @@ impl KvRpcService {
             let keys_only = fb_req.keys_only();
             let count_only = fb_req.count_only();
             let deadline_ms = fb_req.deadline_ms();
+            let direction = match fb_req.direction() {
+                FBKvScanDirection::Forward => crate::kv::ScanDirection::Forward,
+                FBKvScanDirection::Reverse => crate::kv::ScanDirection::Reverse,
+                _ => {
+                    submit_scan_error(
+                        &server_clone,
+                        conn_handle_usize as *mut std::ffi::c_void,
+                        req_id,
+                        create_nano,
+                        msg_type,
+                        FBKvClientRetCode::InvalidArgument,
+                        "invalid scan direction",
+                    );
+                    return;
+                }
+            };
             let request_id = fb_req.request_id();
             let request_create_ms = fb_req.request_create_ms();
 
@@ -817,6 +916,7 @@ impl KvRpcService {
                         deadline_ms,
                         fb_req.bounded(),
                         fb_req.scan_cutoff(),
+                        direction,
                         request_id,
                         request_create_ms,
                     )
@@ -857,6 +957,7 @@ impl KvRpcService {
                     deadline_ms,
                     fb_req.bounded(),
                     fb_req.scan_cutoff(),
+                    direction,
                     request_id,
                     request_create_ms,
                 )
@@ -1264,6 +1365,9 @@ fn kv_error_code_to_fb(code: i32) -> FBKvClientRetCode {
         1 => FBKvClientRetCode::NotLeader,
         2 => FBKvClientRetCode::Unavailable,
         4 => FBKvClientRetCode::JournalScanGcGap,
+        5 => FBKvClientRetCode::CasFailed,
+        6 => FBKvClientRetCode::CasBusy,
+        7 => FBKvClientRetCode::OutcomeUnknown,
         _ => FBKvClientRetCode::Internal,
     }
 }

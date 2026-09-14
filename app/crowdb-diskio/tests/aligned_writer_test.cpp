@@ -283,55 +283,32 @@ TEST(AlignedWriter, SameBlockWritesCompleteInSubmissionOrder)
     EXPECT_EQ(completions, (std::vector<int>{1, 2}));
 }
 
-TEST(AlignedWriter, NewAllocationDrainsThenRejectsOlderIncarnation)
+TEST(AlignedWriter, OrderedWritesShareOneSubmissionQueue)
 {
     RecordingEngine               engine(8192, true);
     auto                          disk = std::make_shared<TestDisk>(&engine, 4096);
     crowdb::diskio::AlignedWriter writer;
-    std::vector<uint8_t>          old_data(1024, 0x11);
-    std::vector<uint8_t>          new_data(1024, 0x22);
+    std::vector<uint8_t>          first_data(1024, 0x11);
+    std::vector<uint8_t>          second_data(1024, 0x22);
+    std::vector<uint8_t>          third_data(1024, 0x33);
     std::vector<int>              results;
 
-    writer.submit_fenced(disk, 0, old_data.data(), old_data.size(), 10, 0,
-                         [&](int result) { results.push_back(result); });
-    writer.submit_fenced(disk, 0, new_data.data(), new_data.size(), 20, 0,
-                         [&](int result) { results.push_back(result); });
-    writer.submit_fenced(disk, 1024, old_data.data(), old_data.size(), 10, 0,
-                         [&](int result) { results.push_back(result); });
+    writer.submit_ordered(disk, 0, first_data.data(), first_data.size(), 0,
+                          [&](int result) { results.push_back(result); });
+    writer.submit_ordered(disk, 1024, second_data.data(), second_data.size(), 0,
+                          [&](int result) { results.push_back(result); });
+    writer.submit_ordered(disk, 2048, third_data.data(), third_data.size(), 0,
+                          [&](int result) { results.push_back(result); });
     ASSERT_EQ(engine.pending_writes.size(), 1);
 
     engine.complete_one_write();
     ASSERT_EQ(engine.pending_writes.size(), 1);
     engine.complete_one_write();
+    ASSERT_EQ(engine.pending_writes.size(), 1);
+    engine.complete_one_write();
 
-    EXPECT_EQ(results, (std::vector<int>{1024, 1024, -ESTALE}));
-    EXPECT_EQ(engine.write_sizes.size(), 2);
-}
-
-TEST(AlignedWriter, AllocationGenerationFenceSurvivesRestart)
-{
-    char journal_template[] = "/tmp/crowdb-allocation-fence-XXXXXX";
-    int  fd                 = ::mkstemp(journal_template);
-    ASSERT_GE(fd, 0);
-    ASSERT_EQ(::close(fd), 0);
-    RecordingEngine      engine(8192);
-    auto                 disk = std::make_shared<TestDisk>(&engine, 1);
-    std::vector<uint8_t> data(1024, 0x33);
-    int                  first_result = -1;
-    {
-        crowdb::diskio::AlignedWriter writer(journal_template);
-        writer.submit_fenced(disk, 0, data.data(), data.size(), 20, 0, [&](int result) { first_result = result; });
-    }
-    EXPECT_EQ(first_result, 1024);
-
-    int stale_result = 0;
-    {
-        crowdb::diskio::AlignedWriter writer(journal_template);
-        writer.submit_fenced(disk, 0, data.data(), data.size(), 10, 0, [&](int result) { stale_result = result; });
-    }
-    EXPECT_EQ(stale_result, -ESTALE);
-    EXPECT_EQ(engine.write_sizes.size(), 1);
-    EXPECT_EQ(::unlink(journal_template), 0);
+    EXPECT_EQ(results, (std::vector<int>{1024, 1024, 1024}));
+    EXPECT_EQ(engine.write_sizes.size(), 3);
 }
 
 } // namespace

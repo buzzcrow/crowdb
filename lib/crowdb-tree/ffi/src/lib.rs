@@ -12,29 +12,39 @@
 
 pub mod async_tree;
 pub mod batch;
+pub mod chunk;
+pub mod config;
 pub mod cpp_global_metrics;
 pub mod crc;
 pub mod error;
-pub mod options;
 pub mod reactor;
 pub mod scan;
 pub mod snapshot;
 pub mod stats;
 pub(crate) mod sys;
 pub mod tree;
+pub mod uring;
 pub mod write_handle;
 
 pub use async_tree::{AsyncCrowdbtree, GetOutcome, PinnedGetOutcome, ScanOutcome};
 pub use batch::{BatchOp, ExtOp};
+pub use chunk::{
+    ChunkPageStoreOptions, ChunkPageStoreStats, ChunkRootCatalog, ChunkRpcDiskRoute, ChunkRpcRoute,
+    ChunkRpcTransportOptions, ChunkTransport, RootCatalogObject, RootCatalogStore,
+};
+#[cfg(feature = "chunk-rpc")]
+pub use chunk::{OwnedChunkRpcDiskRoute, OwnedChunkRpcTransportOptions};
+pub use config::{Compression, Config, KeyRange, PageStore, PageStoreBackend, SyncMode};
 pub use cpp_global_metrics::{cpp_global_metrics_max_name_len, flush_cpp_global_metrics};
 pub use crc::{crc32c, crc32c_update};
 pub use error::CtError;
-pub use options::{Compression, Options, PageStoreBackend, SyncMode};
 pub use reactor::PinnedValue;
-pub use scan::{ScanEntry, ViewEntry};
-pub use stats::{MergeGcStats, Stats};
+pub use scan::{ScanDirection, ScanEntry, ViewEntry};
+pub use snapshot::{SnapshotChunk, SnapshotExportSession, SnapshotImportSession, SnapshotMetadata};
+pub use stats::{MergeGcStats, RangeRebuildStats, Stats};
 pub use tree::{
     ct_add_log_stderr, ct_flush_logging, ct_init_logging, ct_init_test_logging, ct_shutdown_logging,
     Crowdbtree,
 };
+pub use uring::{Uring, UringFile};
 pub use write_handle::WriteHandle;

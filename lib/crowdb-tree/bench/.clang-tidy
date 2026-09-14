@@ -1,0 +1,7 @@
+# Inherit every repository check; only drop diagnostics whose cause lives in
+# a third-party benchmark-framework macro body instead of CROWDB code.
+InheritParentConfig: true
+# google-benchmark's BENCHMARK() expands to a static registration object
+# initialized from a throwing constructor. clang-tidy reports the warning at
+# the BENCHMARK() line in our file, but there is no fix in CROWDB code.
+Checks: '-bugprone-throwing-static-initialization'

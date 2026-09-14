@@ -1,7 +1,7 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-### R96: chunkdb — Chunk Range Delete
+### R95: chunkdb — Chunk Range Delete
 
 **Problem**: Shared chunks need partial deletion capability for individual object deletion. Without range delete, entire shared chunks cannot be reclaimed efficiently.
 

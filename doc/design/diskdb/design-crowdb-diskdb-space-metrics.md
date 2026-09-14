@@ -147,13 +147,13 @@ pub struct DiskGroupUsage {
 - Read `disks` under the read lock; read each disk's `disk_value` for
   its `unit_size_bytes`.
 - Sum across disks; `disk_count` = `disks.len()`;
-  `allocatable_disk_count` = `allocating_disks.read().len()` (RCU
-  context size — matches the `allocatable_disk_count` semantics: disks
-  currently `Up` and allocatable).
+  `allocatable_disk_count` comes from the immutable RCU membership snapshot
+  shared by disk-ID lookup and allocation routing. Membership changes publish
+  both views together.
 - Carry the per-disk `DiskUsage` breakdown in `disks`.
 
 `DdbDiskGroup::zone_usage(&self, disk_id: DiskId, zone_index: u32) -> Option<ZoneUsage>`:
-- Locate the disk via `disk_index` (read lock); `None` if unknown disk.
+- Locate the disk in the immutable RCU membership snapshot; `None` if unknown.
 - Locate the zone by `zone_index` (read lock on `disk.zones`); `None`
   if out of range.
 - Build `ZoneUsage` from the zone's accessors +
@@ -638,8 +638,9 @@ rpc stubs and do endpoint discovery manually.
 
 ```rust
 pub struct DiskdbClient {
-    svc: ServiceRegistryClient,        // endpoint discovery from group 0
-    cache: DashMap<DiskGroupId, String>, // dg_id -> rpc_endpoint
+    svc: ServiceRegistryClient,          // endpoint discovery from group 0
+    routing: Arc<DiskdbRoutingState>,     // shared generated RCU routes
+    rpc_transport: Arc<DiskdbRpcTransport>,
     retry: RetryConfig,
 }
 
@@ -664,13 +665,14 @@ impl DiskdbClient {
 
 - **Endpoint discovery + cache**: `refresh_endpoints` calls
   `svc.read_all_diskdb_instances()`, reads each
-  `InstanceValue.rpc_endpoint` + `DiskdbExtra.owned_dg_ids`, populates
-  `cache: dg_id -> endpoint`. Called on startup (eager), on cache miss
-  (lazy `refresh_for`), and on `Unavailable`/`ResourceExhausted`
-  (refresh + retry). `DashMap` for concurrent reads.
-- **Channel pool**: a `DashMap<String, crowdb_rpc::Channel>` per
-  endpoint; lazily created on first use. Channels are reused across
-  calls.
+  `InstanceValue.rpc_endpoint` + `DiskdbExtra.owned_dg_ids`, and publishes one
+  complete `dg_id -> endpoint` snapshot. Called on startup (eager), on cache
+  miss (lazy `refresh_for`), and on retryable routing failure. Client clones
+  share this state; incrementally learned disk routes carry the endpoint
+  generation and are reconciled after refresh.
+- **Connection pool**: `ConnectionPoolIndex` holds immutable generated pools
+  per endpoint. Connections are reused across calls, and late failures can
+  invalidate only the generation used by that request.
 - **`allocate_blocks`**: look up endpoint for `req.disk_group_id`
   (refresh on miss), open channel, call `AllocateBlocks`, retry on
   transient errors (`Unavailable`, deadline-exceeded).

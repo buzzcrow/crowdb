@@ -5,8 +5,8 @@
 // pool (forces eviction) + periodic snapshots, validated against an in-mem
 // oracle live and after reopen. Plus a focused test that an overflow chain whose
 // pages were evicted is still fully retired on overwrite (no leak; ASan covers).
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
 
 #include <gtest/gtest.h>
 
@@ -53,7 +53,7 @@ std::string make_val(size_t n, uint32_t seed)
 TEST(KitchenSink, AllFeaturesRandomizedReopen)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store        = &store;
     opt.compression       = compress_algo::kLz4;
     opt.frame_bytes       = 4096;
@@ -127,7 +127,7 @@ TEST(KitchenSink, AllFeaturesRandomizedReopen)
 TEST(KitchenSink, OverwriteEvictedOverflowChainNoLeak)
 {
     MemPageStore store(1);
-    Options      opt;
+    Config       opt;
     opt.page_store       = &store;
     opt.frame_bytes      = 4096;
     opt.max_inline_value = 64;

@@ -18,7 +18,7 @@ ScheduledExecutor::TaskId ScheduledExecutor::schedule(Task task, uint32_t delay_
     st.deadline = Clock::now() + std::chrono::milliseconds(delay_ms);
     st.callback = std::move(task);
     {
-        std::lock_guard<std::mutex> lock(mu_);
+        std::scoped_lock lock(mu_);
         tasks_[id] = std::move(st);
     }
     return id;
@@ -29,7 +29,7 @@ bool ScheduledExecutor::cancel(TaskId id)
     if (id == 0) {
         return false;
     }
-    std::lock_guard<std::mutex> lock(mu_);
+    std::scoped_lock lock(mu_);
     return tasks_.erase(id) > 0;
 }
 
@@ -40,7 +40,7 @@ int ScheduledExecutor::run_due_tasks()
     Clock::time_point                    next_deadline = Clock::time_point::max();
 
     {
-        std::lock_guard<std::mutex> lock(mu_);
+        std::scoped_lock lock(mu_);
         for (auto it = tasks_.begin(); it != tasks_.end();) {
             if (it->second.deadline <= now) {
                 to_run.emplace_back(it->first, std::move(it->second.callback));
@@ -69,7 +69,7 @@ int ScheduledExecutor::run_due_tasks()
 
 size_t ScheduledExecutor::pending_count()
 {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::scoped_lock lock(mu_);
     return tasks_.size();
 }
 

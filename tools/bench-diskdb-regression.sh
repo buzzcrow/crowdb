@@ -43,6 +43,10 @@
 #   Dur   — workload duration
 #   Err   — error count
 #   Spc   — space accounting (exact = busy delta matches expected delta)
+#   FB    — concurrent-free batching mode (off|on)
+#   FReq  — free requests admitted during the case
+#   FKV   — KV proposals used for those free requests
+#   FCo   — request/proposal coalescing ratio
 #
 # Wl     Grp  Thr  Blk  Cli  Ddb  Kv  Wkr  Win  Coal    ops/s  p50    p99  Dur  Err      Spc
 # alloc    3    1    1    2    2   2    2   32    32    2,481  410    504  20s  0        exact
@@ -64,6 +68,25 @@
 # lower than KV TPS. The 20-second DiskDB result is about 73% of that KV peak;
 # further tuning should close this overhead gap rather than expect 400K TPS
 # without raising KV throughput or changing the persistence model.
+#
+# Intel i9-7960X (2026-09-10, 16c/32t, Linux 6.11, x86_64):
+#   Same build/config as AMD 2026-09-05. Memory KV/WAL, 3 KV nodes, 3
+#   DiskDB instances, 12 x 4-TiB disks, 1 block/request, 20s window.
+#   Zero errors, exact space accounting across all configs. 1T ~79%
+#   slower (per-op overhead higher on Intel). 16T+ within 6-28%.
+#   Gaps > 30% documented in doc/working/regression-perf-review.md.
+#
+# Wl     Grp  Thr  Blk  Cli  Ddb  Kv  Wkr  Win  Coal    ops/s  avg   p50    p99  Dur  Err      Spc
+# alloc    3    1    1    2    2   2    2   32    32      522  1913  1949   2426  20s  0        exact
+# alloc    3   16    1    2    2   2    2   32    32   30,853   518   506    805  20s  0        exact
+# alloc    3  128    1    4    4   4    4   32    32  114,013  1121  1072   2109  20s  0        exact
+# alloc    3  256    1    4    4   4    4   32    32  136,932  1867  1758   4008  20s  0        exact
+# alloc    1  256    1    4    4   4    4   32    32  153,569  1665  1595   3172  20s  0        exact
+# mix      3    1    1    2    2   2    2   32    32      527  1894  1940   2390  20s  0        exact
+# mix      3   16    1    2    2   2    2   32    32   32,559   491   478    806  20s  0        exact
+# mix      3  128    1    4    4   4    4   32    32  110,366  1158  1095   2347  20s  0        exact
+# mix      3  256    1    4    4   4    4   32    32  144,787  1766  1687   3426  20s  0        exact
+# mix      1  256    1    4    4   4    4   32    32  153,493  1666  1603   3088  20s  0        exact
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -96,6 +119,11 @@ FAILURES=0
 CASE_NUMBER=0
 DEPLOY_NUMBER=0
 CASE_IN_GROUP=0
+FREE_BATCH_MODE=off
+FREE_BATCH_OFF_PROPOSALS=
+FREE_BATCH_ON_PROPOSALS=
+FREE_BATCH_OFF_REQUESTS=
+FREE_BATCH_ON_REQUESTS=
 
 if ! [[ "$DURATION" =~ ^[1-9][0-9]*$ ]] \
     || ! [[ "$DISK_CAPACITY" =~ ^[1-9][0-9]*$ ]] || ! [[ "$ZONE_SIZE" =~ ^[1-9][0-9]*$ ]]; then
@@ -113,7 +141,7 @@ cli() {
 
 destroy_cluster() {
     if [ -n "$CURRENT_CONFIG" ] && [ -f "$CURRENT_CONFIG" ]; then
-        cli cluster destroy || true
+        regression_destroy
     fi
     CURRENT_CONFIG=""
 }
@@ -155,6 +183,7 @@ any_case_selected() {
 
 deploy_group() {
     local mode="$1" profile_connections="$2" profile_workers="$3" profile_groups="$4"
+    local free_batch="${5:-off}"
     CURRENT_CONFIG="$REGRESSION_CONFIG"
     CASE_IN_GROUP=0
     DEPLOY_NUMBER=$((DEPLOY_NUMBER + 1))
@@ -168,6 +197,7 @@ deploy_group() {
     DDB_RPC_WORKERS="$workers"
     KV_CLIENT_WORKERS="$workers"
     KV_RPC_WORKERS="$workers"
+    FREE_BATCH_MODE="$free_batch"
     local backend_args=(--kv-backend mem-block --wal-backend mem-block)
     if [ "$mode" = "block" ]; then
         backend_args=(--kv-backend block --wal-backend block-device)
@@ -188,13 +218,26 @@ deploy_group() {
     done
     local group_csv
     group_csv=$(IFS=,; echo "${groups[*]}")
+    local free_batch_args=()
+    if [ "$free_batch" = "on" ]; then
+        free_batch_args=(--free-batch --free-flush-max-batch 256)
+    fi
     cli cluster local-deploy -t diskdb --data-groups "$group_csv" \
         --rpc-workers "$DDB_RPC_WORKERS" --kv-connections "$KV_CONNECTIONS" \
         --kv-client-rpc-workers "$KV_CLIENT_WORKERS" \
         --disk-groups-per-node 1 --disks-per-group 4 \
         --disk-capacity-bytes "$DISK_CAPACITY" \
         --disk-zone-size-bytes "$ZONE_SIZE" \
-        --disk-unit-size-bytes 1048576
+        --disk-unit-size-bytes 1048576 "${free_batch_args[@]}"
+}
+
+metric_total() {
+    local metric="$1" total=0 value file
+    while IFS= read -r file; do
+        value=$(awk -v metric="$metric" '$1 == metric { value=$4 } END { print value+0 }' "$file")
+        total=$((total + value))
+    done < <(find "$LOG_ROOT" -path '*/diskdb-*/log/crowdb-diskdb-metrics-*.log' -type f)
+    echo "$total"
 }
 
 run_case() {
@@ -210,7 +253,9 @@ run_case() {
         regression_reset_stack "${groups[@]}"
     fi
     CASE_IN_GROUP=$((CASE_IN_GROUP + 1))
-    local output status line epoll_workers
+    local output status line epoll_workers free_requests_before free_batches_before
+    free_requests_before=$(metric_total free_batch.input.requests.c)
+    free_batches_before=$(metric_total free_batch.output.kv_batches.c)
     epoll_workers="$DDB_RPC_WORKERS"
     set +e
     output=$(timeout --signal=INT --kill-after=10 "$((DURATION + 40))" \
@@ -223,12 +268,20 @@ run_case() {
     status=$?
     set -e
     printf '%s\n' "$output"
+    sleep 2
+    local free_requests_after free_batches_after free_requests free_batches free_ratio
+    free_requests_after=$(metric_total free_batch.input.requests.c)
+    free_batches_after=$(metric_total free_batch.output.kv_batches.c)
+    free_requests=$((free_requests_after - free_requests_before))
+    free_batches=$((free_batches_after - free_batches_before))
+    free_ratio=$(awk "BEGIN { if ($free_batches > 0) printf \"%.2f\", $free_requests / $free_batches; else printf \"0.00\" }")
     line=$(sed -n '/^diskdb bench /p' <<<"$output" | tail -n 1)
     if [ -z "$line" ]; then
-        printf '%s/%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\t0\t0\t0\t%ss\t1\tunknown\n' \
+        printf '%s/%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\t0\t0\t0\t%ss\t1\tunknown\t%s\t%s\t%s\t%s\n' \
             "$workload" "$mode" "$DATA_GROUP_COUNT" "$concurrency" "$blocks" \
             "$DDB_CONNECTIONS" "$KV_CONNECTIONS" "$KV_PEER_POOL" "$epoll_workers" \
-            "$KV_INFLIGHT" "$KV_COALESCE" "$DURATION" >>"$RESULTS_FILE"
+            "$KV_INFLIGHT" "$KV_COALESCE" "$DURATION" "$FREE_BATCH_MODE" \
+            "$free_requests" "$free_batches" "$free_ratio" >>"$RESULTS_FILE"
     else
         local busy_delta expected_delta space
         busy_delta=$(field "$line" busy_delta)
@@ -237,13 +290,14 @@ run_case() {
         if [ -n "$busy_delta" ] && [ "$busy_delta" = "$expected_delta" ]; then
             space=exact
         fi
-        printf '%s/%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%ss\t%s\t%s\n' \
+        printf '%s/%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%ss\t%s\t%s\t%s\t%s\t%s\t%s\n' \
             "$workload" "$mode" "$DATA_GROUP_COUNT" "$concurrency" "$blocks" \
             "$DDB_CONNECTIONS" "$KV_CONNECTIONS" "$KV_PEER_POOL" "$epoll_workers" \
             "$KV_INFLIGHT" "$KV_COALESCE" "$(field "$line" ops_per_sec)" \
             "$(field "$line" avg_us)" "$(field "$line" p50_us)" \
             "$(field "$line" p99_us)" "$DURATION" \
-            "$(field "$line" errors)" "$space" >>"$RESULTS_FILE"
+            "$(field "$line" errors)" "$space" "$FREE_BATCH_MODE" \
+            "$free_requests" "$free_batches" "$free_ratio" >>"$RESULTS_FILE"
     fi
     if ! verify_logs "$label"; then
         FAILURES=$((FAILURES + 1))
@@ -252,12 +306,19 @@ run_case() {
         echo "ERROR: benchmark failed for $label (exit=$status)" >&2
         FAILURES=$((FAILURES + 1))
     fi
+    if [ "$label" = "free_batch_off_${mode}" ]; then
+        FREE_BATCH_OFF_PROPOSALS="$free_batches"
+        FREE_BATCH_OFF_REQUESTS="$free_requests"
+    elif [ "$label" = "free_batch_on_${mode}" ]; then
+        FREE_BATCH_ON_PROPOSALS="$free_batches"
+        FREE_BATCH_ON_REQUESTS="$free_requests"
+    fi
 }
 
 echo "=== building release binaries ==="
 pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server -p crowdb-diskdb
 mkdir -p "$LOG_ROOT" "$(dirname "$RESULTS_FILE")"
-printf 'Wl\tGrp\tThr\tBlk\tCli\tDdb\tKv\tWkr\tWin\tCoal\tops/s\tavg\tp50\tp99\tDur\tErr\tSpc\n' >"$RESULTS_FILE"
+printf 'Wl\tGrp\tThr\tBlk\tCli\tDdb\tKv\tWkr\tWin\tCoal\tops/s\tavg\tp50\tp99\tDur\tErr\tSpc\tFB\tFReq\tFKV\tFCo\n' >"$RESULTS_FILE"
 
 for mode in $MODES; do
     if any_case_selected "allocate_${mode}_1t" "allocate_${mode}_16t" "mix_${mode}_1t" "mix_${mode}_16t"; then
@@ -283,6 +344,21 @@ for mode in $MODES; do
         destroy_cluster
     fi
 done
+
+if any_case_selected "free_batch_off_mem" "free_batch_on_mem"; then
+    deploy_group mem 4 4 1 off
+    run_case mix mem 128 1 "free_batch_off_mem"
+    destroy_cluster
+    deploy_group mem 4 4 1 on
+    run_case mix mem 128 1 "free_batch_on_mem"
+    destroy_cluster
+    if [ -n "$FREE_BATCH_OFF_PROPOSALS" ] && [ -n "$FREE_BATCH_ON_PROPOSALS" ] \
+        && [ $((FREE_BATCH_ON_PROPOSALS * FREE_BATCH_OFF_REQUESTS)) -ge \
+             $((FREE_BATCH_OFF_PROPOSALS * FREE_BATCH_ON_REQUESTS)) ]; then
+        echo "ERROR: free batching did not improve requests per KV proposal" >&2
+        FAILURES=$((FAILURES + 1))
+    fi
+fi
 
 echo "=== DONE ==="
 echo "Logs and results retained in $LOG_ROOT"

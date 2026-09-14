@@ -21,7 +21,7 @@ use crowdb_diskdb::model::alloc;
 use crowdb_diskdb::model::disk_group_container::DdbDiskGroupContainer;
 use crowdb_kv_client::{GetOutcome, HardwareClient};
 use crowdb_protocol::common::{ChunkId, DiskId, HwStatus, NodeValue, RackValue};
-use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue};
+use crowdb_protocol::diskdb::rpc::{CommitState, DiskGroupValue, DiskType, DiskValue};
 use crowdb_protocol::key::{BinaryKey, BusyBlockKey, FreeBlockKey};
 use crowdb_protocol::DiskIdExt;
 
@@ -253,17 +253,40 @@ async fn diskdb_e2e_allocate_free() {
         bincode::deserialize(&busy_val.unwrap()).expect("deserialize BusyBlockValue");
     assert_eq!(busy_record.unit_count, 1);
     assert_eq!(busy_record.owner_chunk, Some(owner_chunk));
+    assert_eq!(busy_record.commit_state, CommitState::Tentative as i32);
     eprintln!("BusyBlockValue record verified in kv");
 
-    // 9. Free the block.
+    // 9. Commit from the tentative cache, then retry after the exact cache
+    // entry is gone. The retry takes the authoritative-read path and observes
+    // the already committed value.
+    assert_eq!(
+        alloc::commit_blocks(&dg, &[segment], &alloc_kv, &metrics)
+            .await
+            .expect("commit should succeed"),
+        1
+    );
+    assert_eq!(
+        alloc::commit_blocks(&dg, &[segment], &alloc_kv, &metrics)
+            .await
+            .expect("commit retry should be idempotent"),
+        1
+    );
+    let committed_val = kv_get(&kv_client, &busy_bytes)
+        .await
+        .expect("committed busy record");
+    let committed_record: crowdb_protocol::diskdb::rpc::BusyBlockValue =
+        bincode::deserialize(&committed_val).expect("deserialize committed BusyBlockValue");
+    assert_eq!(committed_record.commit_state, CommitState::Committed as i32);
+
+    // 10. Free the block.
     let free_kv = cluster.make_ddb_kv_client();
     alloc::free_block(&dg, &segment, &free_kv)
         .await
         .expect("free should succeed");
     eprintln!("freed segment");
 
-    // 10. Verify the FreeBlockValue record was persisted and the
-    //     BusyBlockKey is gone.
+    // 11. Verify the FreeBlockValue record was persisted and the
+    //     BusyBlockKey remains until compaction.
     let free_key = FreeBlockKey {
         disk_id: make_disk_id(0, 1),
         zone_index: segment.zone_index,
@@ -283,7 +306,7 @@ async fn diskdb_e2e_allocate_free() {
     let busy_val2 = kv_get(&verify_kv2, &busy_bytes).await;
     assert!(busy_val2.is_some(), "busy record should remain before compaction");
 
-    // 11. Allocate multiple blocks and verify.
+    // 12. Allocate multiple blocks and verify.
     let alloc_kv2 = cluster.make_ddb_kv_client();
     let segments = alloc::allocate_blocks(
         &dg,
@@ -654,7 +677,7 @@ async fn diskdb_e2e_allocate_all_free_all() {
     assert_eq!(usage.busy_bytes, total_cap_bytes);
     assert_eq!(usage.free_bytes, 0);
 
-    // Sample-verify: FreeBlockValue exists + BusyBlockKey is gone.
+    // Sample-verify: FreeBlockValue and BusyBlockKey both exist.
     let verify_kv2 = cluster.make_ddb_kv_client();
     for &idx in &sample_indices {
         let seg = &all_segments[idx];

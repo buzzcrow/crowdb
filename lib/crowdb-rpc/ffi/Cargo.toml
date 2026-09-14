@@ -19,6 +19,7 @@ default = []
 test-util = ["dep:ctor"]
 
 [dependencies]
+arc-swap = "1.9"
 crowdb-common = { path = "../../crowdb-common/rust" }
 tokio = { version = "1.40", features = ["rt", "rt-multi-thread", "macros", "sync"] }
 bytes = "1"

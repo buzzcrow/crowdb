@@ -384,11 +384,8 @@ async fn busy_bytes(client: &DiskdbClient, groups: &[u64]) -> Result<u64, Diskdb
     let mut total = 0u64;
     for group in groups {
         let response = client.query_disk_group(*group).await?;
-        total += response
-            .disk_groups
-            .iter()
-            .map(|entry| entry.busy_bytes)
-            .sum::<u64>();
+        let group_busy: u64 = response.disk_groups.iter().map(|entry| entry.busy_bytes).sum();
+        total += group_busy;
     }
     Ok(total)
 }

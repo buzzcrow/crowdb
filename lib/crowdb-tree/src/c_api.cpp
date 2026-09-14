@@ -10,25 +10,34 @@
 // hand them back to ct_free_buf regardless of allocator details.
 #include "crowdb-tree/c_api.h"
 
+#include "c_api_internal.h"
 #include "crowdb-common/log.h"
-#include "crowdb-tree/async_page_store.h"
-#include "crowdb-tree/block_page_store.h"
-#include "crowdb-tree/cell.h"
+#include "crowdb-tree/backend/async_page_store.h"
+#include "crowdb-tree/backend/block_page_store.h"
+#include "crowdb-tree/backend/page_store.h"
+#include "crowdb-tree/backend/text_page_store.h"
+#include "crowdb-tree/btree/cell.h"
+#include "crowdb-tree/btree/range_rebuild.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
-#include "crowdb-tree/snapshot_io.h"
-#include "crowdb-tree/text_page_store.h"
+#include "crowdb-tree/snapshot/snapshot_io.h"
 #ifdef CROWDB_HAVE_LIBURING
 #    include "crowdb-common/diskio_uring.h"
 #endif
 
 #include <atomic>
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
+
+#ifdef __linux__
+#    include <sys/eventfd.h>
+#    include <unistd.h>
+#endif
 
 using namespace crowdb::tree;
 
@@ -111,19 +120,62 @@ bool read_u32(const uint8_t *buf, size_t len, size_t *pos, uint32_t *v)
 
 // ── Handle structs ────────────────────────────────────────────────
 
+struct CompletionSignal
+{
+    CompletionSignal()
+    {
+#ifdef __linux__
+        fd = ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+#endif
+    }
+
+    ~CompletionSignal()
+    {
+#ifdef __linux__
+        if (fd >= 0) {
+            ::close(fd);
+        }
+#endif
+    }
+
+    void notify() const
+    {
+#ifdef __linux__
+        if (fd >= 0) {
+            uint64_t one = 1;
+            ssize_t  n;
+            do {
+                n = ::write(fd, &one, sizeof(one));
+            } while (n < 0 && errno == EINTR);
+        }
+#endif
+    }
+
+    int fd = -1;
+};
+
 struct ct_tree
 {
-    std::unique_ptr<PageStore>  store; // null for pure in-memory engine
-    std::unique_ptr<Crowdbtree> tree;
+    std::unique_ptr<PageStore>        store; // null for pure in-memory engine
+    std::shared_ptr<PageStoreBundle>  injected_store;
+    std::unique_ptr<Crowdbtree>       tree;
+    std::shared_ptr<CompletionSignal> completion = std::make_shared<CompletionSignal>();
 #ifdef CROWDB_HAVE_LIBURING
     // Both null for an in-memory tree, or if opening the async twin failed
     // (see ct_open) -- get_async/flush_async/snapshot_async then fall back
     // to completing synchronously. Declared so `uring`
     // outlives `async_store` (async_store is non-owning re: uring,
-    // mirroring Options' own comment) and both outlive `tree`, which is
+    // mirroring Config' own comment) and both outlive `tree`, which is
     // what actually calls into them.
     std::unique_ptr<crowdb::common::DiskIOUring> uring;
     std::unique_ptr<AsyncPageStore>              async_store;
+#endif
+};
+
+struct ct_uring
+{
+#ifdef CROWDB_HAVE_LIBURING
+    std::unique_ptr<crowdb::common::DiskIOUring> engine;
 #endif
 };
 
@@ -213,6 +265,24 @@ void ct_free_buf(ct_buf *buf)
 
 // ── Lifecycle ─────────────────────────────────────────────────────
 
+ct_status ct_page_store_open_mem(uint32_t iu_size, ct_page_store **out)
+{
+    if (out == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    auto handle                   = std::make_unique<ct_page_store>();
+    handle->bundle                = std::make_shared<PageStoreBundle>();
+    handle->bundle->store         = std::make_unique<MemPageStore>(iu_size == 0 ? 1 : iu_size);
+    handle->bundle->backend_label = "mem";
+    *out                          = handle.release();
+    return static_cast<ct_status>(Code::kOk);
+}
+
+void ct_page_store_free(ct_page_store *store)
+{
+    delete store;
+}
+
 ct_status ct_open(const ct_options *opt, ct_tree **out)
 {
     if (opt == nullptr || out == nullptr) {
@@ -220,7 +290,7 @@ ct_status ct_open(const ct_options *opt, ct_tree **out)
     }
     auto h = std::make_unique<ct_tree>();
 
-    Options o;
+    Config o;
     if (opt->frame_bytes != 0) {
         o.frame_bytes = opt->frame_bytes;
     }
@@ -234,6 +304,17 @@ ct_status ct_open(const ct_options *opt, ct_tree **out)
     o.store_id    = opt->store_id;
     o.group_id    = opt->group_id;
     o.name        = "s" + std::to_string(opt->store_id) + ".g" + std::to_string(opt->group_id);
+    if (opt->range_bounded != 0) {
+        std::optional<std::string> start;
+        std::optional<std::string> end;
+        if (opt->range_start != nullptr) {
+            start.emplace(reinterpret_cast<const char *>(opt->range_start), opt->range_start_len);
+        }
+        if (opt->range_end != nullptr) {
+            end.emplace(reinterpret_cast<const char *>(opt->range_end), opt->range_end_len);
+        }
+        o.key_range = KeyRange::bounded(std::move(start), std::move(end));
+    }
 
     // Set backend label for metric names
     {
@@ -264,7 +345,26 @@ ct_status ct_open(const ct_options *opt, ct_tree **out)
     }
 
     const bool durable = opt->path != nullptr && opt->path[0] != '\0';
-    if (!durable) {
+    if (opt->page_store != nullptr) {
+        if (opt->page_store->bundle == nullptr || opt->page_store->bundle->store == nullptr) {
+            return static_cast<ct_status>(Code::kInvalidArgument);
+        }
+        h->injected_store  = opt->page_store->bundle;
+        o.page_store       = h->injected_store->store.get();
+        o.async_page_store = h->injected_store->async_store_view != nullptr ? h->injected_store->async_store_view
+                                                                            : h->injected_store->async_store.get();
+        o.backend_label    = h->injected_store->backend_label;
+#ifdef CROWDB_HAVE_LIBURING
+        o.async_uring = h->injected_store->uring.get();
+#endif
+        std::unique_ptr<Crowdbtree> t;
+        Status                      os = Crowdbtree::open(o, &t);
+        if (!os.ok()) {
+            return to_status(os);
+        }
+        h->tree = std::move(t);
+    }
+    else if (!durable) {
         // In-memory: BlockPageStore::open_mem with IU=1
         std::unique_ptr<BlockPageStore> bs;
         Status                          s = BlockPageStore::open_mem(opt->iu_size == 0 ? 1 : opt->iu_size, &bs);
@@ -362,6 +462,72 @@ void ct_close(ct_tree *t)
     delete t;
 }
 
+ct_status ct_rebuild_range(ct_tree *source, const ct_options *destination_options, ct_tree **out,
+                           ct_range_rebuild_stats *stats)
+{
+    if (source == nullptr || destination_options == nullptr || out == nullptr ||
+        destination_options->page_store == nullptr || destination_options->page_store->bundle == nullptr ||
+        destination_options->page_store->bundle->store == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+
+    auto   handle = std::make_unique<ct_tree>();
+    Config options;
+    if (destination_options->frame_bytes != 0) {
+        options.frame_bytes = destination_options->frame_bytes;
+    }
+    if (destination_options->buffer_pool_bytes != 0) {
+        options.buffer_pool_bytes = destination_options->buffer_pool_bytes;
+    }
+    if (destination_options->max_inline_value != 0) {
+        options.max_inline_value = destination_options->max_inline_value;
+    }
+    options.compression = destination_options->compression == 1 ? compress_algo::kLz4 : compress_algo::kNone;
+    options.store_id    = destination_options->store_id;
+    options.group_id    = destination_options->group_id;
+    options.name =
+        "s" + std::to_string(destination_options->store_id) + ".g" + std::to_string(destination_options->group_id);
+
+    std::optional<std::string> start;
+    std::optional<std::string> end;
+    if (destination_options->range_bounded != 0) {
+        if (destination_options->range_start != nullptr) {
+            start.emplace(reinterpret_cast<const char *>(destination_options->range_start),
+                          destination_options->range_start_len);
+        }
+        if (destination_options->range_end != nullptr) {
+            end.emplace(reinterpret_cast<const char *>(destination_options->range_end),
+                        destination_options->range_end_len);
+        }
+        options.key_range = KeyRange::bounded(std::move(start), std::move(end));
+    }
+
+    handle->injected_store   = destination_options->page_store->bundle;
+    options.page_store       = handle->injected_store->store.get();
+    options.async_page_store = handle->injected_store->async_store_view != nullptr
+                                 ? handle->injected_store->async_store_view
+                                 : handle->injected_store->async_store.get();
+    options.backend_label    = handle->injected_store->backend_label;
+    RangeRebuildStats rebuilt;
+    Status            status = rebuild_range(*source->tree, options.key_range, options, &handle->tree, &rebuilt);
+    if (!status.ok()) {
+        CRB_LOG_ERROR("range rebuild failed: {}", status.to_string());
+        return to_status(status);
+    }
+    if (stats != nullptr) {
+        *stats = {
+            .entries_examined = rebuilt.entries_examined,
+            .entries_emitted  = rebuilt.entries_emitted,
+            .entries_filtered = rebuilt.entries_filtered,
+            .pages_reused     = rebuilt.pages_reused,
+            .pages_rebuilt    = rebuilt.pages_rebuilt,
+            .subtrees_skipped = rebuilt.subtrees_skipped,
+        };
+    }
+    *out = handle.release();
+    return static_cast<ct_status>(Code::kOk);
+}
+
 void ct_init_logging(const char *log_dir, const char *level, size_t max_file_mb, size_t max_files,
                      const char *file_prefix)
 {
@@ -391,6 +557,35 @@ ct_status ct_snapshot(ct_tree *t, uint64_t *out_last_applied)
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
     return to_status(t->tree->snapshot(out_last_applied));
+}
+
+ct_status ct_snapshot_info(ct_tree *t, uint64_t *out_snapshot_seq, uint64_t *out_last_applied)
+{
+    if (t == nullptr || out_snapshot_seq == nullptr || out_last_applied == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    return to_status(t->tree->snapshot(out_last_applied, out_snapshot_seq));
+}
+
+ct_status ct_snapshot_state(const ct_tree *t, uint64_t *out_snapshot_seq, uint64_t *out_last_applied)
+{
+    if (t == nullptr || out_snapshot_seq == nullptr || out_last_applied == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    *out_snapshot_seq = t->tree->version();
+    *out_last_applied = t->tree->last_applied_slot();
+    return static_cast<ct_status>(Code::kOk);
+}
+
+ct_status ct_materialize_ownership(ct_tree *t, uint64_t *bytes_written, int32_t *complete)
+{
+    if (t == nullptr || bytes_written == nullptr || complete == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    bool   done   = false;
+    Status status = t->tree->materialize_ownership(bytes_written, &done);
+    *complete     = done ? 1 : 0;
+    return to_status(status);
 }
 
 uint64_t ct_last_applied_slot(const ct_tree *t)
@@ -561,10 +756,17 @@ ct_status ct_apply_put(ct_tree *t, uint64_t slot, const uint8_t *key, size_t kle
     if (t == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
-    std::vector<Crowdbtree::encoded_op> ops;
-    ops.push_back({std::string(reinterpret_cast<const char *>(key), klen),
-                   encode_cell_buf(slot, OpKind::kPut, Slice(reinterpret_cast<const char *>(val), vlen))});
-    return to_status(t->tree->apply_encoded(slot, std::move(ops)));
+    try {
+        std::vector<Crowdbtree::encoded_op> ops;
+        ops.push_back({
+            .key  = std::string(reinterpret_cast<const char *>(key), klen),
+            .cell = encode_cell_buf(slot, OpKind::kPut, Slice(reinterpret_cast<const char *>(val), vlen)),
+        });
+        return to_status(t->tree->apply_encoded(slot, std::move(ops)));
+    }
+    catch (...) {
+        return static_cast<ct_status>(Code::kInternal);
+    }
 }
 
 ct_status ct_apply_delete(ct_tree *t, uint64_t slot, const uint8_t *key, size_t klen)
@@ -572,9 +774,17 @@ ct_status ct_apply_delete(ct_tree *t, uint64_t slot, const uint8_t *key, size_t 
     if (t == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
-    std::vector<Crowdbtree::encoded_op> ops;
-    ops.push_back({std::string(reinterpret_cast<const char *>(key), klen), encode_cell_buf(slot, OpKind::kDelete)});
-    return to_status(t->tree->apply_encoded(slot, std::move(ops)));
+    try {
+        std::vector<Crowdbtree::encoded_op> ops;
+        ops.push_back({
+            .key  = std::string(reinterpret_cast<const char *>(key), klen),
+            .cell = encode_cell_buf(slot, OpKind::kDelete),
+        });
+        return to_status(t->tree->apply_encoded(slot, std::move(ops)));
+    }
+    catch (...) {
+        return static_cast<ct_status>(Code::kInternal);
+    }
 }
 
 ct_status ct_apply_batch(ct_tree *t, uint64_t slot, const uint8_t *ops, size_t ops_len, uint64_t count)
@@ -609,7 +819,8 @@ ct_status ct_apply_batch(ct_tree *t, uint64_t slot, const uint8_t *ops, size_t o
         Slice value_slice(reinterpret_cast<const char *>(ops + pos), vlen);
         pos += vlen;
         OpKind kind = kind_byte == 0 ? OpKind::kPut : OpKind::kDelete;
-        encoded.push_back({std::move(key), encode_cell_buf(slot, kind, kind == OpKind::kPut ? value_slice : Slice())});
+        encoded.push_back(
+            {.key = std::move(key), .cell = encode_cell_buf(slot, kind, kind == OpKind::kPut ? value_slice : Slice())});
     }
     return to_status(t->tree->apply_encoded(slot, std::move(encoded)));
 }
@@ -632,7 +843,8 @@ ct_status ct_apply_batch_slices(ct_tree *t, uint64_t slot, const ct_kv_ref *ops,
         std::string key(reinterpret_cast<const char *>(op.key), op.key_len);
         OpKind      kind = op.kind == 0 ? OpKind::kPut : OpKind::kDelete;
         Slice       value_slice(reinterpret_cast<const char *>(op.value), op.value_len);
-        encoded.push_back({std::move(key), encode_cell_buf(slot, kind, kind == OpKind::kPut ? value_slice : Slice())});
+        encoded.push_back(
+            {.key = std::move(key), .cell = encode_cell_buf(slot, kind, kind == OpKind::kPut ? value_slice : Slice())});
     }
     return to_status(t->tree->apply_encoded(slot, std::move(encoded)));
 }
@@ -665,7 +877,7 @@ ct_status ct_apply_batch_external(ct_tree *t, uint64_t slot, const ct_ext_op *op
             value = buffer::alloc(0);
         }
         // Delete: value stays default (empty); flags = kFlagTombstone.
-        external.push_back({std::move(key), flags, std::move(value)});
+        external.push_back({.key = std::move(key), .flags = flags, .value = std::move(value)});
     }
     return to_status(t->tree->apply_external(slot, std::move(external)));
 }
@@ -710,7 +922,7 @@ ct_status ct_apply_put_owned(ct_tree *t, uint64_t slot, ct_write_handle *handle)
     }
     p[8] = 0; // kPut (no tombstone flag)
     std::vector<Crowdbtree::encoded_op> ops;
-    ops.push_back({std::move(handle->key), std::move(handle->cell)});
+    ops.push_back({.key = std::move(handle->key), .cell = std::move(handle->cell)});
     auto status = to_status(t->tree->apply_encoded(slot, std::move(ops)));
     delete handle;
     return status;
@@ -751,6 +963,10 @@ ct_status ct_get(ct_tree *t, const uint8_t *key, size_t klen, int32_t *found, ui
     if (t == nullptr || found == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
+    Status range_status = t->tree->validate_key(Slice(reinterpret_cast<const char *>(key), klen));
+    if (!range_status.ok()) {
+        return to_status(range_status);
+    }
     std::string v;
     uint64_t    s  = 0;
     bool        ok = t->tree->get(Slice(reinterpret_cast<const char *>(key), klen), &s, &v);
@@ -776,11 +992,21 @@ ct_future *ct_get_async(ct_tree *t, const uint8_t *key, size_t klen)
     if (t == nullptr) {
         return nullptr;
     }
-    auto impl  = std::make_shared<ct_future_impl>();
-    impl->kind = ct_future_impl::Kind::kGet;
-    t->tree->get_async(Slice(reinterpret_cast<const char *>(key), klen), [impl](GetView view) {
+    auto impl           = std::make_shared<ct_future_impl>();
+    impl->kind          = ct_future_impl::Kind::kGet;
+    auto   signal       = t->completion;
+    Status range_status = t->tree->validate_key(Slice(reinterpret_cast<const char *>(key), klen));
+    if (!range_status.ok()) {
+        impl->status = to_status(range_status);
+        impl->done.store(true, std::memory_order_release);
+        signal->notify();
+        return reinterpret_cast<ct_future *>(new ct_future_handle(std::move(impl)));
+    }
+    t->tree->get_async(Slice(reinterpret_cast<const char *>(key), klen), [impl, signal](Status status, GetView view) {
+        impl->status     = to_status(status);
         impl->get_result = std::move(view);
         impl->done.store(true, std::memory_order_release);
+        signal->notify();
     });
     return reinterpret_cast<ct_future *>(new ct_future_handle(std::move(impl)));
 }
@@ -790,11 +1016,13 @@ ct_future *ct_flush_async(ct_tree *t)
     if (t == nullptr) {
         return nullptr;
     }
-    auto impl  = std::make_shared<ct_future_impl>();
-    impl->kind = ct_future_impl::Kind::kFlush;
-    t->tree->flush_async([impl](const Status &st) {
+    auto impl   = std::make_shared<ct_future_impl>();
+    impl->kind  = ct_future_impl::Kind::kFlush;
+    auto signal = t->completion;
+    t->tree->flush_async([impl, signal](const Status &st) {
         impl->status = to_status(st);
         impl->done.store(true, std::memory_order_release);
+        signal->notify();
     });
     return reinterpret_cast<ct_future *>(new ct_future_handle(std::move(impl)));
 }
@@ -804,12 +1032,14 @@ ct_future *ct_snapshot_async(ct_tree *t)
     if (t == nullptr) {
         return nullptr;
     }
-    auto impl  = std::make_shared<ct_future_impl>();
-    impl->kind = ct_future_impl::Kind::kSnapshot;
-    t->tree->snapshot_async([impl](const Status &st, uint64_t last_applied) {
+    auto impl   = std::make_shared<ct_future_impl>();
+    impl->kind  = ct_future_impl::Kind::kSnapshot;
+    auto signal = t->completion;
+    t->tree->snapshot_async([impl, signal](const Status &st, uint64_t last_applied) {
         impl->status = to_status(st);
         impl->slot   = last_applied;
         impl->done.store(true, std::memory_order_release);
+        signal->notify();
     });
     return reinterpret_cast<ct_future *>(new ct_future_handle(std::move(impl)));
 }
@@ -818,23 +1048,32 @@ ct_future *ct_scan_async(ct_tree *t, const uint8_t *prefix, size_t plen, const u
                          const uint8_t *end_key, size_t elen, size_t limit, size_t byte_budget, int keys_only,
                          uint64_t deadline_ms)
 {
+    return ct_scan_directional_async(t, prefix, plen, start_after, salen, end_key, elen, limit, byte_budget, keys_only,
+                                     deadline_ms, 0);
+}
+
+ct_future *ct_scan_directional_async(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_after,
+                                     size_t salen, const uint8_t *end_key, size_t elen, size_t limit,
+                                     size_t byte_budget, int keys_only, uint64_t deadline_ms, int direction)
+{
     if (t == nullptr) {
         return nullptr;
     }
     auto impl  = std::make_shared<ct_future_impl>();
     impl->kind = ct_future_impl::Kind::kScan;
-    t->tree->scan_async(Slice(reinterpret_cast<const char *>(prefix), plen),
-                        Slice(reinterpret_cast<const char *>(start_after), salen),
-                        Slice(reinterpret_cast<const char *>(end_key), elen), limit, byte_budget, keys_only != 0,
-                        deadline_ms, [impl](const Status &st, ScanPackedBuf packed, bool truncated) {
-                            impl->status = to_status(st);
-                            if (st.ok()) {
-                                impl->scan_count     = count_packed_entries(packed.data(), packed.size());
-                                impl->scan_packed    = std::move(packed);
-                                impl->scan_truncated = truncated;
-                            }
-                            impl->done.store(true, std::memory_order_release);
-                        });
+    t->tree->scan_directional_async(
+        Slice(reinterpret_cast<const char *>(prefix), plen), Slice(reinterpret_cast<const char *>(start_after), salen),
+        Slice(reinterpret_cast<const char *>(end_key), elen), limit, byte_budget, keys_only != 0, deadline_ms,
+        direction != 0, [impl, signal = t->completion](const Status &st, ScanPackedBuf packed, bool truncated) {
+            impl->status = to_status(st);
+            if (st.ok()) {
+                impl->scan_count     = count_packed_entries(packed.data(), packed.size());
+                impl->scan_packed    = std::move(packed);
+                impl->scan_truncated = truncated;
+            }
+            impl->done.store(true, std::memory_order_release);
+            signal->notify();
+        });
     return reinterpret_cast<ct_future *>(new ct_future_handle(std::move(impl)));
 }
 
@@ -918,16 +1157,133 @@ void ct_future_free(ct_future *f)
 
 size_t ct_uring_eventfds(const ct_tree *t, int32_t *out_fds, size_t max_fds)
 {
+    if (t == nullptr) {
+        return 0;
+    }
+    size_t total = t->completion != nullptr && t->completion->fd >= 0 ? 1 : 0;
+    if (out_fds != nullptr && max_fds > 0 && total != 0) {
+        out_fds[0] = t->completion->fd;
+    }
 #ifdef CROWDB_HAVE_LIBURING
-    if (t != nullptr && t->uring != nullptr) {
-        return t->uring->eventfds(out_fds, max_fds);
+    auto *uring = t->uring.get();
+    if (uring == nullptr && t->injected_store != nullptr) {
+        uring = t->injected_store->uring.get();
+    }
+    if (uring != nullptr) {
+        const size_t room  = max_fds > total ? max_fds - total : 0;
+        const size_t count = uring->eventfds(out_fds == nullptr ? nullptr : out_fds + total, room);
+        return total + count;
+    }
+#endif
+    return total;
+}
+
+ct_uring *ct_uring_create(uint32_t entries)
+{
+#ifdef CROWDB_HAVE_LIBURING
+    auto                     handle = std::make_unique<ct_uring>();
+    crowdb::common::Topology topology;
+    topology.pipelines.push_back({.entries = entries == 0 ? 256U : entries});
+    handle->engine = std::make_unique<crowdb::common::DiskIOUring>(std::move(topology));
+    if (!handle->engine->valid()) {
+        return nullptr;
+    }
+    return handle.release();
+#else
+    (void)entries;
+    return nullptr;
+#endif
+}
+
+void ct_uring_destroy(ct_uring *uring)
+{
+    delete uring;
+}
+
+int32_t ct_uring_register_fd(ct_uring *uring, int32_t fd)
+{
+#ifdef CROWDB_HAVE_LIBURING
+    if (uring == nullptr || uring->engine == nullptr || fd < 0) {
+        return -EINVAL;
+    }
+    uring->engine->register_fd(fd);
+    return 0;
+#else
+    (void)uring;
+    (void)fd;
+    return -ENOSYS;
+#endif
+}
+
+void ct_uring_unregister_fd(ct_uring *uring, int32_t fd)
+{
+#ifdef CROWDB_HAVE_LIBURING
+    if (uring != nullptr && uring->engine != nullptr) {
+        uring->engine->unregister_fd(fd);
     }
 #else
-    (void)t;
-    (void)out_fds;
-    (void)max_fds;
+    (void)uring;
+    (void)fd;
 #endif
-    return 0;
+}
+
+void ct_uring_submit_read(ct_uring *uring, int32_t fd, uint8_t *buf, size_t len, uint64_t offset,
+                          ct_uring_callback callback, void *context)
+{
+#ifdef CROWDB_HAVE_LIBURING
+    if (uring != nullptr && uring->engine != nullptr) {
+        uring->engine->submit_read(fd, buf, len, static_cast<off_t>(offset),
+                                   [callback, context](int result) { callback(context, result); });
+        return;
+    }
+#else
+    (void)uring;
+    (void)fd;
+    (void)buf;
+    (void)len;
+    (void)offset;
+#endif
+    callback(context, -ENOSYS);
+}
+
+void ct_uring_submit_writev(ct_uring *uring, int32_t fd, const uint8_t *const *bases, const size_t *lengths,
+                            size_t count, uint64_t offset, ct_uring_callback callback, void *context)
+{
+#ifdef CROWDB_HAVE_LIBURING
+    if (uring != nullptr && uring->engine != nullptr) {
+        std::vector<struct iovec> iov(count);
+        for (size_t i = 0; i < count; ++i) {
+            iov[i].iov_base = const_cast<uint8_t *>(bases[i]);
+            iov[i].iov_len  = lengths[i];
+        }
+        uring->engine->submit_writev(fd, iov.data(), iov.size(), static_cast<off_t>(offset),
+                                     [callback, context](int result) { callback(context, result); });
+        return;
+    }
+#else
+    (void)uring;
+    (void)fd;
+    (void)bases;
+    (void)lengths;
+    (void)count;
+    (void)offset;
+#endif
+    callback(context, -ENOSYS);
+}
+
+void ct_uring_submit_sync(ct_uring *uring, int32_t fd, int32_t data_only, ct_uring_callback callback, void *context)
+{
+#ifdef CROWDB_HAVE_LIBURING
+    if (uring != nullptr && uring->engine != nullptr) {
+        uring->engine->submit_fsync(fd, data_only != 0, [callback, context](int result) { callback(context, result); });
+        return;
+    }
+#else
+    (void)uring;
+    (void)fd;
+    (void)data_only;
+#endif
+    callback(context, -ENOSYS);
 }
 
 ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_after, size_t salen,
@@ -947,7 +1303,7 @@ ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t 
     Status s = t->tree->scan(Slice(reinterpret_cast<const char *>(prefix), plen),
                              Slice(reinterpret_cast<const char *>(start_after), salen),
                              Slice(reinterpret_cast<const char *>(end_key), elen), limit, byte_budget, keys_only != 0,
-                             deadline_ms, nullptr, &tr, include_tombstones != 0, &packed, &count);
+                             deadline_ms, nullptr, &tr, include_tombstones != 0, &packed, &count, salen != 0);
     if (!s.ok()) {
         return to_status(s);
     }
@@ -966,6 +1322,100 @@ ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t 
     if (truncated != nullptr) {
         *truncated = tr ? 1 : 0;
     }
+    return static_cast<ct_status>(Code::kOk);
+}
+
+ct_status ct_scan_from(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_key, size_t sklen,
+                       int start_inclusive, const uint8_t *end_key, size_t elen, size_t limit, size_t byte_budget,
+                       int keys_only, uint64_t deadline_ms, int include_tombstones, ct_buf *out_entries,
+                       uint64_t *out_count, int32_t *truncated)
+{
+    if (t == nullptr || out_entries == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    ScanPackedBuf packed;
+    size_t        count = 0;
+    bool          tr    = false;
+    Status        s     = t->tree->scan(
+        Slice(reinterpret_cast<const char *>(prefix), plen), Slice(reinterpret_cast<const char *>(start_key), sklen),
+        Slice(reinterpret_cast<const char *>(end_key), elen), limit, byte_budget, keys_only != 0, deadline_ms, nullptr,
+        &tr, include_tombstones != 0, &packed, &count, true, start_inclusive != 0);
+    if (!s.ok()) {
+        return to_status(s);
+    }
+    size_t sz = packed.size();
+    if (sz > 0) {
+        out_entries->data = packed.release();
+        out_entries->len  = sz;
+    }
+    else {
+        out_entries->data = nullptr;
+        out_entries->len  = 0;
+    }
+    if (out_count != nullptr) {
+        *out_count = count;
+    }
+    if (truncated != nullptr) {
+        *truncated = tr ? 1 : 0;
+    }
+    return static_cast<ct_status>(Code::kOk);
+}
+
+ct_status ct_seek_reverse(ct_tree *t, const uint8_t *start_key, size_t sklen, int start_inclusive,
+                          const uint8_t *begin_key, size_t bklen, int32_t *found, ct_buf *out_key, uint64_t *out_slot,
+                          ct_buf *out_value)
+{
+    if (t == nullptr || found == nullptr || out_key == nullptr || out_slot == nullptr || out_value == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    scan_entry entry;
+    bool       present = false;
+    Status status = t->tree->seek_reverse(Slice(reinterpret_cast<const char *>(start_key), sklen), start_inclusive != 0,
+                                          Slice(reinterpret_cast<const char *>(begin_key), bklen), &entry, &present);
+    if (!status.ok()) {
+        return to_status(status);
+    }
+    *found = present ? 1 : 0;
+    if (!present) {
+        *out_key   = make_buf(nullptr, 0);
+        *out_value = make_buf(nullptr, 0);
+        *out_slot  = 0;
+        return static_cast<ct_status>(Code::kOk);
+    }
+    *out_key   = make_buf(entry.key.data(), entry.key.size());
+    *out_value = make_buf(entry.value.data(), entry.value.size());
+    *out_slot  = entry.slot;
+    return static_cast<ct_status>(Code::kOk);
+}
+
+ct_status ct_scan_reverse(ct_tree *t, const uint8_t *start_key, size_t sklen, int has_start_bound, int start_inclusive,
+                          const uint8_t *begin_key, size_t bklen, size_t limit, size_t byte_budget, ct_buf *out_entries,
+                          uint64_t *out_count, int32_t *truncated)
+{
+    if (t == nullptr || out_entries == nullptr || out_count == nullptr || truncated == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    std::vector<scan_entry> entries;
+    bool                    was_truncated = false;
+    Status status = t->tree->scan_reverse(Slice(reinterpret_cast<const char *>(start_key), sklen), has_start_bound != 0,
+                                          start_inclusive != 0, Slice(reinterpret_cast<const char *>(begin_key), bklen),
+                                          limit, byte_budget, &entries, &was_truncated);
+    if (!status.ok()) {
+        return to_status(status);
+    }
+    ScanPackedBuf packed;
+    for (const scan_entry &entry : entries) {
+        packed.pack_u32(static_cast<uint32_t>(entry.key.size()));
+        packed.append(Slice(entry.key));
+        packed.pack_u64(entry.slot);
+        packed.push_back(0);
+        packed.pack_u32(static_cast<uint32_t>(entry.value.size()));
+        packed.append(Slice(entry.value));
+    }
+    out_entries->len  = packed.size();
+    out_entries->data = packed.release();
+    *out_count        = entries.size();
+    *truncated        = was_truncated ? 1 : 0;
     return static_cast<ct_status>(Code::kOk);
 }
 
@@ -1040,13 +1490,13 @@ void ct_view_release(ct_view *v)
 
 // ── Snapshot export / import ──────────────────────────────────────
 
-ct_status ct_snapshot_export_begin(ct_tree *t, ct_export **out)
+ct_status ct_snapshot_export_begin(ct_tree *t, size_t chunk_bytes, ct_export **out)
 {
-    if (t == nullptr || out == nullptr) {
+    if (t == nullptr || out == nullptr || chunk_bytes == 0) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
     auto   e = std::make_unique<ct_export>();
-    Status s = snapshot_export_begin(*t->tree, snapshot_format::kPortable, kSnapshotChunkBytes, &e->exp);
+    Status s = snapshot_export_begin(*t->tree, snapshot_format::kPortable, chunk_bytes, &e->exp);
     if (!s.ok()) {
         return to_status(s);
     }
@@ -1054,9 +1504,37 @@ ct_status ct_snapshot_export_begin(ct_tree *t, ct_export **out)
     return static_cast<ct_status>(Code::kOk);
 }
 
-ct_status ct_snapshot_export_next(ct_export *e, ct_buf *chunk, int32_t *done)
+uint64_t ct_snapshot_export_at_slot(const ct_export *e)
+{
+    return e == nullptr ? 0 : e->exp->at_slot();
+}
+
+uint64_t ct_snapshot_export_total_bytes(const ct_export *e)
+{
+    return e == nullptr ? 0 : static_cast<uint64_t>(e->exp->total_bytes());
+}
+
+uint32_t ct_snapshot_export_final_crc32c(const ct_export *e)
+{
+    return e == nullptr ? 0 : e->exp->final_crc32c();
+}
+
+size_t ct_snapshot_export_chunk_bytes(const ct_export *e)
+{
+    return e == nullptr ? 0 : e->exp->chunk_bytes();
+}
+
+uint64_t ct_snapshot_export_offset(const ct_export *e)
+{
+    return e == nullptr ? 0 : static_cast<uint64_t>(e->exp->offset());
+}
+
+ct_status ct_snapshot_export_next(ct_export *e, uint64_t offset, ct_buf *chunk, int32_t *done)
 {
     if (e == nullptr || chunk == nullptr || done == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    if (offset != static_cast<uint64_t>(e->exp->offset())) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
     std::string out;

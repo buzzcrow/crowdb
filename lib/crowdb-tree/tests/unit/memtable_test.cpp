@@ -2,9 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 // CT7: MemTable (L0) tests — R50 epoch-protected skip-list version.
-#include "crowdb-tree/cell.h"
+#include "crowdb-tree/btree/cell.h"
 #include "crowdb-tree/epoch.h"
-#include "crowdb-tree/memtable.h"
+#include "crowdb-tree/memtable/memtable.h"
 
 #include <gtest/gtest.h>
 
@@ -28,7 +28,7 @@ bool put_op(MemTable &mt, const std::string &k, uint64_t slot, const std::string
 std::string materialize_cv(const CellVersion *cv)
 {
     if (cv->cell.ownership() != buffer::mode::kExternal) {
-        return std::string(reinterpret_cast<const char *>(cv->cell.data()), cv->cell.size());
+        return {reinterpret_cast<const char *>(cv->cell.data()), cv->cell.size()};
     }
     size_t      vlen = cv->cell.size();
     std::string out(kCellHeaderSize + vlen, '\0');

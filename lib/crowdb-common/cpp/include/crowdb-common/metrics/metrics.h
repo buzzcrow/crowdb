@@ -70,7 +70,7 @@ class MetricsRegistry
                   size_t width = 0, size_t count_w = 0, size_t tps_w = 0);
 
     // Return the current max metric name length across all sections.
-    size_t max_name_len() const;
+    [[nodiscard]] size_t max_name_len() const;
 
     // Start periodic flush thread. interval_secs in seconds.
     // max_file_mb and max_files control size-based rotation with gzip

@@ -2,8 +2,9 @@
 // Licensed under the Apache License, Version 2.0.
 
 // PT7: snapshot export / import (portable stream + file wrappers).
+#include "crowdb-common/crc32c.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/snapshot_io.h"
+#include "crowdb-tree/snapshot/snapshot_io.h"
 #include "test_tmp.h"
 
 #include <gtest/gtest.h>
@@ -84,7 +85,7 @@ void transfer(Crowdbtree &a, Crowdbtree &b, size_t chunk_bytes, uint64_t *at_slo
 
 TEST(SnapshotExport, ExportImportCompareEmpty)
 {
-    Options                            opt; // pure in-memory engines
+    Config                             opt; // pure in-memory engines
     Crowdbtree                         a(opt);
     std::map<std::string, std::string> live;
     build_source(&a, &live);
@@ -104,7 +105,7 @@ TEST(SnapshotExport, ExportImportCompareEmpty)
 
 TEST(SnapshotExport, CrossEngineParityVsOracle)
 {
-    Options                            opt;
+    Config                             opt;
     Crowdbtree                         a(opt);
     std::map<std::string, std::string> live;
     build_source(&a, &live);
@@ -131,7 +132,7 @@ TEST(SnapshotExport, CrossEngineParityVsOracle)
 // A UAF in free_subtree would trip ASan/TSan here.
 TEST(SnapshotExport, ConcurrentReadersDuringImportNoUAF)
 {
-    Options                            opt;
+    Config                             opt;
     Crowdbtree                         a(opt);
     std::map<std::string, std::string> live;
     build_source(&a, &live);
@@ -180,7 +181,7 @@ TEST(SnapshotExport, ConcurrentReadersDuringImportNoUAF)
 
 TEST(SnapshotExport, FileDumpLoadRoundTrip)
 {
-    Options                            opt;
+    Config                             opt;
     Crowdbtree                         a(opt);
     std::map<std::string, std::string> live;
     build_source(&a, &live);
@@ -203,7 +204,7 @@ TEST(SnapshotExport, FileDumpLoadRoundTrip)
 
 TEST(SnapshotExport, ChunkBoundaryDeterminism)
 {
-    Options                            opt;
+    Config                             opt;
     Crowdbtree                         a(opt);
     std::map<std::string, std::string> live;
     build_source(&a, &live);
@@ -233,9 +234,49 @@ TEST(SnapshotExport, ChunkBoundaryDeterminism)
     }
 }
 
+TEST(SnapshotExport, PortableMetadataAndOversizedValueStayChunkBounded)
+{
+    Config      opt;
+    Crowdbtree  source(opt);
+    std::string value(32 * 1024, 'v');
+    ASSERT_TRUE(source.apply(1, put_one("large", value)).ok());
+    ASSERT_TRUE(source.flush().ok());
+
+    constexpr size_t                chunk_bytes = 257;
+    std::unique_ptr<SnapshotExport> exp;
+    ASSERT_TRUE(snapshot_export_begin(source, snapshot_format::kPortable, chunk_bytes, &exp).ok());
+    EXPECT_EQ(exp->at_slot(), 1U);
+    EXPECT_EQ(exp->chunk_bytes(), chunk_bytes);
+
+    std::string stream;
+    bool        done = false;
+    while (!done) {
+        std::string chunk;
+        ASSERT_TRUE(exp->next_chunk(&chunk, &done).ok());
+        EXPECT_LE(chunk.size(), chunk_bytes);
+        EXPECT_EQ(exp->offset(), stream.size() + chunk.size());
+        stream.append(chunk);
+    }
+    ASSERT_GE(stream.size(), 4U);
+    EXPECT_EQ(exp->total_bytes(), stream.size());
+    EXPECT_EQ(exp->final_crc32c(),
+              crowdb::common::crc32c(reinterpret_cast<const uint8_t *>(stream.data()), stream.size() - 4));
+
+    Crowdbtree     target(opt);
+    SnapshotImport imp(target);
+    ASSERT_TRUE(imp.feed(Slice(stream)).ok());
+    uint64_t imported_at = 0;
+    ASSERT_TRUE(imp.finish(&imported_at).ok());
+    EXPECT_EQ(imported_at, 1U);
+    std::string imported;
+    uint64_t    slot = 0;
+    ASSERT_TRUE(target.get(Slice("large"), &slot, &imported));
+    EXPECT_EQ(imported, value);
+}
+
 TEST(SnapshotExport, CrcTamperRejected)
 {
-    Options                            opt;
+    Config                             opt;
     Crowdbtree                         a(opt);
     std::map<std::string, std::string> live;
     build_source(&a, &live);
@@ -254,8 +295,68 @@ TEST(SnapshotExport, CrcTamperRejected)
 
     Crowdbtree     b(opt);
     SnapshotImport imp(b);
-    ASSERT_TRUE(imp.feed(Slice(stream)).ok());
-    EXPECT_EQ(imp.finish(nullptr).code(), Code::kCorruption);
+    Status         status = imp.feed(Slice(stream));
+    if (status.ok()) {
+        status = imp.finish(nullptr);
+    }
+    EXPECT_EQ(status.code(), Code::kCorruption);
+}
+
+TEST(SnapshotExport, PortableImportParsesEveryByteBoundary)
+{
+    Config                             opt;
+    Crowdbtree                         source(opt);
+    std::map<std::string, std::string> live;
+    build_source(&source, &live);
+
+    std::unique_ptr<SnapshotExport> exp;
+    ASSERT_TRUE(snapshot_export_begin(source, snapshot_format::kPortable, 333, &exp).ok());
+    std::string stream;
+    bool        done = false;
+    while (!done) {
+        std::string chunk;
+        ASSERT_TRUE(exp->next_chunk(&chunk, &done).ok());
+        stream.append(chunk);
+    }
+
+    Crowdbtree     target(opt);
+    SnapshotImport imp(target);
+    for (char byte : stream) {
+        ASSERT_TRUE(imp.feed(Slice(&byte, 1)).ok());
+    }
+    uint64_t at_slot = 0;
+    ASSERT_TRUE(imp.finish(&at_slot).ok());
+    EXPECT_EQ(at_slot, source.last_applied_slot());
+    EXPECT_TRUE(source.snapshot_view()->compare(*target.snapshot_view()).empty());
+}
+
+TEST(SnapshotExport, PortableImportRejectsTrailingDataWithoutChangingPriorTree)
+{
+    Config     opt;
+    Crowdbtree source(opt);
+    ASSERT_TRUE(source.apply(1, put_one("new", "state")).ok());
+    ASSERT_TRUE(source.flush().ok());
+    std::unique_ptr<SnapshotExport> exp;
+    ASSERT_TRUE(snapshot_export_begin(source, snapshot_format::kPortable, 64, &exp).ok());
+    std::string stream;
+    bool        done = false;
+    while (!done) {
+        std::string chunk;
+        ASSERT_TRUE(exp->next_chunk(&chunk, &done).ok());
+        stream.append(chunk);
+    }
+    stream.push_back('x');
+
+    Crowdbtree target(opt);
+    ASSERT_TRUE(target.apply(1, put_one("old", "readable")).ok());
+    ASSERT_TRUE(target.flush().ok());
+    SnapshotImport imp(target);
+    EXPECT_EQ(imp.feed(Slice(stream)).code(), Code::kCorruption);
+    std::string value;
+    uint64_t    slot = 0;
+    EXPECT_TRUE(target.get(Slice("old"), &slot, &value));
+    EXPECT_EQ(value, "readable");
+    EXPECT_FALSE(target.get(Slice("new"), &slot, &value));
 }
 
 // plan-tree #16: native format (raw frame images, no cell decode/tuple
@@ -263,7 +364,7 @@ TEST(SnapshotExport, CrcTamperRejected)
 // same structural compare via snapshot_view().
 TEST(SnapshotExport, NativeExportImportRoundTrip)
 {
-    Options                            opt;
+    Config                             opt;
     Crowdbtree                         a(opt);
     std::map<std::string, std::string> live;
     build_source(&a, &live);
@@ -295,7 +396,7 @@ TEST(SnapshotExport, NativeExportImportRoundTrip)
 // even though the wire bytes differ entirely.
 TEST(SnapshotExport, NativeEquivalentToPortable)
 {
-    Options                            opt;
+    Config                             opt;
     Crowdbtree                         a(opt);
     std::map<std::string, std::string> live;
     build_source(&a, &live);
@@ -318,7 +419,7 @@ TEST(SnapshotExport, NativeEquivalentToPortable)
 // (the common new-member-install shape) with no residual state.
 TEST(SnapshotExport, NativeEmptyTreeRoundTrip)
 {
-    Options    opt;
+    Config     opt;
     Crowdbtree a(opt); // never written to -- exports just the empty root leaf
     Crowdbtree b(opt);
     uint64_t   at = 123; // sentinel to prove it gets overwritten to 0
@@ -331,7 +432,7 @@ TEST(SnapshotExport, NativeEmptyTreeRoundTrip)
 
 TEST(SnapshotExport, NativeCrcTamperRejected)
 {
-    Options                            opt;
+    Config                             opt;
     Crowdbtree                         a(opt);
     std::map<std::string, std::string> live;
     build_source(&a, &live);

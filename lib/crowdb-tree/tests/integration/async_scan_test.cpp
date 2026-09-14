@@ -64,7 +64,7 @@ std::map<std::string, std::string> unpack_entries(const ct_buf &buf, uint64_t co
     std::map<std::string, std::string> out;
     const auto                        *p       = reinterpret_cast<const uint8_t *>(buf.data);
     size_t                             pos     = 0;
-    auto                               get_u32 = [&]() {
+    auto                               get_u32 = [&] {
         uint32_t v = 0;
         for (int i = 0; i < 4; ++i) {
             v |= static_cast<uint32_t>(p[pos + i]) << (8 * i);
@@ -72,7 +72,7 @@ std::map<std::string, std::string> unpack_entries(const ct_buf &buf, uint64_t co
         pos += 4;
         return v;
     };
-    auto get_u64 = [&]() {
+    auto get_u64 = [&] {
         uint64_t v = 0;
         for (int i = 0; i < 8; ++i) {
             v |= static_cast<uint64_t>(p[pos + i]) << (8 * i);
@@ -363,5 +363,34 @@ TEST(AsyncScan, StartAfterMatchesSyncScan)
     EXPECT_EQ(sync_trunc, 1) << "20 keys after cursor, limit=7 should truncate";
     EXPECT_EQ(sync_map, async_map);
 
+    ct_close(t);
+}
+
+TEST(AsyncScan, DirectionalReverseUsesExclusiveUpperCursor)
+{
+    ct_options opt = {};
+    ct_tree   *t   = nullptr;
+    ASSERT_EQ(ct_open(&opt, &t), 0);
+    for (int i = 0; i < 20; ++i) {
+        ASSERT_EQ(put_flush(t, i + 1, make_key(i), "v" + std::to_string(i)), 0);
+    }
+
+    std::string cursor = make_key(10);
+    ct_future  *f      = ct_scan_directional_async(t, nullptr, 0, reinterpret_cast<const uint8_t *>(cursor.data()),
+                                                   cursor.size(), nullptr, 0, 4, 0, 0, 0, 1);
+    ASSERT_NE(f, nullptr);
+    int32_t  truncated = 0;
+    uint64_t count     = 0;
+    ct_buf   entries   = {};
+    ASSERT_EQ(poll_scan_until_done(f, &truncated, &count, &entries), 0);
+    auto got = unpack_entries(entries, count);
+    ct_free_buf(&entries);
+
+    EXPECT_EQ(count, 4U);
+    EXPECT_EQ(truncated, 1);
+    EXPECT_TRUE(got.contains(make_key(9)));
+    EXPECT_TRUE(got.contains(make_key(8)));
+    EXPECT_TRUE(got.contains(make_key(7)));
+    EXPECT_TRUE(got.contains(make_key(6)));
     ct_close(t);
 }

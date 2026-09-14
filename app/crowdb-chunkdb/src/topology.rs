@@ -11,14 +11,17 @@
 //! `HardwareClient` + watch/notify for immediate status changes.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use tracing::warn;
 
-use crowdb_protocol::common::HwStatus;
+use crowdb_protocol::common::{DiskGroupUsageSummary, DiskId, HwStatus};
 use crowdb_protocol::sysdata::DiskGroupEntry;
 use crowdb_protocol::{DiskGroupId, NodeId, RackId};
+
+use crate::selector::PlacementEntry;
 
 pub mod notify;
 pub mod refresh;
@@ -45,10 +48,89 @@ pub struct TopologySnapshot {
     nodes: HashMap<(RackId, NodeId), (i32, Vec<DiskGroupId>)>,
     /// dg_id → disk-group entry (with rack_id, node_id, status)
     disk_groups: HashMap<DiskGroupId, DiskGroupEntry>,
+    /// disk_id → physical failure-domain location for post-allocation checks.
+    disks: HashMap<DiskId, DiskLocation>,
+    /// Capacity observations joined to live disk-group membership.
+    usage: HashMap<DiskGroupId, DiskGroupCapacity>,
+    /// Monotonic local publication generation.
+    generation: u64,
     /// Unit size in bytes (from disk records). Used to convert
     /// `write_granularity` (KB) to `unit_count` for diskdb allocation.
     /// 0 if not yet populated.
     unit_size_bytes: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiskLocation {
+    pub rack_id: RackId,
+    pub node_id: NodeId,
+    pub disk_group_id: DiskGroupId,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiskGroupCapacity {
+    pub allocatable_disk_count: u32,
+    pub capacity_bytes: u64,
+    pub used_bytes: u64,
+    pub free_bytes: u64,
+    pub sampled_at_ms: u64,
+    in_flight_bytes: Arc<AtomicU64>,
+}
+
+impl DiskGroupCapacity {
+    #[must_use]
+    pub fn in_flight_bytes(&self) -> u64 {
+        self.in_flight_bytes.load(Ordering::Acquire)
+    }
+
+    #[must_use]
+    pub fn projected_bytes(&self, planned_bytes: u64) -> u64 {
+        self.used_bytes
+            .saturating_add(self.in_flight_bytes())
+            .saturating_add(planned_bytes)
+    }
+}
+
+/// A normalized utilization value. Known observations sort before unknown
+/// observations and are compared without floating-point rounding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CapacityScore {
+    used: u64,
+    capacity: u64,
+    known: bool,
+}
+
+impl Ord for CapacityScore {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match (self.known, other.known) {
+            (true, true) => u128::from(self.used)
+                .saturating_mul(u128::from(other.capacity))
+                .cmp(&u128::from(other.used).saturating_mul(u128::from(self.capacity))),
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            (false, false) => std::cmp::Ordering::Equal,
+        }
+    }
+}
+
+impl PartialOrd for CapacityScore {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Releases projected bytes automatically on success, failure, or cancellation.
+#[derive(Debug)]
+pub struct InFlightReservation {
+    counters: Vec<(Arc<AtomicU64>, u64)>,
+}
+
+impl Drop for InFlightReservation {
+    fn drop(&mut self) {
+        for (counter, bytes) in &self.counters {
+            counter.fetch_sub(*bytes, Ordering::AcqRel);
+        }
+    }
 }
 
 impl TopologySnapshot {
@@ -71,6 +153,115 @@ impl TopologySnapshot {
     /// Get a disk-group entry by ID.
     pub fn disk_group(&self, dg_id: DiskGroupId) -> Option<&DiskGroupEntry> {
         self.disk_groups.get(&dg_id)
+    }
+
+    #[must_use]
+    pub fn disk_location(&self, disk_id: DiskId) -> Option<DiskLocation> {
+        self.disks.get(&disk_id).copied()
+    }
+
+    #[must_use]
+    pub fn disk_group_capacity(&self, dg_id: DiskGroupId) -> Option<&DiskGroupCapacity> {
+        self.usage.get(&dg_id)
+    }
+
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    #[must_use]
+    pub fn capacity_score(&self, dg_id: DiskGroupId, planned_bytes: u64) -> CapacityScore {
+        self.usage.get(&dg_id).map_or(
+            CapacityScore {
+                used: 0,
+                capacity: 0,
+                known: false,
+            },
+            |capacity| CapacityScore {
+                used: capacity.projected_bytes(planned_bytes),
+                capacity: capacity.capacity_bytes,
+                known: capacity.capacity_bytes > 0,
+            },
+        )
+    }
+
+    #[must_use]
+    pub fn node_capacity_score(&self, node_id: NodeId, planned_bytes: u64) -> CapacityScore {
+        self.domain_capacity_score(
+            self.disk_groups
+                .values()
+                .filter(|disk_group| disk_group.node_id == node_id)
+                .map(|disk_group| disk_group.dg_id),
+            planned_bytes,
+        )
+    }
+
+    #[must_use]
+    pub fn rack_capacity_score(&self, rack_id: RackId, planned_bytes: u64) -> CapacityScore {
+        self.domain_capacity_score(
+            self.disk_groups
+                .values()
+                .filter(|disk_group| disk_group.rack_id == rack_id)
+                .map(|disk_group| disk_group.dg_id),
+            planned_bytes,
+        )
+    }
+
+    fn domain_capacity_score(
+        &self,
+        disk_group_ids: impl Iterator<Item = DiskGroupId>,
+        planned_bytes: u64,
+    ) -> CapacityScore {
+        let mut used = 0u64;
+        let mut capacity_bytes = 0u64;
+        let mut found = false;
+        for disk_group_id in disk_group_ids {
+            let Some(capacity) = self.usage.get(&disk_group_id) else {
+                return CapacityScore {
+                    used: 0,
+                    capacity: 0,
+                    known: false,
+                };
+            };
+            if capacity.capacity_bytes == 0 {
+                return CapacityScore {
+                    used: 0,
+                    capacity: 0,
+                    known: false,
+                };
+            }
+            found = true;
+            used = used.saturating_add(capacity.projected_bytes(0));
+            capacity_bytes = capacity_bytes.saturating_add(capacity.capacity_bytes);
+        }
+        CapacityScore {
+            used: used.saturating_add(planned_bytes),
+            capacity: capacity_bytes,
+            known: found,
+        }
+    }
+
+    /// Atomically account for every byte in a selected plan. The returned
+    /// guard releases all reservations when the allocation attempt ends.
+    #[must_use]
+    pub fn reserve_plan(&self, entries: &[PlacementEntry], bytes_per_block: u64) -> InFlightReservation {
+        let mut by_group = HashMap::<DiskGroupId, u64>::new();
+        for entry in entries {
+            let bytes = bytes_per_block.saturating_mul(u64::from(entry.block_count));
+            by_group
+                .entry(entry.disk_group_id)
+                .and_modify(|reserved| *reserved = reserved.saturating_add(bytes))
+                .or_insert(bytes);
+        }
+        let mut counters = Vec::with_capacity(by_group.len());
+        for (dg_id, bytes) in by_group {
+            if let Some(capacity) = self.usage.get(&dg_id) {
+                capacity.in_flight_bytes.fetch_add(bytes, Ordering::AcqRel);
+                counters.push((Arc::clone(&capacity.in_flight_bytes), bytes));
+            }
+        }
+        InFlightReservation { counters }
     }
 
     /// Complete disk-group entries for synchronizing dependent route caches.
@@ -119,6 +310,7 @@ impl TopologySnapshot {
 #[derive(Clone)]
 pub struct TopologyCache {
     inner: Arc<ArcSwap<TopologySnapshot>>,
+    next_generation: Arc<AtomicU64>,
 }
 
 impl TopologyCache {
@@ -126,6 +318,7 @@ impl TopologyCache {
     pub fn new() -> Self {
         Self {
             inner: Arc::new(ArcSwap::from_pointee(TopologySnapshot::default())),
+            next_generation: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -135,7 +328,14 @@ impl TopologyCache {
     }
 
     /// Replace the entire snapshot (periodic refresh).
-    pub fn replace(&self, snapshot: TopologySnapshot) {
+    pub fn replace(&self, mut snapshot: TopologySnapshot) {
+        let current = self.inner.load_full();
+        for (dg_id, capacity) in &mut snapshot.usage {
+            if let Some(previous) = current.usage.get(dg_id) {
+                capacity.in_flight_bytes = Arc::clone(&previous.in_flight_bytes);
+            }
+        }
+        snapshot.generation = self.next_generation.fetch_add(1, Ordering::AcqRel);
         self.inner.store(Arc::new(snapshot));
     }
 
@@ -145,6 +345,31 @@ impl TopologyCache {
         self.inner.rcu(|current| {
             let mut next = (**current).clone();
             next.disk_groups.insert(entry.dg_id, entry.clone());
+            next.generation = self.next_generation.fetch_add(1, Ordering::AcqRel);
+            next
+        });
+    }
+
+    /// Update one usage observation while retaining its in-flight counter.
+    pub fn update_disk_group_usage(&self, dg_id: DiskGroupId, summary: &DiskGroupUsageSummary) {
+        self.inner.rcu(|current| {
+            let mut next = (**current).clone();
+            let mut capacity = capacity_from_summary(summary);
+            if let Some(previous) = current.usage.get(&dg_id) {
+                capacity.in_flight_bytes = Arc::clone(&previous.in_flight_bytes);
+            }
+            next.usage.insert(dg_id, capacity);
+            next.generation = self.next_generation.fetch_add(1, Ordering::AcqRel);
+            next
+        });
+    }
+
+    /// Publish one healthy physical disk location for allocation validation.
+    pub fn update_disk_location(&self, disk_id: DiskId, location: DiskLocation) {
+        self.inner.rcu(|current| {
+            let mut next = (**current).clone();
+            next.disks.insert(disk_id, location);
+            next.generation = self.next_generation.fetch_add(1, Ordering::AcqRel);
             next
         });
     }
@@ -154,6 +379,9 @@ impl TopologyCache {
         self.inner.rcu(|current| {
             let mut next = (**current).clone();
             next.disk_groups.remove(&dg_id);
+            next.usage.remove(&dg_id);
+            next.disks.retain(|_, location| location.disk_group_id != dg_id);
+            next.generation = self.next_generation.fetch_add(1, Ordering::AcqRel);
             next
         });
     }
@@ -170,6 +398,7 @@ impl TopologyCache {
         self.inner.rcu(|current| {
             let mut next = (**current).clone();
             next.nodes.insert((rack_id, node_id), (status, dg_ids.clone()));
+            next.generation = self.next_generation.fetch_add(1, Ordering::AcqRel);
             next
         });
     }
@@ -180,6 +409,7 @@ impl TopologyCache {
         self.inner.rcu(|current| {
             let mut next = (**current).clone();
             next.racks.insert(rack_id, (status, node_ids.clone()));
+            next.generation = self.next_generation.fetch_add(1, Ordering::AcqRel);
             next
         });
     }
@@ -234,6 +464,17 @@ pub async fn build_snapshot(hw: &crowdb_kv_client::HardwareClient) -> Option<Top
         }
     };
 
+    let usages = match crowdb_kv_client::SpaceUsageClient::from_shared(hw.clone())
+        .list_disk_group_usages()
+        .await
+    {
+        Ok(usages) => usages,
+        Err(error) => {
+            warn!(%error, "topology refresh: usage summaries unavailable; using topology-only ranking");
+            Vec::new()
+        }
+    };
+
     if racks.is_empty() && nodes.is_empty() && disk_groups.is_empty() {
         warn!("topology refresh: all lists empty, keeping previous snapshot");
         return None;
@@ -257,8 +498,36 @@ pub async fn build_snapshot(hw: &crowdb_kv_client::HardwareClient) -> Option<Top
             .collect();
         snap.disk_groups.insert(dg.dg_id, dg);
     }
+    for disk in &disks {
+        if disk.value.status == HW_UP {
+            snap.disks.insert(
+                disk.disk_id,
+                DiskLocation {
+                    rack_id: disk.rack_id,
+                    node_id: disk.node_id,
+                    disk_group_id: disk.disk_group_id,
+                },
+            );
+        }
+    }
+    for (dg_id, summary) in usages {
+        if snap.disk_groups.contains_key(&dg_id) {
+            snap.usage.insert(dg_id, capacity_from_summary(&summary));
+        }
+    }
 
     snap.unit_size_bytes = disks.first().map_or(0, |disk| disk.value.unit_size_bytes);
 
     Some(snap)
+}
+
+fn capacity_from_summary(summary: &DiskGroupUsageSummary) -> DiskGroupCapacity {
+    DiskGroupCapacity {
+        allocatable_disk_count: summary.allocatable_disk_count,
+        capacity_bytes: summary.allocatable_capacity_bytes,
+        used_bytes: summary.allocatable_used_bytes,
+        free_bytes: summary.allocatable_free_bytes,
+        sampled_at_ms: summary.sampled_at_ms,
+        in_flight_bytes: Arc::new(AtomicU64::new(0)),
+    }
 }

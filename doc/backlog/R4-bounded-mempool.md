@@ -8,7 +8,7 @@ embedded in crowdb-kv-server, a burst of large writes can spike RSS without
 backpressure.
 
 **Approach**: Admission control at `Crowdbtree::apply()`/`apply_batch()` entry
-via `Options.mem_budget_bytes` (0 = unlimited). Track outstanding buffer
+via `Config.mem_budget_bytes` (0 = unlimited). Track outstanding buffer
 bytes atomically; reject with `Status::resource_exhausted()` when over
 budget. Flush/snapshot path is exempt (must always succeed).
 
@@ -18,8 +18,9 @@ requirement.
 **Complexity**: Medium — atomic counter, budget accounting in apply path,
 test for rejection + recovery.
 
-**Files**: `crowdbtree/include/crowdbtree/options.h`,
-`crowdbtree/include/crowdbtree/buffer.h`, `crowdbtree/src/crowdbtree.cpp`
+**Files**: `lib/crowdb-tree/include/crowdb-tree/config.h`,
+`lib/crowdb-tree/include/crowdb-tree/buffer.h`,
+`lib/crowdb-tree/src/btree/crowdb-tree.cpp`
 
 **Acceptance**: Unit test: set `mem_budget_bytes=1MiB`, apply 2 MiB of
 values, verify `resource_exhausted` after budget exceeded, verify success

@@ -124,13 +124,15 @@ request-response, `send()` for fire-and-forget), and `Connection`
 port with a dedicated schema. The client library
 (`crowdb-kv-client`) uses crowdb-rpc for retry, topology cache, and
 `NotLeaderHint` handling. The crowdb-rpc server also serves
-`SnapshotService` (snapshot install stream).
+bounded snapshot-session handlers for unpublished new-member install.
 
 **Connection model:** Each `PxKvStore` runs one `RpcServer` on the
 crowdb-rpc port (derived from the base port via a fixed offset, see
-§12). The shared `PxRpcTransport` holds one `RpcClient` + a
-`DashMap<endpoint, Connection>` connection cache. All `PxRemoteReplica`
-instances in the store share the same transport.
+§12). The shared `PxRpcTransport` holds one `RpcClient` and a lock-free RCU
+connection-pool index. Each endpoint entry is an immutable generated pool;
+connections are established outside the index and installed with
+compare-and-swap. All `PxRemoteReplica` instances in the store share the same
+transport.
 
 ---
 
@@ -192,8 +194,9 @@ consensus RPCs. It holds:
 - `server: Arc<RpcServer>` — the local server handle (for connection
   attachment).
 - `rpc: RpcClient` — the client facade for `call()` / `send()`.
-- `connections: DashMap<String, Connection>` — per-endpoint
-  connection cache. `conn_for(endpoint)` lazily connects and caches.
+- `connections: ConnectionPoolIndex` — per-endpoint immutable connection
+  pools carrying a generation. `conn_for(endpoint)` lazily connects outside
+  the index and atomically installs one completed pool.
 
 **Request-response path (`send_prepare`, `send_accept`, etc.):**
 Builds the flatbuffer request via `FlatBufferBuilder`, calls
@@ -211,6 +214,10 @@ observability but treated as best-effort.
 
 **Port derivation:** `conn_for(endpoint)` parses the server endpoint
 (host:port) and connects to `port + RPC_PORT_OFFSET` (see §12).
+
+Retryable failures invalidate only the exact generation selected for the
+failed request. A late failure from an older connection therefore cannot
+discard a replacement pool.
 
 ---
 
@@ -276,7 +283,7 @@ Each `send_*` method wraps its `CallFuture` await with
 `tokio::time::timeout(rpc_timeout)`. On expiry the caller surfaces a
 typed retryable error. A connected-yet-unresponsive peer (GC pause,
 half-open socket, overloaded server) is surfaced as a retryable
-failure within `learner_stream_rpc_timeout_ms` (default 2000 ms,
+failure within `peer_rpc_timeout_ms` (default 2000 ms,
 aligned with the 2 s election max) rather than blocking the fan-out
 indefinitely.
 
@@ -366,7 +373,8 @@ proven by R115:
   `rpc_create_nano` as its first two fields.
 - `FBAcceptedValue` is a table (has a `payload: [ubyte]` vector,
   which requires a vtable).
-- `FBDedupTag` is an inline struct (fixed-layout, two `uint64` fields).
+- `FBAcceptRequest` carries consensus value and fence fields only. Client
+  request identities remain leader-local and are not follower wire metadata.
 - `NotLeaderHint` is NOT a separate message — it is fields on the
   response tables (`not_leader_hint:string` + `term:uint64` +
   `membership_epoch:uint64`).
@@ -390,14 +398,40 @@ EChosenNotification = 1012,       // fire-and-forget (no response)
 EBatchChosenNotification = 1013,  // fire-and-forget (no response)
 EFetchGapRequest = 1014,
 EFetchGapResponse = 1015,
-ESnapshotRequest = 1016,
-ESnapshotResponse = 1017,
+ESnapshotBeginRequest = 1018,
+ESnapshotBeginResponse = 1019,
+ESnapshotReadRequest = 1020,
+ESnapshotReadResponse = 1021,
+ESnapshotFinishRequest = 1022,
+ESnapshotFinishResponse = 1023,
+ESnapshotAbortRequest = 1024,
+ESnapshotAbortResponse = 1025,
 ```
 
-No separate LearnerStream request/response msg_types — each frame type
-has its own msg_type. The persistent connection carries a mix of these
-msg_types; the server dispatches each frame independently by its
-msg_type.
+Each consensus operation has its own message type. Unary operations use
+`RpcClient::call`; chosen notifications use fire-and-forget
+`RpcClient::send`. The shared peer connection carries the mixed message types,
+and the server dispatches each frame independently by its `msg_type`.
+
+### 10.1 New-member snapshot lifecycle
+
+Snapshot bootstrap is a receiver-pulled sequence of bounded unary calls. Begin
+pins one immutable engine view and returns a process boot nonce plus monotonic
+session number, source membership epoch, engine format, slot/term, total
+length, body CRC32C, and a chunk limit no larger than 1 MiB. Read echoes the
+identity and requested byte offset; it carries one payload and its CRC32C in
+the data buffer. Only the current offset or an exact retry of the immediately
+previous offset is accepted. Finish requires the final offset; Abort is
+idempotent.
+
+The source admits at most four sessions by default and expires idle sessions
+after 30 seconds. Every Read and Finish rechecks the captured membership epoch.
+The receiver keeps one Read in flight, advances only after feeding a verified
+payload, and may reconnect without changing identity. An expired identity
+causes a fresh Begin and importer. Import is restricted to a fresh unpublished
+group; learner seeding and group registration occur only after length, CRC,
+source Finish, and engine Finish all succeed. The removed single-frame message
+IDs 1016 and 1017 are deliberately unsupported.
 
 **Build integration:** `lib/crowdb-protocol/build.rs` compiles
 `kv_consensus.fbs` via `flatc --rust --gen-all` (inlines

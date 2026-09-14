@@ -2,41 +2,41 @@
 // Licensed under the Apache License, Version 2.0.
 
 #![allow(clippy::missing_errors_doc)]
-#![allow(dead_code)] // Wired in Phase 6 (LearnerStream + RemoteReplica)
-
-//! crowdb-rpc client transport for the KV consensus service (R32
-//! migration). Builds flatbuffer requests, sends via `RpcClient::call`,
+//! crowdb-rpc client transport for the KV consensus service. Builds
+//! flatbuffer requests, sends via `RpcClient::call`,
 //! awaits `CallFuture`, and parses flatbuffer responses via the
-//! zero-copy `Ref` wrappers. Replaced the legacy transport during
-//! the mixed-rollout window; `PxRemoteReplica` selects the transport
-//! based on whether `with_rpc_transport` was called.
+//! zero-copy `Ref` wrappers.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use flatbuffers::FlatBufferBuilder;
 
 use crowdb_protocol::fb::FBMsgType;
 use crowdb_protocol::fb_wrappers::kv_consensus::{
     FBAcceptedResponseRef, FBFetchGapResponseRef, FBHeartbeatResponseRef, FBPreVoteResponseRef,
-    FBPromiseResponseRef, FBRequestVoteResponseRef, FBSnapshotResponseRef, FBStepDownResponseRef,
+    FBPromiseResponseRef, FBRequestVoteResponseRef, FBSnapshotAbortResponseRef, FBSnapshotBeginResponseRef,
+    FBSnapshotFinishResponseRef, FBSnapshotReadResponseRef, FBStepDownResponseRef,
 };
 use crowdb_protocol::kv_consensus_fb::{
     FBAcceptRequest, FBAcceptRequestArgs, FBAcceptedValue, FBAcceptedValueArgs, FBBatchChosenNotification,
     FBBatchChosenNotificationArgs, FBChosenNotification, FBChosenNotificationArgs, FBFetchGapRequest,
     FBFetchGapRequestArgs, FBHeartbeatRequest, FBHeartbeatRequestArgs, FBKvRetCode, FBPreVoteRequest,
     FBPreVoteRequestArgs, FBPrepareRequest, FBPrepareRequestArgs, FBRequestVoteRequest,
-    FBRequestVoteRequestArgs, FBSnapshotRequest, FBSnapshotRequestArgs, FBStepDownRequest,
-    FBStepDownRequestArgs,
+    FBRequestVoteRequestArgs, FBSnapshotAbortRequest, FBSnapshotAbortRequestArgs, FBSnapshotBeginRequest,
+    FBSnapshotBeginRequestArgs, FBSnapshotFinishRequest, FBSnapshotFinishRequestArgs, FBSnapshotReadRequest,
+    FBSnapshotReadRequestArgs, FBStepDownRequest, FBStepDownRequestArgs,
 };
-use crowdb_rpc_ffi::{noop_completion, Buffer, Connection, RpcClient, RpcError, RpcServer};
+use crowdb_rpc_ffi::{
+    noop_completion, Buffer, ConnectionPoolError, ConnectionPoolIndex, RpcClient, RpcError, RpcServer,
+    SelectedConnection,
+};
 
 use crate::cluster::replica::{
     FetchGapReply, HeartbeatReply, HeartbeatRequestPayload, PxReplicaError, StepDownReply,
     StepDownRequestPayload, VoteReply, VoteRequestPayload,
 };
-use crate::paxos::roles::{DedupTag, PxAcceptReply, PxBallot, PxLogEntry, PxPrepareReply};
+use crate::paxos::roles::{PxAcceptReply, PxBallot, PxLogEntry, PxPrepareReply};
 
 /// crowdb-rpc transport for the KV consensus service. Holds the
 /// client-side `RpcServer` (manages connections), `RpcClient`
@@ -45,9 +45,7 @@ use crate::paxos::roles::{DedupTag, PxAcceptReply, PxBallot, PxLogEntry, PxPrepa
 pub struct PxRpcTransport {
     server: Arc<RpcServer>,
     rpc: Arc<RpcClient>,
-    connections: DashMap<String, Vec<Connection>>,
-    pool_size: usize,
-    conn_rr: AtomicU64,
+    connections: ConnectionPoolIndex,
     next_req_id: AtomicU64,
 }
 
@@ -94,9 +92,7 @@ impl PxRpcTransport {
         Self {
             server,
             rpc,
-            connections: DashMap::new(),
-            pool_size: pool_size.max(1),
-            conn_rr: AtomicU64::new(0),
+            connections: ConnectionPoolIndex::new(pool_size, None),
             next_req_id: AtomicU64::new(1),
         }
     }
@@ -108,61 +104,34 @@ impl PxRpcTransport {
     /// Get or create a `Connection` for the given endpoint, round-
     /// robining across the pool. The crowdb-rpc server listens on the
     /// same port as the crowdb-rpc endpoint (no port derivation).
-    fn conn_for(&self, rpc_endpoint: &str) -> Result<Connection, PxReplicaError> {
+    fn conn_for(&self, rpc_endpoint: &str) -> Result<SelectedConnection, PxReplicaError> {
         let normalized = normalize_endpoint(rpc_endpoint);
-        if let Some(entry) = self.connections.get(&normalized) {
-            let pool = entry.value();
-            if pool.is_empty() {
-                // Pool was cleared (e.g. via clear_connections after a
-                // server restart). Fall through to re-populate below.
-            } else if pool.len() == 1 {
-                return Ok(pool[0].clone());
-            } else {
-                let idx =
-                    usize::try_from(self.conn_rr.fetch_add(1, Ordering::Relaxed)).unwrap_or(0) % pool.len();
-                return Ok(pool[idx].clone());
-            }
-        }
-        let mut entry = self.connections.entry(normalized.clone()).or_default();
-        let pool = entry.value_mut();
-        if !pool.is_empty() {
-            if pool.len() == 1 {
-                return Ok(pool[0].clone());
-            }
-            let idx = usize::try_from(self.conn_rr.fetch_add(1, Ordering::Relaxed)).unwrap_or(0) % pool.len();
-            return Ok(pool[idx].clone());
-        }
         let (host, port) = parse_endpoint(&normalized)
             .map_err(|e| PxReplicaError::Internal(format!("rpc connect parse endpoint: {e}")))?;
-        for _ in 0..self.pool_size {
-            let conn = self
-                .server
-                .connect(&host, port)
-                .map_err(|e| PxReplicaError::Internal(format!("rpc connect to {host}:{port}: {e:?}")))?;
-            self.rpc.attach(&conn);
-            pool.push(conn);
-        }
-        Ok(pool[0].clone())
-    }
-
-    /// Remove all cached connections for `rpc_endpoint` so the next
-    /// `conn_for` re-establishes a fresh connection. Called when an
-    /// RPC fails with a retryable transport error (`SendQueueFull`,
-    /// `ConnectionClosed`, etc.) — the cached connection is dead and
-    /// must be replaced.
-    pub(crate) fn drop_endpoint(&self, rpc_endpoint: &str) {
-        let normalized = normalize_endpoint(rpc_endpoint);
-        if let Some(mut entry) = self.connections.get_mut(&normalized) {
-            entry.value_mut().clear();
-        }
+        self.connections
+            .get_or_try_install(&normalized, || {
+                let conn = self
+                    .server
+                    .connect(&host, port)
+                    .map_err(|e| PxReplicaError::Internal(format!("rpc connect to {host}:{port}: {e:?}")))?;
+                self.rpc.attach(&conn);
+                Ok(conn)
+            })
+            .map_err(|error| match error {
+                ConnectionPoolError::Connect(error) => error,
+                ConnectionPoolError::Capacity { max_endpoints } => {
+                    PxReplicaError::Internal(format!("endpoint connection limit {max_endpoints} reached"))
+                }
+            })
     }
 
     /// Convert an `RpcError` to `PxReplicaError`, dropping cached
-    /// connections for `endpoint` on retryable transport errors so
-    /// the next call reconnects.
-    fn map_rpc_err(&self, e: RpcError, endpoint: &str) -> PxReplicaError {
-        if e.is_retryable() {
-            self.drop_endpoint(endpoint);
+    /// connections only when the connection itself failed. Timeout and
+    /// queue pressure do not prove that the selected generation is dead.
+    fn map_rpc_err(&self, e: RpcError, endpoint: &str, generation: u64) -> PxReplicaError {
+        if rpc_error_invalidates_connection(e) {
+            self.connections
+                .invalidate(&normalize_endpoint(endpoint), generation);
         }
         rpc_error_to_px(e)
     }
@@ -198,8 +167,10 @@ impl PxRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp
             .control
             .ok_or_else(|| PxReplicaError::Internal("prepare response missing control buffer".into()))?;
@@ -238,22 +209,18 @@ impl PxRpcTransport {
         }
     }
 
-    /// Send an `Accept` request via crowdb-rpc (unary — the `LearnerStream`
-    /// rewrite in Phase 6 routes through `send` for fire-and-forget
-    /// frames, but Accept is request-response).
+    /// Send a unary `Accept` request via crowdb-rpc.
     pub async fn send_accept(
         &self,
         rpc_endpoint: &str,
         entry: &PxLogEntry,
-        dedup_tags: &[DedupTag],
         group_id: u64,
         membership_epoch: u64,
     ) -> Result<PxAcceptReply, PxReplicaError> {
         let req_id = self.next_id();
         let conn = self.conn_for(rpc_endpoint)?;
         let mut builder = FlatBufferBuilder::new();
-        let payload_vec = entry.payload.to_vec();
-        let payload = builder.create_vector(&payload_vec);
+        let payload = builder.create_vector(entry.payload.as_ref());
         let value = FBAcceptedValue::create(
             &mut builder,
             &FBAcceptedValueArgs {
@@ -264,7 +231,6 @@ impl PxRpcTransport {
                 payload: Some(payload),
             },
         );
-        let (legacy_client_id, legacy_seq) = dedup_tags.first().map_or((0, 0), |t| (t.client_id, t.seq));
         let args = FBAcceptRequestArgs {
             id: req_id,
             rpc_create_nano: 0,
@@ -274,11 +240,8 @@ impl PxRpcTransport {
             leader_id: entry.ballot.leader_id,
             term: entry.term,
             value: Some(value),
-            client_id: legacy_client_id,
-            seq: legacy_seq,
             group_id,
             membership_epoch,
-            dedup_tags: None, // TODO: build dedup_tags vector
         };
         let req = FBAcceptRequest::create(&mut builder, &args);
         builder.finish(req, None);
@@ -287,8 +250,10 @@ impl PxRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp
             .control
             .ok_or_else(|| PxReplicaError::Internal("accept response missing control buffer".into()))?;
@@ -346,8 +311,10 @@ impl PxRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp
             .control
             .ok_or_else(|| PxReplicaError::Internal("pre_vote response missing control buffer".into()))?;
@@ -392,8 +359,10 @@ impl PxRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp
             .control
             .ok_or_else(|| PxReplicaError::Internal("request_vote response missing control buffer".into()))?;
@@ -441,8 +410,10 @@ impl PxRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp
             .control
             .ok_or_else(|| PxReplicaError::Internal("heartbeat response missing control buffer".into()))?;
@@ -489,8 +460,10 @@ impl PxRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp
             .control
             .ok_or_else(|| PxReplicaError::Internal("step_down response missing control buffer".into()))?;
@@ -534,8 +507,10 @@ impl PxRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         let ctrl = resp
             .control
             .ok_or_else(|| PxReplicaError::Internal("fetch_gap response missing control buffer".into()))?;
@@ -594,7 +569,7 @@ impl PxRpcTransport {
                 noop_completion(),
                 std::ptr::null_mut(),
             )
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))
     }
 
     /// Send a fire-and-forget `BatchChosenNotification` via crowdb-rpc.
@@ -638,85 +613,223 @@ impl PxRpcTransport {
                 noop_completion(),
                 std::ptr::null_mut(),
             )
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))
     }
 
-    /// Request a snapshot from a peer via crowdb-rpc. The response carries
-    /// header info (`term_at_slot`, `membership_epoch`, `at_slot`) in the
-    /// control buffer and the full snapshot bytes in the data buffer.
-    pub async fn send_snapshot(
+    pub(crate) async fn snapshot_begin(
         &self,
         rpc_endpoint: &str,
         group_id: u64,
-    ) -> Result<SnapshotReply, PxReplicaError> {
+        max_chunk_bytes: u32,
+    ) -> Result<SnapshotBeginReply, SnapshotTransferError> {
         let req_id = self.next_id();
-        let conn = self.conn_for(rpc_endpoint)?;
+        let conn = self
+            .conn_for(rpc_endpoint)
+            .map_err(SnapshotTransferError::Transport)?;
         let mut builder = FlatBufferBuilder::new();
-        let args = FBSnapshotRequestArgs {
-            id: req_id,
-            rpc_create_nano: 0,
-            group_id,
-        };
-        let fb_req = FBSnapshotRequest::create(&mut builder, &args);
-        builder.finish(fb_req, None);
+        let request = FBSnapshotBeginRequest::create(
+            &mut builder,
+            &FBSnapshotBeginRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                group_id,
+                max_chunk_bytes,
+            },
+        );
+        builder.finish(request, None);
         let control = Buffer::from_bytes(builder.finished_data());
-        let msg_type = FBMsgType::ESnapshotRequest.0 as u16;
-        let fut = self
+        let future = self
             .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let ctrl = resp
-            .control
-            .ok_or_else(|| PxReplicaError::Internal("snapshot response missing control buffer".into()))?;
-        let r = FBSnapshotResponseRef::new(ctrl.bytes());
-        if !r.valid() {
-            return Err(PxReplicaError::Internal("snapshot response malformed".into()));
+            .call(
+                &self.server,
+                &conn,
+                req_id,
+                control,
+                None,
+                FBMsgType::ESnapshotBeginRequest.0 as u16,
+            )
+            .map_err(|error| {
+                SnapshotTransferError::Transport(self.map_rpc_err(error, rpc_endpoint, conn.generation()))
+            })?;
+        let response = future.await.map_err(|error| {
+            SnapshotTransferError::Transport(self.map_rpc_err(error, rpc_endpoint, conn.generation()))
+        })?;
+        let control = response.control.ok_or_else(|| {
+            SnapshotTransferError::Protocol("snapshot Begin response missing control".into())
+        })?;
+        let view = FBSnapshotBeginResponseRef::new(control.bytes());
+        if !view.valid() {
+            return Err(SnapshotTransferError::Protocol(
+                "snapshot Begin response malformed".into(),
+            ));
         }
-        check_ret_code(r.ret_code(), r.error_msg())?;
-        let data = resp
-            .data
-            .map(|d| bytes::Bytes::copy_from_slice(d.bytes()))
-            .unwrap_or_default();
-        Ok(SnapshotReply {
-            group_id: r.group_id(),
-            term_at_slot: r.term_at_slot(),
-            membership_epoch: r.membership_epoch(),
-            at_slot: r.at_slot(),
-            data,
+        check_snapshot_ret_code(view.ret_code(), view.error_msg())?;
+        Ok(SnapshotBeginReply {
+            identity: SnapshotIdentity {
+                boot_nonce: view.boot_nonce(),
+                session_number: view.session_number(),
+            },
+            group_id: view.group_id(),
+            engine_format: view.engine_format(),
+            at_slot: view.at_slot(),
+            term_at_slot: view.term_at_slot(),
+            membership_epoch: view.membership_epoch(),
+            chunk_bytes: view.chunk_bytes(),
+            total_bytes: view.total_bytes(),
+            final_crc32c: view.final_crc32c(),
         })
     }
 
-    /// Get the underlying `RpcServer` (for the `LearnerStream` to share
-    /// the connection pool).
-    pub(crate) fn server(&self) -> &Arc<RpcServer> {
-        &self.server
-    }
-
-    /// Get the underlying `RpcClient` (for the `LearnerStream` to share
-    /// the response correlation).
-    pub(crate) fn rpc(&self) -> &Arc<RpcClient> {
-        &self.rpc
-    }
-
-    /// Get or create a connection for an endpoint (exposed for the
-    /// `LearnerStream` to share the connection pool). Always returns
-    /// the first connection (index 0) so the learner stream stays on
-    /// one connection.
-    pub(crate) fn get_conn(&self, rpc_endpoint: &str) -> Result<Connection, PxReplicaError> {
-        let normalized = normalize_endpoint(rpc_endpoint);
-        if let Some(entry) = self.connections.get(&normalized) {
-            let pool = entry.value();
-            if let Some(conn) = pool.first() {
-                return Ok(conn.clone());
-            }
+    pub(crate) async fn snapshot_read(
+        &self,
+        rpc_endpoint: &str,
+        identity: SnapshotIdentity,
+        offset: u64,
+    ) -> Result<SnapshotReadReply, SnapshotTransferError> {
+        let req_id = self.next_id();
+        let conn = self
+            .conn_for(rpc_endpoint)
+            .map_err(SnapshotTransferError::Transport)?;
+        let mut builder = FlatBufferBuilder::new();
+        let request = FBSnapshotReadRequest::create(
+            &mut builder,
+            &FBSnapshotReadRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                boot_nonce: identity.boot_nonce,
+                session_number: identity.session_number,
+                offset,
+            },
+        );
+        builder.finish(request, None);
+        let control = Buffer::from_bytes(builder.finished_data());
+        let future = self
+            .rpc
+            .call(
+                &self.server,
+                &conn,
+                req_id,
+                control,
+                None,
+                FBMsgType::ESnapshotReadRequest.0 as u16,
+            )
+            .map_err(|error| {
+                SnapshotTransferError::Transport(self.map_rpc_err(error, rpc_endpoint, conn.generation()))
+            })?;
+        let response = future.await.map_err(|error| {
+            SnapshotTransferError::Transport(self.map_rpc_err(error, rpc_endpoint, conn.generation()))
+        })?;
+        let control = response.control.ok_or_else(|| {
+            SnapshotTransferError::Protocol("snapshot Read response missing control".into())
+        })?;
+        let view = FBSnapshotReadResponseRef::new(control.bytes());
+        if !view.valid() {
+            return Err(SnapshotTransferError::Protocol(
+                "snapshot Read response malformed".into(),
+            ));
         }
-        self.conn_for(rpc_endpoint)
+        check_snapshot_ret_code(view.ret_code(), view.error_msg())?;
+        Ok(SnapshotReadReply {
+            identity: SnapshotIdentity {
+                boot_nonce: view.boot_nonce(),
+                session_number: view.session_number(),
+            },
+            offset: view.offset(),
+            payload_crc32c: view.payload_crc32c(),
+            done: view.done(),
+            data: response.data.map_or_else(Vec::new, |data| data.bytes().to_vec()),
+        })
     }
 
-    /// Allocate a new request ID (exposed for the `LearnerStream`).
-    pub(crate) fn alloc_id(&self) -> u64 {
-        self.next_id()
+    pub(crate) async fn snapshot_finish(
+        &self,
+        rpc_endpoint: &str,
+        identity: SnapshotIdentity,
+        final_offset: u64,
+    ) -> Result<(), SnapshotTransferError> {
+        let req_id = self.next_id();
+        let conn = self
+            .conn_for(rpc_endpoint)
+            .map_err(SnapshotTransferError::Transport)?;
+        let mut builder = FlatBufferBuilder::new();
+        let request = FBSnapshotFinishRequest::create(
+            &mut builder,
+            &FBSnapshotFinishRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                boot_nonce: identity.boot_nonce,
+                session_number: identity.session_number,
+                final_offset,
+            },
+        );
+        builder.finish(request, None);
+        let control = Buffer::from_bytes(builder.finished_data());
+        let future = self
+            .rpc
+            .call(
+                &self.server,
+                &conn,
+                req_id,
+                control,
+                None,
+                FBMsgType::ESnapshotFinishRequest.0 as u16,
+            )
+            .map_err(|error| {
+                SnapshotTransferError::Transport(self.map_rpc_err(error, rpc_endpoint, conn.generation()))
+            })?;
+        let response = future.await.map_err(|error| {
+            SnapshotTransferError::Transport(self.map_rpc_err(error, rpc_endpoint, conn.generation()))
+        })?;
+        let control = response.control.ok_or_else(|| {
+            SnapshotTransferError::Protocol("snapshot Finish response missing control".into())
+        })?;
+        let view = FBSnapshotFinishResponseRef::new(control.bytes());
+        if !view.valid()
+            || view.boot_nonce() != identity.boot_nonce
+            || view.session_number() != identity.session_number
+        {
+            return Err(SnapshotTransferError::Protocol(
+                "snapshot Finish response identity mismatch".into(),
+            ));
+        }
+        check_snapshot_ret_code(view.ret_code(), view.error_msg())
+    }
+
+    pub(crate) async fn snapshot_abort(&self, rpc_endpoint: &str, identity: SnapshotIdentity) {
+        let Ok(conn) = self.conn_for(rpc_endpoint) else {
+            return;
+        };
+        let req_id = self.next_id();
+        let mut builder = FlatBufferBuilder::new();
+        let request = FBSnapshotAbortRequest::create(
+            &mut builder,
+            &FBSnapshotAbortRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                boot_nonce: identity.boot_nonce,
+                session_number: identity.session_number,
+            },
+        );
+        builder.finish(request, None);
+        let control = Buffer::from_bytes(builder.finished_data());
+        let Ok(future) = self.rpc.call(
+            &self.server,
+            &conn,
+            req_id,
+            control,
+            None,
+            FBMsgType::ESnapshotAbortRequest.0 as u16,
+        ) else {
+            return;
+        };
+        let Ok(response) = future.await else {
+            return;
+        };
+        let Some(control) = response.control else {
+            return;
+        };
+        let view = FBSnapshotAbortResponseRef::new(control.bytes());
+        let _ = view.valid() && view.ret_code() == FBKvRetCode::Success;
     }
 
     /// Test-only: send a frame with arbitrary control bytes and a
@@ -736,9 +849,25 @@ impl PxRpcTransport {
         let fut = self
             .rpc
             .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
-        let resp = fut.await.map_err(|e| self.map_rpc_err(e, rpc_endpoint))?;
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
+        let resp = fut
+            .await
+            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
         Ok(resp)
+    }
+
+    /// Classify a transport error without requiring a live connection.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn classify_error_for_tests(error: RpcError) -> PxReplicaError {
+        rpc_error_to_px(error)
+    }
+
+    /// Report whether a transport error proves the selected connection dead.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn error_invalidates_connection_for_tests(error: RpcError) -> bool {
+        rpc_error_invalidates_connection(error)
     }
 }
 
@@ -748,19 +877,71 @@ impl Default for PxRpcTransport {
     }
 }
 
-/// Snapshot reply: header info + exported bytes.
-pub struct SnapshotReply {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SnapshotIdentity {
+    pub boot_nonce: u64,
+    pub session_number: u64,
+}
+
+#[derive(Debug)]
+pub(crate) struct SnapshotBeginReply {
+    pub identity: SnapshotIdentity,
     pub group_id: u64,
+    pub engine_format: u8,
+    pub at_slot: u64,
     pub term_at_slot: u64,
     pub membership_epoch: u64,
-    pub at_slot: u64,
-    pub data: bytes::Bytes,
+    pub chunk_bytes: u32,
+    pub total_bytes: u64,
+    pub final_crc32c: u32,
+}
+
+#[derive(Debug)]
+pub(crate) struct SnapshotReadReply {
+    pub identity: SnapshotIdentity,
+    pub offset: u64,
+    pub payload_crc32c: u32,
+    pub done: bool,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum SnapshotTransferError {
+    #[error("snapshot transport: {0}")]
+    Transport(PxReplicaError),
+    #[error("snapshot session not found: {0}")]
+    NotFound(String),
+    #[error("snapshot session expired: {0}")]
+    Expired(String),
+    #[error("snapshot offset rejected: {0}")]
+    InvalidOffset(String),
+    #[error("snapshot source at capacity: {0}")]
+    Backpressure(String),
+    #[error("snapshot topology changed: {0}")]
+    TopologyChanged(String),
+    #[error("snapshot integrity failure: {0}")]
+    Integrity(String),
+    #[error("snapshot protocol failure: {0}")]
+    Protocol(String),
 }
 
 // ── Error mapping ────────────────────────────────────────────────
 
 fn rpc_error_to_px(e: RpcError) -> PxReplicaError {
-    PxReplicaError::Internal(format!("crowdb-rpc error: {e:?}"))
+    match e {
+        RpcError::Timeout => PxReplicaError::Timeout("crowdb-rpc deadline expired".into()),
+        RpcError::SendQueueFull => PxReplicaError::Backpressure("crowdb-rpc send queues are full".into()),
+        RpcError::ConnectionClosed | RpcError::ConnectionError | RpcError::AllDown => {
+            PxReplicaError::Transport(format!("crowdb-rpc error: {e:?}"))
+        }
+        RpcError::Ok | RpcError::RegistrationFailed | RpcError::InvalidArg | RpcError::Unknown(_) => {
+            PxReplicaError::Internal(format!("crowdb-rpc error: {e:?}"))
+        }
+    }
+}
+
+fn rpc_error_invalidates_connection(e: RpcError) -> bool {
+    matches!(e, RpcError::ConnectionClosed | RpcError::ConnectionError)
 }
 
 fn check_ret_code(code: FBKvRetCode, msg: Option<&str>) -> Result<(), PxReplicaError> {
@@ -772,6 +953,26 @@ fn check_ret_code(code: FBKvRetCode, msg: Option<&str>) -> Result<(), PxReplicaE
             Err(PxReplicaError::Internal(msg.unwrap_or("internal error").into()))
         }
         _ => Err(PxReplicaError::Internal(format!("unknown ret_code: {code:?}"))),
+    }
+}
+
+fn check_snapshot_ret_code(code: FBKvRetCode, msg: Option<&str>) -> Result<(), SnapshotTransferError> {
+    let message = msg.unwrap_or("remote snapshot failure").to_string();
+    match code {
+        FBKvRetCode::Success => Ok(()),
+        FBKvRetCode::SnapshotNotFound | FBKvRetCode::NotFound => {
+            Err(SnapshotTransferError::NotFound(message))
+        }
+        FBKvRetCode::SnapshotExpired => Err(SnapshotTransferError::Expired(message)),
+        FBKvRetCode::SnapshotInvalidOffset => Err(SnapshotTransferError::InvalidOffset(message)),
+        FBKvRetCode::SnapshotBackpressure => Err(SnapshotTransferError::Backpressure(message)),
+        FBKvRetCode::SnapshotTopologyChanged => Err(SnapshotTransferError::TopologyChanged(message)),
+        FBKvRetCode::SnapshotIntegrity => Err(SnapshotTransferError::Integrity(message)),
+        FBKvRetCode::Unavailable => Err(SnapshotTransferError::Transport(PxReplicaError::ShuttingDown)),
+        FBKvRetCode::Internal | FBKvRetCode::InvalidArgument => Err(SnapshotTransferError::Protocol(message)),
+        _ => Err(SnapshotTransferError::Protocol(format!(
+            "unknown ret_code: {code:?}"
+        ))),
     }
 }
 

@@ -159,7 +159,7 @@ pub struct ChunkdbDeployRequest {
     pub metrics_interval: Option<u64>,
 }
 
-/// Inputs for one local `NullDisk` `DiskIO` service.
+/// Inputs for one local dummy-disk `DiskIO` service.
 #[derive(Debug, Clone)]
 pub struct DiskioDeployRequest {
     pub server_id: String,
@@ -169,6 +169,7 @@ pub struct DiskioDeployRequest {
     pub node_id: u64,
     pub disk_group_id: u64,
     pub kv_server_mgmt_seeds: Vec<String>,
+    pub dummy_disk_type: String,
     pub rpc_workers: Option<u32>,
     pub metrics_interval: Option<u64>,
 }
@@ -717,6 +718,10 @@ pub struct DiskdbDeployRequest {
     /// Keepalive and group-0 sync interval override in seconds.
     /// `None` preserves the `crowdb-diskdb` defaults.
     pub keepalive_interval_secs: Option<u32>,
+    /// Enable immediate concurrent-free coalescing in the generated config.
+    pub free_batch_enabled: Option<bool>,
+    /// Maximum free records per coalesced KV proposal.
+    pub free_flush_max_batch: Option<u32>,
     /// Main listener port (diskdb `listen_addr`).
     pub listen_port: u16,
     /// HTTP management port (diskdb `http_listen_addr`).
@@ -849,18 +854,13 @@ pub fn crowdb_rpc_fb_server_bin() -> Option<PathBuf> {
 /// kv-server management port.
 fn resolve_diskdb_config_path(
     workspace_dir: &std::path::Path,
-    listen_port: u16,
-    http_port: u16,
-    rpc_port: u16,
-    instance_id: Option<u64>,
-    kv_server_mgmt_seeds: &[String],
-    rpc_workers: Option<u32>,
+    request: &DiskdbDeployRequest,
 ) -> Result<PathBuf> {
     let conf = workspace_dir.join("conf");
     std::fs::create_dir_all(&conf).map_err(Error::Io)?;
     let path = conf.join("crowdb_diskdb_config.toml");
-    if path.exists() && kv_server_mgmt_seeds.is_empty() {
-        if let Some(workers) = rpc_workers {
+    if path.exists() && request.kv_server_mgmt_seeds.is_empty() {
+        if let Some(workers) = request.rpc_workers {
             let content = std::fs::read_to_string(&path).map_err(Error::Io)?;
             let mut config = toml::from_str::<toml::Value>(&content)
                 .map_err(|error| Error::Config(format!("failed to parse {}: {error}", path.display())))?;
@@ -875,10 +875,11 @@ fn resolve_diskdb_config_path(
         }
         return Ok(path);
     }
-    let seeds = if kv_server_mgmt_seeds.is_empty() {
+    let seeds = if request.kv_server_mgmt_seeds.is_empty() {
         format!("\"http://127.0.0.1:{}\"", crowdb_protocol::KV_SERVER_MGMT_BASE)
     } else {
-        kv_server_mgmt_seeds
+        request
+            .kv_server_mgmt_seeds
             .iter()
             .map(|s| format!("\"{s}\""))
             .collect::<Vec<_>>()
@@ -887,16 +888,31 @@ fn resolve_diskdb_config_path(
     // Minimal valid config — only [server] is required; all other
     // sections default via `#[serde(default)]` on `DdbConfig` fields
     // (values match `DdbConfig::default()`).
-    let instance_id = instance_id.map_or_else(String::new, |id| format!("instance_id = \"{id}\"\n"));
+    let instance_id = request
+        .instance_id
+        .map_or_else(String::new, |id| format!("instance_id = \"{id}\"\n"));
+    let persistence = if request.free_batch_enabled.is_some() || request.free_flush_max_batch.is_some() {
+        format!(
+            "\n[persistence]\nfree_batch_enabled = {}\nfree_flush_max_batch = {}\n",
+            request.free_batch_enabled.unwrap_or(false),
+            request.free_flush_max_batch.unwrap_or(256),
+        )
+    } else {
+        String::new()
+    };
     let config = format!(
         "[server]\n\
          rpc_workers = {}\n\
-         listen_addr = \"0.0.0.0:{listen_port}\"\n\
-         http_listen_addr = \"0.0.0.0:{http_port}\"\n\
-         rpc_listen_addr = \"0.0.0.0:{rpc_port}\"\n\
+         listen_addr = \"0.0.0.0:{}\"\n\
+         http_listen_addr = \"0.0.0.0:{}\"\n\
+         rpc_listen_addr = \"0.0.0.0:{}\"\n\
          {instance_id}\
-         kv_server_mgmt_seeds = [{seeds}]\n",
-        rpc_workers.unwrap_or(2),
+         kv_server_mgmt_seeds = [{seeds}]\n\
+         {persistence}",
+        request.rpc_workers.unwrap_or(2),
+        request.listen_port,
+        request.http_port,
+        request.rpc_port,
     );
     std::fs::write(&path, config).map_err(Error::Io)?;
     Ok(path)
@@ -1025,15 +1041,7 @@ pub async fn deploy_diskdb_local(
         stage_server_binary(&binary, workspace_dir)?
     };
 
-    let config_path = resolve_diskdb_config_path(
-        workspace_dir,
-        req.listen_port,
-        req.http_port,
-        req.rpc_port,
-        req.instance_id,
-        &req.kv_server_mgmt_seeds,
-        req.rpc_workers,
-    )?;
+    let config_path = resolve_diskdb_config_path(workspace_dir, req)?;
     // The public endpoint is the crowdb-rpc listener. The main listener is
     // an internal compatibility endpoint and is not exposed as DiskDB identity.
     let endpoint = format!("http://{}:{}", node.host, req.rpc_port);
@@ -1160,7 +1168,7 @@ pub async fn deploy_chunkdb_local(
         .collect::<Vec<_>>()
         .join(", ");
     let config = format!(
-        "[server]\nrpc_workers = {}\nhttp_listen_addr = \"{}:{}\"\nrpc_listen_addr = \"{}:{}\"\ninstance_id = \"{}\"\nkv_server_mgmt_seeds = [{}]\nkeepalive_interval_secs = 1\nkv_pool_size = {}\nkv_rpc_workers = {}\ndiskdb_pool_size = {}\ndiskdb_rpc_workers = {}\n\n[topology]\nrefresh_interval_secs = 1\n\n[range_guard]\nallow_all_when_empty = false\n\n[lifecycle]\ncache_capacity = 10000\nsweep_chunk_lock_interval_secs = 60\nlock_hold_warn_threshold_ms = 1000\n\n[placement]\nallow_unsafe_ec = {}\n",
+        "[server]\nrpc_workers = {}\nhttp_listen_addr = \"{}:{}\"\nrpc_listen_addr = \"{}:{}\"\ninstance_id = \"{}\"\nkv_server_mgmt_seeds = [{}]\nkeepalive_interval_secs = 1\nkv_pool_size = {}\nkv_rpc_workers = {}\ndiskdb_pool_size = {}\ndiskdb_rpc_workers = {}\n\n[topology]\nrefresh_interval_secs = 1\n\n[range_guard]\nallow_all_when_empty = false\n\n[lifecycle]\ncache_capacity = 10000\nsweep_chunk_lock_interval_secs = 60\nlock_hold_warn_threshold_ms = 1000\n\n[placement]\nallow_unsafe_ec = {}\nallow_degraded_failure_domains = {}\n",
         req.rpc_workers.unwrap_or(2),
         node.host,
         req.http_port,
@@ -1172,6 +1180,7 @@ pub async fn deploy_chunkdb_local(
         req.kv_client_rpc_workers.unwrap_or(2),
         req.diskdb_connections.unwrap_or(1),
         req.diskdb_client_rpc_workers.unwrap_or(2),
+        req.allow_unsafe_ec,
         req.allow_unsafe_ec,
     );
     std::fs::write(&config_path, config)?;
@@ -1237,7 +1246,7 @@ fn chunkdb_launch_args(req: &ChunkdbDeployRequest, config_path: &Path, log_dir: 
     args
 }
 
-/// Spawn one local `DiskIO` service with a `NullDisk` backend.
+/// Spawn one local `DiskIO` service with the selected dummy-disk backend.
 ///
 /// Readiness is completed by the caller through the group-0 service registry,
 /// which proves both KV synchronization and ownership publication.
@@ -1272,11 +1281,12 @@ pub async fn deploy_diskio_local(
         .collect::<Vec<_>>()
         .join(", ");
     let config = format!(
-        "[server]\nbind_address = {:?}\nlisten_port = {}\nrpc_workers = {}\nnode_id = {}\ndummy_disk_type = \"null\"\no_direct = true\n\n[engine]\nthread_pool_size = 4\nsq_entries = 256\n\n[group0]\nkv_seeds = [{}]\ninstance_id = {}\nrack_id = {}\ndisk_group_id = {}\nsync_interval_ms = 1000\nauto_discover_disks = true\n\n[metrics]\nlog_dir = {:?}\ninterval_secs = {}\n",
+        "[server]\nbind_address = {:?}\nlisten_port = {}\nrpc_workers = {}\nnode_id = {}\ndummy_disk_type = {:?}\no_direct = true\n\n[engine]\nthread_pool_size = 4\nsq_entries = 256\n\n[group0]\nkv_seeds = [{}]\ninstance_id = {}\nrack_id = {}\ndisk_group_id = {}\nsync_interval_ms = 1000\nauto_discover_disks = true\n\n[metrics]\nlog_dir = {:?}\ninterval_secs = {}\n",
         node.host,
         req.rpc_port,
         req.rpc_workers.unwrap_or(4),
         req.node_id,
+        req.dummy_disk_type,
         seeds,
         req.instance_id,
         req.rack_id,

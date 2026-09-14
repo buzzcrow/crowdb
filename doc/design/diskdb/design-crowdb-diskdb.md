@@ -139,12 +139,15 @@ multiple distinct-disk passes in one atomic per-group request. The caller is
 responsible for validating that roles requiring mutual anti-affinity fit in
 the first pass. The caller (or a future placement service) picks the disk-group.
 
-### 3.3 No CAS needed; exclusive ownership
+### 3.3 Incarnation-safe lifecycle transitions
 
-Each disk-group is owned by exactly one diskdb instance at a time (map
-in group 0). DiskDB persists only blind, commutative record mutations, so no
-KV-level CAS is required. Allocation incarnations and immutable free facts
-make delayed retries safe without ordering the parallel KV write path.
+Each disk-group is owned by exactly one diskdb instance at a time (map in group
+0). Allocation and free remain blind, batchable record writes; allocation
+incarnations and compaction-time validation make delayed frees safe. Commit
+uses an exact matching tentative cache entry when present; otherwise it reads
+the authoritative BusyBlock and validates its allocation incarnation. It
+changes Tentative to Committed with an ordinary batch write. An already
+Committed record is idempotent success.
 In-memory concurrency within one instance is handled by **per-bit CAS**
 on the usage bitmap (`compare_exchange` on 64-bit words), not a
 zone-level lock. Multiple threads can allocate from the same zone
@@ -530,8 +533,8 @@ intervals.
 - per-disk: `allocate.count`, `free.count`
 - per-disk-group: `allocate.count`, `free.count`
 - per-instance: `sync.count`, `sync.error.count`,
-  `compaction.count`, `compaction.error.count`,
-  `free_batch.flush.count` (when batching enabled)
+  `compaction.count`, `compaction.error.count`, and free-batch input request/
+  record, output KV batch/record, oversize, and failure counters
 
 **2. Gauges (internal status, current state snapshot):**
 - per-disk: `capacity_bytes`, `used_bytes`, `free_bytes`, `used_pct`,
@@ -542,7 +545,7 @@ intervals.
 - per-disk-group: `disk_count`, `allocatable_disk_count`,
   `capacity_bytes`, `used_bytes`, `free_bytes`
 - per-instance: `owned_disk_group_count`, `degraded` (0/1),
-  `free_batch_len` (current pending frees),
+  `free_batch.queue_depth` and `free_batch.coalescing_ratio_x1000`,
   `uncompacted_free_record_count` (per zone — compaction backlog),
   `last_sync_slot` (group-0 sync frontier),
   `last_sync_age_secs` (time since last successful sync)
@@ -610,15 +613,15 @@ visibility.
   clears a bit when records confidently say "free" (no `BusyBlockKey`,
   no `FreeBlockKey`, records intact and readable).
 - **Drift detection in the persist-only model** — the free path does
-  not touch the bitmap (zone-management §6), so "bit set, no `BusyBlockKey`" is
-  **normal** for freed-but-not-compacted blocks (a `FreeBlockKey`
-  exists). The scanner distinguishes:
+  not touch the bitmap (zone-management §6), so a bit set with matching busy
+  and free records is **normal** for freed-but-not-compacted blocks. The scanner
+  distinguishes:
   - **Real ghost-busy** (drift): bit set, no `BusyBlockKey`, no
     `FreeBlockKey` — the block was never freed and never allocated
     (crash between allocate Phase 1 and Phase 2, or a bug). Records
     are authoritative → block is free → safe to clear the bit.
-  - **Normal uncompacted**: bit set, no `BusyBlockKey`, `FreeBlockKey`
-    exists — the block was freed (persist-only) but compaction hasn't
+  - **Normal uncompacted**: bit set, matching `BusyBlockKey` and
+    `FreeBlockKey` exist — the block was freed (persist-only) but compaction hasn't
     cleared the bit yet. This is **not drift** — it's the expected
     state. The scanner counts it as `uncompacted_lag` (not drift) so
     operators can see compaction lag, but does not auto-correct it.
@@ -793,14 +796,12 @@ All public and inter-module APIs are `async`. Runtime is `tokio`
 These design assumptions map cleanly onto CROWDB and need no design
 work, just implementation:
 
-- **Durability model**: crowdb-kv's WAL is the sole durable log. diskdb's
-  blind writes become durable via crowdb-kv's WAL flush.
-- **Consensus semantics**: Multi-Paxos with parallel slots. For diskdb's
-  usage (blind writes of zone records), parallel slots may even improve
-  allocation throughput. No change needed.
-- **Blind-ops persistence**: diskdb persists via blind Puts (no
-  read-modify-write) — matches crowdb's blind-ops-only model exactly
-  (§3.3).
+- **Durability model**: crowdb-kv's WAL is the sole durable log. DiskDB's blind
+  allocation/free writes and conditional commit batches become durable through
+  the same Paxos/WAL path.
+- **Consensus semantics**: Multi-Paxos retains parallel blind allocation and
+  free throughput. Conditional commit serializes only on its one busy key
+  before proposing an ordinary batch.
 - **Async runtime**: tokio multi-threaded; diskdb's two-phase
   async allocation (sync bitmap-scan claim + async KV persist) maps
   directly.
@@ -819,9 +820,10 @@ hardcoded tunables in business logic). Defaults:
 - **Sync** — sync interval (10 s, fixed — same on success and failure),
   degraded miss threshold (3), temp-failure timeout (900 s)
 - **Allocator** — `zone_rotate_count`, CAS retry limit (100)
-- **Free** — `free_batch_enabled` (default false — v1 immediate free;
-  size-threshold batching when true), `free_flush_max_batch` (256,
-  used when batching is enabled)
+- **Free** — `free_batch_enabled` (default false — one durable KV batch per
+  request; immediate concurrent-request coalescing when true),
+  `free_flush_max_batch` (256, maximum records in one coalesced KV proposal;
+  one oversized request remains atomic)
 - **Compaction** — snapshot compaction threshold (record count or
   time), compaction cadence (periodic interval for strategy 3)
 - **Disk** — block / unit size (default 1 MB), zone size

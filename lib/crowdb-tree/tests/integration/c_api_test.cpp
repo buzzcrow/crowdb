@@ -15,6 +15,10 @@
 #include <string>
 #include <vector>
 
+#ifdef __linux__
+#    include <unistd.h>
+#endif
+
 namespace
 {
 std::string make_key(int i)
@@ -76,6 +80,45 @@ TEST(CApi, MemOpenApplyGetScan)
     ct_close(t);
 }
 
+TEST(CApi, InjectedStoreRetainedAndFutureSignalsCompletionFd)
+{
+    ct_page_store *store = nullptr;
+    ASSERT_EQ(ct_page_store_open_mem(1, &store), 0);
+    ASSERT_NE(store, nullptr);
+
+    ct_options opt  = {};
+    opt.page_store  = store;
+    opt.frame_bytes = 4096;
+    ct_tree *t      = nullptr;
+    ASSERT_EQ(ct_open(&opt, &t), 0);
+    ct_page_store_free(store);
+
+    ASSERT_EQ(put_flush(t, 1, "key", "value"), 0);
+    ct_future *future = ct_get_async(t, reinterpret_cast<const uint8_t *>("key"), 3);
+    ASSERT_NE(future, nullptr);
+
+#ifdef __linux__
+    int32_t fd = -1;
+    ASSERT_GE(ct_uring_eventfds(t, &fd, 1), 1U);
+    ASSERT_GE(fd, 0);
+    uint64_t completions = 0;
+    ASSERT_EQ(::read(fd, &completions, sizeof(completions)), static_cast<ssize_t>(sizeof(completions)));
+    EXPECT_EQ(completions, 1U);
+#endif
+
+    int32_t  done  = 0;
+    int32_t  found = 0;
+    uint64_t slot  = 0;
+    ct_buf   value = {};
+    ASSERT_EQ(ct_future_poll(future, &done, &found, &slot, &value), 0);
+    ASSERT_EQ(done, 1);
+    ASSERT_EQ(found, 1);
+    EXPECT_EQ(slot, 1U);
+    EXPECT_EQ(std::string(reinterpret_cast<char *>(value.data), value.len), "value");
+    ct_future_free(future);
+    ct_close(t);
+}
+
 // plan-tree #20: ct_apply_batch lets a caller (crowkv's CrowdbtreeEngine) apply
 // several ops atomically at one slot in a single call into Crowdbtree::apply,
 // instead of looping ct_apply_put/ct_apply_delete per key (which would let a
@@ -109,7 +152,7 @@ TEST(CApi, ApplyBatchAtomicMultiKey)
 
     for (const auto &kv : std::vector<std::pair<std::string, std::string>>{
              {"a", "va"},
-             {"b", "vb"}
+             {"b", "vb"},
     }) {
         int32_t  found = 0;
         uint64_t slot  = 0;
@@ -338,17 +381,30 @@ TEST(CApi, SnapshotExportImport)
     ct_tree *b = nullptr;
     ASSERT_EQ(ct_open(&opt, &b), 0);
 
-    ct_export *e = nullptr;
-    ASSERT_EQ(ct_snapshot_export_begin(a, &e), 0);
+    constexpr size_t kChunkBytes = 17;
+    ct_export       *e           = nullptr;
+    ASSERT_EQ(ct_snapshot_export_begin(a, kChunkBytes, &e), 0);
+    EXPECT_EQ(ct_snapshot_export_at_slot(e), 40U);
+    EXPECT_GT(ct_snapshot_export_total_bytes(e), 0U);
+    EXPECT_NE(ct_snapshot_export_final_crc32c(e), 0U);
+    EXPECT_EQ(ct_snapshot_export_chunk_bytes(e), kChunkBytes);
+    EXPECT_EQ(ct_snapshot_export_offset(e), 0U);
     ct_import *im = nullptr;
     ASSERT_EQ(ct_snapshot_import_begin(b, &im), 0);
+    uint64_t offset       = 0;
+    ct_buf   skipped      = {};
+    int32_t  skipped_done = 0;
+    EXPECT_NE(ct_snapshot_export_next(e, 1, &skipped, &skipped_done), 0);
     while (true) {
         ct_buf  chunk = {};
         int32_t done  = 0;
-        ASSERT_EQ(ct_snapshot_export_next(e, &chunk, &done), 0);
+        ASSERT_EQ(ct_snapshot_export_next(e, offset, &chunk, &done), 0);
+        EXPECT_LE(chunk.len, kChunkBytes);
         if (chunk.len > 0) {
             ASSERT_EQ(ct_snapshot_import_feed(im, chunk.data, chunk.len), 0);
         }
+        offset += chunk.len;
+        EXPECT_EQ(ct_snapshot_export_offset(e), offset);
         ct_free_buf(&chunk);
         if (done != 0) {
             break;

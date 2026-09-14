@@ -19,7 +19,7 @@ use crowdb_protocol::mgmt::{
 };
 
 use super::{err_json, ErrorResponse, RegistryArc};
-use crate::operation_registry::{Operation, OperationKind, OperationStatus, OperationTarget};
+use crate::mgmt::operation_registry::{Operation, OperationKind, OperationStatus, OperationTarget};
 
 /// Request body for [`join_group_via_snapshot`]: bootstrap a new/far-lagging
 /// group member by pulling a snapshot from an existing member instead of
@@ -29,9 +29,8 @@ pub(super) struct JoinGroupRequest {
     replica_id: u64,
     /// crowdb-rpc endpoint (`host:port`) of an existing, already-caught-up member
     /// of this group to pull the snapshot from. Must run the **same**
-    /// crowdb-tree backend as this store -- `KVEngine::snapshot_import`
-    /// is only ever meaningful fed a stream from the same engine kind's
-    /// `snapshot_export`.
+    /// crowdb-tree backend as this store; snapshot sessions accept only the
+    /// same engine kind's portable format.
     peer_endpoint: String,
 }
 
@@ -239,7 +238,7 @@ pub(super) async fn add_group(
         AddGroupInitialRole::Leader => PxLocalReplicaRole::Leader,
         AddGroupInitialRole::Follower => PxLocalReplicaRole::Follower,
     };
-    let group = crate::startup::create_group_with_wal(
+    let group = crate::recovery::startup::create_group_with_wal(
         sid,
         req.group_id,
         req.replica_id,
@@ -365,7 +364,7 @@ pub(super) async fn join_group_via_snapshot(
         peer_endpoint = %req.peer_endpoint,
         "joining PxGroup via snapshot pull"
     );
-    let group = crate::startup::create_group_with_wal(
+    let group = crate::recovery::startup::create_group_with_wal(
         sid,
         gid,
         req.replica_id,
@@ -382,12 +381,27 @@ pub(super) async fn join_group_via_snapshot(
         )
     })?;
 
-    let at_slot = group.join_via_snapshot(&req.peer_endpoint).await.map_err(|e| {
-        err_json(
-            StatusCode::BAD_GATEWAY,
-            format!("snapshot join against {} failed: {e}", req.peer_endpoint),
+    let at_slot = match group
+        .join_via_snapshot_with_config(
+            &req.peer_endpoint,
+            state.config.server.snapshot_chunk_bytes,
+            state.config.server.snapshot_restart_attempts,
         )
-    })?;
+        .await
+    {
+        Ok(at_slot) => at_slot,
+        Err(error) => {
+            let _ = group
+                .shutdown(std::time::Duration::from_millis(
+                    state.config.server.shutdown_timeout_ms,
+                ))
+                .await;
+            return Err(err_json(
+                StatusCode::BAD_GATEWAY,
+                format!("snapshot join against {} failed: {error}", req.peer_endpoint),
+            ));
+        }
+    };
     // The frontier moved from 0 to `at_slot` (or further, if a concurrent
     // catch-up already advanced it) after `create_group_with_wal` computed
     // `next_slot` from a still-empty replica; recompute so a future
@@ -447,7 +461,7 @@ pub(super) async fn remove_group(
     }
 
     // Delete the engine dir for this group.
-    let engine_dir = crate::startup::store_crowdb_tree_path(&state.config.data_root, sid, gid);
+    let engine_dir = crate::recovery::startup::store_crowdb_tree_path(&state.config.data_root, sid, gid);
     if let Err(e) = tokio::fs::remove_dir_all(&engine_dir).await {
         if e.kind() != std::io::ErrorKind::NotFound {
             tracing::warn!(s = sid, g = gid, error = %e, "failed to delete engine dir; continuing");
@@ -456,7 +470,7 @@ pub(super) async fn remove_group(
 
     // Delete the WAL group dir.
     let wal_group_dir =
-        crate::startup::store_wal_root(&state.config.wal_root, sid).join(format!("group{gid}"));
+        crate::recovery::startup::store_wal_root(&state.config.wal_root, sid).join(format!("group{gid}"));
     if let Err(e) = tokio::fs::remove_dir_all(&wal_group_dir).await {
         if e.kind() != std::io::ErrorKind::NotFound {
             tracing::warn!(s = sid, g = gid, error = %e, "failed to delete WAL group dir; continuing");
@@ -808,7 +822,7 @@ pub(super) async fn wipe_user_data(
     // replays the now-empty WAL (→ slot 0), creates fresh WalEngine +
     // engine, and `maybe_apply_persisted_config` restores the remote
     // membership from node-config.json (which the wipe did not touch).
-    let new_group = crate::startup::create_group_with_wal(
+    let new_group = crate::recovery::startup::create_group_with_wal(
         sid,
         gid,
         replica_id,
@@ -878,7 +892,7 @@ async fn wipe_wal_and_engine_dirs(
     gid: u64,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     let wal_group_dir =
-        crate::startup::store_wal_root(&state.config.wal_root, sid).join(format!("group{gid}"));
+        crate::recovery::startup::store_wal_root(&state.config.wal_root, sid).join(format!("group{gid}"));
     if let Err(e) = state.wal_backend.remove_dir_all(&wal_group_dir).await {
         if e.kind() != std::io::ErrorKind::NotFound {
             return Err(err_json(
@@ -887,7 +901,7 @@ async fn wipe_wal_and_engine_dirs(
             ));
         }
     }
-    let engine_dir = crate::startup::store_crowdb_tree_path(&state.config.data_root, sid, gid);
+    let engine_dir = crate::recovery::startup::store_crowdb_tree_path(&state.config.data_root, sid, gid);
     if let Err(e) = tokio::fs::remove_dir_all(&engine_dir).await {
         if e.kind() != std::io::ErrorKind::NotFound {
             return Err(err_json(

@@ -13,12 +13,11 @@
 // doc/backlog/R50-epoch-protected-memtable.md Gate 2.
 //
 // Build:
-//   pixi run -- cmake -S lib/crowdb-tree -B lib/crowdb-tree/build-bench \
-//     -DCROWDB_TREE_BENCH=ON -DCMAKE_BUILD_TYPE=Release
+//   pixi run -- cmake -S lib/crowdb-tree -B lib/crowdb-tree/build-bench -DCROWDB_TREE_BENCH=ON
 //   pixi run -- cmake --build lib/crowdb-tree/build-bench -j
 //   ./lib/crowdb-tree/build-bench/scan_step_profile
+#include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
-#include "crowdb-tree/page_store.h"
 
 #include <atomic>
 #include <chrono>
@@ -33,7 +32,7 @@ namespace
 {
 std::string make_key(int i)
 {
-    std::string s(21, '\0');
+    std::string s(22, '\0');
     snprintf(s.data(), s.size(), "k%020d", i);
     s.resize(strlen(s.c_str()));
     return s;
@@ -67,7 +66,7 @@ Setup build_tree(int n, int value_size, bool flush, bool flush_only = false, int
 {
     Setup s;
     s.store = std::make_shared<MemPageStore>(1);
-    Options opt;
+    Config opt;
     opt.page_store       = s.store.get();
     opt.frame_bytes      = 64 * 1024;
     opt.leaf_split_bytes = 64 * 1024;
@@ -147,7 +146,7 @@ void run_concurrent(const char *label, int n_prepop, int value_size, size_t limi
 {
     Setup s;
     s.store = std::make_shared<MemPageStore>(1);
-    Options opt;
+    Config opt;
     opt.page_store         = s.store.get();
     opt.frame_bytes        = 64 * 1024;
     opt.leaf_split_bytes   = 64 * 1024;
@@ -193,8 +192,9 @@ void run_concurrent(const char *label, int n_prepop, int value_size, size_t limi
         flusher = std::thread([&] {
             while (!stop.load(std::memory_order_relaxed)) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(flush_every_ms));
-                if (stop.load(std::memory_order_relaxed))
+                if (stop.load(std::memory_order_relaxed)) {
                     break;
+                }
                 s.tree->flush();
                 flushes_done.fetch_add(1, std::memory_order_relaxed);
             }
@@ -218,8 +218,9 @@ void run_concurrent(const char *label, int n_prepop, int value_size, size_t limi
 
     stop.store(true, std::memory_order_relaxed);
     writer.join();
-    if (flusher.joinable())
+    if (flusher.joinable()) {
         flusher.join();
+    }
 
     uint64_t wd        = writes_done.load(std::memory_order_relaxed);
     uint64_t fd        = flushes_done.load(std::memory_order_relaxed);

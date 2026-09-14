@@ -22,6 +22,16 @@ libabseil = "*"  # lib/crowdb-tree MemTable uses absl::btree_map (plan-tree #9)
 spdlog = ">=1.17.0,<2"  # lib/crowdb-tree async file logging (plan-tree #10)
 clang-format = ">=19.0.0"
 clang-tools = "*"
+# clang-tidy (from clang-tools) needs the clang builtin resource headers
+# (stddef.h, stdarg.h, ...) under lib/clang/<ver>/include/. clang-tools ships
+# only the tools, not those headers (conda-forge/clangdev-feedstock#87), so
+# clang-tidy fails with "'stddef.h' file not found" on the conda sysroot.
+# clang-23 pulls in compiler-rt23, which installs the resource-dir headers.
+# Pinned to 23.1.0 to match the locked clang-tools; the resource dir is keyed
+# by major version (23), so any 23.1.x is compatible. This does NOT change the
+# C++ build compiler: cxx-compiler activates the conda gcc/g++, and no clang
+# activation script overrides CC/CXX, so cmake keeps using GNU.
+clang-23 = "==23.1.0"
 folly = "*"
 isa-l = "*"
 # Flatbuffer schema compiler + runtime headers for crowdb-rpc (R104) and
@@ -63,7 +73,7 @@ rdma-core = "*"
 # C++ libraries only (crowdb-tree, crowdb-rpc, crowdb-diskio). Needed by C++
 # ctest tasks. Rust FFI crates compile their own C++ via cc::Build in
 # build.rs, so Rust tests do NOT depend on this.
-build-cpp = { cmd = "cmake -S lib/crowdb-tree -B lib/crowdb-tree/build -DCMAKE_BUILD_TYPE=Release && cmake --build lib/crowdb-tree/build -j && cmake -S lib/crowdb-rpc -B lib/crowdb-rpc/build -DCMAKE_BUILD_TYPE=Release && cmake --build lib/crowdb-rpc/build -j && cmake -S app/crowdb-diskio -B app/crowdb-diskio/build -DCMAKE_BUILD_TYPE=Release && cmake --build app/crowdb-diskio/build -j" }
+build-cpp = { cmd = "cmake -S lib/crowdb-tree -B lib/crowdb-tree/build -DCMAKE_BUILD_TYPE=Release && cmake --build lib/crowdb-tree/build -j && cmake --build lib/crowdb-tree/build -j --target crowdb_rpc_tests && cmake -S lib/crowdb-rpc -B lib/crowdb-rpc/build -DCMAKE_BUILD_TYPE=Release && cmake --build lib/crowdb-rpc/build -j && cmake -S app/crowdb-diskio -B app/crowdb-diskio/build -DCMAKE_BUILD_TYPE=Release && cmake --build app/crowdb-diskio/build -j" }
 # npm deps only (for UI tests and ts-lint). Separated from install-deps
 # so test-console-ui doesn't trigger cargo installs of profiling tools.
 install-ui-deps = "test -d app/crowdb-web/ui/node_modules || (cd app/crowdb-web/ui && npm ci)"
@@ -80,9 +90,18 @@ cargo install --locked inferno || echo "Warning: inferno install failed"
 tree-fmt = '''
 find lib/crowdb-tree/src lib/crowdb-tree/include lib/crowdb-tree/tests lib/crowdb-tree/bench lib/crowdb-common/cpp lib/crowdb-rpc/src lib/crowdb-rpc/include lib/crowdb-rpc/tests -type f \( -name '*.cpp' -o -name '*.h' \) -print0 | xargs -0 clang-format -i
 '''
-tree-lint = "python3 tools/ct_lint.py"
+# CPATH lets clang-tidy find the conda env headers (spdlog, gtest, folly,
+# absl, flatbuffers, zlib, isa-l, liburing, infiniband, ...) at
+# $CONDA_PREFIX/include. The conda gcc has this as a built-in default include
+# path, but clang-tidy (a separate compiler) does not, and compile_commands.json
+# does not list it explicitly because gcc finds those headers automatically.
+# clang treats CPATH entries as system includes, so warnings from third-party
+# headers are suppressed.
+tree-lint = "CPATH=$CONDA_PREFIX/include python3 tools/ct_lint.py"
+test-tree-link-isolation = "bash tools/test-tree-chunk-link-isolation.sh"
 rs-fmt = "cargo fmt --all"
-rs-lint = "cargo clippy --all-targets -- -D warnings"
+check-production-dashmap = "python3 tools/check-production-dashmap.py"
+rs-lint = { cmd = "cargo clippy --all-targets -- -D warnings", depends-on = ["check-production-dashmap"] }
 ts-lint = { cmd = "cd app/crowdb-web/ui && npx tsc --noEmit --project tsconfig.e2e.json", depends-on = ["install-ui-deps"] }
 # Full build: C++ libs + release Rust binaries + frontend. Used by
 # run/bench/profile. Tests use build-cpp (C++ tests) or nothing (Rust tests).
@@ -110,7 +129,7 @@ profile-write = { cmd = "bash tools/profile-write.sh", depends-on = ["build"] }
 # Grouping Guide"). Each group maps 1:1 to a parallel CI job. Run
 # `pixi run build-tests` once before any test task to pre-build all
 # Rust test binaries; C++ ctest tasks need `pixi run build-cpp`.
-clean-env = "pkill -9 -f 'crowdb-kv-server.*test-' 2>/dev/null; pkill -9 -f 'crowdb-kv-server.*e2e' 2>/dev/null; pkill -9 -f 'crowdb-web.*test-mode' 2>/dev/null; rm -rf test-logs test-data runtime-data; true"
+clean-env = "pkill -9 -f 'crowdb-kv-server.*test-' 2>/dev/null; pkill -9 -f 'crowdb-kv-server.*e2e' 2>/dev/null; pkill -9 -f 'crowdb-web.*test-mode' 2>/dev/null; rm -rf test-logs test-data runtime-data app/crowdb-web/.crowdb-port-alloc; true"
 # Pre-build ALL Rust test binaries + bin targets in one parallel cargo
 # invocation. Run this once at the start of a CI job so every subsequent
 # `cargo test -p <crate>` step just executes the pre-built binaries
@@ -149,6 +168,10 @@ test-protocol = { cmd = "cargo test -p crowdb-protocol --all-targets" }
 test-kv-core = { cmd = "cargo test -p crowdb-kv --all-targets" }
 test-kv-client = { cmd = "cargo test -p crowdb-kv-client --all-targets" }
 test-chunkdb-client = { cmd = "cargo test -p crowdb-chunkdb-client --all-targets" }
+test-chunk-kv = { cmd = "cargo test -p crowdb-chunk-kv --all-targets" }
+test-chunk-stream = { cmd = "cargo test -p crowdb-chunk-stream --all-targets" }
+test-chunk-kv-client = { cmd = "cargo test -p crowdb-chunk-kv-client --all-targets" }
+test-chunk-kv-server = { cmd = "cargo test -p crowdb-chunk-kv-server --all-targets" }
 test-unit = { cmd = '''
 bash -c '
 set -e
@@ -157,13 +180,17 @@ pixi run test-protocol
 pixi run test-kv-core
 pixi run test-kv-client
 pixi run test-chunkdb-client
+pixi run test-chunk-kv
+pixi run test-chunk-stream
+pixi run test-chunk-kv-client
+pixi run test-chunk-kv-server
 '
 ''', depends-on = ["build-tests"] }
 
 # ── ServerTests job: spawns crowdb-kv-server / crowdb-diskdb / crowdb-diskio ──
 test-kv-server = { cmd = "cargo test -p crowdb-kv-server --all-targets" }
 test-diskdb = { cmd = "cargo test -p crowdb-diskdb --all-targets" }
-test-diskdb-client = { cmd = "cargo test -p crowdb-diskdb-client --all-targets" }
+test-diskdb-client = { cmd = "cargo build -p crowdb-kv-server -p crowdb-diskdb && cargo test -p crowdb-diskdb-client --all-targets" }
 test-chunkdb = { cmd = "cargo test -p crowdb-chunkdb --all-targets" }
 test-chunk-client = { cmd = "cargo test -p crowdb-chunk-client --all-targets" }
 test-diskio-client = { cmd = "cargo test -p crowdb-diskio-client --all-targets" }
@@ -215,7 +242,7 @@ pixi run test-console-ui
 
 # ── Coverage & LOC ───────────────────────────────────────────────
 coverage = { cmd = "cargo tarpaulin --workspace --out Html --output-dir target/coverage --exclude-files '*/tests/*'", depends-on = ["install-deps"] }
-loc = "tokei . .github --exclude swagger-ui --exclude 'lib/crowdb-tree/build-*' --exclude target --exclude dist --exclude node_modules --exclude 'doc/user-manual/*.html' --exclude 'doc/user-manual/*.py' --exclude package-lock.json"
+loc = "tokei . .github --exclude swagger-ui --exclude third-party --exclude 'lib/crowdb-tree/build-*' --exclude target --exclude dist --exclude node_modules --exclude 'doc/user-manual/*.html' --exclude 'doc/user-manual/*.py' --exclude package-lock.json"
 
 # ── Clean ────────────────────────────────────────────────────────
 # Removes all build/test/runtime artifacts, keeping only git-tracked
@@ -263,7 +290,7 @@ echo "[clean] log dirs"
 rm -rf log cli-log app/crowdb-kv-server/log app/crowdb-diskdb/log app/crowdb-chunkdb/log \
   app/crowdb-cli/log lib/crowdb-console-shared/log app/crowdb-web/log \
   app/crowdb-web/ui/e2e/log \
-  lib/crowdb-chunk-client/log lib/crowdb-diskdb-client/log lib/crowdb-diskio-client/log
+  lib/crowdb-chunk-client/log lib/crowdb-chunk-stream/log lib/crowdb-diskdb-client/log lib/crowdb-diskio-client/log
 
 # ── Profiling artifacts ──
 echo "[clean] profiling artifacts"

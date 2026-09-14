@@ -1,9 +1,6 @@
 ---
 name: coding
-description: Apply CROWDB code, logging, test, and module conventions.
-triggers:
-  - user
-  - model
+description: Apply CROWDB conventions while changing production or test code; not for read-only questions or reviews.
 ---
 
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
@@ -11,9 +8,9 @@ triggers:
 
 # Coding
 
-Read `doc/doc_index.md`, select the matching design section, and keep code
-consistent with it. Update upstream design first when intent is missing or
-contradictory. Ask only when architectural choices remain equivalent.
+Inspect the touched module and its callers. Read `doc/doc_index.md` and the one
+matched design section only when the change alters documented behavior,
+crosses module boundaries, or leaves architectural intent unclear.
 
 ## Logging
 
@@ -43,16 +40,30 @@ object methods so fields propagate. Defaults remain file=`debug`, console=`info`
 
 ## Layout
 
+- Keep roots for entry points, facades, ABI boundaries, configuration, and
+  genuinely shared primitives. Put implementation under its owning product
+  domain; avoid catch-all `handlers`, `types`, and `utils` folders.
 - Use the non-`mod.rs` layout: `foo.rs` + `foo/`; `foo.rs` contains module docs,
-  declarations, and re-exports.
-- Name files by domain subject, not kind, verb, transport, or legacy wording.
-  Avoid `types.rs`, `impl.rs`, `core.rs`, `misc.rs`, and helper suffixes.
-- Keep one concept and one nameable responsibility per module. Group handlers by
-  resource, strategies by file, and services one per file.
-- Separate domain state/invariants from runtime wiring and infrastructure.
+  declarations, and deliberate re-exports. Keep internal children private
+  unless callers need them.
+- Mirror public C++ subsystem ownership under `include/<library>/` and `src/`;
+  keep private headers with their implementation. Avoid forwarding headers
+  unless compatibility requires them.
+- Use established domain names consistently. Keep one nameable responsibility
+  per module and separate domain invariants from runtime wiring.
+- Improve nearby layout only when cohesive with the requested change.
 - Keep code files near 300 lines; split before adding to one over 1000. Keep
   functions near 40 lines, at most 80 for orchestration; split over 150.
 - Use the narrowest visibility. Test hooks require `test-util` and `_for_tests`.
-- Do not add lint suppressions.
 
-Use `/console-ui-e2e` for visible UI changes and `/review` before handoff.
+## C++ clang-tidy
+
+- Run `pixi run tree-lint` before committing; it must exit 0.
+- No per-line `NOLINT`. Disable checks in `.clang-tidy` with a comment.
+- Auto-fix only with `--extra-arg=-w` (blocks compiler fix-its leaking
+  in). Build and run `pixi run test-cpp` after each check group.
+- Review fix-its that change behavior or perf: `static`/`const` method
+  conversions, `std::move` removals, value-param → `const &`.
+- Suppressed checks and reasons are listed in `.clang-tidy`.
+
+For visible console UI or Playwright work, also apply `/console-ui-e2e`.

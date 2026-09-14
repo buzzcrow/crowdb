@@ -45,7 +45,7 @@ const std::vector<std::string> &keys(size_t n)
     if (it != cache.end()) {
         return it->second;
     }
-    std::mt19937_64          rng(0x9E3779B97F4A7C15ull ^ n);
+    std::mt19937_64          rng(0x9E3779B97F4A7C15ULL ^ n);
     std::vector<std::string> ks;
     ks.reserve(n);
     for (size_t i = 0; i < n; ++i) {
@@ -63,11 +63,11 @@ const std::vector<std::string> &keys(size_t n)
 // Keys guaranteed absent from keys(n) (flip the high bit of the seed space).
 std::vector<std::string> miss_keys(size_t n)
 {
-    std::mt19937_64          rng(0xD1B54A32D192ED03ull ^ n);
+    std::mt19937_64          rng(0xD1B54A32D192ED03ULL ^ n);
     std::vector<std::string> ks;
     ks.reserve(n);
     for (size_t i = 0; i < n; ++i) {
-        uint64_t    a = rng() | (1ull << 63);
+        uint64_t    a = rng() | (1ULL << 63);
         uint64_t    b = rng();
         std::string s(16, '\0');
         std::memcpy(s.data(), &a, 8);

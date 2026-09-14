@@ -52,20 +52,19 @@ higher throughput than Raft's strictly sequential log.
 performance, Multi-Paxos for the one thing that does." Leader election,
 leases, snapshot install, log replay are well-understood Raft patterns.
 The hot path, parallel slot writes, is where Multi-Paxos diverges.
-Blind operations only (`Put`, `Delete`); out-of-order apply is safe
-because no operation reads before writing.
+Replicas apply only unconditional mutation batches. Blind operations remain
+fully parallel; revision-conditional writes are serialized per checked key at
+the leader before their resulting ordinary batch enters Paxos.
 
 ## 2. Non-Goals (Design Envelope)
 
 - **No multi-group transactions / 2PC.** Each operation targets a
   single group.
-- **No read-modify-write (`CAS`, `Increment`).** Only blind operations.
-  This is what makes parallel slot writes safe. A leader-side read before
-  propose is not atomic because concurrent requests can observe the same
-  revision and enter different slots. An apply-time predicate is also unsafe:
-  replicas may apply those slots in different orders and choose different
-  predicate results. General conditional mutation therefore requires ordered
-  application or another serialization boundary and is outside this design.
+- **No general read-modify-write.** `Increment` and arbitrary predicates are
+  unsupported. Put and single-group BatchWrite support one revision
+  precondition on a key mutated by the request. Same-key conditional requests
+  use a leader-local lock-free transient map; the predicate never enters the
+  replicated payload and is never evaluated during out-of-order apply.
 - **No dynamic group split/merge.** Operator-managed; membership changes
   require planned reconfiguration.
 - **No core-library sharding.** Every KV RPC carries an explicit
@@ -199,16 +198,30 @@ single-field overrides without rebuilding the whole struct. The
 
 - **Key:** `Vec<u8>` (opaque bytes, lexicographic ordering for scans).
 - **Value:** `Vec<u8>`.
-- **Operations:** `Get`, `Put`, `Delete`, `Scan`, `BatchPut`,
-  `BatchGet`, `BatchDelete` — all single-group.
-- **Not supported:** `CAS`, `Increment`, `Watch`/change feed, TTL/expiry.
-  Callers that require retry-safe mutation should prefer immutable,
-  incarnation-qualified facts whose effects commute under out-of-order apply.
-  For example, DiskDB records a free against the allocation incarnation it
-  releases; later consolidation validates that fact against the current busy
-  incarnation. This preserves blind parallel writes without treating a
-  read-then-write sequence as atomic.
+- **Operations:** `Get`, `Put`, revision-conditional Put, `Delete`, `Scan`,
+  `BatchPut`, revision-conditional BatchWrite, `BatchGet`, `BatchDelete` — all
+  single-group.
+- **Not supported:** `Increment`, arbitrary predicates, `Watch`/change feed,
+  TTL/expiry.
 - **Limits:** key ≤ 1 KB, value ≤ 1 MB, batch ≤ 1024 ops or 4 MiB.
+
+### 5.1 Revision-conditional mutation
+
+The leader claims `cas_transient_map[key]` before a fallible lookup of the
+complete engine view (all live memtables followed by the tree). Revision zero
+means absent or tombstoned. A mismatch returns `CasFailed`; same-key guarded
+contention returns `CasBusy`. A match proposes only the ordinary mutation
+batch. The guard is retained until every allocated slot is resolved and the
+chosen slot is locally applied. Failed slot attempts run Classic Paxos at a
+higher ballot, adopting an accepted value or filling NoOp; failure to resolve
+closes conditional admission for that leader tenure and returns
+`OutcomeUnknown`.
+
+The group-owned task survives RPC cancellation. New leaders admit reads and
+CAS only after bulk Phase 1 has resolved and locally applied every slot through
+its election ceiling. Blind writes do not participate in the guard, so the CAS
+ordering guarantee applies only when every competing mutation of the protected
+key is conditional.
 
 ## 6. Read Modes
 
@@ -226,7 +239,12 @@ single-field overrides without rebuilding the whole struct. The
 
 **Range reads (Scan):** same two modes. Linearizable scan waits for
 the leader's own contiguous applied frontier. This is the one
-latency cost of parallel slots.
+latency cost of parallel slots. Ordinary scans accept `Forward` (the
+FlatBuffer default) or `Reverse`. The legacy `start_after` wire bytes are an
+exclusive continuation in both modes: forward returns larger keys; reverse
+returns smaller keys. With no reverse continuation, `end_key` is the exclusive
+upper bound, or the prefix successor supplies that bound when `end_key` is
+empty.
 
 Full read-flow details: `design-crowdb-kv-leader-election.md`,
 `design-crowdb-kv-state-machine.md`.
@@ -247,7 +265,7 @@ Full read-flow details: `design-crowdb-kv-leader-election.md`,
 
 Full design: `design-crowdb-kv-slot.md` (parallel slots, gap repair,
 correctness proof), `design-crowdb-kv-leader-election.md` (election, lease,
-ReadIndex), `design-crowdb-kv-rpc.md` (wire protocol, LearnerStream).
+ReadIndex), `design-crowdb-kv-rpc.md` (wire protocol and peer transport).
 
 ## 8. Storage and Durability
 
@@ -294,8 +312,9 @@ Full design: `design-crowdb-kv-wal.md`, `design-crowdb-kv-state-machine.md`,
   behavior for backward compatibility. A `GET
   /stores/:sid/groups/:gid/ready` endpoint checks cluster readiness
   (leader elected, quorum reachable, applied-slot lag). The operation
-  registry is an in-memory `DashMap` in `crowdb-kv-server`; background
-  tasks poll group status until a new leader appears or timeout.
+  registry is an in-memory sharded-lock map in `crowdb-kv-server`;
+  this retained use is limited to low-frequency management work, and
+  entry guards are dropped before background polling or other awaits.
 
 Full design: `design-crowdb-kv-reconfiguration.md`, `design-crowdb-kv-server.md`.
 
@@ -329,15 +348,18 @@ Full design: `design-crowdb-kv-reconfiguration.md`, `design-crowdb-kv-server.md`
     Same `NotLeader` fallback as `AnyReplica`.
   - All distributed policies (`AnyReplica`, `LeastConnections`,
     `Latency`) increment `read_endpoint_distributed` on selection and
-    `read_endpoint_fallback` on `NotLeader` redirect. Per-endpoint
-    statistics live in a `DashMap<String, Arc<EndpointStats>>` keyed by
-    endpoint string; entries are created lazily and never evicted
-    (stale entries are harmless: zero in-flight, zero RTT, never
-    selected).
+    `read_endpoint_fallback` on `NotLeader` redirect. Each immutable
+    group route owns its read cursor, write high-watermark, and `Arc`
+    endpoint objects containing atomic in-flight and RTT statistics.
+    Publishing or evicting the route retires those values as one
+    topology generation.
 - **Retry** — on timeout or `NotLeader`, client retries with backoff.
   `NotLeader` with hint → follow hint immediately.
 - **Scan pagination** — the unary `Scan` RPC uses S3-style pagination
-  (`start_after` + `truncated` + `limit`). The server applies a
+  (exclusive continuation + `truncated` + `limit`) in ascending or descending
+  order. Existing `scan*` methods and omitted wire direction remain forward;
+  explicit `scan*_reverse` methods name their public cursor `start_before`.
+  The server applies a
   per-page byte budget (`ServerConfig::scan_byte_budget`, default 3.5
   MiB, leaving ~0.5 MiB for flatbuffer framing under the 4 MiB default)
   to each response so every page is provably bounded regardless of
@@ -347,21 +369,22 @@ Full design: `design-crowdb-kv-reconfiguration.md`, `design-crowdb-kv-server.md`
   still makes progress). A warning is logged for any single entry
   whose key+value size alone exceeds the budget. The client
   transparently pages until `!truncated` or the caller's `limit` is
-  reached, using the last
-  returned key as the next page's `start_after`. On redirect or
-  transport error, pagination restarts from the beginning with the
-  (possibly new) endpoint. The byte budget is server-internal, not
-  on the wire, so `KvScanRequest` and the `kv_store::kv_scan` trait
-  are unchanged. The former `ScanStream` server-streaming RPC (which
+  reached, using the last returned key as the next exclusive continuation.
+  Pages must remain strictly monotonic in the requested direction; a repeated
+  or out-of-order key is rejected instead of looping. On redirect or transport
+  error, pagination resumes from the last returned key on the possibly new
+  endpoint. The byte budget is server-internal. The former `ScanStream`
+  server-streaming RPC (which
   was "fake streaming": it materialized the full result, then chunked
   it) has been deleted. The unary + pagination path is strictly
   simpler and provably bounded.
-- **Idempotency** — `(client_id, seq)` dedup, persisted into the
-  PxLogEntry stream (survives leader change). Per-client retention of
-  the last 64 committed `(seq, slot)` mappings, exact-match lookup: a
-  recorded `seq` returns its own commit slot; an unrecorded `seq`
-  (lower or otherwise) is a miss. Outside the window, outcome is
-  unknown, safe to re-propose.
+- **Request replay** — the active leader keeps the last 64 chosen
+  `(seq, slot)` results per `client_id`. Exact-match lookup suppresses an
+  immediate ordinary-write retry without allocating another slot. The cache
+  is lock-free, in-memory, leader-local, and absent from Accept/WAL records;
+  leader change or restart may therefore re-propose idempotent Put/Delete/
+  Batch operations. Ambiguous conditional writes return `OutcomeUnknown` for
+  read reconciliation instead of being automatically replayed.
 
 ## 11. Module Decomposition
 

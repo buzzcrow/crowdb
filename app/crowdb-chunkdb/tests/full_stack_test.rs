@@ -21,6 +21,7 @@ use crowdb_chunkdb::lifecycle::{
     ReserveGroupSpec,
 };
 use crowdb_chunkdb::metrics::{ChunkdbMetrics, LifecycleMetrics};
+use crowdb_chunkdb::placement_repair::PlacementRepairCoordinator;
 use crowdb_chunkdb::range_guard::{OwnedRange, RangeGuard};
 use crowdb_chunkdb::repair::{decode_payload as decode_repair_payload, RepairCoordinator};
 use crowdb_chunkdb::routing::{default_binding_table, hash_to_bucket, BindingCache};
@@ -30,10 +31,12 @@ use crowdb_chunkdb::task::{
 };
 use crowdb_common::metrics::MetricsRegistry;
 use crowdb_protocol::chunk_task::{
-    ChunkTaskState, ChunkTaskValue, CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_MIRROR_TO_EC, TASK_KIND_REPAIR_STRIP,
+    ChunkTaskState, ChunkTaskValue, CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_MIRROR_TO_EC,
+    TASK_KIND_REPAIR_PLACEMENT, TASK_KIND_REPAIR_STRIP,
 };
 use crowdb_protocol::chunkdb::rpc::{
-    ChunkState, ChunkType, Strip, StripReservationAction, StripReservationState, StripType,
+    Chunk, ChunkState, ChunkStrip, ChunkType, EcState, EcStrip, PlacementAssessment, Strip,
+    StripReservationAction, StripReservationState, StripType,
 };
 use crowdb_protocol::common::ChunkId;
 
@@ -242,6 +245,65 @@ async fn unavailable_strip_survives_crash_gap_and_is_admitted_as_repair_task() {
 }
 
 #[tokio::test]
+async fn degraded_ec_strip_is_admitted_as_a_persistent_placement_task() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let bindings = BindingCache::new();
+    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let coordinator = PlacementRepairCoordinator::new(Arc::clone(&harness.handler), Arc::clone(&tasks));
+    let chunk_id = ChunkId { high: 41, low: 42 };
+    let strip = ChunkStrip {
+        strip_sequence: 7,
+        strip_type: StripType::Ec as i32,
+        strip: Some(Strip::EcStrip(EcStrip {
+            data_num: 2,
+            code_num: 1,
+            ec_state: EcState::Parity as i32,
+            segments: Vec::new(),
+        })),
+        placement_assessment: Some(PlacementAssessment {
+            loss_budget: 1,
+            max_fragments_per_rack: 2,
+            max_fragments_per_node: 1,
+            max_fragments_per_disk: 1,
+            rack_protected: false,
+            node_protected: true,
+            disk_protected: true,
+            topology_generation: 1,
+            usage_fresh: true,
+        }),
+        placement_repair_required: true,
+        ..ChunkStrip::default()
+    };
+    let chunk = Chunk {
+        id: Some(chunk_id),
+        modify_ts: 9,
+        strips: vec![strip],
+        ..Chunk::default()
+    };
+
+    assert_eq!(coordinator.admit_chunk(&chunk, 100).await.unwrap(), 1);
+    assert_eq!(coordinator.admit_chunk(&chunk, 101).await.unwrap(), 0);
+    let ready = tasks.scan_ready(101, 16).await.unwrap();
+    assert_eq!(ready.len(), 1);
+    assert_eq!(ready[0].kind, TASK_KIND_REPAIR_PLACEMENT);
+    let task = tasks
+        .get(&chunk_id, TASK_KIND_REPAIR_PLACEMENT, &ready[0].task_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.source_revision, 9);
+    assert_eq!(task.max_attempts, u32::MAX);
+}
+
+#[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn chunkdb_full_stack_allocate_seal_delete() {
     // Skip if crowdb-kv-server binary is not built.
@@ -287,6 +349,20 @@ async fn chunkdb_full_stack_allocate_seal_delete() {
         .expect("allocate_chunk");
     assert_eq!(chunk.state, ChunkState::Active as i32);
     assert!(!chunk.strips.is_empty(), "chunk should have strips");
+    for strip in &chunk.strips {
+        let assessment = strip
+            .placement_assessment
+            .as_ref()
+            .expect("allocated strips persist a physical placement assessment");
+        assert_eq!(assessment.loss_budget, 2);
+        assert_eq!(assessment.max_fragments_per_rack, 1);
+        assert_eq!(assessment.max_fragments_per_node, 1);
+        assert_eq!(assessment.max_fragments_per_disk, 1);
+        assert!(assessment.rack_protected);
+        assert!(assessment.node_protected);
+        assert!(assessment.disk_protected);
+        assert!(!strip.placement_repair_required);
+    }
     eprintln!("chunk allocated: {} strips", chunk.strips.len());
 
     // 6. Query the chunk.
@@ -1019,8 +1095,40 @@ async fn assert_legacy_consumed_reservation_is_retained(
     harness.store.put_reservation_group(&retained).await.unwrap();
 }
 
+async fn assert_consumed_reservation_waits_for_reuse_grace(
+    harness: &ChunkdbHarness,
+    chunk_id: &ChunkId,
+    group_id: &ChunkId,
+) {
+    let retained = harness
+        .store
+        .get_reservation_group(chunk_id, group_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let outcome = harness
+        .handler
+        .recover_expired_reservation_group(
+            chunk_id,
+            group_id,
+            retained
+                .lease_deadline_ms
+                .saturating_add(harness.handler.layout_validity_ms().saturating_sub(1)),
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome, ReservationRecovery::Reconciled);
+    let retained = harness
+        .store
+        .get_reservation_group(chunk_id, group_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.states[0], StripReservationState::Consumed as i32);
+}
+
 #[tokio::test]
-async fn expired_consumed_reservation_only_reclaims_generation_fenced_blocks() {
+async fn expired_consumed_reservation_waits_for_reuse_grace() {
     if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
         eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
         return;
@@ -1094,6 +1202,8 @@ async fn expired_consumed_reservation_only_reclaims_generation_fenced_blocks() {
         .unwrap();
 
     assert_legacy_consumed_reservation_is_retained(&harness, &chunk_id, &group_id, planned_cursor).await;
+
+    assert_consumed_reservation_waits_for_reuse_grace(&harness, &chunk_id, &group_id).await;
 
     let outcome = harness
         .handler

@@ -13,7 +13,7 @@ use crowdb_kv::paxos::roles::{PxBallot, PxLogEntry};
 use crowdb_kv::wal::record::WALRecord;
 use crowdb_kv::wal::replay::replay_group;
 use crowdb_kv::wal::{IoBackend, WalEngine};
-use crowdb_kv_server::startup::{create_group_with_wal, store_wal_root};
+use crowdb_kv_server::recovery::startup::{create_group_with_wal, store_wal_root};
 
 fn encode_put_payload(key: &[u8], value: &[u8]) -> Vec<u8> {
     let mut buf = Vec::new();
@@ -154,7 +154,7 @@ async fn crowdb_tree_engine_persists_across_restart(crowtree_backend: CrowdbTree
 
     // The durable crowdb-tree file was created under data_root, not left at the
     // default in-memory (no file) path.
-    let ct_path = crowdb_kv_server::startup::store_crowdb_tree_path(&data_root, store_id, group_id);
+    let ct_path = crowdb_kv_server::recovery::startup::store_crowdb_tree_path(&data_root, store_id, group_id);
     assert!(
         ct_path.exists(),
         "expected a durable crowdb-tree file at {}",

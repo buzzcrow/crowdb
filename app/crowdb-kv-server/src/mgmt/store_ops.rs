@@ -26,16 +26,12 @@ use super::{err_json, ErrorResponse, RegistryArc};
     )]
 pub(super) async fn list_stores(State(state): State<RegistryArc>) -> Json<StoreListResponse> {
     let stores: Vec<StoreSummary> = state
-        .stores
+        .stores_snapshot()
         .iter()
-        .map(|entry| {
-            let store_id = *entry.key();
-            let store = entry.value();
-            StoreSummary {
-                store_id,
-                listen_addr: store.listen_addr().map(|a| a.to_string()),
-                group_count: store.group_count(),
-            }
+        .map(|(store_id, store)| StoreSummary {
+            store_id: *store_id,
+            listen_addr: store.listen_addr().map(|a| a.to_string()),
+            group_count: store.group_count(),
         })
         .collect();
     Json(StoreListResponse { stores })
@@ -95,7 +91,7 @@ pub(super) async fn add_store(
     State(state): State<RegistryArc>,
     Json(req): Json<AddStoreRequest>,
 ) -> Result<(StatusCode, Json<StoreSummary>), (StatusCode, Json<ErrorResponse>)> {
-    if state.stores.contains_key(&req.store_id) {
+    if state.contains_store(req.store_id) {
         return Err(err_json(
             StatusCode::CONFLICT,
             format!("store {} already exists", req.store_id),
@@ -126,6 +122,11 @@ pub(super) async fn add_store(
     store.set_quickack(state.config.server.quickack);
     store.set_event_write(state.config.server.event_write);
     store.set_send_queue_capacity(state.config.server.send_queue_capacity);
+    store.set_snapshot_source_config(
+        state.config.server.snapshot_chunk_bytes,
+        state.config.server.snapshot_source_sessions,
+        state.config.server.snapshot_session_lease_ms,
+    );
     let store = Arc::new(store);
 
     if let Err(e) = store.start().await {
@@ -148,7 +149,7 @@ pub(super) async fn add_store(
         group_count: 0,
     };
 
-    state.add_store(req.store_id, store);
+    state.add_store(req.store_id, &store);
     Ok((StatusCode::CREATED, Json(summary)))
 }
 
@@ -190,7 +191,7 @@ pub(super) async fn remove_store(
     }
 
     // Delete the WAL store dir (cascades all group subdirs).
-    let wal_store_dir = crate::startup::store_wal_root(&state.config.wal_root, sid);
+    let wal_store_dir = crate::recovery::startup::store_wal_root(&state.config.wal_root, sid);
     if let Err(e) = tokio::fs::remove_dir_all(&wal_store_dir).await {
         if e.kind() != std::io::ErrorKind::NotFound {
             tracing::warn!(s = sid, error = %e, "failed to delete WAL store dir; continuing");

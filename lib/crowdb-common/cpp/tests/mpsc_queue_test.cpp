@@ -145,7 +145,7 @@ TEST(MpscQueueTest, MpscStress)
     std::atomic<int> next_value{0};
     std::atomic<int> drained_count{0};
 
-    auto producer_fn = [&]() {
+    auto producer_fn = [&] {
         for (;;) {
             int v = next_value.fetch_add(1, std::memory_order_relaxed);
             if (v >= TOTAL) {
@@ -157,7 +157,7 @@ TEST(MpscQueueTest, MpscStress)
         }
     };
 
-    auto consumer_fn = [&]() {
+    auto consumer_fn = [&] {
         while (drained_count.load(std::memory_order_relaxed) < TOTAL) {
             int out[64];
             int n = q.drain(out, 64);
@@ -172,6 +172,7 @@ TEST(MpscQueueTest, MpscStress)
 
     std::thread              consumer(consumer_fn);
     std::vector<std::thread> producers;
+    producers.reserve(PRODUCERS);
     for (int p = 0; p < PRODUCERS; p++) {
         producers.emplace_back(producer_fn);
     }
@@ -198,7 +199,7 @@ TEST(MpscQueueTest, MpscStressSmallQueue)
     std::atomic<int> next_value{0};
     std::atomic<int> drained_count{0};
 
-    auto producer_fn = [&]() {
+    auto producer_fn = [&] {
         for (;;) {
             int v = next_value.fetch_add(1, std::memory_order_relaxed);
             if (v >= TOTAL) {
@@ -210,7 +211,7 @@ TEST(MpscQueueTest, MpscStressSmallQueue)
         }
     };
 
-    auto consumer_fn = [&]() {
+    auto consumer_fn = [&] {
         while (drained_count.load(std::memory_order_relaxed) < TOTAL) {
             int out[4];
             int n = q.drain(out, 4);
@@ -225,6 +226,7 @@ TEST(MpscQueueTest, MpscStressSmallQueue)
 
     std::thread              consumer(consumer_fn);
     std::vector<std::thread> producers;
+    producers.reserve(PRODUCERS);
     for (int p = 0; p < PRODUCERS; p++) {
         producers.emplace_back(producer_fn);
     }

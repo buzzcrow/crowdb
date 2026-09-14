@@ -36,8 +36,9 @@ See [`todo_code.md`](../todo_code.md) for anything still open.
   position) of the write that produced it, stored **in the value cell, not the
   key**. Putting it in the key would make each key sort into multiple ordered
   versions — multi-version storage — which is explicitly not wanted.
-- Pluggable persistence behind one page-granular backend: a **file** store and a
-  **block-device** store. The block-device store covers raw SSD, SCM, an
+- Pluggable persistence behind one page-granular backend: a **file** store, a
+  **block-device** store, and an immutable **chunk** store. The block-device
+  store covers raw SSD, SCM, an
   in-memory store for tests, and RDMA-remote (a remote block device); it is
   parameterized by an **IU (indivisible-unit) alignment** as small as 1 byte
   (mem / SCM) or a flash page (SSD).
@@ -114,8 +115,8 @@ crowdb-kv (Rust)
         ├─ DiskIOUring (1 thread)  io_uring event loop for async I/O
         ├─ root_pid / leftmost_leaf_pid
         ├─ RootVersion         versioned root + refcount for consistent snapshots
-        └─ PageStore (backend)  FilePageStore | BlockPageStore
-                                 (raw SSD / SCM / mem-for-test / RDMA-remote; IU-aligned, IU ≥ 1B)
+        └─ PageStore (backend)  TextPageStore | BlockPageStore | ChunkPageStore
+                                 (local aligned pages or immutable mirrored packs)
 ```
 
 - **One crowdb-tree per consensus group.** A node hosting many groups owns many
@@ -262,13 +263,14 @@ signatures):
 
 ## 5. Sub-Design Document Map
 
-The crowdb-tree design is split into two self-contained documents:
+The crowdb-tree design is split into focused documents:
 
 | Doc | Covers |
 | --- | --- |
 | `design-crowdb-tree.md` (this) | Goals, architecture, `KVEngine` trait, FFI boundary, decision log. |
 | [`design-crowdb-tree-engine.md`](design-crowdb-tree-engine.md) | **In-memory engine.** MemTable (L0) + COW B+tree (L1), slot-aware value cell, delta records + consolidation, split/merge, versioned root (MVCC snapshots), epoch-based reclamation, read path; the `buffer` memory-ownership model (zero-copy write/read pipelines); the io_uring async FFI bridge. |
 | [`design-crowdb-tree-storage.md`](design-crowdb-tree-storage.md) | **Durable storage.** `PageStore` backends, on-disk zero-copy frame format, buffer pool (frame cache) + eviction safety, snapshot + internal-WAL decision + recovery, snapshot export/import; the mapping table (PID indirection, segment persistence, recycling); snapshot/GC flow integration with the learner and consensus WAL. |
+| [`design-crowdb-tree-chunk-storage.md`](design-crowdb-tree-chunk-storage.md) | **Chunk storage.** Immutable mirrored page packs, async execution, fenced manifests and recovery, range rebuild, sharing, ownership materialization, and reclamation boundaries. |
 
 Test strategy for crowdb-tree (C++ unit, integration, crash/recovery, Rust FFI,
 cross-engine parity, sanitizer) is documented in [`../kv/design-crowdb-kv-test.md`](../kv/design-crowdb-kv-test.md) §
@@ -290,7 +292,7 @@ cross-engine parity, sanitizer) is documented in [`../kv/design-crowdb-kv-test.m
 | D8 | **Unified `buffer` memory model; single-allocation zero-copy pipeline.** | Key/value bytes are allocated once at the API boundary and moved down to the MemTable and into the frame; reads return borrowed views into resident frames (L1) or copies (L0). Replaces per-write `std::string`. Full design in [`design-crowdb-tree-engine.md §2`](design-crowdb-tree-engine.md#2-memory-and-buffer-management). |
 | D9 | **MemTable ordered map = `absl::btree_map`.** | Chosen over `std::map` (poor cache locality) and skip list (cache-miss-heavy at MemTable scale). B-tree fanout gives 2–3× faster point lookups; ordered iteration is preserved for drain/snapshot. |
 | D10 | **Snapshot/flush unified terminology + dual flush trigger.** | `flush` (drain L0→L1 + publish a new COW root) *is* snapshot creation. Trigger = MemTable size (primary) **OR** a long time interval (secondary safety net, default ~2 h) so a slow-write workload cannot leave L0 un-flushed and make crash recovery replay unbounded (§3.1). |
-| D11 | **C++ logging via `spdlog`, hot-path-silent.** | Async ring-buffer file logger matching the Rust `tracing` file format. Hot paths (`apply`/`get`/`scan`) emit no info/warn logs; only structural events (flush/snapshot/recover) and errors log at info+. Off by default (`Options.log_dir`). |
+| D11 | **C++ logging via `spdlog`, hot-path-silent.** | Async ring-buffer file logger matching the Rust `tracing` file format. Hot paths (`apply`/`get`/`scan`) emit no info/warn logs; only structural events (flush/snapshot/recover) and errors log at info+. Off by default (`Config.log_dir`). |
 | D12 | **Async FFI via io_uring + completion-based futures; no `spawn_blocking`, no large thread pools.** | Fast path (in-memory hit) completes synchronously with zero scheduling overhead; slow path (I/O) submits an io_uring SQE and returns pending. A single-thread C++ DiskIOUring per `Crowdbtree` processes completions and notifies the Rust `Future` via `eventfd` + Tokio `AsyncFd`. Full design in [`design-crowdb-tree-engine.md §3`](design-crowdb-tree-engine.md#3-async-ffi-bridge). |
 | D13 | **Flush trigger = MemTable byte/entry limit OR time limit; flush the contiguous prefix only.** | The contiguous frontier is supplied by the learner (NoOp / repair-fill slots leave no MemTable entry, so the frontier must not be inferred from MemTable contents — otherwise the Flusher blocks at a NoOp gap). Flush entries with `slot ≤ contiguous_slot` (§3.1). |
 | D14 | **One block-device backend covers raw SSD / SCM / mem-for-test / RDMA-remote; RDMA is not a separate backend.** | All are IU-aligned with a configurable IU that can be **1 byte** (mem / SCM) up to a flash page (SSD). RDMA-remote is just a remote block device; its cache/eviction details are deferred with the rest of the block backend. Full design in [`design-crowdb-tree-storage.md §2`](design-crowdb-tree-storage.md#2-backends). |
@@ -298,4 +300,5 @@ cross-engine parity, sanitizer) is documented in [`../kv/design-crowdb-kv-test.m
 | D16 | **Tree-level split/merge: not in v1, but not precluded.** | Designed so a future large-cluster *sharding* feature can split/merge whole trees (§1). |
 | D17 | **No internal redo-WAL; snapshot-only recovery.** | crowdb-tree persists a snapshot = immutable root + `last_applied_slot`. On restart it composes with the external WAL: replay starts from `last_applied_slot+1`. Full rationale in [`design-crowdb-tree-storage.md §5`](design-crowdb-tree-storage.md#5-internal-wal-decision). |
 | D18 | **Snapshot is implicit (a COW root version).** | Every flush/snapshot yields a new immutable root tagged with its slot = a snapshot, no explicit "create snapshot" API; callers obtain `(version, root, slot)` via `snapshot_view()`. `snapshot_export` iterates a pinned root (§3.1). |
-| D19 | **Compression implemented (LZ4), off by default.** | LZ4 on-disk page compression is opt-in (`Options.compression = kLz4`); see [`design-crowdb-tree-storage.md §3.6`](design-crowdb-tree-storage.md#36-compression-details). |
+| D19 | **Compression implemented (LZ4), off by default.** | LZ4 on-disk page compression is opt-in (`Config.compression = kLz4`); see [`design-crowdb-tree-storage.md §3.6`](design-crowdb-tree-storage.md#36-compression-details). |
+| D20 | **Chunk storage is an injected private backend built from immutable mirrored packs.** | Tree algorithms keep the `PageStore` contract while chunk-KV supplies topology, ownership epochs, and root publication. Immutable pack and metadata sharing makes range rebuild cheap; generation fencing and later materialization preserve independent ownership. Full design in [`design-crowdb-tree-chunk-storage.md`](design-crowdb-tree-chunk-storage.md). |

@@ -99,9 +99,14 @@ The number of in-flight slots is capped at the **window size** (`max_inflight_pr
 
 As soon as the leader has fsynced its own copy of slot N, it sends `Accept(N, ...)` to all followers. It does **not** wait for slot N-1, N-2 to reach quorum first.
 
-**Transport: per-peer bidi `LearnerStream`.** The leader uses one long-running crowdb-rpc bidi stream per `(group_id, peer_id)` pair (see [`design-crowdb-kv-rpc.md`](design-crowdb-kv-rpc.md) §3). The stream's background task maintains a `PendingMap` (`HashMap<request_id, oneshot::Sender>`). Because each `Accept` gets its own oneshot, the leader can enqueue slot N+1's `Accept` before slot N's `Accepted` response has returned.
+**Transport: shared per-peer `crowdb-rpc` connection.** Each Accept is a unary
+request correlated by `RpcClient`, so concurrent slots may remain in flight
+without a dedicated application-level stream.
 
-**Per-follower flow control.** The stream's `cmd_tx` is a bounded `tokio::sync::mpsc` whose capacity is `learner_stream_window_frames` (default 64). When full, `dispatch` fails and the proposer surfaces `PxPaxosError::Busy`.
+**Per-follower flow control.** `crowdb-rpc` uses the configured bounded send
+queue plus a bounded overflow queue drained on writable events. Terminal
+queue pressure surfaces as `PxReplicaError::Backpressure`; the proposal retry
+budget applies backoff without invalidating the healthy connection.
 
 **Quorum bookkeeping.** For each in-flight slot, the leader keeps a small bitmap of which peers have `Accepted` it. As soon as a majority is reached (counting itself), the slot transitions to `Chosen`.
 
@@ -192,7 +197,7 @@ The `ballot_round` field in the ChosenNotice flatbuffer enables this verificatio
 
 ### 9A.3 Follower-Driven FetchGap Catch-up
 
-When a follower detects a gap (missing or stale slot in the chosen range), it sends a `FetchGap(slot)` request to the leader via the LearnerStream. The leader:
+When a follower detects a gap (missing or stale slot in the chosen range), it sends a unary `FetchGap(slot)` request to the leader. The leader:
 
 - Has the chosen value locally → replies with the full entry (payload + ballot + term).
 - Does not have it → runs classic Paxos (`repair_once`, §9) to resolve the slot, then replies with the resolved value (or NoOp).
@@ -204,6 +209,11 @@ This replaces the previous leader-driven catch-up that ran inline in `run_heartb
 ### 9A.4 Snapshot Fallback
 
 If a follower's gap count exceeds `catchup_snapshot_threshold` (default `bulk_prepare_window` = 1024), the follower stops issuing FetchGap requests and logs a warning. The full snapshot-install path for running replicas is deferred; the threshold gate prevents FetchGap storms against the leader when a follower is severely lagging (e.g. after a long network partition).
+
+The bounded snapshot protocol is used only while bootstrapping a fresh,
+unpublished member. It does not replace the engine of a running follower and
+is not invoked by this threshold. A live replacement requires a separate
+atomic engine-generation publication design.
 
 ### 9A.5 Apply Loop
 
@@ -298,7 +308,6 @@ Detailed further in [`design-crowdb-kv-wal.md`](design-crowdb-kv-wal.md) §4.
 | `max_paxos_retries` | 3 | `PaxosConfig` (per-slot Phase-2 retries) |
 | `max_slot_retries` | 3 | `PaxosConfig` (new-slot retries before giving up) |
 | `retry_base_backoff_ms` | 5 | `PaxosConfig` (exponential backoff base) |
-| `learner_stream_window_frames` | 64 | `PxElectionConfig` (per-peer mpsc capacity) |
 | `bulk_prepare_window` | 1024 | `PxElectionConfig` (bulk Phase-1 batch size) |
 | `catchup_snapshot_threshold` | 1024 | `PxElectionConfig` (gap count above which FetchGap is skipped in favor of snapshot fallback) |
 
@@ -595,8 +604,8 @@ concurrent map.
 - `op_bodies: Vec<u8>` — concatenated op bodies (each single-op
   payload's leading count bytes dropped; op bodies are self-delimited).
 - `op_count: u16` — number of ops accumulated.
-- `tags: Vec<DedupTag>` — one `(client_id, seq)` dedup tag per client
-  op, all mapping to the shared slot.
+- `identities: Vec<RequestIdentity>` — one `(client_id, seq)` request
+  identity per client operation, all mapping to the shared result slot.
 - `waiters: Vec<oneshot::Sender<ProposeResult>>` — one per coalesced
   caller; each receives the shared `ProposeResult` on flush.
 - `timer: Option<JoinHandle<()>>` — reserved (unused in event mode;
@@ -605,7 +614,7 @@ concurrent map.
 `propose` flow (refactored into `propose` + `propose_inner`):
 
 1. Leadership gate (as before).
-2. Dedup lookup (as before) — a hit returns the cached slot
+2. Request-result lookup — a hit returns the cached slot
    immediately, never enters a batch.
 3. If `coalesce_max_keys == 0` (coalescing disabled) or `self_weak` is
    unset: call `propose_inner(payload, &[tag])` directly; bit-identical
@@ -643,32 +652,20 @@ checks if there's been no coalescer activity for 1000ms. If so, it
 flushes any stuck non-empty batch. Safety net for edge cases (drain
 panic, spawn failure). Zero overhead during normal operation.
 
-### 23.4 Dedup Tag Threading
+### 23.4 Request Identity Threading
 
-A coalesced batch carries K `(client_id, seq)` tags but one slot. To
-preserve the existing dedup-on-all-replicas invariant (so a follower
-that becomes leader can return cached slots for retried coalesced ops),
-all K tags must reach every replica that accepts the batch.
+A coalesced batch carries K client request identities but one result slot.
+The identities stay with the leader's coalescer waiters and are published to
+the leader-local request-result cache only after that value is chosen. They
+are not part of `PxLogEntry`, the WAL, or `FBAcceptRequest` because an
+Accepted value is not necessarily chosen and followers cannot safely publish
+a result from Accept alone.
 
-The `Accept` RPC flatbuffer is extended with a repeated `dedup_tags` field:
-
-```fbs
-message DedupTag { uint64 client_id = 1; uint64 seq = 2; }
-// in AcceptRequest:
-repeated DedupTag dedup_tags = 13;
-```
-
-The `client_id`/`seq` fields (9/10) are kept populated with the
-first tag (or 0) for backward-compat with older followers during a
-rolling upgrade. New followers prefer `dedup_tags`; older followers
-fall back to the single tag.
-
-The `Learner::learn` trait signature changed from `(entry,
-client_id: Option<u64>, seq: Option<u64>)` to `(entry, dedup_tags:
-&[DedupTag])`. `PxLearner::record_dedup_tags` records each tag against
-the slot (skipping `client_id == 0` sentinels). Repair/election/restore
-paths pass `&[]` (no tags → no dedup recording, identical to the old
-`None, None`).
+`Learner::learn` accepts a slice of `RequestIdentity` values. Normal leader
+proposals pass their identities; repair, election, follower notification, and
+restore paths pass an empty slice. The cache is lost on leader change or
+restart, at which point ordinary data-idempotent operations may be proposed
+again.
 
 ### 23.5 Config
 
@@ -688,19 +685,15 @@ coalescer reads `self.config.paxos.*`).
 
 ### 23.6 Correctness
 
-- **Dedup**: each coalesced tag is recorded on leader + all accepting
-  followers → a retried `(client_id, seq)` returns the shared slot on
-  any replica that has it; outside the window, safe to re-propose
-  (per-key highest-slot-wins makes a re-propose idempotent at the
-  engine level). Identical guarantee shape as before.
+- **Request replay**: every coalesced identity is recorded against the shared
+  slot on the leader after choice. Same-leader retries return that slot;
+  retries after leader change or restart may re-propose ordinary mutations.
 - **Per-key ordering**: unchanged; all ops in a batch share one slot;
   across batches, per-key highest-slot-wins applies as before.
 - **`ProposeResult::Chosen { slot }` contract**: every coalesced
   waiter receives the same slot. `ProposeResult` gains `Clone`.
 - **`coalesce_max_keys = 0`**: `propose` calls `propose_inner` with a
-  1-tag slice; the paxos loop is unchanged; the only difference is
-  the `&[DedupTag]` vs `(Option, Option)` plumbing, which records the
-  same single dedup entry. No behavior change.
+  one-identity slice and records the same leader-local result after choice.
 - **Leadership**: re-checked inside `propose_inner`; a step-down
   between batch collection and flush surfaces as `NotLeader` to all
   waiters.

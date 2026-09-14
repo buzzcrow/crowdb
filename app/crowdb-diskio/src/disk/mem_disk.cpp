@@ -9,8 +9,10 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <limits>
 
 namespace crowdb::diskio
 {
@@ -34,12 +36,25 @@ int create_memfd(int64_t capacity)
     return -1;
 #endif
 }
+
+int64_t backing_capacity(const std::vector<Zone> &zones)
+{
+    int64_t capacity = 4096;
+    for (const Zone &zone : zones) {
+        if (zone.base_offset < 0 || zone.capacity < 0 ||
+            zone.base_offset > std::numeric_limits<int64_t>::max() - zone.capacity) {
+            return -1;
+        }
+        capacity = std::max(capacity, static_cast<int64_t>(zone.base_offset) + zone.capacity);
+    }
+    return capacity;
+}
 } // namespace
 
 MemDisk::MemDisk(DiskId id, std::shared_ptr<IoEngine> engine, std::vector<Zone> zones,
                  std::optional<DiskProperties> props)
     : id_(id),
-      fd_(create_memfd(zones.empty() ? 4096 : zones[0].capacity))
+      fd_(create_memfd(backing_capacity(zones)))
 {
     if (props.has_value() && props->has_fault_injection()) {
         // Wrap with fault injection (no read-content hack — MemDisk

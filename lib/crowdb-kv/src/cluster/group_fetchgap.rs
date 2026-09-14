@@ -68,7 +68,7 @@ pub(crate) async fn run_fetchgap_driver(
         // can call `transport.send_fetch_gap()` directly.
         let rpc_transport = remote.rpc_transport().cloned();
         let rpc_endpoint = remote.endpoint_str().to_string();
-        let rpc_timeout = Duration::from_millis(group.config.election.learner_stream_rpc_timeout_ms);
+        let rpc_timeout = Duration::from_millis(group.config.election.peer_rpc_timeout_ms);
         let replica = group.local_replica();
         let term = replica.current_term_snapshot();
         let gaps = replica.drain_gaps_for_fetchgap();

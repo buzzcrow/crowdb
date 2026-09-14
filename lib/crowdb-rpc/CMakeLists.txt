@@ -35,6 +35,8 @@ set(CROWDB_RPC_FBS_FILES
   ${CROWDB_PROTOCOL_FBS_DIR}/common_type.fbs
   ${CROWDB_PROTOCOL_FBS_DIR}/common_msg.fbs
   ${CROWDB_PROTOCOL_FBS_DIR}/diskio.fbs
+  ${CROWDB_PROTOCOL_FBS_DIR}/diskdb.fbs
+  ${CROWDB_PROTOCOL_FBS_DIR}/chunkdb.fbs
 )
 execute_process(
   COMMAND ${FLATC_BIN} --cpp -o ${CROWDB_RPC_PROTO_GEN_DIR} ${CROWDB_RPC_FBS_FILES}
@@ -78,7 +80,9 @@ endif()
 # ── crowdb-common (shared utils: crc32c, log, gzip, metrics) ────────
 # Built in-tree via add_subdirectory so crowdb-rpc can link
 # MetricsRegistry::global() and other crowdb-common symbols.
-add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../crowdb-common/cpp crowdb-common-build)
+if(NOT TARGET crowdbcommon)
+  add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../crowdb-common/cpp crowdb-common-build)
+endif()
 
 add_library(crowdb-rpc STATIC ${CROWDB_RPC_SRC})
 target_include_directories(crowdb-rpc
