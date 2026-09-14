@@ -24,13 +24,14 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::Segment;
-use crowdb_protocol::frame::{parse_frame, FrameMagic};
+use crowdb_protocol::frame::{parse_frame, FrameMagic, MAX_FRAME_PAYLOAD_BYTES};
 use crowdb_test_harness::chunkdb::ChunkdbStartOptions;
 
 use e2e_stack::{all_binaries_available, E2eStack};
 
 const KIB: usize = 1024;
 const MIB: usize = 1024 * KIB;
+const FRAMES_PER_MIB_STRIP: usize = MIB / (64 * KIB);
 
 struct FailSelectedDiskWrite {
     inner: Arc<dyn DiskWriter>,
@@ -118,6 +119,41 @@ async fn write_object(client: &ChunkIoClient, data: Bytes) -> Location {
     let mut writer = client.prepare_small_write(data.len()).await.unwrap();
     writer.on_data(data).await.unwrap();
     writer.on_finish().await.unwrap().remove(0)
+}
+
+async fn write_full_small_strip(client: &ChunkIoClient, value: u8) -> Vec<(Bytes, Location)> {
+    let mut frames = Vec::with_capacity(FRAMES_PER_MIB_STRIP);
+    for _ in 0..FRAMES_PER_MIB_STRIP {
+        let payload = Bytes::from(vec![value; MAX_FRAME_PAYLOAD_BYTES]);
+        let location = write_object(client, payload.clone()).await;
+        frames.push((payload, location));
+    }
+    frames
+}
+
+async fn read_mirror_strip(stack: &E2eStack, chunk: &Chunk, location: &Location) -> Bytes {
+    let strip = chunk
+        .strips
+        .iter()
+        .find(|strip| {
+            let start = u64::from(strip.chunk_offset) * KIB as u64;
+            let end = start + u64::from(strip.capacity) * KIB as u64;
+            start <= location.offset && location.offset < end
+        })
+        .expect("location strip");
+    let Strip::MirrorStrip(mirror) = strip.strip.as_ref().expect("strip body") else {
+        panic!("expected mirror strip");
+    };
+    Bytes::from(
+        stack
+            .read_segment(
+                &mirror.segments[0],
+                u64::from(strip.unit_kb) * KIB as u64,
+                0,
+                u32::try_from(MIB).unwrap(),
+            )
+            .await,
+    )
 }
 
 async fn real_write_parts(stack: &E2eStack) -> (Arc<ChunkdbClient>, Arc<RoutedDiskWriter>) {
@@ -244,16 +280,23 @@ async fn eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread()
     let mut configured = policy();
     configured.chunk_capacity = 16 * MIB as u64;
     let stack = E2eStack::start(configured).await;
-    let mut data = Vec::new();
-    let mut locations = Vec::new();
+    let mut object_groups = Vec::new();
     for index in 0_u8..8 {
-        let shard = Bytes::from(vec![index.wrapping_mul(29).wrapping_add(7); MIB]);
-        locations.push(write_object(&stack.client, shard.clone()).await);
-        data.push(shard);
+        object_groups
+            .push(write_full_small_strip(&stack.client, index.wrapping_mul(29).wrapping_add(7)).await);
     }
+    let locations: Vec<Location> = object_groups
+        .iter()
+        .flat_map(|group| group.iter().map(|(_, location)| location.clone()))
+        .collect();
     assert!(locations
         .iter()
         .all(|location| location.chunk_id == locations[0].chunk_id));
+    let before = stack.query_chunk(&locations[0]).await;
+    let mut data = Vec::with_capacity(object_groups.len());
+    for group in &object_groups {
+        data.push(read_mirror_strip(&stack, &before, &group[0].1).await);
+    }
     // Draining joins the already-scheduled foreground conversion task. This
     // is a deterministic completion boundary and still proves that parity was
     // produced from retained mirror images rather than rereading the data.
@@ -293,15 +336,17 @@ async fn eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread()
     degraded[3] = None;
     let reconstructed = decode(EcScheme::new(8, 4), degraded).unwrap();
     assert_eq!(reconstructed[3], data[3]);
-    for (location, expected) in locations.iter().zip(&data) {
-        assert_eq!(
-            stack
-                .client
-                .read_object(std::slice::from_ref(location))
-                .await
-                .unwrap(),
-            *expected
-        );
+    for group in &object_groups {
+        for (expected, location) in group {
+            assert_eq!(
+                stack
+                    .client
+                    .read_object(std::slice::from_ref(location))
+                    .await
+                    .unwrap(),
+                *expected
+            );
+        }
     }
     let sealed = stack.query_chunk(&locations[0]).await;
     assert_eq!(sealed.state, ChunkState::Sealed as i32);
