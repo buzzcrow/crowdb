@@ -45,7 +45,10 @@ integrity-aware protection reads.
 
 ## Phase 4: Chunk writers and locations
 
-- [ ] **Repo writers**: frame small and large object writes, publish shared
+- [~] **Repo writers**: `RepoSmall` writes and reads now use one verified
+  frame per object and compact physical/logical locations. Frame `RepoLarge`
+  writes, multi-frame range reads, and migration of legacy small-object tests
+  remain. Publish shared
   locations only after durable writes, and support range reads. Files:
   `lib/crowdb-chunk-client/src/writer/*`, client tests.
 - [ ] **Stream**: frame journal records and remove duplicate physical checksum
@@ -58,7 +61,8 @@ integrity-aware protection reads.
 
 ## Phase 5: Verified reads and repair
 
-- [ ] **Verified source-aware strip reads**: retain source provenance through
+- [~] **Verified source-aware strip reads**: RepoSmall locations are parsed
+  and CRC/chunk-ID verified before payload exposure. Retain source provenance through
   frame verification, attempt a connected target at most three times, and feed
   checksum corruption into mirror/EC fallback and repair. Files:
   `lib/crowdb-chunk-client/src/chunk/strip_reader.rs`, `chunk_reader.rs`,

@@ -23,6 +23,7 @@ use crowdb_protocol::chunkdb::rpc::{
     UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
 use crowdb_rpc_ffi::OwnedClientRoute;
 
 use crate::metrics::SmallWriteMetrics;
@@ -30,8 +31,8 @@ use crate::negative_list::FailedDiskList;
 use crate::writer::small_pool::SmallWritePool;
 use crate::{
     ChunkAllocator, ChunkClientConfig, ChunkClientMetrics, ChunkIoWriter, ChunkReadPolicy, ChunkReadStream,
-    ChunkReader, DiskWriter, LargeAsyncObjectWriter, PartialReadResult, ReadResult, Result, RoutedDiskWriter,
-    SmallObjectWriter, SmallWriteMetricsSnapshot, SmallWritePolicy,
+    ChunkReader, DiskWriter, IoError, LargeAsyncObjectWriter, PartialReadResult, ReadResult, Result,
+    RoutedDiskWriter, SmallObjectWriter, SmallWriteMetricsSnapshot, SmallWritePolicy,
 };
 
 /// Discovery and transport configuration for [`ChunkIoClient`].
@@ -286,6 +287,12 @@ impl ChunkIoClient {
     pub async fn prepare_small_write(&self, object_size: usize) -> Result<SmallObjectWriter> {
         if object_size == 0 {
             return Ok(SmallObjectWriter::empty());
+        }
+        if object_size > MAX_FRAME_PAYLOAD_BYTES {
+            return Err(IoError::ObjectTooLarge {
+                size: object_size,
+                limit: MAX_FRAME_PAYLOAD_BYTES,
+            });
         }
         let (runtime, reservation) = self.small_pool.reserve(object_size).await?;
         Ok(SmallObjectWriter::new(runtime, object_size, reservation))

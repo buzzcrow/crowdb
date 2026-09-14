@@ -24,6 +24,7 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_protocol::frame::{parse_frame, FrameMagic};
 use crowdb_test_harness::chunkdb::ChunkdbStartOptions;
 
 use e2e_stack::{all_binaries_available, E2eStack};
@@ -159,7 +160,10 @@ async fn assert_mirror_data(stack: &E2eStack, chunk: &Chunk, location: &Location
                 u32::try_from(location.length).unwrap(),
             )
             .await;
-        assert_eq!(actual, expected);
+        let frame = parse_frame(&actual, location.chunk_id.expect("location chunk"))
+            .expect("durable RepoSmall frame");
+        assert_eq!(frame.header.magic, FrameMagic::RepoSmallV1);
+        assert_eq!(frame.payload, expected);
     }
 }
 

@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::{Bytes, BytesMut};
 use crowdb_common::ec::{EcScheme, IncrementalParity};
@@ -19,6 +19,9 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_protocol::frame::{
+    encode_frame, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_PAYLOAD_BYTES,
+};
 use crowdb_protocol::{generate_chunk_id, CHUNK_TYPE_REPO};
 use tokio::sync::{mpsc, Notify, OwnedSemaphorePermit};
 
@@ -118,7 +121,7 @@ impl PipelineWorker {
             if dequeued {
                 self.note_dequeue(&first);
             }
-            if let Err(error) = self.ensure_object_fits(first.len).await {
+            if let Err(error) = self.ensure_object_fits(frame_bytes(first.len)?).await {
                 fail_one(first, &error.to_string(), &self.runtime.metrics);
                 self.fail_remaining(&error.to_string()).await;
                 let _ = self.finish_chunks().await;
@@ -223,7 +226,7 @@ impl PipelineWorker {
     }
 
     fn collect_batch(&mut self, first: PendingObject) -> Vec<PendingObject> {
-        let mut bytes = first.len;
+        let mut bytes = frame_bytes(first.len).unwrap_or(usize::MAX);
         let mut batch = vec![first];
         while batch.len() < self.runtime.policy.max_batch_objects
             && bytes < self.runtime.policy.max_batch_bytes
@@ -232,7 +235,7 @@ impl PipelineWorker {
                 break;
             };
             self.note_dequeue(&next);
-            let candidate_bytes = bytes.saturating_add(next.len);
+            let candidate_bytes = bytes.saturating_add(frame_bytes(next.len).unwrap_or(usize::MAX));
             let available = self
                 .chunk
                 .remaining_in_strip()
@@ -1069,13 +1072,13 @@ impl OwnedChunk {
         batch: &[PendingObject],
         metrics: &SmallWriteMetrics,
     ) -> Result<Vec<Location>> {
-        let (logical_bytes, buffer_count) = batch_shape(batch);
-        let planned_cursor = self.cursor.saturating_add(logical_bytes as u64);
+        let (physical_bytes, logical_bytes, buffer_count) = batch_shape(batch)?;
+        let planned_cursor = self.cursor.saturating_add(physical_bytes as u64);
         self.consume_staged_reservation(planned_cursor).await?;
         let strip = self.current_strip()?.clone();
         let unit_bytes = u64::from(strip.unit_kb) * 1024;
-        if logical_bytes as u64 > self.remaining_in_strip()
-            || logical_bytes as u64 > self.remaining_in_chunk()
+        if physical_bytes as u64 > self.remaining_in_strip()
+            || physical_bytes as u64 > self.remaining_in_chunk()
         {
             return Err(IoError::Internal(
                 "assembled batch crosses mirror strip or chunk".into(),
@@ -1100,21 +1103,31 @@ impl OwnedChunk {
             .ok_or_else(|| IoError::AllocationFailed("shared chunk missing id".into()))?;
         let mut copied = 0usize;
         let mut locations = Vec::with_capacity(batch.len());
+        let write_time_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| {
+                u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+            });
         for object in batch {
-            let object_start = copied;
+            let mut payload = Vec::with_capacity(object.len);
             for fragment in &object.fragments {
-                shadow.extend_from_slice(fragment);
-                copied += fragment.len();
+                payload.extend_from_slice(fragment);
             }
+            let frame = encode_frame(FrameMagic::RepoSmallV1, chunk_id, &payload, write_time_ms)
+                .map_err(|error| IoError::WriteFailed(error.to_string()))?;
+            let frame_length = frame.len();
+            shadow.extend_from_slice(&frame);
             locations.push(Location {
                 chunk_id: Some(chunk_id),
-                offset: start + object_start as u64,
-                length: object.len as u64,
+                offset: start + copied as u64,
+                length: frame_length as u64,
                 logical_offset: 0,
                 logical_length: object.len as u64,
             });
+            copied += frame_length;
         }
-        let written_end = block_offset_us + logical_bytes;
+        debug_assert_eq!(copied, physical_bytes);
+        let written_end = block_offset_us + physical_bytes;
         debug_assert_eq!(shadow.len(), written_end);
 
         // Freeze the buffer, take a view of the written portion, and send
@@ -1142,7 +1155,7 @@ impl OwnedChunk {
                 .unwrap_or_else(|shared| BytesMut::from(shared.as_ref())),
         );
         write_result?;
-        let end = start + logical_bytes as u64;
+        let end = start + physical_bytes as u64;
         let strip_end = u64::from(strip.chunk_offset.saturating_add(strip.capacity)) * 1024;
         let closed = (end == strip_end).then_some(strip.strip_sequence);
         self.cursor = end;
@@ -1939,11 +1952,28 @@ impl OwnedChunk {
     }
 }
 
-fn batch_shape(batch: &[PendingObject]) -> (usize, usize) {
-    (
-        batch.iter().map(|object| object.len).sum(),
-        batch.iter().map(|object| object.fragments.len()).sum(),
-    )
+fn batch_shape(batch: &[PendingObject]) -> Result<(usize, usize, usize)> {
+    let mut physical_bytes = 0usize;
+    let mut logical_bytes = 0usize;
+    let mut buffer_count = 0usize;
+    for object in batch {
+        physical_bytes = physical_bytes
+            .checked_add(frame_bytes(object.len)?)
+            .ok_or_else(|| IoError::WriteFailed("small frame batch is too large".into()))?;
+        logical_bytes = logical_bytes.saturating_add(object.len);
+        buffer_count = buffer_count.saturating_add(object.fragments.len());
+    }
+    Ok((physical_bytes, logical_bytes, buffer_count))
+}
+
+fn frame_bytes(payload_bytes: usize) -> Result<usize> {
+    if payload_bytes > MAX_FRAME_PAYLOAD_BYTES {
+        return Err(IoError::ObjectTooLarge {
+            size: payload_bytes,
+            limit: MAX_FRAME_PAYLOAD_BYTES,
+        });
+    }
+    Ok(FRAME_HEADER_PREFIX_BYTES + payload_bytes + FRAME_FOOTER_BYTES)
 }
 
 struct RepairMetricGuard {

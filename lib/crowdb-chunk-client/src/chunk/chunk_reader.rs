@@ -12,6 +12,7 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_protocol::frame::{parse_frame, FrameMagic};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
@@ -188,6 +189,11 @@ impl ChunkReader {
         length: u64,
         logical_start: u64,
     ) -> ReadResult<PartialReadResult> {
+        if location.length != location.logical_length {
+            return self
+                .read_single_framed_location(location, local_start, length, logical_start)
+                .await;
+        }
         let chunk_id = location
             .chunk_id
             .ok_or_else(|| ReadError::InvalidLocations("location has no chunk ID".into()))?;
@@ -226,6 +232,88 @@ impl ChunkReader {
             if Instant::now() < deadline {
                 return Ok(partial);
             }
+        }
+        Err(ReadError::LayoutExpired)
+    }
+
+    async fn read_single_framed_location(
+        &self,
+        location: &Location,
+        local_start: u64,
+        length: u64,
+        logical_start: u64,
+    ) -> ReadResult<PartialReadResult> {
+        let chunk_id = location
+            .chunk_id
+            .ok_or_else(|| ReadError::InvalidLocations("location has no chunk ID".into()))?;
+        if local_start
+            .checked_add(length)
+            .is_none_or(|end| end > location.logical_length)
+        {
+            return Err(ReadError::InvalidLocations(
+                "framed location logical range is invalid".into(),
+            ));
+        }
+        for _ in 0..self.policy.max_layout_retries {
+            let query_started = Instant::now();
+            let response = self
+                .chunkdb
+                .query_chunk(QueryChunkRequest {
+                    chunk_id: Some(chunk_id),
+                })
+                .await
+                .map_err(map_metadata_error)?;
+            let validity = Duration::from_millis(response.layout_validity_ms);
+            let deadline = query_started + validity.saturating_sub(self.policy.layout_safety_margin);
+            let mut chunk = response
+                .chunk
+                .ok_or_else(|| ReadError::ChunkDeleted(format!("{}:{}", chunk_id.high, chunk_id.low)))?;
+            let (physical, observations) = self
+                .read_chunk_range_partial(&chunk, location.offset, location.length, 0)
+                .await?;
+            if Instant::now() >= deadline {
+                continue;
+            }
+            if self
+                .mark_observed_failures(&mut chunk, observations)
+                .await
+                .is_err()
+            {
+                continue;
+            }
+            let bytes = assemble_ranges(
+                physical.ranges,
+                0,
+                usize::try_from(location.length).map_err(|_| {
+                    ReadError::InvalidLocations("framed location exceeds addressable memory".into())
+                })?,
+            )?;
+            let frame = parse_frame(&bytes, chunk_id)
+                .map_err(|error| ReadError::DataLoss(format!("invalid chunk frame: {error}")))?;
+            if frame.header.magic != FrameMagic::RepoSmallV1
+                || frame.physical_length as u64 != location.length
+                || frame.payload.len() as u64 != location.logical_length
+            {
+                return Err(ReadError::DataLoss(
+                    "framed location does not match RepoSmall frame".into(),
+                ));
+            }
+            let start = usize::try_from(local_start).map_err(|_| {
+                ReadError::InvalidLocations("logical range exceeds addressable memory".into())
+            })?;
+            let end = start
+                .checked_add(usize::try_from(length).map_err(|_| {
+                    ReadError::InvalidLocations("logical range exceeds addressable memory".into())
+                })?)
+                .ok_or_else(|| ReadError::InvalidLocations("logical range overflows".into()))?;
+            return Ok(PartialReadResult {
+                ranges: vec![ReadRangeData {
+                    start: logical_start,
+                    end: logical_start + length,
+                    data: Bytes::copy_from_slice(&frame.payload[start..end]),
+                }],
+                failures: Vec::new(),
+            });
         }
         Err(ReadError::LayoutExpired)
     }
