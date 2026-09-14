@@ -41,15 +41,6 @@ requirement is implemented.
 
 ### High Priority
 
-- **[R151](R151-kv-snapshot-streaming.md)** — resumable chunked new-member KV
-  snapshot streaming — Area: kv / crowdb-tree / RPC — Replace the current
-  whole-`Vec`, single-frame bootstrap with a receiver-pulled stream of bounded
-  deterministic chunks. Expose engine export/import sessions through Rust
-  RAII, resume after reconnect from the last acknowledged offset, and publish
-  the freshly constructed group only after integrity checks and learner
-  seeding succeed. Live follower replacement remains deferred because it
-  requires atomic engine-generation publication.
-
 - **[R103](R103-chunkdb-range-migration.md)** — chunkdb range ownership
   migration — Area: chunkdb / kv — Implement the full
   `Copying`/`Cutover`/`Complete` migration flow for transferring chunkdb
