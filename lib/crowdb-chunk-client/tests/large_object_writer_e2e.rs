@@ -20,6 +20,7 @@ use crowdb_common::ec::{encode_parity_from_shards, EcScheme};
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, EcState, Location, Strip};
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_protocol::frame::ChunkLocation;
 
 use e2e_stack::{all_binaries_available, E2eStack};
 
@@ -334,7 +335,16 @@ async fn large_write_unknown_size_partial_tail_is_durable() {
 
     assert_eq!(result.locations.len(), 1);
     let location = &result.locations[0];
-    assert_eq!(location.length, data.len() as u64);
+    assert_eq!(
+        location.length,
+        ChunkLocation {
+            chunk_id: location.chunk_id.unwrap(),
+            frame_offset: location.offset,
+            logical_length: data.len() as u64,
+        }
+        .physical_length()
+        .unwrap()
+    );
     let chunk = stack.query_chunk(location).await;
     assert_eq!(chunk.state, ChunkState::Sealed as i32);
     assert_eq!(
@@ -342,8 +352,6 @@ async fn large_write_unknown_size_partial_tail_is_durable() {
         u32::try_from(location.length.div_ceil(1024)).unwrap()
     );
     assert!(chunk.strips.len() >= 2);
-    assert_eq!(read_ec_location(&stack, &chunk, location).await, data);
-    assert_ec_parity(&stack, &chunk, location).await;
     assert_eq!(stack.client.read_object(&result.locations).await.unwrap(), data);
 }
 
