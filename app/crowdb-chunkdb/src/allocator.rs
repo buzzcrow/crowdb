@@ -202,62 +202,76 @@ impl ChunkAllocator {
     ) -> Result<ChunkStrip, AllocError> {
         self.pool.update_disk_id_lookup(&snap.disk_groups());
         let bytes_per_block = u64::from(unit_count).saturating_mul(u64::from(snap.unit_size_bytes()));
-        let constraints = constraints.clone().with_planned_bytes_per_block(bytes_per_block);
-        let plan = match strip_type {
-            StripAllocType::Mirror { copy_count } => MirrorPlacement::select(snap, copy_count, &constraints)?,
-            StripAllocType::Ec { data_num, code_num } => {
-                EcPlacement::select(snap, data_num, code_num, &constraints)?
+        let mut retry_constraints = constraints.clone().with_planned_bytes_per_block(bytes_per_block);
+        for attempt in 0..=MAX_ALLOC_RETRIES {
+            let plan = match strip_type {
+                StripAllocType::Mirror { copy_count } => {
+                    MirrorPlacement::select(snap, copy_count, &retry_constraints)?
+                }
+                StripAllocType::Ec { data_num, code_num } => {
+                    EcPlacement::select(snap, data_num, code_num, &retry_constraints)?
+                }
+            };
+            let _reservation = snap.reserve_plan(&plan.entries, bytes_per_block);
+            if let Some(metrics) = &self.metrics {
+                metrics
+                    .allocate_diskdb_calls
+                    .inc_by(u64::try_from(plan.entries.len()).unwrap_or(u64::MAX));
             }
-        };
-        let _reservation = snap.reserve_plan(&plan.entries, bytes_per_block);
-        if let Some(metrics) = &self.metrics {
-            metrics
-                .allocate_diskdb_calls
-                .inc_by(u64::try_from(plan.entries.len()).unwrap_or(u64::MAX));
+            let segments = self
+                .allocate_blocks_parallel(owner_chunk, &plan, unit_count)
+                .await?;
+            let assessment = assess_physical_placement(
+                snap,
+                &segments,
+                plan.protection.loss_budget,
+                plan.topology_generation,
+                plan.usage_fresh,
+            );
+            let disk_degraded = plan.protection.loss_budget > 0 && !assessment.disk_protected;
+            let degradation_allowed = retry_constraints.allow_degraded_failure_domains
+                && (!matches!(strip_type, StripAllocType::Ec { .. }) || retry_constraints.allow_unsafe_ec);
+            if disk_degraded && !degradation_allowed {
+                if attempt == MAX_ALLOC_RETRIES {
+                    return self
+                        .rollback_or_error(
+                            &segments,
+                            crate::selector::PlacementError::DiskProtectionUnavailable {
+                                loss_budget: assessment.loss_budget,
+                                actual: assessment.max_fragments_per_disk,
+                            }
+                            .into(),
+                        )
+                        .await;
+                }
+                self.free_all(&segments).await?;
+                let rejected_group = plan
+                    .entries
+                    .iter()
+                    .max_by_key(|entry| entry.block_count)
+                    .map(|entry| entry.disk_group_id)
+                    .ok_or(crate::selector::PlacementError::NoHealthyDiskGroups)?;
+                retry_constraints.exclude_disk_groups.push(rejected_group);
+                self.record_diskdb_retry();
+                continue;
+            }
+            if let Some(metrics) = &self.metrics {
+                metrics
+                    .allocate_blocks
+                    .inc_by(u64::try_from(segments.len()).unwrap_or(u64::MAX));
+                metrics.allocate_strips.inc();
+            }
+            return Ok(assemble_strip(
+                &segments,
+                strip_type,
+                strip_sequence,
+                unit_count,
+                (snap.unit_size_bytes() / 1024).max(1),
+                placement_priority(plan.priority),
+                assessment,
+            ));
         }
-
-        let segments = self
-            .allocate_blocks_parallel(owner_chunk, &plan, unit_count)
-            .await?;
-        let assessment = assess_physical_placement(
-            snap,
-            &segments,
-            plan.protection.loss_budget,
-            plan.topology_generation,
-            plan.usage_fresh,
-        );
-        let disk_degraded = plan.protection.loss_budget > 0 && !assessment.disk_protected;
-        let degradation_allowed = constraints.allow_degraded_failure_domains
-            && (!matches!(strip_type, StripAllocType::Ec { .. }) || constraints.allow_unsafe_ec);
-        if disk_degraded && !degradation_allowed {
-            return self
-                .rollback_or_error(
-                    &segments,
-                    crate::selector::PlacementError::DiskProtectionUnavailable {
-                        loss_budget: assessment.loss_budget,
-                        actual: assessment.max_fragments_per_disk,
-                    }
-                    .into(),
-                )
-                .await;
-        }
-        if let Some(metrics) = &self.metrics {
-            metrics
-                .allocate_blocks
-                .inc_by(u64::try_from(segments.len()).unwrap_or(u64::MAX));
-            metrics.allocate_strips.inc();
-        }
-
-        let strip = assemble_strip(
-            &segments,
-            strip_type,
-            strip_sequence,
-            unit_count,
-            (snap.unit_size_bytes() / 1024).max(1),
-            placement_priority(plan.priority),
-            assessment,
-        );
-        Ok(strip)
+        unreachable!("disk validation retry loop always returns")
     }
 
     /// Allocate independent strips concurrently from one topology snapshot.

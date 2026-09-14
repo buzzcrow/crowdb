@@ -53,7 +53,7 @@ of temporarily degraded EC strips.
   reservations on every completion and rollback path. Files:
   `app/crowdb-chunkdb/src/allocator.rs`, lifecycle/repair/conversion callers,
   allocator tests.
-- [~] **Physical assessment**: validate returned `Segment.disk_id` placement,
+- [x] **Physical assessment**: validate returned `Segment.disk_id` placement,
   retry alternatives after rollback, assemble and persist the final assessment,
   and prohibit silent degradation. Files: allocator, storage/wire codecs,
   integration tests.
