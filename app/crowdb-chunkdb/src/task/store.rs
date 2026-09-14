@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use crowdb_kv_client::{BatchOp, CrowdbKvClient, Error as KvError, GetOutcome, ReadMode, ScanOutcome};
-use crowdb_protocol::chunk_task::{ChunkTaskState, ChunkTaskValue};
+use crowdb_protocol::chunk_task::{ChunkTaskState, ChunkTaskValue, TASK_KIND_FINALIZE_CHUNK};
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::{
-    decode_chunk_task_value, encode_chunk_task_value, BinaryKey, ChunkTaskKey, ChunkTaskValueError, KeyError,
-    LeasedChunkTaskKey, ReadyChunkTaskKey,
+    decode_chunk_task_value, encode_chunk_task_value, BinaryKey, ChunkTaskKey, ChunkTaskValueError,
+    FinalizeChunkTaskKey, KeyError, LeasedChunkTaskKey, ReadyChunkTaskKey,
 };
 use tracing::warn;
 
@@ -182,6 +182,34 @@ impl TaskStore {
         Ok(decoded)
     }
 
+    /// Scan only FinalizeChunk liveness indexes that have expired. Their key
+    /// starts with the fixed-width deadline, so no chunk or generic-task scan
+    /// is required.
+    pub async fn scan_finalize_due(
+        &self,
+        now_ms: u64,
+        max_keys: u32,
+    ) -> Result<Vec<ReadyChunkTaskKey>, TaskStoreError> {
+        let keys = self
+            .scan_index(FinalizeChunkTaskKey::prefix_all(), max_keys)
+            .await?;
+        let mut due = Vec::with_capacity(keys.len());
+        for key in keys {
+            match FinalizeChunkTaskKey::from_bytes(&key) {
+                Ok(task) if task.expires_at_ms <= now_ms => due.push(ReadyChunkTaskKey {
+                    priority_inverse: 0,
+                    eligible_at_ms: task.expires_at_ms,
+                    partition_id: task.partition_id,
+                    kind: TASK_KIND_FINALIZE_CHUNK,
+                    task_id: task.task_id,
+                }),
+                Ok(_) => break,
+                Err(error) => warn!(%error, "skipping malformed finalize task index"),
+            }
+        }
+        Ok(due)
+    }
+
     /// Scan claimed indexes whose lease has expired.
     ///
     /// # Errors
@@ -340,6 +368,14 @@ fn canonical_key(task: &ChunkTaskValue) -> Vec<u8> {
 
 fn index_key(task: &ChunkTaskValue) -> Option<Vec<u8>> {
     match task.state {
+        ChunkTaskState::Pending | ChunkTaskState::RetryWait if task.kind == TASK_KIND_FINALIZE_CHUNK => Some(
+            FinalizeChunkTaskKey {
+                expires_at_ms: task.eligible_at_ms,
+                partition_id: task.partition_id,
+                task_id: task.task_id,
+            }
+            .to_bytes(),
+        ),
         ChunkTaskState::Pending | ChunkTaskState::RetryWait => Some(
             ReadyChunkTaskKey {
                 priority_inverse: u8::MAX - task.priority,

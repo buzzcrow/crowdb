@@ -300,10 +300,10 @@ pub use chunk_id::{
 
 pub mod key;
 pub use key::{
-    BinaryKey, BindMapKey, BusyBlockKey, ChunkTaskKey, DiskGroupKey, DiskKey, FreeBlockKey, InstanceKey,
-    KeyError, KvGroupKey, KvReplicaKey, KvStoreKey, LeasedChunkTaskKey, NodeKey, OwnerMapKey, RackKey,
-    ReadyChunkTaskKey, RecoveryScanProgressKey, RelocationJournalKey, TentativeOwnerGraceKey, TextKey,
-    ZoneKey, CROWDB_KEY_MAGIC, DISKDB_WATCH_PREFIXES,
+    BinaryKey, BindMapKey, BusyBlockKey, ChunkTaskKey, DiskGroupKey, DiskKey, FinalizeChunkTaskKey,
+    FreeBlockKey, InstanceKey, KeyError, KvGroupKey, KvReplicaKey, KvStoreKey, LeasedChunkTaskKey, NodeKey,
+    OwnerMapKey, RackKey, ReadyChunkTaskKey, RecoveryScanProgressKey, RelocationJournalKey,
+    TentativeOwnerGraceKey, TextKey, ZoneKey, CROWDB_KEY_MAGIC, DISKDB_WATCH_PREFIXES,
 };
 
 pub mod sysdata;

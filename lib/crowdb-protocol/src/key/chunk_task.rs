@@ -103,6 +103,47 @@ impl ReadyChunkTaskKey {
     }
 }
 
+/// Liveness index ordered by expiry before every other field. It is separate
+/// from generic work priority so finalization never requires scanning the
+/// chunk table or unrelated task kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FinalizeChunkTaskKey {
+    pub expires_at_ms: u64,
+    pub partition_id: ChunkId,
+    pub task_id: ChunkId,
+}
+
+impl BinaryKey for FinalizeChunkTaskKey {
+    const TYPE_TAG: u16 = 0x0010;
+
+    fn encode_to(&self, out: &mut Vec<u8>) {
+        encode_header(out, Self::TYPE_TAG);
+        encode_u64(out, self.expires_at_ms);
+        encode_chunk_id(out, &self.partition_id);
+        encode_chunk_id(out, &self.task_id);
+    }
+
+    fn decode(buf: &[u8]) -> Result<Self, KeyError> {
+        let fields = decode_header(buf, Self::TYPE_TAG)?;
+        let (expires_at_ms, offset) = decode_u64(fields, 0)?;
+        let (partition_id, offset) = decode_chunk_id(fields, offset)?;
+        let (task_id, offset) = decode_chunk_id(fields, offset)?;
+        check_exact(fields, offset)?;
+        Ok(Self {
+            expires_at_ms,
+            partition_id,
+            task_id,
+        })
+    }
+}
+
+impl FinalizeChunkTaskKey {
+    #[must_use]
+    pub fn prefix_all() -> Vec<u8> {
+        prefix(Self::TYPE_TAG)
+    }
+}
+
 /// Claimed task index ordered by lease deadline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LeasedChunkTaskKey {

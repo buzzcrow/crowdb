@@ -62,7 +62,13 @@ impl TaskScanner {
             }
         }
 
-        let ready = self.store.scan_ready(now_ms, self.scan_limit).await?;
+        let mut ready = self.store.scan_finalize_due(now_ms, self.scan_limit).await?;
+        let remaining = self
+            .scan_limit
+            .saturating_sub(u32::try_from(ready.len()).unwrap_or(u32::MAX));
+        if remaining != 0 {
+            ready.extend(self.store.scan_ready(now_ms, remaining).await?);
+        }
         summary.ready_indexes_seen = u64::try_from(ready.len()).unwrap_or(u64::MAX);
         let capacity = self.executor.available_capacity();
         let mut claims = Vec::with_capacity(ready.len().min(capacity));

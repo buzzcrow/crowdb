@@ -38,7 +38,7 @@ integrity-aware protection reads.
 - [~] **Conditional task primitive**: extend KV batch support with compare
   conditions and make task claim/renew conflict-safe. Files:
   `lib/crowdb-kv-client`, `lib/crowdb-kv`, protocol KV wire, and task tests.
-- [ ] **Deadline-indexed FinalizeChunk task**: add a due-first liveness index,
+- [~] **Deadline-indexed FinalizeChunk task**: add a due-first liveness index,
   creation/renewal batch, owner self-fence, final frame scan and seal/delete.
   Files: `lib/crowdb-protocol/src/key/chunk_task.rs`,
   `app/crowdb-chunkdb/src/task/*`, lifecycle handler, RPC and integration tests.
