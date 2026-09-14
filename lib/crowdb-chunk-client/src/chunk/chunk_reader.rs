@@ -12,7 +12,7 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::diskdb::rpc::Segment;
-use crowdb_protocol::frame::{parse_frame, FrameMagic};
+use crowdb_protocol::frame::{parse_frame, ChunkLocation, FrameMagic, MAX_FRAME_PAYLOAD_BYTES};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
@@ -254,6 +254,25 @@ impl ChunkReader {
                 "framed location logical range is invalid".into(),
             ));
         }
+        let framed = ChunkLocation {
+            chunk_id,
+            frame_offset: location.offset,
+            logical_length: location.logical_length,
+        };
+        if framed
+            .physical_length()
+            .map_err(|error| ReadError::InvalidLocations(error.to_string()))?
+            != location.length
+        {
+            return Err(ReadError::InvalidLocations(
+                "framed location length is inconsistent".into(),
+            ));
+        }
+        let physical_range = framed
+            .physical_range_for_subrange(local_start..local_start.saturating_add(length))
+            .map_err(|error| ReadError::InvalidLocations(error.to_string()))?;
+        let selected_logical_start =
+            (local_start / MAX_FRAME_PAYLOAD_BYTES as u64) * MAX_FRAME_PAYLOAD_BYTES as u64;
         for _ in 0..self.policy.max_layout_retries {
             let query_started = Instant::now();
             let response = self
@@ -269,7 +288,12 @@ impl ChunkReader {
                 .chunk
                 .ok_or_else(|| ReadError::ChunkDeleted(format!("{}:{}", chunk_id.high, chunk_id.low)))?;
             let (physical, observations) = self
-                .read_chunk_range_partial(&chunk, location.offset, location.length, 0)
+                .read_chunk_range_partial(
+                    &chunk,
+                    physical_range.start,
+                    physical_range.end - physical_range.start,
+                    0,
+                )
                 .await?;
             if Instant::now() >= deadline {
                 continue;
@@ -284,12 +308,12 @@ impl ChunkReader {
             let bytes = assemble_ranges(
                 physical.ranges,
                 0,
-                usize::try_from(location.length).map_err(|_| {
+                usize::try_from(physical_range.end - physical_range.start).map_err(|_| {
                     ReadError::InvalidLocations("framed location exceeds addressable memory".into())
                 })?,
             )?;
-            let payload = decode_framed_location(&bytes, chunk_id, location)?;
-            let start = usize::try_from(local_start).map_err(|_| {
+            let payload = decode_selected_frames(&bytes, chunk_id)?;
+            let start = usize::try_from(local_start - selected_logical_start).map_err(|_| {
                 ReadError::InvalidLocations("logical range exceeds addressable memory".into())
             })?;
             let end = start
@@ -435,9 +459,9 @@ impl ChunkReader {
     }
 }
 
-fn decode_framed_location(bytes: &Bytes, chunk_id: ChunkId, location: &Location) -> ReadResult<Bytes> {
+fn decode_selected_frames(bytes: &Bytes, chunk_id: ChunkId) -> ReadResult<Bytes> {
     let mut physical_cursor = 0_usize;
-    let mut payload = BytesMut::with_capacity(usize::try_from(location.logical_length).unwrap_or(usize::MAX));
+    let mut payload = BytesMut::new();
     let mut magic = None;
     while physical_cursor < bytes.len() {
         let frame = parse_frame(&bytes[physical_cursor..], chunk_id)
@@ -462,7 +486,7 @@ fn decode_framed_location(bytes: &Bytes, chunk_id: ChunkId, location: &Location)
             .checked_add(frame.physical_length)
             .ok_or_else(|| ReadError::DataLoss("frame location physical length overflows".into()))?;
     }
-    if physical_cursor as u64 != location.length || payload.len() as u64 != location.logical_length {
+    if physical_cursor != bytes.len() {
         return Err(ReadError::DataLoss(
             "framed location metadata does not match its frames".into(),
         ));
