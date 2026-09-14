@@ -348,6 +348,10 @@ async fn main() {
             .with_metrics(Arc::clone(&workflow_metrics))
             .with_reservation_limits(reservation_blocks, reservation_bytes)
             .with_allow_unsafe_ec(config.placement.allow_unsafe_ec)
+            .with_placement_policy(
+                config.placement.failure_domain_priority,
+                config.placement.allow_degraded_failure_domains,
+            )
             .with_layout_validity(Duration::from_millis(config.lifecycle.layout_validity_ms)),
     );
     match handler.rebuild_reservation_admission().await {

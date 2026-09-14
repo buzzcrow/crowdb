@@ -128,6 +128,8 @@ pub struct LifecycleHandler {
     /// configured (no lifecycle section in config).
     locks: Option<Arc<ChunkLockMap>>,
     allow_unsafe_ec: bool,
+    allow_degraded_failure_domains: bool,
+    failure_domain_priority: crate::selector::FailureDomainPriority,
     metrics: Option<Arc<ChunkdbMetrics>>,
     layout_validity_ms: u64,
     reservation_admission: Arc<admission::ReservationAdmission>,
@@ -179,6 +181,8 @@ impl LifecycleHandler {
             range_guard: None,
             locks: None,
             allow_unsafe_ec: false,
+            allow_degraded_failure_domains: false,
+            failure_domain_priority: crate::selector::FailureDomainPriority::default(),
             metrics: None,
             layout_validity_ms: DEFAULT_LAYOUT_VALIDITY_MS,
             reservation_admission: Arc::new(admission::ReservationAdmission::new(u64::MAX, u64::MAX, None)),
@@ -209,6 +213,18 @@ impl LifecycleHandler {
     #[must_use]
     pub fn with_allow_unsafe_ec(mut self, allow: bool) -> Self {
         self.allow_unsafe_ec = allow;
+        self
+    }
+
+    /// Configure failure-domain ordering and explicit degraded placement.
+    #[must_use]
+    pub fn with_placement_policy(
+        mut self,
+        priority: crate::selector::FailureDomainPriority,
+        allow_degraded_failure_domains: bool,
+    ) -> Self {
+        self.failure_domain_priority = priority;
+        self.allow_degraded_failure_domains = allow_degraded_failure_domains;
         self
     }
 
@@ -1586,12 +1602,15 @@ impl LifecycleHandler {
     }
 
     fn placement_constraints(&self) -> PlacementConstraints {
-        let constraints = PlacementConstraints::new();
+        let mut constraints =
+            PlacementConstraints::new().with_failure_domain_priority(self.failure_domain_priority);
         if self.allow_unsafe_ec {
-            constraints.allow_unsafe_ec()
-        } else {
-            constraints
+            constraints = constraints.allow_unsafe_ec();
         }
+        if self.allow_degraded_failure_domains {
+            constraints = constraints.allow_degraded_failure_domains();
+        }
+        constraints
     }
 }
 

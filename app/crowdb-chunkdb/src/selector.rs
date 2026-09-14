@@ -10,12 +10,24 @@ pub mod ec;
 pub mod mirror;
 
 use crowdb_protocol::{DiskGroupId, NodeId, RackId};
+use serde::{Deserialize, Serialize};
 
 use crate::topology::TopologySnapshot;
 
 /// Re-export the placement selector trait + implementations.
 pub use ec::EcPlacement;
 pub use mirror::MirrorPlacement;
+
+/// Lexicographic failure-domain priority for new placement decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureDomainPriority {
+    /// Protect and balance racks before considering nodes within them.
+    #[default]
+    RackFirst,
+    /// Protect and balance nodes before using rack diversity as a tie-breaker.
+    NodeFirst,
+}
 
 /// Placement constraints — negative hints for exclusion.
 #[derive(Debug, Clone, Default)]
@@ -28,6 +40,10 @@ pub struct PlacementConstraints {
     pub exclude_disk_groups: Vec<DiskGroupId>,
     /// Permit EC placement that exceeds the safe per-node failure bound.
     pub allow_unsafe_ec: bool,
+    /// Permit a plan that cannot satisfy every requested failure domain.
+    pub allow_degraded_failure_domains: bool,
+    /// Ordering used to choose among otherwise eligible domains.
+    pub failure_domain_priority: FailureDomainPriority,
 }
 
 impl PlacementConstraints {
@@ -57,6 +73,18 @@ impl PlacementConstraints {
     #[must_use]
     pub fn allow_unsafe_ec(mut self) -> Self {
         self.allow_unsafe_ec = true;
+        self
+    }
+
+    #[must_use]
+    pub fn allow_degraded_failure_domains(mut self) -> Self {
+        self.allow_degraded_failure_domains = true;
+        self
+    }
+
+    #[must_use]
+    pub fn with_failure_domain_priority(mut self, priority: FailureDomainPriority) -> Self {
+        self.failure_domain_priority = priority;
         self
     }
 
