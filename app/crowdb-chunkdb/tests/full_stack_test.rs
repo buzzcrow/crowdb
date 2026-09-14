@@ -23,6 +23,7 @@ use crowdb_chunkdb::allocator::StripAllocType;
 use crowdb_chunkdb::chunkdb_config::PlacementRebalanceConfig;
 use crowdb_chunkdb::conversion::io::ConversionDiskIo;
 use crowdb_chunkdb::conversion::{decode_payload, ConversionCoordinator, MirrorToEcTaskHandler};
+use crowdb_chunkdb::finalize::FinalizeChunkTaskHandler;
 use crowdb_chunkdb::lifecycle::{
     ChunkLockMap, LifecycleError, LifecycleHandler, ReservationFence, ReservationRecovery, ReservationUpdate,
     ReserveGroupSpec,
@@ -870,6 +871,49 @@ async fn active_chunk_creates_one_deadline_indexed_finalizer() {
         1
     );
     assert!(tasks.scan_ready(task.eligible_at_ms, 8).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn finalizer_reclaims_an_empty_active_chunk() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let chunk = harness
+        .handler
+        .allocate_chunk(
+            None,
+            1,
+            1,
+            StripType::Mirror,
+            0,
+            0,
+            3,
+            ChunkType::Repo,
+            19,
+            60_000,
+        )
+        .await
+        .unwrap();
+    let chunk_id = chunk.id.unwrap();
+    let bindings = BindingCache::new();
+    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
+    let task = tasks
+        .get(&chunk_id, TASK_KIND_FINALIZE_CHUNK, &chunk_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let finalizer = FinalizeChunkTaskHandler::new(Arc::clone(&harness.handler));
+    assert!(matches!(finalizer.execute(&task).await, TaskOutcome::Complete));
+    assert_eq!(
+        harness.handler.query_chunk(&chunk_id).await.unwrap().state,
+        ChunkState::Deleted as i32
+    );
 }
 
 impl TaskHandler for CompleteTaskHandler {
