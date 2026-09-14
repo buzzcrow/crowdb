@@ -1,155 +1,240 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-### R146: chunkdb — Seal abandoned chunks across all chunk users
-
-**Status: Deferred.** The existing chunkdb expired-writer sweep is the base
-mechanism. Implement the generic owner identity after R141's production stream
-writer supplies owner metadata, then apply the same contract to all chunk
-types: `Stream`, `Repo`, `Wal`, `BtreePage`, and `PageIndex`.
+### R146: chunkdb — Self-validating chunk frames and abandoned-chunk finalization
 
 ## Problem
 
-Any chunk writer that crashes or loses ownership leaves an Active chunk whose
-unused tail cannot be reclaimed safely. This affects every chunk type:
+`Repo`, chunk `Stream`, and the B+tree (`BtreePage` and `PageIndex`) append
+user bytes to active chunks, but today their durability, integrity, and
+abandoned-chunk recovery contracts are separate. A process crash can leave an
+Active tail whose safe end is not derivable from disk; the existing
+writer-lease sweep scans chunk metadata rather than an expiry index; and a
+successful raw read has no common end-to-end checksum that can turn silent
+corruption into a mirror or EC protection read.
 
-- **`Stream`:** a stream writer crashes mid-append, leaving an
-  Active chunk with unacknowledged bytes beyond the cursor.
-- **`Repo`:** an object writer crashes while it owns an Active chunk.
-- **`Wal`:** a WAL writer crashes after appending but before sealing.
-- **`BtreePage` / `PageIndex` (R140):** a B+tree process crashes during
-  rotation; the old active chunk cannot be sealed and its tail is orphaned.
-
-R140 rotates a B+tree's active chunk at 256 MiB and seals it during an orderly
-rotation or shutdown. A process crash cannot perform that seal. Restart also
-must not resume the old active chunk because the former writer's final outcome
-may be ambiguous; it opens a fresh chunk instead. Without management cleanup,
-the abandoned chunk remains Active indefinitely and its unused tail cannot be
-reclaimed safely.
-
-Chunkdb already persists `writer_epoch`, `writer_lease_deadline_ms`, and
-`acknowledged_cursor` for shared chunks and scans expired writers under the
-normal lifecycle guard. The B+tree backend must participate in that durable
-contract, including while an open tree is idle. An in-memory owner registry or
-one-shot startup task would be lost when chunkdb restarts and could seal a
-chunk that is still owned by a live but temporarily idle tree.
+Persisting a sidecar checksum or cursor for every small write would add a
+second write path, cause poor HDD seek behavior and SSD write amplification,
+and make location metadata disproportionately large. Padding every small
+object to I/O alignment would similarly waste capacity. A large object also
+needs range reads with bounded verification amplification.
 
 The root lifecycle contract is
-`doc/design/chunkdb/design-crowdb-chunkdb.md`; R140 defines the B+tree chunk
-writer and its restart behavior.
+`doc/design/chunkdb/design-crowdb-chunkdb.md`. This requirement replaces
+R146's old generic `owner_key`, writer-lease, acknowledged-cursor, and full
+Active-chunk-scan design. There is no released-data compatibility requirement:
+existing test/development data and callers may be rewritten.
 
 ## Solution
 
-Reuse chunkdb's persisted writer lease and expired-writer sweep for **all
-chunk types** (`Stream`, `Repo`, `Wal`, `BtreePage`, `PageIndex`), with durable
-owner identity and periodic renewal independent of write traffic.
+All persistent chunk users use a public, self-validating frame protocol and
+one durable liveness task per Active chunk. The frame is both the integrity
+unit for reads and the recovery unit for abandoned writes. It is not a DiskIO
+alignment unit; DiskIO continues to handle device alignment internally without
+callers adding padding to a frame.
 
-1. Reuse R141's backward-compatible `owner_key: bytes` extension and `Stream`
-   chunk type, and extend their ownership contract to all chunk users. A
-   nonempty owner key starts with an owner-kind prefix followed by its
-   canonical identity: a 128-bit `StreamName` for stream chunks, the matching
-   tree identity for B+tree chunks, and the object identity for repository
-   chunks. Validate that the prefix matches `chunk_type`. An empty owner key is
-   retained only for records created before the extension and means
-   shared/unattributed ownership; it must not be invented by new writers.
-2. Have every active B+tree chunk use a nonzero random writer
-   epoch, a persisted acknowledged byte cursor, and a configurable writer lease
-   whose default is the existing 30 seconds. Every append and cursor advance
-   carries that epoch and the expected chunk revision. A stale process cannot
-   advance or seal the chunk after ownership has changed. The same contract
-   already applies to stream, repository, and WAL chunks; the tree backend
-   extends it to `BtreePage` and `PageIndex`.
-3. Add a low-frequency writer-lease renewal operation to the private native
-   chunk backend and chunkdb lifecycle API for each chunk type. Renew from
-   chunkdb's server clock while the owner holds the chunk, even when no writes
-   occur. Schedule renewal no later than one-third of the configured lease. Run
-   it on the backend maintenance path, not the hot path, and use the existing
-   per-chunk lifecycle guard rather than adding a new lock.
-4. On clean rotation or shutdown, stop append admission, drain accepted
-   writes, persist the final acknowledged cursor, seal the non-empty chunk,
-   and delete an empty chunk. On process restart, never renew or append to
-   any chunk from the previous process; allocate a new writer epoch and new
-   chunk.
-5. Extend chunkdb's bounded Active-chunk scan to include all chunk types.
-   For an expired lease, acquire the lifecycle guard, re-read
-   and recheck the epoch, lease, revision, state, and acknowledged cursor,
-   then seal a nonempty chunk at exactly that cursor or delete a zero-length
-   chunk and release its reservations. Bytes beyond the acknowledged cursor
-   remain unreachable. A concurrent valid renewal wins and prevents cleanup.
-6. Keep writer ownership and lease authority in durable chunk metadata. Every
-   chunkdb instance startup restarts the bounded periodic scan over its
-   currently bound ranges; its scan cursor may restart from the beginning.
-   Range reassignment routes the same persisted chunk record to the new owner.
-   No task correctness depends on the lifetime of any writer process or
-   chunkdb process.
-7. Reconcile and free never-consumed reservations through the existing cleanup
-   intent path. Preserve consumed reservations until the writer lease and reuse
-   grace expire, matching the shared small-write recovery contract.
-8. Expose renewal success/failure, expired chunks found, chunks sealed or
-   deleted, cursor bytes retained, reservation bytes reclaimed, scan lag, and
-   retry counts.
-   Repeated metadata or DiskDB failure leaves the chunk Active and retryable;
-   it never guesses a later cursor.
+1. Define the public frame wire contract and shared utilities in
+   `lib/crowdb-protocol`. The canonical header prefix is encoded explicitly,
+   with no language-struct padding:
+
+   ```text
+   FrameHeaderPrefix {
+     magic:          u16,  // public FrameMagic enum value (kind + version)
+     payload_offset: u16,  // byte offset from the frame start
+     payload_size:   u16,
+     write_time_ms:  u64,  // diagnostic wall-clock time only
+   }
+
+   FrameFooter {
+     checksum_crc32c: u32,
+     chunk_id:        [u8; 16],
+   }
+   ```
+
+   `payload_offset` is at least the prefix length and permits a future header
+   extension before the payload. `FrameKind` is a public enum constant,
+   including distinct values for `RepoSmall`, `RepoLarge`, `Stream`,
+   `BtreePage`, and `PageIndex`; it is not repeated in a location. A change
+   with different interpretation uses a new magic/version. The CRC32C covers
+   the encoded header, payload, and chunk ID, but not its own checksum field.
+   The parser rejects an unknown magic, an offset or size outside the frame, a
+   footer whose chunk ID differs from the expected chunk, and a checksum
+   mismatch. `write_time_ms` is for diagnosis only and never grants write
+   authority or determines liveness.
+
+2. A frame's physical length is
+   `payload_offset + payload_size + sizeof(FrameFooter)` and must be at most
+   64 KiB. Frames are variable length and are written without synthetic
+   padding. A `RepoSmall` object is one frame. A `RepoLarge` object is a
+   sequence of frames: every interior frame fills the 64 KiB maximum and
+   its final frame may be shorter. The common location utility represents a
+   single location and an ordered combined location, validates contiguity,
+   merges adjacent locations, and maps a logical subrange to the containing
+   physical frame range. A large-object location records only the chunk,
+   first-frame position, and logical length needed for that computation; it
+   does not store a per-frame checksum, magic, layout, or location. B+tree and
+   PageIndex pages use the same location form: the default persistent page
+   limit is 65,502 bytes, so the usual page is one frame and one location. A
+   larger page is split into frames within one chunk and remains one location.
+   A tree page never crosses chunks: if the Active chunk's remaining capacity
+   cannot hold the complete framed page, the writer rotates before that page.
+   The configured maximum tree-page size must fit one allocatable chunk. The
+   tree manifest replaces its scalar `ChunkPageRef` checksum/location
+   representation with the shared single-location representation; it never
+   adds a per-frame checksum. A Stream frame's payload is the stream's journal
+   record; the stream journal removes checksum/provenance fields now supplied
+   by the outer frame.
+
+3. Make the protocol implementation usable by every caller rather than
+   duplicating parsers. `crowdb-protocol` supplies encode, parse, verify, and
+   location/subrange helpers plus shared cross-language test vectors. The Rust
+   chunk clients and the C++ tree and DiskIO paths consume that same wire
+   definition and vectors. A fat client verifies frames itself before data is
+   exposed or RDMA is completed; DiskIO recognizes and bounds-checks the
+   public format at its boundary without forcing an extra disk read, parse, or
+   payload copy on the normal write path.
+
+4. On creating an Active chunk, chunkdb atomically creates its sole durable
+   `FinalizeChunk` liveness task, keyed by the chunk ID and containing the
+   owner generation and expiry. The initial expiry is 15 minutes. A live owner
+   renews on a 12-minute cadence, independent of writes. Renewal is one
+   conditional transaction batch in the chunk's task partition: compare the
+   canonical task's expected revision, state, and owner generation; delete the
+   old deadline-ordered ready index; overwrite the same task record with its
+   new deadline and revision; and insert the new ready index. The task is the
+   only source of the liveness deadline; chunk metadata must not retain a
+   second deadline. The owner generation identifies the allocation owner and
+   does not change for ordinary renewal. On creation and every successful
+   renewal, the owner converts that wall-clock expiry to a local monotonic
+   self-fence deadline by subtracting the shared maximum clock skew and
+   self-fence margin. Write admission checks that local deadline.
+
+5. The task scanner scans only due ready-index entries, whose binary key has a
+   fixed-width ordered deadline prefix, never the chunk table or unrelated
+   task kinds. Claiming uses the same compare-and-transition primitive. Thus a
+   scanner that observed an old index loses to an already-committed renewal; if
+   it has already claimed the task, a renewal fails and the owner immediately
+   stops using that chunk and allocates a new one. A restart never resumes a
+   prior process's Active chunk. The owner metadata/publication for repository
+   chunks belongs behind the chunk-kv interface, not a Paxos KV group; this
+   requirement must not couple it to the current backing store.
+
+6. A liveness deadline uses the existing serving-authority self-fence model.
+   An owner that cannot renew stops admitting writes at its conservative local
+   monotonic deadline, including when it remains connected to DiskIO during a
+   network partition. A claimed liveness task waits through the shared maximum
+   write-request age, peer wall-clock skew bound, and scanner safety margin. It
+   then blocks new writes for that chunk, reads and validates consecutive frames
+   from offset zero, and seals at the largest complete valid frame boundary. It
+   releases an empty chunk. Chunkdb crash recovery resumes the durable task.
+   Owner-server crash recovery always writes a new chunk; a surviving old
+   request is rejected by DiskIO when its explicit wall-clock creation time
+   exceeds the configured request-age bound after allowing the peer-skew bound.
+   `rpc_create_nano` remains a local RPC correlation value and must not be used
+   for this cross-node check.
+
+7. Add an explicit wall-clock write creation timestamp and `OldRequest` result
+   to `lib/crowdb-protocol/src/fbs/diskio.fbs`, enforce it in
+   `app/crowdb-diskio/src/rpc/dio_server.cpp`, and propagate it through the
+   DiskIO client. `max_write_request_age` is one shared bound for DiskIO queue
+   residence, network delay, and permitted write retries. The existing
+   serving-authority timing policy supplies maximum peer skew and self-fence
+   margin; DiskIO rejection and task finalization consume those shared bounds
+   rather than adding caller-local time configuration.
+
+8. Integrate frame integrity failure into
+   `lib/crowdb-chunk-client/src/chunk/strip_reader.rs` and the repair path.
+   For one connected target, a read gets at most three total attempts. A
+   connection-establishment failure skips further attempts on that target and
+   moves immediately to another mirror or the EC path. A returned frame with
+   invalid structure, mismatched chunk ID, or bad CRC32C is a corrupt strip,
+   never successful data. The validating read interface retains the source
+   segment provenance until frame verification has passed, so it can exclude
+   that exact mirror/shard, obtain valid mirror data or reconstruct from EC
+   shards, verify reconstructed frames before return, and submit the corrupt
+   strip to the existing repair workflow. Exhausting viable sources returns an
+   integrity/read error and never returns unchecked bytes.
+
+9. Move Repo, Stream, and B+tree append/read paths onto these frame and
+   liveness contracts. Location publication happens only after the relevant
+   user data is durable; recovery finds the physical committed boundary from
+   frames, not from a per-write chunkdb cursor. Expose frame validation
+   failures, protection-read/reconstruction counts, liveness renewals,
+   due-task lag, chunks sealed/deleted, retained bytes, and rejected old
+   writes.
 
 ## Dependencies
 
-- Depends on R140 for B+tree chunk type usage, fresh-on-restart allocation,
-  writer epochs, and acknowledged cursors, and on R141 for the compatible
-  owner-key schema, stream chunk identity, and production allocation.
-- Reuses chunkdb's durable writer fields, per-chunk lifecycle guard, bounded
-  `list_chunks` scan, reservation reconciliation, and server-time lease logic.
-  R146 extends R141's attributed Stream ownership and the sweep uniformly to
-  `Stream`, `Repo`, `Wal`, `BtreePage`, and `PageIndex`.
-- R147 consumes the resulting sealed chunks for physical strip reclamation.
-- R142 supplies production tree ownership and shutdown sequencing but is not
-  required for chunkdb's expiration test harness.
+- Reuses the existing serving-authority timing policy, including maximum clock
+  skew and self-fence margin. R146 adds its shared `max_write_request_age` to
+  that policy and uses it for both DiskIO and finalization.
+- Reuses `TaskStore`/`TaskManager` in `app/crowdb-chunkdb/src/task` and its
+  atomic same-partition batch writes; R146 adds the liveness task kind and its
+  conditional renewal/claim behavior.
+- Reuses mirror fallback, EC reconstruction, and repair submission in
+  `lib/crowdb-chunk-client`; R146 extends their failure input to verified frame
+  corruption.
+- R147 may consume the sealed chunks for physical strip reclamation.
 
 ## Acceptance
 
-- Given each chunk type and canonical owner identity, when its metadata is
-  encoded and decoded, assert `owner_key` round-trips and a mismatched
-  owner-kind prefix is rejected. Given an old record without the field, assert
-  it decodes as shared/unattributed without changing its bytes. Invariant:
-  cleanup can identify attributed owners without breaking existing records.
-  Unit test.
-- Given a live but write-idle chunk owner (any type) holds an Active chunk,
-  when more than one lease period passes, assert maintenance renewals keep its
-  persisted lease current and the chunkdb sweep does not seal it. Invariant:
-  elapsed write idleness is not proof that a live owner disappeared. Integration
-  test.
-- Given a writer process crashes after acknowledging cursor `c` with later bytes
-  unacknowledged (any chunk type), when the writer lease expires and chunkdb
-  sweeps the record, assert the chunk is sealed at exactly `c` and bytes beyond
-  `c` are not readable through the manifest. Invariant: recovery never promotes
-  ambiguous writes. E2E test.
-- Given a renewal races the expiration sweep, when both acquire the existing
-  lifecycle guard, assert either the renewed lease remains Active or the
-  expired epoch is sealed, with no append accepted after sealing. Invariant:
-  lease renewal and sealing have one revision-ordered outcome. Integration
-  test.
-- Given any writer restarts before its old lease expires, when it writes again,
-  assert it allocates a new chunk and writer epoch and never renews or appends
-  to the old chunk. Invariant: process restart creates a new ownership
-  generation. Integration test.
-- Given chunkdb restarts after the writer crashes but before lease expiry,
-  when the replacement chunkdb instance reloads its range and the durable
-  deadline passes, assert its resumed sweep seals the old chunk. Invariant:
-  orphan sealing survives chunkdb restart. E2E test.
-- Given an expired attributed chunk has acknowledged cursor zero, when the
-  sweep owns its lifecycle revision, assert the chunk and its unused
-  reservations are deleted rather than sealed. Invariant: an allocation that
-  published no durable byte does not become an empty sealed chunk. Integration
-  test.
-- Given chunkdb range ownership moves while an expired chunk is pending (any
-  type), when the new owner begins its bounded scan, assert it seals the same
-  durable record once and the former owner cannot mutate it. Invariant:
-  cleanup follows range ownership without losing or duplicating state
-  transitions. E2E test.
-- Given an expired chunk has unused reservations and cleanup RPCs fail, when the
-  sweep retries, assert sealing stays durable, qualified frees are idempotent,
-  and no consumed extent is reused before the grace deadline. Invariant:
-  cleanup failure cannot reopen the chunk or permit stale-writer corruption.
+- Given each public frame kind and a payload at the maximum allowed size, when
+  Rust and C++ encode, parse, and verify the shared vectors, assert both
+  implementations produce and accept identical bytes; assert bad magic,
+  bounds, footer chunk ID, and CRC are rejected. Invariant: every reader has
+  one wire interpretation. Unit test.
+- Given a `RepoSmall` object and a `RepoLarge` object whose final payload does
+  not fill a frame, when they are written and their combined locations are used
+  for a range read, assert no frame exceeds 64 KiB, no write supplies alignment
+  padding, all requested bytes round-trip, and only containing frames are read
+  and verified. Invariant: bounded range verification needs no per-frame
+  location metadata. Integration test.
+- Given a default-size B+tree or PageIndex durable page, when it is persisted
+  and read, assert it is one verified frame and one location. Given a larger
+  page or insufficient tail capacity in the Active chunk, assert the writer
+  frames the complete page in one chunk, rotates before the page when needed,
+  and round-trips only after every frame verifies. Given a configured page too
+  large for one chunk, assert allocation is rejected before I/O. Invariant: a
+  tree page never crosses chunks and always has one location. Integration test.
+- Given a Stream journal record, when it is framed and replayed, assert the
+  stream payload format round-trips and no duplicate outer checksum or
+  provenance trailer is persisted. Invariant: the frame owns physical integrity
+  metadata. Integration test.
+- Given an Active chunk, when it is created and renewed, assert its one
+  liveness task has exactly one canonical record and the old ready index is
+  removed while the new deadline index appears in the same committed batch.
+  Invariant: task expiry has one durable source of truth. Integration test.
+- Given concurrent renewal and task claim with the same observed task revision,
+  when both submit their conditional batch, assert exactly one commits and the
+  losing operation observes a conflict rather than overwriting the winner.
+  Invariant: transaction atomicity does not permit lost task transitions.
   Integration test.
+- Given a scanner has read an old due index, when a valid liveness renewal
+  commits before the scanner claims the task, assert claim is rejected and the
+  chunk remains Active. Given claim commits first, assert renewal fails and the
+  owner allocates a new chunk. Invariant: renewal and finalization have one
+  ordered result. Integration test.
+- Given an owner-server crash and later a chunkdb restart, when its liveness
+  expiry plus request-age, skew, and safety bounds pass, assert the resumed
+  task seals at the final complete CRC-valid frame boundary or deletes an empty
+  chunk; assert a delayed pre-crash write receives `OldRequest`. Invariant: no
+  ambiguous tail becomes visible. E2E test.
+- Given a chunk owner loses renewal while its DiskIO connection remains live,
+  when its conservative local monotonic self-fence deadline arrives, assert it
+  admits no further writes; assert the finalizer runs only after the shared
+  request-age, skew, and scanner-safety window. Invariant: a network partition
+  cannot prolong a chunk writer beyond its liveness authority. Integration test.
+- Given a connected replica returns an I/O error twice then data, when the
+  frame is read, assert at most three total attempts are issued to that target
+  and the verified data is returned. Given connection establishment fails,
+  assert that target receives no retry and protection reading starts. Given a
+  returned frame has a bad CRC, assert it is excluded, mirror fallback or EC
+  reconstruction is verified before return, and repair is submitted for the
+  corrupt strip. Invariant: a checksum failure is a protection-read failure,
+  not successful data. Integration test.
+- Given no mirror or reconstructable EC set yields a verified frame, when the
+  caller reads it, assert it receives an integrity/read error and no payload.
+  Invariant: unchecked bytes never cross the client boundary. Integration test.
 
 Required gates:
 
@@ -157,8 +242,9 @@ Required gates:
 - `pixi run tree-lint`
 - `pixi run test-tree-ct`
 - `pixi run test-tree-ffi`
+- `pixi run -- cargo test -p crowdb-protocol --all-targets`
 - `pixi run -- cargo test -p crowdb-chunkdb --all-targets`
-- `pixi run -- cargo test -p crowdb-chunk-stream --all-targets`
 - `pixi run -- cargo test -p crowdb-chunk-client --all-targets`
+- `pixi run -- cargo test -p crowdb-chunk-stream --all-targets`
 - `pixi run -- cargo fmt --all -- --check`
 - `pixi run rs-lint`
