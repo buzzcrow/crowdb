@@ -28,6 +28,7 @@ use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_protocol::generate_chunk_id;
+use crowdb_protocol::timing::{DEFAULT_MAX_CLOCK_SKEW_MS, DEFAULT_SELF_FENCE_MARGIN_MS};
 
 use crate::allocator::{AllocError, ChunkAllocator, StripAllocType, StripBatchSpec};
 use crate::metrics::ChunkdbMetrics;
@@ -46,6 +47,8 @@ const DEFAULT_LOCK_WAIT: Duration = Duration::from_secs(10);
 const DEFAULT_LAYOUT_VALIDITY_MS: u64 = 30_000;
 const FINALIZE_CHUNK_LIVENESS_MS: u64 = 15 * 60 * 1_000;
 const FINALIZE_CHUNK_RENEWAL_MS: u64 = 12 * 60 * 1_000;
+const FINALIZE_CHUNK_SELF_FENCE_MS: u64 =
+    FINALIZE_CHUNK_LIVENESS_MS - DEFAULT_MAX_CLOCK_SKEW_MS - DEFAULT_SELF_FENCE_MARGIN_MS;
 
 /// Lifecycle error — maps to crowdb-rpc status codes in the service layer.
 #[derive(Debug, thiserror::Error)]
@@ -553,9 +556,6 @@ impl LifecycleHandler {
         if chunk.writer_epoch != writer_epoch || chunk.modify_ts != expected_modify_ts {
             return Err(LifecycleError::StateConflict);
         }
-        if self.liveness_renewed_at.get(chunk_id).is_none() {
-            return Err(LifecycleError::StateConflict);
-        }
         let capacity_bytes = u64::from(chunk.capacity).saturating_mul(1024);
         if acknowledged_cursor <= chunk.acknowledged_cursor || acknowledged_cursor > capacity_bytes {
             return Err(LifecycleError::InvalidRequest(format!(
@@ -587,7 +587,7 @@ impl LifecycleHandler {
                 ));
             }
         }
-        let now_ms = unix_time_ms();
+        let now_ms = self.renew_liveness_if_due(chunk_id, writer_epoch).await?;
         if let Some(sequence) = closed_strip_sequence {
             for strip in &mut chunk.strips {
                 if strip.strip_sequence <= sequence && strip.sealed_ts_ms == 0 {
@@ -601,28 +601,42 @@ impl LifecycleHandler {
         chunk.writer_lease_deadline_ms = now_ms.saturating_add(writer_lease_ms);
         chunk.modify_ts = chunk.modify_ts.saturating_add(1);
         self.store.put_chunk(&chunk).await?;
-        if self
-            .liveness_renewed_at
-            .get(chunk_id)
-            .is_some_and(|renewed_at| now_ms.saturating_sub(renewed_at) >= FINALIZE_CHUNK_RENEWAL_MS)
-        {
-            let Some(tasks) = &self.placement_tasks else {
-                return Err(LifecycleError::InvalidRequest(
-                    "chunk liveness task store is unavailable".into(),
-                ));
-            };
-            tasks
-                .renew_finalize_chunk(chunk_id, writer_epoch, now_ms, FINALIZE_CHUNK_LIVENESS_MS)
-                .await
-                .map_err(|error| {
-                    LifecycleError::InvalidRequest(format!("chunk liveness renewal failed: {error}"))
-                })?;
-            self.liveness_renewed_at.insert(*chunk_id, now_ms);
-        }
         if let Some(ref mut guard) = guard {
             guard.refresh(chunk.clone());
         }
         Ok(chunk)
+    }
+
+    async fn renew_liveness_if_due(
+        &self,
+        chunk_id: &ChunkId,
+        writer_epoch: u64,
+    ) -> Result<u64, LifecycleError> {
+        let now_ms = unix_time_ms();
+        let renewed_at = self
+            .liveness_renewed_at
+            .get(chunk_id)
+            .ok_or(LifecycleError::StateConflict)?;
+        let liveness_age = now_ms.saturating_sub(renewed_at);
+        if liveness_age >= FINALIZE_CHUNK_SELF_FENCE_MS {
+            return Err(LifecycleError::StateConflict);
+        }
+        if liveness_age < FINALIZE_CHUNK_RENEWAL_MS {
+            return Ok(now_ms);
+        }
+        let Some(tasks) = &self.placement_tasks else {
+            return Err(LifecycleError::InvalidRequest(
+                "chunk liveness task store is unavailable".into(),
+            ));
+        };
+        tasks
+            .renew_finalize_chunk(chunk_id, writer_epoch, now_ms, FINALIZE_CHUNK_LIVENESS_MS)
+            .await
+            .map_err(|error| {
+                LifecycleError::InvalidRequest(format!("chunk liveness renewal failed: {error}"))
+            })?;
+        self.liveness_renewed_at.insert(*chunk_id, now_ms);
+        Ok(now_ms)
     }
 
     fn commit_strip_segments_background(&self, strips: Vec<ChunkStrip>) {
