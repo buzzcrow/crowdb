@@ -86,11 +86,11 @@ async fn small_write_benchmark_uses_real_metadata_and_null_disk() {
 }
 
 #[tokio::test]
-async fn mixed_read_benchmark_prepares_real_locations_then_reads_null_disk() {
+async fn mixed_read_benchmark_prepares_and_verifies_real_frames() {
     if !all_binaries_available() {
         return;
     }
-    let stack = E2eStack::start_null(small_policy()).await;
+    let stack = E2eStack::start(small_policy()).await;
     let result = run_read_benchmark(
         stack.client.clone(),
         ReadBenchmarkConfig {
