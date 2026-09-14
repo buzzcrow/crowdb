@@ -111,6 +111,27 @@ pub fn encode_frame(
     Ok(frame)
 }
 
+/// Encode an object as its consecutive frame sequence.
+///
+/// Every interior frame has the maximum payload and the final frame is
+/// variable sized. An empty payload has no frame because it has no durable
+/// object location.
+///
+/// # Errors
+///
+/// Returns an error if an individual frame cannot be encoded.
+pub fn encode_frames(
+    magic: FrameMagic,
+    chunk_id: ChunkId,
+    payload: &[u8],
+    write_time_ms: u64,
+) -> Result<Vec<Vec<u8>>, FrameError> {
+    payload
+        .chunks(MAX_FRAME_PAYLOAD_BYTES)
+        .map(|part| encode_frame(magic, chunk_id, part, write_time_ms))
+        .collect()
+}
+
 /// Parse and verify one complete frame. The expected chunk ID is mandatory so
 /// a valid frame copied from a different chunk is rejected.
 ///

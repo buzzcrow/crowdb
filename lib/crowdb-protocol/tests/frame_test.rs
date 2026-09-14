@@ -3,8 +3,8 @@
 
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::frame::{
-    encode_frame, merge_adjacent_locations, parse_frame, ChunkLocation, FrameError, FrameMagic,
-    FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES,
+    encode_frame, encode_frames, merge_adjacent_locations, parse_frame, ChunkLocation, FrameError,
+    FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES,
 };
 
 const CHUNK: ChunkId = ChunkId { high: 7, low: 11 };
@@ -34,6 +34,18 @@ fn frame_round_trips_and_has_canonical_maximum_size() {
     assert_eq!(decoded.header.payload_offset as usize, FRAME_HEADER_PREFIX_BYTES);
     assert_eq!(decoded.payload, payload);
     assert_eq!(decoded.physical_length, MAX_FRAME_BYTES);
+}
+
+#[test]
+fn large_payload_has_full_interior_and_variable_tail_frames() {
+    let payload = vec![0xA5; MAX_FRAME_PAYLOAD_BYTES + 7];
+    let frames = encode_frames(FrameMagic::RepoLargeV1, CHUNK, &payload, 42).unwrap();
+    assert_eq!(frames.len(), 2);
+    assert_eq!(frames[0].len(), MAX_FRAME_BYTES);
+    assert_eq!(parse_frame(&frames[1], CHUNK).unwrap().payload, &[0xA5; 7]);
+    assert!(encode_frames(FrameMagic::RepoLargeV1, CHUNK, &[], 42)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
