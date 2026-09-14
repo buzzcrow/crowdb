@@ -16,6 +16,10 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 use tracing::{info, warn};
 
 use crowdb_protocol::chunk_stream::chunk_owner_key_matches_type;
+use crowdb_protocol::chunk_task::{
+    ChunkTaskState, ChunkTaskValue, CHUNK_TASK_SCHEMA_VERSION, FINALIZE_CHUNK_KIND_VERSION,
+    TASK_KIND_FINALIZE_CHUNK,
+};
 use crowdb_protocol::chunkdb::rpc::{
     Chunk, ChunkState as ProtoChunkState, ChunkStrip, ChunkType, Strip, StripCleanupIntent,
     StripReservationState, StripType as ProtoStripType,
@@ -40,6 +44,7 @@ use super::state::{ChunkState, StateTransitionError};
 /// Default lock wait time for `LockPolicy::default()`.
 const DEFAULT_LOCK_WAIT: Duration = Duration::from_secs(10);
 const DEFAULT_LAYOUT_VALIDITY_MS: u64 = 30_000;
+const FINALIZE_CHUNK_LIVENESS_MS: u64 = 15 * 60 * 1_000;
 
 /// Lifecycle error — maps to crowdb-rpc status codes in the service layer.
 #[derive(Debug, thiserror::Error)]
@@ -435,7 +440,7 @@ impl LifecycleHandler {
             last_strip_replacement: None,
             owner_key,
         };
-        self.persist_active_chunk(&chunk).await?;
+        self.create_chunk_with_liveness_task(&chunk).await?;
         self.admit_placement_repairs(&chunk);
         self.commit_strip_segments_background(chunk.strips.clone());
 
@@ -470,6 +475,42 @@ impl LifecycleHandler {
         Err(LifecycleError::InvalidRequest(
             "failed to generate a chunk id in the owned range".into(),
         ))
+    }
+
+    async fn create_chunk_with_liveness_task(&self, chunk: &Chunk) -> Result<(), LifecycleError> {
+        let id = chunk
+            .id
+            .ok_or_else(|| LifecycleError::InvalidRequest("chunk id is required".into()))?;
+        let now_ms = chunk.create_ts_ms;
+        let task = ChunkTaskValue {
+            schema_version: CHUNK_TASK_SCHEMA_VERSION,
+            task_id: id,
+            partition_id: id,
+            kind: TASK_KIND_FINALIZE_CHUNK,
+            kind_version: FINALIZE_CHUNK_KIND_VERSION,
+            state: ChunkTaskState::Pending,
+            priority: u8::MAX,
+            revision: 1,
+            operation_id: id,
+            source_revision: chunk.writer_epoch,
+            created_at_ms: now_ms,
+            updated_at_ms: now_ms,
+            eligible_at_ms: now_ms.saturating_add(FINALIZE_CHUNK_LIVENESS_MS),
+            attempt: 0,
+            max_attempts: u32::MAX,
+            estimated_queue_bytes: 0,
+            claim_owner: 0,
+            claim_generation: 0,
+            claim_deadline_ms: 0,
+            last_error_code: 0,
+            last_error: String::new(),
+            payload: Vec::new(),
+        };
+        if let Err(error) = self.store.create_chunk_with_finalize_task(chunk, &task).await {
+            self.allocator.rollback_strips(&chunk.strips).await?;
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     /// Advance the durable cursor of an exclusively owned shared chunk.
@@ -557,24 +598,6 @@ impl LifecycleHandler {
             guard.refresh(chunk.clone());
         }
         Ok(chunk)
-    }
-
-    async fn persist_active_chunk(&self, chunk: &Chunk) -> Result<(), LifecycleError> {
-        for attempt in 0..100_u32 {
-            match self.store.put_chunk(chunk).await {
-                Ok(()) => break,
-                Err(error) if attempt < 99 => {
-                    let backoff_ms = 1_u64.checked_shl(attempt).unwrap_or(u64::MAX).min(50);
-                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                    drop(error);
-                }
-                Err(error) => {
-                    self.allocator.rollback_strips(&chunk.strips).await?;
-                    return Err(error.into());
-                }
-            }
-        }
-        Ok(())
     }
 
     fn commit_strip_segments_background(&self, strips: Vec<ChunkStrip>) {
