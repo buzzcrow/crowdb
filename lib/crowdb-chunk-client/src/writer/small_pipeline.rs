@@ -114,7 +114,7 @@ impl PipelineWorker {
                         self.receiver.close();
                         self.receiver.recv().await
                     },
-                    () = liveness.tick() => {
+                    _ = liveness.tick() => {
                         if let Err(error) = self.renew_idle_chunks().await {
                             self.receiver.close();
                             self.fail_remaining(&error.to_string()).await;

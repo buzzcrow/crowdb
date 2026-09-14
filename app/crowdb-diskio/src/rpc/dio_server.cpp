@@ -179,7 +179,12 @@ crowdb::rpc::OutFrame *DiskioServer::handle_write(crowdb::rpc::Frame *request, c
         send_error_response(conn, req_id, create_nano, msg_type, static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError));
         return nullptr;
     }
-    if (data_buf != nullptr && size >= 2 &&
+    // An EC shard is opaque DiskIO data.  It can begin with the same two
+    // bytes as a public frame because the first data shard carries the
+    // original prefix, but it is not itself a frame sequence.  Without an
+    // explicit content-kind field, only a single-frame request is
+    // unambiguously self-describing at this boundary.
+    if (data_buf != nullptr && size <= crowdb::protocol::kMaxFrameBytes && size >= 2 &&
         crowdb::protocol::valid_magic(crowdb::protocol::read_u16_le(data_buf->data))) {
         const auto frame_status =
             crowdb::protocol::validate_frame_sequence(std::span<const uint8_t>(data_buf->data, size));
