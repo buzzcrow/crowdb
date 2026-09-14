@@ -191,7 +191,7 @@ impl ChunkReader {
     ) -> ReadResult<PartialReadResult> {
         if location.length != location.logical_length {
             return self
-                .read_single_framed_location(location, local_start, length, logical_start)
+                .read_framed_location(location, local_start, length, logical_start)
                 .await;
         }
         let chunk_id = location
@@ -236,7 +236,7 @@ impl ChunkReader {
         Err(ReadError::LayoutExpired)
     }
 
-    async fn read_single_framed_location(
+    async fn read_framed_location(
         &self,
         location: &Location,
         local_start: u64,
@@ -248,7 +248,7 @@ impl ChunkReader {
             .ok_or_else(|| ReadError::InvalidLocations("location has no chunk ID".into()))?;
         if local_start
             .checked_add(length)
-            .is_none_or(|end| end > location.logical_length)
+            .map_or(true, |end| end > location.logical_length)
         {
             return Err(ReadError::InvalidLocations(
                 "framed location logical range is invalid".into(),
@@ -288,16 +288,7 @@ impl ChunkReader {
                     ReadError::InvalidLocations("framed location exceeds addressable memory".into())
                 })?,
             )?;
-            let frame = parse_frame(&bytes, chunk_id)
-                .map_err(|error| ReadError::DataLoss(format!("invalid chunk frame: {error}")))?;
-            if frame.header.magic != FrameMagic::RepoSmallV1
-                || frame.physical_length as u64 != location.length
-                || frame.payload.len() as u64 != location.logical_length
-            {
-                return Err(ReadError::DataLoss(
-                    "framed location does not match RepoSmall frame".into(),
-                ));
-            }
+            let payload = decode_framed_location(&bytes, chunk_id, location)?;
             let start = usize::try_from(local_start).map_err(|_| {
                 ReadError::InvalidLocations("logical range exceeds addressable memory".into())
             })?;
@@ -310,7 +301,7 @@ impl ChunkReader {
                 ranges: vec![ReadRangeData {
                     start: logical_start,
                     end: logical_start + length,
-                    data: Bytes::copy_from_slice(&frame.payload[start..end]),
+                    data: payload.slice(start..end),
                 }],
                 failures: Vec::new(),
             });
@@ -442,6 +433,41 @@ impl ChunkReader {
         }
         Ok(())
     }
+}
+
+fn decode_framed_location(bytes: &Bytes, chunk_id: ChunkId, location: &Location) -> ReadResult<Bytes> {
+    let mut physical_cursor = 0_usize;
+    let mut payload = BytesMut::with_capacity(usize::try_from(location.logical_length).unwrap_or(usize::MAX));
+    let mut magic = None;
+    while physical_cursor < bytes.len() {
+        let frame = parse_frame(&bytes[physical_cursor..], chunk_id)
+            .map_err(|error| ReadError::DataLoss(format!("invalid chunk frame: {error}")))?;
+        match magic {
+            Some(previous) if previous != frame.header.magic => {
+                return Err(ReadError::DataLoss("framed location mixes frame kinds".into()));
+            }
+            None => magic = Some(frame.header.magic),
+            Some(_) => {}
+        }
+        if !matches!(
+            frame.header.magic,
+            FrameMagic::RepoSmallV1 | FrameMagic::RepoLargeV1
+        ) {
+            return Err(ReadError::DataLoss(
+                "framed location has unsupported frame kind".into(),
+            ));
+        }
+        payload.extend_from_slice(frame.payload);
+        physical_cursor = physical_cursor
+            .checked_add(frame.physical_length)
+            .ok_or_else(|| ReadError::DataLoss("frame location physical length overflows".into()))?;
+    }
+    if physical_cursor as u64 != location.length || payload.len() as u64 != location.logical_length {
+        return Err(ReadError::DataLoss(
+            "framed location metadata does not match its frames".into(),
+        ));
+    }
+    Ok(payload.freeze())
 }
 
 struct StripFailureObservation {
