@@ -594,6 +594,14 @@ impl LifecycleHandler {
         chunk.writer_lease_deadline_ms = now_ms.saturating_add(writer_lease_ms);
         chunk.modify_ts = chunk.modify_ts.saturating_add(1);
         self.store.put_chunk(&chunk).await?;
+        if let Some(tasks) = &self.placement_tasks {
+            tasks
+                .renew_finalize_chunk(chunk_id, writer_epoch, now_ms, FINALIZE_CHUNK_LIVENESS_MS)
+                .await
+                .map_err(|error| {
+                    LifecycleError::InvalidRequest(format!("chunk liveness renewal failed: {error}"))
+                })?;
+        }
         if let Some(ref mut guard) = guard {
             guard.refresh(chunk.clone());
         }

@@ -159,6 +159,32 @@ impl TaskStore {
         Ok(tasks.into_values().collect())
     }
 
+    /// Move an Active chunk's one liveness task to a new deadline. The
+    /// canonical task is CAS-guarded; the old deadline index deletion and new
+    /// index insertion are in the same batch. A claimed or replaced task is a
+    /// conflict, which fences the owner from further writes.
+    pub async fn renew_finalize_chunk(
+        &self,
+        chunk_id: &ChunkId,
+        owner_generation: u64,
+        now_ms: u64,
+        liveness_ms: u64,
+    ) -> Result<ChunkTaskValue, TaskStoreError> {
+        let current = self
+            .get(chunk_id, TASK_KIND_FINALIZE_CHUNK, chunk_id)
+            .await?
+            .ok_or(TaskStoreError::Conflict)?;
+        if current.state != ChunkTaskState::Pending || current.source_revision != owner_generation {
+            return Err(TaskStoreError::Conflict);
+        }
+        let mut renewed = current.clone();
+        renewed.revision = renewed.revision.saturating_add(1);
+        renewed.updated_at_ms = now_ms;
+        renewed.eligible_at_ms = now_ms.saturating_add(liveness_ms);
+        self.write_transition(Some(&current), &renewed).await?;
+        Ok(renewed)
+    }
+
     /// Scan runnable indexes whose retry eligibility has arrived.
     ///
     /// # Errors
