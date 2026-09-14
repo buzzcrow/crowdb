@@ -131,7 +131,7 @@ async fn write_full_small_strip(client: &ChunkIoClient, value: u8) -> Vec<(Bytes
     frames
 }
 
-async fn read_mirror_strip(stack: &E2eStack, chunk: &Chunk, location: &Location) -> Bytes {
+async fn read_data_image(stack: &E2eStack, chunk: &Chunk, location: &Location) -> Bytes {
     let strip = chunk
         .strips
         .iter()
@@ -141,17 +141,22 @@ async fn read_mirror_strip(stack: &E2eStack, chunk: &Chunk, location: &Location)
             start <= location.offset && location.offset < end
         })
         .expect("location strip");
-    let Strip::MirrorStrip(mirror) = strip.strip.as_ref().expect("strip body") else {
-        panic!("expected mirror strip");
+    let strip_start = u64::from(strip.chunk_offset) * KIB as u64;
+    let unit_bytes = u64::from(strip.unit_kb) * KIB as u64;
+    let segment = match strip.strip.as_ref().expect("strip body") {
+        Strip::MirrorStrip(mirror) => &mirror.segments[0],
+        Strip::EcStrip(ec) => {
+            // Conversion may finish while the writer returns its final
+            // location. The data images remain at their deterministic shard
+            // indexes, so capture them from either representation.
+            let shard =
+                usize::try_from((location.offset - strip_start) / MIB as u64).expect("EC data shard index");
+            &ec.segments[shard]
+        }
     };
     Bytes::from(
         stack
-            .read_segment(
-                &mirror.segments[0],
-                u64::from(strip.unit_kb) * KIB as u64,
-                0,
-                u32::try_from(MIB).unwrap(),
-            )
+            .read_segment(segment, unit_bytes, 0, u32::try_from(MIB).unwrap())
             .await,
     )
 }
@@ -295,7 +300,7 @@ async fn eight_closed_mirror_strips_become_one_durable_ec_strip_without_reread()
     let before = stack.query_chunk(&locations[0]).await;
     let mut data = Vec::with_capacity(object_groups.len());
     for group in &object_groups {
-        data.push(read_mirror_strip(&stack, &before, &group[0].1).await);
+        data.push(read_data_image(&stack, &before, &group[0].1).await);
     }
     // Draining joins the already-scheduled foreground conversion task. This
     // is a deterministic completion boundary and still proves that parity was
@@ -439,7 +444,7 @@ async fn chunkdb_takes_over_durable_conversion_task_after_client_io_failure() {
     let before = failed_fast_path;
     let mut expected_data = Vec::with_capacity(object_groups.len());
     for group in &object_groups {
-        expected_data.push(read_mirror_strip(&stack, &before, &group[0].1).await);
+        expected_data.push(read_data_image(&stack, &before, &group[0].1).await);
     }
     for (segment, expected) in ec.segments[..8].iter().zip(&expected_data) {
         let actual = stack
@@ -497,7 +502,7 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
         .all(|strip| matches!(strip.strip, Some(Strip::MirrorStrip(_)))));
     let mut data = Vec::with_capacity(object_groups.len());
     for group in &object_groups {
-        data.push(read_mirror_strip(&stack, &before, &group[0].1).await);
+        data.push(read_data_image(&stack, &before, &group[0].1).await);
     }
 
     let (chunkdb, _) = real_write_parts(&stack).await;
@@ -615,7 +620,7 @@ async fn automatic_chunkdb_scan_converts_three_groups_and_preserves_tail() {
     let before = stack.query_chunk(&locations[0]).await;
     let mut data = Vec::with_capacity(object_groups.len());
     for group in &object_groups {
-        data.push(read_mirror_strip(&stack, &before, &group[0].1).await);
+        data.push(read_data_image(&stack, &before, &group[0].1).await);
     }
     stack.client.shutdown_small_writes().await.unwrap();
     let (chunkdb, _) = real_write_parts(&stack).await;
@@ -727,7 +732,7 @@ async fn chunkdb_restart_recovers_an_inflight_conversion_claim() {
     let before = stack.query_chunk(&locations[0]).await;
     let mut data = Vec::with_capacity(object_groups.len());
     for group in &object_groups {
-        data.push(read_mirror_strip(&stack, &before, &group[0].1).await);
+        data.push(read_data_image(&stack, &before, &group[0].1).await);
     }
     stack.client.shutdown_small_writes().await.unwrap();
     stack.wait_for_conversion_active().await;
