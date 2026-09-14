@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use crowdb_chunk_stream::memory::MemoryStreamStore;
@@ -57,6 +58,18 @@ async fn first_append_has_no_timer_and_publishes_framed_extent() {
     assert_eq!(store.cursor_advance_count(), 1);
     assert_eq!(store.metadata_publish_count(), 3);
     assert_eq!(stream.read_at(0, 4).await.unwrap(), Bytes::from_static(b"abcd"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_active_chunk_renews_liveness_without_advancing_cursor() {
+    let store = Arc::new(MemoryStreamStore::new(64));
+    let stream = create_stream(&store, 64, StreamConfig::default()).await;
+    stream.append(&[Bytes::from_static(b"idle")]).await.unwrap();
+    assert_eq!(store.cursor_advance_count(), 1);
+    tokio::time::advance(Duration::from_secs(12 * 60)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(store.liveness_renew_count(), 1);
+    assert_eq!(store.cursor_advance_count(), 1);
 }
 
 #[tokio::test]

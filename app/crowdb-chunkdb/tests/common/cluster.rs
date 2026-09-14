@@ -13,7 +13,7 @@ use std::io as std_io;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc, Arc, LazyLock, Mutex};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -45,7 +45,7 @@ use crowdb_protocol::ServicePort;
 use serde_json::Value;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-static FULL_STACK_PERMITS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
+static FULL_STACK_PERMITS: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 // ── process management ──────────────────────────────────────────
 
@@ -254,6 +254,7 @@ pub struct KvCluster {
 impl KvCluster {
     pub async fn start() -> Self {
         let permit = FULL_STACK_PERMITS
+            .get_or_init(|| Arc::new(Semaphore::new(1)))
             .clone()
             .acquire_owned()
             .await

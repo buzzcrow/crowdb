@@ -133,9 +133,7 @@ fn normalize_topology(mut topo: Value) -> Value {
 }
 
 fn node_endpoint(topo: &Value) -> Option<String> {
-    topo["stores"][0]["listen_addr"]
-        .as_str()
-        .map(|s| normalize_endpoint(s))
+    topo["stores"][0]["listen_addr"].as_str().map(normalize_endpoint)
 }
 
 async fn combined_topology(nodes: &[ServerNode]) -> Value {
@@ -312,6 +310,7 @@ async fn kv_get_nodes(nodes: &[&ServerNode], group_id: u64, key: &[u8]) -> Optio
 /// write data, kill the leader via SIGTERM, verify the surviving
 /// nodes re-elect and all committed data is still readable.
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // serializes real process stacks that share topology ports
 async fn graceful_shutdown_leader_under_load() {
     let _guard = acquire_guard();
     let group_id = 10;
@@ -382,6 +381,7 @@ async fn graceful_shutdown_leader_under_load() {
 /// replica. Writes must continue to commit through both reconfig operations.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
+#[allow(clippy::await_holding_lock)] // serializes real process stacks that share topology ports
 async fn reconfig_via_api_add_then_remove() {
     let _guard = acquire_guard();
     let group_id = 20;
@@ -521,6 +521,7 @@ async fn reconfig_via_api_add_then_remove() {
 /// the step-down API (`server_api_test`) with the remove-replica API in a
 /// single end-to-end workflow.
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // serializes real process stacks that share topology ports
 async fn reconfig_via_api_remove_leader() {
     let _guard = acquire_guard();
     let group_id = 30;

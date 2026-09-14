@@ -3,7 +3,7 @@
 
 //! Real-process chunk-client E2E fixture and disk read-back helpers.
 
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, SmallWritePolicy};
@@ -21,7 +21,7 @@ use crowdb_test_harness::diskio::{self as dio_harness, DiskioProcess, DiskioStar
 use crowdb_test_harness::hardware::{make_disk_id, seed_hardware};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-static E2E_STACK_PERMITS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
+static E2E_STACK_PERMITS: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 pub fn all_binaries_available() -> bool {
     let available = (std::env::var("CROWDB_KV_SERVER_BIN").is_ok()
@@ -98,6 +98,7 @@ impl E2eStack {
         chunkdb_options: ChunkdbStartOptions,
     ) -> Self {
         let permit = E2E_STACK_PERMITS
+            .get_or_init(|| Arc::new(Semaphore::new(1)))
             .clone()
             .acquire_owned()
             .await

@@ -587,6 +587,7 @@ async fn manual_chunkdb_trigger_converts_closed_active_range_end_to_end() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn automatic_chunkdb_scan_converts_three_groups_and_preserves_tail() {
     if !all_binaries_available() {
         return;

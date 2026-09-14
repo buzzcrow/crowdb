@@ -64,6 +64,7 @@ pub struct MemoryStreamStore {
     extent_page_loads: AtomicU64,
     chunk_writes: AtomicU64,
     cursor_advances: AtomicU64,
+    liveness_renews: AtomicU64,
     pause_writes: AtomicBool,
     pause_reads: AtomicBool,
     active_reads: AtomicUsize,
@@ -96,6 +97,7 @@ impl MemoryStreamStore {
             extent_page_loads: AtomicU64::new(0),
             chunk_writes: AtomicU64::new(0),
             cursor_advances: AtomicU64::new(0),
+            liveness_renews: AtomicU64::new(0),
             pause_writes: AtomicBool::new(false),
             pause_reads: AtomicBool::new(false),
             active_reads: AtomicUsize::new(0),
@@ -179,6 +181,11 @@ impl MemoryStreamStore {
     #[must_use]
     pub fn cursor_advance_count(&self) -> u64 {
         self.cursor_advances.load(Ordering::Acquire)
+    }
+
+    #[must_use]
+    pub fn liveness_renew_count(&self) -> u64 {
+        self.liveness_renews.load(Ordering::Acquire)
     }
 
     pub async fn is_released(&self, chunk_id: ChunkId) -> bool {
@@ -426,6 +433,19 @@ impl StreamChunkStore for MemoryStreamStore {
             last_advance_checksum: chunk.last_advance_checksum,
             sealed: chunk.sealed,
         })
+    }
+
+    async fn renew_liveness(&self, chunk_id: ChunkId, writer_epoch: u64) -> Result<()> {
+        let state = self.state.lock().await;
+        let chunk = state
+            .chunks
+            .get(&chunk_id)
+            .ok_or_else(|| StreamError::ReadUnavailable("chunk is missing".into()))?;
+        if chunk.writer_epoch != writer_epoch || chunk.sealed {
+            return Err(StreamError::StaleWriter);
+        }
+        self.liveness_renews.fetch_add(1, Ordering::AcqRel);
+        Ok(())
     }
 
     async fn seal(&self, chunk_id: ChunkId, writer_epoch: u64, cursor: u64) -> Result<()> {

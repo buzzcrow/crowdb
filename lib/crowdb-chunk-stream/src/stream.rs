@@ -980,9 +980,10 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<Command
     let mut liveness = tokio::time::interval(Duration::from_secs(12 * 60));
     liveness.tick().await;
     loop {
-        let command = match pending.take() {
-            Some(command) => command,
-            None => tokio::select! {
+        let command = if let Some(command) = pending.take() {
+            command
+        } else {
+            tokio::select! {
                 command = receiver.recv() => match command {
                     Some(command) => command,
                     None => break,
@@ -995,7 +996,7 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<Command
                     }
                     continue;
                 }
-            },
+            }
         };
         match command {
             Command::Append(first) => {

@@ -750,8 +750,8 @@ Status RpcChunkTransport::advance_write(ChunkId chunk_id, uint64_t expected_byte
     builder.Finish(request);
     std::vector<uint8_t> control(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());
     RpcResult            result;
-    Status status = call_rpc(impl_->options.chunkdb, request_id,
-                             crowdb::rpc::proto::FBMsgType_EAdvanceChunkWriteRequest, control, nullptr, 0, &result);
+    Status               status = call_rpc(impl_->options.chunkdb, request_id,
+                                           crowdb::rpc::proto::FBMsgType_EAdvanceChunkWriteRequest, control, nullptr, 0, &result);
     if (!status.ok()) {
         return status;
     }
