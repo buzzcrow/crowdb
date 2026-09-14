@@ -138,6 +138,11 @@ pub async fn load_local_groups(
         store.set_quickack(registry.config.server.quickack);
         store.set_event_write(registry.config.server.event_write);
         store.set_send_queue_capacity(registry.config.server.send_queue_capacity);
+        store.set_snapshot_source_config(
+            registry.config.server.snapshot_chunk_bytes,
+            registry.config.server.snapshot_source_sessions,
+            registry.config.server.snapshot_session_lease_ms,
+        );
         let store = Arc::new(store);
 
         for group_id in group_ids {

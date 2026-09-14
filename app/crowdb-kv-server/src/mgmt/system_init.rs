@@ -121,6 +121,11 @@ pub(super) async fn system_init(
         store.set_quickack(state.config.server.quickack);
         store.set_event_write(state.config.server.event_write);
         store.set_send_queue_capacity(state.config.server.send_queue_capacity);
+        store.set_snapshot_source_config(
+            state.config.server.snapshot_chunk_bytes,
+            state.config.server.snapshot_source_sessions,
+            state.config.server.snapshot_session_lease_ms,
+        );
         let store = Arc::new(store);
         store.start().await.map_err(|e| {
             err_json(

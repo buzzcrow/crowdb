@@ -109,6 +109,14 @@ pub struct ServerConfig {
     /// static: per-connection send queue capacity (backpressure bound).
     /// Default 4096. Raise if `enqueue_send` failures appear under load.
     pub send_queue_capacity: u32,
+    /// Maximum snapshot payload bytes returned by one Read RPC.
+    pub snapshot_chunk_bytes: usize,
+    /// Maximum number of pinned snapshot exports owned by this store.
+    pub snapshot_source_sessions: usize,
+    /// Idle lifetime of a source snapshot session.
+    pub snapshot_session_lease_ms: u64,
+    /// Maximum number of fresh Begin attempts during a new-member join.
+    pub snapshot_restart_attempts: usize,
 }
 
 impl ServerConfig {
@@ -121,6 +129,10 @@ impl ServerConfig {
         quickack: false,
         event_write: false,
         send_queue_capacity: 4096,
+        snapshot_chunk_bytes: 1024 * 1024,
+        snapshot_source_sessions: 4,
+        snapshot_session_lease_ms: 30_000,
+        snapshot_restart_attempts: 3,
     };
 }
 
@@ -480,6 +492,18 @@ impl BaseConfig for CrowDBConfig {
         if self.server.send_queue_capacity == 0 {
             return Err("server.send_queue_capacity must be > 0".to_string());
         }
+        if self.server.snapshot_chunk_bytes == 0 || self.server.snapshot_chunk_bytes > 1024 * 1024 {
+            return Err("server.snapshot_chunk_bytes must be in 1..=1048576".to_string());
+        }
+        if self.server.snapshot_source_sessions == 0 {
+            return Err("server.snapshot_source_sessions must be > 0".to_string());
+        }
+        if self.server.snapshot_session_lease_ms == 0 {
+            return Err("server.snapshot_session_lease_ms must be > 0".to_string());
+        }
+        if self.server.snapshot_restart_attempts == 0 {
+            return Err("server.snapshot_restart_attempts must be > 0".to_string());
+        }
         if self.paxos.max_inflight_proposals == 0 {
             return Err("paxos.max_inflight_proposals must be > 0".to_string());
         }
@@ -654,6 +678,23 @@ mod tests {
         assert_eq!(
             config.validate(),
             Err("server.send_queue_capacity must be > 0".to_string())
+        );
+    }
+
+    #[test]
+    fn snapshot_transfer_defaults_are_bounded_and_validate() {
+        let config = CrowDBConfig::default();
+        assert_eq!(config.server.snapshot_chunk_bytes, 1024 * 1024);
+        assert_eq!(config.server.snapshot_source_sessions, 4);
+        assert_eq!(config.server.snapshot_session_lease_ms, 30_000);
+        assert_eq!(config.server.snapshot_restart_attempts, 3);
+        assert_eq!(config.validate(), Ok(()));
+
+        let mut invalid = config;
+        invalid.server.snapshot_chunk_bytes = 1024 * 1024 + 1;
+        assert_eq!(
+            invalid.validate(),
+            Err("server.snapshot_chunk_bytes must be in 1..=1048576".to_string())
         );
     }
 

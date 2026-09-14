@@ -29,9 +29,8 @@ pub(super) struct JoinGroupRequest {
     replica_id: u64,
     /// crowdb-rpc endpoint (`host:port`) of an existing, already-caught-up member
     /// of this group to pull the snapshot from. Must run the **same**
-    /// crowdb-tree backend as this store -- `KVEngine::snapshot_import`
-    /// is only ever meaningful fed a stream from the same engine kind's
-    /// `snapshot_export`.
+    /// crowdb-tree backend as this store; snapshot sessions accept only the
+    /// same engine kind's portable format.
     peer_endpoint: String,
 }
 
@@ -382,12 +381,27 @@ pub(super) async fn join_group_via_snapshot(
         )
     })?;
 
-    let at_slot = group.join_via_snapshot(&req.peer_endpoint).await.map_err(|e| {
-        err_json(
-            StatusCode::BAD_GATEWAY,
-            format!("snapshot join against {} failed: {e}", req.peer_endpoint),
+    let at_slot = match group
+        .join_via_snapshot_with_config(
+            &req.peer_endpoint,
+            state.config.server.snapshot_chunk_bytes,
+            state.config.server.snapshot_restart_attempts,
         )
-    })?;
+        .await
+    {
+        Ok(at_slot) => at_slot,
+        Err(error) => {
+            let _ = group
+                .shutdown(std::time::Duration::from_millis(
+                    state.config.server.shutdown_timeout_ms,
+                ))
+                .await;
+            return Err(err_json(
+                StatusCode::BAD_GATEWAY,
+                format!("snapshot join against {} failed: {error}", req.peer_endpoint),
+            ));
+        }
+    };
     // The frontier moved from 0 to `at_slot` (or further, if a concurrent
     // catch-up already advanced it) after `create_group_with_wal` computed
     // `next_slot` from a still-empty replica; recompute so a future

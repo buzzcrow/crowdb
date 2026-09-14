@@ -25,7 +25,7 @@ pub struct SnapshotMetadata {
 }
 
 /// One bounded piece of a snapshot byte stream.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnapshotChunk {
     pub offset: u64,
     pub bytes: Vec<u8>,
@@ -310,47 +310,6 @@ pub trait KVEngine: Send + Sync {
     /// Returns an error when this engine does not support streaming import or
     /// cannot allocate its parser state.
     fn snapshot_import_begin(&self) -> Result<Box<dyn SnapshotImporter>, String> {
-        Err("snapshot import not supported by this engine".to_string())
-    }
-
-    /// Export this engine's entire current state as an opaque,
-    /// engine-specific byte stream, for the new-member join flow: a fresh/far-lagging
-    /// replica pulls this over [`crate::rpc::SnapshotService`] instead of
-    /// replaying full Paxos history. Returns `(at_slot, stream)`: `at_slot`
-    /// is the highest slot durably reflected in `stream` (same contract as
-    /// [`Self::resume_from_slot`]/[`Self::persist_snapshot`]); `stream` is
-    /// only ever meaningful fed back into **this same engine kind's**
-    /// [`Self::snapshot_import`] — never across engine kinds.
-    ///
-    /// Default: unsupported (`InMemKV` and [`super::CrowdbTreeEngine`] both
-    /// override this with a real implementation; a future engine kind that
-    /// doesn't gets a clear error instead of silently returning empty
-    /// state).
-    ///
-    /// # Errors
-    /// Returns an error string if this engine kind does not support
-    /// snapshot export, or if the underlying export fails.
-    fn snapshot_export(&self) -> Result<(u64, Vec<u8>), String> {
-        Err("snapshot export not supported by this engine".to_string())
-    }
-
-    /// Import a byte stream produced by [`Self::snapshot_export`] on
-    /// **another replica's same-kind engine**, replacing this engine's
-    /// entire state. Returns the `at_slot` the imported snapshot covers
-    /// (the same value the exporter returned).
-    ///
-    /// Only ever called on a freshly-constructed, still-empty engine — the
-    /// join flow's contract, mirroring [`Self::resume_from_slot`]'s "before
-    /// any `apply` calls in this process" precondition. Never called on a
-    /// live engine with existing local state.
-    ///
-    /// Default: unsupported.
-    ///
-    /// # Errors
-    /// Returns an error string if this engine kind does not support
-    /// snapshot import, or if `stream` is malformed / fails to decode.
-    fn snapshot_import(&self, stream: &[u8]) -> Result<u64, String> {
-        let _ = stream;
         Err("snapshot import not supported by this engine".to_string())
     }
 

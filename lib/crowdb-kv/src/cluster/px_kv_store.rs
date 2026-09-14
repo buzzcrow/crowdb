@@ -67,6 +67,9 @@ pub struct PxKvStore {
     /// `ServerConfig::DEFAULT.send_queue_capacity`; overridden via
     /// `set_send_queue_capacity` before `start()`.
     pub(crate) send_queue_capacity: u32,
+    pub(crate) snapshot_chunk_bytes: usize,
+    pub(crate) snapshot_source_sessions: usize,
+    pub(crate) snapshot_session_lease_ms: u64,
     /// Test-only delay injected into `kv_get` before `resolve_read_point`.
     /// Set via `set_get_delay_for_tests` under the `test-util` feature;
     /// `None` in production.
@@ -93,6 +96,9 @@ impl PxKvStore {
             quickack: ServerConfig::DEFAULT.quickack,
             event_write: ServerConfig::DEFAULT.event_write,
             send_queue_capacity: ServerConfig::DEFAULT.send_queue_capacity,
+            snapshot_chunk_bytes: ServerConfig::DEFAULT.snapshot_chunk_bytes,
+            snapshot_source_sessions: ServerConfig::DEFAULT.snapshot_source_sessions,
+            snapshot_session_lease_ms: ServerConfig::DEFAULT.snapshot_session_lease_ms,
             #[cfg(feature = "test-util")]
             get_delay: Mutex::new(None),
         }
@@ -138,6 +144,13 @@ impl PxKvStore {
     /// `CrowDBConfig.server.send_queue_capacity`. Called before `start()`.
     pub fn set_send_queue_capacity(&mut self, capacity: u32) {
         self.send_queue_capacity = capacity;
+    }
+
+    /// Override bounded source snapshot settings before `start()`.
+    pub fn set_snapshot_source_config(&mut self, chunk_bytes: usize, sessions: usize, lease_ms: u64) {
+        self.snapshot_chunk_bytes = chunk_bytes;
+        self.snapshot_source_sessions = sessions;
+        self.snapshot_session_lease_ms = lease_ms;
     }
 
     /// Reap expired snapshot handles from a group's registry. Called

@@ -597,34 +597,6 @@ fn block_device_snapshot_reopen_smoke() {
 }
 
 #[test]
-fn snapshot_export_import_round_trip() {
-    let a = Crowdbtree::open(&Config::default()).unwrap();
-    for i in 0..30usize {
-        a.apply_put((i + 1) as u64, &key(i), format!("v{i}").as_bytes())
-            .unwrap();
-        a.flush().unwrap();
-    }
-    let stream = a.snapshot_export().unwrap();
-    assert!(!stream.is_empty());
-
-    let b = Crowdbtree::open(&Config::default()).unwrap();
-    let at = b.snapshot_import(&stream).unwrap();
-    assert_eq!(at, 30);
-    for i in 0..30usize {
-        assert_eq!(
-            b.get(&key(i)).unwrap(),
-            Some(((i + 1) as u64, format!("v{i}").into_bytes()))
-        );
-    }
-
-    // Snapshot views must match structurally.
-    let (sa, va) = a.snapshot_view().unwrap();
-    let (sb, vb) = b.snapshot_view().unwrap();
-    assert_eq!(sa, sb);
-    assert_eq!(va, vb);
-}
-
-#[test]
 fn snapshot_sessions_stream_with_metadata_and_abort_without_installing() {
     let source = Arc::new(Crowdbtree::open(&Config::default()).unwrap());
     for i in 0..30usize {

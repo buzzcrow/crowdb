@@ -10,8 +10,6 @@ use crate::scan::ViewEntry;
 use crate::sys;
 use crate::tree::Crowdbtree;
 
-const DEFAULT_SNAPSHOT_CHUNK_BYTES: usize = 1 << 20;
-
 /// Immutable metadata captured when a portable snapshot export begins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SnapshotMetadata {
@@ -219,52 +217,5 @@ impl Crowdbtree {
             sys::ct_view_release(view);
         }
         Ok((at, out))
-    }
-
-    /// Export the current durable snapshot as the portable byte stream
-    /// (concatenated chunks). The snapshot's slot is carried in the stream.
-    pub fn snapshot_export(&self) -> Result<Vec<u8>, CtError> {
-        let mut exp: *mut sys::ct_export = std::ptr::null_mut();
-        check(unsafe {
-            sys::ct_snapshot_export_begin(self.as_ptr(), DEFAULT_SNAPSHOT_CHUNK_BYTES, &mut exp)
-        })?;
-        let mut stream = Vec::new();
-        let mut offset = 0;
-        loop {
-            let mut chunk = sys::ct_buf {
-                data: std::ptr::null_mut(),
-                len: 0,
-            };
-            let mut done: c_int = 0;
-            let rc = unsafe { sys::ct_snapshot_export_next(exp, offset, &mut chunk, &mut done) };
-            if rc != 0 {
-                unsafe { sys::ct_snapshot_export_end(exp) };
-                return Err(check(rc).unwrap_err());
-            }
-            let bytes = take_buf(chunk);
-            offset = offset.saturating_add(bytes.len() as u64);
-            stream.extend_from_slice(&bytes);
-            if done != 0 {
-                break;
-            }
-        }
-        unsafe { sys::ct_snapshot_export_end(exp) };
-        Ok(stream)
-    }
-
-    /// Import a portable snapshot stream, replacing this engine's state.
-    pub fn snapshot_import(&self, stream: &[u8]) -> Result<u64, CtError> {
-        let mut im: *mut sys::ct_import = std::ptr::null_mut();
-        check(unsafe { sys::ct_snapshot_import_begin(self.as_ptr(), &mut im) })?;
-        let rc = unsafe { sys::ct_snapshot_import_feed(im, stream.as_ptr(), stream.len()) };
-        if rc != 0 {
-            unsafe { sys::ct_snapshot_import_end(im) };
-            return Err(check(rc).unwrap_err());
-        }
-        let mut at = 0u64;
-        let rc = unsafe { sys::ct_snapshot_import_finish(im, &mut at) };
-        unsafe { sys::ct_snapshot_import_end(im) };
-        check(rc)?;
-        Ok(at)
     }
 }

@@ -52,6 +52,17 @@ pub(crate) struct SnapshotRegistryHandles {
     pub(crate) max_us: Arc<Gauge>,
 }
 
+pub(crate) struct SnapshotJoinRegistryHandles {
+    pub(crate) bytes: Arc<Counter>,
+    pub(crate) chunks: Arc<Counter>,
+    pub(crate) reconnect_retries: Arc<Counter>,
+    pub(crate) resumed_offsets: Arc<Counter>,
+    pub(crate) restarts: Arc<Counter>,
+    pub(crate) integrity_failures: Arc<Counter>,
+    pub(crate) aborted: Arc<Counter>,
+    pub(crate) latency: Arc<LatencySummary>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct CasOwnerToken {
     pub(crate) tenure: u64,
@@ -246,6 +257,7 @@ pub struct PxGroup {
     pub(crate) write_handles: OnceLock<WriteRegistryHandles>,
     /// Snapshot completion counters and latency, read lock-free by maintenance.
     pub(crate) snapshot_handles: OnceLock<SnapshotRegistryHandles>,
+    pub(crate) snapshot_join_handles: OnceLock<SnapshotJoinRegistryHandles>,
     /// Pending `ReadIndex` barrier batch. `Some` only while a `ReadIndex`
     /// heartbeat round is in flight; concurrent reads that arrive during
     /// the round enqueue a waiter here instead of starting their own
@@ -414,6 +426,7 @@ impl PxGroup {
             read_handles: OnceLock::new(),
             write_handles: OnceLock::new(),
             snapshot_handles: OnceLock::new(),
+            snapshot_join_handles: OnceLock::new(),
             pending_read_barrier: parking_lot::Mutex::new(None),
             #[cfg(feature = "test-util")]
             readindex_round_gate: parking_lot::Mutex::new(None),
@@ -659,6 +672,17 @@ impl PxGroup {
         };
         snapshot_handles.max_us.set(0);
         let _ = self.snapshot_handles.set(snapshot_handles);
+        let snapshot_join_handles = SnapshotJoinRegistryHandles {
+            bytes: r.register_counter(format!("{prefix}.snapshot.join.bytes.c")),
+            chunks: r.register_counter(format!("{prefix}.snapshot.join.chunks.c")),
+            reconnect_retries: r.register_counter(format!("{prefix}.snapshot.join.reconnect_retries.c")),
+            resumed_offsets: r.register_counter(format!("{prefix}.snapshot.join.resumed_offsets.c")),
+            restarts: r.register_counter(format!("{prefix}.snapshot.join.restarts.c")),
+            integrity_failures: r.register_counter(format!("{prefix}.snapshot.join.integrity_failures.c")),
+            aborted: r.register_counter(format!("{prefix}.snapshot.join.aborted.c")),
+            latency: r.register_summary(format!("{prefix}.snapshot.join.import.l")),
+        };
+        let _ = self.snapshot_join_handles.set(snapshot_join_handles);
     }
 
     /// Borrow optional registry handles for read-path metrics. Returns
@@ -666,6 +690,10 @@ impl PxGroup {
     #[must_use]
     pub(crate) fn read_handles(&self) -> Option<&ReadRegistryHandles> {
         self.read_handles.get()
+    }
+
+    pub(crate) fn snapshot_join_handles(&self) -> Option<&SnapshotJoinRegistryHandles> {
+        self.snapshot_join_handles.get()
     }
 
     pub fn force_classic(&self) -> bool {

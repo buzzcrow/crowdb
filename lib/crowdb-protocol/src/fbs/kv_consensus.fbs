@@ -27,6 +27,12 @@ enum FBKvRetCode : int16 {
     Unavailable = 2,
     Internal = 3,
     InvalidArgument = 4,
+    SnapshotNotFound = 5,
+    SnapshotExpired = 6,
+    SnapshotInvalidOffset = 7,
+    SnapshotBackpressure = 8,
+    SnapshotTopologyChanged = 9,
+    SnapshotIntegrity = 10,
 }
 
 // ── Accepted value (table — has a payload vector) ────────────────
@@ -263,30 +269,81 @@ table FBFetchGapResponse {
     payload:[ubyte];
 }
 
-// ── Snapshot (new-member install) ────────────────────────────────
-// Single-frame response: header info in the control buffer (this
-// table), full exported bytes in the frame's data buffer. The server
-// configures a larger max_data_size (64 MiB) to accommodate large
-// snapshots. If the snapshot exceeds the limit, the join fails with
-// a clear error.
+// ── Bounded new-member snapshot transfer ────────────────────────
 
-table FBSnapshotRequest {
+table FBSnapshotBeginRequest {
     id:uint64;
     rpc_create_nano:uint64;
     group_id:uint64;
+    max_chunk_bytes:uint32;
 }
 
-table FBSnapshotResponse {
+table FBSnapshotBeginResponse {
     id:uint64;
     rpc_create_nano:uint64;
     ret_code:FBKvRetCode;
     error_msg:string;
     group_id:uint64;
-    // Term of the log entry chosen at the snapshot's at_slot.
-    term_at_slot:uint64;
-    // Exporting replica's current membership_epoch.
-    membership_epoch:uint64;
-    // The slot covered by the snapshot (returned by snapshot_import
-    // on the server side; echoed here so the client can verify).
+    boot_nonce:uint64;
+    session_number:uint64;
+    engine_format:ubyte;
     at_slot:uint64;
+    term_at_slot:uint64;
+    membership_epoch:uint64;
+    chunk_bytes:uint32;
+    total_bytes:uint64;
+    final_crc32c:uint32;
+}
+
+table FBSnapshotReadRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    boot_nonce:uint64;
+    session_number:uint64;
+    offset:uint64;
+}
+
+table FBSnapshotReadResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    ret_code:FBKvRetCode;
+    error_msg:string;
+    boot_nonce:uint64;
+    session_number:uint64;
+    offset:uint64;
+    payload_crc32c:uint32;
+    done:bool;
+}
+
+table FBSnapshotFinishRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    boot_nonce:uint64;
+    session_number:uint64;
+    final_offset:uint64;
+}
+
+table FBSnapshotFinishResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    ret_code:FBKvRetCode;
+    error_msg:string;
+    boot_nonce:uint64;
+    session_number:uint64;
+}
+
+table FBSnapshotAbortRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    boot_nonce:uint64;
+    session_number:uint64;
+}
+
+table FBSnapshotAbortResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    ret_code:FBKvRetCode;
+    error_msg:string;
+    boot_nonce:uint64;
+    session_number:uint64;
 }

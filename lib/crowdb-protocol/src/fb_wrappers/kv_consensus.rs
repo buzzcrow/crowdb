@@ -13,7 +13,8 @@
 
 use crate::kv_consensus_fb::{
     FBAcceptedResponse, FBFetchGapResponse, FBHeartbeatResponse, FBKvRetCode, FBPreVoteResponse,
-    FBPromiseResponse, FBRequestVoteResponse, FBSnapshotResponse, FBStepDownResponse,
+    FBPromiseResponse, FBRequestVoteResponse, FBSnapshotAbortResponse, FBSnapshotBeginResponse,
+    FBSnapshotFinishResponse, FBSnapshotReadResponse, FBStepDownResponse,
 };
 use crate::types::kv_consensus::AcceptedValue;
 use bytes::Bytes;
@@ -399,43 +400,135 @@ impl<'a> FBFetchGapResponseRef<'a> {
     }
 }
 
-// ── FBSnapshotResponseRef ────────────────────────────────────────
-
-/// Zero-copy view over an `FBSnapshotResponse` control buffer.
-/// The snapshot bytes are in the frame's data buffer, not in this
-/// control buffer — the caller accesses them via `Response::data`.
-pub struct FBSnapshotResponseRef<'a> {
-    root: Option<FBSnapshotResponse<'a>>,
+/// Zero-copy view over snapshot Begin metadata.
+pub struct FBSnapshotBeginResponseRef<'a> {
+    root: Option<FBSnapshotBeginResponse<'a>>,
 }
 
-impl<'a> FBSnapshotResponseRef<'a> {
+impl<'a> FBSnapshotBeginResponseRef<'a> {
     pub fn new(buf: &'a [u8]) -> Self {
         Self {
-            root: parse_root::<FBSnapshotResponse>(buf),
+            root: parse_root::<FBSnapshotBeginResponse>(buf),
         }
     }
     pub fn valid(&self) -> bool {
         self.root.is_some()
     }
     pub fn ret_code(&self) -> FBKvRetCode {
-        self.root.map_or(FBKvRetCode::Internal, |r| r.ret_code())
+        self.root.map_or(FBKvRetCode::Internal, |root| root.ret_code())
     }
     pub fn error_msg(&self) -> Option<&'a str> {
-        self.root.and_then(|r| r.error_msg())
+        self.root.and_then(|root| root.error_msg())
     }
     pub fn request_id(&self) -> Option<u64> {
-        self.root.map(|r| r.id())
+        self.root.map(|root| root.id())
     }
     pub fn group_id(&self) -> u64 {
-        self.root.map_or(0, |r| r.group_id())
+        self.root.map_or(0, |root| root.group_id())
     }
-    pub fn term_at_slot(&self) -> u64 {
-        self.root.map_or(0, |r| r.term_at_slot())
+    pub fn boot_nonce(&self) -> u64 {
+        self.root.map_or(0, |root| root.boot_nonce())
     }
-    pub fn membership_epoch(&self) -> u64 {
-        self.root.map_or(0, |r| r.membership_epoch())
+    pub fn session_number(&self) -> u64 {
+        self.root.map_or(0, |root| root.session_number())
+    }
+    pub fn engine_format(&self) -> u8 {
+        self.root.map_or(0, |root| root.engine_format())
     }
     pub fn at_slot(&self) -> u64 {
-        self.root.map_or(0, |r| r.at_slot())
+        self.root.map_or(0, |root| root.at_slot())
+    }
+    pub fn term_at_slot(&self) -> u64 {
+        self.root.map_or(0, |root| root.term_at_slot())
+    }
+    pub fn membership_epoch(&self) -> u64 {
+        self.root.map_or(0, |root| root.membership_epoch())
+    }
+    pub fn chunk_bytes(&self) -> u32 {
+        self.root.map_or(0, |root| root.chunk_bytes())
+    }
+    pub fn total_bytes(&self) -> u64 {
+        self.root.map_or(0, |root| root.total_bytes())
+    }
+    pub fn final_crc32c(&self) -> u32 {
+        self.root.map_or(0, |root| root.final_crc32c())
     }
 }
+
+/// Zero-copy view over one snapshot Read response.
+pub struct FBSnapshotReadResponseRef<'a> {
+    root: Option<FBSnapshotReadResponse<'a>>,
+}
+
+impl<'a> FBSnapshotReadResponseRef<'a> {
+    pub fn new(buf: &'a [u8]) -> Self {
+        Self {
+            root: parse_root::<FBSnapshotReadResponse>(buf),
+        }
+    }
+    pub fn valid(&self) -> bool {
+        self.root.is_some()
+    }
+    pub fn ret_code(&self) -> FBKvRetCode {
+        self.root.map_or(FBKvRetCode::Internal, |root| root.ret_code())
+    }
+    pub fn error_msg(&self) -> Option<&'a str> {
+        self.root.and_then(|root| root.error_msg())
+    }
+    pub fn request_id(&self) -> Option<u64> {
+        self.root.map(|root| root.id())
+    }
+    pub fn boot_nonce(&self) -> u64 {
+        self.root.map_or(0, |root| root.boot_nonce())
+    }
+    pub fn session_number(&self) -> u64 {
+        self.root.map_or(0, |root| root.session_number())
+    }
+    pub fn offset(&self) -> u64 {
+        self.root.map_or(0, |root| root.offset())
+    }
+    pub fn payload_crc32c(&self) -> u32 {
+        self.root.map_or(0, |root| root.payload_crc32c())
+    }
+    pub fn done(&self) -> bool {
+        self.root.is_some_and(|root| root.done())
+    }
+}
+
+macro_rules! snapshot_close_response_ref {
+    ($name:ident, $root:ident) => {
+        pub struct $name<'a> {
+            root: Option<$root<'a>>,
+        }
+
+        impl<'a> $name<'a> {
+            pub fn new(buf: &'a [u8]) -> Self {
+                Self {
+                    root: parse_root::<$root>(buf),
+                }
+            }
+            pub fn valid(&self) -> bool {
+                self.root.is_some()
+            }
+            pub fn ret_code(&self) -> FBKvRetCode {
+                self.root
+                    .map_or(FBKvRetCode::Internal, |root| root.ret_code())
+            }
+            pub fn error_msg(&self) -> Option<&'a str> {
+                self.root.and_then(|root| root.error_msg())
+            }
+            pub fn request_id(&self) -> Option<u64> {
+                self.root.map(|root| root.id())
+            }
+            pub fn boot_nonce(&self) -> u64 {
+                self.root.map_or(0, |root| root.boot_nonce())
+            }
+            pub fn session_number(&self) -> u64 {
+                self.root.map_or(0, |root| root.session_number())
+            }
+        }
+    };
+}
+
+snapshot_close_response_ref!(FBSnapshotFinishResponseRef, FBSnapshotFinishResponse);
+snapshot_close_response_ref!(FBSnapshotAbortResponseRef, FBSnapshotAbortResponse);

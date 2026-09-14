@@ -210,6 +210,11 @@ This replaces the previous leader-driven catch-up that ran inline in `run_heartb
 
 If a follower's gap count exceeds `catchup_snapshot_threshold` (default `bulk_prepare_window` = 1024), the follower stops issuing FetchGap requests and logs a warning. The full snapshot-install path for running replicas is deferred; the threshold gate prevents FetchGap storms against the leader when a follower is severely lagging (e.g. after a long network partition).
 
+The bounded snapshot protocol is used only while bootstrapping a fresh,
+unpublished member. It does not replace the engine of a running follower and
+is not invoked by this threshold. A live replacement requires a separate
+atomic engine-generation publication design.
+
 ### 9A.5 Apply Loop
 
 The follower's apply loop targets `max(known_commit_slot, last_chosen_slot)`. For each slot in the apply range:

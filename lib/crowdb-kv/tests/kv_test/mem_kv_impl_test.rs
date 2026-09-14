@@ -187,7 +187,7 @@ impl KVEngine for InMemKV {
         if chunk_bytes == 0 {
             return Err("snapshot chunk size must be nonzero".to_string());
         }
-        let (at_slot, bytes) = self.snapshot_export()?;
+        let (at_slot, bytes) = export_snapshot(&self.map);
         let metadata = SnapshotMetadata {
             format: SnapshotFormat::InMemoryTest,
             at_slot,
@@ -208,45 +208,40 @@ impl KVEngine for InMemKV {
             bytes: Vec::new(),
         }))
     }
+}
 
-    fn snapshot_export(&self) -> Result<(u64, Vec<u8>), String> {
-        // Collect owned entries and sort for deterministic snapshot output.
-        let mut entries: Vec<(Vec<u8>, u64, Cell)> = self
-            .map
-            .iter()
-            .map(|r| (r.key().clone(), r.value().0, r.value().1.clone()))
-            .collect();
-        entries.sort_by(|a, b| a.0.cmp(&b.0));
-        // `at_slot`: the highest slot for which this engine holds any
-        // evidence of an apply. May under-report by a NoOp-only trailing
-        // range (a repair-filled slot with an empty batch never reaches
-        // `apply` at all -- see `PxLearner::apply_entry`), which is safe
-        // per `KVEngine::resume_from_slot`'s contract: the joining replica
-        // just re-fetches and re-learns a few extra (idempotent) slots.
-        let at_slot = entries.iter().map(|(_, slot, _)| *slot).max().unwrap_or(0);
-        let mut out = Vec::new();
-        out.extend_from_slice(&MEM_SNAP_MAGIC.to_le_bytes());
-        out.extend_from_slice(&MEM_SNAP_VERSION.to_le_bytes());
-        out.extend_from_slice(&at_slot.to_le_bytes());
-        out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
-        for (key, slot, cell) in &entries {
-            out.extend_from_slice(&(key.len() as u32).to_le_bytes());
-            out.extend_from_slice(key);
-            out.extend_from_slice(&slot.to_le_bytes());
-            let (tombstone, value): (u8, &[u8]) = match cell {
-                Cell::Tombstone => (1, &[]),
-                Cell::Value(v) => (0, v.as_slice()),
-            };
-            out.push(tombstone);
-            out.extend_from_slice(&(value.len() as u32).to_le_bytes());
-            out.extend_from_slice(value);
-        }
-        Ok((at_slot, out))
+fn export_snapshot(map: &DashMap<Vec<u8>, (u64, Cell)>) -> (u64, Vec<u8>) {
+    // Collect owned entries and sort for deterministic snapshot output.
+    let mut entries: Vec<(Vec<u8>, u64, Cell)> = map
+        .iter()
+        .map(|r| (r.key().clone(), r.value().0, r.value().1.clone()))
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    // `at_slot`: the highest slot for which this engine holds any
+    // evidence of an apply. May under-report by a NoOp-only trailing
+    // range (a repair-filled slot with an empty batch never reaches
+    // `apply` at all -- see `PxLearner::apply_entry`), which is safe
+    // per `KVEngine::resume_from_slot`'s contract: the joining replica
+    // just re-fetches and re-learns a few extra (idempotent) slots.
+    let at_slot = entries.iter().map(|(_, slot, _)| *slot).max().unwrap_or(0);
+    let mut out = Vec::new();
+    out.extend_from_slice(&MEM_SNAP_MAGIC.to_le_bytes());
+    out.extend_from_slice(&MEM_SNAP_VERSION.to_le_bytes());
+    out.extend_from_slice(&at_slot.to_le_bytes());
+    out.extend_from_slice(&(entries.len() as u64).to_le_bytes());
+    for (key, slot, cell) in &entries {
+        out.extend_from_slice(&(key.len() as u32).to_le_bytes());
+        out.extend_from_slice(key);
+        out.extend_from_slice(&slot.to_le_bytes());
+        let (tombstone, value): (u8, &[u8]) = match cell {
+            Cell::Tombstone => (1, &[]),
+            Cell::Value(v) => (0, v.as_slice()),
+        };
+        out.push(tombstone);
+        out.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        out.extend_from_slice(value);
     }
-
-    fn snapshot_import(&self, stream: &[u8]) -> Result<u64, String> {
-        import_snapshot(&self.map, stream)
-    }
+    (at_slot, out)
 }
 
 struct InMemSnapshotExporter {

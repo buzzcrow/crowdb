@@ -33,8 +33,10 @@ use crowdb_protocol::kv_consensus_fb::{
     FBFetchGapResponseArgs, FBHeartbeatRequest, FBHeartbeatResponse, FBHeartbeatResponseArgs, FBKvRetCode,
     FBPreVoteRequest, FBPreVoteResponse, FBPreVoteResponseArgs, FBPrepareRequest, FBPromiseResponse,
     FBPromiseResponseArgs, FBRequestVoteRequest, FBRequestVoteResponse, FBRequestVoteResponseArgs,
-    FBSnapshotRequest, FBSnapshotResponse, FBSnapshotResponseArgs, FBStepDownRequest, FBStepDownResponse,
-    FBStepDownResponseArgs,
+    FBSnapshotAbortRequest, FBSnapshotAbortResponse, FBSnapshotAbortResponseArgs, FBSnapshotBeginRequest,
+    FBSnapshotBeginResponse, FBSnapshotBeginResponseArgs, FBSnapshotFinishRequest, FBSnapshotFinishResponse,
+    FBSnapshotFinishResponseArgs, FBSnapshotReadRequest, FBSnapshotReadResponse, FBSnapshotReadResponseArgs,
+    FBStepDownRequest, FBStepDownResponse, FBStepDownResponseArgs,
 };
 use crowdb_rpc_ffi::{Buffer, RpcServer, ServerRequest};
 use flatbuffers::FlatBufferBuilder;
@@ -47,6 +49,9 @@ use crate::cluster::replica::{
     HeartbeatRequestPayload, PxReplicaError, ReplicaHandler, StepDownRequestPayload, VoteRequestPayload,
 };
 use crate::paxos::roles::{PxAcceptReply, PxBallot, PxLogEntry, PxPrepareReply};
+use crate::rpc::snapshot_registry::{
+    SnapshotRegistration, SnapshotRegistry, SnapshotSessionError, SnapshotSessionId, SnapshotSourceMetrics,
+};
 
 /// crowdb-rpc handler set for the KV consensus service. Holds the same
 /// dependencies as the former `PxReplicaService` plus a tokio `Handle`
@@ -54,6 +59,7 @@ use crate::paxos::roles::{PxAcceptReply, PxBallot, PxLogEntry, PxPrepareReply};
 pub struct PxRpcService {
     store: Arc<PxKvStore>,
     rt: Handle,
+    snapshots: Arc<SnapshotRegistry>,
 }
 
 fn spawn_request<F>(rt: &Handle, operation: &'static str, store_id: u64, future: F)
@@ -97,7 +103,29 @@ fn record_group_context(store: &PxKvStore, group_id: u64) {
 
 impl PxRpcService {
     pub(crate) fn new(store: Arc<PxKvStore>, rt: Handle) -> Self {
-        Self { store, rt }
+        let snapshot_metrics = store.metrics_registry.as_ref().map(|registry| {
+            let mut registry = registry.lock().expect("metrics registry poisoned");
+            SnapshotSourceMetrics::register(&mut registry, store.store_id)
+        });
+        let snapshots = SnapshotRegistry::new(
+            store.snapshot_source_sessions,
+            std::time::Duration::from_millis(store.snapshot_session_lease_ms),
+            snapshot_metrics,
+        );
+        let weak = Arc::downgrade(&snapshots);
+        let reap_interval = std::time::Duration::from_millis((store.snapshot_session_lease_ms / 2).max(1));
+        rt.spawn(async move {
+            let mut ticker = tokio::time::interval(reap_interval);
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                let Some(registry) = weak.upgrade() else {
+                    break;
+                };
+                registry.reap_expired();
+            }
+        });
+        Self { store, rt, snapshots }
     }
 
     /// Register all consensus request handlers into the `RpcServer`.
@@ -139,8 +167,20 @@ impl PxRpcService {
             Self::make_handler(Arc::clone(self), Arc::clone(server), Self::handle_fetch_gap),
         );
         server.register_handler(
-            FBMsgType::ESnapshotRequest.0 as u16,
-            Self::make_handler(Arc::clone(self), Arc::clone(server), Self::handle_snapshot),
+            FBMsgType::ESnapshotBeginRequest.0 as u16,
+            Self::make_handler(Arc::clone(self), Arc::clone(server), Self::handle_snapshot_begin),
+        );
+        server.register_handler(
+            FBMsgType::ESnapshotReadRequest.0 as u16,
+            Self::make_handler(Arc::clone(self), Arc::clone(server), Self::handle_snapshot_read),
+        );
+        server.register_handler(
+            FBMsgType::ESnapshotFinishRequest.0 as u16,
+            Self::make_handler(Arc::clone(self), Arc::clone(server), Self::handle_snapshot_finish),
+        );
+        server.register_handler(
+            FBMsgType::ESnapshotAbortRequest.0 as u16,
+            Self::make_handler(Arc::clone(self), Arc::clone(server), Self::handle_snapshot_abort),
         );
     }
 
@@ -1088,111 +1128,564 @@ impl PxRpcService {
         // req dropped here, frame released
     }
 
-    // ── Snapshot ─────────────────────────────────────────────────
+    // ── Snapshot streaming ───────────────────────────────────────
 
-    fn handle_snapshot(&self, req: ServerRequest, server: &Arc<RpcServer>) {
+    #[allow(clippy::too_many_lines)]
+    fn handle_snapshot_begin(&self, req: ServerRequest, server: &Arc<RpcServer>) {
         let req_id = req.request_id;
         let create_nano = req.rpc_create_nano;
-        let conn_handle_usize = req.conn_handle as usize;
-        let msg_type = FBMsgType::ESnapshotResponse.0 as u16;
+        let conn_handle = req.conn_handle as usize;
         let store = Arc::clone(&self.store);
-        let store_id = self.store.store_id;
+        let registry = Arc::clone(&self.snapshots);
         let server = Arc::clone(server);
-        spawn_request(&self.rt, "snapshot", store.store_id, async move {
-            let Ok(fb_req) = flatbuffers::root::<FBSnapshotRequest>(req.control()) else {
-                submit_error(
+        spawn_request(&self.rt, "snapshot_begin", store.store_id, async move {
+            let Ok(request) = flatbuffers::root::<FBSnapshotBeginRequest>(req.control()) else {
+                submit_snapshot_begin(
                     &server,
-                    conn_handle_usize as *mut std::ffi::c_void,
+                    conn_handle,
                     req_id,
                     create_nano,
-                    msg_type,
                     FBKvRetCode::InvalidArgument,
-                    "invalid snapshot request flatbuffer",
+                    Some("invalid snapshot Begin request"),
+                    None,
+                    0,
                 );
                 return;
             };
-            let group_id = fb_req.group_id();
+            let group_id = request.group_id();
             record_group_context(&store, group_id);
-
-            let Some(group) = store.get_group(group_id) else {
-                submit_error(
+            let requested = request.max_chunk_bytes() as usize;
+            if requested == 0 {
+                submit_snapshot_begin(
                     &server,
-                    conn_handle_usize as *mut std::ffi::c_void,
+                    conn_handle,
                     req_id,
                     create_nano,
-                    msg_type,
+                    FBKvRetCode::InvalidArgument,
+                    Some("max_chunk_bytes must be nonzero"),
+                    None,
+                    group_id,
+                );
+                return;
+            }
+            let Some(group) = store.get_group(group_id) else {
+                submit_snapshot_begin(
+                    &server,
+                    conn_handle,
+                    req_id,
+                    create_nano,
                     FBKvRetCode::NotFound,
-                    "px group not found",
+                    Some("px group not found"),
+                    None,
+                    group_id,
                 );
                 return;
             };
-
-            let replica = group.local_replica();
-            let export_result = replica.learner.engine().snapshot_export();
-            let (at_slot, bytes) = match export_result {
-                Ok(v) => v,
-                Err(e) => {
-                    submit_error(
+            let membership_epoch = group.membership_epoch();
+            let chunk_bytes = requested.min(store.snapshot_chunk_bytes).min(1024 * 1024);
+            if chunk_bytes == 0 {
+                submit_snapshot_begin(
+                    &server,
+                    conn_handle,
+                    req_id,
+                    create_nano,
+                    FBKvRetCode::Internal,
+                    Some("snapshot source chunk size is not configured"),
+                    None,
+                    group_id,
+                );
+                return;
+            }
+            let permit = match registry.reserve() {
+                Ok(permit) => permit,
+                Err(error) => {
+                    let (code, message) = snapshot_error(&error);
+                    submit_snapshot_begin(
                         &server,
-                        conn_handle_usize as *mut std::ffi::c_void,
+                        conn_handle,
                         req_id,
                         create_nano,
-                        msg_type,
-                        FBKvRetCode::Internal,
-                        &format!("snapshot export failed: {e}"),
+                        code,
+                        Some(&message),
+                        None,
+                        group_id,
                     );
                     return;
                 }
             };
-
-            let membership_epoch = group.membership_epoch();
+            let export_group = Arc::clone(&group);
+            let export_started = std::time::Instant::now();
+            let exporter = match tokio::task::spawn_blocking(move || {
+                export_group
+                    .local_replica()
+                    .learner
+                    .engine()
+                    .snapshot_export_begin(chunk_bytes)
+            })
+            .await
+            {
+                Ok(Ok(exporter)) => exporter,
+                Ok(Err(error)) => {
+                    submit_snapshot_begin(
+                        &server,
+                        conn_handle,
+                        req_id,
+                        create_nano,
+                        FBKvRetCode::Internal,
+                        Some(&error),
+                        None,
+                        group_id,
+                    );
+                    return;
+                }
+                Err(error) => {
+                    let message = format!("snapshot export task failed: {error}");
+                    submit_snapshot_begin(
+                        &server,
+                        conn_handle,
+                        req_id,
+                        create_nano,
+                        FBKvRetCode::Internal,
+                        Some(&message),
+                        None,
+                        group_id,
+                    );
+                    return;
+                }
+            };
+            registry.observe_export(export_started.elapsed());
+            if group.membership_epoch() != membership_epoch {
+                submit_snapshot_begin(
+                    &server,
+                    conn_handle,
+                    req_id,
+                    create_nano,
+                    FBKvRetCode::SnapshotTopologyChanged,
+                    Some("membership changed while snapshot began"),
+                    None,
+                    group_id,
+                );
+                return;
+            }
+            let at_slot = exporter.metadata().at_slot;
             let term_at_slot = group
                 .local_replica()
                 .accepted_at(at_slot)
                 .await
                 .map_or(0, |entry| entry.term);
-
-            debug!(
-                store_id,
+            let registration = registry.begin(group_id, membership_epoch, exporter, permit);
+            submit_snapshot_begin(
+                &server,
+                conn_handle,
+                req_id,
+                create_nano,
+                FBKvRetCode::Success,
+                None,
+                Some((&registration, term_at_slot)),
                 group_id,
-                at_slot,
-                term_at_slot,
-                membership_epoch,
-                snapshot_bytes = bytes.len(),
-                "serving snapshot export"
             );
+        });
+    }
 
-            let mut builder = FlatBufferBuilder::new();
-            let args = FBSnapshotResponseArgs {
-                id: req_id,
-                rpc_create_nano: create_nano,
-                ret_code: FBKvRetCode::Success,
-                error_msg: None,
-                group_id,
-                term_at_slot,
-                membership_epoch,
-                at_slot,
-            };
-            let fb_resp = FBSnapshotResponse::create(&mut builder, &args);
-            builder.finish(fb_resp, None);
-            let (ctrl_vec, ctrl_head) = builder.collapse();
-            let ctrl_buf = Buffer::from_vec_offset(ctrl_vec, ctrl_head);
-            let data_buf = Buffer::from_vec_offset(bytes, 0);
-            unsafe {
-                let _ = server.submit_response_buffer(
-                    conn_handle_usize as *mut std::ffi::c_void,
-                    ctrl_buf,
-                    Some(data_buf),
-                    msg_type,
+    fn handle_snapshot_read(&self, req: ServerRequest, server: &Arc<RpcServer>) {
+        let req_id = req.request_id;
+        let create_nano = req.rpc_create_nano;
+        let conn_handle = req.conn_handle as usize;
+        let store = Arc::clone(&self.store);
+        let registry = Arc::clone(&self.snapshots);
+        let server = Arc::clone(server);
+        spawn_request(&self.rt, "snapshot_read", store.store_id, async move {
+            let Ok(request) = flatbuffers::root::<FBSnapshotReadRequest>(req.control()) else {
+                submit_snapshot_read(
+                    &server,
+                    conn_handle,
                     req_id,
+                    create_nano,
+                    FBKvRetCode::InvalidArgument,
+                    Some("invalid snapshot Read request"),
+                    SnapshotSessionId {
+                        boot_nonce: 0,
+                        session_number: 0,
+                    },
+                    0,
+                    None,
                 );
+                return;
+            };
+            let id = SnapshotSessionId {
+                boot_nonce: request.boot_nonce(),
+                session_number: request.session_number(),
+            };
+            let offset = request.offset();
+            let registration = match registry.registration(id) {
+                Ok(value) => value,
+                Err(error) => {
+                    let (code, message) = snapshot_error(&error);
+                    submit_snapshot_read(
+                        &server,
+                        conn_handle,
+                        req_id,
+                        create_nano,
+                        code,
+                        Some(&message),
+                        id,
+                        offset,
+                        None,
+                    );
+                    return;
+                }
+            };
+            if store.get_group(registration.group_id).map_or(true, |group| {
+                group.membership_epoch() != registration.membership_epoch
+            }) {
+                registry.expire(id);
+                submit_snapshot_read(
+                    &server,
+                    conn_handle,
+                    req_id,
+                    create_nano,
+                    FBKvRetCode::SnapshotTopologyChanged,
+                    Some("snapshot membership epoch changed"),
+                    id,
+                    offset,
+                    None,
+                );
+                return;
             }
-            // req dropped here, frame released
+            match registry.read(id, offset).await {
+                Ok(read) => submit_snapshot_read(
+                    &server,
+                    conn_handle,
+                    req_id,
+                    create_nano,
+                    FBKvRetCode::Success,
+                    None,
+                    id,
+                    offset,
+                    Some(read),
+                ),
+                Err(error) => {
+                    let (code, message) = snapshot_error(&error);
+                    submit_snapshot_read(
+                        &server,
+                        conn_handle,
+                        req_id,
+                        create_nano,
+                        code,
+                        Some(&message),
+                        id,
+                        offset,
+                        None,
+                    );
+                }
+            }
+        });
+    }
+
+    fn handle_snapshot_finish(&self, req: ServerRequest, server: &Arc<RpcServer>) {
+        let req_id = req.request_id;
+        let create_nano = req.rpc_create_nano;
+        let conn_handle = req.conn_handle as usize;
+        let store = Arc::clone(&self.store);
+        let registry = Arc::clone(&self.snapshots);
+        let server = Arc::clone(server);
+        spawn_request(&self.rt, "snapshot_finish", store.store_id, async move {
+            let Ok(request) = flatbuffers::root::<FBSnapshotFinishRequest>(req.control()) else {
+                submit_snapshot_close(
+                    &server,
+                    conn_handle,
+                    req_id,
+                    create_nano,
+                    FBMsgType::ESnapshotFinishResponse.0 as u16,
+                    FBKvRetCode::InvalidArgument,
+                    Some("invalid snapshot Finish request"),
+                    SnapshotSessionId {
+                        boot_nonce: 0,
+                        session_number: 0,
+                    },
+                );
+                return;
+            };
+            let id = SnapshotSessionId {
+                boot_nonce: request.boot_nonce(),
+                session_number: request.session_number(),
+            };
+            if let Ok(registration) = registry.registration(id) {
+                if store.get_group(registration.group_id).map_or(true, |group| {
+                    group.membership_epoch() != registration.membership_epoch
+                }) {
+                    registry.expire(id);
+                    submit_snapshot_close(
+                        &server,
+                        conn_handle,
+                        req_id,
+                        create_nano,
+                        FBMsgType::ESnapshotFinishResponse.0 as u16,
+                        FBKvRetCode::SnapshotTopologyChanged,
+                        Some("snapshot membership epoch changed"),
+                        id,
+                    );
+                    return;
+                }
+            }
+            match registry.finish(id, request.final_offset()).await {
+                Ok(()) => submit_snapshot_close(
+                    &server,
+                    conn_handle,
+                    req_id,
+                    create_nano,
+                    FBMsgType::ESnapshotFinishResponse.0 as u16,
+                    FBKvRetCode::Success,
+                    None,
+                    id,
+                ),
+                Err(error) => {
+                    let (code, message) = snapshot_error(&error);
+                    submit_snapshot_close(
+                        &server,
+                        conn_handle,
+                        req_id,
+                        create_nano,
+                        FBMsgType::ESnapshotFinishResponse.0 as u16,
+                        code,
+                        Some(&message),
+                        id,
+                    );
+                }
+            }
+        });
+    }
+
+    fn handle_snapshot_abort(&self, req: ServerRequest, server: &Arc<RpcServer>) {
+        let req_id = req.request_id;
+        let create_nano = req.rpc_create_nano;
+        let conn_handle = req.conn_handle as usize;
+        let registry = Arc::clone(&self.snapshots);
+        let server = Arc::clone(server);
+        spawn_request(&self.rt, "snapshot_abort", self.store.store_id, async move {
+            let Ok(request) = flatbuffers::root::<FBSnapshotAbortRequest>(req.control()) else {
+                submit_snapshot_close(
+                    &server,
+                    conn_handle,
+                    req_id,
+                    create_nano,
+                    FBMsgType::ESnapshotAbortResponse.0 as u16,
+                    FBKvRetCode::InvalidArgument,
+                    Some("invalid snapshot Abort request"),
+                    SnapshotSessionId {
+                        boot_nonce: 0,
+                        session_number: 0,
+                    },
+                );
+                return;
+            };
+            let id = SnapshotSessionId {
+                boot_nonce: request.boot_nonce(),
+                session_number: request.session_number(),
+            };
+            registry.abort(id).await;
+            submit_snapshot_close(
+                &server,
+                conn_handle,
+                req_id,
+                create_nano,
+                FBMsgType::ESnapshotAbortResponse.0 as u16,
+                FBKvRetCode::Success,
+                None,
+                id,
+            );
         });
     }
 }
 
+impl Drop for PxRpcService {
+    fn drop(&mut self) {
+        self.snapshots.shutdown();
+    }
+}
+
 // ── Helper functions ─────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+fn submit_snapshot_begin(
+    server: &RpcServer,
+    conn_handle: usize,
+    req_id: u64,
+    create_nano: u64,
+    ret_code: FBKvRetCode,
+    error: Option<&str>,
+    success: Option<(&SnapshotRegistration, u64)>,
+    group_id: u64,
+) {
+    let mut builder = FlatBufferBuilder::new();
+    let error_msg = error.map(|message| builder.create_string(message));
+    let (
+        boot_nonce,
+        session_number,
+        engine_format,
+        at_slot,
+        term_at_slot,
+        membership_epoch,
+        chunk_bytes,
+        total_bytes,
+        final_crc32c,
+    ) = success.map_or((0, 0, 0, 0, 0, 0, 0, 0, 0), |(registration, term)| {
+        (
+            registration.id.boot_nonce,
+            registration.id.session_number,
+            registration.metadata.format as u8,
+            registration.metadata.at_slot,
+            term,
+            registration.membership_epoch,
+            u32::try_from(registration.metadata.chunk_bytes).unwrap_or(u32::MAX),
+            registration.metadata.total_bytes,
+            registration.metadata.final_crc32c,
+        )
+    });
+    let response = FBSnapshotBeginResponse::create(
+        &mut builder,
+        &FBSnapshotBeginResponseArgs {
+            id: req_id,
+            rpc_create_nano: create_nano,
+            ret_code,
+            error_msg,
+            group_id,
+            boot_nonce,
+            session_number,
+            engine_format,
+            at_slot,
+            term_at_slot,
+            membership_epoch,
+            chunk_bytes,
+            total_bytes,
+            final_crc32c,
+        },
+    );
+    builder.finish(response, None);
+    submit_fb_response(
+        server,
+        conn_handle as *mut std::ffi::c_void,
+        builder.collapse(),
+        FBMsgType::ESnapshotBeginResponse.0 as u16,
+        req_id,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn submit_snapshot_read(
+    server: &RpcServer,
+    conn_handle: usize,
+    req_id: u64,
+    create_nano: u64,
+    ret_code: FBKvRetCode,
+    error: Option<&str>,
+    id: SnapshotSessionId,
+    offset: u64,
+    read: Option<crate::rpc::snapshot_registry::SnapshotRead>,
+) {
+    let mut builder = FlatBufferBuilder::new();
+    let error_msg = error.map(|message| builder.create_string(message));
+    let payload_crc32c = read.as_ref().map_or(0, |value| value.payload_crc32c);
+    let done = read.as_ref().is_some_and(|value| value.chunk.done);
+    let response = FBSnapshotReadResponse::create(
+        &mut builder,
+        &FBSnapshotReadResponseArgs {
+            id: req_id,
+            rpc_create_nano: create_nano,
+            ret_code,
+            error_msg,
+            boot_nonce: id.boot_nonce,
+            session_number: id.session_number,
+            offset,
+            payload_crc32c,
+            done,
+        },
+    );
+    builder.finish(response, None);
+    let control = builder.collapse();
+    let data = read.map(|value| Buffer::from_vec_offset(value.chunk.bytes, 0));
+    let control = Buffer::from_vec_offset(control.0, control.1);
+    unsafe {
+        let _ = server.submit_response_buffer(
+            conn_handle as *mut std::ffi::c_void,
+            control,
+            data,
+            FBMsgType::ESnapshotReadResponse.0 as u16,
+            req_id,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn submit_snapshot_close(
+    server: &RpcServer,
+    conn_handle: usize,
+    req_id: u64,
+    create_nano: u64,
+    msg_type: u16,
+    ret_code: FBKvRetCode,
+    error: Option<&str>,
+    id: SnapshotSessionId,
+) {
+    let mut builder = FlatBufferBuilder::new();
+    let error_msg = error.map(|message| builder.create_string(message));
+    if msg_type == FBMsgType::ESnapshotFinishResponse.0 as u16 {
+        let response = FBSnapshotFinishResponse::create(
+            &mut builder,
+            &FBSnapshotFinishResponseArgs {
+                id: req_id,
+                rpc_create_nano: create_nano,
+                ret_code,
+                error_msg,
+                boot_nonce: id.boot_nonce,
+                session_number: id.session_number,
+            },
+        );
+        builder.finish(response, None);
+    } else {
+        let response = FBSnapshotAbortResponse::create(
+            &mut builder,
+            &FBSnapshotAbortResponseArgs {
+                id: req_id,
+                rpc_create_nano: create_nano,
+                ret_code,
+                error_msg,
+                boot_nonce: id.boot_nonce,
+                session_number: id.session_number,
+            },
+        );
+        builder.finish(response, None);
+    }
+    submit_fb_response(
+        server,
+        conn_handle as *mut std::ffi::c_void,
+        builder.collapse(),
+        msg_type,
+        req_id,
+    );
+}
+
+fn snapshot_error(error: &SnapshotSessionError) -> (FBKvRetCode, String) {
+    match error {
+        SnapshotSessionError::NotFound => (
+            FBKvRetCode::SnapshotNotFound,
+            "snapshot session not found".to_string(),
+        ),
+        SnapshotSessionError::Expired => (
+            FBKvRetCode::SnapshotExpired,
+            "snapshot session expired".to_string(),
+        ),
+        SnapshotSessionError::Backpressure => (
+            FBKvRetCode::SnapshotBackpressure,
+            "snapshot session capacity exhausted".to_string(),
+        ),
+        SnapshotSessionError::InvalidOffset { expected } => (
+            FBKvRetCode::SnapshotInvalidOffset,
+            format!("invalid snapshot offset; expected {expected}"),
+        ),
+        SnapshotSessionError::Export(message) => (FBKvRetCode::Internal, message.clone()),
+    }
+}
 
 fn px_error_to_ret_code(e: &PxReplicaError) -> (FBKvRetCode, String) {
     match e {

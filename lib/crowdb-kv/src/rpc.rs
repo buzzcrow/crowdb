@@ -4,7 +4,7 @@
 //! `CrowDB` RPC services and client library.
 //!
 //! Consensus RPC service (`Prepare`/`Promise`/`Accept`/`Accepted`) and
-//! the full service set (`PxService`, `SnapshotService`, client library
+//! the full service set (consensus plus snapshot-session handlers, client library
 //! with topology cache, retry, `NotLeaderHint` handling).
 //!
 //! The wire types (message structs + enums) are defined in
@@ -20,6 +20,7 @@ pub use crowdb_protocol::kv_consensus::rpc::*;
 pub(crate) mod kv_rpc_service;
 pub(crate) mod px_rpc_service;
 pub(crate) mod px_rpc_transport;
+pub(crate) mod snapshot_registry;
 #[allow(unused_imports)]
 pub(crate) use kv_rpc_service::{KvClientRpcForwarder, KvRpcService};
 #[allow(unused_imports)]

@@ -15,15 +15,17 @@ use flatbuffers::FlatBufferBuilder;
 use crowdb_protocol::fb::FBMsgType;
 use crowdb_protocol::fb_wrappers::kv_consensus::{
     FBAcceptedResponseRef, FBFetchGapResponseRef, FBHeartbeatResponseRef, FBPreVoteResponseRef,
-    FBPromiseResponseRef, FBRequestVoteResponseRef, FBSnapshotResponseRef, FBStepDownResponseRef,
+    FBPromiseResponseRef, FBRequestVoteResponseRef, FBSnapshotAbortResponseRef, FBSnapshotBeginResponseRef,
+    FBSnapshotFinishResponseRef, FBSnapshotReadResponseRef, FBStepDownResponseRef,
 };
 use crowdb_protocol::kv_consensus_fb::{
     FBAcceptRequest, FBAcceptRequestArgs, FBAcceptedValue, FBAcceptedValueArgs, FBBatchChosenNotification,
     FBBatchChosenNotificationArgs, FBChosenNotification, FBChosenNotificationArgs, FBFetchGapRequest,
     FBFetchGapRequestArgs, FBHeartbeatRequest, FBHeartbeatRequestArgs, FBKvRetCode, FBPreVoteRequest,
     FBPreVoteRequestArgs, FBPrepareRequest, FBPrepareRequestArgs, FBRequestVoteRequest,
-    FBRequestVoteRequestArgs, FBSnapshotRequest, FBSnapshotRequestArgs, FBStepDownRequest,
-    FBStepDownRequestArgs,
+    FBRequestVoteRequestArgs, FBSnapshotAbortRequest, FBSnapshotAbortRequestArgs, FBSnapshotBeginRequest,
+    FBSnapshotBeginRequestArgs, FBSnapshotFinishRequest, FBSnapshotFinishRequestArgs, FBSnapshotReadRequest,
+    FBSnapshotReadRequestArgs, FBStepDownRequest, FBStepDownRequestArgs,
 };
 use crowdb_rpc_ffi::{
     noop_completion, Buffer, ConnectionPoolError, ConnectionPoolIndex, RpcClient, RpcError, RpcServer,
@@ -614,52 +616,220 @@ impl PxRpcTransport {
             .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))
     }
 
-    /// Request a snapshot from a peer via crowdb-rpc. The response carries
-    /// header info (`term_at_slot`, `membership_epoch`, `at_slot`) in the
-    /// control buffer and the full snapshot bytes in the data buffer.
-    pub async fn send_snapshot(
+    pub(crate) async fn snapshot_begin(
         &self,
         rpc_endpoint: &str,
         group_id: u64,
-    ) -> Result<SnapshotReply, PxReplicaError> {
+        max_chunk_bytes: u32,
+    ) -> Result<SnapshotBeginReply, SnapshotTransferError> {
         let req_id = self.next_id();
-        let conn = self.conn_for(rpc_endpoint)?;
+        let conn = self
+            .conn_for(rpc_endpoint)
+            .map_err(SnapshotTransferError::Transport)?;
         let mut builder = FlatBufferBuilder::new();
-        let args = FBSnapshotRequestArgs {
-            id: req_id,
-            rpc_create_nano: 0,
-            group_id,
-        };
-        let fb_req = FBSnapshotRequest::create(&mut builder, &args);
-        builder.finish(fb_req, None);
+        let request = FBSnapshotBeginRequest::create(
+            &mut builder,
+            &FBSnapshotBeginRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                group_id,
+                max_chunk_bytes,
+            },
+        );
+        builder.finish(request, None);
         let control = Buffer::from_bytes(builder.finished_data());
-        let msg_type = FBMsgType::ESnapshotRequest.0 as u16;
-        let fut = self
+        let future = self
             .rpc
-            .call(&self.server, &conn, req_id, control, None, msg_type)
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
-        let resp = fut
-            .await
-            .map_err(|e| self.map_rpc_err(e, rpc_endpoint, conn.generation()))?;
-        let ctrl = resp
-            .control
-            .ok_or_else(|| PxReplicaError::Internal("snapshot response missing control buffer".into()))?;
-        let r = FBSnapshotResponseRef::new(ctrl.bytes());
-        if !r.valid() {
-            return Err(PxReplicaError::Internal("snapshot response malformed".into()));
+            .call(
+                &self.server,
+                &conn,
+                req_id,
+                control,
+                None,
+                FBMsgType::ESnapshotBeginRequest.0 as u16,
+            )
+            .map_err(|error| {
+                SnapshotTransferError::Transport(self.map_rpc_err(error, rpc_endpoint, conn.generation()))
+            })?;
+        let response = future.await.map_err(|error| {
+            SnapshotTransferError::Transport(self.map_rpc_err(error, rpc_endpoint, conn.generation()))
+        })?;
+        let control = response.control.ok_or_else(|| {
+            SnapshotTransferError::Protocol("snapshot Begin response missing control".into())
+        })?;
+        let view = FBSnapshotBeginResponseRef::new(control.bytes());
+        if !view.valid() {
+            return Err(SnapshotTransferError::Protocol(
+                "snapshot Begin response malformed".into(),
+            ));
         }
-        check_ret_code(r.ret_code(), r.error_msg())?;
-        let data = resp
-            .data
-            .map(|d| bytes::Bytes::copy_from_slice(d.bytes()))
-            .unwrap_or_default();
-        Ok(SnapshotReply {
-            group_id: r.group_id(),
-            term_at_slot: r.term_at_slot(),
-            membership_epoch: r.membership_epoch(),
-            at_slot: r.at_slot(),
-            data,
+        check_snapshot_ret_code(view.ret_code(), view.error_msg())?;
+        Ok(SnapshotBeginReply {
+            identity: SnapshotIdentity {
+                boot_nonce: view.boot_nonce(),
+                session_number: view.session_number(),
+            },
+            group_id: view.group_id(),
+            engine_format: view.engine_format(),
+            at_slot: view.at_slot(),
+            term_at_slot: view.term_at_slot(),
+            membership_epoch: view.membership_epoch(),
+            chunk_bytes: view.chunk_bytes(),
+            total_bytes: view.total_bytes(),
+            final_crc32c: view.final_crc32c(),
         })
+    }
+
+    pub(crate) async fn snapshot_read(
+        &self,
+        rpc_endpoint: &str,
+        identity: SnapshotIdentity,
+        offset: u64,
+    ) -> Result<SnapshotReadReply, SnapshotTransferError> {
+        let req_id = self.next_id();
+        let conn = self
+            .conn_for(rpc_endpoint)
+            .map_err(SnapshotTransferError::Transport)?;
+        let mut builder = FlatBufferBuilder::new();
+        let request = FBSnapshotReadRequest::create(
+            &mut builder,
+            &FBSnapshotReadRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                boot_nonce: identity.boot_nonce,
+                session_number: identity.session_number,
+                offset,
+            },
+        );
+        builder.finish(request, None);
+        let control = Buffer::from_bytes(builder.finished_data());
+        let future = self
+            .rpc
+            .call(
+                &self.server,
+                &conn,
+                req_id,
+                control,
+                None,
+                FBMsgType::ESnapshotReadRequest.0 as u16,
+            )
+            .map_err(|error| {
+                SnapshotTransferError::Transport(self.map_rpc_err(error, rpc_endpoint, conn.generation()))
+            })?;
+        let response = future.await.map_err(|error| {
+            SnapshotTransferError::Transport(self.map_rpc_err(error, rpc_endpoint, conn.generation()))
+        })?;
+        let control = response.control.ok_or_else(|| {
+            SnapshotTransferError::Protocol("snapshot Read response missing control".into())
+        })?;
+        let view = FBSnapshotReadResponseRef::new(control.bytes());
+        if !view.valid() {
+            return Err(SnapshotTransferError::Protocol(
+                "snapshot Read response malformed".into(),
+            ));
+        }
+        check_snapshot_ret_code(view.ret_code(), view.error_msg())?;
+        Ok(SnapshotReadReply {
+            identity: SnapshotIdentity {
+                boot_nonce: view.boot_nonce(),
+                session_number: view.session_number(),
+            },
+            offset: view.offset(),
+            payload_crc32c: view.payload_crc32c(),
+            done: view.done(),
+            data: response.data.map_or_else(Vec::new, |data| data.bytes().to_vec()),
+        })
+    }
+
+    pub(crate) async fn snapshot_finish(
+        &self,
+        rpc_endpoint: &str,
+        identity: SnapshotIdentity,
+        final_offset: u64,
+    ) -> Result<(), SnapshotTransferError> {
+        let req_id = self.next_id();
+        let conn = self
+            .conn_for(rpc_endpoint)
+            .map_err(SnapshotTransferError::Transport)?;
+        let mut builder = FlatBufferBuilder::new();
+        let request = FBSnapshotFinishRequest::create(
+            &mut builder,
+            &FBSnapshotFinishRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                boot_nonce: identity.boot_nonce,
+                session_number: identity.session_number,
+                final_offset,
+            },
+        );
+        builder.finish(request, None);
+        let control = Buffer::from_bytes(builder.finished_data());
+        let future = self
+            .rpc
+            .call(
+                &self.server,
+                &conn,
+                req_id,
+                control,
+                None,
+                FBMsgType::ESnapshotFinishRequest.0 as u16,
+            )
+            .map_err(|error| {
+                SnapshotTransferError::Transport(self.map_rpc_err(error, rpc_endpoint, conn.generation()))
+            })?;
+        let response = future.await.map_err(|error| {
+            SnapshotTransferError::Transport(self.map_rpc_err(error, rpc_endpoint, conn.generation()))
+        })?;
+        let control = response.control.ok_or_else(|| {
+            SnapshotTransferError::Protocol("snapshot Finish response missing control".into())
+        })?;
+        let view = FBSnapshotFinishResponseRef::new(control.bytes());
+        if !view.valid()
+            || view.boot_nonce() != identity.boot_nonce
+            || view.session_number() != identity.session_number
+        {
+            return Err(SnapshotTransferError::Protocol(
+                "snapshot Finish response identity mismatch".into(),
+            ));
+        }
+        check_snapshot_ret_code(view.ret_code(), view.error_msg())
+    }
+
+    pub(crate) async fn snapshot_abort(&self, rpc_endpoint: &str, identity: SnapshotIdentity) {
+        let Ok(conn) = self.conn_for(rpc_endpoint) else {
+            return;
+        };
+        let req_id = self.next_id();
+        let mut builder = FlatBufferBuilder::new();
+        let request = FBSnapshotAbortRequest::create(
+            &mut builder,
+            &FBSnapshotAbortRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                boot_nonce: identity.boot_nonce,
+                session_number: identity.session_number,
+            },
+        );
+        builder.finish(request, None);
+        let control = Buffer::from_bytes(builder.finished_data());
+        let Ok(future) = self.rpc.call(
+            &self.server,
+            &conn,
+            req_id,
+            control,
+            None,
+            FBMsgType::ESnapshotAbortRequest.0 as u16,
+        ) else {
+            return;
+        };
+        let Ok(response) = future.await else {
+            return;
+        };
+        let Some(control) = response.control else {
+            return;
+        };
+        let view = FBSnapshotAbortResponseRef::new(control.bytes());
+        let _ = view.valid() && view.ret_code() == FBKvRetCode::Success;
     }
 
     /// Test-only: send a frame with arbitrary control bytes and a
@@ -707,13 +877,52 @@ impl Default for PxRpcTransport {
     }
 }
 
-/// Snapshot reply: header info + exported bytes.
-pub struct SnapshotReply {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SnapshotIdentity {
+    pub boot_nonce: u64,
+    pub session_number: u64,
+}
+
+#[derive(Debug)]
+pub(crate) struct SnapshotBeginReply {
+    pub identity: SnapshotIdentity,
     pub group_id: u64,
+    pub engine_format: u8,
+    pub at_slot: u64,
     pub term_at_slot: u64,
     pub membership_epoch: u64,
-    pub at_slot: u64,
-    pub data: bytes::Bytes,
+    pub chunk_bytes: u32,
+    pub total_bytes: u64,
+    pub final_crc32c: u32,
+}
+
+#[derive(Debug)]
+pub(crate) struct SnapshotReadReply {
+    pub identity: SnapshotIdentity,
+    pub offset: u64,
+    pub payload_crc32c: u32,
+    pub done: bool,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum SnapshotTransferError {
+    #[error("snapshot transport: {0}")]
+    Transport(PxReplicaError),
+    #[error("snapshot session not found: {0}")]
+    NotFound(String),
+    #[error("snapshot session expired: {0}")]
+    Expired(String),
+    #[error("snapshot offset rejected: {0}")]
+    InvalidOffset(String),
+    #[error("snapshot source at capacity: {0}")]
+    Backpressure(String),
+    #[error("snapshot topology changed: {0}")]
+    TopologyChanged(String),
+    #[error("snapshot integrity failure: {0}")]
+    Integrity(String),
+    #[error("snapshot protocol failure: {0}")]
+    Protocol(String),
 }
 
 // ── Error mapping ────────────────────────────────────────────────
@@ -744,6 +953,26 @@ fn check_ret_code(code: FBKvRetCode, msg: Option<&str>) -> Result<(), PxReplicaE
             Err(PxReplicaError::Internal(msg.unwrap_or("internal error").into()))
         }
         _ => Err(PxReplicaError::Internal(format!("unknown ret_code: {code:?}"))),
+    }
+}
+
+fn check_snapshot_ret_code(code: FBKvRetCode, msg: Option<&str>) -> Result<(), SnapshotTransferError> {
+    let message = msg.unwrap_or("remote snapshot failure").to_string();
+    match code {
+        FBKvRetCode::Success => Ok(()),
+        FBKvRetCode::SnapshotNotFound | FBKvRetCode::NotFound => {
+            Err(SnapshotTransferError::NotFound(message))
+        }
+        FBKvRetCode::SnapshotExpired => Err(SnapshotTransferError::Expired(message)),
+        FBKvRetCode::SnapshotInvalidOffset => Err(SnapshotTransferError::InvalidOffset(message)),
+        FBKvRetCode::SnapshotBackpressure => Err(SnapshotTransferError::Backpressure(message)),
+        FBKvRetCode::SnapshotTopologyChanged => Err(SnapshotTransferError::TopologyChanged(message)),
+        FBKvRetCode::SnapshotIntegrity => Err(SnapshotTransferError::Integrity(message)),
+        FBKvRetCode::Unavailable => Err(SnapshotTransferError::Transport(PxReplicaError::ShuttingDown)),
+        FBKvRetCode::Internal | FBKvRetCode::InvalidArgument => Err(SnapshotTransferError::Protocol(message)),
+        _ => Err(SnapshotTransferError::Protocol(format!(
+            "unknown ret_code: {code:?}"
+        ))),
     }
 }
 

@@ -124,7 +124,7 @@ request-response, `send()` for fire-and-forget), and `Connection`
 port with a dedicated schema. The client library
 (`crowdb-kv-client`) uses crowdb-rpc for retry, topology cache, and
 `NotLeaderHint` handling. The crowdb-rpc server also serves
-`SnapshotService` (snapshot install stream).
+bounded snapshot-session handlers for unpublished new-member install.
 
 **Connection model:** Each `PxKvStore` runs one `RpcServer` on the
 crowdb-rpc port (derived from the base port via a fixed offset, see
@@ -398,14 +398,40 @@ EChosenNotification = 1012,       // fire-and-forget (no response)
 EBatchChosenNotification = 1013,  // fire-and-forget (no response)
 EFetchGapRequest = 1014,
 EFetchGapResponse = 1015,
-ESnapshotRequest = 1016,
-ESnapshotResponse = 1017,
+ESnapshotBeginRequest = 1018,
+ESnapshotBeginResponse = 1019,
+ESnapshotReadRequest = 1020,
+ESnapshotReadResponse = 1021,
+ESnapshotFinishRequest = 1022,
+ESnapshotFinishResponse = 1023,
+ESnapshotAbortRequest = 1024,
+ESnapshotAbortResponse = 1025,
 ```
 
 Each consensus operation has its own message type. Unary operations use
 `RpcClient::call`; chosen notifications use fire-and-forget
 `RpcClient::send`. The shared peer connection carries the mixed message types,
 and the server dispatches each frame independently by its `msg_type`.
+
+### 10.1 New-member snapshot lifecycle
+
+Snapshot bootstrap is a receiver-pulled sequence of bounded unary calls. Begin
+pins one immutable engine view and returns a process boot nonce plus monotonic
+session number, source membership epoch, engine format, slot/term, total
+length, body CRC32C, and a chunk limit no larger than 1 MiB. Read echoes the
+identity and requested byte offset; it carries one payload and its CRC32C in
+the data buffer. Only the current offset or an exact retry of the immediately
+previous offset is accepted. Finish requires the final offset; Abort is
+idempotent.
+
+The source admits at most four sessions by default and expires idle sessions
+after 30 seconds. Every Read and Finish rechecks the captured membership epoch.
+The receiver keeps one Read in flight, advances only after feeding a verified
+payload, and may reconnect without changing identity. An expired identity
+causes a fresh Begin and importer. Import is restricted to a fresh unpublished
+group; learner seeding and group registration occur only after length, CRC,
+source Finish, and engine Finish all succeed. The removed single-frame message
+IDs 1016 and 1017 are deliberately unsupported.
 
 **Build integration:** `lib/crowdb-protocol/build.rs` compiles
 `kv_consensus.fbs` via `flatc --rust --gen-all` (inlines

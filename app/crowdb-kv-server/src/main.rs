@@ -477,6 +477,11 @@ async fn create_and_start_stores(
         store.set_quickack(registry.config.server.quickack);
         store.set_event_write(registry.config.server.event_write);
         store.set_send_queue_capacity(registry.config.server.send_queue_capacity);
+        store.set_snapshot_source_config(
+            registry.config.server.snapshot_chunk_bytes,
+            registry.config.server.snapshot_source_sessions,
+            registry.config.server.snapshot_session_lease_ms,
+        );
         let store = Arc::new(store);
 
         // Create groups with the single local replica for this store, if group_ids provided.
