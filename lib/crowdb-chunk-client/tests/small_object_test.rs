@@ -406,6 +406,9 @@ fn make_strip(chunk_id: ChunkId, sequence: u32, copies: u32) -> ChunkStrip {
         strip: Some(Strip::MirrorStrip(MirrorStrip { segments })),
         usage_bitmap: Vec::new(),
         unavailable_segments: Vec::new(),
+        placement_priority: 0,
+        placement_assessment: None,
+        placement_repair_required: false,
     }
 }
 

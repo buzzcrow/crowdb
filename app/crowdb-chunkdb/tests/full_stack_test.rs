@@ -287,6 +287,20 @@ async fn chunkdb_full_stack_allocate_seal_delete() {
         .expect("allocate_chunk");
     assert_eq!(chunk.state, ChunkState::Active as i32);
     assert!(!chunk.strips.is_empty(), "chunk should have strips");
+    for strip in &chunk.strips {
+        let assessment = strip
+            .placement_assessment
+            .as_ref()
+            .expect("allocated strips persist a physical placement assessment");
+        assert_eq!(assessment.loss_budget, 2);
+        assert_eq!(assessment.max_fragments_per_rack, 1);
+        assert_eq!(assessment.max_fragments_per_node, 1);
+        assert_eq!(assessment.max_fragments_per_disk, 1);
+        assert!(assessment.rack_protected);
+        assert!(assessment.node_protected);
+        assert!(assessment.disk_protected);
+        assert!(!strip.placement_repair_required);
+    }
     eprintln!("chunk allocated: {} strips", chunk.strips.len());
 
     // 6. Query the chunk.

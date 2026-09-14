@@ -364,6 +364,16 @@ impl TopologyCache {
         });
     }
 
+    /// Publish one healthy physical disk location for allocation validation.
+    pub fn update_disk_location(&self, disk_id: DiskId, location: DiskLocation) {
+        self.inner.rcu(|current| {
+            let mut next = (**current).clone();
+            next.disks.insert(disk_id, location);
+            next.generation = self.next_generation.fetch_add(1, Ordering::AcqRel);
+            next
+        });
+    }
+
     /// Remove a disk-group entry (deleted disk-group).
     pub fn remove_disk_group(&self, dg_id: DiskGroupId) {
         self.inner.rcu(|current| {

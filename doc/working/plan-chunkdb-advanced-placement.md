@@ -20,7 +20,7 @@ of temporarily degraded EC strips.
   `app/crowdb-chunkdb/src/lifecycle/handler.rs`,
   `app/crowdb-chunkdb/src/selector.rs`, `app/crowdb-chunkdb/src/main.rs`,
   config tests.
-- [~] **Placement assessment contract**: add serialized placement priority,
+- [x] **Placement assessment contract**: add serialized placement priority,
   protection assessment, degraded marker, task kind, and typed placement
   failures while preserving legacy decoding. Files:
   `lib/crowdb-protocol/src/types/chunkdb.rs`,
@@ -53,7 +53,7 @@ of temporarily degraded EC strips.
   reservations on every completion and rollback path. Files:
   `app/crowdb-chunkdb/src/allocator.rs`, lifecycle/repair/conversion callers,
   allocator tests.
-- [ ] **Physical assessment**: validate returned `Segment.disk_id` placement,
+- [~] **Physical assessment**: validate returned `Segment.disk_id` placement,
   retry alternatives after rollback, assemble and persist the final assessment,
   and prohibit silent degradation. Files: allocator, storage/wire codecs,
   integration tests.

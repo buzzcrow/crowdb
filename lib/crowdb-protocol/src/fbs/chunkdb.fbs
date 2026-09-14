@@ -55,6 +55,11 @@ enum FBStripType : int16 {
     Ec = 1,
 }
 
+enum FBPlacementPriority : int16 {
+    RackFirst = 0,
+    NodeFirst = 1,
+}
+
 enum FBChunkType : int16 {
     Repo = 0,
     Wal = 1,
@@ -86,6 +91,18 @@ union FBStripBody {
     FBEcStrip = 2,
 }
 
+table FBPlacementAssessment {
+    loss_budget:uint32;
+    max_fragments_per_rack:uint32;
+    max_fragments_per_node:uint32;
+    max_fragments_per_disk:uint32;
+    rack_protected:bool;
+    node_protected:bool;
+    disk_protected:bool;
+    topology_generation:uint64;
+    usage_fresh:bool;
+}
+
 // A single strip within a chunk.
 table FBChunkStrip {
     chunk_offset:uint32;
@@ -99,6 +116,9 @@ table FBChunkStrip {
     strip_body:FBStripBody;
     usage_bitmap:[ubyte];
     unavailable_segments:[crowdb.diskdb.proto.FBSegment];
+    placement_priority:FBPlacementPriority;
+    placement_assessment:FBPlacementAssessment;
+    placement_repair_required:bool;
 }
 
 // A chunk — logical block composed of strips.

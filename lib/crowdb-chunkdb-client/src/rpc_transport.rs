@@ -24,9 +24,9 @@ use crowdb_protocol::chunkdb::rpc::{
     AppendChunkResponse, Chunk, ChunkState as ProtoChunkState, ChunkStrip, ChunkType as ProtoChunkType,
     CompleteMirrorToEcConversionResponse, DeleteChunkRangeResponse, DeleteChunkResponse,
     DiscardReplacementSegmentResponse, ListChunksResponse, MutateStripReservationResponse,
-    PrepareMirrorToEcConversionResponse, QueryChunkResponse, ReplaceChunkStripRangeResponse,
-    ReserveStripGroupResponse, SealChunkResponse, StripCleanupIntent, StripReservationAction,
-    StripReservationGroup, StripReservationState, StripType as ProtoStripType,
+    PlacementAssessment, PlacementPriority, PrepareMirrorToEcConversionResponse, QueryChunkResponse,
+    ReplaceChunkStripRangeResponse, ReserveStripGroupResponse, SealChunkResponse, StripCleanupIntent,
+    StripReservationAction, StripReservationGroup, StripReservationState, StripType as ProtoStripType,
     TriggerConversionBatchResponse, TriggerConversionResponse, UpdateChunkStripResponse,
 };
 use crowdb_protocol::chunkdb::rpc::{EcState as ProtoEcState, EcStrip, MirrorStrip, Strip as ProtoStrip};
@@ -39,15 +39,16 @@ use crowdb_protocol::chunkdb_fb::{
     FBDeleteChunkRequest, FBDeleteChunkRequestArgs, FBDiscardReplacementSegmentRequest,
     FBDiscardReplacementSegmentRequestArgs, FBDiscardReplacementSegmentResponse, FBInt128,
     FBListChunksRequest, FBListChunksRequestArgs, FBMutateStripReservationRequest,
-    FBMutateStripReservationRequestArgs, FBMutateStripReservationResponse,
-    FBPrepareMirrorToEcConversionRequest, FBPrepareMirrorToEcConversionRequestArgs,
-    FBPrepareMirrorToEcConversionResponse, FBQueryChunkRequest, FBQueryChunkRequestArgs,
-    FBReplaceChunkStripRangeRequest, FBReplaceChunkStripRangeRequestArgs, FBReserveStripGroupRequest,
-    FBReserveStripGroupRequestArgs, FBReserveStripGroupResponse, FBSealChunkRequest, FBSealChunkRequestArgs,
-    FBSegment, FBStripBody, FBStripReservationAction, FBStripReservationGroup, FBStripReservationState,
-    FBStripType, FBTriggerConversionBatchRequest, FBTriggerConversionBatchRequestArgs,
-    FBTriggerConversionBatchResponse, FBTriggerConversionRequest, FBTriggerConversionRequestArgs,
-    FBTriggerConversionResponse, FBUpdateChunkStripRequest, FBUpdateChunkStripRequestArgs,
+    FBMutateStripReservationRequestArgs, FBMutateStripReservationResponse, FBPlacementAssessment,
+    FBPlacementAssessmentArgs, FBPlacementPriority, FBPrepareMirrorToEcConversionRequest,
+    FBPrepareMirrorToEcConversionRequestArgs, FBPrepareMirrorToEcConversionResponse, FBQueryChunkRequest,
+    FBQueryChunkRequestArgs, FBReplaceChunkStripRangeRequest, FBReplaceChunkStripRangeRequestArgs,
+    FBReserveStripGroupRequest, FBReserveStripGroupRequestArgs, FBReserveStripGroupResponse,
+    FBSealChunkRequest, FBSealChunkRequestArgs, FBSegment, FBStripBody, FBStripReservationAction,
+    FBStripReservationGroup, FBStripReservationState, FBStripType, FBTriggerConversionBatchRequest,
+    FBTriggerConversionBatchRequestArgs, FBTriggerConversionBatchResponse, FBTriggerConversionRequest,
+    FBTriggerConversionRequestArgs, FBTriggerConversionResponse, FBUpdateChunkStripRequest,
+    FBUpdateChunkStripRequestArgs,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::fb::FBMsgType;
@@ -1136,6 +1137,22 @@ fn parse_fb_chunk_strip(fb: &FBChunkStrip<'_>) -> ChunkStrip {
         strip,
         usage_bitmap,
         unavailable_segments: parse_fb_segments(fb.unavailable_segments()),
+        placement_priority: match fb.placement_priority() {
+            FBPlacementPriority::NodeFirst => PlacementPriority::NodeFirst as i32,
+            _ => PlacementPriority::RackFirst as i32,
+        },
+        placement_assessment: fb.placement_assessment().map(|assessment| PlacementAssessment {
+            loss_budget: assessment.loss_budget(),
+            max_fragments_per_rack: assessment.max_fragments_per_rack(),
+            max_fragments_per_node: assessment.max_fragments_per_node(),
+            max_fragments_per_disk: assessment.max_fragments_per_disk(),
+            rack_protected: assessment.rack_protected(),
+            node_protected: assessment.node_protected(),
+            disk_protected: assessment.disk_protected(),
+            topology_generation: assessment.topology_generation(),
+            usage_fresh: assessment.usage_fresh(),
+        }),
+        placement_repair_required: fb.placement_repair_required(),
     }
 }
 
@@ -1215,6 +1232,22 @@ fn build_chunk_strip_offset<'a>(
     let unavailable_values: Vec<_> = strip.unavailable_segments.iter().map(build_fb_segment).collect();
     let unavailable_segments =
         (!unavailable_values.is_empty()).then(|| fbb.create_vector(&unavailable_values));
+    let placement_assessment = strip.placement_assessment.as_ref().map(|assessment| {
+        FBPlacementAssessment::create(
+            fbb,
+            &FBPlacementAssessmentArgs {
+                loss_budget: assessment.loss_budget,
+                max_fragments_per_rack: assessment.max_fragments_per_rack,
+                max_fragments_per_node: assessment.max_fragments_per_node,
+                max_fragments_per_disk: assessment.max_fragments_per_disk,
+                rack_protected: assessment.rack_protected,
+                node_protected: assessment.node_protected,
+                disk_protected: assessment.disk_protected,
+                topology_generation: assessment.topology_generation,
+                usage_fresh: assessment.usage_fresh,
+            },
+        )
+    });
     FBChunkStrip::create(
         fbb,
         &FBChunkStripArgs {
@@ -1230,6 +1263,13 @@ fn build_chunk_strip_offset<'a>(
             strip_body: body_off,
             usage_bitmap: usage_bitmap_off,
             unavailable_segments,
+            placement_priority: if strip.placement_priority == PlacementPriority::NodeFirst as i32 {
+                FBPlacementPriority::NodeFirst
+            } else {
+                FBPlacementPriority::RackFirst
+            },
+            placement_assessment,
+            placement_repair_required: strip.placement_repair_required,
         },
     )
 }

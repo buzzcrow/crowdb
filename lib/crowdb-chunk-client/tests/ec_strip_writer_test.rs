@@ -72,6 +72,9 @@ fn make_chunk(unit_kb: u32, num_segments: usize) -> Arc<Chunk> {
         })),
         usage_bitmap: Vec::new(),
         unavailable_segments: Vec::new(),
+        placement_priority: 0,
+        placement_assessment: None,
+        placement_repair_required: false,
     };
     Arc::new(Chunk {
         id: Some(ChunkId { high: 1, low: 1 }),

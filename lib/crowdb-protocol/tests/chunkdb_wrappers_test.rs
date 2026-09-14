@@ -99,6 +99,7 @@ macro_rules! build_mirror_chunk {
                 strip_body: Some(mirror.as_union_value()),
                 usage_bitmap: None,
                 unavailable_segments: None,
+                ..FBChunkStripArgs::default()
             },
         );
         let strips = $fbb.create_vector(&[strip]);
@@ -271,6 +272,7 @@ fn ec_strip_union_variant() {
             strip_body: Some(ec.as_union_value()),
             usage_bitmap: None,
             unavailable_segments: None,
+            ..FBChunkStripArgs::default()
         },
     );
     let strips = fbb.create_vector(&[strip]);

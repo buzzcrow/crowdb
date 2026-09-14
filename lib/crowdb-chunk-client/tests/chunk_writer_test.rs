@@ -187,6 +187,9 @@ fn make_strip(strip_seq: u32, data_num: u32, code_num: u32, segments: Vec<Segmen
         })),
         usage_bitmap: Vec::new(),
         unavailable_segments: Vec::new(),
+        placement_priority: 0,
+        placement_assessment: None,
+        placement_repair_required: false,
     }
 }
 
