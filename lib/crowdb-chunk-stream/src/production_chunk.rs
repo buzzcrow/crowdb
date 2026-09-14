@@ -345,9 +345,8 @@ impl StreamChunkStore for ProductionStreamChunkStore {
             .read_verified_frame(
                 chunk_id,
                 physical_offset,
-                u64::try_from(length).map_err(|_| {
-                    StreamError::InvalidRequest("chunk frame length exceeds u64".into())
-                })?,
+                u64::try_from(length)
+                    .map_err(|_| StreamError::InvalidRequest("chunk frame length exceeds u64".into()))?,
                 FrameMagic::StreamV1,
             )
             .await

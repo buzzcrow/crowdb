@@ -231,9 +231,14 @@ impl ChunkReader {
                 Ok(bytes) if physical.failures.is_empty() => bytes,
                 Ok(_) | Err(_) => {
                     if Instant::now() >= deadline
-                        || self.mark_observed_failures(&mut chunk, observations).await.is_err()
+                        || self
+                            .mark_observed_failures(&mut chunk, observations)
+                            .await
+                            .is_err()
                     {
-                        return Err(ReadError::DataLoss("frame bytes could not be reconstructed".into()));
+                        return Err(ReadError::DataLoss(
+                            "frame bytes could not be reconstructed".into(),
+                        ));
                     }
                     continue;
                 }
@@ -247,7 +252,9 @@ impl ChunkReader {
                     return Ok(bytes);
                 }
                 Ok(_) => {
-                    return Err(ReadError::DataLoss("frame kind disagrees with its location".into()));
+                    return Err(ReadError::DataLoss(
+                        "frame kind disagrees with its location".into(),
+                    ));
                 }
                 Err(error) => {
                     let corrupt = mark_served_segments_corrupt(observations);
