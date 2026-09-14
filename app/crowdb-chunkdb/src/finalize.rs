@@ -135,13 +135,11 @@ async fn scan_complete_frame_boundary(
             Ok(header) => header,
             Err(error) => return Err(error.to_string()),
         };
-        let header = match parse_header(&header) {
-            Ok(header) => header,
-            Err(_) => return Ok(cursor),
+        let Ok(header) = parse_header(&header) else {
+            return Ok(cursor);
         };
-        let length = match frame_length(header) {
-            Ok(length) => length,
-            Err(_) => return Ok(cursor),
+        let Ok(length) = frame_length(header) else {
+            return Ok(cursor);
         };
         let frame_end = cursor.saturating_add(u64::try_from(length).expect("frame length fits u64"));
         if frame_end > strip_end {

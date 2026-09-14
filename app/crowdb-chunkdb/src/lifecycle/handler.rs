@@ -45,6 +45,7 @@ use super::state::{ChunkState, StateTransitionError};
 const DEFAULT_LOCK_WAIT: Duration = Duration::from_secs(10);
 const DEFAULT_LAYOUT_VALIDITY_MS: u64 = 30_000;
 const FINALIZE_CHUNK_LIVENESS_MS: u64 = 15 * 60 * 1_000;
+const FINALIZE_CHUNK_RENEWAL_MS: u64 = 12 * 60 * 1_000;
 
 /// Lifecycle error — maps to crowdb-rpc status codes in the service layer.
 #[derive(Debug, thiserror::Error)]
@@ -140,6 +141,7 @@ pub struct LifecycleHandler {
     layout_validity_ms: u64,
     reservation_admission: Arc<admission::ReservationAdmission>,
     placement_tasks: Option<Arc<TaskStore>>,
+    liveness_renewed_at: Cache<ChunkId, u64>,
 }
 
 struct AllocationMetricGuard {
@@ -194,6 +196,7 @@ impl LifecycleHandler {
             layout_validity_ms: DEFAULT_LAYOUT_VALIDITY_MS,
             reservation_admission: Arc::new(admission::ReservationAdmission::new(u64::MAX, u64::MAX, None)),
             placement_tasks: None,
+            liveness_renewed_at: Cache::new(4_096),
         }
     }
 
@@ -441,6 +444,7 @@ impl LifecycleHandler {
             owner_key,
         };
         self.create_chunk_with_liveness_task(&chunk).await?;
+        self.liveness_renewed_at.insert(id, now_ms);
         self.admit_placement_repairs(&chunk);
         self.commit_strip_segments_background(chunk.strips.clone());
 
@@ -549,6 +553,9 @@ impl LifecycleHandler {
         if chunk.writer_epoch != writer_epoch || chunk.modify_ts != expected_modify_ts {
             return Err(LifecycleError::StateConflict);
         }
+        if self.liveness_renewed_at.get(chunk_id).is_none() {
+            return Err(LifecycleError::StateConflict);
+        }
         let capacity_bytes = u64::from(chunk.capacity).saturating_mul(1024);
         if acknowledged_cursor <= chunk.acknowledged_cursor || acknowledged_cursor > capacity_bytes {
             return Err(LifecycleError::InvalidRequest(format!(
@@ -594,13 +601,23 @@ impl LifecycleHandler {
         chunk.writer_lease_deadline_ms = now_ms.saturating_add(writer_lease_ms);
         chunk.modify_ts = chunk.modify_ts.saturating_add(1);
         self.store.put_chunk(&chunk).await?;
-        if let Some(tasks) = &self.placement_tasks {
+        if self
+            .liveness_renewed_at
+            .get(chunk_id)
+            .is_some_and(|renewed_at| now_ms.saturating_sub(renewed_at) >= FINALIZE_CHUNK_RENEWAL_MS)
+        {
+            let Some(tasks) = &self.placement_tasks else {
+                return Err(LifecycleError::InvalidRequest(
+                    "chunk liveness task store is unavailable".into(),
+                ));
+            };
             tasks
                 .renew_finalize_chunk(chunk_id, writer_epoch, now_ms, FINALIZE_CHUNK_LIVENESS_MS)
                 .await
                 .map_err(|error| {
                     LifecycleError::InvalidRequest(format!("chunk liveness renewal failed: {error}"))
                 })?;
+            self.liveness_renewed_at.insert(*chunk_id, now_ms);
         }
         if let Some(ref mut guard) = guard {
             guard.refresh(chunk.clone());
