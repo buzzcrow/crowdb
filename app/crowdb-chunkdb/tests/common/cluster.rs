@@ -13,7 +13,7 @@ use std::io as std_io;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -43,6 +43,9 @@ use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue, Segment}
 use crowdb_protocol::port::alloc as port_alloc;
 use crowdb_protocol::ServicePort;
 use serde_json::Value;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+static FULL_STACK_PERMITS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(1)));
 
 // ── process management ──────────────────────────────────────────
 
@@ -241,6 +244,7 @@ pub async fn leader_endpoint(nodes: &[KvNode], group_id: u64) -> String {
 
 #[allow(dead_code)]
 pub struct KvCluster {
+    _permit: OwnedSemaphorePermit,
     pub nodes: Vec<KvNode>,
     pub group0_leader_endpoint: String,
     pub group1_leader_endpoint: String,
@@ -249,6 +253,11 @@ pub struct KvCluster {
 
 impl KvCluster {
     pub async fn start() -> Self {
+        let permit = FULL_STACK_PERMITS
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("full-stack semaphore is never closed");
         let mut nodes = Vec::new();
         for (idx, nid) in [0u64, 1, 2].iter().enumerate() {
             let replica_id = u64::try_from(idx + 1).unwrap();
@@ -271,6 +280,7 @@ impl KvCluster {
         let mgmt_endpoints: Vec<String> = nodes.iter().map(|n| n.base_url().to_string()).collect();
 
         Self {
+            _permit: permit,
             nodes,
             group0_leader_endpoint,
             group1_leader_endpoint,
