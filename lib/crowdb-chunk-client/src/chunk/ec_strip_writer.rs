@@ -84,6 +84,12 @@ impl EcStripWriter {
         self.data_blocks_written
     }
 
+    /// Whether this strip has accepted bytes, including an unfinished
+    /// sub-unit tail which still needs its final data and parity write.
+    pub fn has_data(&self) -> bool {
+        self.bytes_written != 0
+    }
+
     /// True if the strip is full (all data_num blocks written).
     pub fn is_full(&self) -> bool {
         self.next_block >= self.ec_scheme.data_num
