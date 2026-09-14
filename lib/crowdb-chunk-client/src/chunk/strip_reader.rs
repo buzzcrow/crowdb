@@ -137,11 +137,16 @@ impl StripReader {
                 push_unique(&mut failed_segments, *segment);
                 continue;
             }
-            match self.disk_io.read(segment, unit_bytes, offset, length).await {
-                Ok(data) => return Ok((data, failed_segments)),
-                Err(error) => {
-                    failures.push(error.to_string());
-                    push_durable_failure(&mut failed_segments, *segment, &error);
+            for attempt in 0..3 {
+                match self.disk_io.read(segment, unit_bytes, offset, length).await {
+                    Ok(data) => return Ok((data, failed_segments)),
+                    Err(error) => {
+                        failures.push(error.to_string());
+                        push_durable_failure(&mut failed_segments, *segment, &error);
+                        if matches!(error, crate::IoError::Topology(_)) || attempt == 2 {
+                            break;
+                        }
+                    }
                 }
             }
         }
