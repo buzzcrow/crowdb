@@ -45,13 +45,11 @@ integrity-aware protection reads.
 
 ## Phase 4: Chunk writers and locations
 
-- [~] **Repo writers**: `RepoSmall` writes and reads now use one verified
-  frame per object and compact physical/logical locations. `RepoLarge` frame
-  encoding and reader arithmetic exist, but its current EC `ChunkWriter` is
-  block-oriented and inserts zero-filled physical gaps between `push` calls;
-  it must be replaced with continuous byte packing before RepoLarge can claim
-  the no-padding frame contract. Migrate legacy small-object tests and publish shared
-  locations only after durable writes, and support range reads. Files:
+- [~] **Repo writers**: `RepoSmall` writes and reads use one verified frame
+  per object and compact physical/logical locations. `RepoLarge` uses
+  continuous EC byte packing, frames its partial unit tail before sealing, and
+  supports bounded frame range reads. Migrate legacy small-object tests and
+  publish shared locations only after durable writes. Files:
   `lib/crowdb-chunk-client/src/writer/*`, client tests.
 - [ ] **Stream**: frame journal records and remove duplicate physical checksum
   fields while preserving journal payload semantics. Files:
