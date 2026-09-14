@@ -30,5 +30,23 @@ TEST(FrameTest, RoundTripAndDetectsCorruption)
     EXPECT_EQ(parse_frame(encoded, chunk, &decoded), FrameError::ChecksumMismatch);
 }
 
+TEST(FrameTest, MatchesCrossLanguageVector)
+{
+    constexpr FrameChunkId            chunk{.high = 7, .low = 11};
+    constexpr std::array<uint8_t, 3>  payload{1, 2, 3};
+    constexpr std::array<uint8_t, 37> expected{
+        0x01, 0x01, 0x0E, 0x00, 0x03, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x02, 0x03, 0x96, 0x16, 0xD6, 0x1E, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0B,
+    };
+    std::vector<uint8_t> encoded;
+    ASSERT_EQ(encode_frame(FrameMagic::RepoSmallV1, chunk, payload, 42, &encoded), FrameError::Ok);
+    EXPECT_TRUE(std::equal(encoded.begin(), encoded.end(), expected.begin(), expected.end()));
+
+    ParsedFrame decoded{};
+    ASSERT_EQ(parse_frame(expected, chunk, &decoded), FrameError::Ok);
+    EXPECT_TRUE(std::equal(decoded.payload.begin(), decoded.payload.end(), payload.begin(), payload.end()));
+}
+
 } // namespace
 } // namespace crowdb::protocol

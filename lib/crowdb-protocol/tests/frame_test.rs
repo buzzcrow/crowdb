@@ -8,6 +8,21 @@ use crowdb_protocol::frame::{
 };
 
 const CHUNK: ChunkId = ChunkId { high: 7, low: 11 };
+const REPO_SMALL_VECTOR: [u8; 37] = [
+    0x01, 0x01, 0x0E, 0x00, 0x03, 0x00, 0x2A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03,
+    0x96, 0x16, 0xD6, 0x1E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x0B,
+];
+
+#[test]
+fn frame_matches_cross_language_vector() {
+    let encoded = encode_frame(FrameMagic::RepoSmallV1, CHUNK, &[1, 2, 3], 42).unwrap();
+    assert_eq!(encoded, REPO_SMALL_VECTOR);
+    assert_eq!(
+        parse_frame(&REPO_SMALL_VECTOR, CHUNK).unwrap().payload,
+        &[1, 2, 3]
+    );
+}
 
 #[test]
 fn frame_round_trips_and_has_canonical_maximum_size() {

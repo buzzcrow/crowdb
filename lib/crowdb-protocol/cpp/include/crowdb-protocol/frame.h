@@ -19,8 +19,7 @@ inline constexpr size_t kFrameFooterBytes       = 20;
 inline constexpr size_t kMaxFrameBytes          = 64 * 1024;
 inline constexpr size_t kMaxFramePayloadBytes   = kMaxFrameBytes - kFrameHeaderPrefixBytes - kFrameFooterBytes;
 
-enum class FrameMagic : uint16_t
-{
+enum class FrameMagic : uint16_t {
     RepoSmallV1 = 0x0101,
     RepoLargeV1 = 0x0201,
     StreamV1    = 0x0301,
@@ -44,8 +43,7 @@ struct FrameHeaderPrefix
     uint64_t   write_time_ms  = 0;
 };
 
-enum class FrameError : uint8_t
-{
+enum class FrameError : uint8_t {
     Ok,
     Incomplete,
     UnknownMagic,
@@ -57,16 +55,16 @@ enum class FrameError : uint8_t
 
 struct ParsedFrame
 {
-    FrameHeaderPrefix       header;
+    FrameHeaderPrefix        header;
     std::span<const uint8_t> payload;
-    FrameChunkId            chunk_id;
-    size_t                  physical_length = 0;
+    FrameChunkId             chunk_id;
+    size_t                   physical_length = 0;
 };
 
 [[nodiscard]] inline bool valid_magic(uint16_t value)
 {
-    return value >= static_cast<uint16_t>(FrameMagic::RepoSmallV1) && value <= static_cast<uint16_t>(FrameMagic::PageIndexV1) &&
-           (value & 0xffU) == 1;
+    return value >= static_cast<uint16_t>(FrameMagic::RepoSmallV1) &&
+           value <= static_cast<uint16_t>(FrameMagic::PageIndexV1) && (value & 0xffU) == 1;
 }
 
 [[nodiscard]] inline uint16_t read_u16_le(const uint8_t *data)
@@ -126,7 +124,7 @@ inline void append_u64_be(std::vector<uint8_t> *out, uint64_t value)
 }
 
 [[nodiscard]] inline FrameError encode_frame(FrameMagic magic, FrameChunkId chunk_id, std::span<const uint8_t> payload,
-                                               uint64_t write_time_ms, std::vector<uint8_t> *out)
+                                             uint64_t write_time_ms, std::vector<uint8_t> *out)
 {
     if (out == nullptr || payload.size() > kMaxFramePayloadBytes) {
         return FrameError::FrameTooLarge;
@@ -138,14 +136,17 @@ inline void append_u64_be(std::vector<uint8_t> *out, uint64_t value)
     append_u16_le(out, static_cast<uint16_t>(payload.size()));
     append_u64_le(out, write_time_ms);
     out->insert(out->end(), payload.begin(), payload.end());
-    append_u32_le(out, crowdb::common::crc32c(out->data(), out->size()));
     append_u64_be(out, chunk_id.high);
     append_u64_be(out, chunk_id.low);
+    const uint32_t checksum = crowdb::common::crc32c(out->data(), out->size());
+    out->insert(out->begin() + static_cast<ptrdiff_t>(kFrameHeaderPrefixBytes + payload.size()),
+                {static_cast<uint8_t>(checksum), static_cast<uint8_t>(checksum >> 8U),
+                 static_cast<uint8_t>(checksum >> 16U), static_cast<uint8_t>(checksum >> 24U)});
     return FrameError::Ok;
 }
 
 [[nodiscard]] inline FrameError parse_frame(std::span<const uint8_t> bytes, FrameChunkId expected_chunk_id,
-                                              ParsedFrame *out)
+                                            ParsedFrame *out)
 {
     if (bytes.size() < kFrameHeaderPrefixBytes) {
         return FrameError::Incomplete;
@@ -166,8 +167,14 @@ inline void append_u64_be(std::vector<uint8_t> *out, uint64_t value)
     if (bytes.size() < physical_length) {
         return FrameError::Incomplete;
     }
-    const size_t footer_start = physical_length - kFrameFooterBytes;
-    if (crowdb::common::crc32c(bytes.data(), footer_start) != read_u32_le(bytes.data() + footer_start)) {
+    const size_t         footer_start = physical_length - kFrameFooterBytes;
+    std::vector<uint8_t> checksum_input;
+    checksum_input.reserve(footer_start + 16);
+    checksum_input.insert(checksum_input.end(), bytes.begin(), bytes.begin() + static_cast<ptrdiff_t>(footer_start));
+    checksum_input.insert(checksum_input.end(), bytes.begin() + static_cast<ptrdiff_t>(footer_start + 4),
+                          bytes.begin() + static_cast<ptrdiff_t>(physical_length));
+    if (crowdb::common::crc32c(checksum_input.data(), checksum_input.size()) !=
+        read_u32_le(bytes.data() + footer_start)) {
         return FrameError::ChecksumMismatch;
     }
     const FrameChunkId chunk_id{
@@ -179,12 +186,13 @@ inline void append_u64_be(std::vector<uint8_t> *out, uint64_t value)
     }
     if (out != nullptr) {
         *out = ParsedFrame{
-            .header = {
-                .magic          = static_cast<FrameMagic>(magic_value),
-                .payload_offset = payload_offset,
-                .payload_size   = payload_size,
-                .write_time_ms  = read_u64_le(bytes.data() + 6),
-            },
+            .header =
+                {
+                         .magic          = static_cast<FrameMagic>(magic_value),
+                         .payload_offset = payload_offset,
+                         .payload_size   = payload_size,
+                         .write_time_ms  = read_u64_le(bytes.data() + 6),
+                         },
             .payload         = bytes.subspan(payload_offset, payload_size),
             .chunk_id        = chunk_id,
             .physical_length = physical_length,

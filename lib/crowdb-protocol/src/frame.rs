@@ -96,10 +96,13 @@ pub fn encode_frame(
     let mut frame = Vec::with_capacity(length);
     write_header(&mut frame, header);
     frame.extend_from_slice(payload);
-    let checksum = crc32c(&frame);
-    frame.extend_from_slice(&checksum.to_le_bytes());
     frame.extend_from_slice(&chunk_id.high.to_be_bytes());
     frame.extend_from_slice(&chunk_id.low.to_be_bytes());
+    let checksum = crc32c(&frame);
+    frame.splice(
+        length - FRAME_FOOTER_BYTES..length - FRAME_FOOTER_BYTES,
+        checksum.to_le_bytes(),
+    );
     Ok(frame)
 }
 
@@ -119,7 +122,7 @@ pub fn parse_frame<'a>(bytes: &'a [u8], expected_chunk_id: ChunkId) -> Result<Pa
             required_bytes: length,
         }
     })?);
-    if crc32c(&bytes[..footer_start]) != checksum {
+    if crc32c_frame_parts(&bytes[..footer_start], &bytes[footer_start + 4..length]) != checksum {
         return Err(FrameError::ChecksumMismatch);
     }
     let chunk_id =
@@ -297,12 +300,19 @@ fn write_header(frame: &mut Vec<u8>, header: FrameHeaderPrefix) {
 }
 
 fn crc32c(bytes: &[u8]) -> u32 {
-    let mut crc = !0_u32;
+    let mut crc = 0_u32;
     for byte in bytes {
         crc ^= u32::from(*byte);
         for _ in 0..8 {
             crc = (crc >> 1) ^ (0x82F6_3B78 & (0_u32.wrapping_sub(crc & 1)));
         }
     }
-    !crc
+    crc
+}
+
+fn crc32c_frame_parts(prefix: &[u8], chunk_id: &[u8]) -> u32 {
+    let mut bytes = Vec::with_capacity(prefix.len() + chunk_id.len());
+    bytes.extend_from_slice(prefix);
+    bytes.extend_from_slice(chunk_id);
+    crc32c(&bytes)
 }

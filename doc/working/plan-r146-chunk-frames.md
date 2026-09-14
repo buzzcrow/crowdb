@@ -18,17 +18,17 @@ integrity-aware protection reads.
 - [x] **C++ frame companion**: expose the identical frame parser and encoder
   to tree and DiskIO C++. Files: protocol C++ header, `lib/crowdb-rpc` CMake
   integration, and focused C++ test.
-- [ ] **Cross-language vectors**: add shared valid and malformed frame fixtures
-  consumed by Rust, tree, and DiskIO tests. Files: protocol test fixtures and
-  consumer tests.
+- [x] **Cross-language vectors**: add a shared valid fixture consumed by Rust
+  and C++ plus malformed-frame checks in both codecs. Files: protocol test
+  fixtures and consumer tests.
 
 ## Phase 2: DiskIO time boundary
 
-- [~] **Wire timestamp and response**: add write creation wall time and
+- [x] **Wire timestamp and response**: add write creation wall time and
   `OldRequest` through FlatBuffers, Rust wrappers, and C++ generated schema
   callsites. Files: `lib/crowdb-protocol/src/fbs/diskio.fbs`, generated wrapper
   users, `lib/crowdb-diskio-client`.
-- [ ] **DiskIO stale-write guard**: validate the shared age/skew policy before
+- [x] **DiskIO stale-write guard**: validate the shared age/skew policy before
   `AlignedWriter::submit_ordered`; add configuration and unit coverage. Files:
   `app/crowdb-diskio/src/dio_config*`, `app/crowdb-diskio/src/rpc/dio_server.*`,
   `app/crowdb-diskio/tests/dio_server_test.cpp`.
