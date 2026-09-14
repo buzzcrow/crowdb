@@ -35,7 +35,7 @@ integrity-aware protection reads.
 
 ## Phase 3: Liveness task
 
-- [ ] **Conditional task primitive**: extend KV batch support with compare
+- [~] **Conditional task primitive**: extend KV batch support with compare
   conditions and make task claim/renew conflict-safe. Files:
   `lib/crowdb-kv-client`, `lib/crowdb-kv`, protocol KV wire, and task tests.
 - [ ] **Deadline-indexed FinalizeChunk task**: add a due-first liveness index,
