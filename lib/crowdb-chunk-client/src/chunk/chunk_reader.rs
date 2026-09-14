@@ -13,7 +13,10 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::diskdb::rpc::Segment;
-use crowdb_protocol::frame::{parse_frame, ChunkLocation, FrameMagic, MAX_FRAME_PAYLOAD_BYTES};
+use crowdb_protocol::frame::{
+    parse_frame, ChunkLocation, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_BYTES,
+    MAX_FRAME_PAYLOAD_BYTES,
+};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
@@ -168,7 +171,7 @@ impl ChunkReader {
         }
         partial.ranges.sort_unstable_by_key(|range| range.start);
         partial.failures.sort_unstable_by_key(|range| range.start);
-        Ok(partial)
+        Ok(coalesce_partial_ranges(partial))
     }
 
     pub fn read_stream(&self, locations: &[Location]) -> ReadResult<ChunkReadStream> {
@@ -274,29 +277,25 @@ impl ChunkReader {
             .map_err(|error| ReadError::InvalidLocations(error.to_string()))?;
         let selected_logical_start =
             (local_start / MAX_FRAME_PAYLOAD_BYTES as u64) * MAX_FRAME_PAYLOAD_BYTES as u64;
-        let payload = self.read_verified_framed_bytes(chunk_id, physical_range).await?;
-        let start = usize::try_from(local_start - selected_logical_start)
-            .map_err(|_| ReadError::InvalidLocations("logical range exceeds addressable memory".into()))?;
-        let end = start
-            .checked_add(usize::try_from(length).map_err(|_| {
-                ReadError::InvalidLocations("logical range exceeds addressable memory".into())
-            })?)
-            .ok_or_else(|| ReadError::InvalidLocations("logical range overflows".into()))?;
-        Ok(PartialReadResult {
-            ranges: vec![ReadRangeData {
-                start: logical_start,
-                end: logical_start + length,
-                data: payload.slice(start..end),
-            }],
-            failures: Vec::new(),
-        })
+        self.read_verified_framed_range(
+            framed,
+            physical_range,
+            selected_logical_start,
+            local_start..local_start + length,
+            logical_start,
+        )
+        .await
     }
 
-    async fn read_verified_framed_bytes(
+    async fn read_verified_framed_range(
         &self,
-        chunk_id: ChunkId,
+        framed: ChunkLocation,
         physical_range: Range<u64>,
-    ) -> ReadResult<Bytes> {
+        selected_logical_start: u64,
+        requested: Range<u64>,
+        output_logical_start: u64,
+    ) -> ReadResult<PartialReadResult> {
+        let chunk_id = framed.chunk_id;
         for _ in 0..self.policy.max_layout_retries {
             let query_started = Instant::now();
             let response = self
@@ -316,18 +315,17 @@ impl ChunkReader {
                     &chunk,
                     physical_range.start,
                     physical_range.end - physical_range.start,
-                    0,
+                    physical_range.start,
                 )
                 .await?;
-            let bytes = assemble_ranges(
-                physical.ranges,
-                0,
-                usize::try_from(physical_range.end - physical_range.start).map_err(|_| {
-                    ReadError::InvalidLocations("framed location exceeds addressable memory".into())
-                })?,
-            )?;
-            let payload = match decode_selected_frames(&bytes, chunk_id) {
-                Ok(payload) => payload,
+            let parsed = match decode_framed_partial(
+                &physical,
+                framed,
+                selected_logical_start,
+                requested.clone(),
+                output_logical_start,
+            ) {
+                Ok(parsed) => parsed,
                 Err(error) => {
                     let corrupt = mark_served_segments_corrupt(observations);
                     if corrupt.is_empty()
@@ -349,7 +347,7 @@ impl ChunkReader {
             {
                 continue;
             }
-            return Ok(payload);
+            return Ok(parsed);
         }
         Err(ReadError::LayoutExpired)
     }
@@ -487,20 +485,46 @@ impl ChunkReader {
     }
 }
 
-fn decode_selected_frames(bytes: &Bytes, chunk_id: ChunkId) -> ReadResult<Bytes> {
-    let mut physical_cursor = 0_usize;
-    let mut payload = BytesMut::new();
+fn decode_framed_partial(
+    physical: &PartialReadResult,
+    framed: ChunkLocation,
+    selected_logical_start: u64,
+    requested: Range<u64>,
+    output_logical_start: u64,
+) -> ReadResult<PartialReadResult> {
+    let first_frame = selected_logical_start / MAX_FRAME_PAYLOAD_BYTES as u64;
+    let last_frame = (requested.end - 1) / MAX_FRAME_PAYLOAD_BYTES as u64;
+    let mut result = PartialReadResult::default();
     let mut magic = None;
-    while physical_cursor < bytes.len() {
-        let frame = parse_frame(&bytes[physical_cursor..], chunk_id)
-            .map_err(|error| ReadError::DataLoss(format!("invalid chunk frame: {error}")))?;
-        match magic {
-            Some(previous) if previous != frame.header.magic => {
-                return Err(ReadError::DataLoss("framed location mixes frame kinds".into()));
-            }
-            None => magic = Some(frame.header.magic),
-            Some(_) => {}
+    for frame_index in first_frame..=last_frame {
+        let frame_logical_start = frame_index * MAX_FRAME_PAYLOAD_BYTES as u64;
+        let payload_len = (framed.logical_length - frame_logical_start).min(MAX_FRAME_PAYLOAD_BYTES as u64);
+        let frame_start = framed
+            .frame_offset
+            .checked_add(frame_index * MAX_FRAME_BYTES as u64)
+            .ok_or_else(|| ReadError::InvalidLocations("frame offset overflows".into()))?;
+        let frame_end = frame_start
+            .checked_add(FRAME_HEADER_PREFIX_BYTES as u64 + payload_len + FRAME_FOOTER_BYTES as u64)
+            .ok_or_else(|| ReadError::InvalidLocations("frame end overflows".into()))?;
+        let wanted_start = requested.start.max(frame_logical_start);
+        let wanted_end = requested.end.min(frame_logical_start + payload_len);
+        let output_start = output_logical_start + wanted_start - requested.start;
+        let output_end = output_logical_start + wanted_end - requested.start;
+        if physical
+            .failures
+            .iter()
+            .any(|failure| failure.start < frame_end && failure.end > frame_start)
+        {
+            result.failures.push(FailedReadRange {
+                start: output_start,
+                end: output_end,
+                error: ReadError::DataLoss("frame bytes could not be reconstructed".into()),
+            });
+            continue;
         }
+        let bytes = extract_physical_range(&physical.ranges, frame_start..frame_end)?;
+        let frame = parse_frame(&bytes, framed.chunk_id)
+            .map_err(|error| ReadError::DataLoss(format!("invalid chunk frame: {error}")))?;
         if !matches!(
             frame.header.magic,
             FrameMagic::RepoSmallV1 | FrameMagic::RepoLargeV1
@@ -509,17 +533,87 @@ fn decode_selected_frames(bytes: &Bytes, chunk_id: ChunkId) -> ReadResult<Bytes>
                 "framed location has unsupported frame kind".into(),
             ));
         }
-        payload.extend_from_slice(frame.payload);
-        physical_cursor = physical_cursor
-            .checked_add(frame.physical_length)
-            .ok_or_else(|| ReadError::DataLoss("frame location physical length overflows".into()))?;
+        match magic {
+            Some(previous) if previous != frame.header.magic => {
+                return Err(ReadError::DataLoss("framed location mixes frame kinds".into()));
+            }
+            None => magic = Some(frame.header.magic),
+            Some(_) => {}
+        }
+        if frame.physical_length as u64 != frame_end - frame_start {
+            return Err(ReadError::DataLoss("frame length disagrees with location".into()));
+        }
+        let payload_start = usize::try_from(wanted_start - frame_logical_start)
+            .map_err(|_| ReadError::InvalidLocations("frame payload range overflows".into()))?;
+        let payload_end = usize::try_from(wanted_end - frame_logical_start)
+            .map_err(|_| ReadError::InvalidLocations("frame payload range overflows".into()))?;
+        result.ranges.push(ReadRangeData {
+            start: output_start,
+            end: output_end,
+            data: Bytes::copy_from_slice(&frame.payload[payload_start..payload_end]),
+        });
     }
-    if physical_cursor != bytes.len() {
-        return Err(ReadError::DataLoss(
-            "framed location metadata does not match its frames".into(),
+    Ok(result)
+}
+
+fn extract_physical_range(ranges: &[ReadRangeData], wanted: Range<u64>) -> ReadResult<Bytes> {
+    let mut output =
+        BytesMut::with_capacity(usize::try_from(wanted.end - wanted.start).unwrap_or(usize::MAX));
+    let mut cursor = wanted.start;
+    for range in ranges {
+        if range.end <= cursor || range.start >= wanted.end {
+            continue;
+        }
+        let start = cursor.max(range.start);
+        if start != cursor {
+            return Err(ReadError::InvalidLocations(
+                "physical frame data has a gap".into(),
+            ));
+        }
+        let end = wanted.end.min(range.end);
+        let offset = usize::try_from(start - range.start)
+            .map_err(|_| ReadError::InvalidLocations("physical frame offset overflows".into()))?;
+        let length = usize::try_from(end - start)
+            .map_err(|_| ReadError::InvalidLocations("physical frame length overflows".into()))?;
+        output.extend_from_slice(&range.data[offset..offset + length]);
+        cursor = end;
+        if cursor == wanted.end {
+            break;
+        }
+    }
+    if cursor != wanted.end {
+        return Err(ReadError::InvalidLocations(
+            "physical frame data is incomplete".into(),
         ));
     }
-    Ok(payload.freeze())
+    Ok(output.freeze())
+}
+
+fn coalesce_partial_ranges(partial: PartialReadResult) -> PartialReadResult {
+    let mut ranges: Vec<ReadRangeData> = Vec::new();
+    for range in partial.ranges {
+        if let Some(previous) = ranges.last_mut().filter(|previous| previous.end == range.start) {
+            previous.end = range.end;
+            let mut data = BytesMut::with_capacity(previous.data.len() + range.data.len());
+            data.extend_from_slice(&previous.data);
+            data.extend_from_slice(&range.data);
+            previous.data = data.freeze();
+        } else {
+            ranges.push(range);
+        }
+    }
+    let mut failures: Vec<FailedReadRange> = Vec::new();
+    for failure in partial.failures {
+        if let Some(previous) = failures
+            .last_mut()
+            .filter(|previous| previous.end == failure.start)
+        {
+            previous.end = failure.end;
+        } else {
+            failures.push(failure);
+        }
+    }
+    PartialReadResult { ranges, failures }
 }
 
 struct StripFailureObservation {
