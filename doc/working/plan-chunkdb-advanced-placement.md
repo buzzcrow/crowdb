@@ -69,7 +69,7 @@ of temporarily degraded EC strips.
   and move the minimum fragments one at a time through fenced replacement.
   Files: placement repair, task runtime wiring, lifecycle/storage, integration
   tests.
-- [~] **Placement repair controls and metrics**: add bounded concurrency,
+- [x] **Placement repair controls and metrics**: add bounded concurrency,
   bandwidth, backoff, protection/degradation counters, and status reporting.
   Files: config, metrics, service wiring, tests.
 

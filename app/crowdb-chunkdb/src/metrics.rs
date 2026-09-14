@@ -128,6 +128,7 @@ pub struct ChunkdbMetrics {
     pub requests: Arc<RequestMetrics>,
     pub conversion: Arc<ConversionMetrics>,
     pub repair: Arc<RepairMetrics>,
+    pub placement: Arc<PlacementMetrics>,
     pub allocate_inflight: Arc<Gauge>,
     pub allocate_strips: Arc<Counter>,
     pub allocate_blocks: Arc<Counter>,
@@ -149,6 +150,7 @@ impl ChunkdbMetrics {
             requests: Arc::new(RequestMetrics::register(registry)),
             conversion: Arc::new(ConversionMetrics::register(registry)),
             repair: Arc::new(RepairMetrics::register(registry)),
+            placement: Arc::new(PlacementMetrics::register(registry)),
             allocate_inflight: registry.register_gauge("allocate.inflight.g"),
             allocate_strips: registry.register_counter("allocate.strips.c"),
             allocate_blocks: registry.register_counter("allocate.blocks.c"),
@@ -161,6 +163,66 @@ impl ChunkdbMetrics {
             reservation_blocks: registry.register_gauge("reservation.blocks.g"),
             reservation_bytes: registry.register_gauge("reservation.bytes.g"),
             reservation_rejections: registry.register_counter("reservation.rejections.c"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacementMetricsSnapshot {
+    pub degraded_admitted: u64,
+    pub repair_waiting: u64,
+    pub repair_completed: u64,
+    pub repair_failures: u64,
+    pub fragments_moved: u64,
+}
+
+pub struct PlacementMetrics {
+    degraded_admitted: Arc<Counter>,
+    repair_waiting: Arc<Counter>,
+    repair_completed: Arc<Counter>,
+    repair_failures: Arc<Counter>,
+    fragments_moved: Arc<Counter>,
+}
+
+impl PlacementMetrics {
+    fn register(registry: &mut MetricsRegistry) -> Self {
+        Self {
+            degraded_admitted: registry.register_counter("placement.degraded_admitted.c"),
+            repair_waiting: registry.register_counter("placement.repair_waiting.c"),
+            repair_completed: registry.register_counter("placement.repair_completed.c"),
+            repair_failures: registry.register_counter("placement.repair_failures.c"),
+            fragments_moved: registry.register_counter("placement.fragments_moved.c"),
+        }
+    }
+
+    pub(crate) fn admitted(&self, count: u64) {
+        self.degraded_admitted.inc_by(count);
+    }
+
+    pub(crate) fn waiting(&self) {
+        self.repair_waiting.inc();
+    }
+
+    pub(crate) fn completed(&self) {
+        self.repair_completed.inc();
+    }
+
+    pub(crate) fn failed(&self) {
+        self.repair_failures.inc();
+    }
+
+    pub(crate) fn moved(&self) {
+        self.fragments_moved.inc();
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> PlacementMetricsSnapshot {
+        PlacementMetricsSnapshot {
+            degraded_admitted: self.degraded_admitted.snapshot().total,
+            repair_waiting: self.repair_waiting.snapshot().total,
+            repair_completed: self.repair_completed.snapshot().total,
+            repair_failures: self.repair_failures.snapshot().total,
+            fragments_moved: self.fragments_moved.snapshot().total,
         }
     }
 }

@@ -17,6 +17,7 @@ use serde_json::to_vec;
 use crate::allocator::assess_physical_placement;
 use crate::conversion::io::ConversionDiskIo;
 use crate::lifecycle::{LifecycleError, LifecycleHandler};
+use crate::metrics::PlacementMetrics;
 use crate::task::executor::TaskFuture;
 use crate::task::{TaskHandler, TaskOutcome, TaskStore, TaskStoreError};
 
@@ -37,6 +38,7 @@ pub struct PlacementRepairCoordinator {
     lifecycle: Arc<LifecycleHandler>,
     tasks: Arc<TaskStore>,
     wake: Option<Arc<tokio::sync::Notify>>,
+    metrics: Option<Arc<PlacementMetrics>>,
     scan_cursor: ArcSwapOption<ChunkId>,
 }
 
@@ -47,6 +49,7 @@ impl PlacementRepairCoordinator {
             lifecycle,
             tasks,
             wake: None,
+            metrics: None,
             scan_cursor: ArcSwapOption::empty(),
         }
     }
@@ -57,9 +60,18 @@ impl PlacementRepairCoordinator {
         self
     }
 
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<PlacementMetrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
+    }
+
     pub async fn admit_chunk(&self, chunk: &Chunk, now_ms: u64) -> Result<u64, PlacementRepairError> {
         let admitted = admit_placement_chunk(&self.tasks, chunk, now_ms).await?;
         if admitted != 0 {
+            if let Some(metrics) = &self.metrics {
+                metrics.admitted(admitted);
+            }
             if let Some(wake) = &self.wake {
                 wake.notify_one();
             }
@@ -133,12 +145,21 @@ pub async fn admit_placement_chunk(
 pub struct PlacementRepairTaskHandler {
     lifecycle: Arc<LifecycleHandler>,
     io: Arc<ConversionDiskIo>,
+    metrics: Arc<PlacementMetrics>,
 }
 
 impl PlacementRepairTaskHandler {
     #[must_use]
-    pub fn new(lifecycle: Arc<LifecycleHandler>, io: Arc<ConversionDiskIo>) -> Self {
-        Self { lifecycle, io }
+    pub fn new(
+        lifecycle: Arc<LifecycleHandler>,
+        io: Arc<ConversionDiskIo>,
+        metrics: Arc<PlacementMetrics>,
+    ) -> Self {
+        Self {
+            lifecycle,
+            io,
+            metrics,
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -244,6 +265,7 @@ impl PlacementRepairTaskHandler {
                 placement_operation_id(task.operation_id, strip.strip_sequence),
             )
             .await?;
+        self.metrics.moved();
         Ok(!replacement.placement_repair_required)
     }
 
@@ -286,17 +308,26 @@ impl TaskHandler for PlacementRepairTaskHandler {
     fn execute<'a>(&'a self, task: &'a ChunkTaskValue) -> TaskFuture<'a> {
         Box::pin(async move {
             match self.execute_once(task).await {
-                Ok(true) => TaskOutcome::Complete,
-                Ok(false) => TaskOutcome::Retry {
-                    delay_ms: RETRY_DELAY_MS,
-                    error_code: 40,
-                    error: "topology cannot yet improve placement".into(),
-                },
-                Err(error) => TaskOutcome::Retry {
-                    delay_ms: RETRY_DELAY_MS,
-                    error_code: 41,
-                    error: error.to_string(),
-                },
+                Ok(true) => {
+                    self.metrics.completed();
+                    TaskOutcome::Complete
+                }
+                Ok(false) => {
+                    self.metrics.waiting();
+                    TaskOutcome::Retry {
+                        delay_ms: RETRY_DELAY_MS,
+                        error_code: 40,
+                        error: "topology cannot yet improve placement".into(),
+                    }
+                }
+                Err(error) => {
+                    self.metrics.failed();
+                    TaskOutcome::Retry {
+                        delay_ms: RETRY_DELAY_MS,
+                        error_code: 41,
+                        error: error.to_string(),
+                    }
+                }
             }
         })
     }

@@ -485,7 +485,8 @@ async fn main() {
     );
     let placement_repair = Arc::new(
         PlacementRepairCoordinator::new(Arc::clone(&handler), Arc::clone(&task_store))
-            .with_wake(task_manager.wake_handle()),
+            .with_wake(task_manager.wake_handle())
+            .with_metrics(Arc::clone(&workflow_metrics.placement)),
     );
     let placement_repair_scan_handle = config.placement_repair.enabled.then(|| {
         let placement_repair = Arc::clone(&placement_repair);
@@ -564,6 +565,7 @@ async fn main() {
             let placement_repair_task_handler = Arc::new(PlacementRepairTaskHandler::new(
                 Arc::clone(&handler),
                 Arc::clone(&io),
+                Arc::clone(&workflow_metrics.placement),
             ));
             let task_handlers: Vec<Arc<dyn TaskHandler>> = vec![
                 conversion_task_handler,
