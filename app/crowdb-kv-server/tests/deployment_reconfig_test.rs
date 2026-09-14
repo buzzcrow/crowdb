@@ -10,6 +10,7 @@
 mod common;
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -22,6 +23,36 @@ use common::test_client::TestKvClient;
 
 fn client() -> reqwest::Client {
     reqwest::Client::new()
+}
+
+// Each test boots 3 real crowdb-kv-server processes. Running them in
+// parallel (3 tests × 3 servers = 9 processes) saturates CI's 2-core
+// runners, causing peer-RPC timeouts, election failures, and lost
+// commits. The guard serializes the tests within this binary so each
+// cluster has the full CPU budget.
+static PROCESS_TEST_GUARD: Mutex<()> = Mutex::new(());
+
+/// Acquire the serialization guard. Uses `into_inner` on poison so a
+/// panic in one test does not cascade-fail the remaining tests.
+fn acquire_guard() -> std::sync::MutexGuard<'static, ()> {
+    PROCESS_TEST_GUARD
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Send a request builder, retrying on transient HTTP errors for up
+/// to 10 s. Returns the response on success. Panics on deadline.
+async fn http_send_with_retry(req: reqwest::RequestBuilder, label: &str) -> reqwest::Response {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match req.try_clone().expect("clonable request").send().await {
+            Ok(r) => return r,
+            Err(e) => {
+                assert!(Instant::now() <= deadline, "{label} failed within 10 s: {e}");
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+    }
 }
 
 struct ServerNode {
@@ -59,15 +90,29 @@ async fn start_cluster(node_ids: &[u64], group_id: u64) -> Vec<ServerNode> {
     nodes
 }
 
-async fn topology(node: &ServerNode) -> Value {
-    client()
-        .get(format!("{}/topology", node.mgmt_base()))
+/// Fetch the topology from a node's management API. Returns `Err` on
+/// any HTTP or parse failure so callers with their own deadline-based
+/// retry loop (e.g. `wait_for_leader_ref`, `kv_put_nodes`) can skip
+/// the transient failure instead of panicking.
+async fn topology(node: &ServerNode) -> Result<Value, String> {
+    let url = format!("{}/topology", node.mgmt_base());
+    let resp = client()
+        .get(&url)
         .send()
         .await
-        .unwrap()
-        .json()
+        .map_err(|e| format!("GET {url}: {e}"))?;
+    resp.json()
         .await
-        .unwrap()
+        .map_err(|e| format!("json parse from {url}: {e}"))
+}
+
+/// Like [`topology`] but panics on failure. Used only at setup time
+/// (e.g. `wire_topology`) when the servers are freshly started and
+/// should be responsive.
+async fn topology_or_panic(node: &ServerNode) -> Value {
+    topology(node)
+        .await
+        .unwrap_or_else(|e| panic!("topology for node {}: {e}", node.node_id))
 }
 
 fn normalize_endpoint(endpoint: &str) -> String {
@@ -87,18 +132,16 @@ fn normalize_topology(mut topo: Value) -> Value {
     topo
 }
 
-fn node_endpoint(topo: &Value) -> String {
-    normalize_endpoint(
-        topo["stores"][0]["listen_addr"]
-            .as_str()
-            .expect("store listen_addr"),
-    )
+fn node_endpoint(topo: &Value) -> Option<String> {
+    topo["stores"][0]["listen_addr"]
+        .as_str()
+        .map(|s| normalize_endpoint(s))
 }
 
 async fn combined_topology(nodes: &[ServerNode]) -> Value {
     let mut combined_stores = Vec::new();
     for node in nodes {
-        let topo = normalize_topology(topology(node).await);
+        let topo = normalize_topology(topology_or_panic(node).await);
         for store in topo["stores"].as_array().unwrap() {
             combined_stores.push(store.clone());
         }
@@ -109,16 +152,12 @@ async fn combined_topology(nodes: &[ServerNode]) -> Value {
 async fn wire_topology(nodes: &[ServerNode], group_id: u64) {
     let combined = combined_topology(nodes).await;
     for node in nodes {
-        let resp = client()
-            .post(format!(
-                "{}/stores/{}/groups/{group_id}/remotes/batch",
-                node.mgmt_base(),
-                node.node_id
-            ))
-            .json(&combined)
-            .send()
-            .await
-            .unwrap();
+        let url = format!(
+            "{}/stores/{}/groups/{group_id}/remotes/batch",
+            node.mgmt_base(),
+            node.node_id
+        );
+        let resp = http_send_with_retry(client().post(&url).json(&combined), "batch wiring").await;
         assert_eq!(
             resp.status(),
             200,
@@ -137,7 +176,12 @@ async fn wait_for_leader_ref(nodes: &[&ServerNode], group_id: u64, timeout: Dura
     while Instant::now() < deadline {
         let mut leaders: Vec<usize> = Vec::new();
         for (idx, node) in nodes.iter().enumerate() {
-            let topo = topology(node).await;
+            // Skip nodes whose management API is transiently unreachable
+            // instead of panicking; the deadline-protected loop will
+            // retry on the next iteration.
+            let Ok(topo) = topology(node).await else {
+                continue;
+            };
             let role = topo["stores"][0]["groups"]
                 .as_array()
                 .and_then(|g| g.iter().find(|gg| gg["group_id"].as_u64() == Some(group_id)))
@@ -164,8 +208,21 @@ async fn kv_put_nodes(nodes: &[&ServerNode], group_id: u64, key: &[u8], val: &[u
     let transport = Arc::new(KvRpcTransport::new());
     let mut last_err = String::new();
     while Instant::now() < deadline {
-        let leader_idx = wait_for_leader_ref(nodes, group_id, Duration::from_secs(10)).await;
-        let addr = node_endpoint(&topology(nodes[leader_idx]).await);
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let leader_idx = wait_for_leader_ref(nodes, group_id, remaining).await;
+        let topo = match topology(nodes[leader_idx]).await {
+            Ok(t) => t,
+            Err(e) => {
+                last_err = e;
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                continue;
+            }
+        };
+        let Some(addr) = node_endpoint(&topo) else {
+            last_err = "topology missing listen_addr".to_string();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        };
         let client = TestKvClient::with_transport(Arc::clone(&transport), format!("http://{addr}"));
         match client
             .put(KvSetRequest {
@@ -182,13 +239,14 @@ async fn kv_put_nodes(nodes: &[&ServerNode], group_id: u64, key: &[u8], val: &[u
             .await
         {
             Ok(resp) => return resp.into_inner().ok,
+            // Retry on any transport error (Timeout, ConnectionClosed,
+            // etc.) — the transport layer already invalidates stale
+            // connections, so the next iteration re-resolves the leader
+            // and establishes a fresh connection. Matches the retry
+            // pattern in cluster_e2e_test::run_kv_op_with_retry.
             Err(status) => {
                 last_err = status.message().to_string();
-                if last_err.to_lowercase().contains("not leader") {
-                    tokio::time::sleep(Duration::from_millis(200)).await;
-                    continue;
-                }
-                panic!("put rpc failed: {last_err}");
+                tokio::time::sleep(Duration::from_millis(200)).await;
             }
         }
     }
@@ -201,27 +259,53 @@ async fn kv_get(nodes: &[ServerNode], group_id: u64, key: &[u8]) -> Option<Vec<u
 }
 
 async fn kv_get_nodes(nodes: &[&ServerNode], group_id: u64, key: &[u8]) -> Option<Vec<u8>> {
-    let leader_idx = wait_for_leader_ref(nodes, group_id, Duration::from_secs(10)).await;
-    let addr = node_endpoint(&topology(nodes[leader_idx]).await);
-    let client = TestKvClient::connect(format!("http://{addr}")).await;
-    let resp = client
-        .get(KvGetRequest {
-            version: 1,
-            key: Bytes::copy_from_slice(key),
-            request_id: 9001,
-            request_create_ms: 9001,
-            group_id,
-            read_mode: 0,
-            min_slot: 0,
-        })
-        .await
-        .ok()?
-        .into_inner();
-    if resp.ok && !resp.not_found {
-        Some(resp.value.to_vec())
-    } else {
-        None
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let transport = Arc::new(KvRpcTransport::new());
+    let mut last_err = String::new();
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let leader_idx = wait_for_leader_ref(nodes, group_id, remaining).await;
+        let topo = match topology(nodes[leader_idx]).await {
+            Ok(t) => t,
+            Err(e) => {
+                last_err = e;
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                continue;
+            }
+        };
+        let Some(addr) = node_endpoint(&topo) else {
+            last_err = "topology missing listen_addr".to_string();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        };
+        let client = TestKvClient::with_transport(Arc::clone(&transport), format!("http://{addr}"));
+        match client
+            .get(KvGetRequest {
+                version: 1,
+                key: Bytes::copy_from_slice(key),
+                request_id: 9001,
+                request_create_ms: 9001,
+                group_id,
+                read_mode: 0,
+                min_slot: 0,
+            })
+            .await
+        {
+            Ok(resp) => {
+                let resp = resp.into_inner();
+                return if resp.ok && !resp.not_found {
+                    Some(resp.value.to_vec())
+                } else {
+                    None
+                };
+            }
+            Err(status) => {
+                last_err = status.message().to_string();
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
     }
+    panic!("kv get timed out waiting for leader: {last_err}");
 }
 
 /// Graceful shutdown of the leader process under write load:
@@ -229,6 +313,7 @@ async fn kv_get_nodes(nodes: &[&ServerNode], group_id: u64, key: &[u8]) -> Optio
 /// nodes re-elect and all committed data is still readable.
 #[tokio::test]
 async fn graceful_shutdown_leader_under_load() {
+    let _guard = acquire_guard();
     let group_id = 10;
     let mut nodes = start_cluster(&[1001, 1002, 1003], group_id).await;
     wire_topology(&nodes, group_id).await;
@@ -259,7 +344,9 @@ async fn graceful_shutdown_leader_under_load() {
         assert!(Instant::now() <= deadline, "no leader elected after shutdown");
         let mut leaders = Vec::new();
         for &i in &remaining_indices {
-            let topo = topology(&nodes[i]).await;
+            let Ok(topo) = topology(&nodes[i]).await else {
+                continue;
+            };
             let role = topo["stores"][0]["groups"]
                 .as_array()
                 .and_then(|g| g.iter().find(|gg| gg["group_id"].as_u64() == Some(group_id)))
@@ -296,6 +383,7 @@ async fn graceful_shutdown_leader_under_load() {
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn reconfig_via_api_add_then_remove() {
+    let _guard = acquire_guard();
     let group_id = 20;
     let nodes = start_cluster(&[2001, 2002, 2003], group_id).await;
     wire_topology(&nodes, group_id).await;
@@ -322,13 +410,14 @@ async fn reconfig_via_api_add_then_remove() {
     let node4_id = 2004u64;
 
     // Get the 4th node's endpoint from its topology.
-    let topo4 = topology(&ServerNode {
+    let topo4 = topology_or_panic(&ServerNode {
         handle: Some(server4),
         node_id: node4_id,
         replica_id: 4,
     })
     .await;
-    let node4_endpoint = node_endpoint(&topo4);
+    let node4_endpoint =
+        node_endpoint(&topo4).expect("node 4 topology should have listen_addr after wait_for_ready");
 
     // Add the 4th node as a remote replica to all existing nodes.
     let add_payload = serde_json::json!([{
@@ -336,16 +425,17 @@ async fn reconfig_via_api_add_then_remove() {
         "endpoint": node4_endpoint,
     }]);
     for node in &nodes {
-        let resp = client()
-            .post(format!(
-                "{}/stores/{}/groups/{group_id}/remotes",
-                node.mgmt_base(),
-                node.node_id
-            ))
-            .json(&add_payload)
-            .send()
-            .await
-            .unwrap();
+        let resp = http_send_with_retry(
+            client()
+                .post(format!(
+                    "{}/stores/{}/groups/{group_id}/remotes",
+                    node.mgmt_base(),
+                    node.node_id
+                ))
+                .json(&add_payload),
+            "add remote",
+        )
+        .await;
         assert_eq!(
             resp.status(),
             200,
@@ -373,16 +463,16 @@ async fn reconfig_via_api_add_then_remove() {
         if i == remove_idx {
             continue;
         }
-        let resp = client()
-            .delete(format!(
+        let resp = http_send_with_retry(
+            client().delete(format!(
                 "{}/stores/{}/groups/{group_id}/remotes/{}",
                 node.mgmt_base(),
                 node.node_id,
                 remove_replica_id
-            ))
-            .send()
-            .await
-            .unwrap();
+            )),
+            "remove remote",
+        )
+        .await;
         assert_eq!(
             resp.status(),
             200,
@@ -432,6 +522,7 @@ async fn reconfig_via_api_add_then_remove() {
 /// single end-to-end workflow.
 #[tokio::test]
 async fn reconfig_via_api_remove_leader() {
+    let _guard = acquire_guard();
     let group_id = 30;
     let mut nodes = start_cluster(&[3001, 3002, 3003], group_id).await;
     wire_topology(&nodes, group_id).await;
@@ -447,20 +538,34 @@ async fn reconfig_via_api_remove_leader() {
     // 1. Step the leader down via the management API.
     let leader_node_id = nodes[leader_idx].node_id;
     let leader_replica_id = nodes[leader_idx].replica_id;
-    let step_resp: Value = client()
-        .post(format!(
-            "{}/stores/{}/groups/{}/step-down?sync=true",
-            nodes[leader_idx].mgmt_base(),
-            leader_node_id,
-            group_id,
-        ))
-        .json(&serde_json::json!({"reason": "remove-leader reconfig"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let step_url = format!(
+        "{}/stores/{}/groups/{}/step-down?sync=true",
+        nodes[leader_idx].mgmt_base(),
+        leader_node_id,
+        group_id,
+    );
+    let step_resp: Value = {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let resp = http_send_with_retry(
+                client()
+                    .post(&step_url)
+                    .json(&serde_json::json!({"reason": "remove-leader reconfig"})),
+                "step-down",
+            )
+            .await;
+            match resp.json().await {
+                Ok(v) => break v,
+                Err(e) => {
+                    assert!(
+                        Instant::now() <= deadline,
+                        "step-down JSON parse from {step_url} failed within 10 s: {e}"
+                    );
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+            }
+        }
+    };
     assert_eq!(
         step_resp["accepted"], true,
         "leader should accept its own step-down: {step_resp}"
@@ -471,17 +576,17 @@ async fn reconfig_via_api_remove_leader() {
         if i == leader_idx {
             continue;
         }
-        let resp = client()
-            .delete(format!(
+        let resp = http_send_with_retry(
+            client().delete(format!(
                 "{}/stores/{}/groups/{}/remotes/{}",
                 node.mgmt_base(),
                 node.node_id,
                 group_id,
                 leader_replica_id,
-            ))
-            .send()
-            .await
-            .unwrap();
+            )),
+            "remove remote (remove-leader)",
+        )
+        .await;
         assert_eq!(
             resp.status(),
             200,
