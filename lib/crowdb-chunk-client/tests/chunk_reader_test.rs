@@ -4,7 +4,7 @@
 //! Focused strip fallback and recovery tests; full flows live in reader E2E.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -16,11 +16,12 @@ use crowdb_common::ec::{encode, EcScheme};
 use crowdb_protocol::chunkdb::rpc::{
     AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse, Chunk, ChunkState,
     ChunkStrip, DeleteChunkRequest, DeleteChunkResponse, EcState, EcStrip, Location, MirrorStrip,
-    QueryChunkRequest, QueryChunkResponse, SealChunkRequest, SealChunkResponse, Strip, StripType,
-    UpdateChunkStripRequest, UpdateChunkStripResponse,
+    QueryChunkRequest, QueryChunkResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse,
+    SealChunkRequest, SealChunkResponse, Strip, StripType, UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_protocol::frame::{encode_frame, FrameMagic};
 use tokio::sync::Semaphore;
 
 const KIB: usize = 1024;
@@ -35,7 +36,8 @@ struct MemoryDiskIo {
 struct SequenceAllocator {
     queries: AtomicUsize,
     first: Chunk,
-    current: Chunk,
+    current: Mutex<Chunk>,
+    first_layout_validity_ms: u64,
 }
 
 #[async_trait]
@@ -69,9 +71,26 @@ impl ChunkAllocator for SequenceAllocator {
             chunk: Some(if query == 0 {
                 self.first.clone()
             } else {
-                self.current.clone()
+                self.current.lock().unwrap().clone()
             }),
-            layout_validity_ms: if query == 0 { 1 } else { 1_000 },
+            layout_validity_ms: if query == 0 {
+                self.first_layout_validity_ms
+            } else {
+                1_000
+            },
+        })
+    }
+
+    async fn replace_chunk_strip_range(
+        &self,
+        request: ReplaceChunkStripRangeRequest,
+    ) -> Result<ReplaceChunkStripRangeResponse> {
+        let mut current = self.current.lock().unwrap();
+        let index = usize::try_from(request.start_index).unwrap();
+        current.strips[index] = request.replacement_strips[0].clone();
+        current.modify_ts = current.modify_ts.saturating_add(1);
+        Ok(ReplaceChunkStripRangeResponse {
+            chunk: Some(current.clone()),
         })
     }
 }
@@ -326,7 +345,8 @@ async fn object_reader_discards_bytes_from_an_expired_layout() {
     let allocator = Arc::new(SequenceAllocator {
         queries: AtomicUsize::new(0),
         first: make_chunk(old_segment),
-        current: make_chunk(new_segment),
+        current: Mutex::new(make_chunk(new_segment)),
+        first_layout_validity_ms: 1,
     });
     let disk_io = Arc::new(MemoryDiskIo {
         shards: vec![
@@ -353,4 +373,60 @@ async fn object_reader_discards_bytes_from_an_expired_layout() {
     };
     assert_eq!(reader.read_object(&[location]).await.unwrap(), b"new!".as_slice());
     assert_eq!(allocator.queries.load(Ordering::Acquire), 2);
+}
+
+#[tokio::test]
+async fn framed_mirror_crc_failure_uses_a_verified_fallback() {
+    let id = ChunkId { high: 17, low: 23 };
+    let first = segment(1);
+    let second = segment(2);
+    let payload = b"verified mirror payload";
+    let valid = Bytes::from(encode_frame(FrameMagic::RepoSmallV1, id, payload, 1).unwrap());
+    let mut corrupt = valid.to_vec();
+    corrupt[14] ^= 0x80;
+    let chunk = Chunk {
+        id: Some(id),
+        state: ChunkState::Sealed as i32,
+        capacity: 64,
+        sealed_length: 64,
+        strips: vec![ChunkStrip {
+            unit_kb: 1,
+            capacity: 64,
+            sealed_length: 64,
+            sealed_ts_ms: 1,
+            strip_type: StripType::Mirror as i32,
+            strip: Some(Strip::MirrorStrip(MirrorStrip {
+                segments: vec![first, second],
+            })),
+            ..ChunkStrip::default()
+        }],
+        ..Chunk::default()
+    };
+    let allocator = Arc::new(SequenceAllocator {
+        queries: AtomicUsize::new(0),
+        first: chunk.clone(),
+        current: Mutex::new(chunk),
+        first_layout_validity_ms: 1_000,
+    });
+    let disk_io = Arc::new(MemoryDiskIo {
+        shards: vec![
+            (first.disk_id.unwrap(), Bytes::from(corrupt)),
+            (second.disk_id.unwrap(), valid.clone()),
+        ],
+        failed: Vec::new(),
+        reads: Arc::new(AtomicUsize::new(0)),
+    });
+    let reader = ChunkReader::new(allocator.clone(), disk_io, ChunkReadPolicy::default()).unwrap();
+    let location = Location {
+        chunk_id: Some(id),
+        length: valid.len() as u64,
+        logical_length: payload.len() as u64,
+        ..Location::default()
+    };
+    assert_eq!(reader.read_object(&[location]).await.unwrap(), payload.as_slice());
+    assert!(allocator.queries.load(Ordering::Acquire) >= 2);
+    assert_eq!(
+        allocator.current.lock().unwrap().strips[0].unavailable_segments,
+        vec![first]
+    );
 }
