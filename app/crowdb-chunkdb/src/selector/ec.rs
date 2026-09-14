@@ -59,14 +59,10 @@ impl EcPlacement {
         let node_count = dgs.iter().map(|dg| dg.node_id).collect::<HashSet<_>>().len();
 
         // Try safe mode first: max `code_num` blocks per node.
-        let safe_plan = try_distribute(
-            &by_rack,
-            total_blocks,
-            code_num,
-            constraints.failure_domain_priority,
-        );
+        let safe_plan = try_distribute(snap, &by_rack, total_blocks, code_num, constraints);
         if let Some(entries) = safe_plan {
             return finish_plan(
+                snap,
                 entries,
                 u32::try_from(code_num).unwrap_or(u32::MAX),
                 constraints,
@@ -87,13 +83,9 @@ impl EcPlacement {
             "EC placement: safe mode failed, falling back to unsafe mode"
         );
         let unsafe_limit = total_blocks;
-        if let Some(entries) = try_distribute(
-            &by_rack,
-            total_blocks,
-            unsafe_limit,
-            constraints.failure_domain_priority,
-        ) {
+        if let Some(entries) = try_distribute(snap, &by_rack, total_blocks, unsafe_limit, constraints) {
             return finish_plan(
+                snap,
                 entries,
                 u32::try_from(code_num).unwrap_or(u32::MAX),
                 constraints,
@@ -112,11 +104,13 @@ impl EcPlacement {
 /// Try to distribute `total_blocks` across nodes, with max
 /// `max_per_node` blocks per node. Distributes across racks first
 /// (round-robin), then within each rack across nodes.
+#[allow(clippy::too_many_lines)]
 fn try_distribute(
+    snap: &TopologySnapshot,
     by_rack: &HashMap<RackId, Vec<&crowdb_protocol::sysdata::DiskGroupEntry>>,
     total_blocks: usize,
     max_per_node: usize,
-    priority: FailureDomainPriority,
+    constraints: &PlacementConstraints,
 ) -> Option<Vec<PlacementEntry>> {
     let mut rack_ids: Vec<RackId> = by_rack.keys().copied().collect();
     rack_ids.sort_unstable();
@@ -125,13 +119,32 @@ fn try_distribute(
     let mut rack_load: HashMap<RackId, u32> = HashMap::new();
     let mut entries: Vec<PlacementEntry> = Vec::new();
     let mut placed = 0;
-    let mut rack_index = 0;
-
     while placed < total_blocks {
-        let candidate = match priority {
+        let candidate = match constraints.failure_domain_priority {
             FailureDomainPriority::RackFirst => {
-                let rack = rack_ids[rack_index];
-                rack_index = (rack_index + 1) % rack_ids.len();
+                let rack = *rack_ids
+                    .iter()
+                    .filter(|rack| {
+                        by_rack.get(rack).is_some_and(|dgs| {
+                            dgs.iter().any(|dg| {
+                                let load = node_load.get(&dg.node_id).copied().unwrap_or(0);
+                                (load as usize) < max_per_node
+                            })
+                        })
+                    })
+                    .min_by_key(|rack| {
+                        let next_load = rack_load.get(rack).copied().unwrap_or(0).saturating_add(1);
+                        (
+                            next_load,
+                            snap.rack_capacity_score(
+                                **rack,
+                                constraints
+                                    .planned_bytes_per_block
+                                    .saturating_mul(u64::from(next_load)),
+                            ),
+                            **rack,
+                        )
+                    })?;
                 by_rack
                     .get(&rack)?
                     .iter()
@@ -143,6 +156,13 @@ fn try_distribute(
                     .min_by_key(|dg| {
                         (
                             node_load.get(&dg.node_id).copied().unwrap_or(0),
+                            snap.node_capacity_score(
+                                dg.node_id,
+                                constraints.planned_bytes_per_block.saturating_mul(u64::from(
+                                    node_load.get(&dg.node_id).copied().unwrap_or(0).saturating_add(1),
+                                )),
+                            ),
+                            snap.capacity_score(dg.dg_id, constraints.planned_bytes_per_block),
                             dg.node_id,
                             dg.dg_id,
                         )
@@ -159,7 +179,20 @@ fn try_distribute(
                 .min_by_key(|dg| {
                     (
                         node_load.get(&dg.node_id).copied().unwrap_or(0),
+                        snap.node_capacity_score(
+                            dg.node_id,
+                            constraints.planned_bytes_per_block.saturating_mul(u64::from(
+                                node_load.get(&dg.node_id).copied().unwrap_or(0).saturating_add(1),
+                            )),
+                        ),
                         rack_load.get(&dg.rack_id).copied().unwrap_or(0),
+                        snap.rack_capacity_score(
+                            dg.rack_id,
+                            constraints.planned_bytes_per_block.saturating_mul(u64::from(
+                                rack_load.get(&dg.rack_id).copied().unwrap_or(0).saturating_add(1),
+                            )),
+                        ),
+                        snap.capacity_score(dg.dg_id, constraints.planned_bytes_per_block),
                         dg.node_id,
                         dg.dg_id,
                     )

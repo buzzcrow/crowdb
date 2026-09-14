@@ -35,6 +35,10 @@ async fn discover_registered_diskdb_instance() {
             free_bytes: 1000,
             disk_count: 3,
             allocatable_disk_count: 3,
+            allocatable_capacity_bytes: 1000,
+            allocatable_used_bytes: 0,
+            allocatable_free_bytes: 1000,
+            sampled_at_ms: 1,
         }],
     )
     .await

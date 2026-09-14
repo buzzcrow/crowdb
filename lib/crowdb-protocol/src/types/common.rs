@@ -284,6 +284,14 @@ pub struct DiskGroupUsageSummary {
     pub free_bytes: u64,
     pub disk_count: u32,
     pub allocatable_disk_count: u32,
+    #[serde(default)]
+    pub allocatable_capacity_bytes: u64,
+    #[serde(default)]
+    pub allocatable_used_bytes: u64,
+    #[serde(default)]
+    pub allocatable_free_bytes: u64,
+    #[serde(default)]
+    pub sampled_at_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]

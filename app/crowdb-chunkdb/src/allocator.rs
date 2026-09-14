@@ -91,7 +91,9 @@ impl ChunkAllocator {
             .into());
         }
         self.pool.update_disk_id_lookup(&snap.disk_groups());
-        let ec_plan = EcPlacement::select(snap, data_num, code_num, constraints)?;
+        let bytes_per_block = u64::from(unit_count).saturating_mul(u64::from(snap.unit_size_bytes()));
+        let constraints = constraints.clone().with_planned_bytes_per_block(bytes_per_block);
+        let ec_plan = EcPlacement::select(snap, data_num, code_num, &constraints)?;
         let mut ec_blocks_by_group = HashMap::<u64, usize>::new();
         for entry in &ec_plan.entries {
             *ec_blocks_by_group.entry(entry.disk_group_id).or_default() += entry.block_count as usize;
@@ -116,7 +118,10 @@ impl ChunkAllocator {
             safe_mode: ec_plan.safe_mode,
             priority: ec_plan.priority,
             protection: ec_plan.protection,
+            topology_generation: ec_plan.topology_generation,
+            usage_fresh: ec_plan.usage_fresh,
         };
+        let _reservation = snap.reserve_plan(&plan.entries, bytes_per_block);
         let mut blocks_by_group = HashMap::<u64, usize>::new();
         for entry in &plan.entries {
             *blocks_by_group.entry(entry.disk_group_id).or_default() += 1;
@@ -186,12 +191,15 @@ impl ChunkAllocator {
         constraints: &PlacementConstraints,
     ) -> Result<ChunkStrip, AllocError> {
         self.pool.update_disk_id_lookup(&snap.disk_groups());
+        let bytes_per_block = u64::from(unit_count).saturating_mul(u64::from(snap.unit_size_bytes()));
+        let constraints = constraints.clone().with_planned_bytes_per_block(bytes_per_block);
         let plan = match strip_type {
-            StripAllocType::Mirror { copy_count } => MirrorPlacement::select(snap, copy_count, constraints)?,
+            StripAllocType::Mirror { copy_count } => MirrorPlacement::select(snap, copy_count, &constraints)?,
             StripAllocType::Ec { data_num, code_num } => {
-                EcPlacement::select(snap, data_num, code_num, constraints)?
+                EcPlacement::select(snap, data_num, code_num, &constraints)?
             }
         };
+        let _reservation = snap.reserve_plan(&plan.entries, bytes_per_block);
         if let Some(metrics) = &self.metrics {
             metrics
                 .allocate_diskdb_calls
@@ -265,6 +273,8 @@ impl ChunkAllocator {
     ) -> Result<Segment, AllocError> {
         self.pool.update_disk_id_lookup(&snap.disk_groups());
         let mut constraints = constraints.clone();
+        let bytes_per_block = u64::from(unit_count).saturating_mul(u64::from(snap.unit_size_bytes()));
+        constraints.planned_bytes_per_block = bytes_per_block;
         constraints.exclude_disk_groups.extend(
             snap.disk_groups()
                 .into_iter()
@@ -279,6 +289,7 @@ impl ChunkAllocator {
                 .map(|disk_group| disk_group.dg_id),
         );
         let plan = MirrorPlacement::select(snap, 1, &constraints)?;
+        let _reservation = snap.reserve_plan(&plan.entries, bytes_per_block);
         let entry = plan
             .entries
             .first()

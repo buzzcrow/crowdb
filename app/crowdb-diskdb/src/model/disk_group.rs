@@ -472,13 +472,24 @@ impl DdbDiskGroup {
     #[must_use]
     pub fn aggregate_usage(&self) -> DiskGroupUsage {
         let disks_guard = self.disks.read().unwrap();
+        let membership = self.membership.load();
         let mut capacity_bytes = 0u64;
         let mut busy_bytes = 0u64;
+        let mut allocatable_capacity_bytes = 0u64;
+        let mut allocatable_busy_bytes = 0u64;
         let mut disk_usages: Vec<DiskUsage> = Vec::with_capacity(disks_guard.len());
         for disk in disks_guard.iter() {
             let u = disk.usage();
             capacity_bytes += u.capacity_bytes;
             busy_bytes += u.busy_bytes;
+            if membership
+                .allocating
+                .iter()
+                .any(|candidate| candidate.disk_id == disk.disk_id)
+            {
+                allocatable_capacity_bytes += u.capacity_bytes;
+                allocatable_busy_bytes += u.busy_bytes;
+            }
             disk_usages.push(u);
         }
         #[allow(clippy::cast_possible_truncation)]
@@ -486,6 +497,7 @@ impl DdbDiskGroup {
         #[allow(clippy::cast_possible_truncation)]
         let allocatable_disk_count = self.membership.load().allocating.len() as u32;
         let free_bytes = capacity_bytes.saturating_sub(busy_bytes);
+        let allocatable_free_bytes = allocatable_capacity_bytes.saturating_sub(allocatable_busy_bytes);
         DiskGroupUsage {
             disk_group_id: self.disk_group_id,
             capacity_bytes,
@@ -493,6 +505,9 @@ impl DdbDiskGroup {
             free_bytes,
             disk_count,
             allocatable_disk_count,
+            allocatable_capacity_bytes,
+            allocatable_busy_bytes,
+            allocatable_free_bytes,
             disks: disk_usages,
         }
     }
@@ -560,6 +575,9 @@ pub struct DiskGroupUsage {
     pub free_bytes: u64,
     pub disk_count: u32,
     pub allocatable_disk_count: u32,
+    pub allocatable_capacity_bytes: u64,
+    pub allocatable_busy_bytes: u64,
+    pub allocatable_free_bytes: u64,
     pub disks: Vec<DiskUsage>,
 }
 

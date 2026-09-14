@@ -29,6 +29,7 @@ impl MirrorPlacement {
     /// pass the health + exclusion filters, or
     /// `PlacementError::InsufficientNodes` if fewer healthy nodes than
     /// `copy_count`.
+    #[allow(clippy::too_many_lines)]
     pub fn select(
         snap: &TopologySnapshot,
         copy_count: usize,
@@ -52,7 +53,7 @@ impl MirrorPlacement {
         }
 
         let mut rack_ids: Vec<RackId> = by_rack.keys().copied().collect();
-        rack_ids.sort_unstable();
+        rack_ids.sort_by_key(|rack_id| (snap.rack_capacity_score(*rack_id, 0), *rack_id));
         for dgs in by_rack.values_mut() {
             dgs.sort_unstable_by_key(|dg| (dg.node_id, dg.dg_id));
         }
@@ -71,7 +72,16 @@ impl MirrorPlacement {
                         let rack = rack_ids[rack_index];
                         rack_index = (rack_index + 1) % rack_ids.len();
                         if let Some(dgs_in_rack) = by_rack.get(&rack) {
-                            if let Some(dg) = dgs_in_rack.iter().find(|dg| !used_nodes.contains(&dg.node_id))
+                            if let Some(dg) = dgs_in_rack
+                                .iter()
+                                .filter(|dg| !used_nodes.contains(&dg.node_id))
+                                .min_by_key(|dg| {
+                                    (
+                                        snap.capacity_score(dg.dg_id, constraints.planned_bytes_per_block),
+                                        dg.node_id,
+                                        dg.dg_id,
+                                    )
+                                })
                             {
                                 used_nodes.insert(dg.node_id);
                                 selected.push((rack, dg.node_id, dg.dg_id));
@@ -91,7 +101,10 @@ impl MirrorPlacement {
                         .filter(|dg| !used_nodes.contains(&dg.node_id))
                         .min_by_key(|dg| {
                             (
+                                snap.node_capacity_score(dg.node_id, constraints.planned_bytes_per_block),
                                 rack_load.get(&dg.rack_id).copied().unwrap_or(0),
+                                snap.rack_capacity_score(dg.rack_id, constraints.planned_bytes_per_block),
+                                snap.capacity_score(dg.dg_id, constraints.planned_bytes_per_block),
                                 dg.node_id,
                                 dg.dg_id,
                             )
@@ -119,7 +132,16 @@ impl MirrorPlacement {
                 remaining,
                 "mirror placement: not enough distinct racks, placing remaining copies on distinct nodes"
             );
-            for dg in &dgs {
+            let mut remaining_dgs: Vec<_> = dgs.iter().collect();
+            remaining_dgs.sort_by_key(|dg| {
+                (
+                    snap.capacity_score(dg.dg_id, constraints.planned_bytes_per_block),
+                    dg.rack_id,
+                    dg.node_id,
+                    dg.dg_id,
+                )
+            });
+            for dg in remaining_dgs {
                 if selected.len() >= copy_count {
                     break;
                 }
@@ -148,6 +170,7 @@ impl MirrorPlacement {
             .collect();
 
         finish_plan(
+            snap,
             entries,
             u32::try_from(copy_count.saturating_sub(1)).unwrap_or(u32::MAX),
             constraints,

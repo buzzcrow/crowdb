@@ -26,7 +26,7 @@ of temporarily degraded EC strips.
   `lib/crowdb-protocol/src/types/chunkdb.rs`,
   `lib/crowdb-protocol/src/fbs/chunkdb.fbs`,
   `lib/crowdb-protocol/src/types/chunk_task.rs`, selector/protocol tests.
-- [ ] **Usable capacity snapshot**: extend disk-group summaries with
+- [x] **Usable capacity snapshot**: extend disk-group summaries with
   allocatable capacity/free bytes and freshness, join healthy disk records and
   usage into immutable topology snapshots, and add lock-free in-flight byte
   reservations. Files: `lib/crowdb-protocol/src/types/common.rs`, matching
@@ -38,17 +38,17 @@ of temporarily degraded EC strips.
 - [x] **Failure-domain evaluator**: calculate mirror/EC loss budgets and
   planned/actual rack, node, and disk protection without relying on capacity
   metrics. Files: `app/crowdb-chunkdb/src/selector.rs`, selector tests.
-- [~] **Capacity-aware rack-first selector**: replace random rack rotation with
+- [x] **Capacity-aware rack-first selector**: replace random rack rotation with
   deterministic safe-set selection and projected-utilization ranking. Files:
   `app/crowdb-chunkdb/src/selector/mirror.rs`,
   `app/crowdb-chunkdb/src/selector/ec.rs`, selector tests.
-- [ ] **Capacity-aware node-first selector**: implement distinct-node-first
+- [x] **Capacity-aware node-first selector**: implement distinct-node-first
   ranking, rack tie-breaking, explicit degraded output, and deterministic
   retry ordering. Files: selector modules and tests.
 
 ## Phase 3 — Allocation and physical-disk validation
 
-- [ ] **Allocator policy wiring**: pass policy and planned-byte reservations
+- [x] **Allocator policy wiring**: pass policy and planned-byte reservations
   through ordinary, batch, conversion, and replacement allocation; release
   reservations on every completion and rollback path. Files:
   `app/crowdb-chunkdb/src/allocator.rs`, lifecycle/repair/conversion callers,

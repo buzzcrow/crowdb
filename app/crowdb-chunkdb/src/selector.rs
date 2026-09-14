@@ -46,6 +46,8 @@ pub struct PlacementConstraints {
     pub allow_degraded_failure_domains: bool,
     /// Ordering used to choose among otherwise eligible domains.
     pub failure_domain_priority: FailureDomainPriority,
+    /// Bytes added by one planned fragment for projected-utilization ranking.
+    pub planned_bytes_per_block: u64,
 }
 
 impl PlacementConstraints {
@@ -90,6 +92,12 @@ impl PlacementConstraints {
         self
     }
 
+    #[must_use]
+    pub fn with_planned_bytes_per_block(mut self, bytes: u64) -> Self {
+        self.planned_bytes_per_block = bytes;
+        self
+    }
+
     /// Check if a rack is excluded.
     pub fn is_rack_excluded(&self, rack: RackId) -> bool {
         self.exclude_racks.contains(&rack)
@@ -123,6 +131,8 @@ pub struct PlacementPlan {
     pub safe_mode: bool,
     pub priority: FailureDomainPriority,
     pub protection: PlacementProtection,
+    pub topology_generation: u64,
+    pub usage_fresh: bool,
 }
 
 impl PlacementPlan {
@@ -188,6 +198,7 @@ pub(super) fn assess_entries(entries: &[PlacementEntry], loss_budget: u32) -> Pl
 }
 
 pub(super) fn finish_plan(
+    snap: &TopologySnapshot,
     entries: Vec<PlacementEntry>,
     loss_budget: u32,
     constraints: &PlacementConstraints,
@@ -212,11 +223,30 @@ pub(super) fn finish_plan(
             actual: protection.max_fragments_per_node,
         });
     }
+    let usage_fresh = entries_have_fresh_usage(snap, &entries);
     Ok(PlacementPlan {
         entries,
         safe_mode: !protection.degraded(),
         priority: constraints.failure_domain_priority,
         protection,
+        topology_generation: snap.generation(),
+        usage_fresh,
+    })
+}
+
+fn entries_have_fresh_usage(snap: &TopologySnapshot, entries: &[PlacementEntry]) -> bool {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        });
+    entries.iter().all(|entry| {
+        snap.disk_group_capacity(entry.disk_group_id)
+            .is_some_and(|usage| {
+                usage.sampled_at_ms > 0
+                    && now_ms.saturating_sub(usage.sampled_at_ms) <= 30_000
+                    && usage.capacity_bytes > 0
+            })
     })
 }
 

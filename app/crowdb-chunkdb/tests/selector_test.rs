@@ -9,7 +9,7 @@ use crowdb_chunkdb::selector::{
     EcPlacement, FailureDomainPriority, MirrorPlacement, PlacementConstraints, PlacementError,
 };
 use crowdb_chunkdb::topology::TopologyCache;
-use crowdb_protocol::common::HwStatus;
+use crowdb_protocol::common::{DiskGroupUsageSummary, HwStatus};
 use crowdb_protocol::diskdb::rpc::DiskGroupValue;
 use crowdb_protocol::sysdata::DiskGroupEntry;
 
@@ -40,6 +40,27 @@ fn build_topology(racks: &[(u64, &[u64])]) -> TopologyCache {
     cache
 }
 
+fn usage(dg_id: u64, capacity_bytes: u64, used_bytes: u64) -> DiskGroupUsageSummary {
+    DiskGroupUsageSummary {
+        disk_group_id: dg_id,
+        capacity_bytes,
+        used_bytes,
+        free_bytes: capacity_bytes.saturating_sub(used_bytes),
+        disk_count: 2,
+        allocatable_disk_count: 2,
+        allocatable_capacity_bytes: capacity_bytes,
+        allocatable_used_bytes: used_bytes,
+        allocatable_free_bytes: capacity_bytes.saturating_sub(used_bytes),
+        sampled_at_ms: u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap(),
+    }
+}
+
 #[test]
 fn mirror_select_3_copies_3_racks_distinct() {
     let cache = build_topology(&[(1, &[10, 11]), (2, &[20, 21]), (3, &[30, 31])]);
@@ -51,6 +72,46 @@ fn mirror_select_3_copies_3_racks_distinct() {
     // Each entry should be in a distinct rack.
     let racks: std::collections::HashSet<_> = plan.entries.iter().map(|e| e.rack_id).collect();
     assert_eq!(racks.len(), 3);
+}
+
+#[test]
+fn mirror_prefers_lower_projected_utilization_inside_safe_rack() {
+    let cache = build_topology(&[(1, &[10, 11])]);
+    cache.update_disk_group_usage(100, &usage(100, 1_000, 900));
+    cache.update_disk_group_usage(101, &usage(101, 2_000, 200));
+
+    let constraints = PlacementConstraints::new().with_planned_bytes_per_block(100);
+    let plan = MirrorPlacement::select(&cache.snapshot(), 1, &constraints).unwrap();
+
+    assert_eq!(plan.entries[0].disk_group_id, 101);
+    assert!(plan.usage_fresh);
+}
+
+#[test]
+fn in_flight_bytes_divert_the_next_safe_placement() {
+    let cache = build_topology(&[(1, &[10, 11])]);
+    cache.update_disk_group_usage(100, &usage(100, 1_000, 0));
+    cache.update_disk_group_usage(101, &usage(101, 1_000, 0));
+    let snapshot = cache.snapshot();
+    let constraints = PlacementConstraints::new().with_planned_bytes_per_block(100);
+    let first = MirrorPlacement::select(&snapshot, 1, &constraints).unwrap();
+    assert_eq!(first.entries[0].disk_group_id, 100);
+
+    let _reservation = snapshot.reserve_plan(&first.entries, 800);
+    let second = MirrorPlacement::select(&snapshot, 1, &constraints).unwrap();
+    assert_eq!(second.entries[0].disk_group_id, 101);
+}
+
+#[test]
+fn absent_usage_uses_deterministic_topology_order_and_marks_stale() {
+    let cache = build_topology(&[(1, &[10, 11])]);
+    let constraints = PlacementConstraints::new().with_planned_bytes_per_block(100);
+
+    let first = MirrorPlacement::select(&cache.snapshot(), 1, &constraints).unwrap();
+    let second = MirrorPlacement::select(&cache.snapshot(), 1, &constraints).unwrap();
+
+    assert_eq!(first.entries, second.entries);
+    assert!(!first.usage_fresh);
 }
 
 #[test]
