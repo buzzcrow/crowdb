@@ -97,6 +97,8 @@ struct PipelineWorker {
 
 impl PipelineWorker {
     async fn run(mut self) -> Result<()> {
+        let mut liveness = tokio::time::interval(Duration::from_secs(12 * 60));
+        liveness.tick().await;
         loop {
             if self.retire.load(Ordering::Acquire) {
                 self.receiver.close();
@@ -111,7 +113,16 @@ impl PipelineWorker {
                     () = self.wake.notified() => {
                         self.receiver.close();
                         self.receiver.recv().await
-                    }
+                    },
+                    () = liveness.tick() => {
+                        if let Err(error) = self.renew_idle_chunks().await {
+                            self.receiver.close();
+                            self.fail_remaining(&error.to_string()).await;
+                            let _ = self.finish_chunks().await;
+                            return Err(error);
+                        }
+                        continue;
+                    },
                 };
                 (object, true)
             };
@@ -223,6 +234,14 @@ impl PipelineWorker {
             None => Ok(()),
         };
         current_result.and(replacement_result)
+    }
+
+    async fn renew_idle_chunks(&mut self) -> Result<()> {
+        self.chunk.renew_liveness().await?;
+        if let Some(replacement) = self.replacement.as_mut() {
+            replacement.renew_liveness().await?;
+        }
+        Ok(())
     }
 
     fn collect_batch(&mut self, first: PendingObject) -> Vec<PendingObject> {
@@ -818,6 +837,25 @@ impl OwnedChunk {
 
     fn remaining_in_chunk(&self) -> u64 {
         self.policy.chunk_capacity.saturating_sub(self.cursor)
+    }
+
+    async fn renew_liveness(&mut self) -> Result<()> {
+        self.flush_pending_advance().await?;
+        let chunk_id = self
+            .chunk
+            .id
+            .ok_or_else(|| IoError::AllocationFailed("shared chunk missing id".into()))?;
+        self.chunk = advance_chunk(
+            Arc::clone(&self.allocator),
+            chunk_id,
+            self.writer_epoch,
+            self.chunk.modify_ts,
+            self.cursor,
+            None,
+            u64::try_from(self.policy.writer_lease.as_millis()).unwrap_or(u64::MAX),
+        )
+        .await?;
+        Ok(())
     }
 
     fn current_strip(&self) -> Result<&crowdb_protocol::chunkdb::rpc::ChunkStrip> {
