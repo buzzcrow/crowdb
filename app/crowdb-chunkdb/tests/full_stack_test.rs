@@ -920,6 +920,55 @@ async fn finalizer_reclaims_an_empty_active_chunk() {
     );
 }
 
+#[tokio::test]
+async fn finalizer_waits_for_pre_expiry_requests_before_scanning() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let chunk = harness
+        .handler
+        .allocate_chunk(
+            None,
+            1,
+            1,
+            StripType::Mirror,
+            0,
+            0,
+            3,
+            ChunkType::Repo,
+            23,
+            60_000,
+        )
+        .await
+        .unwrap();
+    let chunk_id = chunk.id.unwrap();
+    let bindings = BindingCache::new();
+    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let tasks = TaskStore::new(cluster.make_crowdb_client(), bindings);
+    let task = tasks
+        .get(&chunk_id, TASK_KIND_FINALIZE_CHUNK, &chunk_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let finalizer = FinalizeChunkTaskHandler::new(
+        Arc::clone(&harness.handler),
+        Arc::new(ConversionDiskIo::empty_for_tests()),
+    );
+    assert!(matches!(
+        finalizer.execute(&task).await,
+        TaskOutcome::Retry { delay_ms, .. } if delay_ms > 0
+    ));
+    assert_eq!(
+        harness.handler.query_chunk(&chunk_id).await.unwrap().state,
+        ChunkState::Active as i32
+    );
+}
+
 impl TaskHandler for CompleteTaskHandler {
     fn kind(&self) -> u16 {
         TASK_KIND_MIRROR_TO_EC
