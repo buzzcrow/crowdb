@@ -69,6 +69,7 @@ enum class IoRetCode : int16_t {
     PartialWrite     = 4,
     InvalidAlignment = 5,
     ConnectionError  = 6,
+    OldRequest       = 8,
 };
 
 } // namespace crowdb::diskio

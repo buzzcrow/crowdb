@@ -32,6 +32,13 @@ SOURCE_TREES = [
         ],
         "lib/crowdb-rpc/build",
     ),
+    (
+        [
+            Path("app/crowdb-diskio/src"),
+            Path("app/crowdb-diskio/tests"),
+        ],
+        "app/crowdb-diskio/build",
+    ),
 ]
 EXTENSIONS = {".cpp", ".h"}
 DEFAULT_BATCH_SIZE = 3

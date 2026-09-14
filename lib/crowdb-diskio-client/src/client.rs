@@ -12,6 +12,7 @@ use crowdb_protocol::diskio_fb::{
 use crowdb_protocol::fb::FBMsgType;
 use crowdb_rpc_ffi::{Buffer, CallFuture, Connection, RpcClient, RpcClientHandle, RpcError, RpcServer};
 use flatbuffers::FlatBufferBuilder;
+use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 use crate::DiskId;
@@ -47,6 +48,7 @@ pub enum DiskIoRetCode {
     ConnectionError = 6,
     /// Compatibility response from an older `DiskIO` server.
     StaleAllocation = 7,
+    OldRequest = 8,
 }
 
 #[derive(Clone, Copy)]
@@ -68,6 +70,7 @@ impl From<i16> for DiskIoRetCode {
             5 => Self::InvalidAlignment,
             6 => Self::ConnectionError,
             7 => Self::StaleAllocation,
+            8 => Self::OldRequest,
             _ => Self::IoError,
         }
     }
@@ -243,6 +246,7 @@ impl WireClient {
                 zone_offset: target.zone_offset,
                 size: target.size,
                 ordering_zone_offset: target.ordering_zone_offset,
+                write_create_time_ms: unix_time_ms(),
             },
         );
         fbb.finish(off, None);
@@ -361,6 +365,14 @@ impl WireClient {
     pub async fn await_fsync_response(fut: CallFuture) -> WireResult<DiskIoRetCode> {
         Self::await_write_response(fut).await
     }
+}
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 impl Default for WireClient {

@@ -24,7 +24,7 @@ integrity-aware protection reads.
 
 ## Phase 2: DiskIO time boundary
 
-- [ ] **Wire timestamp and response**: add write creation wall time and
+- [~] **Wire timestamp and response**: add write creation wall time and
   `OldRequest` through FlatBuffers, Rust wrappers, and C++ generated schema
   callsites. Files: `lib/crowdb-protocol/src/fbs/diskio.fbs`, generated wrapper
   users, `lib/crowdb-diskio-client`.

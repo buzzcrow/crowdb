@@ -49,6 +49,11 @@ struct DioConfig
     uint32_t thread_pool_size = 4;
     uint32_t sq_entries       = 256;
 
+    // Shared stale-write exclusion budget. DiskIO rejects a write whose
+    // wall-clock creation time is older than this age plus peer clock skew.
+    uint64_t max_write_request_age_ms = 30'000;
+    uint64_t max_clock_skew_ms         = 1'000;
+
     // Optional fault injection for dummy disks.
     std::optional<DiskProperties> dummy_props;
 

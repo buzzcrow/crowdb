@@ -143,6 +143,7 @@ fn disk_io_ret_code_values() {
     assert_eq!(FBDiskIoRetCode::InvalidAlignment.0, 5);
     assert_eq!(FBDiskIoRetCode::ConnectionError.0, 6);
     assert_eq!(FBDiskIoRetCode::StaleAllocation.0, 7);
+    assert_eq!(FBDiskIoRetCode::OldRequest.0, 8);
 }
 
 #[test]
@@ -162,6 +163,7 @@ fn disk_write_request_round_trip() {
             zone_offset: 4096,
             size: 4096,
             ordering_zone_offset: 2048,
+            write_create_time_ms: 1234,
         },
     );
     fbb.finish(req, None);
@@ -175,6 +177,7 @@ fn disk_write_request_round_trip() {
     assert_eq!(parsed.zone_offset(), 4096);
     assert_eq!(parsed.size(), 4096);
     assert_eq!(parsed.ordering_zone_offset(), 2048);
+    assert_eq!(parsed.write_create_time_ms(), 1234);
 }
 
 #[test]

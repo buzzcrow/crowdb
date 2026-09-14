@@ -92,6 +92,13 @@ uint64_t monotonic_nanos()
         .count();
 }
 
+uint64_t wall_time_ms()
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
+}
+
 uint64_t monotonic_millis()
 {
     return monotonic_nanos() / 1'000'000;
@@ -186,6 +193,7 @@ Status diskio_status(crowdb::diskio::proto::FBDiskIoRetCode code)
     case FBDiskIoRetCode_ConnectionError:
     case FBDiskIoRetCode_DiskNotExist:
     case FBDiskIoRetCode_ZoneNotExist:
+    case FBDiskIoRetCode_OldRequest:
         return Status::unavailable("DiskIO tree page target is unavailable");
     default:
         return Status::internal_error("DiskIO tree page operation failed");
@@ -470,9 +478,9 @@ struct RpcChunkTransport::Impl::AsyncWrite
         const uint64_t request_id  = owner->next_request_id();
         const FBInt128 disk_id(segment.disk_high, segment.disk_low);
         flatbuffers::FlatBufferBuilder builder;
-        auto request = crowdb::diskio::proto::CreateFBDiskWriteRequest(builder, request_id, monotonic_nanos(), &disk_id,
-                                                                       segment.zone_index, zone_offset,
-                                                                       static_cast<uint32_t>(part), zone_offset);
+        auto                           request = crowdb::diskio::proto::CreateFBDiskWriteRequest(
+            builder, request_id, monotonic_nanos(), &disk_id, segment.zone_index, zone_offset,
+            static_cast<uint32_t>(part), zone_offset, wall_time_ms());
         builder.Finish(request);
         crowdb_rpc_buffer_t control = crowdb_rpc_buffer_create(builder.GetBufferPointer(), builder.GetSize());
         crowdb_rpc_buffer_t payload = crowdb_rpc_buffer_create(data + consumed, static_cast<uint32_t>(part));
@@ -605,9 +613,9 @@ Status RpcChunkTransport::write_mirror(ChunkId chunk_id, uint32_t mirror_index, 
         const uint64_t request_id  = impl_->next_request_id();
         const FBInt128 disk_id(segment.disk_high, segment.disk_low);
         flatbuffers::FlatBufferBuilder builder;
-        auto request = crowdb::diskio::proto::CreateFBDiskWriteRequest(builder, request_id, monotonic_nanos(), &disk_id,
-                                                                       segment.zone_index, zone_offset,
-                                                                       static_cast<uint32_t>(part), zone_offset);
+        auto                           request = crowdb::diskio::proto::CreateFBDiskWriteRequest(
+            builder, request_id, monotonic_nanos(), &disk_id, segment.zone_index, zone_offset,
+            static_cast<uint32_t>(part), zone_offset, wall_time_ms());
         builder.Finish(request);
         std::vector<uint8_t> control(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());
         RpcResult            result;

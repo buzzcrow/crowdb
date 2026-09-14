@@ -38,7 +38,8 @@ namespace crowdb::diskio
 class DiskioServer
 {
   public:
-    DiskioServer(std::shared_ptr<DiskSet> disk_set, crowdb::rpc::SocketTransport *transport);
+    DiskioServer(std::shared_ptr<DiskSet> disk_set, crowdb::rpc::SocketTransport *transport,
+                 uint64_t max_write_request_age_ms = 30'000, uint64_t max_clock_skew_ms = 1'000);
 
     // Handler functions (registered with RpcServer::register_handler).
     // Each parses the flatbuffer control from the Frame, looks up the
@@ -58,6 +59,8 @@ class DiskioServer
     crowdb::common::metrics::LatencyHistogram *read_latency_;
     crowdb::common::metrics::LatencyHistogram *write_latency_;
     crowdb::common::metrics::LatencyHistogram *fsync_latency_;
+    uint64_t                                   max_write_request_age_ms_;
+    uint64_t                                   max_clock_skew_ms_;
 
     // Build a response control buffer for a diskio response msg_type.
     // ret_code is a proto::FBDiskIoRetCode value (int16_t to avoid
