@@ -854,7 +854,9 @@ impl ChunkStream {
         length: usize,
         logical_offset: u64,
     ) -> Result<Bytes> {
-        let read = self.chunks.read(chunk_id, physical_offset, length);
+        let read = self
+            .chunks
+            .read_verified_frame(chunk_id, physical_offset, length);
         tokio::pin!(read);
         let started = Instant::now();
         loop {

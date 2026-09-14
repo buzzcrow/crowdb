@@ -18,6 +18,7 @@ use crowdb_protocol::chunkdb::rpc::{
     Strip,
 };
 use crowdb_protocol::common::ChunkId;
+use crowdb_protocol::frame::FrameMagic;
 
 use crate::{CursorAdvance, DurableCursor, Result, StreamChunkStore, StreamError, TrimmedChunk};
 
@@ -329,6 +330,25 @@ impl StreamChunkStore for ProductionStreamChunkStore {
                 }],
                 0,
                 length,
+            )
+            .await
+            .map_err(read_error)
+    }
+
+    async fn read_verified_frame(
+        &self,
+        chunk_id: ChunkId,
+        physical_offset: u64,
+        length: usize,
+    ) -> Result<Bytes> {
+        self.reader
+            .read_verified_frame(
+                chunk_id,
+                physical_offset,
+                u64::try_from(length).map_err(|_| {
+                    StreamError::InvalidRequest("chunk frame length exceeds u64".into())
+                })?,
+                FrameMagic::StreamV1,
             )
             .await
             .map_err(read_error)

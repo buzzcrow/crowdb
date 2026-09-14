@@ -7,6 +7,7 @@ use crowdb_protocol::chunk_stream::{
     ActiveChunkDescriptor, StreamBinding, StreamExtentPage, StreamManifest, StreamName,
 };
 use crowdb_protocol::common::ChunkId;
+use crowdb_protocol::frame::{parse_frame, FrameMagic};
 
 use crate::Result;
 
@@ -87,5 +88,26 @@ pub trait StreamChunkStore: Send + Sync {
     async fn durable_cursor(&self, chunk_id: ChunkId, writer_epoch: u64) -> Result<DurableCursor>;
     async fn seal(&self, chunk_id: ChunkId, writer_epoch: u64, cursor: u64) -> Result<()>;
     async fn read(&self, chunk_id: ChunkId, physical_offset: u64, length: usize) -> Result<Bytes>;
+    /// Reads and validates a public stream frame before its payload is exposed.
+    ///
+    /// In-memory and test stores use the default parser. Production overrides
+    /// this to let `ChunkReader` retry a corrupt serving mirror or reconstruct
+    /// an EC stripe before returning the frame.
+    async fn read_verified_frame(
+        &self,
+        chunk_id: ChunkId,
+        physical_offset: u64,
+        length: usize,
+    ) -> Result<Bytes> {
+        let frame = self.read(chunk_id, physical_offset, length).await?;
+        let parsed = parse_frame(&frame, chunk_id)
+            .map_err(|error| crate::StreamError::Corruption(format!("invalid stream frame: {error}")))?;
+        if parsed.header.magic != FrameMagic::StreamV1 {
+            return Err(crate::StreamError::Corruption(
+                "stream extent has the wrong frame kind".into(),
+            ));
+        }
+        Ok(frame)
+    }
     async fn release_trimmed(&self, chunk_id: ChunkId, logical_end: u64) -> Result<TrimmedChunk>;
 }
