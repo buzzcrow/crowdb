@@ -82,9 +82,13 @@ of temporarily degraded EC strips.
   conditionally publishes the source-revision replacement, then confirms that
   same target and authorizes source free. A local ongoing set merges duplicate
   deliveries but is not a recovery authority; the job phase resumes confirmation
-  after a restart and DiskDB's scanner reclaims pre-publication orphans. Files:
-  DiskDB relocation/task protocol, ChunkDB task handling, lifecycle/storage,
-  and integration tests.
+  after a restart. DiskDB's scanner asks the chunk owner for an exact target
+  disposition and frees only `Absent` targets; it confirms `Referenced` and
+  retains `TaskPending` targets, never freeing by timeout alone.
+  Frontend ad-hoc EC repair returns reconstructed readable data immediately and
+  uses the in-memory manager only to coalesce/reuse work while the durable job
+  publishes. Files: DiskDB relocation/task protocol, ChunkDB task handling,
+  lifecycle/storage, frontend repair manager, and integration tests.
 - [x] **EC topology matrix**: cover 10+2, 20+2, and 40+4 on two racks with a
   four-node/two-node split under both policies, interrupted admission/restart,
   insufficient-topology waiting, and convergence after adding six or eleven

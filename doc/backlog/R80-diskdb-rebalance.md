@@ -269,6 +269,10 @@ imbalance (placeholder relocation in v1; real move deferred to a future
    source. R80 retries an unacknowledged handoff after restart. This gives
    normal repair and disk rebalance one metadata publication authority and
    prevents either mover from freeing a source still referenced by ChunkDB.
+   Its tentative-block scanner must obtain the same owner's disposition for an
+   exact target incarnation before cleanup: it confirms `Referenced`, retains
+   `TaskPending`, and frees only `Absent`. A time limit may trigger that query
+   but is not itself permission to free a tentative block.
 
 ```
   sync tick / reporting interval

@@ -177,7 +177,17 @@ policy and a verified post-allocation assessment.
     target and phase before each externally visible step, so a restart resumes
     confirmation after a successful CAS rather than allocating a second target.
     A failed pre-CAS attempt leaves an unreferenced tentative target for the
-    DiskDB scanner to reclaim. Each published step must keep at least
+    DiskDB scanner to reclaim. The scanner must first ask the chunk owner for
+    the exact target incarnation: `Referenced` confirms it, `TaskPending`
+    retains it, and only `Absent` frees it. It must never free a tentative block
+    by age alone because a published Chunk CAS can precede confirmation. A
+    frontend I/O-triggered ad-hoc repair may return
+    as soon as EC reconstruction has produced the requested readable bytes; it
+    hands the fsynced tentative target to the same durable job for later CAS and
+    confirmation. ChunkDB's in-memory repair manager coalesces same-source
+    requests and retains reusable rebuilt bytes or a completed target while the
+    job is active, but it is only a latency optimization. Each published step
+    must keep at least
     `data_num` readable EC fragments, must not turn any currently protected
     domain into an unprotected one, and must validate the destination physical
     disk. Clear `placement_repair_required` and complete the task only after
@@ -277,8 +287,17 @@ policy and a verified post-allocation assessment.
   Restart after Chunk CAS but before target confirmation; assert the persisted
   job confirms that same target without a second allocation. Restart before
   CAS; assert the DiskDB scanner can reclaim the unreferenced tentative target,
-  proving copy-before-publish, durable duplicate handling, tentative-block
-  recovery, and source-revision fencing — E2E test.
+  after the owner returns `Absent`, while it preserves an identical target when
+  the owner returns `TaskPending` or `Referenced`, proving copy-before-publish,
+  durable duplicate handling, owner-validated tentative-block recovery, and
+  source-revision fencing — E2E test.
+- Given concurrent frontend reads that detect the same unavailable EC fragment,
+  reconstruct it once and return the readable data before metadata publication;
+  assert the in-memory repair manager shares that result with the other reads
+  and one durable job later performs the CAS and target confirmation. Restart
+  before publication; assert the durable job or scanner, not the memory cache,
+  resolves the tentative target, proving low-latency ad-hoc repair without
+  making process memory a correctness dependency — E2E test.
 - Given the two-rack fixture with four nodes in one rack and two in the other,
   allocate 10+2, 20+2, and 40+4 EC strips under both priorities; resolve every
   physical segment and assert the reported maximum fragments per rack, node,
