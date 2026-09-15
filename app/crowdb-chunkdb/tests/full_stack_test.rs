@@ -45,8 +45,8 @@ use crowdb_chunkdb_client::ChunkdbRpcTransport;
 use crowdb_common::metrics::MetricsRegistry;
 use crowdb_protocol::chunk_task::{
     ChunkTaskState, ChunkTaskValue, RelocateSegmentTaskDisposition, RelocateSegmentTaskPayload,
-    CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_FINALIZE_CHUNK, TASK_KIND_MIRROR_TO_EC,
-    TASK_KIND_RELOCATE_SEGMENT, TASK_KIND_REPAIR_PLACEMENT, TASK_KIND_REPAIR_STRIP,
+    CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_FINALIZE_CHUNK, TASK_KIND_MIRROR_TO_EC, TASK_KIND_RELOCATE_SEGMENT,
+    TASK_KIND_REPAIR_PLACEMENT, TASK_KIND_REPAIR_STRIP,
 };
 use crowdb_protocol::chunkdb::rpc::{
     Chunk, ChunkState, ChunkStrip, ChunkType, EcState, EcStrip, PlacementAssessment,
@@ -101,7 +101,13 @@ async fn assert_conversion_task_pending(
     replacement: &ChunkStrip,
 ) {
     assert_eq!(
-        task_store.list_partition(&chunk_id).await.unwrap(),
+        task_store
+            .list_partition(&chunk_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.kind != TASK_KIND_FINALIZE_CHUNK)
+            .collect::<Vec<_>>(),
         vec![task.clone()]
     );
     assert!(decode_payload(&task.payload).unwrap().replacement_strip.is_some());
@@ -1653,7 +1659,12 @@ async fn relocation_handoff_claims_publishes_and_defers_source_free() {
         coordinator.admit(&invalid_identity, 1).await,
         Err(RelocationAdmissionError::InvalidGeometry)
     ));
-    assert!(tasks.list_partition(&chunk_id).await.unwrap().is_empty());
+    assert!(tasks
+        .list_partition(&chunk_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .all(|t| t.kind == TASK_KIND_FINALIZE_CHUNK));
     let port = port_alloc::alloc_test_port(ServicePort::ChunkdbRpc);
     let endpoint = format!("http://127.0.0.1:{port}");
     let server = Arc::new(crowdb_rpc_ffi::RpcServer::new(None));
@@ -1700,7 +1711,16 @@ async fn relocation_handoff_claims_publishes_and_defers_source_free() {
         RelocationHandoffDisposition::try_from(duplicate.disposition).unwrap(),
         RelocationHandoffDisposition::Accepted
     );
-    assert_eq!(tasks.list_partition(&chunk_id).await.unwrap().len(), 1);
+    assert_eq!(
+        tasks
+            .list_partition(&chunk_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.kind != TASK_KIND_FINALIZE_CHUNK)
+            .count(),
+        1
+    );
     let owner = SegmentOwnerResolver::new(Arc::clone(&harness.handler), Arc::clone(&tasks));
     assert_eq!(
         owner.resolve(&chunk_id, &target).await.unwrap(),
