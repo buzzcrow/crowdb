@@ -565,6 +565,7 @@ async fn main() {
             ));
             let placement_repair_task_handler = Arc::new(PlacementRepairTaskHandler::new(
                 Arc::clone(&handler),
+                Arc::clone(&task_manager),
                 Arc::clone(&io),
                 Arc::clone(&workflow_metrics.placement),
             ));

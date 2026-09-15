@@ -361,6 +361,7 @@ async fn assert_expanded_topology_converges_ec(data_num: u32, code_num: u32, req
         1,
         vec![Arc::new(PlacementRepairTaskHandler::new(
             Arc::clone(&handler),
+            Arc::clone(&manager),
             Arc::clone(&io),
             metrics,
         ))],
@@ -493,6 +494,7 @@ async fn degraded_ec_markers_recreate_one_task_per_large_strip_after_admission_g
         1,
         vec![Arc::new(PlacementRepairTaskHandler::new(
             Arc::clone(&handler),
+            Arc::clone(&manager),
             Arc::new(ConversionDiskIo::empty_for_tests()),
             Arc::clone(&metrics),
         ))],

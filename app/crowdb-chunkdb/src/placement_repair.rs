@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
 use crowdb_protocol::chunk_task::{
-    ChunkTaskState, ChunkTaskValue, PlacementRepairTaskPayload, CHUNK_TASK_SCHEMA_VERSION,
-    PLACEMENT_REPAIR_KIND_VERSION, TASK_KIND_REPAIR_PLACEMENT,
+    ChunkTaskState, ChunkTaskValue, PlacementRepairTaskPayload, RepairTargetCheckpoint, RepairTargetPhase,
+    CHUNK_TASK_SCHEMA_VERSION, PLACEMENT_REPAIR_KIND_VERSION, TASK_KIND_REPAIR_PLACEMENT,
 };
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkStrip, Strip};
 use crowdb_protocol::common::ChunkId;
@@ -20,7 +20,7 @@ use crate::lifecycle::{LifecycleError, LifecycleHandler};
 use crate::metrics::PlacementMetrics;
 use crate::selector::PlacementError;
 use crate::task::executor::TaskFuture;
-use crate::task::{TaskHandler, TaskOutcome, TaskStore, TaskStoreError};
+use crate::task::{TaskHandler, TaskManager, TaskOutcome, TaskStore, TaskStoreError};
 
 const RETRY_DELAY_MS: u64 = 5_000;
 
@@ -145,6 +145,7 @@ pub async fn admit_placement_chunk(
 /// publishes a move that preserves every current protection guarantee.
 pub struct PlacementRepairTaskHandler {
     lifecycle: Arc<LifecycleHandler>,
+    task_manager: Arc<TaskManager>,
     io: Arc<ConversionDiskIo>,
     metrics: Arc<PlacementMetrics>,
 }
@@ -153,11 +154,13 @@ impl PlacementRepairTaskHandler {
     #[must_use]
     pub fn new(
         lifecycle: Arc<LifecycleHandler>,
+        task_manager: Arc<TaskManager>,
         io: Arc<ConversionDiskIo>,
         metrics: Arc<PlacementMetrics>,
     ) -> Self {
         Self {
             lifecycle,
+            task_manager,
             io,
             metrics,
         }
@@ -165,7 +168,7 @@ impl PlacementRepairTaskHandler {
 
     #[allow(clippy::too_many_lines)]
     async fn execute_once(&self, task: &ChunkTaskValue) -> Result<bool, PlacementRepairError> {
-        let payload = decode_payload(&task.payload)?;
+        let mut payload = decode_payload(&task.payload)?;
         let chunk = self.lifecycle.query_chunk(&payload.chunk_id).await?;
         let Some((index, strip)) = chunk
             .strips
@@ -175,12 +178,14 @@ impl PlacementRepairTaskHandler {
         else {
             return Ok(true);
         };
-        if !strip.placement_repair_required {
-            return Ok(true);
-        }
         let Some(Strip::EcStrip(ec)) = strip.strip.as_ref() else {
             return Ok(true);
         };
+        self.confirm_published_target(task, &mut payload, &ec.segments)
+            .await?;
+        if !strip.placement_repair_required {
+            return Ok(true);
+        }
         let snapshot = self.lifecycle.topology_snapshot();
         let current = assess_physical_placement(
             &snapshot,
@@ -197,7 +202,12 @@ impl PlacementRepairTaskHandler {
                 .await?;
             return Ok(true);
         }
-        let Some(source_index) = select_source(&snapshot, &ec.segments, ec.code_num) else {
+        let source_index = payload
+            .target
+            .as_ref()
+            .and_then(|target| ec.segments.iter().position(|segment| *segment == target.source))
+            .or_else(|| select_source(&snapshot, &ec.segments, ec.code_num));
+        let Some(source_index) = source_index else {
             return Ok(false);
         };
         let source = ec.segments[source_index];
@@ -208,51 +218,63 @@ impl PlacementRepairTaskHandler {
             .filter_map(|(position, segment)| (position != source_index).then_some(*segment))
             .collect();
         let excluded: Vec<_> = ec.segments.iter().filter_map(|segment| segment.disk_id).collect();
-        let (exclude_racks, exclude_nodes) = over_budget_domains(&snapshot, &ec.segments, ec.code_num);
-        let Some(target_disk_group) = select_target_disk_group(
-            &snapshot,
-            &ec.segments,
-            &excluded,
-            &exclude_racks,
-            &exclude_nodes,
-            strip.placement_priority,
-        ) else {
-            return Ok(false);
-        };
-        let destination = self
-            .lifecycle
-            .allocate_placement_replacement_segment(
-                &payload.chunk_id,
-                &source,
-                &survivors,
+        let destination = if let Some(target) = &payload.target {
+            target.destination
+        } else {
+            let (exclude_racks, exclude_nodes) = over_budget_domains(&snapshot, &ec.segments, ec.code_num);
+            let Some(target_disk_group) = select_target_disk_group(
+                &snapshot,
+                &ec.segments,
                 &excluded,
                 &exclude_racks,
                 &exclude_nodes,
-                target_disk_group,
-            )
-            .await?;
+                strip.placement_priority,
+            ) else {
+                return Ok(false);
+            };
+            let destination = self
+                .lifecycle
+                .allocate_placement_replacement_segment(
+                    &payload.chunk_id,
+                    &source,
+                    &survivors,
+                    &excluded,
+                    &exclude_racks,
+                    &exclude_nodes,
+                    target_disk_group,
+                )
+                .await?;
+            payload.target = Some(RepairTargetCheckpoint {
+                source,
+                destination,
+                phase: RepairTargetPhase::Allocated,
+            });
+            self.checkpoint(task, &payload).await?;
+            destination
+        };
         let unit_bytes = u64::from(strip.unit_kb).saturating_mul(1024);
-        let copy = async {
+        if payload
+            .target
+            .as_ref()
+            .is_some_and(|target| target.phase == RepairTargetPhase::Allocated)
+        {
             let bytes = self
                 .io
                 .read_segment(&source, unit_bytes)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| PlacementRepairError::Payload(error.to_string()))?;
             self.io
                 .write_segment(&destination, unit_bytes, bytes)
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| PlacementRepairError::Payload(error.to_string()))?;
             self.io
                 .fsync_segment(&destination)
                 .await
-                .map_err(|error| error.to_string())
-        }
-        .await;
-        if let Err(error) = copy {
-            self.lifecycle
-                .discard_replacement_segment(&payload.chunk_id, destination)
-                .await?;
-            return Err(PlacementRepairError::Payload(error));
+                .map_err(|error| PlacementRepairError::Payload(error.to_string()))?;
+            if let Some(target) = &mut payload.target {
+                target.phase = RepairTargetPhase::Copied;
+            }
+            self.checkpoint(task, &payload).await?;
         }
         let mut replacement = strip.clone();
         let Some(Strip::EcStrip(replacement_ec)) = replacement.strip.as_mut() else {
@@ -270,13 +292,16 @@ impl PlacementRepairTaskHandler {
             self.lifecycle
                 .discard_replacement_segment(&payload.chunk_id, destination)
                 .await?;
+            payload.target = None;
+            self.checkpoint(task, &payload).await?;
             return Ok(false);
         }
         replacement.placement_assessment = Some(next.clone());
         replacement.placement_repair_required =
             !(next.rack_protected && next.node_protected && next.disk_protected);
+        let replacement_segments = replacement_ec.segments.clone();
         self.lifecycle
-            .replace_chunk_strip_range(
+            .publish_tentative_chunk_strip_range(
                 &payload.chunk_id,
                 chunk.modify_ts,
                 u32::try_from(index).unwrap_or(u32::MAX),
@@ -285,8 +310,61 @@ impl PlacementRepairTaskHandler {
                 placement_operation_id(task.operation_id, strip.strip_sequence),
             )
             .await?;
+        if let Some(target) = &mut payload.target {
+            target.phase = RepairTargetPhase::Published;
+        }
+        self.checkpoint(task, &payload).await?;
+        self.confirm_published_target(task, &mut payload, &replacement_segments)
+            .await?;
         self.metrics.moved();
         Ok(!replacement.placement_repair_required)
+    }
+
+    async fn checkpoint(
+        &self,
+        task: &ChunkTaskValue,
+        payload: &PlacementRepairTaskPayload,
+    ) -> Result<(), PlacementRepairError> {
+        self.task_manager
+            .checkpoint_payload(
+                task,
+                to_vec(payload).map_err(|error| PlacementRepairError::Payload(error.to_string()))?,
+                now_ms(),
+            )
+            .await
+            .map_err(|error| PlacementRepairError::Payload(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn confirm_published_target(
+        &self,
+        task: &ChunkTaskValue,
+        payload: &mut PlacementRepairTaskPayload,
+        segments: &[crowdb_protocol::diskdb::rpc::Segment],
+    ) -> Result<(), PlacementRepairError> {
+        let Some(target) = payload.target.as_ref() else {
+            return Ok(());
+        };
+        let became_published = target.phase != RepairTargetPhase::Confirmed
+            && segments.contains(&target.destination)
+            && !segments.contains(&target.source);
+        if became_published {
+            payload.target.as_mut().expect("target checked above").phase = RepairTargetPhase::Published;
+            self.checkpoint(task, payload).await?;
+        }
+        if payload
+            .target
+            .as_ref()
+            .is_some_and(|target| target.phase == RepairTargetPhase::Published)
+        {
+            let destination = payload.target.as_ref().expect("target checked above").destination;
+            self.lifecycle
+                .confirm_tentative_segments(vec![destination])
+                .await?;
+            payload.target.as_mut().expect("target checked above").phase = RepairTargetPhase::Confirmed;
+            self.checkpoint(task, payload).await?;
+        }
+        Ok(())
     }
 
     async fn clear_marker(
@@ -389,6 +467,7 @@ fn payload_for_strip(
         repair_rack: !assessment.rack_protected,
         repair_node: !assessment.node_protected,
         repair_disk: !assessment.disk_protected,
+        target: None,
     })
 }
 
@@ -437,6 +516,14 @@ fn make_task(
 
 fn decode_payload(bytes: &[u8]) -> Result<PlacementRepairTaskPayload, PlacementRepairError> {
     serde_json::from_slice(bytes).map_err(|error| PlacementRepairError::Payload(error.to_string()))
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 fn placement_task_id(chunk_id: ChunkId, strip_sequence: u32) -> ChunkId {

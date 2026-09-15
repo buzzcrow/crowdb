@@ -21,6 +21,8 @@ pub struct PlacementRepairTaskPayload {
     pub repair_rack: bool,
     pub repair_node: bool,
     pub repair_disk: bool,
+    #[serde(default)]
+    pub target: Option<RepairTargetCheckpoint>,
 }
 
 /// Durable target state for one repair fragment.
