@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::cluster::{
-    seed_hardware, seed_hardware_layout_with_zones, ChunkdbHarness, DiskdbServer, KvCluster, DATA_GROUP_ID,
-    STORE_ID,
+    seed_hardware, seed_hardware_layout_from_disk_group, seed_hardware_layout_with_zones, ChunkdbHarness,
+    DiskdbServer, KvCluster, DATA_GROUP_ID, STORE_ID,
 };
 use crowdb_chunkdb::allocator::StripAllocType;
 use crowdb_chunkdb::conversion::io::ConversionDiskIo;
@@ -44,6 +44,7 @@ use crowdb_protocol::chunkdb::rpc::{
     StripReservationAction, StripReservationState, StripType,
 };
 use crowdb_protocol::common::ChunkId;
+use crowdb_test_harness::diskio::{DiskioGroup0Identity, DiskioProcess, DiskioStartOpts};
 
 fn max_fragment_count<K: Eq + Hash>(counts: &HashMap<K, u32>) -> u32 {
     *counts.values().max().expect("segment count")
@@ -136,6 +137,89 @@ async fn physical_ec_reports_the_two_rack_layout_truthfully() {
             assert!(assessment.max_fragments_per_rack > assessment.loss_budget);
         }
     }
+}
+
+#[tokio::test]
+async fn diskdb_refreshes_new_failure_domains_without_restart() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary not found");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    let mut disk_groups = seed_hardware_layout_with_zones(
+        &cluster.make_hardware_client(),
+        &[(100, vec![10, 11, 12, 13]), (101, vec![20, 21])],
+        32,
+    )
+    .await;
+    let diskdb = DiskdbServer::start_with_disk_groups_and_zones(&cluster, &disk_groups, 32).await;
+    let new_disk_groups =
+        seed_hardware_layout_from_disk_group(&cluster.make_hardware_client(), &[(102, vec![30])], 32, 2000)
+            .await;
+    disk_groups.extend_from_slice(&new_disk_groups);
+    diskdb
+        .refresh_disk_groups(&cluster, &new_disk_groups, &disk_groups, 32)
+        .await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while harness.topology.snapshot().healthy_disk_groups().len() < disk_groups.len() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "new topology was not published"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+#[tokio::test]
+async fn diskio_routes_cover_every_group_in_the_two_rack_fixture() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary not found");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    let disk_groups = seed_hardware_layout_with_zones(
+        &cluster.make_hardware_client(),
+        &[(100, vec![10, 11, 12, 13]), (101, vec![20, 21])],
+        32,
+    )
+    .await;
+    let _diskdb = DiskdbServer::start_with_disk_groups_and_zones(&cluster, &disk_groups, 32).await;
+    let layouts = [(100, 10), (100, 11), (100, 12), (100, 13), (101, 20), (101, 21)];
+    let mut diskio = Vec::new();
+    for ((disk_group_id, (rack_id, node_id)), instance_id) in disk_groups.iter().zip(layouts).zip(2_000_u64..)
+    {
+        diskio.push(DiskioProcess::start_for_group(
+            &DiskioStartOpts {
+                dummy_disk: "mem",
+                kv_seeds: &cluster.mgmt_endpoints,
+                disks: &[],
+                fault_error_rate: 0.0,
+                fault_latency_ms: None,
+                no_o_direct: false,
+            },
+            DiskioGroup0Identity {
+                instance_id,
+                rack_id,
+                node_id,
+                disk_group_id: *disk_group_id,
+            },
+        ));
+    }
+    let service = cluster.make_service_registry_client();
+    let hardware = cluster.make_hardware_client();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if ConversionDiskIo::connect(&service, &hardware).await.is_ok() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "DiskIO routes were not published"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(diskio.len(), disk_groups.len());
 }
 
 #[tokio::test]

@@ -113,6 +113,15 @@ pub struct DiskioStartOpts<'a> {
     pub no_o_direct: bool,
 }
 
+/// Group-0 identity advertised by one DiskIO process.
+#[derive(Clone, Copy, Debug)]
+pub struct DiskioGroup0Identity {
+    pub instance_id: u64,
+    pub rack_id: u64,
+    pub node_id: u64,
+    pub disk_group_id: u64,
+}
+
 /// A `--disk` argument: hex id + path + zone capacity bytes.
 #[derive(Clone)]
 pub struct DiskArg {
@@ -139,6 +148,19 @@ impl DiskioProcess {
 
     /// Start crowdb-diskio with the given options.
     pub fn start(opts: &DiskioStartOpts<'_>) -> Self {
+        Self::start_for_group(
+            opts,
+            DiskioGroup0Identity {
+                instance_id: INSTANCE_ID,
+                rack_id: RACK_ID,
+                node_id: NODE_ID,
+                disk_group_id: DG_ID,
+            },
+        )
+    }
+
+    /// Start a DiskIO process for one explicit group-0 disk-group owner.
+    pub fn start_for_group(opts: &DiskioStartOpts<'_>, identity: DiskioGroup0Identity) -> Self {
         let bin = crowdb_diskio_bin().unwrap_or_else(|| {
             panic!("crowdb-diskio binary not found; set CROWDB_DISKIO_BIN or build app/crowdb-diskio")
         });
@@ -193,13 +215,13 @@ impl DiskioProcess {
                 "--kv-seeds",
                 &seeds_arg,
                 "--instance-id",
-                &INSTANCE_ID.to_string(),
+                &identity.instance_id.to_string(),
                 "--rack-id",
-                &RACK_ID.to_string(),
+                &identity.rack_id.to_string(),
                 "--node-id",
-                &NODE_ID.to_string(),
+                &identity.node_id.to_string(),
                 "--dg-id",
-                &DG_ID.to_string(),
+                &identity.disk_group_id.to_string(),
                 "--sync-interval-ms",
                 "200",
                 "--auto-discover-disks",

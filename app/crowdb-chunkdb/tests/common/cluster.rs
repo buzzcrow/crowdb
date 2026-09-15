@@ -421,6 +421,16 @@ pub async fn seed_hardware_layout_with_zones(
     layout: &[(u64, Vec<u64>)],
     zone_count: u32,
 ) -> Vec<u64> {
+    seed_hardware_layout_from_disk_group(hw, layout, zone_count, 1000).await
+}
+
+/// Seed an additional layout using disk-group IDs beginning at `first_dg_id`.
+pub async fn seed_hardware_layout_from_disk_group(
+    hw: &HardwareClient,
+    layout: &[(u64, Vec<u64>)],
+    zone_count: u32,
+    first_dg_id: u64,
+) -> Vec<u64> {
     let capacity_units = ZONE_SIZE_UNITS.saturating_mul(u64::from(zone_count));
     let lease_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -432,7 +442,8 @@ pub async fn seed_hardware_layout_with_zones(
 
     let mut disk_groups = Vec::new();
     for (rack_id, node_ids) in layout {
-        let first_dg_id = 1000 + u64::try_from(disk_groups.len()).unwrap_or(u64::MAX);
+        let rack_first_dg_id =
+            first_dg_id.saturating_add(u64::try_from(disk_groups.len()).unwrap_or(u64::MAX));
 
         hw.add_rack(
             *rack_id,
@@ -445,7 +456,7 @@ pub async fn seed_hardware_layout_with_zones(
         .expect("add rack");
 
         for (node_offset, node_id) in node_ids.iter().enumerate() {
-            let dg_id = first_dg_id + u64::try_from(node_offset).unwrap_or(u64::MAX);
+            let dg_id = rack_first_dg_id.saturating_add(u64::try_from(node_offset).unwrap_or(u64::MAX));
             hw.add_node(
                 *rack_id,
                 *node_id,
@@ -628,6 +639,40 @@ impl DiskdbServer {
             rpc_endpoint,
             _serve_handle: None,
         }
+    }
+
+    /// Load newly assigned disk-groups into this running `DiskDB` instance and
+    /// republish its complete ownership list.
+    pub async fn refresh_disk_groups(
+        &self,
+        cluster: &KvCluster,
+        new_disk_group_ids: &[u64],
+        all_disk_group_ids: &[u64],
+        zone_count: u32,
+    ) {
+        let keepalive = KeepAlive::new(
+            cluster.make_hardware_client(),
+            cluster.make_service_registry_client(),
+            Arc::clone(&self.container),
+            KeepAliveConfig {
+                interval: Duration::from_secs(10),
+                miss_threshold: 3,
+                zone_rotate_count: zone_count,
+                cas_retry_limit: 100,
+                temp_failure_timeout_secs: 900,
+            },
+        )
+        .with_ddb_kv_client(DdbKvClient::from_shared(cluster.make_crowdb_client()));
+        let outcome = keepalive.tick().await;
+        assert_eq!(outcome.groups_added, new_disk_group_ids.len());
+        for disk_group_id in new_disk_group_ids {
+            wait_for_disks_ready(&self.container, *disk_group_id, 3, zone_count).await;
+        }
+        cluster
+            .make_service_registry_client()
+            .register_diskdb(INSTANCE_ID, &self.rpc_endpoint, all_disk_group_ids, &[])
+            .await
+            .expect("refresh DiskDB ownership");
     }
 }
 
