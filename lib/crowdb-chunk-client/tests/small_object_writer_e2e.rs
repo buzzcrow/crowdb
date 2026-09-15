@@ -976,6 +976,7 @@ async fn small_write_carry_does_not_underflow_queue_pressure() {
     configured.max_batch_bytes = 64 * KIB;
     configured.scale_out_queue_bytes = configured.memory_budget;
     configured.scale_out_queue_objects = configured.queue_capacity;
+    configured.conversion_enabled = false;
     let stack = E2eStack::start(configured).await;
 
     let completed = concurrent_writes(&stack, 64, 40 * KIB).await;

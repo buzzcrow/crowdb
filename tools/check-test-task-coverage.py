@@ -31,7 +31,6 @@ TASK_PACKAGES = {
 
 SUPPORT_PACKAGES = {
     "crowdb-test-harness": "test support library; covered by dependent package tests",
-    "crowdb-port-alloc": "E2E support binary; exercised by test-console-ui",
 }
 
 

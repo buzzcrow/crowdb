@@ -36,13 +36,30 @@ impl ProductionStreamRuntime {
         read_policy: ChunkReadPolicy,
         config: StreamConfig,
     ) -> Result<Self> {
+        Self::new_with_mirror_copies(kv, chunk_io, writer_lease_ms, read_policy, config, 3)
+    }
+
+    /// Builds the stream runtime with an explicit stream mirror count.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid writer lease, mirror count, read policy, or stream configuration.
+    pub fn new_with_mirror_copies(
+        kv: Arc<CrowdbKvClient>,
+        chunk_io: &ChunkIoClient,
+        writer_lease_ms: u64,
+        read_policy: ChunkReadPolicy,
+        config: StreamConfig,
+        mirror_copies: u32,
+    ) -> Result<Self> {
         config.validate()?;
         let (allocator, disk_writer) = chunk_io.storage_parts();
-        let chunks = Arc::new(ProductionStreamChunkStore::new(
+        let chunks = Arc::new(ProductionStreamChunkStore::new_with_mirror_copies(
             allocator,
             disk_writer,
             writer_lease_ms,
             read_policy,
+            mirror_copies,
         )?);
         Ok(Self {
             registry: Arc::new(KvStreamRegistry::new(Arc::clone(&kv))),

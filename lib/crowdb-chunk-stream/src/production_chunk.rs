@@ -39,6 +39,7 @@ pub struct ProductionStreamChunkStore {
     disk_writer: Arc<dyn DiskWriter>,
     reader: ChunkReader,
     writer_lease_ms: u64,
+    mirror_copies: u32,
     chunks: SkipMap<(u64, u64), Arc<ChunkStateView>>,
 }
 
@@ -54,7 +55,22 @@ impl ProductionStreamChunkStore {
         writer_lease_ms: u64,
         read_policy: ChunkReadPolicy,
     ) -> Result<Self> {
-        if writer_lease_ms == 0 {
+        Self::new_with_mirror_copies(allocator, disk_writer, writer_lease_ms, read_policy, 3)
+    }
+
+    /// Creates a production adapter with an explicit stream mirror count.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid lease, mirror count, or read policy.
+    pub fn new_with_mirror_copies(
+        allocator: Arc<dyn ChunkAllocator>,
+        disk_writer: Arc<dyn DiskWriter>,
+        writer_lease_ms: u64,
+        read_policy: ChunkReadPolicy,
+        mirror_copies: u32,
+    ) -> Result<Self> {
+        if writer_lease_ms == 0 || mirror_copies == 0 {
             return Err(StreamError::InvalidRequest(
                 "stream chunk writer lease must be nonzero".into(),
             ));
@@ -66,6 +82,7 @@ impl ProductionStreamChunkStore {
             disk_writer,
             reader,
             writer_lease_ms,
+            mirror_copies,
             chunks: SkipMap::new(),
         })
     }
@@ -115,12 +132,13 @@ impl StreamChunkStore for ProductionStreamChunkStore {
         stream_name: StreamName,
         writer_epoch: u64,
     ) -> Result<ActiveChunkDescriptor> {
-        let writer = MirrorChunkWriter::allocate(
+        let writer = MirrorChunkWriter::allocate_with_copy_count(
             Arc::clone(&self.allocator),
             Arc::clone(&self.disk_writer),
             stream_name,
             writer_epoch,
             self.writer_lease_ms,
+            self.mirror_copies,
         )
         .await
         .map_err(io_error)?;
@@ -162,9 +180,9 @@ impl StreamChunkStore for ProductionStreamChunkStore {
                 "stream chunk strip is not mirrored".into(),
             ));
         };
-        if mirror.segments.len() != 3 {
+        if mirror.segments.len() != self.mirror_copies as usize {
             return Err(StreamError::Corruption(
-                "stream chunk does not have three mirrors".into(),
+                "stream chunk mirror count differs from configuration".into(),
             ));
         }
         let unit_bytes = u64::from(strip.unit_kb) * 1024;

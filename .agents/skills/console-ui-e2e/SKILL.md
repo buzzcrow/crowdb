@@ -53,7 +53,7 @@ does not need that reference.
 ## Run
 
 ```sh
-pixi run cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-port-alloc
+pixi run cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-cli
 pixi run bash -c 'export CROWDB_KV_SERVER_BINARY=$(pwd)/target/debug/crowdb-kv-server \
   && cd app/crowdb-web/ui \
   && npx playwright test --config=e2e/realBackend.config.ts e2e/flows/NN-<area>-<fn>.spec.ts'

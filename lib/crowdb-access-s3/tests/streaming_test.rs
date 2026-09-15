@@ -1,0 +1,187 @@
+// Copyright 2026-present Gian <crow.db@outlook.com>
+// Licensed under the Apache License, Version 2.0.
+
+use std::collections::VecDeque;
+use std::convert::Infallible;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::{Context, Poll};
+
+use async_trait::async_trait;
+use crowdb_access_s3::metadata::{BucketId, ObjectRecord};
+use crowdb_access_s3::streaming::{
+    attach_completed_locations, cleanup_after_definite_error, write_body, FailedPublicationCleanup,
+    FailedPublicationTarget, PutErrorCode, PutOutcome,
+};
+use crowdb_chunk_client::{ChunkIoWriter, FeedStatus, IoError};
+use crowdb_protocol::chunkdb::rpc::Location;
+use hyper::body::{Body, Bytes, Frame, SizeHint};
+
+#[test]
+fn completed_locations_become_the_object_data_reference() {
+    let mut object = ObjectRecord {
+        bucket_id: BucketId::new([1; 16]),
+        key: b"key".to_vec(),
+        logical_length: 3,
+        checksum: b"sum".to_vec(),
+        etag: "etag".into(),
+        created_at_ms: 1,
+        modified_at_ms: 1,
+        content_type: "application/octet-stream".into(),
+        attributes: Vec::new(),
+        data_reference: Vec::new(),
+        data_length: 3,
+    };
+    let locations = vec![Location {
+        offset: 4,
+        length: 3,
+        logical_offset: 0,
+        logical_length: 3,
+        ..Location::default()
+    }];
+    attach_completed_locations(&mut object, &locations).expect("locations encode");
+    assert_eq!(
+        bincode::deserialize::<Vec<Location>>(&object.data_reference).expect("locations decode"),
+        locations
+    );
+}
+
+#[derive(Default)]
+struct TestCleanup(AtomicUsize);
+
+#[async_trait]
+impl FailedPublicationCleanup for TestCleanup {
+    async fn cleanup(&self, _targets: &[FailedPublicationTarget]) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[tokio::test]
+async fn only_definite_errors_run_cleanup() {
+    let cleanup = TestCleanup::default();
+    let cleanup_targets = vec![FailedPublicationTarget::SharedRange(Location::default())];
+    let error = PutOutcome::Error {
+        code: PutErrorCode::KvRejected,
+        message: "rejected".into(),
+    };
+    assert!(matches!(
+        cleanup_after_definite_error(error, &cleanup_targets, &cleanup).await,
+        PutOutcome::Error { .. }
+    ));
+    assert_eq!(cleanup.0.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        cleanup_after_definite_error(PutOutcome::Timeout, &cleanup_targets, &cleanup).await,
+        PutOutcome::Timeout
+    );
+    assert_eq!(cleanup.0.load(Ordering::Relaxed), 1);
+}
+
+struct TestBody {
+    frames: VecDeque<Bytes>,
+    polls: AtomicUsize,
+}
+
+impl Body for TestBody {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        _context: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        self.polls.fetch_add(1, Ordering::Relaxed);
+        Poll::Ready(self.frames.pop_front().map(|data| Ok(Frame::data(data))))
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.frames.is_empty()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::default()
+    }
+}
+
+#[derive(Default)]
+struct RejectingWriter(AtomicUsize);
+
+#[async_trait]
+impl ChunkIoWriter for RejectingWriter {
+    async fn on_data(&mut self, _buffer: Bytes) -> crowdb_chunk_client::Result<FeedStatus> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Err(IoError::WriteFailed("injected writer failure".into()))
+    }
+
+    async fn on_finish(&mut self) -> crowdb_chunk_client::Result<Vec<Location>> {
+        Ok(Vec::new())
+    }
+
+    async fn on_error(&mut self) -> crowdb_chunk_client::Result<Vec<Location>> {
+        Ok(Vec::new())
+    }
+
+    fn require_data(&self) -> bool {
+        true
+    }
+}
+
+#[derive(Default)]
+struct LengthBoundWriter {
+    frames: AtomicUsize,
+}
+
+#[async_trait]
+impl ChunkIoWriter for LengthBoundWriter {
+    async fn on_data(&mut self, _buffer: Bytes) -> crowdb_chunk_client::Result<FeedStatus> {
+        self.frames.fetch_add(1, Ordering::Relaxed);
+        Ok(FeedStatus::Pause)
+    }
+
+    async fn on_finish(&mut self) -> crowdb_chunk_client::Result<Vec<Location>> {
+        Ok(Vec::new())
+    }
+
+    async fn on_error(&mut self) -> crowdb_chunk_client::Result<Vec<Location>> {
+        Ok(Vec::new())
+    }
+
+    fn require_data(&self) -> bool {
+        self.frames.load(Ordering::Relaxed) == 0
+    }
+
+    fn input_complete(&self) -> bool {
+        self.frames.load(Ordering::Relaxed) == 1
+    }
+}
+
+#[tokio::test]
+async fn writer_error_stops_body_polling_before_the_next_frame() {
+    let mut body = TestBody {
+        frames: VecDeque::from([Bytes::from_static(b"first"), Bytes::from_static(b"second")]),
+        polls: AtomicUsize::new(0),
+    };
+    let mut writer = RejectingWriter::default();
+
+    assert!(matches!(
+        write_body(&mut body, &mut writer).await,
+        Err(PutOutcome::Error {
+            code: PutErrorCode::ChunkWrite,
+            ..
+        })
+    ));
+    assert_eq!(writer.0.load(Ordering::Relaxed), 1);
+    assert_eq!(body.polls.load(Ordering::Relaxed), 1);
+    assert_eq!(body.frames.len(), 1);
+}
+
+#[tokio::test]
+async fn declared_length_completion_does_not_poll_for_an_extra_body_frame() {
+    let mut body = TestBody {
+        frames: VecDeque::from([Bytes::from_static(b"only"), Bytes::from_static(b"unexpected")]),
+        polls: AtomicUsize::new(0),
+    };
+    let mut writer = LengthBoundWriter::default();
+
+    write_body(&mut body, &mut writer).await.expect("body accepted");
+    assert_eq!(body.polls.load(Ordering::Relaxed), 1);
+}

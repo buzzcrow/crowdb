@@ -56,9 +56,26 @@ pub struct ChunkdbProcess {
     pub log_path: std::path::PathBuf,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub enum ChunkdbPlacementMode {
+    #[default]
+    Protected,
+    UnsafeColocated,
+}
+
+impl ChunkdbPlacementMode {
+    fn as_config(self) -> &'static str {
+        match self {
+            Self::Protected => "protected",
+            Self::UnsafeColocated => "unsafe_colocated",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct ChunkdbStartOptions {
+    pub placement_mode: ChunkdbPlacementMode,
     pub allow_unsafe_ec: bool,
     pub allow_degraded_failure_domains: bool,
     pub conversion_enabled: bool,
@@ -76,6 +93,7 @@ pub struct ChunkdbStartOptions {
 impl Default for ChunkdbStartOptions {
     fn default() -> Self {
         Self {
+            placement_mode: ChunkdbPlacementMode::Protected,
             allow_unsafe_ec: false,
             allow_degraded_failure_domains: false,
             conversion_enabled: false,
@@ -156,6 +174,7 @@ refresh_interval_secs = 2
 allow_all_when_empty = true
 
 [placement]
+mode = "{placement_mode}"
 allow_unsafe_ec = {allow_unsafe_ec}
 allow_degraded_failure_domains = {allow_degraded_failure_domains}
 
@@ -182,6 +201,7 @@ cache_capacity = 1000
 sweep_chunk_lock_interval_secs = 10
 lock_hold_warn_threshold_ms = 1000
 "#,
+            placement_mode = options.placement_mode.as_config(),
             allow_unsafe_ec = options.allow_unsafe_ec,
             allow_degraded_failure_domains = options.allow_degraded_failure_domains,
             conversion_enabled = options.conversion_enabled,

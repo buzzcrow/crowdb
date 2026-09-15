@@ -53,7 +53,6 @@ package from silently disappearing from CI.
 The only allowlisted support packages are:
 
 - `crowdb-test-harness`: support library covered through dependent package tests.
-- `crowdb-port-alloc`: E2E support binary exercised by `test-console-ui`.
 
 A new test folder inside an assigned package needs no CI mapping change because
 the component task uses `cargo test -p <package> --all-targets`. A new workspace

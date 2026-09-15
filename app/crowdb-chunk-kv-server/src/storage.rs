@@ -73,8 +73,30 @@ impl ChunkKvStorage {
             chunk_io,
             config.storage.metadata_store_id,
             config.storage.stream_writer_lease_ms,
+            config.storage.stream_mirror_copies,
         )
         .await
+    }
+
+    async fn from_parts_with_mirror_copies(
+        kv: Arc<CrowdbKvClient>,
+        chunk_io: ChunkIoClient,
+        metadata_store_id: u64,
+        writer_lease_ms: u64,
+        stream_mirror_copies: u32,
+    ) -> Result<Self, StorageRuntimeError> {
+        let streams = Arc::new(
+            ProductionStreamRuntime::new_with_mirror_copies(
+                Arc::clone(&kv),
+                &chunk_io,
+                writer_lease_ms,
+                ChunkReadPolicy::default(),
+                StreamConfig::default(),
+                stream_mirror_copies,
+            )
+            .map_err(|error| StorageRuntimeError::Stream(error.to_string()))?,
+        );
+        Self::assemble(kv, chunk_io, streams, metadata_store_id, writer_lease_ms).await
     }
 
     /// Assembles production adapters from already connected process clients.
@@ -87,17 +109,25 @@ impl ChunkKvStorage {
         chunk_io: ChunkIoClient,
         metadata_store_id: u64,
         writer_lease_ms: u64,
+        stream_mirror_copies: u32,
     ) -> Result<Self, StorageRuntimeError> {
-        let streams = Arc::new(
-            ProductionStreamRuntime::new(
-                Arc::clone(&kv),
-                &chunk_io,
-                writer_lease_ms,
-                ChunkReadPolicy::default(),
-                StreamConfig::default(),
-            )
-            .map_err(|error| StorageRuntimeError::Stream(error.to_string()))?,
-        );
+        Self::from_parts_with_mirror_copies(
+            kv,
+            chunk_io,
+            metadata_store_id,
+            writer_lease_ms,
+            stream_mirror_copies,
+        )
+        .await
+    }
+
+    async fn assemble(
+        kv: Arc<CrowdbKvClient>,
+        chunk_io: ChunkIoClient,
+        streams: Arc<ProductionStreamRuntime>,
+        metadata_store_id: u64,
+        writer_lease_ms: u64,
+    ) -> Result<Self, StorageRuntimeError> {
         let (chunkdb, disks) = chunk_io
             .native_storage_routes()
             .await

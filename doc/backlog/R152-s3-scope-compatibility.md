@@ -21,18 +21,24 @@ maintenance is defined in `doc/dev/hyper_fork.md`.
    `app/crowdb-access-server` process. The S3 library owns S3 request types,
    routing, metadata rules, errors, and metrics; it does not implement a common
    object-store trait for Catalog or Dataset.
-2. Add the `third-party/hyper` submodule from `buzzcrow/hyper`, pin one reviewed
-   commit, and integrate it through the workspace path and crates.io patch
-   rules in `Cargo.toml`. Enable only the fork features required by the HTTP/1
-   server. Normal builds must compile the pinned source without network access.
+2. Add the `third-party/hyper` submodule from `buzzcrow/hyper`, pin
+   `feature-crowdb` commit `c6dca2078ce223050dc0832be7c9ab07baa6c4bf`, and
+   integrate it through the workspace path and crates.io patch rules in
+   `Cargo.toml`. The branch is provenance only; the gitlink SHA is the build
+   input. Enable only the fork features required by the HTTP/1 server. Normal
+   builds must compile the pinned source without network access.
 3. Define the first compatibility surface as `CreateBucket`, `HeadBucket`,
    `ListBuckets`, empty-only `DeleteBucket`, `PutObject`, `HeadObject`,
    `GetObject`, one contiguous byte range, `ListObjectsV2`, and `DeleteObject`.
    Reject a non-empty bucket deletion without changing the namespace.
 4. Explicitly exclude multipart upload, versioning, lifecycle, replication
    controls, server-side encryption, storage classes, object lock, tagging,
-   website hosting, notifications, and S3 Select. Unsupported features return
-   the stable error contract supplied by R163 and are never silently ignored.
+   website hosting, notifications, and S3 Select. From the first release,
+   unsupported operations return HTTP 501 with the standard S3 XML `Error`
+   shape, `Code` `NotImplemented`, and message `A header you provided implies
+   functionality that is not implemented.` R163 extends this baseline for all
+   error classes and is never permitted to change it. Unsupported operations
+   are never silently ignored.
 5. Keep S3, Catalog, Dataset, and optional transfer extensions in independent
    libraries. The access-server loads only compiled and configured libraries;
    disabling S3 registers no listener, task, pool, or route. Basic S3 contains
@@ -43,6 +49,14 @@ maintenance is defined in `doc/dev/hyper_fork.md`.
    the authentication hook now, but until R162 lands permit bypass only through
    an explicit unauthenticated trusted-network mode with a startup warning and
    request metric.
+7. Store bucket-name mappings under a dedicated tenant bucket-key prefix in
+   Chunk-KV so `ListBuckets` is one bounded prefix scan. Allocate a random UUID
+   for every bucket generation; UUID collision probability is accepted for the
+   initial service and IDs are never deliberately reused.
+8. Treat the access-server configuration as the initial secret authority. It
+   supplies one cluster master key used to encrypt group-0 user credentials
+   and continuation-token keys. Key rotation, KMS integration, and hardened
+   secret provisioning are later security work, not blockers for basic S3.
 
 ## Dependencies
 
@@ -60,8 +74,9 @@ maintenance is defined in `doc/dev/hyper_fork.md`.
   declared operations. Invariant: the initial public surface is
   explicit and finite. Integration test.
 - Given any excluded S3 feature or operation, when a request selects it, assert
-  the server returns a stable unsupported response and performs no metadata or
-  chunk mutation. Invariant: unsupported behavior is never accepted silently.
+  the server returns the standard `NotImplemented` HTTP 501 XML response and
+  performs no metadata or chunk mutation. Invariant: unsupported behavior is
+  never accepted silently.
   Integration test.
 - Given the service is configured before R162, when trusted-network bypass is
   disabled or enabled, assert startup respectively rejects missing
@@ -86,5 +101,5 @@ Required gates:
 - `pixi run -- cargo test -p crowdb-access-s3 --all-targets`
 - `pixi run -- cargo test -p crowdb-access-server --all-targets`
 - `pixi run -- cargo tree -d`
-- `pixi run -- cargo fmt --all -- --check`
+- `pixi run rs-fmt-check`
 - `pixi run rs-lint`

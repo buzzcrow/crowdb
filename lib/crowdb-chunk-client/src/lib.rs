@@ -56,7 +56,7 @@ pub use metrics::{ChunkClientMetrics, LargeWriteRepairMetricsSnapshot, SmallWrit
 pub use negative_list::FailedDiskList;
 pub use traits::ChunkAllocator;
 pub use worker::{EcWorker, HashWorker};
-pub use writer::{LargeAsyncObjectWriter, LargeObjectWriter, PooledWriter, SmallObjectWriter, WriterPool};
+pub use writer::{LargeAsyncObjectWriter, LargeObjectWriter, PooledWriter, SharedObjectWriter, WriterPool};
 
 // Re-export key protocol types for convenience.
 pub use crowdb_protocol::chunkdb::rpc::Location as ProtoLocation;

@@ -153,6 +153,27 @@ impl Group0ControlPlane {
             .map(|write| write.chosen_slot)
     }
 
+    /// Put a set of control-plane values in one Paxos mutation.
+    ///
+    /// This is used for tables whose readers require a complete snapshot: a
+    /// leader publishes the whole changed table atomically instead of exposing
+    /// a partially populated prefix while individual keys are being written.
+    ///
+    /// # Errors
+    ///
+    /// Returns a leadership, admission, or Paxos error.
+    pub async fn put_batch(&self, entries: Vec<(Bytes, Bytes)>) -> Result<u64, KvGroupOperationError> {
+        let identity = self.next_identity()?;
+        let mutations: Vec<_> = entries
+            .into_iter()
+            .map(|(key, value)| KvGroupMutation::Put { key, value })
+            .collect();
+        self.operations
+            .write(&mutations, Some(identity))
+            .await
+            .map(|write| write.chosen_slot)
+    }
+
     /// Delete a value only when the key has `expected_revision`.
     ///
     /// # Errors

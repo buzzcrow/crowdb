@@ -10,7 +10,7 @@ use std::time::Instant;
 use arc_swap::ArcSwap;
 use bytes::Bytes;
 use crowdb_protocol::chunkdb::rpc::Location;
-use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, oneshot, Notify, Semaphore};
 
 use crate::config::SmallWritePolicy;
 use crate::metrics::SmallWriteMetrics;
@@ -20,41 +20,67 @@ use crate::{ChunkAllocator, DiskWriter, IoError, Result};
 use super::small_manager::{self, ManagerCommand};
 
 pub(crate) struct PendingObject {
+    pub route_hash: u64,
+    pub route: Arc<PipelineRoute>,
     pub fragments: Vec<Bytes>,
     pub len: usize,
     pub enqueued_at: Instant,
     pub completion: oneshot::Sender<Result<Vec<Location>>>,
-    pub _reservation: ByteReservation,
+    pub charge: RouteCharge,
 }
 
-pub(crate) struct ByteReservation {
-    _permit: OwnedSemaphorePermit,
+/// Retained bytes owned by one request while it moves handler -> queue -> worker.
+/// The same charge moves with the fragments, so that transfer never double-counts.
+pub(crate) struct RouteCharge {
+    route: Arc<PipelineRoute>,
     metrics: Arc<SmallWriteMetrics>,
     bytes: u64,
 }
 
-impl ByteReservation {
-    fn new(permit: OwnedSemaphorePermit, metrics: Arc<SmallWriteMetrics>, bytes: usize) -> Self {
-        let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
-        metrics.reserved_bytes.fetch_add(bytes, Ordering::Relaxed);
+impl RouteCharge {
+    pub fn new(route: Arc<PipelineRoute>, metrics: Arc<SmallWriteMetrics>) -> Self {
         Self {
-            _permit: permit,
+            route,
             metrics,
-            bytes,
+            bytes: 0,
         }
+    }
+
+    pub fn add(&mut self, bytes: usize) {
+        let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.route.used_bytes.fetch_add(bytes, Ordering::Relaxed);
+        self.metrics.reserved_bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    fn rebind(&mut self, route: Arc<PipelineRoute>) {
+        if Arc::ptr_eq(&self.route, &route) {
+            return;
+        }
+        self.route.used_bytes.fetch_sub(self.bytes, Ordering::Release);
+        self.route.capacity_changed.notify_waiters();
+        route.used_bytes.fetch_add(self.bytes, Ordering::Relaxed);
+        self.route = route;
     }
 }
 
-impl Drop for ByteReservation {
+impl Drop for RouteCharge {
     fn drop(&mut self) {
-        self.metrics
-            .reserved_bytes
-            .fetch_sub(self.bytes, Ordering::Relaxed);
+        if self.bytes != 0 {
+            self.route.used_bytes.fetch_sub(self.bytes, Ordering::Release);
+            self.metrics
+                .reserved_bytes
+                .fetch_sub(self.bytes, Ordering::Relaxed);
+            self.route.capacity_changed.notify_waiters();
+        }
     }
 }
 
 pub(crate) struct PipelineRoute {
     pub sender: mpsc::Sender<PendingObject>,
+    pub used_bytes: AtomicU64,
+    pub capacity_bytes: u64,
+    pub capacity_changed: Notify,
     pub queued_bytes: AtomicU64,
     pub queued_objects: AtomicU64,
     pub last_active_ms: AtomicU64,
@@ -63,9 +89,17 @@ pub(crate) struct PipelineRoute {
 }
 
 impl PipelineRoute {
-    pub fn new(sender: mpsc::Sender<PendingObject>, now_ms: u64, conversion_active: Arc<AtomicBool>) -> Self {
+    pub fn new(
+        sender: mpsc::Sender<PendingObject>,
+        now_ms: u64,
+        conversion_active: Arc<AtomicBool>,
+        capacity_bytes: usize,
+    ) -> Self {
         Self {
             sender,
+            used_bytes: AtomicU64::new(0),
+            capacity_bytes: u64::try_from(capacity_bytes).unwrap_or(u64::MAX),
+            capacity_changed: Notify::new(),
             queued_bytes: AtomicU64::new(0),
             queued_objects: AtomicU64::new(0),
             last_active_ms: AtomicU64::new(now_ms),
@@ -88,6 +122,10 @@ impl PipelineRoute {
         self.rejected(bytes);
         self.last_active_ms.store(now_ms, Ordering::Relaxed);
     }
+
+    pub fn has_capacity(&self) -> bool {
+        self.used_bytes.load(Ordering::Acquire) < self.capacity_bytes
+    }
 }
 
 pub(crate) struct SmallPoolRuntime {
@@ -101,12 +139,15 @@ pub(crate) struct SmallPoolRuntime {
     pub route_nonce: AtomicU64,
     pub manager_tx: mpsc::UnboundedSender<ManagerCommand>,
     pub failed_disks: Arc<FailedDiskList>,
-    pub(crate) budget: Arc<Semaphore>,
     pub(crate) conversion_budget: Arc<Semaphore>,
     pub(crate) conversion_active: Arc<AtomicBool>,
 }
 
 impl SmallPoolRuntime {
+    pub fn route_for_hash(&self, hash: u64) -> Option<Arc<PipelineRoute>> {
+        let routes = self.routes.load_full();
+        (!routes.is_empty()).then(|| choose_route(&routes, hash))
+    }
     pub fn now_ms(&self) -> u64 {
         u64::try_from(self.origin.elapsed().as_millis()).unwrap_or(u64::MAX)
     }
@@ -119,25 +160,6 @@ impl SmallPoolRuntime {
             .fetch_max(routes.len() as u64, Ordering::Relaxed);
     }
 
-    pub async fn reserve(self: &Arc<Self>, bytes: usize) -> Result<ByteReservation> {
-        if self.closed.load(Ordering::Acquire) {
-            return Err(IoError::Finished);
-        }
-        let permits = u32::try_from(bytes).map_err(|_| IoError::ObjectTooLarge {
-            size: bytes,
-            limit: self.policy.object_limit,
-        })?;
-        let permit = Arc::clone(&self.budget)
-            .acquire_many_owned(permits)
-            .await
-            .map_err(|_| IoError::Finished)?;
-        if self.closed.load(Ordering::Acquire) {
-            drop(permit);
-            return Err(IoError::Finished);
-        }
-        Ok(ByteReservation::new(permit, Arc::clone(&self.metrics), bytes))
-    }
-
     pub async fn submit(&self, mut object: PendingObject) -> Result<()> {
         loop {
             if self.closed.load(Ordering::Acquire) {
@@ -148,7 +170,7 @@ impl SmallPoolRuntime {
                 tokio::task::yield_now().await;
                 continue;
             }
-            let route = choose_route(&routes, self.route_nonce.fetch_add(1, Ordering::Relaxed));
+            let route = Arc::clone(&object.route);
             route.accepted(object.len);
             match route.sender.try_send(object) {
                 Ok(()) => {
@@ -156,32 +178,27 @@ impl SmallPoolRuntime {
                     return Ok(());
                 }
                 Err(error) => {
+                    let closed = matches!(&error, mpsc::error::TrySendError::Closed(_));
                     object = error.into_inner();
                     route.rejected(object.len);
-                    tokio::task::yield_now().await;
+                    if closed {
+                        let replacement = choose_route(&routes, object.route_hash);
+                        object.charge.rebind(Arc::clone(&replacement));
+                        object.route = replacement;
+                    }
+                    let notified = route.capacity_changed.notified();
+                    tokio::select! {
+                        () = notified => {},
+                        () = tokio::time::sleep(self.policy.control_interval) => {},
+                    }
                 }
             }
         }
     }
 }
 
-fn choose_route(routes: &[Arc<PipelineRoute>], nonce: u64) -> Arc<PipelineRoute> {
-    if routes.len() == 1 {
-        return Arc::clone(&routes[0]);
-    }
-    let first = nonce as usize % routes.len();
-    let mixed = nonce.wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(17);
-    let mut second = mixed as usize % routes.len();
-    if second == first {
-        second = (second + 1) % routes.len();
-    }
-    let a = &routes[first];
-    let b = &routes[second];
-    if a.queued_bytes.load(Ordering::Relaxed) <= b.queued_bytes.load(Ordering::Relaxed) {
-        Arc::clone(a)
-    } else {
-        Arc::clone(b)
-    }
+fn choose_route(routes: &[Arc<PipelineRoute>], hash: u64) -> Arc<PipelineRoute> {
+    Arc::clone(&routes[hash as usize % routes.len()])
 }
 
 pub(crate) struct SmallWritePool {
@@ -219,16 +236,14 @@ impl SmallWritePool {
             .map(Arc::clone)
     }
 
-    pub async fn reserve(self: &Arc<Self>, bytes: usize) -> Result<(Arc<SmallPoolRuntime>, ByteReservation)> {
+    pub async fn prepare(self: &Arc<Self>, bytes: usize) -> Result<Arc<SmallPoolRuntime>> {
         if bytes > self.policy.object_limit || bytes > self.policy.memory_budget {
             return Err(IoError::ObjectTooLarge {
                 size: bytes,
                 limit: self.policy.object_limit.min(self.policy.memory_budget),
             });
         }
-        let runtime = self.runtime().await?;
-        let reservation = runtime.reserve(bytes).await?;
-        Ok((runtime, reservation))
+        self.runtime().await
     }
 
     pub async fn shutdown(&self) -> Result<()> {
@@ -238,7 +253,6 @@ impl SmallWritePool {
         if runtime.closed.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
-        runtime.budget.close();
         let (done_tx, done_rx) = oneshot::channel();
         runtime
             .manager_tx
@@ -258,7 +272,6 @@ impl Drop for SmallWritePool {
         if runtime.closed.swap(true, Ordering::AcqRel) {
             return;
         }
-        runtime.budget.close();
         let (done, _completion) = oneshot::channel();
         let _ = runtime.manager_tx.send(ManagerCommand::Shutdown(done));
     }

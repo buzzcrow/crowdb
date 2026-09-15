@@ -1064,6 +1064,7 @@ fn check_ret_code(code: FBChunkdbRetCode, error_msg: Option<&str>) -> Result<()>
         FBChunkdbRetCode::Internal => Err(ChunkdbClientError::Internal(msg)),
         FBChunkdbRetCode::Unavailable => Err(ChunkdbClientError::Unavailable(msg)),
         FBChunkdbRetCode::NotMyRange => Err(ChunkdbClientError::NotMyRange(msg)),
+        FBChunkdbRetCode::Unimplemented => Err(ChunkdbClientError::Unimplemented(msg)),
         _ => Err(ChunkdbClientError::Internal(format!(
             "unknown ret_code {code:?}: {msg}"
         ))),

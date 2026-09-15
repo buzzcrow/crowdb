@@ -275,7 +275,18 @@ impl DiskioProcess {
         server: &RpcServer,
         conn: &crowdb_rpc_ffi::Connection,
     ) {
-        let test_disk = DioDiskId::new(0, 1);
+        self.wait_for_disk(dio_client, server, conn, DioDiskId::new(0, 1))
+            .await;
+    }
+
+    /// Wait for one expected disk to become writable after group-0 discovery.
+    pub async fn wait_for_disk(
+        &self,
+        dio_client: &DiskioClient,
+        server: &RpcServer,
+        conn: &crowdb_rpc_ffi::Connection,
+        test_disk: DioDiskId,
+    ) {
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         loop {
             let write_result = dio_client.write(server, conn, test_disk, 0, 0, vec![0xAB; 4096]);

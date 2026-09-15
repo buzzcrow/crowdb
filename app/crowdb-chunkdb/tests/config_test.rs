@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_chunkdb::chunkdb_config::ChunkdbConfig;
+use crowdb_chunkdb::chunkdb_config::{ChunkdbConfig, PlacementMode};
 use crowdb_chunkdb::selector::FailureDomainPriority;
 use crowdb_common::config::BaseConfig;
 
@@ -52,6 +52,16 @@ fn placement_policy_parses_both_priorities() {
         FailureDomainPriority::NodeFirst
     );
     assert!(!node.placement.allow_degraded_failure_domains);
+}
+
+#[test]
+fn unsafe_colocated_placement_mode_is_explicit() {
+    let protected: ChunkdbConfig = toml::from_str("").expect("defaults parse");
+    assert_eq!(protected.placement.mode, PlacementMode::Protected);
+
+    let colocated: ChunkdbConfig =
+        toml::from_str("[placement]\nmode = \"unsafe_colocated\"\n").expect("mode parses");
+    assert_eq!(colocated.placement.mode, PlacementMode::UnsafeColocated);
 }
 
 #[test]

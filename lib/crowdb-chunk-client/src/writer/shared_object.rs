@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! One declared small object retained under a whole-object reservation.
+//! One object retained for the shared-chunk aggregation path.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -13,28 +13,34 @@ use tokio::sync::oneshot;
 use crate::io::{ChunkIoWriter, FeedStatus};
 use crate::{IoError, Result};
 
-use super::small_pool::{ByteReservation, PendingObject, SmallPoolRuntime};
+use super::small_pool::{PendingObject, PipelineRoute, RouteCharge, SmallPoolRuntime};
 
 /// A single-use object handle backed by the client's shared small-write pool.
-pub struct SmallObjectWriter {
+pub struct SharedObjectWriter {
     runtime: Option<Arc<SmallPoolRuntime>>,
-    reservation: Option<ByteReservation>,
+    charge: Option<RouteCharge>,
     declared_size: usize,
+    route_hash: u64,
+    route: Option<Arc<PipelineRoute>>,
     retained_size: usize,
     fragments: Vec<Bytes>,
     finished: bool,
 }
 
-impl SmallObjectWriter {
+impl SharedObjectWriter {
     pub(crate) fn new(
         runtime: Arc<SmallPoolRuntime>,
         declared_size: usize,
-        reservation: ByteReservation,
+        route: Arc<PipelineRoute>,
+        route_hash: u64,
     ) -> Self {
+        let charge = RouteCharge::new(Arc::clone(&route), Arc::clone(&runtime.metrics));
         Self {
             runtime: Some(runtime),
-            reservation: Some(reservation),
+            charge: Some(charge),
             declared_size,
+            route_hash,
+            route: Some(route),
             retained_size: 0,
             fragments: Vec::new(),
             finished: false,
@@ -44,8 +50,10 @@ impl SmallObjectWriter {
     pub(crate) fn empty() -> Self {
         Self {
             runtime: None,
-            reservation: None,
+            charge: None,
             declared_size: 0,
+            route_hash: 0,
+            route: None,
             retained_size: 0,
             fragments: Vec::new(),
             finished: false,
@@ -63,7 +71,7 @@ impl SmallObjectWriter {
     fn fail_size(&mut self, actual: usize) -> IoError {
         self.finished = true;
         self.fragments.clear();
-        self.reservation.take();
+        self.charge.take();
         IoError::ObjectSizeMismatch {
             declared: self.declared_size,
             actual,
@@ -72,7 +80,7 @@ impl SmallObjectWriter {
 }
 
 #[async_trait::async_trait]
-impl ChunkIoWriter for SmallObjectWriter {
+impl ChunkIoWriter for SharedObjectWriter {
     async fn on_data(&mut self, buffer: Bytes) -> Result<FeedStatus> {
         self.ensure_open()?;
         let actual = self.retained_size.saturating_add(buffer.len());
@@ -80,6 +88,10 @@ impl ChunkIoWriter for SmallObjectWriter {
             return Err(self.fail_size(actual));
         }
         self.retained_size = actual;
+        self.charge
+            .as_mut()
+            .ok_or_else(|| IoError::Internal("shared writer missing route charge".into()))?
+            .add(buffer.len());
         self.fragments.push(buffer);
         Ok(if self.retained_size == self.declared_size {
             FeedStatus::Pause
@@ -101,17 +113,22 @@ impl ChunkIoWriter for SmallObjectWriter {
             .runtime
             .take()
             .ok_or_else(|| IoError::Internal("small writer missing shared pool".into()))?;
-        let reservation = self
-            .reservation
+        let charge = self
+            .charge
             .take()
-            .ok_or_else(|| IoError::Internal("small writer missing reservation".into()))?;
+            .ok_or_else(|| IoError::Internal("small writer missing route charge".into()))?;
         let (completion, result) = oneshot::channel();
         let object = PendingObject {
+            route_hash: self.route_hash,
+            route: self
+                .route
+                .take()
+                .ok_or_else(|| IoError::Internal("shared writer missing route".into()))?,
             fragments: std::mem::take(&mut self.fragments),
             len: self.declared_size,
             enqueued_at: Instant::now(),
             completion,
-            _reservation: reservation,
+            charge,
         };
         runtime.submit(object).await?;
         result
@@ -123,11 +140,31 @@ impl ChunkIoWriter for SmallObjectWriter {
         self.ensure_open()?;
         self.finished = true;
         self.fragments.clear();
-        self.reservation.take();
+        self.charge.take();
         Ok(Vec::new())
     }
 
     fn require_data(&self) -> bool {
-        !self.finished && self.retained_size < self.declared_size
+        !self.finished
+            && self.retained_size < self.declared_size
+            && self.route.as_ref().map_or(true, |route| route.has_capacity())
+    }
+
+    fn input_complete(&self) -> bool {
+        !self.finished && self.retained_size == self.declared_size
+    }
+
+    async fn wait_for_capacity(&mut self) {
+        let Some(route) = &self.route else {
+            return;
+        };
+        let notified = route.capacity_changed.notified();
+        if route.has_capacity() {
+            return;
+        }
+        tokio::select! {
+            () = notified => {},
+            () = tokio::time::sleep(std::time::Duration::from_millis(5)) => {},
+        }
     }
 }

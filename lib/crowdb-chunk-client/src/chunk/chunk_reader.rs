@@ -176,11 +176,39 @@ impl ChunkReader {
 
     pub fn read_stream(&self, locations: &[Location]) -> ReadResult<ChunkReadStream> {
         let (locations, object_length) = normalize_locations(locations)?;
+        self.range_stream(locations, 0, object_length, object_length)
+    }
+
+    /// Builds a pull-based stream for the exact logical half-open range.
+    pub fn read_range_stream(
+        &self,
+        locations: &[Location],
+        start: u64,
+        end: u64,
+    ) -> ReadResult<ChunkReadStream> {
+        let (locations, object_length) = normalize_locations(locations)?;
+        self.range_stream(locations, start, end, object_length)
+    }
+
+    fn range_stream(
+        &self,
+        locations: Vec<Location>,
+        start: u64,
+        end: u64,
+        object_length: u64,
+    ) -> ReadResult<ChunkReadStream> {
+        if start > end || end > object_length {
+            return Err(ReadError::InvalidRange {
+                start,
+                end,
+                object_length,
+            });
+        }
         Ok(ChunkReadStream {
             reader: self.clone(),
             locations: Arc::from(locations),
-            cursor: 0,
-            end: object_length,
+            cursor: start,
+            end,
             window_bytes: self.policy.stream_window_bytes as u64,
             pending_error: None,
         })

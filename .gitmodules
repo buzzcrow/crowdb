@@ -1,3 +1,6 @@
 [submodule "third-party/stdexec"]
 	path = third-party/stdexec
 	url = https://github.com/NVIDIA/stdexec.git
+[submodule "third-party/hyper"]
+	path = third-party/hyper
+	url = https://github.com/buzzcrow/hyper.git

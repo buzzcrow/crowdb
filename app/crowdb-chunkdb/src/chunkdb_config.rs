@@ -11,6 +11,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::selector::FailureDomainPriority;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlacementMode {
+    #[default]
+    Protected,
+    UnsafeColocated,
+}
+
 /// Top-level configuration for a chunkdb instance.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChunkdbConfig {
@@ -40,6 +48,8 @@ pub struct ChunkdbConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PlacementConfig {
+    /// Select the protected or single-node colocated placement implementation.
+    pub mode: PlacementMode,
     /// Permit EC layouts that exceed the safe per-node failure bound.
     pub allow_unsafe_ec: bool,
     /// Permit placement when one or more requested failure domains are not protected.

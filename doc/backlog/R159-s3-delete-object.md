@@ -1,63 +1,56 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-### R159: access server / S3 — DeleteObject and owned-chunk reclamation
+### R159: access server / S3 — DeleteObject
 
 ## Problem
 
-Removing visible metadata and reclaiming bytes are separate operations. A
-large object owns complete chunks that can be deleted cheaply, but immediate
-reclamation can race readers holding the old immutable generation. A retry or
-lost response must not enqueue conflicting cleanup or make deletion depend on
-shared-chunk GC.
+Object visibility must disappear cheaply and idempotently. Reading the old
+record, creating a delete identity, or using CAS would add metadata round trips
+to a normal object operation without improving the S3 overwrite model.
+Physical reclamation is separate: a shared chunk cannot be deleted for one
+object, and immediate dedicated-chunk deletion can race an admitted reader.
 
 The deletion model is
 `doc/design/accessserver/design-crowdb-access-server-s3.md` §5.
 
 ## Solution
 
-1. Give each logical delete a stable operation identity. Atomically replace the
-   current visibility record with an absent generation/tombstone and retain the
-   previous immutable generation as cleanup input. Repeated delete follows the
-   selected S3 idempotency contract.
-2. Classify every data reference as dedicated whole chunks or shared ranges.
-   Dedicated chunks enter a durable, bounded cleanup queue after the reader-
-   validity grace period. Their reclamation does not use R92 or R95.
-3. Delete dedicated chunks idempotently through `crowdb-chunk-client`, record
-   per-chunk completion, retry transient failures with limits, and reconcile an
-   unknown response by reading chunk state.
-4. For a shared range, make metadata invisible first, record durable pending
-   range cleanup, and invoke the qualified R95 chunk-range-delete contract when
-   available. Until then, the range remains logical garbage and deletion still
-   succeeds. The call-site comment names the R95 dependency.
-5. Apply the same cleanup record to overwritten generations. Never reclaim a
-   generation while an admitted reader may still hold it.
+1. Resolve the active bucket name, then issue exactly one unconditional
+   Chunk-KV delete for `tenant / bucket ID / object key`. Do not read, CAS,
+   tombstone, version, or allocate an operation identity on this object path.
+2. Treat missing and repeated deletes as S3 success. A definite KV rejection
+   returns a stable error; a transport timeout is explicitly ambiguous because
+   the delete may have applied.
+3. Return after the logical KV result. Physical cleanup is asynchronous and
+   never extends DELETE latency.
+4. Reclaim dedicated chunks only through later safe garbage discovery. Shared
+   ranges remain logical garbage until qualified range deletion is available;
+   never delete their whole containing chunk.
+5. Define the chunkdb `DeleteChunkRange(chunk_id, offset, size)` client and RPC
+   boundary now. Until R95 implements chunk-local range lifecycle, the chunkdb
+   handler returns an explicit not-implemented result and mutates no bytes.
 
 ## Dependencies
 
-- Depends on R153 and R154 generation/publication identities.
-- Uses whole-chunk delete from `crowdb-chunk-client` for large objects.
-- R95 and R168 are required only for physical shared-range reclamation; their
-  absence cannot block metadata deletion or whole-chunk reclamation.
-- R169 later compacts residual shared garbage and metadata tombstones.
+- Depends on the direct object key and one-mutation contract.
+- Uses Chunk-KV routed point deletion.
+- Qualified shared-range reclamation is deferred and does not block logical
+  deletion.
 
 ## Acceptance
 
-- Given a reader pinned to a large object's old generation, when DELETE removes
-  visibility and cleanup runs before and after the grace period, assert new
-  readers see absence and old chunks disappear only after reader validity.
-  Invariant: visibility removal precedes safe reclamation. E2E test.
-- Given a lost delete or chunk-delete response and repeated retries, when the
-  reconciler runs, assert one logical deletion completes and every owned chunk
-  reaches a known terminal state. Invariant: deletion and cleanup are
-  idempotent. Integration test.
-- Given a shared small object while R95 is unavailable or returns failure, when
-  DELETE completes, assert metadata is absent and durable pending cleanup names
-  the exact qualified range. Invariant: unavailable physical reclamation does
-  not restore visibility or delete neighboring bytes. Integration test.
-- Given an overwrite and delete race, when their metadata compares resolve,
-  assert cleanup targets only generations no longer selected by visibility.
-  Invariant: cleanup cannot reclaim the winning generation. Integration test.
+- Given an existing or missing object, when DELETE runs, assert it performs one
+  unconditional point delete and returns the S3 idempotent result without a
+  metadata read or CAS. Invariant: DELETE has one KV operation. Integration
+  test.
+- Given a definite KV error or transport timeout, when DELETE returns, assert
+  the outcomes are respectively coded failure and ambiguous timeout without
+  synchronous chunk deletion. Invariant: unknown metadata state cannot trigger
+  destructive cleanup. Integration test.
+- Given an object in a shared chunk, when metadata deletion succeeds, assert no
+  whole-chunk delete occurs. Invariant: deleting one object cannot erase its
+  neighbors. Integration test.
 
 Required gates:
 

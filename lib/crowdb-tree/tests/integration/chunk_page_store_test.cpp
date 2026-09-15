@@ -1368,7 +1368,8 @@ TEST(ChunkPageStore, HardCapsConfiguredChunkCapacityAt256MiB)
     ASSERT_FALSE(manifest->packs.empty());
     ChunkLayout layout;
     ASSERT_TRUE(transport->query_chunk(manifest->packs.front().ref.chunk_id, &layout).ok());
-    EXPECT_GE(layout.logical_capacity, 256U * 1024U * 1024U);
+    EXPECT_LE(layout.logical_capacity, 256U * 1024U * 1024U);
+    EXPECT_GE(layout.logical_capacity, 255U * 1024U * 1024U);
 }
 
 TEST(ChunkPageStore, CatalogRejectsManifestGenerationOutsidePublicationFence)
@@ -1448,7 +1449,7 @@ TEST(ChunkPageStore, LargePackUsesOneLocationAndMultipleVerifiedFrames)
     ASSERT_NE(manifest, nullptr);
     ASSERT_EQ(manifest->packs.size(), 1U);
     const ChunkPageRef &ref = manifest->packs.front().ref;
-    EXPECT_GT(ref.length, 64U * 1024U - 34U);
+    EXPECT_GT(ref.length, (64U * 1024U) - 34U);
     ChunkLayout layout;
     ASSERT_TRUE(transport->query_chunk(ref.chunk_id, &layout).ok());
     EXPECT_EQ(layout.acknowledged_bytes, ref.length + 68U);

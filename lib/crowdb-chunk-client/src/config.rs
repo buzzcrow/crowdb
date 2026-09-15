@@ -4,7 +4,7 @@
 //! `ChunkClientConfig` — shared configuration for the chunk data path.
 //!
 //! Replaces `WriterConfig`. All writers (`LargeObjectWriter`,
-//! `LargeAsyncObjectWriter`, `SmallObjectWriter`, `WriterPool`,
+//! `LargeAsyncObjectWriter`, `SharedObjectWriter`, `WriterPool`,
 //! `ChunkPrefetch`, `ChunkWriter`, `EcStripWriter`) read the fields
 //! they need from this single config.
 
@@ -51,7 +51,11 @@ impl Default for SmallWritePolicy {
         const MIB: usize = 1024 * 1024;
         Self {
             object_limit: MIB,
-            memory_budget: 96 * MIB,
+            // 1,000 concurrent 1 MiB objects are a normal S3 small-object
+            // workload.  3,000 and 5,000 require roughly 3.25 GiB and 5.25
+            // GiB respectively after pipeline and conversion headroom; set
+            // this explicitly for those deployments.
+            memory_budget: 1280 * MIB,
             queue_capacity: 1_024,
             min_pipelines: 1,
             max_pipelines: 32,
@@ -103,11 +107,6 @@ impl SmallWritePolicy {
                     .into(),
             ));
         }
-        if self.memory_budget > u32::MAX as usize {
-            return Err(IoError::Internal(
-                "small write memory budget must fit Tokio semaphore permits".into(),
-            ));
-        }
         if self.queue_capacity == 0
             || self.min_pipelines == 0
             || self.min_pipelines > self.max_pipelines
@@ -131,6 +130,25 @@ impl SmallWritePolicy {
             return Err(IoError::Internal("invalid small write policy".into()));
         }
         Ok(())
+    }
+
+    /// Retained request bytes available to one stable hash route.  The sum
+    /// across all possible routes stays within `memory_budget`; fixed chunk
+    /// shadows and one conversion group are excluded first.
+    pub fn route_buffer_capacity(&self) -> usize {
+        const HARD_LIMIT: usize = 1024 * 1024;
+        let shadows = self.max_pipelines.saturating_mul(HARD_LIMIT);
+        let conversion = if self.conversion_enabled {
+            self.conversion_data_num
+                .saturating_add(self.conversion_code_num)
+                .saturating_mul(HARD_LIMIT)
+        } else {
+            0
+        };
+        self.memory_budget
+            .saturating_sub(shadows.saturating_add(conversion))
+            .checked_div(self.max_pipelines)
+            .unwrap_or(0)
     }
 }
 

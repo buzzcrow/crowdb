@@ -1,0 +1,25 @@
+namespace crowdb.access.s3;
+
+enum FBBucketState : ubyte { Active = 0, Tombstone = 1 }
+table FBBucketName {
+    schema_version:uint16;
+    tenant:[ubyte];
+    name:[ubyte];
+    bucket_id:[ubyte];
+    state:FBBucketState;
+}
+
+table FBObject {
+    schema_version:uint16;
+    bucket_id:[ubyte];
+    key:[ubyte];
+    logical_length:uint64;
+    checksum:[ubyte];
+    etag:string;
+    created_at_ms:uint64;
+    modified_at_ms:uint64;
+    content_type:string;
+    attributes:[ubyte];
+    data_reference:[ubyte];
+    data_length:uint64;
+}

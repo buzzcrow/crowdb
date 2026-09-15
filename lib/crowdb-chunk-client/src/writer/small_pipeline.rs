@@ -47,13 +47,9 @@ pub(crate) async fn spawn(runtime: Arc<SmallPoolRuntime>, _id: u64) -> Result<Ma
         sender,
         runtime.now_ms(),
         Arc::clone(&runtime.conversion_active),
+        runtime.policy.route_buffer_capacity(),
     ));
     let owned = OwnedChunk::allocate(&runtime, Arc::clone(&route.conversion_active)).await?;
-    let shadow_bytes =
-        u32::try_from(u64::from(owned.current_strip()?.capacity).saturating_mul(1024)).unwrap_or(u32::MAX);
-    let shadow_budget = Arc::clone(&runtime.budget)
-        .try_acquire_many_owned(shadow_bytes)
-        .map_err(|_| IoError::MemoryBudgetExhausted)?;
     let retire = Arc::new(AtomicBool::new(false));
     let wake = Arc::new(Notify::new());
     let worker = PipelineWorker {
@@ -65,7 +61,6 @@ pub(crate) async fn spawn(runtime: Arc<SmallPoolRuntime>, _id: u64) -> Result<Ma
         chunk: owned,
         replacement: None,
         carry: None,
-        _shadow_budget: shadow_budget,
     };
     let join = tokio::spawn(worker.run());
     Ok(ManagedPipeline {
@@ -92,7 +87,6 @@ struct PipelineWorker {
     chunk: OwnedChunk,
     replacement: Option<OwnedChunk>,
     carry: Option<PendingObject>,
-    _shadow_budget: OwnedSemaphorePermit,
 }
 
 impl PipelineWorker {

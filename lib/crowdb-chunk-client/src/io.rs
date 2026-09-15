@@ -62,4 +62,14 @@ pub trait ChunkIoWriter: Send {
     async fn on_error(&mut self) -> Result<Vec<ProtoLocation>>;
     /// Non-async pre-check: `true` if `on_data` would not block now.
     fn require_data(&self) -> bool;
+    /// True only when a writer with a trusted declared length has accepted its
+    /// complete input. Callers may finish without polling a further body frame.
+    fn input_complete(&self) -> bool {
+        false
+    }
+    /// Wait for a capacity change without polling more network input. Writers
+    /// with no external notifier use the short default recheck.
+    async fn wait_for_capacity(&mut self) {
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+    }
 }

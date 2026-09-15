@@ -17,13 +17,15 @@ management is `doc/dev/hyper_fork.md`.
 
 ## Solution
 
-1. Extend the pinned Hyper fork with an opt-in HTTP/1 pooled body path. After
-   header authentication/admission and before the first body poll, select the
-   native glibc-backed provider, read decoded payload directly into its buffers
-   across partial socket reads, freeze before delivery, and return `Pending`
-   when credits are absent. The pooled payload path does not allocate body
-   buffers through the Rust runtime. Preserve owner metadata so R170 can add a
-   registered provider separately without changing the basic writer contract.
+1. Extend the pinned Hyper fork with an opt-in HTTP/1 body allocator selected
+   after header authentication/admission and before the first body poll. Hyper
+   requests buffers sized from the admitted object length and configured frame
+   bounds, reads decoded payload directly across partial socket reads, freezes
+   each allocation into an immutable owner-backed body frame, and returns
+   `Pending` when allocator credits are absent. CROWDB supplies the allocator
+   type: the initial implementation owns native memory, while a later provider
+   may own registered or RDMA-pinned memory without changing Hyper or the
+   writer contract.
 2. Add safe immutable owner/view/chain types at the RPC/chunk boundary. A view
    retains a Rust or native allocation plus offset and length; splitting at
    block or EC boundaries does not copy. Preserve the existing one-`Bytes`
@@ -40,7 +42,11 @@ management is `doc/dev/hyper_fork.md`.
 5. Copy only a body prefix already read with HTTP headers into the first pooled
    buffer. Record that bounded copy separately. Reject early EOF, length
    overflow, unsupported streaming signatures, timeout, cancellation, and
-   writer failure without invoking R154 publication.
+   writer failure without invoking R154 publication. The final outcome is
+   exactly `Success`, `Error { code, message }`, or `Timeout`. A definite
+   chunk or KV error may best-effort delete newly written data (a small-object
+   shared-chunk range or dedicated large-object chunks); timeout means the KV
+   mutation may have applied and must not synchronously delete data.
 6. Finish data/parity, seal dedicated large-object chunks, persist the upload
    result, and call R154 publication. Use the existing shared writer directly
    for small objects; R159/R168 own their later range reclamation.
@@ -51,6 +57,9 @@ management is `doc/dev/hyper_fork.md`.
 - R164 defines accepted checksums and ETag inputs; before it lands, tests use a
   single required internal digest without claiming final S3 compatibility.
 - Changes `crowdb-chunk-client`, `crowdb-rpc`, and `crowdb-rpc-ffi` buffer APIs.
+- The Hyper/native allocator and RPC ownership modules may contain narrowly
+  scoped audited unsafe code; the access-server and S3 operation layers remain
+  `unsafe_code = deny`.
 - R161 supplies global/per-tenant admission policy; this requirement still
   enforces local bounded credits if R161 has not landed.
 - R170 owns every cuObject/RDMA PUT concern and is not part of this requirement.
@@ -85,7 +94,7 @@ management is `doc/dev/hyper_fork.md`.
 
 Required gates:
 
-- `pixi run -- cargo test --manifest-path third-party/hyper/Cargo.toml --all-features`
+- `pixi run -- cargo test --manifest-path third-party/hyper/Cargo.toml --features full`
 - `pixi run -- cargo test -p crowdb-access-s3 --all-targets`
 - `pixi run -- cargo test -p crowdb-chunk-client --all-targets`
 - `pixi run test-rpc-ct`

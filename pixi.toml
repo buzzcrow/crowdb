@@ -67,6 +67,22 @@ liburing = "*"
 # rdma-core provides both libibverbs and librdmacm.
 rdma-core = "*"
 
+[feature.s3-e2e.dependencies]
+boto3 = "*"
+
+[feature.s3-e2e.tasks]
+test-s3-e2e = '''
+bash -c '
+set -e
+pixi run -e default build-cpp
+pixi run -e default -- cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb -p crowdb-chunk-kv-server -p crowdb-access-server
+CROWDB_S3_E2E_PYTHON="$PIXI_PROJECT_ROOT/.pixi/envs/s3-e2e/bin/python" pixi run -e default -- cargo test -p crowdb-access-server --features s3-e2e --test s3_full_stack_test -- --nocapture
+'
+'''
+
+[environments]
+s3-e2e = { features = ["s3-e2e"], no-default-feature = true }
+
 [tasks]
 
 # ── Build ────────────────────────────────────────────────────────
@@ -99,7 +115,8 @@ find lib/crowdb-tree/src lib/crowdb-tree/include lib/crowdb-tree/tests lib/crowd
 # headers are suppressed.
 tree-lint = "CPATH=$CONDA_PREFIX/include python3 tools/ct_lint.py"
 test-tree-link-isolation = "bash tools/test-tree-chunk-link-isolation.sh"
-rs-fmt = "cargo fmt --all"
+rs-fmt = '''cargo metadata --format-version 1 --no-deps | jq -r '.workspace_members as $members | .packages[] | select(.id as $package_id | $members | index($package_id)) | .name' | xargs sh -c 'cargo fmt --package "$@"' _'''
+rs-fmt-check = '''cargo metadata --format-version 1 --no-deps | jq -r '.workspace_members as $members | .packages[] | select(.id as $package_id | $members | index($package_id)) | .name' | xargs sh -c 'cargo fmt --package "$@" -- --check' _'''
 check-production-dashmap = "python3 tools/check-production-dashmap.py"
 rs-lint = { cmd = "cargo clippy --all-targets -- -D warnings", depends-on = ["check-production-dashmap"] }
 ts-lint = { cmd = "cd app/crowdb-web/ui && npx tsc --noEmit --project tsconfig.e2e.json", depends-on = ["install-ui-deps"] }
@@ -223,7 +240,7 @@ pixi run test-console-server
 ''', depends-on = ["build-tests"] }
 
 # ── UITests job: Playwright browser E2E + subprocess spawning ──
-test-console-ui = { cmd = "cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-port-alloc && export CROWDB_KV_SERVER_BINARY=$(pwd)/target/debug/crowdb-kv-server && cd app/crowdb-web/ui && npm test && npx playwright test --config=e2e/realBackend.config.ts", depends-on = ["install-ui-deps"] }
+test-console-ui = { cmd = "cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-cli && export CROWDB_KV_SERVER_BINARY=$(pwd)/target/debug/crowdb-kv-server && cd app/crowdb-web/ui && npm test && npx playwright test --config=e2e/realBackend.config.ts", depends-on = ["install-ui-deps"] }
 
 # ── Full local suite (not a CI job; runs everything in one process) ──
 # Grouped by CI job order. Each group task owns its component list;

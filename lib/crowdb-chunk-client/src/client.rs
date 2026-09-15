@@ -32,7 +32,7 @@ use crate::writer::small_pool::SmallWritePool;
 use crate::{
     ChunkAllocator, ChunkClientConfig, ChunkClientMetrics, ChunkIoWriter, ChunkReadPolicy, ChunkReadStream,
     ChunkReader, DiskWriter, IoError, LargeAsyncObjectWriter, PartialReadResult, ReadResult, Result,
-    RoutedDiskWriter, SmallObjectWriter, SmallWriteMetricsSnapshot, SmallWritePolicy,
+    RoutedDiskWriter, SharedObjectWriter, SmallWriteMetricsSnapshot, SmallWritePolicy,
 };
 
 /// Discovery and transport configuration for [`ChunkIoClient`].
@@ -283,10 +283,20 @@ impl ChunkIoClient {
         self.reader.read_stream(locations)
     }
 
+    /// Build a pull-based, memory-windowed stream for `[start, end)`.
+    pub fn read_range_stream(
+        &self,
+        locations: &[Location],
+        start: u64,
+        end: u64,
+    ) -> ReadResult<ChunkReadStream> {
+        self.reader.read_range_stream(locations, start, end)
+    }
+
     /// Reserve one bounded object and return its single-use writer handle.
-    pub async fn prepare_small_write(&self, object_size: usize) -> Result<SmallObjectWriter> {
+    pub async fn prepare_small_write(&self, object_size: usize) -> Result<SharedObjectWriter> {
         if object_size == 0 {
-            return Ok(SmallObjectWriter::empty());
+            return Ok(SharedObjectWriter::empty());
         }
         if object_size > MAX_FRAME_PAYLOAD_BYTES {
             return Err(IoError::ObjectTooLarge {
@@ -294,8 +304,37 @@ impl ChunkIoClient {
                 limit: MAX_FRAME_PAYLOAD_BYTES,
             });
         }
-        let (runtime, reservation) = self.small_pool.reserve(object_size).await?;
-        Ok(SmallObjectWriter::new(runtime, object_size, reservation))
+        let runtime = self.small_pool.prepare(object_size).await?;
+        let route_hash = runtime
+            .route_nonce
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let route = runtime
+            .route_for_hash(route_hash)
+            .ok_or_else(|| IoError::Internal("small write has no pipeline route".into()))?;
+        Ok(SharedObjectWriter::new(runtime, object_size, route, route_hash))
+    }
+
+    /// Prepares a shared-object write whose pipeline slot is stable for `key`.
+    pub async fn prepare_small_write_for_key(
+        &self,
+        object_size: usize,
+        key: &[u8],
+    ) -> Result<SharedObjectWriter> {
+        if object_size == 0 {
+            return Ok(SharedObjectWriter::empty());
+        }
+        if object_size > MAX_FRAME_PAYLOAD_BYTES {
+            return Err(IoError::ObjectTooLarge {
+                size: object_size,
+                limit: MAX_FRAME_PAYLOAD_BYTES,
+            });
+        }
+        let runtime = self.small_pool.prepare(object_size).await?;
+        let route_hash = stable_route_hash(key);
+        let route = runtime
+            .route_for_hash(route_hash)
+            .ok_or_else(|| IoError::Internal("small write has no pipeline route".into()))?;
+        Ok(SharedObjectWriter::new(runtime, object_size, route, route_hash))
     }
 
     /// Stop admission, drain accepted objects, and finalize shared chunks.
@@ -395,6 +434,12 @@ impl ChunkIoClient {
         }
         Ok(writes)
     }
+}
+
+fn stable_route_hash(key: &[u8]) -> u64 {
+    key.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 struct MetricsChunkAllocator {
@@ -680,6 +725,25 @@ impl PreparedLargeWrite {
     /// Release a prepared session that will not be written.
     pub async fn abort(mut self) -> Result<()> {
         self.writer.abort_pipeline().await.map(|_| ())
+    }
+}
+
+#[async_trait]
+impl ChunkIoWriter for PreparedLargeWrite {
+    async fn on_data(&mut self, buffer: Bytes) -> Result<crate::FeedStatus> {
+        self.writer.on_data(buffer).await
+    }
+
+    async fn on_finish(&mut self) -> Result<Vec<Location>> {
+        self.writer.on_finish().await
+    }
+
+    async fn on_error(&mut self) -> Result<Vec<Location>> {
+        self.writer.on_error().await
+    }
+
+    fn require_data(&self) -> bool {
+        self.writer.require_data()
     }
 }
 

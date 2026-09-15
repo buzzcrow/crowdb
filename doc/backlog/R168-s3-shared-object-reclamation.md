@@ -24,9 +24,10 @@ The lifecycle boundary is
 1. Persist a range-cleanup record containing object generation, chunk identity,
    writer/layout generation, exact offset/length, reader-validity deadline, and
    stable cleanup identity before invoking physical deletion.
-2. After metadata invisibility and the grace period, call R95's qualified,
-   idempotent chunk-range-delete interface. The S3 call site explicitly names
-   R95 because a raw offset alone is not deletion authority.
+2. After metadata invisibility and the grace period, call R95's idempotent
+   `DeleteChunkRange(chunk_id, offset, size)` interface. The RPC exists before
+   R95 but returns not-implemented and performs no mutation until chunkdb owns
+   the required range validation and used-bitmap lifecycle.
 3. Reconcile unknown results from chunk state, retry bounded transient failures,
    and quarantine generation/ownership mismatches for inspection. Never widen,
    merge, or align a range across live neighbors merely to reclaim space.

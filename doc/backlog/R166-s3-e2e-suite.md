@@ -16,9 +16,21 @@ The tested invariants are
 
 ## Solution
 
-1. Build a reproducible E2E harness using at least one standard S3 SDK/client
-   plus raw HTTP cases for every basic bucket/object operation, conditional,
-   range, continuation, unsupported feature, and error contract.
+1. Build a reproducible E2E harness using the official Python `boto3` SDK as
+   its one SDK client, plus raw HTTP cases for every basic bucket/object
+   operation, conditional, range, continuation, unsupported feature, and
+   error contract. Install `boto3` only in a dedicated Pixi `s3-e2e`
+   environment; it is not a Rust dependency and is absent from release builds.
+   The required test owns its environment: build and start KV group 0/data
+   groups, diskdb, diskio, chunkdb, Chunk-KV, and access-server, wait for each
+   readiness boundary, pass the resulting loopback endpoint to boto3, and tear
+   every process down. An externally supplied endpoint remains a developer
+   override, not a reason for the required test to skip.
+   The lightweight required topology uses one diskdb process, one diskio
+   process, one disk group, one disk, and one zone. ChunkDB runs the explicit
+   `unsafe_colocated` placement strategy so the 2+1 EC object fragments may
+   occupy that one physical failure domain. The test therefore validates
+   composition and protocol correctness, not node- or disk-failure survival.
 2. Exercise empty, tiny shared, block-boundary, chunk-boundary, EC-boundary,
    and large dedicated objects with randomized body fragmentation and binary
    keys. Compare exact bytes and persisted integrity.
@@ -39,6 +51,8 @@ The tested invariants are
 - Uses existing chunk/chunk-KV E2E fixtures and fault injection where possible.
 - SigV4 cases may remain skipped with an explicit R162 reason while that
   requirement is deferred; unauthenticated trusted mode must be visible.
+- Uses path-style local endpoints in the `s3-e2e` Pixi environment. The suite
+  switches to explicit static SigV4 test credentials when R162 lands.
 
 ## Acceptance
 

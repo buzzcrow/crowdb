@@ -12,21 +12,22 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 export const DEFAULT_SERVER_BINARY =
   process.env.CROWDB_KV_SERVER_BINARY ?? resolve(__dirname, '../../../../../target/debug/crowdb-kv-server');
 
-// Path to the crowdb-port-alloc CLI binary. Used for flock-coordinated
-// port allocation with bind probes — no port 0, no TOCTOU.
+// Path to the crowdb-cli binary (port-alloc subcommand). Used for
+// flock-coordinated port allocation with bind probes — no port 0,
+// no TOCTOU.
 const PORT_ALLOC_BIN =
-  process.env.CROWDB_PORT_ALLOC_BIN ?? resolve(__dirname, '../../../../../target/debug/crowdb-port-alloc');
+  process.env.CROWDB_PORT_ALLOC_BIN ?? resolve(__dirname, '../../../../../target/debug/crowdb-cli');
 
 // Per-process claim file root for E2E port allocation. Uses a temp
 // directory keyed by PID so parallel test runs don't collide.
 const PORT_ALLOC_ROOT = resolve(`/tmp/crowdb-port-alloc-e2e-${process.pid}`);
 
-// Allocate a single port for the given service via the crowdb-port-alloc
-// CLI. Services: kv-mgmt, kv-listen, diskdb-listen, diskdb-http,
-// diskdb-rpc, chunkdb-http, chunkdb-rpc, diskio-rpc, web.
+// Allocate a single port for the given service via the crowdb-cli
+// port-alloc subcommand. Services: kv-mgmt, kv-listen, diskdb-listen,
+// diskdb-http, diskdb-rpc, chunkdb-http, chunkdb-rpc, diskio-rpc, web.
 export function freePort(service = 'kv-mgmt'): number {
   const out = execSync(
-    `${PORT_ALLOC_BIN} --root "${PORT_ALLOC_ROOT}" --service ${service}`,
+    `${PORT_ALLOC_BIN} port-alloc --root "${PORT_ALLOC_ROOT}" --service ${service}`,
     { encoding: 'utf-8' },
   ).trim();
   return parseInt(out, 10);
@@ -37,7 +38,7 @@ export function freePort(service = 'kv-mgmt'): number {
 export function freePortRange(count: number, service = 'kv-mgmt'): number {
   if (count < 1) throw new Error('freePortRange: count must be >= 1');
   const out = execSync(
-    `${PORT_ALLOC_BIN} --root "${PORT_ALLOC_ROOT}" --service ${service} --count ${count}`,
+    `${PORT_ALLOC_BIN} port-alloc --root "${PORT_ALLOC_ROOT}" --service ${service} --count ${count}`,
     { encoding: 'utf-8' },
   ).trim();
   const ports = out.split('\n').map((p) => parseInt(p.trim(), 10));

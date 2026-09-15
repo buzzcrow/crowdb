@@ -46,14 +46,6 @@ baseline is correct and measured.
   contract — Area: access server / S3 — Establish the independent S3 library,
   access-server and pinned Hyper fork, basic bucket management, six object
   operations, explicit exclusions, and reserved authentication hook.
-- **[R153](R153-s3-object-metadata-schema.md)** — bucket namespace and object
-  metadata schema — Area: access server / S3 / Chunk-KV — Define binary-safe
-  ordered keys, stable bucket IDs, immutable generations, visibility records,
-  and fenced bucket lifecycle.
-- **[R154](R154-s3-atomic-publication-recovery.md)** — atomic object publication
-  and upload recovery — Area: access server / S3 / chunk — Publish only complete
-  sealed data through one visibility compare and reconcile durable upload
-  identities after ambiguous outcomes or restart.
 - **[R155](R155-s3-streaming-put-object.md)** — streaming PutObject — Area:
   access server / S3 / Hyper / chunk / RPC — Receive payload into bounded
   native pools, preserve owned buffer chains through chunk/EC/RPC, and propagate

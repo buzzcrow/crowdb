@@ -70,6 +70,17 @@ impl DiskdbProcess {
     /// Start crowdb-diskdb with a generated config pointing at the
     /// kv-server management seeds. `small_storage` enables compact test zones.
     pub fn start(kv_seeds: &[String], small_storage: bool) -> Self {
+        let zone_size_units = small_storage.then_some(ZONE_SIZE_UNITS);
+        Self::start_with_zone_size(kv_seeds, zone_size_units)
+    }
+
+    /// Start crowdb-diskdb with an explicit test zone size.
+    pub fn start_with_zone_size(kv_seeds: &[String], zone_size_units: Option<u64>) -> Self {
+        Self::start_for_instance(kv_seeds, INSTANCE_ID, zone_size_units)
+    }
+
+    /// Start one diskdb owner with an explicit group-0 instance identity.
+    pub fn start_for_instance(kv_seeds: &[String], instance_id: u64, zone_size_units: Option<u64>) -> Self {
         let bin = crowdb_diskdb_bin().unwrap_or_else(|| {
             panic!("crowdb-diskdb binary not found; set CROWDB_DISKDB_BIN or build app/crowdb-diskdb")
         });
@@ -92,8 +103,8 @@ impl DiskdbProcess {
         );
         let http_port = i32::from(alloc_test_port(ServicePort::DiskdbHttp));
 
-        let zone_size_bytes = ZONE_SIZE_UNITS * u64::from(UNIT_SIZE_BYTES);
-        let storage_section = if small_storage {
+        let storage_section = if let Some(zone_size_units) = zone_size_units {
+            let zone_size_bytes = zone_size_units * u64::from(UNIT_SIZE_BYTES);
             format!(
                 "\n[storage]\nzone_size_bytes = {zone_size_bytes}\nblock_size_bytes = {UNIT_SIZE_BYTES}\nallocate_granularity = {UNIT_SIZE_BYTES}\nzone_rotate_count = 4\ncas_retry_limit = 100\n"
             )
@@ -106,7 +117,7 @@ rpc_workers = 2
 listen_addr = "127.0.0.1:{listen_port}"
 rpc_listen_addr = "127.0.0.1:{rpc_port}"
 http_listen_addr = "127.0.0.1:{http_port}"
-instance_id = "{INSTANCE_ID}"
+instance_id = "{instance_id}"
 kv_server_mgmt_seeds = [{seeds}]
 {storage_section}
 [sync]

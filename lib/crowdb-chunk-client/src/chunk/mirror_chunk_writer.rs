@@ -45,7 +45,31 @@ impl MirrorChunkWriter {
         writer_epoch: u64,
         writer_lease_ms: u64,
     ) -> Result<Self> {
-        if writer_epoch == 0 || writer_lease_ms == 0 {
+        Self::allocate_with_copy_count(
+            allocator,
+            disk_writer,
+            stream_name,
+            writer_epoch,
+            writer_lease_ms,
+            3,
+        )
+        .await
+    }
+
+    /// Allocates one WAL chunk with an explicit mirror count.
+    ///
+    /// # Errors
+    ///
+    /// Returns an allocation or layout error for a zero count or unavailable placement.
+    pub async fn allocate_with_copy_count(
+        allocator: Arc<dyn ChunkAllocator>,
+        disk_writer: Arc<dyn DiskWriter>,
+        stream_name: StreamName,
+        writer_epoch: u64,
+        writer_lease_ms: u64,
+        copy_count: u32,
+    ) -> Result<Self> {
+        if writer_epoch == 0 || writer_lease_ms == 0 || copy_count == 0 {
             return Err(IoError::AllocationFailed(
                 "stream mirror writer requires a nonzero epoch and lease".into(),
             ));
@@ -58,7 +82,7 @@ impl MirrorChunkWriter {
                 strip_type: StripType::Mirror as i32,
                 data_num: 0,
                 code_num: 0,
-                copy_count: 3,
+                copy_count,
                 chunk_type: ChunkType::Stream as i32,
                 writer_epoch,
                 writer_lease_ms,
@@ -68,13 +92,14 @@ impl MirrorChunkWriter {
         let chunk = response
             .chunk
             .ok_or_else(|| IoError::AllocationFailed("stream chunk allocation returned no chunk".into()))?;
-        Self::open(
+        Self::open_with_copy_count(
             allocator,
             disk_writer,
             chunk,
             stream_name,
             writer_epoch,
             writer_lease_ms,
+            copy_count,
         )
     }
 
@@ -90,6 +115,31 @@ impl MirrorChunkWriter {
         stream_name: StreamName,
         writer_epoch: u64,
         writer_lease_ms: u64,
+    ) -> Result<Self> {
+        Self::open_with_copy_count(
+            allocator,
+            disk_writer,
+            chunk,
+            stream_name,
+            writer_epoch,
+            writer_lease_ms,
+            3,
+        )
+    }
+
+    /// Opens a direct mirror chunk with the configured layout width.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a mismatched epoch, state, capacity, or mirror count.
+    pub fn open_with_copy_count(
+        allocator: Arc<dyn ChunkAllocator>,
+        disk_writer: Arc<dyn DiskWriter>,
+        chunk: Chunk,
+        stream_name: StreamName,
+        writer_epoch: u64,
+        writer_lease_ms: u64,
+        copy_count: u32,
     ) -> Result<Self> {
         let chunk_id = chunk
             .id
@@ -110,7 +160,7 @@ impl MirrorChunkWriter {
                 "stream chunk does not contain a mirror strip".into(),
             ));
         };
-        if mirror.segments.len() != 3 || strip.unit_kb == 0 || strip.capacity == 0 {
+        if mirror.segments.len() != copy_count as usize || strip.unit_kb == 0 || strip.capacity == 0 {
             return Err(IoError::MetadataConflict(
                 "stream chunk mirror geometry is invalid".into(),
             ));

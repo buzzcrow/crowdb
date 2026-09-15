@@ -593,21 +593,19 @@ async fn small_object_ingress_validates_size_and_releases_reservation() {
 }
 
 #[tokio::test]
-async fn small_object_whole_budget_waits_without_partial_reservation() {
+async fn small_object_charges_received_bytes_without_whole_object_reservation() {
     let mut bounded = policy();
     bounded.object_limit = MAX_SMALL;
     bounded.memory_budget = 1024 * 1024 + MAX_SMALL;
     bounded.scale_out_queue_bytes = MAX_SMALL;
     let (client, _, _) = client(bounded);
     let mut first = client.prepare_small_write(MAX_SMALL).await.unwrap();
-    let clone = client.clone();
-    let second = tokio::spawn(async move { clone.prepare_small_write(MAX_SMALL).await });
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    assert!(!second.is_finished());
+    let mut second = client.prepare_small_write(MAX_SMALL).await.unwrap();
+    assert_eq!(client.small_write_metrics().reserved_bytes, 0);
+    first.on_data(Bytes::from(vec![7; MAX_SMALL])).await.unwrap();
     assert_eq!(client.small_write_metrics().reserved_bytes, MAX_SMALL as u64);
+    assert!(!first.require_data());
     first.on_error().await.unwrap();
-    let mut second = second.await.unwrap().unwrap();
-    assert_eq!(client.small_write_metrics().reserved_bytes, MAX_SMALL as u64);
     second.on_error().await.unwrap();
     assert_eq!(client.small_write_metrics().reserved_bytes, 0);
     client.shutdown_small_writes().await.unwrap();
