@@ -177,10 +177,7 @@ policy and a verified post-allocation assessment.
     target and phase before each externally visible step, so a restart resumes
     confirmation after a successful CAS rather than allocating a second target.
     A failed pre-CAS attempt leaves an unreferenced tentative target for the
-    DiskDB scanner to reclaim. The scanner must first ask the chunk owner for
-    the exact target incarnation: `Referenced` confirms it, `TaskPending`
-    retains it, and only `Absent` frees it. It must never free a tentative block
-    by age alone because a published Chunk CAS can precede confirmation. A
+    R80-owned DiskDB scanner to reclaim under its owner-disposition contract. A
     frontend I/O-triggered ad-hoc repair may return
     as soon as EC reconstruction has produced the requested readable bytes; it
     hands the fsynced tentative target to the same durable job for later CAS and
@@ -286,11 +283,10 @@ policy and a verified post-allocation assessment.
   rejects it, the target is discarded, and the current source remains live.
   Restart after Chunk CAS but before target confirmation; assert the persisted
   job confirms that same target without a second allocation. Restart before
-  CAS; assert the DiskDB scanner can reclaim the unreferenced tentative target,
-  after the owner returns `Absent`, while it preserves an identical target when
-  the owner returns `TaskPending` or `Referenced`, proving copy-before-publish,
-  durable duplicate handling, owner-validated tentative-block recovery, and
-  source-revision fencing — E2E test.
+  CAS; assert the R80-owned scanner handles the unreferenced tentative target
+  under its owner-disposition contract, proving copy-before-publish, durable
+  duplicate handling, tentative-block recovery, and source-revision fencing —
+  E2E test.
 - Given concurrent frontend reads that detect the same unavailable EC fragment,
   reconstruct it once and return the readable data before metadata publication;
   assert the in-memory repair manager shares that result with the other reads

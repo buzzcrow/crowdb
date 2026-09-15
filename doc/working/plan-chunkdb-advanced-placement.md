@@ -82,9 +82,8 @@ of temporarily degraded EC strips.
   conditionally publishes the source-revision replacement, then confirms that
   same target and authorizes source free. A local ongoing set merges duplicate
   deliveries but is not a recovery authority; the job phase resumes confirmation
-  after a restart. DiskDB's scanner asks the chunk owner for an exact target
-  disposition and frees only `Absent` targets; it confirms `Referenced` and
-  retains `TaskPending` targets, never freeing by timeout alone.
+  after a restart. R80 owns its DiskDB scanner and owner-disposition cleanup
+  contract.
   Frontend ad-hoc EC repair returns reconstructed readable data immediately and
   uses the in-memory manager only to coalesce/reuse work while the durable job
   publishes. Files: DiskDB relocation/task protocol, ChunkDB task handling,
