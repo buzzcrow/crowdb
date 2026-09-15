@@ -218,8 +218,16 @@ impl ChunkAllocator {
                     .allocate_diskdb_calls
                     .inc_by(u64::try_from(plan.entries.len()).unwrap_or(u64::MAX));
             }
+            // DiskDB normally keeps a batch on distinct disks. A degraded
+            // large EC plan can legitimately place more fragments in one
+            // disk-group than it has disks, while still staying within the EC
+            // disk loss budget after evenly repeated passes. Ask DiskDB for
+            // that mode only when the selected group requires it; the physical
+            // assessment below remains the authority on the resulting disk
+            // protection.
+            let reuse_disks = plan_requires_disk_reuse(snap, &plan);
             let segments = self
-                .allocate_blocks_parallel(owner_chunk, &plan, unit_count)
+                .allocate_blocks_parallel(owner_chunk, &plan, unit_count, reuse_disks)
                 .await?;
             let assessment = assess_physical_placement(
                 snap,
@@ -385,6 +393,7 @@ impl ChunkAllocator {
         owner_chunk: &ChunkId,
         plan: &PlacementPlan,
         unit_count: u32,
+        reuse_disks: bool,
     ) -> Result<Vec<Segment>, AllocError> {
         let mut all_segments: Vec<Segment> = Vec::new();
         // One request per DiskDB/data group. The selector still chooses each
@@ -404,12 +413,16 @@ impl ChunkAllocator {
                 let dg = *dg_id;
                 let cnt = *count;
                 futures.push(async move {
-                    pool.allocate_blocks(dg, cnt, unit_count, &owner)
-                        .await
-                        .map_err(|e| AllocError::AllocateFailed {
-                            dg_id: dg,
-                            error: e.to_string(),
-                        })
+                    let response = if reuse_disks {
+                        pool.allocate_blocks_reusing_disks(dg, cnt, unit_count, &owner)
+                            .await
+                    } else {
+                        pool.allocate_blocks(dg, cnt, unit_count, &owner).await
+                    };
+                    response.map_err(|e| AllocError::AllocateFailed {
+                        dg_id: dg,
+                        error: e.to_string(),
+                    })
                 });
             }
 
@@ -718,6 +731,20 @@ fn grouped_requests(plan: &PlacementPlan) -> Vec<(u64, u32)> {
             .or_insert(entry.block_count);
     }
     grouped.into_iter().collect()
+}
+
+/// Whether a grouped DiskDB request needs repeated distinct-disk passes.
+///
+/// Selection chooses disk-groups, not individual disks. The caller validates
+/// the returned physical layout before publishing the strip.
+fn plan_requires_disk_reuse(snap: &TopologySnapshot, plan: &PlacementPlan) -> bool {
+    grouped_requests(plan)
+        .into_iter()
+        .any(|(disk_group_id, block_count)| {
+            snap.disk_group(disk_group_id).map_or(true, |entry| {
+                u32::try_from(entry.value.disk_ids.len()).unwrap_or(u32::MAX) < block_count
+            })
+        })
 }
 
 fn extract_segments(strip: &ChunkStrip) -> Vec<Segment> {

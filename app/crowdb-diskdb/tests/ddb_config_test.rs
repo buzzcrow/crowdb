@@ -4,7 +4,7 @@
 //! Config validation + `load_from_file` tests.
 
 use crowdb_common::config::BaseConfig;
-use crowdb_diskdb::ddb_config::{validate, DdbConfig};
+use crowdb_diskdb::ddb_config::{validate, DdbConfig, LoadAwareWeight};
 
 #[test]
 fn config_validate_accepts_default() {
@@ -82,6 +82,12 @@ fn config_defaults_match_design() {
     assert_eq!(config.storage.cas_retry_limit, 100);
     assert!(!config.persistence.free_batch_enabled);
     assert_eq!(config.persistence.free_flush_max_batch, 256);
+    assert!(config.rebalance.enabled);
+    assert_eq!(config.rebalance.plan_interval_secs, 300);
+    assert_eq!(config.rebalance.imbalance_threshold_pct, 20);
+    assert_eq!(config.rebalance.max_jobs_per_cycle, 1);
+    assert_eq!(config.rebalance.zone_delay_secs, 3);
+    assert!(config.allocator.load_aware);
 }
 
 #[test]
@@ -104,6 +110,25 @@ fn partial_persistence_config_keeps_defaults() {
 }
 
 #[test]
+fn allocator_weight_policy_parses_and_keeps_other_defaults() {
+    let config: DdbConfig = toml::from_str(
+        r#"
+        [server]
+        listen_addr = "127.0.0.1:1"
+
+        [allocator]
+        load_aware_weight = "inverse_used_pct"
+        "#,
+    )
+    .unwrap();
+    assert!(config.allocator.load_aware);
+    assert!(matches!(
+        config.allocator.load_aware_weight,
+        LoadAwareWeight::InverseUsedPct
+    ));
+}
+
+#[test]
 fn config_rejects_zero_server_rpc_workers() {
     let mut config = DdbConfig::default();
     config.server.rpc_workers = 0;
@@ -122,6 +147,47 @@ fn config_rejects_zero_kv_transport_sizes() {
     let mut config = DdbConfig::default();
     config.server.kv_rpc_workers = 0;
     assert!(validate(&config).is_err());
+}
+
+#[test]
+fn config_rejects_zero_scanner_intervals() {
+    let mut config = DdbConfig::default();
+    config.scanner.scan_interval_secs = 0;
+    assert_eq!(
+        validate(&config),
+        Err("scanner.scan_interval_secs must be > 0".to_string())
+    );
+
+    let mut config = DdbConfig::default();
+    config.scanner.tentative_owner_scan_interval_secs = 0;
+    assert_eq!(
+        validate(&config),
+        Err("scanner.tentative_owner_scan_interval_secs must be > 0".to_string())
+    );
+}
+
+#[test]
+fn config_rejects_invalid_rebalance_limits() {
+    let mut config = DdbConfig::default();
+    config.rebalance.plan_interval_secs = 0;
+    assert_eq!(
+        validate(&config),
+        Err("rebalance.plan_interval_secs must be > 0".to_string())
+    );
+
+    let mut config = DdbConfig::default();
+    config.rebalance.imbalance_threshold_pct = 101;
+    assert_eq!(
+        validate(&config),
+        Err("rebalance.imbalance_threshold_pct must be <= 100".to_string())
+    );
+
+    let mut config = DdbConfig::default();
+    config.rebalance.max_jobs_per_cycle = 0;
+    assert_eq!(
+        validate(&config),
+        Err("rebalance.max_jobs_per_cycle must be > 0".to_string())
+    );
 }
 
 #[test]

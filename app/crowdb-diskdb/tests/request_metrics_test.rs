@@ -51,6 +51,7 @@ fn every_request_kind_has_its_own_metric_family() {
         (RequestKind::CompactZone, "compact_zone"),
         (RequestKind::TriggerScan, "trigger_scan"),
         (RequestKind::GetScanStatus, "get_scan_status"),
+        (RequestKind::ExecuteRelocation, "execute_relocation"),
     ];
 
     for (kind, name) in kinds {

@@ -31,6 +31,8 @@ pub struct ChunkdbConfig {
     #[serde(default)]
     pub placement_repair: PlacementRepairConfig,
     #[serde(default)]
+    pub placement_rebalance: PlacementRebalanceConfig,
+    #[serde(default)]
     pub reservation: ReservationConfig,
 }
 
@@ -80,7 +82,47 @@ impl BaseConfig for ChunkdbConfig {
         self.conversion.validate()?;
         self.repair.validate()?;
         self.placement_repair.validate()?;
+        self.placement_rebalance.validate()?;
         self.reservation.validate()?;
+        Ok(())
+    }
+}
+
+/// Low-rate cross-disk-group placement rebalance policy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlacementRebalanceConfig {
+    pub enabled: bool,
+    pub scan_interval_secs: u64,
+    pub imbalance_threshold_pct: u32,
+    pub hysteresis_secs: u64,
+    pub min_target_free_bytes: u64,
+    pub max_moves_per_cycle: u32,
+}
+
+impl Default for PlacementRebalanceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            scan_interval_secs: 300,
+            imbalance_threshold_pct: 20,
+            hysteresis_secs: 900,
+            min_target_free_bytes: 1 << 30,
+            max_moves_per_cycle: 1,
+        }
+    }
+}
+
+impl PlacementRebalanceConfig {
+    fn validate(&self) -> Result<(), String> {
+        if self.scan_interval_secs == 0 {
+            return Err("placement_rebalance.scan_interval_secs must be > 0".into());
+        }
+        if self.max_moves_per_cycle != 1 {
+            return Err("placement_rebalance.max_moves_per_cycle must be 1".into());
+        }
+        if self.imbalance_threshold_pct > 100 {
+            return Err("placement_rebalance.imbalance_threshold_pct must be <= 100".into());
+        }
         Ok(())
     }
 }

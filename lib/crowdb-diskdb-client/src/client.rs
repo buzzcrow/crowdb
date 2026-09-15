@@ -20,10 +20,10 @@ use crowdb_kv_client::ServiceRegistryClient;
 use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::{
     AllocateBlocksRequest, AllocateResponse, CommitBlocksRequest, CommitBlocksResponse, CompactZoneRequest,
-    CompactZoneResponse, FreeBlocksRequest, FreeFailure, FreeFailureReason, FreeResponse,
-    GetDiskGroupInfoResponse, GetDiskInfoResponse, GetScanStatusResponse, QueryCapacityStatsRequest,
-    QueryCapacityStatsResponse, RebuildZoneBitmapResponse, RecalcDiskUsageRequest, RecalcDiskUsageResponse,
-    TriggerScanResponse,
+    CompactZoneResponse, ExecuteRelocationRequest, ExecuteRelocationResponse, FreeBlocksRequest, FreeFailure,
+    FreeFailureReason, FreeResponse, GetDiskGroupInfoResponse, GetDiskInfoResponse, GetScanStatusResponse,
+    QueryCapacityStatsRequest, QueryCapacityStatsResponse, RebuildZoneBitmapResponse, RecalcDiskUsageRequest,
+    RecalcDiskUsageResponse, TriggerScanResponse,
 };
 use crowdb_protocol::DiskGroupId;
 
@@ -239,6 +239,32 @@ impl DiskdbClient {
             committed_count += response.committed_count;
         }
         Ok(CommitBlocksResponse { committed_count })
+    }
+
+    /// Ask the `DiskDB` owning the already-reserved target to durably adopt and
+    /// execute a cross-domain relocation.
+    ///
+    /// # Errors
+    /// Returns routing, transport, or server-side validation failures.
+    pub async fn execute_relocation(
+        &self,
+        req: ExecuteRelocationRequest,
+    ) -> Result<ExecuteRelocationResponse> {
+        let target = req
+            .target
+            .and_then(|segment| segment.disk_id)
+            .ok_or_else(|| DiskdbClientError::Rpc("relocation target disk is required".into()))?;
+        let dg_id = self.dg_for_disk(target).await?;
+        if dg_id != req.target_disk_group_id {
+            return Err(DiskdbClientError::NotOwner(
+                "relocation target disk-group does not match routing".into(),
+            ));
+        }
+        self.with_rpc_retry(dg_id, |endpoint, rpc| {
+            let request = req.clone();
+            async move { rpc.execute_relocation(&endpoint, &request).await }
+        })
+        .await
     }
 
     /// Query capacity stats at the disk-group level (all owned groups

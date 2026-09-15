@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use clap::Parser;
+use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport};
 use crowdb_common::metrics::{MetricsRegistry, MetricsRunner};
 use crowdb_diskdb::bg_task::{BgCtx, BgRunner};
 use crowdb_diskdb::ddb_config::{validate, CompactionConfig, DdbConfig, KeepAliveConfig};
@@ -17,13 +18,15 @@ use crowdb_diskdb::liveness::lifecycle::StartupPhase;
 use crowdb_diskdb::liveness::notify::NotifyHandler;
 use crowdb_diskdb::metrics::{DiskdbMetrics, RecalcEngine, ReportingTask};
 use crowdb_diskdb::model::disk_group_container::DdbDiskGroupContainer;
+use crowdb_diskdb::rebalance::{DiskioRelocationIo, RebalancePlannerTask, RelocationWorker};
 use crowdb_diskdb::recovery::compaction::{CompactionEngine, PreparatoryThread};
 use crowdb_diskdb::recovery::ZoneLoader;
-use crowdb_diskdb::scanner::{ScanState, ScannerTask};
+use crowdb_diskdb::scanner::{BusyBlockOwnerScanner, ScanState, ScannerTask, SegmentOwnerQuery};
 use crowdb_diskdb::service::DiskdbRpcService;
+use crowdb_diskdb_client::{DiskdbClient, DiskdbRpcTransport};
 use crowdb_kv_client::{
-    ClientConfig, CrowdbKvClient, DomainMonitorClient, HardwareClient, ServiceRegistryClient,
-    WatchNotifyClient,
+    ClientConfig, CrowdbKvClient, DomainMonitorClient, HardwareClient,
+    RangeBindingClient as KvRangeBindingClient, ServiceRegistryClient, WatchNotifyClient,
 };
 use crowdb_protocol::chunk_kv::{
     DomainFailurePolicy, DomainMonitorDescriptor, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest,
@@ -211,6 +214,15 @@ async fn main() {
     );
     let hw = HardwareClient::from_shared(Arc::clone(&kv_client));
     let svc = ServiceRegistryClient::from_shared(Arc::clone(&kv_client));
+    let owner_client = Arc::new(
+        ChunkdbClient::new(svc.clone(), Arc::new(ChunkdbRpcTransport::new()))
+            .with_range_binding(KvRangeBindingClient::from_shared(Arc::clone(&kv_client))),
+    );
+    let relocation_io = Arc::new(DiskioRelocationIo::new(svc.clone(), hw.clone()));
+    let relocation_source_free = Arc::new(DiskdbClient::new(
+        svc.clone(),
+        Arc::new(DiskdbRpcTransport::new()),
+    ));
     let monitor_request = EnsureDomainMonitorRequest {
         descriptor: DomainMonitorDescriptor {
             domain: "diskdb".into(),
@@ -322,6 +334,9 @@ async fn main() {
     ));
     let recalc_engine = Arc::new(RecalcEngine::new(Arc::clone(&dg_kv), Arc::clone(&container)));
     let scan_state = ScanState::new();
+    let relocation_worker = Arc::new(
+        RelocationWorker::new(owner_client.clone(), relocation_io).with_source_free(relocation_source_free),
+    );
     let listen_addr: SocketAddr = config
         .load()
         .server
@@ -339,17 +354,20 @@ async fn main() {
         .parse()
         .expect("valid rpc_listen_addr");
     let rpc_rt_handle = tokio::runtime::Handle::current();
-    let rpc_service = Arc::new(DiskdbRpcService::new(
-        container.clone(),
-        Arc::clone(&dg_kv),
-        config.load().storage.clone(),
-        Arc::clone(&zone_loader),
-        Arc::clone(&recalc_engine),
-        scan_state.clone(),
-        Arc::new(metrics.clone()),
-        Arc::clone(&config),
-        rpc_rt_handle,
-    ));
+    let rpc_service = Arc::new(
+        DiskdbRpcService::new(
+            container.clone(),
+            Arc::clone(&dg_kv),
+            config.load().storage.clone(),
+            Arc::clone(&zone_loader),
+            Arc::clone(&recalc_engine),
+            scan_state.clone(),
+            Arc::new(metrics.clone()),
+            Arc::clone(&config),
+            rpc_rt_handle,
+        )
+        .with_relocation_worker(Arc::clone(&relocation_worker)),
+    );
     let rpc_workers = config.load().server.rpc_workers;
     let rpc_server = Arc::new(crowdb_rpc_ffi::RpcServer::with_engines(None, 1, rpc_workers));
     rpc_server
@@ -395,12 +413,19 @@ async fn main() {
         Arc::new(ReportingTask::new(metrics.clone(), Arc::clone(&config)));
     let scanner_task: Arc<dyn crowdb_diskdb::bg_task::BackgroundTask> =
         Arc::new(ScannerTask::new(scan_state, Arc::clone(&config)));
+    let scanner_owner: Arc<dyn SegmentOwnerQuery> = owner_client.clone();
+    let owner_scanner_task: Arc<dyn crowdb_diskdb::bg_task::BackgroundTask> =
+        Arc::new(BusyBlockOwnerScanner::new(scanner_owner, Arc::clone(&config)));
+    let rebalance_task: Arc<dyn crowdb_diskdb::bg_task::BackgroundTask> =
+        Arc::new(RebalancePlannerTask::new(relocation_worker, Arc::clone(&config)));
     let runner = BgRunner::new()
         .register(keepalive_task)
         .register(compaction_engine)
         .register(preparatory_thread)
         .register(reporting_task)
-        .register(scanner_task);
+        .register(scanner_task)
+        .register(owner_scanner_task)
+        .register(rebalance_task);
     let stop = runner.stop_handle();
     let bg_ctx = Arc::new(BgCtx {
         container: Arc::clone(&container),

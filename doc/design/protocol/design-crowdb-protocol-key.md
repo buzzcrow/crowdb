@@ -290,6 +290,15 @@ Header for every binary key: `magic:1 | type_tag:2`.
   unit_offset:u64 BE`. Total 31 bytes. Tag `0x0007`. Binary-only.
   Scan prefix `magic|0x0007|disk_id|zone_index` = all free blocks in
   a zone.
+- **TentativeOwnerGraceKey** — `disk_id:16 bytes | zone_index:u32 BE |
+  unit_offset:u64 BE | allocation_ts:u64 BE`. Total 39 bytes. Tag
+  `0x0020`. Binary-only. It identifies the first-absent grace state for
+  one exact tentative allocation incarnation.
+- **RelocationJournalKey** — `disk_id:16 bytes | zone_index:u32 BE |
+  unit_offset:u64 BE | allocation_ts:u64 BE`. Total 39 bytes. Tag
+  `0x0021`. Binary-only. It identifies the durable relocation state for one
+  exact source allocation incarnation; the value carries the operation and
+  target identities.
 - **OwnerMapKey** — `rack_id:u64 BE | node_id:u64 BE |
   disk_group_id:u64 BE`. Total 27 bytes. Tag `0x0008`. Same field
   shape as `DiskGroupKey`, distinct tag.
@@ -306,8 +315,8 @@ Header for every binary key: `magic:1 | type_tag:2`.
 
 `disk_id` 16-byte encoding is `high:u64 BE | low:u64 BE`.
 
-Reserved type tags: `0x000B` and above. Assigned sequentially as new
-kinds are added; never reused, never reordered.
+Unassigned type tags remain reserved. Assigned tags are never reused or
+reordered.
 
 `CROWDB_KEY_MAGIC` is a named constant in `lib/crowdb-protocol/src/key/`.
 Its exact value is fixed at first ship and never changed afterward.

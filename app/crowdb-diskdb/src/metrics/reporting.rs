@@ -42,6 +42,8 @@ impl ReportingTask {
         let mut dg_capacity_bytes = 0u64;
         let mut dg_busy_bytes = 0u64;
         let mut dg_free_bytes = 0u64;
+        let mut imbalance_max = 0u64;
+        let mut imbalance_min = u64::MAX;
 
         let dg_ids = ctx.container.disk_group_ids();
         for dg_id in dg_ids {
@@ -61,6 +63,10 @@ impl ReportingTask {
                         let snap = disk_metrics.swap_periods();
                         total_allocate_count += snap.allocate_count;
                         total_free_count += snap.free_count;
+                    }
+                    if let Some(used_pct) = du.busy_bytes.saturating_mul(100).checked_div(du.capacity_bytes) {
+                        imbalance_max = imbalance_max.max(used_pct);
+                        imbalance_min = imbalance_min.min(used_pct);
                     }
                 }
             }
@@ -83,6 +89,16 @@ impl ReportingTask {
         self.metrics.dg_capacity_bytes.set(dg_capacity_bytes);
         self.metrics.dg_busy_bytes.set(dg_busy_bytes);
         self.metrics.dg_free_bytes.set(dg_free_bytes);
+        let imbalance_min = if imbalance_min == u64::MAX {
+            0
+        } else {
+            imbalance_min
+        };
+        self.metrics.dg_imbalance_used_pct_max.set(imbalance_max);
+        self.metrics.dg_imbalance_used_pct_min.set(imbalance_min);
+        self.metrics
+            .dg_imbalance_used_pct_spread
+            .set(imbalance_max.saturating_sub(imbalance_min));
         self.metrics
             .owned_disk_group_count
             .set(ctx.container.disk_group_count() as u64);

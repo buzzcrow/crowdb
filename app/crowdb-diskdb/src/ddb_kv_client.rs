@@ -15,8 +15,13 @@ use std::sync::Arc;
 use bytes::Bytes;
 use crowdb_kv_client::{BatchOp, CrowdbKvClient, GetOutcome, JournalOp, ReadMode, Result};
 use crowdb_protocol::common::DiskId;
-use crowdb_protocol::diskdb::rpc::{BusyBlockValue, FreeBlockValue, RecoveryScanProgressValue, ZoneValue};
-use crowdb_protocol::key::{BinaryKey, BusyBlockKey, FreeBlockKey, RecoveryScanProgressKey, ZoneKey};
+use crowdb_protocol::diskdb::rpc::{
+    BusyBlockValue, FreeBlockValue, RecoveryScanProgressValue, RelocationJournalValue, ZoneValue,
+};
+use crowdb_protocol::key::{
+    BinaryKey, BusyBlockKey, FreeBlockKey, RecoveryScanProgressKey, RelocationJournalKey,
+    TentativeOwnerGraceKey, ZoneKey,
+};
 use crowdb_protocol::{RecoveryScanProgressValueExt, ZoneValueExt};
 
 use crate::model::records::{BusyRecord, FreeRecord, ZoneRecords};
@@ -36,6 +41,120 @@ pub struct DdbKvClient {
 }
 
 impl DdbKvClient {
+    /// Persist one exact-source relocation checkpoint.
+    pub async fn put_relocation_journal(
+        &self,
+        bind: Bind,
+        key: &RelocationJournalKey,
+        value: &RelocationJournalValue,
+    ) -> Result<()> {
+        let (store_id, group_id) = bind;
+        let bytes = bincode::serialize(value).expect("serialize relocation journal");
+        self.kv
+            .put(store_id, group_id, &key.to_bytes(), &bytes, None)
+            .await
+            .map(|_| ())
+    }
+
+    /// Read one exact-source relocation checkpoint.
+    pub async fn get_relocation_journal(
+        &self,
+        bind: Bind,
+        key: &RelocationJournalKey,
+    ) -> Result<Option<RelocationJournalValue>> {
+        let (store_id, group_id) = bind;
+        match self
+            .kv
+            .get(store_id, group_id, &key.to_bytes(), ReadMode::Linearizable, None)
+            .await?
+        {
+            GetOutcome::Found { value, .. } => decode_relocation_journal(key, &value).map(Some),
+            GetOutcome::NotFound => Ok(None),
+        }
+    }
+
+    /// List restart-resumable relocation checkpoints in one bound data group.
+    pub async fn list_relocation_journals(
+        &self,
+        bind: Bind,
+    ) -> Result<Vec<(RelocationJournalKey, RelocationJournalValue)>> {
+        let (store_id, group_id) = bind;
+        let prefix = RelocationJournalKey::prefix_all();
+        let outcome = self
+            .kv
+            .scan(
+                store_id,
+                group_id,
+                &prefix,
+                &[],
+                &[],
+                0,
+                ReadMode::Linearizable,
+                None,
+                false,
+                None,
+            )
+            .await?;
+        let mut journals = Vec::with_capacity(outcome.items.len());
+        for (raw_key, raw_value) in outcome.items {
+            let key = RelocationJournalKey::from_bytes(&raw_key).map_err(|error| {
+                crowdb_kv_client::Error::SysdataDecode {
+                    key: format!("{raw_key:02x?}"),
+                    reason: error.to_string(),
+                }
+            })?;
+            journals.push((key.clone(), decode_relocation_journal(&key, &raw_value)?));
+        }
+        Ok(journals)
+    }
+
+    /// Read the durable first-absent timestamp for one exact tentative
+    /// allocation incarnation.
+    pub async fn get_tentative_owner_grace(
+        &self,
+        bind: Bind,
+        key: &TentativeOwnerGraceKey,
+    ) -> Result<Option<u64>> {
+        let (store_id, group_id) = bind;
+        match self
+            .kv
+            .get(store_id, group_id, &key.to_bytes(), ReadMode::Linearizable, None)
+            .await?
+        {
+            GetOutcome::Found { value, .. } => bincode::deserialize(&value).map(Some).map_err(|error| {
+                crowdb_kv_client::Error::SysdataDecode {
+                    key: format!("{:02x?}", key.to_bytes()),
+                    reason: error.to_string(),
+                }
+            }),
+            GetOutcome::NotFound => Ok(None),
+        }
+    }
+
+    /// Persist the first observed `Absent` timestamp idempotently.
+    pub async fn put_tentative_owner_grace(
+        &self,
+        bind: Bind,
+        key: &TentativeOwnerGraceKey,
+        first_absent_at_secs: u64,
+    ) -> Result<()> {
+        let (store_id, group_id) = bind;
+        let value = bincode::serialize(&first_absent_at_secs).expect("serialize grace timestamp");
+        self.kv
+            .put(store_id, group_id, &key.to_bytes(), &value, None)
+            .await
+            .map(|_| ())
+    }
+
+    /// Delete a grace marker once its exact incarnation is referenced or freed.
+    pub async fn delete_tentative_owner_grace(&self, bind: Bind, key: &TentativeOwnerGraceKey) -> Result<()> {
+        let (store_id, group_id) = bind;
+        self.kv
+            .delete(store_id, group_id, &key.to_bytes(), None)
+            .await
+            .map(|_| ())
+    }
+
     /// Wrap a `CrowdbKvClient` for data-group access.
     #[must_use]
     pub fn new(kv: CrowdbKvClient) -> Self {
@@ -631,4 +750,11 @@ impl DdbKvClient {
             .await
             .map(|_| ())
     }
+}
+
+fn decode_relocation_journal(key: &RelocationJournalKey, bytes: &[u8]) -> Result<RelocationJournalValue> {
+    bincode::deserialize(bytes).map_err(|error| crowdb_kv_client::Error::SysdataDecode {
+        key: format!("{:02x?}", key.to_bytes()),
+        reason: error.to_string(),
+    })
 }

@@ -11,7 +11,9 @@ pub const CHUNK_TASK_SCHEMA_VERSION: u16 = 1;
 pub const TASK_KIND_MIRROR_TO_EC: u16 = 1;
 pub const TASK_KIND_REPAIR_STRIP: u16 = 2;
 pub const TASK_KIND_REPAIR_PLACEMENT: u16 = 3;
+pub const TASK_KIND_RELOCATE_SEGMENT: u16 = 4;
 pub const PLACEMENT_REPAIR_KIND_VERSION: u16 = 1;
+pub const RELOCATE_SEGMENT_KIND_VERSION: u16 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlacementRepairTaskPayload {
@@ -21,6 +23,59 @@ pub struct PlacementRepairTaskPayload {
     pub repair_rack: bool,
     pub repair_node: bool,
     pub repair_disk: bool,
+    #[serde(default)]
+    pub target: Option<RepairTargetCheckpoint>,
+}
+
+/// Durable target state for one repair fragment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RepairTargetPhase {
+    Allocated,
+    Copied,
+    Published,
+    Confirmed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepairTargetCheckpoint {
+    pub source: crate::diskdb::rpc::Segment,
+    pub destination: crate::diskdb::rpc::Segment,
+    pub phase: RepairTargetPhase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[repr(i32)]
+pub enum RelocateSegmentTaskDisposition {
+    #[default]
+    Accepted = 0,
+    Published = 1,
+    Stale = 2,
+    Rejected = 3,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelocateSegmentTaskPayload {
+    pub operation_id: ChunkId,
+    pub chunk_id: ChunkId,
+    pub source: crate::diskdb::rpc::Segment,
+    pub target: crate::diskdb::rpc::Segment,
+    pub disposition: RelocateSegmentTaskDisposition,
+    #[serde(default)]
+    pub expected_modify_ts: Option<u64>,
+    #[serde(default)]
+    pub strip_index: Option<u32>,
+    #[serde(default)]
+    pub source_free_not_before_ms: u64,
+}
+
+/// Deterministic relocation identity for one exact source incarnation.
+#[must_use]
+pub fn relocation_operation_id(source: &crate::diskdb::rpc::Segment) -> Option<ChunkId> {
+    let disk = source.disk_id?;
+    Some(ChunkId {
+        high: disk.high ^ source.allocation_ts.rotate_left(17) ^ u64::from(source.zone_index),
+        low: disk.low ^ source.unit_offset.rotate_left(29),
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

@@ -25,8 +25,9 @@ use crowdb_protocol::chunkdb::rpc::{
     CompleteMirrorToEcConversionResponse, DeleteChunkRangeResponse, DeleteChunkResponse,
     DiscardReplacementSegmentResponse, ListChunksResponse, MutateStripReservationResponse,
     PlacementAssessment, PlacementPriority, PrepareMirrorToEcConversionResponse, QueryChunkResponse,
-    ReplaceChunkStripRangeResponse, ReserveStripGroupResponse, SealChunkResponse, StripCleanupIntent,
-    StripReservationAction, StripReservationGroup, StripReservationState, StripType as ProtoStripType,
+    QuerySegmentOwnerResponse, RelocateSegmentHandoffResponse, ReplaceChunkStripRangeResponse,
+    ReserveStripGroupResponse, SealChunkResponse, StripCleanupIntent, StripReservationAction,
+    StripReservationGroup, StripReservationState, StripType as ProtoStripType,
     TriggerConversionBatchResponse, TriggerConversionResponse, UpdateChunkStripResponse,
 };
 use crowdb_protocol::chunkdb::rpc::{EcState as ProtoEcState, EcStrip, MirrorStrip, Strip as ProtoStrip};
@@ -42,7 +43,9 @@ use crowdb_protocol::chunkdb_fb::{
     FBMutateStripReservationRequestArgs, FBMutateStripReservationResponse, FBPlacementAssessment,
     FBPlacementAssessmentArgs, FBPlacementPriority, FBPrepareMirrorToEcConversionRequest,
     FBPrepareMirrorToEcConversionRequestArgs, FBPrepareMirrorToEcConversionResponse, FBQueryChunkRequest,
-    FBQueryChunkRequestArgs, FBReplaceChunkStripRangeRequest, FBReplaceChunkStripRangeRequestArgs,
+    FBQueryChunkRequestArgs, FBQuerySegmentOwnerRequest, FBQuerySegmentOwnerRequestArgs,
+    FBQuerySegmentOwnerResponse, FBRelocateSegmentHandoffRequest, FBRelocateSegmentHandoffRequestArgs,
+    FBRelocateSegmentHandoffResponse, FBReplaceChunkStripRangeRequest, FBReplaceChunkStripRangeRequestArgs,
     FBReserveStripGroupRequest, FBReserveStripGroupRequestArgs, FBReserveStripGroupResponse,
     FBSealChunkRequest, FBSealChunkRequestArgs, FBSegment, FBStripBody, FBStripReservationAction,
     FBStripReservationGroup, FBStripReservationState, FBStripType, FBTriggerConversionBatchRequest,
@@ -431,6 +434,86 @@ impl ChunkdbRpcTransport {
         Ok(QueryChunkResponse {
             chunk: r.chunk().map(|fb_chunk| parse_fb_chunk(&fb_chunk)),
             layout_validity_ms: r.layout_validity_ms(),
+        })
+    }
+
+    /// Send an exact-segment owner disposition query via crowdb-rpc.
+    pub async fn send_query_segment_owner(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::QuerySegmentOwnerRequest,
+    ) -> Result<QuerySegmentOwnerResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let chunk_id = req.chunk_id.as_ref().map(|id| FBInt128::new(id.high, id.low));
+        let segment = req.segment.as_ref().map(build_fb_segment);
+        let request = FBQuerySegmentOwnerRequest::create(
+            &mut builder,
+            &FBQuerySegmentOwnerRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                chunk_id: chunk_id.as_ref(),
+                segment: segment.as_ref(),
+            },
+        );
+        builder.finish(request, None);
+        let response = call_rpc(
+            self,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::EQuerySegmentOwnerRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = flatbuffers::root::<FBQuerySegmentOwnerResponse>(response.bytes())
+            .map_err(|_| ChunkdbClientError::Rpc("segment owner response malformed".into()))?;
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        Ok(QuerySegmentOwnerResponse {
+            disposition: i32::from(response.disposition().0),
+        })
+    }
+
+    /// Deliver or poll one exact-segment relocation handoff via crowdb-rpc.
+    pub async fn send_relocate_segment_handoff(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::RelocateSegmentHandoffRequest,
+    ) -> Result<RelocateSegmentHandoffResponse> {
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let operation_id = req.operation_id.as_ref().map(|id| FBInt128::new(id.high, id.low));
+        let chunk_id = req.chunk_id.as_ref().map(|id| FBInt128::new(id.high, id.low));
+        let source = req.source.as_ref().map(build_fb_segment);
+        let target = req.target.as_ref().map(build_fb_segment);
+        let request = FBRelocateSegmentHandoffRequest::create(
+            &mut builder,
+            &FBRelocateSegmentHandoffRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                operation_id: operation_id.as_ref(),
+                chunk_id: chunk_id.as_ref(),
+                source: source.as_ref(),
+                target: target.as_ref(),
+            },
+        );
+        builder.finish(request, None);
+        let response = call_rpc(
+            self,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::ERelocateSegmentHandoffRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = flatbuffers::root::<FBRelocateSegmentHandoffResponse>(response.bytes())
+            .map_err(|_| ChunkdbClientError::Rpc("relocation handoff response malformed".into()))?;
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        Ok(RelocateSegmentHandoffResponse {
+            disposition: i32::from(response.disposition().0),
         })
     }
 

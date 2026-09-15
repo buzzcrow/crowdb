@@ -49,6 +49,8 @@ enum FBMsgType : int16 {
     ETriggerScanResponse = 3019,
     EGetScanStatusRequest = 3020,
     EGetScanStatusResponse = 3021,
+    EExecuteRelocationRequest = 3022,
+    EExecuteRelocationResponse = 3023,
     // kv consensus service (range 1000s, see kv_consensus.fbs — R32)
     EPrepareRequest = 1000,
     EPromiseResponse = 1001,
@@ -133,6 +135,10 @@ enum FBMsgType : int16 {
     EReserveStripGroupResponse = 3333,
     EMutateStripReservationRequest = 3334,
     EMutateStripReservationResponse = 3335,
+    EQuerySegmentOwnerRequest = 3336,
+    EQuerySegmentOwnerResponse = 3337,
+    ERelocateSegmentHandoffRequest = 3338,
+    ERelocateSegmentHandoffResponse = 3339,
     // chunk KV service (range 3700s, see chunk_kv.fbs)
     EChunkKvPointRequest = 3700,
     EChunkKvPointResponse = 3701,

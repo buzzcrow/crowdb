@@ -5,7 +5,7 @@
 //! allocatable-disk context, and the round-robin cursor.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 use arc_swap::ArcSwap;
@@ -14,6 +14,7 @@ use crowdb_protocol::common::{DiskId, HwStatus};
 use crowdb_protocol::diskdb::rpc::BusyBlockValue;
 use crowdb_protocol::DiskGroupId;
 
+use crate::ddb_config::LoadAwareWeight;
 use crate::metrics::DiskMetrics;
 use crate::model::disk::{DdbDisk, DiskUsage};
 use crate::model::zone::{AllocatedRange, DdbZone, ZoneUsage};
@@ -67,6 +68,8 @@ pub struct DdbDiskGroup {
     membership: ArcSwap<DiskMembership>,
     /// Round-robin cursor over the snapshot's allocatable disks.
     pos_v_disk_ctx: AtomicU64,
+    load_aware: AtomicBool,
+    load_aware_weight: AtomicU8,
     /// Per-disk-group monotonic allocation-incarnation source.
     allocation_ts_source: AtomicU64,
     /// `allocation_ts -> tentative allocation`; recovery-safe KV reads are
@@ -99,6 +102,8 @@ impl DdbDiskGroup {
             disks: RwLock::new(Vec::new()),
             membership: ArcSwap::from_pointee(DiskMembership::default()),
             pos_v_disk_ctx: AtomicU64::new(0),
+            load_aware: AtomicBool::new(true),
+            load_aware_weight: AtomicU8::new(LoadAwareWeight::FreeBytes as u8),
             allocation_ts_source: AtomicU64::new(now_nanos()),
             tentative_blocks: SkipMap::new(),
             tentative_count: AtomicUsize::new(0),
@@ -296,6 +301,11 @@ impl DdbDiskGroup {
         self.status.store(status as i32, Ordering::Release);
     }
 
+    pub fn set_allocation_policy(&self, load_aware: bool, weight: LoadAwareWeight) {
+        self.load_aware.store(load_aware, Ordering::Release);
+        self.load_aware_weight.store(weight as u8, Ordering::Release);
+    }
+
     /// Allocate a single block — round-robin over allocatable disks
     /// within this disk-group, skipping `exclude_disks`.
     ///
@@ -318,8 +328,23 @@ impl DdbDiskGroup {
         let ctx_len = ctx.len();
         #[allow(clippy::cast_possible_truncation)]
         let start = self.pos_v_disk_ctx.fetch_add(1, Ordering::Relaxed) as usize % ctx_len;
+        let preferred = self
+            .load_aware
+            .load(Ordering::Acquire)
+            .then(|| self.preferred_disk(ctx, exclude_disks, start))
+            .flatten();
+        if let Some(index) = preferred {
+            let disk = &ctx[index];
+            if let Some((zone, range)) = disk.disk_allocate(unit_count, cas_retry_limit, zone_rotate_count) {
+                return Ok((Arc::clone(disk), zone, range));
+            }
+        }
         for i in 0..ctx_len {
-            let disk = &ctx[(start + i) % ctx_len];
+            let index = (start + i) % ctx_len;
+            if Some(index) == preferred {
+                continue;
+            }
+            let disk = &ctx[index];
             if exclude_disks.contains(&disk.disk_id) {
                 continue;
             }
@@ -328,6 +353,31 @@ impl DdbDiskGroup {
             }
         }
         Err(AllocError::NoSpace)
+    }
+
+    fn preferred_disk(&self, disks: &[Arc<DdbDisk>], excluded: &[DiskId], start: usize) -> Option<usize> {
+        let weight = self.load_aware_weight.load(Ordering::Acquire);
+        let mut best: Option<(usize, DiskUsage)> = None;
+        for offset in 0..disks.len() {
+            let index = (start + offset) % disks.len();
+            let disk = &disks[index];
+            if excluded.contains(&disk.disk_id) {
+                continue;
+            }
+            let usage = disk.usage();
+            let replace = best.as_ref().map_or(true, |(_, current)| {
+                if weight == LoadAwareWeight::InverseUsedPct as u8 {
+                    u128::from(usage.busy_bytes) * u128::from(current.capacity_bytes)
+                        < u128::from(current.busy_bytes) * u128::from(usage.capacity_bytes)
+                } else {
+                    usage.free_bytes > current.free_bytes
+                }
+            });
+            if replace {
+                best = Some((index, usage));
+            }
+        }
+        best.map(|(index, _)| index)
     }
 
     /// Allocate `count` blocks of `unit_count` units each, spreading

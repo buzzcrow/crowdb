@@ -41,7 +41,8 @@ pub use chunkdb::{ChunkdbRangeBindingKey, ChunkdbRangeMigrationKey};
 pub use common::{NodeKey, RackKey};
 pub use diskdb::{
     BindMapKey, BusyBlockKey, DiskGroupKey, DiskGroupUsageKey, DiskKey, FreeBlockKey, InstanceKey,
-    OwnerMapKey, RecoveryScanProgressKey, ZoneKey, DISKDB_WATCH_PREFIXES,
+    OwnerMapKey, RecoveryScanProgressKey, RelocationJournalKey, TentativeOwnerGraceKey, ZoneKey,
+    DISKDB_WATCH_PREFIXES,
 };
 pub use encoding::{BinaryKey, KeyError, TextKey, CROWDB_KEY_MAGIC};
 pub use kv_cluster::{KvGroupKey, KvReplicaKey, KvStoreKey};

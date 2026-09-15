@@ -5,10 +5,14 @@
 
 pub mod executor;
 pub mod manager;
+pub mod owner;
+pub mod relocation;
 pub mod scanner;
 pub mod store;
 
 pub use executor::{TaskExecutor, TaskHandler, TaskOutcome, TaskRegistryError};
 pub use manager::{TaskAdmission, TaskClaim, TaskManager, TaskManagerError};
+pub use owner::{SegmentOwnerError, SegmentOwnerResolver};
+pub use relocation::{RelocateSegmentTaskError, RelocateSegmentTaskHandler};
 pub use scanner::{TaskScanSummary, TaskScanner};
 pub use store::{TaskStore, TaskStoreError};

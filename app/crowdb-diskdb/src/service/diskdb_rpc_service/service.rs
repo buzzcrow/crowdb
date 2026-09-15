@@ -32,6 +32,7 @@ use crowdb_protocol::diskdb_fb::{
     FBCommitBlocksResponse, FBCommitBlocksResponseArgs, FBCompactZoneRequest, FBCompactZoneResponse,
     FBCompactZoneResponseArgs, FBDiskGroupInfo, FBDiskGroupInfoArgs, FBDiskGroupRecalcResult,
     FBDiskGroupRecalcResultArgs, FBDiskInfo, FBDiskInfoArgs, FBDiskType, FBDiskdbRetCode,
+    FBExecuteRelocationRequest, FBExecuteRelocationResponse, FBExecuteRelocationResponseArgs,
     FBFreeBlocksRequest, FBFreeFailure, FBFreeFailureArgs, FBFreeFailureReason, FBFreeResponse,
     FBFreeResponseArgs, FBGetDiskGroupInfoRequest, FBGetDiskGroupInfoResponse,
     FBGetDiskGroupInfoResponseArgs, FBGetDiskInfoRequest, FBGetDiskInfoResponse, FBGetDiskInfoResponseArgs,
@@ -57,6 +58,7 @@ use crate::model::disk_group::{AllocError, DdbDiskGroup, DiskGroupUsage};
 use crate::model::disk_group_container::DdbDiskGroupContainer;
 use crate::model::zone::{DdbZoneHealth, ZoneUsage};
 use crate::persistence::FreeBatcher;
+use crate::rebalance::RelocationWorker;
 use crate::recovery::compaction::compact_zone;
 use crate::recovery::{unit_capacity_for_zone, ZoneLoader};
 use crate::scanner::{ScanState, ScanSummary};
@@ -80,6 +82,7 @@ pub struct DiskdbRpcService {
     metrics: Arc<DiskdbMetrics>,
     config: Arc<arc_swap::ArcSwap<DdbConfig>>,
     free_batcher: Arc<FreeBatcher>,
+    relocation: Option<Arc<RelocationWorker>>,
     /// Tokio runtime handle for spawning async work from the C++ I/O
     /// thread callback.
     rt: Handle,
@@ -109,8 +112,15 @@ impl DiskdbRpcService {
             metrics,
             config,
             free_batcher,
+            relocation: None,
             rt,
         }
+    }
+
+    #[must_use]
+    pub fn with_relocation_worker(mut self, worker: Arc<RelocationWorker>) -> Self {
+        self.relocation = Some(worker);
+        self
     }
 
     /// Close free admission and wait for every accepted free to finish.
@@ -119,6 +129,7 @@ impl DiskdbRpcService {
     }
 
     /// Register all 11 diskdb request handlers into the `RpcServer`.
+    #[allow(clippy::too_many_lines)]
     pub fn register_handlers(self: &Arc<Self>, server: &Arc<RpcServer>) {
         server.register_handler(
             FBMsgType::EAllocateBlocksRequest.0 as u16,
@@ -219,6 +230,15 @@ impl DiskdbRpcService {
                 Self::handle_get_scan_status,
             ),
         );
+        server.register_handler(
+            FBMsgType::EExecuteRelocationRequest.0 as u16,
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::ExecuteRelocation,
+                Self::handle_execute_relocation,
+            ),
+        );
     }
 
     /// Build a handler closure that dispatches to the given method.
@@ -245,9 +265,10 @@ mod queries;
 mod wire;
 
 use wire::{
-    build_allocate_response, build_commit_response, build_compact_zone_response, build_free_response,
-    build_get_disk_group_info_response, build_get_disk_info_response, build_get_scan_status_response,
-    build_query_capacity_response, build_query_capacity_response_zone, build_rebuild_zone_bitmap_response,
-    build_recalc_response, build_trigger_scan_response, map_free_error, parse_segments, submit_error,
-    submit_fb_response, AllocateParams,
+    build_allocate_response, build_commit_response, build_compact_zone_response,
+    build_execute_relocation_response, build_free_response, build_get_disk_group_info_response,
+    build_get_disk_info_response, build_get_scan_status_response, build_query_capacity_response,
+    build_query_capacity_response_zone, build_rebuild_zone_bitmap_response, build_recalc_response,
+    build_trigger_scan_response, map_free_error, parse_segments, submit_error, submit_fb_response,
+    AllocateParams,
 };

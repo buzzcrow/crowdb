@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R171** — Bump this line in the same commit when adding a new item.
+**Next R number: R172** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -136,19 +136,11 @@ baseline is correct and measured.
   rebinding. Monitor detects instance join/leave, rebalances disk-group
   assignments, migrates data during rebinding.
 - **[R80](R80-diskdb-rebalance.md)** — diskdb space rebalance across
-  disks + disk-groups — Area: diskdb — New/recovered disks enter
-  `allocating_disks` empty while peers stay near-full; the round-robin
-  allocator is load-unaware so imbalance persists. Add imbalance
-  gauges (per-disk-group `used_pct` spread), load-aware allocation
-  skewing (weight new allocates by free space — passive convergence,
-  no data move), and a per-disk-group rebalance planner that emits
-  `RebalancePlanValue` (source busy blocks + `owner_chunk` + target
-  disk) with placeholder relocation (`LogOnly`, no `diskio` — same
-  envelope as the disk failure recovery scan). Disk-group-level
-  rebalance is a caller concern
-  (§3.2 — caller picks `disk_group_id`); diskdb contributes a
-  `GetRebalanceHint` RPC + keepalive summary, not cross-instance
-  moves. Real data relocation deferred to a future `diskio` service.
+  disks — Area: diskdb — Complete the existing passive allocator and durable
+  relocation baseline with sustained-skew admission, projected-improvement and
+  target-headroom gates, bounded repeated moves, truthful stalled/balanced
+  status, and a real DiskIO/ChunkDB convergence test for newly added or
+  recovered empty disks.
 - **[R82](R82-kv-watch-notify-coalescing.md)** — watch/notify
   coalescing (debounce) — Area: kv / diskdb — the watch/notify
   extension ships without coalescing: one notify per changed key per
@@ -170,15 +162,11 @@ end-to-end Chunk IO performance workloads are landed. The RPC migration items
 
 ### Medium Priority
 
-- **[R97](R97-chunkdb-advanced-placement-strategies.md)** — configurable
-  failure-domain placement and cross-domain balancing — Area: chunkdb / diskdb
-  / group 0 — Add `rack_first` and `node_first` policies with explicit rack,
-  node, and physical-disk protection assessments. Rank safe candidates by
-  projected normalized utilization so uneven racks, nodes, disk-groups, and
-  disks converge without weakening the selected failure guarantee. Validate
-  DiskDB's returned physical disks, keep policy changes non-retroactive, create
-  durable background repair tasks for every temporarily degraded EC strip,
-  and add a protection-preserving cross-disk-group rebalance planner.
+- **[R171](R171-chunkdb-ad-hoc-ec-read-recovery.md)** — ad-hoc EC read
+  recovery — Area: chunk-client / chunkdb / diskdb — Preserve slice-only ISA-L
+  reconstruction for small reads, while routing eligible full-fragment
+  recoveries to a bounded ChunkDB in-memory coalescer that reuses rebuilt bytes
+  and hands one target to the existing durable repair publication sequence.
 - **[R83](R83-chunkdb-complete-recovery-flow.md)** — chunkdb
   complete recovery flow (real data recovery + speed control) —
   Area: chunkdb / diskdb / diskio — diskdb's recovery is disk-layer

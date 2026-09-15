@@ -76,6 +76,28 @@ impl TaskManager {
         Ok(())
     }
 
+    /// Persist a handler checkpoint under the caller's current task claim.
+    ///
+    /// The returned task contains the new payload revision. A stale executor
+    /// cannot overwrite a successor after its lease has been reclaimed.
+    pub async fn checkpoint_payload(
+        &self,
+        claim: &ChunkTaskValue,
+        payload: Vec<u8>,
+        now_ms: u64,
+    ) -> Result<ChunkTaskValue, TaskManagerError> {
+        let current = self.load(claim).await?.ok_or(TaskManagerError::StaleClaim)?;
+        if !owns_claim(&current, claim.claim_owner, claim.claim_generation) {
+            return Err(TaskManagerError::StaleClaim);
+        }
+        let mut checkpoint = current.clone();
+        checkpoint.revision = checkpoint.revision.saturating_add(1);
+        checkpoint.updated_at_ms = now_ms;
+        checkpoint.payload = payload;
+        self.store.write_transition(Some(&current), &checkpoint).await?;
+        Ok(checkpoint)
+    }
+
     /// Create a task unless its deterministic identity already exists.
     ///
     /// # Errors

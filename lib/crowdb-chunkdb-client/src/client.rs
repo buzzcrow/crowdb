@@ -25,7 +25,8 @@ use crowdb_protocol::chunkdb::rpc::{
     DiscardReplacementSegmentRequest, DiscardReplacementSegmentResponse, ListChunksRequest,
     ListChunksResponse, MutateStripReservationRequest, MutateStripReservationResponse,
     PrepareMirrorToEcConversionRequest, PrepareMirrorToEcConversionResponse, QueryChunkRequest,
-    QueryChunkResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse,
+    QueryChunkResponse, QuerySegmentOwnerRequest, QuerySegmentOwnerResponse, RelocateSegmentHandoffRequest,
+    RelocateSegmentHandoffResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse,
     ReserveStripGroupRequest, ReserveStripGroupResponse, SealChunkRequest, SealChunkResponse,
     TriggerConversionBatchRequest, TriggerConversionBatchResponse, TriggerConversionRequest,
     TriggerConversionResponse, UpdateChunkStripRequest, UpdateChunkStripResponse,
@@ -309,6 +310,32 @@ impl ChunkdbClient {
         self.with_rpc_retry(chunk_id.as_ref(), |t, ep| {
             let req = req.clone();
             async move { t.send_query_chunk(&ep, &req).await }
+        })
+        .await
+    }
+
+    /// Query the current `ChunkDB` owner's disposition for an exact segment.
+    pub async fn query_segment_owner(
+        &self,
+        req: QuerySegmentOwnerRequest,
+    ) -> Result<QuerySegmentOwnerResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move { transport.send_query_segment_owner(&endpoint, &req).await }
+        })
+        .await
+    }
+
+    /// Deliver or poll one durable exact-segment relocation handoff.
+    pub async fn relocate_segment_handoff(
+        &self,
+        req: RelocateSegmentHandoffRequest,
+    ) -> Result<RelocateSegmentHandoffResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let req = req.clone();
+            async move { transport.send_relocate_segment_handoff(&endpoint, &req).await }
         })
         .await
     }

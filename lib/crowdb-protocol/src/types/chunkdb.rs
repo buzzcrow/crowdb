@@ -388,6 +388,62 @@ pub struct QueryChunkResponse {
     pub layout_validity_ms: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[repr(i32)]
+pub enum SegmentOwnerDisposition {
+    #[default]
+    Referenced = 0,
+    TaskPending = 1,
+    Absent = 2,
+}
+impl_enum_conversions!(
+    SegmentOwnerDisposition,
+    Referenced = 0,
+    TaskPending = 1,
+    Absent = 2
+);
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct QuerySegmentOwnerRequest {
+    pub chunk_id: Option<ChunkId>,
+    pub segment: Option<Segment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct QuerySegmentOwnerResponse {
+    pub disposition: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[repr(i32)]
+pub enum RelocationHandoffDisposition {
+    #[default]
+    Accepted = 0,
+    Published = 1,
+    Stale = 2,
+    Rejected = 3,
+}
+impl_enum_conversions!(
+    RelocationHandoffDisposition,
+    Accepted = 0,
+    Published = 1,
+    Stale = 2,
+    Rejected = 3
+);
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct RelocateSegmentHandoffRequest {
+    pub operation_id: Option<ChunkId>,
+    pub chunk_id: Option<ChunkId>,
+    pub source: Option<Segment>,
+    pub target: Option<Segment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct RelocateSegmentHandoffResponse {
+    pub disposition: i32,
+}
+
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct SealChunkRequest {
     pub chunk_id: Option<ChunkId>,

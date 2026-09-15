@@ -1041,6 +1041,84 @@ impl LifecycleHandler {
         replacement_strips: &[ChunkStrip],
         operation_id: ChunkId,
     ) -> Result<Chunk, LifecycleError> {
+        self.replace_chunk_strip_range_with_confirmation(
+            chunk_id,
+            expected_modify_ts,
+            start_index,
+            old_strips,
+            replacement_strips,
+            operation_id,
+            true,
+            true,
+        )
+        .await
+    }
+
+    /// Publish a replacement that continues to reference tentative blocks.
+    ///
+    /// The caller must persist enough operation state to confirm every new
+    /// segment after publication. This is used only by durable repair jobs.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn publish_tentative_chunk_strip_range(
+        &self,
+        chunk_id: &ChunkId,
+        expected_modify_ts: u64,
+        start_index: u32,
+        old_strips: &[ChunkStrip],
+        replacement_strips: &[ChunkStrip],
+        operation_id: ChunkId,
+    ) -> Result<Chunk, LifecycleError> {
+        self.replace_chunk_strip_range_with_confirmation(
+            chunk_id,
+            expected_modify_ts,
+            start_index,
+            old_strips,
+            replacement_strips,
+            operation_id,
+            false,
+            true,
+        )
+        .await
+    }
+
+    /// Publish a copied relocation target without scheduling source cleanup.
+    /// The external relocation journal owns source release after reader-layout
+    /// grace and an idempotent owner acknowledgement.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn publish_relocation_chunk_strip_range(
+        &self,
+        chunk_id: &ChunkId,
+        expected_modify_ts: u64,
+        start_index: u32,
+        old_strips: &[ChunkStrip],
+        replacement_strips: &[ChunkStrip],
+        operation_id: ChunkId,
+    ) -> Result<Chunk, LifecycleError> {
+        self.replace_chunk_strip_range_with_confirmation(
+            chunk_id,
+            expected_modify_ts,
+            start_index,
+            old_strips,
+            replacement_strips,
+            operation_id,
+            false,
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn replace_chunk_strip_range_with_confirmation(
+        &self,
+        chunk_id: &ChunkId,
+        expected_modify_ts: u64,
+        start_index: u32,
+        old_strips: &[ChunkStrip],
+        replacement_strips: &[ChunkStrip],
+        operation_id: ChunkId,
+        confirm_new_segments: bool,
+        retire_old_segments: bool,
+    ) -> Result<Chunk, LifecycleError> {
         self.check_range(chunk_id)?;
         if old_strips.is_empty() || replacement_strips.is_empty() {
             return Err(LifecycleError::InvalidRequest(
@@ -1091,6 +1169,7 @@ impl LifecycleHandler {
                         old_strips,
                         replacement_strips,
                         operation_id,
+                        retire_old_segments,
                     )
                     .await?
             {
@@ -1114,11 +1193,9 @@ impl LifecycleHandler {
         let new_segments: HashSet<_> = replacement_strips.iter().flat_map(extract_segments).collect();
         let new_only: Vec<_> = new_segments.difference(&old_segments).copied().collect();
         let old_only: Vec<_> = old_segments.difference(&new_segments).copied().collect();
-        self.allocator
-            .pool()
-            .commit_blocks(new_only.clone())
-            .await
-            .map_err(LifecycleError::Commit)?;
+        if confirm_new_segments {
+            self.confirm_tentative_segments(new_only.clone()).await?;
+        }
 
         chunk
             .strips
@@ -1127,7 +1204,7 @@ impl LifecycleHandler {
         chunk.next_strip_sequence = next_strip_sequence;
         chunk.modify_ts = chunk.modify_ts.saturating_add(1);
         chunk.last_strip_replacement = Some(operation_id);
-        if !old_only.is_empty() {
+        if retire_old_segments && !old_only.is_empty() {
             chunk.cleanup_intents.push(StripCleanupIntent {
                 operation_id: Some(operation_id),
                 retired_segments: old_only,
@@ -1153,6 +1230,7 @@ impl LifecycleHandler {
         old_strips: &[ChunkStrip],
         replacement_strips: &[ChunkStrip],
         operation_id: ChunkId,
+        retire_old_segments: bool,
     ) -> Result<bool, LifecycleError> {
         let old = &old_strips[0];
         let replacement = &replacement_strips[0];
@@ -1177,7 +1255,7 @@ impl LifecycleHandler {
                 .difference(&new_segments)
                 .copied()
                 .collect::<Vec<_>>();
-            if !retired.is_empty() {
+            if retire_old_segments && !retired.is_empty() {
                 chunk.cleanup_intents.push(StripCleanupIntent {
                     operation_id: Some(operation_id),
                     retired_segments: retired,
@@ -1200,8 +1278,44 @@ impl LifecycleHandler {
         surviving_segments: &[Segment],
         exclude_disk_ids: &[DiskId],
     ) -> Result<Segment, LifecycleError> {
-        self.allocate_repair_segment(chunk_id, old_segment, surviving_segments, exclude_disk_ids, false)
-            .await
+        self.allocate_repair_segment_constrained(
+            chunk_id,
+            old_segment,
+            surviving_segments,
+            exclude_disk_ids,
+            false,
+            &[],
+            &[],
+            None,
+            true,
+        )
+        .await
+    }
+
+    /// Allocate a placement-repair destination outside over-budget domains.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn allocate_placement_replacement_segment(
+        &self,
+        chunk_id: &ChunkId,
+        old_segment: &Segment,
+        surviving_segments: &[Segment],
+        exclude_disk_ids: &[DiskId],
+        exclude_racks: &[u64],
+        exclude_nodes: &[u64],
+        target_disk_group: u64,
+    ) -> Result<Segment, LifecycleError> {
+        self.allocate_repair_segment_constrained(
+            chunk_id,
+            old_segment,
+            surviving_segments,
+            exclude_disk_ids,
+            false,
+            exclude_racks,
+            exclude_nodes,
+            Some(target_disk_group),
+            false,
+        )
+        .await
     }
 
     /// Allocate one tentative repair segment, optionally relaxing node
@@ -1214,6 +1328,33 @@ impl LifecycleHandler {
         exclude_disk_ids: &[DiskId],
         allow_unsafe_placement: bool,
     ) -> Result<Segment, LifecycleError> {
+        self.allocate_repair_segment_constrained(
+            chunk_id,
+            old_segment,
+            surviving_segments,
+            exclude_disk_ids,
+            allow_unsafe_placement,
+            &[],
+            &[],
+            None,
+            true,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn allocate_repair_segment_constrained(
+        &self,
+        chunk_id: &ChunkId,
+        old_segment: &Segment,
+        surviving_segments: &[Segment],
+        exclude_disk_ids: &[DiskId],
+        allow_unsafe_placement: bool,
+        exclude_racks: &[u64],
+        exclude_nodes: &[u64],
+        target_disk_group: Option<u64>,
+        exclude_surviving_disks: bool,
+    ) -> Result<Segment, LifecycleError> {
         self.check_range(chunk_id)?;
         if old_segment.owner_chunk.as_ref() != Some(chunk_id) || old_segment.unit_count == 0 {
             return Err(LifecycleError::InvalidRequest(
@@ -1223,6 +1364,15 @@ impl LifecycleHandler {
         let snap = self.topology.snapshot();
         let disk_groups = snap.disk_groups();
         let mut constraints = self.placement_constraints();
+        constraints.exclude_racks.extend_from_slice(exclude_racks);
+        constraints.exclude_nodes.extend_from_slice(exclude_nodes);
+        if let Some(target_disk_group) = target_disk_group {
+            constraints
+                .exclude_disk_groups
+                .extend(disk_groups.iter().filter_map(|disk_group| {
+                    (disk_group.dg_id != target_disk_group).then_some(disk_group.dg_id)
+                }));
+        }
         if !allow_unsafe_placement {
             let node_count = disk_groups
                 .iter()
@@ -1249,10 +1399,12 @@ impl LifecycleHandler {
             );
         }
         let mut excluded = exclude_disk_ids.to_vec();
-        for segment in std::iter::once(old_segment).chain(surviving_segments) {
-            if let Some(disk_id) = segment.disk_id {
-                if !excluded.contains(&disk_id) {
-                    excluded.push(disk_id);
+        if exclude_surviving_disks {
+            for segment in std::iter::once(old_segment).chain(surviving_segments) {
+                if let Some(disk_id) = segment.disk_id {
+                    if !excluded.contains(&disk_id) {
+                        excluded.push(disk_id);
+                    }
                 }
             }
         }
@@ -1441,6 +1593,16 @@ impl LifecycleHandler {
             .free_blocks(vec![segment])
             .await
             .map_err(LifecycleError::Cleanup)
+    }
+
+    /// Confirm tentative segments after their owning chunk metadata was
+    /// durably published by a repair task.
+    pub async fn confirm_tentative_segments(&self, segments: Vec<Segment>) -> Result<(), LifecycleError> {
+        self.allocator
+            .pool()
+            .commit_blocks(segments)
+            .await
+            .map_err(LifecycleError::Commit)
     }
 
     /// Query a chunk by ID.

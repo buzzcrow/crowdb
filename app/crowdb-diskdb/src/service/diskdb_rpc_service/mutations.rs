@@ -1,11 +1,156 @@
 use super::{
-    alloc, build_allocate_response, build_commit_response, build_free_response, map_free_error,
-    mutation_gate, parse_segments, submit_error, submit_fb_response, AllocError, AllocateParams, Arc,
-    ChunkId, DiskId, DiskdbRpcService, FBAllocateBlocksRequest, FBCommitBlocksRequest, FBDiskdbRetCode,
-    FBFreeBlocksRequest, FBMsgType, RequestGuard, RpcServer, ServerRequest, MAX_ALLOCATE_COUNT,
+    alloc, build_allocate_response, build_commit_response, build_execute_relocation_response,
+    build_free_response, map_free_error, mutation_gate, parse_segments, submit_error, submit_fb_response,
+    AllocError, AllocateParams, Arc, ChunkId, DiskId, DiskdbRpcService, FBAllocateBlocksRequest,
+    FBCommitBlocksRequest, FBDiskdbRetCode, FBExecuteRelocationRequest, FBFreeBlocksRequest, FBMsgType,
+    RequestGuard, RpcServer, Segment, ServerRequest, MAX_ALLOCATE_COUNT,
 };
 
+fn segment_from_fb(segment: &crowdb_protocol::diskdb_fb::FBSegment) -> Segment {
+    Segment {
+        disk_id: Some(DiskId {
+            high: segment.disk_id().high(),
+            low: segment.disk_id().low(),
+        }),
+        zone_index: segment.zone_index(),
+        unit_offset: segment.unit_offset(),
+        unit_count: segment.unit_count(),
+        owner_chunk: Some(ChunkId {
+            high: segment.owner_chunk().high(),
+            low: segment.owner_chunk().low(),
+        }),
+        allocation_ts: segment.allocation_ts(),
+    }
+}
+
 impl DiskdbRpcService {
+    #[allow(clippy::needless_pass_by_value, reason = "make_handler uniform signature")]
+    #[allow(clippy::too_many_lines)]
+    pub(super) fn handle_execute_relocation(
+        &self,
+        req: ServerRequest,
+        server: &Arc<RpcServer>,
+        request: RequestGuard,
+    ) {
+        let req_id = req.request_id;
+        let create_nano = req.rpc_create_nano;
+        let msg_type = FBMsgType::EExecuteRelocationResponse.0 as u16;
+        let Ok(frame) = flatbuffers::root::<FBExecuteRelocationRequest>(req.control()) else {
+            submit_error(
+                server,
+                req.conn_handle,
+                req_id,
+                create_nano,
+                msg_type,
+                FBDiskdbRetCode::InvalidArgument,
+                "invalid execute relocation request",
+            );
+            return;
+        };
+        if let Err((code, message)) = mutation_gate::validate(&self.container) {
+            submit_error(
+                server,
+                req.conn_handle,
+                req_id,
+                create_nano,
+                msg_type,
+                code,
+                message,
+            );
+            return;
+        }
+        let Some(worker) = self.relocation.clone() else {
+            submit_error(
+                server,
+                req.conn_handle,
+                req_id,
+                create_nano,
+                msg_type,
+                FBDiskdbRetCode::Unavailable,
+                "relocation worker is unavailable",
+            );
+            return;
+        };
+        let Some(target_dg) = self.container.get_disk_group(frame.target_disk_group_id()) else {
+            submit_error(
+                server,
+                req.conn_handle,
+                req_id,
+                create_nano,
+                msg_type,
+                FBDiskdbRetCode::NotOwner,
+                "target disk-group is not owned",
+            );
+            return;
+        };
+        let (Some(source), Some(target)) = (frame.source(), frame.target()) else {
+            submit_error(
+                server,
+                req.conn_handle,
+                req_id,
+                create_nano,
+                msg_type,
+                FBDiskdbRetCode::InvalidArgument,
+                "source and target are required",
+            );
+            return;
+        };
+        let source = segment_from_fb(source);
+        let target = segment_from_fb(target);
+        let ctx = crate::bg_task::BgCtx {
+            container: Arc::clone(&self.container),
+            kv: Arc::clone(&self.kv),
+            metrics: (*self.metrics).clone(),
+            config: Arc::clone(&self.config),
+        };
+        let server = Arc::clone(server);
+        let conn_handle = req.conn_handle as usize;
+        self.rt.spawn(async move {
+            let mut request = request;
+            match worker.adopt(&ctx, &target_dg, source, target).await {
+                Ok((key, mut journal)) => {
+                    request.mark_success();
+                    let response = build_execute_relocation_response(
+                        req_id,
+                        create_nano,
+                        FBDiskdbRetCode::Success,
+                        None,
+                        journal.operation_id,
+                        journal.phase,
+                    );
+                    submit_fb_response(
+                        &server,
+                        conn_handle as *mut std::ffi::c_void,
+                        response,
+                        msg_type,
+                        req_id,
+                    );
+                    if let Err(error) = worker.resume(&ctx, &target_dg, &key, &mut journal).await {
+                        ctx.metrics.rebalance_errors_total.inc();
+                        tracing::warn!(%error, "adopted cross-domain relocation did not advance");
+                    }
+                }
+                Err(error) => {
+                    let response = build_execute_relocation_response(
+                        req_id,
+                        create_nano,
+                        FBDiskdbRetCode::InvalidArgument,
+                        Some(&error.to_string()),
+                        None,
+                        0,
+                    );
+                    submit_fb_response(
+                        &server,
+                        conn_handle as *mut std::ffi::c_void,
+                        response,
+                        msg_type,
+                        req_id,
+                    );
+                }
+            }
+        });
+    }
+
     // ── AllocateBlocks ───────────────────────────────────────────
 
     #[allow(clippy::needless_pass_by_value, reason = "make_handler uniform signature")]

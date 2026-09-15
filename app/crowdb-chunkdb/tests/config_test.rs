@@ -53,3 +53,35 @@ fn placement_policy_parses_both_priorities() {
     );
     assert!(!node.placement.allow_degraded_failure_domains);
 }
+
+#[test]
+fn placement_rebalance_defaults_and_enforces_slow_single_move_cycles() {
+    let config: ChunkdbConfig = toml::from_str("").expect("defaults parse");
+    assert!(config.placement_rebalance.enabled);
+    assert_eq!(config.placement_rebalance.scan_interval_secs, 300);
+    assert_eq!(config.placement_rebalance.imbalance_threshold_pct, 20);
+    assert_eq!(config.placement_rebalance.hysteresis_secs, 900);
+    assert_eq!(config.placement_rebalance.max_moves_per_cycle, 1);
+    config.validate().expect("defaults validate");
+
+    let mut invalid = config.clone();
+    invalid.placement_rebalance.scan_interval_secs = 0;
+    assert_eq!(
+        invalid.validate(),
+        Err("placement_rebalance.scan_interval_secs must be > 0".to_string())
+    );
+
+    let mut invalid = config.clone();
+    invalid.placement_rebalance.imbalance_threshold_pct = 101;
+    assert_eq!(
+        invalid.validate(),
+        Err("placement_rebalance.imbalance_threshold_pct must be <= 100".to_string())
+    );
+
+    let mut invalid = config;
+    invalid.placement_rebalance.max_moves_per_cycle = 2;
+    assert_eq!(
+        invalid.validate(),
+        Err("placement_rebalance.max_moves_per_cycle must be 1".to_string())
+    );
+}

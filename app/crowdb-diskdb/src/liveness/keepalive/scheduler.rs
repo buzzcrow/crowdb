@@ -247,6 +247,14 @@ impl KeepAlive {
 
         let (groups_added, groups_removed) = self.reconcile_ownership(&observed);
         let mut outcome = self.reconcile_observed_disks(&observed).await;
+        if let Some(config) = &self.config_handle {
+            let allocator = config.load().allocator.clone();
+            for disk_group_id in self.container.disk_group_ids() {
+                if let Some(group) = self.container.get_disk_group(disk_group_id) {
+                    group.set_allocation_policy(allocator.load_aware, allocator.load_aware_weight);
+                }
+            }
+        }
         if let Some(m) = &self.metrics {
             m.sync_read_group0_latency.observe(elapsed_ns(read_start));
         }

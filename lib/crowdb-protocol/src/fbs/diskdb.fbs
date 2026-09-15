@@ -405,3 +405,22 @@ table FBGetScanStatusResponse {
     summary:FBScanSummary;
     has_run:bool;
 }
+
+// ── Cross-domain relocation adoption ────────────────────────────
+
+table FBExecuteRelocationRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    target_disk_group_id:uint64;
+    source:FBSegment;
+    target:FBSegment;
+}
+
+table FBExecuteRelocationResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    ret_code:FBDiskdbRetCode;
+    error_msg:string;
+    operation_id:crowdb.rpc.proto.FBInt128;
+    phase:int32;
+}
