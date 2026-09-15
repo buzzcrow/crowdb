@@ -151,8 +151,8 @@ jobs:
       uses: Swatinem/rust-cache@v2
     - name: Clean env
       run: pixi run clean-env
-    - name: Build all Rust test binaries + crowdb-kv-server
-      run: pixi run build-tests
+    - name: Build C++ libs (crowdb-diskio subprocess) + all Rust test binaries
+      run: pixi run build-cpp && pixi run build-tests
     - name: Run server tests
       run: pixi run test-server
     - name: Capture runner state on failure

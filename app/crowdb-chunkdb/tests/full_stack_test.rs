@@ -323,6 +323,9 @@ async fn diskio_routes_cover_every_group_in_the_two_rack_fixture() {
         eprintln!("skipping: crowdb-kv-server binary not found");
         return;
     }
+    if !crowdb_test_harness::diskio::check_diskio_only() {
+        return;
+    }
     let cluster = KvCluster::start().await;
     let disk_groups = seed_hardware_layout_with_zones(
         &cluster.make_hardware_client(),
@@ -363,6 +366,9 @@ async fn diskio_routes_cover_every_group_in_the_two_rack_fixture() {
 async fn assert_expanded_topology_converges_ec(data_num: u32, code_num: u32, required_racks: u64) {
     if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
         eprintln!("skipping: crowdb-kv-server binary not found");
+        return;
+    }
+    if !crowdb_test_harness::diskio::check_diskio_only() {
         return;
     }
     let cluster = KvCluster::start().await;
