@@ -138,6 +138,78 @@ async fn physical_ec_reports_the_two_rack_layout_truthfully() {
     }
 }
 
+#[tokio::test]
+async fn degraded_ec_markers_recreate_one_task_per_large_strip_after_admission_gap() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary not found");
+        return;
+    }
+
+    let cluster = KvCluster::start().await;
+    let disk_groups = seed_hardware_layout_with_zones(
+        &cluster.make_hardware_client(),
+        &[(100, vec![10, 11, 12, 13]), (101, vec![20, 21])],
+        32,
+    )
+    .await;
+    let _diskdb = DiskdbServer::start_with_disk_groups_and_zones(&cluster, &disk_groups, 32).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let handler = Arc::new(
+        LifecycleHandler::new(
+            Arc::clone(&harness.store),
+            Arc::clone(&harness.allocator),
+            harness.topology.clone(),
+        )
+        .with_allow_unsafe_ec(true)
+        .with_placement_policy(FailureDomainPriority::RackFirst, true),
+    );
+
+    let mut chunks = Vec::new();
+    for (index, (data_num, code_num)) in [(10, 2), (20, 2), (40, 4)].into_iter().enumerate() {
+        let chunk = handler
+            .allocate_chunk(
+                Some(ChunkId {
+                    high: 970,
+                    low: u64::try_from(index).unwrap(),
+                }),
+                1,
+                1,
+                StripType::Ec,
+                data_num,
+                code_num,
+                0,
+                ChunkType::Repo,
+                0,
+                0,
+            )
+            .await
+            .expect("degraded EC allocation persists before task admission");
+        assert!(chunk.strips[0].placement_repair_required);
+        chunks.push(chunk);
+    }
+
+    let bindings = BindingCache::new();
+    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
+    let restarted = PlacementRepairCoordinator::new(Arc::clone(&handler), Arc::clone(&tasks));
+    assert_eq!(restarted.scan_batch(256, 100).await.unwrap(), 3);
+
+    let ready = tasks.scan_ready(100, 16).await.unwrap();
+    assert_eq!(ready.len(), 3);
+    for chunk in &chunks {
+        let chunk_id = chunk.id.expect("chunk ID");
+        assert_eq!(
+            ready.iter().filter(|task| task.partition_id == chunk_id).count(),
+            1,
+            "one repaired task for the marked strip"
+        );
+    }
+
+    let second_restart = PlacementRepairCoordinator::new(Arc::clone(&handler), Arc::clone(&tasks));
+    assert_eq!(second_restart.scan_batch(256, 101).await.unwrap(), 0);
+    assert_eq!(tasks.scan_ready(101, 16).await.unwrap().len(), 3);
+}
+
 fn task_value() -> ChunkTaskValue {
     ChunkTaskValue {
         schema_version: CHUNK_TASK_SCHEMA_VERSION,

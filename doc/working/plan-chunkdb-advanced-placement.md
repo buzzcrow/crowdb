@@ -88,9 +88,11 @@ of temporarily degraded EC strips.
   it recomputes rack, node, and disk maxima from returned segments and compares
   them with the persisted assessment. DiskDB repeated distinct-disk passes are
   used only when a selected disk-group has more fragments than physical disks;
-  post-allocation assessment still gates the disk guarantee. Interrupted
-  admission/restart, waiting, and expanded-topology convergence remain in this
-  active task.
+  post-allocation assessment still gates the disk guarantee. A real admission
+  gap now persists degraded 10+2, 20+2, and 40+4 strips before the task store
+  is attached; restart reconciliation creates exactly one task for each marker
+  and a second restart creates none. Insufficient-topology waiting and
+  expanded-topology convergence remain in this active task.
 
 ## Phase 6 — Documentation and cleanup
 
