@@ -14,6 +14,7 @@ use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Duration;
 
+use bytes::Bytes;
 use common::cluster::{
     seed_hardware, seed_hardware_layout_from_disk_group, seed_hardware_layout_with_zones, ChunkdbHarness,
     DiskdbServer, KvCluster, DATA_GROUP_ID, STORE_ID,
@@ -48,6 +49,35 @@ use crowdb_test_harness::diskio::{DiskioGroup0Identity, DiskioProcess, DiskioSta
 
 fn max_fragment_count<K: Eq + Hash>(counts: &HashMap<K, u32>) -> u32 {
     *counts.values().max().expect("segment count")
+}
+
+fn start_diskio_groups(
+    cluster: &KvCluster,
+    groups: &[(u64, u64, u64)],
+    instance_base: u64,
+) -> Vec<DiskioProcess> {
+    groups
+        .iter()
+        .enumerate()
+        .map(|(index, &(disk_group_id, rack_id, node_id))| {
+            DiskioProcess::start_for_group(
+                &DiskioStartOpts {
+                    dummy_disk: "mem",
+                    kv_seeds: &cluster.mgmt_endpoints,
+                    disks: &[],
+                    fault_error_rate: 0.0,
+                    fault_latency_ms: None,
+                    no_o_direct: false,
+                },
+                DiskioGroup0Identity {
+                    instance_id: instance_base.saturating_add(u64::try_from(index).unwrap()),
+                    rack_id,
+                    node_id,
+                    disk_group_id,
+                },
+            )
+        })
+        .collect()
 }
 
 #[tokio::test]
@@ -185,27 +215,18 @@ async fn diskio_routes_cover_every_group_in_the_two_rack_fixture() {
     )
     .await;
     let _diskdb = DiskdbServer::start_with_disk_groups_and_zones(&cluster, &disk_groups, 32).await;
-    let layouts = [(100, 10), (100, 11), (100, 12), (100, 13), (101, 20), (101, 21)];
-    let mut diskio = Vec::new();
-    for ((disk_group_id, (rack_id, node_id)), instance_id) in disk_groups.iter().zip(layouts).zip(2_000_u64..)
-    {
-        diskio.push(DiskioProcess::start_for_group(
-            &DiskioStartOpts {
-                dummy_disk: "mem",
-                kv_seeds: &cluster.mgmt_endpoints,
-                disks: &[],
-                fault_error_rate: 0.0,
-                fault_latency_ms: None,
-                no_o_direct: false,
-            },
-            DiskioGroup0Identity {
-                instance_id,
-                rack_id,
-                node_id,
-                disk_group_id: *disk_group_id,
-            },
-        ));
-    }
+    let diskio = start_diskio_groups(
+        &cluster,
+        &[
+            (1000, 100, 10),
+            (1001, 100, 11),
+            (1002, 100, 12),
+            (1003, 100, 13),
+            (1004, 101, 20),
+            (1005, 101, 21),
+        ],
+        2_000,
+    );
     let service = cluster.make_service_registry_client();
     let hardware = cluster.make_hardware_client();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
@@ -220,6 +241,155 @@ async fn diskio_routes_cover_every_group_in_the_two_rack_fixture() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(diskio.len(), disk_groups.len());
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn expanded_topology_converges_a_degraded_10_2_strip() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary not found");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    let mut disk_groups = seed_hardware_layout_with_zones(
+        &cluster.make_hardware_client(),
+        &[(100, vec![10, 11, 12, 13]), (101, vec![20, 21])],
+        32,
+    )
+    .await;
+    let diskdb = DiskdbServer::start_with_disk_groups_and_zones(&cluster, &disk_groups, 32).await;
+    let mut diskio = start_diskio_groups(
+        &cluster,
+        &[
+            (1000, 100, 10),
+            (1001, 100, 11),
+            (1002, 100, 12),
+            (1003, 100, 13),
+            (1004, 101, 20),
+            (1005, 101, 21),
+        ],
+        2_000,
+    );
+    let service = cluster.make_service_registry_client();
+    let hardware = cluster.make_hardware_client();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let io = loop {
+        if let Ok(io) = ConversionDiskIo::connect(&service, &hardware).await {
+            break Arc::new(io);
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "DiskIO routes were not published"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let handler = Arc::new(
+        LifecycleHandler::new(
+            Arc::clone(&harness.store),
+            Arc::clone(&harness.allocator),
+            harness.topology.clone(),
+        )
+        .with_allow_unsafe_ec(true)
+        .with_placement_policy(FailureDomainPriority::RackFirst, true),
+    );
+    let chunk_id = ChunkId { high: 97, low: 10 };
+    let chunk = handler
+        .allocate_chunk(
+            Some(chunk_id),
+            1,
+            1,
+            StripType::Ec,
+            10,
+            2,
+            0,
+            ChunkType::Repo,
+            0,
+            0,
+        )
+        .await
+        .unwrap();
+    let Some(Strip::EcStrip(ec)) = chunk.strips[0].strip.as_ref() else {
+        panic!("expected EC strip");
+    };
+    for segment in &ec.segments {
+        io.write_segment(segment, 1024 * 1024, Bytes::from(vec![0x97; 1024 * 1024]))
+            .await
+            .expect("seed source data");
+    }
+    let new_disk_groups = seed_hardware_layout_from_disk_group(
+        &cluster.make_hardware_client(),
+        &[(102, vec![30]), (103, vec![31]), (104, vec![32]), (105, vec![33])],
+        32,
+        2000,
+    )
+    .await;
+    disk_groups.extend_from_slice(&new_disk_groups);
+    diskdb
+        .refresh_disk_groups(&cluster, &new_disk_groups, &disk_groups, 32)
+        .await;
+    diskio.extend(start_diskio_groups(
+        &cluster,
+        &[(2000, 102, 30), (2001, 103, 31), (2002, 104, 32), (2003, 105, 33)],
+        3_000,
+    ));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        if io.refresh(&service, &hardware).await.is_ok()
+            && harness.topology.snapshot().healthy_disk_groups().len() == disk_groups.len()
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "expanded routes were not published"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let bindings = BindingCache::new();
+    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
+    PlacementRepairCoordinator::new(Arc::clone(&handler), Arc::clone(&tasks))
+        .admit_chunk(&chunk, 100)
+        .await
+        .unwrap();
+    let mut registry = MetricsRegistry::new();
+    let metrics = ChunkdbMetrics::register(&mut registry).placement;
+    let manager = Arc::new(TaskManager::new(Arc::clone(&tasks), 97, 30_000));
+    let executor = TaskExecutor::new(
+        Arc::clone(&manager),
+        1,
+        vec![Arc::new(PlacementRepairTaskHandler::new(
+            Arc::clone(&handler),
+            Arc::clone(&io),
+            metrics,
+        ))],
+    )
+    .unwrap();
+    for _ in 0..64 {
+        let ready = tasks.scan_ready(u64::MAX, 1).await.unwrap();
+        let claim = manager.claim(&ready[0], u64::MAX).await.unwrap().unwrap();
+        executor.execute(claim).await.unwrap();
+        if !handler.query_chunk(&chunk_id).await.unwrap().strips[0].placement_repair_required {
+            break;
+        }
+    }
+    let repaired = handler.query_chunk(&chunk_id).await.unwrap();
+    let assessment = repaired.strips[0].placement_assessment.as_ref().unwrap();
+    let task = tasks.scan_ready(u64::MAX, 1).await.unwrap();
+    let task_detail = match task.first() {
+        Some(index) => tasks
+            .get(&index.partition_id, index.kind, &index.task_id)
+            .await
+            .unwrap(),
+        None => None,
+    };
+    assert!(
+        !repaired.strips[0].placement_repair_required,
+        "assessment={assessment:?}, next_task={task:?}, task_detail={task_detail:?}"
+    );
+    assert!(assessment.rack_protected && assessment.node_protected && assessment.disk_protected);
+    assert!(!diskio.is_empty());
 }
 
 #[tokio::test]

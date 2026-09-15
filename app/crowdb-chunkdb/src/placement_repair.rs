@@ -142,7 +142,7 @@ pub async fn admit_placement_chunk(
 }
 
 /// Copies one existing EC fragment to a newly allocated destination and only
-/// publishes the move when the verified assessment strictly improves.
+/// publishes a move that preserves every current protection guarantee.
 pub struct PlacementRepairTaskHandler {
     lifecycle: Arc<LifecycleHandler>,
     io: Arc<ConversionDiskIo>,
@@ -208,9 +208,28 @@ impl PlacementRepairTaskHandler {
             .filter_map(|(position, segment)| (position != source_index).then_some(*segment))
             .collect();
         let excluded: Vec<_> = ec.segments.iter().filter_map(|segment| segment.disk_id).collect();
+        let (exclude_racks, exclude_nodes) = over_budget_domains(&snapshot, &ec.segments, ec.code_num);
+        let Some(target_disk_group) = select_target_disk_group(
+            &snapshot,
+            &ec.segments,
+            &excluded,
+            &exclude_racks,
+            &exclude_nodes,
+            strip.placement_priority,
+        ) else {
+            return Ok(false);
+        };
         let destination = self
             .lifecycle
-            .allocate_replacement_segment(&payload.chunk_id, &source, &survivors, &excluded)
+            .allocate_placement_replacement_segment(
+                &payload.chunk_id,
+                &source,
+                &survivors,
+                &excluded,
+                &exclude_racks,
+                &exclude_nodes,
+                target_disk_group,
+            )
             .await?;
         let unit_bytes = u64::from(strip.unit_kb).saturating_mul(1024);
         let copy = async {
@@ -247,7 +266,7 @@ impl PlacementRepairTaskHandler {
             snapshot.generation(),
             current.usage_fresh,
         );
-        if !improves(&current, &next) {
+        if weakens_protection(&current, &next) {
             self.lifecycle
                 .discard_replacement_segment(&payload.chunk_id, destination)
                 .await?;
@@ -460,20 +479,87 @@ fn select_source(
     })
 }
 
-fn improves(
+fn over_budget_domains(
+    snapshot: &crate::topology::TopologySnapshot,
+    segments: &[crowdb_protocol::diskdb::rpc::Segment],
+    loss_budget: u32,
+) -> (Vec<u64>, Vec<u64>) {
+    let mut racks = std::collections::HashMap::<u64, u32>::new();
+    let mut nodes = std::collections::HashMap::<u64, u32>::new();
+    for segment in segments {
+        let Some(disk_id) = segment.disk_id else {
+            continue;
+        };
+        let Some(location) = snapshot.disk_location(disk_id) else {
+            continue;
+        };
+        *racks.entry(location.rack_id).or_default() += 1;
+        *nodes.entry(location.node_id).or_default() += 1;
+    }
+    (
+        racks
+            .into_iter()
+            .filter_map(|(rack_id, count)| (count > loss_budget).then_some(rack_id))
+            .collect(),
+        nodes
+            .into_iter()
+            .filter_map(|(node_id, count)| (count > loss_budget).then_some(node_id))
+            .collect(),
+    )
+}
+
+fn select_target_disk_group(
+    snapshot: &crate::topology::TopologySnapshot,
+    segments: &[crowdb_protocol::diskdb::rpc::Segment],
+    excluded_disks: &[crowdb_protocol::common::DiskId],
+    exclude_racks: &[u64],
+    exclude_nodes: &[u64],
+    priority: i32,
+) -> Option<u64> {
+    let mut racks = std::collections::HashMap::<u64, u32>::new();
+    let mut nodes = std::collections::HashMap::<u64, u32>::new();
+    let mut groups = std::collections::HashMap::<u64, u32>::new();
+    for segment in segments {
+        let disk_id = segment.disk_id?;
+        let location = snapshot.disk_location(disk_id)?;
+        *racks.entry(location.rack_id).or_default() += 1;
+        *nodes.entry(location.node_id).or_default() += 1;
+        *groups.entry(location.disk_group_id).or_default() += 1;
+    }
+    snapshot
+        .healthy_disk_groups()
+        .into_iter()
+        .filter(|group| {
+            !exclude_racks.contains(&group.rack_id)
+                && !exclude_nodes.contains(&group.node_id)
+                && group
+                    .value
+                    .disk_ids
+                    .iter()
+                    .any(|disk| !excluded_disks.contains(disk))
+        })
+        .min_by_key(|group| {
+            let rack = racks.get(&group.rack_id).copied().unwrap_or(0);
+            let node = nodes.get(&group.node_id).copied().unwrap_or(0);
+            let disk_group = groups.get(&group.dg_id).copied().unwrap_or(0);
+            let capacity = snapshot.capacity_score(group.dg_id, 0);
+            if priority == crowdb_protocol::chunkdb::rpc::PlacementPriority::NodeFirst as i32 {
+                (node, rack, disk_group, capacity, group.node_id, group.dg_id)
+            } else {
+                (rack, node, disk_group, capacity, group.node_id, group.dg_id)
+            }
+        })
+        .map(|group| group.dg_id)
+}
+
+fn weakens_protection(
     current: &crowdb_protocol::chunkdb::rpc::PlacementAssessment,
     next: &crowdb_protocol::chunkdb::rpc::PlacementAssessment,
 ) -> bool {
-    (next.rack_protected && !current.rack_protected)
-        || (next.node_protected && !current.node_protected)
-        || (next.disk_protected && !current.disk_protected)
-        || (
-            next.max_fragments_per_rack,
-            next.max_fragments_per_node,
-            next.max_fragments_per_disk,
-        ) < (
-            current.max_fragments_per_rack,
-            current.max_fragments_per_node,
-            current.max_fragments_per_disk,
-        )
+    (current.rack_protected && !next.rack_protected)
+        || (current.node_protected && !next.node_protected)
+        || (current.disk_protected && !next.disk_protected)
+        || next.max_fragments_per_rack > current.max_fragments_per_rack
+        || next.max_fragments_per_node > current.max_fragments_per_node
+        || next.max_fragments_per_disk > current.max_fragments_per_disk
 }

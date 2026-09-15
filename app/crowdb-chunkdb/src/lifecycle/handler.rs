@@ -1200,8 +1200,42 @@ impl LifecycleHandler {
         surviving_segments: &[Segment],
         exclude_disk_ids: &[DiskId],
     ) -> Result<Segment, LifecycleError> {
-        self.allocate_repair_segment(chunk_id, old_segment, surviving_segments, exclude_disk_ids, false)
-            .await
+        self.allocate_repair_segment_constrained(
+            chunk_id,
+            old_segment,
+            surviving_segments,
+            exclude_disk_ids,
+            false,
+            &[],
+            &[],
+            None,
+        )
+        .await
+    }
+
+    /// Allocate a placement-repair destination outside over-budget domains.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn allocate_placement_replacement_segment(
+        &self,
+        chunk_id: &ChunkId,
+        old_segment: &Segment,
+        surviving_segments: &[Segment],
+        exclude_disk_ids: &[DiskId],
+        exclude_racks: &[u64],
+        exclude_nodes: &[u64],
+        target_disk_group: u64,
+    ) -> Result<Segment, LifecycleError> {
+        self.allocate_repair_segment_constrained(
+            chunk_id,
+            old_segment,
+            surviving_segments,
+            exclude_disk_ids,
+            false,
+            exclude_racks,
+            exclude_nodes,
+            Some(target_disk_group),
+        )
+        .await
     }
 
     /// Allocate one tentative repair segment, optionally relaxing node
@@ -1214,6 +1248,31 @@ impl LifecycleHandler {
         exclude_disk_ids: &[DiskId],
         allow_unsafe_placement: bool,
     ) -> Result<Segment, LifecycleError> {
+        self.allocate_repair_segment_constrained(
+            chunk_id,
+            old_segment,
+            surviving_segments,
+            exclude_disk_ids,
+            allow_unsafe_placement,
+            &[],
+            &[],
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn allocate_repair_segment_constrained(
+        &self,
+        chunk_id: &ChunkId,
+        old_segment: &Segment,
+        surviving_segments: &[Segment],
+        exclude_disk_ids: &[DiskId],
+        allow_unsafe_placement: bool,
+        exclude_racks: &[u64],
+        exclude_nodes: &[u64],
+        target_disk_group: Option<u64>,
+    ) -> Result<Segment, LifecycleError> {
         self.check_range(chunk_id)?;
         if old_segment.owner_chunk.as_ref() != Some(chunk_id) || old_segment.unit_count == 0 {
             return Err(LifecycleError::InvalidRequest(
@@ -1223,6 +1282,15 @@ impl LifecycleHandler {
         let snap = self.topology.snapshot();
         let disk_groups = snap.disk_groups();
         let mut constraints = self.placement_constraints();
+        constraints.exclude_racks.extend_from_slice(exclude_racks);
+        constraints.exclude_nodes.extend_from_slice(exclude_nodes);
+        if let Some(target_disk_group) = target_disk_group {
+            constraints
+                .exclude_disk_groups
+                .extend(disk_groups.iter().filter_map(|disk_group| {
+                    (disk_group.dg_id != target_disk_group).then_some(disk_group.dg_id)
+                }));
+        }
         if !allow_unsafe_placement {
             let node_count = disk_groups
                 .iter()
