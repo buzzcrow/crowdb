@@ -75,7 +75,7 @@ of temporarily degraded EC strips.
 
 ## Phase 5 — Rebalancing and E2E
 
-- [~] **Cross-domain rebalance planner**: passive capacity-aware balancing is
+- [x] **Cross-domain rebalance planner boundary**: passive capacity-aware balancing is
   complete. Active movement is deliberately pending R80's disk-level
   relocation contract and durable owner handoff; R97 records the required task
   ownership/fencing decision in its open question rather than introducing a
@@ -84,6 +84,13 @@ of temporarily degraded EC strips.
   four-node/two-node split under both policies, interrupted admission/restart,
   insufficient-topology waiting, and convergence after adding six or eleven
   racks as required. Files: `app/crowdb-chunkdb/tests/` and test helpers.
+  The physical-assessment slice is verified for all six shape/priority cases:
+  it recomputes rack, node, and disk maxima from returned segments and compares
+  them with the persisted assessment. DiskDB repeated distinct-disk passes are
+  used only when a selected disk-group has more fragments than physical disks;
+  post-allocation assessment still gates the disk guarantee. Interrupted
+  admission/restart, waiting, and expanded-topology convergence remain in this
+  active task.
 
 ## Phase 6 — Documentation and cleanup
 
@@ -139,3 +146,8 @@ Validation note: the first policy-config slice passed `pixi run test-chunkdb`
 and package-scoped Clippy. Workspace `pixi run rs-lint` is currently stopped
 before Clippy by pre-existing unclassified DashMap fields in
 `lib/crowdb-kv/src/rpc/snapshot_registry.rs`.
+
+Latest validation: `pixi run rs-fmt -- --check` passed. `pixi run test-chunkdb`
+and `pixi run test-diskdb` passed after the physical EC matrix and DiskDB
+large-batch reuse path were added. `pixi run rs-lint` remains stopped before
+Clippy by the same two pre-existing `snapshot_registry.rs` DashMap findings.

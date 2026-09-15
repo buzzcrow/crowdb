@@ -9,10 +9,15 @@
 
 mod common;
 
+use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::cluster::{seed_hardware, ChunkdbHarness, DiskdbServer, KvCluster, DATA_GROUP_ID, STORE_ID};
+use common::cluster::{
+    seed_hardware, seed_hardware_layout_with_zones, ChunkdbHarness, DiskdbServer, KvCluster, DATA_GROUP_ID,
+    STORE_ID,
+};
 use crowdb_chunkdb::allocator::StripAllocType;
 use crowdb_chunkdb::conversion::io::ConversionDiskIo;
 use crowdb_chunkdb::conversion::{decode_payload, ConversionCoordinator, MirrorToEcTaskHandler};
@@ -25,7 +30,7 @@ use crowdb_chunkdb::placement_repair::PlacementRepairCoordinator;
 use crowdb_chunkdb::range_guard::{OwnedRange, RangeGuard};
 use crowdb_chunkdb::repair::{decode_payload as decode_repair_payload, RepairCoordinator};
 use crowdb_chunkdb::routing::{default_binding_table, hash_to_bucket, BindingCache};
-use crowdb_chunkdb::selector::PlacementConstraints;
+use crowdb_chunkdb::selector::{FailureDomainPriority, PlacementConstraints};
 use crowdb_chunkdb::task::{
     TaskAdmission, TaskClaim, TaskExecutor, TaskHandler, TaskManager, TaskOutcome, TaskScanner, TaskStore,
 };
@@ -39,6 +44,99 @@ use crowdb_protocol::chunkdb::rpc::{
     StripReservationAction, StripReservationState, StripType,
 };
 use crowdb_protocol::common::ChunkId;
+
+fn max_fragment_count<K: Eq + Hash>(counts: &HashMap<K, u32>) -> u32 {
+    *counts.values().max().expect("segment count")
+}
+
+#[tokio::test]
+async fn physical_ec_reports_the_two_rack_layout_truthfully() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary not found");
+        return;
+    }
+
+    for (data_num, code_num) in [(10, 2), (20, 2), (40, 4)] {
+        for priority in [FailureDomainPriority::RackFirst, FailureDomainPriority::NodeFirst] {
+            let cluster = KvCluster::start().await;
+            let disk_groups = seed_hardware_layout_with_zones(
+                &cluster.make_hardware_client(),
+                &[(100, vec![10, 11, 12, 13]), (101, vec![20, 21])],
+                32,
+            )
+            .await;
+            let _diskdb = DiskdbServer::start_with_disk_groups_and_zones(&cluster, &disk_groups, 32).await;
+            let harness = ChunkdbHarness::start(&cluster).await;
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            while harness.topology.snapshot().healthy_disk_groups().len() < disk_groups.len() {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "two-rack topology was not published"
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            let strip = harness
+                .allocator
+                .allocate_strip(
+                    &harness.topology.snapshot(),
+                    &ChunkId {
+                        high: u64::try_from(data_num).unwrap(),
+                        low: u64::try_from(code_num).unwrap(),
+                    },
+                    StripAllocType::Ec { data_num, code_num },
+                    1,
+                    0,
+                    &PlacementConstraints::new()
+                        .allow_unsafe_ec()
+                        .allow_degraded_failure_domains()
+                        .with_failure_domain_priority(priority),
+                )
+                .await
+                .expect("degraded EC allocation");
+            let assessment = strip.placement_assessment.as_ref().expect("physical assessment");
+            assert_eq!(assessment.loss_budget, u32::try_from(code_num).unwrap());
+
+            let segments = match strip.strip.as_ref().expect("EC strip") {
+                Strip::EcStrip(ec) => &ec.segments,
+                Strip::MirrorStrip(_) => panic!("expected EC strip"),
+            };
+            let mut racks = HashMap::new();
+            let mut nodes = HashMap::new();
+            let mut disks = HashMap::new();
+            for segment in segments {
+                let disk_id = segment.disk_id.expect("physical disk ID");
+                let location = harness
+                    .topology
+                    .snapshot()
+                    .disk_location(disk_id)
+                    .expect("disk location");
+                *racks.entry(location.rack_id).or_insert(0_u32) += 1;
+                *nodes.entry(location.node_id).or_insert(0_u32) += 1;
+                *disks.entry(disk_id).or_insert(0_u32) += 1;
+            }
+            assert_eq!(assessment.max_fragments_per_rack, max_fragment_count(&racks));
+            assert_eq!(assessment.max_fragments_per_node, max_fragment_count(&nodes));
+            assert_eq!(assessment.max_fragments_per_disk, max_fragment_count(&disks));
+            assert_eq!(
+                assessment.rack_protected,
+                max_fragment_count(&racks) <= assessment.loss_budget
+            );
+            assert_eq!(
+                assessment.node_protected,
+                max_fragment_count(&nodes) <= assessment.loss_budget
+            );
+            assert_eq!(
+                assessment.disk_protected,
+                max_fragment_count(&disks) <= assessment.loss_budget
+            );
+            assert!(
+                !assessment.rack_protected,
+                "two racks cannot protect {data_num}+{code_num}"
+            );
+            assert!(assessment.max_fragments_per_rack > assessment.loss_budget);
+        }
+    }
+}
 
 fn task_value() -> ChunkTaskValue {
     ChunkTaskValue {
