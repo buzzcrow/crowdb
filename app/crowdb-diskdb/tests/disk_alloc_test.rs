@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Barrier};
 
+use crowdb_diskdb::ddb_config::LoadAwareWeight;
 use crowdb_diskdb::model::disk::DdbDisk;
 use crowdb_diskdb::model::disk_group::{AllocError, DdbDiskGroup, TentativeBlock};
 use crowdb_diskdb::model::zone::DdbZone;
@@ -259,6 +260,32 @@ fn dg_allocate_block_round_robins_across_disks() {
     let disk_set: HashSet<DiskId> = disk_ids.into_iter().collect();
     // Should have used at least 2 different disks.
     assert!(disk_set.len() >= 2, "expected disk round-robin, got {disk_set:?}");
+}
+
+#[test]
+fn dg_load_aware_allocation_prefers_the_disk_with_more_free_space() {
+    let dg = make_dg_with_disks(&[(1, 1, 128), (2, 1, 128)]);
+    let first = dg
+        .disks
+        .read()
+        .unwrap()
+        .iter()
+        .find(|disk| disk.disk_id == disk_id(1))
+        .unwrap()
+        .clone();
+    first.disk_allocate(64, CAS_RETRY, ZONE_ROTATE).unwrap();
+    let (selected, _, _) = dg.allocate_block(1, &[], CAS_RETRY, ZONE_ROTATE).unwrap();
+    assert_eq!(selected.disk_id, disk_id(2));
+}
+
+#[test]
+fn dg_can_disable_load_aware_allocation_for_round_robin_fallback() {
+    let dg = make_dg_with_disks(&[(1, 1, 128), (2, 1, 128)]);
+    let first = dg.disks.read().unwrap()[0].clone();
+    first.disk_allocate(64, CAS_RETRY, ZONE_ROTATE).unwrap();
+    dg.set_allocation_policy(false, LoadAwareWeight::FreeBytes);
+    let (selected, _, _) = dg.allocate_block(1, &[], CAS_RETRY, ZONE_ROTATE).unwrap();
+    assert_eq!(selected.disk_id, disk_id(1));
 }
 
 #[test]

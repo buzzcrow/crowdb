@@ -229,7 +229,7 @@ impl PlacementRepairTaskHandler {
             .enumerate()
             .filter_map(|(position, segment)| (position != source_index).then_some(*segment))
             .collect();
-        let excluded: Vec<_> = ec.segments.iter().filter_map(|segment| segment.disk_id).collect();
+        let excluded = over_budget_disks(&ec.segments, ec.code_num);
         let destination = if let Some(target) = &payload.target {
             target.destination
         } else {
@@ -532,7 +532,7 @@ fn make_task(
     })
 }
 
-fn decode_payload(bytes: &[u8]) -> Result<PlacementRepairTaskPayload, PlacementRepairError> {
+pub(crate) fn decode_payload(bytes: &[u8]) -> Result<PlacementRepairTaskPayload, PlacementRepairError> {
     serde_json::from_slice(bytes).map_err(|error| PlacementRepairError::Payload(error.to_string()))
 }
 
@@ -611,6 +611,20 @@ fn over_budget_domains(
             .filter_map(|(node_id, count)| (count > loss_budget).then_some(node_id))
             .collect(),
     )
+}
+
+fn over_budget_disks(
+    segments: &[crowdb_protocol::diskdb::rpc::Segment],
+    loss_budget: u32,
+) -> Vec<crowdb_protocol::common::DiskId> {
+    let mut disks = std::collections::HashMap::new();
+    for disk_id in segments.iter().filter_map(|segment| segment.disk_id) {
+        *disks.entry(disk_id).or_insert(0u32) += 1;
+    }
+    disks
+        .into_iter()
+        .filter_map(|(disk_id, count)| (count >= loss_budget).then_some(disk_id))
+        .collect()
 }
 
 fn select_target_disk_group(

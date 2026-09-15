@@ -18,14 +18,15 @@ use flatbuffers::FlatBufferBuilder;
 
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::{
-    AllocateResponse, CompactZoneResponse, DiskInfo, DiskType, FreeFailure, FreeFailureReason, FreeResponse,
-    GetDiskGroupInfoResponse, GetDiskInfoResponse, GetScanStatusResponse, QueryCapacityStatsResponse,
-    RebuildZoneBitmapResponse, RecalcDiskUsageResponse, Segment, TriggerScanResponse, ZoneAllocationState,
-    ZoneUsage,
+    AllocateResponse, CompactZoneResponse, DiskInfo, DiskType, ExecuteRelocationRequest,
+    ExecuteRelocationResponse, FreeFailure, FreeFailureReason, FreeResponse, GetDiskGroupInfoResponse,
+    GetDiskInfoResponse, GetScanStatusResponse, QueryCapacityStatsResponse, RebuildZoneBitmapResponse,
+    RecalcDiskUsageResponse, Segment, TriggerScanResponse, ZoneAllocationState, ZoneUsage,
 };
 use crowdb_protocol::diskdb_fb::{
     FBAllocateBlocksRequest, FBAllocateBlocksRequestArgs, FBCommitBlocksRequest, FBCommitBlocksRequestArgs,
     FBCompactZoneRequest, FBCompactZoneRequestArgs, FBDiskGroupInfo, FBDiskInfo, FBDiskType, FBDiskdbRetCode,
+    FBExecuteRelocationRequest, FBExecuteRelocationRequestArgs, FBExecuteRelocationResponse,
     FBFreeBlocksRequest, FBFreeBlocksRequestArgs, FBFreeFailureReason, FBGetDiskGroupInfoRequest,
     FBGetDiskGroupInfoRequestArgs, FBGetDiskInfoRequest, FBGetDiskInfoRequestArgs, FBGetScanStatusRequest,
     FBGetScanStatusRequestArgs, FBHwStatus, FBInt128, FBQueryCapacityStatsRequest,
@@ -297,6 +298,18 @@ impl DiskdbRpcTransport {
         let resp = self.call(rpc_endpoint, req_id, control, msg_type).await?;
         parse_get_scan_status_response(&resp)
     }
+
+    pub async fn execute_relocation(
+        &self,
+        rpc_endpoint: &str,
+        req: &ExecuteRelocationRequest,
+    ) -> Result<ExecuteRelocationResponse> {
+        let req_id = self.next_id();
+        let control = build_execute_relocation_request(req_id, req)?;
+        let msg_type = FBMsgType::EExecuteRelocationRequest.0 as u16;
+        let resp = self.call(rpc_endpoint, req_id, control, msg_type).await?;
+        parse_execute_relocation_response(&resp)
+    }
 }
 
 impl Default for DiskdbRpcTransport {
@@ -323,6 +336,19 @@ fn fb_int128(id: DiskId) -> FBInt128 {
 
 fn fb_chunk_id(id: ChunkId) -> FBInt128 {
     FBInt128::new(id.high, id.low)
+}
+
+fn fb_segment(segment: Segment) -> FBSegment {
+    let disk = segment.disk_id.unwrap_or_default();
+    let owner = segment.owner_chunk.unwrap_or_default();
+    FBSegment::new(
+        &FBInt128::new(disk.high, disk.low),
+        &FBInt128::new(owner.high, owner.low),
+        segment.unit_offset,
+        segment.allocation_ts,
+        segment.zone_index,
+        segment.unit_count,
+    )
 }
 
 fn build_segments<'a>(
@@ -526,6 +552,30 @@ fn build_get_scan_status_request(req_id: u64) -> Buffer {
     Buffer::from_bytes(fbb.finished_data())
 }
 
+fn build_execute_relocation_request(req_id: u64, req: &ExecuteRelocationRequest) -> Result<Buffer> {
+    let source = req
+        .source
+        .ok_or_else(|| DiskdbClientError::Rpc("relocation source is required".into()))?;
+    let target = req
+        .target
+        .ok_or_else(|| DiskdbClientError::Rpc("relocation target is required".into()))?;
+    let source = fb_segment(source);
+    let target = fb_segment(target);
+    let mut fbb = FlatBufferBuilder::new();
+    let off = FBExecuteRelocationRequest::create(
+        &mut fbb,
+        &FBExecuteRelocationRequestArgs {
+            id: req_id,
+            rpc_create_nano: 0,
+            target_disk_group_id: req.target_disk_group_id,
+            source: Some(&source),
+            target: Some(&target),
+        },
+    );
+    fbb.finish(off, None);
+    Ok(Buffer::from_bytes(fbb.finished_data()))
+}
+
 // ── Response parsers ─────────────────────────────────────────────
 
 /// Check the `ret_code` from a flatbuffer response and return an error
@@ -546,6 +596,24 @@ fn check_ret_code(code: FBDiskdbRetCode, msg: Option<&str>) -> Result<()> {
         FBDiskdbRetCode::InvalidArgument => DiskdbClientError::Rpc(format!("invalid argument: {msg}")),
         FBDiskdbRetCode::Internal => DiskdbClientError::Rpc(format!("internal: {msg}")),
         _ => DiskdbClientError::Rpc(format!("unknown error: {msg}")),
+    })
+}
+
+fn parse_execute_relocation_response(resp: &crowdb_rpc_ffi::Response) -> Result<ExecuteRelocationResponse> {
+    let ctrl = resp
+        .control
+        .as_ref()
+        .ok_or_else(|| DiskdbClientError::Rpc("missing control buffer".into()))?;
+    let response = flatbuffers::root::<FBExecuteRelocationResponse>(ctrl.bytes())
+        .map_err(|_| DiskdbClientError::Rpc("invalid execute relocation response".into()))?;
+    check_ret_code(response.ret_code(), response.error_msg())?;
+    let operation = response.operation_id();
+    Ok(ExecuteRelocationResponse {
+        operation_id: operation.map(|id| ChunkId {
+            high: id.high(),
+            low: id.low(),
+        }),
+        phase: response.phase(),
     })
 }
 

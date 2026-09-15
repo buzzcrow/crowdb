@@ -1049,6 +1049,7 @@ impl LifecycleHandler {
             replacement_strips,
             operation_id,
             true,
+            true,
         )
         .await
     }
@@ -1075,6 +1076,33 @@ impl LifecycleHandler {
             replacement_strips,
             operation_id,
             false,
+            true,
+        )
+        .await
+    }
+
+    /// Publish a copied relocation target without scheduling source cleanup.
+    /// The external relocation journal owns source release after reader-layout
+    /// grace and an idempotent owner acknowledgement.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn publish_relocation_chunk_strip_range(
+        &self,
+        chunk_id: &ChunkId,
+        expected_modify_ts: u64,
+        start_index: u32,
+        old_strips: &[ChunkStrip],
+        replacement_strips: &[ChunkStrip],
+        operation_id: ChunkId,
+    ) -> Result<Chunk, LifecycleError> {
+        self.replace_chunk_strip_range_with_confirmation(
+            chunk_id,
+            expected_modify_ts,
+            start_index,
+            old_strips,
+            replacement_strips,
+            operation_id,
+            false,
+            false,
         )
         .await
     }
@@ -1089,6 +1117,7 @@ impl LifecycleHandler {
         replacement_strips: &[ChunkStrip],
         operation_id: ChunkId,
         confirm_new_segments: bool,
+        retire_old_segments: bool,
     ) -> Result<Chunk, LifecycleError> {
         self.check_range(chunk_id)?;
         if old_strips.is_empty() || replacement_strips.is_empty() {
@@ -1140,6 +1169,7 @@ impl LifecycleHandler {
                         old_strips,
                         replacement_strips,
                         operation_id,
+                        retire_old_segments,
                     )
                     .await?
             {
@@ -1174,7 +1204,7 @@ impl LifecycleHandler {
         chunk.next_strip_sequence = next_strip_sequence;
         chunk.modify_ts = chunk.modify_ts.saturating_add(1);
         chunk.last_strip_replacement = Some(operation_id);
-        if !old_only.is_empty() {
+        if retire_old_segments && !old_only.is_empty() {
             chunk.cleanup_intents.push(StripCleanupIntent {
                 operation_id: Some(operation_id),
                 retired_segments: old_only,
@@ -1200,6 +1230,7 @@ impl LifecycleHandler {
         old_strips: &[ChunkStrip],
         replacement_strips: &[ChunkStrip],
         operation_id: ChunkId,
+        retire_old_segments: bool,
     ) -> Result<bool, LifecycleError> {
         let old = &old_strips[0];
         let replacement = &replacement_strips[0];
@@ -1224,7 +1255,7 @@ impl LifecycleHandler {
                 .difference(&new_segments)
                 .copied()
                 .collect::<Vec<_>>();
-            if !retired.is_empty() {
+            if retire_old_segments && !retired.is_empty() {
                 chunk.cleanup_intents.push(StripCleanupIntent {
                     operation_id: Some(operation_id),
                     retired_segments: retired,
@@ -1256,6 +1287,7 @@ impl LifecycleHandler {
             &[],
             &[],
             None,
+            true,
         )
         .await
     }
@@ -1281,6 +1313,7 @@ impl LifecycleHandler {
             exclude_racks,
             exclude_nodes,
             Some(target_disk_group),
+            false,
         )
         .await
     }
@@ -1304,6 +1337,7 @@ impl LifecycleHandler {
             &[],
             &[],
             None,
+            true,
         )
         .await
     }
@@ -1319,6 +1353,7 @@ impl LifecycleHandler {
         exclude_racks: &[u64],
         exclude_nodes: &[u64],
         target_disk_group: Option<u64>,
+        exclude_surviving_disks: bool,
     ) -> Result<Segment, LifecycleError> {
         self.check_range(chunk_id)?;
         if old_segment.owner_chunk.as_ref() != Some(chunk_id) || old_segment.unit_count == 0 {
@@ -1364,10 +1399,12 @@ impl LifecycleHandler {
             );
         }
         let mut excluded = exclude_disk_ids.to_vec();
-        for segment in std::iter::once(old_segment).chain(surviving_segments) {
-            if let Some(disk_id) = segment.disk_id {
-                if !excluded.contains(&disk_id) {
-                    excluded.push(disk_id);
+        if exclude_surviving_disks {
+            for segment in std::iter::once(old_segment).chain(surviving_segments) {
+                if let Some(disk_id) = segment.disk_id {
+                    if !excluded.contains(&disk_id) {
+                        excluded.push(disk_id);
+                    }
                 }
             }
         }

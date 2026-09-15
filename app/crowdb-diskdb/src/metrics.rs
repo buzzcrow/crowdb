@@ -35,10 +35,11 @@ pub enum RequestKind {
     CompactZone,
     TriggerScan,
     GetScanStatus,
+    ExecuteRelocation,
 }
 
 impl RequestKind {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::AllocateBlocks,
         Self::FreeBlocks,
         Self::CommitBlocks,
@@ -50,6 +51,7 @@ impl RequestKind {
         Self::CompactZone,
         Self::TriggerScan,
         Self::GetScanStatus,
+        Self::ExecuteRelocation,
     ];
 
     const fn name(self) -> &'static str {
@@ -65,6 +67,7 @@ impl RequestKind {
             Self::CompactZone => "compact_zone",
             Self::TriggerScan => "trigger_scan",
             Self::GetScanStatus => "get_scan_status",
+            Self::ExecuteRelocation => "execute_relocation",
         }
     }
 
@@ -80,7 +83,7 @@ struct RequestMetric {
 
 /// Uniform count, inflight, and error metrics for all `DiskDB` RPCs.
 pub struct RequestMetrics {
-    methods: [RequestMetric; 11],
+    methods: [RequestMetric; 12],
 }
 
 impl RequestMetrics {
@@ -205,6 +208,19 @@ pub struct DiskdbMetrics {
     pub scanner_ghosts_found: Arc<Gauge>,
     pub scanner_drift_found: Arc<Gauge>,
     pub scanner_corrupt_records: Arc<Gauge>,
+    pub tentative_owner_referenced: Arc<Counter>,
+    pub tentative_owner_task_pending: Arc<Counter>,
+    pub tentative_owner_absent: Arc<Counter>,
+    pub tentative_owner_transient: Arc<Counter>,
+
+    // ── Rebalance metrics ────────────────────────────────────────
+    pub dg_imbalance_used_pct_spread: Arc<Gauge>,
+    pub dg_imbalance_used_pct_max: Arc<Gauge>,
+    pub dg_imbalance_used_pct_min: Arc<Gauge>,
+    pub rebalance_plan_count: Arc<Gauge>,
+    pub rebalance_planned_blocks: Arc<Gauge>,
+    pub rebalance_moves_total: Arc<Counter>,
+    pub rebalance_errors_total: Arc<Counter>,
 }
 
 impl DiskdbMetrics {
@@ -271,6 +287,19 @@ impl DiskdbMetrics {
             scanner_ghosts_found: registry.register_gauge("scanner.ghosts_found"),
             scanner_drift_found: registry.register_gauge("scanner.drift_found"),
             scanner_corrupt_records: registry.register_gauge("scanner.corrupt_records"),
+            tentative_owner_referenced: registry.register_counter("scanner.tentative_owner.referenced.total"),
+            tentative_owner_task_pending: registry
+                .register_counter("scanner.tentative_owner.task_pending.total"),
+            tentative_owner_absent: registry.register_counter("scanner.tentative_owner.absent.total"),
+            tentative_owner_transient: registry.register_counter("scanner.tentative_owner.transient.total"),
+            // Rebalance metrics.
+            dg_imbalance_used_pct_spread: registry.register_gauge("disk_group.imbalance.used_pct_spread"),
+            dg_imbalance_used_pct_max: registry.register_gauge("disk_group.imbalance.used_pct_max"),
+            dg_imbalance_used_pct_min: registry.register_gauge("disk_group.imbalance.used_pct_min"),
+            rebalance_plan_count: registry.register_gauge("rebalance.plan_count"),
+            rebalance_planned_blocks: registry.register_gauge("rebalance.planned_blocks"),
+            rebalance_moves_total: registry.register_counter("rebalance.moves.total"),
+            rebalance_errors_total: registry.register_counter("rebalance.errors.total"),
         }
     }
 

@@ -69,6 +69,29 @@ impl_enum_conversions!(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default)]
 #[repr(i32)]
+pub enum RelocationJournalPhase {
+    #[default]
+    Reserved = 0,
+    Copied = 1,
+    Accepted = 2,
+    Published = 3,
+    TargetConfirmed = 4,
+    SourceFreed = 5,
+    Discarded = 6,
+}
+impl_enum_conversions!(
+    RelocationJournalPhase,
+    Reserved = 0,
+    Copied = 1,
+    Accepted = 2,
+    Published = 3,
+    TargetConfirmed = 4,
+    SourceFreed = 5,
+    Discarded = 6
+);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, Default)]
+#[repr(i32)]
 pub enum BlockState {
     #[default]
     Ok = 0,
@@ -198,6 +221,23 @@ pub struct RecoveryScanProgressValue {
     pub impacted_blocks_count: u64,
     pub started_at_ms: u64,
     pub updated_at_ms: u64,
+}
+
+pub const RELOCATION_JOURNAL_SCHEMA_VERSION: u16 = 1;
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct RelocationJournalValue {
+    pub schema_version: u16,
+    pub operation_id: Option<ChunkId>,
+    pub owner_chunk: Option<ChunkId>,
+    pub source: Option<Segment>,
+    pub target: Option<Segment>,
+    pub target_disk_group_id: u64,
+    pub unit_size: u32,
+    pub phase: i32,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+    pub last_error: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
@@ -383,6 +423,19 @@ pub struct GetScanStatusRequest {}
 pub struct GetScanStatusResponse {
     pub summary: Option<ScanSummary>,
     pub has_run: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct ExecuteRelocationRequest {
+    pub target_disk_group_id: u64,
+    pub source: Option<Segment>,
+    pub target: Option<Segment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct ExecuteRelocationResponse {
+    pub operation_id: Option<ChunkId>,
+    pub phase: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]

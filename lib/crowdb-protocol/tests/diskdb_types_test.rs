@@ -6,6 +6,7 @@
 
 use crowdb_protocol::common::{DiskId, HwStatus};
 use crowdb_protocol::diskdb::rpc::{ZoneAllocationState, ZoneValue};
+use crowdb_protocol::key::{BinaryKey, RelocationJournalKey, TentativeOwnerGraceKey};
 use crowdb_protocol::{DiskIdExt, HwStatusExt, UsageBitmap, ZoneAllocationStateExt, ZoneValueExt};
 
 // ── HwStatus ────────────────────────────────────────────────────
@@ -61,6 +62,28 @@ fn disk_id_from_display_string_rejects_malformed() {
     assert!(DiskId::from_display_string("short").is_err());
     assert!(DiskId::from_display_string("zzzzzzzzzzzzzzzz-aaaaaaaaaaaaaaaa").is_err());
     assert!(DiskId::from_display_string("0123456789abcdef-").is_err());
+}
+
+#[test]
+fn tentative_owner_grace_key_round_trips_exact_incarnation() {
+    let key = TentativeOwnerGraceKey {
+        disk_id: DiskId { high: 7, low: 9 },
+        zone_index: 3,
+        unit_offset: 42,
+        allocation_ts: 99,
+    };
+    assert_eq!(TentativeOwnerGraceKey::from_bytes(&key.to_bytes()).unwrap(), key);
+}
+
+#[test]
+fn relocation_journal_key_round_trips_exact_source_incarnation() {
+    let key = RelocationJournalKey {
+        disk_id: DiskId { high: 17, low: 19 },
+        zone_index: 5,
+        unit_offset: 142,
+        allocation_ts: 199,
+    };
+    assert_eq!(RelocationJournalKey::from_bytes(&key.to_bytes()).unwrap(), key);
 }
 
 // ── ZoneAllocationState ─────────────────────────────────────────

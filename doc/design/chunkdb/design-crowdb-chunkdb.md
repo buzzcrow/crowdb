@@ -38,6 +38,8 @@ and Rust source; this doc covers decisions and architecture only.
 - [7. Placement Strategy](#7-placement-strategy)
   - [7.1 Mirror placement](#71-mirror-placement)
   - [7.2 EC placement](#72-ec-placement)
+  - [7.3 Physical validation and degraded-placement repair](#73-physical-validation-and-degraded-placement-repair)
+  - [7.4 Active cross-domain rebalance](#74-active-cross-domain-rebalance)
 - [8. Allocation Flow](#8-allocation-flow)
 - [9. Chunk Lifecycle](#9-chunk-lifecycle)
 - [10. Per-Chunk-ID Lifecycle Lock + Chunk Cache](#10-per-chunk-id-lifecycle-lock--chunk-cache)
@@ -685,6 +687,37 @@ new physical layout, and atomically replaces only that fragment. The old
 fragment remains under the normal layout-validity cleanup fence. The marker is
 cleared only after all recorded guarantees are satisfied.
 
+### 7.4 Active cross-domain rebalance
+
+ChunkDB consumes live DiskDB usage summaries and runs a deliberately low-rate
+planner. It requires utilization skew to remain above the configured threshold
+for the full hysteresis window, scans a bounded chunk page, skips strips with
+placement repair already pending, and admits exactly one fragment move per
+cycle. Missing or stale summaries disable capacity ranking, never physical
+safety checks.
+
+For a candidate move, ChunkDB allocates one exact tentative target on the cold
+disk-group, substitutes it into a copy of the strip, and recomputes rack, node,
+and physical-disk assessment. It frees the candidate and emits no handoff if
+any protection flag would become false or any recorded domain maximum would
+increase.
+
+An accepted candidate is sent to the target DiskDB through
+`ExecuteRelocation`. DiskDB durably adopts the exact source/target pair, copies
+and fsyncs data, and asks the current ChunkDB range owner to claim the move.
+ChunkDB persists a deterministic relocation task before acknowledging it. The
+task conditionally publishes only when the exact source and expected chunk
+revision still match. Duplicate delivery observes the same task or installed
+target. ChunkDB first confirms the target after its successful CAS; DiskDB
+verifies and idempotently confirms that exact target before freeing the source
+after `Published`. ChunkDB never frees the source from this path.
+
+The task checkpoint makes the tentative target visible to DiskDB's owner
+scanner as `TaskPending`. Current metadata reports `Referenced`; a deleted or
+superseded owner reports `Absent`. This joins crash recovery and ordinary
+relocation under one ownership decision instead of treating target age as
+permission to reclaim data.
+
 ## 8. Allocation Flow
 
 **AllocateChunk** operation:
@@ -1156,24 +1189,29 @@ deadlocks with `.await`. Parallel allocation minimizes latency.
 
 Key configuration parameters:
 
-| Parameter                                | Default | Description                                             |
-|------------------------------------------|---------|---------------------------------------------------------|
-| disk_block_size                          | 1 MB    | Size of disk blocks from diskdb                         |
-| mirror_copy_count                        | 3       | Number of replicas for mirror strips                    |
-| default_ec_scheme                        | 6+3     | Default EC scheme (data+parity)                         |
-| topology_refresh_interval                | 30 s    | Topology cache refresh interval                         |
-| placement.allow_unsafe_ec                | false   | Permit explicit degraded EC placement                   |
-| placement.allow_degraded_failure_domains  | false   | Permit an explicit unmet rack or node guarantee         |
-| placement.failure_domain_priority         | rack_first | Prefer rack or node protection when ranking safe plans |
-| placement_repair.max_concurrency          | 2       | Maximum concurrent degraded-EC repair tasks             |
-| placement_repair.scan_interval_secs       | 1       | Marker reconciliation interval                           |
-| max_allocation_parallelism               | 10      | Max parallel strip allocations                          |
-| lifecycle.cache_capacity                 | 10_000  | Per-chunk payload cache capacity (§10)                   |
-| lifecycle.sweep_chunk_lock_interval_secs | 60      | Idle lock reap interval (§10)                           |
-| lifecycle.lock_hold_warn_threshold_ms    | 1000    | Lock hold warn threshold (§10)                          |
-| lifecycle.layout_validity_ms             | 30_000  | Minimum retired-layout and expired-writer reuse grace   |
-| server.keepalive_interval_secs           | 10      | Service-registry heartbeat interval                     |
-| server.rpc_workers                       | 2       | Inbound RPC workers; static and must be positive        |
+| Parameter                                         | Default    | Description                                                   |
+|---------------------------------------------------|------------|---------------------------------------------------------------|
+| disk_block_size                                   | 1 MB       | Size of disk blocks from diskdb                               |
+| mirror_copy_count                                 | 3          | Number of replicas for mirror strips                          |
+| default_ec_scheme                                 | 6+3        | Default EC scheme (data+parity)                               |
+| topology_refresh_interval                         | 30 s       | Topology cache refresh interval                               |
+| placement.allow_unsafe_ec                         | false      | Permit explicit degraded EC placement                         |
+| placement.allow_degraded_failure_domains          | false      | Permit an explicit unmet rack or node guarantee               |
+| placement.failure_domain_priority                 | rack_first | Prefer rack or node protection when ranking safe plans        |
+| placement_repair.max_concurrency                  | 2          | Maximum concurrent degraded-EC repair tasks                   |
+| placement_repair.scan_interval_secs               | 1          | Marker reconciliation interval                               |
+| placement_rebalance.scan_interval_secs            | 300        | Cross-domain usage scan interval                              |
+| placement_rebalance.imbalance_threshold_pct       | 20         | Required utilization-point skew                               |
+| placement_rebalance.hysteresis_secs               | 900        | Required sustained-skew window                                |
+| placement_rebalance.min_target_free_bytes         | 1 GiB      | Minimum target disk-group free capacity                       |
+| placement_rebalance.max_moves_per_cycle           | 1          | Exact per-cycle relocation bound                              |
+| max_allocation_parallelism                        | 10         | Max parallel strip allocations                                |
+| lifecycle.cache_capacity                          | 10_000     | Per-chunk payload cache capacity (§10)                         |
+| lifecycle.sweep_chunk_lock_interval_secs          | 60         | Idle lock reap interval (§10)                                 |
+| lifecycle.lock_hold_warn_threshold_ms             | 1000       | Lock hold warn threshold (§10)                                |
+| lifecycle.layout_validity_ms                      | 30_000     | Minimum retired-layout and expired-writer reuse grace         |
+| server.keepalive_interval_secs                    | 10         | Service-registry heartbeat interval                           |
+| server.rpc_workers                                | 2          | Inbound RPC workers; static and must be positive              |
 
 chunkdb requires a typed TOML file at startup. Omitted fields use typed
 defaults, and explicitly supplied CLI fields override file values according to

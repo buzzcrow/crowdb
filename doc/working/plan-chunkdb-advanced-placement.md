@@ -75,8 +75,8 @@ of temporarily degraded EC strips.
 
 ## Phase 5 — Rebalancing and E2E
 
-- [~] **Cross-domain rebalance planner**: passive capacity-aware balancing is
-  complete. Implement the R80 copy-before-publish handoff: R80 reserves,
+- [x] **Cross-domain rebalance planner**: passive capacity-aware balancing and
+  the R80 copy-before-publish handoff are complete. R80 reserves,
   copies, and fsyncs a tentative target before sending the durable
   source-identity handoff to the ChunkDB owner; ChunkDB checkpoints the target,
   conditionally publishes the source-revision replacement, then confirms that
@@ -84,10 +84,10 @@ of temporarily degraded EC strips.
   deliveries but is not a recovery authority; the job phase resumes confirmation
   after a restart. R80 owns its DiskDB scanner and owner-disposition cleanup
   contract.
-  Frontend ad-hoc EC repair returns reconstructed readable data immediately and
-  uses the in-memory manager only to coalesce/reuse work while the durable job
-  publishes. Files: DiskDB relocation/task protocol, ChunkDB task handling,
-  lifecycle/storage, frontend repair manager, and integration tests.
+  The planner waits for sustained usage skew, moves exactly one fragment per
+  cycle, and stops when refreshed summaries are balanced. Files: DiskDB
+  relocation/task protocol, ChunkDB task handling, lifecycle/storage, planner,
+  and integration tests.
 - [x] **EC topology matrix**: cover 10+2, 20+2, and 40+4 on two racks with a
   four-node/two-node split under both policies, interrupted admission/restart,
   insufficient-topology waiting, and convergence after adding six or eleven
@@ -106,6 +106,9 @@ of temporarily degraded EC strips.
   eleven racks. The E2E fixture grows
   a running DiskDB instance without restart and starts one real DiskIO owner
   per disk-group, so convergence will copy and fsync physical segments.
+  The expanded 10+2/20+2/40+4 matrix also performs one cross-disk-group
+  relocation per shape and verifies that every physical protection bound is
+  preserved.
 
 ## Phase 6 — Documentation and cleanup
 
@@ -115,6 +118,9 @@ of temporarily degraded EC strips.
 - [ ] **Final cleanup**: run every gate, remove R97 from the backlog and delete
   this plan after the active cross-domain mover has a defined ownership and
   fencing contract and every acceptance case passes.
+  The affected gates pass; final cleanup remains blocked by the unrelated
+  workspace `rs-lint` DashMap inventory failure in
+  `lib/crowdb-kv/src/rpc/snapshot_registry.rs`.
 
 ## Files
 

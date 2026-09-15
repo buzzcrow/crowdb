@@ -464,7 +464,7 @@ pub async fn build_snapshot(hw: &crowdb_kv_client::HardwareClient) -> Option<Top
         }
     };
 
-    let usages = match crowdb_kv_client::SpaceUsageClient::from_shared(hw.clone())
+    let mut usages = match crowdb_kv_client::SpaceUsageClient::from_shared(hw.clone())
         .list_disk_group_usages()
         .await
     {
@@ -474,6 +474,23 @@ pub async fn build_snapshot(hw: &crowdb_kv_client::HardwareClient) -> Option<Top
             Vec::new()
         }
     };
+    let service = crowdb_kv_client::ServiceRegistryClient::from_shared(hw.shared_kv());
+    if let Ok(instances) = service.read_all_diskdb_instances().await {
+        for (_, instance) in instances {
+            if let Some(diskdb) = instance.extra.and_then(|extra| extra.diskdb) {
+                for summary in diskdb.group_usages {
+                    if let Some((_, current)) = usages
+                        .iter_mut()
+                        .find(|(disk_group_id, _)| *disk_group_id == summary.disk_group_id)
+                    {
+                        *current = summary;
+                    } else {
+                        usages.push((summary.disk_group_id, summary));
+                    }
+                }
+            }
+        }
+    }
 
     if racks.is_empty() && nodes.is_empty() && disk_groups.is_empty() {
         warn!("topology refresh: all lists empty, keeping previous snapshot");

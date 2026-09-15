@@ -9,7 +9,7 @@
 
 mod common;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,6 +20,7 @@ use common::cluster::{
     DiskdbServer, KvCluster, DATA_GROUP_ID, STORE_ID,
 };
 use crowdb_chunkdb::allocator::StripAllocType;
+use crowdb_chunkdb::chunkdb_config::PlacementRebalanceConfig;
 use crowdb_chunkdb::conversion::io::ConversionDiskIo;
 use crowdb_chunkdb::conversion::{decode_payload, ConversionCoordinator, MirrorToEcTaskHandler};
 use crowdb_chunkdb::lifecycle::{
@@ -27,28 +28,136 @@ use crowdb_chunkdb::lifecycle::{
     ReserveGroupSpec,
 };
 use crowdb_chunkdb::metrics::{ChunkdbMetrics, LifecycleMetrics};
+use crowdb_chunkdb::placement_rebalance::PlacementRebalancePlanner;
 use crowdb_chunkdb::placement_repair::{PlacementRepairCoordinator, PlacementRepairTaskHandler};
 use crowdb_chunkdb::range_guard::{OwnedRange, RangeGuard};
+use crowdb_chunkdb::relocation::{RelocationAdmissionError, RelocationCoordinator};
 use crowdb_chunkdb::repair::{decode_payload as decode_repair_payload, RepairCoordinator};
 use crowdb_chunkdb::routing::{default_binding_table, hash_to_bucket, BindingCache};
 use crowdb_chunkdb::selector::{FailureDomainPriority, PlacementConstraints};
+use crowdb_chunkdb::service::ChunkdbRpcService;
 use crowdb_chunkdb::task::{
-    TaskAdmission, TaskClaim, TaskExecutor, TaskHandler, TaskManager, TaskOutcome, TaskScanner, TaskStore,
+    RelocateSegmentTaskHandler, SegmentOwnerResolver, TaskAdmission, TaskClaim, TaskExecutor, TaskHandler,
+    TaskManager, TaskOutcome, TaskScanner, TaskStore,
 };
+use crowdb_chunkdb_client::ChunkdbRpcTransport;
 use crowdb_common::metrics::MetricsRegistry;
 use crowdb_protocol::chunk_task::{
-    ChunkTaskState, ChunkTaskValue, CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_MIRROR_TO_EC,
+    ChunkTaskState, ChunkTaskValue, RelocateSegmentTaskDisposition, RelocateSegmentTaskPayload,
+    CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_MIRROR_TO_EC, TASK_KIND_RELOCATE_SEGMENT,
     TASK_KIND_REPAIR_PLACEMENT, TASK_KIND_REPAIR_STRIP,
 };
 use crowdb_protocol::chunkdb::rpc::{
-    Chunk, ChunkState, ChunkStrip, ChunkType, EcState, EcStrip, PlacementAssessment, Strip,
-    StripReservationAction, StripReservationState, StripType,
+    Chunk, ChunkState, ChunkStrip, ChunkType, EcState, EcStrip, PlacementAssessment,
+    QuerySegmentOwnerRequest, RelocateSegmentHandoffRequest, RelocationHandoffDisposition,
+    SegmentOwnerDisposition, Strip, StripReservationAction, StripReservationState, StripType,
 };
-use crowdb_protocol::common::ChunkId;
+use crowdb_protocol::common::{ChunkId, DiskGroupUsageSummary};
+use crowdb_protocol::diskdb::rpc::RelocationJournalPhase;
+use crowdb_protocol::{port::alloc as port_alloc, ServicePort};
 use crowdb_test_harness::diskio::{DiskioGroup0Identity, DiskioProcess, DiskioStartOpts};
 
 fn max_fragment_count<K: Eq + Hash>(counts: &HashMap<K, u32>) -> u32 {
     *counts.values().max().expect("segment count")
+}
+
+fn test_physical_assessment(
+    snapshot: &crowdb_chunkdb::topology::TopologySnapshot,
+    segments: &[crowdb_protocol::diskdb::rpc::Segment],
+    loss_budget: u32,
+) -> PlacementAssessment {
+    let mut rack_counts = HashMap::new();
+    let mut node_counts = HashMap::new();
+    let mut disk_counts = HashMap::new();
+    for segment in segments {
+        let disk_id = segment.disk_id.expect("physical disk");
+        let location = snapshot.disk_location(disk_id).expect("disk location");
+        *rack_counts.entry(location.rack_id).or_insert(0) += 1;
+        *node_counts.entry(location.node_id).or_insert(0) += 1;
+        *disk_counts.entry(disk_id).or_insert(0) += 1;
+    }
+    let max_fragments_per_rack = max_fragment_count(&rack_counts);
+    let max_fragments_per_node = max_fragment_count(&node_counts);
+    let max_fragments_per_disk = max_fragment_count(&disk_counts);
+    PlacementAssessment {
+        loss_budget,
+        max_fragments_per_rack,
+        max_fragments_per_node,
+        max_fragments_per_disk,
+        rack_protected: max_fragments_per_rack <= loss_budget,
+        node_protected: max_fragments_per_node <= loss_budget,
+        disk_protected: max_fragments_per_disk <= loss_budget,
+        topology_generation: snapshot.generation(),
+        usage_fresh: false,
+    }
+}
+
+async fn assert_conversion_task_pending(
+    handler: &Arc<LifecycleHandler>,
+    task_store: &Arc<TaskStore>,
+    chunk_id: ChunkId,
+    task: &ChunkTaskValue,
+    replacement: &ChunkStrip,
+) {
+    assert_eq!(
+        task_store.list_partition(&chunk_id).await.unwrap(),
+        vec![task.clone()]
+    );
+    assert!(decode_payload(&task.payload).unwrap().replacement_strip.is_some());
+    let target = match replacement.strip.as_ref().expect("replacement body") {
+        Strip::MirrorStrip(mirror) => mirror.segments[0],
+        Strip::EcStrip(ec) => ec.segments[0],
+    };
+    let owner = SegmentOwnerResolver::new(Arc::clone(handler), Arc::clone(task_store));
+    assert_eq!(
+        owner.resolve(&chunk_id, &target).await.unwrap(),
+        SegmentOwnerDisposition::TaskPending
+    );
+
+    let port = port_alloc::alloc_test_port(ServicePort::ChunkdbRpc);
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let server = Arc::new(crowdb_rpc_ffi::RpcServer::new(None));
+    server.listen("127.0.0.1", i32::from(port)).unwrap();
+    let mut registry = MetricsRegistry::new();
+    let service = Arc::new(
+        ChunkdbRpcService::new(
+            Arc::clone(handler),
+            Arc::new(ChunkdbMetrics::register(&mut registry)),
+            tokio::runtime::Handle::current(),
+        )
+        .with_task_store(Arc::clone(task_store)),
+    );
+    service.register_handlers(&server);
+    server.start();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let transport = ChunkdbRpcTransport::new();
+        match transport
+            .send_query_segment_owner(
+                &endpoint,
+                &QuerySegmentOwnerRequest {
+                    chunk_id: Some(chunk_id),
+                    segment: Some(target),
+                },
+            )
+            .await
+        {
+            Ok(response) => {
+                assert_eq!(
+                    SegmentOwnerDisposition::try_from(response.disposition).unwrap(),
+                    SegmentOwnerDisposition::TaskPending
+                );
+                break;
+            }
+            Err(error) => {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "owner RPC did not become ready: {error}"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    }
 }
 
 fn start_diskio_groups(
@@ -190,7 +299,7 @@ async fn diskdb_refreshes_new_failure_domains_without_restart() {
     diskdb
         .refresh_disk_groups(&cluster, &new_disk_groups, &disk_groups, 32)
         .await;
-    let harness = ChunkdbHarness::start(&cluster).await;
+    let harness = ChunkdbHarness::start_with_layout_validity(&cluster, Duration::from_millis(1)).await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while harness.topology.snapshot().healthy_disk_groups().len() < disk_groups.len() {
         assert!(
@@ -289,6 +398,7 @@ async fn assert_expanded_topology_converges_ec(data_num: u32, code_num: u32, req
             Arc::clone(&harness.allocator),
             harness.topology.clone(),
         )
+        .with_layout_validity(Duration::from_millis(1))
         .with_allow_unsafe_ec(true)
         .with_placement_policy(FailureDomainPriority::RackFirst, true),
     );
@@ -389,6 +499,173 @@ async fn assert_expanded_topology_converges_ec(data_num: u32, code_num: u32, req
         !repaired.strips[0].placement_repair_required,
         "assessment={assessment:?}, next_task={task:?}, task_detail={task_detail:?}"
     );
+    assert!(assessment.rack_protected && assessment.node_protected && assessment.disk_protected);
+
+    let snapshot = handler.topology_snapshot();
+    let segments = match repaired.strips[0].strip.as_ref().unwrap() {
+        Strip::EcStrip(ec) => &ec.segments,
+        Strip::MirrorStrip(_) => unreachable!(),
+    };
+    let occupied_disks: HashSet<_> = segments.iter().filter_map(|segment| segment.disk_id).collect();
+    let current = test_physical_assessment(&snapshot, segments, code_num);
+    let mut source_groups = HashSet::new();
+    let (source_dg, target_dg) = disk_groups
+        .iter()
+        .copied()
+        .find_map(|target_dg| {
+            let target_disk = snapshot
+                .disk_group(target_dg)?
+                .value
+                .disk_ids
+                .iter()
+                .copied()
+                .find(|disk_id| !occupied_disks.contains(disk_id))?;
+            source_groups.clear();
+            segments.iter().find_map(|source| {
+                let source_dg = snapshot.disk_location(source.disk_id?).unwrap().disk_group_id;
+                if source_dg == target_dg || !source_groups.insert(source_dg) {
+                    return None;
+                }
+                let source = segments.iter().find(|candidate| {
+                    candidate.disk_id.is_some_and(|disk_id| {
+                        snapshot.disk_location(disk_id).unwrap().disk_group_id == source_dg
+                    })
+                })?;
+                let mut replacement = segments.clone();
+                let position = replacement.iter().position(|candidate| candidate == source)?;
+                replacement[position].disk_id = Some(target_disk);
+                let next = test_physical_assessment(&snapshot, &replacement, code_num);
+                (next.rack_protected == current.rack_protected
+                    && next.node_protected == current.node_protected
+                    && next.disk_protected == current.disk_protected
+                    && next.max_fragments_per_rack <= current.max_fragments_per_rack
+                    && next.max_fragments_per_node <= current.max_fragments_per_node
+                    && next.max_fragments_per_disk <= current.max_fragments_per_disk)
+                    .then_some((source_dg, target_dg))
+            })
+        })
+        .expect("one cross-domain move preserves every physical protection bound");
+    let capacity = 1_000_000_000_000u64;
+    let summaries: Vec<_> = disk_groups
+        .iter()
+        .copied()
+        .map(|disk_group_id| {
+            let used_bytes = if disk_group_id == source_dg {
+                capacity * 8 / 10
+            } else if disk_group_id == target_dg {
+                capacity / 10
+            } else {
+                capacity / 2
+            };
+            DiskGroupUsageSummary {
+                disk_group_id,
+                capacity_bytes: capacity,
+                used_bytes,
+                free_bytes: capacity - used_bytes,
+                disk_count: 3,
+                allocatable_disk_count: 3,
+                allocatable_capacity_bytes: capacity,
+                allocatable_used_bytes: used_bytes,
+                allocatable_free_bytes: capacity - used_bytes,
+                sampled_at_ms: 1,
+            }
+        })
+        .collect();
+    service
+        .register_diskdb(
+            common::cluster::INSTANCE_ID,
+            &diskdb.rpc_endpoint,
+            &disk_groups,
+            &summaries,
+        )
+        .await
+        .unwrap();
+    let refreshed = crowdb_chunkdb::topology::build_snapshot(&hardware).await.unwrap();
+    harness.topology.replace(refreshed);
+    harness
+        .pool
+        .update_disk_id_lookup(&harness.topology.snapshot().disk_groups());
+
+    let coordinator = Arc::new(RelocationCoordinator::new(Arc::clone(&manager)));
+    diskdb.set_relocation_owner(coordinator);
+    let planner = PlacementRebalancePlanner::new(
+        Arc::clone(&handler),
+        Arc::clone(&harness.pool),
+        PlacementRebalanceConfig {
+            enabled: true,
+            scan_interval_secs: 1,
+            imbalance_threshold_pct: 20,
+            hysteresis_secs: 0,
+            min_target_free_bytes: 0,
+            max_moves_per_cycle: 1,
+        },
+    );
+    assert_eq!(planner.run_once(1_000).await.unwrap(), 1);
+    let kv = cluster.make_ddb_kv_client();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let accepted = loop {
+        let journals = kv
+            .list_relocation_journals((STORE_ID, DATA_GROUP_ID))
+            .await
+            .unwrap();
+        if let Some((_, journal)) = journals.iter().find(|(_, journal)| {
+            journal.source.is_some_and(|source| {
+                snapshot
+                    .disk_location(source.disk_id.unwrap())
+                    .is_some_and(|location| location.disk_group_id == source_dg)
+            })
+        }) {
+            if RelocationJournalPhase::try_from(journal.phase) == Ok(RelocationJournalPhase::Accepted) {
+                break journal.clone();
+            }
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let relocation_executor = TaskExecutor::new(
+        Arc::clone(&manager),
+        1,
+        vec![Arc::new(RelocateSegmentTaskHandler::new(
+            Arc::clone(&handler),
+            Arc::clone(&manager),
+        ))],
+    )
+    .unwrap();
+    for _ in 0..4 {
+        let ready = tasks.scan_ready(u64::MAX, 1).await.unwrap();
+        if ready.is_empty() {
+            break;
+        }
+        let claim = manager.claim(&ready[0], u64::MAX).await.unwrap().unwrap();
+        relocation_executor.execute(claim).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    harness
+        .pool
+        .execute_relocation(crowdb_protocol::diskdb::rpc::ExecuteRelocationRequest {
+            target_disk_group_id: target_dg,
+            source: accepted.source,
+            target: accepted.target,
+        })
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let journals = kv
+            .list_relocation_journals((STORE_ID, DATA_GROUP_ID))
+            .await
+            .unwrap();
+        if journals.iter().any(|(_, journal)| {
+            journal.operation_id == accepted.operation_id
+                && RelocationJournalPhase::try_from(journal.phase) == Ok(RelocationJournalPhase::SourceFreed)
+        }) {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let rebalanced = handler.query_chunk(&chunk_id).await.unwrap();
+    let assessment = rebalanced.strips[0].placement_assessment.as_ref().unwrap();
     assert!(assessment.rack_protected && assessment.node_protected && assessment.disk_protected);
     assert!(!diskio.is_empty());
 }
@@ -1130,7 +1407,14 @@ async fn deletion_during_conversion_clears_task_ownership_before_tentative_clean
         .await
         .unwrap()
         .expect("durable conversion task");
-    assert!(decode_payload(&task.payload).unwrap().replacement_strip.is_some());
+    assert_conversion_task_pending(
+        &harness.handler,
+        &task_store,
+        chunk_id,
+        &task,
+        &prepared.replacement_strip,
+    )
+    .await;
 
     harness
         .handler
@@ -1174,6 +1458,520 @@ async fn deletion_during_conversion_clears_task_ownership_before_tentative_clean
     let deleted = harness.handler.query_chunk(&chunk_id).await.unwrap();
     assert_eq!(deleted.state, ChunkState::Deleted as i32);
     assert!(deleted.strips.is_empty());
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn relocation_handoff_claims_publishes_and_defers_source_free() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start_with_layout_validity(&cluster, Duration::from_millis(1)).await;
+    let chunk = harness
+        .handler
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .await
+        .unwrap();
+    let chunk_id = chunk.id.unwrap();
+    let Strip::MirrorStrip(mirror) = chunk.strips[0].strip.as_ref().unwrap() else {
+        unreachable!();
+    };
+    let source = mirror.segments[0];
+    let target = harness
+        .handler
+        .allocate_replacement_segment(&chunk_id, &source, &mirror.segments[1..], &[])
+        .await
+        .unwrap();
+    let bindings = BindingCache::new();
+    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
+    let manager = Arc::new(TaskManager::new(Arc::clone(&tasks), 8000, 30_000));
+    let coordinator = Arc::new(RelocationCoordinator::new(Arc::clone(&manager)));
+    let operation_id = crowdb_protocol::chunk_task::relocation_operation_id(&source).unwrap();
+    let request = RelocateSegmentHandoffRequest {
+        operation_id: Some(operation_id),
+        chunk_id: Some(chunk_id),
+        source: Some(source),
+        target: Some(target),
+    };
+    let mut invalid_identity = request.clone();
+    invalid_identity.operation_id = Some(ChunkId {
+        high: operation_id.high,
+        low: operation_id.low ^ 1,
+    });
+    assert!(matches!(
+        coordinator.admit(&invalid_identity, 1).await,
+        Err(RelocationAdmissionError::InvalidGeometry)
+    ));
+    assert!(tasks.list_partition(&chunk_id).await.unwrap().is_empty());
+    let port = port_alloc::alloc_test_port(ServicePort::ChunkdbRpc);
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let server = Arc::new(crowdb_rpc_ffi::RpcServer::new(None));
+    server.listen("127.0.0.1", i32::from(port)).unwrap();
+    let mut registry = MetricsRegistry::new();
+    let service = Arc::new(
+        ChunkdbRpcService::new(
+            Arc::clone(&harness.handler),
+            Arc::new(ChunkdbMetrics::register(&mut registry)),
+            tokio::runtime::Handle::current(),
+        )
+        .with_task_store(Arc::clone(&tasks))
+        .with_relocation(Arc::clone(&coordinator)),
+    );
+    service.register_handlers(&server);
+    server.start();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match ChunkdbRpcTransport::new()
+            .send_relocate_segment_handoff(&endpoint, &request)
+            .await
+        {
+            Ok(response) => {
+                assert_eq!(
+                    RelocationHandoffDisposition::try_from(response.disposition).unwrap(),
+                    RelocationHandoffDisposition::Accepted
+                );
+                break;
+            }
+            Err(error) => {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "relocation RPC did not become ready: {error}"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+    }
+    let duplicate = ChunkdbRpcTransport::new()
+        .send_relocate_segment_handoff(&endpoint, &request)
+        .await
+        .unwrap();
+    assert_eq!(
+        RelocationHandoffDisposition::try_from(duplicate.disposition).unwrap(),
+        RelocationHandoffDisposition::Accepted
+    );
+    assert_eq!(tasks.list_partition(&chunk_id).await.unwrap().len(), 1);
+    let owner = SegmentOwnerResolver::new(Arc::clone(&harness.handler), Arc::clone(&tasks));
+    assert_eq!(
+        owner.resolve(&chunk_id, &target).await.unwrap(),
+        SegmentOwnerDisposition::TaskPending
+    );
+    let executor = TaskExecutor::new(
+        Arc::clone(&manager),
+        1,
+        vec![Arc::new(RelocateSegmentTaskHandler::new(
+            Arc::clone(&harness.handler),
+            Arc::clone(&manager),
+        ))],
+    )
+    .unwrap();
+    for _ in 0..4 {
+        let ready = tasks.scan_ready(u64::MAX, 1).await.unwrap();
+        if ready.is_empty() {
+            break;
+        }
+        let claim = manager.claim(&ready[0], u64::MAX).await.unwrap().unwrap();
+        executor.execute(claim).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    let response = ChunkdbRpcTransport::new()
+        .send_relocate_segment_handoff(&endpoint, &request)
+        .await
+        .unwrap();
+    assert_eq!(
+        RelocationHandoffDisposition::try_from(response.disposition).unwrap(),
+        RelocationHandoffDisposition::Published
+    );
+    let published = harness.handler.query_chunk(&chunk_id).await.unwrap();
+    let Strip::MirrorStrip(published_mirror) = published.strips[0].strip.as_ref().unwrap() else {
+        unreachable!();
+    };
+    assert!(!published_mirror.segments.contains(&source));
+    assert!(published_mirror.segments.contains(&target));
+    assert!(published.cleanup_intents.is_empty());
+
+    let kv = cluster.make_ddb_kv_client();
+    let source_records = kv
+        .read_zone_records(
+            (STORE_ID, DATA_GROUP_ID),
+            &source.disk_id.unwrap(),
+            source.zone_index,
+        )
+        .await
+        .unwrap();
+    assert!(!source_records.free.iter().any(|record| {
+        record.key.unit_offset == source.unit_offset && record.key.allocation_ts == source.allocation_ts
+    }));
+}
+
+#[tokio::test]
+async fn relocation_rejects_a_target_that_weakens_physical_placement() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let chunk = harness
+        .handler
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .await
+        .unwrap();
+    let chunk_id = chunk.id.unwrap();
+    let Strip::MirrorStrip(mirror) = chunk.strips[0].strip.as_ref().unwrap() else {
+        unreachable!();
+    };
+    let source = mirror.segments[0];
+    let mut target = mirror.segments[1];
+    target.allocation_ts = target.allocation_ts.saturating_add(1);
+    let bindings = BindingCache::new();
+    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
+    let manager = Arc::new(TaskManager::new(Arc::clone(&tasks), 8001, 30_000));
+    let coordinator = RelocationCoordinator::new(Arc::clone(&manager));
+    let operation_id = crowdb_protocol::chunk_task::relocation_operation_id(&source).unwrap();
+    assert_eq!(
+        coordinator
+            .admit(
+                &RelocateSegmentHandoffRequest {
+                    operation_id: Some(operation_id),
+                    chunk_id: Some(chunk_id),
+                    source: Some(source),
+                    target: Some(target),
+                },
+                1,
+            )
+            .await
+            .unwrap(),
+        RelocationHandoffDisposition::Accepted
+    );
+    let executor = TaskExecutor::new(
+        Arc::clone(&manager),
+        1,
+        vec![Arc::new(RelocateSegmentTaskHandler::new(
+            Arc::clone(&harness.handler),
+            Arc::clone(&manager),
+        ))],
+    )
+    .unwrap();
+    let ready = tasks.scan_ready(u64::MAX, 1).await.unwrap();
+    let claim = manager.claim(&ready[0], u64::MAX).await.unwrap().unwrap();
+    executor.execute(claim).await.unwrap();
+
+    let stored = tasks
+        .get(&chunk_id, TASK_KIND_RELOCATE_SEGMENT, &operation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.state, ChunkTaskState::Completed);
+    let payload: RelocateSegmentTaskPayload = serde_json::from_slice(&stored.payload).unwrap();
+    assert_eq!(payload.disposition, RelocateSegmentTaskDisposition::Rejected);
+    assert_eq!(harness.handler.query_chunk(&chunk_id).await.unwrap(), chunk);
+}
+
+#[tokio::test]
+async fn relocation_marks_deleted_owner_stale_without_publishing_target() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let chunk = harness
+        .handler
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .await
+        .unwrap();
+    let chunk_id = chunk.id.unwrap();
+    let Strip::MirrorStrip(mirror) = chunk.strips[0].strip.as_ref().unwrap() else {
+        unreachable!();
+    };
+    let source = mirror.segments[0];
+    let target = harness
+        .handler
+        .allocate_replacement_segment(&chunk_id, &source, &mirror.segments[1..], &[])
+        .await
+        .unwrap();
+    let bindings = BindingCache::new();
+    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
+    let manager = Arc::new(TaskManager::new(Arc::clone(&tasks), 8002, 30_000));
+    let coordinator = RelocationCoordinator::new(Arc::clone(&manager));
+    let operation_id = crowdb_protocol::chunk_task::relocation_operation_id(&source).unwrap();
+    coordinator
+        .admit(
+            &RelocateSegmentHandoffRequest {
+                operation_id: Some(operation_id),
+                chunk_id: Some(chunk_id),
+                source: Some(source),
+                target: Some(target),
+            },
+            1,
+        )
+        .await
+        .unwrap();
+    harness.handler.delete_chunk(&chunk_id).await.unwrap();
+    let executor = TaskExecutor::new(
+        Arc::clone(&manager),
+        1,
+        vec![Arc::new(RelocateSegmentTaskHandler::new(
+            Arc::clone(&harness.handler),
+            Arc::clone(&manager),
+        ))],
+    )
+    .unwrap();
+    let ready = tasks.scan_ready(u64::MAX, 1).await.unwrap();
+    let claim = manager.claim(&ready[0], u64::MAX).await.unwrap().unwrap();
+    executor.execute(claim).await.unwrap();
+
+    let stored = tasks
+        .get(&chunk_id, TASK_KIND_RELOCATE_SEGMENT, &operation_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let payload: RelocateSegmentTaskPayload = serde_json::from_slice(&stored.payload).unwrap();
+    assert_eq!(payload.disposition, RelocateSegmentTaskDisposition::Stale);
+    let owner = SegmentOwnerResolver::new(Arc::clone(&harness.handler), tasks);
+    assert_eq!(
+        owner.resolve(&chunk_id, &target).await.unwrap(),
+        SegmentOwnerDisposition::Absent
+    );
+    let deleted = harness.handler.query_chunk(&chunk_id).await.unwrap();
+    assert_eq!(deleted.state, ChunkState::Deleted as i32);
+    assert!(deleted.strips.is_empty());
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn cross_domain_rebalance_hands_one_safe_move_to_target_diskdb() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start_with_layout_validity(&cluster, Duration::from_millis(1)).await;
+    let chunk = harness
+        .handler
+        .allocate_chunk(None, 1, 1, StripType::Mirror, 0, 0, 3, ChunkType::Repo, 0, 0)
+        .await
+        .unwrap();
+    let chunk_id = chunk.id.unwrap();
+    let Strip::MirrorStrip(mirror) = chunk.strips[0].strip.as_ref().unwrap() else {
+        unreachable!();
+    };
+    let snapshot = harness.topology.snapshot();
+    let occupied: HashSet<_> = mirror
+        .segments
+        .iter()
+        .filter_map(|segment| segment.disk_id)
+        .filter_map(|disk| snapshot.disk_location(disk))
+        .map(|location| location.disk_group_id)
+        .collect();
+    let source = mirror.segments[0];
+    let source_dg = snapshot
+        .disk_location(source.disk_id.unwrap())
+        .unwrap()
+        .disk_group_id;
+    let target_dg = common::cluster::seeded_dg_ids()
+        .into_iter()
+        .find(|disk_group_id| !occupied.contains(disk_group_id))
+        .unwrap();
+    let capacity = 1_000_000_000_000u64;
+    let summaries: Vec<_> = common::cluster::seeded_dg_ids()
+        .into_iter()
+        .map(|disk_group_id| {
+            let used_bytes = if disk_group_id == source_dg {
+                capacity * 8 / 10
+            } else if disk_group_id == target_dg {
+                capacity / 10
+            } else {
+                capacity / 2
+            };
+            DiskGroupUsageSummary {
+                disk_group_id,
+                capacity_bytes: capacity,
+                used_bytes,
+                free_bytes: capacity - used_bytes,
+                disk_count: 3,
+                allocatable_disk_count: 3,
+                allocatable_capacity_bytes: capacity,
+                allocatable_used_bytes: used_bytes,
+                allocatable_free_bytes: capacity - used_bytes,
+                sampled_at_ms: 1,
+            }
+        })
+        .collect();
+    cluster
+        .make_service_registry_client()
+        .register_diskdb(
+            common::cluster::INSTANCE_ID,
+            &diskdb.rpc_endpoint,
+            &common::cluster::seeded_dg_ids(),
+            &summaries,
+        )
+        .await
+        .unwrap();
+    let refreshed = crowdb_chunkdb::topology::build_snapshot(&cluster.make_hardware_client())
+        .await
+        .unwrap();
+    harness.topology.replace(refreshed);
+    harness
+        .pool
+        .update_disk_id_lookup(&harness.topology.snapshot().disk_groups());
+    let planner = PlacementRebalancePlanner::new(
+        Arc::clone(&harness.handler),
+        Arc::clone(&harness.pool),
+        PlacementRebalanceConfig {
+            enabled: true,
+            scan_interval_secs: 1,
+            imbalance_threshold_pct: 20,
+            hysteresis_secs: 10,
+            min_target_free_bytes: 0,
+            max_moves_per_cycle: 1,
+        },
+    );
+    let bindings = BindingCache::new();
+    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
+    let manager = Arc::new(TaskManager::new(Arc::clone(&tasks), 8003, 30_000));
+    let coordinator = Arc::new(RelocationCoordinator::new(Arc::clone(&manager)));
+    diskdb.set_relocation_owner(coordinator);
+    assert_eq!(planner.run_once(1_000).await.unwrap(), 0);
+    assert_eq!(planner.run_once(10_999).await.unwrap(), 0);
+    assert_eq!(planner.run_once(11_000).await.unwrap(), 1);
+    let kv = cluster.make_ddb_kv_client();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let accepted = loop {
+        let journals = kv
+            .list_relocation_journals((STORE_ID, DATA_GROUP_ID))
+            .await
+            .unwrap();
+        if let Some((_, journal)) = journals
+            .iter()
+            .find(|(_, journal)| journal.source == Some(source))
+        {
+            assert_eq!(journal.target_disk_group_id, target_dg);
+            if RelocationJournalPhase::try_from(journal.phase) == Ok(RelocationJournalPhase::Accepted) {
+                break journal.clone();
+            }
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let executor = TaskExecutor::new(
+        Arc::clone(&manager),
+        1,
+        vec![Arc::new(RelocateSegmentTaskHandler::new(
+            Arc::clone(&harness.handler),
+            Arc::clone(&manager),
+        ))],
+    )
+    .unwrap();
+    for _ in 0..4 {
+        let ready = tasks.scan_ready(u64::MAX, 1).await.unwrap();
+        if ready.is_empty() {
+            break;
+        }
+        let claim = manager.claim(&ready[0], u64::MAX).await.unwrap().unwrap();
+        executor.execute(claim).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    harness
+        .pool
+        .execute_relocation(crowdb_protocol::diskdb::rpc::ExecuteRelocationRequest {
+            target_disk_group_id: target_dg,
+            source: accepted.source,
+            target: accepted.target,
+        })
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let journals = kv
+            .list_relocation_journals((STORE_ID, DATA_GROUP_ID))
+            .await
+            .unwrap();
+        if journals.iter().any(|(_, journal)| {
+            journal.source == Some(source)
+                && RelocationJournalPhase::try_from(journal.phase) == Ok(RelocationJournalPhase::SourceFreed)
+        }) {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let source_records = kv
+        .read_zone_records(
+            (STORE_ID, DATA_GROUP_ID),
+            &source.disk_id.unwrap(),
+            source.zone_index,
+        )
+        .await
+        .unwrap();
+    assert!(source_records.free.iter().any(|record| {
+        record.key.unit_offset == source.unit_offset && record.key.allocation_ts == source.allocation_ts
+    }));
+    let published = harness.handler.query_chunk(&chunk_id).await.unwrap();
+    let Strip::MirrorStrip(published_mirror) = published.strips[0].strip.as_ref().unwrap() else {
+        unreachable!();
+    };
+    assert!(!published_mirror.segments.contains(&source));
+    assert!(published_mirror.segments.contains(&accepted.target.unwrap()));
+    let assessment = published.strips[0].placement_assessment.as_ref().unwrap();
+    assert!(assessment.rack_protected && assessment.node_protected && assessment.disk_protected);
+
+    let journal_count = kv
+        .list_relocation_journals((STORE_ID, DATA_GROUP_ID))
+        .await
+        .unwrap()
+        .len();
+    let balanced_summaries: Vec<_> = common::cluster::seeded_dg_ids()
+        .into_iter()
+        .map(|disk_group_id| DiskGroupUsageSummary {
+            disk_group_id,
+            capacity_bytes: capacity,
+            used_bytes: capacity / 2,
+            free_bytes: capacity / 2,
+            disk_count: 3,
+            allocatable_disk_count: 3,
+            allocatable_capacity_bytes: capacity,
+            allocatable_used_bytes: capacity / 2,
+            allocatable_free_bytes: capacity / 2,
+            sampled_at_ms: 2,
+        })
+        .collect();
+    cluster
+        .make_service_registry_client()
+        .register_diskdb(
+            common::cluster::INSTANCE_ID,
+            &diskdb.rpc_endpoint,
+            &common::cluster::seeded_dg_ids(),
+            &balanced_summaries,
+        )
+        .await
+        .unwrap();
+    let refreshed = crowdb_chunkdb::topology::build_snapshot(&cluster.make_hardware_client())
+        .await
+        .unwrap();
+    harness.topology.replace(refreshed);
+    assert_eq!(planner.run_once(12_000).await.unwrap(), 0);
+    assert_eq!(
+        kv.list_relocation_journals((STORE_ID, DATA_GROUP_ID))
+            .await
+            .unwrap()
+            .len(),
+        journal_count
+    );
 }
 
 #[tokio::test]

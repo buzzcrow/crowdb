@@ -23,6 +23,10 @@ pub struct DdbConfig {
     #[serde(default)]
     pub scanner: ScannerConfig,
     #[serde(default)]
+    pub rebalance: RebalanceConfig,
+    #[serde(default)]
+    pub allocator: AllocatorConfig,
+    #[serde(default)]
     pub sync: SyncConfig,
     #[serde(default)]
     pub reporting: ReportingConfig,
@@ -274,9 +278,18 @@ impl Default for IntegrityScanConfig {
 
 /// Background scanner configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ScannerConfig {
     /// dynamic: scanner run interval in seconds (default: 600).
     pub scan_interval_secs: u32,
+    /// Dynamic cadence for the independent tentative `BusyBlock` owner scanner.
+    pub tentative_owner_scan_interval_secs: u32,
+    /// Dynamic pause after each zone during tentative owner reconciliation.
+    /// Zero is useful only for tests or an explicitly unpaced operator scan.
+    pub tentative_owner_zone_delay_secs: u32,
+    /// Dynamic grace before an `Absent` owner disposition may free an exact
+    /// tentative allocation incarnation.
+    pub tentative_owner_grace_secs: u64,
     /// Ghost allocation + drift detection sub-config.
     pub ghost: GhostScanConfig,
     /// Record integrity verification sub-config.
@@ -292,11 +305,62 @@ impl Default for ScannerConfig {
     fn default() -> Self {
         Self {
             scan_interval_secs: 600,
+            tentative_owner_scan_interval_secs: 600,
+            tentative_owner_zone_delay_secs: 3,
+            tentative_owner_grace_secs: 86_400,
             ghost: GhostScanConfig::default(),
             integrity: IntegrityScanConfig::default(),
             reverify_delay_ms: 1000,
         }
     }
+}
+
+/// Deliberately low-rate physical relocation planning.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RebalanceConfig {
+    pub enabled: bool,
+    pub plan_interval_secs: u32,
+    pub imbalance_threshold_pct: u32,
+    pub max_jobs_per_cycle: u32,
+    pub zone_delay_secs: u32,
+}
+
+impl Default for RebalanceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            plan_interval_secs: 300,
+            imbalance_threshold_pct: 20,
+            max_jobs_per_cycle: 1,
+            zone_delay_secs: 3,
+        }
+    }
+}
+
+/// Lock-free disk selection policy for new allocations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AllocatorConfig {
+    pub load_aware: bool,
+    pub load_aware_weight: LoadAwareWeight,
+}
+
+impl Default for AllocatorConfig {
+    fn default() -> Self {
+        Self {
+            load_aware: true,
+            load_aware_weight: LoadAwareWeight::FreeBytes,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadAwareWeight {
+    #[default]
+    FreeBytes,
+    InverseUsedPct,
 }
 
 // ── Validation ──────────────────────────────────────────────────
@@ -426,6 +490,21 @@ pub fn validate(config: &DdbConfig) -> Result<(), String> {
     }
     if config.reporting.interval_secs == 0 {
         return Err("reporting.interval_secs must be > 0".to_string());
+    }
+    if config.scanner.scan_interval_secs == 0 {
+        return Err("scanner.scan_interval_secs must be > 0".to_string());
+    }
+    if config.scanner.tentative_owner_scan_interval_secs == 0 {
+        return Err("scanner.tentative_owner_scan_interval_secs must be > 0".to_string());
+    }
+    if config.rebalance.plan_interval_secs == 0 {
+        return Err("rebalance.plan_interval_secs must be > 0".to_string());
+    }
+    if config.rebalance.imbalance_threshold_pct > 100 {
+        return Err("rebalance.imbalance_threshold_pct must be <= 100".to_string());
+    }
+    if config.rebalance.max_jobs_per_cycle == 0 {
+        return Err("rebalance.max_jobs_per_cycle must be > 0".to_string());
     }
     Ok(())
 }

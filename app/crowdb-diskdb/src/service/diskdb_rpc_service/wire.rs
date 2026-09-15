@@ -3,10 +3,11 @@ use super::{
     DiskGroupUsage, DiskId, FBAllocateResponse, FBAllocateResponseArgs, FBCommitBlocksResponse,
     FBCommitBlocksResponseArgs, FBCompactZoneResponse, FBCompactZoneResponseArgs, FBDiskGroupInfo,
     FBDiskGroupInfoArgs, FBDiskGroupRecalcResult, FBDiskGroupRecalcResultArgs, FBDiskInfo, FBDiskInfoArgs,
-    FBDiskType, FBDiskdbRetCode, FBFreeFailure, FBFreeFailureArgs, FBFreeFailureReason, FBFreeResponse,
-    FBFreeResponseArgs, FBGetDiskGroupInfoResponse, FBGetDiskGroupInfoResponseArgs, FBGetDiskInfoResponse,
-    FBGetDiskInfoResponseArgs, FBGetScanStatusResponse, FBGetScanStatusResponseArgs, FBHwStatus, FBInt128,
-    FBMsgType, FBQueryCapacityStatsResponse, FBQueryCapacityStatsResponseArgs, FBRebuildZoneBitmapResponse,
+    FBDiskType, FBDiskdbRetCode, FBExecuteRelocationResponse, FBExecuteRelocationResponseArgs, FBFreeFailure,
+    FBFreeFailureArgs, FBFreeFailureReason, FBFreeResponse, FBFreeResponseArgs, FBGetDiskGroupInfoResponse,
+    FBGetDiskGroupInfoResponseArgs, FBGetDiskInfoResponse, FBGetDiskInfoResponseArgs,
+    FBGetScanStatusResponse, FBGetScanStatusResponseArgs, FBHwStatus, FBInt128, FBMsgType,
+    FBQueryCapacityStatsResponse, FBQueryCapacityStatsResponseArgs, FBRebuildZoneBitmapResponse,
     FBRebuildZoneBitmapResponseArgs, FBRecalcDiskUsageResponse, FBRecalcDiskUsageResponseArgs, FBScanSummary,
     FBScanSummaryArgs, FBSegment, FBTriggerScanResponse, FBTriggerScanResponseArgs, FBZoneAllocationState,
     FBZoneCompactionResult, FBZoneCompactionResultArgs, FBZoneRecalcResult, FBZoneRecalcResultArgs,
@@ -130,11 +131,40 @@ pub(super) fn build_error_response(
         mt if mt == FBMsgType::ECommitBlocksResponse.0 as u16 => {
             build_commit_response(req_id, create_nano, ret_code, error_msg, 0)
         }
+        mt if mt == FBMsgType::EExecuteRelocationResponse.0 as u16 => {
+            build_execute_relocation_response(req_id, create_nano, ret_code, error_msg, None, 0)
+        }
         _ => {
             // Fallback: build an allocate response (generic shape).
             build_allocate_response(req_id, create_nano, ret_code, error_msg, &[])
         }
     }
+}
+
+pub(super) fn build_execute_relocation_response(
+    req_id: u64,
+    create_nano: u64,
+    ret_code: FBDiskdbRetCode,
+    error_msg: Option<&str>,
+    operation_id: Option<ChunkId>,
+    phase: i32,
+) -> (Vec<u8>, usize) {
+    let mut fbb = FlatBufferBuilder::new();
+    let error = error_msg.map(|message| fbb.create_string(message));
+    let operation = operation_id.map(|id| FBInt128::new(id.high, id.low));
+    let response = FBExecuteRelocationResponse::create(
+        &mut fbb,
+        &FBExecuteRelocationResponseArgs {
+            id: req_id,
+            rpc_create_nano: create_nano,
+            ret_code,
+            error_msg: error,
+            operation_id: operation.as_ref(),
+            phase,
+        },
+    );
+    fbb.finish(response, None);
+    fbb.collapse()
 }
 
 pub(super) fn build_allocate_response(

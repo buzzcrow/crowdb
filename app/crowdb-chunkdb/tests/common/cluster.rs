@@ -8,8 +8,10 @@
 //! crowdb-rpc server, registers it in the service registry, and wires the
 //! chunkdb lifecycle handler. Tests call the handler directly.
 
+use std::future::Future;
 use std::io as std_io;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::process::{Child, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -17,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use crowdb_chunkdb::allocator::{ChunkAllocator, DiskdbClientPool};
 use crowdb_chunkdb::lifecycle::LifecycleHandler;
+use crowdb_chunkdb::relocation::RelocationCoordinator;
 use crowdb_chunkdb::routing::{default_binding_table, BindingCache};
 use crowdb_chunkdb::storage::ChunkStore;
 use crowdb_chunkdb::topology::{refresh::run_refresh_loop, TopologyCache};
@@ -28,13 +31,15 @@ use crowdb_diskdb::liveness::lifecycle::StartupPhase;
 use crowdb_diskdb::metrics::DiskdbMetrics;
 use crowdb_diskdb::metrics::RecalcEngine;
 use crowdb_diskdb::model::disk_group_container::DdbDiskGroupContainer;
+use crowdb_diskdb::rebalance::{RelocationIo, RelocationOwner, RelocationWorker};
 use crowdb_diskdb::recovery::ZoneLoader;
 use crowdb_diskdb::scanner::ScanState;
 use crowdb_diskdb::service::DiskdbRpcService;
 use crowdb_diskdb_client::DiskdbRpcTransport;
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, RetryConfig, ServiceRegistryClient};
+use crowdb_protocol::chunkdb::rpc::{RelocateSegmentHandoffRequest, RelocationHandoffDisposition};
 use crowdb_protocol::common::{DiskId, HwStatus, NodeValue, RackValue};
-use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue};
+use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue, Segment};
 use crowdb_protocol::port::alloc as port_alloc;
 use crowdb_protocol::ServicePort;
 use serde_json::Value;
@@ -531,10 +536,58 @@ pub fn seeded_dg_ids() -> Vec<u64> {
 pub struct DiskdbServer {
     pub container: Arc<DdbDiskGroupContainer>,
     pub rpc_endpoint: String,
+    relocation_owner: Arc<HarnessRelocationOwner>,
     _serve_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
+struct HarnessRelocationOwner {
+    coordinator: arc_swap::ArcSwapOption<RelocationCoordinator>,
+}
+
+fn unix_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+impl RelocationOwner for HarnessRelocationOwner {
+    fn handoff<'a>(
+        &'a self,
+        request: RelocateSegmentHandoffRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<RelocationHandoffDisposition, String>> + Send + 'a>> {
+        Box::pin(async move {
+            let coordinator = self
+                .coordinator
+                .load_full()
+                .ok_or_else(|| "test relocation owner is not attached".to_string())?;
+            coordinator
+                .admit(&request, unix_time_ms())
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+}
+
+struct HarnessRelocationIo;
+
+impl RelocationIo for HarnessRelocationIo {
+    fn copy_and_fsync<'a>(
+        &'a self,
+        _source: Segment,
+        _target: Segment,
+        _unit_size: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
 impl DiskdbServer {
+    pub fn set_relocation_owner(&self, coordinator: Arc<RelocationCoordinator>) {
+        self.relocation_owner.coordinator.store(Some(coordinator));
+    }
+
     /// Start diskdb in-process: run one keepalive tick to populate
     /// state, wait for zones, then start the crowdb-rpc server on a free
     /// port and register in the service registry.
@@ -592,20 +645,29 @@ impl DiskdbServer {
         let mut registry = MetricsRegistry::new();
         let metrics = Arc::new(DiskdbMetrics::register(&mut registry));
         let rt_handle = tokio::runtime::Handle::current();
-        let rpc_service = Arc::new(DiskdbRpcService::new(
-            Arc::clone(&container),
-            cluster.make_ddb_kv_client(),
-            StorageDefaults::default(),
-            Arc::new(ZoneLoader::new(cluster.make_ddb_kv_client(), 4)),
-            Arc::new(RecalcEngine::new(
-                cluster.make_ddb_kv_client(),
+        let relocation_owner = Arc::new(HarnessRelocationOwner {
+            coordinator: arc_swap::ArcSwapOption::empty(),
+        });
+        let rpc_service = Arc::new(
+            DiskdbRpcService::new(
                 Arc::clone(&container),
-            )),
-            ScanState::new(),
-            metrics,
-            Arc::new(arc_swap::ArcSwap::from_pointee(DdbConfig::default())),
-            rt_handle,
-        ));
+                cluster.make_ddb_kv_client(),
+                StorageDefaults::default(),
+                Arc::new(ZoneLoader::new(cluster.make_ddb_kv_client(), 4)),
+                Arc::new(RecalcEngine::new(
+                    cluster.make_ddb_kv_client(),
+                    Arc::clone(&container),
+                )),
+                ScanState::new(),
+                metrics,
+                Arc::new(arc_swap::ArcSwap::from_pointee(DdbConfig::default())),
+                rt_handle,
+            )
+            .with_relocation_worker(Arc::new(RelocationWorker::new(
+                relocation_owner.clone(),
+                Arc::new(HarnessRelocationIo),
+            ))),
+        );
         let rpc_server = Arc::new(crowdb_rpc_ffi::RpcServer::new(None));
         rpc_server
             .listen(
@@ -637,6 +699,7 @@ impl DiskdbServer {
         Self {
             container,
             rpc_endpoint,
+            relocation_owner,
             _serve_handle: None,
         }
     }
@@ -751,6 +814,7 @@ pub struct ChunkdbHarness {
     pub handler: Arc<LifecycleHandler>,
     pub store: Arc<ChunkStore>,
     pub allocator: Arc<ChunkAllocator>,
+    pub pool: Arc<DiskdbClientPool>,
     pub topology: TopologyCache,
     _refresh_handle: tokio::task::JoinHandle<()>,
 }
@@ -801,6 +865,7 @@ impl ChunkdbHarness {
             handler,
             store,
             allocator,
+            pool,
             topology,
             _refresh_handle: refresh_handle,
         }

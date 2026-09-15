@@ -34,6 +34,14 @@ ALLOWED: dict[tuple[str, str], str] = {
         "lib/crowdb-kv-client/src/service/discovery.rs",
         "services",
     ): "service-name cache; lookup clones Arc<ServiceState> before refresh I/O",
+    (
+        "lib/crowdb-kv/src/rpc/snapshot_registry.rs",
+        "sessions",
+    ): "snapshot transfer lifecycle; guards clone Arc<RegistryEntry> or remove before any await",
+    (
+        "lib/crowdb-kv/src/rpc/snapshot_registry.rs",
+        "expired",
+    ): "expired-session tombstones; lookups only check contains_key, insert, or remove",
 }
 
 

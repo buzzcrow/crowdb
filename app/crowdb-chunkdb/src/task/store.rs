@@ -3,7 +3,7 @@
 
 //! KV persistence for canonical task values and runnable/lease indexes.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -11,7 +11,7 @@ use crowdb_kv_client::{BatchOp, CrowdbKvClient, Error as KvError, GetOutcome, Re
 use crowdb_protocol::chunk_task::{ChunkTaskState, ChunkTaskValue};
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::{
-    decode_chunk_task_value, encode_chunk_task_value, BinaryKey, ChunkTaskKey, ChunkTaskValueError,
+    decode_chunk_task_value, encode_chunk_task_value, BinaryKey, ChunkTaskKey, ChunkTaskValueError, KeyError,
     LeasedChunkTaskKey, ReadyChunkTaskKey,
 };
 use tracing::warn;
@@ -26,6 +26,8 @@ pub enum TaskStoreError {
     Kv(String),
     #[error("task value is invalid: {0}")]
     Value(#[from] ChunkTaskValueError),
+    #[error("task key is invalid: {0}")]
+    Key(#[from] KeyError),
     #[error("task transition changes immutable identity")]
     IdentityChanged,
     #[error("task value does not match its canonical key")]
@@ -120,6 +122,41 @@ impl TaskStore {
             }
         }
         Ok(None)
+    }
+
+    /// List canonical tasks for one chunk partition. Used by owner
+    /// reconciliation to retain a tentative DiskDB target named by a durable
+    /// repair task.
+    pub async fn list_partition(
+        &self,
+        partition_id: &ChunkId,
+    ) -> Result<Vec<ChunkTaskValue>, TaskStoreError> {
+        let task_route = route(&self.bindings, partition_id)?;
+        let prefix = ChunkTaskKey::prefix_for_partition(partition_id);
+        let mut records = self.scan_partition_route(&task_route, &prefix).await?;
+        if matches!(
+            task_route.migration_state,
+            MigrationState::Copying | MigrationState::Cutover
+        ) {
+            if let (Some(store), Some(group)) = (task_route.old_kv_store_id, task_route.old_kv_group_id) {
+                let old_route = Route {
+                    kv_store_id: store,
+                    kv_group_id: group,
+                    migration_state: MigrationState::NotMigrating,
+                    old_kv_store_id: None,
+                    old_kv_group_id: None,
+                };
+                records.extend(self.scan_partition_route(&old_route, &prefix).await?);
+            }
+        }
+        let mut tasks = HashMap::with_capacity(records.len());
+        for (key, value) in records {
+            let task_key = ChunkTaskKey::from_bytes(&key)?;
+            if task_key.partition_id == *partition_id && !tasks.contains_key(&task_key) {
+                tasks.insert(task_key, decode_for_key(&task_key, &value)?);
+            }
+        }
+        Ok(tasks.into_values().collect())
     }
 
     /// Scan runnable indexes whose retry eligibility has arrived.
@@ -237,6 +274,30 @@ impl TaskStore {
             GetOutcome::Found { value, revision } => Ok(Some((value, revision))),
             GetOutcome::NotFound => Ok(None),
         }
+    }
+
+    async fn scan_partition_route(
+        &self,
+        task_route: &Route,
+        prefix: &[u8],
+    ) -> Result<Vec<(Bytes, Bytes)>, TaskStoreError> {
+        let result = self
+            .kv
+            .scan(
+                task_route.kv_store_id,
+                task_route.kv_group_id,
+                prefix,
+                &[],
+                &[],
+                0,
+                ReadMode::Linearizable,
+                None,
+                false,
+                None,
+            )
+            .await
+            .map_err(|error| TaskStoreError::Kv(error.to_string()))?;
+        Ok(result.items)
     }
 
     async fn scan_index(&self, prefix: Vec<u8>, max_keys: u32) -> Result<Vec<Bytes>, TaskStoreError> {

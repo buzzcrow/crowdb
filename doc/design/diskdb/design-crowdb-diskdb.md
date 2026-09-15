@@ -693,6 +693,37 @@ visibility.
   via the shared lock. Details in
   [`design-crowdb-diskdb-zone-management.md`](design-crowdb-diskdb-zone-management.md) §9.
 
+### Tentative owner reconciliation and relocation
+
+Tentative allocation cleanup is independent from bitmap drift scanning.
+`BusyBlockOwnerScanner` reads only tentative durable BusyBlock records after
+the disk-group reaches lifecycle `Up`. It queries ChunkDB with the owner chunk
+and exact disk/zone/offset/allocation incarnation. `Referenced` confirms the
+block, `TaskPending` retains it, and `Absent` persists a first-observed grace
+record. Only a repeated authoritative `Absent` after the 24-hour default grace
+writes the normal free record. Transport failures retain the block.
+
+The scanner visits disk-groups, disks, and zones in sorted serial order and
+awaits an async configurable delay after every zone. The default is three
+seconds. This pacing bounds KV and owner-RPC pressure without blocking a tokio
+executor thread.
+
+Active movement uses a durable relocation journal keyed by the exact source
+incarnation. The worker reserves a tentative target, asks DiskIO to copy and
+fsync it, then delivers the exact source/target pair to ChunkDB. Journal phases
+are `Reserved`, `Copied`, `Accepted`, `Published`, `TargetConfirmed`,
+`SourceFreed`, and `Discarded`; startup resumes every non-terminal phase.
+ChunkDB alone conditionally publishes the new layout. DiskDB confirms the
+target and writes the source free record only after `Published`.
+
+The intra-disk-group planner selects one committed source from an over-used
+disk and one target on an under-used disk. It resumes existing journals before
+selecting new work and uses the same serial per-zone pacing. For cross-group
+moves, ChunkDB allocates the target and sends `ExecuteRelocation` to its owning
+DiskDB, which adopts that exact target into the same journal state machine.
+Source finalization is local when the source disk belongs to another owned
+group and otherwise routes through `DiskdbClient`.
+
 ## 11. Crate Layout
 
 ```

@@ -33,6 +33,12 @@ load_concurrency = 16
 
 [scanner]
 scan_interval_secs = 600
+# Reconcile tentative ownership independently and at a deliberately low rate.
+tentative_owner_scan_interval_secs = 600
+# Traverse disk-group, disk, and zone serially, pausing after every zone.
+tentative_owner_zone_delay_secs = 3
+# Require a durable Absent observation to age for 24 hours before reclaiming.
+tentative_owner_grace_secs = 86400
 reverify_delay_ms = 1000
 
 [scanner.ghost]
@@ -42,6 +48,17 @@ auto_correct = false
 [scanner.integrity]
 verify = true
 detect_owner_mismatch = false
+
+[rebalance]
+enabled = true
+plan_interval_secs = 300
+imbalance_threshold_pct = 20
+max_jobs_per_cycle = 1
+zone_delay_secs = 3
+
+[allocator]
+load_aware = true
+load_aware_weight = "free_bytes"
 
 [sync]
 group0_store_id = 0

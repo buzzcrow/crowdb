@@ -775,6 +775,95 @@ impl BinaryKey for RecoveryScanProgressKey {
     }
 }
 
+// ── TentativeOwnerGraceKey ──────────────────────────────────────
+
+/// First observed `Absent` time for one exact tentative `BusyBlock` incarnation.
+/// Binary-only and stored in the allocation's bound data group.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TentativeOwnerGraceKey {
+    pub disk_id: DiskId,
+    pub zone_index: u32,
+    pub unit_offset: u64,
+    pub allocation_ts: u64,
+}
+
+impl BinaryKey for TentativeOwnerGraceKey {
+    const TYPE_TAG: u16 = 0x0020;
+
+    fn encode_to(&self, out: &mut Vec<u8>) {
+        encode_header(out, Self::TYPE_TAG);
+        encode_disk_id(out, &self.disk_id);
+        encode_u32(out, self.zone_index);
+        encode_u64(out, self.unit_offset);
+        encode_u64(out, self.allocation_ts);
+    }
+
+    fn decode(buf: &[u8]) -> Result<Self, KeyError> {
+        let fields = decode_header(buf, Self::TYPE_TAG)?;
+        let (disk_id, offset) = decode_disk_id(fields, 0)?;
+        let (zone_index, offset) = decode_u32(fields, offset)?;
+        let (unit_offset, offset) = decode_u64(fields, offset)?;
+        let (allocation_ts, offset) = decode_u64(fields, offset)?;
+        check_exact(fields, offset)?;
+        Ok(Self {
+            disk_id,
+            zone_index,
+            unit_offset,
+            allocation_ts,
+        })
+    }
+}
+
+// ── RelocationJournalKey ────────────────────────────────────────
+
+/// Durable relocation state for one exact source allocation incarnation.
+/// Binary-only and stored in the source disk-group's bound data group.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RelocationJournalKey {
+    pub disk_id: DiskId,
+    pub zone_index: u32,
+    pub unit_offset: u64,
+    pub allocation_ts: u64,
+}
+
+impl BinaryKey for RelocationJournalKey {
+    const TYPE_TAG: u16 = 0x0021;
+
+    fn encode_to(&self, out: &mut Vec<u8>) {
+        encode_header(out, Self::TYPE_TAG);
+        encode_disk_id(out, &self.disk_id);
+        encode_u32(out, self.zone_index);
+        encode_u64(out, self.unit_offset);
+        encode_u64(out, self.allocation_ts);
+    }
+
+    fn decode(buf: &[u8]) -> Result<Self, KeyError> {
+        let fields = decode_header(buf, Self::TYPE_TAG)?;
+        let (disk_id, offset) = decode_disk_id(fields, 0)?;
+        let (zone_index, offset) = decode_u32(fields, offset)?;
+        let (unit_offset, offset) = decode_u64(fields, offset)?;
+        let (allocation_ts, offset) = decode_u64(fields, offset)?;
+        check_exact(fields, offset)?;
+        Ok(Self {
+            disk_id,
+            zone_index,
+            unit_offset,
+            allocation_ts,
+        })
+    }
+}
+
+impl RelocationJournalKey {
+    /// Prefix for scanning every durable relocation journal in one bound data
+    /// group.
+    #[must_use]
+    pub fn prefix_all() -> Vec<u8> {
+        let mut value = Vec::new();
+        encode_header(&mut value, Self::TYPE_TAG);
+        value
+    }
+}
+
 // ── diskdb watch prefixes ───────────────────────────────────────
 
 /// Group-0 text prefixes that diskdb's `NotifyHandler` should

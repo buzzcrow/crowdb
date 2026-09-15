@@ -16,7 +16,8 @@ use crowdb_diskdb_client::{DiskdbClientError, DiskdbRpcTransport};
 use crowdb_kv_client::ServiceRegistryClient;
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::{
-    AllocateBlocksRequest, AllocateResponse, CommitBlocksRequest, FreeBlocksRequest, Segment,
+    AllocateBlocksRequest, AllocateResponse, CommitBlocksRequest, ExecuteRelocationRequest,
+    ExecuteRelocationResponse, FreeBlocksRequest, Segment,
 };
 
 /// Pool of diskdb crowdb-rpc transports, keyed by disk-group ID.
@@ -171,6 +172,19 @@ impl DiskdbClientPool {
             DiskdbClientError::Unreachable(format!("no endpoint for disk_group {dg_id}: {error}"))
         })?;
         self.transport.allocate_blocks(&endpoint, &req).await
+    }
+
+    /// Deliver an already-reserved target to its owning `DiskDB` for durable
+    /// copy and owner handoff.
+    pub async fn execute_relocation(
+        &self,
+        request: ExecuteRelocationRequest,
+    ) -> Result<ExecuteRelocationResponse, DiskdbClientError> {
+        let endpoint = self
+            .endpoint_for_dg(request.target_disk_group_id)
+            .await
+            .map_err(DiskdbClientError::Unreachable)?;
+        self.transport.execute_relocation(&endpoint, &request).await
     }
 
     /// Commit blocks on the DiskDB instances that own them.

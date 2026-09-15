@@ -15,13 +15,17 @@ use crowdb_chunkdb::conversion::{ConversionCoordinator, MirrorToEcTaskHandler};
 use crowdb_chunkdb::lifecycle::{ChunkLockMap, LifecycleHandler};
 use crowdb_chunkdb::metrics::ChunkdbMetrics;
 use crowdb_chunkdb::metrics::LifecycleMetrics;
+use crowdb_chunkdb::placement_rebalance::PlacementRebalancePlanner;
 use crowdb_chunkdb::placement_repair::{PlacementRepairCoordinator, PlacementRepairTaskHandler};
 use crowdb_chunkdb::range_guard::RangeGuard;
+use crowdb_chunkdb::relocation::RelocationCoordinator;
 use crowdb_chunkdb::repair::{RepairCoordinator, RepairStripTaskHandler};
 use crowdb_chunkdb::routing::{default_binding_table, BindingCache};
 use crowdb_chunkdb::service::ChunkdbRpcService;
 use crowdb_chunkdb::storage::ChunkStore;
-use crowdb_chunkdb::task::{TaskExecutor, TaskHandler, TaskManager, TaskScanner, TaskStore};
+use crowdb_chunkdb::task::{
+    RelocateSegmentTaskHandler, TaskExecutor, TaskHandler, TaskManager, TaskScanner, TaskStore,
+};
 use crowdb_chunkdb::topology::{
     build_snapshot, notify::NotifyHandler, refresh::run_refresh_loop, TopologyCache,
 };
@@ -389,6 +393,7 @@ async fn main() {
             .unwrap_or(1),
         config.conversion.task_lease_secs.saturating_mul(1_000),
     ));
+    let relocation = Arc::new(RelocationCoordinator::new(Arc::clone(&task_manager)));
     let conversion = Arc::new(
         ConversionCoordinator::new(Arc::clone(&handler), Arc::clone(&task_store))
             .with_wake(task_manager.wake_handle())
@@ -511,6 +516,35 @@ async fn main() {
             }
         })
     });
+    let placement_rebalance_handle = config.placement_rebalance.enabled.then(|| {
+        let planner = Arc::new(PlacementRebalancePlanner::new(
+            Arc::clone(&handler),
+            Arc::clone(&pool),
+            config.placement_rebalance.clone(),
+        ));
+        let mut stop = stop_rx.clone();
+        let interval = Duration::from_secs(config.placement_rebalance.scan_interval_secs);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        match planner.run_once(unix_time_ms()).await {
+                            Ok(moved) if moved > 0 => info!(moved, "cross-domain rebalance moves handed to DiskDB"),
+                            Ok(_) => {}
+                            Err(error) => warn!(%error, "cross-domain rebalance planning failed"),
+                        }
+                    }
+                    changed = stop.changed() => {
+                        if changed.is_err() || *stop.borrow() {
+                            return;
+                        }
+                    }
+                }
+            }
+        })
+    });
     let repair_scan_handle = config.repair.enabled.then(|| {
         let repair = Arc::clone(&repair);
         let mut stop = stop_rx.clone();
@@ -573,6 +607,10 @@ async fn main() {
                 conversion_task_handler,
                 repair_task_handler,
                 placement_repair_task_handler,
+                Arc::new(RelocateSegmentTaskHandler::new(
+                    Arc::clone(&handler),
+                    Arc::clone(&task_manager),
+                )),
             ];
             let executor = Arc::new(
                 TaskExecutor::new(
@@ -626,7 +664,9 @@ async fn main() {
     };
     let rpc_service = Arc::new(
         ChunkdbRpcService::new(Arc::clone(&handler), Arc::clone(&workflow_metrics), rpc_rt_handle)
-            .with_conversion(Arc::clone(&conversion)),
+            .with_conversion(Arc::clone(&conversion))
+            .with_task_store(Arc::clone(&task_store))
+            .with_relocation(relocation),
     );
     let rpc_server = Arc::new(crowdb_rpc_ffi::RpcServer::with_engines(
         None,
@@ -686,6 +726,9 @@ async fn main() {
         let _ = handle.await;
     }
     if let Some(handle) = placement_repair_scan_handle {
+        let _ = handle.await;
+    }
+    if let Some(handle) = placement_rebalance_handle {
         let _ = handle.await;
     }
     let _ = range_refresh_handle.await;

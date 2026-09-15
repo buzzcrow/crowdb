@@ -14,21 +14,28 @@
 
 mod common;
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use common::cluster::{wait_for_disks_ready, KvCluster};
-use crowdb_diskdb::ddb_config::KeepAliveConfig;
+use crowdb_diskdb::bg_task::BgCtx;
+use crowdb_diskdb::ddb_config::{DdbConfig, KeepAliveConfig};
 use crowdb_diskdb::liveness::keepalive::KeepAlive;
+use crowdb_diskdb::liveness::lifecycle::StartupPhase;
 use crowdb_diskdb::model::alloc;
 use crowdb_diskdb::model::disk_group_container::DdbDiskGroupContainer;
 use crowdb_diskdb::scanner::ghost::diff_bitmaps;
 use crowdb_diskdb::scanner::integrity::{is_zero_chunk, is_zero_owner};
-use crowdb_diskdb::scanner::{ScanState, ScanSummary};
+use crowdb_diskdb::scanner::{BusyBlockOwnerScanner, ScanState, ScanSummary, SegmentOwnerQuery, ZonePacer};
 use crowdb_kv_client::HardwareClient;
+use crowdb_protocol::chunkdb::rpc::{QuerySegmentOwnerRequest, SegmentOwnerDisposition};
 use crowdb_protocol::common::{ChunkId, DiskId, HwStatus, NodeValue, RackValue};
-use crowdb_protocol::diskdb::rpc::{BusyBlockValue, DiskGroupValue, DiskType, DiskValue};
-use crowdb_protocol::key::BinaryKey;
+use crowdb_protocol::diskdb::rpc::{BusyBlockValue, CommitState, DiskGroupValue, DiskType, DiskValue};
+use crowdb_protocol::key::{BinaryKey, TentativeOwnerGraceKey};
 use crowdb_protocol::{DiskGroupId, UsageBitmap};
 
 const RACK_ID: u64 = 1;
@@ -139,6 +146,48 @@ fn crowdb_kv_server_bin() -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+struct TestOwnerQuery {
+    dispositions: RwLock<HashMap<u64, Option<SegmentOwnerDisposition>>>,
+}
+
+impl TestOwnerQuery {
+    fn set(&self, allocation_ts: u64, disposition: Option<SegmentOwnerDisposition>) {
+        self.dispositions
+            .write()
+            .unwrap()
+            .insert(allocation_ts, disposition);
+    }
+}
+
+impl SegmentOwnerQuery for TestOwnerQuery {
+    fn query<'a>(
+        &'a self,
+        request: QuerySegmentOwnerRequest,
+    ) -> Pin<Box<dyn Future<Output = Option<SegmentOwnerDisposition>> + Send + 'a>> {
+        let allocation_ts = request.segment.map_or(0, |segment| segment.allocation_ts);
+        Box::pin(async move {
+            self.dispositions
+                .read()
+                .unwrap()
+                .get(&allocation_ts)
+                .copied()
+                .flatten()
+        })
+    }
+}
+
+#[derive(Default)]
+struct TestZonePacer {
+    durations: RwLock<Vec<Duration>>,
+}
+
+impl ZonePacer for TestZonePacer {
+    fn sleep(&self, duration: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        self.durations.write().unwrap().push(duration);
+        Box::pin(async {})
+    }
 }
 
 // ── Unit tests (pure functions, no cluster needed) ───────────────
@@ -501,4 +550,175 @@ async fn scan_integrity_detects_corrupt_snapshot() {
     );
 
     eprintln!("scan_integrity_detects_corrupt_snapshot: ALL CHECKS PASSED");
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn tentative_owner_scanner_reconciles_fault_matrix_and_restart_grace() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: CROWDB_KV_SERVER_BIN not set and binary not found");
+        return;
+    }
+
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let container = Arc::new(DdbDiskGroupContainer::new(INSTANCE_ID));
+    let keepalive = KeepAlive::new(
+        cluster.make_hardware_client(),
+        cluster.make_service_registry_client(),
+        Arc::clone(&container),
+        KeepAliveConfig {
+            interval: Duration::from_secs(10),
+            miss_threshold: 3,
+            zone_rotate_count: 4,
+            cas_retry_limit: 100,
+            temp_failure_timeout_secs: 900,
+        },
+    )
+    .with_ddb_kv_client(cluster.make_ddb_kv_client());
+    assert_eq!(keepalive.tick().await.groups_added, 1);
+    wait_for_disks_ready(&container, DG_ID, 3, ZONE_COUNT).await;
+    container.set_lifecycle_phase(StartupPhase::Up);
+
+    let dg = container.get_disk_group(DG_ID).expect("disk-group exists");
+    let kv = Arc::new(cluster.make_ddb_kv_client());
+    let metrics = crowdb_diskdb::metrics::DiskdbMetrics::disabled();
+    let segments = alloc::allocate_blocks(
+        &dg,
+        1,
+        4,
+        &[],
+        true,
+        &make_chunk_id(8, 80),
+        UNIT_SIZE_BYTES,
+        &kv,
+        100,
+        4,
+        &metrics,
+    )
+    .await
+    .expect("allocate tentative blocks");
+    assert_eq!(segments.len(), 4);
+
+    let owner = Arc::new(TestOwnerQuery {
+        dispositions: RwLock::new(HashMap::new()),
+    });
+    owner.set(
+        segments[0].allocation_ts,
+        Some(SegmentOwnerDisposition::Referenced),
+    );
+    owner.set(
+        segments[1].allocation_ts,
+        Some(SegmentOwnerDisposition::TaskPending),
+    );
+    owner.set(segments[2].allocation_ts, Some(SegmentOwnerDisposition::Absent));
+    owner.set(segments[3].allocation_ts, None);
+
+    let mut scanner_config = DdbConfig::default();
+    scanner_config.scanner.tentative_owner_zone_delay_secs = 3;
+    scanner_config.scanner.tentative_owner_grace_secs = 0;
+    let config = Arc::new(ArcSwap::from_pointee(scanner_config));
+    let ctx = BgCtx {
+        container: Arc::clone(&container),
+        kv: Arc::clone(&kv),
+        metrics: metrics.clone(),
+        config: Arc::clone(&config),
+    };
+    let pacer = Arc::new(TestZonePacer::default());
+    let scanner =
+        BusyBlockOwnerScanner::new(owner.clone(), Arc::clone(&config)).with_pacer_for_tests(pacer.clone());
+    scanner.run_once_for_tests(&ctx).await;
+
+    let referenced = segments[0];
+    let referenced_busy = kv
+        .get_busy(
+            dg.bind(),
+            &referenced.disk_id.unwrap(),
+            referenced.zone_index,
+            referenced.unit_offset,
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .0;
+    assert_eq!(referenced_busy.commit_state, CommitState::Committed as i32);
+    let pending = segments[1];
+    assert_eq!(
+        kv.get_busy(
+            dg.bind(),
+            &pending.disk_id.unwrap(),
+            pending.zone_index,
+            pending.unit_offset,
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .0
+        .commit_state,
+        CommitState::Tentative as i32
+    );
+    let absent = segments[2];
+    let grace_key = TentativeOwnerGraceKey {
+        disk_id: absent.disk_id.unwrap(),
+        zone_index: absent.zone_index,
+        unit_offset: absent.unit_offset,
+        allocation_ts: absent.allocation_ts,
+    };
+    assert!(kv
+        .get_tentative_owner_grace(dg.bind(), &grace_key)
+        .await
+        .unwrap()
+        .is_some());
+
+    owner.set(
+        segments[1].allocation_ts,
+        Some(SegmentOwnerDisposition::Referenced),
+    );
+    let restarted =
+        BusyBlockOwnerScanner::new(owner, Arc::clone(&config)).with_pacer_for_tests(pacer.clone());
+    restarted.run_once_for_tests(&ctx).await;
+
+    assert_eq!(
+        kv.get_busy(
+            dg.bind(),
+            &pending.disk_id.unwrap(),
+            pending.zone_index,
+            pending.unit_offset,
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .0
+        .commit_state,
+        CommitState::Committed as i32
+    );
+    let absent_records = kv
+        .read_zone_records(dg.bind(), &absent.disk_id.unwrap(), absent.zone_index)
+        .await
+        .unwrap();
+    assert!(absent_records.free.iter().any(|record| {
+        record.key.unit_offset == absent.unit_offset && record.key.allocation_ts == absent.allocation_ts
+    }));
+    let transient = segments[3];
+    assert_eq!(
+        kv.get_busy(
+            dg.bind(),
+            &transient.disk_id.unwrap(),
+            transient.zone_index,
+            transient.unit_offset,
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .0
+        .commit_state,
+        CommitState::Tentative as i32
+    );
+    assert_eq!(metrics.tentative_owner_referenced.snapshot().count, 2);
+    assert_eq!(metrics.tentative_owner_task_pending.snapshot().count, 1);
+    assert_eq!(metrics.tentative_owner_absent.snapshot().count, 2);
+    assert_eq!(metrics.tentative_owner_transient.snapshot().count, 2);
+    let delays = pacer.durations.read().unwrap();
+    assert_eq!(delays.len(), usize::try_from(3 * ZONE_COUNT * 2).unwrap());
+    assert!(delays.iter().all(|delay| *delay == Duration::from_secs(3)));
 }

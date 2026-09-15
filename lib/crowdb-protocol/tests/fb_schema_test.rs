@@ -3,6 +3,9 @@
 
 //! Flatbuffer control-message schema layout tests (R104).
 
+use crowdb_protocol::diskdb_fb::{
+    FBExecuteRelocationRequest, FBExecuteRelocationRequestArgs, FBInt128 as FBDiskdbInt128, FBSegment,
+};
 use crowdb_protocol::diskio_fb::{
     FBDiskFsyncRequest, FBDiskFsyncRequestArgs, FBDiskReadRequest, FBDiskReadRequestArgs, FBDiskWriteRequest,
     FBDiskWriteRequestArgs, FBInt128 as FBDiskInt128,
@@ -31,6 +34,52 @@ fn msg_type_diskio_range() {
     assert_eq!(FBMsgType::EDiskReadResponse.0, 3603);
     assert_eq!(FBMsgType::EDiskFsyncRequest.0, 3604);
     assert_eq!(FBMsgType::EDiskFsyncResponse.0, 3605);
+}
+
+#[test]
+fn msg_type_chunkdb_relocation_handoff_is_append_only() {
+    assert_eq!(FBMsgType::EQuerySegmentOwnerRequest.0, 3336);
+    assert_eq!(FBMsgType::EQuerySegmentOwnerResponse.0, 3337);
+    assert_eq!(FBMsgType::ERelocateSegmentHandoffRequest.0, 3338);
+    assert_eq!(FBMsgType::ERelocateSegmentHandoffResponse.0, 3339);
+}
+
+#[test]
+fn msg_type_diskdb_execute_relocation_is_append_only() {
+    assert_eq!(FBMsgType::EExecuteRelocationRequest.0, 3022);
+    assert_eq!(FBMsgType::EExecuteRelocationResponse.0, 3023);
+}
+
+#[test]
+fn diskdb_execute_relocation_preserves_exact_incarnations() {
+    let source = FBSegment::new(&FBDiskdbInt128::new(1, 2), &FBDiskdbInt128::new(3, 4), 5, 6, 7, 8);
+    let target = FBSegment::new(
+        &FBDiskdbInt128::new(9, 10),
+        &FBDiskdbInt128::new(3, 4),
+        11,
+        12,
+        13,
+        8,
+    );
+    let mut fbb = FlatBufferBuilder::new();
+    let request = FBExecuteRelocationRequest::create(
+        &mut fbb,
+        &FBExecuteRelocationRequestArgs {
+            id: 14,
+            rpc_create_nano: 15,
+            target_disk_group_id: 16,
+            source: Some(&source),
+            target: Some(&target),
+        },
+    );
+    fbb.finish(request, None);
+
+    let decoded = flatbuffers::root::<FBExecuteRelocationRequest>(fbb.finished_data()).unwrap();
+    assert_eq!(decoded.id(), 14);
+    assert_eq!(decoded.rpc_create_nano(), 15);
+    assert_eq!(decoded.target_disk_group_id(), 16);
+    assert_eq!(*decoded.source().unwrap(), source);
+    assert_eq!(*decoded.target().unwrap(), target);
 }
 
 #[test]

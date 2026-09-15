@@ -9,9 +9,11 @@
 pub mod ghost;
 pub mod integrity;
 pub mod leak;
+pub mod owner;
 pub mod task;
 
 pub use ghost::{GhostBlock, GhostDirection, GhostScanResult};
 pub use integrity::{IntegrityFinding, IntegrityScanResult};
 pub use leak::LeakScanResult;
+pub use owner::{BusyBlockOwnerScanner, SegmentOwnerQuery, ZonePacer};
 pub use task::{FallbackReason, ScanState, ScanSummary, ScannerTask};

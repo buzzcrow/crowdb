@@ -44,14 +44,17 @@ use crowdb_protocol::chunkdb_fb::{
     FBDiscardReplacementSegmentResponseArgs, FBEcState, FBEcStrip, FBEcStripArgs, FBInt128,
     FBListChunksRequest, FBListChunksResponse, FBListChunksResponseArgs, FBMirrorStrip, FBMirrorStripArgs,
     FBMutateStripReservationRequest, FBMutateStripReservationResponse, FBMutateStripReservationResponseArgs,
-    FBPrepareMirrorToEcConversionRequest, FBPrepareMirrorToEcConversionResponse,
+    FBOwnerDisposition, FBPrepareMirrorToEcConversionRequest, FBPrepareMirrorToEcConversionResponse,
     FBPrepareMirrorToEcConversionResponseArgs, FBQueryChunkRequest, FBQueryChunkResponse,
-    FBQueryChunkResponseArgs, FBReplaceChunkStripRangeRequest, FBReserveStripGroupRequest,
-    FBReserveStripGroupResponse, FBReserveStripGroupResponseArgs, FBSealChunkRequest, FBSegment, FBStripBody,
-    FBStripCleanupIntent, FBStripCleanupIntentArgs, FBStripReservationAction, FBStripReservationGroup,
-    FBStripReservationGroupArgs, FBStripReservationState, FBStripType, FBTriggerConversionBatchRequest,
-    FBTriggerConversionBatchResponse, FBTriggerConversionBatchResponseArgs, FBTriggerConversionRequest,
-    FBTriggerConversionResponse, FBTriggerConversionResponseArgs, FBUpdateChunkStripRequest,
+    FBQueryChunkResponseArgs, FBQuerySegmentOwnerRequest, FBQuerySegmentOwnerResponse,
+    FBQuerySegmentOwnerResponseArgs, FBRelocateSegmentHandoffRequest, FBRelocateSegmentHandoffResponse,
+    FBRelocateSegmentHandoffResponseArgs, FBRelocationHandoffDisposition, FBReplaceChunkStripRangeRequest,
+    FBReserveStripGroupRequest, FBReserveStripGroupResponse, FBReserveStripGroupResponseArgs,
+    FBSealChunkRequest, FBSegment, FBStripBody, FBStripCleanupIntent, FBStripCleanupIntentArgs,
+    FBStripReservationAction, FBStripReservationGroup, FBStripReservationGroupArgs, FBStripReservationState,
+    FBStripType, FBTriggerConversionBatchRequest, FBTriggerConversionBatchResponse,
+    FBTriggerConversionBatchResponseArgs, FBTriggerConversionRequest, FBTriggerConversionResponse,
+    FBTriggerConversionResponseArgs, FBUpdateChunkStripRequest,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::fb::FBMsgType;
@@ -62,6 +65,8 @@ use tokio::runtime::Handle;
 use crate::conversion::ConversionCoordinator;
 use crate::lifecycle::{AppendChunkOutcome, LifecycleError, LifecycleHandler};
 use crate::metrics::{ChunkdbMetrics, RequestGuard, RequestKind};
+use crate::relocation::RelocationCoordinator;
+use crate::task::{SegmentOwnerResolver, TaskStore};
 
 /// crowdb-rpc handler set for `ChunkdbService`. Holds the same
 /// `LifecycleHandler` as the tonic `ChunkdbService`; `register_handlers`
@@ -73,6 +78,8 @@ pub struct ChunkdbRpcService {
     /// thread callback.
     rt: Handle,
     conversion: Option<Arc<ConversionCoordinator>>,
+    owner: Option<Arc<SegmentOwnerResolver>>,
+    relocation: Option<Arc<RelocationCoordinator>>,
 }
 
 impl ChunkdbRpcService {
@@ -82,12 +89,29 @@ impl ChunkdbRpcService {
             metrics,
             rt,
             conversion: None,
+            owner: None,
+            relocation: None,
         }
     }
 
     #[must_use]
     pub fn with_conversion(mut self, conversion: Arc<ConversionCoordinator>) -> Self {
         self.conversion = Some(conversion);
+        self
+    }
+
+    #[must_use]
+    pub fn with_task_store(mut self, tasks: Arc<TaskStore>) -> Self {
+        self.owner = Some(Arc::new(SegmentOwnerResolver::new(
+            Arc::clone(&self.handler),
+            tasks,
+        )));
+        self
+    }
+
+    #[must_use]
+    pub fn with_relocation(mut self, relocation: Arc<RelocationCoordinator>) -> Self {
+        self.relocation = Some(relocation);
         self
     }
 
@@ -146,6 +170,24 @@ impl ChunkdbRpcService {
                 Arc::clone(server),
                 RequestKind::QueryChunk,
                 Self::handle_query,
+            ),
+        );
+        server.register_handler(
+            FBMsgType::EQuerySegmentOwnerRequest.0 as u16,
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::QueryChunk,
+                Self::handle_query_segment_owner,
+            ),
+        );
+        server.register_handler(
+            FBMsgType::ERelocateSegmentHandoffRequest.0 as u16,
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::UpdateChunkStrip,
+                Self::handle_relocate_segment_handoff,
             ),
         );
         server.register_handler(
@@ -280,6 +322,8 @@ impl ChunkdbRpcService {
     }
 }
 
+#[path = "handoff.rs"]
+mod handoff;
 #[path = "mutations.rs"]
 mod mutations;
 #[path = "queries.rs"]
