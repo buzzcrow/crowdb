@@ -14,10 +14,11 @@ use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkStrip, Strip};
 use crowdb_protocol::common::ChunkId;
 use serde_json::to_vec;
 
-use crate::allocator::assess_physical_placement;
+use crate::allocator::{assess_physical_placement, AllocError};
 use crate::conversion::io::ConversionDiskIo;
 use crate::lifecycle::{LifecycleError, LifecycleHandler};
 use crate::metrics::PlacementMetrics;
+use crate::selector::PlacementError;
 use crate::task::executor::TaskFuture;
 use crate::task::{TaskHandler, TaskOutcome, TaskStore, TaskStoreError};
 
@@ -320,6 +321,14 @@ impl TaskHandler for PlacementRepairTaskHandler {
                         error: "topology cannot yet improve placement".into(),
                     }
                 }
+                Err(error) if topology_waiting(&error) => {
+                    self.metrics.waiting();
+                    TaskOutcome::Retry {
+                        delay_ms: RETRY_DELAY_MS,
+                        error_code: 40,
+                        error: error.to_string(),
+                    }
+                }
                 Err(error) => {
                     self.metrics.failed();
                     TaskOutcome::Retry {
@@ -331,6 +340,19 @@ impl TaskHandler for PlacementRepairTaskHandler {
             }
         })
     }
+}
+
+/// Placement exclusions can leave no safe destination until topology changes.
+/// Those errors are a retryable waiting condition, not a failed repair attempt.
+fn topology_waiting(error: &PlacementRepairError) -> bool {
+    matches!(
+        error,
+        PlacementRepairError::Lifecycle(LifecycleError::Allocation(AllocError::Placement(
+            PlacementError::InsufficientNodes { .. }
+                | PlacementError::InsufficientCapacity
+                | PlacementError::NoHealthyDiskGroups
+        )))
+    )
 }
 
 fn payload_for_strip(

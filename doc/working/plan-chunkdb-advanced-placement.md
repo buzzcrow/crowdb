@@ -91,8 +91,10 @@ of temporarily degraded EC strips.
   post-allocation assessment still gates the disk guarantee. A real admission
   gap now persists degraded 10+2, 20+2, and 40+4 strips before the task store
   is attached; restart reconciliation creates exactly one task for each marker
-  and a second restart creates none. Insufficient-topology waiting and
-  expanded-topology convergence remain in this active task.
+  and a second restart creates none. A real 40+4 repair task with every
+  physical disk already excluded now persists as `RetryWait` with the waiting
+  metric (not a task failure) when no safe destination exists. Expanded-
+  topology convergence remains in this active task.
 
 ## Phase 6 — Documentation and cleanup
 

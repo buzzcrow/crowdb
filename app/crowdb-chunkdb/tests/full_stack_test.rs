@@ -26,7 +26,7 @@ use crowdb_chunkdb::lifecycle::{
     ReserveGroupSpec,
 };
 use crowdb_chunkdb::metrics::{ChunkdbMetrics, LifecycleMetrics};
-use crowdb_chunkdb::placement_repair::PlacementRepairCoordinator;
+use crowdb_chunkdb::placement_repair::{PlacementRepairCoordinator, PlacementRepairTaskHandler};
 use crowdb_chunkdb::range_guard::{OwnedRange, RangeGuard};
 use crowdb_chunkdb::repair::{decode_payload as decode_repair_payload, RepairCoordinator};
 use crowdb_chunkdb::routing::{default_binding_table, hash_to_bucket, BindingCache};
@@ -139,6 +139,7 @@ async fn physical_ec_reports_the_two_rack_layout_truthfully() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn degraded_ec_markers_recreate_one_task_per_large_strip_after_admission_gap() {
     if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
         eprintln!("skipping: crowdb-kv-server binary not found");
@@ -208,6 +209,49 @@ async fn degraded_ec_markers_recreate_one_task_per_large_strip_after_admission_g
     let second_restart = PlacementRepairCoordinator::new(Arc::clone(&handler), Arc::clone(&tasks));
     assert_eq!(second_restart.scan_batch(256, 101).await.unwrap(), 0);
     assert_eq!(tasks.scan_ready(101, 16).await.unwrap().len(), 3);
+
+    let largest_chunk_id = chunks
+        .last()
+        .and_then(|chunk| chunk.id)
+        .expect("largest chunk ID");
+    let index = ready
+        .iter()
+        .find(|task| task.partition_id == largest_chunk_id)
+        .copied()
+        .expect("40+4 placement task");
+    let task = tasks
+        .get(&largest_chunk_id, TASK_KIND_REPAIR_PLACEMENT, &index.task_id)
+        .await
+        .unwrap()
+        .expect("stored placement task");
+    let mut registry = MetricsRegistry::new();
+    let metrics = ChunkdbMetrics::register(&mut registry).placement;
+    let manager = Arc::new(TaskManager::new(Arc::clone(&tasks), 97, 30_000));
+    let executor = TaskExecutor::new(
+        Arc::clone(&manager),
+        1,
+        vec![Arc::new(PlacementRepairTaskHandler::new(
+            Arc::clone(&handler),
+            Arc::new(ConversionDiskIo::empty_for_tests()),
+            Arc::clone(&metrics),
+        ))],
+    )
+    .unwrap();
+    let claim = manager
+        .claim(&index, 102)
+        .await
+        .unwrap()
+        .expect("claim placement task");
+    executor.execute(claim).await.unwrap();
+    let waiting = tasks
+        .get(&largest_chunk_id, TASK_KIND_REPAIR_PLACEMENT, &task.task_id)
+        .await
+        .unwrap()
+        .expect("waiting placement task");
+    assert_eq!(waiting.state, ChunkTaskState::RetryWait);
+    assert_eq!(waiting.last_error_code, 40);
+    assert_eq!(metrics.snapshot().repair_waiting, 1);
+    assert_eq!(metrics.snapshot().repair_failures, 0);
 }
 
 fn task_value() -> ChunkTaskValue {
