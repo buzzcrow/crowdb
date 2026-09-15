@@ -274,8 +274,10 @@ imbalance (placeholder relocation in v1; real move deferred to a future
    `TaskPending`, and frees only `Absent`. A time limit may trigger that query
    but is not itself permission to free a tentative block.
 
-8. **Tentative-owner scanner** — extend `ScannerTask` to scan durable
-   `BusyBlockValue` records with `commit_state = Tentative`. It uses the
+8. **Busy-block owner reconciliation scanner** — add an independent
+   `BusyBlockOwnerScanner`, separate from the existing ghost/integrity
+   `ScannerTask`, to scan durable `BusyBlockValue` records with
+   `commit_state = Tentative`. It uses the
    record's `owner_chunk` and the exact disk/zone/offset/allocation incarnation
    to query the owning ChunkDB instance through a versioned owner-disposition
    interface. The owner returns `Referenced`, `TaskPending`, or `Absent`.
@@ -448,7 +450,7 @@ depends on R80 yet.
   - `allocator.load_aware = true` changes only *new* allocation
     placement — existing `BusyBlockKey`s are never moved or deleted by
     the allocator. Integration test.
-- **Tentative-owner scanner**:
+- **Busy-block owner reconciliation scanner**:
   - A tentative busy block whose owner reports `Referenced` → scanner commits
     that exact incarnation and never frees it, proving published data remains
     durable. Integration test.

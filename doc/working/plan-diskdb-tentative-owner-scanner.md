@@ -20,10 +20,12 @@ ChunkDB instance without treating elapsed time as permission to free data.
 
 ## Phase 2 — DiskDB reconciliation
 
-- [ ] **Tentative scan pass**: enumerate durable tentative busy records from
-  `ScannerTask`, query their owner, idempotently confirm referenced blocks,
-  retain pending/transient results, and free only absent ones. Files:
-  `app/crowdb-diskdb/src/scanner/`, allocation persistence, metrics.
+- [ ] **Busy-block scan pass**: add an independent `BusyBlockOwnerScanner`
+  background component (not an extension of the ghost/integrity `ScannerTask`)
+  that enumerates durable tentative busy records, queries their owner,
+  idempotently confirms referenced blocks, retains pending/transient results,
+  and frees only absent ones. Files: `app/crowdb-diskdb/src/`, allocation
+  persistence, metrics.
 - [ ] **Deleted-owner grace**: track first unseen time per exact incarnation
   and apply configurable 86,400-second grace only to missing/deleted owners.
   Files: scanner progress persistence, `DdbConfig`, scanner tests.
