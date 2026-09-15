@@ -129,7 +129,17 @@ policy and a verified post-allocation assessment.
    and never publishes an intermediate or final layout with weaker protection.
    R80 remains responsible for balancing disks within one disk-group; this
    requirement owns selection and movement across disk-groups, nodes, and
-   racks.
+   racks. A physical relocation is copy-before-publish: R80 reserves the
+   target block, copies and fsyncs the source bytes, and persists a handoff
+   naming the owner chunk, exact source segment identity, target segment, and
+   operation identity. It never edits chunk metadata. The owning ChunkDB
+   instance coalesces duplicate handoffs locally, durably claims the operation,
+   validates the target and protection, and conditionally replaces the exact
+   source at the expected strip revision. Only a successful or idempotently
+   observed publication authorizes R80 to free the source block. A stale source
+   or revision rejects the handoff; R80 discards the target and retains the
+   source. The durable handoff plus the source-revision fence, rather than the
+   process-local coalescing set, makes restart and duplicate delivery safe.
 
 10. Add metrics in `app/crowdb-chunkdb/src/metrics.rs` for allocations by
     priority, rack/node/disk protection failures, explicitly degraded plans,
@@ -250,6 +260,15 @@ policy and a verified post-allocation assessment.
   strip is in transition, and every published layout preserves protection;
   then lower skew below the hysteresis threshold and assert no move is emitted,
   proving safe stable rebalancing — Integration test.
+- Given an R80 relocation handoff for a live source segment, reserve and copy
+  the target, then deliver the handoff twice to the owning ChunkDB instance;
+  assert one conditional strip publication installs the fsynced target and only
+  that publication authorizes source free. Restart between copy and delivery,
+  then deliver the persisted handoff; assert the same result. Deliver a
+  handoff after ordinary repair has replaced its source; assert the owner
+  rejects it, the target is discarded, and the current source remains live,
+  proving copy-before-publish, durable duplicate handling, and source-revision
+  fencing — E2E test.
 - Given the two-rack fixture with four nodes in one rack and two in the other,
   allocate 10+2, 20+2, and 40+4 EC strips under both priorities; resolve every
   physical segment and assert the reported maximum fragments per rack, node,
@@ -279,13 +298,3 @@ Verification commands:
 - `pixi run test-diskdb`
 - `pixi run rs-fmt -- --check`
 - `pixi run rs-lint`
-
-**Open question — active cross-domain rebalance**: R97's passive balancing and
-temporary degraded-EC repair are implemented. The active cross-disk-group
-planner remains pending R80's disk-level relocation contract and its durable
-handoff record. Once R80 defines the ownership/fencing boundary for a segment
-that is simultaneously being moved within a disk-group and replaced by
-ChunkDB, decide whether ChunkDB emits a separate rebalance task kind or an
-R80-owned handoff task. Until that boundary exists, do not schedule an active
-cross-domain move: a second planner could race R80 and weaken the one-segment
-transition guarantee.

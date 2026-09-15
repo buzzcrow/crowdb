@@ -75,11 +75,14 @@ of temporarily degraded EC strips.
 
 ## Phase 5 — Rebalancing and E2E
 
-- [x] **Cross-domain rebalance planner boundary**: passive capacity-aware balancing is
-  complete. Active movement is deliberately pending R80's disk-level
-  relocation contract and durable owner handoff; R97 records the required task
-  ownership/fencing decision in its open question rather than introducing a
-  competing mover.
+- [~] **Cross-domain rebalance planner**: passive capacity-aware balancing is
+  complete. Implement the R80 copy-before-publish handoff: R80 reserves,
+  copies, and fsyncs a target before sending the durable source-identity
+  handoff to the ChunkDB owner; ChunkDB durably claims it, conditionally
+  publishes the source-revision replacement, and only then authorizes source
+  free. A local ongoing set merges duplicate deliveries but is not a recovery
+  authority. Files: DiskDB relocation/task protocol, ChunkDB task handling,
+  lifecycle/storage, and integration tests.
 - [x] **EC topology matrix**: cover 10+2, 20+2, and 40+4 on two racks with a
   four-node/two-node split under both policies, interrupted admission/restart,
   insufficient-topology waiting, and convergence after adding six or eleven
@@ -107,24 +110,6 @@ of temporarily degraded EC strips.
 - [ ] **Final cleanup**: run every gate, remove R97 from the backlog and delete
   this plan after the active cross-domain mover has a defined ownership and
   fencing contract and every acceptance case passes.
-
-## Blocked
-
-- **Active cross-domain rebalance ownership and fencing**: R97 requires the
-  mover to serialize a cross-disk-group replacement with any simultaneous
-  R80 intra-disk relocation, but R80 v1 explicitly has only `LogOnly`
-  relocation and no owner-notification mechanism. It therefore defines neither
-  a durable handoff record nor the ordering between a DiskDB relocation fence
-  and ChunkDB's source-revision fence. The two valid designs are a separate
-  ChunkDB rebalance task that owns the handoff record, or an R80-owned task
-  that invokes ChunkDB under a documented fencing boundary. Choosing either
-  without that contract risks two movers publishing incompatible one-segment
-  transitions. R97 explicitly prohibits scheduling that move until the
-  boundary is defined (`doc/backlog/R97-chunkdb-advanced-placement-strategies.md`,
-  “Open question — active cross-domain rebalance”); R80 likewise marks real
-  relocation and owner notification deferred (`doc/backlog/R80-diskdb-rebalance.md`,
-  “Skip real data relocation”). No safe implementation work remains for this
-  acceptance item.
 
 ## Files
 

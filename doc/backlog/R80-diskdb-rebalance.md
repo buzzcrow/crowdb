@@ -254,6 +254,21 @@ imbalance (placeholder relocation in v1; real move deferred to a future
      path that does not exist yet). The `RebalancePlanValue` +
      `owner_chunk` schema is the forward-compatible hand-off.
 
+7. **Future owner handoff contract** — when real relocation is enabled, R80
+   owns physical transfer but never mutates a chunk layout. For each source
+   block it reserves a target, copies and fsyncs the bytes, then durably records
+   a handoff containing an operation identity, `owner_chunk`, exact source
+   block identity, target block identity, and the source allocation generation.
+   It delivers that handoff to the current ChunkDB owner. The owner may keep an
+   in-memory ongoing set to merge local duplicate requests, but it must durably
+   claim the operation and conditionally publish the replacement using the
+   chunk's expected strip revision and exact source segment. `Published` or an
+   idempotent observation of the same target authorizes R80 to free the source;
+   `Stale` or `Rejected` requires R80 to discard the target and retain the
+   source. R80 retries an unacknowledged handoff after restart. This gives
+   normal repair and disk rebalance one metadata publication authority and
+   prevents either mover from freeing a source still referenced by ChunkDB.
+
 ```
   sync tick / reporting interval
        │
