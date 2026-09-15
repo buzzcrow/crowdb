@@ -1,129 +1,121 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-### R80: diskdb — Space Rebalance Across Disks + Disk-Groups
+### R80: diskdb — Disk Space Rebalance Convergence
 
-**Problem**: DiskDB originally selected allocatable disks with a pure
-round-robin cursor and never moved existing allocations. A new or recovered
-disk therefore received only an equal share of new writes while older disks
-remained hot. Cross-disk-group imbalance also persisted because ChunkDB chose
-the disk-group without a safe physical relocation contract. Tentative blocks
-left by interrupted allocation, repair, or relocation had no owner-fenced
-cleanup path.
+**Problem**: DiskDB can now place new allocations on the least-used eligible
+disk and can move one committed block through its durable relocation journal.
+The current intra-disk-group planner, however, reacts to one utilization
+sample, chooses the hottest and coldest disks without projecting the selected
+block's effect, and has no end-to-end proof that repeated cycles converge and
+then stop. A large block can overshoot the balance point, transient skew can
+start unnecessary movement, and passing handoff or restart tests does not show
+that a newly added or recovered empty disk actually absorbs old allocations.
 
-**Solution**: provide passive and active convergence while keeping allocation
-lock-free and making ChunkDB the only authority that publishes chunk layout
-changes.
+The implemented allocation, relocation, and owner-fencing baseline is defined
+by the [DiskDB design](../design/diskdb/design-crowdb-diskdb.md), especially
+sections 3.2, 9, and 10. ChunkDB's protection-preserving cross-disk-group
+planner is defined by the
+[ChunkDB design](../design/chunkdb/design-crowdb-chunkdb.md#74-active-cross-domain-rebalance).
+This requirement is limited to completing and proving DiskDB's space-balance
+behavior within one disk-group.
 
-1. **Load-aware passive allocation**:
-   - `allocator.load_aware`, default `true`, selects the eligible disk with the
-     best configured weight before falling back to the existing cursor.
-   - `allocator.load_aware_weight = "free_bytes" | "inverse_used_pct"`.
-   - Equal weights retain deterministic cursor order. Disabling the policy
-     restores pure round-robin behavior.
-   - Exclusion hints and multi-block rollback semantics remain unchanged.
+**Solution**:
 
-2. **Usage and rebalance visibility**:
-   - The reporting loop publishes disk-group usage summaries through DiskDB
-     keepalive extras. ChunkDB joins those summaries to the live service
-     registry and hardware topology.
-   - DiskDB exposes `disk_group.imbalance.used_pct_{spread,max,min}` plus
-     `rebalance.plan_count`, `rebalance.planned_blocks`,
-     `rebalance.moves.total`, and `rebalance.errors.total`.
+1. **Define an improving move**. `RebalancePlannerTask` computes normalized
+   utilization as `busy_bytes / capacity_bytes` for every allocatable disk. It
+   selects the hottest source and coldest eligible target deterministically,
+   but admits a source block only when projecting that exact block onto the
+   target strictly reduces the disk-group's utilization spread. Require the
+   target to retain `rebalance.min_target_free_bytes` after reservation. If no
+   committed block improves the spread, emit no relocation and report the
+   group as stalled; never oscillate a block across the balance point merely
+   because the current spread exceeds the threshold.
 
-3. **Tentative BusyBlock owner scanner**:
-   - Scan only durable `BusyBlockValue` records with
-     `commit_state = Tentative`.
-   - Query the current ChunkDB owner with the chunk ID and exact segment
-     incarnation. `Referenced` confirms that exact target, `TaskPending`
-     retains it, and `Absent` starts or continues a durable grace record.
-   - Free only after `Absent` remains authoritative through
-     `scanner.tentative_owner_grace_secs`, default 86,400 seconds. Routing and
-     RPC failures retain the target.
-   - Do not mutate before the owning disk-group reaches lifecycle `Up`.
-   - Traverse one disk-group, one disk, and one zone at a time. Await
-     `scanner.tentative_owner_zone_delay_secs`, default 3 seconds, after every
-     visited zone. The delay uses the async runtime timer and does not block an
-     executor thread.
+2. **Require sustained skew**. `RebalancePlannerTask` tracks when each owned
+   disk-group first exceeds `rebalance.imbalance_threshold_pct` and starts new
+   work only after it remains above the threshold for
+   `rebalance.hysteresis_secs`. A balanced observation clears the timer. This
+   observation state is an optimization and may reset on restart;
+   `RelocationJournalValue` remains the durable recovery authority and resumes
+   before any new decision.
 
-4. **Durable relocation handoff**:
-   - Key one relocation journal by the exact source incarnation. Its value
-     records the deterministic operation ID, owner chunk, exact source and
-     target, target disk-group, unit size, timestamps, error, and phase.
-   - Phases are `Reserved`, `Copied`, `Accepted`, `Published`,
-     `TargetConfirmed`, `SourceFreed`, and `Discarded`. Persist each phase
-     before relying on it after restart.
-   - Reserve an exact tentative target, copy through DiskIO, and fsync the
-     target before contacting ChunkDB.
-   - ChunkDB durably claims the request before returning `Accepted`. Its task
-     conditionally replaces the exact source under the chunk revision fence.
-     Duplicate delivery observes the same durable task and publication.
-   - ChunkDB first confirms the target after its successful CAS. Only
-     `Published` authorizes DiskDB to verify and idempotently confirm that exact
-     target and then write the source free record. `Stale` discards the target;
-     `Rejected` or transient failures retain both sides for reconciliation.
-   - On restart, DiskDB lists non-terminal journals for the disk-group and
-     resumes from the persisted phase. A journal is counted only by its
-     recorded target disk-group, even when several groups share a KV binding.
+3. **Converge at a bounded rate**. `RebalancePlannerTask` re-evaluates live
+   usage after each completed relocation, starts no more than
+   `rebalance.max_jobs_per_cycle`, and keeps at most one active relocation per
+   disk-group. `RebalanceZonePacer` keeps disk-groups and zones serially paced
+   by `rebalance.zone_delay_secs`. The planner stops creating journals once the
+   spread is below the configured threshold. A source or target that is no
+   longer allocatable invalidates the candidate without weakening
+   `RelocationWorker` safety rules.
 
-5. **Paced intra-disk-group planner**:
-   - On `rebalance.plan_interval_secs`, compare allocatable disk utilization.
-     If the configured spread persists, choose a committed source on a hot
-     disk and an eligible target disk in the same disk-group.
-   - Process disk-groups and zones serially and await
-     `rebalance.zone_delay_secs` between zones. Default batch and concurrency
-     remain bounded; no cluster-wide burst is permitted.
-   - Existing non-terminal journals resume before a new source is selected.
+4. **Make convergence observable**. `DiskdbMetrics` keeps the existing
+   imbalance and relocation metrics and distinguishes groups that are observing
+   hysteresis, actively moving, balanced, or stalled because no safe improving
+   block fits. Status is derived from `DdbDiskGroup::aggregate_usage`, the
+   hysteresis observation, and durable journals, not from a process-local job
+   set. Per-disk-group keepalive summaries remain the cluster-wide source for
+   placement and operator inspection.
 
-6. **Cross-disk-group consumer**:
-   - ChunkDB ranks live disk-group usage summaries, waits for sustained skew,
-     and moves at most one fragment per cycle through `ExecuteRelocation`.
-   - The target is allocated tentatively on the chosen cold disk-group. Before
-     handoff, ChunkDB recomputes the proposed strip and rejects any move that
-     weakens rack, node, or physical-disk protection or increases a recorded
-     domain maximum.
-   - DiskDB adopts the exact preallocated target into its durable journal.
-     Re-delivery must match the journal's exact source and target.
-   - A target DiskDB can finalize a source owned by another local disk-group or
-     route the exact free request to the remote DiskDB owner.
-   - The default policy uses a 300-second scan interval, 20-point utilization
-     threshold, 900-second hysteresis, 1-GiB minimum target headroom, and
-     exactly one move per cycle.
+5. **Prove passive and active balance together**. Preserve the lock-free
+   `DdbDiskGroup::allocate_block` load-aware policy and verify its behavior over
+   sequences rather than a single allocation. Add a full-stack fixture with
+   real DiskIO and the ChunkDB owner path that repeatedly runs the production
+   planner until a hot disk-group converges or truthfully reports that block
+   granularity prevents further improvement.
 
-**Safety invariants**:
+The relocation invariants remain unchanged: ChunkDB alone publishes layout
+changes; the exact target is copied, fsynced, published, and confirmed before
+the source is freed; and timeout, age, or utilization never authorizes a free.
 
-- ChunkDB is the sole publisher of chunk layout metadata.
-- Source data is never freed before the exact target is fsynced, published,
-  and confirmed.
-- A timeout or age is never sufficient authority to free a tentative block.
-- Operation and scanner identities include `allocation_ts`; reused offsets do
-  not alias an older incarnation.
-- Scanner and planners remain serial and paced. No new placement-path lock is
-  introduced.
-- Missing or stale utilization affects ranking only; it never weakens physical
-  placement safety.
+**Dependencies**:
+
+- Uses DiskDB's existing load-aware allocator, per-disk usage snapshots,
+  relocation journal, DiskIO copy/fsync path, and tentative-owner scanner.
+- Uses ChunkDB's existing exact-source revision fence and durable relocation
+  task. No new metadata publication path is introduced.
+- Cross-disk-group selection is already owned by ChunkDB. This requirement
+  does not change rack, node, or physical-disk placement policy.
+- Dynamic disk membership and status come from the existing group-0 sync. A
+  disk leaving `Up` is excluded on the next planning decision.
 
 **Acceptance**:
 
-- Load-aware allocation prefers the less-used disk, equal weights preserve
-  cursor order, disabled mode is round-robin, and exclusions remain strict.
-- Metrics report disk utilization spread and relocation activity.
-- Scanner covers `Referenced`, `TaskPending`, `Absent` before/after grace,
-  deleted owner, stale incarnation, transient owner failure, lifecycle gate,
-  durable grace restart, and disk-group/disk/zone pacing order.
-- Relocation proves copy and fsync precede owner handoff; duplicate requests
-  are idempotent; `Stale`, `Rejected`, and transient outcomes retain the safe
-  side of the move.
-- Restart from every durable phase (`Reserved`, `Copied`, `Accepted`,
-  `Published`, `TargetConfirmed`, and `SourceFreed`) converges without a second
-  publication or premature source free.
-- A true cross-disk-group RPC path reaches `SourceFreed`, leaves a durable
-  source free record, installs the target in ChunkDB, and keeps rack/node/disk
-  protection true.
-- Sustained skew honors hysteresis and emits one move; balanced summaries emit
-  no further journal.
-- Cross-domain 10+2, 20+2, and 40+4 EC moves preserve all recorded protection
-  bounds.
+- Given equal-capacity disks at 90% and 0%, when 100 single-block allocations
+  run with load-aware allocation enabled, assert the colder disk receives the
+  allocations until its utilization catches up; repeat with the policy
+  disabled and assert cursor-order round-robin, and with equal utilization and
+  exclusions to assert deterministic ties and strict anti-affinity. Invariant:
+  passive balancing changes selection only and preserves allocation safety.
+  Integration test.
+- Given unequal-capacity disks, when allocation uses `free_bytes` and then
+  `inverse_used_pct`, assert each policy follows its documented absolute or
+  normalized ordering without division-by-zero or overflow. Invariant: mixed
+  capacity produces deterministic, configured behavior. Unit test.
+- Given a disk-group whose spread crosses the threshold for less than the
+  hysteresis interval, when planner cycles run, assert no relocation journal is
+  created; after sustained skew, assert exactly one improving journal is
+  admitted. Invariant: transient skew cannot trigger data movement.
+  Integration test.
+- Given a candidate block whose projected move would preserve or increase the
+  spread, or leave less than the configured target headroom, when the planner
+  evaluates it, assert no target is reserved and the group reports stalled.
+  Invariant: every admitted move strictly improves usable balance. Unit test.
+- Given a hot disk and a newly added or recovered empty peer, when production
+  planner cycles execute through real DiskIO and ChunkDB, assert each
+  `SourceFreed` move lowers projected spread, restart once with a non-terminal
+  journal, and eventually observe spread below threshold with no subsequent
+  journal. Invariant: active rebalance converges, survives restart, and stops.
+  E2E test.
+- Given balanced disks, a single-disk group, all disks non-allocatable, or a
+  source/target status change between cycles, when the planner runs, assert it
+  creates no unsafe new journal and retains or safely resumes any existing
+  journal. Invariant: topology edge cases are no-op or retry, never unsafe
+  relocation. Integration test.
+- Given several owned disk-groups, when some are observing, moving, balanced,
+  and stalled, assert metrics/status report each state consistently with
+  current usage and non-terminal journals. Invariant: operators can distinguish
+  progress from inability to improve. Integration test.
 
 Verification commands:
 
@@ -131,12 +123,5 @@ Verification commands:
 - `pixi run test-chunkdb`
 - `pixi run test-diskdb-client`
 - `pixi run test-chunkdb-client`
-- `pixi run test-protocol`
 - `pixi run rs-fmt -- --check`
 - `pixi run rs-lint`
-
-**Current cleanup blocker**: the affected crates and tests are clean, but the
-workspace `rs-lint` gate is blocked by pre-existing unclassified DashMap fields
-`sessions` and `expired` in
-`lib/crowdb-kv/src/rpc/snapshot_registry.rs`. Keep this requirement and its
-working plans until the complete workspace gate is clean.

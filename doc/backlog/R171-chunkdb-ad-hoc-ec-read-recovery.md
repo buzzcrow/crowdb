@@ -14,11 +14,12 @@ decode the same bytes, and a full-block reconstruction is not handed to the
 durable repair flow that could publish it.
 
 The root read design is [ChunkIO Reader](../design/chunkio/design-crowdb-chunkio-reader.md)
-sections 3 and 7. The durable repair state machine is R97's repair flow: it
-allocates a DiskDB BusyBlock as `Tentative`, writes and fsyncs the replacement,
-CAS-publishes chunk metadata, then confirms that same BusyBlock. This
-requirement changes neither the small-range recovery behavior nor DiskDB's
-allocation/confirmation contract.
+sections 3 and 7. The durable repair state machine is the
+[ChunkDB placement-repair flow](../design/chunkdb/design-crowdb-chunkdb.md#73-physical-validation-and-degraded-placement-repair):
+it allocates a DiskDB BusyBlock as `Tentative`, writes and fsyncs the
+replacement, CAS-publishes chunk metadata, then confirms that same BusyBlock.
+This requirement changes neither the small-range recovery behavior nor
+DiskDB's allocation/confirmation contract.
 
 **Solution**: Preserve slice recovery for small reads and add a bounded,
 ChunkDB-owned full-block ad-hoc recovery path.
@@ -61,9 +62,10 @@ ChunkDB-owned full-block ad-hoc recovery path.
    return the rebuilt bytes to waiters immediately after rebuild and fsync;
    publication and confirmation continue asynchronously through the same
    durable job. A process crash before publication leaves the single tentative
-   BusyBlock for R80's owner-reconciliation scanner; a crash after CAS resumes
-   target confirmation from the repair checkpoint. No second target is
-   allocated for a duplicate or resumed operation.
+   BusyBlock for DiskDB's
+   [owner-reconciliation scanner](../design/diskdb/design-crowdb-diskdb.md#tentative-owner-reconciliation-and-relocation);
+   a crash after CAS resumes target confirmation from the repair checkpoint.
+   No second target is allocated for a duplicate or resumed operation.
 
 6. Integrate the manager with the existing marker-to-`RepairStrip` admission
    path. A successful client fallback still records `unavailable_segments`.
@@ -78,12 +80,12 @@ ChunkDB-owned full-block ad-hoc recovery path.
    disk, or segment identifiers in metric labels.
 
 **Dependencies**: Depends on the landed range-based reader in
-`lib/crowdb-chunk-client`, R97's fenced `RepairStrip` target checkpoint and
-publication sequence, and R80's tentative BusyBlock owner-reconciliation
+`lib/crowdb-chunk-client`, ChunkDB's fenced `RepairStrip` target checkpoint and
+publication sequence, and DiskDB's tentative BusyBlock owner-reconciliation
 scanner for pre-publication crash cleanup. It adds a ChunkDB RPC surface and
-uses the existing ChunkDB range routing and DiskIO routing. R97 placement
-repair remains independent; this requirement owns read-triggered EC repair
-coalescing and full-block reuse.
+uses the existing ChunkDB range routing and DiskIO routing. Background
+placement repair remains independent; this requirement owns read-triggered EC
+repair coalescing and full-block reuse.
 
 **Acceptance**:
 
@@ -111,12 +113,12 @@ coalescing and full-block reuse.
   requests it, assert the client retains the failure marker and normal
   background `RepairStrip` admission repairs the segment. Invariant: overload
   never drops repair intent or bypasses limits. Integration test.
-- Given a crash after target fsync but before Chunk CAS, when DiskDB's R80
-  scanner runs, assert the unreferenced tentative BusyBlock is retained or
-  freed only according to its owner disposition and grace policy. Given a
+- Given a crash after target fsync but before Chunk CAS, when DiskDB's
+  tentative-owner scanner runs, assert the unreferenced BusyBlock is retained
+  or freed only according to its owner disposition and grace policy. Given a
   crash after CAS but before confirm, assert the checkpointed repair job
-  confirms the same target without another allocation. Invariant: memory cache
-  loss cannot leak or duplicate a target. E2E test.
+  confirms the same target without another allocation. Invariant: memory
+  cache loss cannot leak or duplicate a target. E2E test.
 
 Run `pixi run test-chunk-client`, `pixi run test-chunkdb`,
 `pixi run rs-fmt -- --check`, and `pixi run cargo clippy -p crowdb-chunk-client

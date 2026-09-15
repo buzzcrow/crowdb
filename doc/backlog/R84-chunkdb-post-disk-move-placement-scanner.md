@@ -118,10 +118,9 @@
      `DiskValue` moves path, with periodic sweep as a safety net
      (same pattern as diskdb's watch/notify + polling safety net, §8).
   6. **Progress persistence + resume** — KV-persisted scan progress
-     (last scanned `ChunkId`, follows R76's
-     `RecoveryScanProgressValue` / R80's `RebalancePlanValue`
-     precedent); on restart the scanner resumes from the last
-     checkpoint, no full re-walk.
+     (last scanned `ChunkId`, following the existing
+     `RecoveryScanProgressValue` checkpoint pattern); on restart the scanner
+     resumes from the last checkpoint, no full re-walk.
 
 - **Flow diagram**:
 

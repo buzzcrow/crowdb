@@ -386,7 +386,11 @@ hierarchy) reusing `crowdb-common`'s `MetricsRegistry`. `DiskdbMetrics` in
 - **Gauges** (`Arc<Gauge>`): `disk_capacity_bytes`, `disk_busy_bytes`,
   `disk_free_bytes`, `disk_active_zone_count`, `disk_total_zone_count`,
   `dg_capacity_bytes`, `dg_busy_bytes`, `dg_free_bytes`,
-  `owned_disk_group_count`, `degraded`, `last_sync_age_secs`.
+  `disk_group.imbalance.used_pct_spread`,
+  `disk_group.imbalance.used_pct_max`,
+  `disk_group.imbalance.used_pct_min`, `rebalance.plan_count`,
+  `rebalance.planned_blocks`, `owned_disk_group_count`, `degraded`, and
+  `last_sync_age_secs`.
   (Per-disk/per-disk-group gauges are single instances updated each tick
   with the summed value — v1 does not label per-disk-id in the registry;
   the reporting loop sums across disks into the single gauge. The
@@ -395,7 +399,8 @@ hierarchy) reusing `crowdb-common`'s `MetricsRegistry`. `DiskdbMetrics` in
 - **Counters** (`Arc<Counter>`): `allocate_total`, `free_total` (flushed
   from per-disk `DiskMetrics` totals by the reporting loop),
   `allocate_errors_total`, `sync_success_total`,
-  `sync_failure_total`, `compaction_records_deleted_total`.
+  `sync_failure_total`, `compaction_records_deleted_total`,
+  `rebalance.moves.total`, and `rebalance.errors.total`.
 - **Latency histograms** (`Arc<LatencyHistogram>`, hot paths):
   `allocate.rpc.latency_us`, `allocate.bitmap_scan.latency_us`,
   `allocate.kv_persist.latency_us`, `free.rpc.latency_us`,
@@ -464,7 +469,9 @@ the shared config handle):
   `DdbDiskGroup::aggregate_usage()` → set
   `dg_capacity_bytes`/`dg_busy_bytes`/`dg_free_bytes` (summed across
   groups); per-disk sums → `disk_*` gauges;
-  `disk_active_zone_count`/`disk_total_zone_count` summed.
+  `disk_active_zone_count`/`disk_total_zone_count` summed. The imbalance
+  gauges expose the minimum, maximum, and spread across the disks observed by
+  the instance.
 - `owned_disk_group_count.set(container.disk_group_ids().len())`;
   `degraded.set(if container.is_degraded() {1} else {0})`;
   `last_sync_age_secs.set(...)` (tracked from the last successful
@@ -485,11 +492,11 @@ Edge cases:
 
 ## 8. Keepalive usage piggyback
 
-`heartbeat_diskdb` accepts `DiskGroupUsageSummary[]` but keepalive
-passes `&[]`. Group 0 stores disk-group-level usage at
-`/hw/dg_usage/<dg_id>`; the console reads it for the cluster-wide view.
-The summary is derived (recomputed each tick from the bitmap), not a
-source of truth.
+Keepalive sends one `DiskGroupUsageSummary` for each owned disk-group through
+`heartbeat_diskdb`. Group 0 stores the latest summary at
+`/hw/dg_usage/<dg_id>` for the cluster-wide view and placement ranking. The
+summary is derived from the bitmap on every keepalive tick, not a source of
+truth.
 
 In `liveness/keepalive.rs` `tick()`, after `observe_disks`, compute one
 `DiskGroupUsageSummary` per owned disk-group from `aggregate_usage()`:
@@ -509,17 +516,18 @@ let group_usages: Vec<DiskGroupUsageSummary> = container
             free_bytes: u.free_bytes,
             disk_count: u.disk_count,
             allocatable_disk_count: u.allocatable_disk_count,
+            allocatable_capacity_bytes: u.allocatable_capacity_bytes,
+            allocatable_used_bytes: u.allocatable_busy_bytes,
+            allocatable_free_bytes: u.allocatable_free_bytes,
+            sampled_at_ms: unix_time_ms(),
         }
     })
     .collect();
 ```
 
-Pass `&owned_dg_ids` + `&group_usages` to `svc.heartbeat_diskdb(instance_id,
-endpoint, &owned_dg_ids, &group_usages)` instead of `&[]`. The endpoint
-string is the diskdb rpc listen address (from config; passed as the
-real `server.listen_addr` so group 0 records a reachable endpoint for
-the diskdb-client cache). The summary is recomputed each tick (not
-cached).
+`KeepAlive::tick` passes the owned IDs and summaries to
+`heartbeat_diskdb`. The endpoint is the reachable DiskDB RPC address used by
+client routing. The summary is recomputed each tick rather than cached.
 
 Edge cases:
 - Zero owned groups → empty `group_usages` (not an error).

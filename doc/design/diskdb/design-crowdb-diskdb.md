@@ -58,9 +58,10 @@ persist-only (the bitmap is a conservative over-estimate; compaction
 reclaims freed space). All state changes are durably persisted to CROWDB
 KV before being acknowledged to callers.
 
-diskdb **allocates** blocks; it does **not** perform data I/O. Callers
-(a future object store, chunk service) write to the allocated
-blocks themselves and tell diskdb when they are done (`active_zone`).
+diskdb allocates blocks and does not serve foreground block contents. Callers
+write their own allocated blocks. For background relocation only, DiskDB
+orchestrates an exact source-to-target copy through DiskIO before asking the
+ChunkDB owner to publish the new layout.
 
 **Language:** Rust. **Runtime:** tokio (async everywhere).
 
@@ -88,8 +89,9 @@ batch_write API.
 
 ## 2. Non-Goals (Design Envelope)
 
-- **No data I/O.** diskdb allocates blocks; it does not read/write
-  block contents. A future diskio-like component does data I/O.
+- **No direct device I/O.** diskdb does not serve foreground block contents or
+  implement a device engine. Background relocation delegates copy and fsync to
+  DiskIO and persists only allocation and relocation metadata.
 - **No local WAL.** CROWDB KV's WAL is the sole durability mechanism.
 - **No consensus code.** diskdb is a client of crowdb-kv, with one
   extension: a `JournalScan` RPC for fast crash recovery (zone-management §6). All
@@ -137,7 +139,15 @@ v1. The caller issues separate `AllocateBlocks` calls per group if
 needed. A joint placement caller may set `allow_disk_reuse` to execute
 multiple distinct-disk passes in one atomic per-group request. The caller is
 responsible for validating that roles requiring mutual anti-affinity fit in
-the first pass. The caller (or a future placement service) picks the disk-group.
+the first pass. The caller, normally ChunkDB placement, picks the disk-group.
+
+Within the selected disk-group, allocation remains lock-free and applies the
+configured load-aware policy before cursor fallback. `free_bytes` chooses the
+eligible disk with the most absolute free space; `inverse_used_pct` chooses the
+lowest normalized utilization. Equal scores retain rotating cursor order,
+`exclude_disks` remains a hard constraint, and disabling load awareness restores
+pure round-robin selection. This affects new allocations only; existing blocks
+move through the fenced relocation path in §10.
 
 ### 3.3 Incarnation-safe lifecycle transitions
 
@@ -269,8 +279,7 @@ Schema definitions are split across multiple files in
 `diskio_op`, `diskio_service`). See the schema files for field-level
 detail.
 
-Three rpc services (diskdb now; chunkdb and diskio are future
-components with protocol surfaces reserved):
+The storage path uses three RPC services:
 - **`DiskdbService`** (served by the diskdb server): `AllocateBlocks`
   (carries `disk_group_id`, not `node_id`; carries `exclude_disks` for
   anti-affinity), `FreeBlocks`, `QueryCapacityStats`,
@@ -291,10 +300,11 @@ components with protocol surfaces reserved):
   from group 0 via `HardwareClient` in its sync loop; it does not
   serve hardware admin. See `doc/design/kv/design-crowdb-kv-group0.md`
   §2.8.
-- **`ChunkdbService`** (future chunkdb server): `AllocateChunk`,
+- **`ChunkdbService`**: `AllocateChunk`,
   `AppendChunk`, `QueryChunk`, `SealChunk`, `DeleteChunk`,
-  `DeleteChunkRange`, `UpdateChunkStrip`, `ListChunks`.
-- **`DiskioService`** (future diskio server): `DiskWrite`, `DiskRead`.
+  `DeleteChunkRange`, `UpdateChunkStrip`, `ListChunks`, exact-segment owner
+  queries, and relocation handoff.
+- **`DiskioService`**: `DiskWrite`, `DiskRead`, and `DiskFsync`.
 
 Key protocol decisions: integer IDs throughout (no string UUIDs);
 `DiskId` is globally unique (no `node_id`/`disk_group_id` in `Segment`
@@ -450,10 +460,10 @@ diskdb's first major component:
     zone, zone-management §6) and collect all live `BusyBlockValue`s — these are the
     impacted blocks. Each carries `owner_chunk` (the chunk that owns
     the allocation) so the caller / data-IO layer can be notified.
-  - Emit the `disk.bad.impacted_blocks` gauge (§9) and log the
-    hand-off. The collected list is handed to a future
-    recovery/relocation path: the data-IO layer rebuilds from
-    EC/mirror, or the owner is notified to re-allocate elsewhere.
+  - Emit the `disk.bad.impacted_blocks` gauge (§9) and log the hand-off. The
+    dedicated bad-disk recovery flow still needs to turn this list into
+    ChunkDB repair work. The ordinary relocation journal is not authority to
+    reconstruct data that is already unreadable.
   - The disk stays `Bad` — its records are read-only until an operator
     removes the disk or marks it `Up` after repair (which triggers
     strategy-1/2 recovery, zone-management §6).
@@ -511,9 +521,9 @@ capacity problems and performance bottlenecks.
   statistics, detecting drift.
 
 **Disk-group-level usage summary on keepalive:** diskdb piggybacks a
-per-disk-group usage summary (`capacity_bytes`, `used_bytes`,
-`free_bytes`, `disk_count`, `allocatable_disk_count`) on the keepalive
-message sent to group 0 on each sync tick. Group 0 maintains this at
+per-disk-group usage summary (`capacity_bytes`, `used_bytes`, `free_bytes`,
+allocatable capacity/used/free bytes, disk counts, and sample time) on the
+keepalive message sent to group 0 on each sync tick. Group 0 maintains this at
 the disk-group level (`DiskGroupUsageKey { disk_group_id }`). The
 console reads this for cluster-wide overview; per-disk/per-zone
 drill-down is via the `QueryCapacityStats` API. The summary is
@@ -548,7 +558,13 @@ intervals.
   `free_batch.queue_depth` and `free_batch.coalescing_ratio_x1000`,
   `uncompacted_free_record_count` (per zone — compaction backlog),
   `last_sync_slot` (group-0 sync frontier),
-  `last_sync_age_secs` (time since last successful sync)
+  `last_sync_age_secs` (time since last successful sync), active relocation
+  journal and planned-block counts
+
+Relocation counters record completed moves and errors. Capacity summaries and
+the current instance-wide disk utilization spread/minimum/maximum gauges are
+observations only; they influence ranking and admission but never authorize
+publication or source release.
 
 **3. Latency hierarchy (where time is spent, per layer):**
 
@@ -603,6 +619,8 @@ conservative over-estimate; freed blocks stay busy until compaction);
 it is an operational health mechanism for early corruption detection,
 defense-in-depth against unknown bugs or hardware errors, and operator
 visibility.
+
+### Integrity scanning
 
 - **Data-safety principle** — a busy block may have data written to
   it. The scanner's first priority is to never free a block that might
@@ -717,12 +735,20 @@ ChunkDB alone conditionally publishes the new layout. DiskDB confirms the
 target and writes the source free record only after `Published`.
 
 The intra-disk-group planner selects one committed source from an over-used
-disk and one target on an under-used disk. It resumes existing journals before
-selecting new work and uses the same serial per-zone pacing. For cross-group
-moves, ChunkDB allocates the target and sends `ExecuteRelocation` to its owning
-DiskDB, which adopts that exact target into the same journal state machine.
-Source finalization is local when the source disk belongs to another owned
-group and otherwise routes through `DiskdbClient`.
+disk and one target on an under-used disk when their utilization-point spread
+meets the configured threshold. It resumes existing journals before selecting
+new work, limits admissions per cycle, and uses serial per-zone pacing. For
+cross-group moves, ChunkDB applies its own skew hysteresis and protection gate,
+allocates the target, and sends `ExecuteRelocation` to its owning DiskDB, which
+adopts that exact target into the same journal state machine. Source
+finalization is local when the source disk belongs to another owned group and
+otherwise routes through `DiskdbClient`.
+
+The relocation journal, not an in-memory job set, is the recovery authority.
+Operation identity includes the source allocation incarnation, so offset reuse
+cannot alias an earlier move. `Stale` discards only the tentative target;
+`Rejected` and transient failures retain both sides for reconciliation. No age,
+usage observation, or planner timeout is permission to free either block.
 
 ## 11. Crate Layout
 
@@ -851,6 +877,8 @@ hardcoded tunables in business logic). Defaults:
 - **Sync** — sync interval (10 s, fixed — same on success and failure),
   degraded miss threshold (3), temp-failure timeout (900 s)
 - **Allocator** — `zone_rotate_count`, CAS retry limit (100)
+- **Allocation policy** — `allocator.load_aware` (true) and
+  `allocator.load_aware_weight` (`free_bytes`)
 - **Free** — `free_batch_enabled` (default false — one durable KV batch per
   request; immediate concurrent-request coalescing when true),
   `free_flush_max_batch` (256, maximum records in one coalesced KV proposal;
@@ -865,7 +893,10 @@ hardcoded tunables in business logic). Defaults:
   self-healing), `integrity.verify` (true),
   `integrity.detect_owner_mismatch` (false — piggybacks on
   `read_zone_records`), `reverify_delay_ms` (1000 — set 0 to disable
-  re-verify)
+  re-verify), tentative-owner interval (600 s), per-zone delay (3 s), and
+  absent-owner grace (86,400 s)
+- **Rebalance** — enabled, planning interval (300 s), utilization-point
+  threshold (20), one new job per cycle, and a three-second per-zone delay
 
 ## 15. Implementation Scope
 
@@ -881,15 +912,17 @@ the full diskdb server.
 - **Zone allocator + record persistence** — bitmap-scan allocator,
   rotating active-zone-set, busy/free records, two-phase async
   allocation, persist-only free (no `FreeBatch`, no timer),
-  `disk_group_id` routing, `exclude_disks`, CAS retry bound.
+  `disk_group_id` routing, load-aware disk selection, `exclude_disks`, CAS
+  retry bound.
 - **Crash recovery + snapshot compaction** — three strategies: full
   scan rebuild, journal scan replay via `JournalScan` RPC, compaction
   that deletes only free records.
 - **Space metrics + query API** — per-disk/group/zone metrics,
   recalculation path, `query_disk_usage`, three-category metrics:
   counters, gauges, latency hierarchy.
-- **Background scanner** — ghost/drift/integrity detection, per-block
-  state validation, uses strategy 1 full scan rebuild.
+- **Background reconciliation and relocation** — ghost/drift/integrity
+  detection, tentative-owner reconciliation, paced intra-disk-group planning,
+  durable DiskIO relocation, and restart-safe ChunkDB publication handoff.
 - **Disk discovery + health probing** — config-driven disk list, health
   probe, disk failure detection.
 - **Console + CLI integration** — disk/disk-group management UI, zone
