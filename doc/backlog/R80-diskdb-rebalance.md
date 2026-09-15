@@ -274,6 +274,18 @@ imbalance (placeholder relocation in v1; real move deferred to a future
    `TaskPending`, and frees only `Absent`. A time limit may trigger that query
    but is not itself permission to free a tentative block.
 
+8. **Tentative-owner scanner** — extend `ScannerTask` to scan durable
+   `BusyBlockValue` records with `commit_state = Tentative`. It uses the
+   record's `owner_chunk` and the exact disk/zone/offset/allocation incarnation
+   to query the owning ChunkDB instance through a versioned owner-disposition
+   interface. The owner returns `Referenced`, `TaskPending`, or `Absent`.
+   `Referenced` is confirmed idempotently, `TaskPending` is retained, and only
+   `Absent` is freed. A missing/deleted Chunk owner is treated as `Absent` only
+   after `scanner.tentative_owner_grace_secs`, default 86,400 seconds; transient
+   routing and owner errors retain the block for a later scan. The disposition
+   enum and per-disposition counters are extensible so recovery and relocation
+   can add outcomes without changing the scan loop's safety default.
+
 ```
   sync tick / reporting interval
        │
@@ -436,6 +448,20 @@ depends on R80 yet.
   - `allocator.load_aware = true` changes only *new* allocation
     placement — existing `BusyBlockKey`s are never moved or deleted by
     the allocator. Integration test.
+- **Tentative-owner scanner**:
+  - A tentative busy block whose owner reports `Referenced` → scanner commits
+    that exact incarnation and never frees it, proving published data remains
+    durable. Integration test.
+  - A tentative busy block whose owner reports `TaskPending` → scanner leaves
+    it tentative; a later `Referenced` response commits the same block,
+    proving a repair checkpoint survives repeated scans. Integration test.
+  - A tentative busy block whose owner reports `Absent` → scanner writes the
+    normal durable free record. A missing/deleted owner is retained before the
+    configured 24-hour grace and freed after it, proving delayed orphan
+    cleanup without TTL-only deletion. Integration test.
+  - Owner routing or RPC failure → scanner retains the block and records the
+    transient outcome, proving an unavailable ChunkDB cannot cause data loss.
+    Integration test.
 - `pixi run cargo fmt --all -- --check` and
   `pixi run cargo clippy --all-targets -- -D warnings` clean.
 - `pixi run test-diskdb` (relevant integration tests pass).
