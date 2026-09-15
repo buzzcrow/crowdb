@@ -276,14 +276,14 @@ imbalance (placeholder relocation in v1; real move deferred to a future
 
 8. **Busy-block owner reconciliation scanner** — add an independent
    `BusyBlockOwnerScanner`, separate from the existing ghost/integrity
-   `ScannerTask`, to scan durable `BusyBlockValue` records with
-   `commit_state = Tentative`. It uses the
+   `ScannerTask`, to scan every durable `BusyBlockValue` record. It uses the
    record's `owner_chunk` and the exact disk/zone/offset/allocation incarnation
    to query the owning ChunkDB instance through a versioned owner-disposition
    interface. The owner returns `Referenced`, `TaskPending`, or `Absent`.
-   `Referenced` is confirmed idempotently, `TaskPending` is retained, and only
-   `Absent` is freed. A missing/deleted Chunk owner is treated as `Absent` only
-   after `scanner.tentative_owner_grace_secs`, default 86,400 seconds; transient
+   `Referenced` confirms a tentative record idempotently and retains a
+   committed record; `TaskPending` is retained; only `Absent` is freed. A
+   missing/deleted Chunk owner is treated as `Absent` only after
+   `scanner.tentative_owner_grace_secs`, default 86,400 seconds; transient
    routing and owner errors retain the block for a later scan. The disposition
    enum and per-disposition counters are extensible so recovery and relocation
    can add outcomes without changing the scan loop's safety default.
@@ -451,9 +451,9 @@ depends on R80 yet.
     placement — existing `BusyBlockKey`s are never moved or deleted by
     the allocator. Integration test.
 - **Busy-block owner reconciliation scanner**:
-  - A tentative busy block whose owner reports `Referenced` → scanner commits
-    that exact incarnation and never frees it, proving published data remains
-    durable. Integration test.
+  - Every durable busy block is visited. A tentative busy block whose owner
+    reports `Referenced` → scanner commits that exact incarnation; an already
+    committed referenced block remains unchanged. Integration test.
   - A tentative busy block whose owner reports `TaskPending` → scanner leaves
     it tentative; a later `Referenced` response commits the same block,
     proving a repair checkpoint survives repeated scans. Integration test.
