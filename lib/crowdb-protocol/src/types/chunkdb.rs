@@ -388,6 +388,32 @@ pub struct QueryChunkResponse {
     pub layout_validity_ms: u64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[repr(i32)]
+pub enum SegmentOwnerDisposition {
+    #[default]
+    Referenced = 0,
+    TaskPending = 1,
+    Absent = 2,
+}
+impl_enum_conversions!(
+    SegmentOwnerDisposition,
+    Referenced = 0,
+    TaskPending = 1,
+    Absent = 2
+);
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct QuerySegmentOwnerRequest {
+    pub chunk_id: Option<ChunkId>,
+    pub segment: Option<Segment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct QuerySegmentOwnerResponse {
+    pub disposition: i32,
+}
+
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct SealChunkRequest {
     pub chunk_id: Option<ChunkId>,

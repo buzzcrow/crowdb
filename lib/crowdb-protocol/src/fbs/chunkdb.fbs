@@ -332,6 +332,27 @@ table FBQueryChunkResponse {
     layout_validity_ms:uint64;
 }
 
+// ── QuerySegmentOwner ───────────────────────────────────────────
+
+enum FBOwnerDisposition : byte { Referenced = 0, TaskPending = 1, Absent = 2 }
+
+table FBQuerySegmentOwnerRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    chunk_id:crowdb.rpc.proto.FBInt128;
+    segment:crowdb.diskdb.proto.FBSegment;
+}
+
+table FBQuerySegmentOwnerResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    ret_code:FBChunkdbRetCode;
+    error_msg:string;
+    range_start:uint32;
+    range_end:uint32;
+    disposition:FBOwnerDisposition;
+}
+
 // ── SealChunk ────────────────────────────────────────────────────
 
 table FBSealChunkRequest {
