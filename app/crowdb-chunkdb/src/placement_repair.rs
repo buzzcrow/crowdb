@@ -349,7 +349,9 @@ impl PlacementRepairTaskHandler {
             && segments.contains(&target.destination)
             && !segments.contains(&target.source);
         if became_published {
-            payload.target.as_mut().expect("target checked above").phase = RepairTargetPhase::Published;
+            if let Some(target) = &mut payload.target {
+                target.phase = RepairTargetPhase::Published;
+            }
             self.checkpoint(task, payload).await?;
         }
         if payload
@@ -357,12 +359,16 @@ impl PlacementRepairTaskHandler {
             .as_ref()
             .is_some_and(|target| target.phase == RepairTargetPhase::Published)
         {
-            let destination = payload.target.as_ref().expect("target checked above").destination;
+            let Some(destination) = payload.target.as_ref().map(|target| target.destination) else {
+                return Ok(());
+            };
             self.lifecycle
                 .confirm_tentative_segments(vec![destination])
                 .await?;
-            payload.target.as_mut().expect("target checked above").phase = RepairTargetPhase::Confirmed;
-            self.checkpoint(task, payload).await?;
+            if let Some(target) = &mut payload.target {
+                target.phase = RepairTargetPhase::Confirmed;
+                self.checkpoint(task, payload).await?;
+            }
         }
         Ok(())
     }
