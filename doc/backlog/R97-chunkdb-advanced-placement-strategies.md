@@ -178,7 +178,7 @@ policy and a verified post-allocation assessment.
     confirmation after a successful CAS rather than allocating a second target.
     A failed pre-CAS attempt leaves an unreferenced tentative target for the
     R80-owned DiskDB scanner to reclaim under its owner-disposition contract. A
-    R98 owns frontend I/O-triggered ad-hoc full-block recovery, its in-memory
+    R171 owns frontend I/O-triggered ad-hoc full-block recovery, its in-memory
     coalescing manager, and reuse of rebuilt bytes. Each published step
     must keep at least
     `data_num` readable EC fragments, must not turn any currently protected

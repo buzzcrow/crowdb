@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R171** — Bump this line in the same commit when adding a new item.
+**Next R number: R172** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -179,7 +179,7 @@ end-to-end Chunk IO performance workloads are landed. The RPC migration items
   DiskDB's returned physical disks, keep policy changes non-retroactive, create
   durable background repair tasks for every temporarily degraded EC strip,
   and add a protection-preserving cross-disk-group rebalance planner.
-- **[R98](R98-chunkdb-ad-hoc-ec-read-recovery.md)** — ad-hoc EC read
+- **[R171](R171-chunkdb-ad-hoc-ec-read-recovery.md)** — ad-hoc EC read
   recovery — Area: chunk-client / chunkdb / diskdb — Preserve slice-only ISA-L
   reconstruction for small reads, while routing eligible full-fragment
   recoveries to a bounded ChunkDB in-memory coalescer that reuses rebuilt bytes

@@ -1,7 +1,7 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-### R98: chunkdb / chunk-client — Ad-hoc EC Read Recovery
+### R171: chunkdb / chunk-client — Ad-hoc EC Read Recovery
 
 **Problem**: `ChunkReader` already reconstructs only the requested byte slice
 when a readable EC shard fails: a 64-KiB read uses 64-KiB shard slices and

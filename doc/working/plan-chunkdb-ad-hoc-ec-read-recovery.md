@@ -3,7 +3,7 @@
 
 # Ad-hoc EC Read Recovery Plan
 
-Upstream: [R98](../backlog/R98-chunkdb-ad-hoc-ec-read-recovery.md).
+Upstream: [R171](../backlog/R171-chunkdb-ad-hoc-ec-read-recovery.md).
 
 Goal: retain slice-level EC recovery for small reads while letting ChunkDB
 coalesce, reuse, and durably publish safe full-block reconstructions.
