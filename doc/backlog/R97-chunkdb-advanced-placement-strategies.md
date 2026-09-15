@@ -135,11 +135,13 @@ policy and a verified post-allocation assessment.
    operation identity. It never edits chunk metadata. The owning ChunkDB
    instance coalesces duplicate handoffs locally, durably claims the operation,
    validates the target and protection, and conditionally replaces the exact
-   source at the expected strip revision. Only a successful or idempotently
-   observed publication authorizes R80 to free the source block. A stale source
-   or revision rejects the handoff; R80 discards the target and retains the
-   source. The durable handoff plus the source-revision fence, rather than the
-   process-local coalescing set, makes restart and duplicate delivery safe.
+   source at the expected strip revision. A target stays tentative through the
+   copy and Chunk CAS; the durable job confirms it only after that CAS succeeds.
+   Only a successful or idempotently observed publication authorizes R80 to
+   free the source block. A stale source or revision rejects the handoff; R80
+   discards the target and retains the source. The durable handoff plus the
+   source-revision fence, rather than the process-local coalescing set, makes
+   restart and duplicate delivery safe.
 
 10. Add metrics in `app/crowdb-chunkdb/src/metrics.rs` for allocations by
     priority, rack/node/disk protection failures, explicitly degraded plans,
@@ -169,8 +171,13 @@ policy and a verified post-allocation assessment.
     task failure. A topology-generation change triggers reconciliation and
     makes waiting placement tasks immediately eligible. When capacity becomes
     available, the handler relocates only the minimum fragments required, one
-    fragment per strip at a time, through the existing fenced replacement
-    flow. Each published step must keep at least
+    fragment per strip at a time, through a durable state machine: allocate a
+    tentative target, rebuild/copy and fsync it, CAS the exact source replacement
+    into the chunk, then confirm the target block. The task checkpoints the
+    target and phase before each externally visible step, so a restart resumes
+    confirmation after a successful CAS rather than allocating a second target.
+    A failed pre-CAS attempt leaves an unreferenced tentative target for the
+    DiskDB scanner to reclaim. Each published step must keep at least
     `data_num` readable EC fragments, must not turn any currently protected
     domain into an unprotected one, and must validate the destination physical
     disk. Clear `placement_repair_required` and complete the task only after
@@ -266,9 +273,12 @@ policy and a verified post-allocation assessment.
   that publication authorizes source free. Restart between copy and delivery,
   then deliver the persisted handoff; assert the same result. Deliver a
   handoff after ordinary repair has replaced its source; assert the owner
-  rejects it, the target is discarded, and the current source remains live,
-  proving copy-before-publish, durable duplicate handling, and source-revision
-  fencing — E2E test.
+  rejects it, the target is discarded, and the current source remains live.
+  Restart after Chunk CAS but before target confirmation; assert the persisted
+  job confirms that same target without a second allocation. Restart before
+  CAS; assert the DiskDB scanner can reclaim the unreferenced tentative target,
+  proving copy-before-publish, durable duplicate handling, tentative-block
+  recovery, and source-revision fencing — E2E test.
 - Given the two-rack fixture with four nodes in one rack and two in the other,
   allocate 10+2, 20+2, and 40+4 EC strips under both priorities; resolve every
   physical segment and assert the reported maximum fragments per rack, node,

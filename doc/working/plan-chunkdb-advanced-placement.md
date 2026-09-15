@@ -77,12 +77,14 @@ of temporarily degraded EC strips.
 
 - [~] **Cross-domain rebalance planner**: passive capacity-aware balancing is
   complete. Implement the R80 copy-before-publish handoff: R80 reserves,
-  copies, and fsyncs a target before sending the durable source-identity
-  handoff to the ChunkDB owner; ChunkDB durably claims it, conditionally
-  publishes the source-revision replacement, and only then authorizes source
-  free. A local ongoing set merges duplicate deliveries but is not a recovery
-  authority. Files: DiskDB relocation/task protocol, ChunkDB task handling,
-  lifecycle/storage, and integration tests.
+  copies, and fsyncs a tentative target before sending the durable
+  source-identity handoff to the ChunkDB owner; ChunkDB checkpoints the target,
+  conditionally publishes the source-revision replacement, then confirms that
+  same target and authorizes source free. A local ongoing set merges duplicate
+  deliveries but is not a recovery authority; the job phase resumes confirmation
+  after a restart and DiskDB's scanner reclaims pre-publication orphans. Files:
+  DiskDB relocation/task protocol, ChunkDB task handling, lifecycle/storage,
+  and integration tests.
 - [x] **EC topology matrix**: cover 10+2, 20+2, and 40+4 on two racks with a
   four-node/two-node split under both policies, interrupted admission/restart,
   insufficient-topology waiting, and convergence after adding six or eleven

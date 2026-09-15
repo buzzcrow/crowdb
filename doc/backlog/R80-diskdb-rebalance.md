@@ -262,7 +262,8 @@ imbalance (placeholder relocation in v1; real move deferred to a future
    It delivers that handoff to the current ChunkDB owner. The owner may keep an
    in-memory ongoing set to merge local duplicate requests, but it must durably
    claim the operation and conditionally publish the replacement using the
-   chunk's expected strip revision and exact source segment. `Published` or an
+   chunk's expected strip revision and exact source segment. The owner confirms
+   the tentative target only after its Chunk CAS succeeds. `Published` or an
    idempotent observation of the same target authorizes R80 to free the source;
    `Stale` or `Rejected` requires R80 to discard the target and retain the
    source. R80 retries an unacknowledged handoff after restart. This gives
