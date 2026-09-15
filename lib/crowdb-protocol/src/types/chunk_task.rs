@@ -23,6 +23,22 @@ pub struct PlacementRepairTaskPayload {
     pub repair_disk: bool,
 }
 
+/// Durable target state for one repair fragment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RepairTargetPhase {
+    Allocated,
+    Copied,
+    Published,
+    Confirmed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepairTargetCheckpoint {
+    pub source: crate::diskdb::rpc::Segment,
+    pub destination: crate::diskdb::rpc::Segment,
+    pub phase: RepairTargetPhase,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[repr(u8)]
 pub enum ChunkTaskState {

@@ -9,7 +9,8 @@ use arc_swap::ArcSwapOption;
 use bytes::Bytes;
 use crowdb_common::ec::{decode, EcScheme};
 use crowdb_protocol::chunk_task::{
-    ChunkTaskState, ChunkTaskValue, CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_REPAIR_STRIP,
+    ChunkTaskState, ChunkTaskValue, RepairTargetCheckpoint, RepairTargetPhase, CHUNK_TASK_SCHEMA_VERSION,
+    TASK_KIND_REPAIR_STRIP,
 };
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkStrip, EcState, Strip};
 use crowdb_protocol::common::ChunkId;
@@ -21,7 +22,7 @@ use crate::conversion::io::ConversionDiskIo;
 use crate::lifecycle::{LifecycleError, LifecycleHandler};
 use crate::metrics::RepairMetrics;
 use crate::task::executor::TaskFuture;
-use crate::task::{TaskHandler, TaskOutcome, TaskStore, TaskStoreError};
+use crate::task::{TaskHandler, TaskManager, TaskOutcome, TaskStore, TaskStoreError};
 
 pub const REPAIR_STRIP_TASK_VERSION: u16 = 1;
 
@@ -30,6 +31,8 @@ pub struct RepairStripTaskV1 {
     pub chunk_id: ChunkId,
     pub strip_sequence: u32,
     pub failed_segments: Vec<Segment>,
+    #[serde(default)]
+    pub targets: Vec<RepairTargetCheckpoint>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -104,6 +107,7 @@ impl RepairCoordinator {
                 chunk_id,
                 strip_sequence: strip.strip_sequence,
                 failed_segments,
+                targets: Vec::new(),
             };
             let shard_bytes = payload.failed_segments.first().map_or(0, |segment| {
                 u64::from(segment.unit_count)
@@ -160,6 +164,7 @@ impl RepairCoordinator {
 
 pub struct RepairStripTaskHandler {
     lifecycle: Arc<LifecycleHandler>,
+    task_manager: Arc<TaskManager>,
     io: Arc<ConversionDiskIo>,
     memory: Arc<Semaphore>,
     memory_limit: usize,
@@ -172,6 +177,7 @@ impl RepairStripTaskHandler {
     #[must_use]
     pub fn new(
         lifecycle: Arc<LifecycleHandler>,
+        task_manager: Arc<TaskManager>,
         io: Arc<ConversionDiskIo>,
         memory_bytes: usize,
         max_concurrency: usize,
@@ -181,6 +187,7 @@ impl RepairStripTaskHandler {
         metrics.set_memory_limit(memory_bytes);
         Self {
             lifecycle,
+            task_manager,
             io,
             memory: Arc::new(Semaphore::new(memory_bytes)),
             memory_limit: memory_bytes,
@@ -192,7 +199,7 @@ impl RepairStripTaskHandler {
 
     #[allow(clippy::too_many_lines)]
     async fn execute_once(&self, task: &ChunkTaskValue) -> Result<RepairStats, RepairRunError> {
-        let payload = decode_payload(&task.payload)?;
+        let mut payload = decode_payload(&task.payload)?;
         let chunk = self.lifecycle.query_chunk(&payload.chunk_id).await?;
         let Some((strip_index, strip)) = chunk
             .strips
@@ -203,6 +210,8 @@ impl RepairStripTaskHandler {
             return Ok(RepairStats::default());
         };
         let segments = strip_segments(strip)?;
+        self.confirm_published_targets(task, &mut payload, &segments)
+            .await?;
         let unavailable: Vec<_> = strip
             .unavailable_segments
             .iter()
@@ -271,24 +280,42 @@ impl RepairStripTaskHandler {
                 .iter()
                 .position(|segment| segment == failed)
                 .ok_or_else(|| RepairRunError::Permanent("failed segment disappeared".into()))?;
-            let new_segment = self
-                .lifecycle
-                .allocate_repair_segment(
-                    &payload.chunk_id,
-                    failed,
-                    &surviving,
-                    &excluded,
-                    self.allow_unsafe_placement,
-                )
-                .await?;
-            self.io
-                .write_segment(&new_segment, unit_bytes, recovered.shards[index].clone())
-                .await
-                .map_err(|error| RepairRunError::Retry(error.to_string()))?;
-            self.io
-                .fsync_segment(&new_segment)
-                .await
-                .map_err(|error| RepairRunError::Retry(error.to_string()))?;
+            let target_index = payload.targets.iter().position(|target| target.source == *failed);
+            let target_index = if let Some(index) = target_index {
+                index
+            } else {
+                let destination = self
+                    .lifecycle
+                    .allocate_repair_segment(
+                        &payload.chunk_id,
+                        failed,
+                        &surviving,
+                        &excluded,
+                        self.allow_unsafe_placement,
+                    )
+                    .await?;
+                payload.targets.push(RepairTargetCheckpoint {
+                    source: *failed,
+                    destination,
+                    phase: RepairTargetPhase::Allocated,
+                });
+                self.checkpoint(task, &payload).await?;
+                payload.targets.len().saturating_sub(1)
+            };
+            let destination = payload.targets[target_index].destination;
+            if payload.targets[target_index].phase == RepairTargetPhase::Allocated {
+                self.io
+                    .write_segment(&destination, unit_bytes, recovered.shards[index].clone())
+                    .await
+                    .map_err(|error| RepairRunError::Retry(error.to_string()))?;
+                self.io
+                    .fsync_segment(&destination)
+                    .await
+                    .map_err(|error| RepairRunError::Retry(error.to_string()))?;
+                payload.targets[target_index].phase = RepairTargetPhase::Copied;
+                self.checkpoint(task, &payload).await?;
+            }
+            let new_segment = destination;
             replace_segment(&mut replacement, failed, new_segment)?;
             surviving.push(new_segment);
             if let Some(disk_id) = new_segment.disk_id {
@@ -299,7 +326,7 @@ impl RepairStripTaskHandler {
             .unavailable_segments
             .retain(|segment| !unavailable.contains(segment));
         self.lifecycle
-            .replace_chunk_strip_range(
+            .publish_tentative_chunk_strip_range(
                 &payload.chunk_id,
                 chunk.modify_ts,
                 u32::try_from(strip_index).unwrap_or(u32::MAX),
@@ -308,10 +335,68 @@ impl RepairStripTaskHandler {
                 task.operation_id,
             )
             .await?;
+        for target in &mut payload.targets {
+            if unavailable.contains(&target.source) && target.phase == RepairTargetPhase::Copied {
+                target.phase = RepairTargetPhase::Published;
+            }
+        }
+        self.checkpoint(task, &payload).await?;
+        let replacement_segments = strip_segments(&replacement)?;
+        self.confirm_published_targets(task, &mut payload, &replacement_segments)
+            .await?;
         Ok(RepairStats {
             segments: u64::try_from(unavailable.len()).unwrap_or(u64::MAX),
             bytes: shard_bytes.saturating_mul(u64::try_from(unavailable.len()).unwrap_or(u64::MAX)),
         })
+    }
+
+    async fn checkpoint(
+        &self,
+        task: &ChunkTaskValue,
+        payload: &RepairStripTaskV1,
+    ) -> Result<(), RepairRunError> {
+        self.task_manager
+            .checkpoint_payload(task, encode_payload(payload)?, now_ms())
+            .await
+            .map_err(|error| RepairRunError::Retry(error.to_string()))?;
+        Ok(())
+    }
+
+    async fn confirm_published_targets(
+        &self,
+        task: &ChunkTaskValue,
+        payload: &mut RepairStripTaskV1,
+        current_segments: &[Segment],
+    ) -> Result<(), RepairRunError> {
+        let mut changed = false;
+        for target in &mut payload.targets {
+            if target.phase != RepairTargetPhase::Confirmed
+                && current_segments.contains(&target.destination)
+                && !current_segments.contains(&target.source)
+            {
+                target.phase = RepairTargetPhase::Published;
+                changed = true;
+            }
+        }
+        if changed {
+            self.checkpoint(task, payload).await?;
+        }
+        let targets = payload
+            .targets
+            .iter()
+            .filter(|target| target.phase == RepairTargetPhase::Published)
+            .map(|target| target.destination)
+            .collect::<Vec<_>>();
+        if targets.is_empty() {
+            return Ok(());
+        }
+        self.lifecycle.confirm_tentative_segments(targets).await?;
+        for target in &mut payload.targets {
+            if target.phase == RepairTargetPhase::Published {
+                target.phase = RepairTargetPhase::Confirmed;
+            }
+        }
+        self.checkpoint(task, payload).await
     }
 
     async fn recover_mirror(
@@ -609,6 +694,14 @@ fn failure_operation_id(operation_id: ChunkId, strip_sequence: u32) -> ChunkId {
         high: operation_id.high ^ 0xfa11_ed00_0000_0002,
         low: operation_id.low ^ u64::from(strip_sequence),
     }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 pub fn encode_payload(payload: &RepairStripTaskV1) -> Result<Vec<u8>, RepairError> {

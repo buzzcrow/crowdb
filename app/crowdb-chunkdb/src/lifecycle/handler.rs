@@ -1041,6 +1041,55 @@ impl LifecycleHandler {
         replacement_strips: &[ChunkStrip],
         operation_id: ChunkId,
     ) -> Result<Chunk, LifecycleError> {
+        self.replace_chunk_strip_range_with_confirmation(
+            chunk_id,
+            expected_modify_ts,
+            start_index,
+            old_strips,
+            replacement_strips,
+            operation_id,
+            true,
+        )
+        .await
+    }
+
+    /// Publish a replacement that continues to reference tentative blocks.
+    ///
+    /// The caller must persist enough operation state to confirm every new
+    /// segment after publication. This is used only by durable repair jobs.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn publish_tentative_chunk_strip_range(
+        &self,
+        chunk_id: &ChunkId,
+        expected_modify_ts: u64,
+        start_index: u32,
+        old_strips: &[ChunkStrip],
+        replacement_strips: &[ChunkStrip],
+        operation_id: ChunkId,
+    ) -> Result<Chunk, LifecycleError> {
+        self.replace_chunk_strip_range_with_confirmation(
+            chunk_id,
+            expected_modify_ts,
+            start_index,
+            old_strips,
+            replacement_strips,
+            operation_id,
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn replace_chunk_strip_range_with_confirmation(
+        &self,
+        chunk_id: &ChunkId,
+        expected_modify_ts: u64,
+        start_index: u32,
+        old_strips: &[ChunkStrip],
+        replacement_strips: &[ChunkStrip],
+        operation_id: ChunkId,
+        confirm_new_segments: bool,
+    ) -> Result<Chunk, LifecycleError> {
         self.check_range(chunk_id)?;
         if old_strips.is_empty() || replacement_strips.is_empty() {
             return Err(LifecycleError::InvalidRequest(
@@ -1114,11 +1163,9 @@ impl LifecycleHandler {
         let new_segments: HashSet<_> = replacement_strips.iter().flat_map(extract_segments).collect();
         let new_only: Vec<_> = new_segments.difference(&old_segments).copied().collect();
         let old_only: Vec<_> = old_segments.difference(&new_segments).copied().collect();
-        self.allocator
-            .pool()
-            .commit_blocks(new_only.clone())
-            .await
-            .map_err(LifecycleError::Commit)?;
+        if confirm_new_segments {
+            self.confirm_tentative_segments(new_only.clone()).await?;
+        }
 
         chunk
             .strips
@@ -1509,6 +1556,16 @@ impl LifecycleHandler {
             .free_blocks(vec![segment])
             .await
             .map_err(LifecycleError::Cleanup)
+    }
+
+    /// Confirm tentative segments after their owning chunk metadata was
+    /// durably published by a repair task.
+    pub async fn confirm_tentative_segments(&self, segments: Vec<Segment>) -> Result<(), LifecycleError> {
+        self.allocator
+            .pool()
+            .commit_blocks(segments)
+            .await
+            .map_err(LifecycleError::Commit)
     }
 
     /// Query a chunk by ID.

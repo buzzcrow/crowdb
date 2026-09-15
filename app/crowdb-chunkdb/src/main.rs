@@ -556,6 +556,7 @@ async fn main() {
             ));
             let repair_task_handler = Arc::new(RepairStripTaskHandler::new(
                 Arc::clone(&handler),
+                Arc::clone(&task_manager),
                 Arc::clone(&io),
                 config.repair.memory_bytes,
                 config.repair.max_concurrency,
