@@ -183,6 +183,18 @@ impl PlacementRepairTaskHandler {
         };
         self.confirm_published_target(task, &mut payload, &ec.segments)
             .await?;
+        // A placement task moves at most one fragment per execution. Once the
+        // published target is confirmed, it must not be reused as the next
+        // move's destination; persist that retirement before selecting a new
+        // source so a retry or restart starts a fresh move.
+        if payload
+            .target
+            .as_ref()
+            .is_some_and(|target| target.phase == RepairTargetPhase::Confirmed)
+        {
+            payload.target = None;
+            self.checkpoint(task, &payload).await?;
+        }
         if !strip.placement_repair_required {
             return Ok(true);
         }
