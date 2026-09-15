@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use crowdb_kv_client::{BatchOp, CrowdbKvClient, GetOutcome, ReadMode, ScanOutcome};
+use crowdb_kv_client::{BatchOp, CrowdbKvClient, Error as KvError, GetOutcome, ReadMode, ScanOutcome};
 use crowdb_protocol::chunk_task::{ChunkTaskState, ChunkTaskValue};
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::{
@@ -30,6 +30,8 @@ pub enum TaskStoreError {
     IdentityChanged,
     #[error("task value does not match its canonical key")]
     KeyMismatch,
+    #[error("task transition lost its compare-and-write race")]
+    Conflict,
 }
 
 /// Persistent task storage. It is lock-free and relies on the caller's
@@ -49,8 +51,8 @@ impl TaskStore {
     ///
     /// # Errors
     /// Returns an error for identity changes, routing failure, or failed KV
-    /// writes. `previous` must be the state held by the caller's lifecycle
-    /// guard; cross-process duplicates remain fenced by the task operation ID.
+    /// writes. Every transition conditionally updates the canonical task key,
+    /// so a stale claimant cannot overwrite a successor's checkpoint.
     pub async fn write_transition(
         &self,
         previous: Option<&ChunkTaskValue>,
@@ -75,7 +77,8 @@ impl TaskStore {
                 value: Bytes::new(),
             });
         }
-        self.write_routed(&next.partition_id, &ops).await
+        self.write_routed(&next.partition_id, &canonical_key(next), previous, &ops)
+            .await
     }
 
     /// Read one task through the partition's current route.
@@ -96,7 +99,7 @@ impl TaskStore {
         };
         let key = task_key.to_bytes();
         let task_route = route(&self.bindings, partition_id)?;
-        if let Some(value) = self.read_raw(&task_route, &key).await? {
+        if let Some((value, _)) = self.read_raw(&task_route, &key).await? {
             return decode_for_key(&task_key, &value).map(Some);
         }
         if matches!(
@@ -111,7 +114,7 @@ impl TaskStore {
                     old_kv_store_id: None,
                     old_kv_group_id: None,
                 };
-                if let Some(value) = self.read_raw(&old_route, &key).await? {
+                if let Some((value, _)) = self.read_raw(&old_route, &key).await? {
                     return decode_for_key(&task_key, &value).map(Some);
                 }
             }
@@ -167,12 +170,44 @@ impl TaskStore {
         Ok(decoded)
     }
 
-    async fn write_routed(&self, partition_id: &ChunkId, ops: &[BatchOp]) -> Result<(), TaskStoreError> {
+    async fn write_routed(
+        &self,
+        partition_id: &ChunkId,
+        canonical: &[u8],
+        previous: Option<&ChunkTaskValue>,
+        ops: &[BatchOp],
+    ) -> Result<(), TaskStoreError> {
         let task_route = route(&self.bindings, partition_id)?;
+        let expected_revision = match previous {
+            Some(previous) => {
+                let Some((value, revision)) = self.read_raw(&task_route, canonical).await? else {
+                    return Err(TaskStoreError::Conflict);
+                };
+                let key = ChunkTaskKey {
+                    partition_id: previous.partition_id,
+                    kind: previous.kind,
+                    task_id: previous.task_id,
+                };
+                if decode_for_key(&key, &value)? != *previous {
+                    return Err(TaskStoreError::Conflict);
+                }
+                revision
+            }
+            None => 0,
+        };
         self.kv
-            .batch_write(task_route.kv_store_id, task_route.kv_group_id, ops)
+            .batch_write_cas(
+                task_route.kv_store_id,
+                task_route.kv_group_id,
+                ops,
+                canonical,
+                expected_revision,
+            )
             .await
-            .map_err(|error| TaskStoreError::Kv(error.to_string()))?;
+            .map_err(|error| match error {
+                KvError::CasFailed { .. } | KvError::CasBusy => TaskStoreError::Conflict,
+                _ => TaskStoreError::Kv(error.to_string()),
+            })?;
         if matches!(
             task_route.migration_state,
             MigrationState::Copying | MigrationState::Cutover
@@ -186,7 +221,7 @@ impl TaskStore {
         Ok(())
     }
 
-    async fn read_raw(&self, task_route: &Route, key: &[u8]) -> Result<Option<Bytes>, TaskStoreError> {
+    async fn read_raw(&self, task_route: &Route, key: &[u8]) -> Result<Option<(Bytes, u64)>, TaskStoreError> {
         match self
             .kv
             .get(
@@ -199,7 +234,7 @@ impl TaskStore {
             .await
             .map_err(|error| TaskStoreError::Kv(error.to_string()))?
         {
-            GetOutcome::Found { value, .. } => Ok(Some(value)),
+            GetOutcome::Found { value, revision } => Ok(Some((value, revision))),
             GetOutcome::NotFound => Ok(None),
         }
     }
