@@ -12,6 +12,9 @@ pub const TASK_KIND_MIRROR_TO_EC: u16 = 1;
 pub const TASK_KIND_REPAIR_STRIP: u16 = 2;
 pub const TASK_KIND_REPAIR_PLACEMENT: u16 = 3;
 pub const TASK_KIND_RELOCATE_SEGMENT: u16 = 4;
+/// The sole liveness task for an Active chunk.
+pub const TASK_KIND_FINALIZE_CHUNK: u16 = 5;
+pub const FINALIZE_CHUNK_KIND_VERSION: u16 = 1;
 pub const PLACEMENT_REPAIR_KIND_VERSION: u16 = 1;
 pub const RELOCATE_SEGMENT_KIND_VERSION: u16 = 1;
 

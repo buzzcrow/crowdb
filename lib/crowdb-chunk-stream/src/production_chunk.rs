@@ -18,6 +18,7 @@ use crowdb_protocol::chunkdb::rpc::{
     Strip,
 };
 use crowdb_protocol::common::ChunkId;
+use crowdb_protocol::frame::FrameMagic;
 
 use crate::{CursorAdvance, DurableCursor, Result, StreamChunkStore, StreamError, TrimmedChunk};
 
@@ -287,6 +288,31 @@ impl StreamChunkStore for ProductionStreamChunkStore {
         })
     }
 
+    async fn renew_liveness(&self, chunk_id: ChunkId, writer_epoch: u64) -> Result<()> {
+        let state = self.state(chunk_id).await?;
+        let cursor = state.cursor.load(Ordering::Acquire);
+        let response = self
+            .allocator
+            .advance_chunk_write(AdvanceChunkWriteRequest {
+                chunk_id: Some(chunk_id),
+                writer_epoch,
+                expected_modify_ts: state.modify_ts.load(Ordering::Acquire),
+                acknowledged_cursor: cursor,
+                closed_strip_sequence: None,
+                writer_lease_ms: self.writer_lease_ms,
+            })
+            .await
+            .map_err(io_error)?;
+        let chunk = response
+            .chunk
+            .ok_or_else(|| StreamError::Corruption("liveness renewal returned no chunk".into()))?;
+        if chunk.writer_epoch != writer_epoch || chunk.acknowledged_cursor != cursor {
+            return Err(StreamError::StaleWriter);
+        }
+        state.modify_ts.store(chunk.modify_ts, Ordering::Release);
+        Ok(())
+    }
+
     async fn seal(&self, chunk_id: ChunkId, writer_epoch: u64, cursor: u64) -> Result<()> {
         let state = self.state(chunk_id).await?;
         if state.chunk.writer_epoch > writer_epoch || state.cursor.load(Ordering::Acquire) != cursor {
@@ -329,6 +355,24 @@ impl StreamChunkStore for ProductionStreamChunkStore {
                 }],
                 0,
                 length,
+            )
+            .await
+            .map_err(read_error)
+    }
+
+    async fn read_verified_frame(
+        &self,
+        chunk_id: ChunkId,
+        physical_offset: u64,
+        length: usize,
+    ) -> Result<Bytes> {
+        self.reader
+            .read_verified_frame(
+                chunk_id,
+                physical_offset,
+                u64::try_from(length)
+                    .map_err(|_| StreamError::InvalidRequest("chunk frame length exceeds u64".into()))?,
+                FrameMagic::StreamV1,
             )
             .await
             .map_err(read_error)

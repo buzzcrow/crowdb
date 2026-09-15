@@ -87,7 +87,8 @@ endif()
 add_library(crowdb-rpc STATIC ${CROWDB_RPC_SRC})
 target_include_directories(crowdb-rpc
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
-          ${CMAKE_CURRENT_SOURCE_DIR}/../crowdb-common/cpp/include
+         ${CMAKE_CURRENT_SOURCE_DIR}/../crowdb-protocol/cpp/include
+         ${CMAKE_CURRENT_SOURCE_DIR}/../crowdb-common/cpp/include
   PRIVATE ${CROWDB_RPC_PROTO_GEN_DIR}
 )
 find_package(Threads REQUIRED)

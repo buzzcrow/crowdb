@@ -20,6 +20,7 @@ fn extent_page() -> StreamExtentPage {
         chunk_ids: vec![ChunkId { high: 0, low: 10 }, ChunkId { high: 0, low: 11 }],
         logical_offsets: vec![0, 10, 25],
         physical_offsets: vec![4, 8],
+        frame_lengths: vec![44, 49],
     }
 }
 
@@ -28,16 +29,19 @@ fn resolves_first_interior_and_boundary_offsets() {
     let page = extent_page();
     let first = resolve_extent(&page, 0).unwrap();
     assert_eq!(first.chunk_id.low, 10);
-    assert_eq!(first.physical_offset, 4);
+    assert_eq!(first.frame_offset, 4);
+    assert_eq!(first.payload_offset, 14);
     assert_eq!(first.available, 10);
 
     let interior = resolve_extent(&page, 6).unwrap();
-    assert_eq!(interior.physical_offset, 10);
+    assert_eq!(interior.frame_offset, 4);
+    assert_eq!(interior.payload_offset, 20);
     assert_eq!(interior.available, 4);
 
     let boundary = resolve_extent(&page, 10).unwrap();
     assert_eq!(boundary.chunk_id.low, 11);
-    assert_eq!(boundary.physical_offset, 8);
+    assert_eq!(boundary.frame_offset, 8);
+    assert_eq!(boundary.payload_offset, 14);
     assert_eq!(boundary.available, 15);
 }
 

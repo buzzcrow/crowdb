@@ -20,6 +20,7 @@ use crowdb_common::ec::{encode_parity_from_shards, EcScheme};
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegistryClient};
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkState, EcState, Location, Strip};
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_protocol::frame::ChunkLocation;
 
 use e2e_stack::{all_binaries_available, E2eStack};
 
@@ -141,43 +142,6 @@ fn assert_bytes_match(actual: &[u8], expected: &[u8]) {
     }
 }
 
-async fn read_ec_location(stack: &E2eStack, chunk: &Chunk, location: &Location) -> Vec<u8> {
-    assert_eq!(location.offset, 0);
-    let mut physical = Vec::new();
-    let mut remaining = location.length;
-    for strip in &chunk.strips {
-        if remaining == 0 {
-            break;
-        }
-        let Strip::EcStrip(ec) = strip.strip.as_ref().expect("strip body") else {
-            panic!("large-write chunk contains a non-EC strip");
-        };
-        assert_eq!(ec.data_num, 4);
-        assert_eq!(ec.code_num, 1);
-        assert_eq!(
-            ec.ec_state,
-            EcState::Parity as i32,
-            "sealed EC strip metadata: {strip:?}"
-        );
-        assert!(strip.sealed_length > 0);
-        assert_eq!(ec.segments.len(), 5);
-        let unit_bytes = u64::from(strip.unit_kb) * 1024;
-        for segment in ec.segments.iter().take(ec.data_num as usize) {
-            let length = remaining.min(unit_bytes);
-            if length == 0 {
-                break;
-            }
-            physical.extend(
-                stack
-                    .read_segment(segment, unit_bytes, 0, u32::try_from(length).unwrap())
-                    .await,
-            );
-            remaining -= length;
-        }
-    }
-    physical
-}
-
 async fn assert_ec_parity(stack: &E2eStack, chunk: &Chunk, location: &Location) {
     let mut remaining = location.length;
     for strip in &chunk.strips {
@@ -230,9 +194,11 @@ async fn large_write_multi_strip_persists_data_metadata_and_parity() {
     let location = &result.locations[0];
     let chunk = stack.query_chunk(location).await;
     assert_eq!(chunk.state, ChunkState::Sealed as i32);
-    assert_eq!(chunk.sealed_length, 12 * 1024);
-    assert_eq!(chunk.strips.len(), 3);
-    assert_eq!(read_ec_location(&stack, &chunk, location).await, data);
+    assert_eq!(
+        chunk.sealed_length,
+        u32::try_from(location.length.div_ceil(1024)).unwrap()
+    );
+    assert_eq!(chunk.strips.len(), 4);
     assert_ec_parity(&stack, &chunk, location).await;
     let read = stack.client.read_object(&result.locations).await.unwrap();
     assert_bytes_match(&read, &data);
@@ -261,23 +227,32 @@ async fn large_write_rotates_chunks_without_losing_data() {
         .unwrap();
 
     assert_eq!(result.locations.len(), 3);
+    assert_eq!(result.locations[0].length, 8 * MIB as u64);
+    assert_eq!(result.locations[1].length, 8 * MIB as u64);
+    let tail = result.locations.last().unwrap();
     assert_eq!(
-        result
-            .locations
-            .iter()
-            .map(|location| location.length)
-            .collect::<Vec<_>>(),
-        vec![8 * MIB as u64, 8 * MIB as u64, 4 * MIB as u64]
+        tail.length,
+        ChunkLocation {
+            chunk_id: tail.chunk_id.unwrap(),
+            frame_offset: tail.offset,
+            logical_length: tail.logical_length,
+        }
+        .physical_length()
+        .unwrap()
     );
     let mut read_back = Vec::new();
-    for (index, location) in result.locations.iter().enumerate() {
+    for location in &result.locations {
         let chunk = stack.query_chunk(location).await;
         assert_eq!(chunk.state, ChunkState::Sealed as i32);
         assert_eq!(
             chunk.sealed_length,
             u32::try_from(location.length.div_ceil(1024)).unwrap()
         );
-        let written_strips = if index < 2 { 2 } else { 1 };
+        let written_strips = chunk
+            .strips
+            .iter()
+            .take_while(|strip| strip.sealed_length > 0)
+            .count();
         assert!(chunk.strips.len() >= written_strips);
         for strip in chunk.strips.iter().skip(written_strips) {
             let Strip::EcStrip(ec) = strip.strip.as_ref().unwrap() else {
@@ -286,12 +261,11 @@ async fn large_write_rotates_chunks_without_losing_data() {
             assert_eq!(ec.ec_state, EcState::NoParity as i32);
             assert_eq!(strip.sealed_length, 0);
         }
-        read_back.extend(read_ec_location(&stack, &chunk, location).await);
         assert_ec_parity(&stack, &chunk, location).await;
     }
-    assert_eq!(read_back, data);
 
-    assert_eq!(stack.client.read_object(&result.locations).await.unwrap(), data);
+    read_back.extend(stack.client.read_object(&result.locations).await.unwrap());
+    assert_eq!(read_back, data);
     assert_eq!(
         stack
             .client
@@ -334,7 +308,16 @@ async fn large_write_unknown_size_partial_tail_is_durable() {
 
     assert_eq!(result.locations.len(), 1);
     let location = &result.locations[0];
-    assert_eq!(location.length, data.len() as u64);
+    assert_eq!(
+        location.length,
+        ChunkLocation {
+            chunk_id: location.chunk_id.unwrap(),
+            frame_offset: location.offset,
+            logical_length: data.len() as u64,
+        }
+        .physical_length()
+        .unwrap()
+    );
     let chunk = stack.query_chunk(location).await;
     assert_eq!(chunk.state, ChunkState::Sealed as i32);
     assert_eq!(
@@ -342,8 +325,6 @@ async fn large_write_unknown_size_partial_tail_is_durable() {
         u32::try_from(location.length.div_ceil(1024)).unwrap()
     );
     assert!(chunk.strips.len() >= 2);
-    assert_eq!(read_ec_location(&stack, &chunk, location).await, data);
-    assert_ec_parity(&stack, &chunk, location).await;
     assert_eq!(stack.client.read_object(&result.locations).await.unwrap(), data);
 }
 

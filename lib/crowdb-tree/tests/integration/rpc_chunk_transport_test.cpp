@@ -151,6 +151,15 @@ void complete_async_write(void *context, Status status)
     result->done.notify_one();
 }
 
+TEST(RpcChunkTransport, RejectsWriteWithoutLocalLivenessAuthority)
+{
+    RpcChunkTransport            transport({});
+    const std::array<uint8_t, 1> data{0};
+    const Status                 status = transport.write_mirror(ChunkId(1, 2), 0, 0, data.data(), data.size());
+    EXPECT_FALSE(status.ok());
+    EXPECT_EQ(status.code(), Code::kUnavailable);
+}
+
 TEST(RpcChunkTransport, AllocatesOneFullMirrorStripAndPreserves128BitChunkId)
 {
     crowdb_rpc_pool_t   pool   = crowdb_rpc_pool_create(128);

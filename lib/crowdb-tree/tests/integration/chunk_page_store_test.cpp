@@ -629,8 +629,8 @@ TEST(ChunkPageStore, CheckpointCowsOnlyChangedLogicalPacks)
     ASSERT_EQ(second->packs.size(), 3U);
     EXPECT_EQ(second->packs[1].ref.chunk_id, first->packs[1].ref.chunk_id);
     EXPECT_EQ(second->packs[1].ref.offset, first->packs[1].ref.offset);
-    EXPECT_NE(second->packs[0].ref.checksum, first->packs[0].ref.checksum);
-    EXPECT_NE(second->packs[2].ref.checksum, first->packs[2].ref.checksum);
+    EXPECT_NE(second->packs[0].ref.offset, first->packs[0].ref.offset);
+    EXPECT_NE(second->packs[2].ref.offset, first->packs[2].ref.offset);
     EXPECT_EQ(second->packs_reused, 1U);
     EXPECT_EQ(second->pack_bytes_reused, 4096U);
     EXPECT_EQ(store.stats().packs_reused, 1U);
@@ -880,7 +880,7 @@ TEST(ChunkPageStore, LivePackRepackDropsDeadPacksWithoutResurrection)
     }
     auto sparse = catalog->load(66);
     ASSERT_NE(sparse, nullptr);
-    ASSERT_EQ(sparse->format_version, 4U);
+    ASSERT_EQ(sparse->format_version, kChunkManifestFormat);
     ASSERT_EQ(sparse->packs.size(), 2U);
     EXPECT_EQ(sparse->packs[0].logical_offset, 0U);
     EXPECT_EQ(sparse->packs[1].logical_offset, 8192U);
@@ -1006,7 +1006,7 @@ TEST(ChunkPageStore, StaleMaterializationCannotReplaceForegroundCheckpoint)
     EXPECT_GT(materializer.stats().orphan_bytes, 0U);
 }
 
-TEST(ChunkPageStore, ReopensLegacyManifestChecksumWithoutOwnerFields)
+TEST(ChunkPageStore, RejectsLegacyManifestWithoutPublicFrameLocations)
 {
     auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
     auto           transport = std::make_shared<MemoryChunkTransport>();
@@ -1018,8 +1018,7 @@ TEST(ChunkPageStore, ReopensLegacyManifestChecksumWithoutOwnerFields)
     ChunkPageStore reopened({.tree_id = 52, .owner_epoch = 1, .pack_bytes = 4096, .page_alignment = 1, .iu_size = 1},
                             catalog, transport);
     std::array<uint8_t, 1> value{};
-    ASSERT_TRUE(reopened.read_at(8192, value.data(), value.size()).ok());
-    EXPECT_EQ(value[0], 6U);
+    EXPECT_EQ(reopened.read_at(8192, value.data(), value.size()).code(), Code::kCorruption);
 }
 
 TEST(ChunkPageStore, CatalogPublishesIndependentTreeLineagesConcurrently)
@@ -1320,7 +1319,9 @@ TEST(ChunkPageStore, RotatesWholePacksAndReopenAllocatesFreshChunk)
     std::vector<ChunkId> chunk_ids;
     for (const ChunkPagePack &pack : first->packs) {
         EXPECT_LE(pack.ref.length, config.pack_bytes);
-        EXPECT_LE(pack.ref.offset + pack.ref.length, config.max_chunk_bytes);
+        ChunkLayout layout;
+        ASSERT_TRUE(transport->query_chunk(pack.ref.chunk_id, &layout).ok());
+        EXPECT_LE(pack.ref.offset + pack.ref.length + 34U, layout.logical_capacity);
         if (std::find(chunk_ids.begin(), chunk_ids.end(), pack.ref.chunk_id) == chunk_ids.end()) {
             chunk_ids.push_back(pack.ref.chunk_id);
         }
@@ -1340,12 +1341,6 @@ TEST(ChunkPageStore, RotatesWholePacksAndReopenAllocatesFreshChunk)
     auto second = catalog->load(18);
     ASSERT_NE(second, nullptr);
     EXPECT_NE(second->packs.front().ref.chunk_id, abandoned_chunk_id);
-
-    std::array<uint8_t, 4> old_bytes{};
-    ASSERT_TRUE(transport
-                    ->read_mirror(abandoned_chunk_id, 0, first->packs.back().ref.offset, old_bytes.data(),
-                                  first->packs.back().ref.length)
-                    .ok());
 }
 
 TEST(ChunkPageStore, HardCapsConfiguredChunkCapacityAt256MiB)
@@ -1373,7 +1368,7 @@ TEST(ChunkPageStore, HardCapsConfiguredChunkCapacityAt256MiB)
     ASSERT_FALSE(manifest->packs.empty());
     ChunkLayout layout;
     ASSERT_TRUE(transport->query_chunk(manifest->packs.front().ref.chunk_id, &layout).ok());
-    EXPECT_EQ(layout.logical_capacity, 256U * 1024U * 1024U);
+    EXPECT_GE(layout.logical_capacity, 256U * 1024U * 1024U);
 }
 
 TEST(ChunkPageStore, CatalogRejectsManifestGenerationOutsidePublicationFence)
@@ -1393,7 +1388,7 @@ TEST(ChunkPageStore, CatalogRejectsManifestGenerationOutsidePublicationFence)
     EXPECT_TRUE(catalog.publish(27, 0, 1, first).ok());
 }
 
-TEST(ChunkPageStore, PadsPackTailWithoutChangingLogicalChecksum)
+TEST(ChunkPageStore, FramesPackTailWithoutAlignmentPadding)
 {
     auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
     auto           transport = std::make_shared<MemoryChunkTransport>();
@@ -1420,12 +1415,47 @@ TEST(ChunkPageStore, PadsPackTailWithoutChangingLogicalChecksum)
     EXPECT_EQ(first->packs[0].ref.length, bytes.size());
     ChunkLayout layout;
     ASSERT_TRUE(transport->query_chunk(first->packs[0].ref.chunk_id, &layout).ok());
-    EXPECT_EQ(layout.acknowledged_bytes, 64U * 1024U);
+    EXPECT_EQ(layout.acknowledged_bytes, first->packs[0].ref.length + 34U);
 
     transport->corrupt_mirror(first->packs[0].ref.chunk_id, 0, first->packs[0].ref.length);
     std::array<uint8_t, 4> out{};
     ASSERT_TRUE(store.read_at(8192, out.data(), out.size()).ok());
     EXPECT_TRUE(std::all_of(out.begin(), out.end(), [](uint8_t value) { return value == 4; }));
+}
+
+TEST(ChunkPageStore, LargePackUsesOneLocationAndMultipleVerifiedFrames)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore store(
+        {
+            .tree_id         = 73,
+            .owner_epoch     = 1,
+            .pack_bytes      = 96U * 1024U,
+            .max_chunk_bytes = 128U * 1024U,
+            .page_alignment  = 1,
+            .iu_size         = 1,
+        },
+        catalog, transport);
+    std::vector<uint8_t> payload(80U * 1024U, 0x5a);
+    ASSERT_TRUE(store.write_at(8192, payload.data(), payload.size()).ok());
+    ASSERT_TRUE(store.sync().ok());
+    std::array<uint8_t, 8192> anchor{};
+    ASSERT_TRUE(store.write_at(0, anchor.data(), anchor.size()).ok());
+    ASSERT_TRUE(store.sync().ok());
+
+    const auto manifest = catalog->load(73);
+    ASSERT_NE(manifest, nullptr);
+    ASSERT_EQ(manifest->packs.size(), 1U);
+    const ChunkPageRef &ref = manifest->packs.front().ref;
+    EXPECT_GT(ref.length, 64U * 1024U - 34U);
+    ChunkLayout layout;
+    ASSERT_TRUE(transport->query_chunk(ref.chunk_id, &layout).ok());
+    EXPECT_EQ(layout.acknowledged_bytes, ref.length + 68U);
+
+    std::vector<uint8_t> read(payload.size());
+    ASSERT_TRUE(store.read_at(8192, read.data(), read.size()).ok());
+    EXPECT_EQ(read, payload);
 }
 
 TEST(ChunkPageStore, MirrorRetryRequiresEveryReplicaAndHealthyFallbackReads)

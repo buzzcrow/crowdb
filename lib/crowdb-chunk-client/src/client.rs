@@ -23,6 +23,7 @@ use crowdb_protocol::chunkdb::rpc::{
     UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_protocol::frame::MAX_FRAME_PAYLOAD_BYTES;
 use crowdb_rpc_ffi::OwnedClientRoute;
 
 use crate::metrics::SmallWriteMetrics;
@@ -30,8 +31,8 @@ use crate::negative_list::FailedDiskList;
 use crate::writer::small_pool::SmallWritePool;
 use crate::{
     ChunkAllocator, ChunkClientConfig, ChunkClientMetrics, ChunkIoWriter, ChunkReadPolicy, ChunkReadStream,
-    ChunkReader, DiskWriter, LargeAsyncObjectWriter, PartialReadResult, ReadResult, Result, RoutedDiskWriter,
-    SmallObjectWriter, SmallWriteMetricsSnapshot, SmallWritePolicy,
+    ChunkReader, DiskWriter, IoError, LargeAsyncObjectWriter, PartialReadResult, ReadResult, Result,
+    RoutedDiskWriter, SmallObjectWriter, SmallWriteMetricsSnapshot, SmallWritePolicy,
 };
 
 /// Discovery and transport configuration for [`ChunkIoClient`].
@@ -286,6 +287,12 @@ impl ChunkIoClient {
     pub async fn prepare_small_write(&self, object_size: usize) -> Result<SmallObjectWriter> {
         if object_size == 0 {
             return Ok(SmallObjectWriter::empty());
+        }
+        if object_size > MAX_FRAME_PAYLOAD_BYTES {
+            return Err(IoError::ObjectTooLarge {
+                size: object_size,
+                limit: MAX_FRAME_PAYLOAD_BYTES,
+            });
         }
         let (runtime, reservation) = self.small_pool.reserve(object_size).await?;
         Ok(SmallObjectWriter::new(runtime, object_size, reservation))
@@ -682,19 +689,20 @@ fn build_large_write_result(
     locations: Vec<Location>,
     elapsed: Duration,
 ) -> LargeWriteResult {
-    let logical_bytes: u64 = locations.iter().map(|location| location.length).sum();
+    let logical_bytes: u64 = locations.iter().map(|location| location.logical_length).sum();
+    let data_bytes: u64 = locations.iter().map(|location| location.length).sum();
     let block_bytes = policy.client.read_buffer_size as u64;
     let strip_data_bytes = block_bytes * policy.ec_scheme.data_num as u64;
-    let full_strips = logical_bytes / strip_data_bytes;
-    let tail_bytes = logical_bytes % strip_data_bytes;
+    let full_strips = data_bytes / strip_data_bytes;
+    let tail_bytes = data_bytes % strip_data_bytes;
     let strips = full_strips + u64::from(tail_bytes > 0);
-    let parity_bytes =
-        (full_strips * block_bytes + tail_bytes.min(block_bytes)) * policy.ec_scheme.code_num as u64;
+    let parity_blocks = full_strips + u64::from(tail_bytes > 0);
+    let parity_bytes = parity_blocks * block_bytes * policy.ec_scheme.code_num as u64;
     LargeWriteResult {
         chunks: locations.len(),
         locations,
         logical_bytes,
-        physical_bytes: logical_bytes + parity_bytes,
+        physical_bytes: data_bytes + parity_bytes,
         strips,
         elapsed,
         preparation_stalls: writer.preparation_stalls(),

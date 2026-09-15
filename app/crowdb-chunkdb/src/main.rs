@@ -12,6 +12,7 @@ use crowdb_chunkdb::allocator::{ChunkAllocator, DiskdbClientPool};
 use crowdb_chunkdb::chunkdb_config::ChunkdbConfig;
 use crowdb_chunkdb::conversion::io::ConversionDiskIo;
 use crowdb_chunkdb::conversion::{ConversionCoordinator, MirrorToEcTaskHandler};
+use crowdb_chunkdb::finalize::FinalizeChunkTaskHandler;
 use crowdb_chunkdb::lifecycle::{ChunkLockMap, LifecycleHandler};
 use crowdb_chunkdb::metrics::ChunkdbMetrics;
 use crowdb_chunkdb::metrics::LifecycleMetrics;
@@ -374,12 +375,6 @@ async fn main() {
             return;
         }
     }
-    let writer_lease_sweep_handle = tokio::spawn(run_writer_lease_sweep_loop(
-        Arc::clone(&handler),
-        sweep_interval,
-        stop_rx.clone(),
-    ));
-
     // Build the crowdb-rpc server. The RpcServer listens on the RPC
     // port and dispatches to ChunkdbRpcService handlers.
     let rpc_rt_handle = tokio::runtime::Handle::current();
@@ -604,6 +599,10 @@ async fn main() {
                 Arc::clone(&workflow_metrics.placement),
             ));
             let task_handlers: Vec<Arc<dyn TaskHandler>> = vec![
+                Arc::new(FinalizeChunkTaskHandler::new(
+                    Arc::clone(&handler),
+                    Arc::clone(&io),
+                )),
                 conversion_task_handler,
                 repair_task_handler,
                 placement_repair_task_handler,
@@ -710,7 +709,6 @@ async fn main() {
     let _ = http_handle.await;
     let _ = refresh_handle.await;
     let _ = notify_handle.await;
-    let _ = writer_lease_sweep_handle.await;
     let _ = reservation_reconcile_handle.await;
     let _ = reservation_admission_handle.await;
     if let Some(handle) = task_scanner_handle {
@@ -795,32 +793,6 @@ async fn run_sweep_loop(
                 if *stop.borrow() {
                     info!("sweep task stopping");
                     break;
-                }
-            }
-        }
-    }
-}
-
-async fn run_writer_lease_sweep_loop(
-    handler: Arc<LifecycleHandler>,
-    interval: Duration,
-    mut stop: tokio::sync::watch::Receiver<bool>,
-) {
-    let mut ticker = tokio::time::interval(interval);
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    loop {
-        tokio::select! {
-            _ = ticker.tick() => {
-                if let Err(error) = handler.seal_expired_writer_chunks().await {
-                    warn!(%error, "shared writer lease sweep failed");
-                }
-                if let Err(error) = handler.reconcile_pending_chunks().await {
-                    warn!(%error, "chunk cleanup reconciliation failed");
-                }
-            }
-            changed = stop.changed() => {
-                if changed.is_ok() && *stop.borrow() {
-                    return;
                 }
             }
         }

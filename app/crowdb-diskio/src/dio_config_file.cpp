@@ -110,6 +110,8 @@ bool read_server(const toml::table &root, DioConfig &config, std::string &err)
         !read_value(*server, "listen_port", listen_port, err) ||
         !read_u32(*server, "rpc_workers", config.rpc_workers, err) ||
         !read_u64(*server, "node_id", config.node_id, err) || !read_value(*server, "o_direct", config.o_direct, err) ||
+        !read_u64(*server, "max_write_request_age_ms", config.max_write_request_age_ms, err) ||
+        !read_u64(*server, "max_clock_skew_ms", config.max_clock_skew_ms, err) ||
         !read_value(*server, "dummy_disk_type", dummy_disk_type, err)) {
         return false;
     }

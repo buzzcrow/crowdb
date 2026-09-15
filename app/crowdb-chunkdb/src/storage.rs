@@ -13,10 +13,13 @@ use std::sync::Arc;
 
 use tracing::warn;
 
-use crowdb_kv_client::{CrowdbKvClient, GetOutcome, ReadMode, ScanOutcome};
+use bytes::Bytes;
+use crowdb_kv_client::{BatchOp, CrowdbKvClient, GetOutcome, ReadMode, ScanOutcome};
+use crowdb_protocol::chunk_task::ChunkTaskValue;
 use crowdb_protocol::chunkdb::rpc::{Chunk, ChunkStrip, Strip, StripCleanupIntent};
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_protocol::{encode_chunk_task_value, BinaryKey, ChunkTaskKey, FinalizeChunkTaskKey};
 use serde::Deserialize;
 
 use crate::routing::{route, BindingCache, MigrationState, Route};
@@ -176,6 +179,60 @@ impl ChunkStore {
     #[must_use]
     pub fn new(kv: Arc<CrowdbKvClient>, bindings: BindingCache) -> Self {
         Self { kv, bindings }
+    }
+
+    /// Atomically create an Active chunk and its sole FinalizeChunk task in
+    /// the chunk partition. The chunk key is the CAS precondition, so a
+    /// duplicate allocation cannot overwrite either record.
+    pub async fn create_chunk_with_finalize_task(&self, chunk: &Chunk, task: &ChunkTaskValue) -> Result<()> {
+        let id = chunk.id.as_ref().ok_or(StoreError::Conflict)?;
+        if task.partition_id != *id || task.task_id != *id {
+            return Err(StoreError::Conflict);
+        }
+        let route = route(&self.bindings, id)?;
+        let chunk_key = chunk_key(id);
+        let task_key = ChunkTaskKey {
+            partition_id: *id,
+            kind: task.kind,
+            task_id: *id,
+        }
+        .to_bytes();
+        let index_key = FinalizeChunkTaskKey {
+            expires_at_ms: task.eligible_at_ms,
+            partition_id: *id,
+            task_id: *id,
+        }
+        .to_bytes();
+        let ops = [
+            BatchOp::Put {
+                key: Bytes::from(chunk_key.clone()),
+                value: Bytes::from(encode_chunk(chunk)),
+            },
+            BatchOp::Put {
+                key: Bytes::from(task_key),
+                value: Bytes::from(encode_chunk_task_value(task)),
+            },
+            BatchOp::Put {
+                key: Bytes::from(index_key),
+                value: Bytes::new(),
+            },
+        ];
+        match self
+            .kv
+            .batch_write_cas(route.kv_store_id, route.kv_group_id, &ops, &chunk_key, 0)
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(crowdb_kv_client::Error::OutcomeUnknown) => match self.get_chunk(id).await {
+                Ok(stored) if stored == *chunk => Ok(()),
+                Ok(_) | Err(StoreError::ChunkNotFound) => Err(StoreError::Conflict),
+                Err(error) => Err(error),
+            },
+            Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => {
+                Err(StoreError::ChunkAlreadyExists)
+            }
+            Err(error) => Err(StoreError::Kv(error.to_string())),
+        }
     }
 
     /// Publish one logical chunk transition with KV revision CAS. New chunks

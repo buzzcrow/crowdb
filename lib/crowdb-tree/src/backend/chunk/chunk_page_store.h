@@ -22,7 +22,7 @@
 namespace crowdb::tree::detail
 {
 
-inline constexpr uint32_t kChunkManifestFormat = 4;
+inline constexpr uint32_t kChunkManifestFormat = 5;
 
 class ChunkAsyncExecutor;
 class ChunkPackPipeline;
@@ -30,10 +30,11 @@ class ChunkPackPipelineImpl;
 
 struct ChunkPageRef
 {
+    // Public frame location. Integrity belongs to the frame footer, never to
+    // this high-cardinality manifest entry.
     ChunkId  chunk_id;
-    uint64_t offset   = 0;
-    uint32_t length   = 0;
-    uint32_t checksum = 0;
+    uint64_t offset = 0;
+    uint32_t length = 0;
 };
 
 struct ChunkPagePack
@@ -96,8 +97,8 @@ class RootCatalog
     [[nodiscard]] virtual std::shared_ptr<const ChunkManifest> load(uint64_t tree_id) const               = 0;
     [[nodiscard]] virtual std::shared_ptr<const ChunkManifest> load_generation(uint64_t tree_id,
                                                                                uint64_t generation) const = 0;
-    virtual Status persist_reference_segment(uint64_t                                          tree_id,
-                                             std::shared_ptr<const ChunkReferenceSegmentImage> segment)   = 0;
+    virtual Status                                             persist_reference_segment(uint64_t                                          tree_id,
+                                                                                         std::shared_ptr<const ChunkReferenceSegmentImage> segment) = 0;
     [[nodiscard]] virtual std::shared_ptr<const ChunkReferenceSegmentImage>
                      load_reference_segment(uint64_t tree_id, uint64_t object_id) const                    = 0;
     virtual uint64_t allocate_reference_segment_id(uint64_t tree_id)                                       = 0;
@@ -135,8 +136,8 @@ class MemoryRootCatalog final : public RootCatalog
     [[nodiscard]] uint64_t                             retained_manifest_count(uint64_t tree_id) const override;
     [[nodiscard]] uint64_t                             pinned_bytes(uint64_t tree_id) const override;
     [[nodiscard]] uint64_t                             oldest_pin_age_ms(uint64_t tree_id) const override;
-    Status persist_reference_segment(uint64_t                                          tree_id,
-                                     std::shared_ptr<const ChunkReferenceSegmentImage> segment) override;
+    Status                                             persist_reference_segment(uint64_t                                          tree_id,
+                                                                                 std::shared_ptr<const ChunkReferenceSegmentImage> segment) override;
     [[nodiscard]] std::shared_ptr<const ChunkReferenceSegmentImage>
              load_reference_segment(uint64_t tree_id, uint64_t object_id) const override;
     uint64_t allocate_reference_segment_id(uint64_t tree_id) override;
@@ -259,7 +260,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     {
         uint64_t tree_id                        = 0;
         uint64_t owner_epoch                    = 0;
-        size_t   pack_bytes                     = 4U * 1024U * 1024U;
+        size_t   pack_bytes                     = 64U * 1024U - 34U;
         uint64_t max_chunk_bytes                = 256U * 1024U * 1024U;
         uint32_t page_alignment                 = 64U * 1024U;
         uint32_t iu_size                        = 64U * 1024U;
@@ -350,8 +351,7 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     Status                persist_reference_segments(ChunkManifest *manifest, const ChunkManifest *reuse_base);
     [[nodiscard]] std::shared_ptr<const ChunkManifest> reuse_base_manifest() const;
     [[nodiscard]] const ChunkPagePack        *find_reusable_pack(const ChunkManifest &base, uint64_t logical_offset,
-                                                                 uint32_t length, uint32_t checksum,
-                                                                 ChunkCancellation cancellation = {}) const;
+                                                                 uint32_t length, ChunkCancellation cancellation = {}) const;
     [[nodiscard]] static const ChunkPagePack *find_pack_at(const ChunkManifest &base, uint64_t logical_offset,
                                                            uint32_t length);
     static uint32_t                           reference_segment_checksum(const ChunkReferenceSegmentImage &segment);

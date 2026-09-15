@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use crowdb_chunk_stream::memory::MemoryStreamStore;
@@ -40,7 +41,7 @@ async fn create_stream(store: &Arc<MemoryStreamStore>, capacity: u64, config: St
 }
 
 #[tokio::test]
-async fn first_append_has_no_timer_and_skips_metadata_consensus() {
+async fn first_append_has_no_timer_and_publishes_framed_extent() {
     let store = Arc::new(MemoryStreamStore::new(64));
     let stream = create_stream(&store, 64, StreamConfig::default()).await;
 
@@ -55,8 +56,20 @@ async fn first_append_has_no_timer_and_skips_metadata_consensus() {
     assert_eq!((range.begin, range.end), (0, 4));
     assert_eq!(store.chunk_write_count(), 1);
     assert_eq!(store.cursor_advance_count(), 1);
-    assert_eq!(store.metadata_publish_count(), 2);
+    assert_eq!(store.metadata_publish_count(), 3);
     assert_eq!(stream.read_at(0, 4).await.unwrap(), Bytes::from_static(b"abcd"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn idle_active_chunk_renews_liveness_without_advancing_cursor() {
+    let store = Arc::new(MemoryStreamStore::new(64));
+    let stream = create_stream(&store, 64, StreamConfig::default()).await;
+    stream.append(&[Bytes::from_static(b"idle")]).await.unwrap();
+    assert_eq!(store.cursor_advance_count(), 1);
+    tokio::time::advance(Duration::from_secs(12 * 60)).await;
+    tokio::task::yield_now().await;
+    assert_eq!(store.liveness_renew_count(), 1);
+    assert_eq!(store.cursor_advance_count(), 1);
 }
 
 #[tokio::test]
@@ -77,7 +90,7 @@ async fn registered_binding_initializes_metadata_without_recreating_registry_rec
 }
 
 #[tokio::test]
-async fn chunk_bound_append_adds_selected_chunk_identity_and_provenance() {
+async fn chunk_bound_append_keeps_payload_free_of_physical_trailers() {
     let store = Arc::new(MemoryStreamStore::new(64));
     let stream = create_stream(&store, 64, StreamConfig::default()).await;
     let range = stream
@@ -85,12 +98,12 @@ async fn chunk_bound_append_adds_selected_chunk_identity_and_provenance() {
         .await
         .unwrap();
     let chunk_id = range.chunk_id.expect("nonempty append has a chunk");
-    assert_eq!((range.begin, range.end), (0, 23));
-    let bytes = stream.read_at(0, 23).await.unwrap();
-    assert_eq!(&bytes[..7], b"bodycrc");
-    assert_eq!(&bytes[7..15], &chunk_id.high.to_be_bytes());
-    assert_eq!(&bytes[15..23], &chunk_id.low.to_be_bytes());
-    let segments = stream.read_at_with_provenance(0, 23).await.unwrap();
+    assert_eq!((range.begin, range.end), (0, 7));
+    assert_eq!(
+        stream.read_at(0, 7).await.unwrap(),
+        Bytes::from_static(b"bodycrc")
+    );
+    let segments = stream.read_at_with_provenance(0, 7).await.unwrap();
     assert_eq!(segments.len(), 1);
     assert_eq!(segments[0].chunk_id, chunk_id);
 
@@ -99,6 +112,20 @@ async fn chunk_bound_append_adds_selected_chunk_identity_and_provenance() {
     assert_eq!(reader.next().await.unwrap(), None);
     reader.seek(5).unwrap();
     assert_eq!(reader.next().await.unwrap(), Some(Bytes::from_static(b"rc")));
+}
+
+#[tokio::test]
+async fn stream_read_rejects_a_corrupt_outer_frame_before_exposing_payload() {
+    let store = Arc::new(MemoryStreamStore::new(64));
+    let stream = create_stream(&store, 64, StreamConfig::default()).await;
+    let range = stream.append(&[Bytes::from_static(b"verified")]).await.unwrap();
+    store.flip_durable_byte(range.chunk_id.unwrap(), 14).await;
+    assert!(matches!(
+        stream
+            .read_at(range.begin, usize::try_from(range.end - range.begin).unwrap())
+            .await,
+        Err(StreamError::Corruption(_))
+    ));
 }
 
 #[tokio::test]
@@ -141,7 +168,7 @@ async fn sequential_reader_splits_windows_into_bounded_physical_reads() {
 }
 
 #[tokio::test]
-async fn chunk_bound_batch_rolls_before_a_record_and_binds_each_chunk() {
+async fn chunk_bound_batch_rolls_before_a_record_without_payload_trailers() {
     let store = Arc::new(MemoryStreamStore::new(20));
     let stream = create_stream(&store, 20, StreamConfig::default()).await;
     let ranges = stream
@@ -149,17 +176,15 @@ async fn chunk_bound_batch_rolls_before_a_record_and_binds_each_chunk() {
         .await
         .unwrap();
     assert_eq!(ranges.len(), 2);
-    assert_eq!((ranges[0].begin, ranges[0].end), (0, 18));
-    assert_eq!((ranges[1].begin, ranges[1].end), (18, 36));
+    assert_eq!((ranges[0].begin, ranges[0].end), (0, 2));
+    assert_eq!((ranges[1].begin, ranges[1].end), (2, 4));
     assert_ne!(ranges[0].chunk_id, ranges[1].chunk_id);
-    for range in ranges {
+    for (range, expected) in ranges.into_iter().zip([b"aa", b"bb"]) {
         let bytes = stream
             .read_at(range.begin, usize::try_from(range.end - range.begin).unwrap())
             .await
             .unwrap();
-        let chunk_id = range.chunk_id.unwrap();
-        assert_eq!(&bytes[2..10], &chunk_id.high.to_be_bytes());
-        assert_eq!(&bytes[10..18], &chunk_id.low.to_be_bytes());
+        assert_eq!(bytes, Bytes::copy_from_slice(expected));
     }
 }
 
@@ -199,8 +224,8 @@ async fn queued_requests_aggregate_after_an_inflight_batch() {
             .collect::<Vec<_>>(),
         vec![(1, 2), (2, 3), (3, 4)]
     );
-    assert_eq!(store.chunk_write_count(), 2);
-    assert_eq!(store.cursor_advance_count(), 2);
+    assert_eq!(store.chunk_write_count(), 3);
+    assert_eq!(store.cursor_advance_count(), 3);
     assert_eq!(stream.read_at(0, 4).await.unwrap(), Bytes::from_static(b"abcd"));
 }
 
@@ -222,7 +247,7 @@ async fn extent_pages_are_cached_across_independent_reads() {
     assert_eq!(metrics.extent_page_cache_misses, 1);
     assert_eq!(metrics.extent_page_cache_hits, 1);
     assert_eq!(metrics.physical_read_requests, 2);
-    assert_eq!(metrics.metadata_publications, 3);
+    assert_eq!(metrics.metadata_publications, 6);
 }
 
 #[tokio::test]
@@ -352,7 +377,7 @@ async fn trim_hides_prefix_before_reclaiming_complete_chunks() {
     stream.append(&[Bytes::from_static(b"abcd")]).await.unwrap();
     stream.append(&[Bytes::from_static(b"ef")]).await.unwrap();
 
-    assert_eq!(stream.trim_prefix(4).await.unwrap(), 4);
+    assert_eq!(stream.trim_prefix(4).await.unwrap(), 38);
     assert!(
         store
             .is_released(crowdb_protocol::common::ChunkId { high: 0, low: 1 })
@@ -466,7 +491,7 @@ async fn append_rotates_an_active_chunk_sealed_by_its_writer_lease() {
     let stream = create_stream(&store, 32, StreamConfig::default()).await;
     let first = stream.append(&[Bytes::from_static(b"old")]).await.unwrap();
     let active_chunk = first.chunk_id.unwrap();
-    store.seal(active_chunk, 9, first.end).await.unwrap();
+    store.seal(active_chunk, 9, 37).await.unwrap();
 
     let range = stream.append(&[Bytes::from_static(b"new")]).await.unwrap();
 

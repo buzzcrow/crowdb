@@ -25,6 +25,13 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_protocol::frame::{parse_frame, MAX_FRAME_PAYLOAD_BYTES};
+
+const MAX_SMALL: usize = MAX_FRAME_PAYLOAD_BYTES;
+
+fn frame_bytes(payload_bytes: usize) -> u64 {
+    u64::try_from(payload_bytes).unwrap() + 34
+}
 
 #[derive(Default)]
 struct MockState {
@@ -488,16 +495,16 @@ impl DiskWriter for SelectiveFailureDiskWriter {
     async fn write_at_byte_offset(
         &self,
         seg: &Segment,
-        unit_bytes: u64,
-        byte_offset: u64,
+        _unit_bytes: u64,
+        _byte_offset: u64,
         data: Bytes,
     ) -> Result<()> {
-        if byte_offset % unit_bytes == 0 {
-            return self.write_at(seg, unit_bytes, byte_offset, data).await;
+        let disk = seg.disk_id.expect("disk id").high;
+        if self.failed_initial_disks.contains(&disk) {
+            return Err(IoError::WriteFailed(format!("injected disk {disk} failure")));
         }
-        Err(IoError::WriteFailed(
-            "byte-offset writes not supported by this writer".into(),
-        ))
+        self.writes.lock().unwrap().push((disk, data));
+        Ok(())
     }
 }
 
@@ -560,27 +567,23 @@ async fn small_object_empty_finishes_without_starting_pool() {
 #[tokio::test]
 async fn small_object_ingress_validates_size_and_releases_reservation() {
     let (client, _, _) = client(policy());
-    let mut writer = client.prepare_small_write(64 * 1024).await.unwrap();
-    for _ in 0..4 {
-        writer.on_data(Bytes::from(vec![7; 16 * 1024])).await.unwrap();
-    }
-    assert_eq!(client.small_write_metrics().reserved_bytes, 64 * 1024);
+    let mut writer = client.prepare_small_write(MAX_SMALL).await.unwrap();
+    writer.on_data(Bytes::from(vec![7; MAX_SMALL])).await.unwrap();
+    assert_eq!(client.small_write_metrics().reserved_bytes, MAX_SMALL as u64);
     let locations = writer.on_finish().await.unwrap();
-    assert_eq!(locations[0].length, 64 * 1024);
+    assert_eq!(locations[0].length, frame_bytes(MAX_SMALL));
     assert_eq!(client.small_write_metrics().reserved_bytes, 0);
 
-    let mut short = client.prepare_small_write(64 * 1024).await.unwrap();
+    let mut short = client.prepare_small_write(MAX_SMALL).await.unwrap();
     short.on_data(Bytes::from(vec![1; 32 * 1024])).await.unwrap();
     assert!(matches!(
         short.on_finish().await,
-        Err(IoError::ObjectSizeMismatch {
-            declared: 65536,
-            actual: 32768
-        })
+        Err(IoError::ObjectSizeMismatch { declared, actual: 32768 })
+            if declared == MAX_SMALL
     ));
     assert!(matches!(short.on_error().await, Err(IoError::Finished)));
 
-    let mut overflow = client.prepare_small_write(64 * 1024).await.unwrap();
+    let mut overflow = client.prepare_small_write(MAX_SMALL).await.unwrap();
     assert!(matches!(
         overflow.on_data(Bytes::from(vec![1; 65 * 1024])).await,
         Err(IoError::ObjectSizeMismatch { .. })
@@ -592,19 +595,19 @@ async fn small_object_ingress_validates_size_and_releases_reservation() {
 #[tokio::test]
 async fn small_object_whole_budget_waits_without_partial_reservation() {
     let mut bounded = policy();
-    bounded.object_limit = 64 * 1024;
-    bounded.memory_budget = 1024 * 1024 + 64 * 1024;
-    bounded.scale_out_queue_bytes = 64 * 1024;
+    bounded.object_limit = MAX_SMALL;
+    bounded.memory_budget = 1024 * 1024 + MAX_SMALL;
+    bounded.scale_out_queue_bytes = MAX_SMALL;
     let (client, _, _) = client(bounded);
-    let mut first = client.prepare_small_write(64 * 1024).await.unwrap();
+    let mut first = client.prepare_small_write(MAX_SMALL).await.unwrap();
     let clone = client.clone();
-    let second = tokio::spawn(async move { clone.prepare_small_write(64 * 1024).await });
+    let second = tokio::spawn(async move { clone.prepare_small_write(MAX_SMALL).await });
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(!second.is_finished());
-    assert_eq!(client.small_write_metrics().reserved_bytes, 64 * 1024);
+    assert_eq!(client.small_write_metrics().reserved_bytes, MAX_SMALL as u64);
     first.on_error().await.unwrap();
     let mut second = second.await.unwrap().unwrap();
-    assert_eq!(client.small_write_metrics().reserved_bytes, 64 * 1024);
+    assert_eq!(client.small_write_metrics().reserved_bytes, MAX_SMALL as u64);
     second.on_error().await.unwrap();
     assert_eq!(client.small_write_metrics().reserved_bytes, 0);
     client.shutdown_small_writes().await.unwrap();
@@ -650,7 +653,7 @@ async fn small_object_mirror_failure_fails_every_object_without_cursor_commit() 
     .await
     .expect("manager should replace failed worker")
     .unwrap();
-    assert_eq!(recovered[0].length, 4096);
+    assert_eq!(recovered[0].length, frame_bytes(4096));
     assert!(allocator.snapshot().0 >= 2);
     assert!(client.small_write_metrics().exhausted_repairs >= 1);
     assert!(client.small_write_metrics().pipeline_replacements >= 1);
@@ -749,11 +752,15 @@ async fn small_object_repairs_two_failed_replicas_from_the_same_shadow() {
             .collect()
     };
     assert_eq!(replacement_images.len(), 2);
-    assert_eq!(replacement_images[0].len(), 12 * 1024);
+    assert_eq!(
+        replacement_images[0].len(),
+        usize::try_from(frame_bytes(12 * 1024)).unwrap()
+    );
     assert_eq!(replacement_images[0], replacement_images[1]);
-    assert_eq!(&replacement_images[0][..12 * 1024], vec![0x5a; 12 * 1024]);
+    let frame = parse_frame(&replacement_images[0], locations[0].chunk_id.unwrap()).unwrap();
+    assert_eq!(frame.payload, vec![0x5a; 12 * 1024]);
     assert_eq!(chunks[0].state, ChunkState::Active as i32);
-    assert_eq!(chunks[0].acknowledged_cursor, 12 * 1024);
+    assert_eq!(chunks[0].acknowledged_cursor, frame_bytes(12 * 1024));
     assert_eq!(client.small_write_metrics().repaired_replicas, 2);
     assert_eq!(client.small_write_metrics().repairs_avoiding_rotation, 2);
     assert_eq!(client.small_write_metrics().active_repairs, 0);
@@ -775,7 +782,7 @@ async fn small_object_retries_ambiguous_metadata_commit_without_reallocating() {
     let client = ChunkIoClient::from_parts_with_small_policy(allocator.clone(), disk, policy()).unwrap();
     let mut writer = client.prepare_small_write(4096).await.unwrap();
     writer.on_data(Bytes::from(vec![3; 4096])).await.unwrap();
-    assert_eq!(writer.on_finish().await.unwrap()[0].length, 4096);
+    assert_eq!(writer.on_finish().await.unwrap()[0].length, frame_bytes(4096));
 
     let (allocations, replacements, discards, _, chunks) = allocator.repair_snapshot();
     assert_eq!((allocations, replacements, discards), (1, 1, 0));
@@ -829,14 +836,14 @@ fn small_object_policy_rejects_unreachable_limits() {
 #[tokio::test]
 async fn small_object_uses_prefetched_strip_after_exact_physical_boundary() {
     let (client, allocator, _) = client(policy());
-    let mut first = client.prepare_small_write(1024 * 1024).await.unwrap();
-    first.on_data(Bytes::from(vec![1; 1024 * 1024])).await.unwrap();
+    let mut first = client.prepare_small_write(MAX_SMALL).await.unwrap();
+    first.on_data(Bytes::from(vec![1; MAX_SMALL])).await.unwrap();
     let first = first.on_finish().await.unwrap().remove(0);
     let mut second = client.prepare_small_write(4096).await.unwrap();
     second.on_data(Bytes::from(vec![2; 4096])).await.unwrap();
     let second = second.on_finish().await.unwrap().remove(0);
     assert_eq!(first.chunk_id, second.chunk_id);
-    assert_eq!(second.offset, 1024 * 1024);
+    assert_eq!(second.offset, frame_bytes(MAX_SMALL));
     assert_eq!(allocator.snapshot().1, 0);
     client.shutdown_small_writes().await.unwrap();
 }
@@ -844,22 +851,20 @@ async fn small_object_uses_prefetched_strip_after_exact_physical_boundary() {
 #[tokio::test]
 async fn small_object_batch_stops_at_configured_chunk_boundary() {
     let mut limited = policy();
-    limited.chunk_capacity = 1024 * 1024;
+    limited.object_limit = MAX_SMALL;
+    limited.chunk_capacity = 70 * 1024;
     let (client, _, _) = client(limited);
 
-    let mut prefix = client.prepare_small_write(700 * 1024).await.unwrap();
-    prefix.on_data(Bytes::from(vec![1; 700 * 1024])).await.unwrap();
+    let mut prefix = client.prepare_small_write(40 * 1024).await.unwrap();
+    prefix.on_data(Bytes::from(vec![1; 40 * 1024])).await.unwrap();
     let prefix = prefix.on_finish().await.unwrap().remove(0);
 
     let mut tasks = Vec::new();
     for value in [2, 3] {
         let clone = client.clone();
         tasks.push(tokio::spawn(async move {
-            let mut writer = clone.prepare_small_write(200 * 1024).await.unwrap();
-            writer
-                .on_data(Bytes::from(vec![value; 200 * 1024]))
-                .await
-                .unwrap();
+            let mut writer = clone.prepare_small_write(20 * 1024).await.unwrap();
+            writer.on_data(Bytes::from(vec![value; 20 * 1024])).await.unwrap();
             writer.on_finish().await.unwrap().remove(0)
         }));
     }
@@ -889,7 +894,7 @@ async fn small_object_completion_does_not_wait_for_cursor_commit() {
         "completion must return after disk writes without waiting for metadata advance"
     );
     let locations = completion.await.unwrap().unwrap();
-    assert_eq!(locations[0].length, 16 * 1024);
+    assert_eq!(locations[0].length, frame_bytes(16 * 1024));
     client.shutdown_small_writes().await.unwrap();
     assert_eq!(allocator.snapshot().2, 1);
 }
@@ -906,7 +911,7 @@ async fn consecutive_small_objects_do_not_wait_for_previous_cursor_commit() {
             .await
             .expect("a preceding metadata advance must not block the next disk write")
             .unwrap();
-        assert_eq!(locations[0].length, 16 * 1024);
+        assert_eq!(locations[0].length, frame_bytes(16 * 1024));
     }
 
     client.shutdown_small_writes().await.unwrap();
@@ -926,7 +931,7 @@ async fn small_object_does_not_wait_for_batch_watchdog() {
         .expect("an empty queue must not delay the first object")
         .unwrap();
 
-    assert_eq!(locations[0].length, 4096);
+    assert_eq!(locations[0].length, frame_bytes(4096));
     assert_eq!(client.small_write_metrics().batch_watchdog_expirations, 0);
     client.shutdown_small_writes().await.unwrap();
 }
@@ -942,7 +947,7 @@ async fn small_object_watchdog_observes_but_does_not_cancel_batch() {
 
     let locations = writer.on_finish().await.unwrap();
 
-    assert_eq!(locations[0].length, 4096);
+    assert_eq!(locations[0].length, frame_bytes(4096));
     assert!(client.small_write_metrics().batch_watchdog_expirations > 0);
     client.shutdown_small_writes().await.unwrap();
 }

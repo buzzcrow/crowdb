@@ -295,10 +295,6 @@ async fn replay_children_until(
             if decoded.record.mutation_seq > target_seq {
                 return Ok(());
             }
-            parent
-                .journal
-                .validate_frame_source(frame_offset, decoded.bytes_consumed, decoded.chunk_id)
-                .await?;
             super::validate_replay_record(
                 parent.id,
                 parent.ownership_epoch.load(Ordering::Acquire),

@@ -238,7 +238,10 @@ TEST(DiskioStartupTest, WriteReadRoundTrip)
     {
         flatbuffers::FlatBufferBuilder fbb(128);
         rproto::FBInt128               fb_disk_id(0, 1);
-        auto off = dproto::CreateFBDiskWriteRequest(fbb, write_req_id, 0, &fb_disk_id, 0, 0, DATA_SIZE);
+        const auto                     now_ms = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
+        auto off = dproto::CreateFBDiskWriteRequest(fbb, write_req_id, 0, &fb_disk_id, 0, 0, DATA_SIZE, 0, now_ms);
         fbb.Finish(off);
         Buffer *ctrl = pool->alloc(fbb.GetSize());
         std::memcpy(ctrl->data, fbb.GetBufferPointer(), fbb.GetSize());

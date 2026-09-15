@@ -65,11 +65,12 @@ std::string temp_path()
 
 // Build a diskio write request control buffer.
 Buffer *build_write_request(BufferPool *pool, uint64_t req_id, crowdb::diskio::DiskId disk_id, uint32_t zone_index,
-                            uint64_t zone_offset, uint32_t size)
+                            uint64_t zone_offset, uint32_t size, uint64_t write_create_time_ms = 0)
 {
     flatbuffers::FlatBufferBuilder fbb(128);
-    crowdb::rpc::proto::FBInt128     fb_disk_id(disk_id.high, disk_id.low);
-    auto off = dproto::CreateFBDiskWriteRequest(fbb, req_id, 0, &fb_disk_id, zone_index, zone_offset, size);
+    crowdb::rpc::proto::FBInt128   fb_disk_id(disk_id.high, disk_id.low);
+    auto off = dproto::CreateFBDiskWriteRequest(fbb, req_id, 0, &fb_disk_id, zone_index, zone_offset, size, 0,
+                                                write_create_time_ms);
     fbb.Finish(off);
     uint32_t sz  = fbb.GetSize();
     auto    *buf = pool->alloc(sz);
@@ -85,7 +86,7 @@ Buffer *build_read_request(BufferPool *pool, uint64_t req_id, crowdb::diskio::Di
                            uint64_t zone_offset, uint32_t size)
 {
     flatbuffers::FlatBufferBuilder fbb(128);
-    crowdb::rpc::proto::FBInt128     fb_disk_id(disk_id.high, disk_id.low);
+    crowdb::rpc::proto::FBInt128   fb_disk_id(disk_id.high, disk_id.low);
     auto off = dproto::CreateFBDiskReadRequest(fbb, req_id, 0, &fb_disk_id, zone_index, zone_offset, size, 0);
     fbb.Finish(off);
     uint32_t sz  = fbb.GetSize();
@@ -101,7 +102,7 @@ Buffer *build_read_request(BufferPool *pool, uint64_t req_id, crowdb::diskio::Di
 Buffer *build_fsync_request(BufferPool *pool, uint64_t req_id, crowdb::diskio::DiskId disk_id)
 {
     flatbuffers::FlatBufferBuilder fbb(128);
-    crowdb::rpc::proto::FBInt128     fb_disk_id(disk_id.high, disk_id.low);
+    crowdb::rpc::proto::FBInt128   fb_disk_id(disk_id.high, disk_id.low);
     auto                           off = dproto::CreateFBDiskFsyncRequest(fbb, req_id, 0, &fb_disk_id);
     fbb.Finish(off);
     uint32_t sz  = fbb.GetSize();
@@ -160,6 +161,13 @@ bool wait_for(DioState &s, int timeout_ms = 300)
     return s.got_response.load(std::memory_order_acquire);
 }
 
+uint64_t wall_time_ms()
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
+}
+
 } // namespace
 
 // ── Write + Read round-trip via RPC ───────────────────────────────
@@ -169,11 +177,11 @@ TEST(DiskioServerTest, WriteAndReadRoundTrip)
     ASSERT_EQ(::truncate(path.c_str(), 1 << 16), 0);
 
     // Set up DiskSet + BlockingEngine + DiskioServer.
-    auto                            engine = std::make_shared<crowdb::diskio::BlockingEngine>(2);
+    auto                              engine = std::make_shared<crowdb::diskio::BlockingEngine>(2);
     std::vector<crowdb::diskio::Zone> zones;
     zones.push_back({0, 0, 1 << 24});
-    auto disk =
-        std::make_shared<crowdb::diskio::BlockDisk>(crowdb::diskio::DiskId{1, 1}, path, engine, std::move(zones), false);
+    auto disk = std::make_shared<crowdb::diskio::BlockDisk>(crowdb::diskio::DiskId{1, 1}, path, engine,
+                                                            std::move(zones), false);
 
     auto disk_set = std::make_shared<crowdb::diskio::DiskSet>();
     disk_set->add(disk);
@@ -211,7 +219,7 @@ TEST(DiskioServerTest, WriteAndReadRoundTrip)
     }
 
     uint64_t write_req_id = 10;
-    Buffer  *write_ctrl   = build_write_request(pool, write_req_id, {1, 1}, 0, 0, DATA_SIZE);
+    Buffer  *write_ctrl   = build_write_request(pool, write_req_id, {1, 1}, 0, 0, DATA_SIZE, wall_time_ms());
     Buffer  *write_data   = pool->alloc(DATA_SIZE);
     write_data->write(payload.data(), DATA_SIZE);
 
@@ -247,11 +255,11 @@ TEST(DiskioServerTest, FsyncRoundTrip)
     std::string path = temp_path();
     ASSERT_EQ(::truncate(path.c_str(), 4096), 0);
 
-    auto                            engine = std::make_shared<crowdb::diskio::BlockingEngine>(1);
+    auto                              engine = std::make_shared<crowdb::diskio::BlockingEngine>(1);
     std::vector<crowdb::diskio::Zone> zones;
     zones.push_back({0, 0, 1 << 24});
-    auto disk =
-        std::make_shared<crowdb::diskio::BlockDisk>(crowdb::diskio::DiskId{2, 2}, path, engine, std::move(zones), false);
+    auto disk = std::make_shared<crowdb::diskio::BlockDisk>(crowdb::diskio::DiskId{2, 2}, path, engine,
+                                                            std::move(zones), false);
 
     auto disk_set = std::make_shared<crowdb::diskio::DiskSet>();
     disk_set->add(disk);
@@ -324,7 +332,7 @@ TEST(DiskioServerTest, DiskNotExist)
 
     // Write to a non-existent disk.
     uint64_t req_id = 40;
-    Buffer  *ctrl   = build_write_request(pool, req_id, {99, 99}, 0, 0, 4096);
+    Buffer  *ctrl   = build_write_request(pool, req_id, {99, 99}, 0, 0, 4096, wall_time_ms());
     Buffer  *data   = pool->alloc(4096);
     std::memset(data->data, 0xAB, 4096);
     data->write(data->data, 4096);
@@ -335,6 +343,42 @@ TEST(DiskioServerTest, DiskNotExist)
 
     ASSERT_TRUE(wait_for(state));
     EXPECT_EQ(state.ret_code.load(), static_cast<int16_t>(dproto::FBDiskIoRetCode_DiskNotExist));
+
+    client_transport.stop();
+    server.stop();
+}
+
+TEST(DiskioServerTest, RejectsWriteWithoutCreationTime)
+{
+    auto disk_set = std::make_shared<crowdb::diskio::DiskSet>();
+
+    RpcServer server;
+    ASSERT_TRUE(server.listen("127.0.0.1", 0));
+    auto dio_server = std::make_unique<crowdb::diskio::DiskioServer>(disk_set, server.transport());
+    dio_server->register_handlers(server);
+    server.start();
+
+    SocketTransport client_transport(1, 1);
+    client_transport.start();
+    auto conn = client_transport.connect("127.0.0.1", server.listen_port());
+    ASSERT_NE(conn, nullptr);
+
+    RpcClient caller;
+    caller.set_completion_pool_size(16);
+    caller.attach(conn.get());
+    BufferPool *pool = client_transport.pool() != nullptr ? client_transport.pool() : server.pool();
+
+    constexpr uint64_t request_id = 41;
+    Buffer            *ctrl       = build_write_request(pool, request_id, {99, 99}, 0, 0, 4096);
+    Buffer            *data       = pool->alloc(4096);
+    std::memset(data->data, 0, 4096);
+    data->write(data->data, 4096);
+
+    DioState state;
+    ASSERT_TRUE(caller.send(&client_transport, conn.get(), request_id, ctrl, data,
+                            static_cast<uint16_t>(rproto::FBMsgType_EDiskWriteRequest), dio_on_complete, &state));
+    ASSERT_TRUE(wait_for(state));
+    EXPECT_EQ(state.ret_code.load(), static_cast<int16_t>(dproto::FBDiskIoRetCode_OldRequest));
 
     client_transport.stop();
     server.stop();

@@ -72,6 +72,29 @@ impl ConversionDiskIo {
             .map_err(|error| ConversionIoError::Io(error.to_string()))
     }
 
+    /// Read a byte range from a segment without imposing frame alignment on
+    /// callers. DiskIO owns any device-level read-modify policy.
+    pub async fn read_segment_range(
+        &self,
+        segment: &Segment,
+        unit_bytes: u64,
+        offset: u64,
+        length: u32,
+    ) -> Result<Bytes, ConversionIoError> {
+        #[cfg(feature = "test-util")]
+        if self.client.is_none() {
+            return Ok(Bytes::from(vec![
+                0;
+                usize::try_from(length).expect("u32 fits usize")
+            ]));
+        }
+        let target = target(segment, unit_bytes)?;
+        self.client()?
+            .read(target, offset, length, self.client()?.normal_options().priority())
+            .await
+            .map_err(|error| ConversionIoError::Io(error.to_string()))
+    }
+
     pub async fn write_segment(
         &self,
         segment: &Segment,

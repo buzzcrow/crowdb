@@ -5,6 +5,7 @@
 // Loaded from TOML and overlaid by CLI args; validated before startup.
 #pragma once
 
+#include "crowdb-protocol/timing.h"
 #include "disk/disk_properties.h"
 #include "disk/types.h"
 
@@ -48,6 +49,11 @@ struct DioConfig
     // Engine tuning (auto-detected: uring if available, blocking otherwise).
     uint32_t thread_pool_size = 4;
     uint32_t sq_entries       = 256;
+
+    // Shared stale-write exclusion budget. DiskIO rejects a write whose
+    // wall-clock creation time is older than this age plus peer clock skew.
+    uint64_t max_write_request_age_ms = protocol::kDefaultMaxWriteRequestAgeMs;
+    uint64_t max_clock_skew_ms        = protocol::kDefaultMaxClockSkewMs;
 
     // Optional fault injection for dummy disks.
     std::optional<DiskProperties> dummy_props;

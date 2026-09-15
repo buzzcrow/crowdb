@@ -1713,9 +1713,6 @@ async fn replay_suffix(
             let FrameDecode::Complete(decoded) = decoded else {
                 break;
             };
-            journal
-                .validate_frame_source(frame_offset, decoded.bytes_consumed, decoded.chunk_id)
-                .await?;
             validate_replay_record(partition_id, ownership_epoch, &decoded.record)?;
             replay.process(tree, frame_offset, decoded.record).await?;
             let consumed = decoded.bytes_consumed;

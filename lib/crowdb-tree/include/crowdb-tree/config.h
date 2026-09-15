@@ -38,7 +38,9 @@ struct Config
     // Split when a consolidated leaf exceeds leaf_split_bytes; merge when it
     // drops below leaf_merge_bytes. Hysteresis: merge threshold is well below
     // split to avoid oscillation.
-    size_t leaf_split_bytes = 64ULL * 1024; // 64 KiB target page size
+    // One default durable page fits in a public chunk frame after its 14-byte
+    // header and 20-byte footer.
+    size_t leaf_split_bytes = 65'502;
     size_t leaf_merge_bytes = 16ULL * 1024; // split/4
 
     // Inner-page fanout bound (separator count) before an inner split.

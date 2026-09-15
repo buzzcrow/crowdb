@@ -75,8 +75,24 @@ impl StripWriter {
     /// True if the strip has any data blocks written.
     pub fn has_data(&self) -> bool {
         match self {
-            Self::Ec(w) => w.data_blocks_written() > 0,
+            Self::Ec(w) => w.has_data(),
             Self::Mirror(w) => w.has_data(),
+        }
+    }
+
+    /// Bytes this strip can accept without crossing into the next strip.
+    pub fn remaining_capacity(&self) -> u64 {
+        match self {
+            Self::Ec(w) => w.remaining_capacity(),
+            // Mirror strips are not a large-object write target yet.
+            Self::Mirror(_) => 0,
+        }
+    }
+
+    pub fn accepted_bytes(&self) -> u64 {
+        match self {
+            Self::Ec(w) => w.accepted_bytes(),
+            Self::Mirror(_) => 0,
         }
     }
 }

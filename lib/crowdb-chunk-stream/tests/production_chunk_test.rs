@@ -293,9 +293,8 @@ async fn chunk_stream_runs_end_to_end_over_the_production_chunk_adapter() {
         .append_chunk_bound(&[Bytes::from_static(b"frame")])
         .await
         .unwrap();
-    assert_eq!((range.begin, range.end), (0, 21));
-    let bytes = stream.read_at(0, 21).await.unwrap();
-    assert_eq!(&bytes[..5], b"frame");
+    assert_eq!((range.begin, range.end), (0, 5));
+    assert_eq!(stream.read_at(0, 5).await.unwrap(), Bytes::from_static(b"frame"));
     assert_eq!(range.chunk_id.unwrap().low, 8);
 }
 

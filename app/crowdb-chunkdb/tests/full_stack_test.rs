@@ -23,6 +23,7 @@ use crowdb_chunkdb::allocator::StripAllocType;
 use crowdb_chunkdb::chunkdb_config::PlacementRebalanceConfig;
 use crowdb_chunkdb::conversion::io::ConversionDiskIo;
 use crowdb_chunkdb::conversion::{decode_payload, ConversionCoordinator, MirrorToEcTaskHandler};
+use crowdb_chunkdb::finalize::FinalizeChunkTaskHandler;
 use crowdb_chunkdb::lifecycle::{
     ChunkLockMap, LifecycleError, LifecycleHandler, ReservationFence, ReservationRecovery, ReservationUpdate,
     ReserveGroupSpec,
@@ -44,7 +45,7 @@ use crowdb_chunkdb_client::ChunkdbRpcTransport;
 use crowdb_common::metrics::MetricsRegistry;
 use crowdb_protocol::chunk_task::{
     ChunkTaskState, ChunkTaskValue, RelocateSegmentTaskDisposition, RelocateSegmentTaskPayload,
-    CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_MIRROR_TO_EC, TASK_KIND_RELOCATE_SEGMENT,
+    CHUNK_TASK_SCHEMA_VERSION, TASK_KIND_FINALIZE_CHUNK, TASK_KIND_MIRROR_TO_EC, TASK_KIND_RELOCATE_SEGMENT,
     TASK_KIND_REPAIR_PLACEMENT, TASK_KIND_REPAIR_STRIP,
 };
 use crowdb_protocol::chunkdb::rpc::{
@@ -100,7 +101,13 @@ async fn assert_conversion_task_pending(
     replacement: &ChunkStrip,
 ) {
     assert_eq!(
-        task_store.list_partition(&chunk_id).await.unwrap(),
+        task_store
+            .list_partition(&chunk_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.kind != TASK_KIND_FINALIZE_CHUNK)
+            .collect::<Vec<_>>(),
         vec![task.clone()]
     );
     assert!(decode_payload(&task.payload).unwrap().replacement_strip.is_some());
@@ -316,6 +323,9 @@ async fn diskio_routes_cover_every_group_in_the_two_rack_fixture() {
         eprintln!("skipping: crowdb-kv-server binary not found");
         return;
     }
+    if !crowdb_test_harness::diskio::check_diskio_only() {
+        return;
+    }
     let cluster = KvCluster::start().await;
     let disk_groups = seed_hardware_layout_with_zones(
         &cluster.make_hardware_client(),
@@ -356,6 +366,9 @@ async fn diskio_routes_cover_every_group_in_the_two_rack_fixture() {
 async fn assert_expanded_topology_converges_ec(data_num: u32, code_num: u32, required_racks: u64) {
     if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
         eprintln!("skipping: crowdb-kv-server binary not found");
+        return;
+    }
+    if !crowdb_test_harness::diskio::check_diskio_only() {
         return;
     }
     let cluster = KvCluster::start().await;
@@ -822,6 +835,151 @@ fn task_value() -> ChunkTaskValue {
 }
 
 struct CompleteTaskHandler;
+
+#[tokio::test]
+async fn active_chunk_creates_one_deadline_indexed_finalizer() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let chunk = harness
+        .handler
+        .allocate_chunk(
+            None,
+            1,
+            1,
+            StripType::Mirror,
+            0,
+            0,
+            3,
+            ChunkType::Repo,
+            17,
+            60_000,
+        )
+        .await
+        .unwrap();
+    let chunk_id = chunk.id.unwrap();
+    let bindings = BindingCache::new();
+    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let tasks = TaskStore::new(cluster.make_crowdb_client(), bindings);
+
+    let task = tasks
+        .get(&chunk_id, TASK_KIND_FINALIZE_CHUNK, &chunk_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(task.source_revision, 17);
+    assert_eq!(task.state, ChunkTaskState::Pending);
+    assert_eq!(
+        tasks
+            .scan_finalize_due(task.eligible_at_ms, 8)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(tasks.scan_ready(task.eligible_at_ms, 8).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn finalizer_reclaims_an_empty_active_chunk() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let chunk = harness
+        .handler
+        .allocate_chunk(
+            None,
+            1,
+            1,
+            StripType::Mirror,
+            0,
+            0,
+            3,
+            ChunkType::Repo,
+            19,
+            60_000,
+        )
+        .await
+        .unwrap();
+    let chunk_id = chunk.id.unwrap();
+    let bindings = BindingCache::new();
+    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let tasks = Arc::new(TaskStore::new(cluster.make_crowdb_client(), bindings));
+    let mut task = tasks
+        .get(&chunk_id, TASK_KIND_FINALIZE_CHUNK, &chunk_id)
+        .await
+        .unwrap()
+        .unwrap();
+    task.eligible_at_ms = 0;
+    let finalizer = FinalizeChunkTaskHandler::new(
+        Arc::clone(&harness.handler),
+        Arc::new(ConversionDiskIo::empty_for_tests()),
+    );
+    assert!(matches!(finalizer.execute(&task).await, TaskOutcome::Complete));
+    assert_eq!(
+        harness.handler.query_chunk(&chunk_id).await.unwrap().state,
+        ChunkState::Deleted as i32
+    );
+}
+
+#[tokio::test]
+async fn finalizer_waits_for_pre_expiry_requests_before_scanning() {
+    if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
+        eprintln!("skipping: crowdb-kv-server binary is unavailable");
+        return;
+    }
+    let cluster = KvCluster::start().await;
+    seed_hardware(&cluster.make_hardware_client()).await;
+    let _diskdb = DiskdbServer::start(&cluster).await;
+    let harness = ChunkdbHarness::start(&cluster).await;
+    let chunk = harness
+        .handler
+        .allocate_chunk(
+            None,
+            1,
+            1,
+            StripType::Mirror,
+            0,
+            0,
+            3,
+            ChunkType::Repo,
+            23,
+            60_000,
+        )
+        .await
+        .unwrap();
+    let chunk_id = chunk.id.unwrap();
+    let bindings = BindingCache::new();
+    bindings.replace(default_binding_table(STORE_ID, DATA_GROUP_ID));
+    let tasks = TaskStore::new(cluster.make_crowdb_client(), bindings);
+    let task = tasks
+        .get(&chunk_id, TASK_KIND_FINALIZE_CHUNK, &chunk_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let finalizer = FinalizeChunkTaskHandler::new(
+        Arc::clone(&harness.handler),
+        Arc::new(ConversionDiskIo::empty_for_tests()),
+    );
+    assert!(matches!(
+        finalizer.execute(&task).await,
+        TaskOutcome::Retry { delay_ms, .. } if delay_ms > 0
+    ));
+    assert_eq!(
+        harness.handler.query_chunk(&chunk_id).await.unwrap().state,
+        ChunkState::Active as i32
+    );
+}
 
 impl TaskHandler for CompleteTaskHandler {
     fn kind(&self) -> u16 {
@@ -1507,7 +1665,12 @@ async fn relocation_handoff_claims_publishes_and_defers_source_free() {
         coordinator.admit(&invalid_identity, 1).await,
         Err(RelocationAdmissionError::InvalidGeometry)
     ));
-    assert!(tasks.list_partition(&chunk_id).await.unwrap().is_empty());
+    assert!(tasks
+        .list_partition(&chunk_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .all(|t| t.kind == TASK_KIND_FINALIZE_CHUNK));
     let port = port_alloc::alloc_test_port(ServicePort::ChunkdbRpc);
     let endpoint = format!("http://127.0.0.1:{port}");
     let server = Arc::new(crowdb_rpc_ffi::RpcServer::new(None));
@@ -1554,7 +1717,16 @@ async fn relocation_handoff_claims_publishes_and_defers_source_free() {
         RelocationHandoffDisposition::try_from(duplicate.disposition).unwrap(),
         RelocationHandoffDisposition::Accepted
     );
-    assert_eq!(tasks.list_partition(&chunk_id).await.unwrap().len(), 1);
+    assert_eq!(
+        tasks
+            .list_partition(&chunk_id)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.kind != TASK_KIND_FINALIZE_CHUNK)
+            .count(),
+        1
+    );
     let owner = SegmentOwnerResolver::new(Arc::clone(&harness.handler), Arc::clone(&tasks));
     assert_eq!(
         owner.resolve(&chunk_id, &target).await.unwrap(),
@@ -2980,6 +3152,20 @@ async fn chunkdb_shared_writer_cursor_is_fenced_and_orphan_is_sealed() {
         .expect("advance cursor");
     assert_eq!(advanced.acknowledged_cursor, 1024 * 1024);
     assert_eq!(advanced.closed_strip_sequence, Some(0));
+    let renewed = harness
+        .handler
+        .advance_chunk_write(
+            &chunk_id,
+            99,
+            advanced.modify_ts,
+            advanced.acknowledged_cursor,
+            None,
+            20,
+        )
+        .await
+        .expect("renew liveness without advancing cursor");
+    assert_eq!(renewed.modify_ts, advanced.modify_ts);
+    assert_eq!(renewed.acknowledged_cursor, advanced.acknowledged_cursor);
     assert!(matches!(
         harness
             .handler

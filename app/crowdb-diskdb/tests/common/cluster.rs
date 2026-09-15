@@ -11,7 +11,7 @@
 use std::io as std_io;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -20,6 +20,13 @@ use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, RetryConfig
 use crowdb_protocol::port::alloc as port_alloc;
 use crowdb_protocol::ServicePort;
 use serde_json::Value;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+// E2E tests each start a 3-node KV cluster; running them in parallel
+// on a 2-core CI runner causes severe resource contention that makes
+// background zone-load tasks miss their deadlines. A single-permit
+// semaphore serializes cluster startup so only one test runs at a time.
+static E2E_PERMITS: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 // ── process management ──────────────────────────────────────────
 
@@ -225,6 +232,7 @@ pub async fn leader_endpoint(nodes: &[KvNode], group_id: u64) -> String {
 /// group 1 (diskdb data).
 #[allow(dead_code)]
 pub struct KvCluster {
+    _permit: OwnedSemaphorePermit,
     pub nodes: Vec<KvNode>,
     pub group0_leader_endpoint: String,
     pub group1_leader_endpoint: String,
@@ -238,6 +246,12 @@ impl KvCluster {
     /// Start a 3-node cluster with store 0, groups 0 and 1.
     /// Each node runs both groups.
     pub async fn start() -> Self {
+        let permit = E2E_PERMITS
+            .get_or_init(|| Arc::new(Semaphore::new(1)))
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("e2e semaphore is never closed");
         let mut nodes = Vec::new();
         // Start 3 nodes, each with store 0, groups 0 and 1.
         // The kv-server `--groups` flag accepts a comma list.
@@ -258,6 +272,7 @@ impl KvCluster {
         let group1_leader_endpoint = leader_endpoint(&nodes, 1).await;
         let mgmt_endpoints = nodes.iter().map(|n| n.base_url().to_string()).collect();
         Self {
+            _permit: permit,
             nodes,
             group0_leader_endpoint,
             group1_leader_endpoint,
@@ -434,7 +449,7 @@ pub async fn wait_for_disks_ready(
                 }
                 None => "no dg".to_string(),
             };
-            panic!("disks not ready after 5s: {status}");
+            panic!("disks not ready after 15s: {status}");
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }

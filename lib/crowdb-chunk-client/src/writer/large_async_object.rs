@@ -13,9 +13,10 @@
 //! for push mode.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
+use crowdb_protocol::frame::{encode_frame, FrameMagic, MAX_FRAME_PAYLOAD_BYTES};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -45,6 +46,8 @@ pub struct LargeAsyncObjectWriter {
     pub(crate) prepared_chunk: Option<Chunk>,
     pub(crate) locations: Vec<ProtoLocation>,
     pub(crate) logical_offset: u64,
+    pub(crate) logical_bytes_in_chunk: u64,
+    pub(crate) frame_tail: BytesMut,
     pub(crate) object_size: Option<u64>,
     pub(crate) finished: bool,
     pub(crate) preparation_stalls: u64,
@@ -97,6 +100,8 @@ impl LargeAsyncObjectWriter {
             prepared_chunk: None,
             locations: Vec::new(),
             logical_offset: 0,
+            logical_bytes_in_chunk: 0,
+            frame_tail: BytesMut::new(),
             object_size: None,
             finished: false,
             preparation_stalls: 0,
@@ -180,14 +185,14 @@ impl LargeAsyncObjectWriter {
             self.preparation_stall_time += stall_time;
             self.ec_encode_time += cw.ec_encode_time;
             self.completion_wait_time += cw.completion_wait_time;
-            let bytes = location.length;
-            if bytes > 0 {
+            if location.length > 0 {
                 self.locations.push(ProtoLocation {
                     logical_offset: self.logical_offset,
-                    logical_length: bytes,
+                    logical_length: self.logical_bytes_in_chunk,
                     ..location
                 });
-                self.logical_offset += bytes;
+                self.logical_offset += self.logical_bytes_in_chunk;
+                self.logical_bytes_in_chunk = 0;
             }
         }
         Ok(())
@@ -328,30 +333,17 @@ impl LargeAsyncObjectWriter {
                 // Receive the next block from the fetch stage.
                 match block_rx.recv().await {
                     Some(buffer) => {
-                        // Push the block. If the chunk is full (Pause),
-                        // rotate to a new chunk and re-push. Bytes is
-                        // ref-counted, so clone is cheap.
-                        let buffer = buffer;
-                        loop {
-                            let status = {
-                                let cw = self
-                                    .chunk_writer
-                                    .as_mut()
-                                    .ok_or_else(|| IoError::Internal("no chunk writer".into()))?;
-                                cw.push(buffer.clone()).await?
-                            };
-                            if status == FeedStatus::Pause {
-                                self.rotate_chunk().await?;
-                                continue;
-                            }
-                            break;
-                        }
+                        self.push_buffer(buffer).await?;
                     }
                     None => {
                         // EOF — break out, seal the current chunk.
                         break;
                     }
                 }
+            }
+            if !self.frame_tail.is_empty() {
+                let tail = self.frame_tail.split().freeze();
+                self.push_payload_frame(tail).await?;
             }
             Ok::<(), IoError>(())
         };
@@ -411,20 +403,8 @@ impl ChunkIoWriter for LargeAsyncObjectWriter {
             self.chunk_prefetch_rx = Some(rx);
             self.chunk_prefetch_handle = Some(handle);
         }
-        loop {
-            self.ensure_open().await?;
-            let status = self
-                .chunk_writer
-                .as_mut()
-                .ok_or_else(|| IoError::Internal("no chunk writer".into()))?
-                .push(buffer.clone())
-                .await?;
-            if status == FeedStatus::Pause {
-                self.rotate_chunk().await?;
-                continue;
-            }
-            return Ok(FeedStatus::Continue);
-        }
+        self.push_buffer(buffer).await?;
+        Ok(FeedStatus::Continue)
     }
 
     async fn on_finish(&mut self) -> Result<Vec<ProtoLocation>> {
@@ -432,6 +412,10 @@ impl ChunkIoWriter for LargeAsyncObjectWriter {
             return Err(IoError::Finished);
         }
         self.finished = true;
+        if !self.frame_tail.is_empty() {
+            let tail = self.frame_tail.split().freeze();
+            self.push_payload_frame(tail).await?;
+        }
         self.seal_current().await?;
         self.stop_chunk_prefetch().await;
         Ok(std::mem::take(&mut self.locations))
@@ -447,5 +431,58 @@ impl ChunkIoWriter for LargeAsyncObjectWriter {
             return false;
         }
         self.chunk_writer.as_ref().map_or(true, ChunkWriter::ready)
+    }
+}
+
+impl LargeAsyncObjectWriter {
+    async fn push_buffer(&mut self, buffer: Bytes) -> Result<()> {
+        self.frame_tail.extend_from_slice(&buffer);
+        while self.frame_tail.len() >= MAX_FRAME_PAYLOAD_BYTES {
+            let payload = self.frame_tail.split_to(MAX_FRAME_PAYLOAD_BYTES).freeze();
+            self.push_payload_frame(payload).await?;
+        }
+        Ok(())
+    }
+
+    async fn push_payload_frame(&mut self, payload: Bytes) -> Result<()> {
+        loop {
+            self.ensure_open().await?;
+            let chunk_id = self
+                .chunk_writer
+                .as_ref()
+                .and_then(ChunkWriter::current_chunk_id)
+                .ok_or_else(|| IoError::Internal("large async writer has no chunk ID".into()))?;
+            let write_time_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| {
+                    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+                });
+            let frame = encode_frame(FrameMagic::RepoLargeV1, chunk_id, &payload, write_time_ms)
+                .map_err(|error| IoError::WriteFailed(error.to_string()))?;
+            let remaining = self
+                .chunk_writer
+                .as_ref()
+                .ok_or_else(|| IoError::Internal("large async writer has no chunk writer".into()))?
+                .remaining_capacity();
+            if frame.len() as u64 > remaining {
+                if frame.len() as u64 > self.config.max_chunk_size {
+                    return Err(IoError::WriteFailed("large frame exceeds chunk capacity".into()));
+                }
+                self.rotate_chunk().await?;
+                continue;
+            }
+            let status = self
+                .chunk_writer
+                .as_mut()
+                .ok_or_else(|| IoError::Internal("large async writer has no chunk writer".into()))?
+                .push(Bytes::from(frame))
+                .await?;
+            if status == FeedStatus::Pause {
+                self.rotate_chunk().await?;
+                continue;
+            }
+            self.logical_bytes_in_chunk = self.logical_bytes_in_chunk.saturating_add(payload.len() as u64);
+            return Ok(());
+        }
     }
 }

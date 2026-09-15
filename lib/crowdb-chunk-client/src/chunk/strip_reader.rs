@@ -19,6 +19,8 @@ use crate::{DiskWriter, ReadError, ReadResult};
 pub(crate) struct ObservedStripRead {
     pub result: ReadResult<Bytes>,
     pub failed_segments: Vec<Segment>,
+    /// Segments whose returned bytes have not yet passed frame validation.
+    pub served_segments: Vec<Segment>,
 }
 
 /// Reads byte intersections from one validated strip.
@@ -65,13 +67,15 @@ impl StripReader {
             .read_observed_inner(strip, durable_bytes, offset, length)
             .await;
         match result {
-            Ok((data, failed_segments)) => ObservedStripRead {
+            Ok((data, failed_segments, served_segments)) => ObservedStripRead {
                 result: Ok(data),
                 failed_segments,
+                served_segments,
             },
             Err((error, failed_segments)) => ObservedStripRead {
                 result: Err(error),
                 failed_segments,
+                served_segments: Vec::new(),
             },
         }
     }
@@ -82,9 +86,9 @@ impl StripReader {
         durable_bytes: u64,
         offset: u64,
         length: u64,
-    ) -> Result<(Bytes, Vec<Segment>), (ReadError, Vec<Segment>)> {
+    ) -> Result<(Bytes, Vec<Segment>, Vec<Segment>), (ReadError, Vec<Segment>)> {
         if length == 0 {
-            return Ok((Bytes::new(), Vec::new()));
+            return Ok((Bytes::new(), Vec::new(), Vec::new()));
         }
         let sealed_bytes = kib_to_bytes(strip.sealed_length).map_err(|error| (error, Vec::new()))?;
         let available = sealed_bytes.max(durable_bytes);
@@ -121,7 +125,7 @@ impl StripReader {
         segments: &[Segment],
         offset: u64,
         length: u64,
-    ) -> Result<(Bytes, Vec<Segment>), (ReadError, Vec<Segment>)> {
+    ) -> Result<(Bytes, Vec<Segment>, Vec<Segment>), (ReadError, Vec<Segment>)> {
         let length = u32::try_from(length).map_err(|_| {
             (
                 ReadError::InvalidLocations("mirror read exceeds RPC size".into()),
@@ -137,8 +141,8 @@ impl StripReader {
                 push_unique(&mut failed_segments, *segment);
                 continue;
             }
-            match self.disk_io.read(segment, unit_bytes, offset, length).await {
-                Ok(data) => return Ok((data, failed_segments)),
+            match self.read_target(segment, unit_bytes, offset, length).await {
+                Ok(data) => return Ok((data, failed_segments, vec![*segment])),
                 Err(error) => {
                     failures.push(error.to_string());
                     push_durable_failure(&mut failed_segments, *segment, &error);
@@ -161,7 +165,7 @@ impl StripReader {
         ec: &crowdb_protocol::chunkdb::rpc::EcStrip,
         offset: u64,
         length: u64,
-    ) -> Result<(Bytes, Vec<Segment>), (ReadError, Vec<Segment>)> {
+    ) -> Result<(Bytes, Vec<Segment>, Vec<Segment>), (ReadError, Vec<Segment>)> {
         let geometry = validate_ec_read(strip, ec, offset, length).map_err(|error| (error, Vec::new()))?;
         let EcReadGeometry {
             scheme,
@@ -189,17 +193,18 @@ impl StripReader {
             let result = if unavailable {
                 Err(crate::IoError::ReadFailed("segment is unavailable".into()))
             } else {
-                self.disk_io
-                    .read(&segment, unit_bytes, local_start, read_len)
+                self.read_target(&segment, unit_bytes, local_start, read_len)
                     .await
             };
             pieces.push((order, shard_index, local_start, read_len, result));
         }
         pieces.sort_unstable_by_key(|(order, _, _, _, _)| *order);
         let mut output = BytesMut::with_capacity(usize::try_from(length).unwrap_or(usize::MAX));
+        let mut served_segments = Vec::new();
         for (_, shard_index, local_start, read_len, result) in pieces {
             if let Ok(data) = result {
                 output.extend_from_slice(&data);
+                push_unique(&mut served_segments, ec.segments[shard_index]);
             } else if let Err(error) = result {
                 let durable_target_failure = error.is_durable_read_failure();
                 if durable_target_failure {
@@ -238,7 +243,7 @@ impl StripReader {
                 output.extend_from_slice(&recovered.data);
             }
         }
-        Ok((output.freeze(), failed_segments))
+        Ok((output.freeze(), failed_segments, served_segments))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -367,7 +372,7 @@ impl StripReader {
                 let segment = segments[index];
                 let physical_len = u64::from(length).min(actual - offset) as u32;
                 reads.spawn(async move {
-                    let result = disk_io.read(&segment, unit_bytes, offset, physical_len).await;
+                    let result = read_target(&*disk_io, &segment, unit_bytes, offset, physical_len).await;
                     (index, result)
                 });
             }
@@ -395,6 +400,39 @@ impl StripReader {
             failed_segments,
         })
     }
+
+    async fn read_target(
+        &self,
+        segment: &Segment,
+        unit_bytes: u64,
+        offset: u64,
+        length: u32,
+    ) -> crate::Result<Bytes> {
+        read_target(&*self.disk_io, segment, unit_bytes, offset, length).await
+    }
+}
+
+async fn read_target(
+    disk_io: &dyn DiskWriter,
+    segment: &Segment,
+    unit_bytes: u64,
+    offset: u64,
+    length: u32,
+) -> crate::Result<Bytes> {
+    let mut last_error = None;
+    for attempt in 0..3 {
+        match disk_io.read(segment, unit_bytes, offset, length).await {
+            Ok(data) => return Ok(data),
+            Err(error) => {
+                let connection_failure = matches!(error, crate::IoError::Topology(_));
+                last_error = Some(error);
+                if connection_failure || attempt == 2 {
+                    break;
+                }
+            }
+        }
+    }
+    Err(last_error.expect("read target executes at least once"))
 }
 
 fn decode_recoverable(

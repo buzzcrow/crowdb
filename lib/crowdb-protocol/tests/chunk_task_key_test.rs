@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_protocol::common::ChunkId;
-use crowdb_protocol::{BinaryKey, ChunkTaskKey, LeasedChunkTaskKey, ReadyChunkTaskKey};
+use crowdb_protocol::{BinaryKey, ChunkTaskKey, FinalizeChunkTaskKey, LeasedChunkTaskKey, ReadyChunkTaskKey};
 
 fn id(high: u64, low: u64) -> ChunkId {
     ChunkId { high, low }
@@ -70,6 +70,24 @@ fn ready_keys_sort_high_priority_first_then_eligibility() {
     };
     assert!(make(9, 100) < make(8, 1));
     assert!(make(9, 100) < make(9, 101));
+}
+
+#[test]
+fn finalize_keys_sort_by_expiry() {
+    let early = FinalizeChunkTaskKey {
+        expires_at_ms: 100,
+        partition_id: id(1, 2),
+        task_id: id(3, 4),
+    };
+    let late = FinalizeChunkTaskKey {
+        expires_at_ms: 101,
+        ..early
+    };
+    assert!(early.to_bytes() < late.to_bytes());
+    assert_eq!(
+        FinalizeChunkTaskKey::from_bytes(&early.to_bytes()).unwrap(),
+        early
+    );
 }
 
 #[test]

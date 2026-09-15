@@ -6,6 +6,7 @@
 #include "c_api_internal.h"
 #include "chunk_page_store.h"
 #include "crowdb-common/crc32c.h"
+#include "crowdb-protocol/frame.h"
 #include "stdexec_adapter.h"
 
 #include <algorithm>
@@ -193,7 +194,6 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             }
             const size_t length =
                 std::min(store->config_.pack_bytes, store->staged_.size() - static_cast<size_t>(offset));
-            const uint32_t checksum = crowdb::common::crc32c(store->staged_.data() + offset, length);
             if (reuse_base != nullptr && reuse_base->format_version >= 3 &&
                 ChunkPageStore::find_pack_at(*reuse_base, offset, static_cast<uint32_t>(length)) == nullptr &&
                 !store->range_was_written(offset, length)) {
@@ -201,8 +201,8 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
                 continue;
             }
             if (reuse_base != nullptr) {
-                const ChunkPagePack *reused = store->find_reusable_pack(
-                    *reuse_base, offset, static_cast<uint32_t>(length), checksum, cancellation);
+                const ChunkPagePack *reused =
+                    store->find_reusable_pack(*reuse_base, offset, static_cast<uint32_t>(length), cancellation);
                 if (cancellation.cancelled()) {
                     return Status::unavailable("chunk manifest reuse verification cancelled");
                 }
@@ -233,7 +233,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
                 const uint64_t packs_per_chunk =
                     (store->config_.max_chunk_bytes + store->config_.pack_bytes - 1) / store->config_.pack_bytes;
                 const uint64_t physical_pack_bytes =
-                    round_up_to_iu(store->config_.pack_bytes, store->config_.page_alignment);
+                    crowdb::protocol::framed_physical_length(store->config_.pack_bytes);
                 if (packs_per_chunk > std::numeric_limits<uint64_t>::max() / physical_pack_bytes) {
                     return Status::resource_exhausted("chunk page framing exceeds address space");
                 }
@@ -249,12 +249,11 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             job->pack.ordinal        = manifest->packs.size();
             job->pack.logical_offset = offset;
             job->pack.ref            = {
-                .chunk_id = chunk,
-                .offset   = cursor,
-                .length   = static_cast<uint32_t>(length),
-                .checksum = checksum,
+                           .chunk_id = chunk,
+                           .offset   = cursor,
+                           .length   = static_cast<uint32_t>(length),
             };
-            job->physical_length = round_up_to_iu(length, store->config_.page_alignment);
+            job->physical_length = crowdb::protocol::framed_physical_length(length);
             job->source_offset   = offset;
             manifest->packs.push_back(job->pack);
             logical_bytes += length;
@@ -392,8 +391,16 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
     {
         auto &job = *writes[index];
         orphan_pack_bytes.fetch_add(job.pack.ref.length, std::memory_order_relaxed);
-        job.framed.assign(job.physical_length, 0);
-        std::copy_n(store->staged_.data() + job.source_offset, job.pack.ref.length, job.framed.data());
+        const auto frame_error = crowdb::protocol::encode_frames(
+            crowdb::protocol::FrameMagic::BtreePageV1,
+            {.high = job.pack.ref.chunk_id.high, .low = job.pack.ref.chunk_id.low},
+            std::span<const uint8_t>(store->staged_.data() + job.source_offset, job.pack.ref.length),
+            monotonic_millis(), &job.framed);
+        if (frame_error != crowdb::protocol::FrameError::Ok || job.framed.size() != job.physical_length) {
+            stop_requested.store(true, std::memory_order_release);
+            completion.complete(Status::corruption("chunk page frame encoding failed"));
+            return;
+        }
         for (uint32_t mirror = 0; mirror < job.mirrors.size(); ++mirror) {
             job.mirrors[mirror] = {
                 .transport         = store->transport_,

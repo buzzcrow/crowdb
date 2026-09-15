@@ -190,5 +190,8 @@ pub struct StreamExtentPage {
     pub page_index: u64,
     pub chunk_ids: Vec<ChunkId>,
     pub logical_offsets: Vec<u64>,
+    /// Physical start of each complete public Stream frame.
     pub physical_offsets: Vec<u64>,
+    /// Complete physical frame length, including its public header and footer.
+    pub frame_lengths: Vec<u32>,
 }

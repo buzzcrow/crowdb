@@ -81,6 +81,8 @@ rpc_workers = 7
 node_id = 9
 dummy_disk_type = "mem"
 o_direct = false
+max_write_request_age_ms = 40000
+max_clock_skew_ms = 2000
 fault_latency_min_ms = 2
 fault_latency_max_ms = 8
 fault_error_rate = 0.25
@@ -116,6 +118,8 @@ zone_capacity = 4096
     EXPECT_EQ(config.node_id, 9U);
     EXPECT_EQ(config.dummy_disk_type, DummyDiskType::Mem);
     EXPECT_FALSE(config.o_direct);
+    EXPECT_EQ(config.max_write_request_age_ms, 40000U);
+    EXPECT_EQ(config.max_clock_skew_ms, 2000U);
     ASSERT_TRUE(config.dummy_props.has_value());
     EXPECT_EQ(config.dummy_props->latency_min_ms, 2U);
     EXPECT_EQ(config.dummy_props->latency_max_ms, 8U);

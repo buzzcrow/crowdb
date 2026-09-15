@@ -773,6 +773,27 @@ read-modify-write lifecycle. Locks for different chunks are independent and
 tests prove cross-chunk progress. Immutable topology, routing, range, endpoint,
 and disk-group reverse-map snapshots remain lock-free on their read paths.
 
+### 9.1 Public frames and active-chunk liveness
+
+Every persistent chunk user stores public, self-validating frames. The frame
+header names a versioned kind and payload bounds; its footer binds CRC32C and
+chunk ID. Locations retain only chunk ID, physical frame start, and logical
+length, so integrity state is never duplicated in high-cardinality metadata.
+Readers verify a complete frame before returning a payload. A failed
+verification excludes the serving mirror or shard and uses the existing
+protection-read and repair path.
+
+An Active chunk has exactly one durable `FinalizeChunk` liveness task. Chunk
+creation atomically creates it with a 15-minute deadline. The owner renews it
+on the 12-minute cadence by conditionally replacing the one deadline-index
+entry and task record in one task-partition transaction; no second expiry is
+stored in chunk metadata. The owner self-fences before that authority can
+expire. The task scanner reads due task-index entries only, never scans the
+chunk table. After claim and the shared request-age/skew safety window, it
+parses frames from offset zero and seals at the last complete verified frame,
+or deletes an empty chunk. A restarted owner always allocates a new Active
+chunk.
+
 ## 10. Per-Chunk-ID Lifecycle Lock + Chunk Cache
 
 `LifecycleHandler`'s six mutating RPCs (allocate/append/seal/delete/

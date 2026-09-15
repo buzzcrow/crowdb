@@ -26,8 +26,18 @@ SOURCE_TREES = [
             Path("lib/crowdb-rpc/src"),
             Path("lib/crowdb-rpc/include"),
             Path("lib/crowdb-rpc/tests"),
+            # Public C++ protocol headers are consumed through crowdb-rpc's
+            # exported include path and therefore use its compile commands.
+            Path("lib/crowdb-protocol/cpp/include"),
         ],
         "lib/crowdb-rpc/build",
+    ),
+    (
+        [
+            Path("app/crowdb-diskio/src"),
+            Path("app/crowdb-diskio/tests"),
+        ],
+        "app/crowdb-diskio/build",
     ),
 ]
 EXTENSIONS = {".cpp", ".h"}

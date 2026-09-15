@@ -3,7 +3,7 @@
 
 //! Real-process chunk-client E2E fixture and disk read-back helpers.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, SmallWritePolicy};
@@ -19,6 +19,9 @@ use crowdb_test_harness::cluster::KvCluster;
 use crowdb_test_harness::diskdb::{self as ddb_harness, DiskdbProcess};
 use crowdb_test_harness::diskio::{self as dio_harness, DiskioProcess, DiskioStartOpts};
 use crowdb_test_harness::hardware::{make_disk_id, seed_hardware};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+
+static E2E_STACK_PERMITS: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 pub fn all_binaries_available() -> bool {
     let available = (std::env::var("CROWDB_KV_SERVER_BIN").is_ok()
@@ -37,6 +40,7 @@ fn standard_disk_ids() -> Vec<ProtoDiskId> {
 }
 
 pub struct E2eStack {
+    _permit: OwnedSemaphorePermit,
     pub cluster: KvCluster,
     _diskdb: DiskdbProcess,
     _diskio: DiskioProcess,
@@ -93,6 +97,12 @@ impl E2eStack {
         dummy_disk: &str,
         chunkdb_options: ChunkdbStartOptions,
     ) -> Self {
+        let permit = E2E_STACK_PERMITS
+            .get_or_init(|| Arc::new(Semaphore::new(1)))
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("E2E stack semaphore is never closed");
         let cluster = KvCluster::start().await;
         let hardware = cluster.make_hardware_client();
         seed_hardware(&hardware, &standard_disk_ids()).await;
@@ -144,6 +154,7 @@ impl E2eStack {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
         Self {
+            _permit: permit,
             cluster,
             _diskdb: diskdb,
             _diskio: diskio,

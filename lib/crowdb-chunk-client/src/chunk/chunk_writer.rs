@@ -176,24 +176,31 @@ impl ChunkWriter {
         if self.current_strip.is_none() {
             return Err(IoError::Internal("push with no open strip".into()));
         }
-        // Auto-rotate: if the current strip is full, finish it + check
-        // if the chunk is now full. If so, return Pause without pushing
-        // — the caller rotates chunks and re-pushes this buffer.
-        if self.is_strip_full() {
-            self.finish_strip().await?;
-            if self.is_full() {
-                return Ok(FeedStatus::Pause);
+        // A public frame can span several EC data blocks. Feed each strip only
+        // the bytes it owns; never leave an overflow tail in a completed
+        // strip, which would otherwise be encoded as an extra data shard.
+        let mut offset = 0usize;
+        while offset < buffer.len() {
+            if self.is_strip_full() {
+                self.finish_strip().await?;
+                if self.is_full() {
+                    return Ok(FeedStatus::Pause);
+                }
+                self.open_next_strip().await?;
             }
-            self.open_next_strip().await?;
+            let strip = self
+                .current_strip
+                .as_mut()
+                .ok_or_else(|| IoError::Internal("push: strip vanished after rotate".into()))?;
+            let remaining = usize::try_from(strip.remaining_capacity())
+                .map_err(|_| IoError::Internal("strip capacity exceeds usize".into()))?;
+            if remaining == 0 {
+                continue;
+            }
+            let end = offset.saturating_add(remaining).min(buffer.len());
+            strip.push(buffer.slice(offset..end)).await?;
+            offset = end;
         }
-        let strip = self
-            .current_strip
-            .as_mut()
-            .ok_or_else(|| IoError::Internal("push: strip vanished after rotate".into()))?;
-        // Push to the strip. The strip's Pause (strip full) is handled
-        // internally by auto-rotate on the next push — we always return
-        // Continue after a successful push (only chunk-full returns Pause).
-        strip.push(buffer).await?;
         Ok(FeedStatus::Continue)
     }
 
@@ -570,6 +577,14 @@ impl ChunkWriter {
     /// Bytes written to the current chunk so far.
     pub fn bytes_in_chunk(&self) -> u64 {
         self.bytes_in_chunk
+    }
+
+    /// Physical bytes that may still be appended without crossing a chunk.
+    pub fn remaining_capacity(&self) -> u64 {
+        let current = self.current_strip.as_ref().map_or(0, StripWriter::accepted_bytes);
+        self.config
+            .max_chunk_size
+            .saturating_sub(self.bytes_in_chunk.saturating_add(current))
     }
 
     /// Current chunk id (if any), derived from the owned `Chunk`.

@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use crowdb_kv_client::{BatchOp, CrowdbKvClient, Error as KvError, GetOutcome, ReadMode, ScanOutcome};
-use crowdb_protocol::chunk_task::{ChunkTaskState, ChunkTaskValue};
+use crowdb_protocol::chunk_task::{ChunkTaskState, ChunkTaskValue, TASK_KIND_FINALIZE_CHUNK};
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::{
-    decode_chunk_task_value, encode_chunk_task_value, BinaryKey, ChunkTaskKey, ChunkTaskValueError, KeyError,
-    LeasedChunkTaskKey, ReadyChunkTaskKey,
+    decode_chunk_task_value, encode_chunk_task_value, BinaryKey, ChunkTaskKey, ChunkTaskValueError,
+    FinalizeChunkTaskKey, KeyError, LeasedChunkTaskKey, ReadyChunkTaskKey,
 };
 use tracing::warn;
 
@@ -159,6 +159,32 @@ impl TaskStore {
         Ok(tasks.into_values().collect())
     }
 
+    /// Move an Active chunk's one liveness task to a new deadline. The
+    /// canonical task is CAS-guarded; the old deadline index deletion and new
+    /// index insertion are in the same batch. A claimed or replaced task is a
+    /// conflict, which fences the owner from further writes.
+    pub async fn renew_finalize_chunk(
+        &self,
+        chunk_id: &ChunkId,
+        owner_generation: u64,
+        now_ms: u64,
+        liveness_ms: u64,
+    ) -> Result<ChunkTaskValue, TaskStoreError> {
+        let current = self
+            .get(chunk_id, TASK_KIND_FINALIZE_CHUNK, chunk_id)
+            .await?
+            .ok_or(TaskStoreError::Conflict)?;
+        if current.state != ChunkTaskState::Pending || current.source_revision != owner_generation {
+            return Err(TaskStoreError::Conflict);
+        }
+        let mut renewed = current.clone();
+        renewed.revision = renewed.revision.saturating_add(1);
+        renewed.updated_at_ms = now_ms;
+        renewed.eligible_at_ms = now_ms.saturating_add(liveness_ms);
+        self.write_transition(Some(&current), &renewed).await?;
+        Ok(renewed)
+    }
+
     /// Scan runnable indexes whose retry eligibility has arrived.
     ///
     /// # Errors
@@ -180,6 +206,34 @@ impl TaskStore {
         decoded.sort_unstable_by_key(BinaryKey::to_bytes);
         decoded.truncate(usize::try_from(max_keys).unwrap_or(usize::MAX));
         Ok(decoded)
+    }
+
+    /// Scan only FinalizeChunk liveness indexes that have expired. Their key
+    /// starts with the fixed-width deadline, so no chunk or generic-task scan
+    /// is required.
+    pub async fn scan_finalize_due(
+        &self,
+        now_ms: u64,
+        max_keys: u32,
+    ) -> Result<Vec<ReadyChunkTaskKey>, TaskStoreError> {
+        let keys = self
+            .scan_index(FinalizeChunkTaskKey::prefix_all(), max_keys)
+            .await?;
+        let mut due = Vec::with_capacity(keys.len());
+        for key in keys {
+            match FinalizeChunkTaskKey::from_bytes(&key) {
+                Ok(task) if task.expires_at_ms <= now_ms => due.push(ReadyChunkTaskKey {
+                    priority_inverse: 0,
+                    eligible_at_ms: task.expires_at_ms,
+                    partition_id: task.partition_id,
+                    kind: TASK_KIND_FINALIZE_CHUNK,
+                    task_id: task.task_id,
+                }),
+                Ok(_) => break,
+                Err(error) => warn!(%error, "skipping malformed finalize task index"),
+            }
+        }
+        Ok(due)
     }
 
     /// Scan claimed indexes whose lease has expired.
@@ -340,6 +394,14 @@ fn canonical_key(task: &ChunkTaskValue) -> Vec<u8> {
 
 fn index_key(task: &ChunkTaskValue) -> Option<Vec<u8>> {
     match task.state {
+        ChunkTaskState::Pending | ChunkTaskState::RetryWait if task.kind == TASK_KIND_FINALIZE_CHUNK => Some(
+            FinalizeChunkTaskKey {
+                expires_at_ms: task.eligible_at_ms,
+                partition_id: task.partition_id,
+                task_id: task.task_id,
+            }
+            .to_bytes(),
+        ),
         ChunkTaskState::Pending | ChunkTaskState::RetryWait => Some(
             ReadyChunkTaskKey {
                 priority_inverse: u8::MAX - task.priority,

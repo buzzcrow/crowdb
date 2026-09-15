@@ -21,6 +21,7 @@ use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, ServiceRegi
 use crowdb_protocol::chunkdb::rpc::{Location, Strip};
 use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_protocol::frame::{parse_frame, MAX_FRAME_PAYLOAD_BYTES};
 use crowdb_test_harness::chunkdb::ChunkdbStartOptions;
 
 use e2e_stack::{all_binaries_available, E2eStack};
@@ -201,9 +202,12 @@ async fn ec_range_read_recovers_only_the_requested_bytes() {
         actual,
         data[usize::try_from(start).unwrap()..usize::try_from(end).unwrap()]
     );
-    let direct = stack.read_segment(&ec.segments[0], MIB as u64, 0, 4096).await;
-    assert_eq!(direct, data[..4096]);
-    assert!(fault.max_read.load(Ordering::Relaxed) <= 16 * KIB);
+    let direct = stack
+        .read_segment(&ec.segments[0], MIB as u64, 0, u32::try_from(64 * KIB).unwrap())
+        .await;
+    let frame = parse_frame(&direct, result.locations[0].chunk_id.unwrap()).unwrap();
+    assert_eq!(frame.payload, &data[..frame.payload.len()]);
+    assert!(fault.max_read.load(Ordering::Relaxed) <= 64 * KIB);
     assert_eq!(reader.read_object(&result.locations).await.unwrap(), data);
 
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -293,34 +297,43 @@ async fn partial_read_preserves_healthy_ec_shard_ranges_around_data_loss() {
         panic!("large write did not produce EC");
     };
     let reader = reader_with_segment_failures(&stack, ec.segments[1..3].to_vec()).await;
+    let payload_per_shard = 16 * MAX_FRAME_PAYLOAD_BYTES as u64;
     let partial = reader
         .read_range_partial(&result.locations, 0, 4 * MIB as u64)
         .await
         .unwrap();
-    assert_eq!(partial.failures.len(), 2);
+    assert_eq!(partial.failures.len(), 1);
     assert_eq!(
         (partial.failures[0].start, partial.failures[0].end),
-        (MIB as u64, 2 * MIB as u64)
-    );
-    assert_eq!(
-        (partial.failures[1].start, partial.failures[1].end),
-        (2 * MIB as u64, 3 * MIB as u64)
+        (payload_per_shard, 3 * payload_per_shard)
     );
     assert_eq!(partial.ranges.len(), 2);
-    assert_eq!((partial.ranges[0].start, partial.ranges[0].end), (0, MIB as u64));
-    assert_eq!(partial.ranges[0].data, data[..MIB]);
+    assert_eq!(
+        (partial.ranges[0].start, partial.ranges[0].end),
+        (0, payload_per_shard)
+    );
+    assert_eq!(
+        partial.ranges[0].data,
+        data[..usize::try_from(payload_per_shard).unwrap()]
+    );
     assert_eq!(
         (partial.ranges[1].start, partial.ranges[1].end),
-        (3 * MIB as u64, 4 * MIB as u64)
+        (3 * payload_per_shard, 4 * MIB as u64)
     );
-    assert_eq!(partial.ranges[1].data, data[3 * MIB..4 * MIB]);
+    assert_eq!(
+        partial.ranges[1].data,
+        data[usize::try_from(3 * payload_per_shard).unwrap()..]
+    );
 
     let mut stream = reader.read_stream(&result.locations).unwrap();
-    assert_eq!(stream.next_chunk().await.unwrap().unwrap(), data[..MIB]);
+    assert_eq!(
+        stream.next_chunk().await.unwrap().unwrap(),
+        data[..usize::try_from(payload_per_shard).unwrap()]
+    );
     assert!(matches!(
         stream.next_chunk().await.unwrap(),
         Err(ReadError::FailedRange { start, end, .. })
-            if start == MIB as u64 && end == 2 * MIB as u64
+            if start == payload_per_shard && end == 3 * payload_per_shard
     ));
     assert!(stream.next_chunk().await.is_none());
 }
@@ -331,7 +344,7 @@ async fn mirror_read_succeeds_and_reports_replica_loss() {
         return;
     }
     let stack = E2eStack::start(small_policy(1)).await;
-    let data = Bytes::from(test_data(96 * KIB));
+    let data = Bytes::from(test_data(60 * KIB));
     let mut writer = stack.client.prepare_small_write(data.len()).await.unwrap();
     writer.on_data(data.clone()).await.unwrap();
     let location: Location = writer.on_finish().await.unwrap().remove(0);
@@ -434,7 +447,7 @@ async fn chunkdb_restart_admits_durable_read_failure_and_repairs_full_shard() {
         reader.read_range(&result.locations, 0, length).await.unwrap(),
         data[..16 * KIB]
     );
-    assert!(fault.max_read.load(Ordering::Relaxed) <= 16 * KIB);
+    assert!(fault.max_read.load(Ordering::Relaxed) <= 64 * KIB);
     let marked = stack.query_chunk(&result.locations[0]).await;
     assert!(marked.strips[0].unavailable_segments.contains(&failed_segment));
 

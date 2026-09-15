@@ -155,6 +155,18 @@ bool DioConfig::parse_args(int argc, char *argv[], DioConfig &out, std::string &
                 return false;
             }
         }
+        else if (arg == "--max-write-request-age-ms" && i + 1 < argc) {
+            if (!parse_u64(argv[++i], out.max_write_request_age_ms)) {
+                err = "invalid --max-write-request-age-ms value";
+                return false;
+            }
+        }
+        else if (arg == "--max-clock-skew-ms" && i + 1 < argc) {
+            if (!parse_u64(argv[++i], out.max_clock_skew_ms)) {
+                err = "invalid --max-clock-skew-ms value";
+                return false;
+            }
+        }
         else if (arg == "--fault-latency" && i + 1 < argc) {
             // Format: --fault-latency <min_ms>:<max_ms>
             std::string spec  = argv[++i];
@@ -313,7 +325,8 @@ bool DioConfig::parse_args(int argc, char *argv[], DioConfig &out, std::string &
         else if (arg == "--help" || arg == "-h") {
             std::printf("usage: crowdb-diskio [--config <toml>] [--port <port>] [--bind <addr>] "
                         "[--dummy-disk null|mem] "
-                        "[--rpc-workers N] [--threads N] [--sq-entries N] [--no-o-direct] "
+                        "[--rpc-workers N] [--threads N] [--sq-entries N] [--max-write-request-age-ms N] "
+                        "[--max-clock-skew-ms N] [--no-o-direct] "
                         "[--fault-latency <min_ms>:<max_ms>] "
                         "[--fault-error-rate <0.0..1.0>] "
                         "[--disk <hex_id>:<path>[:<capacity>]]... "
@@ -352,6 +365,10 @@ bool DioConfig::validate(std::string &err) const
     }
     if (sq_entries == 0) {
         err = "sq_entries must be > 0";
+        return false;
+    }
+    if (max_write_request_age_ms == 0) {
+        err = "max_write_request_age_ms must be > 0";
         return false;
     }
     for (const auto &d : disks) {

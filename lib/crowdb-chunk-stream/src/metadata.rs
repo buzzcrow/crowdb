@@ -3,13 +3,16 @@
 
 use crowdb_protocol::chunk_stream::{StreamExtentPage, StreamManifest};
 use crowdb_protocol::common::ChunkId;
+use crowdb_protocol::frame::FRAME_HEADER_PREFIX_BYTES;
 
 use crate::{Result, StreamError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExtentLocation {
     pub chunk_id: ChunkId,
-    pub physical_offset: u64,
+    pub frame_offset: u64,
+    pub frame_length: u32,
+    pub payload_offset: u32,
     pub available: u64,
 }
 
@@ -115,19 +118,29 @@ pub fn resolve_extent(page: &StreamExtentPage, logical_offset: u64) -> Result<Ex
         ));
     }
     let delta = logical_offset - logical_start;
-    let physical_offset = page.physical_offsets[extent]
-        .checked_add(delta)
-        .ok_or_else(|| StreamError::Corruption("physical extent offset overflows".into()))?;
+    let payload_offset = u32::try_from(FRAME_HEADER_PREFIX_BYTES)
+        .map_err(|_| StreamError::Corruption("frame header length exceeds u32".into()))?
+        .checked_add(
+            u32::try_from(delta)
+                .map_err(|_| StreamError::Corruption("physical extent payload offset overflows".into()))?,
+        )
+        .ok_or_else(|| StreamError::Corruption("physical extent payload offset overflows".into()))?;
     Ok(ExtentLocation {
         chunk_id: page.chunk_ids[extent],
-        physical_offset,
+        frame_offset: page.physical_offsets[extent],
+        frame_length: page.frame_lengths[extent],
+        payload_offset,
         available: logical_end - logical_offset,
     })
 }
 
 fn validate_extent_page(page: &StreamExtentPage) -> Result<()> {
     let count = page.chunk_ids.len();
-    if count == 0 || page.physical_offsets.len() != count || page.logical_offsets.len() != count + 1 {
+    if count == 0
+        || page.physical_offsets.len() != count
+        || page.frame_lengths.len() != count
+        || page.logical_offsets.len() != count + 1
+    {
         return Err(StreamError::Corruption(
             "extent arrays have invalid lengths".into(),
         ));
@@ -140,9 +153,8 @@ fn validate_extent_page(page: &StreamExtentPage) -> Result<()> {
         }
     }
     for index in 0..count {
-        let length = page.logical_offsets[index + 1] - page.logical_offsets[index];
         page.physical_offsets[index]
-            .checked_add(length)
+            .checked_add(u64::from(page.frame_lengths[index]))
             .ok_or_else(|| StreamError::Corruption("physical extent end overflows".into()))?;
     }
     Ok(())

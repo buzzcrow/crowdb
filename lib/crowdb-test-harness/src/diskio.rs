@@ -618,7 +618,11 @@ pub async fn run_concurrent_benchmark(
             let mut errors = 0usize;
             for i in 0..BENCH_CYCLES {
                 let offset = u64::try_from((tid * BENCH_CYCLES + i) * BENCH_SIZE).unwrap();
-                let data = vec![u8::try_from((tid + i) % 256).unwrap(); BENCH_SIZE];
+                // Skip fill value 0x01: the diskio server validates that
+                // data beginning with a frame magic (0x0101-0x0501) is a
+                // real frame, so a uniform 0x01 buffer would be rejected.
+                let fill = (tid + i + 2) % 256;
+                let data = vec![u8::try_from(fill).unwrap(); BENCH_SIZE];
 
                 let Ok(wf) = client.write(&server, &conn, disk_id, 0, offset, data.clone()) else {
                     errors += 1;

@@ -16,6 +16,10 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 use tracing::{info, warn};
 
 use crowdb_protocol::chunk_stream::chunk_owner_key_matches_type;
+use crowdb_protocol::chunk_task::{
+    ChunkTaskState, ChunkTaskValue, CHUNK_TASK_SCHEMA_VERSION, FINALIZE_CHUNK_KIND_VERSION,
+    TASK_KIND_FINALIZE_CHUNK,
+};
 use crowdb_protocol::chunkdb::rpc::{
     Chunk, ChunkState as ProtoChunkState, ChunkStrip, ChunkType, Strip, StripCleanupIntent,
     StripReservationState, StripType as ProtoStripType,
@@ -24,6 +28,7 @@ use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::common::DiskId;
 use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_protocol::generate_chunk_id;
+use crowdb_protocol::timing::{DEFAULT_MAX_CLOCK_SKEW_MS, DEFAULT_SELF_FENCE_MARGIN_MS};
 
 use crate::allocator::{AllocError, ChunkAllocator, StripAllocType, StripBatchSpec};
 use crate::metrics::ChunkdbMetrics;
@@ -40,6 +45,10 @@ use super::state::{ChunkState, StateTransitionError};
 /// Default lock wait time for `LockPolicy::default()`.
 const DEFAULT_LOCK_WAIT: Duration = Duration::from_secs(10);
 const DEFAULT_LAYOUT_VALIDITY_MS: u64 = 30_000;
+const FINALIZE_CHUNK_LIVENESS_MS: u64 = 15 * 60 * 1_000;
+const FINALIZE_CHUNK_RENEWAL_MS: u64 = 12 * 60 * 1_000;
+const FINALIZE_CHUNK_SELF_FENCE_MS: u64 =
+    FINALIZE_CHUNK_LIVENESS_MS - DEFAULT_MAX_CLOCK_SKEW_MS - DEFAULT_SELF_FENCE_MARGIN_MS;
 
 /// Lifecycle error — maps to crowdb-rpc status codes in the service layer.
 #[derive(Debug, thiserror::Error)]
@@ -135,6 +144,7 @@ pub struct LifecycleHandler {
     layout_validity_ms: u64,
     reservation_admission: Arc<admission::ReservationAdmission>,
     placement_tasks: Option<Arc<TaskStore>>,
+    liveness_renewed_at: Cache<ChunkId, u64>,
 }
 
 struct AllocationMetricGuard {
@@ -189,6 +199,7 @@ impl LifecycleHandler {
             layout_validity_ms: DEFAULT_LAYOUT_VALIDITY_MS,
             reservation_admission: Arc::new(admission::ReservationAdmission::new(u64::MAX, u64::MAX, None)),
             placement_tasks: None,
+            liveness_renewed_at: Cache::new(4_096),
         }
     }
 
@@ -435,7 +446,8 @@ impl LifecycleHandler {
             last_strip_replacement: None,
             owner_key,
         };
-        self.persist_active_chunk(&chunk).await?;
+        self.create_chunk_with_liveness_task(&chunk).await?;
+        self.liveness_renewed_at.insert(id, now_ms);
         self.admit_placement_repairs(&chunk);
         self.commit_strip_segments_background(chunk.strips.clone());
 
@@ -470,6 +482,42 @@ impl LifecycleHandler {
         Err(LifecycleError::InvalidRequest(
             "failed to generate a chunk id in the owned range".into(),
         ))
+    }
+
+    async fn create_chunk_with_liveness_task(&self, chunk: &Chunk) -> Result<(), LifecycleError> {
+        let id = chunk
+            .id
+            .ok_or_else(|| LifecycleError::InvalidRequest("chunk id is required".into()))?;
+        let now_ms = chunk.create_ts_ms;
+        let task = ChunkTaskValue {
+            schema_version: CHUNK_TASK_SCHEMA_VERSION,
+            task_id: id,
+            partition_id: id,
+            kind: TASK_KIND_FINALIZE_CHUNK,
+            kind_version: FINALIZE_CHUNK_KIND_VERSION,
+            state: ChunkTaskState::Pending,
+            priority: u8::MAX,
+            revision: 1,
+            operation_id: id,
+            source_revision: chunk.writer_epoch,
+            created_at_ms: now_ms,
+            updated_at_ms: now_ms,
+            eligible_at_ms: now_ms.saturating_add(FINALIZE_CHUNK_LIVENESS_MS),
+            attempt: 0,
+            max_attempts: u32::MAX,
+            estimated_queue_bytes: 0,
+            claim_owner: 0,
+            claim_generation: 0,
+            claim_deadline_ms: 0,
+            last_error_code: 0,
+            last_error: String::new(),
+            payload: Vec::new(),
+        };
+        if let Err(error) = self.store.create_chunk_with_finalize_task(chunk, &task).await {
+            self.allocator.rollback_strips(&chunk.strips).await?;
+            return Err(error.into());
+        }
+        Ok(())
     }
 
     /// Advance the durable cursor of an exclusively owned shared chunk.
@@ -509,9 +557,9 @@ impl LifecycleHandler {
             return Err(LifecycleError::StateConflict);
         }
         let capacity_bytes = u64::from(chunk.capacity).saturating_mul(1024);
-        if acknowledged_cursor <= chunk.acknowledged_cursor || acknowledged_cursor > capacity_bytes {
+        if acknowledged_cursor < chunk.acknowledged_cursor || acknowledged_cursor > capacity_bytes {
             return Err(LifecycleError::InvalidRequest(format!(
-                "acknowledged cursor {acknowledged_cursor} must advance beyond {} within capacity {capacity_bytes}",
+                "acknowledged cursor {acknowledged_cursor} must not move behind {} within capacity {capacity_bytes}",
                 chunk.acknowledged_cursor
             )));
         }
@@ -539,7 +587,10 @@ impl LifecycleHandler {
                 ));
             }
         }
-        let now_ms = unix_time_ms();
+        let now_ms = self.renew_liveness_if_due(chunk_id, writer_epoch).await?;
+        if acknowledged_cursor == chunk.acknowledged_cursor && closed_strip_sequence.is_none() {
+            return Ok(chunk);
+        }
         if let Some(sequence) = closed_strip_sequence {
             for strip in &mut chunk.strips {
                 if strip.strip_sequence <= sequence && strip.sealed_ts_ms == 0 {
@@ -559,22 +610,39 @@ impl LifecycleHandler {
         Ok(chunk)
     }
 
-    async fn persist_active_chunk(&self, chunk: &Chunk) -> Result<(), LifecycleError> {
-        for attempt in 0..100_u32 {
-            match self.store.put_chunk(chunk).await {
-                Ok(()) => break,
-                Err(error) if attempt < 99 => {
-                    let backoff_ms = 1_u64.checked_shl(attempt).unwrap_or(u64::MAX).min(50);
-                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                    drop(error);
-                }
-                Err(error) => {
-                    self.allocator.rollback_strips(&chunk.strips).await?;
-                    return Err(error.into());
-                }
-            }
+    async fn renew_liveness_if_due(
+        &self,
+        chunk_id: &ChunkId,
+        writer_epoch: u64,
+    ) -> Result<u64, LifecycleError> {
+        let now_ms = unix_time_ms();
+        // The durable task, not this bounded process-local cache, is the
+        // source of liveness. A restarted chunkdb must be able to renew an
+        // owner that is still within its task deadline.
+        let renewed_at = self
+            .liveness_renewed_at
+            .get(chunk_id)
+            .unwrap_or_else(|| now_ms.saturating_sub(FINALIZE_CHUNK_RENEWAL_MS));
+        let liveness_age = now_ms.saturating_sub(renewed_at);
+        if liveness_age >= FINALIZE_CHUNK_SELF_FENCE_MS {
+            return Err(LifecycleError::StateConflict);
         }
-        Ok(())
+        if liveness_age < FINALIZE_CHUNK_RENEWAL_MS {
+            return Ok(now_ms);
+        }
+        let Some(tasks) = &self.placement_tasks else {
+            return Err(LifecycleError::InvalidRequest(
+                "chunk liveness task store is unavailable".into(),
+            ));
+        };
+        tasks
+            .renew_finalize_chunk(chunk_id, writer_epoch, now_ms, FINALIZE_CHUNK_LIVENESS_MS)
+            .await
+            .map_err(|error| {
+                LifecycleError::InvalidRequest(format!("chunk liveness renewal failed: {error}"))
+            })?;
+        self.liveness_renewed_at.insert(*chunk_id, now_ms);
+        Ok(now_ms)
     }
 
     fn commit_strip_segments_background(&self, strips: Vec<ChunkStrip>) {

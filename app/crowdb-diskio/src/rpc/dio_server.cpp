@@ -4,6 +4,7 @@
 #include "rpc/dio_server.h"
 
 #include "crowdb-common/metrics/metrics.h"
+#include "crowdb-protocol/frame.h"
 #include "crowdb-rpc/server/message.h"
 #include "crowdb-rpc/server/server.h"
 #include "disk/disk.h"
@@ -53,15 +54,25 @@ uint64_t elapsed_nanos(std::chrono::steady_clock::time_point started)
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count());
 }
 
+uint64_t unix_time_ms()
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
+}
+
 } // namespace
 
-DiskioServer::DiskioServer(std::shared_ptr<DiskSet> disk_set, crowdb::rpc::SocketTransport *transport)
+DiskioServer::DiskioServer(std::shared_ptr<DiskSet> disk_set, crowdb::rpc::SocketTransport *transport,
+                           uint64_t max_write_request_age_ms, uint64_t max_clock_skew_ms)
     : disk_set_(std::move(disk_set)),
       transport_(transport),
       aligned_writer_(),
       read_latency_(&engine_read_latency_metric()),
       write_latency_(&engine_write_latency_metric()),
-      fsync_latency_(&engine_fsync_latency_metric())
+      fsync_latency_(&engine_fsync_latency_metric()),
+      max_write_request_age_ms_(max_write_request_age_ms),
+      max_clock_skew_ms_(max_clock_skew_ms)
 {
 }
 
@@ -128,6 +139,18 @@ crowdb::rpc::OutFrame *DiskioServer::handle_write(crowdb::rpc::Frame *request, c
     uint64_t zone_offset          = fb_req->zone_offset();
     uint32_t size                 = fb_req->size();
     uint64_t ordering_zone_offset = fb_req->ordering_zone_offset();
+    uint64_t write_create_time_ms = fb_req->write_create_time_ms();
+
+    const uint64_t allowance = max_write_request_age_ms_ > UINT64_MAX - max_clock_skew_ms_
+                                 ? UINT64_MAX
+                                 : max_write_request_age_ms_ + max_clock_skew_ms_;
+    const uint64_t now_ms    = unix_time_ms();
+    if (write_create_time_ms == 0 || (now_ms >= write_create_time_ms && now_ms - write_create_time_ms > allowance)) {
+        delete request;
+        send_error_response(conn, req_id, create_nano, msg_type,
+                            static_cast<int16_t>(dproto::FBDiskIoRetCode_OldRequest));
+        return nullptr;
+    }
 
     auto disk = disk_set_->find_disk(did);
     if (disk == nullptr) {
@@ -155,6 +178,22 @@ crowdb::rpc::OutFrame *DiskioServer::handle_write(crowdb::rpc::Frame *request, c
     if (data_buf == nullptr && size > 0) {
         send_error_response(conn, req_id, create_nano, msg_type, static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError));
         return nullptr;
+    }
+    // An EC shard is opaque DiskIO data.  It can begin with the same two
+    // bytes as a public frame because the first data shard carries the
+    // original prefix, but it is not itself a frame sequence.  Without an
+    // explicit content-kind field, only a single-frame request is
+    // unambiguously self-describing at this boundary.
+    if (data_buf != nullptr && size <= crowdb::protocol::kMaxFrameBytes && size >= 2 &&
+        crowdb::protocol::valid_magic(crowdb::protocol::read_u16_le(data_buf->data))) {
+        const auto frame_status =
+            crowdb::protocol::validate_frame_sequence(std::span<const uint8_t>(data_buf->data, size));
+        if (frame_status != crowdb::protocol::FrameError::Ok) {
+            data_buf->release();
+            send_error_response(conn, req_id, create_nano, msg_type,
+                                static_cast<int16_t>(dproto::FBDiskIoRetCode_IoError));
+            return nullptr;
+        }
     }
 
     uint64_t ordering_phys_offset = zone->base_offset + ordering_zone_offset;

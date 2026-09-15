@@ -13,6 +13,7 @@ enum FBDiskIoRetCode : int16 {
     ConnectionError = 6,
     // Retired response value kept so mixed-version peers do not reuse code 7.
     StaleAllocation = 7,
+    OldRequest = 8,
 }
 
 // All diskio control messages carry id + rpc_create_nano as their first
@@ -31,6 +32,7 @@ table FBDiskWriteRequest {
     // Retired allocation-fence field; keep its slot for wire compatibility.
     allocation_ts:uint64 (deprecated);
     ordering_zone_offset:uint64;
+    write_create_time_ms:uint64;
 }
 
 table FBDiskWriteResponse {

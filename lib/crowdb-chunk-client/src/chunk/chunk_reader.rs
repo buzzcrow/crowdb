@@ -3,6 +3,7 @@
 
 //! Object and range reads over current chunk layouts.
 
+use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -12,6 +13,10 @@ use crowdb_protocol::chunkdb::rpc::{
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::diskdb::rpc::Segment;
+use crowdb_protocol::frame::{
+    parse_frame, ChunkLocation, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_BYTES,
+    MAX_FRAME_PAYLOAD_BYTES,
+};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
@@ -166,7 +171,7 @@ impl ChunkReader {
         }
         partial.ranges.sort_unstable_by_key(|range| range.start);
         partial.failures.sort_unstable_by_key(|range| range.start);
-        Ok(partial)
+        Ok(coalesce_partial_ranges(partial))
     }
 
     pub fn read_stream(&self, locations: &[Location]) -> ReadResult<ChunkReadStream> {
@@ -181,6 +186,90 @@ impl ChunkReader {
         })
     }
 
+    /// Reads one variable-length frame through the normal mirror/EC recovery
+    /// path and verifies both its integrity trailer and its public kind.
+    ///
+    /// Stream and tree metadata keep a compact physical frame location rather
+    /// than a synthetic fixed-stride `Location`.  They use this entry point so
+    /// a checksum mismatch still marks the serving replica unavailable and
+    /// retries from a protected source before any payload is exposed.
+    pub async fn read_verified_frame(
+        &self,
+        chunk_id: ChunkId,
+        frame_offset: u64,
+        frame_length: u64,
+        expected_magic: FrameMagic,
+    ) -> ReadResult<Bytes> {
+        if frame_length < (FRAME_HEADER_PREFIX_BYTES + FRAME_FOOTER_BYTES) as u64
+            || frame_length > MAX_FRAME_BYTES as u64
+        {
+            return Err(ReadError::InvalidLocations(
+                "frame length is outside the public frame bounds".into(),
+            ));
+        }
+        let frame_end = frame_offset
+            .checked_add(frame_length)
+            .ok_or_else(|| ReadError::InvalidLocations("frame end overflows".into()))?;
+        for _ in 0..self.policy.max_layout_retries {
+            let query_started = Instant::now();
+            let response = self
+                .chunkdb
+                .query_chunk(QueryChunkRequest {
+                    chunk_id: Some(chunk_id),
+                })
+                .await
+                .map_err(map_metadata_error)?;
+            let validity = Duration::from_millis(response.layout_validity_ms);
+            let deadline = query_started + validity.saturating_sub(self.policy.layout_safety_margin);
+            let mut chunk = response
+                .chunk
+                .ok_or_else(|| ReadError::ChunkDeleted(format!("{}:{}", chunk_id.high, chunk_id.low)))?;
+            let (physical, observations) = self
+                .read_chunk_range_partial(&chunk, frame_offset, frame_length, frame_offset)
+                .await?;
+            let bytes = match extract_physical_range(&physical.ranges, frame_offset..frame_end) {
+                Ok(bytes) if physical.failures.is_empty() => bytes,
+                Ok(_) | Err(_) => {
+                    if Instant::now() >= deadline
+                        || self
+                            .mark_observed_failures(&mut chunk, observations)
+                            .await
+                            .is_err()
+                    {
+                        return Err(ReadError::DataLoss(
+                            "frame bytes could not be reconstructed".into(),
+                        ));
+                    }
+                    continue;
+                }
+            };
+            match parse_frame(&bytes, chunk_id) {
+                Ok(frame) if frame.header.magic == expected_magic => {
+                    if Instant::now() >= deadline {
+                        continue;
+                    }
+                    self.mark_observed_failures(&mut chunk, observations).await?;
+                    return Ok(bytes);
+                }
+                Ok(_) => {
+                    return Err(ReadError::DataLoss(
+                        "frame kind disagrees with its location".into(),
+                    ));
+                }
+                Err(error) => {
+                    let corrupt = mark_served_segments_corrupt(observations);
+                    if corrupt.is_empty()
+                        || Instant::now() >= deadline
+                        || self.mark_observed_failures(&mut chunk, corrupt).await.is_err()
+                    {
+                        return Err(ReadError::DataLoss(format!("invalid chunk frame: {error}")));
+                    }
+                }
+            }
+        }
+        Err(ReadError::LayoutExpired)
+    }
+
     async fn read_location_partial(
         &self,
         location: &Location,
@@ -188,6 +277,11 @@ impl ChunkReader {
         length: u64,
         logical_start: u64,
     ) -> ReadResult<PartialReadResult> {
+        if location.length != location.logical_length {
+            return self
+                .read_framed_location(location, local_start, length, logical_start)
+                .await;
+        }
         let chunk_id = location
             .chunk_id
             .ok_or_else(|| ReadError::InvalidLocations("location has no chunk ID".into()))?;
@@ -226,6 +320,118 @@ impl ChunkReader {
             if Instant::now() < deadline {
                 return Ok(partial);
             }
+        }
+        Err(ReadError::LayoutExpired)
+    }
+
+    async fn read_framed_location(
+        &self,
+        location: &Location,
+        local_start: u64,
+        length: u64,
+        logical_start: u64,
+    ) -> ReadResult<PartialReadResult> {
+        let chunk_id = location
+            .chunk_id
+            .ok_or_else(|| ReadError::InvalidLocations("location has no chunk ID".into()))?;
+        if local_start
+            .checked_add(length)
+            .map_or(true, |end| end > location.logical_length)
+        {
+            return Err(ReadError::InvalidLocations(
+                "framed location logical range is invalid".into(),
+            ));
+        }
+        let framed = ChunkLocation {
+            chunk_id,
+            frame_offset: location.offset,
+            logical_length: location.logical_length,
+        };
+        if framed
+            .physical_length()
+            .map_err(|error| ReadError::InvalidLocations(error.to_string()))?
+            != location.length
+        {
+            return Err(ReadError::InvalidLocations(
+                "framed location length is inconsistent".into(),
+            ));
+        }
+        let physical_range = framed
+            .physical_range_for_subrange(local_start..local_start.saturating_add(length))
+            .map_err(|error| ReadError::InvalidLocations(error.to_string()))?;
+        let selected_logical_start =
+            (local_start / MAX_FRAME_PAYLOAD_BYTES as u64) * MAX_FRAME_PAYLOAD_BYTES as u64;
+        self.read_verified_framed_range(
+            framed,
+            physical_range,
+            selected_logical_start,
+            local_start..local_start + length,
+            logical_start,
+        )
+        .await
+    }
+
+    async fn read_verified_framed_range(
+        &self,
+        framed: ChunkLocation,
+        physical_range: Range<u64>,
+        selected_logical_start: u64,
+        requested: Range<u64>,
+        output_logical_start: u64,
+    ) -> ReadResult<PartialReadResult> {
+        let chunk_id = framed.chunk_id;
+        for _ in 0..self.policy.max_layout_retries {
+            let query_started = Instant::now();
+            let response = self
+                .chunkdb
+                .query_chunk(QueryChunkRequest {
+                    chunk_id: Some(chunk_id),
+                })
+                .await
+                .map_err(map_metadata_error)?;
+            let validity = Duration::from_millis(response.layout_validity_ms);
+            let deadline = query_started + validity.saturating_sub(self.policy.layout_safety_margin);
+            let mut chunk = response
+                .chunk
+                .ok_or_else(|| ReadError::ChunkDeleted(format!("{}:{}", chunk_id.high, chunk_id.low)))?;
+            let (physical, observations) = self
+                .read_chunk_range_partial(
+                    &chunk,
+                    physical_range.start,
+                    physical_range.end - physical_range.start,
+                    physical_range.start,
+                )
+                .await?;
+            let parsed = match decode_framed_partial(
+                &physical,
+                framed,
+                selected_logical_start,
+                requested.clone(),
+                output_logical_start,
+            ) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    let corrupt = mark_served_segments_corrupt(observations);
+                    if corrupt.is_empty()
+                        || Instant::now() >= deadline
+                        || self.mark_observed_failures(&mut chunk, corrupt).await.is_err()
+                    {
+                        return Err(error);
+                    }
+                    continue;
+                }
+            };
+            if Instant::now() >= deadline {
+                continue;
+            }
+            if self
+                .mark_observed_failures(&mut chunk, observations)
+                .await
+                .is_err()
+            {
+                continue;
+            }
+            return Ok(parsed);
         }
         Err(ReadError::LayoutExpired)
     }
@@ -283,6 +489,13 @@ impl ChunkReader {
                     observations.push(StripFailureObservation {
                         strip_sequence: strip.strip_sequence,
                         failed_segments: observed.failed_segments,
+                        served_segments: observed.served_segments,
+                    });
+                } else if !observed.served_segments.is_empty() {
+                    observations.push(StripFailureObservation {
+                        strip_sequence: strip.strip_sequence,
+                        failed_segments: Vec::new(),
+                        served_segments: observed.served_segments,
                     });
                 }
                 match observed.result {
@@ -356,9 +569,155 @@ impl ChunkReader {
     }
 }
 
+fn decode_framed_partial(
+    physical: &PartialReadResult,
+    framed: ChunkLocation,
+    selected_logical_start: u64,
+    requested: Range<u64>,
+    output_logical_start: u64,
+) -> ReadResult<PartialReadResult> {
+    let first_frame = selected_logical_start / MAX_FRAME_PAYLOAD_BYTES as u64;
+    let last_frame = (requested.end - 1) / MAX_FRAME_PAYLOAD_BYTES as u64;
+    let mut result = PartialReadResult::default();
+    let mut magic = None;
+    for frame_index in first_frame..=last_frame {
+        let frame_logical_start = frame_index * MAX_FRAME_PAYLOAD_BYTES as u64;
+        let payload_len = (framed.logical_length - frame_logical_start).min(MAX_FRAME_PAYLOAD_BYTES as u64);
+        let frame_start = framed
+            .frame_offset
+            .checked_add(frame_index * MAX_FRAME_BYTES as u64)
+            .ok_or_else(|| ReadError::InvalidLocations("frame offset overflows".into()))?;
+        let frame_end = frame_start
+            .checked_add(FRAME_HEADER_PREFIX_BYTES as u64 + payload_len + FRAME_FOOTER_BYTES as u64)
+            .ok_or_else(|| ReadError::InvalidLocations("frame end overflows".into()))?;
+        let wanted_start = requested.start.max(frame_logical_start);
+        let wanted_end = requested.end.min(frame_logical_start + payload_len);
+        let output_start = output_logical_start + wanted_start - requested.start;
+        let output_end = output_logical_start + wanted_end - requested.start;
+        if physical
+            .failures
+            .iter()
+            .any(|failure| failure.start < frame_end && failure.end > frame_start)
+        {
+            result.failures.push(FailedReadRange {
+                start: output_start,
+                end: output_end,
+                error: ReadError::DataLoss("frame bytes could not be reconstructed".into()),
+            });
+            continue;
+        }
+        let bytes = extract_physical_range(&physical.ranges, frame_start..frame_end)?;
+        let frame = parse_frame(&bytes, framed.chunk_id)
+            .map_err(|error| ReadError::DataLoss(format!("invalid chunk frame: {error}")))?;
+        if !matches!(
+            frame.header.magic,
+            FrameMagic::RepoSmallV1 | FrameMagic::RepoLargeV1
+        ) {
+            return Err(ReadError::DataLoss(
+                "framed location has unsupported frame kind".into(),
+            ));
+        }
+        match magic {
+            Some(previous) if previous != frame.header.magic => {
+                return Err(ReadError::DataLoss("framed location mixes frame kinds".into()));
+            }
+            None => magic = Some(frame.header.magic),
+            Some(_) => {}
+        }
+        if frame.physical_length as u64 != frame_end - frame_start {
+            return Err(ReadError::DataLoss("frame length disagrees with location".into()));
+        }
+        let payload_start = usize::try_from(wanted_start - frame_logical_start)
+            .map_err(|_| ReadError::InvalidLocations("frame payload range overflows".into()))?;
+        let payload_end = usize::try_from(wanted_end - frame_logical_start)
+            .map_err(|_| ReadError::InvalidLocations("frame payload range overflows".into()))?;
+        result.ranges.push(ReadRangeData {
+            start: output_start,
+            end: output_end,
+            data: Bytes::copy_from_slice(&frame.payload[payload_start..payload_end]),
+        });
+    }
+    Ok(result)
+}
+
+fn extract_physical_range(ranges: &[ReadRangeData], wanted: Range<u64>) -> ReadResult<Bytes> {
+    let mut output =
+        BytesMut::with_capacity(usize::try_from(wanted.end - wanted.start).unwrap_or(usize::MAX));
+    let mut cursor = wanted.start;
+    for range in ranges {
+        if range.end <= cursor || range.start >= wanted.end {
+            continue;
+        }
+        let start = cursor.max(range.start);
+        if start != cursor {
+            return Err(ReadError::InvalidLocations(
+                "physical frame data has a gap".into(),
+            ));
+        }
+        let end = wanted.end.min(range.end);
+        let offset = usize::try_from(start - range.start)
+            .map_err(|_| ReadError::InvalidLocations("physical frame offset overflows".into()))?;
+        let length = usize::try_from(end - start)
+            .map_err(|_| ReadError::InvalidLocations("physical frame length overflows".into()))?;
+        output.extend_from_slice(&range.data[offset..offset + length]);
+        cursor = end;
+        if cursor == wanted.end {
+            break;
+        }
+    }
+    if cursor != wanted.end {
+        return Err(ReadError::InvalidLocations(
+            "physical frame data is incomplete".into(),
+        ));
+    }
+    Ok(output.freeze())
+}
+
+fn coalesce_partial_ranges(partial: PartialReadResult) -> PartialReadResult {
+    let mut ranges: Vec<ReadRangeData> = Vec::new();
+    for range in partial.ranges {
+        if let Some(previous) = ranges.last_mut().filter(|previous| previous.end == range.start) {
+            previous.end = range.end;
+            let mut data = BytesMut::with_capacity(previous.data.len() + range.data.len());
+            data.extend_from_slice(&previous.data);
+            data.extend_from_slice(&range.data);
+            previous.data = data.freeze();
+        } else {
+            ranges.push(range);
+        }
+    }
+    let mut failures: Vec<FailedReadRange> = Vec::new();
+    for failure in partial.failures {
+        if let Some(previous) = failures
+            .last_mut()
+            .filter(|previous| previous.end == failure.start)
+        {
+            previous.end = failure.end;
+        } else {
+            failures.push(failure);
+        }
+    }
+    PartialReadResult { ranges, failures }
+}
+
 struct StripFailureObservation {
     strip_sequence: u32,
     failed_segments: Vec<Segment>,
+    served_segments: Vec<Segment>,
+}
+
+fn mark_served_segments_corrupt(
+    mut observations: Vec<StripFailureObservation>,
+) -> Vec<StripFailureObservation> {
+    for observation in &mut observations {
+        for segment in std::mem::take(&mut observation.served_segments) {
+            if !observation.failed_segments.contains(&segment) {
+                observation.failed_segments.push(segment);
+            }
+        }
+    }
+    observations.retain(|observation| !observation.failed_segments.is_empty());
+    observations
 }
 
 /// Pull-based stream whose emitted item never exceeds the configured window.
