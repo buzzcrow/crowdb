@@ -243,9 +243,8 @@ async fn diskio_routes_cover_every_group_in_the_two_rack_fixture() {
     assert_eq!(diskio.len(), disk_groups.len());
 }
 
-#[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn expanded_topology_converges_a_degraded_10_2_strip() {
+async fn assert_expanded_topology_converges_ec(data_num: u32, code_num: u32, required_racks: u64) {
     if std::env::var("CROWDB_KV_SERVER_BIN").is_err() && common::cluster::crowdb_kv_server_bin().is_none() {
         eprintln!("skipping: crowdb-kv-server binary not found");
         return;
@@ -293,15 +292,18 @@ async fn expanded_topology_converges_a_degraded_10_2_strip() {
         .with_allow_unsafe_ec(true)
         .with_placement_policy(FailureDomainPriority::RackFirst, true),
     );
-    let chunk_id = ChunkId { high: 97, low: 10 };
+    let chunk_id = ChunkId {
+        high: 97,
+        low: u64::from(data_num),
+    };
     let chunk = handler
         .allocate_chunk(
             Some(chunk_id),
             1,
             1,
             StripType::Ec,
-            10,
-            2,
+            data_num,
+            code_num,
             0,
             ChunkType::Repo,
             0,
@@ -317,22 +319,20 @@ async fn expanded_topology_converges_a_degraded_10_2_strip() {
             .await
             .expect("seed source data");
     }
-    let new_disk_groups = seed_hardware_layout_from_disk_group(
-        &cluster.make_hardware_client(),
-        &[(102, vec![30]), (103, vec![31]), (104, vec![32]), (105, vec![33])],
-        32,
-        2000,
-    )
-    .await;
+    let expansion_layout: Vec<_> = (0..required_racks.saturating_sub(2))
+        .map(|offset| (102 + offset, vec![30 + offset]))
+        .collect();
+    let new_disk_groups =
+        seed_hardware_layout_from_disk_group(&cluster.make_hardware_client(), &expansion_layout, 32, 2000)
+            .await;
     disk_groups.extend_from_slice(&new_disk_groups);
     diskdb
         .refresh_disk_groups(&cluster, &new_disk_groups, &disk_groups, 32)
         .await;
-    diskio.extend(start_diskio_groups(
-        &cluster,
-        &[(2000, 102, 30), (2001, 103, 31), (2002, 104, 32), (2003, 105, 33)],
-        3_000,
-    ));
+    let expansion_groups: Vec<_> = (0..required_racks.saturating_sub(2))
+        .map(|offset| (2000 + offset, 102 + offset, 30 + offset))
+        .collect();
+    diskio.extend(start_diskio_groups(&cluster, &expansion_groups, 3_000));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
         if io.refresh(&service, &hardware).await.is_ok()
@@ -366,7 +366,7 @@ async fn expanded_topology_converges_a_degraded_10_2_strip() {
         ))],
     )
     .unwrap();
-    for _ in 0..64 {
+    for _ in 0..usize::try_from(u64::from(data_num + code_num).saturating_mul(4)).unwrap() {
         let ready = tasks.scan_ready(u64::MAX, 1).await.unwrap();
         let claim = manager.claim(&ready[0], u64::MAX).await.unwrap().unwrap();
         executor.execute(claim).await.unwrap();
@@ -390,6 +390,13 @@ async fn expanded_topology_converges_a_degraded_10_2_strip() {
     );
     assert!(assessment.rack_protected && assessment.node_protected && assessment.disk_protected);
     assert!(!diskio.is_empty());
+}
+
+#[tokio::test]
+async fn expanded_topology_converges_degraded_ec_matrix() {
+    for (data_num, code_num, racks) in [(10, 2, 6), (20, 2, 11), (40, 4, 11)] {
+        assert_expanded_topology_converges_ec(data_num, code_num, racks).await;
+    }
 }
 
 #[tokio::test]

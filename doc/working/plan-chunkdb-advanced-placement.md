@@ -80,7 +80,7 @@ of temporarily degraded EC strips.
   relocation contract and durable owner handoff; R97 records the required task
   ownership/fencing decision in its open question rather than introducing a
   competing mover.
-- [~] **EC topology matrix**: cover 10+2, 20+2, and 40+4 on two racks with a
+- [x] **EC topology matrix**: cover 10+2, 20+2, and 40+4 on two racks with a
   four-node/two-node split under both policies, interrupted admission/restart,
   insufficient-topology waiting, and convergence after adding six or eleven
   racks as required. Files: `app/crowdb-chunkdb/tests/` and test helpers.
@@ -94,7 +94,8 @@ of temporarily degraded EC strips.
   and a second restart creates none. A real 40+4 repair task with every
   physical disk already excluded now persists as `RetryWait` with the waiting
   metric (not a task failure) when no safe destination exists. Expanded-
-  topology convergence remains in this active task. The E2E fixture now grows
+  topology convergence is verified for 10+2 at six racks and 20+2/40+4 at
+  eleven racks. The E2E fixture grows
   a running DiskDB instance without restart and starts one real DiskIO owner
   per disk-group, so convergence will copy and fsync physical segments.
 
