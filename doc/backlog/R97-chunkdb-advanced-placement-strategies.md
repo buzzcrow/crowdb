@@ -178,12 +178,8 @@ policy and a verified post-allocation assessment.
     confirmation after a successful CAS rather than allocating a second target.
     A failed pre-CAS attempt leaves an unreferenced tentative target for the
     R80-owned DiskDB scanner to reclaim under its owner-disposition contract. A
-    frontend I/O-triggered ad-hoc repair may return
-    as soon as EC reconstruction has produced the requested readable bytes; it
-    hands the fsynced tentative target to the same durable job for later CAS and
-    confirmation. ChunkDB's in-memory repair manager coalesces same-source
-    requests and retains reusable rebuilt bytes or a completed target while the
-    job is active, but it is only a latency optimization. Each published step
+    R98 owns frontend I/O-triggered ad-hoc full-block recovery, its in-memory
+    coalescing manager, and reuse of rebuilt bytes. Each published step
     must keep at least
     `data_num` readable EC fragments, must not turn any currently protected
     domain into an unprotected one, and must validate the destination physical
@@ -287,13 +283,6 @@ policy and a verified post-allocation assessment.
   under its owner-disposition contract, proving copy-before-publish, durable
   duplicate handling, tentative-block recovery, and source-revision fencing —
   E2E test.
-- Given concurrent frontend reads that detect the same unavailable EC fragment,
-  reconstruct it once and return the readable data before metadata publication;
-  assert the in-memory repair manager shares that result with the other reads
-  and one durable job later performs the CAS and target confirmation. Restart
-  before publication; assert the durable job or scanner, not the memory cache,
-  resolves the tentative target, proving low-latency ad-hoc repair without
-  making process memory a correctness dependency — E2E test.
 - Given the two-rack fixture with four nodes in one rack and two in the other,
   allocate 10+2, 20+2, and 40+4 EC strips under both priorities; resolve every
   physical segment and assert the reported maximum fragments per rack, node,
