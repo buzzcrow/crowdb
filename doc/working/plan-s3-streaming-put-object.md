@@ -45,6 +45,10 @@ completion returns locations, publish complete object metadata with one KV Put.
   storage header/footer into reserved bytes before handing a full owner or EOF
   prefix to the chunk pipeline. Files: `lib/crowdb-access-s3/src/`,
   `lib/crowdb-protocol/src/frame.rs`, `lib/crowdb-chunk-client/src/`.
+  The protocol region encoder and native slot handoff now finalize a single
+  socket-filled payload in place with byte-identical framing. Large-writer
+  chunk-ID binding and aggregation of adjacent slots into one owner view
+  remain.
 - [ ] **Share payload with integrity and EC**: move MD5/SHA state into the
   object provider lifecycle and feed the same immutable payload views to the
   strip-scoped incremental parity state. Files:

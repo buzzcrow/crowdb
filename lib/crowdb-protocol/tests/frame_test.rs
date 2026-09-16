@@ -3,8 +3,9 @@
 
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::frame::{
-    encode_frame, encode_frames, merge_adjacent_locations, parse_frame, ChunkLocation, FrameError,
-    FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES,
+    encode_frame, encode_frame_regions, encode_frames, merge_adjacent_locations, parse_frame, ChunkLocation,
+    FrameError, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_BYTES,
+    MAX_FRAME_PAYLOAD_BYTES,
 };
 
 const CHUNK: ChunkId = ChunkId { high: 7, low: 11 };
@@ -34,6 +35,39 @@ fn frame_round_trips_and_has_canonical_maximum_size() {
     assert_eq!(decoded.header.payload_offset as usize, FRAME_HEADER_PREFIX_BYTES);
     assert_eq!(decoded.payload, payload);
     assert_eq!(decoded.physical_length, MAX_FRAME_BYTES);
+}
+
+#[test]
+fn separated_frame_regions_match_contiguous_encoding() {
+    let payload = vec![0x5a; MAX_FRAME_PAYLOAD_BYTES];
+    let expected = encode_frame(FrameMagic::RepoLargeV1, CHUNK, &payload, 42).unwrap();
+    let mut header = [0; FRAME_HEADER_PREFIX_BYTES];
+    let mut footer = [0; FRAME_FOOTER_BYTES];
+    encode_frame_regions(
+        FrameMagic::RepoLargeV1,
+        CHUNK,
+        &payload,
+        42,
+        &mut header,
+        &mut footer,
+    )
+    .unwrap();
+
+    assert_eq!(&expected[..header.len()], &header);
+    assert_eq!(&expected[header.len()..header.len() + payload.len()], &payload);
+    assert_eq!(&expected[header.len() + payload.len()..], &footer);
+    let mut short_header = [0; FRAME_HEADER_PREFIX_BYTES - 1];
+    assert_eq!(
+        encode_frame_regions(
+            FrameMagic::RepoLargeV1,
+            CHUNK,
+            &payload,
+            42,
+            &mut short_header,
+            &mut footer,
+        ),
+        Err(FrameError::InvalidRegionLength)
+    );
 }
 
 #[test]

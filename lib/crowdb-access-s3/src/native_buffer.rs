@@ -9,13 +9,15 @@ use std::cell::UnsafeCell;
 use std::io;
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::{Arc, Weak};
 use std::task::{Context, Poll};
 
 use atomic_waker::AtomicWaker;
+use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::frame::{
-    FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES,
+    encode_frame_regions, FrameError, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES,
+    MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES,
 };
 use hyper::body::{Bytes, Http1BodyReceiveBuffer, Http1BodyReceiveProvider};
 
@@ -28,6 +30,16 @@ pub struct NativeBodyReceiver {
     allocator: NativeBodyAllocator,
     state: UnsafeCell<ReceiverState>,
     state_in_use: AtomicBool,
+    capture_frames: AtomicBool,
+    ready_frame: AtomicPtr<NativeFrameSlot>,
+}
+
+/// One socket-filled payload slot whose reserved framing bytes are still
+/// private to the CROWDB owner.
+pub struct NativeFrameSlot {
+    owner: Arc<NativeOwner>,
+    payload_offset: usize,
+    payload_len: usize,
 }
 
 // SAFETY: Hyper invokes one provider serially for one Incoming body. The
@@ -37,6 +49,13 @@ unsafe impl Sync for NativeBodyReceiver {}
 struct ReceiverState {
     owner: Option<Arc<NativeOwner>>,
     next_slot: usize,
+    issued: Option<IssuedSlot>,
+}
+
+struct IssuedSlot {
+    owner: Weak<NativeOwner>,
+    payload_offset: usize,
+    capacity: usize,
 }
 
 struct AllocatorState {
@@ -110,8 +129,11 @@ impl NativeBodyAllocator {
             state: UnsafeCell::new(ReceiverState {
                 owner: None,
                 next_slot: 0,
+                issued: None,
             }),
             state_in_use: AtomicBool::new(false),
+            capture_frames: AtomicBool::new(false),
+            ready_frame: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
@@ -128,6 +150,12 @@ impl NativeBodyAllocator {
 }
 
 impl NativeBodyReceiver {
+    /// Enable ordered native-slot handoff for a consumer which will call
+    /// [`Self::take_ready_frame`] after every received body frame.
+    pub fn enable_frame_slots(&self) {
+        self.capture_frames.store(true, Ordering::Release);
+    }
+
     fn enter_state(&self) -> io::Result<ReceiverStateGuard<'_>> {
         self.state_in_use
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -138,6 +166,91 @@ impl NativeBodyReceiver {
                 )
             })?;
         Ok(ReceiverStateGuard { receiver: self })
+    }
+
+    /// Take the native slot corresponding to `payload`, if that body frame
+    /// came from a provider-owned socket buffer. Header-buffer read-ahead has
+    /// no slot and returns `None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the body frame does not match the next completed
+    /// provider slot.
+    pub fn take_ready_frame(&self, payload: &Bytes) -> io::Result<Option<NativeFrameSlot>> {
+        let pointer = self.ready_frame.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        if pointer.is_null() {
+            return Ok(None);
+        }
+        // SAFETY: `on_data_ready` publishes one Box with release ordering and
+        // this swap is the unique consumer of that pointer.
+        let frame = unsafe { *Box::from_raw(pointer) };
+        let expected = frame.owner.pointer.as_ptr().wrapping_add(frame.payload_offset);
+        if payload.as_ptr() != expected || payload.len() != frame.payload_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HTTP body frame does not match its native receive slot",
+            ));
+        }
+        Ok(Some(frame))
+    }
+}
+
+impl Drop for NativeBodyReceiver {
+    fn drop(&mut self) {
+        let pointer = self.ready_frame.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        if !pointer.is_null() {
+            // SAFETY: the receiver owns an unpublished-to-consumer Box here.
+            drop(unsafe { Box::from_raw(pointer) });
+        }
+    }
+}
+
+impl NativeFrameSlot {
+    #[must_use]
+    pub fn payload_len(&self) -> usize {
+        self.payload_len
+    }
+
+    /// Fill the reserved physical-frame bytes and return one immutable view
+    /// over header, original payload, and footer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a frame error when the payload or reserved regions are invalid.
+    pub fn finalize(
+        self,
+        magic: FrameMagic,
+        chunk_id: ChunkId,
+        write_time_ms: u64,
+    ) -> Result<Bytes, FrameError> {
+        let frame_offset = self.payload_offset - FRAME_HEADER_PREFIX_BYTES;
+        let frame_len = FRAME_HEADER_PREFIX_BYTES + self.payload_len + FRAME_FOOTER_BYTES;
+        // SAFETY: the provider never exposes the reserved header/footer bytes.
+        // This consumed slot is their only writer; payload views alias only
+        // the disjoint initialized payload range.
+        unsafe {
+            let header = std::slice::from_raw_parts_mut(
+                self.owner.pointer.as_ptr().add(frame_offset),
+                FRAME_HEADER_PREFIX_BYTES,
+            );
+            let payload = std::slice::from_raw_parts(
+                self.owner.pointer.as_ptr().add(self.payload_offset),
+                self.payload_len,
+            );
+            let footer = std::slice::from_raw_parts_mut(
+                self.owner
+                    .pointer
+                    .as_ptr()
+                    .add(self.payload_offset + self.payload_len),
+                FRAME_FOOTER_BYTES,
+            );
+            encode_frame_regions(magic, chunk_id, payload, write_time_ms, header, footer)?;
+        }
+        Ok(Bytes::from_owner(NativePhysicalFrameView {
+            owner: self.owner,
+            frame_offset,
+            frame_len,
+        }))
     }
 }
 
@@ -169,6 +282,12 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
         };
         // SAFETY: `_guard` gives this invocation exclusive state access.
         let state = unsafe { &mut *self.state.get() };
+        if state.issued.is_some() {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "previous HTTP body receive buffer is still issued",
+            )));
+        }
         let slots_per_owner = self.allocator.state.owner_bytes / MAX_FRAME_BYTES;
         if state.owner.is_none() || state.next_slot == slots_per_owner {
             state.owner = None;
@@ -200,6 +319,11 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
         let payload_offset = slot * MAX_FRAME_BYTES + FRAME_HEADER_PREFIX_BYTES;
         let capacity = requested.min(MAX_FRAME_PAYLOAD_BYTES);
         let owner = Arc::clone(state.owner.as_ref().expect("owner initialized"));
+        state.issued = Some(IssuedSlot {
+            owner: Arc::downgrade(&owner),
+            payload_offset,
+            capacity,
+        });
         if state.next_slot == slots_per_owner {
             state.owner = None;
         }
@@ -216,10 +340,57 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
     }
 
     fn on_data_ready(&self, buffer: Box<dyn Http1BodyReceiveBuffer>) -> io::Result<Bytes> {
+        let initialized = buffer.initialized_len();
+        let _guard = self.enter_state()?;
+        // SAFETY: `_guard` gives this invocation exclusive state access.
+        let state = unsafe { &mut *self.state.get() };
+        let issued = state.issued.take().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HTTP body receive buffer was not issued",
+            )
+        })?;
+        if initialized > issued.capacity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HTTP body receive buffer exceeded its issued capacity",
+            ));
+        }
+        if self.capture_frames.load(Ordering::Acquire) {
+            let owner = issued.owner.upgrade().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "native body owner was released before completion",
+                )
+            })?;
+            let frame = Box::new(NativeFrameSlot {
+                owner,
+                payload_offset: issued.payload_offset,
+                payload_len: initialized,
+            });
+            let pointer = Box::into_raw(frame);
+            if self
+                .ready_frame
+                .compare_exchange(
+                    std::ptr::null_mut(),
+                    pointer,
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                )
+                .is_err()
+            {
+                // SAFETY: publication failed, so ownership remains local.
+                drop(unsafe { Box::from_raw(pointer) });
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "previous native body frame was not consumed",
+                ));
+            }
+        }
         self.allocator
             .state
             .direct_bytes
-            .fetch_add(buffer.initialized_len(), Ordering::Relaxed);
+            .fetch_add(initialized, Ordering::Relaxed);
         Ok(buffer.freeze())
     }
 
@@ -322,6 +493,12 @@ struct NativePayloadView {
     initialized: usize,
 }
 
+struct NativePhysicalFrameView {
+    owner: Arc<NativeOwner>,
+    frame_offset: usize,
+    frame_len: usize,
+}
+
 impl AsRef<[u8]> for NativePayloadView {
     fn as_ref(&self) -> &[u8] {
         // SAFETY: Hyper calls `advance` only for bytes reported initialized by
@@ -331,6 +508,16 @@ impl AsRef<[u8]> for NativePayloadView {
                 self.owner.pointer.as_ptr().add(self.payload_offset),
                 self.initialized,
             )
+        }
+    }
+}
+
+impl AsRef<[u8]> for NativePhysicalFrameView {
+    fn as_ref(&self) -> &[u8] {
+        // SAFETY: `finalize` initialized this complete frame range before the
+        // immutable owner view was constructed.
+        unsafe {
+            std::slice::from_raw_parts(self.owner.pointer.as_ptr().add(self.frame_offset), self.frame_len)
         }
     }
 }

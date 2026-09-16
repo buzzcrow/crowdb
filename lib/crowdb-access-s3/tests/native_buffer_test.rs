@@ -4,7 +4,8 @@
 use std::future::poll_fn;
 
 use crowdb_access_s3::native_buffer::NativeBodyAllocator;
-use crowdb_protocol::frame::MAX_FRAME_BYTES;
+use crowdb_protocol::common::ChunkId;
+use crowdb_protocol::frame::{parse_frame, FrameMagic, MAX_FRAME_BYTES};
 use hyper::body::Http1BodyReceiveProvider;
 
 #[tokio::test]
@@ -72,5 +73,31 @@ async fn object_receiver_carves_frame_payloads_from_one_mib_owner() {
     drop(provider);
     drop(first);
     drop(second);
+    assert_eq!(allocator.retained_bytes(), 0);
+}
+
+#[tokio::test]
+async fn native_slot_finalizes_reserved_frame_bytes_in_place() {
+    let allocator = NativeBodyAllocator::new(MAX_FRAME_BYTES, MAX_FRAME_BYTES).unwrap();
+    let provider = allocator.object_receiver();
+    provider.enable_frame_slots();
+    let mut allocation = poll_fn(|cx| provider.poll_next_buffer(cx, 7)).await.unwrap();
+    for (slot, value) in allocation.spare_capacity_mut()[..7].iter_mut().zip(*b"payload") {
+        slot.write(value);
+    }
+    allocation.advance(7).unwrap();
+    let payload = provider.on_data_ready(allocation).unwrap();
+    let slot = provider.take_ready_frame(&payload).unwrap().unwrap();
+    assert_eq!(slot.payload_len(), payload.len());
+    let chunk_id = ChunkId { high: 17, low: 29 };
+    let frame = slot.finalize(FrameMagic::RepoLargeV1, chunk_id, 123).unwrap();
+
+    assert_eq!(parse_frame(&frame, chunk_id).unwrap().payload, payload);
+    assert_eq!(frame.as_ptr().wrapping_add(14), payload.as_ptr());
+    assert!(provider.take_ready_frame(&payload).unwrap().is_none());
+
+    drop(frame);
+    drop(payload);
+    drop(provider);
     assert_eq!(allocator.retained_bytes(), 0);
 }
