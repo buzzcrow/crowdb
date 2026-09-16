@@ -10,7 +10,11 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crowdb_chunk_client::{
+    ChunkClientConfig, ChunkIoClient, ChunkIoClientConfig, LargeWritePolicy, SmallWritePolicy,
+};
 use crowdb_chunkdb_client::ChunkdbClientError;
+use crowdb_common::ec::EcScheme;
 use crowdb_diskio_client::{DiskId as DiskIoDiskId, TestWireDiskioClient};
 use crowdb_kv_client::HardwareClient;
 use crowdb_protocol::chunkdb::rpc::DeleteChunkRangeRequest;
@@ -24,6 +28,8 @@ use crowdb_test_harness::chunkdb::{
 use crowdb_test_harness::cluster::KvCluster;
 use crowdb_test_harness::diskdb::DiskdbProcess;
 use crowdb_test_harness::diskio::{DiskioGroup0Identity, DiskioProcess, DiskioStartOpts};
+use hyper::body::Bytes;
+use serde_json::json;
 
 const MASTER_KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 
@@ -123,6 +129,7 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
         &chunk_kv,
     );
     run_restart_phase("lost-reply", &listen, &access_key, &secret_key);
+    run_direct_chunk_benchmark(&cluster.mgmt_endpoints).await;
     run_benchmark(&listen, access_server.child.id(), &access_key, &secret_key);
     assert_native_write_metrics(&listen);
 
@@ -304,6 +311,94 @@ fn run_benchmark(listen: &str, server_pid: u32, access_key: &str, secret_key: &s
         .join(format!("crowdb-s3-e2e-benchmark-{}.json", std::process::id()));
     std::fs::write(&artifact, result.stdout).expect("write S3 baseline samples");
     eprintln!("S3 benchmark samples: {}", artifact.display());
+}
+
+async fn run_direct_chunk_benchmark(seeds: &[String]) {
+    let chunks = Arc::new(
+        ChunkIoClient::connect(ChunkIoClientConfig {
+            management_seeds: seeds.to_vec(),
+            diskio_connections_per_endpoint: 2,
+            diskio_rpc_workers: 1,
+            small_write: SmallWritePolicy::default(),
+        })
+        .await
+        .expect("connect benchmark chunk client"),
+    );
+    let policy = LargeWritePolicy {
+        ec_scheme: EcScheme::new(2, 1),
+        client: Arc::new(ChunkClientConfig {
+            max_chunk_size: 4 * 1024 * 1024,
+            ..ChunkClientConfig::default()
+        }),
+    };
+    let mut samples = Vec::new();
+    for size in [65_536_usize, 1_048_576] {
+        for concurrency in [1_usize, 2] {
+            let mut tasks = Vec::new();
+            for index in 0..concurrency {
+                let chunks = Arc::clone(&chunks);
+                let policy = policy.clone();
+                tasks.push(tokio::spawn(async move {
+                    let payload = Bytes::from(
+                        (0..size)
+                            .map(|offset| u8::try_from(offset % 256).expect("byte value is bounded"))
+                            .collect::<Vec<_>>(),
+                    );
+                    let started = Instant::now();
+                    let result = chunks
+                        .prepare_large_write(Some(size as u64), policy)
+                        .write_buffers([payload.clone()])
+                        .await
+                        .expect("direct chunk write");
+                    let put_ns = started.elapsed().as_nanos();
+                    let started = Instant::now();
+                    let read = chunks
+                        .read_object(&result.locations)
+                        .await
+                        .expect("direct chunk read");
+                    let get_ns = started.elapsed().as_nanos();
+                    assert_eq!(read, payload);
+                    let started = Instant::now();
+                    let range = chunks
+                        .read_range(&result.locations, 0, 4096)
+                        .await
+                        .expect("direct chunk range read");
+                    let range_ns = started.elapsed().as_nanos();
+                    assert_eq!(range, payload.slice(..4096));
+                    json!({
+                        "size": size,
+                        "concurrency": concurrency,
+                        "index": index,
+                        "put_ns": put_ns,
+                        "get_ns": get_ns,
+                        "range_ns": range_ns,
+                        "logical_bytes": result.logical_bytes,
+                        "physical_bytes": result.physical_bytes,
+                        "assembly_copies": result.assembly_copies,
+                    })
+                }));
+            }
+            for task in tasks {
+                samples.push(task.await.expect("direct chunk benchmark task"));
+            }
+        }
+    }
+    let artifact = crowdb_test_harness::test_dirs::test_log_dir().join(format!(
+        "crowdb-direct-chunk-e2e-benchmark-{}.json",
+        std::process::id()
+    ));
+    std::fs::write(
+        &artifact,
+        serde_json::to_vec_pretty(&json!({
+            "scope": "chunk-client only; excludes HTTP, SigV4, namespace metadata, and client network",
+            "ec_data": 2,
+            "ec_code": 1,
+            "samples": samples,
+        }))
+        .expect("serialize direct chunk benchmark"),
+    )
+    .expect("write direct chunk baseline samples");
+    eprintln!("direct chunk benchmark samples: {}", artifact.display());
 }
 
 fn http_get(address: &str, path: &str) -> String {

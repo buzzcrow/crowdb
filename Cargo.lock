@@ -642,6 +642,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "percent-encoding",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
