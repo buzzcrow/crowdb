@@ -35,6 +35,11 @@ impl EcWorker {
     /// Feed one data shard and immediately fold it into parity. The worker
     /// does not retain the data shard after this call.
     pub fn push(&mut self, buffer: &Bytes) -> Result<()> {
+        self.push_views(std::slice::from_ref(buffer))
+    }
+
+    /// Fold one logical data shard represented by immutable owner views.
+    pub fn push_views(&mut self, buffers: &[Bytes]) -> Result<()> {
         if self.shards_received >= self.ec_scheme.data_num {
             return Err(IoError::EcEncodeFailed(format!(
                 "too many data shards: got {}, max {}",
@@ -45,7 +50,7 @@ impl EcWorker {
         self.parity
             .as_mut()
             .ok_or_else(|| IoError::EcEncodeFailed("invalid EC scheme".into()))?
-            .push_partial(buffer)
+            .push_views(&buffers.iter().map(Bytes::as_ref).collect::<Vec<_>>())
             .map_err(|error| IoError::EcEncodeFailed(error.to_string()))?;
         self.shards_received += 1;
         Ok(())

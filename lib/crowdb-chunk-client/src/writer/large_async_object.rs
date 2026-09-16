@@ -16,7 +16,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::{Bytes, BytesMut};
-use crowdb_protocol::frame::{encode_frame, FrameMagic, MAX_FRAME_PAYLOAD_BYTES};
+use crowdb_protocol::frame::{
+    encode_frame, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_PAYLOAD_BYTES,
+};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
@@ -24,7 +26,7 @@ use crate::chunk::chunk_prefetch::ChunkPrefetch;
 use crate::chunk::chunk_writer::ChunkWriter;
 use crate::config::ChunkClientConfig;
 use crate::disk_io::DiskWriter;
-use crate::io::{ChunkIoWriter, FeedStatus};
+use crate::io::{ChunkIoWriter, FeedStatus, FramedWriteBuffer};
 use crate::metrics::LargeWriteRepairMetrics;
 use crate::negative_list::FailedDiskList;
 use crate::traits::ChunkAllocator;
@@ -407,6 +409,19 @@ impl ChunkIoWriter for LargeAsyncObjectWriter {
         Ok(FeedStatus::Continue)
     }
 
+    async fn on_framed_data(&mut self, mut buffer: Box<dyn FramedWriteBuffer>) -> Result<FeedStatus> {
+        if self.finished {
+            return Err(IoError::Finished);
+        }
+        if !self.frame_tail.is_empty() {
+            return Err(IoError::WriteFailed(
+                "owner-backed framed data cannot follow an unframed payload tail".into(),
+            ));
+        }
+        self.push_framed_owner(buffer.as_mut()).await?;
+        Ok(FeedStatus::Continue)
+    }
+
     async fn on_finish(&mut self) -> Result<Vec<ProtoLocation>> {
         if self.finished {
             return Err(IoError::Finished);
@@ -435,6 +450,106 @@ impl ChunkIoWriter for LargeAsyncObjectWriter {
 }
 
 impl LargeAsyncObjectWriter {
+    async fn push_framed_owner(&mut self, buffer: &mut dyn FramedWriteBuffer) -> Result<()> {
+        let declared_logical = (0..buffer.frame_count()).try_fold(0u64, |total, index| {
+            let length = buffer
+                .frame_payload_len(index)
+                .ok_or_else(|| IoError::WriteFailed("framed owner slot is missing".into()))?;
+            total
+                .checked_add(length as u64)
+                .ok_or_else(|| IoError::WriteFailed("framed owner logical length overflows".into()))
+        })?;
+        if declared_logical != buffer.logical_len() {
+            return Err(IoError::WriteFailed(
+                "framed owner logical length is inconsistent".into(),
+            ));
+        }
+        let mut frame_index = 0usize;
+        while frame_index < buffer.frame_count() {
+            self.ensure_open().await?;
+            let remaining = self
+                .chunk_writer
+                .as_ref()
+                .ok_or_else(|| IoError::Internal("large async writer has no chunk writer".into()))?
+                .remaining_capacity();
+            if remaining == 0 {
+                self.rotate_chunk().await?;
+                continue;
+            }
+            let chunk_id = self
+                .chunk_writer
+                .as_ref()
+                .and_then(ChunkWriter::current_chunk_id)
+                .ok_or_else(|| IoError::Internal("large async writer has no chunk ID".into()))?;
+            let write_time_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| {
+                    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+                });
+            let group_start = frame_index;
+            let mut group_range: Option<std::ops::Range<usize>> = None;
+            let mut group_logical = 0u64;
+            let mut group_physical = 0u64;
+            while frame_index < buffer.frame_count() {
+                let payload_len = buffer
+                    .frame_payload_len(frame_index)
+                    .ok_or_else(|| IoError::WriteFailed("framed owner slot is missing".into()))?;
+                let frame_len = FRAME_HEADER_PREFIX_BYTES
+                    .checked_add(payload_len)
+                    .and_then(|length| length.checked_add(FRAME_FOOTER_BYTES))
+                    .ok_or_else(|| IoError::WriteFailed("framed owner length overflows".into()))?;
+                let frame_len_u64 = u64::try_from(frame_len).unwrap_or(u64::MAX);
+                if group_physical.saturating_add(frame_len_u64) > remaining {
+                    break;
+                }
+                let range = buffer
+                    .finalize_frame(frame_index, FrameMagic::RepoLargeV1, chunk_id, write_time_ms)
+                    .map_err(|error| IoError::WriteFailed(error.to_string()))?;
+                if let Some(group) = &mut group_range {
+                    if group.end != range.start {
+                        return Err(IoError::WriteFailed(
+                            "framed owner contains a non-contiguous interior slot".into(),
+                        ));
+                    }
+                    group.end = range.end;
+                } else {
+                    group_range = Some(range);
+                }
+                group_physical = group_physical.saturating_add(frame_len_u64);
+                group_logical = group_logical.saturating_add(payload_len as u64);
+                frame_index += 1;
+            }
+            if frame_index == group_start {
+                if group_start == 0 && remaining == self.config.max_chunk_size {
+                    return Err(IoError::WriteFailed(
+                        "one physical frame exceeds chunk capacity".into(),
+                    ));
+                }
+                self.rotate_chunk().await?;
+                continue;
+            }
+            let view = buffer
+                .view(group_range.ok_or_else(|| IoError::Internal("framed owner group vanished".into()))?)
+                .map_err(|error| IoError::WriteFailed(error.to_string()))?;
+            let status = self
+                .chunk_writer
+                .as_mut()
+                .ok_or_else(|| IoError::Internal("large async writer has no chunk writer".into()))?
+                .push(view)
+                .await?;
+            if status == FeedStatus::Pause {
+                return Err(IoError::Internal(
+                    "pre-split framed owner unexpectedly exceeded chunk capacity".into(),
+                ));
+            }
+            self.logical_bytes_in_chunk = self.logical_bytes_in_chunk.saturating_add(group_logical);
+            if frame_index < buffer.frame_count() {
+                self.rotate_chunk().await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn push_buffer(&mut self, buffer: Bytes) -> Result<()> {
         self.frame_tail.extend_from_slice(&buffer);
         while self.frame_tail.len() >= MAX_FRAME_PAYLOAD_BYTES {

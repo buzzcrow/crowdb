@@ -16,17 +16,18 @@
 //! `segment`, `disk_id`, `zone_offset`) read directly from
 //! `self.chunk.strips[self.strip_index]`.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::chunk::parity_writer::spawn_parity_writes;
-use crate::chunk::segment_writer::{spawn_segment_write, SegmentWriteHandle};
+use crate::chunk::segment_writer::{spawn_segment_write_views, SegmentWriteHandle};
 use crate::chunk::strip::StripResult;
 use crate::disk_io::DiskWriter;
 use crate::io::FeedStatus;
 use crate::worker::EcWorker;
 use crate::{IoError, Result};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use crowdb_common::ec::EcScheme;
 use crowdb_diskio_client::DiskId;
 use crowdb_protocol::chunkdb::rpc::Strip as StripOneof;
@@ -46,7 +47,8 @@ pub struct EcStripWriter {
     pub(crate) partial: bool,
     pub(crate) finished: bool,
     pub(crate) data_handles: Vec<SegmentWriteHandle>,
-    pub(crate) pending: BytesMut,
+    pub(crate) pending: VecDeque<Bytes>,
+    pub(crate) pending_bytes: usize,
 }
 
 impl EcStripWriter {
@@ -70,7 +72,8 @@ impl EcStripWriter {
             partial: false,
             finished: false,
             data_handles: Vec::with_capacity(ec_scheme.data_num),
-            pending: BytesMut::new(),
+            pending: VecDeque::new(),
+            pending_bytes: 0,
         }
     }
 
@@ -173,10 +176,11 @@ impl EcStripWriter {
         }
 
         self.bytes_written = self.bytes_written.saturating_add(buffer.len() as u64);
-        self.pending.extend_from_slice(&buffer);
+        self.pending_bytes = self.pending_bytes.saturating_add(buffer.len());
+        self.pending.push_back(buffer);
         let unit_bytes = usize::try_from(self.unit_bytes()).unwrap_or(usize::MAX);
-        while self.pending.len() >= unit_bytes && !self.is_full() {
-            let block = self.pending.split_to(unit_bytes).freeze();
+        while self.pending_bytes >= unit_bytes && !self.is_full() {
+            let block = self.take_pending(unit_bytes)?;
             self.flush_block(block)?;
         }
 
@@ -188,11 +192,35 @@ impl EcStripWriter {
         Ok(status)
     }
 
-    fn flush_block(&mut self, block: Bytes) -> Result<()> {
-        self.ec_worker.push(&block)?;
+    fn take_pending(&mut self, length: usize) -> Result<Vec<Bytes>> {
+        if length == 0 || length > self.pending_bytes {
+            return Err(IoError::Internal("invalid pending view length".into()));
+        }
+        let mut remaining = length;
+        let mut views = Vec::new();
+        while remaining != 0 {
+            let front = self
+                .pending
+                .pop_front()
+                .ok_or_else(|| IoError::Internal("pending view queue underflow".into()))?;
+            if front.len() <= remaining {
+                remaining -= front.len();
+                views.push(front);
+            } else {
+                views.push(front.slice(..remaining));
+                self.pending.push_front(front.slice(remaining..));
+                remaining = 0;
+            }
+        }
+        self.pending_bytes -= length;
+        Ok(views)
+    }
+
+    fn flush_block(&mut self, block: Vec<Bytes>) -> Result<()> {
+        self.ec_worker.push_views(&block)?;
         let strip_sequence = self.strip()?.strip_sequence;
         let seg = *self.segment(self.next_block)?;
-        self.data_handles.push(spawn_segment_write(
+        self.data_handles.push(spawn_segment_write_views(
             self.disk_writer.clone(),
             strip_sequence,
             seg,
@@ -215,9 +243,9 @@ impl EcStripWriter {
             return Err(IoError::Finished);
         }
         self.finished = true;
-        if !self.pending.is_empty() {
+        if self.pending_bytes != 0 {
             self.partial = true;
-            let block = self.pending.split().freeze();
+            let block = self.take_pending(self.pending_bytes)?;
             self.flush_block(block)?;
         }
 

@@ -16,7 +16,8 @@ use crowdb_access_s3::publication::PublicationRequest;
 use crowdb_access_s3::retrieval::{self, ObjectHeaders, RetrievalError};
 use crowdb_access_s3::route::{S3Operation, S3Route};
 use crowdb_access_s3::streaming::{
-    publish_completed_locations, write_body_with_checksums, PutErrorCode, PutOutcome,
+    publish_completed_locations, write_body_with_checksums, write_native_body_with_checksums, PutErrorCode,
+    PutOutcome,
 };
 use crowdb_chunk_client::{
     ChunkClientConfig, ChunkIoWriter, IoError, LargeWritePolicy, PreparedLargeWrite, SharedObjectWriter,
@@ -199,16 +200,31 @@ impl ProductionS3Operations {
         route_key.extend_from_slice(bucket_id.as_bytes());
         route_key.extend_from_slice(&key);
         let mut writer = self.prepare_writer(content_length, &route_key).await?;
-        install_body_receive_provider(&mut request);
+        let native_receiver = install_body_receive_provider(&mut request);
+        let native_receiver = native_receiver.filter(|_| writer.is_large() && content_length.is_some());
+        if let Some(receiver) = &native_receiver {
+            receiver.enable_owner_handoff();
+        }
         let mut body = request.into_body();
-        let (etag, checksum) = match write_body_with_checksums(
-            &mut body,
-            &mut writer,
-            content_md5.as_deref(),
-            payload_sha256.as_deref(),
-        )
-        .await
-        {
+        let write_result = if let Some(receiver) = native_receiver.as_deref() {
+            write_native_body_with_checksums(
+                &mut body,
+                &mut writer,
+                receiver,
+                content_md5.as_deref(),
+                payload_sha256.as_deref(),
+            )
+            .await
+        } else {
+            write_body_with_checksums(
+                &mut body,
+                &mut writer,
+                content_md5.as_deref(),
+                payload_sha256.as_deref(),
+            )
+            .await
+        };
+        let (etag, checksum) = match write_result {
             Ok(result) => result,
             Err(outcome) => {
                 let _ = writer.on_error().await;
@@ -428,6 +444,12 @@ enum ObjectWriter {
     Large(Box<PreparedLargeWrite>),
 }
 
+impl ObjectWriter {
+    fn is_large(&self) -> bool {
+        matches!(self, Self::Large(_))
+    }
+}
+
 #[async_trait::async_trait]
 impl ChunkIoWriter for ObjectWriter {
     async fn on_data(
@@ -437,6 +459,18 @@ impl ChunkIoWriter for ObjectWriter {
         match self {
             Self::Small(writer) => writer.on_data(buffer).await,
             Self::Large(writer) => writer.on_data(buffer).await,
+        }
+    }
+
+    async fn on_framed_data(
+        &mut self,
+        buffer: Box<dyn crowdb_chunk_client::FramedWriteBuffer>,
+    ) -> crowdb_chunk_client::Result<crowdb_chunk_client::FeedStatus> {
+        match self {
+            Self::Small(_) => Err(IoError::WriteFailed(
+                "small object writer does not accept framed owners".into(),
+            )),
+            Self::Large(writer) => writer.on_framed_data(buffer).await,
         }
     }
 

@@ -316,3 +316,19 @@ fn incremental_partial_parity_matches_zero_padded_tail() {
     invalid.push_partial(&tail).unwrap();
     assert!(invalid.push_partial(&first).is_err());
 }
+
+#[test]
+fn incremental_scattered_shards_match_contiguous_input() {
+    let scheme = EcScheme::new(2, 1);
+    let first = vec![0x19; 4096];
+    let second = vec![0x83; 4096];
+    let expected = encode_parity_from_shards(scheme, &[&first, &second]).unwrap();
+    let mut incremental = IncrementalParity::new(scheme).unwrap();
+    incremental
+        .push_views(&[&first[..777], &first[777..2048], &first[2048..]])
+        .unwrap();
+    incremental
+        .push_views(&[&second[..1024], &second[1024..]])
+        .unwrap();
+    assert_eq!(incremental.finish().unwrap(), expected);
+}

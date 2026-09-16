@@ -747,6 +747,13 @@ impl ChunkIoWriter for PreparedLargeWrite {
         self.writer.on_data(buffer).await
     }
 
+    async fn on_framed_data(
+        &mut self,
+        buffer: Box<dyn crate::FramedWriteBuffer>,
+    ) -> Result<crate::FeedStatus> {
+        self.writer.on_framed_data(buffer).await
+    }
+
     async fn on_finish(&mut self) -> Result<Vec<Location>> {
         self.writer.on_finish().await
     }

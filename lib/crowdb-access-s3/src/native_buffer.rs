@@ -8,12 +8,14 @@
 use std::cell::UnsafeCell;
 use std::io;
 use std::mem::MaybeUninit;
+use std::ops::Range;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::task::{Context, Poll};
 
 use atomic_waker::AtomicWaker;
+use crowdb_chunk_client::FramedWriteBuffer;
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::frame::{
     encode_frame_regions, FrameError, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES,
@@ -30,16 +32,17 @@ pub struct NativeBodyReceiver {
     allocator: NativeBodyAllocator,
     state: UnsafeCell<ReceiverState>,
     state_in_use: AtomicBool,
-    capture_frames: AtomicBool,
-    ready_frame: AtomicPtr<NativeFrameSlot>,
+    owner_handoff: AtomicBool,
+    prefetched: AtomicBool,
+    ready_owner: AtomicPtr<NativeFramedOwner>,
 }
 
-/// One socket-filled payload slot whose reserved framing bytes are still
-/// private to the CROWDB owner.
-pub struct NativeFrameSlot {
+/// One contiguous native receive owner with populated physical-frame slots.
+pub struct NativeFramedOwner {
     owner: Arc<NativeOwner>,
-    payload_offset: usize,
-    payload_len: usize,
+    payload_lengths: Box<[u16]>,
+    logical_len: u64,
+    physical_len: usize,
 }
 
 // SAFETY: Hyper invokes one provider serially for one Incoming body. The
@@ -50,12 +53,14 @@ struct ReceiverState {
     owner: Option<Arc<NativeOwner>>,
     next_slot: usize,
     issued: Option<IssuedSlot>,
+    completed_slots: usize,
+    payload_lengths: Vec<u16>,
 }
 
 struct IssuedSlot {
     owner: Weak<NativeOwner>,
-    payload_offset: usize,
     capacity: usize,
+    slot: usize,
 }
 
 struct AllocatorState {
@@ -130,10 +135,13 @@ impl NativeBodyAllocator {
                 owner: None,
                 next_slot: 0,
                 issued: None,
+                completed_slots: 0,
+                payload_lengths: vec![0; self.state.owner_bytes / MAX_FRAME_BYTES],
             }),
             state_in_use: AtomicBool::new(false),
-            capture_frames: AtomicBool::new(false),
-            ready_frame: AtomicPtr::new(std::ptr::null_mut()),
+            owner_handoff: AtomicBool::new(false),
+            prefetched: AtomicBool::new(false),
+            ready_owner: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
@@ -150,10 +158,16 @@ impl NativeBodyAllocator {
 }
 
 impl NativeBodyReceiver {
-    /// Enable ordered native-slot handoff for a consumer which will call
-    /// [`Self::take_ready_frame`] after every received body frame.
-    pub fn enable_frame_slots(&self) {
-        self.capture_frames.store(true, Ordering::Release);
+    /// Enable publication of each full native owner. A request which receives
+    /// header-buffer read-ahead remains on the generic view path.
+    pub fn enable_owner_handoff(&self) {
+        self.owner_handoff.store(true, Ordering::Release);
+    }
+
+    /// Whether body data can still be delivered as complete native owners.
+    #[must_use]
+    pub fn owner_handoff_active(&self) -> bool {
+        self.owner_handoff.load(Ordering::Acquire) && !self.prefetched.load(Ordering::Acquire)
     }
 
     fn enter_state(&self) -> io::Result<ReceiverStateGuard<'_>> {
@@ -168,36 +182,102 @@ impl NativeBodyReceiver {
         Ok(ReceiverStateGuard { receiver: self })
     }
 
-    /// Take the native slot corresponding to `payload`, if that body frame
-    /// came from a provider-owned socket buffer. Header-buffer read-ahead has
-    /// no slot and returns `None`.
+    /// Take a completed contiguous owner after the body frame which filled its
+    /// last slot has been delivered.
+    #[must_use]
+    pub fn take_ready_owner(&self) -> Option<NativeFramedOwner> {
+        let pointer = self.ready_owner.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        if pointer.is_null() {
+            return None;
+        }
+        // SAFETY: `on_data_ready` publishes one Box with release ordering;
+        // this swap is the unique consumer of that pointer.
+        Some(unsafe { *Box::from_raw(pointer) })
+    }
+
+    /// Finish the populated prefix of the current owner at HTTP body EOF.
     ///
     /// # Errors
     ///
-    /// Returns an error if the body frame does not match the next completed
-    /// provider slot.
-    pub fn take_ready_frame(&self, payload: &Bytes) -> io::Result<Option<NativeFrameSlot>> {
-        let pointer = self.ready_frame.swap(std::ptr::null_mut(), Ordering::AcqRel);
-        if pointer.is_null() {
+    /// Returns an error if Hyper still owns an issued receive region or the
+    /// provider's slot accounting is inconsistent.
+    pub fn finish_owner(&self) -> io::Result<Option<NativeFramedOwner>> {
+        if let Some(owner) = self.take_ready_owner() {
+            return Ok(Some(owner));
+        }
+        if !self.owner_handoff.load(Ordering::Acquire) || self.prefetched.load(Ordering::Acquire) {
             return Ok(None);
         }
-        // SAFETY: `on_data_ready` publishes one Box with release ordering and
-        // this swap is the unique consumer of that pointer.
-        let frame = unsafe { *Box::from_raw(pointer) };
-        let expected = frame.owner.pointer.as_ptr().wrapping_add(frame.payload_offset);
-        if payload.as_ptr() != expected || payload.len() != frame.payload_len {
+        let _guard = self.enter_state()?;
+        // SAFETY: `_guard` gives this invocation exclusive state access.
+        let state = unsafe { &mut *self.state.get() };
+        if state.issued.is_some() {
             return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "HTTP body frame does not match its native receive slot",
+                io::ErrorKind::WouldBlock,
+                "cannot finish native owner while a receive region is issued",
             ));
         }
-        Ok(Some(frame))
+        if state.completed_slots == 0 {
+            return Ok(None);
+        }
+        let owner = state
+            .owner
+            .take()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "partial native owner is missing"))?;
+        let result = completed_owner(state, owner)?;
+        state.next_slot = 0;
+        Ok(Some(result))
     }
+
+    fn publish_owner(&self, owner: NativeFramedOwner) -> io::Result<()> {
+        let pointer = Box::into_raw(Box::new(owner));
+        if self
+            .ready_owner
+            .compare_exchange(
+                std::ptr::null_mut(),
+                pointer,
+                Ordering::Release,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            return Ok(());
+        }
+        // SAFETY: publication failed, so ownership remains local.
+        drop(unsafe { Box::from_raw(pointer) });
+        Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "previous native owner was not consumed",
+        ))
+    }
+}
+
+fn completed_owner(state: &mut ReceiverState, owner: Arc<NativeOwner>) -> io::Result<NativeFramedOwner> {
+    let lengths = state.payload_lengths[..state.completed_slots]
+        .to_vec()
+        .into_boxed_slice();
+    let logical_len = lengths.iter().map(|length| u64::from(*length)).sum();
+    let last_payload = lengths
+        .last()
+        .copied()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "native owner has no completed slots"))?;
+    let physical_len = (lengths.len() - 1) * MAX_FRAME_BYTES
+        + FRAME_HEADER_PREFIX_BYTES
+        + usize::from(last_payload)
+        + FRAME_FOOTER_BYTES;
+    state.completed_slots = 0;
+    state.payload_lengths.fill(0);
+    Ok(NativeFramedOwner {
+        owner,
+        payload_lengths: lengths,
+        logical_len,
+        physical_len,
+    })
 }
 
 impl Drop for NativeBodyReceiver {
     fn drop(&mut self) {
-        let pointer = self.ready_frame.swap(std::ptr::null_mut(), Ordering::AcqRel);
+        let pointer = self.ready_owner.swap(std::ptr::null_mut(), Ordering::AcqRel);
         if !pointer.is_null() {
             // SAFETY: the receiver owns an unpublished-to-consumer Box here.
             drop(unsafe { Box::from_raw(pointer) });
@@ -205,26 +285,34 @@ impl Drop for NativeBodyReceiver {
     }
 }
 
-impl NativeFrameSlot {
-    #[must_use]
-    pub fn payload_len(&self) -> usize {
-        self.payload_len
+impl FramedWriteBuffer for NativeFramedOwner {
+    fn logical_len(&self) -> u64 {
+        self.logical_len
     }
 
-    /// Fill the reserved physical-frame bytes and return one immutable view
-    /// over header, original payload, and footer.
-    ///
-    /// # Errors
-    ///
-    /// Returns a frame error when the payload or reserved regions are invalid.
-    pub fn finalize(
-        self,
+    fn frame_count(&self) -> usize {
+        self.payload_lengths.len()
+    }
+
+    fn frame_payload_len(&self, index: usize) -> Option<usize> {
+        self.payload_lengths.get(index).copied().map(usize::from)
+    }
+
+    fn finalize_frame(
+        &mut self,
+        index: usize,
         magic: FrameMagic,
         chunk_id: ChunkId,
         write_time_ms: u64,
-    ) -> Result<Bytes, FrameError> {
-        let frame_offset = self.payload_offset - FRAME_HEADER_PREFIX_BYTES;
-        let frame_len = FRAME_HEADER_PREFIX_BYTES + self.payload_len + FRAME_FOOTER_BYTES;
+    ) -> Result<Range<usize>, FrameError> {
+        let payload_len = self
+            .frame_payload_len(index)
+            .ok_or(FrameError::InvalidLocationRange)?;
+        let frame_offset = index
+            .checked_mul(MAX_FRAME_BYTES)
+            .ok_or(FrameError::LengthOverflow)?;
+        let payload_offset = frame_offset + FRAME_HEADER_PREFIX_BYTES;
+        let frame_len = FRAME_HEADER_PREFIX_BYTES + payload_len + FRAME_FOOTER_BYTES;
         // SAFETY: the provider never exposes the reserved header/footer bytes.
         // This consumed slot is their only writer; payload views alias only
         // the disjoint initialized payload range.
@@ -233,23 +321,25 @@ impl NativeFrameSlot {
                 self.owner.pointer.as_ptr().add(frame_offset),
                 FRAME_HEADER_PREFIX_BYTES,
             );
-            let payload = std::slice::from_raw_parts(
-                self.owner.pointer.as_ptr().add(self.payload_offset),
-                self.payload_len,
-            );
+            let payload =
+                std::slice::from_raw_parts(self.owner.pointer.as_ptr().add(payload_offset), payload_len);
             let footer = std::slice::from_raw_parts_mut(
-                self.owner
-                    .pointer
-                    .as_ptr()
-                    .add(self.payload_offset + self.payload_len),
+                self.owner.pointer.as_ptr().add(payload_offset + payload_len),
                 FRAME_FOOTER_BYTES,
             );
             encode_frame_regions(magic, chunk_id, payload, write_time_ms, header, footer)?;
         }
+        Ok(frame_offset..frame_offset + frame_len)
+    }
+
+    fn view(&self, range: Range<usize>) -> Result<Bytes, FrameError> {
+        if range.start >= range.end || range.end > self.physical_len {
+            return Err(FrameError::InvalidLocationRange);
+        }
         Ok(Bytes::from_owner(NativePhysicalFrameView {
-            owner: self.owner,
-            frame_offset,
-            frame_len,
+            owner: Arc::clone(&self.owner),
+            frame_offset: range.start,
+            frame_len: range.len(),
         }))
     }
 }
@@ -292,6 +382,8 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
         if state.owner.is_none() || state.next_slot == slots_per_owner {
             state.owner = None;
             state.next_slot = 0;
+            state.completed_slots = 0;
+            state.payload_lengths.fill(0);
             let owner_bytes = self.allocator.state.owner_bytes;
             if !self.allocator.try_reserve(owner_bytes) {
                 self.allocator.state.credit_waker.register(cx.waker());
@@ -321,8 +413,8 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
         let owner = Arc::clone(state.owner.as_ref().expect("owner initialized"));
         state.issued = Some(IssuedSlot {
             owner: Arc::downgrade(&owner),
-            payload_offset,
             capacity,
+            slot,
         });
         if state.next_slot == slots_per_owner {
             state.owner = None;
@@ -356,35 +448,26 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
                 "HTTP body receive buffer exceeded its issued capacity",
             ));
         }
-        if self.capture_frames.load(Ordering::Acquire) {
+        if self.owner_handoff.load(Ordering::Acquire) && !self.prefetched.load(Ordering::Acquire) {
             let owner = issued.owner.upgrade().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     "native body owner was released before completion",
                 )
             })?;
-            let frame = Box::new(NativeFrameSlot {
-                owner,
-                payload_offset: issued.payload_offset,
-                payload_len: initialized,
-            });
-            let pointer = Box::into_raw(frame);
-            if self
-                .ready_frame
-                .compare_exchange(
-                    std::ptr::null_mut(),
-                    pointer,
-                    Ordering::Release,
-                    Ordering::Relaxed,
-                )
-                .is_err()
-            {
-                // SAFETY: publication failed, so ownership remains local.
-                drop(unsafe { Box::from_raw(pointer) });
+            if issued.slot != state.completed_slots || initialized == 0 {
                 return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "previous native body frame was not consumed",
+                    io::ErrorKind::InvalidData,
+                    "native body slots completed out of order",
                 ));
+            }
+            state.payload_lengths[issued.slot] = u16::try_from(initialized).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "native payload length exceeds u16")
+            })?;
+            state.completed_slots += 1;
+            if state.completed_slots == state.payload_lengths.len() {
+                let completed = completed_owner(state, owner)?;
+                self.publish_owner(completed)?;
             }
         }
         self.allocator
@@ -395,6 +478,18 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
     }
 
     fn on_prefetched_data(&self, data: Bytes) -> io::Result<Bytes> {
+        if self.owner_handoff.load(Ordering::Acquire) {
+            let _guard = self.enter_state()?;
+            // SAFETY: `_guard` gives this invocation exclusive state access.
+            let state = unsafe { &*self.state.get() };
+            if state.completed_slots != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "HTTP read-ahead arrived after native owner assembly started",
+                ));
+            }
+        }
+        self.prefetched.store(true, Ordering::Release);
         self.allocator
             .state
             .prefetched_bytes

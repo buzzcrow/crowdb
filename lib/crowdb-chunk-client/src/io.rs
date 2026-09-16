@@ -4,10 +4,35 @@
 //! `ChunkIoWriter` — shared push-based async interface for chunk
 //! data-path writers.
 
+use std::ops::Range;
+
 use bytes::Bytes;
 
 use crate::Result;
 use crowdb_protocol::chunkdb::rpc::Location as ProtoLocation;
+use crowdb_protocol::common::ChunkId;
+use crowdb_protocol::frame::{FrameError, FrameMagic};
+
+/// One owner-backed logical payload whose physical frame regions can be
+/// finalized in place and sliced into immutable write views.
+pub trait FramedWriteBuffer: Send {
+    /// Total logical payload bytes across every frame slot.
+    fn logical_len(&self) -> u64;
+    /// Number of populated physical-frame slots.
+    fn frame_count(&self) -> usize;
+    /// Logical payload bytes in one frame slot.
+    fn frame_payload_len(&self, index: usize) -> Option<usize>;
+    /// Fill one slot's reserved frame bytes for its actual destination chunk.
+    fn finalize_frame(
+        &mut self,
+        index: usize,
+        magic: FrameMagic,
+        chunk_id: ChunkId,
+        write_time_ms: u64,
+    ) -> std::result::Result<Range<usize>, FrameError>;
+    /// Return an immutable zero-copy view over a finalized physical range.
+    fn view(&self, range: Range<usize>) -> std::result::Result<Bytes, FrameError>;
+}
 
 /// Result of `on_data` — does the writer need more data?
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +81,13 @@ pub enum BackpressurePolicy {
 pub trait ChunkIoWriter: Send {
     /// Push a data buffer. An `Ok` result always means the buffer was stored.
     async fn on_data(&mut self, buffer: Bytes) -> Result<FeedStatus>;
+    /// Push one owner-backed framed buffer. Large writers override this path;
+    /// other writers reject it rather than copying framed bytes back out.
+    async fn on_framed_data(&mut self, _buffer: Box<dyn FramedWriteBuffer>) -> Result<FeedStatus> {
+        Err(crate::IoError::WriteFailed(
+            "writer does not accept owner-backed framed data".into(),
+        ))
+    }
     /// End of input: flush, seal, return the `Location` array.
     async fn on_finish(&mut self) -> Result<Vec<ProtoLocation>>;
     /// Abort: return `Location`s of already-sealed chunks for cleanup.

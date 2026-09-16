@@ -3,19 +3,22 @@
 
 use std::collections::VecDeque;
 use std::convert::Infallible;
+use std::future::poll_fn;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 
 use async_trait::async_trait;
 use crowdb_access_s3::metadata::{BucketId, ObjectRecord};
+use crowdb_access_s3::native_buffer::NativeBodyAllocator;
 use crowdb_access_s3::streaming::{
-    attach_completed_locations, cleanup_after_definite_error, write_body, FailedPublicationCleanup,
-    FailedPublicationTarget, PutErrorCode, PutOutcome,
+    attach_completed_locations, cleanup_after_definite_error, write_body, write_native_body_with_checksums,
+    FailedPublicationCleanup, FailedPublicationTarget, PutErrorCode, PutOutcome,
 };
-use crowdb_chunk_client::{ChunkIoWriter, FeedStatus, IoError};
+use crowdb_chunk_client::{ChunkIoWriter, FeedStatus, FramedWriteBuffer, IoError};
 use crowdb_protocol::chunkdb::rpc::Location;
-use hyper::body::{Body, Bytes, Frame, SizeHint};
+use crowdb_protocol::frame::{MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES};
+use hyper::body::{Body, Bytes, Frame, Http1BodyReceiveProvider, SizeHint};
 
 #[test]
 fn completed_locations_become_the_object_data_reference() {
@@ -184,4 +187,69 @@ async fn declared_length_completion_does_not_poll_for_an_extra_body_frame() {
 
     write_body(&mut body, &mut writer).await.expect("body accepted");
     assert_eq!(body.polls.load(Ordering::Relaxed), 1);
+}
+
+#[derive(Default)]
+struct NativeOwnerWriter {
+    generic_frames: usize,
+    owner_frames: usize,
+    logical_bytes: u64,
+}
+
+#[async_trait]
+impl ChunkIoWriter for NativeOwnerWriter {
+    async fn on_data(&mut self, _buffer: Bytes) -> crowdb_chunk_client::Result<FeedStatus> {
+        self.generic_frames += 1;
+        Ok(FeedStatus::Continue)
+    }
+
+    async fn on_framed_data(
+        &mut self,
+        buffer: Box<dyn FramedWriteBuffer>,
+    ) -> crowdb_chunk_client::Result<FeedStatus> {
+        self.owner_frames += 1;
+        self.logical_bytes += buffer.logical_len();
+        Ok(FeedStatus::Continue)
+    }
+
+    async fn on_finish(&mut self) -> crowdb_chunk_client::Result<Vec<Location>> {
+        Ok(Vec::new())
+    }
+
+    async fn on_error(&mut self) -> crowdb_chunk_client::Result<Vec<Location>> {
+        Ok(Vec::new())
+    }
+
+    fn require_data(&self) -> bool {
+        true
+    }
+}
+
+#[tokio::test]
+async fn native_body_hashes_payload_and_hands_owner_to_writer_once() {
+    let allocator = NativeBodyAllocator::new(MAX_FRAME_BYTES, MAX_FRAME_BYTES).unwrap();
+    let receiver = allocator.object_receiver();
+    receiver.enable_owner_handoff();
+    let mut allocation = poll_fn(|cx| receiver.poll_next_buffer(cx, MAX_FRAME_PAYLOAD_BYTES))
+        .await
+        .unwrap();
+    allocation
+        .spare_capacity_mut()
+        .fill(std::mem::MaybeUninit::new(0x5a));
+    allocation.advance(MAX_FRAME_PAYLOAD_BYTES).unwrap();
+    let payload = receiver.on_data_ready(allocation).unwrap();
+    let mut body = TestBody {
+        frames: VecDeque::from([payload]),
+        polls: AtomicUsize::new(0),
+    };
+    let mut writer = NativeOwnerWriter::default();
+
+    let (_, checksum) = write_native_body_with_checksums(&mut body, &mut writer, &receiver, None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(writer.generic_frames, 0);
+    assert_eq!(writer.owner_frames, 1);
+    assert_eq!(writer.logical_bytes, MAX_FRAME_PAYLOAD_BYTES as u64);
+    assert_eq!(checksum.len(), 16);
 }

@@ -13,6 +13,7 @@ use hyper::body::{Body, Bytes};
 
 use crate::integrity::SinglePartIntegrity;
 use crate::metadata::{ChunkKvMetadataStore, MetadataStoreError, ObjectRecord};
+use crate::native_buffer::NativeBodyReceiver;
 use crate::publication::{publish, PublicationError, PublicationRequest};
 
 #[derive(Debug, thiserror::Error)]
@@ -173,6 +174,69 @@ where
             .on_data(data)
             .await
             .map_err(|error| put_error(PutErrorCode::ChunkWrite, error))?;
+    }
+}
+
+/// Streams one body through a native owner provider while calculating object
+/// integrity over the socket-filled payload views. Full owners and the EOF
+/// prefix are handed to the large writer without payload copies.
+///
+/// Header-buffer read-ahead falls back to the generic payload path until its
+/// edge-view representation is available.
+///
+/// # Errors
+///
+/// Returns a coded read, native-owner, writer, or checksum error.
+pub async fn write_native_body_with_checksums<B, W>(
+    body: &mut B,
+    writer: &mut W,
+    receiver: &NativeBodyReceiver,
+    expected_content_md5: Option<&str>,
+    expected_payload_sha256: Option<&str>,
+) -> Result<(String, Vec<u8>), PutOutcome>
+where
+    B: Body<Data = Bytes> + Unpin,
+    B::Error: std::fmt::Display,
+    W: ChunkIoWriter,
+{
+    let mut integrity = SinglePartIntegrity::default();
+    loop {
+        while !writer.require_data() {
+            writer.wait_for_capacity().await;
+        }
+        let frame = poll_fn(|context| Pin::new(&mut *body).poll_frame(context)).await;
+        let Some(frame) = frame else {
+            if receiver.owner_handoff_active() {
+                if let Some(owner) = receiver
+                    .finish_owner()
+                    .map_err(|error| put_error(PutErrorCode::BodyRead, error))?
+                {
+                    writer
+                        .on_framed_data(Box::new(owner))
+                        .await
+                        .map_err(|error| put_error(PutErrorCode::ChunkWrite, error))?;
+                }
+            }
+            return finish_integrity(integrity, expected_content_md5, expected_payload_sha256);
+        };
+        let frame = frame.map_err(|error| put_error(PutErrorCode::BodyRead, error))?;
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
+        integrity.update(&data);
+        if receiver.owner_handoff_active() {
+            if let Some(owner) = receiver.take_ready_owner() {
+                writer
+                    .on_framed_data(Box::new(owner))
+                    .await
+                    .map_err(|error| put_error(PutErrorCode::ChunkWrite, error))?;
+            }
+        } else {
+            writer
+                .on_data(data)
+                .await
+                .map_err(|error| put_error(PutErrorCode::ChunkWrite, error))?;
+        }
     }
 }
 

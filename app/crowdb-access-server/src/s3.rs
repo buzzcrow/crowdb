@@ -7,6 +7,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crowdb_access_s3::error::S3Error;
+use crowdb_access_s3::native_buffer::NativeBodyReceiver;
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Http1BodyReceiveProvider, Incoming};
 use hyper::server::conn::http1;
@@ -31,13 +32,36 @@ pub trait S3HttpHandler: Send + Sync + 'static {
 }
 
 #[derive(Clone)]
-pub(crate) struct DeferredBodyReceiveProvider(pub Arc<dyn Http1BodyReceiveProvider>);
+pub(crate) struct DeferredBodyReceiveProvider {
+    provider: Arc<dyn Http1BodyReceiveProvider>,
+    native: Option<Arc<NativeBodyReceiver>>,
+}
+
+impl DeferredBodyReceiveProvider {
+    fn generic(provider: Arc<dyn Http1BodyReceiveProvider>) -> Self {
+        Self {
+            provider,
+            native: None,
+        }
+    }
+
+    fn native(receiver: Arc<NativeBodyReceiver>) -> Self {
+        Self {
+            provider: receiver.clone(),
+            native: Some(receiver),
+        }
+    }
+}
 
 /// Installs the admitted request's provider immediately before body polling.
-pub fn install_body_receive_provider(request: &mut Request<Incoming>) {
+pub fn install_body_receive_provider(request: &mut Request<Incoming>) -> Option<Arc<NativeBodyReceiver>> {
     if let Some(deferred) = request.extensions_mut().remove::<DeferredBodyReceiveProvider>() {
-        request.body_mut().set_http1_body_receive_provider(deferred.0);
+        request
+            .body_mut()
+            .set_http1_body_receive_provider(deferred.provider);
+        return deferred.native;
     }
+    None
 }
 
 /// Runs one independent HTTP/1 S3 listener until shutdown.

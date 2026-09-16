@@ -40,25 +40,27 @@ completion returns locations, publish complete object metadata with one KV Put.
   preparation, and admission. Files: `third-party/hyper/src/body/`,
   `third-party/hyper/src/proto/h1/`, `lib/crowdb-access-s3/src/native_buffer.rs`,
   `app/crowdb-access-server/src/s3/`.
-- [ ] **Finalize native physical frames in place**: allocate bounded 1 MiB
+- [x] **Finalize native physical frames in place**: allocate bounded 1 MiB
   owners, divide them into 64 KiB slots, fill only payload regions, and write
   storage header/footer into reserved bytes before handing a full owner or EOF
   prefix to the chunk pipeline. Files: `lib/crowdb-access-s3/src/`,
   `lib/crowdb-protocol/src/frame.rs`, `lib/crowdb-chunk-client/src/`.
-  The protocol region encoder and native slot handoff now finalize a single
-  socket-filled payload in place with byte-identical framing. Large-writer
-  chunk-ID binding and aggregation of adjacent slots into one owner view
-  remain.
-- [ ] **Share payload with integrity and EC**: move MD5/SHA state into the
+  A full 1 MiB owner or EOF prefix reaches the large writer once; the writer
+  finalizes each frame in place against its actual chunk and slices the same
+  owner at chunk, strip, and block boundaries.
+- [x] **Share payload with integrity and EC**: bind MD5/SHA state to the object
+  body lifecycle and feed the same immutable payload views to the strip-scoped
+  incremental parity state. Files:
   object provider lifecycle and feed the same immutable payload views to the
   strip-scoped incremental parity state. Files:
   `lib/crowdb-access-s3/src/integrity.rs`,
   `lib/crowdb-chunk-client/src/worker/`,
   `lib/crowdb-common/rust/src/ec.rs`.
-  The large-write EC worker now folds each arriving block directly into
+  The integrity pipe hashes Hyper's owner-backed payload views. The large-write
+  EC worker folds each arriving block directly into
   parity, including a zero-padded short tail, and no longer retains every data
-  shard for a second full-strip read at finish. Provider-owned view input and
-  object-lifecycle integrity state remain.
+  shard for a second full-strip read at finish. It consumes scattered owner
+  views and DiskIO receives those views without payload assembly.
 
 ## RPC buffer views
 
@@ -76,13 +78,16 @@ completion returns locations, publish complete object metadata with one KV Put.
   1 MiB buffers and the bounded chain only for header read-ahead and final edge
   shapes; never coalesce PUT payload. Add copy/view accounting. Files:
   `lib/crowdb-diskio-client/src/`, `lib/crowdb-chunk-client/src/`.
+  Normal native owners now use the single-owner path and writer boundary
+  slicing reaches DiskIO as views. Header read-ahead/final mixed edges and
+  copy/view counters remain.
 
 ## Tests and gates
 
 - [~] **Integration tests**: assert writer failure does not publish and writer
   completion produces one object-key KV Put. Files:
   `lib/crowdb-access-s3/tests/*_test.rs`.
-- [ ] **Required gates**: run affected S3, chunk client, RPC, and Hyper gates.
+- [x] **Required gates**: run affected S3, chunk client, RPC, and Hyper gates.
   Files: workspace.
 
 ## Gate notes

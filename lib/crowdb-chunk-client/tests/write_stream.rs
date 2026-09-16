@@ -15,6 +15,7 @@
 mod common;
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -24,9 +25,9 @@ use crowdb_test_harness::test_dirs;
 use async_trait::async_trait;
 use bytes::Bytes;
 use crowdb_chunk_client::{
-    run_large_write_benchmark, ChunkAllocator, ChunkClientConfig, ChunkIoClient, ChunkIoWriter, IoError,
-    LargeAsyncObjectWriter, LargeObjectWriter, LargeWriteBenchmarkConfig, LargeWritePolicy, Result,
-    WriterPool,
+    run_large_write_benchmark, ChunkAllocator, ChunkClientConfig, ChunkIoClient, ChunkIoWriter,
+    FramedWriteBuffer, IoError, LargeAsyncObjectWriter, LargeObjectWriter, LargeWriteBenchmarkConfig,
+    LargeWritePolicy, Result, WriterPool,
 };
 use crowdb_common::ec::EcScheme;
 use crowdb_common::metrics::{MetricPoint, MetricsRegistry};
@@ -38,10 +39,11 @@ use crowdb_protocol::chunkdb::rpc::{
     QueryChunkResponse, SealChunkRequest, SealChunkResponse, StripType, UpdateChunkStripRequest,
     UpdateChunkStripResponse,
 };
-use crowdb_protocol::common::DiskId as ProtoDiskId;
+use crowdb_protocol::common::{ChunkId, DiskId as ProtoDiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
 use crowdb_protocol::frame::{
-    parse_frame, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_PAYLOAD_BYTES,
+    encode_frame_regions, parse_frame, FrameError, FrameMagic, FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES,
+    MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES,
 };
 
 use common::LocalFileDiskWriter;
@@ -81,6 +83,66 @@ fn decode_repo_large_frames(bytes: &[u8], chunk_id: crowdb_protocol::common::Chu
 
 struct ErrorReader {
     emitted: bool,
+}
+
+struct TestFramedOwner {
+    bytes: Vec<u8>,
+    payload_lengths: Vec<usize>,
+    finalized_chunks: Arc<Mutex<Vec<ChunkId>>>,
+    views: Arc<Mutex<Vec<Range<usize>>>>,
+}
+
+impl TestFramedOwner {
+    fn full_frames(count: usize) -> Self {
+        let mut bytes = vec![0; count * MAX_FRAME_BYTES];
+        for index in 0..count {
+            let start = index * MAX_FRAME_BYTES + FRAME_HEADER_PREFIX_BYTES;
+            bytes[start..start + MAX_FRAME_PAYLOAD_BYTES].fill(index as u8 + 1);
+        }
+        Self {
+            bytes,
+            payload_lengths: vec![MAX_FRAME_PAYLOAD_BYTES; count],
+            finalized_chunks: Arc::new(Mutex::new(Vec::new())),
+            views: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl FramedWriteBuffer for TestFramedOwner {
+    fn logical_len(&self) -> u64 {
+        self.payload_lengths.iter().map(|length| *length as u64).sum()
+    }
+
+    fn frame_count(&self) -> usize {
+        self.payload_lengths.len()
+    }
+
+    fn frame_payload_len(&self, index: usize) -> Option<usize> {
+        self.payload_lengths.get(index).copied()
+    }
+
+    fn finalize_frame(
+        &mut self,
+        index: usize,
+        magic: FrameMagic,
+        chunk_id: ChunkId,
+        write_time_ms: u64,
+    ) -> std::result::Result<Range<usize>, FrameError> {
+        let frame_start = index * MAX_FRAME_BYTES;
+        let payload_len = self.payload_lengths[index];
+        let frame_end = frame_start + FRAME_HEADER_PREFIX_BYTES + payload_len + FRAME_FOOTER_BYTES;
+        let frame = &mut self.bytes[frame_start..frame_end];
+        let (header, remainder) = frame.split_at_mut(FRAME_HEADER_PREFIX_BYTES);
+        let (payload, footer) = remainder.split_at_mut(payload_len);
+        encode_frame_regions(magic, chunk_id, payload, write_time_ms, header, footer)?;
+        self.finalized_chunks.lock().unwrap().push(chunk_id);
+        Ok(frame_start..frame_end)
+    }
+
+    fn view(&self, range: Range<usize>) -> std::result::Result<Bytes, FrameError> {
+        self.views.lock().unwrap().push(range.clone());
+        Ok(Bytes::copy_from_slice(&self.bytes[range]))
+    }
 }
 
 impl tokio::io::AsyncRead for ErrorReader {
@@ -732,6 +794,35 @@ async fn write_stream_uses_one_write_per_data_and_parity_block() {
 
 fn block(value: u8, size: usize) -> Bytes {
     Bytes::from(vec![value; size])
+}
+
+#[tokio::test]
+async fn framed_owner_splits_into_views_only_at_chunk_boundaries() {
+    let chunkdb = MockChunkAllocator::new();
+    let tmp = test_dirs::tempdir_in_test_data("chunk-client");
+    let diskio = LocalFileDiskWriter::new(tmp.path());
+    let mut writer = make_writer(chunkdb, diskio, ec_4_1(), test_config(MAX_FRAME_BYTES as u64));
+    let owner = TestFramedOwner::full_frames(2);
+    let finalized_chunks = Arc::clone(&owner.finalized_chunks);
+    let views = Arc::clone(&owner.views);
+
+    writer.on_framed_data(Box::new(owner)).await.unwrap();
+    let locations = writer.on_finish().await.unwrap();
+
+    assert_eq!(locations.len(), 2);
+    assert_eq!(locations[0].length, MAX_FRAME_BYTES as u64);
+    assert_eq!(locations[1].length, MAX_FRAME_BYTES as u64);
+    assert_eq!(locations[0].logical_length, MAX_FRAME_PAYLOAD_BYTES as u64);
+    assert_eq!(locations[1].logical_length, MAX_FRAME_PAYLOAD_BYTES as u64);
+    assert_ne!(locations[0].chunk_id, locations[1].chunk_id);
+    assert_eq!(
+        *views.lock().unwrap(),
+        vec![0..MAX_FRAME_BYTES, MAX_FRAME_BYTES..2 * MAX_FRAME_BYTES]
+    );
+    assert_eq!(
+        *finalized_chunks.lock().unwrap(),
+        vec![locations[0].chunk_id.unwrap(), locations[1].chunk_id.unwrap()]
+    );
 }
 
 #[tokio::test]

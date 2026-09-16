@@ -108,11 +108,11 @@ async fn mixed_read_benchmark_prepares_and_verifies_real_frames() {
     )
     .await;
 
+    assert_eq!(result.errors, 0, "{:?}", result.error_messages);
     assert_eq!(result.reads, 4);
     assert_eq!(result.small_reads, 2);
     assert_eq!(result.large_reads, 2);
     assert_eq!(result.logical_bytes, 2 * KIB as u64 + 4 * MIB as u64);
-    assert_eq!(result.errors, 0, "{:?}", result.error_messages);
     assert_eq!(result.incomplete_reads, 0);
     assert_eq!(result.stop_reason, "complete");
     assert!(result.preparation_secs > 0.0);

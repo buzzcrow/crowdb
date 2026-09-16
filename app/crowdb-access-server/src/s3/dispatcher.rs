@@ -8,6 +8,7 @@ use std::time::Instant;
 use crowdb_access_s3::auth::{AuthError, RawAuthRequest, RequestAuthenticator};
 use crowdb_access_s3::error::{S3Error, S3ErrorCode};
 use crowdb_access_s3::metrics::{OutcomeClass, S3Metrics};
+use crowdb_access_s3::native_buffer::NativeBodyAllocator;
 use crowdb_access_s3::route::{classify_request, RouteError};
 use hyper::body::{Http1BodyReceiveProvider, Incoming};
 use hyper::{Method, Request};
@@ -20,7 +21,7 @@ pub struct S3Dispatcher {
     metrics: Arc<S3Metrics>,
     host_id: String,
     trusted_network: bool,
-    body_receive_provider_factory: Option<Arc<dyn Fn() -> Arc<dyn Http1BodyReceiveProvider> + Send + Sync>>,
+    body_receive_provider_factory: Option<Arc<dyn Fn() -> DeferredBodyReceiveProvider + Send + Sync>>,
     next_request_id: AtomicU64,
 }
 
@@ -49,7 +50,16 @@ impl S3Dispatcher {
     where
         F: Fn() -> Arc<dyn Http1BodyReceiveProvider> + Send + Sync + 'static,
     {
-        self.body_receive_provider_factory = Some(Arc::new(factory));
+        self.body_receive_provider_factory =
+            Some(Arc::new(move || DeferredBodyReceiveProvider::generic(factory())));
+        self
+    }
+
+    #[must_use]
+    pub fn with_native_body_allocator(mut self, allocator: Arc<NativeBodyAllocator>) -> Self {
+        self.body_receive_provider_factory = Some(Arc::new(move || {
+            DeferredBodyReceiveProvider::native(Arc::new(allocator.object_receiver()))
+        }));
         self
     }
 
@@ -109,9 +119,7 @@ impl S3HttpHandler for S3Dispatcher {
             let operation = route.operation;
             if operation == crowdb_access_s3::route::S3Operation::PutObject {
                 if let Some(factory) = body_receive_provider_factory {
-                    request
-                        .extensions_mut()
-                        .insert(DeferredBodyReceiveProvider(factory()));
+                    request.extensions_mut().insert(factory());
                 }
             }
             let started = Instant::now();

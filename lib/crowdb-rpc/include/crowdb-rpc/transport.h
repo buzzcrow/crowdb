@@ -23,7 +23,7 @@ class Connection;
 // a bounded chain of immutable data owners. The first view stays in `data` so
 // the existing single-buffer path has no extra indirection or allocation.
 // request_id is assigned by RpcClient::call; 0 for one-way messages.
-constexpr uint8_t MAX_DATA_VIEWS = 13;
+constexpr uint8_t MAX_DATA_VIEWS = 16;
 
 struct OutFrame
 {
@@ -58,7 +58,7 @@ struct OutFrame
     }
 };
 
-constexpr int BATCH_MAX        = 64;
+constexpr int BATCH_MAX        = 56;
 constexpr int MAX_FRAME_IOVECS = 2 + MAX_DATA_VIEWS; // header + control + data views
 constexpr int MAX_BATCH_IOVECS = BATCH_MAX * MAX_FRAME_IOVECS;
 static_assert(MAX_BATCH_IOVECS <= 1024, "RPC writev batch exceeds supported IOV_MAX");

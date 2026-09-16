@@ -53,7 +53,7 @@ fn buffer_chain_retains_views_and_enforces_native_limit() {
     assert!(matches!(
         too_many,
         BufferChainError::TooManyViews {
-            maximum: 13,
+            maximum: 16,
             actual: 64
         }
     ));
