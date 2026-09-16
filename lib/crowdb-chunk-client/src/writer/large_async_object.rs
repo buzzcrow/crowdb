@@ -27,7 +27,7 @@ use crate::chunk::chunk_writer::ChunkWriter;
 use crate::config::ChunkClientConfig;
 use crate::disk_io::DiskWriter;
 use crate::io::{ChunkIoWriter, FeedStatus, FramedWriteBuffer};
-use crate::metrics::LargeWriteRepairMetrics;
+use crate::metrics::{LargeWriteBufferMetrics, LargeWriteRepairMetrics};
 use crate::negative_list::FailedDiskList;
 use crate::traits::ChunkAllocator;
 use crate::writer::fetch::run_fetch_stage;
@@ -63,6 +63,7 @@ pub struct LargeAsyncObjectWriter {
     pub(crate) completion_wait_time: Duration,
     pub(crate) failed_disks: Arc<FailedDiskList>,
     pub(crate) repair_metrics: Arc<LargeWriteRepairMetrics>,
+    pub(crate) buffer_metrics: Arc<LargeWriteBufferMetrics>,
 }
 
 impl LargeAsyncObjectWriter {
@@ -80,6 +81,7 @@ impl LargeAsyncObjectWriter {
             config,
             Arc::new(FailedDiskList::new(Duration::from_secs(60))),
             Arc::new(LargeWriteRepairMetrics::default()),
+            Arc::new(LargeWriteBufferMetrics::default()),
         )
     }
 
@@ -90,6 +92,7 @@ impl LargeAsyncObjectWriter {
         config: Arc<ChunkClientConfig>,
         failed_disks: Arc<FailedDiskList>,
         repair_metrics: Arc<LargeWriteRepairMetrics>,
+        buffer_metrics: Arc<LargeWriteBufferMetrics>,
     ) -> Self {
         Self {
             allocator,
@@ -117,6 +120,7 @@ impl LargeAsyncObjectWriter {
             completion_wait_time: Duration::ZERO,
             failed_disks,
             repair_metrics,
+            buffer_metrics,
         }
     }
 
@@ -133,6 +137,12 @@ impl LargeAsyncObjectWriter {
     /// Total time the data path waited for chunk preparation.
     pub fn preparation_stall_time(&self) -> Duration {
         self.preparation_stall_time
+    }
+
+    /// Snapshot owner-view and payload-copy accounting for this writer's
+    /// shared metric set.
+    pub fn buffer_metrics(&self) -> crate::LargeWriteBufferMetricsSnapshot {
+        self.buffer_metrics.snapshot()
     }
 
     /// Start bounded chunk preparation before source consumption begins.
@@ -452,6 +462,10 @@ impl ChunkIoWriter for LargeAsyncObjectWriter {
 impl LargeAsyncObjectWriter {
     async fn push_framed_owner(&mut self, buffer: &mut dyn FramedWriteBuffer) -> Result<()> {
         validate_framed_owner(buffer)?;
+        self.buffer_metrics.framed_owners.inc();
+        self.buffer_metrics
+            .framed_payload_bytes
+            .inc_by(buffer.logical_len());
         let mut frame_index = 0usize;
         while frame_index < buffer.frame_count() {
             self.ensure_open().await?;
@@ -519,6 +533,9 @@ impl LargeAsyncObjectWriter {
             let views = buffer
                 .views(group_range.ok_or_else(|| IoError::Internal("framed owner group vanished".into()))?)
                 .map_err(|error| IoError::WriteFailed(error.to_string()))?;
+            self.buffer_metrics
+                .framed_views
+                .inc_by(u64::try_from(views.len()).unwrap_or(u64::MAX));
             for view in views {
                 let status = self
                     .chunk_writer
@@ -541,6 +558,8 @@ impl LargeAsyncObjectWriter {
     }
 
     async fn push_buffer(&mut self, buffer: Bytes) -> Result<()> {
+        self.buffer_metrics.payload_copy_operations.inc();
+        self.buffer_metrics.payload_copy_bytes.inc_by(buffer.len() as u64);
         self.frame_tail.extend_from_slice(&buffer);
         while self.frame_tail.len() >= MAX_FRAME_PAYLOAD_BYTES {
             let payload = self.frame_tail.split_to(MAX_FRAME_PAYLOAD_BYTES).freeze();
@@ -564,6 +583,10 @@ impl LargeAsyncObjectWriter {
                 });
             let frame = encode_frame(FrameMagic::RepoLargeV1, chunk_id, &payload, write_time_ms)
                 .map_err(|error| IoError::WriteFailed(error.to_string()))?;
+            self.buffer_metrics.payload_copy_operations.inc();
+            self.buffer_metrics
+                .payload_copy_bytes
+                .inc_by(payload.len() as u64);
             let remaining = self
                 .chunk_writer
                 .as_ref()

@@ -74,14 +74,15 @@ completion returns locations, publish complete object metadata with one KV Put.
   client call API which transfers every owner exactly once and rejects empty
   or oversized chains before submission. Files: `lib/crowdb-rpc/ffi/src/`,
   `lib/crowdb-rpc/ffi/tests/`.
-- [ ] **Carry edge views to DiskIO**: use the single-owner fast path for normal
+- [x] **Carry edge views to DiskIO**: use the single-owner fast path for normal
   1 MiB buffers and the bounded chain only for header read-ahead and final edge
   shapes; never coalesce PUT payload. Add copy/view accounting. Files:
   `lib/crowdb-diskio-client/src/`, `lib/crowdb-chunk-client/src/`.
   Normal native owners now use the single-owner path and writer boundary
   slicing reaches DiskIO as views. Header read-ahead becomes one short frame
   with separate metadata/payload views, then reception resumes with native
-  owners. Explicit copy/view counters remain.
+  owners. Lock-free counters distinguish framed owners/views and payload bytes
+  from fallback payload copy operations/bytes.
 
 ## Tests and gates
 

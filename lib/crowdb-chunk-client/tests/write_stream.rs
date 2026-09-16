@@ -808,6 +808,7 @@ async fn framed_owner_splits_into_views_only_at_chunk_boundaries() {
 
     writer.on_framed_data(Box::new(owner)).await.unwrap();
     let locations = writer.on_finish().await.unwrap();
+    let metrics = writer.buffer_metrics();
 
     assert_eq!(locations.len(), 2);
     assert_eq!(locations[0].length, MAX_FRAME_BYTES as u64);
@@ -823,6 +824,11 @@ async fn framed_owner_splits_into_views_only_at_chunk_boundaries() {
         *finalized_chunks.lock().unwrap(),
         vec![locations[0].chunk_id.unwrap(), locations[1].chunk_id.unwrap()]
     );
+    assert_eq!(metrics.framed_owners, 1);
+    assert_eq!(metrics.framed_views, 2);
+    assert_eq!(metrics.framed_payload_bytes, (2 * MAX_FRAME_PAYLOAD_BYTES) as u64);
+    assert_eq!(metrics.payload_copy_operations, 0);
+    assert_eq!(metrics.payload_copy_bytes, 0);
 }
 
 #[tokio::test]

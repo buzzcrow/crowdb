@@ -86,6 +86,7 @@ pub struct ChunkIoClient {
     reader: ChunkReader,
     failed_disks: Arc<FailedDiskList>,
     large_write_repair: Arc<crate::metrics::LargeWriteRepairMetrics>,
+    large_write_buffer: Arc<crate::metrics::LargeWriteBufferMetrics>,
 }
 
 struct ClientTopology {
@@ -127,6 +128,7 @@ impl ChunkIoClient {
         );
         let failed_disks = Arc::new(FailedDiskList::new(config.small_write.failed_disk_ttl));
         let large_write_repair = Arc::new(crate::metrics::LargeWriteRepairMetrics::default());
+        let large_write_buffer = Arc::new(crate::metrics::LargeWriteBufferMetrics::default());
         let small_pool = SmallWritePool::new(
             chunkdb.clone(),
             disk_writer.clone(),
@@ -150,6 +152,7 @@ impl ChunkIoClient {
             reader,
             failed_disks,
             large_write_repair,
+            large_write_buffer,
         })
     }
 
@@ -197,6 +200,7 @@ impl ChunkIoClient {
     ) -> Result<Self> {
         let failed_disks = Arc::new(FailedDiskList::new(small_write.failed_disk_ttl));
         let large_write_repair = Arc::new(crate::metrics::LargeWriteRepairMetrics::default());
+        let large_write_buffer = Arc::new(crate::metrics::LargeWriteBufferMetrics::default());
         let small_pool = SmallWritePool::new(
             Arc::clone(&allocator),
             Arc::clone(&disk_writer),
@@ -219,6 +223,7 @@ impl ChunkIoClient {
             reader,
             failed_disks,
             large_write_repair,
+            large_write_buffer,
         })
     }
 
@@ -235,6 +240,7 @@ impl ChunkIoClient {
         });
         self.metrics = Some(Arc::clone(metrics));
         self.large_write_repair = Arc::clone(&metrics.large_write_repair);
+        self.large_write_buffer = Arc::clone(&metrics.large_write_buffer);
         self.small_pool = SmallWritePool::new(
             Arc::clone(&self.allocator),
             Arc::clone(&self.disk_writer),
@@ -364,6 +370,11 @@ impl ChunkIoClient {
         self.large_write_repair.snapshot()
     }
 
+    /// Snapshot native-owner views and payload-copy fallback counters.
+    pub fn large_write_buffer_metrics(&self) -> crate::LargeWriteBufferMetricsSnapshot {
+        self.large_write_buffer.snapshot()
+    }
+
     /// Refresh `ChunkDB` service endpoints and range ownership routes.
     pub async fn refresh_chunkdb_routes(&self) -> Result<()> {
         let topology = self.topology.as_ref().ok_or_else(|| {
@@ -396,6 +407,7 @@ impl ChunkIoClient {
             policy.client.clone(),
             Arc::clone(&self.failed_disks),
             Arc::clone(&self.large_write_repair),
+            Arc::clone(&self.large_write_buffer),
         );
         writer.prepare(object_size);
         PreparedLargeWrite {
