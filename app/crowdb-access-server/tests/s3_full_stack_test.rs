@@ -112,11 +112,7 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
     wait_for_tcp(&mut access_server, &listen).await;
     let (mut second_access_server, second_listen) = start_access_server(&access_binary, &seeds);
     wait_for_tcp(&mut second_access_server, &second_listen).await;
-    let ready = http_get(&listen, "/_crowdb/health/ready");
-    assert!(
-        ready.starts_with("HTTP/1.1 200"),
-        "access server not ready: {ready}"
-    );
+    assert_access_ready(&listen);
 
     run_boto3(
         &listen,
@@ -126,6 +122,7 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
         &access_server,
         &chunk_kv,
     );
+    run_restart_phase("lost-reply", &listen, &access_key, &secret_key);
     run_benchmark(&listen, &access_key, &secret_key);
     assert_native_write_metrics(&listen);
 
@@ -152,6 +149,14 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
     drop(diskios);
     drop(diskdb);
     rpc.stop();
+}
+
+fn assert_access_ready(listen: &str) {
+    let ready = http_get(listen, "/_crowdb/health/ready");
+    assert!(
+        ready.starts_with("HTTP/1.1 200"),
+        "access server not ready: {ready}"
+    );
 }
 
 fn assert_native_write_metrics(listen: &str) {
@@ -242,9 +247,17 @@ fn run_boto3(
 
 fn run_restart_phase(phase: &str, listen: &str, access_key: &str, secret_key: &str) {
     let python_binary = std::env::var_os("CROWDB_S3_E2E_PYTHON").unwrap_or_else(|| "python".into());
-    let result = Command::new(python_binary)
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/s3_e2e/restart.py"))
-        .arg(phase)
+    let script = if phase == "lost-reply" {
+        "tests/s3_e2e/lost_reply.py"
+    } else {
+        "tests/s3_e2e/restart.py"
+    };
+    let mut command = Command::new(python_binary);
+    command.arg(Path::new(env!("CARGO_MANIFEST_DIR")).join(script));
+    if phase != "lost-reply" {
+        command.arg(phase);
+    }
+    let result = command
         .env("CROWDB_S3_E2E_ENDPOINT", format!("http://{listen}"))
         .env("CROWDB_S3_E2E_REGION", "us-east-1")
         .env("CROWDB_S3_E2E_ACCESS_KEY", access_key)
