@@ -29,7 +29,7 @@ real services rather than mocks.
 
 ## Recovery and scale-out
 
-- [ ] **Restart and retry durable transitions**: restart access-server and
+- [~] **Restart and retry durable transitions**: restart access-server and
   storage owners around completed PUT/overwrite/delete, repeat requests after
   lost-response simulation, and assert atomic visibility/idempotence. Reuse
   process fixtures and expose only deterministic fault hooks.

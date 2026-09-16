@@ -128,7 +128,26 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
         &access_server,
         &chunk_kv,
     );
-    let exported = http_get(&listen, "/_crowdb/metrics");
+    assert_native_write_metrics(&listen);
+
+    run_restart_phase("prepare", &listen, &access_key, &secret_key);
+    drop(access_server);
+    run_restart_phase("verify", &second_listen, &access_key, &secret_key);
+    let (mut restarted_access, restarted_listen) = start_access_server(&access_binary, &seeds);
+    wait_for_tcp(&mut restarted_access, &restarted_listen).await;
+    run_restart_phase("verify", &restarted_listen, &access_key, &secret_key);
+    run_restart_phase("cleanup", &second_listen, &access_key, &secret_key);
+    drop(restarted_access);
+    drop(second_access_server);
+    drop(chunk_kv);
+    drop(chunkdb);
+    drop(diskios);
+    drop(diskdb);
+    rpc.stop();
+}
+
+fn assert_native_write_metrics(listen: &str) {
+    let exported = http_get(listen, "/_crowdb/metrics");
     let native_body_bytes = metric_value(&exported, "crowdb_s3_native_direct_bytes_total")
         + metric_value(&exported, "crowdb_s3_native_prefix_copy_bytes_total");
     assert!(native_body_bytes > 0);
@@ -138,14 +157,6 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
         metric_value(&exported, "crowdb_s3_large_write_payload_copy_operations_total"),
         0
     );
-
-    drop(access_server);
-    drop(second_access_server);
-    drop(chunk_kv);
-    drop(chunkdb);
-    drop(diskios);
-    drop(diskdb);
-    rpc.stop();
 }
 
 fn issue_credentials(access_binary: &Path, seeds: &str) -> (String, String) {
@@ -217,6 +228,24 @@ fn run_boto3(
         String::from_utf8_lossy(&python.stderr),
         access_server.log_content(),
         chunk_kv.log_content(),
+    );
+}
+
+fn run_restart_phase(phase: &str, listen: &str, access_key: &str, secret_key: &str) {
+    let python_binary = std::env::var_os("CROWDB_S3_E2E_PYTHON").unwrap_or_else(|| "python".into());
+    let result = Command::new(python_binary)
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/s3_e2e/restart.py"))
+        .arg(phase)
+        .env("CROWDB_S3_E2E_ENDPOINT", format!("http://{listen}"))
+        .env("CROWDB_S3_E2E_REGION", "us-east-1")
+        .env("CROWDB_S3_E2E_ACCESS_KEY", access_key)
+        .env("CROWDB_S3_E2E_SECRET_KEY", secret_key)
+        .output()
+        .expect("run access-server restart phase");
+    assert!(
+        result.status.success(),
+        "restart {phase} failed: {}",
+        String::from_utf8_lossy(&result.stderr)
     );
 }
 
