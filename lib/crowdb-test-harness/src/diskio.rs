@@ -181,20 +181,16 @@ impl DiskioProcess {
         let log_file2 = log_file.try_clone().expect("clone log file");
 
         let mut cmd = Command::new(&bin);
-        cmd.args([
-            "--port",
-            "0",
-            "--bind",
-            "127.0.0.1",
-            "--dummy-disk",
-            opts.dummy_disk,
-        ])
-        .env("LD_LIBRARY_PATH", lib_dir.to_str().unwrap())
-        .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(log_file2));
+        cmd.args(["--port", "0", "--bind", "127.0.0.1"])
+            .env("LD_LIBRARY_PATH", lib_dir.to_str().unwrap())
+            .stdout(Stdio::from(log_file))
+            .stderr(Stdio::from(log_file2));
 
         if opts.no_o_direct {
             cmd.arg("--no-o-direct");
+        }
+        if opts.disks.is_empty() {
+            cmd.args(["--dummy-disk", opts.dummy_disk]);
         }
 
         apply_fault_options(&mut cmd, opts);

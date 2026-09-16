@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crowdb_diskdb_client::{DiskdbClient, DiskdbRpcTransport, RetryConfig};
+use crowdb_kv_client::ServiceRegistryClient;
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::port::alloc::alloc_test_port;
 use crowdb_protocol::ServicePort;
@@ -55,6 +56,7 @@ pub fn crowdb_diskdb_bin() -> Option<std::path::PathBuf> {
 
 pub struct DiskdbProcess {
     pub child: std::process::Child,
+    pub instance_id: u64,
     pub listen_port: i32,
     pub rpc_port: i32,
     pub http_port: i32,
@@ -163,6 +165,7 @@ interval_secs = 2
 
         Self {
             child,
+            instance_id,
             listen_port,
             rpc_port,
             http_port,
@@ -186,6 +189,53 @@ interval_secs = 2
             if Instant::now() > deadline {
                 let log = self.log_content();
                 panic!("crowdb-diskdb did not become ready within 30s. Log:\n{log}");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Wait until this process has published its current RPC endpoint to
+    /// group-0 and that endpoint accepts an ownership read.
+    pub async fn wait_for_registry_ready(
+        &self,
+        service_registry: &ServiceRegistryClient,
+        disk_group_id: u64,
+        not_before_ms: u64,
+    ) {
+        let endpoint = format!("127.0.0.1:{}", self.rpc_port);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let transport = DiskdbRpcTransport::new();
+        loop {
+            let registered = service_registry
+                .read_instance("diskdb", self.instance_id)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|value| {
+                    value.rpc_endpoint == endpoint
+                        && value.last_heartbeat_ms >= not_before_ms
+                        && value
+                            .extra
+                            .as_ref()
+                            .and_then(|extra| extra.diskdb.as_ref())
+                            .is_some_and(|diskdb| diskdb.owned_dg_ids.contains(&disk_group_id))
+                });
+            if registered
+                && transport
+                    .get_disk_group_info(&endpoint, disk_group_id)
+                    .await
+                    .is_ok()
+            {
+                eprintln!("crowdb-diskdb registry ready at {endpoint}");
+                return;
+            }
+            if Instant::now() > deadline {
+                let observed = service_registry
+                    .read_instance("diskdb", self.instance_id)
+                    .await
+                    .ok()
+                    .flatten();
+                panic!("diskdb registry/RPC not ready at {endpoint} within 30s; observed={observed:?}");
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

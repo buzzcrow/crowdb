@@ -73,6 +73,7 @@ impl ChunkKvClient {
         let mut refreshes = 0_u32;
 
         for attempt in 0..self.config.max_attempts {
+            self.refresh_catalog_if_due(deadline).await;
             let map = match self.cache.load() {
                 Some(map) => map,
                 None => self.refresh_with_deadline(deadline).await?,
@@ -270,6 +271,7 @@ impl ChunkKvClient {
         let mut refreshes = 0_u32;
 
         for attempt in 0..self.config.max_attempts {
+            self.refresh_catalog_if_due(deadline).await;
             let map = match self.cache.load() {
                 Some(map) => map,
                 None => self.refresh_with_deadline(deadline).await?,

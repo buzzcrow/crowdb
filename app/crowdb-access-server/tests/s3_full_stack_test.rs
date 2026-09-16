@@ -82,8 +82,16 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
         zone_capacity: i64::try_from(capacity).expect("disk zone fits i64"),
     };
 
+    let diskdb_started_at = unix_time_ms();
     let diskdb = DiskdbProcess::start_for_instance(&cluster.mgmt_endpoints, 999, Some(16_384));
     diskdb.wait_for_ready().await;
+    diskdb
+        .wait_for_registry_ready(
+            &cluster.make_service_registry_client(),
+            identity.disk_group_id,
+            diskdb_started_at,
+        )
+        .await;
     let rpc = Arc::new(RpcServer::new(None));
     rpc.listen("127.0.0.1", 0)
         .expect("listen for diskio readiness client");
@@ -139,6 +147,7 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
     let diskdb = verify_diskdb_restart(
         diskdb,
         &cluster.mgmt_endpoints,
+        identity.disk_group_id,
         &second_listen,
         &access_key,
         &secret_key,
@@ -275,15 +284,31 @@ async fn verify_chunkdb_restart(
 async fn verify_diskdb_restart(
     previous: DiskdbProcess,
     seeds: &[String],
+    disk_group_id: u64,
     listen: &str,
     access_key: &str,
     secret_key: &str,
 ) -> DiskdbProcess {
     drop(previous);
+    let diskdb_started_at = unix_time_ms();
     let diskdb = DiskdbProcess::start_for_instance(seeds, 999, Some(16_384));
     diskdb.wait_for_ready().await;
+    let service_registry = crowdb_kv_client::ServiceRegistryClient::new(
+        crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(seeds.to_vec())),
+    );
+    diskdb
+        .wait_for_registry_ready(&service_registry, disk_group_id, diskdb_started_at)
+        .await;
     run_restart_phase("verify-after-diskdb-restart", listen, access_key, secret_key);
     diskdb
+}
+
+fn unix_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 fn assert_access_ready(listen: &str) {

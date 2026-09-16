@@ -8,7 +8,9 @@
 //! discovery.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
 
@@ -19,6 +21,16 @@ use crowdb_protocol::diskdb::rpc::{
     AllocateBlocksRequest, AllocateResponse, CommitBlocksRequest, ExecuteRelocationRequest,
     ExecuteRelocationResponse, FreeBlocksRequest, Segment,
 };
+
+const REGISTRY_REFRESH_INTERVAL_MS: u64 = 5_000;
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
+}
 
 /// Pool of diskdb crowdb-rpc transports, keyed by disk-group ID.
 pub struct DiskdbClientPool {
@@ -31,6 +43,9 @@ pub struct DiskdbClientPool {
     disk_id_to_dg: ArcSwap<HashMap<DiskId, u64>>,
     /// Shared crowdb-rpc transport.
     transport: Arc<DiskdbRpcTransport>,
+    /// Last successful (or in-flight) group-0 refresh. One caller refreshes
+    /// each generation without making allocation paths contend on a lock.
+    last_registry_refresh_ms: AtomicU64,
 }
 
 impl DiskdbClientPool {
@@ -47,6 +62,7 @@ impl DiskdbClientPool {
             endpoints: ArcSwap::from_pointee(HashMap::new()),
             disk_id_to_dg: ArcSwap::from_pointee(HashMap::new()),
             transport: Arc::new(DiskdbRpcTransport::with_pool_size(pool_size, workers)),
+            last_registry_refresh_ms: AtomicU64::new(0),
         }
     }
 
@@ -72,7 +88,13 @@ impl DiskdbClientPool {
     async fn endpoint_for_dg(&self, dg_id: u64) -> Result<String, String> {
         // Check endpoint cache.
         if let Some(endpoint) = self.endpoints.load().get(&dg_id) {
-            return Ok(endpoint.clone());
+            self.refresh_endpoints_if_due().await;
+            return Ok(self
+                .endpoints
+                .load()
+                .get(&dg_id)
+                .cloned()
+                .unwrap_or_else(|| endpoint.clone()));
         }
 
         // Cache miss — refresh from service registry and retry.
@@ -106,7 +128,27 @@ impl DiskdbClientPool {
             }
         }
         self.endpoints.store(Arc::new(refreshed));
+        self.last_registry_refresh_ms
+            .store(unix_time_ms(), Ordering::Release);
         Ok(())
+    }
+
+    async fn refresh_endpoints_if_due(&self) {
+        let observed = self.last_registry_refresh_ms.load(Ordering::Acquire);
+        let now = unix_time_ms();
+        if now.saturating_sub(observed) < REGISTRY_REFRESH_INTERVAL_MS
+            || self
+                .last_registry_refresh_ms
+                .compare_exchange(observed, now, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return;
+        }
+        if self.refresh_endpoints().await.is_err() {
+            // The prior RCU snapshot remains usable; allow the next request
+            // to retry Group-0 instead of holding a failed refresh lease.
+            self.last_registry_refresh_ms.store(0, Ordering::Release);
+        }
     }
 
     async fn refresh_after_owner_failure<T>(

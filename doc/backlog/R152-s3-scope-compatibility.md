@@ -125,10 +125,3 @@ Required gates:
   existing fence by replacing the failed block when possible; otherwise it
   seals the affected chunk and rolls over to a newly allocated chunk. Ambiguous
   writes are reconciled before retrying the logical record.
-
-- The compact one-zone S3 E2E still needs a root-cause fix for the post-restart
-  `NoSpace` allocation. Stream storage is allocated one strip at a time and
-  grows by allocating further strips as writes continue; it must not reserve a
-  complete 256 MiB stream chunk up front. Diagnose recovered DiskDB ownership,
-  disk/zone capacity, free-run fragmentation, and active-zone rotation, then
-  correct the earliest failing layer before marking the restart scenario done.

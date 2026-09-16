@@ -292,6 +292,7 @@ impl StreamChunkStore for ProductionStreamChunkStore {
             )
             .ok_or_else(|| StreamError::InvalidRequest("stream write cursor overflows".into()))?;
         let mut copied = 0_usize;
+        let mut written_segments = Vec::new();
         for strip in &chunk.strips {
             let strip_start = u64::from(strip.chunk_offset) * 1024;
             let strip_end = strip_start.saturating_add(u64::from(strip.capacity) * 1024);
@@ -317,6 +318,7 @@ impl StreamChunkStore for ProductionStreamChunkStore {
             let unit_bytes = u64::from(strip.unit_kb) * 1024;
             for segment in &mirror.segments {
                 let segment = *segment;
+                written_segments.push(segment);
                 let disk_writer = Arc::clone(&self.disk_writer);
                 let view = view.clone();
                 let offset = write_start - strip_start;
@@ -335,6 +337,20 @@ impl StreamChunkStore for ProductionStreamChunkStore {
         while let Some(result) = writes.join_next().await {
             result
                 .map_err(|error| StreamError::Internal(format!("mirror write task failed: {error}")))?
+                .map_err(io_error)?;
+        }
+        // The cursor published below is the stream's durable read boundary.
+        // Every mirror backing this append must reach stable storage before
+        // that boundary can advance, including when the active stream chunk
+        // stays open across a DiskIO process restart.
+        let mut syncs = tokio::task::JoinSet::new();
+        for segment in written_segments {
+            let disk_writer = Arc::clone(&self.disk_writer);
+            syncs.spawn(async move { disk_writer.fsync(&segment).await });
+        }
+        while let Some(result) = syncs.join_next().await {
+            result
+                .map_err(|error| StreamError::Internal(format!("mirror fsync task failed: {error}")))?
                 .map_err(io_error)?;
         }
         Ok(())

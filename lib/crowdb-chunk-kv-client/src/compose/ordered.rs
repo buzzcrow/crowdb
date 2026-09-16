@@ -55,6 +55,7 @@ impl ChunkKvClient {
         let mut last_error = None;
         let mut refreshes = 0_u32;
         for attempt in 0..self.config.max_attempts {
+            self.refresh_catalog_if_due(deadline).await;
             let map = match self.cache.load() {
                 Some(map) => map,
                 None => self.refresh_with_deadline(deadline).await?,
@@ -171,6 +172,7 @@ impl ChunkKvClient {
         let mut replans = 0_u32;
 
         'replan: loop {
+            self.refresh_catalog_if_due(deadline).await;
             let map = match self.cache.load() {
                 Some(map) => map,
                 None => self.refresh_with_deadline(deadline).await?,

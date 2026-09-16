@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -201,6 +201,7 @@ impl ChunkAllocator for Allocator {
 #[derive(Default)]
 struct Disks {
     bytes: Mutex<HashMap<u64, Vec<u8>>>,
+    fsyncs: AtomicUsize,
 }
 
 #[test]
@@ -251,6 +252,11 @@ impl DiskWriter for Disks {
         Ok(())
     }
 
+    async fn fsync(&self, _segment: &Segment) -> crowdb_chunk_client::Result<()> {
+        self.fsyncs.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
     async fn read(
         &self,
         segment: &Segment,
@@ -274,7 +280,7 @@ async fn production_store_writes_reads_advances_and_releases_one_mirror_chunk() 
     let allocator = Arc::new(Allocator::new());
     let disks = Arc::new(Disks::default());
     let allocator_trait: Arc<dyn ChunkAllocator> = allocator;
-    let disk_trait: Arc<dyn DiskWriter> = disks;
+    let disk_trait: Arc<dyn DiskWriter> = Arc::clone(&disks) as Arc<dyn DiskWriter>;
     let store =
         ProductionStreamChunkStore::new(allocator_trait, disk_trait, 30_000, ChunkReadPolicy::default())
             .unwrap();
@@ -284,6 +290,7 @@ async fn production_store_writes_reads_advances_and_releases_one_mirror_chunk() 
         .write_mirrors(name, 9, active.chunk_id, 0, Bytes::from_static(b"stream"))
         .await
         .unwrap();
+    assert_eq!(disks.fsyncs.load(Ordering::Relaxed), 3);
     assert_eq!(
         store
             .advance_cursor(name, 9, active.chunk_id, 0, 6, 17)

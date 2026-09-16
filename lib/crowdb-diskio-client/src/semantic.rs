@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
@@ -20,6 +20,16 @@ use crowdb_rpc_ffi::{
 use crate::client::{DiskIoRetCode, WireClient, WireError, WireWriteTarget};
 use crate::topology::{self, DiskRoute};
 use crate::{DiskId, DiskioError, DiskioResult, DiskioStatus, SegmentTarget};
+
+const TOPOLOGY_REFRESH_INTERVAL_MS: u64 = 5_000;
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
+}
 
 /// Independently bounded `DiskIO` traffic lanes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,6 +277,7 @@ pub struct DiskioClient {
     priority: ConnectionPoolIndex,
     routes: ArcSwap<RouteSnapshot>,
     next_route_generation: AtomicU64,
+    last_topology_refresh_ms: AtomicU64,
     counters: Counters,
 }
 
@@ -308,6 +319,7 @@ impl DiskioClient {
             ),
             routes: ArcSwap::from_pointee(RouteSnapshot::empty()),
             next_route_generation: AtomicU64::new(1),
+            last_topology_refresh_ms: AtomicU64::new(0),
             counters: Counters::default(),
             service: None,
             hardware: None,
@@ -400,6 +412,7 @@ impl DiskioClient {
             ),
             routes: ArcSwap::from_pointee(RouteSnapshot::empty()),
             next_route_generation: AtomicU64::new(1),
+            last_topology_refresh_ms: AtomicU64::new(0),
             counters: Counters::default(),
             service: Some(service),
             hardware: Some(hardware),
@@ -424,7 +437,40 @@ impl DiskioClient {
             DiskioError::TopologyUnavailable("static test topology cannot be refreshed".into())
         })?;
         let draft = topology::discover(service, hardware).await?;
-        self.publish_draft(&observed, draft)
+        let generation = self.publish_draft(&observed, draft)?;
+        self.last_topology_refresh_ms
+            .store(unix_time_ms(), Ordering::Release);
+        Ok(generation)
+    }
+
+    async fn refresh_topology_if_due(&self) {
+        if self.service.is_none() {
+            return;
+        }
+        let observed = self.last_topology_refresh_ms.load(Ordering::Acquire);
+        let now = unix_time_ms();
+        if now.saturating_sub(observed) < TOPOLOGY_REFRESH_INTERVAL_MS
+            || self
+                .last_topology_refresh_ms
+                .compare_exchange(observed, now, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return;
+        }
+        if self.refresh().await.is_err() {
+            self.last_topology_refresh_ms.store(0, Ordering::Release);
+        }
+    }
+
+    async fn refresh_topology_after_read_failure(&self) {
+        if self.service.is_none() {
+            return;
+        }
+        // A read can be retried against a newly published owner.  Clear the
+        // lease first so a route that was refreshed immediately before a
+        // server restart does not remain in use for the normal refresh period.
+        self.last_topology_refresh_ms.store(0, Ordering::Release);
+        self.refresh_topology_if_due().await;
     }
 
     fn publish_draft(
@@ -480,6 +526,7 @@ impl DiskioClient {
         length: u32,
         options: OperationOptions,
     ) -> DiskioResult<Bytes> {
+        self.refresh_topology_if_due().await;
         let (zone_offset, _) = target.checked_range(offset, length as usize)?;
         if length == 0 {
             return Ok(Bytes::new());
@@ -501,6 +548,7 @@ impl DiskioClient {
                 Err(error) => {
                     let error = Self::classify_wire(error, OperationKind::Read);
                     if error.is_retryable_read() && attempt + 1 < self.config.retry_attempts {
+                        self.refresh_topology_after_read_failure().await;
                         self.prepare_retry(&route, options.lane, &selected, &mut backoff, options.deadline)
                             .await?;
                         continue;
@@ -512,6 +560,7 @@ impl DiskioClient {
             match result {
                 Ok(data) => return Ok(data),
                 Err(error) if error.is_retryable_read() && attempt + 1 < self.config.retry_attempts => {
+                    self.refresh_topology_after_read_failure().await;
                     self.prepare_retry(&route, options.lane, &selected, &mut backoff, options.deadline)
                         .await?;
                 }
@@ -578,6 +627,7 @@ impl DiskioClient {
         durability: Durability,
         options: OperationOptions,
     ) -> DiskioResult<()> {
+        self.refresh_topology_if_due().await;
         if data.is_empty() {
             return Err(DiskioError::InvalidInput("write data must be nonempty".into()));
         }
@@ -673,6 +723,7 @@ impl DiskioClient {
     /// Returns a typed topology, transport, durability, protocol, or disk
     /// error.
     pub async fn fsync(&self, disk_id: DiskId, options: OperationOptions) -> DiskioResult<()> {
+        self.refresh_topology_if_due().await;
         self.fsync_inner(disk_id, options, false).await
     }
 
