@@ -45,6 +45,7 @@ pub struct IncrementalParity {
     scheme: EcScheme,
     shard_size: Option<usize>,
     shards_received: usize,
+    short_shard_seen: bool,
     parity: Vec<Vec<u8>>,
 }
 
@@ -55,11 +56,23 @@ impl IncrementalParity {
             scheme,
             shard_size: None,
             shards_received: 0,
+            short_shard_seen: false,
             parity: Vec::new(),
         })
     }
 
     pub fn push(&mut self, shard: &[u8]) -> Result<()> {
+        self.push_inner(shard, false)
+    }
+
+    /// Fold one shard into parity while allowing the final present shard to
+    /// be shorter than the first. The missing suffix and any absent data
+    /// shards contribute zeroes, matching [`encode_parity_from_shards`].
+    pub fn push_partial(&mut self, shard: &[u8]) -> Result<()> {
+        self.push_inner(shard, true)
+    }
+
+    fn push_inner(&mut self, shard: &[u8], allow_short: bool) -> Result<()> {
         if self.shards_received >= self.scheme.data_num {
             return Err(EcError::Backend(
                 "incremental encoder already has every data shard".into(),
@@ -68,19 +81,25 @@ impl IncrementalParity {
         if shard.is_empty() {
             return Err(EcError::Backend("incremental shard must be non-empty".into()));
         }
+        if self.short_shard_seen {
+            return Err(EcError::Backend(
+                "incremental short shard must be the final present shard".into(),
+            ));
+        }
         match self.shard_size {
             None => {
                 self.shard_size = Some(shard.len());
                 self.parity = (0..self.scheme.code_num).map(|_| vec![0; shard.len()]).collect();
             }
-            Some(size) if size != shard.len() => {
+            Some(size) if shard.len() > size || (!allow_short && size != shard.len()) => {
                 return Err(EcError::Backend(format!(
-                    "incremental shard length {} differs from {size}",
+                    "incremental shard length {} is incompatible with {size}",
                     shard.len()
                 )));
             }
             Some(_) => {}
         }
+        self.short_shard_seen = self.shard_size.is_some_and(|size| shard.len() < size);
         isal_encode_update(
             shard,
             self.shards_received,
@@ -106,6 +125,15 @@ impl IncrementalParity {
                 "incremental encoder has {} of {} data shards",
                 self.shards_received, self.scheme.data_num
             )));
+        }
+        Ok(self.parity)
+    }
+
+    /// Finish a nonempty partial stripe. Data shards not supplied by the
+    /// caller are implicit zero shards and therefore need no encode update.
+    pub fn finish_partial(self) -> Result<Vec<Vec<u8>>> {
+        if self.shards_received == 0 {
+            return Err(EcError::Backend("incremental encoder has no data shards".into()));
         }
         Ok(self.parity)
     }

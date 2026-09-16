@@ -51,6 +51,10 @@ completion returns locations, publish complete object metadata with one KV Put.
   `lib/crowdb-access-s3/src/integrity.rs`,
   `lib/crowdb-chunk-client/src/worker/`,
   `lib/crowdb-common/rust/src/ec.rs`.
+  The large-write EC worker now folds each arriving block directly into
+  parity, including a zero-padded short tail, and no longer retains every data
+  shard for a second full-strip read at finish. Provider-owned view input and
+  object-lifecycle integrity state remain.
 
 ## RPC buffer views
 

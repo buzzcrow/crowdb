@@ -112,3 +112,18 @@ fn ec_worker_shards_received() {
     worker.reset();
     assert_eq!(worker.shards_received(), 0);
 }
+
+#[test]
+fn ec_worker_partial_tail_matches_zero_padded_reference() {
+    let scheme = EcScheme::new(4, 1);
+    let first = Bytes::from(vec![0x41; 4096]);
+    let tail = Bytes::from(vec![0x93; 513]);
+    let mut padded_tail = vec![0; first.len()];
+    padded_tail[..tail.len()].copy_from_slice(&tail);
+    let expected = encode_parity_from_shards(scheme, &[first.as_ref(), &padded_tail]).unwrap();
+
+    let mut worker = EcWorker::new(scheme);
+    worker.push(&first).unwrap();
+    worker.push(&tail).unwrap();
+    assert_eq!(worker.finish().unwrap(), expected);
+}
