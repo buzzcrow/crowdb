@@ -61,8 +61,9 @@ real services rather than mocks.
   copy/view counters, and raw artifacts without universal hardware thresholds.
   The owned stack now saves a small loopback smoke artifact under `test-logs/`;
   `tests/s3_e2e/benchmark.py` accepts a remote endpoint and larger sample counts.
-  Direct-vs-S3 matching runs, remote measurements, server CPU/RSS, actual wire
-  bytes, and statistically sufficient p95/p99 samples remain.
+  Loopback artifacts now include sampled access-server CPU and RSS. Direct-vs-S3
+  matching runs, remote measurements, actual wire bytes, and statistically
+  sufficient p95/p99 samples remain.
 - [ ] **Run acceptance and gates**: run focused tests, compact full-stack boto3,
   chunk-client tests, scoped fmt, workspace lint, then remove R166 and this
   plan in the final cleanup commit. Preserve the known Hyper formatting issue
