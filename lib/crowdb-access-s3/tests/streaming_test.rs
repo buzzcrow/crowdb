@@ -267,7 +267,7 @@ async fn native_body_hashes_payload_and_hands_owner_to_writer_once() {
 }
 
 #[tokio::test]
-async fn prefetched_body_uses_scattered_framed_owner_instead_of_generic_copy() {
+async fn prefetched_body_joins_the_first_native_owner() {
     let allocator = NativeBodyAllocator::new(MAX_FRAME_BYTES, MAX_FRAME_BYTES).unwrap();
     let receiver = allocator.object_receiver();
     receiver.enable_owner_handoff();

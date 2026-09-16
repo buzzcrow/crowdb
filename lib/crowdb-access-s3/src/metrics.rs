@@ -307,7 +307,10 @@ fn append_native_metrics(output: &mut String, native: NativeBufferMetricsSnapsho
     for (name, value) in [
         ("crowdb_s3_native_retained_bytes", native.retained_bytes),
         ("crowdb_s3_native_direct_bytes_total", native.direct_bytes),
-        ("crowdb_s3_native_prefetched_bytes_total", native.prefetched_bytes),
+        (
+            "crowdb_s3_native_prefix_copy_bytes_total",
+            native.prefix_copy_bytes,
+        ),
         (
             "crowdb_s3_native_backpressure_events_total",
             native.backpressure_events,

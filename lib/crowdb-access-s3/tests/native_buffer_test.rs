@@ -162,23 +162,35 @@ async fn full_owner_is_one_contiguous_buffer_across_chunk_views() {
     );
 }
 
-#[test]
-fn prefetched_payload_becomes_header_payload_footer_views_without_copy() {
+#[tokio::test]
+async fn prefetched_payload_starts_the_first_native_owner_and_next_fill_appends() {
     let allocator = NativeBodyAllocator::new(MAX_FRAME_BYTES, MAX_FRAME_BYTES).unwrap();
     let provider = allocator.object_receiver();
     provider.enable_owner_handoff();
     let payload = Bytes::from_static(b"prefetched-body");
     let delivered = provider.on_prefetched_data(payload.clone()).unwrap();
-    let mut owner = provider.take_prefetched_owner(&delivered).unwrap().unwrap();
+    assert_eq!(delivered, payload);
+    let mut next = poll_fn(|cx| provider.poll_next_buffer(cx, 5)).await.unwrap();
+    assert_eq!(next.spare_capacity_mut().len(), 5);
+    for (slot, value) in next.spare_capacity_mut().iter_mut().zip(*b"-next") {
+        slot.write(value);
+    }
+    next.advance(5).unwrap();
+    let appended = provider.on_data_ready(next).unwrap();
+    assert_eq!(&appended[..], b"-next");
+    let mut owner = provider.finish_owner().unwrap().unwrap();
     let chunk_id = ChunkId { high: 41, low: 43 };
     let range = owner
         .finalize_frame(0, FrameMagic::RepoLargeV1, chunk_id, 47)
         .unwrap();
-    let views = owner.views(range).unwrap();
+    let frame = owner.views(range).unwrap().pop().unwrap();
 
-    assert_eq!(views.len(), 3);
-    assert_eq!(views[1].as_ptr(), payload.as_ptr());
-    let frame = views.concat();
-    assert_eq!(parse_frame(&frame, chunk_id).unwrap().payload, payload);
+    assert_ne!(frame.as_ptr().wrapping_add(14), payload.as_ptr());
+    assert_eq!(
+        parse_frame(&frame, chunk_id).unwrap().payload,
+        b"prefetched-body-next"
+    );
+    assert_eq!(owner.logical_len(), 20);
+    assert_eq!(allocator.prefix_copy_bytes(), payload.len());
     assert!(provider.owner_handoff_active());
 }

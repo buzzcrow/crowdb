@@ -155,7 +155,7 @@ mod s3_dispatcher {
         assert!(put.starts_with("HTTP/1.1 200"));
         assert_eq!(operations.body_bytes.load(Ordering::Relaxed), 4);
         assert_eq!(body_allocator.allocation_count(), 0);
-        assert_eq!(body_allocator.prefetched_bytes(), 4);
+        assert_eq!(body_allocator.prefix_copy_bytes(), 0);
         assert_eq!(body_allocator.direct_bytes(), 0);
 
         let direct_put = request_with_split_body(
@@ -168,7 +168,7 @@ mod s3_dispatcher {
         assert!(direct_put.starts_with("HTTP/1.1 200"));
         assert_eq!(operations.body_bytes.load(Ordering::Relaxed), 12);
         assert_eq!(body_allocator.allocation_count(), 1);
-        assert_eq!(body_allocator.prefetched_bytes(), 4);
+        assert_eq!(body_allocator.prefix_copy_bytes(), 0);
         assert_eq!(body_allocator.direct_bytes(), 8);
         assert_eq!(body_allocator.retained_bytes(), 0);
 

@@ -34,7 +34,6 @@ pub struct NativeBodyReceiver {
     state: UnsafeCell<ReceiverState>,
     state_in_use: AtomicBool,
     owner_handoff: AtomicBool,
-    prefetched: AtomicBool,
     ready_owner: AtomicPtr<NativeFramedOwner>,
 }
 
@@ -44,21 +43,6 @@ pub struct NativeFramedOwner {
     payload_lengths: Box<[u16]>,
     logical_len: u64,
     physical_len: usize,
-}
-
-/// Header-read-ahead payload framed by separate metadata views without
-/// copying the Hyper-owned payload allocation.
-pub struct NativePrefetchedOwner {
-    payload: Bytes,
-    frames: Vec<PrefetchedFrame>,
-    physical_len: usize,
-}
-
-struct PrefetchedFrame {
-    payload: Range<usize>,
-    physical: Range<usize>,
-    header: Option<Bytes>,
-    footer: Option<Bytes>,
 }
 
 // SAFETY: Hyper invokes one provider serially for one Incoming body. The
@@ -71,6 +55,7 @@ struct ReceiverState {
     issued: Option<IssuedSlot>,
     completed_slots: usize,
     payload_lengths: Vec<u16>,
+    append_slot: Option<usize>,
     credit_wait_started: Option<Instant>,
 }
 
@@ -78,6 +63,7 @@ struct IssuedSlot {
     owner: Weak<NativeOwner>,
     capacity: usize,
     slot: usize,
+    initial_len: usize,
 }
 
 struct AllocatorState {
@@ -86,7 +72,7 @@ struct AllocatorState {
     retained_bytes: AtomicUsize,
     allocations: AtomicUsize,
     direct_bytes: AtomicUsize,
-    prefetched_bytes: AtomicUsize,
+    prefix_copy_bytes: AtomicUsize,
     backpressure_events: AtomicUsize,
     backpressure_wait_ns: AtomicUsize,
     credit_waker: AtomicWaker,
@@ -99,7 +85,7 @@ pub struct NativeBufferMetricsSnapshot {
     pub retained_bytes: usize,
     pub allocations: usize,
     pub direct_bytes: usize,
-    pub prefetched_bytes: usize,
+    pub prefix_copy_bytes: usize,
     pub backpressure_events: usize,
     pub backpressure_wait_ns: usize,
 }
@@ -132,7 +118,7 @@ impl NativeBodyAllocator {
                 retained_bytes: AtomicUsize::new(0),
                 allocations: AtomicUsize::new(0),
                 direct_bytes: AtomicUsize::new(0),
-                prefetched_bytes: AtomicUsize::new(0),
+                prefix_copy_bytes: AtomicUsize::new(0),
                 backpressure_events: AtomicUsize::new(0),
                 backpressure_wait_ns: AtomicUsize::new(0),
                 credit_waker: AtomicWaker::new(),
@@ -156,8 +142,8 @@ impl NativeBodyAllocator {
     }
 
     #[must_use]
-    pub fn prefetched_bytes(&self) -> usize {
-        self.state.prefetched_bytes.load(Ordering::Relaxed)
+    pub fn prefix_copy_bytes(&self) -> usize {
+        self.state.prefix_copy_bytes.load(Ordering::Relaxed)
     }
 
     #[must_use]
@@ -168,7 +154,7 @@ impl NativeBodyAllocator {
             retained_bytes: self.state.retained_bytes.load(Ordering::Acquire),
             allocations: self.state.allocations.load(Ordering::Relaxed),
             direct_bytes: self.state.direct_bytes.load(Ordering::Relaxed),
-            prefetched_bytes: self.state.prefetched_bytes.load(Ordering::Relaxed),
+            prefix_copy_bytes: self.state.prefix_copy_bytes.load(Ordering::Relaxed),
             backpressure_events: self.state.backpressure_events.load(Ordering::Relaxed),
             backpressure_wait_ns: self.state.backpressure_wait_ns.load(Ordering::Relaxed),
         }
@@ -184,11 +170,11 @@ impl NativeBodyAllocator {
                 issued: None,
                 completed_slots: 0,
                 payload_lengths: vec![0; self.state.owner_bytes / MAX_FRAME_BYTES],
+                append_slot: None,
                 credit_wait_started: None,
             }),
             state_in_use: AtomicBool::new(false),
             owner_handoff: AtomicBool::new(false),
-            prefetched: AtomicBool::new(false),
             ready_owner: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
@@ -216,19 +202,6 @@ impl NativeBodyReceiver {
     #[must_use]
     pub fn owner_handoff_active(&self) -> bool {
         self.owner_handoff.load(Ordering::Acquire)
-    }
-
-    /// Convert the next header-read-ahead body frame into a scattered framed
-    /// owner. The payload allocation remains owned by Hyper's `Bytes` view.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when Hyper reports an empty prefetched body frame.
-    pub fn take_prefetched_owner(&self, payload: &Bytes) -> io::Result<Option<NativePrefetchedOwner>> {
-        if !self.prefetched.swap(false, Ordering::AcqRel) {
-            return Ok(None);
-        }
-        NativePrefetchedOwner::new(payload.clone()).map(Some)
     }
 
     fn enter_state(&self) -> io::Result<ReceiverStateGuard<'_>> {
@@ -313,102 +286,6 @@ impl NativeBodyReceiver {
     }
 }
 
-impl NativePrefetchedOwner {
-    fn new(payload: Bytes) -> io::Result<Self> {
-        if payload.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "prefetched body payload is empty",
-            ));
-        }
-        let mut physical_offset = 0usize;
-        let mut frames = Vec::new();
-        for start in (0..payload.len()).step_by(MAX_FRAME_PAYLOAD_BYTES) {
-            let end = (start + MAX_FRAME_PAYLOAD_BYTES).min(payload.len());
-            let frame_len = FRAME_HEADER_PREFIX_BYTES + (end - start) + FRAME_FOOTER_BYTES;
-            frames.push(PrefetchedFrame {
-                payload: start..end,
-                physical: physical_offset..physical_offset + frame_len,
-                header: None,
-                footer: None,
-            });
-            physical_offset += frame_len;
-        }
-        Ok(Self {
-            payload,
-            frames,
-            physical_len: physical_offset,
-        })
-    }
-}
-
-impl FramedWriteBuffer for NativePrefetchedOwner {
-    fn logical_len(&self) -> u64 {
-        self.payload.len() as u64
-    }
-
-    fn frame_count(&self) -> usize {
-        self.frames.len()
-    }
-
-    fn frame_payload_len(&self, index: usize) -> Option<usize> {
-        self.frames.get(index).map(|frame| frame.payload.len())
-    }
-
-    fn finalize_frame(
-        &mut self,
-        index: usize,
-        magic: FrameMagic,
-        chunk_id: ChunkId,
-        write_time_ms: u64,
-    ) -> Result<Range<usize>, FrameError> {
-        let frame = self
-            .frames
-            .get_mut(index)
-            .ok_or(FrameError::InvalidLocationRange)?;
-        let mut header = [0; FRAME_HEADER_PREFIX_BYTES];
-        let mut footer = [0; FRAME_FOOTER_BYTES];
-        encode_frame_regions(
-            magic,
-            chunk_id,
-            &self.payload[frame.payload.clone()],
-            write_time_ms,
-            &mut header,
-            &mut footer,
-        )?;
-        frame.header = Some(Bytes::copy_from_slice(&header));
-        frame.footer = Some(Bytes::copy_from_slice(&footer));
-        Ok(frame.physical.clone())
-    }
-
-    fn views(&self, range: Range<usize>) -> Result<Vec<Bytes>, FrameError> {
-        if range.start >= range.end || range.end > self.physical_len {
-            return Err(FrameError::InvalidLocationRange);
-        }
-        let selected = self
-            .frames
-            .iter()
-            .filter(|frame| frame.physical.start >= range.start && frame.physical.end <= range.end)
-            .collect::<Vec<_>>();
-        if selected
-            .first()
-            .map_or(true, |frame| frame.physical.start != range.start)
-            || selected
-                .last()
-                .map_or(true, |frame| frame.physical.end != range.end)
-        {
-            return Err(FrameError::InvalidLocationRange);
-        }
-        let mut views = Vec::with_capacity(selected.len() * 3);
-        for frame in selected {
-            views.push(frame.header.clone().ok_or(FrameError::InvalidLocationRange)?);
-            views.push(self.payload.slice(frame.payload.clone()));
-            views.push(frame.footer.clone().ok_or(FrameError::InvalidLocationRange)?);
-        }
-        Ok(views)
-    }
-}
-
 fn completed_owner(state: &mut ReceiverState, owner: Arc<NativeOwner>) -> io::Result<NativeFramedOwner> {
     let lengths = state.payload_lengths[..state.completed_slots]
         .to_vec()
@@ -423,6 +300,7 @@ fn completed_owner(state: &mut ReceiverState, owner: Arc<NativeOwner>) -> io::Re
         + usize::from(last_payload)
         + FRAME_FOOTER_BYTES;
     state.completed_slots = 0;
+    state.append_slot = None;
     state.payload_lengths.fill(0);
     Ok(NativeFramedOwner {
         owner,
@@ -535,12 +413,11 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
                 "previous HTTP body receive buffer is still issued",
             )));
         }
-        let slots_per_owner = self.allocator.state.owner_bytes / MAX_FRAME_BYTES;
-        if state.owner.is_none() || state.next_slot == slots_per_owner {
-            state.owner = None;
+        if state.owner.is_none() {
             state.next_slot = 0;
             state.completed_slots = 0;
             state.payload_lengths.fill(0);
+            state.append_slot = None;
             let owner_bytes = self.allocator.state.owner_bytes;
             if !self.allocator.try_reserve(owner_bytes) {
                 if state.credit_wait_started.is_none() {
@@ -576,17 +453,24 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
                 }
             }
         }
-        let slot = state.next_slot;
-        state.next_slot += 1;
-        let payload_offset = slot * MAX_FRAME_BYTES + FRAME_HEADER_PREFIX_BYTES;
-        let capacity = requested.min(MAX_FRAME_PAYLOAD_BYTES);
+        let (slot, initial_len) = state.append_slot.take().map_or_else(
+            || {
+                let slot = state.next_slot;
+                state.next_slot += 1;
+                (slot, 0)
+            },
+            |slot| (slot, usize::from(state.payload_lengths[slot])),
+        );
+        let payload_offset = slot * MAX_FRAME_BYTES + FRAME_HEADER_PREFIX_BYTES + initial_len;
+        let capacity = requested.min(MAX_FRAME_PAYLOAD_BYTES - initial_len);
         let owner = Arc::clone(state.owner.as_ref().expect("owner initialized"));
         state.issued = Some(IssuedSlot {
             owner: Arc::downgrade(&owner),
             capacity,
             slot,
+            initial_len,
         });
-        if state.next_slot == slots_per_owner {
+        if !self.owner_handoff.load(Ordering::Acquire) && state.next_slot == state.payload_lengths.len() {
             state.owner = None;
         }
         debug_assert_eq!(
@@ -625,17 +509,29 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
                     "native body owner was released before completion",
                 )
             })?;
-            if issued.slot != state.completed_slots || initialized == 0 {
+            let expected_slot = if issued.initial_len == 0 {
+                state.completed_slots
+            } else {
+                state.completed_slots.saturating_sub(1)
+            };
+            if issued.slot != expected_slot || initialized == 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "native body slots completed out of order",
                 ));
             }
-            state.payload_lengths[issued.slot] = u16::try_from(initialized).map_err(|_| {
+            let payload_len = issued.initial_len + initialized;
+            state.payload_lengths[issued.slot] = u16::try_from(payload_len).map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidData, "native payload length exceeds u16")
             })?;
-            state.completed_slots += 1;
-            if state.completed_slots == state.payload_lengths.len() {
+            if issued.initial_len == 0 {
+                state.completed_slots += 1;
+            }
+            if payload_len < MAX_FRAME_PAYLOAD_BYTES {
+                state.append_slot = Some(issued.slot);
+            }
+            if state.completed_slots == state.payload_lengths.len() && state.append_slot.is_none() {
+                state.owner = None;
                 let completed = completed_owner(state, owner)?;
                 self.publish_owner(completed)?;
             }
@@ -648,26 +544,81 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
     }
 
     fn on_prefetched_data(&self, data: Bytes) -> io::Result<Bytes> {
-        if self.owner_handoff.load(Ordering::Acquire) {
-            let _guard = self.enter_state()?;
-            // SAFETY: `_guard` gives this invocation exclusive state access.
-            let state = unsafe { &*self.state.get() };
-            if state.completed_slots != 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "HTTP read-ahead arrived after native owner assembly started",
-                ));
-            }
+        if data.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "prefetched body payload is empty",
+            ));
         }
-        if self.prefetched.swap(true, Ordering::AcqRel) {
+        if !self.owner_handoff.load(Ordering::Acquire) {
+            return Ok(data);
+        }
+        let _guard = self.enter_state()?;
+        // SAFETY: `_guard` gives this invocation exclusive state access.
+        let state = unsafe { &mut *self.state.get() };
+        if state.owner.is_some() || state.completed_slots != 0 || state.issued.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HTTP read-ahead arrived after native owner assembly started",
+            ));
+        }
+        let owner_bytes = self.allocator.state.owner_bytes;
+        let logical_capacity = (owner_bytes / MAX_FRAME_BYTES) * MAX_FRAME_PAYLOAD_BYTES;
+        if data.len() > logical_capacity {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HTTP read-ahead exceeds one native owner",
+            ));
+        }
+        if !self.allocator.try_reserve(owner_bytes) {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
-                "previous prefetched body view was not consumed",
+                "native body owner budget is exhausted by HTTP read-ahead",
             ));
+        }
+        let owner = match NativeOwner::new(owner_bytes, Arc::clone(&self.allocator.state)) {
+            Ok(owner) => Arc::new(owner),
+            Err(error) => {
+                self.allocator
+                    .state
+                    .retained_bytes
+                    .fetch_sub(owner_bytes, Ordering::AcqRel);
+                self.allocator.state.credit_waker.wake();
+                return Err(error);
+            }
+        };
+        self.allocator.state.allocations.fetch_add(1, Ordering::Relaxed);
+        for (slot, payload) in data.chunks(MAX_FRAME_PAYLOAD_BYTES).enumerate() {
+            let payload_offset = slot * MAX_FRAME_BYTES + FRAME_HEADER_PREFIX_BYTES;
+            // SAFETY: the reserved owner is exclusively initialized here and
+            // every destination payload slot is disjoint and large enough.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    payload.as_ptr(),
+                    owner.pointer.as_ptr().add(payload_offset),
+                    payload.len(),
+                );
+            }
+            state.payload_lengths[slot] = u16::try_from(payload.len()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "native payload length exceeds u16")
+            })?;
+            state.completed_slots += 1;
+        }
+        state.next_slot = state.completed_slots;
+        if let Some(last) = state.completed_slots.checked_sub(1) {
+            if usize::from(state.payload_lengths[last]) < MAX_FRAME_PAYLOAD_BYTES {
+                state.append_slot = Some(last);
+            }
+        }
+        state.owner = Some(Arc::clone(&owner));
+        if state.completed_slots == state.payload_lengths.len() && state.append_slot.is_none() {
+            state.owner = None;
+            let completed = completed_owner(state, owner)?;
+            self.publish_owner(completed)?;
         }
         self.allocator
             .state
-            .prefetched_bytes
+            .prefix_copy_bytes
             .fetch_add(data.len(), Ordering::Relaxed);
         Ok(data)
     }
