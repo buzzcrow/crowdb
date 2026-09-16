@@ -5,15 +5,10 @@
 
 ## Problem
 
-Basic S3 CRUD now composes with the lightweight one-zone topology, but its
-recovery and horizontal-routing guarantees need an explicit, reproducible test
-matrix. A benchmark is not required for this requirement.
-
-The current R166 baseline exposes an earlier recovery defect: after DiskIO is
-replaced and Chunk-KV is restarted, Chunk-KV cannot reopen a persisted
-stream/tree because its chunk reader exhausts valid layouts. The server retries
-the durable transition and S3 HEAD returns 503. R166 owns repairing that
-single-service baseline before R172 expands the matrix.
+Basic S3 CRUD and each single-service restart now compose with the lightweight
+one-zone topology, but broader recovery and horizontal-routing guarantees need
+an explicit, reproducible test matrix. A benchmark is not required for this
+requirement.
 
 ## Solution
 
@@ -33,7 +28,8 @@ single-service baseline before R172 expands the matrix.
 
 ## Dependencies
 
-- Depends on R152–R166 and uses the S3 E2E harness.
+- Depends on the delivered R152–R166 basic S3 service and uses its S3 E2E
+  harness.
 - Requires R144 for partition merge coverage and R103 for ChunkDB range
   migration coverage; their cases remain explicitly skipped until landed.
 

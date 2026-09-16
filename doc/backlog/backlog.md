@@ -36,15 +36,12 @@ requirement is implemented.
 
 ### Planned — S3 data access service
 
-R152–R164 delivered the limited basic S3 service. R166 remains active for the
-single-service restart acceptance baseline; R172 carries the expanded fault and
-scale-out E2E matrix. R167–R169 defer multipart upload and
+R152–R166 delivered the limited basic S3 service, including the single-service
+restart acceptance baseline. R172 carries the expanded fault and scale-out E2E
+matrix. R167–R169 defer multipart upload and
 shared-storage GC without blocking basic large-object deletion. R170 separately
 adds optional cuObject/RDMA acceleration after the TCP baseline is correct and
 measured.
-- **[R166](R166-s3-e2e-suite.md)** — basic end-to-end acceptance — Area: access
-  server / S3 / testing — **Active.** Verify the real-service basic CRUD suite,
-  including every individual service restart, before closing the milestone.
 - **[R167](R167-s3-multipart-upload.md)** — multipart upload — Area: access
   server / S3 — **Deferred.** Add durable part state, atomic completion, cleanup,
   and multipart integrity after the basic milestone stabilizes.

@@ -322,6 +322,14 @@ impl StreamChunkStore for ProductionStreamChunkStore {
                 let disk_writer = Arc::clone(&self.disk_writer);
                 let view = view.clone();
                 let offset = write_start - strip_start;
+                tracing::debug!(
+                    chunk_high = chunk_id.high,
+                    chunk_low = chunk_id.low,
+                    segment = ?segment,
+                    byte_offset = offset,
+                    byte_count = view.len(),
+                    "stream mirror write scheduled"
+                );
                 writes.spawn(async move {
                     disk_writer
                         .write_at_byte_offset(&segment, unit_bytes, offset, view)

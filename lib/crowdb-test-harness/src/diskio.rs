@@ -278,7 +278,10 @@ impl DiskioProcess {
             .await;
     }
 
-    /// Wait for one expected disk to become writable after group-0 discovery.
+    /// Wait for one expected disk to become reachable after group-0 discovery.
+    ///
+    /// The probe must not write: an explicit real disk can already hold a
+    /// durable allocation at zone offset zero when a DiskIO process restarts.
     pub async fn wait_for_disk(
         &self,
         dio_client: &DiskioClient,
@@ -288,9 +291,9 @@ impl DiskioProcess {
     ) {
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         loop {
-            let write_result = dio_client.write(server, conn, test_disk, 0, 0, vec![0xAB; 4096]);
-            match write_result {
-                Ok(fut) => match DiskioClient::await_write_response(fut).await {
+            let fsync_result = dio_client.fsync(server, conn, test_disk);
+            match fsync_result {
+                Ok(fut) => match DiskioClient::await_fsync_response(fut).await {
                     Ok(_) => {
                         eprintln!("diskio disks ready");
                         return;
@@ -303,9 +306,9 @@ impl DiskioProcess {
                             return;
                         }
                     }
-                    Err(e) => eprintln!("diskio write attempt error: {e:?}"),
+                    Err(e) => eprintln!("diskio fsync attempt error: {e:?}"),
                 },
-                Err(e) => eprintln!("diskio write send error: {e:?}"),
+                Err(e) => eprintln!("diskio fsync send error: {e:?}"),
             }
             if std::time::Instant::now() > deadline {
                 let log = self.log_content();

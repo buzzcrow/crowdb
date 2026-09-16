@@ -8,12 +8,12 @@ named recovery and horizontal-routing matrix without adding performance work.
 
 ## Baseline and existing coverage
 
-- [~] **Audit current matrix**: map
+- [x] **Audit current matrix**: map
   current boto3 scripts and restart phases to R172 acceptance cases. Files:
   `app/crowdb-access-server/tests/s3_full_stack_test.rs`,
   `app/crowdb-access-server/tests/s3_e2e/`.
-- [~] **Record completed baseline**: mark CRUD, range, list, ETag, SigV4,
-  lost reply, and access/ChunkDB/DiskDB/DiskIO/Chunk-KV restart cases as
+- [x] **Record completed baseline**: CRUD, range, list, ETag, SigV4,
+  lost reply, and access/ChunkDB/DiskDB/DiskIO/Chunk-KV restart cases are
   covered in R172 without duplicating implementation detail. Files:
   `doc/backlog/R172-s3-fault-scaleout-e2e.md`.
 
