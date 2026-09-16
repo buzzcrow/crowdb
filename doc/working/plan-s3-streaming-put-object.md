@@ -86,7 +86,7 @@ completion returns locations, publish complete object metadata with one KV Put.
 
 ## Tests and gates
 
-- [~] **Integration tests**: assert writer failure does not publish and writer
+- [x] **Integration tests**: assert writer failure does not publish and writer
   completion produces one object-key KV Put. Files:
   `lib/crowdb-access-s3/tests/*_test.rs`.
 - [x] **Required gates**: run affected S3, chunk client, RPC, and Hyper gates.
@@ -101,3 +101,6 @@ completion returns locations, publish complete object metadata with one KV Put.
   Its `--all-features` command is not a stable gate: it enables the upstream
   `nightly`, `ffi`, and `tracing` features, which explicitly require nightly
   or `hyper_unstable_*` compiler configuration.
+- `pixi run -e s3-e2e test-s3-e2e` passes against the self-hosted compact
+  stack: KV, one DiskDB, one DiskIO, unsafe-colocated ChunkDB with 2+1 EC,
+  Chunk-KV, access-server, issued user credentials, and boto3.
