@@ -5,11 +5,15 @@ use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
+use std::time::Instant;
 
 use crowdb_access_s3::error::S3Error;
+use crowdb_access_s3::metrics::{OutcomeClass, S3Metrics};
 use crowdb_access_s3::native_buffer::NativeBodyReceiver;
+use crowdb_access_s3::route::S3Operation;
 use http_body_util::{BodyExt, Full};
-use hyper::body::{Bytes, Http1BodyReceiveProvider, Incoming};
+use hyper::body::{Body, Bytes, Frame, Http1BodyReceiveProvider, Incoming, SizeHint};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
@@ -122,4 +126,65 @@ pub(crate) fn error_response(error: &S3Error, head_only: bool) -> Response<Respo
 
 pub(crate) fn full_body(value: Bytes) -> ResponseBody {
     Full::new(value).map_err(|never| match never {}).boxed()
+}
+
+pub(crate) fn measured_body(
+    body: ResponseBody,
+    metrics: Arc<S3Metrics>,
+    operation: S3Operation,
+    outcome: OutcomeClass,
+    started: Instant,
+) -> ResponseBody {
+    if body.size_hint().exact() == Some(0) {
+        metrics.record_time_to_first_byte(operation, outcome, elapsed_ns(started));
+        return body;
+    }
+    MeasuredBody {
+        inner: body,
+        metrics,
+        operation,
+        outcome,
+        started,
+        recorded: false,
+    }
+    .boxed()
+}
+
+struct MeasuredBody {
+    inner: ResponseBody,
+    metrics: Arc<S3Metrics>,
+    operation: S3Operation,
+    outcome: OutcomeClass,
+    started: Instant,
+    recorded: bool,
+}
+
+impl Body for MeasuredBody {
+    type Data = Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let result = Pin::new(&mut self.inner).poll_frame(context);
+        if result.is_ready() && !self.recorded {
+            self.recorded = true;
+            self.metrics
+                .record_time_to_first_byte(self.operation, self.outcome, elapsed_ns(self.started));
+        }
+        result
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
+    }
+}
+
+fn elapsed_ns(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }

@@ -10,12 +10,12 @@ async fn listener_can_bind_an_ephemeral_port() {
 
 #[cfg(feature = "s3")]
 mod s3_dispatcher {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
     use std::sync::Arc;
 
     use async_trait::async_trait;
     use crowdb_access_s3::auth::{AuthError, RawAuthRequest, RequestAuthenticator};
-    use crowdb_access_s3::metrics::{OutcomeClass, S3Metrics};
+    use crowdb_access_s3::metrics::{OutcomeClass, S3Metrics, S3MetricsSnapshot};
     use crowdb_access_s3::native_buffer::NativeBodyAllocator;
     use crowdb_access_s3::route::{S3Operation, S3Route};
     use crowdb_access_server::s3::{
@@ -43,10 +43,20 @@ mod s3_dispatcher {
         }
     }
 
-    #[derive(Default)]
     struct TestOperations {
         calls: AtomicUsize,
         body_bytes: AtomicUsize,
+        status: AtomicU16,
+    }
+
+    impl Default for TestOperations {
+        fn default() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                body_bytes: AtomicUsize::new(0),
+                status: AtomicU16::new(StatusCode::OK.as_u16()),
+            }
+        }
     }
 
     impl S3Operations for TestOperations {
@@ -63,7 +73,7 @@ mod s3_dispatcher {
                 let body = request.into_body().collect().await.unwrap().to_bytes();
                 self.body_bytes.fetch_add(body.len(), Ordering::Relaxed);
                 Response::builder()
-                    .status(StatusCode::OK)
+                    .status(self.status.load(Ordering::Relaxed))
                     .body(test_body("ok"))
                     .unwrap()
             })
@@ -129,13 +139,7 @@ mod s3_dispatcher {
         assert!(accepted.to_ascii_lowercase().contains("x-amz-id-2:"));
         assert_eq!(operations.calls.load(Ordering::Relaxed), 1);
         assert_eq!(authenticator.calls.load(Ordering::Relaxed), 4);
-        let snapshot = metrics.snapshot();
-        assert_eq!(snapshot.trusted_auth_bypass, 2);
-        assert_eq!(snapshot.in_flight, 0);
-        assert_eq!(
-            snapshot.requests[S3Operation::GetObject as usize][OutcomeClass::Success as usize],
-            1
-        );
+        assert_get_metrics(&metrics.snapshot());
 
         let put = request_with_headers_and_body(
             address,
@@ -175,9 +179,61 @@ mod s3_dispatcher {
         assert_eq!(operations.body_bytes.load(Ordering::Relaxed), 20);
         assert_eq!(body_allocator.direct_bytes(), 16);
         assert_eq!(body_allocator.retained_bytes(), 0);
+        assert_terminal_outcomes(address, &operations, &metrics).await;
 
         let _ = shutdown_tx.send(());
         server.await.unwrap();
+    }
+
+    fn assert_get_metrics(snapshot: &S3MetricsSnapshot) {
+        assert_eq!(snapshot.trusted_auth_bypass, 2);
+        assert_eq!(snapshot.in_flight, 0);
+        assert_eq!(snapshot.max_in_flight, 1);
+        assert_eq!(
+            snapshot.predispatch_requests[OutcomeClass::ClientError as usize],
+            3
+        );
+        assert_eq!(
+            snapshot.requests[S3Operation::GetObject as usize][OutcomeClass::Success as usize],
+            1
+        );
+        assert!(
+            snapshot.time_to_first_byte_ns[S3Operation::GetObject as usize][OutcomeClass::Success as usize]
+                > 0
+        );
+        assert!(
+            snapshot.authentication_latency_ns[S3Operation::GetObject as usize]
+                [OutcomeClass::Success as usize]
+                > 0
+        );
+        assert!(
+            snapshot.operation_latency_ns[S3Operation::GetObject as usize][OutcomeClass::Success as usize]
+                > 0
+        );
+    }
+
+    async fn assert_terminal_outcomes(
+        address: std::net::SocketAddr,
+        operations: &TestOperations,
+        metrics: &S3Metrics,
+    ) {
+        for status in [429, 504, 503, 500] {
+            operations.status.store(status, Ordering::Relaxed);
+            let response = request(address, "GET /bucket/key HTTP/1.1").await;
+            assert!(response.starts_with(&format!("HTTP/1.1 {status}")));
+        }
+        let snapshot = metrics.snapshot();
+        let operation = S3Operation::GetObject as usize;
+        for outcome in [
+            OutcomeClass::Throttled,
+            OutcomeClass::Timeout,
+            OutcomeClass::Unavailable,
+            OutcomeClass::Internal,
+        ] {
+            assert_eq!(snapshot.requests[operation][outcome as usize], 1);
+            assert!(snapshot.request_latency_ns[operation][outcome as usize] > 0);
+            assert!(snapshot.time_to_first_byte_ns[operation][outcome as usize] > 0);
+        }
     }
 
     async fn request(address: std::net::SocketAddr, start_line: &str) -> String {
