@@ -106,6 +106,9 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
     };
     let chunkdb = ChunkdbProcess::start_with_options(&cluster.mgmt_endpoints, chunkdb_options);
     chunkdb.wait_for_ready().await;
+    chunkdb
+        .wait_for_registry_ready(&cluster.make_service_registry_client())
+        .await;
     assert_range_delete_contract(&cluster).await;
     let mut chunk_kv = ChunkKvProcess::start(&cluster.mgmt_endpoints);
     chunk_kv.wait_for_ready().await;

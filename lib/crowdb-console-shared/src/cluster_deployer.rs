@@ -655,35 +655,21 @@ impl CrowdbClusterDeployer {
         }
         log_phase_time("stop_all_servers", t);
 
-        // Wait for the processes to actually exit so the next cycle can
-        // reuse ports and WAL dirs without racing the old processes.
-        // The console sends SIGTERM but doesn't await the exit; without
-        // this wait, the next start() can fail with "address already in
-        // use" when the new server tries to bind before the old one has
-        // released its ports.
+        // The deployer always provisions local processes. Ensure each has
+        // exited before returning, with a bounded graceful period followed
+        // by SIGKILL. The console endpoint starts its own longer reaper in
+        // the background; relying on that 15-second reaper makes this
+        // fast-stop API depend on the server's 10-second shutdown budget.
         let t = Instant::now();
         let all_pids: Vec<u32> = server_pids.iter().chain(ddb_pids.iter()).copied().collect();
-        if !all_pids.is_empty() {
-            let wait_deadline = Instant::now() + Duration::from_secs(10);
-            loop {
-                let alive: Vec<u32> = all_pids
-                    .iter()
-                    .copied()
-                    .filter(|p| process_is_alive(*p))
-                    .collect();
-                if alive.is_empty() {
-                    break;
-                }
-                if Instant::now() >= wait_deadline {
-                    tracing::warn!(
-                        alive_pids = ?alive,
-                        "stop() waited 10s but {} process(es) still alive",
-                        alive.len()
-                    );
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
+        let mut reap_handles = Vec::with_capacity(all_pids.len());
+        for pid in all_pids {
+            reap_handles.push(tokio::task::spawn_blocking(move || {
+                let _ = crate::lifecycle::stop_pid_with_timeout(pid, Duration::from_secs(2));
+            }));
+        }
+        for handle in reap_handles {
+            let _ = handle.await;
         }
         log_phase_time("wait_for_process_exit", t);
 
