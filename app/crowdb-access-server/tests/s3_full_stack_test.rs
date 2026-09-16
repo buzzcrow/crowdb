@@ -128,6 +128,7 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
         &access_server,
         &chunk_kv,
     );
+    run_benchmark(&listen, &access_key, &secret_key);
     assert_native_write_metrics(&listen);
 
     run_restart_phase("prepare", &listen, &access_key, &secret_key);
@@ -247,6 +248,36 @@ fn run_restart_phase(phase: &str, listen: &str, access_key: &str, secret_key: &s
         "restart {phase} failed: {}",
         String::from_utf8_lossy(&result.stderr)
     );
+}
+
+fn run_benchmark(listen: &str, access_key: &str, secret_key: &str) {
+    let python_binary = std::env::var_os("CROWDB_S3_E2E_PYTHON").unwrap_or_else(|| "python".into());
+    let result = Command::new(python_binary)
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/s3_e2e/benchmark.py"))
+        .args(["--endpoint", &format!("http://{listen}")])
+        .args([
+            "--sizes",
+            "65536,1048576",
+            "--concurrency",
+            "1,2",
+            "--samples",
+            "1",
+        ])
+        .env("CROWDB_S3_E2E_REGION", "us-east-1")
+        .env("CROWDB_S3_E2E_ACCESS_KEY", access_key)
+        .env("CROWDB_S3_E2E_SECRET_KEY", secret_key)
+        .output()
+        .expect("run S3 baseline benchmark");
+    assert!(
+        result.status.success(),
+        "S3 baseline benchmark failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(result.stdout.starts_with(b"{\n"), "benchmark did not emit JSON");
+    let artifact = crowdb_test_harness::test_dirs::test_log_dir()
+        .join(format!("crowdb-s3-e2e-benchmark-{}.json", std::process::id()));
+    std::fs::write(&artifact, result.stdout).expect("write S3 baseline samples");
+    eprintln!("S3 benchmark samples: {}", artifact.display());
 }
 
 fn http_get(address: &str, path: &str) -> String {
