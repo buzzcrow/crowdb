@@ -33,7 +33,7 @@ real services rather than mocks.
   storage owners around completed PUT/overwrite/delete, repeat requests after
   lost-response simulation, and assert atomic visibility/idempotence. Reuse
   process fixtures and expose only deterministic fault hooks.
-- [ ] **Backpressure and race coverage**: exercise slow request/response peers,
+- [~] **Backpressure and race coverage**: exercise slow request/response peers,
   exhausted native credits, overwrite/read/delete races, chunk errors, and
   routing refresh while bounding memory and cleanup targets.
 - [x] **Stateless frontend scale-out**: run two independently configured access

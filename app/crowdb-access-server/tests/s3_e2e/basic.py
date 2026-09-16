@@ -3,6 +3,7 @@
 
 import os
 import random
+import time
 import unittest
 from base64 import b64encode
 from hashlib import md5, sha256
@@ -55,15 +56,18 @@ class BasicS3CompatibilityTest(unittest.TestCase):
         cls.bucket = os.environ.get("CROWDB_S3_E2E_BUCKET", "crowdb-basic-e2e")
         cls.endpoint = endpoint
 
-    def signed_http(self, method, path, body=b"", headers=None, corrupt_signature=False):
+    def signed_http(self, method, path, body=b"", headers=None, corrupt_signature=False, slow_chunk_size=0):
         parsed = urlsplit(self.endpoint)
         self.assertEqual(parsed.scheme, "http")
         url = f"{self.endpoint}{path}"
-        request = AWSRequest(method=method, url=url, data=body, headers={
+        signed_headers = {
             "Host": parsed.netloc,
             "x-amz-content-sha256": sha256(body).hexdigest(),
             **(headers or {}),
-        })
+        }
+        if slow_chunk_size:
+            signed_headers["Content-Length"] = str(len(body))
+        request = AWSRequest(method=method, url=url, data=body, headers=signed_headers)
         credentials = Credentials(
             os.environ.get("CROWDB_S3_E2E_ACCESS_KEY", "test-access"),
             os.environ.get("CROWDB_S3_E2E_SECRET_KEY", "test-secret"),
@@ -76,7 +80,16 @@ class BasicS3CompatibilityTest(unittest.TestCase):
             )
         connection = HTTPConnection(parsed.hostname, parsed.port, timeout=15)
         try:
-            connection.request(method, path, body=body, headers=dict(request.headers.items()))
+            if slow_chunk_size:
+                connection.putrequest(method, path, skip_host=True)
+                for name, value in request.headers.items():
+                    connection.putheader(name, value)
+                connection.endheaders()
+                for offset in range(0, len(body), slow_chunk_size):
+                    connection.send(body[offset : offset + slow_chunk_size])
+                    time.sleep(0.002)
+            else:
+                connection.request(method, path, body=body, headers=dict(request.headers.items()))
             response = connection.getresponse()
             return response.status, dict(response.getheaders()), response.read()
         finally:
@@ -151,6 +164,22 @@ class BasicS3CompatibilityTest(unittest.TestCase):
             second.head_object(Bucket=bucket, Key=key)
         self.assertEqual(absent.exception.response["ResponseMetadata"]["HTTPStatusCode"], 404)
         second.delete_bucket(Bucket=bucket)
+
+    def test_slow_signed_upload_releases_native_buffers(self):
+        bucket = f"{self.bucket}-slow"
+        path = f"/{bucket}/slow.bin"
+        payload = bytes(range(256)) * (4096 + 1)
+        status, _, _ = self.signed_http("PUT", f"/{bucket}")
+        self.assertEqual(status, 200)
+        status, headers, data = self.signed_http("PUT", path, payload, slow_chunk_size=8192)
+        self.assertEqual(status, 200, data)
+        self.assertEqual(headers["etag"], f'"{md5(payload).hexdigest()}"')
+        self.assertEqual(self.client.get_object(Bucket=bucket, Key="slow.bin")["Body"].read(), payload)
+        status, _, metrics = self.signed_http("GET", "/_crowdb/metrics")
+        self.assertEqual(status, 200)
+        self.assertIn(b"crowdb_s3_native_retained_bytes 0\n", metrics)
+        self.client.delete_object(Bucket=bucket, Key="slow.bin")
+        self.client.delete_bucket(Bucket=bucket)
 
     def test_basic_bucket_object_matrix(self):
         client = self.client
