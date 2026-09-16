@@ -39,6 +39,10 @@ real services rather than mocks.
 - [~] **Backpressure and race coverage**: exercise slow request/response peers,
   exhausted native credits, overwrite/read/delete races, chunk errors, and
   routing refresh while bounding memory and cleanup targets.
+  A 1 MiB owned-stack budget now proves concurrent slow-upload credit waits,
+  zero retained owners after completion, and positive backpressure accounting;
+  simultaneous read-ahead when that sole credit is unavailable is tracked in
+  R152 Open Issues.
 - [x] **Stateless frontend scale-out**: run two independently configured access
   servers over the same metadata/chunk authorities and alternate retries,
   reads, pagination, overwrites, and deletes between them.

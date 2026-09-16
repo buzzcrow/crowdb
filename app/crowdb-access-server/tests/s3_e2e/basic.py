@@ -12,6 +12,7 @@ from email.utils import format_datetime
 from hashlib import md5, sha256
 from http.client import HTTPConnection
 from io import BytesIO
+from threading import Barrier
 from urllib.parse import quote, urlsplit
 from xml.etree import ElementTree
 
@@ -89,6 +90,10 @@ class BasicS3CompatibilityTest(unittest.TestCase):
                 for name, value in request.headers.items():
                     connection.putheader(name, value)
                 connection.endheaders()
+                # Let Hyper finish the headers before body bytes arrive so
+                # this case exercises async owner-credit waiting, not its
+                # separate synchronous header read-ahead path.
+                time.sleep(0.05)
                 for offset in range(0, len(body), slow_chunk_size):
                     connection.send(body[offset : offset + slow_chunk_size])
                     time.sleep(0.002)
@@ -222,17 +227,34 @@ class BasicS3CompatibilityTest(unittest.TestCase):
     def test_slow_signed_upload_releases_native_buffers(self):
         bucket = f"{self.bucket}-slow"
         path = f"/{bucket}/slow.bin"
+        second_path = f"/{bucket}/slow-second.bin"
         payload = bytes(range(256)) * (4096 + 1)
         status, _, _ = self.signed_http("PUT", f"/{bucket}")
         self.assertEqual(status, 200)
-        status, headers, data = self.signed_http("PUT", path, payload, slow_chunk_size=8192)
-        self.assertEqual(status, 200, data)
-        self.assertEqual(headers["etag"], f'"{md5(payload).hexdigest()}"')
+        barrier = Barrier(2)
+
+        def upload(target):
+            barrier.wait(timeout=5)
+            return self.signed_http("PUT", target, payload, slow_chunk_size=8192)
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            responses = list(workers.map(upload, (path, second_path)))
+        for status, headers, data in responses:
+            self.assertEqual(status, 200, data)
+            self.assertEqual(headers["etag"], f'"{md5(payload).hexdigest()}"')
         self.assertEqual(self.client.get_object(Bucket=bucket, Key="slow.bin")["Body"].read(), payload)
+        self.assertEqual(self.client.get_object(Bucket=bucket, Key="slow-second.bin")["Body"].read(), payload)
         status, _, metrics = self.signed_http("GET", "/_crowdb/metrics")
         self.assertEqual(status, 200)
         self.assertIn(b"crowdb_s3_native_retained_bytes 0\n", metrics)
+        backpressure = next(
+            int(line.split()[-1])
+            for line in metrics.splitlines()
+            if line.startswith(b"crowdb_s3_native_backpressure_events_total ")
+        )
+        self.assertGreater(backpressure, 0)
         self.client.delete_object(Bucket=bucket, Key="slow.bin")
+        self.client.delete_object(Bucket=bucket, Key="slow-second.bin")
         self.client.delete_bucket(Bucket=bucket)
 
     def test_overwrite_and_read_remain_atomic(self):

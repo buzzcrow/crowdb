@@ -95,7 +95,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_metrics(Arc::clone(&metrics))
                 .with_health(Arc::clone(&health)),
         );
-        let body_allocator = Arc::new(NativeBodyAllocator::new(256 * 1024 * 1024, 1024 * 1024)?);
+        let native_budget = optional_usize("CROWDB_S3_NATIVE_BUDGET_BYTES")?.unwrap_or(256 * 1024 * 1024);
+        let body_allocator = Arc::new(NativeBodyAllocator::new(native_budget, 1024 * 1024)?);
         let handler = Arc::new(
             S3Dispatcher::new(
                 authenticator,

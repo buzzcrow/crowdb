@@ -116,3 +116,11 @@ Required gates:
   malformed signatures. Decide whether the advertised S3 compatibility surface
   needs distinct `SignatureDoesNotMatch` and `InvalidAccessKeyId` errors before
   changing the authenticator result type and wire contract.
+- With a 1 MiB native-owner budget already held by another request, Hyper's
+  synchronous `on_prefetched_data` callback cannot await an owner credit for
+  body bytes read alongside HTTP headers. A concurrent signed PUT currently
+  closes its connection (`BrokenPipeError`) in this case. Decide whether to
+  reserve one credit asynchronously before provider installation, or introduce
+  a pollable prefetched-data handoff in the Hyper fork. The no-read-ahead
+  path can wait asynchronously for credit and is tested separately; never
+  silently switch the whole object to a copying fallback.

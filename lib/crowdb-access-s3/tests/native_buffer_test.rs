@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use std::future::poll_fn;
+use std::time::Duration;
 
 use crowdb_access_s3::native_buffer::NativeBodyAllocator;
 use crowdb_chunk_client::FramedWriteBuffer;
@@ -25,6 +26,40 @@ async fn native_frame_retains_and_releases_allocator_credit() {
     assert_eq!(allocator.allocation_count(), 1);
 
     drop(bytes);
+    assert_eq!(allocator.retained_bytes(), 0);
+}
+
+#[tokio::test]
+async fn native_allocator_wakes_all_concurrent_credit_waiters() {
+    let allocator = NativeBodyAllocator::new(MAX_FRAME_BYTES, MAX_FRAME_BYTES).unwrap();
+    let provider = allocator.object_receiver();
+    let occupied = poll_fn(|cx| provider.poll_next_buffer(cx, 8)).await.unwrap();
+    let waiting = (0..2)
+        .map(|_| {
+            let allocator = allocator.clone();
+            tokio::spawn(async move {
+                let provider = allocator.object_receiver();
+                let region = poll_fn(|cx| provider.poll_next_buffer(cx, 8)).await.unwrap();
+                drop(region);
+            })
+        })
+        .collect::<Vec<_>>();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while allocator.metrics_snapshot().backpressure_events < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("both receivers must wait for owner credit");
+
+    drop(occupied);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        for waiter in waiting {
+            waiter.await.unwrap();
+        }
+    })
+    .await
+    .expect("both receivers must wake when credit is returned");
     assert_eq!(allocator.retained_bytes(), 0);
 }
 

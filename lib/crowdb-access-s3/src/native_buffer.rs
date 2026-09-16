@@ -15,6 +15,7 @@ use std::sync::{Arc, Weak};
 use std::task::{Context, Poll};
 use std::time::Instant;
 
+use arc_swap::ArcSwap;
 use atomic_waker::AtomicWaker;
 use crowdb_chunk_client::FramedWriteBuffer;
 use crowdb_protocol::common::ChunkId;
@@ -31,6 +32,7 @@ pub struct NativeBodyAllocator {
 
 pub struct NativeBodyReceiver {
     allocator: NativeBodyAllocator,
+    credit_waker: Arc<AtomicWaker>,
     state: UnsafeCell<ReceiverState>,
     state_in_use: AtomicBool,
     owner_handoff: AtomicBool,
@@ -75,7 +77,7 @@ struct AllocatorState {
     prefix_copy_bytes: AtomicUsize,
     backpressure_events: AtomicUsize,
     backpressure_wait_ns: AtomicUsize,
-    credit_waker: AtomicWaker,
+    credit_waiters: ArcSwap<Vec<Weak<AtomicWaker>>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -121,7 +123,7 @@ impl NativeBodyAllocator {
                 prefix_copy_bytes: AtomicUsize::new(0),
                 backpressure_events: AtomicUsize::new(0),
                 backpressure_wait_ns: AtomicUsize::new(0),
-                credit_waker: AtomicWaker::new(),
+                credit_waiters: ArcSwap::from_pointee(Vec::new()),
             }),
         })
     }
@@ -162,8 +164,19 @@ impl NativeBodyAllocator {
 
     #[must_use]
     pub fn object_receiver(&self) -> NativeBodyReceiver {
+        let credit_waker = Arc::new(AtomicWaker::new());
+        self.state.credit_waiters.rcu(|current| {
+            let mut waiters = current
+                .iter()
+                .filter(|waiter| waiter.strong_count() != 0)
+                .cloned()
+                .collect::<Vec<_>>();
+            waiters.push(Arc::downgrade(&credit_waker));
+            Arc::new(waiters)
+        });
         NativeBodyReceiver {
             allocator: self.clone(),
+            credit_waker,
             state: UnsafeCell::new(ReceiverState {
                 owner: None,
                 next_slot: 0,
@@ -189,11 +202,25 @@ impl NativeBodyAllocator {
             })
             .is_ok()
     }
+
+    fn wake_credit_waiters(&self) {
+        self.state.wake_credit_waiters();
+    }
+}
+
+impl AllocatorState {
+    fn wake_credit_waiters(&self) {
+        for waiter in self.credit_waiters.load().iter() {
+            if let Some(waker) = waiter.upgrade() {
+                waker.wake();
+            }
+        }
+    }
 }
 
 impl NativeBodyReceiver {
-    /// Enable publication of each full native owner. A request which receives
-    /// header-buffer read-ahead remains on the generic view path.
+    /// Enable publication of each full native owner. Header-buffer read-ahead
+    /// is copied into the first owner's payload slots when credit is available.
     pub fn enable_owner_handoff(&self) {
         self.owner_handoff.store(true, Ordering::Release);
     }
@@ -427,7 +454,7 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
                         .backpressure_events
                         .fetch_add(1, Ordering::Relaxed);
                 }
-                self.allocator.state.credit_waker.register(cx.waker());
+                self.credit_waker.register(cx.waker());
                 if !self.allocator.try_reserve(owner_bytes) {
                     return Poll::Pending;
                 }
@@ -448,7 +475,7 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
                         .state
                         .retained_bytes
                         .fetch_sub(owner_bytes, Ordering::AcqRel);
-                    self.allocator.state.credit_waker.wake();
+                    self.allocator.wake_credit_waiters();
                     return Poll::Ready(Err(error));
                 }
             }
@@ -583,7 +610,7 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
                     .state
                     .retained_bytes
                     .fetch_sub(owner_bytes, Ordering::AcqRel);
-                self.allocator.state.credit_waker.wake();
+                self.allocator.wake_credit_waiters();
                 return Err(error);
             }
         };
@@ -656,7 +683,7 @@ impl Drop for NativeOwner {
         self.allocator
             .retained_bytes
             .fetch_sub(self.capacity, Ordering::AcqRel);
-        self.allocator.credit_waker.wake();
+        self.allocator.wake_credit_waiters();
     }
 }
 
