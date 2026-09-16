@@ -36,8 +36,9 @@ real services rather than mocks.
   Completed PUT survives frontend and ChunkDB restarts, including ChunkDB
   rebinding to a different RPC port. A test-owned proxy also discards the
   completed PUT response before the client retries the same key and payload.
-  DiskDB/DiskIO restarts, crashes during transitions, and overwrite/delete
-  restart cases remain.
+  Completed overwrite and delete transitions are also checked across frontend
+  and ChunkDB restarts. DiskDB/DiskIO restarts and crashes during transitions
+  remain.
 - [~] **Backpressure and race coverage**: exercise slow request/response peers,
   exhausted native credits, overwrite/read/delete races, chunk errors, and
   routing refresh while bounding memory and cleanup targets.
