@@ -24,6 +24,8 @@ TASK_PACKAGES = {
     "test-chunkdb": {"crowdb-chunkdb"},
     "test-chunk-client": {"crowdb-chunk-client"},
     "test-diskio-client": {"crowdb-diskio-client"},
+    "test-access-s3": {"crowdb-access-s3"},
+    "test-access-server-s3": {"crowdb-access-server"},
     "test-console-shared": {"crowdb-console-shared"},
     "test-console-cli": {"crowdb-cli"},
     "test-console-server": {"crowdb-web"},

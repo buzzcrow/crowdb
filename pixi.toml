@@ -71,11 +71,13 @@ rdma-core = "*"
 boto3 = "*"
 
 [feature.s3-e2e.tasks]
-test-s3-e2e = '''
+test-boto3-e2e = '''
 bash -c '
 set -e
 pixi run -e default build-cpp
 pixi run -e default -- cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb -p crowdb-chunk-kv-server -p crowdb-access-server
+pixi run -e default test-access-s3
+pixi run -e default test-access-server-s3
 CROWDB_S3_E2E_PYTHON="$PIXI_PROJECT_ROOT/.pixi/envs/s3-e2e/bin/python" pixi run -e default -- cargo test -p crowdb-access-server --features s3-e2e --test s3_full_stack_test -- --nocapture
 '
 '''
@@ -211,6 +213,8 @@ test-diskdb-client = { cmd = "cargo build -p crowdb-kv-server -p crowdb-diskdb &
 test-chunkdb = { cmd = "cargo test -p crowdb-chunkdb --all-targets" }
 test-chunk-client = { cmd = "cargo test -p crowdb-chunk-client --all-targets" }
 test-diskio-client = { cmd = "cargo test -p crowdb-diskio-client --all-targets" }
+test-access-s3 = { cmd = "cargo test -p crowdb-access-s3 --all-targets" }
+test-access-server-s3 = { cmd = "cargo test -p crowdb-access-server --all-targets" }
 test-server = { cmd = '''
 bash -c '
 set -e
@@ -251,6 +255,7 @@ set -e
 pixi run test-cpp
 pixi run test-unit
 pixi run test-server
+pixi run -e s3-e2e test-boto3-e2e
 pixi run test-console
 pixi run clean-env
 pixi run test-console-ui
