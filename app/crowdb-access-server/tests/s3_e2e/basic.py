@@ -55,7 +55,7 @@ class BasicS3CompatibilityTest(unittest.TestCase):
         cls.bucket = os.environ.get("CROWDB_S3_E2E_BUCKET", "crowdb-basic-e2e")
         cls.endpoint = endpoint
 
-    def signed_http(self, method, path, body=b"", headers=None):
+    def signed_http(self, method, path, body=b"", headers=None, corrupt_signature=False):
         parsed = urlsplit(self.endpoint)
         self.assertEqual(parsed.scheme, "http")
         url = f"{self.endpoint}{path}"
@@ -69,6 +69,11 @@ class BasicS3CompatibilityTest(unittest.TestCase):
             os.environ.get("CROWDB_S3_E2E_SECRET_KEY", "test-secret"),
         )
         S3SigV4Auth(credentials, "s3", os.environ.get("CROWDB_S3_E2E_REGION", "us-east-1")).add_auth(request)
+        if corrupt_signature:
+            authorization = request.headers["Authorization"]
+            request.headers["Authorization"] = authorization[:-1] + (
+                "0" if authorization[-1] != "0" else "1"
+            )
         connection = HTTPConnection(parsed.hostname, parsed.port, timeout=15)
         try:
             connection.request(method, path, body=body, headers=dict(request.headers.items()))
@@ -99,6 +104,15 @@ class BasicS3CompatibilityTest(unittest.TestCase):
         status, _, data = self.signed_http("GET", path, headers={"If-Match": '"wrong"'})
         self.assertEqual(status, 412)
         self.assertIn(b"PreconditionFailed", data)
+        status, _, data = self.signed_http("GET", path, headers={"Range": "bytes=999-1000"})
+        self.assertEqual(status, 416)
+        self.assertIn(b"InvalidRange", data)
+        status, _, data = self.signed_http("GET", f"{path}?versionId=1")
+        self.assertEqual(status, 501)
+        self.assertIn(b"NotImplemented", data)
+        status, _, data = self.signed_http("GET", path, corrupt_signature=True)
+        self.assertEqual(status, 403)
+        self.assertIn(b"AccessDenied", data)
         status, _, data = self.signed_http("GET", f"/{bucket}?list-type=2&prefix=raw%2F")
         self.assertEqual(status, 200)
         self.assertIn(b"<Key>raw/%25+", data)
