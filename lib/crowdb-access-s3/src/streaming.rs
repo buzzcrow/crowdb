@@ -271,7 +271,7 @@ fn finish_integrity(
 #[async_trait::async_trait]
 pub trait FailedPublicationCleanup: Send + Sync {
     /// Records or performs cleanup; its failure must not replace the PUT result.
-    async fn cleanup(&self, targets: &[FailedPublicationTarget]);
+    async fn cleanup(&self, request_id: &str, targets: &[FailedPublicationTarget]);
 }
 
 /// Attaches completed writer locations to the metadata that one KV Put publishes.
@@ -341,6 +341,7 @@ where
 
 /// Publishes completed locations and runs best-effort cleanup only after a definite error.
 pub async fn publish_completed_locations_with_cleanup(
+    request_id: &str,
     store: &ChunkKvMetadataStore,
     request: &mut PublicationRequest,
     locations: &[Location],
@@ -348,17 +349,18 @@ pub async fn publish_completed_locations_with_cleanup(
     cleanup: &dyn FailedPublicationCleanup,
 ) -> PutOutcome {
     let outcome = publish_completed_locations(store, request, locations).await;
-    cleanup_after_definite_error(outcome, cleanup_targets, cleanup).await
+    cleanup_after_definite_error(request_id, outcome, cleanup_targets, cleanup).await
 }
 
 /// Runs cleanup only for a definite publication error.
 pub async fn cleanup_after_definite_error(
+    request_id: &str,
     outcome: PutOutcome,
     cleanup_targets: &[FailedPublicationTarget],
     cleanup: &dyn FailedPublicationCleanup,
 ) -> PutOutcome {
     if matches!(outcome, PutOutcome::Error { .. }) {
-        cleanup.cleanup(cleanup_targets).await;
+        cleanup.cleanup(request_id, cleanup_targets).await;
     }
     outcome
 }

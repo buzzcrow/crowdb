@@ -12,6 +12,7 @@ use crowdb_access_s3::native_buffer::NativeBodyAllocator;
 use crowdb_access_s3::route::{classify_request, RouteError};
 use hyper::body::{Http1BodyReceiveProvider, Incoming};
 use hyper::{Method, Request, StatusCode};
+use tracing::Instrument;
 
 use super::{
     error_response, measured_body, DeferredBodyReceiveProvider, HandlerFuture, S3HttpHandler, S3Operations,
@@ -140,8 +141,10 @@ impl S3HttpHandler for S3Dispatcher {
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(0);
             let operation_started = Instant::now();
+            let operation_span = request_span(&request_id, operation);
             let mut response = operations
                 .execute(route, request, request_id.clone(), host_id.clone())
+                .instrument(operation_span)
                 .await;
             let operation_latency_ns = elapsed_ns(operation_started);
             if let Ok(value) = hyper::header::HeaderValue::from_str(&request_id) {
@@ -210,4 +213,8 @@ fn response_bytes(response: &hyper::Response<super::ResponseBody>, head_only: bo
         .and_then(|value| value.parse().ok())
         .or_else(|| hyper::body::Body::size_hint(response.body()).exact())
         .unwrap_or(0)
+}
+
+fn request_span(request_id: &str, operation: crowdb_access_s3::route::S3Operation) -> tracing::Span {
+    tracing::debug_span!("s3_request", %request_id, ?operation)
 }

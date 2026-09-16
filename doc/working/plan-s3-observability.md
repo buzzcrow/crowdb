@@ -17,14 +17,14 @@ with bounded, non-blocking telemetry and dependency-aware service health.
   Keep authentication ahead of storage dispatch and exclude namespace or
   credential labels. Files: `lib/crowdb-access-s3/src/metrics.rs`,
   `app/crowdb-access-server/src/s3/dispatcher.rs`, tests.
-- [~] **Propagate correlation identity**: carry the request ID through the
+- [x] **Propagate correlation identity**: carry the request ID through the
   operation context and cleanup records without logging keys or credentials.
   Files: `app/crowdb-access-server/src/s3/`,
   `lib/crowdb-access-s3/src/`.
 
 ## Data-path accounting
 
-- [ ] **Unify native and chunk counters**: expose pool ownership, direct and
+- [~] **Unify native and chunk counters**: expose pool ownership, direct and
   prefetched bytes, framed owner/views, payload-copy fallback, checksum work,
   backpressure, metadata/chunk retries, and cleanup backlog in bounded
   snapshots. Files: `lib/crowdb-access-s3/src/native_buffer.rs`,

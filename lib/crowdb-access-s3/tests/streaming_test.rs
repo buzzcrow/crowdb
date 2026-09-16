@@ -54,7 +54,8 @@ struct TestCleanup(AtomicUsize);
 
 #[async_trait]
 impl FailedPublicationCleanup for TestCleanup {
-    async fn cleanup(&self, _targets: &[FailedPublicationTarget]) {
+    async fn cleanup(&self, request_id: &str, _targets: &[FailedPublicationTarget]) {
+        assert_eq!(request_id, "request-17");
         self.0.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -68,12 +69,12 @@ async fn only_definite_errors_run_cleanup() {
         message: "rejected".into(),
     };
     assert!(matches!(
-        cleanup_after_definite_error(error, &cleanup_targets, &cleanup).await,
+        cleanup_after_definite_error("request-17", error, &cleanup_targets, &cleanup).await,
         PutOutcome::Error { .. }
     ));
     assert_eq!(cleanup.0.load(Ordering::Relaxed), 1);
     assert_eq!(
-        cleanup_after_definite_error(PutOutcome::Timeout, &cleanup_targets, &cleanup).await,
+        cleanup_after_definite_error("request-17", PutOutcome::Timeout, &cleanup_targets, &cleanup).await,
         PutOutcome::Timeout
     );
     assert_eq!(cleanup.0.load(Ordering::Relaxed), 1);
