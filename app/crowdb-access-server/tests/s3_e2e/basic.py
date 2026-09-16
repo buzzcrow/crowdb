@@ -7,10 +7,13 @@ import time
 import unittest
 from base64 import b64encode
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta, timezone
+from email.utils import format_datetime
 from hashlib import md5, sha256
 from http.client import HTTPConnection
 from io import BytesIO
 from urllib.parse import quote, urlsplit
+from xml.etree import ElementTree
 
 import boto3
 from botocore.auth import S3SigV4Auth
@@ -104,6 +107,12 @@ class BasicS3CompatibilityTest(unittest.TestCase):
 
         status, _, _ = self.signed_http("PUT", f"/{bucket}")
         self.assertEqual(status, 200)
+        status, _, data = self.signed_http("HEAD", f"/{bucket}")
+        self.assertEqual(status, 200)
+        self.assertEqual(data, b"")
+        status, _, data = self.signed_http("GET", "/")
+        self.assertEqual(status, 200)
+        self.assertIn(bucket.encode(), data)
         status, headers, data = self.signed_http("PUT", path, payload)
         self.assertEqual(status, 200, data)
         self.assertEqual(headers["etag"], f'"{md5(payload).hexdigest()}"')
@@ -124,10 +133,24 @@ class BasicS3CompatibilityTest(unittest.TestCase):
         status, _, data = self.signed_http("GET", path, headers={"If-None-Match": headers["etag"]})
         self.assertEqual(status, 304)
         self.assertEqual(data, b"")
+        modified = self.client.head_object(Bucket=bucket, Key=key)["LastModified"].astimezone(timezone.utc)
+        status, _, data = self.signed_http(
+            "GET", path, headers={"If-Modified-Since": format_datetime(modified + timedelta(days=1), usegmt=True)}
+        )
+        self.assertEqual(status, 304)
+        self.assertEqual(data, b"")
+        status, _, data = self.signed_http(
+            "GET", path, headers={"If-Unmodified-Since": format_datetime(modified - timedelta(days=1), usegmt=True)}
+        )
+        self.assertEqual(status, 412)
+        self.assertIn(b"PreconditionFailed", data)
         status, _, data = self.signed_http("GET", path, headers={"If-Match": '"wrong"'})
         self.assertEqual(status, 412)
         self.assertIn(b"PreconditionFailed", data)
         status, _, data = self.signed_http("GET", path, headers={"Range": "bytes=999-1000"})
+        self.assertEqual(status, 416)
+        self.assertIn(b"InvalidRange", data)
+        status, _, data = self.signed_http("GET", path, headers={"Range": "bytes=0-1,4-5"})
         self.assertEqual(status, 416)
         self.assertIn(b"InvalidRange", data)
         status, _, data = self.signed_http("GET", f"{path}?versionId=1")
@@ -139,14 +162,32 @@ class BasicS3CompatibilityTest(unittest.TestCase):
         status, _, data = self.signed_http("GET", f"/{bucket}?list-type=2&prefix=raw%2F")
         self.assertEqual(status, 200)
         self.assertIn(b"<Key>raw/%25+", data)
+        second_path = f"/{bucket}/raw/second.bin"
+        status, _, _ = self.signed_http("PUT", second_path, b"second")
+        self.assertEqual(status, 200)
+        status, _, data = self.signed_http("GET", f"/{bucket}?list-type=2&max-keys=1")
+        self.assertEqual(status, 200)
+        first_page = ElementTree.fromstring(data)
+        token = first_page.findtext(".//{*}NextContinuationToken")
+        self.assertTrue(token)
+        status, _, data = self.signed_http(
+            "GET", f"/{bucket}?list-type=2&max-keys=1&continuation-token={quote(token, safe='')}"
+        )
+        self.assertEqual(status, 200)
+        second_page = ElementTree.fromstring(data)
+        self.assertEqual(second_page.findtext(".//{*}Key"), "raw/second.bin")
         status, _, data = self.signed_http("GET", f"/{bucket}?list-type=2&continuation-token=invalid")
         self.assertEqual(status, 400)
         self.assertIn(b"InvalidRequest", data)
         status, _, _ = self.signed_http("DELETE", path)
         self.assertEqual(status, 204)
+        status, _, _ = self.signed_http("DELETE", path)
+        self.assertEqual(status, 204)
         status, _, data = self.signed_http("GET", path)
         self.assertEqual(status, 404)
         self.assertIn(b"NoSuchKey", data)
+        status, _, _ = self.signed_http("DELETE", second_path)
+        self.assertEqual(status, 204)
         status, _, _ = self.signed_http("DELETE", f"/{bucket}")
         self.assertEqual(status, 204)
 

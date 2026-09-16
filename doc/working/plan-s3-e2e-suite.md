@@ -18,7 +18,7 @@ real services rather than mocks.
   issuance, and access-server with 2+1 EC; wait for readiness and tear down all
   children. Files: `app/crowdb-access-server/tests/s3_full_stack_test.rs`,
   `pixi.toml`.
-- [~] **Complete SDK and raw HTTP matrix**: cover every supported bucket/object
+- [x] **Complete SDK and raw HTTP matrix**: cover every supported bucket/object
   operation, conditions, range, pagination, stable errors, unsupported
   selectors, and SigV4 through boto3 plus signed raw requests. Files:
   `app/crowdb-access-server/tests/s3_e2e/basic.py`.
