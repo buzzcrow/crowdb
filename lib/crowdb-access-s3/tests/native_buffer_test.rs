@@ -7,7 +7,7 @@ use crowdb_access_s3::native_buffer::NativeBodyAllocator;
 use crowdb_chunk_client::FramedWriteBuffer;
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::frame::{parse_frame, FrameMagic, MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES};
-use hyper::body::Http1BodyReceiveProvider;
+use hyper::body::{Bytes, Http1BodyReceiveProvider};
 
 #[tokio::test]
 async fn native_frame_retains_and_releases_allocator_credit() {
@@ -97,7 +97,7 @@ async fn native_eof_owner_finalizes_reserved_frame_bytes_in_place() {
     let range = owner
         .finalize_frame(0, FrameMagic::RepoLargeV1, chunk_id, 123)
         .unwrap();
-    let frame = owner.view(range).unwrap();
+    let frame = owner.views(range).unwrap().pop().unwrap();
 
     assert_eq!(parse_frame(&frame, chunk_id).unwrap().payload, payload);
     assert_eq!(frame.as_ptr().wrapping_add(14), payload.as_ptr());
@@ -140,7 +140,7 @@ async fn full_owner_is_one_contiguous_buffer_across_chunk_views() {
     assert_eq!(first, 0..MAX_FRAME_BYTES);
     assert_eq!(second, MAX_FRAME_BYTES..owner_bytes);
 
-    let whole = owner.view(0..owner_bytes).unwrap();
+    let whole = owner.views(0..owner_bytes).unwrap().pop().unwrap();
     assert_eq!(whole.len(), owner_bytes);
     assert_eq!(
         parse_frame(&whole[..MAX_FRAME_BYTES], first_chunk)
@@ -154,4 +154,25 @@ async fn full_owner_is_one_contiguous_buffer_across_chunk_views() {
             .payload,
         payloads[1]
     );
+}
+
+#[test]
+fn prefetched_payload_becomes_header_payload_footer_views_without_copy() {
+    let allocator = NativeBodyAllocator::new(MAX_FRAME_BYTES, MAX_FRAME_BYTES).unwrap();
+    let provider = allocator.object_receiver();
+    provider.enable_owner_handoff();
+    let payload = Bytes::from_static(b"prefetched-body");
+    let delivered = provider.on_prefetched_data(payload.clone()).unwrap();
+    let mut owner = provider.take_prefetched_owner(&delivered).unwrap().unwrap();
+    let chunk_id = ChunkId { high: 41, low: 43 };
+    let range = owner
+        .finalize_frame(0, FrameMagic::RepoLargeV1, chunk_id, 47)
+        .unwrap();
+    let views = owner.views(range).unwrap();
+
+    assert_eq!(views.len(), 3);
+    assert_eq!(views[1].as_ptr(), payload.as_ptr());
+    let frame = views.concat();
+    assert_eq!(parse_frame(&frame, chunk_id).unwrap().payload, payload);
+    assert!(provider.owner_handoff_active());
 }

@@ -253,3 +253,26 @@ async fn native_body_hashes_payload_and_hands_owner_to_writer_once() {
     assert_eq!(writer.logical_bytes, MAX_FRAME_PAYLOAD_BYTES as u64);
     assert_eq!(checksum.len(), 16);
 }
+
+#[tokio::test]
+async fn prefetched_body_uses_scattered_framed_owner_instead_of_generic_copy() {
+    let allocator = NativeBodyAllocator::new(MAX_FRAME_BYTES, MAX_FRAME_BYTES).unwrap();
+    let receiver = allocator.object_receiver();
+    receiver.enable_owner_handoff();
+    let payload = receiver
+        .on_prefetched_data(Bytes::from_static(b"header-read-ahead"))
+        .unwrap();
+    let mut body = TestBody {
+        frames: VecDeque::from([payload]),
+        polls: AtomicUsize::new(0),
+    };
+    let mut writer = NativeOwnerWriter::default();
+
+    write_native_body_with_checksums(&mut body, &mut writer, &receiver, None, None)
+        .await
+        .unwrap();
+
+    assert_eq!(writer.generic_frames, 0);
+    assert_eq!(writer.owner_frames, 1);
+    assert_eq!(writer.logical_bytes, 17);
+}

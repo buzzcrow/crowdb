@@ -79,8 +79,9 @@ completion returns locations, publish complete object metadata with one KV Put.
   shapes; never coalesce PUT payload. Add copy/view accounting. Files:
   `lib/crowdb-diskio-client/src/`, `lib/crowdb-chunk-client/src/`.
   Normal native owners now use the single-owner path and writer boundary
-  slicing reaches DiskIO as views. Header read-ahead/final mixed edges and
-  copy/view counters remain.
+  slicing reaches DiskIO as views. Header read-ahead becomes one short frame
+  with separate metadata/payload views, then reception resumes with native
+  owners. Explicit copy/view counters remain.
 
 ## Tests and gates
 

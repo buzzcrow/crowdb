@@ -451,19 +451,7 @@ impl ChunkIoWriter for LargeAsyncObjectWriter {
 
 impl LargeAsyncObjectWriter {
     async fn push_framed_owner(&mut self, buffer: &mut dyn FramedWriteBuffer) -> Result<()> {
-        let declared_logical = (0..buffer.frame_count()).try_fold(0u64, |total, index| {
-            let length = buffer
-                .frame_payload_len(index)
-                .ok_or_else(|| IoError::WriteFailed("framed owner slot is missing".into()))?;
-            total
-                .checked_add(length as u64)
-                .ok_or_else(|| IoError::WriteFailed("framed owner logical length overflows".into()))
-        })?;
-        if declared_logical != buffer.logical_len() {
-            return Err(IoError::WriteFailed(
-                "framed owner logical length is inconsistent".into(),
-            ));
-        }
+        validate_framed_owner(buffer)?;
         let mut frame_index = 0usize;
         while frame_index < buffer.frame_count() {
             self.ensure_open().await?;
@@ -528,19 +516,21 @@ impl LargeAsyncObjectWriter {
                 self.rotate_chunk().await?;
                 continue;
             }
-            let view = buffer
-                .view(group_range.ok_or_else(|| IoError::Internal("framed owner group vanished".into()))?)
+            let views = buffer
+                .views(group_range.ok_or_else(|| IoError::Internal("framed owner group vanished".into()))?)
                 .map_err(|error| IoError::WriteFailed(error.to_string()))?;
-            let status = self
-                .chunk_writer
-                .as_mut()
-                .ok_or_else(|| IoError::Internal("large async writer has no chunk writer".into()))?
-                .push(view)
-                .await?;
-            if status == FeedStatus::Pause {
-                return Err(IoError::Internal(
-                    "pre-split framed owner unexpectedly exceeded chunk capacity".into(),
-                ));
+            for view in views {
+                let status = self
+                    .chunk_writer
+                    .as_mut()
+                    .ok_or_else(|| IoError::Internal("large async writer has no chunk writer".into()))?
+                    .push(view)
+                    .await?;
+                if status == FeedStatus::Pause {
+                    return Err(IoError::Internal(
+                        "pre-split framed owner unexpectedly exceeded chunk capacity".into(),
+                    ));
+                }
             }
             self.logical_bytes_in_chunk = self.logical_bytes_in_chunk.saturating_add(group_logical);
             if frame_index < buffer.frame_count() {
@@ -600,4 +590,21 @@ impl LargeAsyncObjectWriter {
             return Ok(());
         }
     }
+}
+
+fn validate_framed_owner(buffer: &dyn FramedWriteBuffer) -> Result<()> {
+    let declared = (0..buffer.frame_count()).try_fold(0u64, |total, index| {
+        let length = buffer
+            .frame_payload_len(index)
+            .ok_or_else(|| IoError::WriteFailed("framed owner slot is missing".into()))?;
+        total
+            .checked_add(length as u64)
+            .ok_or_else(|| IoError::WriteFailed("framed owner logical length overflows".into()))
+    })?;
+    if declared != buffer.logical_len() {
+        return Err(IoError::WriteFailed(
+            "framed owner logical length is inconsistent".into(),
+        ));
+    }
+    Ok(())
 }

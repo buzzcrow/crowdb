@@ -45,6 +45,21 @@ pub struct NativeFramedOwner {
     physical_len: usize,
 }
 
+/// Header-read-ahead payload framed by separate metadata views without
+/// copying the Hyper-owned payload allocation.
+pub struct NativePrefetchedOwner {
+    payload: Bytes,
+    frames: Vec<PrefetchedFrame>,
+    physical_len: usize,
+}
+
+struct PrefetchedFrame {
+    payload: Range<usize>,
+    physical: Range<usize>,
+    header: Option<Bytes>,
+    footer: Option<Bytes>,
+}
+
 // SAFETY: Hyper invokes one provider serially for one Incoming body. The
 // atomic guard rejects accidental concurrent entry before accessing state.
 unsafe impl Sync for NativeBodyReceiver {}
@@ -167,7 +182,20 @@ impl NativeBodyReceiver {
     /// Whether body data can still be delivered as complete native owners.
     #[must_use]
     pub fn owner_handoff_active(&self) -> bool {
-        self.owner_handoff.load(Ordering::Acquire) && !self.prefetched.load(Ordering::Acquire)
+        self.owner_handoff.load(Ordering::Acquire)
+    }
+
+    /// Convert the next header-read-ahead body frame into a scattered framed
+    /// owner. The payload allocation remains owned by Hyper's `Bytes` view.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when Hyper reports an empty prefetched body frame.
+    pub fn take_prefetched_owner(&self, payload: &Bytes) -> io::Result<Option<NativePrefetchedOwner>> {
+        if !self.prefetched.swap(false, Ordering::AcqRel) {
+            return Ok(None);
+        }
+        NativePrefetchedOwner::new(payload.clone()).map(Some)
     }
 
     fn enter_state(&self) -> io::Result<ReceiverStateGuard<'_>> {
@@ -205,7 +233,7 @@ impl NativeBodyReceiver {
         if let Some(owner) = self.take_ready_owner() {
             return Ok(Some(owner));
         }
-        if !self.owner_handoff.load(Ordering::Acquire) || self.prefetched.load(Ordering::Acquire) {
+        if !self.owner_handoff.load(Ordering::Acquire) {
             return Ok(None);
         }
         let _guard = self.enter_state()?;
@@ -249,6 +277,102 @@ impl NativeBodyReceiver {
             io::ErrorKind::WouldBlock,
             "previous native owner was not consumed",
         ))
+    }
+}
+
+impl NativePrefetchedOwner {
+    fn new(payload: Bytes) -> io::Result<Self> {
+        if payload.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "prefetched body payload is empty",
+            ));
+        }
+        let mut physical_offset = 0usize;
+        let mut frames = Vec::new();
+        for start in (0..payload.len()).step_by(MAX_FRAME_PAYLOAD_BYTES) {
+            let end = (start + MAX_FRAME_PAYLOAD_BYTES).min(payload.len());
+            let frame_len = FRAME_HEADER_PREFIX_BYTES + (end - start) + FRAME_FOOTER_BYTES;
+            frames.push(PrefetchedFrame {
+                payload: start..end,
+                physical: physical_offset..physical_offset + frame_len,
+                header: None,
+                footer: None,
+            });
+            physical_offset += frame_len;
+        }
+        Ok(Self {
+            payload,
+            frames,
+            physical_len: physical_offset,
+        })
+    }
+}
+
+impl FramedWriteBuffer for NativePrefetchedOwner {
+    fn logical_len(&self) -> u64 {
+        self.payload.len() as u64
+    }
+
+    fn frame_count(&self) -> usize {
+        self.frames.len()
+    }
+
+    fn frame_payload_len(&self, index: usize) -> Option<usize> {
+        self.frames.get(index).map(|frame| frame.payload.len())
+    }
+
+    fn finalize_frame(
+        &mut self,
+        index: usize,
+        magic: FrameMagic,
+        chunk_id: ChunkId,
+        write_time_ms: u64,
+    ) -> Result<Range<usize>, FrameError> {
+        let frame = self
+            .frames
+            .get_mut(index)
+            .ok_or(FrameError::InvalidLocationRange)?;
+        let mut header = [0; FRAME_HEADER_PREFIX_BYTES];
+        let mut footer = [0; FRAME_FOOTER_BYTES];
+        encode_frame_regions(
+            magic,
+            chunk_id,
+            &self.payload[frame.payload.clone()],
+            write_time_ms,
+            &mut header,
+            &mut footer,
+        )?;
+        frame.header = Some(Bytes::copy_from_slice(&header));
+        frame.footer = Some(Bytes::copy_from_slice(&footer));
+        Ok(frame.physical.clone())
+    }
+
+    fn views(&self, range: Range<usize>) -> Result<Vec<Bytes>, FrameError> {
+        if range.start >= range.end || range.end > self.physical_len {
+            return Err(FrameError::InvalidLocationRange);
+        }
+        let selected = self
+            .frames
+            .iter()
+            .filter(|frame| frame.physical.start >= range.start && frame.physical.end <= range.end)
+            .collect::<Vec<_>>();
+        if selected
+            .first()
+            .map_or(true, |frame| frame.physical.start != range.start)
+            || selected
+                .last()
+                .map_or(true, |frame| frame.physical.end != range.end)
+        {
+            return Err(FrameError::InvalidLocationRange);
+        }
+        let mut views = Vec::with_capacity(selected.len() * 3);
+        for frame in selected {
+            views.push(frame.header.clone().ok_or(FrameError::InvalidLocationRange)?);
+            views.push(self.payload.slice(frame.payload.clone()));
+            views.push(frame.footer.clone().ok_or(FrameError::InvalidLocationRange)?);
+        }
+        Ok(views)
     }
 }
 
@@ -332,15 +456,15 @@ impl FramedWriteBuffer for NativeFramedOwner {
         Ok(frame_offset..frame_offset + frame_len)
     }
 
-    fn view(&self, range: Range<usize>) -> Result<Bytes, FrameError> {
+    fn views(&self, range: Range<usize>) -> Result<Vec<Bytes>, FrameError> {
         if range.start >= range.end || range.end > self.physical_len {
             return Err(FrameError::InvalidLocationRange);
         }
-        Ok(Bytes::from_owner(NativePhysicalFrameView {
+        Ok(vec![Bytes::from_owner(NativePhysicalFrameView {
             owner: Arc::clone(&self.owner),
             frame_offset: range.start,
             frame_len: range.len(),
-        }))
+        })])
     }
 }
 
@@ -448,7 +572,7 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
                 "HTTP body receive buffer exceeded its issued capacity",
             ));
         }
-        if self.owner_handoff.load(Ordering::Acquire) && !self.prefetched.load(Ordering::Acquire) {
+        if self.owner_handoff.load(Ordering::Acquire) {
             let owner = issued.owner.upgrade().ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -489,7 +613,12 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
                 ));
             }
         }
-        self.prefetched.store(true, Ordering::Release);
+        if self.prefetched.swap(true, Ordering::AcqRel) {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "previous prefetched body view was not consumed",
+            ));
+        }
         self.allocator
             .state
             .prefetched_bytes

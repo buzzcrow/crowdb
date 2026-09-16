@@ -224,7 +224,15 @@ where
             continue;
         };
         integrity.update(&data);
-        if receiver.owner_handoff_active() {
+        if let Some(owner) = receiver
+            .take_prefetched_owner(&data)
+            .map_err(|error| put_error(PutErrorCode::BodyRead, error))?
+        {
+            writer
+                .on_framed_data(Box::new(owner))
+                .await
+                .map_err(|error| put_error(PutErrorCode::ChunkWrite, error))?;
+        } else if receiver.owner_handoff_active() {
             if let Some(owner) = receiver.take_ready_owner() {
                 writer
                     .on_framed_data(Box::new(owner))

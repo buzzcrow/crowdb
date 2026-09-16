@@ -30,8 +30,8 @@ pub trait FramedWriteBuffer: Send {
         chunk_id: ChunkId,
         write_time_ms: u64,
     ) -> std::result::Result<Range<usize>, FrameError>;
-    /// Return an immutable zero-copy view over a finalized physical range.
-    fn view(&self, range: Range<usize>) -> std::result::Result<Bytes, FrameError>;
+    /// Map a finalized physical range to immutable zero-copy owner views.
+    fn views(&self, range: Range<usize>) -> std::result::Result<Vec<Bytes>, FrameError>;
 }
 
 /// Result of `on_data` — does the writer need more data?

@@ -139,9 +139,9 @@ impl FramedWriteBuffer for TestFramedOwner {
         Ok(frame_start..frame_end)
     }
 
-    fn view(&self, range: Range<usize>) -> std::result::Result<Bytes, FrameError> {
+    fn views(&self, range: Range<usize>) -> std::result::Result<Vec<Bytes>, FrameError> {
         self.views.lock().unwrap().push(range.clone());
-        Ok(Bytes::copy_from_slice(&self.bytes[range]))
+        Ok(vec![Bytes::copy_from_slice(&self.bytes[range])])
     }
 }
 
