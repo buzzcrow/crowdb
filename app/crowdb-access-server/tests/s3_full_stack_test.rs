@@ -112,13 +112,22 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
     let (access_key, secret_key) = issue_credentials(&access_binary, &seeds);
     let (mut access_server, listen) = start_access_server(&access_binary, &seeds);
     wait_for_tcp(&mut access_server, &listen).await;
+    let (mut second_access_server, second_listen) = start_access_server(&access_binary, &seeds);
+    wait_for_tcp(&mut second_access_server, &second_listen).await;
     let ready = http_get(&listen, "/_crowdb/health/ready");
     assert!(
         ready.starts_with("HTTP/1.1 200"),
         "access server not ready: {ready}"
     );
 
-    run_boto3(&listen, &access_key, &secret_key, &access_server, &chunk_kv);
+    run_boto3(
+        &listen,
+        &second_listen,
+        &access_key,
+        &secret_key,
+        &access_server,
+        &chunk_kv,
+    );
     let exported = http_get(&listen, "/_crowdb/metrics");
     let native_body_bytes = metric_value(&exported, "crowdb_s3_native_direct_bytes_total")
         + metric_value(&exported, "crowdb_s3_native_prefix_copy_bytes_total");
@@ -131,6 +140,7 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
     );
 
     drop(access_server);
+    drop(second_access_server);
     drop(chunk_kv);
     drop(chunkdb);
     drop(diskios);
@@ -159,8 +169,11 @@ fn issue_credentials(access_binary: &Path, seeds: &str) -> (String, String) {
 
 fn start_access_server(access_binary: &Path, seeds: &str) -> (AccessServerProcess, String) {
     let listen = format!("127.0.0.1:{}", reserve_ephemeral_port());
-    let log_path = crowdb_test_harness::test_dirs::test_log_dir()
-        .join(format!("crowdb-access-s3-e2e-{}.log", std::process::id()));
+    let log_path = crowdb_test_harness::test_dirs::test_log_dir().join(format!(
+        "crowdb-access-s3-e2e-{}-{}.log",
+        std::process::id(),
+        listen.replace(':', "-")
+    ));
     let log = std::fs::File::create(&log_path).expect("create access-server log");
     let child = Command::new(access_binary)
         .env("CROWDB_S3_LISTEN", &listen)
@@ -181,6 +194,7 @@ fn start_access_server(access_binary: &Path, seeds: &str) -> (AccessServerProces
 
 fn run_boto3(
     listen: &str,
+    second_listen: &str,
     access_key: &str,
     secret_key: &str,
     access_server: &AccessServerProcess,
@@ -190,6 +204,7 @@ fn run_boto3(
     let python = Command::new(python_binary)
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/s3_e2e/basic.py"))
         .env("CROWDB_S3_E2E_ENDPOINT", format!("http://{listen}"))
+        .env("CROWDB_S3_E2E_SECOND_ENDPOINT", format!("http://{second_listen}"))
         .env("CROWDB_S3_E2E_REGION", "us-east-1")
         .env("CROWDB_S3_E2E_ACCESS_KEY", access_key)
         .env("CROWDB_S3_E2E_SECRET_KEY", secret_key)

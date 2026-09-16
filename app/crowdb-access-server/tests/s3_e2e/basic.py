@@ -110,6 +110,34 @@ class BasicS3CompatibilityTest(unittest.TestCase):
         status, _, _ = self.signed_http("DELETE", f"/{bucket}")
         self.assertEqual(status, 204)
 
+    def test_independent_frontends_share_one_namespace(self):
+        second_endpoint = os.environ.get("CROWDB_S3_E2E_SECOND_ENDPOINT")
+        if not second_endpoint:
+            self.skipTest("second access-server endpoint not supplied")
+        second = boto3.client(
+            "s3",
+            endpoint_url=second_endpoint,
+            region_name=os.environ.get("CROWDB_S3_E2E_REGION", "us-east-1"),
+            aws_access_key_id=os.environ.get("CROWDB_S3_E2E_ACCESS_KEY", "test-access"),
+            aws_secret_access_key=os.environ.get("CROWDB_S3_E2E_SECRET_KEY", "test-secret"),
+            config=Config(s3={"addressing_style": "path"}),
+        )
+        bucket = f"{self.bucket}-scaleout"
+        key = "alternate/one.bin"
+        self.client.create_bucket(Bucket=bucket)
+        self.assertIn(bucket, [item["Name"] for item in second.list_buckets()["Buckets"]])
+        self.client.put_object(Bucket=bucket, Key=key, Body=b"first")
+        self.assertEqual(second.get_object(Bucket=bucket, Key=key)["Body"].read(), b"first")
+        second.put_object(Bucket=bucket, Key=key, Body=b"second")
+        self.assertEqual(self.client.get_object(Bucket=bucket, Key=key)["Body"].read(), b"second")
+        listed = second.list_objects_v2(Bucket=bucket, Prefix="alternate/")
+        self.assertEqual([item["Key"] for item in listed["Contents"]], [key])
+        self.client.delete_object(Bucket=bucket, Key=key)
+        with self.assertRaises(ClientError) as absent:
+            second.head_object(Bucket=bucket, Key=key)
+        self.assertEqual(absent.exception.response["ResponseMetadata"]["HTTPStatusCode"], 404)
+        second.delete_bucket(Bucket=bucket)
+
     def test_basic_bucket_object_matrix(self):
         client = self.client
         bucket = self.bucket
