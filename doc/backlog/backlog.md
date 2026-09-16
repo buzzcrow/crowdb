@@ -81,9 +81,6 @@ baseline is correct and measured.
 - **[R164](R164-s3-integrity-etag.md)** — object integrity, checksum, and ETag —
   Area: access server / S3 / chunk — Define streaming checksums and physical-
   layout-independent single-part ETags shared by PUT, HEAD, GET, and conditions.
-- **[R165](R165-s3-observability.md)** — metrics, tracing, and operational status
-  — Area: access server / S3 / operations — Make latency, retries, memory, copies,
-  backpressure, and cleanup auditable with bounded cardinality.
 - **[R166](R166-s3-e2e-suite.md)** — compatibility, correctness, and performance
   E2E suite — Area: access server / S3 / testing — Validate SDK compatibility,
   crash recovery, storage boundaries, copy accounting, and horizontal scale.

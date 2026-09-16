@@ -103,3 +103,11 @@ Required gates:
 - `pixi run -- cargo tree -d`
 - `pixi run rs-fmt-check`
 - `pixi run rs-lint`
+
+## Open Issues
+
+- `cargo fmt --all -- --check` currently traverses the path-patched Hyper fork
+  even though `third-party/hyper` is excluded from the workspace, then applies
+  CROWDB's root 110-column `rustfmt.toml` to upstream-formatted sources. Scoped
+  CROWDB format checks pass and the Hyper worktree stays clean; the workspace
+  gate needs to exclude the fork without rewriting its unrelated source.

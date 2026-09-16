@@ -62,10 +62,11 @@ through that series and is removed with the completed backlog set.
   single-part ETag, MD5, signed payload SHA-256, and terminal full-read
   verification are implemented. Ambiguous mutations receive no safe-retry
   advice or compensating write.
-- [~] **R165 observability**: fixed-cardinality request outcome/latency/byte,
-  concurrency, bypass, backpressure, retained-byte, and dependency readiness
-  primitives exist. Native copy/view counters and dependency status serving
-  remain coupled to the corresponding R152 open implementations.
+- [x] **R165 observability**: fixed-cardinality request/phase/TTFB metrics,
+  native ownership, prefix-copy, view/fallback-copy, checksum, repair and
+  cleanup accounting, correlation context, dependency-aware readiness,
+  liveness, and non-blocking Prometheus export are complete and exercised by
+  the compact full-stack boto3 gate.
 - [x] **R166 basic E2E**: the required boto3 path owns KV, diskdb, diskio,
   chunkdb, Chunk-KV, access-server, readiness, credentials, and teardown. Its
   minimum topology uses explicit `unsafe_colocated` placement with 2+1 EC on
