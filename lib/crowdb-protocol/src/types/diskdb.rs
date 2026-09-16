@@ -308,6 +308,18 @@ pub struct CommitBlocksResponse {
     pub committed_count: u32,
 }
 
+/// Mark exact allocated block incarnations as corrupt after verified data
+/// integrity failure. A stale incarnation must not affect a reused block.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct MarkBlocksCorruptRequest {
+    pub segments: Vec<Segment>,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct MarkBlocksCorruptResponse {
+    pub marked_count: u32,
+}
+
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct QueryCapacityStatsRequest {
     pub disk_group_id: u64,
