@@ -261,7 +261,8 @@ where
         let Some(frame) = frame else {
             if receiver.owner_handoff_active() {
                 if let Some(owner) = receiver
-                    .finish_owner()
+                    .finish_owner_when_ready()
+                    .await
                     .map_err(|error| put_error(PutErrorCode::BodyRead, error))?
                 {
                     writer

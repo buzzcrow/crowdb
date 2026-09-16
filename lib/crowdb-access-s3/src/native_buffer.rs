@@ -6,6 +6,7 @@
 #![allow(unsafe_code)]
 
 use std::cell::UnsafeCell;
+use std::future::poll_fn;
 use std::io;
 use std::mem::MaybeUninit;
 use std::ops::Range;
@@ -53,6 +54,7 @@ unsafe impl Sync for NativeBodyReceiver {}
 
 struct ReceiverState {
     owner: Option<Arc<NativeOwner>>,
+    pending_prefetched: Option<Bytes>,
     next_slot: usize,
     issued: Option<IssuedSlot>,
     completed_slots: usize,
@@ -179,6 +181,7 @@ impl NativeBodyAllocator {
             credit_waker,
             state: UnsafeCell::new(ReceiverState {
                 owner: None,
+                pending_prefetched: None,
                 next_slot: 0,
                 issued: None,
                 completed_slots: 0,
@@ -219,6 +222,117 @@ impl AllocatorState {
 }
 
 impl NativeBodyReceiver {
+    fn poll_prepare_owner(&self, state: &mut ReceiverState, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if state.owner.is_some() {
+            return Poll::Ready(Ok(()));
+        }
+        let owner_bytes = self.allocator.state.owner_bytes;
+        if !self.allocator.try_reserve(owner_bytes) {
+            if state.credit_wait_started.is_none() {
+                state.credit_wait_started = Some(Instant::now());
+                self.allocator
+                    .state
+                    .backpressure_events
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            self.credit_waker.register(cx.waker());
+            if !self.allocator.try_reserve(owner_bytes) {
+                return Poll::Pending;
+            }
+        }
+        if let Some(started) = state.credit_wait_started.take() {
+            self.allocator.state.backpressure_wait_ns.fetch_add(
+                usize::try_from(started.elapsed().as_nanos()).unwrap_or(usize::MAX),
+                Ordering::Relaxed,
+            );
+        }
+        let owner = match NativeOwner::new(owner_bytes, Arc::clone(&self.allocator.state)) {
+            Ok(owner) => Arc::new(owner),
+            Err(error) => {
+                self.allocator
+                    .state
+                    .retained_bytes
+                    .fetch_sub(owner_bytes, Ordering::AcqRel);
+                self.allocator.wake_credit_waiters();
+                return Poll::Ready(Err(error));
+            }
+        };
+        self.allocator.state.allocations.fetch_add(1, Ordering::Relaxed);
+        if let Some(prefix) = state.pending_prefetched.take() {
+            if let Err(error) = self.populate_prefetched(state, owner, &prefix) {
+                return Poll::Ready(Err(error));
+            }
+        } else {
+            state.owner = Some(owner);
+        }
+        Poll::Ready(Ok(()))
+    }
+
+    fn populate_prefetched(
+        &self,
+        state: &mut ReceiverState,
+        owner: Arc<NativeOwner>,
+        data: &Bytes,
+    ) -> io::Result<()> {
+        for (slot, payload) in data.chunks(MAX_FRAME_PAYLOAD_BYTES).enumerate() {
+            let payload_offset = slot * MAX_FRAME_BYTES + FRAME_HEADER_PREFIX_BYTES;
+            // SAFETY: the reserved owner is exclusively initialized here and
+            // every destination payload slot is disjoint and large enough.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    payload.as_ptr(),
+                    owner.pointer.as_ptr().add(payload_offset),
+                    payload.len(),
+                );
+            }
+            state.payload_lengths[slot] = u16::try_from(payload.len()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "native payload length exceeds u16")
+            })?;
+            state.completed_slots += 1;
+        }
+        state.next_slot = state.completed_slots;
+        if let Some(last) = state.completed_slots.checked_sub(1) {
+            if usize::from(state.payload_lengths[last]) < MAX_FRAME_PAYLOAD_BYTES {
+                state.append_slot = Some(last);
+            }
+        }
+        state.owner = Some(Arc::clone(&owner));
+        if state.completed_slots == state.payload_lengths.len() && state.append_slot.is_none() {
+            state.owner = None;
+            let completed = completed_owner(state, owner)?;
+            self.publish_owner(completed)?;
+        }
+        self.allocator
+            .state
+            .prefix_copy_bytes
+            .fetch_add(data.len(), Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Await a credit for header read-ahead if the body ended before the
+    /// provider needed another socket fill, then finish its native owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if allocating the owner or finalizing its frames fails.
+    pub async fn finish_owner_when_ready(&self) -> io::Result<Option<NativeFramedOwner>> {
+        poll_fn(|cx| {
+            let _guard = match self.enter_state() {
+                Ok(guard) => guard,
+                Err(error) => return Poll::Ready(Err(error)),
+            };
+            // SAFETY: `_guard` gives this invocation exclusive state access.
+            let state = unsafe { &mut *self.state.get() };
+            if state.pending_prefetched.is_some() {
+                self.poll_prepare_owner(state, cx)
+            } else {
+                Poll::Ready(Ok(()))
+            }
+        })
+        .await?;
+        self.finish_owner()
+    }
+
     /// Enable publication of each full native owner. Header-buffer read-ahead
     /// is copied into the first owner's payload slots when credit is available.
     pub fn enable_owner_handoff(&self) {
@@ -272,6 +386,12 @@ impl NativeBodyReceiver {
         let _guard = self.enter_state()?;
         // SAFETY: `_guard` gives this invocation exclusive state access.
         let state = unsafe { &mut *self.state.get() };
+        if state.pending_prefetched.is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "header read-ahead has not acquired its native owner",
+            ));
+        }
         if state.issued.is_some() {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -445,38 +565,23 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
             state.completed_slots = 0;
             state.payload_lengths.fill(0);
             state.append_slot = None;
-            let owner_bytes = self.allocator.state.owner_bytes;
-            if !self.allocator.try_reserve(owner_bytes) {
-                if state.credit_wait_started.is_none() {
-                    state.credit_wait_started = Some(Instant::now());
-                    self.allocator
-                        .state
-                        .backpressure_events
-                        .fetch_add(1, Ordering::Relaxed);
-                }
-                self.credit_waker.register(cx.waker());
-                if !self.allocator.try_reserve(owner_bytes) {
-                    return Poll::Pending;
-                }
+            match self.poll_prepare_owner(state, cx) {
+                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Pending => return Poll::Pending,
             }
-            if let Some(started) = state.credit_wait_started.take() {
-                self.allocator.state.backpressure_wait_ns.fetch_add(
-                    usize::try_from(started.elapsed().as_nanos()).unwrap_or(usize::MAX),
-                    Ordering::Relaxed,
-                );
-            }
-            match NativeOwner::new(owner_bytes, Arc::clone(&self.allocator.state)) {
-                Ok(owner) => {
-                    self.allocator.state.allocations.fetch_add(1, Ordering::Relaxed);
-                    state.owner = Some(Arc::new(owner));
-                }
-                Err(error) => {
-                    self.allocator
-                        .state
-                        .retained_bytes
-                        .fetch_sub(owner_bytes, Ordering::AcqRel);
-                    self.allocator.wake_credit_waiters();
-                    return Poll::Ready(Err(error));
+            // A prefetched body can fill the whole first owner. Its native
+            // frame is already published; the next socket fill needs a new
+            // owner whose offsets still follow the body, not the HTTP header.
+            if state.owner.is_none() {
+                state.next_slot = 0;
+                state.completed_slots = 0;
+                state.payload_lengths.fill(0);
+                state.append_slot = None;
+                match self.poll_prepare_owner(state, cx) {
+                    Poll::Ready(Ok(())) => {}
+                    Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                    Poll::Pending => return Poll::Pending,
                 }
             }
         }
@@ -583,7 +688,11 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
         let _guard = self.enter_state()?;
         // SAFETY: `_guard` gives this invocation exclusive state access.
         let state = unsafe { &mut *self.state.get() };
-        if state.owner.is_some() || state.completed_slots != 0 || state.issued.is_some() {
+        if state.owner.is_some()
+            || state.completed_slots != 0
+            || state.issued.is_some()
+            || state.pending_prefetched.is_some()
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "HTTP read-ahead arrived after native owner assembly started",
@@ -598,10 +707,8 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
             ));
         }
         if !self.allocator.try_reserve(owner_bytes) {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "native body owner budget is exhausted by HTTP read-ahead",
-            ));
+            state.pending_prefetched = Some(data.clone());
+            return Ok(data);
         }
         let owner = match NativeOwner::new(owner_bytes, Arc::clone(&self.allocator.state)) {
             Ok(owner) => Arc::new(owner),
@@ -615,38 +722,7 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
             }
         };
         self.allocator.state.allocations.fetch_add(1, Ordering::Relaxed);
-        for (slot, payload) in data.chunks(MAX_FRAME_PAYLOAD_BYTES).enumerate() {
-            let payload_offset = slot * MAX_FRAME_BYTES + FRAME_HEADER_PREFIX_BYTES;
-            // SAFETY: the reserved owner is exclusively initialized here and
-            // every destination payload slot is disjoint and large enough.
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    payload.as_ptr(),
-                    owner.pointer.as_ptr().add(payload_offset),
-                    payload.len(),
-                );
-            }
-            state.payload_lengths[slot] = u16::try_from(payload.len()).map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "native payload length exceeds u16")
-            })?;
-            state.completed_slots += 1;
-        }
-        state.next_slot = state.completed_slots;
-        if let Some(last) = state.completed_slots.checked_sub(1) {
-            if usize::from(state.payload_lengths[last]) < MAX_FRAME_PAYLOAD_BYTES {
-                state.append_slot = Some(last);
-            }
-        }
-        state.owner = Some(Arc::clone(&owner));
-        if state.completed_slots == state.payload_lengths.len() && state.append_slot.is_none() {
-            state.owner = None;
-            let completed = completed_owner(state, owner)?;
-            self.publish_owner(completed)?;
-        }
-        self.allocator
-            .state
-            .prefix_copy_bytes
-            .fetch_add(data.len(), Ordering::Relaxed);
+        self.populate_prefetched(state, owner, &data)?;
         Ok(data)
     }
 }

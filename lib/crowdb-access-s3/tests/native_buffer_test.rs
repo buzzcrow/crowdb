@@ -229,3 +229,137 @@ async fn prefetched_payload_starts_the_first_native_owner_and_next_fill_appends(
     assert_eq!(allocator.prefix_copy_bytes(), payload.len());
     assert!(provider.owner_handoff_active());
 }
+
+#[tokio::test]
+async fn prefetched_body_waits_for_credit_and_still_starts_at_body_offset_zero() {
+    let allocator = NativeBodyAllocator::new(MAX_FRAME_BYTES, MAX_FRAME_BYTES).unwrap();
+    let occupied_provider = allocator.object_receiver();
+    let occupied = poll_fn(|cx| occupied_provider.poll_next_buffer(cx, 8))
+        .await
+        .unwrap();
+    let provider = allocator.object_receiver();
+    provider.enable_owner_handoff();
+    let prefix = Bytes::from_static(b"body-prefix");
+    assert_eq!(provider.on_prefetched_data(prefix.clone()).unwrap(), prefix);
+    assert_eq!(allocator.prefix_copy_bytes(), 0);
+
+    let waiting = tokio::spawn(async move {
+        let mut next = poll_fn(|cx| provider.poll_next_buffer(cx, 5)).await.unwrap();
+        for (slot, value) in next.spare_capacity_mut().iter_mut().zip(*b"-next") {
+            slot.write(value);
+        }
+        next.advance(5).unwrap();
+        let appended = provider.on_data_ready(next).unwrap();
+        assert_eq!(&appended[..], b"-next");
+        provider.finish_owner().unwrap().unwrap()
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while allocator.metrics_snapshot().backpressure_events == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!waiting.is_finished());
+    drop(occupied);
+    let mut owner = tokio::time::timeout(Duration::from_secs(2), waiting)
+        .await
+        .unwrap()
+        .unwrap();
+    let chunk_id = ChunkId { high: 51, low: 53 };
+    let frame_range = owner
+        .finalize_frame(0, FrameMagic::RepoLargeV1, chunk_id, 59)
+        .unwrap();
+    let frame = owner.views(frame_range).unwrap().pop().unwrap();
+    assert_eq!(
+        parse_frame(&frame, chunk_id).unwrap().payload,
+        b"body-prefix-next"
+    );
+    assert_eq!(owner.logical_len(), 16);
+    assert_eq!(allocator.prefix_copy_bytes(), prefix.len());
+}
+
+#[tokio::test]
+async fn prefetched_body_at_eof_waits_for_credit_before_finalizing() {
+    let allocator = NativeBodyAllocator::new(MAX_FRAME_BYTES, MAX_FRAME_BYTES).unwrap();
+    let occupied_provider = allocator.object_receiver();
+    let occupied = poll_fn(|cx| occupied_provider.poll_next_buffer(cx, 8))
+        .await
+        .unwrap();
+    let provider = allocator.object_receiver();
+    provider.enable_owner_handoff();
+    provider
+        .on_prefetched_data(Bytes::from_static(b"only-body"))
+        .unwrap();
+    let waiting = tokio::spawn(async move { provider.finish_owner_when_ready().await.unwrap().unwrap() });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while allocator.metrics_snapshot().backpressure_events == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!waiting.is_finished());
+    drop(occupied);
+    let mut owner = tokio::time::timeout(Duration::from_secs(2), waiting)
+        .await
+        .unwrap()
+        .unwrap();
+    let chunk_id = ChunkId { high: 61, low: 67 };
+    let frame_range = owner
+        .finalize_frame(0, FrameMagic::RepoLargeV1, chunk_id, 71)
+        .unwrap();
+    let frame = owner.views(frame_range).unwrap().pop().unwrap();
+    assert_eq!(parse_frame(&frame, chunk_id).unwrap().payload, b"only-body");
+    assert_eq!(allocator.prefix_copy_bytes(), 9);
+}
+
+#[tokio::test]
+async fn one_mib_owner_boundaries_follow_body_not_prefetched_header_size() {
+    const MIB: usize = 1024 * 1024;
+    let allocator = NativeBodyAllocator::new(MIB, MIB).unwrap();
+    let provider = allocator.object_receiver();
+    provider.enable_owner_handoff();
+    let prefix = Bytes::from(vec![b'p'; MAX_FRAME_PAYLOAD_BYTES - 2]);
+    provider.on_prefetched_data(prefix.clone()).unwrap();
+
+    let mut first = poll_fn(|cx| provider.poll_next_buffer(cx, 4)).await.unwrap();
+    assert_eq!(first.spare_capacity_mut().len(), 2);
+    for (slot, value) in first.spare_capacity_mut().iter_mut().zip(*b"12") {
+        slot.write(value);
+    }
+    first.advance(2).unwrap();
+    assert_eq!(&provider.on_data_ready(first).unwrap()[..], b"12");
+    let mut second = poll_fn(|cx| provider.poll_next_buffer(cx, 2)).await.unwrap();
+    for (slot, value) in second.spare_capacity_mut().iter_mut().zip(*b"34") {
+        slot.write(value);
+    }
+    second.advance(2).unwrap();
+    assert_eq!(&provider.on_data_ready(second).unwrap()[..], b"34");
+    let mut owner = provider.finish_owner_when_ready().await.unwrap().unwrap();
+    let chunk_id = ChunkId { high: 73, low: 79 };
+    assert_eq!(owner.frame_count(), 2);
+    let first_range = owner
+        .finalize_frame(0, FrameMagic::RepoLargeV1, chunk_id, 0)
+        .unwrap();
+    let second_range = owner
+        .finalize_frame(
+            1,
+            FrameMagic::RepoLargeV1,
+            chunk_id,
+            MAX_FRAME_PAYLOAD_BYTES as u64,
+        )
+        .unwrap();
+    assert_eq!(first_range, 0..MAX_FRAME_BYTES);
+    assert_eq!(second_range.start, MAX_FRAME_BYTES);
+    assert_eq!(owner.logical_len(), (MAX_FRAME_PAYLOAD_BYTES + 2) as u64);
+    let first_frame = owner.views(first_range).unwrap().pop().unwrap();
+    let second_frame = owner.views(second_range).unwrap().pop().unwrap();
+    assert_eq!(
+        parse_frame(&first_frame, chunk_id).unwrap().payload.len(),
+        MAX_FRAME_PAYLOAD_BYTES
+    );
+    assert_eq!(&first_frame[14..14 + prefix.len()], &prefix[..]);
+    assert_eq!(parse_frame(&second_frame, chunk_id).unwrap().payload, b"34");
+    assert_eq!(allocator.allocation_count(), 1);
+}

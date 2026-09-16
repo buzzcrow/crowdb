@@ -116,11 +116,9 @@ Required gates:
   malformed signatures. Decide whether the advertised S3 compatibility surface
   needs distinct `SignatureDoesNotMatch` and `InvalidAccessKeyId` errors before
   changing the authenticator result type and wire contract.
-- With a 1 MiB native-owner budget already held by another request, Hyper's
-  synchronous `on_prefetched_data` callback cannot await an owner credit for
-  body bytes read alongside HTTP headers. A concurrent signed PUT currently
-  closes its connection (`BrokenPipeError`) in this case. Decide whether to
-  reserve one credit asynchronously before provider installation, or introduce
-  a pollable prefetched-data handoff in the Hyper fork. The no-read-ahead
-  path can wait asynchronously for credit and is tested separately; never
-  silently switch the whole object to a copying fallback.
+- A GET whose ChunkDB dependency fails after response headers currently sends
+  HTTP 200 with the declared `Content-Length`, then terminates the stream and
+  makes the SDK report an incomplete response. The ChunkDB restart E2E saw
+  this before routing refreshed. Decide whether GET should prefetch the first
+  storage chunk before committing headers (at a TTFB cost), or retain stream
+  abort semantics and require retry of the whole GET at the client boundary.

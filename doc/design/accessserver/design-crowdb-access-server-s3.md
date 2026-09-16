@@ -77,20 +77,23 @@ writable payload region and fills that region across partial socket reads. No
 body payload is first materialized in a Hyper-owned staging allocation.
 
 The native provider owns bounded 1 MiB buffers divided into 64 KiB physical
-frame slots. Every slot reserves its header and footer before exposing only the
-payload region to Hyper. On completion the provider writes frame metadata into
-the reserved bytes; it never relocates payload. A full owner, or the used prefix
-at EOF, moves directly into the chunk pipeline. Registered and RDMA-pinned
-providers implement the same contract.
+frame slots. Owner and frame boundaries start at the first byte of the HTTP
+body, independent of HTTP headers and header-buffer read-ahead. Every slot
+reserves its header and footer before exposing only the payload region to
+Hyper. On completion the provider writes frame metadata into the reserved
+bytes; it never relocates socket-filled payload. A full owner, or the used
+prefix at EOF, moves directly into the chunk pipeline. Registered and
+RDMA-pinned providers implement the same contract.
 
 Immutable payload views over that owner feed two independent state machines.
 The object integrity pipeline computes ETag, Content-MD5, and signed-payload
 SHA-256 until object completion. The EC pipeline consumes the same views and
 rotates state at strip boundaries. Both retain the original owner and neither
-copies payload. The normal 1 MiB path enters RPC as one buffer. Bounded
-scatter/gather represents a body prefix already read with HTTP headers and
-other final edge shapes without copying; descriptor overflow is rejected and
-reported rather than hidden by coalescing.
+copies socket-filled payload. The normal 1 MiB path enters RPC as one buffer.
+The only receive-side copy is a bounded body prefix read alongside HTTP
+headers: the provider retains that prefix while native credit is unavailable,
+then copies it into the first owner's payload slots before any subsequent
+socket fill. Header bytes never contribute to the owner's body offset.
 
 GET yields native owner-backed views to the response body. The owner is released
 only after Hyper has consumed the bytes accepted by the socket. Slow clients

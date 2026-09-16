@@ -45,9 +45,9 @@ real services rather than mocks.
   zero retained owners after completion, and positive backpressure accounting;
   a paused large GET survives deleting its namespace entry before the remaining
   response body is consumed, and concurrent overwrites preserve per-read ETags.
-  Chunk failure responses and cleanup target verification remain;
-  simultaneous read-ahead when that sole credit is unavailable is tracked in
-  R152 Open Issues.
+  Chunk failure responses and cleanup target verification remain. A bounded
+  header read-ahead prefix now waits for native credit before copying into the
+  first owner; both the next-fill and immediate-EOF cases are covered.
 - [x] **Stateless frontend scale-out**: run two independently configured access
   servers over the same metadata/chunk authorities and alternate retries,
   reads, pagination, overwrites, and deletes between them.
