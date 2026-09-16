@@ -103,7 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "crowdb-access-server".into(),
                 trusted_network,
             )
-            .with_body_allocator(body_allocator),
+            .with_body_receive_provider_factory(move || Arc::new(body_allocator.object_receiver())),
         );
         let listener = TcpListener::bind(address).await?;
         let serve_result = serve(listener, handler, async {

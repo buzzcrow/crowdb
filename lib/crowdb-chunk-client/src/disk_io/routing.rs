@@ -103,6 +103,20 @@ impl DiskWriter for RoutedDiskWriter {
             .map_err(map_write_error)
     }
 
+    async fn write_views(&self, seg: &Segment, unit_bytes: u64, data: Vec<Bytes>) -> Result<()> {
+        let target = Self::target(seg, unit_bytes)?;
+        self.client
+            .write_views(
+                target,
+                0,
+                data,
+                Durability::Buffered,
+                self.client.normal_options(),
+            )
+            .await
+            .map_err(map_write_error)
+    }
+
     async fn write_priority_at_byte_offset(
         &self,
         seg: &Segment,

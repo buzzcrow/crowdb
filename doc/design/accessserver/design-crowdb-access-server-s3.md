@@ -70,20 +70,27 @@ chunks are safe garbage reclaimed asynchronously; cleanup never delays PUT.
 
 ## 4. HTTP buffer ownership
 
-The S3 module uses the maintained Hyper fork directly on Tokio. Its opt-in
-HTTP/1 body path asks a CROWDB-provided allocator for a buffer sized from the
-admitted object length and configured frame bounds, then reads decoded payload
-directly into that allocation. The allocator freezes it into an immutable
-owner-backed frame before delivery. The initial allocator owns native memory;
-registered and RDMA-pinned providers implement the same ownership contract.
-Headers and framing remain in Hyper's normal buffer; a body prefix read with
-headers is copied at most once and measured.
+The S3 module uses the maintained Hyper fork directly on Tokio. After request
+authentication and admission, PUT installs an object-scoped CROWDB body-buffer
+provider before the first body poll. Hyper asks the provider for the next
+writable payload region and fills that region across partial socket reads. No
+body payload is first materialized in a Hyper-owned staging allocation.
 
-An owned buffer view retains its allocation and can be split without copying.
-A bounded chain crosses HTTP, block, chunk, EC, and RPC boundaries without
-making frame boundaries semantic. Vectored writes are used within platform and
-send-queue limits; an operation that cannot fit is coalesced once into a pooled
-buffer and the copied bytes are measured.
+The native provider owns bounded 1 MiB buffers divided into 64 KiB physical
+frame slots. Every slot reserves its header and footer before exposing only the
+payload region to Hyper. On completion the provider writes frame metadata into
+the reserved bytes; it never relocates payload. A full owner, or the used prefix
+at EOF, moves directly into the chunk pipeline. Registered and RDMA-pinned
+providers implement the same contract.
+
+Immutable payload views over that owner feed two independent state machines.
+The object integrity pipeline computes ETag, Content-MD5, and signed-payload
+SHA-256 until object completion. The EC pipeline consumes the same views and
+rotates state at strip boundaries. Both retain the original owner and neither
+copies payload. The normal 1 MiB path enters RPC as one buffer. Bounded
+scatter/gather represents a body prefix already read with HTTP headers and
+other final edge shapes without copying; descriptor overflow is rejected and
+reported rather than hidden by coalescing.
 
 GET yields native owner-backed views to the response body. The owner is released
 only after Hyper has consumed the bytes accepted by the socket. Slow clients

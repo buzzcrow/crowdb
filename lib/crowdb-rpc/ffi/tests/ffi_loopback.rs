@@ -6,8 +6,9 @@
 //! These tests exercise the full FFI loopback: Rust creates a server,
 //! connects a client, sends a ping request, and verifies the response.
 
+use bytes::Bytes;
 use crowdb_protocol::fb::{ConnectionPingRequest, ConnectionPingRequestArgs, FBMsgType};
-use crowdb_rpc_ffi::{init_test_logging, BufferPool, RpcClient, RpcServer};
+use crowdb_rpc_ffi::{init_test_logging, BufferChain, BufferPool, RpcClient, RpcServer};
 use flatbuffers::FlatBufferBuilder;
 
 #[test]
@@ -242,5 +243,54 @@ async fn echo_handler_loopback() {
         "response data should match request data"
     );
 
+    server.stop();
+}
+
+#[tokio::test]
+async fn echo_handler_joins_bounded_data_view_chain() {
+    init_test_logging();
+    const ECHO_MSG_TYPE: u16 = 101;
+    let server = RpcServer::new(None);
+    server.listen("127.0.0.1", 0).expect("listen failed");
+    server.register_echo_handler(ECHO_MSG_TYPE);
+    server.start();
+    let conn = server
+        .connect("127.0.0.1", server.port())
+        .expect("connect failed");
+
+    let mut fbb = FlatBufferBuilder::new();
+    let req = ConnectionPingRequest::create(
+        &mut fbb,
+        &ConnectionPingRequestArgs {
+            id: 778,
+            rpc_create_nano: 0,
+        },
+    );
+    fbb.finish(req, None);
+    let pool = BufferPool::new(32);
+    let mut ctrl = pool
+        .alloc_buffer(fbb.finished_data().len() as u32)
+        .expect("alloc control");
+    ctrl.write(fbb.finished_data());
+
+    let views = [
+        Bytes::from_static(b"fragment-one-"),
+        Bytes::from_static(b"fragment-two-"),
+        Bytes::from_static(b"fragment-three"),
+    ];
+    let expected = views.concat();
+    let chain = BufferChain::from_owned_bytes(views).expect("valid chain");
+    let caller = RpcClient::new();
+    caller.attach(&conn);
+    let future = caller
+        .call_chain(&server, &conn, 778, ctrl, chain, ECHO_MSG_TYPE)
+        .expect("chain call submit failed");
+    let response = tokio::time::timeout(std::time::Duration::from_secs(10), future)
+        .await
+        .expect("timeout waiting for response")
+        .expect("callback dropped");
+
+    assert_eq!(response.request_id, 778);
+    assert_eq!(response.data.expect("echo data").bytes(), expected);
     server.stop();
 }

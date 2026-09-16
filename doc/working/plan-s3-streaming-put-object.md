@@ -32,6 +32,43 @@ completion returns locations, publish complete object metadata with one KV Put.
   backpressured body bridge without S3-side copies. Files:
   `lib/crowdb-access-s3/src/`, `lib/crowdb-chunk-client/src/`.
 
+## Object buffer provider
+
+- [x] **Replace frame allocator with an object provider**: make Hyper retain a
+  writable region across partial reads, expose reserved-prefix/suffix payload
+  regions, and install one provider only after PUT authentication, writer
+  preparation, and admission. Files: `third-party/hyper/src/body/`,
+  `third-party/hyper/src/proto/h1/`, `lib/crowdb-access-s3/src/native_buffer.rs`,
+  `app/crowdb-access-server/src/s3/`.
+- [ ] **Finalize native physical frames in place**: allocate bounded 1 MiB
+  owners, divide them into 64 KiB slots, fill only payload regions, and write
+  storage header/footer into reserved bytes before handing a full owner or EOF
+  prefix to the chunk pipeline. Files: `lib/crowdb-access-s3/src/`,
+  `lib/crowdb-protocol/src/frame.rs`, `lib/crowdb-chunk-client/src/`.
+- [ ] **Share payload with integrity and EC**: move MD5/SHA state into the
+  object provider lifecycle and feed the same immutable payload views to the
+  strip-scoped incremental parity state. Files:
+  `lib/crowdb-access-s3/src/integrity.rs`,
+  `lib/crowdb-chunk-client/src/worker/`,
+  `lib/crowdb-common/rust/src/ec.rs`.
+
+## RPC buffer views
+
+- [x] **Bound the transport view chain**: extend one RPC data payload with a
+  fixed-capacity immutable buffer chain, retain the single-buffer fast path,
+  and make writev, partial-write restoration, metrics, and release walk the
+  same descriptors. Keep the batch-wide descriptor count below the transport
+  hard limit without a fallback allocation. Files: `lib/crowdb-rpc/include/`,
+  `lib/crowdb-rpc/src/`, `lib/crowdb-rpc/tests/`.
+- [x] **Expose safe Rust chains**: add an owning `BufferChain` and bounded
+  client call API which transfers every owner exactly once and rejects empty
+  or oversized chains before submission. Files: `lib/crowdb-rpc/ffi/src/`,
+  `lib/crowdb-rpc/ffi/tests/`.
+- [ ] **Carry edge views to DiskIO**: use the single-owner fast path for normal
+  1 MiB buffers and the bounded chain only for header read-ahead and final edge
+  shapes; never coalesce PUT payload. Add copy/view accounting. Files:
+  `lib/crowdb-diskio-client/src/`, `lib/crowdb-chunk-client/src/`.
+
 ## Tests and gates
 
 - [~] **Integration tests**: assert writer failure does not publish and writer

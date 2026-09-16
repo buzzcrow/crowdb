@@ -167,6 +167,19 @@ crowdb_rpc_status crowdb_rpc_client_send(crowdb_rpc_client_t client, crowdb_rpc_
                                          uint64_t request_id, crowdb_rpc_buffer_t control, crowdb_rpc_buffer_t data,
                                          uint16_t msg_type, crowdb_rpc_on_complete on_complete, void *user_data);
 
+// Maximum immutable data views accepted by one TCP frame. This bound keeps a
+// full send batch below the platform writev descriptor ceiling.
+uint8_t crowdb_rpc_max_data_views(void);
+
+// Scatter/gather request variant. Each entry is an owning buffer handle. The
+// function consumes control and every data view exactly as client_send does.
+// Empty chains, null entries, oversized chains, and a total payload above
+// uint32 are rejected before ownership transfer.
+crowdb_rpc_status crowdb_rpc_client_send_chain(crowdb_rpc_client_t client, crowdb_rpc_server_t server,
+                                               crowdb_rpc_conn_t conn, uint64_t request_id, crowdb_rpc_buffer_t control,
+                                               crowdb_rpc_buffer_t const *data_views, uint8_t data_view_count,
+                                               uint16_t msg_type, crowdb_rpc_on_complete on_complete, void *user_data);
+
 // Strictly bounded callback call. Unlike crowdb_rpc_client_send, this never
 // falls back to the pending map when the indexed completion slot is occupied.
 crowdb_rpc_status crowdb_rpc_client_send_slab(crowdb_rpc_client_t client, crowdb_rpc_server_t server,

@@ -18,7 +18,9 @@ mod s3_dispatcher {
     use crowdb_access_s3::metrics::{OutcomeClass, S3Metrics};
     use crowdb_access_s3::native_buffer::NativeBodyAllocator;
     use crowdb_access_s3::route::{S3Operation, S3Route};
-    use crowdb_access_server::s3::{serve, ResponseBody, S3Dispatcher, S3Operations, S3OperationsFuture};
+    use crowdb_access_server::s3::{
+        install_body_receive_provider, serve, ResponseBody, S3Dispatcher, S3Operations, S3OperationsFuture,
+    };
     use http_body_util::{BodyExt, Full};
     use hyper::body::{Bytes, Incoming};
     use hyper::{Request, Response, StatusCode};
@@ -51,12 +53,13 @@ mod s3_dispatcher {
         fn execute(
             self: Arc<Self>,
             _route: S3Route,
-            request: Request<Incoming>,
+            mut request: Request<Incoming>,
             _request_id: String,
             _host_id: String,
         ) -> S3OperationsFuture {
             Box::pin(async move {
                 self.calls.fetch_add(1, Ordering::Relaxed);
+                install_body_receive_provider(&mut request);
                 let body = request.into_body().collect().await.unwrap().to_bytes();
                 self.body_bytes.fetch_add(body.len(), Ordering::Relaxed);
                 Response::builder()
@@ -75,7 +78,7 @@ mod s3_dispatcher {
         });
         let operations = Arc::new(TestOperations::default());
         let metrics = Arc::new(S3Metrics::default());
-        let body_allocator = Arc::new(NativeBodyAllocator::new(1024, 128).unwrap());
+        let body_allocator = Arc::new(NativeBodyAllocator::new(2 * 1024 * 1024, 1024 * 1024).unwrap());
         let dispatcher = Arc::new(
             S3Dispatcher::new(
                 authenticator.clone(),
@@ -84,7 +87,10 @@ mod s3_dispatcher {
                 "host".into(),
                 true,
             )
-            .with_body_allocator(body_allocator.clone()),
+            .with_body_receive_provider_factory({
+                let body_allocator = body_allocator.clone();
+                move || Arc::new(body_allocator.object_receiver())
+            }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -140,7 +146,34 @@ mod s3_dispatcher {
         .await;
         assert!(put.starts_with("HTTP/1.1 200"));
         assert_eq!(operations.body_bytes.load(Ordering::Relaxed), 4);
+        assert_eq!(body_allocator.allocation_count(), 0);
+        assert_eq!(body_allocator.prefetched_bytes(), 4);
+        assert_eq!(body_allocator.direct_bytes(), 0);
+
+        let direct_put = request_with_split_body(
+            address,
+            "PUT /bucket/direct HTTP/1.1",
+            "Content-Length: 8\r\n",
+            &[b"bod", b"ybody"],
+        )
+        .await;
+        assert!(direct_put.starts_with("HTTP/1.1 200"));
+        assert_eq!(operations.body_bytes.load(Ordering::Relaxed), 12);
         assert_eq!(body_allocator.allocation_count(), 1);
+        assert_eq!(body_allocator.prefetched_bytes(), 4);
+        assert_eq!(body_allocator.direct_bytes(), 8);
+        assert_eq!(body_allocator.retained_bytes(), 0);
+
+        let chunked_put = request_with_split_body(
+            address,
+            "PUT /bucket/chunked HTTP/1.1",
+            "Transfer-Encoding: chunked\r\n",
+            &[b"3\r\n", b"abc", b"\r\n5\r\n", b"defgh", b"\r\n0\r\n\r\n"],
+        )
+        .await;
+        assert!(chunked_put.starts_with("HTTP/1.1 200"));
+        assert_eq!(operations.body_bytes.load(Ordering::Relaxed), 20);
+        assert_eq!(body_allocator.direct_bytes(), 16);
         assert_eq!(body_allocator.retained_bytes(), 0);
 
         let _ = shutdown_tx.send(());
@@ -169,6 +202,29 @@ mod s3_dispatcher {
             )
             .await
             .unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        String::from_utf8(response).unwrap()
+    }
+
+    async fn request_with_split_body(
+        address: std::net::SocketAddr,
+        start_line: &str,
+        headers: &str,
+        body_parts: &[&[u8]],
+    ) -> String {
+        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        stream
+            .write_all(
+                format!("{start_line}\r\nHost: localhost\r\n{headers}Connection: close\r\n\r\n").as_bytes(),
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        for part in body_parts {
+            stream.write_all(part).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         let mut response = Vec::new();
         stream.read_to_end(&mut response).await.unwrap();
         String::from_utf8(response).unwrap()

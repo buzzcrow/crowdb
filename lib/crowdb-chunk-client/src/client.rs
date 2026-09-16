@@ -556,6 +556,19 @@ impl DiskWriter for MetricsDiskWriter {
         result
     }
 
+    async fn write_views(&self, seg: &Segment, unit_bytes: u64, data: Vec<Bytes>) -> Result<()> {
+        let bytes = data.iter().fold(0_u64, |total, view| {
+            total.saturating_add(u64::try_from(view.len()).unwrap_or(u64::MAX))
+        });
+        let mut operation = self.metrics.diskio_write.start();
+        let result = self.inner.write_views(seg, unit_bytes, data).await;
+        if result.is_ok() {
+            self.metrics.diskio_write_bytes.observe(bytes);
+            operation.mark_success();
+        }
+        result
+    }
+
     async fn fsync(&self, seg: &Segment) -> Result<()> {
         self.inner.fsync(seg).await
     }

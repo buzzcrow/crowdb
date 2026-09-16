@@ -34,7 +34,7 @@ use percent_encoding::percent_decode_str;
 
 use crate::storage::S3StorageClients;
 
-use super::{error_response, full_body, BoxError, ResponseBody};
+use super::{error_response, full_body, install_body_receive_provider, BoxError, ResponseBody};
 use crowdb_access_s3::wire;
 
 const DEFAULT_LIST_LIMIT: usize = 1_000;
@@ -179,7 +179,7 @@ impl ProductionS3Operations {
     async fn put_object(
         &self,
         route: S3Route,
-        request: Request<Incoming>,
+        mut request: Request<Incoming>,
     ) -> Result<Response<ResponseBody>, S3ErrorCode> {
         let bucket_name = required_bucket(&route)?;
         let key = required_key(&route)?.to_vec();
@@ -199,6 +199,7 @@ impl ProductionS3Operations {
         route_key.extend_from_slice(bucket_id.as_bytes());
         route_key.extend_from_slice(&key);
         let mut writer = self.prepare_writer(content_length, &route_key).await?;
+        install_body_receive_provider(&mut request);
         let mut body = request.into_body();
         let (etag, checksum) = match write_body_with_checksums(
             &mut body,

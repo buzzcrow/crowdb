@@ -21,7 +21,7 @@ namespace crowdb::rpc
 namespace
 {
 
-// Serialize the frame header into hdr_buf and build up to 3 iovecs from
+// Serialize the frame header into hdr_buf and build bounded iovecs from
 // the frame at its current sent_offset. Returns the number of iovecs.
 // hdr_buf must point to HEADER_SIZE bytes of stable storage.
 inline int build_frame_iovecs(OutFrame *frame, uint8_t *hdr_buf, iovec *iovs)
@@ -48,10 +48,16 @@ inline int build_frame_iovecs(OutFrame *frame, uint8_t *hdr_buf, iovec *iovs)
         }
     }
 
-    if (frame->data != nullptr && frame->data->len > 0) {
-        auto dlen = static_cast<ssize_t>(frame->data->len);
+    const uint8_t data_views = frame->data_views();
+    for (uint8_t index = 0; index < data_views; ++index) {
+        Buffer *view = frame->data_view(index);
+        auto    dlen = static_cast<ssize_t>(view->len);
         if (off < dlen) {
-            iovs[count++] = {.iov_base = frame->data->data + off, .iov_len = static_cast<size_t>(dlen - off)};
+            iovs[count++] = {.iov_base = view->data + off, .iov_len = static_cast<size_t>(dlen - off)};
+            off           = 0;
+        }
+        else {
+            off -= dlen;
         }
     }
 
@@ -65,8 +71,9 @@ inline ssize_t frame_total(OutFrame *frame)
     if (frame->control != nullptr) {
         total += static_cast<ssize_t>(frame->control->len);
     }
-    if (frame->data != nullptr) {
-        total += static_cast<ssize_t>(frame->data->len);
+    const uint8_t data_views = frame->data_views();
+    for (uint8_t index = 0; index < data_views; ++index) {
+        total += static_cast<ssize_t>(frame->data_view(index)->len);
     }
     return total;
 }
@@ -77,9 +84,7 @@ inline void release_frame(OutFrame *frame)
     if (frame->control != nullptr) {
         frame->control->release();
     }
-    if (frame->data != nullptr) {
-        frame->data->release();
-    }
+    frame->release_data();
     delete frame;
 }
 
@@ -202,7 +207,7 @@ retry:
         int       frame_count = 0;
         OutFrame *frames[BATCH_MAX];
         ssize_t   frame_totals[BATCH_MAX];
-        iovec     iovs[3 * BATCH_MAX];
+        iovec     iovs[MAX_BATCH_IOVECS];
         uint8_t   hdr_bufs[BATCH_MAX][HEADER_SIZE];
         int       iov_count = 0;
 
@@ -234,9 +239,10 @@ retry:
                     stats->submit_to_writev.record(delta);
                 }
                 // Request payload bandwidth: data bytes per frame (no header).
-                uint64_t payload = 0;
-                if (batch[i]->data != nullptr) {
-                    payload = batch[i]->data->len;
+                uint64_t      payload    = 0;
+                const uint8_t data_views = batch[i]->data_views();
+                for (uint8_t index = 0; index < data_views; ++index) {
+                    payload += batch[i]->data_view(index)->len;
                 }
                 bw_request_payload().observe(payload);
             }

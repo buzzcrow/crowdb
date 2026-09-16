@@ -122,6 +122,12 @@ class RpcClient
     bool send(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control, Buffer *data,
               uint16_t msg_type, crowdb_rpc_on_complete cb, void *user_data);
 
+    // Scatter/gather variant. `data_views` contains between one and
+    // MAX_DATA_VIEWS immutable owners and is consumed on every return path.
+    bool send_chain(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control,
+                    Buffer *const *data_views, uint8_t data_view_count, uint16_t msg_type, crowdb_rpc_on_complete cb,
+                    void *user_data);
+
     // Bounded variant for callers that must never allocate a pending-map
     // fallback entry. Returns false when the indexed slab slot is occupied.
     bool send_slab_only(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control, Buffer *data,
@@ -198,8 +204,9 @@ class RpcClient
     void stop_reaper();
 
   private:
-    bool send_impl(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control, Buffer *data,
-                   uint16_t msg_type, crowdb_rpc_on_complete cb, void *user_data, bool slab_only);
+    bool send_impl(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control,
+                   Buffer *const *data_views, uint8_t data_view_count, uint16_t msg_type, crowdb_rpc_on_complete cb,
+                   void *user_data, bool slab_only);
 
     // Handler registry for incoming requests (server→client direction).
     // Maps msg_type → (C callback, user_data). Same trampoline pattern
@@ -237,6 +244,8 @@ class RpcClient
     // Build an OutFrame for submission. The RpcClient owns the OutFrame;
     // the transport takes it and releases buffers after send.
     static OutFrame *build_frame(uint64_t request_id, Buffer *control, Buffer *data, uint16_t msg_type, uint8_t flags);
+    static OutFrame *build_frame_chain(uint64_t request_id, Buffer *control, Buffer *const *data_views,
+                                       uint8_t data_view_count, uint16_t msg_type, uint8_t flags);
 
     // Reaper loop: scans slab pool + pending map for timed-out entries.
     void reaper_loop();

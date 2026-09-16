@@ -9,10 +9,10 @@ use crowdb_access_s3::auth::{AuthError, RawAuthRequest, RequestAuthenticator};
 use crowdb_access_s3::error::{S3Error, S3ErrorCode};
 use crowdb_access_s3::metrics::{OutcomeClass, S3Metrics};
 use crowdb_access_s3::route::{classify_request, RouteError};
-use hyper::body::{Http1BodyAllocator, Incoming};
+use hyper::body::{Http1BodyReceiveProvider, Incoming};
 use hyper::{Method, Request};
 
-use super::{error_response, HandlerFuture, S3HttpHandler, S3Operations};
+use super::{error_response, DeferredBodyReceiveProvider, HandlerFuture, S3HttpHandler, S3Operations};
 
 pub struct S3Dispatcher {
     authenticator: Arc<dyn RequestAuthenticator>,
@@ -20,7 +20,7 @@ pub struct S3Dispatcher {
     metrics: Arc<S3Metrics>,
     host_id: String,
     trusted_network: bool,
-    body_allocator: Option<Arc<dyn Http1BodyAllocator>>,
+    body_receive_provider_factory: Option<Arc<dyn Fn() -> Arc<dyn Http1BodyReceiveProvider> + Send + Sync>>,
     next_request_id: AtomicU64,
 }
 
@@ -39,14 +39,17 @@ impl S3Dispatcher {
             metrics,
             host_id,
             trusted_network,
-            body_allocator: None,
+            body_receive_provider_factory: None,
             next_request_id: AtomicU64::new(1),
         }
     }
 
     #[must_use]
-    pub fn with_body_allocator(mut self, allocator: Arc<dyn Http1BodyAllocator>) -> Self {
-        self.body_allocator = Some(allocator);
+    pub fn with_body_receive_provider_factory<F>(mut self, factory: F) -> Self
+    where
+        F: Fn() -> Arc<dyn Http1BodyReceiveProvider> + Send + Sync + 'static,
+    {
+        self.body_receive_provider_factory = Some(Arc::new(factory));
         self
     }
 
@@ -63,7 +66,7 @@ impl S3HttpHandler for S3Dispatcher {
         let host_id = self.host_id.clone();
         let request_id = self.request_id();
         let trusted_network = self.trusted_network;
-        let body_allocator = self.body_allocator.clone();
+        let body_receive_provider_factory = self.body_receive_provider_factory.clone();
         Box::pin(async move {
             let mut request = request;
             let resource = request.uri().path().to_owned();
@@ -105,8 +108,10 @@ impl S3HttpHandler for S3Dispatcher {
             };
             let operation = route.operation;
             if operation == crowdb_access_s3::route::S3Operation::PutObject {
-                if let Some(allocator) = body_allocator {
-                    request.body_mut().set_http1_body_allocator(allocator);
+                if let Some(factory) = body_receive_provider_factory {
+                    request
+                        .extensions_mut()
+                        .insert(DeferredBodyReceiveProvider(factory()));
                 }
             }
             let started = Instant::now();

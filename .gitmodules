@@ -3,4 +3,5 @@
 	url = https://github.com/NVIDIA/stdexec.git
 [submodule "third-party/hyper"]
 	path = third-party/hyper
-	url = https://github.com/buzzcrow/hyper.git
+	url = git@github.com:buzzcrow/hyper.git
+	branch = feature-crowdb

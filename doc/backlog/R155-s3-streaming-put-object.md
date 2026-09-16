@@ -17,31 +17,36 @@ management is `doc/dev/hyper_fork.md`.
 
 ## Solution
 
-1. Extend the pinned Hyper fork with an opt-in HTTP/1 body allocator selected
-   after header authentication/admission and before the first body poll. Hyper
-   requests buffers sized from the admitted object length and configured frame
-   bounds, reads decoded payload directly across partial socket reads, freezes
-   each allocation into an immutable owner-backed body frame, and returns
-   `Pending` when allocator credits are absent. CROWDB supplies the allocator
-   type: the initial implementation owns native memory, while a later provider
-   may own registered or RDMA-pinned memory without changing Hyper or the
-   writer contract.
-2. Add safe immutable owner/view/chain types at the RPC/chunk boundary. A view
-   retains a Rust or native allocation plus offset and length; splitting at
-   block or EC boundaries does not copy. Preserve the existing one-`Bytes`
-   fast path as an additive API.
-3. Stream body chunks through bounded checksum, chunk writer, and EC pipelines.
-   Never allocate or retain memory proportional to object length. Stop polling
-   Hyper while downstream batch or memory credits are exhausted.
+1. Extend the pinned Hyper fork with an opt-in HTTP/1 body-buffer provider
+   selected after header authentication/admission and before the first body
+   poll. The provider lends successive writable payload regions; Hyper fills a
+   region across partial socket reads and returns `Pending` when no region is
+   available. CROWDB supplies the provider: the native implementation owns a
+   bounded set of 1 MiB buffers subdivided into 64 KiB physical-frame slots,
+   with frame header/footer bytes reserved around each payload region. A later
+   provider may use registered or RDMA-pinned memory without changing Hyper or
+   the writer contract.
+2. Make the provider object-scoped. Once one slot is filled, it finalizes the
+   frame header, checksum, and footer in the reserved bytes without moving the
+   payload. Once a 1 MiB owner is full, or EOF finalizes its used prefix, hand
+   that same owner to the chunk write pipeline. HTTP read boundaries are not
+   storage frame boundaries. A bounded body prefix already present in Hyper's
+   header buffer is represented by immutable views with a separate header and
+   footer rather than copied.
+3. Fan each immutable payload view out to two consumers over the same owner:
+   the object-scoped ETag/Content-MD5/SHA-256 pipeline and the strip-scoped EC
+   pipeline. The integrity state ends only with the object; EC state rotates
+   with each strip. Neither pipeline creates a second payload allocation.
 4. Extend the TCP RPC request path to accept bounded scatter/gather buffers and
    use vectored writes. Validate the configured view maximum below every
    platform, RPC, and send-queue hard limit; derive each frame limit from that
    value, remaining queue capacity, and flush policy. Flush before overflow.
-   EC walks corresponding view cursors; coalesce once only when one operation
-   cannot fit, and charge copied bytes.
-5. Copy only a body prefix already read with HTTP headers into the first pooled
-   buffer. Record that bounded copy separately. Reject early EOF, length
-   overflow, unsupported streaming signatures, timeout, cancellation, and
+   The normal 1 MiB owner is a single RPC buffer. Bounded scatter/gather is
+   reserved for the header-read-ahead prefix and final edge cases; reject a
+   descriptor shape that cannot fit instead of copying payload. Record owner,
+   view, prefix, and fallback counters separately.
+5. Reject early EOF, length overflow, unsupported streaming signatures,
+   timeout, cancellation, and
    writer failure without invoking R154 publication. The final outcome is
    exactly `Success`, `Error { code, message }`, or `Timeout`. A definite
    chunk or KV error may best-effort delete newly written data (a small-object
@@ -71,9 +76,9 @@ management is `doc/dev/hyper_fork.md`.
   buffers stay within configured credits. Invariant: object size does not set
   service memory. E2E test.
 - Given frame splits around every block, chunk, and EC boundary, when PUT uses
-  buffer views, assert stored data and parity match contiguous input with no
-  coalesce below the descriptor limit. Invariant: HTTP framing is not a storage
-  boundary. Integration test.
+  1 MiB provider owners, assert stored data, ETag, and parity match contiguous
+  input with no payload copy or coalesce. Invariant: HTTP framing is not a
+  storage boundary and integrity/EC share the same owner. Integration test.
 - Given descriptor or pool exhaustion, when the client continues writing,
   assert Hyper stops reading until a credit returns and no unbounded fallback
   allocation occurs. Invariant: backpressure reaches the client. Integration

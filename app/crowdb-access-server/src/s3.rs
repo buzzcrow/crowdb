@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use crowdb_access_s3::error::S3Error;
 use http_body_util::{BodyExt, Full};
-use hyper::body::{Bytes, Incoming};
+use hyper::body::{Bytes, Http1BodyReceiveProvider, Incoming};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
@@ -28,6 +28,16 @@ pub type HandlerFuture =
 
 pub trait S3HttpHandler: Send + Sync + 'static {
     fn handle(&self, request: Request<Incoming>) -> HandlerFuture;
+}
+
+#[derive(Clone)]
+pub(crate) struct DeferredBodyReceiveProvider(pub Arc<dyn Http1BodyReceiveProvider>);
+
+/// Installs the admitted request's provider immediately before body polling.
+pub fn install_body_receive_provider(request: &mut Request<Incoming>) {
+    if let Some(deferred) = request.extensions_mut().remove::<DeferredBodyReceiveProvider>() {
+        request.body_mut().set_http1_body_receive_provider(deferred.0);
+    }
 }
 
 /// Runs one independent HTTP/1 S3 listener until shutdown.

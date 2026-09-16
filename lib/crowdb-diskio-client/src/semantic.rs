@@ -195,6 +195,30 @@ enum OperationKind {
     Fsync,
 }
 
+#[derive(Clone)]
+enum WritePayload {
+    Contiguous(Bytes),
+    Views(Arc<[Bytes]>),
+}
+
+impl WritePayload {
+    fn len(&self) -> usize {
+        match self {
+            Self::Contiguous(data) => data.len(),
+            Self::Views(views) => views
+                .iter()
+                .fold(0_usize, |total, view| total.saturating_add(view.len())),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Contiguous(data) => data.is_empty(),
+            Self::Views(views) => views.is_empty() || views.iter().any(Bytes::is_empty),
+        }
+    }
+}
+
 impl OperationKind {
     const fn label(self) -> &'static str {
         match self {
@@ -511,6 +535,49 @@ impl DiskioClient {
         durability: Durability,
         options: OperationOptions,
     ) -> DiskioResult<()> {
+        self.write_payload(
+            target,
+            offset,
+            WritePayload::Contiguous(data),
+            durability,
+            options,
+        )
+        .await
+    }
+
+    /// Write caller-owned immutable views as one exact segment-relative range.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed input, topology, backpressure, disk, durability, or
+    /// ambiguous-outcome error. The RPC descriptor bound is checked before
+    /// submission.
+    pub async fn write_views(
+        &self,
+        target: SegmentTarget,
+        offset: u64,
+        data: Vec<Bytes>,
+        durability: Durability,
+        options: OperationOptions,
+    ) -> DiskioResult<()> {
+        self.write_payload(
+            target,
+            offset,
+            WritePayload::Views(data.into()),
+            durability,
+            options,
+        )
+        .await
+    }
+
+    async fn write_payload(
+        &self,
+        target: SegmentTarget,
+        offset: u64,
+        data: WritePayload,
+        durability: Durability,
+        options: OperationOptions,
+    ) -> DiskioResult<()> {
         if data.is_empty() {
             return Err(DiskioError::InvalidInput("write data must be nonempty".into()));
         }
@@ -521,17 +588,25 @@ impl DiskioClient {
         let mut only_backpressure = true;
         for attempt in 0..self.config.retry_attempts {
             let (route, selected) = self.select(target.disk_id, options.lane)?;
-            let future = match self.wire.write_segment_bytes(
-                &self.server,
-                &selected,
-                WireWriteTarget {
-                    disk_id: target.disk_id,
-                    zone_index: target.zone_index,
-                    zone_offset,
-                    ordering_zone_offset: target.segment_base,
-                },
-                data.clone(),
-            ) {
+            let write_target = WireWriteTarget {
+                disk_id: target.disk_id,
+                zone_index: target.zone_index,
+                zone_offset,
+                ordering_zone_offset: target.segment_base,
+            };
+            let submitted = match &data {
+                WritePayload::Contiguous(data) => {
+                    self.wire
+                        .write_segment_bytes(&self.server, &selected, write_target, data.clone())
+                }
+                WritePayload::Views(views) => self.wire.write_segment_views(
+                    &self.server,
+                    &selected,
+                    write_target,
+                    views.iter().cloned().collect(),
+                ),
+            };
+            let future = match submitted {
                 Ok(future) => future,
                 Err(error) => {
                     let error = Self::classify_wire(error, OperationKind::Write);

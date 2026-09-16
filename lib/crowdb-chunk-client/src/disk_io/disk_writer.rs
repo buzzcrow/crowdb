@@ -15,6 +15,27 @@ pub trait DiskWriter: Send + Sync {
     /// Write `data` to the disk/zone/offset described by `seg`.
     async fn write(&self, seg: &Segment, unit_bytes: u64, data: Bytes) -> Result<()>;
 
+    /// Write one logical range from immutable owner-backed views. Production
+    /// DiskIO overrides this with bounded scatter/gather. Implementations that
+    /// cannot preserve views reject multi-view input instead of copying it.
+    async fn write_views(&self, seg: &Segment, unit_bytes: u64, data: Vec<Bytes>) -> Result<()> {
+        if data.is_empty() || data.iter().any(Bytes::is_empty) {
+            return Err(IoError::WriteFailed(
+                "data view chain must contain nonempty views".into(),
+            ));
+        }
+        if data.len() == 1 {
+            let only = data
+                .into_iter()
+                .next()
+                .ok_or_else(|| IoError::WriteFailed("data view chain vanished".into()))?;
+            return self.write(seg, unit_bytes, only).await;
+        }
+        Err(IoError::WriteFailed(
+            "disk writer does not support multi-view writes".into(),
+        ))
+    }
+
     /// Write a conversion-data range without queueing behind ordinary writes.
     async fn write_priority_at_byte_offset(
         &self,

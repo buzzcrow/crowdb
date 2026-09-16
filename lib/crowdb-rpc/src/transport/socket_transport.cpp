@@ -616,9 +616,7 @@ bool SocketTransport::submit_inline(Connection *conn, OutFrame *frame)
     if (frame->control != nullptr) {
         frame->control->release();
     }
-    if (frame->data != nullptr) {
-        frame->data->release();
-    }
+    frame->release_data();
     delete frame;
     return false;
 }

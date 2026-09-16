@@ -5,26 +5,47 @@
 
 #![allow(unsafe_code)]
 
+use std::cell::UnsafeCell;
 use std::io;
 use std::mem::MaybeUninit;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use atomic_waker::AtomicWaker;
-use hyper::body::{Bytes, Http1BodyAllocator, Http1BodyBuffer};
+use crowdb_protocol::frame::{
+    FRAME_FOOTER_BYTES, FRAME_HEADER_PREFIX_BYTES, MAX_FRAME_BYTES, MAX_FRAME_PAYLOAD_BYTES,
+};
+use hyper::body::{Bytes, Http1BodyReceiveBuffer, Http1BodyReceiveProvider};
 
 #[derive(Clone)]
 pub struct NativeBodyAllocator {
     state: Arc<AllocatorState>,
 }
 
+pub struct NativeBodyReceiver {
+    allocator: NativeBodyAllocator,
+    state: UnsafeCell<ReceiverState>,
+    state_in_use: AtomicBool,
+}
+
+// SAFETY: Hyper invokes one provider serially for one Incoming body. The
+// atomic guard rejects accidental concurrent entry before accessing state.
+unsafe impl Sync for NativeBodyReceiver {}
+
+struct ReceiverState {
+    owner: Option<Arc<NativeOwner>>,
+    next_slot: usize,
+}
+
 struct AllocatorState {
     budget_bytes: usize,
-    max_frame_bytes: usize,
+    owner_bytes: usize,
     retained_bytes: AtomicUsize,
     allocations: AtomicUsize,
+    direct_bytes: AtomicUsize,
+    prefetched_bytes: AtomicUsize,
     credit_waker: AtomicWaker,
 }
 
@@ -32,8 +53,8 @@ struct AllocatorState {
 pub enum NativeBufferConfigError {
     #[error("native body buffer budget must be nonzero")]
     ZeroBudget,
-    #[error("native body frame size must be nonzero and no larger than the budget")]
-    InvalidFrameSize,
+    #[error("native body owner size must be a 64 KiB multiple and no larger than the budget")]
+    InvalidOwnerSize,
 }
 
 impl NativeBodyAllocator {
@@ -41,20 +62,22 @@ impl NativeBodyAllocator {
     ///
     /// # Errors
     ///
-    /// Rejects zero or unreachable frame limits.
-    pub fn new(budget_bytes: usize, max_frame_bytes: usize) -> Result<Self, NativeBufferConfigError> {
+    /// Rejects zero or invalid owner limits.
+    pub fn new(budget_bytes: usize, owner_bytes: usize) -> Result<Self, NativeBufferConfigError> {
         if budget_bytes == 0 {
             return Err(NativeBufferConfigError::ZeroBudget);
         }
-        if max_frame_bytes == 0 || max_frame_bytes > budget_bytes {
-            return Err(NativeBufferConfigError::InvalidFrameSize);
+        if owner_bytes == 0 || owner_bytes > budget_bytes || owner_bytes % MAX_FRAME_BYTES != 0 {
+            return Err(NativeBufferConfigError::InvalidOwnerSize);
         }
         Ok(Self {
             state: Arc::new(AllocatorState {
                 budget_bytes,
-                max_frame_bytes,
+                owner_bytes,
                 retained_bytes: AtomicUsize::new(0),
                 allocations: AtomicUsize::new(0),
+                direct_bytes: AtomicUsize::new(0),
+                prefetched_bytes: AtomicUsize::new(0),
                 credit_waker: AtomicWaker::new(),
             }),
         })
@@ -70,6 +93,28 @@ impl NativeBodyAllocator {
         self.state.allocations.load(Ordering::Relaxed)
     }
 
+    #[must_use]
+    pub fn direct_bytes(&self) -> usize {
+        self.state.direct_bytes.load(Ordering::Relaxed)
+    }
+
+    #[must_use]
+    pub fn prefetched_bytes(&self) -> usize {
+        self.state.prefetched_bytes.load(Ordering::Relaxed)
+    }
+
+    #[must_use]
+    pub fn object_receiver(&self) -> NativeBodyReceiver {
+        NativeBodyReceiver {
+            allocator: self.clone(),
+            state: UnsafeCell::new(ReceiverState {
+                owner: None,
+                next_slot: 0,
+            }),
+            state_in_use: AtomicBool::new(false),
+        }
+    }
+
     fn try_reserve(&self, bytes: usize) -> bool {
         self.state
             .retained_bytes
@@ -82,53 +127,123 @@ impl NativeBodyAllocator {
     }
 }
 
-impl Http1BodyAllocator for NativeBodyAllocator {
-    fn poll_allocate(
+impl NativeBodyReceiver {
+    fn enter_state(&self) -> io::Result<ReceiverStateGuard<'_>> {
+        self.state_in_use
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "HTTP body receive provider was entered concurrently",
+                )
+            })?;
+        Ok(ReceiverStateGuard { receiver: self })
+    }
+}
+
+struct ReceiverStateGuard<'a> {
+    receiver: &'a NativeBodyReceiver,
+}
+
+impl Drop for ReceiverStateGuard<'_> {
+    fn drop(&mut self) {
+        self.receiver.state_in_use.store(false, Ordering::Release);
+    }
+}
+
+impl Http1BodyReceiveProvider for NativeBodyReceiver {
+    fn poll_next_buffer(
         &self,
         cx: &mut Context<'_>,
         requested: usize,
-    ) -> Poll<io::Result<Box<dyn Http1BodyBuffer>>> {
+    ) -> Poll<io::Result<Box<dyn Http1BodyReceiveBuffer>>> {
         if requested == 0 {
             return Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "cannot allocate an empty HTTP body frame",
             )));
         }
-        let capacity = requested.min(self.state.max_frame_bytes);
-        if !self.try_reserve(capacity) {
-            self.state.credit_waker.register(cx.waker());
-            if !self.try_reserve(capacity) {
-                return Poll::Pending;
+        let _guard = match self.enter_state() {
+            Ok(guard) => guard,
+            Err(error) => return Poll::Ready(Err(error)),
+        };
+        // SAFETY: `_guard` gives this invocation exclusive state access.
+        let state = unsafe { &mut *self.state.get() };
+        let slots_per_owner = self.allocator.state.owner_bytes / MAX_FRAME_BYTES;
+        if state.owner.is_none() || state.next_slot == slots_per_owner {
+            state.owner = None;
+            state.next_slot = 0;
+            let owner_bytes = self.allocator.state.owner_bytes;
+            if !self.allocator.try_reserve(owner_bytes) {
+                self.allocator.state.credit_waker.register(cx.waker());
+                if !self.allocator.try_reserve(owner_bytes) {
+                    return Poll::Pending;
+                }
+            }
+            match NativeOwner::new(owner_bytes, Arc::clone(&self.allocator.state)) {
+                Ok(owner) => {
+                    self.allocator.state.allocations.fetch_add(1, Ordering::Relaxed);
+                    state.owner = Some(Arc::new(owner));
+                }
+                Err(error) => {
+                    self.allocator
+                        .state
+                        .retained_bytes
+                        .fetch_sub(owner_bytes, Ordering::AcqRel);
+                    self.allocator.state.credit_waker.wake();
+                    return Poll::Ready(Err(error));
+                }
             }
         }
-        match NativeAllocation::new(capacity, Arc::clone(&self.state)) {
-            Ok(allocation) => {
-                self.state.allocations.fetch_add(1, Ordering::Relaxed);
-                Poll::Ready(Ok(Box::new(allocation)))
-            }
-            Err(error) => {
-                self.state.retained_bytes.fetch_sub(capacity, Ordering::AcqRel);
-                self.state.credit_waker.wake();
-                Poll::Ready(Err(error))
-            }
+        let slot = state.next_slot;
+        state.next_slot += 1;
+        let payload_offset = slot * MAX_FRAME_BYTES + FRAME_HEADER_PREFIX_BYTES;
+        let capacity = requested.min(MAX_FRAME_PAYLOAD_BYTES);
+        let owner = Arc::clone(state.owner.as_ref().expect("owner initialized"));
+        if state.next_slot == slots_per_owner {
+            state.owner = None;
         }
+        debug_assert_eq!(
+            FRAME_HEADER_PREFIX_BYTES + MAX_FRAME_PAYLOAD_BYTES + FRAME_FOOTER_BYTES,
+            MAX_FRAME_BYTES
+        );
+        Poll::Ready(Ok(Box::new(NativeReceiveRegion {
+            owner,
+            payload_offset,
+            capacity,
+            initialized: 0,
+        })))
+    }
+
+    fn on_data_ready(&self, buffer: Box<dyn Http1BodyReceiveBuffer>) -> io::Result<Bytes> {
+        self.allocator
+            .state
+            .direct_bytes
+            .fetch_add(buffer.initialized_len(), Ordering::Relaxed);
+        Ok(buffer.freeze())
+    }
+
+    fn on_prefetched_data(&self, data: Bytes) -> io::Result<Bytes> {
+        self.allocator
+            .state
+            .prefetched_bytes
+            .fetch_add(data.len(), Ordering::Relaxed);
+        Ok(data)
     }
 }
 
-struct NativeAllocation {
+struct NativeOwner {
     pointer: NonNull<u8>,
     capacity: usize,
-    initialized: usize,
     allocator: Arc<AllocatorState>,
 }
 
-// SAFETY: the allocation is uniquely mutable until freeze and immutable
-// afterwards; the pointer is freed only when its final Bytes owner drops.
-unsafe impl Send for NativeAllocation {}
-// SAFETY: `AsRef` exposes only the initialized immutable prefix after freeze.
-unsafe impl Sync for NativeAllocation {}
+// SAFETY: provider-issued regions are disjoint physical-frame payload slots.
+// The owner is freed only after the provider and every immutable view drop.
+unsafe impl Send for NativeOwner {}
+unsafe impl Sync for NativeOwner {}
 
-impl NativeAllocation {
+impl NativeOwner {
     fn new(capacity: usize, allocator: Arc<AllocatorState>) -> io::Result<Self> {
         // SAFETY: malloc returns either a suitably aligned allocation of at
         // least `capacity` bytes or null; ownership is immediately wrapped.
@@ -137,22 +252,40 @@ impl NativeAllocation {
         Ok(Self {
             pointer,
             capacity,
-            initialized: 0,
             allocator,
         })
     }
 }
 
-impl Http1BodyBuffer for NativeAllocation {
+impl Drop for NativeOwner {
+    fn drop(&mut self) {
+        // SAFETY: `pointer` came from malloc and this owner frees it once.
+        unsafe { libc::free(self.pointer.as_ptr().cast()) };
+        self.allocator
+            .retained_bytes
+            .fetch_sub(self.capacity, Ordering::AcqRel);
+        self.allocator.credit_waker.wake();
+    }
+}
+
+struct NativeReceiveRegion {
+    owner: Arc<NativeOwner>,
+    payload_offset: usize,
+    capacity: usize,
+    initialized: usize,
+}
+
+impl Http1BodyReceiveBuffer for NativeReceiveRegion {
     fn spare_capacity_mut(&mut self) -> &mut [MaybeUninit<u8>] {
         let remaining = self.capacity - self.initialized;
         // SAFETY: `initialized <= capacity`; this allocation is uniquely
         // borrowed and the returned slice covers only its uninitialized tail.
         unsafe {
             std::slice::from_raw_parts_mut(
-                self.pointer
+                self.owner
+                    .pointer
                     .as_ptr()
-                    .add(self.initialized)
+                    .add(self.payload_offset + self.initialized)
                     .cast::<MaybeUninit<u8>>(),
                 remaining,
             )
@@ -170,26 +303,34 @@ impl Http1BodyBuffer for NativeAllocation {
         Ok(())
     }
 
+    fn initialized_len(&self) -> usize {
+        self.initialized
+    }
+
     fn freeze(self: Box<Self>) -> Bytes {
-        Bytes::from_owner(*self)
+        Bytes::from_owner(NativePayloadView {
+            owner: self.owner,
+            payload_offset: self.payload_offset,
+            initialized: self.initialized,
+        })
     }
 }
 
-impl AsRef<[u8]> for NativeAllocation {
+struct NativePayloadView {
+    owner: Arc<NativeOwner>,
+    payload_offset: usize,
+    initialized: usize,
+}
+
+impl AsRef<[u8]> for NativePayloadView {
     fn as_ref(&self) -> &[u8] {
         // SAFETY: Hyper calls `advance` only for bytes reported initialized by
-        // the socket, and the immutable slice never exceeds that prefix.
-        unsafe { std::slice::from_raw_parts(self.pointer.as_ptr(), self.initialized) }
-    }
-}
-
-impl Drop for NativeAllocation {
-    fn drop(&mut self) {
-        // SAFETY: `pointer` came from malloc and this owner frees it once.
-        unsafe { libc::free(self.pointer.as_ptr().cast()) };
-        self.allocator
-            .retained_bytes
-            .fetch_sub(self.capacity, Ordering::AcqRel);
-        self.allocator.credit_waker.wake();
+        // the socket. Other regions mutate only disjoint payload slots.
+        unsafe {
+            std::slice::from_raw_parts(
+                self.owner.pointer.as_ptr().add(self.payload_offset),
+                self.initialized,
+            )
+        }
     }
 }

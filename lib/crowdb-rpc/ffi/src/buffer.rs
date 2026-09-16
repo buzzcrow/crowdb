@@ -13,6 +13,107 @@ pub struct Buffer {
     handle: sys::crowdb_rpc_buffer_t,
 }
 
+/// An immutable, bounded scatter/gather data payload.
+///
+/// Every view owns its underlying allocation until the RPC transport finishes
+/// the frame. Splitting `bytes::Bytes` before construction therefore retains
+/// the original owner without copying.
+pub struct BufferChain {
+    buffers: Vec<Buffer>,
+    len: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BufferChainError {
+    Empty,
+    TooManyViews { maximum: usize, actual: usize },
+    PayloadTooLarge,
+    EmptyView,
+}
+
+impl std::fmt::Display for BufferChainError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => f.write_str("buffer chain must contain at least one view"),
+            Self::TooManyViews { maximum, actual } => {
+                write!(f, "buffer chain has {actual} views; maximum is {maximum}")
+            }
+            Self::PayloadTooLarge => f.write_str("buffer chain payload exceeds u32"),
+            Self::EmptyView => f.write_str("buffer chain views must not be empty"),
+        }
+    }
+}
+
+impl std::error::Error for BufferChainError {}
+
+impl BufferChain {
+    /// Wrap owner-backed byte views without copying.
+    pub fn from_owned_bytes(views: impl IntoIterator<Item = bytes::Bytes>) -> Result<Self, BufferChainError> {
+        let buffers = views
+            .into_iter()
+            .map(|view| {
+                if view.is_empty() {
+                    Err(BufferChainError::EmptyView)
+                } else {
+                    Ok(Buffer::from_owned_bytes(view))
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::from_buffers(buffers)
+    }
+
+    /// Construct from already-owned RPC buffers.
+    pub fn from_buffers(buffers: Vec<Buffer>) -> Result<Self, BufferChainError> {
+        if buffers.is_empty() {
+            return Err(BufferChainError::Empty);
+        }
+        if buffers.iter().any(Buffer::is_null_handle) {
+            return Err(BufferChainError::EmptyView);
+        }
+        let maximum = usize::from(unsafe { sys::crowdb_rpc_max_data_views() });
+        if buffers.len() > maximum {
+            return Err(BufferChainError::TooManyViews {
+                maximum,
+                actual: buffers.len(),
+            });
+        }
+        let len = buffers.iter().try_fold(0_u32, |total, buffer| {
+            let length =
+                u32::try_from(buffer.bytes().len()).map_err(|_| BufferChainError::PayloadTooLarge)?;
+            total.checked_add(length).ok_or(BufferChainError::PayloadTooLarge)
+        })?;
+        Ok(Self { buffers, len })
+    }
+
+    #[must_use]
+    pub fn len(&self) -> u32 {
+        self.len
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        false
+    }
+
+    #[must_use]
+    pub fn view_count(&self) -> usize {
+        self.buffers.len()
+    }
+
+    pub(crate) fn into_raw_handles(self) -> Vec<sys::crowdb_rpc_buffer_t> {
+        self.buffers.into_iter().map(Buffer::into_raw).collect()
+    }
+}
+
+impl std::fmt::Debug for BufferChain {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BufferChain")
+            .field("view_count", &self.view_count())
+            .field("len", &self.len)
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for Buffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Buffer")

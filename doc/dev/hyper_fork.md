@@ -30,7 +30,8 @@ CROWDB needs more control for large PUT requests:
 
 - Allocate body payload into a selected system or registered-memory pool.
 - Retain native owner, allocation-base, registration, and key metadata.
-- Fill configured 128 KiB or 1 MiB buffers across partial socket reads.
+- Fill provider-selected payload regions across partial socket reads.
+- Transfer body bytes read with the headers as immutable prefetched views.
 - Freeze each buffer before it enters chunk, checksum, EC, RPC, or RDMA paths.
 - Stop reading when buffer credits are exhausted and propagate backpressure.
 - Release or recycle memory when its final asynchronous owner is dropped.
@@ -114,15 +115,15 @@ diff is the main control on future merge cost.
 
 ## 4. Fork implementation boundary
 
-The extension is enabled by a fork-only Cargo feature such as
-`crowdb-body-pool`. With that feature disabled, public behavior and default
-types remain compatible with the upstream base.
+The extension is compiled for HTTP/1 servers and remains opt-in per request.
+Without a provider, the original `BytesMut` receive path and public behavior
+remain unchanged.
 
 The fork may change or add code only around:
 
 ```text
 src/body/
-  separate pooled HTTP/1 Incoming body and channel
+  provider, mutable receive-buffer, and Incoming selection contracts
 
 src/proto/h1/io.rs
   payload-buffer acquisition and socket fill
@@ -136,14 +137,15 @@ src/proto/h1/conn.rs
 src/proto/h1/dispatch.rs
   provider selection, readiness, cancellation, and body delivery
 
-src/server/conn/http1.rs
-  opt-in builder/serve entry point
 ```
 
-The default upstream `Incoming<Data = Bytes>` remains available. The pooled
-path is HTTP/1-server-only and uses a separate incoming data type implementing
-`Buf`. HTTP/2, Hyper clients, header parsing, and response writing are not made
-generic for this feature.
+The upstream `Incoming<Data = Bytes>` contract remains unchanged. An admitted
+HTTP/1 request may install one `Http1BodyReceiveProvider` before its first body
+poll. Hyper retains the IO and HTTP decoder. It asks the provider for writable
+payload regions, fills them directly, and calls `on_data_ready`; a body prefix
+already present after header or chunk-metadata parsing is transferred through
+`on_prefetched_data` as an owned `Bytes` view. HTTP/2, Hyper clients, header
+parsing, and response writing are not made generic for this feature.
 
 The fork must not depend on CROWDB crates or expose CROWDB chunk, RPC, FFI, or
 RDMA types. It defines only safe provider, mutable-receive, frozen-owner, and
@@ -153,8 +155,10 @@ Allocation credit, free-buffer publication, and wakeup must remain lock-free or
 worker-sharded on the receive hot path. Introducing a shared lock requires a
 separate contention and ordering review before implementation.
 
-The `bytes` crate is not forked. Converting a registered buffer into an opaque
-`Bytes` would discard the metadata needed by the downstream transport.
+The `bytes` crate is not forked. `Bytes::from_owner` keeps the native owner and
+its registration metadata alive while exposing only its immutable payload
+view; the provider retains object-scoped control needed to finalize or submit
+the associated physical owner.
 
 ## 5. Upstream change assessment
 
