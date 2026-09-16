@@ -48,7 +48,9 @@ real services rather than mocks.
   response body is consumed, and concurrent overwrites preserve per-read ETags.
   Chunk failure responses and cleanup target verification remain. A bounded
   header read-ahead prefix now waits for native credit before copying into the
-  first owner; both the next-fill and immediate-EOF cases are covered.
+  first owner; both the next-fill and immediate-EOF cases are covered. A
+  truncated signed PUT must leave the key absent, release native credit, and
+  permit an exact-key retry.
 - [x] **Stateless frontend scale-out**: run two independently configured access
   servers over the same metadata/chunk authorities and alternate retries,
   reads, pagination, overwrites, and deletes between them.

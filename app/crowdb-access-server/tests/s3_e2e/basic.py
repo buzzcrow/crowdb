@@ -12,6 +12,7 @@ from email.utils import format_datetime
 from hashlib import md5, sha256
 from http.client import HTTPConnection
 from io import BytesIO
+from socket import SHUT_WR
 from threading import Barrier
 from urllib.parse import quote, urlsplit
 from xml.etree import ElementTree
@@ -61,7 +62,10 @@ class BasicS3CompatibilityTest(unittest.TestCase):
         cls.bucket = os.environ.get("CROWDB_S3_E2E_BUCKET", "crowdb-basic-e2e")
         cls.endpoint = endpoint
 
-    def signed_http(self, method, path, body=b"", headers=None, corrupt_signature=False, slow_chunk_size=0):
+    def signed_http(
+        self, method, path, body=b"", headers=None, corrupt_signature=False, slow_chunk_size=0,
+        truncate_after=None,
+    ):
         parsed = urlsplit(self.endpoint)
         self.assertEqual(parsed.scheme, "http")
         url = f"{self.endpoint}{path}"
@@ -70,7 +74,7 @@ class BasicS3CompatibilityTest(unittest.TestCase):
             "x-amz-content-sha256": sha256(body).hexdigest(),
             **(headers or {}),
         }
-        if slow_chunk_size:
+        if slow_chunk_size or truncate_after is not None:
             signed_headers["Content-Length"] = str(len(body))
         request = AWSRequest(method=method, url=url, data=body, headers=signed_headers)
         credentials = Credentials(
@@ -85,6 +89,14 @@ class BasicS3CompatibilityTest(unittest.TestCase):
             )
         connection = HTTPConnection(parsed.hostname, parsed.port, timeout=15)
         try:
+            if truncate_after is not None:
+                connection.putrequest(method, path, skip_host=True)
+                for name, value in request.headers.items():
+                    connection.putheader(name, value)
+                connection.endheaders()
+                connection.send(body[:truncate_after])
+                connection.sock.shutdown(SHUT_WR)
+                return None
             if slow_chunk_size:
                 connection.putrequest(method, path, skip_host=True)
                 for name, value in request.headers.items():
@@ -255,6 +267,30 @@ class BasicS3CompatibilityTest(unittest.TestCase):
         self.assertGreater(backpressure, 0)
         self.client.delete_object(Bucket=bucket, Key="slow.bin")
         self.client.delete_object(Bucket=bucket, Key="slow-second.bin")
+        self.client.delete_bucket(Bucket=bucket)
+
+    def test_truncated_signed_upload_does_not_publish_and_releases_credit(self):
+        bucket = f"{self.bucket}-truncated"
+        key = "aborted-then-retried.bin"
+        payload = bytes(range(256)) * 8192
+        status, _, _ = self.signed_http("PUT", f"/{bucket}")
+        self.assertEqual(status, 200)
+        self.signed_http("PUT", f"/{bucket}/{key}", payload, truncate_after=131072)
+
+        deadline = time.monotonic() + 10
+        while True:
+            _, _, exported = self.signed_http("GET", "/_crowdb/metrics")
+            if b"crowdb_s3_native_retained_bytes 0\n" in exported:
+                break
+            self.assertLess(time.monotonic(), deadline, "aborted PUT retained a native owner")
+            time.sleep(0.05)
+        self.assertEqual(self.client.list_objects_v2(Bucket=bucket).get("KeyCount", 0), 0)
+        self.assertEqual(
+            self.client.put_object(Bucket=bucket, Key=key, Body=payload)["ETag"],
+            f'"{md5(payload).hexdigest()}"',
+        )
+        self.assertEqual(self.client.get_object(Bucket=bucket, Key=key)["Body"].read(), payload)
+        self.client.delete_object(Bucket=bucket, Key=key)
         self.client.delete_bucket(Bucket=bucket)
 
     def test_overwrite_and_read_remain_atomic(self):
