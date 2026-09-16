@@ -6,6 +6,7 @@ import random
 import time
 import unittest
 from base64 import b64encode
+from concurrent.futures import ThreadPoolExecutor
 from hashlib import md5, sha256
 from http.client import HTTPConnection
 from io import BytesIO
@@ -179,6 +180,34 @@ class BasicS3CompatibilityTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn(b"crowdb_s3_native_retained_bytes 0\n", metrics)
         self.client.delete_object(Bucket=bucket, Key="slow.bin")
+        self.client.delete_bucket(Bucket=bucket)
+
+    def test_overwrite_and_read_remain_atomic(self):
+        bucket = f"{self.bucket}-races"
+        key = "concurrent/object.bin"
+        old_payload = b"old" * 9001
+        new_payload = b"new" * 17001
+        self.client.create_bucket(Bucket=bucket)
+        self.client.put_object(Bucket=bucket, Key=key, Body=old_payload)
+
+        def overwrite():
+            for _ in range(8):
+                self.client.put_object(Bucket=bucket, Key=key, Body=new_payload)
+                self.client.put_object(Bucket=bucket, Key=key, Body=old_payload)
+
+        def read():
+            for _ in range(25):
+                response = self.client.get_object(Bucket=bucket, Key=key)
+                body = response["Body"].read()
+                self.assertIn(body, (old_payload, new_payload))
+                self.assertEqual(response["ETag"], f'"{md5(body).hexdigest()}"')
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            writer = workers.submit(overwrite)
+            reader = workers.submit(read)
+            writer.result(timeout=30)
+            reader.result(timeout=30)
+        self.client.delete_object(Bucket=bucket, Key=key)
         self.client.delete_bucket(Bucket=bucket)
 
     def test_basic_bucket_object_matrix(self):
