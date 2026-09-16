@@ -24,12 +24,12 @@ with bounded, non-blocking telemetry and dependency-aware service health.
 
 ## Data-path accounting
 
-- [~] **Unify native and chunk counters**: expose pool ownership, direct and
+- [x] **Unify native and chunk counters**: expose pool ownership, direct and
   prefetched bytes, framed owner/views, payload-copy fallback, checksum work,
   backpressure, metadata/chunk retries, and cleanup backlog in bounded
   snapshots. Files: `lib/crowdb-access-s3/src/native_buffer.rs`,
   `lib/crowdb-access-s3/src/metrics.rs`, `lib/crowdb-chunk-client/src/metrics.rs`.
-- [ ] **Assert fallback separation**: verify normal owner, prefetched edge,
+- [~] **Assert fallback separation**: verify normal owner, prefetched edge,
   vectored, and generic-copy paths cannot be reported as the same zero-copy
   outcome. Files: affected crate integration tests and S3 E2E harness.
 

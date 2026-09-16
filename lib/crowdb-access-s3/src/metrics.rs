@@ -5,6 +5,13 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crowdb_chunk_client::{
+    ChunkIoClient, LargeWriteBufferMetricsSnapshot, LargeWriteRepairMetricsSnapshot,
+    SmallWriteMetricsSnapshot,
+};
+
+use crate::native_buffer::{NativeBodyAllocator, NativeBufferMetricsSnapshot};
+
 const OPERATION_COUNT: usize = 9;
 const OUTCOME_COUNT: usize = 6;
 
@@ -31,8 +38,11 @@ pub struct S3Metrics {
     trusted_auth_bypass: AtomicU64,
     in_flight: AtomicU64,
     max_in_flight: AtomicU64,
-    backpressure_wait_ns: AtomicU64,
-    retained_body_bytes: AtomicU64,
+    checksum_bytes: AtomicU64,
+    metadata_retries: AtomicU64,
+    cleanup_enqueued: AtomicU64,
+    cleanup_completed: AtomicU64,
+    cleanup_failed: AtomicU64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -59,8 +69,11 @@ impl Default for S3Metrics {
             trusted_auth_bypass: AtomicU64::new(0),
             in_flight: AtomicU64::new(0),
             max_in_flight: AtomicU64::new(0),
-            backpressure_wait_ns: AtomicU64::new(0),
-            retained_body_bytes: AtomicU64::new(0),
+            checksum_bytes: AtomicU64::new(0),
+            metadata_retries: AtomicU64::new(0),
+            cleanup_enqueued: AtomicU64::new(0),
+            cleanup_completed: AtomicU64::new(0),
+            cleanup_failed: AtomicU64::new(0),
         }
     }
 }
@@ -111,13 +124,25 @@ impl S3Metrics {
             .fetch_add(nanoseconds, Ordering::Relaxed);
     }
 
-    pub fn record_backpressure_wait(&self, nanoseconds: u64) {
-        self.backpressure_wait_ns
-            .fetch_add(nanoseconds, Ordering::Relaxed);
+    pub fn record_checksum_bytes(&self, bytes: usize) {
+        self.checksum_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
     }
 
-    pub fn set_retained_body_bytes(&self, value: u64) {
-        self.retained_body_bytes.store(value, Ordering::Relaxed);
+    pub fn record_metadata_retry(&self) {
+        self.metadata_retries.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn enqueue_cleanup(&self, targets: usize) {
+        self.cleanup_enqueued.fetch_add(targets as u64, Ordering::Relaxed);
+    }
+
+    pub fn complete_cleanup(&self, targets: usize) {
+        self.cleanup_completed
+            .fetch_add(targets as u64, Ordering::Relaxed);
+    }
+
+    pub fn fail_cleanup(&self, targets: usize) {
+        self.cleanup_failed.fetch_add(targets as u64, Ordering::Relaxed);
     }
 
     #[must_use]
@@ -145,8 +170,32 @@ impl S3Metrics {
             trusted_auth_bypass: self.trusted_auth_bypass.load(Ordering::Relaxed),
             in_flight: self.in_flight.load(Ordering::Relaxed),
             max_in_flight: self.max_in_flight.load(Ordering::Relaxed),
-            backpressure_wait_ns: self.backpressure_wait_ns.load(Ordering::Relaxed),
-            retained_body_bytes: self.retained_body_bytes.load(Ordering::Relaxed),
+            checksum_bytes: self.checksum_bytes.load(Ordering::Relaxed),
+            metadata_retries: self.metadata_retries.load(Ordering::Relaxed),
+            cleanup_enqueued: self.cleanup_enqueued.load(Ordering::Relaxed),
+            cleanup_completed: self.cleanup_completed.load(Ordering::Relaxed),
+            cleanup_failed: self.cleanup_failed.load(Ordering::Relaxed),
+        }
+    }
+
+    #[must_use]
+    pub fn data_path_snapshot(
+        &self,
+        native: &NativeBodyAllocator,
+        chunks: &ChunkIoClient,
+    ) -> S3DataPathMetricsSnapshot {
+        let request = self.snapshot();
+        S3DataPathMetricsSnapshot {
+            native: native.metrics_snapshot(),
+            large_write_buffers: chunks.large_write_buffer_metrics(),
+            large_write_repairs: chunks.large_write_repair_metrics(),
+            small_writes: chunks.small_write_metrics(),
+            checksum_bytes: request.checksum_bytes,
+            metadata_retries: request.metadata_retries,
+            cleanup_enqueued: request.cleanup_enqueued,
+            cleanup_completed: request.cleanup_completed,
+            cleanup_failed: request.cleanup_failed,
+            cleanup_backlog: request.cleanup_enqueued.saturating_sub(request.cleanup_completed),
         }
     }
 }
@@ -165,8 +214,25 @@ pub struct S3MetricsSnapshot {
     pub trusted_auth_bypass: u64,
     pub in_flight: u64,
     pub max_in_flight: u64,
-    pub backpressure_wait_ns: u64,
-    pub retained_body_bytes: u64,
+    pub checksum_bytes: u64,
+    pub metadata_retries: u64,
+    pub cleanup_enqueued: u64,
+    pub cleanup_completed: u64,
+    pub cleanup_failed: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct S3DataPathMetricsSnapshot {
+    pub native: NativeBufferMetricsSnapshot,
+    pub large_write_buffers: LargeWriteBufferMetricsSnapshot,
+    pub large_write_repairs: LargeWriteRepairMetricsSnapshot,
+    pub small_writes: SmallWriteMetricsSnapshot,
+    pub checksum_bytes: u64,
+    pub metadata_retries: u64,
+    pub cleanup_enqueued: u64,
+    pub cleanup_completed: u64,
+    pub cleanup_failed: u64,
+    pub cleanup_backlog: u64,
 }
 
 fn snapshot_matrix(

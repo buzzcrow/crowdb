@@ -13,6 +13,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 use std::task::{Context, Poll};
+use std::time::Instant;
 
 use atomic_waker::AtomicWaker;
 use crowdb_chunk_client::FramedWriteBuffer;
@@ -70,6 +71,7 @@ struct ReceiverState {
     issued: Option<IssuedSlot>,
     completed_slots: usize,
     payload_lengths: Vec<u16>,
+    credit_wait_started: Option<Instant>,
 }
 
 struct IssuedSlot {
@@ -85,7 +87,21 @@ struct AllocatorState {
     allocations: AtomicUsize,
     direct_bytes: AtomicUsize,
     prefetched_bytes: AtomicUsize,
+    backpressure_events: AtomicUsize,
+    backpressure_wait_ns: AtomicUsize,
     credit_waker: AtomicWaker,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeBufferMetricsSnapshot {
+    pub budget_bytes: usize,
+    pub owner_bytes: usize,
+    pub retained_bytes: usize,
+    pub allocations: usize,
+    pub direct_bytes: usize,
+    pub prefetched_bytes: usize,
+    pub backpressure_events: usize,
+    pub backpressure_wait_ns: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -117,6 +133,8 @@ impl NativeBodyAllocator {
                 allocations: AtomicUsize::new(0),
                 direct_bytes: AtomicUsize::new(0),
                 prefetched_bytes: AtomicUsize::new(0),
+                backpressure_events: AtomicUsize::new(0),
+                backpressure_wait_ns: AtomicUsize::new(0),
                 credit_waker: AtomicWaker::new(),
             }),
         })
@@ -143,6 +161,20 @@ impl NativeBodyAllocator {
     }
 
     #[must_use]
+    pub fn metrics_snapshot(&self) -> NativeBufferMetricsSnapshot {
+        NativeBufferMetricsSnapshot {
+            budget_bytes: self.state.budget_bytes,
+            owner_bytes: self.state.owner_bytes,
+            retained_bytes: self.state.retained_bytes.load(Ordering::Acquire),
+            allocations: self.state.allocations.load(Ordering::Relaxed),
+            direct_bytes: self.state.direct_bytes.load(Ordering::Relaxed),
+            prefetched_bytes: self.state.prefetched_bytes.load(Ordering::Relaxed),
+            backpressure_events: self.state.backpressure_events.load(Ordering::Relaxed),
+            backpressure_wait_ns: self.state.backpressure_wait_ns.load(Ordering::Relaxed),
+        }
+    }
+
+    #[must_use]
     pub fn object_receiver(&self) -> NativeBodyReceiver {
         NativeBodyReceiver {
             allocator: self.clone(),
@@ -152,6 +184,7 @@ impl NativeBodyAllocator {
                 issued: None,
                 completed_slots: 0,
                 payload_lengths: vec![0; self.state.owner_bytes / MAX_FRAME_BYTES],
+                credit_wait_started: None,
             }),
             state_in_use: AtomicBool::new(false),
             owner_handoff: AtomicBool::new(false),
@@ -510,10 +543,23 @@ impl Http1BodyReceiveProvider for NativeBodyReceiver {
             state.payload_lengths.fill(0);
             let owner_bytes = self.allocator.state.owner_bytes;
             if !self.allocator.try_reserve(owner_bytes) {
+                if state.credit_wait_started.is_none() {
+                    state.credit_wait_started = Some(Instant::now());
+                    self.allocator
+                        .state
+                        .backpressure_events
+                        .fetch_add(1, Ordering::Relaxed);
+                }
                 self.allocator.state.credit_waker.register(cx.waker());
                 if !self.allocator.try_reserve(owner_bytes) {
                     return Poll::Pending;
                 }
+            }
+            if let Some(started) = state.credit_wait_started.take() {
+                self.allocator.state.backpressure_wait_ns.fetch_add(
+                    usize::try_from(started.elapsed().as_nanos()).unwrap_or(usize::MAX),
+                    Ordering::Relaxed,
+                );
             }
             match NativeOwner::new(owner_bytes, Arc::clone(&self.allocator.state)) {
                 Ok(owner) => {

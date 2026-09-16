@@ -16,8 +16,8 @@ use crowdb_access_s3::publication::PublicationRequest;
 use crowdb_access_s3::retrieval::{self, ObjectHeaders, RetrievalError};
 use crowdb_access_s3::route::{S3Operation, S3Route};
 use crowdb_access_s3::streaming::{
-    publish_completed_locations, write_body_with_checksums, write_native_body_with_checksums, PutErrorCode,
-    PutOutcome,
+    publish_completed_locations, write_body_with_checksums_metered, write_native_body_with_checksums_metered,
+    PutErrorCode, PutOutcome,
 };
 use crowdb_chunk_client::{
     ChunkClientConfig, ChunkIoWriter, IoError, LargeWritePolicy, PreparedLargeWrite, SharedObjectWriter,
@@ -87,6 +87,7 @@ pub struct ProductionS3Operations {
     config: S3ServiceConfig,
     signer: ContinuationTokenSigner,
     bucket_ids: RandomBucketIdGenerator,
+    metrics: Option<Arc<crowdb_access_s3::metrics::S3Metrics>>,
 }
 
 impl ProductionS3Operations {
@@ -103,7 +104,14 @@ impl ProductionS3Operations {
             config,
             signer,
             bucket_ids: RandomBucketIdGenerator,
+            metrics: None,
         })
+    }
+
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: Arc<crowdb_access_s3::metrics::S3Metrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 
     async fn dispatch(
@@ -207,20 +215,22 @@ impl ProductionS3Operations {
         }
         let mut body = request.into_body();
         let write_result = if let Some(receiver) = native_receiver.as_deref() {
-            write_native_body_with_checksums(
+            write_native_body_with_checksums_metered(
                 &mut body,
                 &mut writer,
                 receiver,
                 content_md5.as_deref(),
                 payload_sha256.as_deref(),
+                self.metrics.as_deref(),
             )
             .await
         } else {
-            write_body_with_checksums(
+            write_body_with_checksums_metered(
                 &mut body,
                 &mut writer,
                 content_md5.as_deref(),
                 payload_sha256.as_deref(),
+                self.metrics.as_deref(),
             )
             .await
         };

@@ -10,10 +10,12 @@ use std::task::{Context, Poll};
 
 use async_trait::async_trait;
 use crowdb_access_s3::metadata::{BucketId, ObjectRecord};
+use crowdb_access_s3::metrics::S3Metrics;
 use crowdb_access_s3::native_buffer::NativeBodyAllocator;
 use crowdb_access_s3::streaming::{
-    attach_completed_locations, cleanup_after_definite_error, write_body, write_native_body_with_checksums,
-    FailedPublicationCleanup, FailedPublicationTarget, PutErrorCode, PutOutcome,
+    attach_completed_locations, cleanup_after_definite_error, write_body,
+    write_native_body_with_checksums_metered, FailedPublicationCleanup, FailedPublicationTarget,
+    PutErrorCode, PutOutcome,
 };
 use crowdb_chunk_client::{ChunkIoWriter, FeedStatus, FramedWriteBuffer, IoError};
 use crowdb_protocol::chunkdb::rpc::Location;
@@ -244,15 +246,24 @@ async fn native_body_hashes_payload_and_hands_owner_to_writer_once() {
         polls: AtomicUsize::new(0),
     };
     let mut writer = NativeOwnerWriter::default();
+    let metrics = S3Metrics::default();
 
-    let (_, checksum) = write_native_body_with_checksums(&mut body, &mut writer, &receiver, None, None)
-        .await
-        .unwrap();
+    let (_, checksum) = write_native_body_with_checksums_metered(
+        &mut body,
+        &mut writer,
+        &receiver,
+        None,
+        None,
+        Some(&metrics),
+    )
+    .await
+    .unwrap();
 
     assert_eq!(writer.generic_frames, 0);
     assert_eq!(writer.owner_frames, 1);
     assert_eq!(writer.logical_bytes, MAX_FRAME_PAYLOAD_BYTES as u64);
     assert_eq!(checksum.len(), 16);
+    assert_eq!(metrics.snapshot().checksum_bytes, MAX_FRAME_PAYLOAD_BYTES as u64);
 }
 
 #[tokio::test]
@@ -269,7 +280,7 @@ async fn prefetched_body_uses_scattered_framed_owner_instead_of_generic_copy() {
     };
     let mut writer = NativeOwnerWriter::default();
 
-    write_native_body_with_checksums(&mut body, &mut writer, &receiver, None, None)
+    write_native_body_with_checksums_metered(&mut body, &mut writer, &receiver, None, None, None)
         .await
         .unwrap();
 

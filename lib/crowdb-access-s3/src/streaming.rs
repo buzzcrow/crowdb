@@ -153,6 +153,27 @@ where
     B::Error: std::fmt::Display,
     W: ChunkIoWriter,
 {
+    write_body_with_checksums_metered(body, writer, expected_content_md5, expected_payload_sha256, None).await
+}
+
+/// Streams one body while accounting the exact bytes presented to both
+/// checksum implementations.
+///
+/// # Errors
+///
+/// Returns a coded body-read, writer, malformed-digest, or mismatch error.
+pub async fn write_body_with_checksums_metered<B, W>(
+    body: &mut B,
+    writer: &mut W,
+    expected_content_md5: Option<&str>,
+    expected_payload_sha256: Option<&str>,
+    metrics: Option<&crate::metrics::S3Metrics>,
+) -> Result<(String, Vec<u8>), PutOutcome>
+where
+    B: Body<Data = Bytes> + Unpin,
+    B::Error: std::fmt::Display,
+    W: ChunkIoWriter,
+{
     let mut integrity = SinglePartIntegrity::default();
     loop {
         if writer.input_complete() {
@@ -169,6 +190,9 @@ where
         let Ok(data) = frame.into_data() else {
             continue;
         };
+        if let Some(metrics) = metrics {
+            metrics.record_checksum_bytes(data.len());
+        }
         integrity.update(&data);
         writer
             .on_data(data)
@@ -199,6 +223,35 @@ where
     B::Error: std::fmt::Display,
     W: ChunkIoWriter,
 {
+    write_native_body_with_checksums_metered(
+        body,
+        writer,
+        receiver,
+        expected_content_md5,
+        expected_payload_sha256,
+        None,
+    )
+    .await
+}
+
+/// Native-owner variant with exact checksum work accounting.
+///
+/// # Errors
+///
+/// Returns a coded read, native-owner, writer, or checksum error.
+pub async fn write_native_body_with_checksums_metered<B, W>(
+    body: &mut B,
+    writer: &mut W,
+    receiver: &NativeBodyReceiver,
+    expected_content_md5: Option<&str>,
+    expected_payload_sha256: Option<&str>,
+    metrics: Option<&crate::metrics::S3Metrics>,
+) -> Result<(String, Vec<u8>), PutOutcome>
+where
+    B: Body<Data = Bytes> + Unpin,
+    B::Error: std::fmt::Display,
+    W: ChunkIoWriter,
+{
     let mut integrity = SinglePartIntegrity::default();
     loop {
         while !writer.require_data() {
@@ -223,6 +276,9 @@ where
         let Ok(data) = frame.into_data() else {
             continue;
         };
+        if let Some(metrics) = metrics {
+            metrics.record_checksum_bytes(data.len());
+        }
         integrity.update(&data);
         if let Some(owner) = receiver
             .take_prefetched_owner(&data)

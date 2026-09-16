@@ -89,11 +89,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Err("CROWDB S3 EC data and code counts must be nonzero".into());
         }
         service_config.large_write.ec_scheme = EcScheme::new(ec_data, ec_code);
+        let metrics = Arc::new(S3Metrics::default());
         let operations = Arc::new(
             ProductionS3Operations::new(storage, service_config)
-                .map_err(|_| "invalid S3 service configuration")?,
+                .map_err(|_| "invalid S3 service configuration")?
+                .with_metrics(Arc::clone(&metrics)),
         );
-        let metrics = Arc::new(S3Metrics::default());
         let body_allocator = Arc::new(NativeBodyAllocator::new(256 * 1024 * 1024, 1024 * 1024)?);
         let handler = Arc::new(
             S3Dispatcher::new(

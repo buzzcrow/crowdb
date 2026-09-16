@@ -45,6 +45,12 @@ async fn native_allocator_blocks_until_credit_is_released() {
     let second = waiting.await.unwrap();
     drop(second);
     assert_eq!(allocator.retained_bytes(), 0);
+    let metrics = allocator.metrics_snapshot();
+    assert_eq!(metrics.backpressure_events, 1);
+    assert!(metrics.backpressure_wait_ns > 0);
+    assert_eq!(metrics.allocations, 2);
+    assert_eq!(metrics.budget_bytes, MAX_FRAME_BYTES);
+    assert_eq!(metrics.owner_bytes, MAX_FRAME_BYTES);
 }
 
 #[tokio::test]

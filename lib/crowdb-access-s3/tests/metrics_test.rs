@@ -24,6 +24,11 @@ fn request_metrics_reconcile_terminal_phase_and_concurrency_totals() {
     );
     metrics.record_time_to_first_byte(S3Operation::GetObject, OutcomeClass::Success, 19);
     metrics.finish_predispatch(OutcomeClass::Unavailable, 23);
+    metrics.record_metadata_retry();
+    metrics.record_checksum_bytes(29);
+    metrics.enqueue_cleanup(5);
+    metrics.complete_cleanup(2);
+    metrics.fail_cleanup(1);
     drop(first);
     drop(second);
 
@@ -47,4 +52,9 @@ fn request_metrics_reconcile_terminal_phase_and_concurrency_totals() {
     );
     assert_eq!(snapshot.in_flight, 0);
     assert_eq!(snapshot.max_in_flight, 2);
+    assert_eq!(snapshot.checksum_bytes, 29);
+    assert_eq!(snapshot.metadata_retries, 1);
+    assert_eq!(snapshot.cleanup_enqueued, 5);
+    assert_eq!(snapshot.cleanup_completed, 2);
+    assert_eq!(snapshot.cleanup_failed, 1);
 }
