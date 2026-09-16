@@ -39,7 +39,13 @@ def main():
         assert client.put_object(Bucket=bucket, Key=overwritten_key, Body=new_payload)["ETag"] == new_etag
         client.put_object(Bucket=bucket, Key=deleted_key, Body=old_payload)
         client.delete_object(Bucket=bucket, Key=deleted_key)
-    elif phase in ("verify", "verify-after-chunkdb-restart", "verify-after-diskdb-restart", "verify-after-diskio-restart"):
+    elif phase in (
+        "verify",
+        "verify-after-group0-restart",
+        "verify-after-chunkdb-restart",
+        "verify-after-diskdb-restart",
+        "verify-after-diskio-restart",
+    ):
         deadline = time.monotonic() + (20 if phase.startswith("verify-after-") else 0)
         while True:
             try:

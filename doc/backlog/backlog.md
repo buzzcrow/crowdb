@@ -36,12 +36,10 @@ requirement is implemented.
 
 ### Planned — S3 data access service
 
-R152–R166 delivered the limited basic S3 service, including the single-service
-restart acceptance baseline. R172 carries the expanded fault and scale-out E2E
-matrix. R167–R169 defer multipart upload and
-shared-storage GC without blocking basic large-object deletion. R170 separately
-adds optional cuObject/RDMA acceleration after the TCP baseline is correct and
-measured.
+R152–R166 delivered the limited basic S3 service, including the restart
+acceptance baseline. R167–R169 defer multipart upload and shared-storage GC
+without blocking basic large-object deletion. R170 separately adds optional
+cuObject/RDMA acceleration after the TCP baseline is correct and measured.
 - **[R167](R167-s3-multipart-upload.md)** — multipart upload — Area: access
   server / S3 — **Deferred.** Add durable part state, atomic completion, cleanup,
   and multipart integrity after the basic milestone stabilizes.
@@ -57,11 +55,6 @@ measured.
   stable.** Keep acceleration in a separate optional library and requirement;
   AccessServer coordinates while DiskIO-owned cuObjServer endpoints transfer
   parallel logical spans directly to or from client registered memory.
-- **[R172](R172-s3-fault-scaleout-e2e.md)** — fault and scale-out E2E matrix —
-  Area: access server / S3 / testing — Validate the basic CRUD service across
-  process recovery, routing changes, concurrency races, and multiple owners;
-  performance measurement is explicitly deferred.
-
 ### High Priority
 
 - **[R103](R103-chunkdb-range-migration.md)** — chunkdb range ownership

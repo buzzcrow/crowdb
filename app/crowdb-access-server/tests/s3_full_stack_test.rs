@@ -65,7 +65,7 @@ impl Drop for AccessServerProcess {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
     let access_binary = binary("crowdb-access-server", "CROWDB_ACCESS_SERVER_BIN");
-    let cluster = KvCluster::start().await;
+    let mut cluster = KvCluster::start().await;
     let identities = seed_compact_hardware(&cluster.make_hardware_client()).await;
     let identity = identities[0];
     let disk_data = TestDir::new("s3-durable-disk").expect("create disk test directory");
@@ -133,6 +133,13 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
     assert_native_write_metrics(&listen);
 
     run_restart_phase("prepare", &listen, &access_key, &secret_key);
+    cluster.crash_and_restart().await;
+    run_restart_phase(
+        "verify-after-group0-restart",
+        &second_listen,
+        &access_key,
+        &secret_key,
+    );
     drop(access_server);
     run_restart_phase("verify", &second_listen, &access_key, &secret_key);
     let (mut restarted_access, restarted_listen) = start_access_server(&access_binary, &seeds);
