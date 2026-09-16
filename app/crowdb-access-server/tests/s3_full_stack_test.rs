@@ -100,15 +100,7 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
     };
     let chunkdb = ChunkdbProcess::start_with_options(&cluster.mgmt_endpoints, chunkdb_options);
     chunkdb.wait_for_ready().await;
-    let chunkdb_client = make_chunkdb_client(cluster.make_service_registry_client());
-    let range_delete = chunkdb_client
-        .delete_chunk_range(DeleteChunkRangeRequest {
-            chunk_id: Some(ChunkId { high: 1, low: 1 }),
-            chunk_offset: 0,
-            chunk_size: 1,
-        })
-        .await;
-    assert!(matches!(range_delete, Err(ChunkdbClientError::Unimplemented(_))));
+    assert_range_delete_contract(&cluster).await;
     let mut chunk_kv = ChunkKvProcess::start(&cluster.mgmt_endpoints);
     chunk_kv.wait_for_ready().await;
 
@@ -139,15 +131,23 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
     let (mut restarted_access, restarted_listen) = start_access_server(&access_binary, &seeds);
     wait_for_tcp(&mut restarted_access, &restarted_listen).await;
     run_restart_phase("verify", &restarted_listen, &access_key, &secret_key);
-    drop(chunkdb);
-    let chunkdb = ChunkdbProcess::start_with_options(&cluster.mgmt_endpoints, chunkdb_options);
-    chunkdb.wait_for_ready().await;
-    run_restart_phase(
-        "verify-after-chunkdb-restart",
+    let chunkdb = verify_chunkdb_restart(
+        chunkdb,
+        &cluster.mgmt_endpoints,
+        chunkdb_options,
         &second_listen,
         &access_key,
         &secret_key,
-    );
+    )
+    .await;
+    let diskdb = verify_diskdb_restart(
+        diskdb,
+        &cluster.mgmt_endpoints,
+        &second_listen,
+        &access_key,
+        &secret_key,
+    )
+    .await;
     run_restart_phase("cleanup", &second_listen, &access_key, &secret_key);
     drop(restarted_access);
     drop(second_access_server);
@@ -156,6 +156,47 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
     drop(diskios);
     drop(diskdb);
     rpc.stop();
+}
+
+async fn assert_range_delete_contract(cluster: &KvCluster) {
+    let chunkdb_client = make_chunkdb_client(cluster.make_service_registry_client());
+    let range_delete = chunkdb_client
+        .delete_chunk_range(DeleteChunkRangeRequest {
+            chunk_id: Some(ChunkId { high: 1, low: 1 }),
+            chunk_offset: 0,
+            chunk_size: 1,
+        })
+        .await;
+    assert!(matches!(range_delete, Err(ChunkdbClientError::Unimplemented(_))));
+}
+
+async fn verify_chunkdb_restart(
+    previous: ChunkdbProcess,
+    seeds: &[String],
+    options: ChunkdbStartOptions,
+    listen: &str,
+    access_key: &str,
+    secret_key: &str,
+) -> ChunkdbProcess {
+    drop(previous);
+    let chunkdb = ChunkdbProcess::start_with_options(seeds, options);
+    chunkdb.wait_for_ready().await;
+    run_restart_phase("verify-after-chunkdb-restart", listen, access_key, secret_key);
+    chunkdb
+}
+
+async fn verify_diskdb_restart(
+    previous: DiskdbProcess,
+    seeds: &[String],
+    listen: &str,
+    access_key: &str,
+    secret_key: &str,
+) -> DiskdbProcess {
+    drop(previous);
+    let diskdb = DiskdbProcess::start_for_instance(seeds, 999, Some(1_536));
+    diskdb.wait_for_ready().await;
+    run_restart_phase("verify-after-diskdb-restart", listen, access_key, secret_key);
+    diskdb
 }
 
 fn assert_access_ready(listen: &str) {
