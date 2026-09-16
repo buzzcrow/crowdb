@@ -5,11 +5,16 @@ import os
 import random
 import unittest
 from base64 import b64encode
-from hashlib import md5
+from hashlib import md5, sha256
+from http.client import HTTPConnection
 from io import BytesIO
+from urllib.parse import quote, urlsplit
 
 import boto3
+from botocore.auth import S3SigV4Auth
+from botocore.awsrequest import AWSRequest
 from botocore.config import Config
+from botocore.credentials import Credentials
 from botocore.exceptions import ClientError
 
 
@@ -48,6 +53,62 @@ class BasicS3CompatibilityTest(unittest.TestCase):
             ),
         )
         cls.bucket = os.environ.get("CROWDB_S3_E2E_BUCKET", "crowdb-basic-e2e")
+        cls.endpoint = endpoint
+
+    def signed_http(self, method, path, body=b"", headers=None):
+        parsed = urlsplit(self.endpoint)
+        self.assertEqual(parsed.scheme, "http")
+        url = f"{self.endpoint}{path}"
+        request = AWSRequest(method=method, url=url, data=body, headers={
+            "Host": parsed.netloc,
+            "x-amz-content-sha256": sha256(body).hexdigest(),
+            **(headers or {}),
+        })
+        credentials = Credentials(
+            os.environ.get("CROWDB_S3_E2E_ACCESS_KEY", "test-access"),
+            os.environ.get("CROWDB_S3_E2E_SECRET_KEY", "test-secret"),
+        )
+        S3SigV4Auth(credentials, "s3", os.environ.get("CROWDB_S3_E2E_REGION", "us-east-1")).add_auth(request)
+        connection = HTTPConnection(parsed.hostname, parsed.port, timeout=15)
+        try:
+            connection.request(method, path, body=body, headers=dict(request.headers.items()))
+            response = connection.getresponse()
+            return response.status, dict(response.getheaders()), response.read()
+        finally:
+            connection.close()
+
+    def test_signed_raw_http_wire_contract(self):
+        bucket = f"{self.bucket}-raw"
+        key = "raw/%25+边界.bin"
+        path = f"/{bucket}/{quote(key, safe='/')}"
+        payload = b"raw-http-object\x00payload"
+
+        status, _, _ = self.signed_http("PUT", f"/{bucket}")
+        self.assertEqual(status, 200)
+        status, headers, data = self.signed_http("PUT", path, payload)
+        self.assertEqual(status, 200, data)
+        self.assertEqual(headers["etag"], f'"{md5(payload).hexdigest()}"')
+        status, headers, data = self.signed_http("GET", path, headers={"Range": "bytes=4-10"})
+        self.assertEqual(status, 206)
+        self.assertEqual(headers["content-range"], f"bytes 4-10/{len(payload)}")
+        self.assertEqual(data, payload[4:11])
+        status, headers, data = self.signed_http("HEAD", path)
+        self.assertEqual(status, 200)
+        self.assertEqual(int(headers["content-length"]), len(payload))
+        self.assertEqual(data, b"")
+        status, _, data = self.signed_http("GET", path, headers={"If-Match": '"wrong"'})
+        self.assertEqual(status, 412)
+        self.assertIn(b"PreconditionFailed", data)
+        status, _, data = self.signed_http("GET", f"/{bucket}?list-type=2&prefix=raw%2F")
+        self.assertEqual(status, 200)
+        self.assertIn(b"<Key>raw/%25+", data)
+        status, _, _ = self.signed_http("DELETE", path)
+        self.assertEqual(status, 204)
+        status, _, data = self.signed_http("GET", path)
+        self.assertEqual(status, 404)
+        self.assertIn(b"NoSuchKey", data)
+        status, _, _ = self.signed_http("DELETE", f"/{bucket}")
+        self.assertEqual(status, 204)
 
     def test_basic_bucket_object_matrix(self):
         client = self.client
