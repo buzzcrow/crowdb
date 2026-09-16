@@ -285,6 +285,23 @@ class BasicS3CompatibilityTest(unittest.TestCase):
         self.client.delete_object(Bucket=bucket, Key=key)
         self.client.delete_bucket(Bucket=bucket)
 
+    def test_slow_response_reader_keeps_full_object_consistent(self):
+        bucket = f"{self.bucket}-slow-get"
+        key = "response/large.bin"
+        payload = bytes(range(256)) * (16384 + 1)
+        self.client.create_bucket(Bucket=bucket)
+        self.client.put_object(Bucket=bucket, Key=key, Body=payload)
+        response = self.client.get_object(Bucket=bucket, Key=key)
+        first = response["Body"].read(1)
+        time.sleep(0.25)
+        self.client.delete_object(Bucket=bucket, Key=key)
+        self.assertEqual(first + response["Body"].read(), payload)
+        self.assertEqual(response["ETag"], f'"{md5(payload).hexdigest()}"')
+        with self.assertRaises(ClientError) as absent:
+            self.client.head_object(Bucket=bucket, Key=key)
+        self.assertEqual(absent.exception.response["ResponseMetadata"]["HTTPStatusCode"], 404)
+        self.client.delete_bucket(Bucket=bucket)
+
     def test_basic_bucket_object_matrix(self):
         client = self.client
         bucket = self.bucket

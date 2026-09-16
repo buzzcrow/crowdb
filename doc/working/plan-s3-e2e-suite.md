@@ -43,6 +43,9 @@ real services rather than mocks.
   routing refresh while bounding memory and cleanup targets.
   A 1 MiB owned-stack budget now proves concurrent slow-upload credit waits,
   zero retained owners after completion, and positive backpressure accounting;
+  a paused large GET survives deleting its namespace entry before the remaining
+  response body is consumed, and concurrent overwrites preserve per-read ETags.
+  Chunk failure responses and cleanup target verification remain;
   simultaneous read-ahead when that sole credit is unavailable is tracked in
   R152 Open Issues.
 - [x] **Stateless frontend scale-out**: run two independently configured access
