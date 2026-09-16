@@ -2,13 +2,31 @@
 # Licensed under the Apache License, Version 2.0.
 
 import os
+import random
 import unittest
 from base64 import b64encode
 from hashlib import md5
+from io import BytesIO
 
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
+
+
+class FragmentedBody(BytesIO):
+    def __init__(self, payload, seed):
+        super().__init__(payload)
+        self.random = random.Random(seed)
+
+    def read(self, size=-1):
+        remaining = len(self.getbuffer()) - self.tell()
+        if remaining == 0:
+            return b""
+        requested = remaining if size is None or size < 0 else min(size, remaining)
+        if requested == 0:
+            return b""
+        fragment = self.random.randint(1, min(requested, 32 * 1024))
+        return super().read(fragment)
 
 
 class BasicS3CompatibilityTest(unittest.TestCase):
@@ -100,6 +118,43 @@ class BasicS3CompatibilityTest(unittest.TestCase):
         client.delete_object(Bucket=bucket, Key=key)
         client.delete_object(Bucket=bucket, Key=second_key)
         client.delete_object(Bucket=bucket, Key="missing")
+        client.delete_bucket(Bucket=bucket)
+
+    def test_fragmentation_and_storage_boundaries(self):
+        client = self.client
+        bucket = f"{self.bucket}-boundaries"
+        client.create_bucket(Bucket=bucket)
+        sizes = [0, 1, 65505, 65506, 65507, 1024 * 1024 + 31, 4 * 1024 * 1024 + 127]
+        keys = []
+        for index, size in enumerate(sizes):
+            key = f"encoded/边界-{index}-%00.bin"
+            payload = bytes((offset * 31 + index) % 256 for offset in range(size))
+            digest = md5(payload)
+            result = client.put_object(
+                Bucket=bucket,
+                Key=key,
+                Body=FragmentedBody(payload, index + 17),
+                ContentLength=size,
+                ContentMD5=b64encode(digest.digest()).decode("ascii"),
+            )
+            self.assertEqual(result["ETag"], f'"{digest.hexdigest()}"')
+            fetched = client.get_object(Bucket=bucket, Key=key)["Body"].read()
+            self.assertEqual(fetched, payload)
+            if size:
+                start = min(size - 1, 65500)
+                end = min(size - 1, start + 31)
+                ranged = client.get_object(
+                    Bucket=bucket,
+                    Key=key,
+                    Range=f"bytes={start}-{end}",
+                )["Body"].read()
+                self.assertEqual(ranged, payload[start : end + 1])
+            keys.append(key)
+
+        listed = client.list_objects_v2(Bucket=bucket, Prefix="encoded/")
+        self.assertEqual(len(listed.get("Contents", [])), len(keys))
+        for key in keys:
+            client.delete_object(Bucket=bucket, Key=key)
         client.delete_bucket(Bucket=bucket)
 
 

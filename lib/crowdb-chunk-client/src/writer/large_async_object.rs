@@ -452,10 +452,9 @@ impl ChunkIoWriter for LargeAsyncObjectWriter {
     }
 
     fn require_data(&self) -> bool {
-        if self.finished {
-            return false;
-        }
-        self.chunk_writer.as_ref().map_or(true, ChunkWriter::ready)
+        // The next push rotates a full strip or chunk. Waiting for a
+        // background capacity change here would deadlock at that boundary.
+        !self.finished
     }
 }
 

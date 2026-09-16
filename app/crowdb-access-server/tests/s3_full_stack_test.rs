@@ -171,6 +171,7 @@ fn start_access_server(access_binary: &Path, seeds: &str) -> (AccessServerProces
         .env("CROWDB_S3_SMALL_OBJECT_LIMIT", "0")
         .env("CROWDB_S3_EC_DATA", "2")
         .env("CROWDB_S3_EC_CODE", "1")
+        .env("CROWDB_S3_MAX_CHUNK_SIZE", (4 * 1024 * 1024).to_string())
         .stdout(Stdio::from(log.try_clone().expect("clone access-server log")))
         .stderr(Stdio::from(log))
         .spawn()

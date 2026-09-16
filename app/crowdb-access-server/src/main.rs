@@ -81,14 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut service_config = S3ServiceConfig::basic(tenant, continuation_key, small_write.object_limit);
         service_config.small_object_limit =
             optional_usize("CROWDB_S3_SMALL_OBJECT_LIMIT")?.unwrap_or(service_config.small_object_limit);
-        let ec_data =
-            optional_usize("CROWDB_S3_EC_DATA")?.unwrap_or(service_config.large_write.ec_scheme.data_num);
-        let ec_code =
-            optional_usize("CROWDB_S3_EC_CODE")?.unwrap_or(service_config.large_write.ec_scheme.code_num);
-        if ec_data == 0 || ec_code == 0 {
-            return Err("CROWDB S3 EC data and code counts must be nonzero".into());
-        }
-        service_config.large_write.ec_scheme = EcScheme::new(ec_data, ec_code);
+        configure_large_write(&mut service_config)?;
         let metrics = Arc::new(S3Metrics::default());
         let cleanup_backlog_limit = optional_usize("CROWDB_S3_CLEANUP_BACKLOG_LIMIT")?
             .map_or(10_000, |value| u64::try_from(value).unwrap_or(u64::MAX));
@@ -128,6 +121,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         serve_result?;
         shutdown_result?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "s3")]
+fn configure_large_write(config: &mut S3ServiceConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let ec_data = optional_usize("CROWDB_S3_EC_DATA")?.unwrap_or(config.large_write.ec_scheme.data_num);
+    let ec_code = optional_usize("CROWDB_S3_EC_CODE")?.unwrap_or(config.large_write.ec_scheme.code_num);
+    if ec_data == 0 || ec_code == 0 {
+        return Err("CROWDB S3 EC data and code counts must be nonzero".into());
+    }
+    config.large_write.ec_scheme = EcScheme::new(ec_data, ec_code);
+    if let Some(max_chunk_size) = optional_usize("CROWDB_S3_MAX_CHUNK_SIZE")? {
+        if max_chunk_size == 0 {
+            return Err("CROWDB S3 max chunk size must be nonzero".into());
+        }
+        Arc::make_mut(&mut config.large_write.client).max_chunk_size =
+            u64::try_from(max_chunk_size).unwrap_or(u64::MAX);
     }
     Ok(())
 }

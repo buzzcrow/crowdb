@@ -797,6 +797,26 @@ fn block(value: u8, size: usize) -> Bytes {
 }
 
 #[tokio::test]
+async fn framed_owner_at_full_chunk_still_accepts_the_next_owner() {
+    let chunkdb = MockChunkAllocator::new();
+    let tmp = test_dirs::tempdir_in_test_data("chunk-client");
+    let diskio = LocalFileDiskWriter::new(tmp.path());
+    let mut writer = make_writer(chunkdb, diskio, ec_4_1(), test_config(MAX_FRAME_BYTES as u64));
+
+    writer
+        .on_framed_data(Box::new(TestFramedOwner::full_frames(1)))
+        .await
+        .unwrap();
+    assert!(writer.require_data(), "the next owner triggers chunk rotation");
+    writer
+        .on_framed_data(Box::new(TestFramedOwner::full_frames(1)))
+        .await
+        .unwrap();
+    assert_eq!(writer.on_finish().await.unwrap().len(), 2);
+    assert!(!writer.require_data());
+}
+
+#[tokio::test]
 async fn framed_owner_splits_into_views_only_at_chunk_boundaries() {
     let chunkdb = MockChunkAllocator::new();
     let tmp = test_dirs::tempdir_in_test_data("chunk-client");

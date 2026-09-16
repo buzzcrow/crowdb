@@ -22,7 +22,7 @@ real services rather than mocks.
   operation, conditions, range, pagination, stable errors, unsupported
   selectors, and SigV4 through boto3 plus signed raw requests. Files:
   `app/crowdb-access-server/tests/s3_e2e/basic.py`.
-- [ ] **Exercise storage boundaries**: deterministic fragmented bodies for
+- [x] **Exercise storage boundaries**: deterministic fragmented bodies for
   empty/tiny, frame, block, EC strip, configured test-chunk, and multi-chunk
   boundaries; include UTF-8/binary-safe encoded keys and exact ETag/range/body
   reference checks. Files: E2E Python and access-server test configuration.
