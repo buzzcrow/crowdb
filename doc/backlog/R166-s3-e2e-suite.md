@@ -1,82 +1,51 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-### R166: access server / S3 — Compatibility, correctness, and performance E2E suite
+### R166: access server / S3 — Basic end-to-end acceptance
+
+## Status
+
+**Active.** The compact real-service topology proves SDK CRUD, but its
+Chunk-KV restart recovery currently fails. Expanded faults, scale-out, and all
+performance evidence are deferred to R172.
 
 ## Problem
 
-Unit tests cannot prove that AWS-compatible clients, Hyper streaming, native
-buffers, Chunk-KV routing, chunks, retries, and reclamation compose correctly.
-A throughput number alone can also hide extra copies, unbounded memory, weak
-failure behavior, or a single metadata bottleneck.
-
-The tested invariants are
-`doc/design/accessserver/design-crowdb-access-server.md` §10 and
-`doc/design/accessserver/design-crowdb-access-server-s3.md` §7.
+Unit coverage cannot prove that the S3 listener, credentials, Chunk-KV routing,
+ChunkDB, DiskDB, DiskIO, and durable storage compose after process replacement.
+The required basic service must retain committed CRUD visibility across each
+single-service restart before it is declared delivered.
 
 ## Solution
 
-1. Build a reproducible E2E harness using the official Python `boto3` SDK as
-   its one SDK client, plus raw HTTP cases for every basic bucket/object
-   operation, conditional, range, continuation, unsupported feature, and
-   error contract. Install `boto3` only in a dedicated Pixi `s3-e2e`
-   environment; it is not a Rust dependency and is absent from release builds.
-   The required test owns its environment: build and start KV group 0/data
-   groups, diskdb, diskio, chunkdb, Chunk-KV, and access-server, wait for each
-   readiness boundary, pass the resulting loopback endpoint to boto3, and tear
-   every process down. An externally supplied endpoint remains a developer
-   override, not a reason for the required test to skip.
-   The lightweight required topology uses one diskdb process, one diskio
-   process, one disk group, one disk, and one zone. ChunkDB runs the explicit
-   `unsafe_colocated` placement strategy so the 2+1 EC object fragments may
-   occupy that one physical failure domain. The test therefore validates
-   composition and protocol correctness, not node- or disk-failure survival.
-2. Exercise empty, tiny shared, block-boundary, chunk-boundary, EC-boundary,
-   and large dedicated objects with randomized body fragmentation and binary
-   keys. Compare exact bytes and persisted integrity.
-3. Inject process restarts, lost replies, routing changes, chunk failures,
-   slow clients, exhausted pools, and overwrite/delete/read races at every
-   durable transition. Verify eventual cleanup separately from visibility.
-4. Benchmark direct chunk-client versus loopback and remote S3 PUT, GET, and
-   range GET. Record CPU, memory traffic, allocations, copy counters,
-   time-to-first-byte, throughput, p50/p95/p99 latency, and network bytes over
-   object size and concurrency.
-5. Add access-server and Chunk-KV owners independently and measure scale-out.
-   Keep environment, datasets, thresholds, and raw result artifacts explicit;
-   do not encode hardware-specific throughput as a universal contract.
+1. Keep the owned `boto3` E2E topology with KV, one disk group, one DiskDB,
+   one DiskIO, unsafe-colocated 2+1 EC ChunkDB, Chunk-KV, and two access
+   listeners. This is a composition topology, not a failure-domain claim.
+2. Verify bucket/object CRUD, range GET, ListObjectsV2, ETag, SigV4, and lost
+   response retry against real storage.
+3. Restart access-server, ChunkDB, DiskDB, DiskIO, and Chunk-KV after durable
+   PUT/overwrite/delete, and verify exact committed bytes, ETags, and namespace
+   state after each restart.
+4. Fix the earliest failed recovery boundary rather than extending a timeout or
+   hiding the failure behind caller retries. Retain logs and the topology on
+   failure.
 
 ## Dependencies
 
-- Depends on R152–R165 for the complete initial contract.
-- Uses existing chunk/chunk-KV E2E fixtures and fault injection where possible.
-- SigV4 cases may remain skipped with an explicit R162 reason while that
-  requirement is deferred; unauthenticated trusted mode must be visible.
-- Uses path-style local endpoints in the `s3-e2e` Pixi environment. The suite
-  switches to explicit static SigV4 test credentials when R162 lands.
+- Depends on the delivered basic S3 behavior from R152–R164.
+- R172 extends this suite after its single-service recovery baseline passes.
 
 ## Acceptance
 
-- Given supported SDK and raw HTTP matrices, when all basic operations and
-  excluded features run, assert wire responses and final namespace match the
-  documented compatibility surface. Invariant: the advertised S3 subset works
-  end to end. E2E test.
-- Given randomized fragmentation and every storage boundary, when objects are
-  round-tripped, assert bytes, ranges, checksums, ETags, and memory bounds match
-  the reference model. Invariant: transport fragmentation does not alter data.
-  E2E test.
-- Given each injected crash, lost response, ownership move, slow peer, and
-  race, when recovery settles, assert visibility is atomic, retries are
-  idempotent, and cleanup targets only unreachable generations. Invariant:
-  failures preserve object consistency. E2E test.
-- Given the benchmark matrix and increasing frontend/metadata owners, when
-  results are recorded, assert every copy/fallback is counted and no hidden
-  gateway-local state is required for correctness. Invariant: performance
-  claims are evidence-backed and scope-specific. E2E test.
+- Given a full owned topology, when boto3 runs supported basic bucket and
+  object operations, assert exact S3-compatible results. E2E test.
+- Given each individual service restart after committed object changes, when
+  the service is ready, assert HEAD, GET, range, list, and deletion state are
+  exact without frontend-local authority. E2E test.
 
 Required gates:
 
+- `pixi run -e s3-e2e test-s3-e2e`
 - `pixi run -- cargo test -p crowdb-access-s3 --all-targets`
-- `pixi run -- cargo test -p crowdb-access-server --all-targets`
-- `pixi run -- cargo test -p crowdb-chunk-client --all-targets`
 - `pixi run -- cargo fmt --all -- --check`
-- `pixi run rs-lint`
+- `pixi run -- cargo clippy -p crowdb-access-server -p crowdb-access-s3 --all-targets -- -D warnings`

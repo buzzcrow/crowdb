@@ -5,7 +5,7 @@
 
 ## Status
 
-**Deferred until the R152–R166 basic TCP S3 milestone is correct and measured.**
+**Deferred until the R152–R166 basic TCP S3 milestone is correct.**
 It is unblocked when immutable-generation GET/PUT, DiskIO direct-read planning,
 admission, integrity, and failure injection are stable without acceleration.
 
@@ -53,7 +53,8 @@ payload operations in data nodes.
 7. For PUT, plan bounded destination writers before transfer. Each DiskIO uses
    `handlePutObject()` to pull its authorized client interval into a registered
    buffer, feeds that owner into the chunk/EC write pipeline, and reports durable
-   completion. R154 publishes metadata only after every data/parity write,
+   completion. The basic publication protocol publishes metadata only after
+   every data/parity write,
    checksum, seal, and completion succeeds.
 8. Fall back to basic TCP only before any RDMA payload operation is submitted.
    After a partial transfer, fail the whole operation, mark the client buffer
@@ -61,7 +62,7 @@ payload operations in data nodes.
    request. Never splice TCP bytes into a partial RDMA operation.
 9. Validate ConnectX-5 DC v1 and at least one newer supported adapter. Enforce
    cuObject's per-operation, SGE, channel, CQ, registered-byte, timeout, and
-   device limits through configuration and R161 admission.
+   device limits through configuration and basic admission control.
 10. Bind every internal span task to tenant, operation, generation, direction,
     remote interval, byte limit, expiry, and nonce. Treat the client descriptor
     as opaque sensitive capability data; never log it or accept it as S3
@@ -112,7 +113,8 @@ Client/GPU       AccessServer          Chunk plan            DiskIO A..D
   stale-generation data. Invariant: acceleration preserves chunk-reader
   semantics. E2E test.
 - Given RDMA PUT fragmentation across writers and EC stripes, when all pulls,
-  checksums, parity, and seals complete, assert R154 publishes one exact object;
+  checksums, parity, and seals complete, assert the basic publication protocol
+  publishes one exact object;
   inject each failure and assert no partial generation is visible. Invariant:
   RDMA completion alone is never publication authority. E2E test.
 - Given rejection before submission and failures after one or more span

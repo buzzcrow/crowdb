@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R172** — Bump this line in the same commit when adding a new item.
+**Next R number: R173** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -36,54 +36,15 @@ requirement is implemented.
 
 ### Planned — S3 data access service
 
-R152–R166 deliver the deliberately limited basic S3 service. R162 authentication
-is a separate deferred step after the basic request flows stabilize. R167–R169
-defer multipart upload and shared-storage GC without blocking basic large-object
-deletion. R170 separately adds optional cuObject/RDMA acceleration after the TCP
-baseline is correct and measured.
-
-- **[R152](R152-s3-scope-compatibility.md)** — basic S3 scope and compatibility
-  contract — Area: access server / S3 — Establish the independent S3 library,
-  access-server and pinned Hyper fork, basic bucket management, six object
-  operations, explicit exclusions, and reserved authentication hook.
-- **[R155](R155-s3-streaming-put-object.md)** — streaming PutObject — Area:
-  access server / S3 / Hyper / chunk / RPC — Receive payload into bounded
-  native pools, preserve owned buffer chains through chunk/EC/RPC, and propagate
-  storage pressure to HTTP.
-- **[R156](R156-s3-head-object.md)** — HeadObject and object attributes — Area:
-  data access / S3 / Chunk-KV — Return one immutable generation's metadata and
-  conditions without reading chunks or exposing physical layout.
-- **[R157](R157-s3-streaming-get-range.md)** — streaming GetObject and
-  single-range reads — Area: access server / S3 / Hyper / chunk — Stream native
-  storage views with explicit completion ownership, bounded prefetch, and the
-  standard single-contiguous-range S3 contract.
-- **[R158](R158-s3-list-objects-v2.md)** — ListObjectsV2 and continuation tokens
-  — Area: access server / S3 / Chunk-KV — Provide stateless ordered pagination
-  across routed partitions with explicit non-snapshot concurrency semantics.
-- **[R159](R159-s3-delete-object.md)** — DeleteObject and owned-chunk
-  reclamation — Area: access server / S3 / chunk — Remove visibility first,
-  reclaim dedicated whole chunks asynchronously, and record shared-range
-  cleanup without blocking logical deletion.
-- **[R160](R160-s3-stateless-routing-scaleout.md)** — stateless access-server
-  routing and scale-out — Area: access server / routing — Give each protocol
-  an isolated listener and keep all S3 authority portable across frontend
-  instances.
-- **[R161](R161-s3-admission-backpressure.md)** — admission control, memory
-  bounds, and backpressure — Area: access server / S3 / RPC — Bound native bytes,
-  views, queues, and work across every pipeline stage with configurable limits
-  below transport hard caps.
-- **[R162](R162-s3-sigv4.md)** — AWS Signature Version 4 authentication — Area:
-  access server / S3 / security — **Deferred.** Fill the reserved hook with
-  standard SigV4 verification and a selected scale-out credential authority.
-- **[R163](R163-s3-error-http-compatibility.md)** — S3 error and HTTP
-  compatibility — Area: access server / S3 — Map lower-layer failures to stable,
-  bounded S3 responses without topology leakage or unsafe retry advice.
-- **[R164](R164-s3-integrity-etag.md)** — object integrity, checksum, and ETag —
-  Area: access server / S3 / chunk — Define streaming checksums and physical-
-  layout-independent single-part ETags shared by PUT, HEAD, GET, and conditions.
-- **[R166](R166-s3-e2e-suite.md)** — compatibility, correctness, and performance
-  E2E suite — Area: access server / S3 / testing — Validate SDK compatibility,
-  crash recovery, storage boundaries, copy accounting, and horizontal scale.
+R152–R164 delivered the limited basic S3 service. R166 remains active for the
+single-service restart acceptance baseline; R172 carries the expanded fault and
+scale-out E2E matrix. R167–R169 defer multipart upload and
+shared-storage GC without blocking basic large-object deletion. R170 separately
+adds optional cuObject/RDMA acceleration after the TCP baseline is correct and
+measured.
+- **[R166](R166-s3-e2e-suite.md)** — basic end-to-end acceptance — Area: access
+  server / S3 / testing — **Active.** Verify the real-service basic CRUD suite,
+  including every individual service restart, before closing the milestone.
 - **[R167](R167-s3-multipart-upload.md)** — multipart upload — Area: access
   server / S3 — **Deferred.** Add durable part state, atomic completion, cleanup,
   and multipart integrity after the basic milestone stabilizes.
@@ -99,6 +60,10 @@ baseline is correct and measured.
   stable.** Keep acceleration in a separate optional library and requirement;
   AccessServer coordinates while DiskIO-owned cuObjServer endpoints transfer
   parallel logical spans directly to or from client registered memory.
+- **[R172](R172-s3-fault-scaleout-e2e.md)** — fault and scale-out E2E matrix —
+  Area: access server / S3 / testing — Validate the basic CRUD service across
+  process recovery, routing changes, concurrency races, and multiple owners;
+  performance measurement is explicitly deferred.
 
 ### High Priority
 

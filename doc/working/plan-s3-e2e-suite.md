@@ -1,92 +1,32 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-# S3 End-to-End Suite Plan
+# S3 Basic End-to-End Acceptance Plan
 
-Upstream: [R166](../backlog/R166-s3-e2e-suite.md),
-[S3 design](../design/accessserver/design-crowdb-access-server-s3.md) §7, and
-[Access Server design](../design/accessserver/design-crowdb-access-server.md) §10.
+Upstream: [R166](../backlog/R166-s3-e2e-suite.md).
 
-Goal: prove the advertised S3 subset, storage-boundary correctness, failure
-semantics, stateless scale-out, and measured data-path behavior against owned
-real services rather than mocks.
+## Baseline
 
-## Harness and compatibility
+- [x] **Run owned-stack CRUD**: boto3 compatibility, two access listeners,
+  real sparse block storage, 2+1 unsafe-colocated EC, range, list, ETag,
+  SigV4, and lost response are covered. Files:
+  `app/crowdb-access-server/tests/s3_full_stack_test.rs`,
+  `app/crowdb-access-server/tests/s3_e2e/`.
+- [x] **Verify access, ChunkDB, and DiskDB replacement**: committed objects
+  remain visible across these process restarts. Files: same.
 
-- [x] **Own the compact production stack**: start KV, one DiskDB, one DiskIO,
-  one disk group/disk/zone, unsafe-colocated ChunkDB, Chunk-KV, credential
-  issuance, and access-server with 2+1 EC; wait for readiness and tear down all
-  children. Files: `app/crowdb-access-server/tests/s3_full_stack_test.rs`,
-  `pixi.toml`.
-- [x] **Complete SDK and raw HTTP matrix**: cover every supported bucket/object
-  operation, conditions, range, pagination, stable errors, unsupported
-  selectors, and SigV4 through boto3 plus signed raw requests. Files:
-  `app/crowdb-access-server/tests/s3_e2e/basic.py`.
-- [x] **Exercise storage boundaries**: deterministic fragmented bodies for
-  empty/tiny, frame, block, EC strip, configured test-chunk, and multi-chunk
-  boundaries; include UTF-8/binary-safe encoded keys and exact ETag/range/body
-  reference checks. Files: E2E Python and access-server test configuration.
+## Recovery failure
 
-## Recovery and scale-out
+- [ ] **Repair Chunk-KV restart recovery**: after DiskIO replacement, restarting
+  Chunk-KV repeatedly fails to recover a persisted stream/tree with `chunk
+  layout expired before its reads completed`; access-server returns 503. Locate
+  and fix the stale/expired layout boundary, add a regression test, then rerun
+  the full owned-stack test. Files: Chunk-KV stream recovery, chunk reader, and
+  S3 full-stack test as evidence directs.
 
-- [~] **Restart and retry durable transitions**: restart access-server and
-  storage owners around completed PUT/overwrite/delete, repeat requests after
-  lost-response simulation, and assert atomic visibility/idempotence. Reuse
-  process fixtures and expose only deterministic fault hooks.
-  Completed PUT survives frontend and ChunkDB restarts, including ChunkDB
-  rebinding to a different RPC port. A test-owned proxy also discards the
-  completed PUT response before the client retries the same key and payload.
-  Completed overwrite and delete transitions are checked across frontend,
-  ChunkDB, and DiskDB restarts. The single DiskIO uses a sparse file-backed
-  disk; restart reopens that file and verifies committed reads. Chunk-KV may
-  need a subsequent restart to recover its stalled journal before mutations;
-  independent DiskIO availability is tracked in R152 Open Issues. Crashes
-  during transitions remain.
-- [~] **Backpressure and race coverage**: exercise slow request/response peers,
-  exhausted native credits, overwrite/read/delete races, chunk errors, and
-  routing refresh while bounding memory and cleanup targets.
-  A 1 MiB owned-stack budget now proves concurrent slow-upload credit waits,
-  zero retained owners after completion, and positive backpressure accounting;
-  a paused large GET survives deleting its namespace entry before the remaining
-  response body is consumed, and concurrent overwrites preserve per-read ETags.
-  Chunk failure responses and cleanup target verification remain. A bounded
-  header read-ahead prefix now waits for native credit before copying into the
-  first owner; both the next-fill and immediate-EOF cases are covered. A
-  truncated signed PUT must leave the key absent, release native credit, and
-  permit an exact-key retry.
-- [x] **Stateless frontend scale-out**: run two independently configured access
-  servers over the same metadata/chunk authorities and alternate retries,
-  reads, pagination, overwrites, and deletes between them.
+## Verification and cleanup
 
-## Performance evidence
-
-- [~] **Add reproducible benchmark matrix**: compare direct chunk client,
-  loopback S3 PUT/GET/range, object sizes, and concurrency; record environment,
-  throughput, latency percentiles, TTFB, CPU/RSS, network bytes, allocations,
-  copy/view counters, and raw artifacts without universal hardware thresholds.
-  The owned stack now saves a small loopback smoke artifact under `test-logs/`;
-  `tests/s3_e2e/benchmark.py` accepts a remote endpoint and larger sample counts.
-  Loopback artifacts now include sampled access-server CPU and RSS. Matching
-  2+1 EC direct chunk-client PUT/GET/range runs record their distinct
-  metadata-free scope alongside S3 samples. Remote measurements, actual wire
-  bytes, and statistically sufficient p95/p99 samples remain.
-- [ ] **Run acceptance and gates**: run focused tests, compact full-stack boto3,
-  chunk-client tests, scoped fmt, workspace lint, then remove R166 and this
-  plan in the final cleanup commit. Preserve the known Hyper formatting issue
-  under R152 rather than rewriting the fork.
-
-## Files
-
-- `app/crowdb-access-server/tests/s3_full_stack_test.rs`
-- `app/crowdb-access-server/tests/s3_e2e/basic.py`
-- `app/crowdb-access-server/src/main.rs`
-- `pixi.toml`
-- focused fault/benchmark helpers under the access-server test tree
-
-## Tests
-
-- SDK/raw wire compatibility matrix against the owned compact stack.
-- Exact boundary and randomized-fragmentation round trips.
-- Restart, lost-response, dependency-failure, slow-peer, race, and scale-out
-  scenarios with deterministic settling conditions.
-- Explicit benchmark artifacts and telemetry reconciliation.
+- [ ] **Run R166 gates**: full s3-e2e, access-s3 tests, fmt, and focused strict
+  clippy.
+- [ ] **Delete R166 and this plan** only after all individual-restart checks
+  pass. R172 remains active for its expanded fault and scale-out matrix.

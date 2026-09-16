@@ -55,10 +55,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 thiserror = "2"
 flate2 = "1"
 pin-project-lite = "0.2"
-hyper = { path = "third-party/hyper", version = "1.11.1", default-features = false }
+hyper = { git = "ssh://git@github.com/buzzcrow/hyper.git", branch = "feature-crowdb", version = "1.11.1", default-features = false }
 
 [patch.crates-io]
-hyper = { path = "third-party/hyper" }
+hyper = { git = "ssh://git@github.com/buzzcrow/hyper.git", branch = "feature-crowdb" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
