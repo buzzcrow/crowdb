@@ -7,15 +7,17 @@ use std::time::Instant;
 
 use crowdb_access_s3::auth::{AuthError, RawAuthRequest, RequestAuthenticator};
 use crowdb_access_s3::error::{S3Error, S3ErrorCode};
-use crowdb_access_s3::metrics::{OutcomeClass, RequestMeasurement, S3Metrics};
+use crowdb_access_s3::metrics::{DependencyHealth, OutcomeClass, RequestMeasurement, S3Health, S3Metrics};
 use crowdb_access_s3::native_buffer::NativeBodyAllocator;
 use crowdb_access_s3::route::{classify_request, RouteError};
+use crowdb_chunk_client::ChunkIoClient;
 use hyper::body::{Http1BodyReceiveProvider, Incoming};
-use hyper::{Method, Request, StatusCode};
+use hyper::{Method, Request, Response, StatusCode};
 use tracing::Instrument;
 
 use super::{
-    error_response, measured_body, DeferredBodyReceiveProvider, HandlerFuture, S3HttpHandler, S3Operations,
+    error_response, full_body, measured_body, DeferredBodyReceiveProvider, HandlerFuture, ResponseBody,
+    S3HttpHandler, S3Operations,
 };
 
 pub struct S3Dispatcher {
@@ -25,6 +27,9 @@ pub struct S3Dispatcher {
     host_id: String,
     trusted_network: bool,
     body_receive_provider_factory: Option<Arc<dyn Fn() -> DeferredBodyReceiveProvider + Send + Sync>>,
+    body_allocator: Option<Arc<NativeBodyAllocator>>,
+    chunk_metrics: Option<Arc<ChunkIoClient>>,
+    health: Arc<S3Health>,
     next_request_id: AtomicU64,
 }
 
@@ -44,6 +49,9 @@ impl S3Dispatcher {
             host_id,
             trusted_network,
             body_receive_provider_factory: None,
+            body_allocator: None,
+            chunk_metrics: None,
+            health: Arc::new(S3Health::ready(u64::MAX)),
             next_request_id: AtomicU64::new(1),
         }
     }
@@ -60,19 +68,109 @@ impl S3Dispatcher {
 
     #[must_use]
     pub fn with_native_body_allocator(mut self, allocator: Arc<NativeBodyAllocator>) -> Self {
+        self.body_allocator = Some(Arc::clone(&allocator));
         self.body_receive_provider_factory = Some(Arc::new(move || {
             DeferredBodyReceiveProvider::native(Arc::new(allocator.object_receiver()))
         }));
         self
     }
 
+    #[must_use]
+    pub fn with_health(mut self, health: Arc<S3Health>) -> Self {
+        self.health = health;
+        self
+    }
+
+    #[must_use]
+    pub fn with_chunk_metrics(mut self, chunks: Arc<ChunkIoClient>) -> Self {
+        self.chunk_metrics = Some(chunks);
+        self
+    }
+
     fn request_id(&self) -> String {
         format!("{:016x}", self.next_request_id.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn operational_response(&self, request: &Request<Incoming>) -> Option<Response<ResponseBody>> {
+        if request.method() != Method::GET && request.method() != Method::HEAD {
+            return None;
+        }
+        let snapshot = self
+            .health
+            .snapshot(&self.metrics, self.body_allocator.as_deref());
+        let (status, content_type, body) = match request.uri().path() {
+            "/_crowdb/health/live" => {
+                let status = if snapshot.live {
+                    StatusCode::OK
+                } else {
+                    StatusCode::SERVICE_UNAVAILABLE
+                };
+                (
+                    status,
+                    "application/json",
+                    format!(r#"{{"live":{}}}"#, snapshot.live),
+                )
+            }
+            "/_crowdb/health/ready" => {
+                let ready = snapshot.live && snapshot.readiness.is_ready();
+                let status = if ready {
+                    StatusCode::OK
+                } else {
+                    StatusCode::SERVICE_UNAVAILABLE
+                };
+                let readiness = snapshot.readiness;
+                (
+                    status,
+                    "application/json",
+                    format!(
+                        concat!(
+                            r#"{{"ready":{},"listener":"{}","metadata":"{}","chunks":"{}",#,
+                            r#""native_pool":"{}","cleanup":"{}","authentication":"{}",#,
+                            r#""native_retained_bytes":{},"native_budget_bytes":{},#,
+                            r#""cleanup_backlog":{},"cleanup_backlog_limit":{}}}"#
+                        ),
+                        ready,
+                        readiness.listener.as_str(),
+                        readiness.metadata.as_str(),
+                        readiness.chunks.as_str(),
+                        readiness.native_pool.as_str(),
+                        readiness.cleanup.as_str(),
+                        readiness.authentication.as_str(),
+                        snapshot.native_retained_bytes,
+                        snapshot.native_budget_bytes,
+                        snapshot.cleanup_backlog,
+                        snapshot.cleanup_backlog_limit,
+                    ),
+                )
+            }
+            "/_crowdb/metrics" => (
+                StatusCode::OK,
+                "text/plain; version=0.0.4",
+                self.metrics
+                    .render_prometheus(self.body_allocator.as_deref(), self.chunk_metrics.as_deref()),
+            ),
+            _ => return None,
+        };
+        let body = if request.method() == Method::HEAD {
+            Vec::new()
+        } else {
+            body.into_bytes()
+        };
+        Some(
+            Response::builder()
+                .status(status)
+                .header(hyper::header::CONTENT_TYPE, content_type)
+                .body(full_body(body.into()))
+                .expect("operational response is valid"),
+        )
     }
 }
 
 impl S3HttpHandler for S3Dispatcher {
     fn handle(&self, request: Request<Incoming>) -> HandlerFuture {
+        if let Some(response) = self.operational_response(&request) {
+            return Box::pin(async move { Ok(response) });
+        }
         let authenticator = Arc::clone(&self.authenticator);
         let operations = Arc::clone(&self.operations);
         let metrics = Arc::clone(&self.metrics);
@@ -80,6 +178,7 @@ impl S3HttpHandler for S3Dispatcher {
         let request_id = self.request_id();
         let trusted_network = self.trusted_network;
         let body_receive_provider_factory = self.body_receive_provider_factory.clone();
+        let health = Arc::clone(&self.health);
         Box::pin(async move {
             let started = Instant::now();
             let _in_flight = metrics.begin_request();
@@ -95,22 +194,17 @@ impl S3HttpHandler for S3Dispatcher {
                 ))
                 .await
             {
-                let code = match error {
-                    AuthError::Rejected => S3ErrorCode::AccessDenied,
-                    AuthError::Unavailable => S3ErrorCode::ServiceUnavailable,
-                };
-                metrics.finish_predispatch(
-                    match error {
-                        AuthError::Rejected => OutcomeClass::ClientError,
-                        AuthError::Unavailable => OutcomeClass::Unavailable,
-                    },
-                    elapsed_ns(started),
-                );
+                if matches!(error, AuthError::Unavailable) {
+                    health.set_authentication(DependencyHealth::Unavailable);
+                }
+                let (code, outcome) = auth_error_outcome(error);
+                metrics.finish_predispatch(outcome, elapsed_ns(started));
                 return Ok(error_response(
                     &S3Error::new(code, resource, request_id, host_id),
                     head_only,
                 ));
             }
+            health.set_authentication(DependencyHealth::Ready);
             let authentication_latency_ns = elapsed_ns(authentication_started);
             if trusted_network {
                 metrics.record_trusted_auth_bypass();
@@ -172,6 +266,13 @@ impl S3HttpHandler for S3Dispatcher {
                 measured_body(body, Arc::clone(&metrics), operation, outcome, started),
             ))
         })
+    }
+}
+
+fn auth_error_outcome(error: AuthError) -> (S3ErrorCode, OutcomeClass) {
+    match error {
+        AuthError::Rejected => (S3ErrorCode::AccessDenied, OutcomeClass::ClientError),
+        AuthError::Unavailable => (S3ErrorCode::ServiceUnavailable, OutcomeClass::Unavailable),
     }
 }
 

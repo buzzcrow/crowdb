@@ -29,24 +29,24 @@ with bounded, non-blocking telemetry and dependency-aware service health.
   backpressure, metadata/chunk retries, and cleanup backlog in bounded
   snapshots. Files: `lib/crowdb-access-s3/src/native_buffer.rs`,
   `lib/crowdb-access-s3/src/metrics.rs`, `lib/crowdb-chunk-client/src/metrics.rs`.
-- [~] **Assert fallback separation**: verify normal owner, prefetched edge,
+- [x] **Assert fallback separation**: verify normal owner, prefetched edge,
   vectored, and generic-copy paths cannot be reported as the same zero-copy
   outcome. Files: affected crate integration tests and S3 E2E harness.
 
 ## Operational health
 
-- [ ] **Model liveness and readiness**: report listener, metadata, chunk,
+- [x] **Model liveness and readiness**: report listener, metadata, chunk,
   native-pool, cleanup, and authentication state; liveness remains independent
   of exporter health and readiness fails only when safe admission is
   impossible. Files: `lib/crowdb-access-s3/src/metrics.rs`,
   `app/crowdb-access-server/src/`.
-- [ ] **Expose health endpoints/status**: serve bounded header-only or JSON
+- [x] **Expose health endpoints/status**: serve bounded header-only or JSON
   status outside the S3 operation namespace without starting it when S3 is
   disabled. Files: `app/crowdb-access-server/src/`, integration tests.
 
 ## Verification and cleanup
 
-- [ ] **Acceptance tests**: cover all terminal classes, phase reconciliation,
+- [~] **Acceptance tests**: cover all terminal classes, phase reconciliation,
   cardinality independence, exporter failure, dependency degradation, and
   compact-stack boto3 evidence. Files: access S3/server tests and E2E harness.
 - [ ] **Required gates**: run affected tests separately, workspace fmt,

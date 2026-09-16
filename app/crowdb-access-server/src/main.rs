@@ -14,7 +14,7 @@ use crowdb_access_s3::auth::{
 #[cfg(feature = "s3")]
 use crowdb_access_s3::metadata::TenantId;
 #[cfg(feature = "s3")]
-use crowdb_access_s3::metrics::S3Metrics;
+use crowdb_access_s3::metrics::{DependencyHealth, S3Health, S3Metrics};
 #[cfg(feature = "s3")]
 use crowdb_access_s3::native_buffer::NativeBodyAllocator;
 #[cfg(feature = "s3")]
@@ -90,10 +90,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         service_config.large_write.ec_scheme = EcScheme::new(ec_data, ec_code);
         let metrics = Arc::new(S3Metrics::default());
+        let cleanup_backlog_limit = optional_usize("CROWDB_S3_CLEANUP_BACKLOG_LIMIT")?
+            .map_or(10_000, |value| u64::try_from(value).unwrap_or(u64::MAX));
+        let health = Arc::new(S3Health::starting(cleanup_backlog_limit));
+        health.set_metadata(DependencyHealth::Ready);
+        health.set_chunks(DependencyHealth::Ready);
+        health.set_authentication(DependencyHealth::Ready);
         let operations = Arc::new(
             ProductionS3Operations::new(storage, service_config)
                 .map_err(|_| "invalid S3 service configuration")?
-                .with_metrics(Arc::clone(&metrics)),
+                .with_metrics(Arc::clone(&metrics))
+                .with_health(Arc::clone(&health)),
         );
         let body_allocator = Arc::new(NativeBodyAllocator::new(256 * 1024 * 1024, 1024 * 1024)?);
         let handler = Arc::new(
@@ -104,13 +111,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "crowdb-access-server".into(),
                 trusted_network,
             )
-            .with_native_body_allocator(body_allocator),
+            .with_native_body_allocator(body_allocator)
+            .with_chunk_metrics(Arc::clone(&chunks))
+            .with_health(Arc::clone(&health)),
         );
         let listener = TcpListener::bind(address).await?;
+        health.set_listener(DependencyHealth::Ready);
         let serve_result = serve(listener, handler, async {
             let _ = tokio::signal::ctrl_c().await;
         })
         .await;
+        health.stop();
         let shutdown_result = chunks.shutdown_small_writes().await;
         if let Some(task) = credential_refresh {
             task.abort();

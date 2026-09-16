@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-use crowdb_access_s3::metrics::{OutcomeClass, RequestMeasurement, S3Metrics};
+use crowdb_access_s3::metrics::{DependencyHealth, OutcomeClass, RequestMeasurement, S3Health, S3Metrics};
 use crowdb_access_s3::route::S3Operation;
 
 #[test]
@@ -57,4 +57,45 @@ fn request_metrics_reconcile_terminal_phase_and_concurrency_totals() {
     assert_eq!(snapshot.cleanup_enqueued, 5);
     assert_eq!(snapshot.cleanup_completed, 2);
     assert_eq!(snapshot.cleanup_failed, 1);
+}
+
+#[test]
+fn readiness_tracks_safe_admission_without_exporter_state() {
+    let metrics = S3Metrics::default();
+    let health = S3Health::starting(2);
+    let starting = health.snapshot(&metrics, None);
+    assert!(starting.live);
+    assert!(!starting.readiness.is_ready());
+
+    health.set_listener(DependencyHealth::Ready);
+    health.set_metadata(DependencyHealth::Ready);
+    health.set_chunks(DependencyHealth::Busy);
+    health.set_authentication(DependencyHealth::Ready);
+    assert!(health.snapshot(&metrics, None).readiness.is_ready());
+
+    metrics.enqueue_cleanup(3);
+    let overloaded = health.snapshot(&metrics, None);
+    assert_eq!(overloaded.readiness.cleanup, DependencyHealth::Unavailable);
+    assert!(!overloaded.readiness.is_ready());
+    metrics.complete_cleanup(1);
+    assert!(health.snapshot(&metrics, None).readiness.is_ready());
+
+    health.stop();
+    assert!(!health.snapshot(&metrics, None).live);
+}
+
+#[test]
+fn exported_request_series_have_fixed_cardinality_and_no_namespace_labels() {
+    let metrics = S3Metrics::default();
+    let rendered = metrics.render_prometheus(None, None);
+    assert_eq!(
+        rendered
+            .lines()
+            .filter(|line| line.starts_with("crowdb_s3_requests_total{"))
+            .count(),
+        9 * 6
+    );
+    assert!(!rendered.contains("bucket="));
+    assert!(!rendered.contains("key="));
+    assert!(!rendered.contains("credential="));
 }

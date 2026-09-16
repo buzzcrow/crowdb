@@ -15,7 +15,7 @@ mod s3_dispatcher {
 
     use async_trait::async_trait;
     use crowdb_access_s3::auth::{AuthError, RawAuthRequest, RequestAuthenticator};
-    use crowdb_access_s3::metrics::{OutcomeClass, S3Metrics, S3MetricsSnapshot};
+    use crowdb_access_s3::metrics::{OutcomeClass, S3Health, S3Metrics, S3MetricsSnapshot};
     use crowdb_access_s3::native_buffer::NativeBodyAllocator;
     use crowdb_access_s3::route::{S3Operation, S3Route};
     use crowdb_access_server::s3::{
@@ -88,6 +88,7 @@ mod s3_dispatcher {
         });
         let operations = Arc::new(TestOperations::default());
         let metrics = Arc::new(S3Metrics::default());
+        let health = Arc::new(S3Health::ready(1));
         let body_allocator = Arc::new(NativeBodyAllocator::new(2 * 1024 * 1024, 1024 * 1024).unwrap());
         let dispatcher = Arc::new(
             S3Dispatcher::new(
@@ -100,7 +101,8 @@ mod s3_dispatcher {
             .with_body_receive_provider_factory({
                 let body_allocator = body_allocator.clone();
                 move || Arc::new(body_allocator.object_receiver())
-            }),
+            })
+            .with_health(Arc::clone(&health)),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -112,6 +114,8 @@ mod s3_dispatcher {
             .await
             .unwrap();
         });
+
+        assert_operational_endpoints(address, &authenticator).await;
 
         let rejected = request(address, "POST /bucket/key?uploads HTTP/1.1").await;
         assert!(rejected.starts_with("HTTP/1.1 403"));
@@ -181,8 +185,27 @@ mod s3_dispatcher {
         assert_eq!(body_allocator.retained_bytes(), 0);
         assert_terminal_outcomes(address, &operations, &metrics).await;
 
+        metrics.enqueue_cleanup(2);
+        let not_ready = request(address, "GET /_crowdb/health/ready HTTP/1.1").await;
+        assert!(not_ready.starts_with("HTTP/1.1 503"));
+        assert!(not_ready.contains(r#""cleanup":"unavailable""#));
+
         let _ = shutdown_tx.send(());
         server.await.unwrap();
+    }
+
+    async fn assert_operational_endpoints(address: std::net::SocketAddr, authenticator: &TestAuthenticator) {
+        let live = request(address, "GET /_crowdb/health/live HTTP/1.1").await;
+        assert!(live.starts_with("HTTP/1.1 200"));
+        assert!(live.contains(r#"{"live":true}"#));
+        let ready = request(address, "GET /_crowdb/health/ready HTTP/1.1").await;
+        assert!(ready.starts_with("HTTP/1.1 200"));
+        assert!(ready.contains(r#""ready":true"#));
+        let exported = request(address, "GET /_crowdb/metrics HTTP/1.1").await;
+        assert!(exported.starts_with("HTTP/1.1 200"));
+        assert!(exported.contains(r#"crowdb_s3_requests_total{operation="put_object",outcome="success"} 0"#));
+        assert!(!exported.contains("bucket/key"));
+        assert_eq!(authenticator.calls.load(Ordering::Relaxed), 0);
     }
 
     fn assert_get_metrics(snapshot: &S3MetricsSnapshot) {

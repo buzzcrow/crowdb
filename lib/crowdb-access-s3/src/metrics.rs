@@ -3,7 +3,8 @@
 
 //! Lock-free bounded-cardinality S3 request counters.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::fmt::Write as _;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 use crowdb_chunk_client::{
     ChunkIoClient, LargeWriteBufferMetricsSnapshot, LargeWriteRepairMetricsSnapshot,
@@ -14,6 +15,25 @@ use crate::native_buffer::{NativeBodyAllocator, NativeBufferMetricsSnapshot};
 
 const OPERATION_COUNT: usize = 9;
 const OUTCOME_COUNT: usize = 6;
+const OPERATION_NAMES: [&str; OPERATION_COUNT] = [
+    "create_bucket",
+    "head_bucket",
+    "list_buckets",
+    "delete_bucket",
+    "put_object",
+    "head_object",
+    "get_object",
+    "list_objects_v2",
+    "delete_object",
+];
+const OUTCOME_NAMES: [&str; OUTCOME_COUNT] = [
+    "success",
+    "client_error",
+    "throttled",
+    "timeout",
+    "unavailable",
+    "internal",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OutcomeClass {
@@ -198,6 +218,132 @@ impl S3Metrics {
             cleanup_backlog: request.cleanup_enqueued.saturating_sub(request.cleanup_completed),
         }
     }
+
+    #[must_use]
+    pub fn render_prometheus(
+        &self,
+        native: Option<&NativeBodyAllocator>,
+        chunks: Option<&ChunkIoClient>,
+    ) -> String {
+        let snapshot = self.snapshot();
+        let mut output = String::with_capacity(24 * 1024);
+        append_request_metrics(&mut output, &snapshot);
+        append_metric(
+            &mut output,
+            "crowdb_s3_request_bytes_total",
+            "",
+            snapshot.request_bytes,
+        );
+        append_metric(
+            &mut output,
+            "crowdb_s3_response_bytes_total",
+            "",
+            snapshot.response_bytes,
+        );
+        append_metric(
+            &mut output,
+            "crowdb_s3_requests_in_flight",
+            "",
+            snapshot.in_flight,
+        );
+        append_metric(
+            &mut output,
+            "crowdb_s3_checksum_bytes_total",
+            "",
+            snapshot.checksum_bytes,
+        );
+        append_metric(
+            &mut output,
+            "crowdb_s3_metadata_retries_total",
+            "",
+            snapshot.metadata_retries,
+        );
+        append_metric(
+            &mut output,
+            "crowdb_s3_cleanup_backlog",
+            "",
+            snapshot
+                .cleanup_enqueued
+                .saturating_sub(snapshot.cleanup_completed),
+        );
+        if let Some(native) = native {
+            append_native_metrics(&mut output, native.metrics_snapshot());
+        }
+        if let Some(chunks) = chunks {
+            append_chunk_metrics(&mut output, chunks.large_write_buffer_metrics());
+        }
+        output
+    }
+}
+
+fn append_request_metrics(output: &mut String, snapshot: &S3MetricsSnapshot) {
+    let metric_matrices = [
+        ("crowdb_s3_requests_total", &snapshot.requests),
+        ("crowdb_s3_request_latency_ns_total", &snapshot.request_latency_ns),
+        (
+            "crowdb_s3_time_to_first_byte_ns_total",
+            &snapshot.time_to_first_byte_ns,
+        ),
+        (
+            "crowdb_s3_authentication_latency_ns_total",
+            &snapshot.authentication_latency_ns,
+        ),
+        (
+            "crowdb_s3_operation_latency_ns_total",
+            &snapshot.operation_latency_ns,
+        ),
+    ];
+    for (name, matrix) in metric_matrices {
+        for (operation, operation_name) in OPERATION_NAMES.iter().enumerate() {
+            for (outcome, outcome_name) in OUTCOME_NAMES.iter().enumerate() {
+                let labels = format!(r#"operation="{operation_name}",outcome="{outcome_name}""#);
+                append_metric(output, name, &labels, matrix[operation][outcome]);
+            }
+        }
+    }
+}
+
+fn append_native_metrics(output: &mut String, native: NativeBufferMetricsSnapshot) {
+    for (name, value) in [
+        ("crowdb_s3_native_retained_bytes", native.retained_bytes),
+        ("crowdb_s3_native_direct_bytes_total", native.direct_bytes),
+        ("crowdb_s3_native_prefetched_bytes_total", native.prefetched_bytes),
+        (
+            "crowdb_s3_native_backpressure_events_total",
+            native.backpressure_events,
+        ),
+        (
+            "crowdb_s3_native_backpressure_wait_ns_total",
+            native.backpressure_wait_ns,
+        ),
+    ] {
+        append_metric(output, name, "", u64::try_from(value).unwrap_or(u64::MAX));
+    }
+}
+
+fn append_chunk_metrics(output: &mut String, buffers: LargeWriteBufferMetricsSnapshot) {
+    for (name, value) in [
+        ("crowdb_s3_large_write_framed_owners_total", buffers.framed_owners),
+        ("crowdb_s3_large_write_framed_views_total", buffers.framed_views),
+        (
+            "crowdb_s3_large_write_payload_copy_operations_total",
+            buffers.payload_copy_operations,
+        ),
+        (
+            "crowdb_s3_large_write_payload_copy_bytes_total",
+            buffers.payload_copy_bytes,
+        ),
+    ] {
+        append_metric(output, name, "", value);
+    }
+}
+
+fn append_metric(output: &mut String, name: &str, labels: &str, value: u64) {
+    if labels.is_empty() {
+        let _ = writeln!(output, "{name} {value}");
+    } else {
+        let _ = writeln!(output, "{name}{{{labels}}} {value}");
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -251,24 +397,155 @@ impl Drop for InFlightRequest<'_> {
     }
 }
 
+pub struct S3Health {
+    live: AtomicBool,
+    listener: AtomicU8,
+    metadata: AtomicU8,
+    chunks: AtomicU8,
+    authentication: AtomicU8,
+    cleanup_backlog_limit: u64,
+}
+
+impl S3Health {
+    #[must_use]
+    pub fn starting(cleanup_backlog_limit: u64) -> Self {
+        Self {
+            live: AtomicBool::new(true),
+            listener: AtomicU8::new(DependencyHealth::Unavailable as u8),
+            metadata: AtomicU8::new(DependencyHealth::Unavailable as u8),
+            chunks: AtomicU8::new(DependencyHealth::Unavailable as u8),
+            authentication: AtomicU8::new(DependencyHealth::Unavailable as u8),
+            cleanup_backlog_limit,
+        }
+    }
+
+    #[must_use]
+    pub fn ready(cleanup_backlog_limit: u64) -> Self {
+        Self {
+            live: AtomicBool::new(true),
+            listener: AtomicU8::new(DependencyHealth::Ready as u8),
+            metadata: AtomicU8::new(DependencyHealth::Ready as u8),
+            chunks: AtomicU8::new(DependencyHealth::Ready as u8),
+            authentication: AtomicU8::new(DependencyHealth::Ready as u8),
+            cleanup_backlog_limit,
+        }
+    }
+
+    pub fn set_listener(&self, health: DependencyHealth) {
+        self.listener.store(health as u8, Ordering::Release);
+    }
+
+    pub fn set_metadata(&self, health: DependencyHealth) {
+        self.metadata.store(health as u8, Ordering::Release);
+    }
+
+    pub fn set_chunks(&self, health: DependencyHealth) {
+        self.chunks.store(health as u8, Ordering::Release);
+    }
+
+    pub fn set_authentication(&self, health: DependencyHealth) {
+        self.authentication.store(health as u8, Ordering::Release);
+    }
+
+    pub fn stop(&self) {
+        self.live.store(false, Ordering::Release);
+    }
+
+    #[must_use]
+    pub fn snapshot(&self, metrics: &S3Metrics, native: Option<&NativeBodyAllocator>) -> S3HealthSnapshot {
+        let native_metrics = native.map(NativeBodyAllocator::metrics_snapshot);
+        let native_pool = native_metrics.map_or(DependencyHealth::Ready, |snapshot| {
+            if snapshot.retained_bytes >= snapshot.budget_bytes {
+                DependencyHealth::Busy
+            } else {
+                DependencyHealth::Ready
+            }
+        });
+        let request = metrics.snapshot();
+        let cleanup_backlog = request.cleanup_enqueued.saturating_sub(request.cleanup_completed);
+        let cleanup = if cleanup_backlog > self.cleanup_backlog_limit {
+            DependencyHealth::Unavailable
+        } else {
+            DependencyHealth::Ready
+        };
+        S3HealthSnapshot {
+            live: self.live.load(Ordering::Acquire),
+            readiness: S3Readiness {
+                listener: load_health(&self.listener),
+                metadata: load_health(&self.metadata),
+                chunks: load_health(&self.chunks),
+                native_pool,
+                cleanup,
+                authentication: load_health(&self.authentication),
+            },
+            native_retained_bytes: native_metrics.map_or(0, |snapshot| snapshot.retained_bytes),
+            native_budget_bytes: native_metrics.map_or(0, |snapshot| snapshot.budget_bytes),
+            cleanup_backlog,
+            cleanup_backlog_limit: self.cleanup_backlog_limit,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct S3HealthSnapshot {
+    pub live: bool,
+    pub readiness: S3Readiness,
+    pub native_retained_bytes: usize,
+    pub native_budget_bytes: usize,
+    pub cleanup_backlog: u64,
+    pub cleanup_backlog_limit: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct S3Readiness {
-    pub dependencies: [DependencyHealth; 4],
+    pub listener: DependencyHealth,
+    pub metadata: DependencyHealth,
+    pub chunks: DependencyHealth,
+    pub native_pool: DependencyHealth,
+    pub cleanup: DependencyHealth,
+    pub authentication: DependencyHealth,
 }
 
 impl S3Readiness {
     #[must_use]
     pub const fn is_ready(self) -> bool {
-        let [listener, metadata, chunks, authentication] = self.dependencies;
-        matches!(listener, DependencyHealth::Ready)
-            && matches!(metadata, DependencyHealth::Ready)
-            && matches!(chunks, DependencyHealth::Ready)
-            && matches!(authentication, DependencyHealth::Ready)
+        self.listener.can_admit()
+            && self.metadata.can_admit()
+            && self.chunks.can_admit()
+            && self.native_pool.can_admit()
+            && self.cleanup.can_admit()
+            && self.authentication.can_admit()
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
 pub enum DependencyHealth {
     Ready,
+    Busy,
     Unavailable,
+}
+
+impl DependencyHealth {
+    #[must_use]
+    pub const fn can_admit(self) -> bool {
+        !matches!(self, Self::Unavailable)
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Busy => "busy",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+fn load_health(value: &AtomicU8) -> DependencyHealth {
+    match value.load(Ordering::Acquire) {
+        value if value == DependencyHealth::Ready as u8 => DependencyHealth::Ready,
+        value if value == DependencyHealth::Busy as u8 => DependencyHealth::Busy,
+        _ => DependencyHealth::Unavailable,
+    }
 }

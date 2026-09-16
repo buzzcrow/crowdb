@@ -3,6 +3,7 @@
 
 #![cfg(feature = "s3-e2e")]
 
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -108,9 +109,37 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
     chunk_kv.wait_for_ready().await;
 
     let seeds = cluster.mgmt_endpoints.join(",");
-    let issued = Command::new(&access_binary)
+    let (access_key, secret_key) = issue_credentials(&access_binary, &seeds);
+    let (mut access_server, listen) = start_access_server(&access_binary, &seeds);
+    wait_for_tcp(&mut access_server, &listen).await;
+    let ready = http_get(&listen, "/_crowdb/health/ready");
+    assert!(
+        ready.starts_with("HTTP/1.1 200"),
+        "access server not ready: {ready}"
+    );
+
+    run_boto3(&listen, &access_key, &secret_key, &access_server, &chunk_kv);
+    let exported = http_get(&listen, "/_crowdb/metrics");
+    assert!(metric_value(&exported, "crowdb_s3_native_prefetched_bytes_total") > 0);
+    assert!(metric_value(&exported, "crowdb_s3_large_write_framed_owners_total") > 0);
+    assert!(metric_value(&exported, "crowdb_s3_large_write_framed_views_total") > 0);
+    assert_eq!(
+        metric_value(&exported, "crowdb_s3_large_write_payload_copy_operations_total"),
+        0
+    );
+
+    drop(access_server);
+    drop(chunk_kv);
+    drop(chunkdb);
+    drop(diskios);
+    drop(diskdb);
+    rpc.stop();
+}
+
+fn issue_credentials(access_binary: &Path, seeds: &str) -> (String, String) {
+    let issued = Command::new(access_binary)
         .args(["issue-user", "boto3-e2e"])
-        .env("CROWDB_MANAGEMENT_SEEDS", &seeds)
+        .env("CROWDB_MANAGEMENT_SEEDS", seeds)
         .env("CROWDB_S3_MASTER_KEY", MASTER_KEY)
         .output()
         .expect("run S3 user-token issuer");
@@ -120,36 +149,44 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
         String::from_utf8_lossy(&issued.stderr)
     );
     let issued = String::from_utf8(issued.stdout).expect("token issuer output is UTF-8");
-    let access_key = output_value(&issued, "AWS_ACCESS_KEY_ID");
-    let secret_key = output_value(&issued, "AWS_SECRET_ACCESS_KEY");
+    (
+        output_value(&issued, "AWS_ACCESS_KEY_ID").to_owned(),
+        output_value(&issued, "AWS_SECRET_ACCESS_KEY").to_owned(),
+    )
+}
 
-    let port = reserve_ephemeral_port();
-    let listen = format!("127.0.0.1:{port}");
+fn start_access_server(access_binary: &Path, seeds: &str) -> (AccessServerProcess, String) {
+    let listen = format!("127.0.0.1:{}", reserve_ephemeral_port());
     let log_path = crowdb_test_harness::test_dirs::test_log_dir()
         .join(format!("crowdb-access-s3-e2e-{}.log", std::process::id()));
     let log = std::fs::File::create(&log_path).expect("create access-server log");
-    let log_error = log.try_clone().expect("clone access-server log");
-    let child = Command::new(&access_binary)
+    let child = Command::new(access_binary)
         .env("CROWDB_S3_LISTEN", &listen)
-        .env("CROWDB_MANAGEMENT_SEEDS", &seeds)
+        .env("CROWDB_MANAGEMENT_SEEDS", seeds)
         .env("CROWDB_S3_TENANT", "boto3-e2e")
         .env("CROWDB_S3_MASTER_KEY", MASTER_KEY)
         .env("CROWDB_S3_REGION", "us-east-1")
         .env("CROWDB_S3_SMALL_OBJECT_LIMIT", "0")
         .env("CROWDB_S3_EC_DATA", "2")
         .env("CROWDB_S3_EC_CODE", "1")
-        .stdout(Stdio::from(log))
-        .stderr(Stdio::from(log_error))
+        .stdout(Stdio::from(log.try_clone().expect("clone access-server log")))
+        .stderr(Stdio::from(log))
         .spawn()
         .expect("start crowdb-access-server");
-    let mut access_server = AccessServerProcess { child, log_path };
-    wait_for_tcp(&mut access_server, &listen).await;
+    (AccessServerProcess { child, log_path }, listen)
+}
 
-    let endpoint = format!("http://{listen}");
+fn run_boto3(
+    listen: &str,
+    access_key: &str,
+    secret_key: &str,
+    access_server: &AccessServerProcess,
+    chunk_kv: &ChunkKvProcess,
+) {
     let python_binary = std::env::var_os("CROWDB_S3_E2E_PYTHON").unwrap_or_else(|| "python".into());
     let python = Command::new(python_binary)
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/s3_e2e/basic.py"))
-        .env("CROWDB_S3_E2E_ENDPOINT", endpoint)
+        .env("CROWDB_S3_E2E_ENDPOINT", format!("http://{listen}"))
         .env("CROWDB_S3_E2E_REGION", "us-east-1")
         .env("CROWDB_S3_E2E_ACCESS_KEY", access_key)
         .env("CROWDB_S3_E2E_SECRET_KEY", secret_key)
@@ -163,13 +200,32 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
         access_server.log_content(),
         chunk_kv.log_content(),
     );
+}
 
-    drop(access_server);
-    drop(chunk_kv);
-    drop(chunkdb);
-    drop(diskios);
-    drop(diskdb);
-    rpc.stop();
+fn http_get(address: &str, path: &str) -> String {
+    let mut stream = TcpStream::connect(address).expect("connect to access-server HTTP listener");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("set access-server HTTP read timeout");
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+    )
+    .expect("write access-server HTTP request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("read access-server HTTP response");
+    response
+}
+
+fn metric_value(response: &str, name: &str) -> u64 {
+    response
+        .lines()
+        .find_map(|line| line.strip_prefix(name).and_then(|value| value.strip_prefix(' ')))
+        .unwrap_or_else(|| panic!("metrics response omitted {name}: {response}"))
+        .parse()
+        .unwrap_or_else(|error| panic!("invalid {name} metric: {error}"))
 }
 
 async fn seed_compact_hardware(hardware: &HardwareClient) -> Vec<DiskioGroup0Identity> {
