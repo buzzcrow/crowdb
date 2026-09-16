@@ -656,10 +656,13 @@ async fn discover_current_range_bindings(
         let instances = service.read_all_chunkdb_instances().await.map_err(|error| {
             crate::IoError::Topology(format!("chunkdb instance discovery failed: {error}"))
         })?;
+        // Range bindings name the owner identity; a restarted owner can keep
+        // that identity while advertising a different RPC port. The service
+        // registry supplies the current endpoint when making each route.
         let current = bindings.snapshot().iter().all(|binding| {
-            instances.iter().any(|(instance_id, instance)| {
-                *instance_id == binding.instance_id && instance.rpc_endpoint == binding.rpc_endpoint
-            })
+            instances
+                .iter()
+                .any(|(instance_id, _)| *instance_id == binding.instance_id)
         });
         if bindings.is_empty() {
             return Ok(None);

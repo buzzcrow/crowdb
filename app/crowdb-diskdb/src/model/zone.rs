@@ -211,6 +211,27 @@ impl DdbZone {
         }
     }
 
+    /// Largest contiguous free run in units.
+    ///
+    /// This is a cold-path diagnostic for explaining a failed contiguous
+    /// allocation. Allocation itself remains bitmap-CAS based and does not
+    /// call this scan.
+    #[must_use]
+    pub fn largest_contiguous_free_run(&self) -> u32 {
+        let mut largest = 0u32;
+        let mut current = 0u32;
+        for bit in 0..self.unit_capacity {
+            let word = self.usage_bits.load_word(bit as usize / 64);
+            if word & (1u64 << (bit % 64)) == 0 {
+                current = current.saturating_add(1);
+                largest = largest.max(current);
+            } else {
+                current = 0;
+            }
+        }
+        largest
+    }
+
     /// Phase 1 (sync) allocate — scan the usage bitmap from
     /// `last_pos_64` (rotating), find `unit_count` consecutive zero
     /// bits, CAS-set each. On CAS failure, retry the same word
@@ -557,7 +578,7 @@ impl DdbZone {
         if !value.verify_checksum() {
             return None;
         }
-        let usage_bits = UsageBitmap::restore(&value.usage_bitmap);
+        let usage_bits = UsageBitmap::restore_for_block_count(&value.usage_bitmap, unit_capacity);
         let used_count = usage_bits.count_set();
         Some(Self {
             disk_id,

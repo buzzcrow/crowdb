@@ -106,19 +106,29 @@ Required gates:
 
 ## Open Issues
 
-- `cargo fmt --all -- --check` currently traverses the path-patched Hyper fork
-  even though `third-party/hyper` is excluded from the workspace, then applies
-  CROWDB's root 110-column `rustfmt.toml` to upstream-formatted sources. Scoped
-  CROWDB format checks pass and the Hyper worktree stays clean; the workspace
-  gate needs to exclude the fork without rewriting its unrelated source.
-- The authentication boundary currently collapses every rejected SigV4 request
-  into a generic `AccessDenied` response; raw HTTP tests pin that behavior for
-  malformed signatures. Decide whether the advertised S3 compatibility surface
-  needs distinct `SignatureDoesNotMatch` and `InvalidAccessKeyId` errors before
-  changing the authenticator result type and wire contract.
-- A GET whose ChunkDB dependency fails after response headers currently sends
-  HTTP 200 with the declared `Content-Length`, then terminates the stream and
-  makes the SDK report an incomplete response. The ChunkDB restart E2E saw
-  this before routing refreshed. Decide whether GET should prefetch the first
-  storage chunk before committing headers (at a TTFB cost), or retain stream
-  abort semantics and require retry of the whole GET at the client boundary.
+- The workspace-wide fmt/lint gate must exclude the path-patched Hyper fork
+  without rewriting upstream source. Scoped CROWDB gates pass; this is tracked
+  separately from the S3 behavior contract.
+
+- Rejected SigV4 requests intentionally return the generic S3 `AccessDenied`
+  response for now. Distinct `SignatureDoesNotMatch` and `InvalidAccessKeyId`
+  responses are deferred compatibility refinement, not a prerequisite for the
+  current authentication contract.
+
+- A GET can fail after its HTTP 200 headers have been sent. Large reads retain
+  streaming semantics: the server forwards bytes as storage produces them and
+  terminates the body on a later storage failure; SDK callers retry the whole
+  GET. The server does not prefetch solely to avoid this outcome.
+
+- A standalone DiskIO restart must not require a Chunk-KV process restart.
+  When an in-flight 1 MiB journal block fails, the journal recovers under its
+  existing fence by replacing the failed block when possible; otherwise it
+  seals the affected chunk and rolls over to a newly allocated chunk. Ambiguous
+  writes are reconciled before retrying the logical record.
+
+- The compact one-zone S3 E2E still needs a root-cause fix for the post-restart
+  `NoSpace` allocation. Stream storage is allocated one strip at a time and
+  grows by allocating further strips as writes continue; it must not reserve a
+  complete 256 MiB stream chunk up front. Diagnose recovered DiskDB ownership,
+  disk/zone capacity, free-run fragmentation, and active-zone rotation, then
+  correct the earliest failing layer before marking the restart scenario done.

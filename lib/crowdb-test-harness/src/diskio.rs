@@ -209,7 +209,8 @@ impl DiskioProcess {
                 let disk_arg = format!("{}:{}:{}", id_str, d.path, d.zone_capacity);
                 cmd.args(["--disk", &disk_arg]);
             }
-        } else if !opts.kv_seeds.is_empty() {
+        }
+        if !opts.kv_seeds.is_empty() {
             let seeds_arg = opts.kv_seeds.join(",");
             cmd.args([
                 "--kv-seeds",
@@ -224,8 +225,10 @@ impl DiskioProcess {
                 &identity.disk_group_id.to_string(),
                 "--sync-interval-ms",
                 "200",
-                "--auto-discover-disks",
             ]);
+            if opts.disks.is_empty() {
+                cmd.arg("--auto-discover-disks");
+            }
         }
 
         let mut child = cmd.spawn().expect("start crowdb-diskio");

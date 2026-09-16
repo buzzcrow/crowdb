@@ -34,9 +34,22 @@ pub async fn rebuild_zone_bitmap_full_scan(
 
     let zone = DdbZone::new(disk_id, zone_idx, disk_group_id, unit_capacity);
     for busy in &records.busy {
-        #[allow(clippy::cast_possible_truncation)]
-        let offset = busy.key.unit_offset as u32;
-        let _ = zone.usage_bits.range_set(offset, busy.value.unit_count);
+        let offset = u32::try_from(busy.key.unit_offset).unwrap_or(u32::MAX);
+        if offset
+            .checked_add(busy.value.unit_count)
+            .is_some_and(|end| end <= unit_capacity)
+        {
+            let _ = zone.usage_bits.range_set(offset, busy.value.unit_count);
+        } else {
+            tracing::warn!(
+                disk_id = ?disk_id,
+                zone_index = zone_idx,
+                unit_offset = busy.key.unit_offset,
+                unit_count = busy.value.unit_count,
+                unit_capacity,
+                "ignored out-of-range busy record during full-scan recovery"
+            );
+        }
     }
     let busy_by_offset: HashMap<u64, _> = records
         .busy

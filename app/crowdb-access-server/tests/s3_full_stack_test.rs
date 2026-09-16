@@ -27,11 +27,22 @@ use crowdb_test_harness::chunkdb::{
 };
 use crowdb_test_harness::cluster::KvCluster;
 use crowdb_test_harness::diskdb::DiskdbProcess;
-use crowdb_test_harness::diskio::{DiskioGroup0Identity, DiskioProcess, DiskioStartOpts};
+use crowdb_test_harness::diskio::{DiskArg, DiskioGroup0Identity, DiskioProcess, DiskioStartOpts};
+use crowdb_test_harness::test_dirs::TestDir;
 use hyper::body::Bytes;
 use serde_json::json;
 
 const MASTER_KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+
+struct DiskioRestartContext<'a> {
+    cluster: &'a KvCluster,
+    rpc: &'a Arc<RpcServer>,
+    identity: DiskioGroup0Identity,
+    disk: &'a DiskArg,
+    listen: &'a str,
+    access_key: &'a str,
+    secret_key: &'a str,
+}
 
 struct AccessServerProcess {
     child: Child,
@@ -56,42 +67,29 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
     let access_binary = binary("crowdb-access-server", "CROWDB_ACCESS_SERVER_BIN");
     let cluster = KvCluster::start().await;
     let identities = seed_compact_hardware(&cluster.make_hardware_client()).await;
+    let identity = identities[0];
+    let disk_data = TestDir::new("s3-durable-disk").expect("create disk test directory");
+    let disk_path = disk_data.path().join("disk.dat");
+    let capacity = 16_384_u64 * 1024 * 1024;
+    std::fs::File::create(&disk_path)
+        .expect("create block disk")
+        .set_len(capacity)
+        .expect("size sparse block disk");
+    let disk_arg = DiskArg {
+        id_high: 0,
+        id_low: 1,
+        path: disk_path.to_string_lossy().into_owned(),
+        zone_capacity: i64::try_from(capacity).expect("disk zone fits i64"),
+    };
 
-    let diskdb = DiskdbProcess::start_for_instance(&cluster.mgmt_endpoints, 999, Some(1_536));
+    let diskdb = DiskdbProcess::start_for_instance(&cluster.mgmt_endpoints, 999, Some(16_384));
     diskdb.wait_for_ready().await;
     let rpc = Arc::new(RpcServer::new(None));
     rpc.listen("127.0.0.1", 0)
         .expect("listen for diskio readiness client");
     rpc.start();
     std::thread::sleep(Duration::from_millis(50));
-    let mut diskios = Vec::new();
-    for (index, identity) in identities.into_iter().enumerate() {
-        let diskio = DiskioProcess::start_for_group(
-            &DiskioStartOpts {
-                dummy_disk: "mem",
-                kv_seeds: &cluster.mgmt_endpoints,
-                disks: &[],
-                fault_error_rate: 0.0,
-                fault_latency_ms: None,
-                no_o_direct: false,
-            },
-            identity,
-        );
-        let connection = rpc
-            .connect("127.0.0.1", diskio.port)
-            .expect("connect diskio readiness client");
-        let diskio_client = TestWireDiskioClient::new();
-        diskio_client.attach(&connection);
-        diskio
-            .wait_for_disk(
-                &diskio_client,
-                &rpc,
-                &connection,
-                DiskIoDiskId::new(0, 1 + index as u64),
-            )
-            .await;
-        diskios.push(diskio);
-    }
+    let diskio = start_durable_diskio(&cluster, &rpc, identity, &disk_arg).await;
 
     let chunkdb_options = ChunkdbStartOptions {
         placement_mode: ChunkdbPlacementMode::UnsafeColocated,
@@ -121,8 +119,6 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
         &chunk_kv,
     );
     run_restart_phase("lost-reply", &listen, &access_key, &secret_key);
-    run_direct_chunk_benchmark(&cluster.mgmt_endpoints).await;
-    run_benchmark(&listen, access_server.child.id(), &access_key, &secret_key);
     assert_native_write_metrics(&listen);
 
     run_restart_phase("prepare", &listen, &access_key, &secret_key);
@@ -148,16 +144,107 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
         &secret_key,
     )
     .await;
+    let (diskio, chunk_kv) = verify_durable_diskio_restart(
+        diskio,
+        chunk_kv,
+        DiskioRestartContext {
+            cluster: &cluster,
+            rpc: &rpc,
+            identity,
+            disk: &disk_arg,
+            listen: &second_listen,
+            access_key: &access_key,
+            secret_key: &secret_key,
+        },
+    )
+    .await;
+    run_direct_chunk_benchmark(&cluster.mgmt_endpoints).await;
+    run_benchmark(
+        &second_listen,
+        second_access_server.child.id(),
+        &access_key,
+        &secret_key,
+    );
     run_restart_phase("cleanup", &second_listen, &access_key, &secret_key);
     drop(restarted_access);
     drop(second_access_server);
     drop(chunk_kv);
     drop(chunkdb);
-    drop(diskios);
+    drop(diskio);
     drop(diskdb);
     rpc.stop();
+    drop(disk_data);
 }
 
+async fn verify_durable_diskio_restart(
+    previous_diskio: DiskioProcess,
+    previous_chunk_kv: ChunkKvProcess,
+    context: DiskioRestartContext<'_>,
+) -> (DiskioProcess, ChunkKvProcess) {
+    drop(previous_diskio);
+    let diskio = start_durable_diskio(context.cluster, context.rpc, context.identity, context.disk).await;
+    run_restart_phase(
+        "verify-after-diskio-restart",
+        context.listen,
+        context.access_key,
+        context.secret_key,
+    );
+    drop(previous_chunk_kv);
+    let mut chunk_kv = ChunkKvProcess::start(&context.cluster.mgmt_endpoints);
+    chunk_kv.wait_for_ready().await;
+    run_restart_phase(
+        "verify-after-diskio-restart",
+        context.listen,
+        context.access_key,
+        context.secret_key,
+    );
+    (diskio, chunk_kv)
+}
+
+async fn start_durable_diskio(
+    cluster: &KvCluster,
+    rpc: &Arc<RpcServer>,
+    identity: DiskioGroup0Identity,
+    disk: &DiskArg,
+) -> DiskioProcess {
+    let diskio = DiskioProcess::start_for_group(
+        &DiskioStartOpts {
+            dummy_disk: "null",
+            kv_seeds: &cluster.mgmt_endpoints,
+            disks: std::slice::from_ref(disk),
+            fault_error_rate: 0.0,
+            fault_latency_ms: None,
+            no_o_direct: true,
+        },
+        identity,
+    );
+    let connection = rpc
+        .connect("127.0.0.1", diskio.port)
+        .expect("connect diskio readiness client");
+    let diskio_client = TestWireDiskioClient::new();
+    diskio_client.attach(&connection);
+    diskio
+        .wait_for_disk(
+            &diskio_client,
+            rpc,
+            &connection,
+            DiskIoDiskId::new(0, disk.id_low),
+        )
+        .await;
+    cluster
+        .make_service_registry_client()
+        .heartbeat_diskio_at(
+            identity.instance_id,
+            &format!("127.0.0.1:{}", diskio.port),
+            identity.rack_id,
+            identity.node_id,
+            &[identity.disk_group_id],
+            &[],
+        )
+        .await
+        .expect("register durable diskio endpoint");
+    diskio
+}
 async fn assert_range_delete_contract(cluster: &KvCluster) {
     let chunkdb_client = make_chunkdb_client(cluster.make_service_registry_client());
     let range_delete = chunkdb_client
@@ -193,7 +280,7 @@ async fn verify_diskdb_restart(
     secret_key: &str,
 ) -> DiskdbProcess {
     drop(previous);
-    let diskdb = DiskdbProcess::start_for_instance(seeds, 999, Some(1_536));
+    let diskdb = DiskdbProcess::start_for_instance(seeds, 999, Some(16_384));
     diskdb.wait_for_ready().await;
     run_restart_phase("verify-after-diskdb-restart", listen, access_key, secret_key);
     diskdb
@@ -471,7 +558,7 @@ fn metric_value(response: &str, name: &str) -> u64 {
 async fn seed_compact_hardware(hardware: &HardwareClient) -> Vec<DiskioGroup0Identity> {
     const RACK_ID: u64 = 1;
     const UNIT_BYTES: u32 = 1024 * 1024;
-    const ZONE_UNITS: u64 = 1_536;
+    const ZONE_UNITS: u64 = 16_384;
     let node_ids = vec![10];
     hardware
         .add_rack(

@@ -204,6 +204,38 @@ impl DiskdbRpcService {
                 Err(AllocError::NoSpace) => {
                     metrics.allocate_errors_total.inc();
                     metrics.allocate_no_space_errors.inc();
+                    let disks = params.dg.disks.read().unwrap();
+                    let diagnostics: Vec<_> = disks
+                        .iter()
+                        .map(|disk| {
+                            let zones = disk.zones.load();
+                            let zones: Vec<_> = zones
+                                .iter()
+                                .map(|zone| {
+                                    (
+                                        zone.zone_index,
+                                        zone.unit_capacity,
+                                        zone.busy_blocks(),
+                                        zone.largest_contiguous_free_run(),
+                                    )
+                                })
+                                .collect();
+                            (
+                                disk.disk_id,
+                                disk.effective_status(),
+                                disk.active_zone_context.load().len(),
+                                zones,
+                            )
+                        })
+                        .collect();
+                    tracing::warn!(
+                        disk_group_id = params.dg.disk_group_id,
+                        requested_blocks = params.count,
+                        requested_units_per_block = params.unit_count,
+                        allow_disk_reuse = params.allow_disk_reuse,
+                        ?diagnostics,
+                        "diskdb allocation has no space after compaction fallback"
+                    );
                     let ctrl = build_allocate_response(
                         req_id,
                         create_nano,

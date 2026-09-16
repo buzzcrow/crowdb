@@ -44,7 +44,8 @@ pub async fn load_zone_inner(
         match &snapshot {
             Some(zv) if zv.verify_checksum() => {
                 // Valid snapshot — restore bitmap + snapshot_slot + compact_ts.
-                let bits = crowdb_protocol::UsageBitmap::restore(&zv.usage_bitmap);
+                let bits =
+                    crowdb_protocol::UsageBitmap::restore_for_block_count(&zv.usage_bitmap, unit_capacity);
                 (bits, zv.snapshot_slot, zv.compact_ts, zv.compact_slot, true)
             }
             Some(_zv) => {
@@ -76,7 +77,6 @@ pub async fn load_zone_inner(
     // BusyBlockKey ops (frees) are ignored — the bitmap stays as a
     // conservative over-estimate. Compaction will range_clear the
     // freed bits when it processes the free records on disk.
-    let mut used_count = usage_bits.count_set();
     let mut max_allocation_ts = 0;
     for op in &busy_ops {
         if op.is_delete {
@@ -88,10 +88,26 @@ pub async fn load_zone_inner(
         if let Ok(bk) = BusyBlockKey::from_bytes(&op.key) {
             if let Ok(bv) = bincode::deserialize::<BusyBlockValue>(&op.value) {
                 max_allocation_ts = max_allocation_ts.max(bv.allocation_ts);
-                #[allow(clippy::cast_possible_truncation)]
-                let offset = bk.unit_offset as u32;
-                let _ = usage_bits.range_set(offset, bv.unit_count);
-                used_count += u64::from(bv.unit_count);
+                let offset = u32::try_from(bk.unit_offset).unwrap_or(u32::MAX);
+                if offset
+                    .checked_add(bv.unit_count)
+                    .is_some_and(|end| end <= unit_capacity)
+                {
+                    // Journal replay can observe a retried Put for the same
+                    // BusyBlockKey. `range_set` preserves the bitmap's
+                    // idempotence; the final popcount below is the sole
+                    // source of the recovered usage count.
+                    let _ = usage_bits.range_set(offset, bv.unit_count);
+                } else {
+                    tracing::warn!(
+                        disk_id = ?disk_id,
+                        zone_index = zone_idx,
+                        unit_offset = bk.unit_offset,
+                        unit_count = bv.unit_count,
+                        unit_capacity,
+                        "ignored out-of-range busy record during zone recovery"
+                    );
+                }
             }
         }
     }
@@ -128,6 +144,7 @@ pub async fn load_zone_inner(
     // written after the snapshot), so the next compaction will
     // classify them as "new" and range_clear their bits. This is
     // correct: those blocks ARE free (no BusyBlockKey on disk).
+    let used_count = u32::try_from(usage_bits.count_set()).unwrap_or(u32::MAX);
     let zone = DdbZone {
         disk_id,
         zone_index: zone_idx,
@@ -136,7 +153,7 @@ pub async fn load_zone_inner(
         unit_capacity,
         usage_bits,
         last_pos_64: std::sync::atomic::AtomicU64::new(0),
-        used_count: std::sync::atomic::AtomicU32::new(u32::try_from(used_count).unwrap_or(u32::MAX)),
+        used_count: std::sync::atomic::AtomicU32::new(used_count),
         snapshot_slot: std::sync::atomic::AtomicU64::new(snapshot_slot),
         compact_ts: std::sync::atomic::AtomicU64::new(snapshot_compact_ts),
         compact_slot: std::sync::atomic::AtomicU64::new(snapshot_compact_slot),

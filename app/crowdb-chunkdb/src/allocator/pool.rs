@@ -109,6 +109,22 @@ impl DiskdbClientPool {
         Ok(())
     }
 
+    async fn refresh_after_owner_failure<T>(
+        &self,
+        result: Result<T, DiskdbClientError>,
+    ) -> Result<T, DiskdbClientError> {
+        if matches!(
+            result,
+            Err(DiskdbClientError::Unreachable(_) | DiskdbClientError::NotOwner(_))
+        ) {
+            // Allocation may already have succeeded when the reply was lost.
+            // Refresh for the next supervised attempt, but never replay this
+            // potentially ambiguous mutation inside the transport adapter.
+            let _ = self.refresh_endpoints().await;
+        }
+        result
+    }
+
     /// Allocate blocks on the diskdb instance owning `disk_group_id`.
     ///
     /// The mutation is sent once. A transport failure is ambiguous because
@@ -150,7 +166,8 @@ impl DiskdbClientPool {
         let endpoint = self.endpoint_for_dg(dg_id).await.map_err(|e| {
             DiskdbClientError::Unreachable(format!("no endpoint for disk_group {dg_id}: {e}"))
         })?;
-        self.transport.allocate_blocks(&endpoint, &req).await
+        self.refresh_after_owner_failure(self.transport.allocate_blocks(&endpoint, &req).await)
+            .await
     }
 
     pub async fn allocate_blocks_reusing_disks(
@@ -171,7 +188,8 @@ impl DiskdbClientPool {
         let endpoint = self.endpoint_for_dg(dg_id).await.map_err(|error| {
             DiskdbClientError::Unreachable(format!("no endpoint for disk_group {dg_id}: {error}"))
         })?;
-        self.transport.allocate_blocks(&endpoint, &req).await
+        self.refresh_after_owner_failure(self.transport.allocate_blocks(&endpoint, &req).await)
+            .await
     }
 
     /// Deliver an already-reserved target to its owning `DiskDB` for durable
