@@ -111,3 +111,8 @@ Required gates:
   CROWDB's root 110-column `rustfmt.toml` to upstream-formatted sources. Scoped
   CROWDB format checks pass and the Hyper worktree stays clean; the workspace
   gate needs to exclude the fork without rewriting its unrelated source.
+- The authentication boundary currently collapses every rejected SigV4 request
+  into a generic `AccessDenied` response; raw HTTP tests pin that behavior for
+  malformed signatures. Decide whether the advertised S3 compatibility surface
+  needs distinct `SignatureDoesNotMatch` and `InvalidAccessKeyId` errors before
+  changing the authenticator result type and wire contract.
