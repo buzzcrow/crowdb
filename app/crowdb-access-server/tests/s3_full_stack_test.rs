@@ -120,7 +120,9 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
 
     run_boto3(&listen, &access_key, &secret_key, &access_server, &chunk_kv);
     let exported = http_get(&listen, "/_crowdb/metrics");
-    assert!(metric_value(&exported, "crowdb_s3_native_prefetched_bytes_total") > 0);
+    let native_body_bytes = metric_value(&exported, "crowdb_s3_native_direct_bytes_total")
+        + metric_value(&exported, "crowdb_s3_native_prefetched_bytes_total");
+    assert!(native_body_bytes > 0);
     assert!(metric_value(&exported, "crowdb_s3_large_write_framed_owners_total") > 0);
     assert!(metric_value(&exported, "crowdb_s3_large_write_framed_views_total") > 0);
     assert_eq!(

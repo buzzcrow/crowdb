@@ -46,7 +46,7 @@ with bounded, non-blocking telemetry and dependency-aware service health.
 
 ## Verification and cleanup
 
-- [~] **Acceptance tests**: cover all terminal classes, phase reconciliation,
+- [x] **Acceptance tests**: cover all terminal classes, phase reconciliation,
   cardinality independence, exporter failure, dependency degradation, and
   compact-stack boto3 evidence. Files: access S3/server tests and E2E harness.
 - [ ] **Required gates**: run affected tests separately, workspace fmt,
