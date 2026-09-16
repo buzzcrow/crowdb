@@ -3,10 +3,12 @@
 
 import os
 import sys
+import time
 from hashlib import md5
 
 import boto3
 from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 
 
 def main():
@@ -28,9 +30,17 @@ def main():
     if phase == "prepare":
         client.create_bucket(Bucket=bucket)
         assert client.put_object(Bucket=bucket, Key=key, Body=payload)["ETag"] == etag
-    elif phase == "verify":
-        assert client.head_object(Bucket=bucket, Key=key)["ETag"] == etag
-        assert client.get_object(Bucket=bucket, Key=key)["Body"].read() == payload
+    elif phase in ("verify", "verify-after-chunkdb-restart"):
+        deadline = time.monotonic() + (20 if phase.endswith("chunkdb-restart") else 0)
+        while True:
+            try:
+                assert client.head_object(Bucket=bucket, Key=key)["ETag"] == etag
+                assert client.get_object(Bucket=bucket, Key=key)["Body"].read() == payload
+                break
+            except (BotoCoreError, ClientError):
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.5)
     elif phase == "cleanup":
         client.delete_object(Bucket=bucket, Key=key)
         client.delete_bucket(Bucket=bucket)

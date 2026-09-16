@@ -163,10 +163,22 @@ impl ChunkdbClient {
             let route = binding
                 .route_with_fallback(bucket)
                 .map_err(|error| ChunkdbClientError::Unreachable(format!("range routing failed: {error}")))?;
-            let mut endpoints = vec![route.primary.rpc_endpoint];
+            // Range bindings identify the owner but can retain its old socket
+            // after that same instance restarts on a different port. The
+            // service registry is authoritative for a live instance endpoint.
+            let cached = self.endpoint_cache.load();
+            let primary = cached
+                .get(&route.primary.instance_id)
+                .cloned()
+                .unwrap_or(route.primary.rpc_endpoint);
+            let mut endpoints = vec![primary];
             if let Some(fallback) = route.fallback {
-                if fallback.rpc_endpoint != endpoints[0] {
-                    endpoints.push(fallback.rpc_endpoint);
+                let endpoint = cached
+                    .get(&fallback.instance_id)
+                    .cloned()
+                    .unwrap_or(fallback.rpc_endpoint);
+                if endpoint != endpoints[0] {
+                    endpoints.push(endpoint);
                 }
             }
             return Ok(endpoints);
@@ -205,13 +217,14 @@ impl ChunkdbClient {
             tokio::time::sleep(backoff).await;
             backoff = backoff.saturating_mul(2);
             let _ = self.refresh_endpoints().await;
-            if matches!(error, ChunkdbClientError::NotMyRange(_)) {
-                if let Some(binding) = &self.range_binding {
-                    if let Some(id) = chunk_id {
-                        let _ = binding.refresh_and_route(id).await;
-                    } else {
-                        let _ = binding.refresh().await;
-                    }
+            // A restarted owner may advertise a new RPC endpoint while the
+            // cached range binding still names its old socket. Refresh both
+            // sources on transient failures, not only on NotMyRange.
+            if let Some(binding) = &self.range_binding {
+                if let Some(id) = chunk_id {
+                    let _ = binding.refresh_and_route(id).await;
+                } else {
+                    let _ = binding.refresh().await;
                 }
             }
         }

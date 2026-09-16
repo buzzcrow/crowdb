@@ -87,14 +87,12 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
         diskios.push(diskio);
     }
 
-    let chunkdb = ChunkdbProcess::start_with_options(
-        &cluster.mgmt_endpoints,
-        ChunkdbStartOptions {
-            placement_mode: ChunkdbPlacementMode::UnsafeColocated,
-            repair_allow_unsafe_placement: true,
-            ..ChunkdbStartOptions::default()
-        },
-    );
+    let chunkdb_options = ChunkdbStartOptions {
+        placement_mode: ChunkdbPlacementMode::UnsafeColocated,
+        repair_allow_unsafe_placement: true,
+        ..ChunkdbStartOptions::default()
+    };
+    let chunkdb = ChunkdbProcess::start_with_options(&cluster.mgmt_endpoints, chunkdb_options);
     chunkdb.wait_for_ready().await;
     let chunkdb_client = make_chunkdb_client(cluster.make_service_registry_client());
     let range_delete = chunkdb_client
@@ -137,6 +135,15 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
     let (mut restarted_access, restarted_listen) = start_access_server(&access_binary, &seeds);
     wait_for_tcp(&mut restarted_access, &restarted_listen).await;
     run_restart_phase("verify", &restarted_listen, &access_key, &secret_key);
+    drop(chunkdb);
+    let chunkdb = ChunkdbProcess::start_with_options(&cluster.mgmt_endpoints, chunkdb_options);
+    chunkdb.wait_for_ready().await;
+    run_restart_phase(
+        "verify-after-chunkdb-restart",
+        &second_listen,
+        &access_key,
+        &secret_key,
+    );
     run_restart_phase("cleanup", &second_listen, &access_key, &secret_key);
     drop(restarted_access);
     drop(second_access_server);
