@@ -5,7 +5,7 @@
 
 ## Status
 
-**Deferred until the R152–R166 basic S3 milestone is complete and measured.**
+**Deferred until the R152–R166 basic S3 milestone is complete.**
 It is unblocked when single-request streaming, publication recovery, ETag,
 listing, deletion, and compatibility E2E behavior are stable.
 
@@ -30,17 +30,17 @@ The scope boundary is
    identities, sizes, checksums, and expected upload state before publishing
    one immutable object generation. No concatenation through access-server
    memory is allowed.
-4. Define multipart-specific ETag/checksum behavior without changing R164's
-   existing single-part generations. Abort and expiry create bounded,
+4. Define multipart-specific ETag/checksum behavior without changing the basic
+   single-part generation rules. Abort and expiry create bounded,
    idempotent cleanup records.
-5. Preserve R161 admission bounds for parallel part traffic and R163 wire
+5. Preserve the basic admission bounds for parallel part traffic and wire
    compatibility for all retry and conflict outcomes.
 
 ## Dependencies
 
 - Depends on R152–R166.
-- Reuses R154 publication/recovery, R155 streaming input, R159 reclamation, and
-  R164 integrity.
+- Reuses the basic milestone's publication/recovery, streaming input, logical
+  deletion, and integrity contracts.
 - R170 owns any accelerated multipart transfer and additionally depends on this
   requirement before enabling that operation.
 

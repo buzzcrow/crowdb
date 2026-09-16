@@ -75,6 +75,10 @@ impl LocalFileDiskWriter {
 #[async_trait]
 impl DiskWriter for LocalFileDiskWriter {
     async fn write(&self, seg: &Segment, unit_bytes: u64, data: Bytes) -> Result<()> {
+        self.write_views(seg, unit_bytes, vec![data]).await
+    }
+
+    async fn write_views(&self, seg: &Segment, unit_bytes: u64, data: Vec<Bytes>) -> Result<()> {
         let disk_id = seg
             .disk_id
             .as_ref()
@@ -90,8 +94,10 @@ impl DiskWriter for LocalFileDiskWriter {
             .map_err(|e| IoError::WriteFailed(format!("open file failed: {e}")))?;
         file.seek(SeekFrom::Start(zone_offset))
             .map_err(|e| IoError::WriteFailed(format!("seek failed: {e}")))?;
-        file.write_all(&data)
-            .map_err(|e| IoError::WriteFailed(format!("write failed: {e}")))?;
+        for view in data {
+            file.write_all(&view)
+                .map_err(|e| IoError::WriteFailed(format!("write failed: {e}")))?;
+        }
         self.write_count.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }

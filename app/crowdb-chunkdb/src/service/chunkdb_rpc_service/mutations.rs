@@ -884,14 +884,13 @@ impl ChunkdbRpcService {
         &self,
         req: ServerRequest,
         server: &Arc<RpcServer>,
-        mut request: RequestGuard,
+        _request: RequestGuard,
     ) {
         let req_id = req.request_id;
         let create_nano = req.rpc_create_nano;
         let msg_type = FBMsgType::EDeleteChunkRangeResponse.0 as u16;
         let conn_handle_usize = req.conn_handle as usize;
 
-        let handler = Arc::clone(&self.handler);
         let server = Arc::clone(server);
         self.rt.spawn(async move {
             let Ok(fb_req) = flatbuffers::root::<FBDeleteChunkRangeRequest>(req.control()) else {
@@ -922,41 +921,24 @@ impl ChunkdbRpcService {
                 );
                 return;
             };
-            let offset = fb_req.chunk_offset();
-            let size = fb_req.chunk_size();
-
-            let result = handler.delete_chunk_range(&chunk_id, offset, size).await;
-            match result {
-                Ok(()) => {
-                    request.mark_success();
-                    let ctrl = build_delete_range_response(
-                        req_id,
-                        create_nano,
-                        FBChunkdbRetCode::Success,
-                        None,
-                        0,
-                        0,
-                    );
-                    submit_fb_response(
-                        &server,
-                        conn_handle_usize as *mut std::ffi::c_void,
-                        ctrl,
-                        msg_type,
-                        req_id,
-                    );
-                }
-                Err(e) => {
-                    let (code, msg, rs, re) = map_error(&e);
-                    let ctrl = build_delete_range_response(req_id, create_nano, code, Some(&msg), rs, re);
-                    submit_fb_response(
-                        &server,
-                        conn_handle_usize as *mut std::ffi::c_void,
-                        ctrl,
-                        msg_type,
-                        req_id,
-                    );
-                }
-            }
+            let _ = (chunk_id, fb_req.chunk_offset(), fb_req.chunk_size());
+            // The used-range lifecycle must exist before this RPC can safely
+            // reclaim data. Until then it must never mutate data.
+            let ctrl = build_delete_range_response(
+                req_id,
+                create_nano,
+                FBChunkdbRetCode::Unimplemented,
+                Some("chunk range deletion is not implemented"),
+                0,
+                0,
+            );
+            submit_fb_response(
+                &server,
+                conn_handle_usize as *mut std::ffi::c_void,
+                ctrl,
+                msg_type,
+                req_id,
+            );
         });
     }
 

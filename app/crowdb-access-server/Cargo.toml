@@ -1,0 +1,57 @@
+[package]
+name = "crowdb-access-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Independent external protocol listeners for CROWDB."
+
+[lints]
+workspace = true
+
+[features]
+default = ["s3"]
+s3-e2e = ["s3"]
+s3 = [
+    "dep:async-trait",
+    "dep:chrono",
+    "dep:crowdb-access-s3",
+    "dep:crowdb-chunk-client",
+    "dep:crowdb-chunk-kv-client",
+    "dep:crowdb-common",
+    "dep:crowdb-kv-client",
+    "dep:futures",
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:percent-encoding",
+    "dep:thiserror",
+]
+
+[dependencies]
+async-trait = { version = "0.1", optional = true }
+chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
+crowdb-access-s3 = { path = "../../lib/crowdb-access-s3", optional = true }
+crowdb-chunk-client = { path = "../../lib/crowdb-chunk-client", optional = true }
+crowdb-chunk-kv-client = { path = "../../lib/crowdb-chunk-kv-client", optional = true }
+crowdb-common = { path = "../../lib/crowdb-common/rust", optional = true }
+crowdb-kv-client = { path = "../../lib/crowdb-kv-client", optional = true }
+futures = { version = "0.3", optional = true }
+http-body-util = { version = "0.1", optional = true }
+hyper = { workspace = true, features = ["http1", "server"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio"], optional = true }
+percent-encoding = { version = "2", optional = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
+thiserror = { workspace = true, optional = true }
+
+[dev-dependencies]
+crowdb-chunkdb-client = { path = "../../lib/crowdb-chunkdb-client" }
+crowdb-diskio-client = { path = "../../lib/crowdb-diskio-client", features = ["test-util"] }
+crowdb-protocol = { path = "../../lib/crowdb-protocol" }
+crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi" }
+crowdb-test-harness = { path = "../../lib/crowdb-test-harness", features = ["chunk-kv", "chunkdb", "diskdb", "diskio"] }
+serde_json = "1"
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync"] }

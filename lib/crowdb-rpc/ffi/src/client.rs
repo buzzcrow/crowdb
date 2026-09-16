@@ -5,7 +5,7 @@
 //! oneshot channels.
 
 use crate::sys;
-use crate::{Buffer, Connection, RpcError, RpcServer};
+use crate::{Buffer, BufferChain, Connection, RpcError, RpcServer};
 use crowdb_common::metrics;
 use std::ptr;
 use std::time::Instant;
@@ -231,6 +231,51 @@ impl RpcClient {
             return Err(e);
         }
 
+        Ok(CallFuture { rx })
+    }
+
+    /// Submit one logical data payload as a bounded immutable view chain.
+    /// The transport sends the views with `writev` and releases every owner
+    /// only after the complete frame is sent or discarded.
+    pub fn call_chain(
+        &self,
+        server: &RpcServer,
+        conn: &Connection,
+        request_id: u64,
+        control: Buffer,
+        data: BufferChain,
+        msg_type: u16,
+    ) -> Result<CallFuture, RpcError> {
+        self.set_completion_pool_size(DEFAULT_POOL_SIZE);
+        let view_count = u8::try_from(data.view_count()).map_err(|_| RpcError::InvalidArg)?;
+
+        let send_ts = Instant::now();
+        let (tx, rx) = oneshot::channel();
+        let user_data = Box::into_raw(Box::new((tx, send_ts))) as *mut std::ffi::c_void;
+        let control_handle = control.into_raw();
+        let handles = data.into_raw_handles();
+        let status = unsafe {
+            sys::crowdb_rpc_client_send_chain(
+                self.handle,
+                server.handle(),
+                conn.handle(),
+                request_id,
+                control_handle,
+                handles.as_ptr(),
+                view_count,
+                msg_type,
+                Some(on_complete_cb),
+                user_data,
+            )
+        };
+        if status != sys::CROWDB_RPC_OK {
+            unsafe {
+                drop(Box::from_raw(
+                    user_data as *mut (oneshot::Sender<(Result<Response, RpcError>, Instant)>, Instant),
+                ));
+            }
+            return Err(RpcError::from_status(status));
+        }
         Ok(CallFuture { rx })
     }
 

@@ -258,10 +258,8 @@ impl ChunkIoWriter for LargeObjectWriter {
     }
 
     fn require_data(&self) -> bool {
-        if self.finished {
-            return false;
-        }
-        self.chunk_writer.as_ref().map_or(true, ChunkWriter::ready)
+        // A full strip advances only when the next push arrives.
+        !self.finished
     }
 }
 

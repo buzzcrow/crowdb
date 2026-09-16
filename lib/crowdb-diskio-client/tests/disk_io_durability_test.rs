@@ -52,6 +52,33 @@ async fn disk_io_e2e_durability() {
     let wc = DiskioClient::await_write_response(wf).await.expect("write IO");
     assert_eq!(wc, DiskIoRetCode::Success, "durability write should succeed");
 
+    // Stream journal frames commonly begin at an unaligned byte offset and
+    // are shorter than one physical sector. Keep this case distinct from the
+    // aligned smoke write above: it exercises AlignedWriter's read-modify-
+    // write path across a process restart.
+    let unaligned_offset = 25_220;
+    let unaligned_data: Vec<u8> = (0..182u16)
+        .map(|index| u8::try_from((index * 31) % 251).unwrap())
+        .collect();
+    let wf = dio_client1
+        .write(
+            &rpc_server1,
+            &conn1,
+            disk_id,
+            0,
+            unaligned_offset,
+            unaligned_data.clone(),
+        )
+        .expect("unaligned write send");
+    let wc = DiskioClient::await_write_response(wf)
+        .await
+        .expect("unaligned write IO");
+    assert_eq!(
+        wc,
+        DiskIoRetCode::Success,
+        "unaligned durability write should succeed"
+    );
+
     let ff = dio_client1
         .fsync(&rpc_server1, &conn1, disk_id)
         .expect("fsync send");
@@ -85,6 +112,26 @@ async fn disk_io_e2e_durability() {
         rd, write_data,
         "durability: read after restart must match written data"
     );
+    let rf = dio_client2
+        .read(
+            &rpc_server2,
+            &conn2,
+            disk_id,
+            0,
+            unaligned_offset,
+            u32::try_from(unaligned_data.len()).expect("unaligned length fits u32"),
+            0,
+        )
+        .expect("unaligned read send");
+    let (rc, rd) = DiskioClient::await_read_response(rf)
+        .await
+        .expect("unaligned read IO");
+    assert_eq!(
+        rc,
+        DiskIoRetCode::Success,
+        "unaligned durability read should succeed"
+    );
+    assert_eq!(rd.as_deref(), Some(unaligned_data.as_slice()));
     eprintln!("  read after restart: data matches");
 
     drop(diskio2);

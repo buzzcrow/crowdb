@@ -174,6 +174,28 @@ impl UsageBitmap {
         Self { bits, block_count }
     }
 
+    /// Restore a snapshot into an explicitly sized bitmap.
+    ///
+    /// Recovery uses the current disk geometry as the authority. Snapshot
+    /// words beyond that geometry are discarded, and unused high bits in the
+    /// final word are cleared.
+    #[must_use]
+    pub fn restore_for_block_count(bytes: &[u8], block_count: u32) -> Self {
+        let restored = Self::restore(bytes);
+        let bitmap = Self::new(block_count);
+        for index in 0..bitmap.word_count() {
+            let mut word = restored
+                .bits
+                .get(index)
+                .map_or(0, |source| source.load(Ordering::Acquire));
+            if index + 1 == bitmap.word_count() && block_count % 64 != 0 {
+                word &= (1u64 << (block_count % 64)) - 1;
+            }
+            bitmap.bits[index].store(word, Ordering::Release);
+        }
+        bitmap
+    }
+
     /// Count the number of set bits (allocated blocks).
     #[must_use]
     pub fn count_set(&self) -> u64 {

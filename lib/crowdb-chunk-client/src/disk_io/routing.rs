@@ -103,6 +103,20 @@ impl DiskWriter for RoutedDiskWriter {
             .map_err(map_write_error)
     }
 
+    async fn write_views(&self, seg: &Segment, unit_bytes: u64, data: Vec<Bytes>) -> Result<()> {
+        let target = Self::target(seg, unit_bytes)?;
+        self.client
+            .write_views(
+                target,
+                0,
+                data,
+                Durability::Buffered,
+                self.client.normal_options(),
+            )
+            .await
+            .map_err(map_write_error)
+    }
+
     async fn write_priority_at_byte_offset(
         &self,
         seg: &Segment,
@@ -161,10 +175,23 @@ impl DiskWriter for RoutedDiskWriter {
 
     async fn read(&self, seg: &Segment, unit_bytes: u64, segment_offset: u64, length: u32) -> Result<Bytes> {
         let target = Self::target(seg, unit_bytes).map_err(|error| IoError::ReadFailed(error.to_string()))?;
-        self.client
+        let result = self
+            .client
             .read(target, segment_offset, length, self.client.normal_options())
-            .await
-            .map_err(map_read_error)
+            .await;
+        match result {
+            Err(DiskioError::TransportUnavailable(_) | DiskioError::TopologyUnavailable(_)) => {
+                // A restarted DiskIO can advertise a new endpoint while the
+                // retained generation still points at its old connection.
+                // Reads are safe to retry once after an authoritative refresh.
+                self.client.refresh().await.map_err(map_read_error)?;
+                self.client
+                    .read(target, segment_offset, length, self.client.normal_options())
+                    .await
+                    .map_err(map_read_error)
+            }
+            result => result.map_err(map_read_error),
+        }
     }
 }
 

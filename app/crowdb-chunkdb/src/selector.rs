@@ -20,6 +20,157 @@ use crate::topology::TopologySnapshot;
 pub use ec::EcPlacement;
 pub use mirror::MirrorPlacement;
 
+pub trait ChunkPlacementStrategy: Send + Sync {
+    fn select_mirror(
+        &self,
+        snap: &TopologySnapshot,
+        copy_count: usize,
+        constraints: &PlacementConstraints,
+    ) -> Result<PlacementPlan, PlacementError>;
+
+    fn select_ec(
+        &self,
+        snap: &TopologySnapshot,
+        data_num: usize,
+        code_num: usize,
+        constraints: &PlacementConstraints,
+    ) -> Result<PlacementPlan, PlacementError>;
+
+    fn permits_degraded_disk(&self, constraints: &PlacementConstraints, ec: bool) -> bool;
+
+    fn permits_unsafe_ec(&self, configured: bool) -> bool;
+
+    fn permits_degraded_failure_domains(&self, configured: bool) -> bool;
+}
+
+#[derive(Debug, Default)]
+pub struct ProtectedPlacementStrategy;
+
+impl ChunkPlacementStrategy for ProtectedPlacementStrategy {
+    fn select_mirror(
+        &self,
+        snap: &TopologySnapshot,
+        copy_count: usize,
+        constraints: &PlacementConstraints,
+    ) -> Result<PlacementPlan, PlacementError> {
+        MirrorPlacement::select(snap, copy_count, constraints)
+    }
+
+    fn select_ec(
+        &self,
+        snap: &TopologySnapshot,
+        data_num: usize,
+        code_num: usize,
+        constraints: &PlacementConstraints,
+    ) -> Result<PlacementPlan, PlacementError> {
+        EcPlacement::select(snap, data_num, code_num, constraints)
+    }
+
+    fn permits_degraded_disk(&self, constraints: &PlacementConstraints, ec: bool) -> bool {
+        constraints.allow_degraded_failure_domains && (!ec || constraints.allow_unsafe_ec)
+    }
+
+    fn permits_unsafe_ec(&self, configured: bool) -> bool {
+        configured
+    }
+
+    fn permits_degraded_failure_domains(&self, configured: bool) -> bool {
+        configured
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct UnsafeColocatedPlacementStrategy;
+
+impl UnsafeColocatedPlacementStrategy {
+    fn select(
+        snap: &TopologySnapshot,
+        fragment_count: usize,
+        loss_budget: u32,
+        constraints: &PlacementConstraints,
+        ec: bool,
+    ) -> Result<PlacementPlan, PlacementError> {
+        if fragment_count == 0 {
+            return Err(PlacementError::InvalidShape(
+                "fragment count must be nonzero".into(),
+            ));
+        }
+        let disk_group = healthy_dgs(snap, constraints)
+            .into_iter()
+            .min_by_key(|entry| {
+                (
+                    snap.capacity_score(entry.dg_id, constraints.planned_bytes_per_block),
+                    entry.rack_id,
+                    entry.node_id,
+                    entry.dg_id,
+                )
+            })
+            .ok_or(PlacementError::NoHealthyDiskGroups)?;
+        let entries = (0..fragment_count)
+            .map(|_| PlacementEntry {
+                rack_id: disk_group.rack_id,
+                node_id: disk_group.node_id,
+                disk_group_id: disk_group.dg_id,
+                block_count: 1,
+            })
+            .collect();
+        let mut policy = constraints.clone();
+        policy.allow_unsafe_ec = true;
+        policy.allow_degraded_failure_domains = true;
+        finish_plan(snap, entries, loss_budget, &policy, ec)
+    }
+}
+
+impl ChunkPlacementStrategy for UnsafeColocatedPlacementStrategy {
+    fn select_mirror(
+        &self,
+        snap: &TopologySnapshot,
+        copy_count: usize,
+        constraints: &PlacementConstraints,
+    ) -> Result<PlacementPlan, PlacementError> {
+        Self::select(
+            snap,
+            copy_count,
+            u32::try_from(copy_count.saturating_sub(1)).unwrap_or(u32::MAX),
+            constraints,
+            false,
+        )
+    }
+
+    fn select_ec(
+        &self,
+        snap: &TopologySnapshot,
+        data_num: usize,
+        code_num: usize,
+        constraints: &PlacementConstraints,
+    ) -> Result<PlacementPlan, PlacementError> {
+        if data_num == 0 || code_num == 0 {
+            return Err(PlacementError::InvalidShape(
+                "EC data_num and code_num must both be non-zero".into(),
+            ));
+        }
+        Self::select(
+            snap,
+            data_num.saturating_add(code_num),
+            u32::try_from(code_num).unwrap_or(u32::MAX),
+            constraints,
+            true,
+        )
+    }
+
+    fn permits_degraded_disk(&self, _constraints: &PlacementConstraints, _ec: bool) -> bool {
+        true
+    }
+
+    fn permits_unsafe_ec(&self, _configured: bool) -> bool {
+        true
+    }
+
+    fn permits_degraded_failure_domains(&self, _configured: bool) -> bool {
+        true
+    }
+}
+
 /// Lexicographic failure-domain priority for new placement decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

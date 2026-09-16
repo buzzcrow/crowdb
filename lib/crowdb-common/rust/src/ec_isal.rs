@@ -124,6 +124,18 @@ pub fn isal_encode_update(
     data_num: usize,
     code_num: usize,
 ) {
+    isal_encode_update_at(data, data_index, parity, data_num, code_num, 0);
+}
+
+/// XOR one data-shard view's contribution into a parity subrange.
+pub fn isal_encode_update_at(
+    data: &[u8],
+    data_index: usize,
+    parity: &mut [Vec<u8>],
+    data_num: usize,
+    code_num: usize,
+    offset: usize,
+) {
     let k = data_num as i32;
     let rows = code_num as i32;
     let m = k + rows;
@@ -140,7 +152,12 @@ pub fn isal_encode_update(
             gftbls.as_mut_ptr(),
         );
     }
-    let parity_ptrs: Vec<UcPtr> = parity.iter_mut().map(Vec::as_mut_ptr).collect();
+    debug_assert!(parity.iter().all(|buffer| offset + data.len() <= buffer.len()));
+    let parity_ptrs: Vec<UcPtr> = parity
+        .iter_mut()
+        // SAFETY: callers validate the view range against every parity shard.
+        .map(|buffer| unsafe { buffer.as_mut_ptr().add(offset) })
+        .collect();
     unsafe {
         ec_encode_data_update(
             data.len() as i32,

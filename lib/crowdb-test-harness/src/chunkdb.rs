@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport, RetryConfig};
+use crowdb_kv_client::ServiceRegistryClient;
 use crowdb_protocol::port::alloc::alloc_test_port;
 use crowdb_protocol::ServicePort;
 
@@ -56,9 +57,26 @@ pub struct ChunkdbProcess {
     pub log_path: std::path::PathBuf,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+pub enum ChunkdbPlacementMode {
+    #[default]
+    Protected,
+    UnsafeColocated,
+}
+
+impl ChunkdbPlacementMode {
+    fn as_config(self) -> &'static str {
+        match self {
+            Self::Protected => "protected",
+            Self::UnsafeColocated => "unsafe_colocated",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct ChunkdbStartOptions {
+    pub placement_mode: ChunkdbPlacementMode,
     pub allow_unsafe_ec: bool,
     pub allow_degraded_failure_domains: bool,
     pub conversion_enabled: bool,
@@ -76,6 +94,7 @@ pub struct ChunkdbStartOptions {
 impl Default for ChunkdbStartOptions {
     fn default() -> Self {
         Self {
+            placement_mode: ChunkdbPlacementMode::Protected,
             allow_unsafe_ec: false,
             allow_degraded_failure_domains: false,
             conversion_enabled: false,
@@ -156,6 +175,7 @@ refresh_interval_secs = 2
 allow_all_when_empty = true
 
 [placement]
+mode = "{placement_mode}"
 allow_unsafe_ec = {allow_unsafe_ec}
 allow_degraded_failure_domains = {allow_degraded_failure_domains}
 
@@ -182,6 +202,7 @@ cache_capacity = 1000
 sweep_chunk_lock_interval_secs = 10
 lock_hold_warn_threshold_ms = 1000
 "#,
+            placement_mode = options.placement_mode.as_config(),
             allow_unsafe_ec = options.allow_unsafe_ec,
             allow_degraded_failure_domains = options.allow_degraded_failure_domains,
             conversion_enabled = options.conversion_enabled,
@@ -246,6 +267,37 @@ lock_hold_warn_threshold_ms = 1000
             if Instant::now() > deadline {
                 let log = self.log_content();
                 panic!("crowdb-chunkdb did not become ready within 30s. Log:\n{log}");
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Wait until this process publishes its RPC endpoint to group-0.
+    ///
+    /// HTTP readiness only proves the local service has started. Clients
+    /// discover chunkdb through the service registry, so an end-to-end test
+    /// must wait for this publication before issuing its first RPC.
+    pub async fn wait_for_registry_ready(&self, service_registry: &ServiceRegistryClient) {
+        let endpoint = format!("http://127.0.0.1:{}", self.listen_port + 200);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let registered = service_registry
+                .read_instance("chunkdb", INSTANCE_ID)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|value| value.rpc_endpoint == endpoint);
+            if registered {
+                eprintln!("crowdb-chunkdb registry ready at {endpoint}");
+                return;
+            }
+            if Instant::now() > deadline {
+                let observed = service_registry
+                    .read_instance("chunkdb", INSTANCE_ID)
+                    .await
+                    .ok()
+                    .flatten();
+                panic!("chunkdb registry not ready at {endpoint} within 30s; observed={observed:?}");
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }

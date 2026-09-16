@@ -6,7 +6,8 @@
 #![allow(clippy::cast_possible_truncation)]
 
 use crowdb_chunkdb::selector::{
-    EcPlacement, FailureDomainPriority, MirrorPlacement, PlacementConstraints, PlacementError,
+    ChunkPlacementStrategy, EcPlacement, FailureDomainPriority, MirrorPlacement, PlacementConstraints,
+    PlacementError, UnsafeColocatedPlacementStrategy,
 };
 use crowdb_chunkdb::topology::TopologyCache;
 use crowdb_protocol::common::{DiskGroupUsageSummary, HwStatus};
@@ -72,6 +73,29 @@ fn mirror_select_3_copies_3_racks_distinct() {
     // Each entry should be in a distinct rack.
     let racks: std::collections::HashSet<_> = plan.entries.iter().map(|e| e.rack_id).collect();
     assert_eq!(racks.len(), 3);
+}
+
+#[test]
+fn unsafe_colocated_strategy_places_mirror_and_ec_on_one_disk_group() {
+    let cache = build_topology(&[(1, &[10])]);
+    let snapshot = cache.snapshot();
+    let strategy = UnsafeColocatedPlacementStrategy;
+
+    let mirror = strategy
+        .select_mirror(&snapshot, 3, &PlacementConstraints::new())
+        .unwrap();
+    let ec = strategy
+        .select_ec(&snapshot, 2, 1, &PlacementConstraints::new())
+        .unwrap();
+
+    assert_eq!(mirror.entries.len(), 3);
+    assert_eq!(ec.entries.len(), 3);
+    assert!(mirror.entries.iter().all(|entry| entry.disk_group_id == 100));
+    assert!(ec.entries.iter().all(|entry| entry.disk_group_id == 100));
+    assert!(!mirror.safe_mode);
+    assert!(!ec.safe_mode);
+    assert!(strategy.permits_unsafe_ec(false));
+    assert!(strategy.permits_degraded_failure_domains(false));
 }
 
 #[test]

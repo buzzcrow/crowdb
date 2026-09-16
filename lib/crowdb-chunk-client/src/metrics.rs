@@ -81,6 +81,7 @@ pub struct ChunkClientMetrics {
     pub diskio_write_bytes: Arc<Bandwidth>,
     pub diskio_read_bytes: Arc<Bandwidth>,
     pub large_write_repair: Arc<LargeWriteRepairMetrics>,
+    pub large_write_buffer: Arc<LargeWriteBufferMetrics>,
     pub small_write: Arc<SmallWriteMetrics>,
 }
 
@@ -102,9 +103,62 @@ impl ChunkClientMetrics {
             diskio_write_bytes: registry.register_bandwidth("chunkio.diskio.write.bw"),
             diskio_read_bytes: registry.register_bandwidth("chunkio.diskio.read.bw"),
             large_write_repair: Arc::new(LargeWriteRepairMetrics::register(registry)),
+            large_write_buffer: Arc::new(LargeWriteBufferMetrics::register(registry)),
             small_write: Arc::new(SmallWriteMetrics::register(registry)),
         }
     }
+}
+
+/// Lock-free counters distinguishing owner views from payload-copy fallback.
+#[derive(Debug)]
+pub struct LargeWriteBufferMetrics {
+    pub(crate) framed_owners: Arc<Counter>,
+    pub(crate) framed_views: Arc<Counter>,
+    pub(crate) framed_payload_bytes: Arc<Counter>,
+    pub(crate) payload_copy_operations: Arc<Counter>,
+    pub(crate) payload_copy_bytes: Arc<Counter>,
+}
+
+impl Default for LargeWriteBufferMetrics {
+    fn default() -> Self {
+        Self::new(|name| Arc::new(Counter::new(name.into())))
+    }
+}
+
+impl LargeWriteBufferMetrics {
+    fn register(registry: &mut MetricsRegistry) -> Self {
+        Self::new(|name| registry.register_counter(name))
+    }
+
+    fn new(mut counter: impl FnMut(&'static str) -> Arc<Counter>) -> Self {
+        Self {
+            framed_owners: counter("chunkio.large_write.buffer.framed_owners.c"),
+            framed_views: counter("chunkio.large_write.buffer.framed_views.c"),
+            framed_payload_bytes: counter("chunkio.large_write.buffer.framed_payload_bytes.c"),
+            payload_copy_operations: counter("chunkio.large_write.buffer.payload_copy_operations.c"),
+            payload_copy_bytes: counter("chunkio.large_write.buffer.payload_copy_bytes.c"),
+        }
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> LargeWriteBufferMetricsSnapshot {
+        LargeWriteBufferMetricsSnapshot {
+            framed_owners: self.framed_owners.snapshot().total,
+            framed_views: self.framed_views.snapshot().total,
+            framed_payload_bytes: self.framed_payload_bytes.snapshot().total,
+            payload_copy_operations: self.payload_copy_operations.snapshot().total,
+            payload_copy_bytes: self.payload_copy_bytes.snapshot().total,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LargeWriteBufferMetricsSnapshot {
+    pub framed_owners: u64,
+    pub framed_views: u64,
+    pub framed_payload_bytes: u64,
+    pub payload_copy_operations: u64,
+    pub payload_copy_bytes: u64,
 }
 
 /// Lock-free counters for in-line large-write segment replacement.

@@ -295,3 +295,40 @@ fn incremental_parity_rejects_incomplete_or_mismatched_groups() {
     assert!(incremental.push(&[1, 2]).is_err());
     assert!(incremental.finish().is_err());
 }
+
+#[test]
+fn incremental_partial_parity_matches_zero_padded_tail() {
+    let scheme = EcScheme::new(4, 2);
+    let first = vec![0x31; 4096];
+    let tail = vec![0x72; 777];
+    let mut padded_tail = vec![0; first.len()];
+    padded_tail[..tail.len()].copy_from_slice(&tail);
+    let expected = encode_parity_from_shards(scheme, &[&first, &padded_tail]).unwrap();
+
+    let mut incremental = IncrementalParity::new(scheme).unwrap();
+    incremental.push_partial(&first).unwrap();
+    incremental.push_partial(&tail).unwrap();
+    assert_eq!(incremental.finish_partial().unwrap(), expected);
+
+    assert!(IncrementalParity::new(scheme).unwrap().finish_partial().is_err());
+    let mut invalid = IncrementalParity::new(scheme).unwrap();
+    invalid.push_partial(&first).unwrap();
+    invalid.push_partial(&tail).unwrap();
+    assert!(invalid.push_partial(&first).is_err());
+}
+
+#[test]
+fn incremental_scattered_shards_match_contiguous_input() {
+    let scheme = EcScheme::new(2, 1);
+    let first = vec![0x19; 4096];
+    let second = vec![0x83; 4096];
+    let expected = encode_parity_from_shards(scheme, &[&first, &second]).unwrap();
+    let mut incremental = IncrementalParity::new(scheme).unwrap();
+    incremental
+        .push_views(&[&first[..777], &first[777..2048], &first[2048..]])
+        .unwrap();
+    incremental
+        .push_views(&[&second[..1024], &second[1024..]])
+        .unwrap();
+    assert_eq!(incremental.finish().unwrap(), expected);
+}

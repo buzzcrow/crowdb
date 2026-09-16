@@ -24,6 +24,8 @@ TASK_PACKAGES = {
     "test-chunkdb": {"crowdb-chunkdb"},
     "test-chunk-client": {"crowdb-chunk-client"},
     "test-diskio-client": {"crowdb-diskio-client"},
+    "test-access-s3": {"crowdb-access-s3"},
+    "test-access-server-s3": {"crowdb-access-server"},
     "test-console-shared": {"crowdb-console-shared"},
     "test-console-cli": {"crowdb-cli"},
     "test-console-server": {"crowdb-web"},
@@ -31,7 +33,6 @@ TASK_PACKAGES = {
 
 SUPPORT_PACKAGES = {
     "crowdb-test-harness": "test support library; covered by dependent package tests",
-    "crowdb-port-alloc": "E2E support binary; exercised by test-console-ui",
 }
 
 

@@ -38,6 +38,13 @@ when adding or resolving a tracked item.
   retry is not implemented. A data or parity write failure currently aborts
   the object; fresh placement retry needs a replacement allocation flow and
   deterministic fault-injection coverage.
+
+## crowdb-chunkdb
+
+- **`app/crowdb-chunkdb/src/service/chunkdb_rpc_service/mutations.rs`** —
+  `DeleteChunkRange` is wired end to end but deliberately returns
+  `Unimplemented` without mutation until R95 adds exact used-range validation,
+  persistence, idempotency, and GC integration.
 - **`lib/crowdb-chunk-client/tests/write_stream.rs`** —
   `push_mode_drop_mid_write_deletes_partial` has no assertion on
   `delete_calls` — `LargeObjectWriter` doesn't implement `Drop` cleanup

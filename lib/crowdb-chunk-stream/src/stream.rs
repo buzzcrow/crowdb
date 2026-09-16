@@ -185,6 +185,14 @@ struct WorkerState {
     metrics: Arc<StreamMetrics>,
 }
 
+/// Internal classification that permits recovery only before a failed mirror
+/// write reaches the fenced cursor advance. Metadata and cursor failures are
+/// deliberately not replayed.
+enum BatchFailure {
+    MirrorWrite(StreamError),
+    Other(StreamError),
+}
+
 impl ChunkStream {
     #[must_use]
     pub fn stream_name(&self) -> StreamName {
@@ -1038,7 +1046,7 @@ async fn process_append_batch(
         }
     };
     if !fits_active(state, first_len) {
-        if let Err(error) = rollover(state).await {
+        if let Err(error) = grow_or_rollover(state, first_len).await {
             state.stalled = true;
             finish_failed(state, vec![first], &error);
             return;
@@ -1073,6 +1081,18 @@ async fn process_append_batch(
         }
     }
     let mut result = write_batch_with_watchdog(state, &requests, bytes).await;
+    if matches!(result, Err(BatchFailure::MirrorWrite(_))) {
+        // The failed bytes have not reached cursor publication. Seal the old
+        // chunk at its confirmed cursor, publish a successor, then replay the
+        // same logical batch only on that successor.
+        result = match rollover(state).await {
+            Ok(()) => {
+                state.stalled = false;
+                write_batch_with_watchdog(state, &requests, bytes).await
+            }
+            Err(error) => Err(BatchFailure::Other(error)),
+        };
+    }
     if result.is_err() && matches!(rotate_externally_sealed_active(state).await, Ok(true)) {
         result = write_batch_with_watchdog(state, &requests, bytes).await;
     }
@@ -1091,7 +1111,10 @@ async fn process_append_batch(
                 let _ = request.completion.send(Ok(range));
             }
         }
-        Err(error) => finish_failed(state, requests, &error),
+        Err(BatchFailure::MirrorWrite(error) | BatchFailure::Other(error)) => {
+            state.stalled = true;
+            finish_failed(state, requests, &error);
+        }
     }
 }
 
@@ -1099,7 +1122,7 @@ async fn write_batch_with_watchdog(
     state: &mut WorkerState,
     requests: &[AppendRequest],
     bytes: usize,
-) -> Result<Vec<AppendRange>> {
+) -> std::result::Result<Vec<AppendRange>, BatchFailure> {
     let interval = state.config.watchdog_interval;
     let metrics = Arc::clone(&state.metrics);
     let stream_name = state.stream_name;
@@ -1143,12 +1166,12 @@ async fn write_batch(
     state: &mut WorkerState,
     requests: &[AppendRequest],
     bytes: usize,
-) -> Result<Vec<AppendRange>> {
+) -> std::result::Result<Vec<AppendRange>, BatchFailure> {
     let active = state
         .manifest
         .active
         .as_ref()
-        .ok_or_else(|| StreamError::Internal("append has no active chunk".into()))?
+        .ok_or_else(|| BatchFailure::Other(StreamError::Internal("append has no active chunk".into())))?
         .clone();
     let expected_cursor = active.acknowledged_cursor;
     let mut new_cursor = expected_cursor;
@@ -1164,13 +1187,16 @@ async fn write_batch(
             &request.data,
             unix_time_ms(),
         )
-        .map_err(|error| StreamError::InvalidRequest(error.to_string()))?;
+        .map_err(|error| BatchFailure::Other(StreamError::InvalidRequest(error.to_string())))?;
         for frame in frames {
-            let frame_length = u32::try_from(frame.len())
-                .map_err(|_| StreamError::InvalidRequest("stream frame exceeds u32".into()))?;
+            let frame_length = u32::try_from(frame.len()).map_err(|_| {
+                BatchFailure::Other(StreamError::InvalidRequest("stream frame exceeds u32".into()))
+            })?;
             let payload_length = u64::from(frame_length)
                 .checked_sub((FRAME_HEADER_PREFIX_BYTES + crowdb_protocol::frame::FRAME_FOOTER_BYTES) as u64)
-                .ok_or_else(|| StreamError::Corruption("stream frame length underflows".into()))?;
+                .ok_or_else(|| {
+                    BatchFailure::Other(StreamError::Corruption("stream frame length underflows".into()))
+                })?;
             extents.push(Extent {
                 chunk_id: active.chunk_id,
                 logical_start: logical_cursor,
@@ -1201,8 +1227,7 @@ async fn write_batch(
         )
         .await
     {
-        state.stalled = true;
-        return Err(error);
+        return Err(BatchFailure::MirrorWrite(error));
     }
     state
         .metrics
@@ -1215,7 +1240,8 @@ async fn write_batch(
         new_cursor,
         crc32fast::hash(&staging),
     )
-    .await?;
+    .await
+    .map_err(BatchFailure::Other)?;
 
     state.extents.extend(extents);
     if let Some(active) = &mut state.manifest.active {
@@ -1225,7 +1251,7 @@ async fn write_batch(
     }
     state.manifest.sealed_tail = logical_cursor;
     state.tail_view.store(logical_cursor, Ordering::Release);
-    publish_state(state).await?;
+    publish_state(state).await.map_err(BatchFailure::Other)?;
     Ok(ranges)
 }
 
@@ -1322,6 +1348,44 @@ async fn rollover(state: &mut WorkerState) -> Result<()> {
     publish_state(state).await?;
     state.metrics.rollovers.fetch_add(1, Ordering::Relaxed);
     Ok(())
+}
+
+async fn grow_or_rollover(state: &mut WorkerState, bytes: usize) -> Result<()> {
+    let active = state
+        .manifest
+        .active
+        .as_ref()
+        .ok_or_else(|| StreamError::Internal("active chunk is missing".into()))?;
+    let required_capacity = active
+        .acknowledged_cursor
+        .checked_add(
+            u64::try_from(bytes)
+                .map_err(|_| StreamError::InvalidRequest("append length exceeds addressable range".into()))?,
+        )
+        .ok_or_else(|| StreamError::InvalidRequest("append cursor overflows".into()))?;
+    if let Some(mut grown) = state
+        .chunks
+        .grow_mirrored(
+            state.stream_name,
+            state.writer_epoch,
+            active.chunk_id,
+            required_capacity,
+        )
+        .await?
+    {
+        grown.physical_start = active.physical_start;
+        grown.logical_start = active.logical_start;
+        grown.acknowledged_cursor = active.acknowledged_cursor;
+        if grown.capacity < required_capacity {
+            return Err(StreamError::Corruption(
+                "grown chunk capacity does not cover the requested append".into(),
+            ));
+        }
+        state.manifest.active = Some(grown);
+        publish_state(state).await?;
+        return Ok(());
+    }
+    rollover(state).await
 }
 
 async fn rotate_externally_sealed_active(state: &mut WorkerState) -> Result<bool> {

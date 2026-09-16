@@ -42,10 +42,11 @@ can be completed by later background conversion.
 
 ## 2. Admission and Object Handles
 
-`prepare_small_write(object_size)` validates the policy and object limit, then
-reserves the object's complete declared size from a pool-wide byte semaphore.
-It never reserves a partial object. Client clones share the same pool and
-budget.
+`prepare_small_write_for_key(object_size, key)` validates the policy and hashes
+the complete tenant/bucket/object identity to one stable pipeline. Admission
+only reads that route's atomic queued-byte state. It does not reserve the
+declared object size and does not acquire a global or per-tenant semaphore.
+The writer charges bytes as immutable input frames arrive.
 
 The returned single-use writer retains caller-owned byte fragments. Successful
 input is never partially accepted. Overflow or underflow is terminal, drops
@@ -53,21 +54,23 @@ retained fragments, releases the reservation, and returns an exact size error.
 An empty object completes locally without starting the pool. Abort before
 submission also completes locally and releases all resources.
 
-Finishing an exact non-empty object transfers its fragments, reservation, and
+Finishing an exact non-empty object transfers its fragments, byte charge, and
 completion channel to the pool. Cancellation after that transfer does not
 cancel or reshape a physical batch: the worker completes the durable operation,
 and an undeliverable result leaves a reclaimable range in the shared chunk.
 
 ## 3. Routing and Pipeline Ownership
 
-Admission reads an immutable `ArcSwap` route snapshot. Power-of-two selection
-chooses the less loaded of two routes using atomic queued-byte counters. Each
-route contains a bounded MPSC sender and atomics; the submission path takes no
-mutex or read-write lock.
+Admission reads an immutable `ArcSwap` route snapshot. One stable hash selects
+one route using the full object identity. Each route contains a bounded MPSC
+sender, atomic queued bytes, and a notification; the submission path takes no
+mutex, read-write lock, semaphore, or multi-route selection.
 
-A send reserves route counters before `try_send`. A full queue retries another
-route. A closed queue returns the unchanged object, restores the counters, and
-retries from a fresh snapshot.
+Before polling another HTTP frame, the caller checks the selected route's
+approximate byte capacity. A full route waits for its notification with a
+short control-interval fallback, leaving the socket unread so TCP applies
+backpressure. A closed route selects its replacement from a fresh snapshot.
+Slight accounting races are accepted; bounded queues remain the hard limit.
 
 For retirement, the manager publishes a snapshot without the route before it
 signals the worker. The worker closes its receiver, establishing the acceptance
@@ -111,13 +114,12 @@ one healthy survivor per mirror set against current topology and atomically
 publishes the 8+4 EC strip. If optimal publication is unavailable, mirrors stay
 authoritative and the ordinary durable conversion task is admitted.
 
-The pool divides its 96 MiB memory ceiling evenly between ordinary object and
-shadow admission and conversion parity. One pool-global atomic gate admits at
-most one foreground conversion group. A new group waits only for the previous
-group's parity permits to be returned; a group larger than the reserved half is
-left mirrored for background conversion. Published EC capacity is divided by
-its data width when deriving the next reservation, so consecutive groups keep
-the same per-shard geometry.
+The configured pool memory budget subtracts one 1 MiB shadow per maximum
+pipeline and one foreground conversion group, then divides the remaining
+buffer capacity between possible routes. Conversion is a cold-path bounded
+operation and may use its own permit; ordinary object admission never does.
+Published EC capacity is divided by its data width when deriving the next
+reservation, so consecutive groups keep the same per-shard geometry.
 
 ## 5. Durable Cursor and Completion
 
@@ -202,13 +204,15 @@ acknowledged prefix, and retires the pipeline for background recovery.
 
 ## 8. Policy and Metrics
 
-Defaults accept objects and batches up to 1 MiB, reserve 96 MiB pool-wide, use
+Defaults accept objects and batches up to 1 MiB, budget 1.25 GiB pool-wide, use
 one to 32 pipelines, allow 1,024 queued objects per pipeline, and scale out
 when one route queues at least 4 MiB or 128 objects. Shared chunks have a 1 GiB
 client-side capacity and write three mirrors. Configuration validates nonzero
 bounds, reachable queue high-water marks, ordered pipeline limits, and a
-budget covering one 1 MiB shadow per maximum pipeline plus one admitted
-maximum-size object. The retained `scale_in_delay` and `cooldown` fields are
+budget covering one 1 MiB shadow per maximum pipeline, one conversion group,
+and route buffers for about 1,000 concurrent maximum-size objects. Deployments
+expecting about 3,000 or 5,000 such objects configure roughly 3.25 GiB or
+5.25 GiB respectively. The retained `scale_in_delay` and `cooldown` fields are
 configuration-compatible but do not participate in scale decisions.
 
 Foreground parity writes use a dedicated connection per DiskIO endpoint and
@@ -230,8 +234,8 @@ maxima. Snapshots compute aggregates without locking submission.
 
 ## 9. Correctness Invariants
 
-- **SW-I1 — Whole-object reservation.** No object input is accepted before its
-  complete declared size is reserved from the pool budget.
+- **SW-I1 — Incremental bounded input.** Received object frames are charged to
+  one stable route; declared object size is never globally reserved.
 - **SW-I2 — Single acceptance.** A submission racing retirement is accepted by
   exactly one draining receiver or returned intact for rerouting.
 - **SW-I3 — Exclusive ownership.** Exactly one live pipeline epoch can advance

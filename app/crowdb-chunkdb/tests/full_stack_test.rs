@@ -2368,6 +2368,15 @@ async fn chunkdb_cache_hit_on_second_query() {
         .await
         .expect("seal_chunk");
     assert_eq!(sealed.state, ChunkState::Sealed as i32);
+    assert_eq!(
+        sealed.strips.len(),
+        1,
+        "sealing must drop and reclaim strips entirely beyond the written cursor"
+    );
+    assert!(
+        sealed.cleanup_intents.is_empty(),
+        "unused strips must be reclaimed synchronously"
+    );
 
     // Check metrics — cache should have hits.
     if let Some(locks) = harness.handler.locks() {

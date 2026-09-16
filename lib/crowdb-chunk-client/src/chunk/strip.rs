@@ -31,6 +31,7 @@ pub struct StripResult {
 /// Strip writer enum — Rust enum (not trait object) for monomorphic
 /// dispatch. `Ec` variant is used by the large-write flow; `Mirror`
 /// is a placeholder stub.
+#[allow(clippy::large_enum_variant)] // avoid one allocation and indirection per hot-path EC strip
 pub enum StripWriter {
     Ec(crate::chunk::ec_strip_writer::EcStripWriter),
     Mirror(crate::chunk::mirror_strip_writer::MirrorStripWriter),

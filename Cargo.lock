@@ -591,6 +591,65 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
+name = "crowdb-access-s3"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "arc-swap",
+ "async-trait",
+ "atomic-waker",
+ "base64",
+ "bincode",
+ "chrono",
+ "crowdb-chunk-client",
+ "crowdb-chunk-kv-client",
+ "crowdb-protocol",
+ "flatbuffers",
+ "hmac",
+ "httpdate",
+ "hyper",
+ "libc",
+ "md5",
+ "percent-encoding",
+ "rand 0.8.6",
+ "sha2",
+ "subtle",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "crowdb-access-server"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "crowdb-access-s3",
+ "crowdb-chunk-client",
+ "crowdb-chunk-kv-client",
+ "crowdb-chunkdb-client",
+ "crowdb-common",
+ "crowdb-diskio-client",
+ "crowdb-kv-client",
+ "crowdb-protocol",
+ "crowdb-rpc-ffi",
+ "crowdb-test-harness",
+ "futures",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "percent-encoding",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "crowdb-chunk-client"
 version = "0.1.0"
 dependencies = [
@@ -977,14 +1036,6 @@ dependencies = [
  "tokio",
  "tracing",
  "utoipa",
-]
-
-[[package]]
-name = "crowdb-port-alloc"
-version = "0.1.0"
-dependencies = [
- "clap",
- "crowdb-protocol",
 ]
 
 [[package]]
@@ -1753,9 +1804,8 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 
 [[package]]
 name = "hyper"
-version = "1.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6299f016b246a94207e63da54dbe807655bf9e00044f73ded42c3ac5305fbcca"
+version = "1.11.1"
+source = "git+https://github.com/buzzcrow/hyper.git?branch=feature-crowdb#ded852caa936fbd96f53914c41bf8b7e3ae356d7"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -4718,6 +4768,20 @@ name = "zeroize"
 version = "1.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
+dependencies = [
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "zerotrie"

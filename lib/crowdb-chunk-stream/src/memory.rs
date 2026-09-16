@@ -70,6 +70,7 @@ pub struct MemoryStreamStore {
     active_reads: AtomicUsize,
     max_active_reads: AtomicUsize,
     fail_next_publish: AtomicBool,
+    fail_next_write: AtomicBool,
     write_started: Notify,
     resume_write: Notify,
     read_started: Notify,
@@ -103,6 +104,7 @@ impl MemoryStreamStore {
             active_reads: AtomicUsize::new(0),
             max_active_reads: AtomicUsize::new(0),
             fail_next_publish: AtomicBool::new(false),
+            fail_next_write: AtomicBool::new(false),
             write_started: Notify::new(),
             resume_write: Notify::new(),
             read_started: Notify::new(),
@@ -124,6 +126,10 @@ impl MemoryStreamStore {
 
     pub fn fail_next_publish(&self) {
         self.fail_next_publish.store(true, Ordering::Release);
+    }
+
+    pub fn fail_next_write(&self) {
+        self.fail_next_write.store(true, Ordering::Release);
     }
 
     pub async fn wait_for_write(&self) {
@@ -350,6 +356,9 @@ impl StreamChunkStore for MemoryStreamStore {
         data: Bytes,
     ) -> Result<()> {
         self.chunk_writes.fetch_add(1, Ordering::AcqRel);
+        if self.fail_next_write.swap(false, Ordering::AcqRel) {
+            return Err(StreamError::Internal("injected mirror write failure".into()));
+        }
         if self.pause_writes.load(Ordering::Acquire) {
             self.write_started.notify_one();
             while self.pause_writes.load(Ordering::Acquire) {

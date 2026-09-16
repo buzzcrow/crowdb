@@ -23,7 +23,9 @@ use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
 
 use crate::metrics::ChunkdbMetrics;
-use crate::selector::{EcPlacement, MirrorPlacement, PlacementConstraints, PlacementPlan};
+use crate::selector::{
+    ChunkPlacementStrategy, PlacementConstraints, PlacementPlan, ProtectedPlacementStrategy,
+};
 use crate::topology::TopologySnapshot;
 
 pub use pool::DiskdbClientPool;
@@ -70,6 +72,7 @@ pub struct ConversionGroupAllocation {
 /// Chunk allocator — orchestrates placement + parallel diskdb calls.
 pub struct ChunkAllocator {
     pool: Arc<DiskdbClientPool>,
+    placement: Arc<dyn ChunkPlacementStrategy>,
     metrics: Option<Arc<ChunkdbMetrics>>,
 }
 
@@ -95,23 +98,15 @@ impl ChunkAllocator {
         self.pool.update_disk_id_lookup(&snap.disk_groups());
         let bytes_per_block = u64::from(unit_count).saturating_mul(u64::from(snap.unit_size_bytes()));
         let constraints = constraints.clone().with_planned_bytes_per_block(bytes_per_block);
-        let ec_plan = EcPlacement::select(snap, data_num, code_num, &constraints)?;
-        let mut ec_blocks_by_group = HashMap::<u64, usize>::new();
-        for entry in &ec_plan.entries {
-            *ec_blocks_by_group.entry(entry.disk_group_id).or_default() += entry.block_count as usize;
-        }
-        if ec_blocks_by_group.into_iter().any(|(dg_id, block_count)| {
-            snap.disk_group(dg_id)
-                .map_or(true, |entry| entry.value.disk_ids.len() < block_count)
-        }) {
-            return Err(crate::selector::PlacementError::InsufficientCapacity.into());
-        }
+        let ec_plan = self.placement.select_ec(snap, data_num, code_num, &constraints)?;
         let mut entries = ec_plan.entries.clone();
         if copy_count > 1 {
             for survivor in ec_plan.entries.iter().take(data_num) {
                 let mut mirror_constraints = constraints.clone();
                 mirror_constraints.exclude_nodes.push(survivor.node_id);
-                let extras = MirrorPlacement::select(snap, copy_count - 1, &mirror_constraints)?;
+                let extras = self
+                    .placement
+                    .select_mirror(snap, copy_count - 1, &mirror_constraints)?;
                 entries.extend(extras.entries);
             }
         }
@@ -171,7 +166,16 @@ impl ChunkAllocator {
 
     #[must_use]
     pub fn new(pool: Arc<DiskdbClientPool>) -> Self {
-        Self { pool, metrics: None }
+        Self::with_placement(pool, Arc::new(ProtectedPlacementStrategy))
+    }
+
+    #[must_use]
+    pub fn with_placement(pool: Arc<DiskdbClientPool>, placement: Arc<dyn ChunkPlacementStrategy>) -> Self {
+        Self {
+            pool,
+            placement,
+            metrics: None,
+        }
     }
 
     /// Attach allocation workflow metrics.
@@ -206,10 +210,12 @@ impl ChunkAllocator {
         for attempt in 0..=MAX_ALLOC_RETRIES {
             let plan = match strip_type {
                 StripAllocType::Mirror { copy_count } => {
-                    MirrorPlacement::select(snap, copy_count, &retry_constraints)?
+                    self.placement
+                        .select_mirror(snap, copy_count, &retry_constraints)?
                 }
                 StripAllocType::Ec { data_num, code_num } => {
-                    EcPlacement::select(snap, data_num, code_num, &retry_constraints)?
+                    self.placement
+                        .select_ec(snap, data_num, code_num, &retry_constraints)?
                 }
             };
             let _reservation = snap.reserve_plan(&plan.entries, bytes_per_block);
@@ -237,8 +243,10 @@ impl ChunkAllocator {
                 plan.usage_fresh,
             );
             let disk_degraded = plan.protection.loss_budget > 0 && !assessment.disk_protected;
-            let degradation_allowed = retry_constraints.allow_degraded_failure_domains
-                && (!matches!(strip_type, StripAllocType::Ec { .. }) || retry_constraints.allow_unsafe_ec);
+            let degradation_allowed = self.placement.permits_degraded_disk(
+                &retry_constraints,
+                matches!(strip_type, StripAllocType::Ec { .. }),
+            );
             if disk_degraded && !degradation_allowed {
                 if attempt == MAX_ALLOC_RETRIES {
                     return self
@@ -344,7 +352,7 @@ impl ChunkAllocator {
                 })
                 .map(|disk_group| disk_group.dg_id),
         );
-        let plan = MirrorPlacement::select(snap, 1, &constraints)?;
+        let plan = self.placement.select_mirror(snap, 1, &constraints)?;
         let _reservation = snap.reserve_plan(&plan.entries, bytes_per_block);
         let entry = plan
             .entries

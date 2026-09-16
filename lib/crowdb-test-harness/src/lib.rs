@@ -48,3 +48,6 @@ pub mod diskdb;
 
 #[cfg(feature = "chunkdb")]
 pub mod chunkdb;
+
+#[cfg(feature = "chunk-kv")]
+pub mod chunk_kv;

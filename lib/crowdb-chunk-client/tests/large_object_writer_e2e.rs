@@ -35,16 +35,28 @@ struct FailWriteCall {
     segments: Mutex<Vec<Segment>>,
 }
 
-#[async_trait]
-impl DiskWriter for FailWriteCall {
-    async fn write(&self, segment: &Segment, unit_bytes: u64, data: Bytes) -> Result<()> {
+impl FailWriteCall {
+    fn inject_failure(&self, segment: &Segment) -> Result<()> {
         let call = self.calls.fetch_add(1, Ordering::AcqRel) + 1;
         self.segments.lock().unwrap().push(*segment);
         if call == self.fail_on || (self.persistent && call >= self.fail_on) {
             *self.failed_segment.lock().unwrap() = Some(*segment);
             return Err(IoError::WriteFailed("injected large-write disk failure".into()));
         }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl DiskWriter for FailWriteCall {
+    async fn write(&self, segment: &Segment, unit_bytes: u64, data: Bytes) -> Result<()> {
+        self.inject_failure(segment)?;
         self.inner.write(segment, unit_bytes, data).await
+    }
+
+    async fn write_views(&self, segment: &Segment, unit_bytes: u64, data: Vec<Bytes>) -> Result<()> {
+        self.inject_failure(segment)?;
+        self.inner.write_views(segment, unit_bytes, data).await
     }
 
     async fn write_at_byte_offset(

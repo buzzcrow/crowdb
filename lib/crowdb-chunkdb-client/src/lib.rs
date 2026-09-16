@@ -46,6 +46,8 @@ pub enum ChunkdbClientError {
     InvalidArgument(String),
     #[error("chunk bucket not in owned ranges: {0}")]
     NotMyRange(String),
+    #[error("chunkdb operation is not implemented: {0}")]
+    Unimplemented(String),
     #[error("RPC error: {0}")]
     Rpc(String),
 }

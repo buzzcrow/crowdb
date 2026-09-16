@@ -49,14 +49,17 @@ pub use client::{
 pub use config::{ChunkClientConfig, SmallWritePolicy};
 pub use disk_io::{DiskWriter, RoutedDiskWriter};
 pub use error::{IoError, ReadError, ReadResult, Result};
-pub use io::{BackpressurePolicy, ChunkIoWriter, FeedStatus};
-pub use metrics::{ChunkClientMetrics, LargeWriteRepairMetricsSnapshot, SmallWriteMetricsSnapshot};
+pub use io::{BackpressurePolicy, ChunkIoWriter, FeedStatus, FramedWriteBuffer};
+pub use metrics::{
+    ChunkClientMetrics, LargeWriteBufferMetricsSnapshot, LargeWriteRepairMetricsSnapshot,
+    SmallWriteMetricsSnapshot,
+};
 #[cfg(feature = "test-util")]
 #[doc(hidden)]
 pub use negative_list::FailedDiskList;
 pub use traits::ChunkAllocator;
 pub use worker::{EcWorker, HashWorker};
-pub use writer::{LargeAsyncObjectWriter, LargeObjectWriter, PooledWriter, SmallObjectWriter, WriterPool};
+pub use writer::{LargeAsyncObjectWriter, LargeObjectWriter, PooledWriter, SharedObjectWriter, WriterPool};
 
 // Re-export key protocol types for convenience.
 pub use crowdb_protocol::chunkdb::rpc::Location as ProtoLocation;

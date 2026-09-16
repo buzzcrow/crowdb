@@ -62,6 +62,8 @@ pub enum FrameError {
     LengthOverflow,
     #[error("frame length exceeds 64 KiB")]
     FrameTooLarge,
+    #[error("frame header or footer region has an invalid length")]
+    InvalidRegionLength,
     #[error("frame chunk ID does not match the expected chunk")]
     ChunkIdMismatch,
     #[error("frame CRC32C does not match")]
@@ -90,6 +92,36 @@ pub fn encode_frame(
     payload: &[u8],
     write_time_ms: u64,
 ) -> Result<Vec<u8>, FrameError> {
+    let mut header = [0; FRAME_HEADER_PREFIX_BYTES];
+    let mut footer = [0; FRAME_FOOTER_BYTES];
+    encode_frame_regions(magic, chunk_id, payload, write_time_ms, &mut header, &mut footer)?;
+    let length = header.len() + payload.len() + footer.len();
+    let mut frame = Vec::with_capacity(length);
+    frame.extend_from_slice(&header);
+    frame.extend_from_slice(payload);
+    frame.extend_from_slice(&footer);
+    Ok(frame)
+}
+
+/// Encode one canonical frame into caller-owned header and footer regions.
+///
+/// The payload is read in place and is never copied. Native receive owners use
+/// this to fill framing bytes reserved around socket-written payload.
+///
+/// # Errors
+///
+/// Returns an error for an oversized payload or incorrectly sized regions.
+pub fn encode_frame_regions(
+    magic: FrameMagic,
+    chunk_id: ChunkId,
+    payload: &[u8],
+    write_time_ms: u64,
+    header_region: &mut [u8],
+    footer_region: &mut [u8],
+) -> Result<(), FrameError> {
+    if header_region.len() != FRAME_HEADER_PREFIX_BYTES || footer_region.len() != FRAME_FOOTER_BYTES {
+        return Err(FrameError::InvalidRegionLength);
+    }
     let payload_size = u16::try_from(payload.len()).map_err(|_| FrameError::PayloadTooLarge)?;
     let header = FrameHeaderPrefix {
         magic,
@@ -97,18 +129,13 @@ pub fn encode_frame(
         payload_size,
         write_time_ms,
     };
-    let length = frame_length(header)?;
-    let mut frame = Vec::with_capacity(length);
-    write_header(&mut frame, header);
-    frame.extend_from_slice(payload);
-    frame.extend_from_slice(&chunk_id.high.to_be_bytes());
-    frame.extend_from_slice(&chunk_id.low.to_be_bytes());
-    let checksum = crc32c(&frame);
-    frame.splice(
-        length - FRAME_FOOTER_BYTES..length - FRAME_FOOTER_BYTES,
-        checksum.to_le_bytes(),
-    );
-    Ok(frame)
+    frame_length(header)?;
+    write_header_region(header_region, header);
+    footer_region[4..12].copy_from_slice(&chunk_id.high.to_be_bytes());
+    footer_region[12..20].copy_from_slice(&chunk_id.low.to_be_bytes());
+    let checksum = crc32c_parts([header_region, payload, &footer_region[4..]]);
+    footer_region[..4].copy_from_slice(&checksum.to_le_bytes());
+    Ok(())
 }
 
 /// Encode an object as its consecutive frame sequence.
@@ -371,19 +398,25 @@ const fn max_payload_u64() -> u64 {
     MAX_FRAME_PAYLOAD_BYTES as u64
 }
 
-fn write_header(frame: &mut Vec<u8>, header: FrameHeaderPrefix) {
-    frame.extend_from_slice(&(header.magic as u16).to_le_bytes());
-    frame.extend_from_slice(&header.payload_offset.to_le_bytes());
-    frame.extend_from_slice(&header.payload_size.to_le_bytes());
-    frame.extend_from_slice(&header.write_time_ms.to_le_bytes());
+fn write_header_region(region: &mut [u8], header: FrameHeaderPrefix) {
+    region[0..2].copy_from_slice(&(header.magic as u16).to_le_bytes());
+    region[2..4].copy_from_slice(&header.payload_offset.to_le_bytes());
+    region[4..6].copy_from_slice(&header.payload_size.to_le_bytes());
+    region[6..14].copy_from_slice(&header.write_time_ms.to_le_bytes());
 }
 
 fn crc32c(bytes: &[u8]) -> u32 {
+    crc32c_parts([bytes])
+}
+
+fn crc32c_parts<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> u32 {
     let mut crc = 0_u32;
-    for byte in bytes {
-        crc ^= u32::from(*byte);
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ (0x82F6_3B78 & (0_u32.wrapping_sub(crc & 1)));
+    for bytes in parts {
+        for byte in bytes {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0x82F6_3B78 & (0_u32.wrapping_sub(crc & 1)));
+            }
         }
     }
     crc

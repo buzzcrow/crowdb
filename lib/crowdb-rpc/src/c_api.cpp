@@ -21,6 +21,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <cstdlib>
@@ -625,6 +626,53 @@ crowdb_rpc_status crowdb_rpc_client_send(crowdb_rpc_client_t client, crowdb_rpc_
     }
 }
 
+uint8_t crowdb_rpc_max_data_views(void)
+{
+    return crowdb::rpc::MAX_DATA_VIEWS;
+}
+
+crowdb_rpc_status crowdb_rpc_client_send_chain(crowdb_rpc_client_t client, crowdb_rpc_server_t server,
+                                               crowdb_rpc_conn_t conn, uint64_t request_id, crowdb_rpc_buffer_t control,
+                                               crowdb_rpc_buffer_t const *data_views, uint8_t data_view_count,
+                                               uint16_t msg_type, crowdb_rpc_on_complete on_complete, void *user_data)
+{
+    try {
+        if (client == nullptr || server == nullptr || conn == nullptr || control == nullptr || data_views == nullptr ||
+            data_view_count == 0 || data_view_count > crowdb::rpc::MAX_DATA_VIEWS || on_complete == nullptr) {
+            return CROWDB_RPC_ERR_INVALID_ARG;
+        }
+
+        std::array<crowdb::rpc::Buffer *, crowdb::rpc::MAX_DATA_VIEWS> buffers{};
+        uint64_t                                                       total = 0;
+        for (uint8_t index = 0; index < data_view_count; ++index) {
+            if (data_views[index] == nullptr || data_views[index]->buf == nullptr) {
+                return CROWDB_RPC_ERR_INVALID_ARG;
+            }
+            buffers[index] = data_views[index]->buf;
+            total += buffers[index]->len;
+        }
+        if (total > UINT32_MAX) {
+            return CROWDB_RPC_ERR_INVALID_ARG;
+        }
+
+        control->buf->ref_clone();
+        for (uint8_t index = 0; index < data_view_count; ++index) {
+            buffers[index]->ref_clone();
+        }
+        bool ok = client->client->send_chain(server->server->transport(), conn->conn.get(), request_id, control->buf,
+                                             buffers.data(), data_view_count, msg_type, on_complete, user_data);
+
+        crowdb_rpc_buffer_release(control);
+        for (uint8_t index = 0; index < data_view_count; ++index) {
+            crowdb_rpc_buffer_release(data_views[index]);
+        }
+        return submit_status(ok, conn->conn.get());
+    }
+    catch (...) {
+        return CROWDB_RPC_ERR_CONN_ERROR;
+    }
+}
+
 crowdb_rpc_status crowdb_rpc_client_send_slab(crowdb_rpc_client_t client, crowdb_rpc_server_t server,
                                               crowdb_rpc_conn_t conn, uint64_t request_id, crowdb_rpc_buffer_t control,
                                               crowdb_rpc_buffer_t data, uint16_t msg_type,
@@ -896,9 +944,7 @@ crowdb_rpc_status crowdb_rpc_server_submit_response(crowdb_rpc_server_t server, 
             if (frame->control != nullptr) {
                 frame->control->release();
             }
-            if (frame->data != nullptr) {
-                frame->data->release();
-            }
+            frame->release_data();
             delete frame;
             return CROWDB_RPC_ERR_SEND_QUEUE;
         }
@@ -949,9 +995,7 @@ crowdb_rpc_status crowdb_rpc_server_submit_response_buffer(crowdb_rpc_server_t s
             if (frame->control != nullptr) {
                 frame->control->release();
             }
-            if (frame->data != nullptr) {
-                frame->data->release();
-            }
+            frame->release_data();
             delete frame;
             return CROWDB_RPC_ERR_SEND_QUEUE;
         }

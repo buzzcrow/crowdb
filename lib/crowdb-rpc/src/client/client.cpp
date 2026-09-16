@@ -49,17 +49,30 @@ void RpcClient::set_completion_pool_size(size_t max_in_flight)
 
 OutFrame *RpcClient::build_frame(uint64_t request_id, Buffer *control, Buffer *data, uint16_t msg_type, uint8_t flags)
 {
+    Buffer *views[1] = {data};
+    return build_frame_chain(request_id, control, views, data == nullptr ? 0 : 1, msg_type, flags);
+}
+
+OutFrame *RpcClient::build_frame_chain(uint64_t request_id, Buffer *control, Buffer *const *data_views,
+                                       uint8_t data_view_count, uint16_t msg_type, uint8_t flags)
+{
     auto *frame            = new OutFrame;
     frame->request_id      = request_id;
     frame->header.msg_type = msg_type;
     frame->header.flags    = flags;
     frame->control         = control;
-    frame->data            = data;
     if (control != nullptr) {
         frame->header.msg_size = control->len;
     }
-    if (data != nullptr) {
-        frame->header.data_size = data->len;
+    frame->data_view_count = data_view_count;
+    if (data_view_count > 0) {
+        frame->data = data_views[0];
+    }
+    for (uint8_t index = 1; index < data_view_count; ++index) {
+        frame->data_tail[index - 1] = data_views[index];
+    }
+    for (uint8_t index = 0; index < data_view_count; ++index) {
+        frame->header.data_size += data_views[index]->len;
     }
     return frame;
 }
@@ -73,17 +86,29 @@ OutFrame *RpcClient::build_frame(uint64_t request_id, Buffer *control, Buffer *d
 bool RpcClient::send(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control, Buffer *data,
                      uint16_t msg_type, crowdb_rpc_on_complete cb, void *user_data)
 {
-    return send_impl(transport, conn, request_id, control, data, msg_type, cb, user_data, false);
+    Buffer *views[1] = {data};
+    return send_impl(transport, conn, request_id, control, views, data == nullptr ? 0 : 1, msg_type, cb, user_data,
+                     false);
+}
+
+bool RpcClient::send_chain(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control,
+                           Buffer *const *data_views, uint8_t data_view_count, uint16_t msg_type,
+                           crowdb_rpc_on_complete cb, void *user_data)
+{
+    return send_impl(transport, conn, request_id, control, data_views, data_view_count, msg_type, cb, user_data, false);
 }
 
 bool RpcClient::send_slab_only(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control,
                                Buffer *data, uint16_t msg_type, crowdb_rpc_on_complete cb, void *user_data)
 {
-    return send_impl(transport, conn, request_id, control, data, msg_type, cb, user_data, true);
+    Buffer *views[1] = {data};
+    return send_impl(transport, conn, request_id, control, views, data == nullptr ? 0 : 1, msg_type, cb, user_data,
+                     true);
 }
 
-bool RpcClient::send_impl(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control, Buffer *data,
-                          uint16_t msg_type, crowdb_rpc_on_complete cb, void *user_data, bool slab_only)
+bool RpcClient::send_impl(Transport *transport, Connection *conn, uint64_t request_id, Buffer *control,
+                          Buffer *const *data_views, uint8_t data_view_count, uint16_t msg_type,
+                          crowdb_rpc_on_complete cb, void *user_data, bool slab_only)
 {
     try {
         uint64_t timeout  = default_timeout_ns_.load(std::memory_order_relaxed);
@@ -98,8 +123,8 @@ bool RpcClient::send_impl(Transport *transport, Connection *conn, uint64_t reque
                 if (control != nullptr) {
                     control->release();
                 }
-                if (data != nullptr) {
-                    data->release();
+                for (uint8_t index = 0; index < data_view_count; ++index) {
+                    data_views[index]->release();
                 }
                 return false;
             }
@@ -125,15 +150,13 @@ bool RpcClient::send_impl(Transport *transport, Connection *conn, uint64_t reque
                     slot.deadline_ns.store(deadline, std::memory_order_relaxed);
                     slot.state.store(SLOT_PENDING_READY, std::memory_order_release);
 
-                    OutFrame *frame = build_frame(request_id, control, data, msg_type, 0);
+                    OutFrame *frame = build_frame_chain(request_id, control, data_views, data_view_count, msg_type, 0);
                     if (!transport->submit(conn, frame)) {
                         slot.state.store(SLOT_FREE, std::memory_order_release);
                         if (frame->control != nullptr) {
                             frame->control->release();
                         }
-                        if (frame->data != nullptr) {
-                            frame->data->release();
-                        }
+                        frame->release_data();
                         delete frame;
                         // submit() already incremented rpc.send.queue.full.c
                         CRB_LOG_WARN("send: submit failed (slab) request_id={} conn_id={}",
@@ -151,8 +174,8 @@ bool RpcClient::send_impl(Transport *transport, Connection *conn, uint64_t reque
             if (control != nullptr) {
                 control->release();
             }
-            if (data != nullptr) {
-                data->release();
+            for (uint8_t index = 0; index < data_view_count; ++index) {
+                data_views[index]->release();
             }
             return false;
         }
@@ -168,7 +191,7 @@ bool RpcClient::send_impl(Transport *transport, Connection *conn, uint64_t reque
         pending_.insert_or_assign(request_id,
                                   PendingEntry{.cb = std::move(wrapped), .deadline_ns = deadline, .conn = conn});
 
-        OutFrame *frame = build_frame(request_id, control, data, msg_type, 0);
+        OutFrame *frame = build_frame_chain(request_id, control, data_views, data_view_count, msg_type, 0);
         if (!transport->submit(conn, frame)) {
             // Submit failed — remove from map. Callback NOT invoked (caller
             // handles the error, same as the slab path).
@@ -176,9 +199,7 @@ bool RpcClient::send_impl(Transport *transport, Connection *conn, uint64_t reque
             if (frame->control != nullptr) {
                 frame->control->release();
             }
-            if (frame->data != nullptr) {
-                frame->data->release();
-            }
+            frame->release_data();
             delete frame;
             // submit() already incremented rpc.send.queue.full.c
             CRB_LOG_WARN("send: submit failed (map) request_id={} conn_id={}",

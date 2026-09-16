@@ -19,8 +19,9 @@ use crowdb_protocol::KV_SERVER_MGMT_BASE;
 
 use commands::{
     run_bench_verb, run_chunk_diskdb_verb, run_chunk_stub_verb, run_cluster_verb, run_group_verb,
-    run_kv_data_verb, run_kv_server_verb, run_replica_verb, run_store_verb, BenchVerb, ChunkDiskdbVerb,
-    ChunkStubVerb, ClusterVerb, GroupVerb, KvDataVerb, KvServerVerb, ReplicaVerb, StoreVerb,
+    run_kv_data_verb, run_kv_server_verb, run_port_alloc, run_replica_verb, run_store_verb, BenchVerb,
+    ChunkDiskdbVerb, ChunkStubVerb, ClusterVerb, GroupVerb, KvDataVerb, KvServerVerb, PortAllocArgs,
+    ReplicaVerb, StoreVerb,
 };
 
 #[derive(Parser, Debug)]
@@ -113,6 +114,7 @@ impl Cli {
                 };
                 format!("bench-{v}")
             }
+            Domain::PortAlloc { .. } => "port-alloc".to_string(),
         }
     }
 }
@@ -140,6 +142,13 @@ enum Domain {
         #[command(subcommand)]
         verb: BenchVerb,
     },
+    /// Flock-coordinated port allocation for tests and cluster
+    /// bootstrap. No tokio, no RPC — handled before the runtime is
+    /// built in `main()`.
+    PortAlloc {
+        #[command(flatten)]
+        args: PortAllocArgs,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -166,6 +175,14 @@ enum ChunkVerb {
 
 fn main() -> ExitCode {
     let mut cli = Cli::parse();
+
+    // Port-alloc is a synchronous bootstrap tool: no tokio runtime,
+    // no RPC, no log files. Short-circuit before the heavy init so
+    // the E2E fixture (which calls it many times) stays fast and
+    // doesn't litter `cli-log/` directories.
+    if let Domain::PortAlloc { args } = &cli.command {
+        return run_port_alloc(args);
+    }
 
     // Each CLI run gets its own log folder so logs from different
     // invocations don't interleave. The folder is
@@ -232,5 +249,6 @@ async fn dispatch(mut cli: Cli) -> ExitCode {
             ChunkVerb::Stub(sv) => run_chunk_stub_verb(&cli, sv).await,
         },
         Domain::Bench { verb } => run_bench_verb(&cli, verb).await,
+        Domain::PortAlloc { args } => run_port_alloc(&args),
     }
 }

@@ -181,20 +181,16 @@ impl DiskioProcess {
         let log_file2 = log_file.try_clone().expect("clone log file");
 
         let mut cmd = Command::new(&bin);
-        cmd.args([
-            "--port",
-            "0",
-            "--bind",
-            "127.0.0.1",
-            "--dummy-disk",
-            opts.dummy_disk,
-        ])
-        .env("LD_LIBRARY_PATH", lib_dir.to_str().unwrap())
-        .stdout(Stdio::from(log_file))
-        .stderr(Stdio::from(log_file2));
+        cmd.args(["--port", "0", "--bind", "127.0.0.1"])
+            .env("LD_LIBRARY_PATH", lib_dir.to_str().unwrap())
+            .stdout(Stdio::from(log_file))
+            .stderr(Stdio::from(log_file2));
 
         if opts.no_o_direct {
             cmd.arg("--no-o-direct");
+        }
+        if opts.disks.is_empty() {
+            cmd.args(["--dummy-disk", opts.dummy_disk]);
         }
 
         apply_fault_options(&mut cmd, opts);
@@ -209,7 +205,8 @@ impl DiskioProcess {
                 let disk_arg = format!("{}:{}:{}", id_str, d.path, d.zone_capacity);
                 cmd.args(["--disk", &disk_arg]);
             }
-        } else if !opts.kv_seeds.is_empty() {
+        }
+        if !opts.kv_seeds.is_empty() {
             let seeds_arg = opts.kv_seeds.join(",");
             cmd.args([
                 "--kv-seeds",
@@ -224,8 +221,10 @@ impl DiskioProcess {
                 &identity.disk_group_id.to_string(),
                 "--sync-interval-ms",
                 "200",
-                "--auto-discover-disks",
             ]);
+            if opts.disks.is_empty() {
+                cmd.arg("--auto-discover-disks");
+            }
         }
 
         let mut child = cmd.spawn().expect("start crowdb-diskio");
@@ -275,12 +274,26 @@ impl DiskioProcess {
         server: &RpcServer,
         conn: &crowdb_rpc_ffi::Connection,
     ) {
-        let test_disk = DioDiskId::new(0, 1);
+        self.wait_for_disk(dio_client, server, conn, DioDiskId::new(0, 1))
+            .await;
+    }
+
+    /// Wait for one expected disk to become reachable after group-0 discovery.
+    ///
+    /// The probe must not write: an explicit real disk can already hold a
+    /// durable allocation at zone offset zero when a DiskIO process restarts.
+    pub async fn wait_for_disk(
+        &self,
+        dio_client: &DiskioClient,
+        server: &RpcServer,
+        conn: &crowdb_rpc_ffi::Connection,
+        test_disk: DioDiskId,
+    ) {
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         loop {
-            let write_result = dio_client.write(server, conn, test_disk, 0, 0, vec![0xAB; 4096]);
-            match write_result {
-                Ok(fut) => match DiskioClient::await_write_response(fut).await {
+            let fsync_result = dio_client.fsync(server, conn, test_disk);
+            match fsync_result {
+                Ok(fut) => match DiskioClient::await_fsync_response(fut).await {
                     Ok(_) => {
                         eprintln!("diskio disks ready");
                         return;
@@ -293,9 +306,9 @@ impl DiskioProcess {
                             return;
                         }
                     }
-                    Err(e) => eprintln!("diskio write attempt error: {e:?}"),
+                    Err(e) => eprintln!("diskio fsync attempt error: {e:?}"),
                 },
-                Err(e) => eprintln!("diskio write send error: {e:?}"),
+                Err(e) => eprintln!("diskio fsync send error: {e:?}"),
             }
             if std::time::Instant::now() > deadline {
                 let log = self.log_content();

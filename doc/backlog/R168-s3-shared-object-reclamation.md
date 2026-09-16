@@ -6,14 +6,16 @@
 ## Status
 
 **Deferred until R95 qualified chunk-range deletion is implemented and basic
-S3 deletion is stable.** Before then, R159 removes metadata and records exact
+S3 deletion is stable.** Before then, the basic delete path removes metadata
+and records exact
 pending ranges as safe logical garbage.
 
 ## Problem
 
 Small objects use the shared chunk writer to avoid private-chunk waste. Their
 bytes cannot be reclaimed by deleting the whole chunk, and an unqualified byte
-range could erase neighboring live objects or a reused generation. R159 needs
+range could erase neighboring live objects or a reused generation. The basic
+delete path needs
 a restart-safe way to turn pending logical garbage into safe range deletion.
 
 The lifecycle boundary is
@@ -24,9 +26,10 @@ The lifecycle boundary is
 1. Persist a range-cleanup record containing object generation, chunk identity,
    writer/layout generation, exact offset/length, reader-validity deadline, and
    stable cleanup identity before invoking physical deletion.
-2. After metadata invisibility and the grace period, call R95's qualified,
-   idempotent chunk-range-delete interface. The S3 call site explicitly names
-   R95 because a raw offset alone is not deletion authority.
+2. After metadata invisibility and the grace period, call R95's idempotent
+   `DeleteChunkRange(chunk_id, offset, size)` interface. The RPC exists before
+   R95 but returns not-implemented and performs no mutation until chunkdb owns
+   the required range validation and used-bitmap lifecycle.
 3. Reconcile unknown results from chunk state, retry bounded transient failures,
    and quarantine generation/ownership mismatches for inspection. Never widen,
    merge, or align a range across live neighbors merely to reclaim space.
@@ -38,8 +41,8 @@ The lifecycle boundary is
 
 ## Dependencies
 
-- Depends on R95 and R159.
-- Uses R153 immutable generation/data references and R161 cleanup admission.
+- Depends on R95 and the basic S3 deletion contract.
+- Uses immutable generation/data references and bounded cleanup admission.
 - R169 may compact fragmented shared chunks after individual dead ranges are
   marked; it is not required for correctness here.
 

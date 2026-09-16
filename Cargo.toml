@@ -21,9 +21,11 @@ members = [
     "lib/crowdb-chunk-kv",
     "lib/crowdb-chunk-kv-client",
     "lib/crowdb-test-harness",
-    "app/crowdb-port-alloc",
     "app/crowdb-chunk-kv-server",
+    "app/crowdb-access-server",
+    "lib/crowdb-access-s3",
 ]
+exclude = ["third-party/hyper"]
 # : crowdb-tree/ffi moved from `exclude` into `members` now that
 # crowdb-kv depends on it (CrowdbTreeEngine) -- building crowdb-kv already triggers
 # the C++ build step via crowdb-tree-ffi's build.rs regardless of workspace
@@ -53,6 +55,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 thiserror = "2"
 flate2 = "1"
 pin-project-lite = "0.2"
+hyper = { git = "https://github.com/buzzcrow/hyper.git", branch = "feature-crowdb", version = "1.11.1", default-features = false }
+
+[patch.crates-io]
+hyper = { git = "https://github.com/buzzcrow/hyper.git", branch = "feature-crowdb" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

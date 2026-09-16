@@ -184,6 +184,18 @@ fn bitmap_snapshot_restore_roundtrip() {
 }
 
 #[test]
+fn bitmap_restore_for_block_count_discards_outside_geometry() {
+    let source = UsageBitmap::new(128);
+    assert!(source.range_set(0, 1));
+    assert!(source.range_set(70, 1));
+    let restored = UsageBitmap::restore_for_block_count(&source.snapshot(), 64);
+
+    assert_eq!(restored.block_count(), 64);
+    assert_eq!(restored.count_set(), 1);
+    assert!(restored.is_set(0));
+}
+
+#[test]
 fn bitmap_count_set_after_set_and_clear() {
     let bm = UsageBitmap::new(128);
     let _ = bm.range_set(0, 10);

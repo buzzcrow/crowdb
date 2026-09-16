@@ -10,7 +10,7 @@
 
 use thiserror::Error;
 
-use crate::ec_isal::{isal_decode, isal_encode, isal_encode_update};
+use crate::ec_isal::{isal_decode, isal_encode, isal_encode_update_at};
 
 /// EC error.
 #[derive(Debug, Error)]
@@ -45,6 +45,7 @@ pub struct IncrementalParity {
     scheme: EcScheme,
     shard_size: Option<usize>,
     shards_received: usize,
+    short_shard_seen: bool,
     parity: Vec<Vec<u8>>,
 }
 
@@ -55,39 +56,77 @@ impl IncrementalParity {
             scheme,
             shard_size: None,
             shards_received: 0,
+            short_shard_seen: false,
             parity: Vec::new(),
         })
     }
 
     pub fn push(&mut self, shard: &[u8]) -> Result<()> {
+        self.push_views_inner(&[shard], false)
+    }
+
+    /// Fold one shard into parity while allowing the final present shard to
+    /// be shorter than the first. The missing suffix and any absent data
+    /// shards contribute zeroes, matching [`encode_parity_from_shards`].
+    pub fn push_partial(&mut self, shard: &[u8]) -> Result<()> {
+        self.push_views_inner(&[shard], true)
+    }
+
+    /// Fold one logical shard assembled from immutable views without joining
+    /// them into a contiguous allocation.
+    pub fn push_views(&mut self, views: &[&[u8]]) -> Result<()> {
+        self.push_views_inner(views, true)
+    }
+
+    fn push_views_inner(&mut self, views: &[&[u8]], allow_short: bool) -> Result<()> {
         if self.shards_received >= self.scheme.data_num {
             return Err(EcError::Backend(
                 "incremental encoder already has every data shard".into(),
             ));
         }
-        if shard.is_empty() {
+        let shard_len = views.iter().try_fold(0usize, |total, view| {
+            if view.is_empty() {
+                return Err(EcError::Backend(
+                    "incremental shard view must be non-empty".into(),
+                ));
+            }
+            total
+                .checked_add(view.len())
+                .ok_or_else(|| EcError::Backend("incremental shard length overflows".into()))
+        })?;
+        if shard_len == 0 {
             return Err(EcError::Backend("incremental shard must be non-empty".into()));
+        }
+        if self.short_shard_seen {
+            return Err(EcError::Backend(
+                "incremental short shard must be the final present shard".into(),
+            ));
         }
         match self.shard_size {
             None => {
-                self.shard_size = Some(shard.len());
-                self.parity = (0..self.scheme.code_num).map(|_| vec![0; shard.len()]).collect();
+                self.shard_size = Some(shard_len);
+                self.parity = (0..self.scheme.code_num).map(|_| vec![0; shard_len]).collect();
             }
-            Some(size) if size != shard.len() => {
+            Some(size) if shard_len > size || (!allow_short && size != shard_len) => {
                 return Err(EcError::Backend(format!(
-                    "incremental shard length {} differs from {size}",
-                    shard.len()
+                    "incremental shard length {shard_len} is incompatible with {size}"
                 )));
             }
             Some(_) => {}
         }
-        isal_encode_update(
-            shard,
-            self.shards_received,
-            &mut self.parity,
-            self.scheme.data_num,
-            self.scheme.code_num,
-        );
+        self.short_shard_seen = self.shard_size.is_some_and(|size| shard_len < size);
+        let mut offset = 0usize;
+        for view in views {
+            isal_encode_update_at(
+                view,
+                self.shards_received,
+                &mut self.parity,
+                self.scheme.data_num,
+                self.scheme.code_num,
+                offset,
+            );
+            offset += view.len();
+        }
         self.shards_received += 1;
         Ok(())
     }
@@ -106,6 +145,15 @@ impl IncrementalParity {
                 "incremental encoder has {} of {} data shards",
                 self.shards_received, self.scheme.data_num
             )));
+        }
+        Ok(self.parity)
+    }
+
+    /// Finish a nonempty partial stripe. Data shards not supplied by the
+    /// caller are implicit zero shards and therefore need no encode update.
+    pub fn finish_partial(self) -> Result<Vec<Vec<u8>>> {
+        if self.shards_received == 0 {
+            return Err(EcError::Backend("incremental encoder has no data shards".into()));
         }
         Ok(self.parity)
     }

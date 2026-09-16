@@ -97,6 +97,17 @@ fn zone_allocate_multi_unit_at_capacity_boundary() {
     assert!(!zone.allocatable());
 }
 
+#[test]
+fn zone_largest_contiguous_free_run_reports_fragmentation() {
+    let zone = make_zone(128);
+    let first = zone.allocate(16, CAS_RETRY).expect("first allocation");
+    let second = zone.allocate(16, CAS_RETRY).expect("second allocation");
+    assert!(zone.rollback_allocate(first.unit_offset + 4, 8));
+    assert!(zone.rollback_allocate(second.unit_offset + 4, 8));
+
+    assert_eq!(zone.largest_contiguous_free_run(), 96);
+}
+
 // ── Derived state ───────────────────────────────────────────────
 
 #[test]

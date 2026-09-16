@@ -21,7 +21,7 @@ mod owned_route;
 mod server;
 pub mod sys;
 
-pub use buffer::{Buffer, BufferPool};
+pub use buffer::{Buffer, BufferChain, BufferChainError, BufferPool};
 pub use client::{noop_completion, CallFuture, ClientRequest, Response, RpcClient};
 pub use connection_pool::{ConnectionPoolError, ConnectionPoolIndex, SelectedConnection};
 pub use cpp_global_metrics::{cpp_global_metrics_max_name_len, flush_cpp_global_metrics};

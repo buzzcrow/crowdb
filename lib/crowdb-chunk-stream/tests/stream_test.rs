@@ -271,6 +271,21 @@ async fn rollover_keeps_append_whole_and_reads_across_chunks() {
 }
 
 #[tokio::test]
+async fn mirror_write_failure_seals_and_retries_on_a_successor_chunk() {
+    let store = Arc::new(MemoryStreamStore::new(64));
+    let stream = create_stream(&store, 64, StreamConfig::default()).await;
+    store.fail_next_write();
+
+    assert_eq!(
+        stream.append(&[Bytes::from_static(b"retry")]).await.unwrap().end,
+        5
+    );
+    assert_eq!(stream.read_at(0, 5).await.unwrap(), Bytes::from_static(b"retry"));
+    assert_eq!(store.chunk_write_count(), 2);
+    assert_eq!(stream.metrics().rollovers, 1);
+}
+
+#[tokio::test]
 async fn cross_chunk_read_runs_with_bounded_concurrency_and_ordered_output() {
     let store = Arc::new(MemoryStreamStore::new(2));
     let config = StreamConfig {

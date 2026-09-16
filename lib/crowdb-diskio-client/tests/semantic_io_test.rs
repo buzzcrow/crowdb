@@ -87,6 +87,27 @@ async fn semantic_client_owns_route_transport_payload_and_durability() {
         .expect("semantic read");
     assert_eq!(read, payload);
 
+    let view_payload = [
+        Bytes::from_static(b"bounded-"),
+        Bytes::from_static(b"scatter-"),
+        Bytes::from_static(b"gather"),
+    ];
+    client
+        .write_views(
+            target,
+            8192,
+            view_payload.to_vec(),
+            Durability::Buffered,
+            client.normal_options(),
+        )
+        .await
+        .expect("view-chain semantic write");
+    let view_read = client
+        .read(target, 8192, 22, client.normal_options())
+        .await
+        .expect("view-chain semantic read");
+    assert_eq!(view_read, Bytes::from_static(b"bounded-scatter-gather"));
+
     let priority_read = client
         .read(
             target,
@@ -123,7 +144,7 @@ async fn semantic_client_owns_route_transport_payload_and_durability() {
     assert_eq!(status.normal_connections, 2);
     assert_eq!(status.priority_connections, 1);
     assert_eq!(status.inflight, 0);
-    assert_eq!(status.write_operations, 3);
+    assert_eq!(status.write_operations, 4);
     assert_eq!(status.fsync_operations, 1);
     assert_eq!(status.retries, 0);
     assert!(status.read_average_us > 0);

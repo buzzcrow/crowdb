@@ -32,7 +32,7 @@ use crate::writer::small_pool::SmallWritePool;
 use crate::{
     ChunkAllocator, ChunkClientConfig, ChunkClientMetrics, ChunkIoWriter, ChunkReadPolicy, ChunkReadStream,
     ChunkReader, DiskWriter, IoError, LargeAsyncObjectWriter, PartialReadResult, ReadResult, Result,
-    RoutedDiskWriter, SmallObjectWriter, SmallWriteMetricsSnapshot, SmallWritePolicy,
+    RoutedDiskWriter, SharedObjectWriter, SmallWriteMetricsSnapshot, SmallWritePolicy,
 };
 
 /// Discovery and transport configuration for [`ChunkIoClient`].
@@ -86,6 +86,7 @@ pub struct ChunkIoClient {
     reader: ChunkReader,
     failed_disks: Arc<FailedDiskList>,
     large_write_repair: Arc<crate::metrics::LargeWriteRepairMetrics>,
+    large_write_buffer: Arc<crate::metrics::LargeWriteBufferMetrics>,
 }
 
 struct ClientTopology {
@@ -127,6 +128,7 @@ impl ChunkIoClient {
         );
         let failed_disks = Arc::new(FailedDiskList::new(config.small_write.failed_disk_ttl));
         let large_write_repair = Arc::new(crate::metrics::LargeWriteRepairMetrics::default());
+        let large_write_buffer = Arc::new(crate::metrics::LargeWriteBufferMetrics::default());
         let small_pool = SmallWritePool::new(
             chunkdb.clone(),
             disk_writer.clone(),
@@ -150,6 +152,7 @@ impl ChunkIoClient {
             reader,
             failed_disks,
             large_write_repair,
+            large_write_buffer,
         })
     }
 
@@ -197,6 +200,7 @@ impl ChunkIoClient {
     ) -> Result<Self> {
         let failed_disks = Arc::new(FailedDiskList::new(small_write.failed_disk_ttl));
         let large_write_repair = Arc::new(crate::metrics::LargeWriteRepairMetrics::default());
+        let large_write_buffer = Arc::new(crate::metrics::LargeWriteBufferMetrics::default());
         let small_pool = SmallWritePool::new(
             Arc::clone(&allocator),
             Arc::clone(&disk_writer),
@@ -219,6 +223,7 @@ impl ChunkIoClient {
             reader,
             failed_disks,
             large_write_repair,
+            large_write_buffer,
         })
     }
 
@@ -235,6 +240,7 @@ impl ChunkIoClient {
         });
         self.metrics = Some(Arc::clone(metrics));
         self.large_write_repair = Arc::clone(&metrics.large_write_repair);
+        self.large_write_buffer = Arc::clone(&metrics.large_write_buffer);
         self.small_pool = SmallWritePool::new(
             Arc::clone(&self.allocator),
             Arc::clone(&self.disk_writer),
@@ -283,10 +289,20 @@ impl ChunkIoClient {
         self.reader.read_stream(locations)
     }
 
+    /// Build a pull-based, memory-windowed stream for `[start, end)`.
+    pub fn read_range_stream(
+        &self,
+        locations: &[Location],
+        start: u64,
+        end: u64,
+    ) -> ReadResult<ChunkReadStream> {
+        self.reader.read_range_stream(locations, start, end)
+    }
+
     /// Reserve one bounded object and return its single-use writer handle.
-    pub async fn prepare_small_write(&self, object_size: usize) -> Result<SmallObjectWriter> {
+    pub async fn prepare_small_write(&self, object_size: usize) -> Result<SharedObjectWriter> {
         if object_size == 0 {
-            return Ok(SmallObjectWriter::empty());
+            return Ok(SharedObjectWriter::empty());
         }
         if object_size > MAX_FRAME_PAYLOAD_BYTES {
             return Err(IoError::ObjectTooLarge {
@@ -294,8 +310,37 @@ impl ChunkIoClient {
                 limit: MAX_FRAME_PAYLOAD_BYTES,
             });
         }
-        let (runtime, reservation) = self.small_pool.reserve(object_size).await?;
-        Ok(SmallObjectWriter::new(runtime, object_size, reservation))
+        let runtime = self.small_pool.prepare(object_size).await?;
+        let route_hash = runtime
+            .route_nonce
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let route = runtime
+            .route_for_hash(route_hash)
+            .ok_or_else(|| IoError::Internal("small write has no pipeline route".into()))?;
+        Ok(SharedObjectWriter::new(runtime, object_size, route, route_hash))
+    }
+
+    /// Prepares a shared-object write whose pipeline slot is stable for `key`.
+    pub async fn prepare_small_write_for_key(
+        &self,
+        object_size: usize,
+        key: &[u8],
+    ) -> Result<SharedObjectWriter> {
+        if object_size == 0 {
+            return Ok(SharedObjectWriter::empty());
+        }
+        if object_size > MAX_FRAME_PAYLOAD_BYTES {
+            return Err(IoError::ObjectTooLarge {
+                size: object_size,
+                limit: MAX_FRAME_PAYLOAD_BYTES,
+            });
+        }
+        let runtime = self.small_pool.prepare(object_size).await?;
+        let route_hash = stable_route_hash(key);
+        let route = runtime
+            .route_for_hash(route_hash)
+            .ok_or_else(|| IoError::Internal("small write has no pipeline route".into()))?;
+        Ok(SharedObjectWriter::new(runtime, object_size, route, route_hash))
     }
 
     /// Stop admission, drain accepted objects, and finalize shared chunks.
@@ -323,6 +368,11 @@ impl ChunkIoClient {
     /// Snapshot in-line large-write segment replacement counters.
     pub fn large_write_repair_metrics(&self) -> crate::LargeWriteRepairMetricsSnapshot {
         self.large_write_repair.snapshot()
+    }
+
+    /// Snapshot native-owner views and payload-copy fallback counters.
+    pub fn large_write_buffer_metrics(&self) -> crate::LargeWriteBufferMetricsSnapshot {
+        self.large_write_buffer.snapshot()
     }
 
     /// Refresh `ChunkDB` service endpoints and range ownership routes.
@@ -357,6 +407,7 @@ impl ChunkIoClient {
             policy.client.clone(),
             Arc::clone(&self.failed_disks),
             Arc::clone(&self.large_write_repair),
+            Arc::clone(&self.large_write_buffer),
         );
         writer.prepare(object_size);
         PreparedLargeWrite {
@@ -395,6 +446,12 @@ impl ChunkIoClient {
         }
         Ok(writes)
     }
+}
+
+fn stable_route_hash(key: &[u8]) -> u64 {
+    key.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 struct MetricsChunkAllocator {
@@ -511,6 +568,19 @@ impl DiskWriter for MetricsDiskWriter {
         result
     }
 
+    async fn write_views(&self, seg: &Segment, unit_bytes: u64, data: Vec<Bytes>) -> Result<()> {
+        let bytes = data.iter().fold(0_u64, |total, view| {
+            total.saturating_add(u64::try_from(view.len()).unwrap_or(u64::MAX))
+        });
+        let mut operation = self.metrics.diskio_write.start();
+        let result = self.inner.write_views(seg, unit_bytes, data).await;
+        if result.is_ok() {
+            self.metrics.diskio_write_bytes.observe(bytes);
+            operation.mark_success();
+        }
+        result
+    }
+
     async fn fsync(&self, seg: &Segment) -> Result<()> {
         self.inner.fsync(seg).await
     }
@@ -586,10 +656,13 @@ async fn discover_current_range_bindings(
         let instances = service.read_all_chunkdb_instances().await.map_err(|error| {
             crate::IoError::Topology(format!("chunkdb instance discovery failed: {error}"))
         })?;
+        // Range bindings name the owner identity; a restarted owner can keep
+        // that identity while advertising a different RPC port. The service
+        // registry supplies the current endpoint when making each route.
         let current = bindings.snapshot().iter().all(|binding| {
-            instances.iter().any(|(instance_id, instance)| {
-                *instance_id == binding.instance_id && instance.rpc_endpoint == binding.rpc_endpoint
-            })
+            instances
+                .iter()
+                .any(|(instance_id, _)| *instance_id == binding.instance_id)
         });
         if bindings.is_empty() {
             return Ok(None);
@@ -680,6 +753,32 @@ impl PreparedLargeWrite {
     /// Release a prepared session that will not be written.
     pub async fn abort(mut self) -> Result<()> {
         self.writer.abort_pipeline().await.map(|_| ())
+    }
+}
+
+#[async_trait]
+impl ChunkIoWriter for PreparedLargeWrite {
+    async fn on_data(&mut self, buffer: Bytes) -> Result<crate::FeedStatus> {
+        self.writer.on_data(buffer).await
+    }
+
+    async fn on_framed_data(
+        &mut self,
+        buffer: Box<dyn crate::FramedWriteBuffer>,
+    ) -> Result<crate::FeedStatus> {
+        self.writer.on_framed_data(buffer).await
+    }
+
+    async fn on_finish(&mut self) -> Result<Vec<Location>> {
+        self.writer.on_finish().await
+    }
+
+    async fn on_error(&mut self) -> Result<Vec<Location>> {
+        self.writer.on_error().await
+    }
+
+    fn require_data(&self) -> bool {
+        self.writer.require_data()
     }
 }
 

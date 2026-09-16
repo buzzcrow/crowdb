@@ -176,11 +176,39 @@ impl ChunkReader {
 
     pub fn read_stream(&self, locations: &[Location]) -> ReadResult<ChunkReadStream> {
         let (locations, object_length) = normalize_locations(locations)?;
+        self.range_stream(locations, 0, object_length, object_length)
+    }
+
+    /// Builds a pull-based stream for the exact logical half-open range.
+    pub fn read_range_stream(
+        &self,
+        locations: &[Location],
+        start: u64,
+        end: u64,
+    ) -> ReadResult<ChunkReadStream> {
+        let (locations, object_length) = normalize_locations(locations)?;
+        self.range_stream(locations, start, end, object_length)
+    }
+
+    fn range_stream(
+        &self,
+        locations: Vec<Location>,
+        start: u64,
+        end: u64,
+        object_length: u64,
+    ) -> ReadResult<ChunkReadStream> {
+        if start > end || end > object_length {
+            return Err(ReadError::InvalidRange {
+                start,
+                end,
+                object_length,
+            });
+        }
         Ok(ChunkReadStream {
             reader: self.clone(),
             locations: Arc::from(locations),
-            cursor: 0,
-            end: object_length,
+            cursor: start,
+            end,
             window_bytes: self.policy.stream_window_bytes as u64,
             pending_error: None,
         })
@@ -193,6 +221,10 @@ impl ChunkReader {
     /// than a synthetic fixed-stride `Location`.  They use this entry point so
     /// a checksum mismatch still marks the serving replica unavailable and
     /// retries from a protected source before any payload is exposed.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "layout acquisition, validation, failure observation, and retries share one frame-read state machine"
+    )]
     pub async fn read_verified_frame(
         &self,
         chunk_id: ChunkId,
@@ -210,32 +242,91 @@ impl ChunkReader {
         let frame_end = frame_offset
             .checked_add(frame_length)
             .ok_or_else(|| ReadError::InvalidLocations("frame end overflows".into()))?;
-        for _ in 0..self.policy.max_layout_retries {
+        for attempt in 1..=self.policy.max_layout_retries {
             let query_started = Instant::now();
-            let response = self
+            let response = match self
                 .chunkdb
                 .query_chunk(QueryChunkRequest {
                     chunk_id: Some(chunk_id),
                 })
                 .await
-                .map_err(map_metadata_error)?;
-            let validity = Duration::from_millis(response.layout_validity_ms);
+            {
+                Ok(response) => response,
+                Err(error) => {
+                    tracing::warn!(
+                        chunk_high = chunk_id.high,
+                        chunk_low = chunk_id.low,
+                        frame_offset,
+                        frame_length,
+                        attempt,
+                        error = %error,
+                        "verified frame layout query failed"
+                    );
+                    return Err(map_metadata_error(error));
+                }
+            };
+            let layout_validity_ms = response.layout_validity_ms;
+            let validity = Duration::from_millis(layout_validity_ms);
             let deadline = query_started + validity.saturating_sub(self.policy.layout_safety_margin);
             let mut chunk = response
                 .chunk
                 .ok_or_else(|| ReadError::ChunkDeleted(format!("{}:{}", chunk_id.high, chunk_id.low)))?;
-            let (physical, observations) = self
+            tracing::debug!(
+                chunk_high = chunk_id.high,
+                chunk_low = chunk_id.low,
+                frame_offset,
+                frame_length,
+                attempt,
+                layout_validity_ms,
+                strip_count = chunk.strips.len(),
+                "verified frame layout acquired"
+            );
+            let (physical, observations) = match self
                 .read_chunk_range_partial(&chunk, frame_offset, frame_length, frame_offset)
-                .await?;
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    tracing::warn!(
+                        chunk_high = chunk_id.high,
+                        chunk_low = chunk_id.low,
+                        frame_offset,
+                        frame_length,
+                        attempt,
+                        error = %error,
+                        "verified frame physical read failed"
+                    );
+                    return Err(error);
+                }
+            };
             let bytes = match extract_physical_range(&physical.ranges, frame_offset..frame_end) {
                 Ok(bytes) if physical.failures.is_empty() => bytes,
                 Ok(_) | Err(_) => {
-                    if Instant::now() >= deadline
-                        || self
-                            .mark_observed_failures(&mut chunk, observations)
-                            .await
-                            .is_err()
-                    {
+                    let failed_start = physical.failures.first().map(|failure| failure.start);
+                    let failed_end = physical.failures.first().map(|failure| failure.end);
+                    let failed_error = physical.failures.first().map(|failure| failure.error.to_string());
+                    let expired = Instant::now() >= deadline;
+                    let observation_error = if expired {
+                        None
+                    } else {
+                        self.mark_observed_failures(&mut chunk, observations).await.err()
+                    };
+                    tracing::warn!(
+                        chunk_high = chunk_id.high,
+                        chunk_low = chunk_id.low,
+                        frame_offset,
+                        frame_length,
+                        attempt,
+                        completed_ranges = physical.ranges.len(),
+                        failed_ranges = physical.failures.len(),
+                        failed_start = ?failed_start,
+                        failed_end = ?failed_end,
+                        failed_error = ?failed_error,
+                        expired,
+                        observation_error = ?observation_error,
+                        "verified frame read did not produce a complete range"
+                    );
+                    if expired || observation_error.is_some() {
                         return Err(ReadError::DataLoss(
                             "frame bytes could not be reconstructed".into(),
                         ));
@@ -246,27 +337,76 @@ impl ChunkReader {
             match parse_frame(&bytes, chunk_id) {
                 Ok(frame) if frame.header.magic == expected_magic => {
                     if Instant::now() >= deadline {
+                        tracing::warn!(
+                            chunk_high = chunk_id.high,
+                            chunk_low = chunk_id.low,
+                            frame_offset,
+                            frame_length,
+                            attempt,
+                            elapsed_ms = query_started.elapsed().as_millis(),
+                            layout_validity_ms,
+                            "verified frame read exceeded layout validity"
+                        );
                         continue;
                     }
                     self.mark_observed_failures(&mut chunk, observations).await?;
                     return Ok(bytes);
                 }
-                Ok(_) => {
+                Ok(frame) => {
+                    tracing::warn!(
+                        chunk_high = chunk_id.high,
+                        chunk_low = chunk_id.low,
+                        frame_offset,
+                        frame_length,
+                        attempt,
+                        expected_magic = ?expected_magic,
+                        actual_magic = ?frame.header.magic,
+                        "verified frame kind disagrees with its location"
+                    );
                     return Err(ReadError::DataLoss(
                         "frame kind disagrees with its location".into(),
                     ));
                 }
                 Err(error) => {
+                    let served_segments: Vec<Segment> = observations
+                        .iter()
+                        .flat_map(|observation| observation.served_segments.iter().copied())
+                        .collect();
                     let corrupt = mark_served_segments_corrupt(observations);
-                    if corrupt.is_empty()
-                        || Instant::now() >= deadline
-                        || self.mark_observed_failures(&mut chunk, corrupt).await.is_err()
-                    {
+                    let corrupt_segments = corrupt.len();
+                    let expired = Instant::now() >= deadline;
+                    let observation_error = if corrupt_segments == 0 || expired {
+                        None
+                    } else {
+                        self.mark_observed_failures(&mut chunk, corrupt).await.err()
+                    };
+                    tracing::warn!(
+                        chunk_high = chunk_id.high,
+                        chunk_low = chunk_id.low,
+                        frame_offset,
+                        frame_length,
+                        attempt,
+                        error = %error,
+                        corrupt_segments,
+                        served_segments = ?served_segments,
+                        expired,
+                        observation_error = ?observation_error,
+                        "verified frame parsing failed"
+                    );
+                    if corrupt_segments == 0 || expired || observation_error.is_some() {
                         return Err(ReadError::DataLoss(format!("invalid chunk frame: {error}")));
                     }
                 }
             }
         }
+        tracing::warn!(
+            chunk_high = chunk_id.high,
+            chunk_low = chunk_id.low,
+            frame_offset,
+            frame_length,
+            attempts = self.policy.max_layout_retries,
+            "verified frame read exhausted valid chunk layouts"
+        );
         Err(ReadError::LayoutExpired)
     }
 

@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -14,11 +15,14 @@ use crate::{
     ClientConfig, ClientError, RequestIdentityAllocator, Result,
 };
 
+const CATALOG_REFRESH_INTERVAL_MS: u64 = 5_000;
+
 pub struct ChunkKvClient {
     pub(crate) config: ClientConfig,
     catalog_source: Arc<dyn ChunkKvRangeCatalogSource>,
     pub(crate) transport: Arc<dyn ChunkKvTransport>,
     pub(crate) cache: Arc<ChunkKvRangeCatalogCache>,
+    last_catalog_refresh_ms: AtomicU64,
     pub(crate) identities: RequestIdentityAllocator,
 }
 
@@ -40,6 +44,7 @@ impl ChunkKvClient {
             catalog_source,
             transport,
             cache: Arc::new(ChunkKvRangeCatalogCache::default()),
+            last_catalog_refresh_ms: AtomicU64::new(0),
             identities: RequestIdentityAllocator::new(),
         })
     }
@@ -63,6 +68,8 @@ impl ChunkKvClient {
         let (head, pages) = self.catalog_source.load().await?;
         let map = ChunkKvRangeCatalogMap::decode(&head, &pages)?;
         self.cache.install(map)?;
+        self.last_catalog_refresh_ms
+            .store(wall_now_ms(), Ordering::Release);
         self.cache
             .load()
             .ok_or_else(|| ClientError::CatalogUnavailable("refresh produced no catalog".into()))
@@ -171,6 +178,7 @@ impl ChunkKvClient {
 
         while attempts < self.config.max_attempts {
             attempts += 1;
+            self.refresh_catalog_if_due(deadline).await;
             let map = match self.cache.load() {
                 Some(map) => map,
                 None => self.refresh_with_deadline(deadline).await?,
@@ -266,6 +274,22 @@ impl ChunkKvClient {
         tokio::time::timeout(remaining, self.refresh_catalog())
             .await
             .map_err(|_| ClientError::Deadline)?
+    }
+
+    pub(crate) async fn refresh_catalog_if_due(&self, deadline: Instant) {
+        let observed = self.last_catalog_refresh_ms.load(Ordering::Acquire);
+        let now = wall_now_ms();
+        if now.saturating_sub(observed) < CATALOG_REFRESH_INTERVAL_MS
+            || self
+                .last_catalog_refresh_ms
+                .compare_exchange(observed, now, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return;
+        }
+        if self.refresh_with_deadline(deadline).await.is_err() {
+            self.last_catalog_refresh_ms.store(0, Ordering::Release);
+        }
     }
 }
 

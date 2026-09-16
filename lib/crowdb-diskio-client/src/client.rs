@@ -10,7 +10,9 @@ use crowdb_protocol::diskio_fb::{
     FBDiskWriteResponse, FBInt128 as FBDiskInt128,
 };
 use crowdb_protocol::fb::FBMsgType;
-use crowdb_rpc_ffi::{Buffer, CallFuture, Connection, RpcClient, RpcClientHandle, RpcError, RpcServer};
+use crowdb_rpc_ffi::{
+    Buffer, BufferChain, CallFuture, Connection, RpcClient, RpcClientHandle, RpcError, RpcServer,
+};
 use flatbuffers::FlatBufferBuilder;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -224,6 +226,52 @@ impl WireClient {
             },
             Buffer::from_owned_bytes(data),
         )
+    }
+
+    /// Send a segment write as one bounded immutable RPC data-view chain.
+    ///
+    /// # Errors
+    ///
+    /// Returns a protocol error when the chain violates the transport bound,
+    /// or an RPC error when submission fails.
+    pub fn write_segment_views(
+        &self,
+        server: &RpcServer,
+        conn: &Connection,
+        target: WireWriteTarget,
+        data: Vec<bytes::Bytes>,
+    ) -> Result<CallFuture, WireError> {
+        let data =
+            BufferChain::from_owned_bytes(data).map_err(|error| WireError::Protocol(error.to_string()))?;
+        let size = data.len();
+        let req_id = self.next_id();
+        let mut fbb = FlatBufferBuilder::new();
+        let fb_disk_id = target.disk_id.to_fb();
+        let off = FBDiskWriteRequest::create(
+            &mut fbb,
+            &FBDiskWriteRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                disk_id: Some(&fb_disk_id),
+                zone_index: target.zone_index,
+                zone_offset: target.zone_offset,
+                size,
+                ordering_zone_offset: target.ordering_zone_offset,
+                write_create_time_ms: unix_time_ms(),
+            },
+        );
+        fbb.finish(off, None);
+        let control = Buffer::from_bytes(fbb.finished_data());
+        self.rpc
+            .call_chain(
+                server,
+                conn,
+                req_id,
+                control,
+                data,
+                FBMsgType::EDiskWriteRequest.0 as u16,
+            )
+            .map_err(WireError::from)
     }
 
     fn write_buffer(

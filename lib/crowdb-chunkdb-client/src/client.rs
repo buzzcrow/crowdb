@@ -8,8 +8,9 @@
 //! (`instance_id -> rpc_endpoint`). On cache miss, lazily refreshes.
 //! Retry: exponential backoff on transient errors, up to `max_retries`.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use std::collections::HashMap;
 
@@ -36,6 +37,16 @@ use crowdb_protocol::InstanceId;
 use crowdb_rpc_ffi::OwnedClientRoute;
 
 use crate::{ChunkdbClientError, ChunkdbRpcTransport, Result};
+
+const REGISTRY_REFRESH_INTERVAL_MS: u64 = 5_000;
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
+}
 
 /// Retry configuration for transient errors.
 #[derive(Debug, Clone)]
@@ -67,6 +78,8 @@ pub struct ChunkdbClient {
     range_binding: Option<RangeBindingClient>,
     /// crowdb-rpc transport.
     rpc_transport: Arc<ChunkdbRpcTransport>,
+    /// Last successful (or in-flight) Group-0 endpoint refresh.
+    last_registry_refresh_ms: AtomicU64,
 }
 
 impl ChunkdbClient {
@@ -78,6 +91,7 @@ impl ChunkdbClient {
             retry: RetryConfig::default(),
             range_binding: None,
             rpc_transport,
+            last_registry_refresh_ms: AtomicU64::new(0),
         }
     }
 
@@ -94,6 +108,7 @@ impl ChunkdbClient {
             retry,
             range_binding: None,
             rpc_transport,
+            last_registry_refresh_ms: AtomicU64::new(0),
         }
     }
 
@@ -117,7 +132,25 @@ impl ChunkdbClient {
             .map(|(id, value)| (id, value.rpc_endpoint))
             .collect();
         self.endpoint_cache.store(Arc::new(refreshed));
+        self.last_registry_refresh_ms
+            .store(unix_time_ms(), Ordering::Release);
         Ok(())
+    }
+
+    async fn refresh_endpoints_if_due(&self) {
+        let observed = self.last_registry_refresh_ms.load(Ordering::Acquire);
+        let now = unix_time_ms();
+        if now.saturating_sub(observed) < REGISTRY_REFRESH_INTERVAL_MS
+            || self
+                .last_registry_refresh_ms
+                .compare_exchange(observed, now, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return;
+        }
+        if self.refresh_endpoints().await.is_err() {
+            self.last_registry_refresh_ms.store(0, Ordering::Release);
+        }
     }
 
     /// Refresh `ChunkDB` service endpoints and range ownership bindings.
@@ -134,6 +167,7 @@ impl ChunkdbClient {
 
     /// Get the first cached endpoint (or refresh + pick first).
     async fn first_endpoint(&self) -> Result<String> {
+        self.refresh_endpoints_if_due().await;
         if let Some(endpoint) = self.endpoint_cache.load().values().next() {
             return Ok(endpoint.clone());
         }
@@ -154,6 +188,7 @@ impl ChunkdbClient {
     }
 
     async fn endpoints_for_chunk(&self, chunk_id: Option<&ChunkId>) -> Result<Vec<String>> {
+        self.refresh_endpoints_if_due().await;
         if let (Some(binding), Some(id)) = (&self.range_binding, chunk_id) {
             binding
                 .route(id)
@@ -163,10 +198,22 @@ impl ChunkdbClient {
             let route = binding
                 .route_with_fallback(bucket)
                 .map_err(|error| ChunkdbClientError::Unreachable(format!("range routing failed: {error}")))?;
-            let mut endpoints = vec![route.primary.rpc_endpoint];
+            // Range bindings identify the owner but can retain its old socket
+            // after that same instance restarts on a different port. The
+            // service registry is authoritative for a live instance endpoint.
+            let cached = self.endpoint_cache.load();
+            let primary = cached
+                .get(&route.primary.instance_id)
+                .cloned()
+                .unwrap_or(route.primary.rpc_endpoint);
+            let mut endpoints = vec![primary];
             if let Some(fallback) = route.fallback {
-                if fallback.rpc_endpoint != endpoints[0] {
-                    endpoints.push(fallback.rpc_endpoint);
+                let endpoint = cached
+                    .get(&fallback.instance_id)
+                    .cloned()
+                    .unwrap_or(fallback.rpc_endpoint);
+                if endpoint != endpoints[0] {
+                    endpoints.push(endpoint);
                 }
             }
             return Ok(endpoints);
@@ -205,13 +252,14 @@ impl ChunkdbClient {
             tokio::time::sleep(backoff).await;
             backoff = backoff.saturating_mul(2);
             let _ = self.refresh_endpoints().await;
-            if matches!(error, ChunkdbClientError::NotMyRange(_)) {
-                if let Some(binding) = &self.range_binding {
-                    if let Some(id) = chunk_id {
-                        let _ = binding.refresh_and_route(id).await;
-                    } else {
-                        let _ = binding.refresh().await;
-                    }
+            // A restarted owner may advertise a new RPC endpoint while the
+            // cached range binding still names its old socket. Refresh both
+            // sources on transient failures, not only on NotMyRange.
+            if let Some(binding) = &self.range_binding {
+                if let Some(id) = chunk_id {
+                    let _ = binding.refresh_and_route(id).await;
+                } else {
+                    let _ = binding.refresh().await;
                 }
             }
         }

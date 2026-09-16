@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use crowdb_chunkdb::allocator::{ChunkAllocator, DiskdbClientPool};
-use crowdb_chunkdb::chunkdb_config::ChunkdbConfig;
+use crowdb_chunkdb::chunkdb_config::{ChunkdbConfig, PlacementMode};
 use crowdb_chunkdb::conversion::io::ConversionDiskIo;
 use crowdb_chunkdb::conversion::{ConversionCoordinator, MirrorToEcTaskHandler};
 use crowdb_chunkdb::finalize::FinalizeChunkTaskHandler;
@@ -22,6 +22,9 @@ use crowdb_chunkdb::range_guard::RangeGuard;
 use crowdb_chunkdb::relocation::RelocationCoordinator;
 use crowdb_chunkdb::repair::{RepairCoordinator, RepairStripTaskHandler};
 use crowdb_chunkdb::routing::{default_binding_table, BindingCache};
+use crowdb_chunkdb::selector::{
+    ChunkPlacementStrategy, ProtectedPlacementStrategy, UnsafeColocatedPlacementStrategy,
+};
 use crowdb_chunkdb::service::ChunkdbRpcService;
 use crowdb_chunkdb::storage::ChunkStore;
 use crowdb_chunkdb::task::{
@@ -323,8 +326,17 @@ async fn main() {
         return;
     }
     pool.update_disk_id_lookup(&cache.snapshot().disk_groups());
-    let allocator =
-        Arc::new(ChunkAllocator::new(Arc::clone(&pool)).with_metrics(Arc::clone(&workflow_metrics)));
+    let placement: Arc<dyn ChunkPlacementStrategy> = match config.placement.mode {
+        PlacementMode::Protected => Arc::new(ProtectedPlacementStrategy),
+        PlacementMode::UnsafeColocated => Arc::new(UnsafeColocatedPlacementStrategy),
+    };
+    let allow_unsafe_ec = placement.permits_unsafe_ec(config.placement.allow_unsafe_ec);
+    let allow_degraded_failure_domains =
+        placement.permits_degraded_failure_domains(config.placement.allow_degraded_failure_domains);
+    let allocator = Arc::new(
+        ChunkAllocator::with_placement(Arc::clone(&pool), placement)
+            .with_metrics(Arc::clone(&workflow_metrics)),
+    );
 
     // Per-chunk lock map + payload cache (R100).
     let lifecycle_metrics = Arc::new(LifecycleMetrics::new());
@@ -354,10 +366,10 @@ async fn main() {
             .with_locks(Arc::clone(&lock_map))
             .with_metrics(Arc::clone(&workflow_metrics))
             .with_reservation_limits(reservation_blocks, reservation_bytes)
-            .with_allow_unsafe_ec(config.placement.allow_unsafe_ec)
+            .with_allow_unsafe_ec(allow_unsafe_ec)
             .with_placement_policy(
                 config.placement.failure_domain_priority,
-                config.placement.allow_degraded_failure_domains,
+                allow_degraded_failure_domains,
             )
             .with_layout_validity(Duration::from_millis(config.lifecycle.layout_validity_ms)),
     );

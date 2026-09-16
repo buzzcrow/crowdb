@@ -20,7 +20,10 @@ pub(crate) enum ManagerCommand {
 
 pub(crate) async fn start(pool: Arc<SmallWritePool>) -> Result<Arc<SmallPoolRuntime>> {
     let conversion_budget = if pool.policy.conversion_enabled {
-        pool.policy.memory_budget / 2
+        pool.policy
+            .conversion_data_num
+            .saturating_add(pool.policy.conversion_code_num)
+            .saturating_mul(1024 * 1024)
     } else {
         0
     };
@@ -36,9 +39,6 @@ pub(crate) async fn start(pool: Arc<SmallWritePool>) -> Result<Arc<SmallPoolRunt
         route_nonce: std::sync::atomic::AtomicU64::new(0),
         manager_tx,
         failed_disks: Arc::clone(&pool.failed_disks),
-        budget: Arc::new(Semaphore::new(
-            pool.policy.memory_budget.saturating_sub(conversion_budget),
-        )),
         conversion_budget: Arc::new(Semaphore::new(conversion_budget)),
         conversion_active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     });
@@ -158,6 +158,7 @@ fn should_scale_out(runtime: &SmallPoolRuntime, pipelines: &[ManagedPipeline]) -
             pipeline.route.queued_bytes.load(Ordering::Relaxed) >= runtime.policy.scale_out_queue_bytes as u64
                 || pipeline.route.queued_objects.load(Ordering::Relaxed)
                     >= runtime.policy.scale_out_queue_objects as u64
+                || !pipeline.route.has_capacity()
         })
 }
 

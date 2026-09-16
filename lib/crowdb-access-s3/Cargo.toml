@@ -1,0 +1,42 @@
+[package]
+name = "crowdb-access-s3"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "S3-compatible external access service."
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = "0.1"
+arc-swap = "1.9"
+aes-gcm = "0.10"
+atomic-waker = "1"
+base64 = "0.22"
+bincode = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+crowdb-chunk-client = { path = "../crowdb-chunk-client" }
+crowdb-chunk-kv-client = { path = "../crowdb-chunk-kv-client" }
+crowdb-protocol = { path = "../crowdb-protocol" }
+flatbuffers = { workspace = true }
+hyper = { workspace = true, features = ["http1", "server"] }
+hmac = "0.12"
+httpdate = "1"
+md5 = "0.7"
+percent-encoding = "2"
+libc = "0.2"
+rand = "0.8"
+sha2 = "0.10"
+subtle = "2"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+uuid = { version = "1", features = ["v4"] }
+zeroize = { version = "1", features = ["derive"] }
+
+[build-dependencies]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

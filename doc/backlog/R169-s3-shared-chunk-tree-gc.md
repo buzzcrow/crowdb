@@ -45,8 +45,8 @@ strip reclamation is R147.
 
 - Depends on R147 and R168; R92/R95 provide qualified in-chunk/range lifecycle
   mechanisms where applicable.
-- Uses R153 generation metadata, R154 retry identities, R159 tombstones, and
-  R161 background admission.
+- Uses the basic milestone's generation metadata, retry identities, tombstones,
+  and background admission.
 - It is not a prerequisite for basic S3 visibility or large-object deletion.
 
 ## Acceptance

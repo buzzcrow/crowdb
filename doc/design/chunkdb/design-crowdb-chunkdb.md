@@ -611,6 +611,26 @@ projected usable utilization, `(used + in_flight + planned) / capacity`, only
 among candidates that meet that safety constraint. Equal scores use stable
 topology identifiers, making retries deterministic.
 
+`placement.mode` selects one placement strategy at process construction. The
+allocator depends on the `ChunkPlacementStrategy` interface and does not branch
+on the mode while allocating, converting, repairing, or deciding whether a
+degraded disk result may be published. Each mode is a separate strategy type:
+
+- `protected` uses failure-domain-aware mirror and EC selectors. The granular
+  degraded-placement settings below remain available only within this mode.
+- `unsafe_colocated` deliberately selects one healthy disk group and may place
+  every mirror copy or EC fragment in that same group, on the same physical
+  disk, and in the same zone. This mode supports the minimum container topology
+  of one rack, one node, one disk group, one disk, and one zone. It preserves
+  strip geometry and encoding but provides no node-, disk-, or zone-failure
+  durability; losing the colocated resource may lose every fragment.
+
+The mode is an explicit deployment property, not an automatic fallback. A
+protected deployment never changes to `unsafe_colocated` because topology is
+small or unavailable. New placement policies are added as strategy
+implementations and selected at the composition root, keeping policy branches
+out of the allocation hot path.
+
 For an EC `data_num + code_num` strip, a protected rack, node, or physical
 disk contains at most `code_num` fragments. For a mirror strip, losing a
 protected domain leaves at least one copy. A single-copy mirror is explicitly
@@ -660,10 +680,10 @@ with per-node block limits:
 **Safe mode**: Ensures no single node failure exceeds code_num, guaranteeing
 recoverability. Requires enough nodes to satisfy constraints.
 
-**Unsafe mode**: Relaxes per-node limits when cluster is too small. It is
-disabled by default and requires the explicit `placement.allow_unsafe_ec`
-server setting. Insufficient topology otherwise returns a typed placement
-error without allocating blocks.
+Within `protected` mode, `placement.allow_unsafe_ec` permits a degraded EC plan
+that exceeds the normal recovery budget when the cluster is too small. It does
+not select colocated placement. Insufficient topology otherwise returns a typed
+placement error without allocating blocks.
 
 **Example**: 8+4 EC on 12-node cluster → 12 blocks across ≥3 racks, max 4
 blocks per node. On 3-node cluster (unsafe mode) → 12 blocks, 4 per node.
@@ -1216,6 +1236,7 @@ Key configuration parameters:
 | mirror_copy_count                                 | 3          | Number of replicas for mirror strips                          |
 | default_ec_scheme                                 | 6+3        | Default EC scheme (data+parity)                               |
 | topology_refresh_interval                         | 30 s       | Topology cache refresh interval                               |
+| placement.mode                                    | protected  | Select `protected` or explicit `unsafe_colocated` strategy    |
 | placement.allow_unsafe_ec                         | false      | Permit explicit degraded EC placement                         |
 | placement.allow_degraded_failure_domains          | false      | Permit an explicit unmet rack or node guarantee               |
 | placement.failure_domain_priority                 | rack_first | Prefer rack or node protection when ranking safe plans        |

@@ -23,7 +23,7 @@ pub(crate) struct FailedSegmentWrite {
     pub strip_sequence: u32,
     pub segment: Segment,
     pub unit_bytes: u64,
-    pub data: Bytes,
+    pub data: Vec<Bytes>,
     pub error: String,
 }
 
@@ -36,8 +36,18 @@ pub(crate) fn spawn_segment_write(
     unit_bytes: u64,
     data: Bytes,
 ) -> SegmentWriteHandle {
+    spawn_segment_write_views(disk_writer, strip_sequence, segment, unit_bytes, vec![data])
+}
+
+pub(crate) fn spawn_segment_write_views(
+    disk_writer: Arc<dyn DiskWriter>,
+    strip_sequence: u32,
+    segment: Segment,
+    unit_bytes: u64,
+    data: Vec<Bytes>,
+) -> SegmentWriteHandle {
     tokio::spawn(async move {
-        match disk_writer.write(&segment, unit_bytes, data.clone()).await {
+        match disk_writer.write_views(&segment, unit_bytes, data.clone()).await {
             Ok(()) => None,
             Err(error) => Some(FailedSegmentWrite {
                 strip_sequence,
@@ -112,7 +122,7 @@ impl SegmentRepair<'_> {
             };
             if self
                 .disk_writer
-                .write(&replacement, failure.unit_bytes, failure.data.clone())
+                .write_views(&replacement, failure.unit_bytes, failure.data.clone())
                 .await
                 .is_err()
             {

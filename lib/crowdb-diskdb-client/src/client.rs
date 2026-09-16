@@ -11,8 +11,10 @@
 //! All RPCs go through the crowdb-rpc flatbuffer transport.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tracing::warn;
 
@@ -30,6 +32,16 @@ use crowdb_protocol::DiskGroupId;
 use crate::routing::{DiskdbRoutingState, EndpointRoute};
 use crate::rpc_transport::DiskdbRpcTransport;
 use crate::{DiskdbClientError, Result};
+
+const REGISTRY_REFRESH_INTERVAL_MS: u64 = 5_000;
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
+}
 
 /// Retry configuration for transient errors.
 #[derive(Debug, Clone)]
@@ -56,6 +68,9 @@ pub struct DiskdbClient {
     /// crowdb-rpc transport.
     rpc_transport: Arc<DiskdbRpcTransport>,
     retry: RetryConfig,
+    /// Last successful (or in-flight) group-0 route refresh. Shared between
+    /// clones so one caller refreshes each generation without a hot-path lock.
+    last_registry_refresh_ms: Arc<AtomicU64>,
 }
 
 impl DiskdbClient {
@@ -66,6 +81,7 @@ impl DiskdbClient {
             routing: Arc::new(DiskdbRoutingState::new()),
             rpc_transport,
             retry: RetryConfig::default(),
+            last_registry_refresh_ms: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -98,6 +114,8 @@ impl DiskdbClient {
             }
         }
         self.routing.replace_endpoints(observed);
+        self.last_registry_refresh_ms
+            .store(unix_time_ms(), Ordering::Release);
         Ok(())
     }
 
@@ -110,13 +128,32 @@ impl DiskdbClient {
     /// Look up the endpoint for `dg_id`, refreshing on cache miss.
     async fn endpoint_for(&self, dg_id: DiskGroupId) -> Result<EndpointRoute> {
         if let Some(endpoint) = self.routing.endpoint_for(dg_id) {
-            return Ok(endpoint);
+            self.refresh_routes_if_due().await;
+            return Ok(self.routing.endpoint_for(dg_id).unwrap_or(endpoint));
         }
         // Cache miss — refresh and retry.
         self.refresh_endpoints().await?;
         self.routing
             .endpoint_for(dg_id)
             .ok_or_else(|| DiskdbClientError::Unreachable(format!("no diskdb instance owns dg {dg_id}")))
+    }
+
+    async fn refresh_routes_if_due(&self) {
+        let observed = self.last_registry_refresh_ms.load(Ordering::Acquire);
+        let now = unix_time_ms();
+        if now.saturating_sub(observed) < REGISTRY_REFRESH_INTERVAL_MS
+            || self
+                .last_registry_refresh_ms
+                .compare_exchange(observed, now, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return;
+        }
+        if self.refresh_endpoints().await.is_err() {
+            // Retain the last complete RCU snapshot and permit a later caller
+            // to retry group-0 rather than extending a failed refresh lease.
+            self.last_registry_refresh_ms.store(0, Ordering::Release);
+        }
     }
 
     /// Allocate blocks on a disk-group. Retries on transient errors

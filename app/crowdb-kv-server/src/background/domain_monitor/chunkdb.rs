@@ -65,25 +65,19 @@ impl DomainMonitorDriver for ChunkdbRangeMonitorDriver {
             if !changed {
                 return Ok(());
             }
-            let revisions: HashMap<_, _> = current
-                .into_iter()
-                .map(|binding| (binding.value.sub_range_index, binding.revision))
-                .collect();
+            let mut entries = Vec::with_capacity(desired.len());
             for binding in desired {
                 let key = ChunkdbRangeBindingKey {
                     sub_range_index: binding.sub_range_index,
                 }
                 .to_path();
                 let value = serde_json::to_vec(&binding).map_err(|error| error.to_string())?;
-                control
-                    .compare_and_put(
-                        Bytes::from(key),
-                        Bytes::from(value),
-                        revisions.get(&binding.sub_range_index).copied().unwrap_or(0),
-                    )
-                    .await
-                    .map_err(|error| error.to_string())?;
+                entries.push((Bytes::from(key), Bytes::from(value)));
             }
+            control
+                .put_batch(entries)
+                .await
+                .map_err(|error| error.to_string())?;
             Ok(())
         })
     }
@@ -91,7 +85,6 @@ impl DomainMonitorDriver for ChunkdbRangeMonitorDriver {
 
 struct VersionedBinding {
     value: ChunkdbRangeBindingValue,
-    revision: u64,
 }
 
 async fn read_live_instances(
@@ -137,10 +130,7 @@ async fn read_bindings(control: &Group0ControlPlane) -> Result<Vec<VersionedBind
             if value.sub_range_index != key.sub_range_index {
                 return Err(format!("chunkdb binding key/value mismatch at {path}"));
             }
-            Ok(VersionedBinding {
-                value,
-                revision: item.revision,
-            })
+            Ok(VersionedBinding { value })
         })
         .collect()
 }

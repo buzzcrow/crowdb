@@ -68,6 +68,18 @@ pub trait StreamChunkStore: Send + Sync {
         stream_name: StreamName,
         writer_epoch: u64,
     ) -> Result<ActiveChunkDescriptor>;
+    /// Extends an active mirror chunk so `required_capacity` bytes can be
+    /// addressed. `None` means that this store has reached the chunk's fixed
+    /// logical limit and the caller must seal and roll over.
+    async fn grow_mirrored(
+        &self,
+        _stream_name: StreamName,
+        _writer_epoch: u64,
+        _chunk_id: ChunkId,
+        _required_capacity: u64,
+    ) -> Result<Option<ActiveChunkDescriptor>> {
+        Ok(None)
+    }
     async fn write_mirrors(
         &self,
         stream_name: StreamName,

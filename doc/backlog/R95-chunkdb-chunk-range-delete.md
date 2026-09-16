@@ -5,6 +5,10 @@
 
 **Problem**: Shared chunks need partial deletion capability for individual object deletion. Without range delete, entire shared chunks cannot be reclaimed efficiently.
 
-**Solution**: Implement DeleteChunkRange operation for partial chunk deletion with used bitmap management and integration with in-chunk GC.
+**Solution**: Define `DeleteChunkRange(chunk_id, offset, size)` in the chunkdb
+protocol, client, and server dispatch now. The initial server implementation
+returns an explicit not-implemented result without mutation. The full R95
+implementation adds range validation, used-bitmap management, idempotency, and
+in-chunk GC integration before any caller may treat success as reclamation.
 
 **Scope**: Placeholder - detailed design to be refined before implementation.

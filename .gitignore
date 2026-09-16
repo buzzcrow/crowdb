@@ -53,6 +53,7 @@ app/crowdb-diskdb/conf/runtime/
 # `log/` is dangerous as a glob — "log" is a common Rust module name.
 # List explicitly per crate to avoid ignoring source directories.
 app/crowdb-kv-server/log/
+app/crowdb-access-server/log/
 app/crowdb-cli/log/
 app/crowdb-cli/cli-log/
 lib/crowdb-console-shared/log/

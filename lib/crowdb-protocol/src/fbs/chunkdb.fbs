@@ -34,6 +34,7 @@ enum FBChunkdbRetCode : int16 {
     Unavailable = 7,
     NotMyRange = 8,
     StripIndexOutOfRange = 9,
+    Unimplemented = 10,
 }
 
 // ── Enums (from chunkdb_type.proto) ──────────────────────────────
