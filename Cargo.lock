@@ -1805,7 +1805,7 @@ checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
 [[package]]
 name = "hyper"
 version = "1.11.1"
-source = "git+ssh://git@github.com/buzzcrow/hyper.git?branch=feature-crowdb#ded852caa936fbd96f53914c41bf8b7e3ae356d7"
+source = "git+https://github.com/buzzcrow/hyper.git?branch=feature-crowdb#ded852caa936fbd96f53914c41bf8b7e3ae356d7"
 dependencies = [
  "atomic-waker",
  "bytes",
