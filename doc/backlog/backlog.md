@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R174** — Bump this line in the same commit when adding a new item.
+**Next R number: R176** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -33,6 +33,15 @@ requirement is implemented.
   sealed-chunk EC — Area: chunk-stream / chunk-kv / KV / chunkdb — Move the
   stream namespace and tree root catalog as one fenced binding generation,
   optionally shard their indexes, and convert sealed mirror chunks to EC.
+- **[R174](R174-chunk-kv-overlay-split-cutover.md)** — overlay-backed partition
+  split cutover — Area: chunk-kv / crowdb-tree / chunk-stream / server / group
+  0 — Keep foreground writes and reads available through split preparation and
+  replace the final child checkpoint outage with a durable child-tail overlay
+  and a bounded sequencer handoff.
+- **[R175](R175-chunk-kv-child-tree-balance.md)** — child-tree owner balance —
+  Area: chunk-kv / crowdb-tree / chunk-stream / server / group 0 — Move an
+  already split child tree to a selected remote owner through snapshot, durable
+  journal-tail replay, short writer handoff, and stale-route forwarding.
 
 ### Planned — S3 data access service
 
