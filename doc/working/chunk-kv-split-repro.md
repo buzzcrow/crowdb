@@ -124,3 +124,28 @@ weaken assertions, or count a failed split as a successful benchmark. After a
 change, rerun the same workload and verify both `errors=0` and split/replay
 convergence. `pixi run tree-lint` and `pixi run test-cpp` passed for the
 range-rebuild fix; rerun the relevant gates after further code changes.
+
+## Overlay-cutover follow-up
+
+The 2026-09-17 R174/R175 runs used 12,000 × 4 KiB puts, concurrency 32, three
+hot ranges, and a 1 MiB partition target:
+
+- `chunk-kv-regression-20260917-184714` exposed missing child activation from
+  the catalog split proof: 1,312 third-round errors and repeated prepared-child
+  grant rejection.
+- `chunk-kv-regression-20260917-185834` confirmed child activation but exposed
+  heartbeat misclassification of `SplitPreparing`: 128 third-round errors.
+- `chunk-kv-regression-20260917-190434` completed all 12,000 writes with zero
+  errors, then stopped at five partitions because materialization retained the
+  completed split transition ID and later balance could not match its source.
+- `chunk-kv-regression-20260917-191402` again completed all writes with zero
+  errors (worst p99 135,438 µs) and advanced the catalog through generation 26
+  after releasing both overlay and split marker. It then failed closed during
+  multi-generation balance: the overlay base expected tree manifest 3 at
+  applied sequence 12007, while target/catalog recovery reopened manifest 2 at
+  the same sequence.
+
+The remaining failure is an exact tree-root pin/open problem, not client retry,
+lease duration, or split-fence latency. Preserve the failing logs and implement
+historical tree-manifest open for both initial target preparation and
+`CatchupPublished` recovery before accepting the sustained gate.

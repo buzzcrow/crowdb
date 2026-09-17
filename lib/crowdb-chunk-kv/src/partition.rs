@@ -1472,6 +1472,14 @@ impl Partition {
         Ok(())
     }
 
+    /// Returns whether this prepared assignment carries a split-child
+    /// artifact and therefore requires an exact catalog commit proof before
+    /// it can serve.
+    #[must_use]
+    pub fn is_prepared_split_child(&self) -> bool {
+        self.prepared_artifact.is_some()
+    }
+
     /// Activates a replayed assignment after its owner validates external
     /// catalog and lease authority for the exact epoch.
     ///
@@ -1481,6 +1489,12 @@ impl Partition {
     /// through [`Self::activate_prepared`] with their catalog commit proof.
     pub fn activate_recovered(&self, ownership_epoch: u64) -> Result<()> {
         self.validate_epoch(ownership_epoch)?;
+        if matches!(
+            self.lifecycle(),
+            PartitionLifecycle::Serving | PartitionLifecycle::SplitPreparing
+        ) {
+            return Ok(());
+        }
         if self.prepared_artifact.is_some() {
             return Err(ChunkKvError::InvalidRequest(
                 "prepared split child requires a split commit proof".into(),

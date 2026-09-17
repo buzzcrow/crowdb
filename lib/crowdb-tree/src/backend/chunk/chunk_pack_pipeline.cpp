@@ -249,9 +249,9 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
             job->pack.ordinal        = manifest->packs.size();
             job->pack.logical_offset = offset;
             job->pack.ref            = {
-                           .chunk_id = chunk,
-                           .offset   = cursor,
-                           .length   = static_cast<uint32_t>(length),
+                .chunk_id = chunk,
+                .offset   = cursor,
+                .length   = static_cast<uint32_t>(length),
             };
             job->physical_length = crowdb::protocol::framed_physical_length(length);
             job->source_offset   = offset;

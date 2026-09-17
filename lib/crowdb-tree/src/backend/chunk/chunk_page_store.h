@@ -97,8 +97,8 @@ class RootCatalog
     [[nodiscard]] virtual std::shared_ptr<const ChunkManifest> load(uint64_t tree_id) const               = 0;
     [[nodiscard]] virtual std::shared_ptr<const ChunkManifest> load_generation(uint64_t tree_id,
                                                                                uint64_t generation) const = 0;
-    virtual Status                                             persist_reference_segment(uint64_t                                          tree_id,
-                                                                                         std::shared_ptr<const ChunkReferenceSegmentImage> segment) = 0;
+    virtual Status persist_reference_segment(uint64_t                                          tree_id,
+                                             std::shared_ptr<const ChunkReferenceSegmentImage> segment)   = 0;
     [[nodiscard]] virtual std::shared_ptr<const ChunkReferenceSegmentImage>
                      load_reference_segment(uint64_t tree_id, uint64_t object_id) const                    = 0;
     virtual uint64_t allocate_reference_segment_id(uint64_t tree_id)                                       = 0;
@@ -136,8 +136,8 @@ class MemoryRootCatalog final : public RootCatalog
     [[nodiscard]] uint64_t                             retained_manifest_count(uint64_t tree_id) const override;
     [[nodiscard]] uint64_t                             pinned_bytes(uint64_t tree_id) const override;
     [[nodiscard]] uint64_t                             oldest_pin_age_ms(uint64_t tree_id) const override;
-    Status                                             persist_reference_segment(uint64_t                                          tree_id,
-                                                                                 std::shared_ptr<const ChunkReferenceSegmentImage> segment) override;
+    Status persist_reference_segment(uint64_t                                          tree_id,
+                                     std::shared_ptr<const ChunkReferenceSegmentImage> segment) override;
     [[nodiscard]] std::shared_ptr<const ChunkReferenceSegmentImage>
              load_reference_segment(uint64_t tree_id, uint64_t object_id) const override;
     uint64_t allocate_reference_segment_id(uint64_t tree_id) override;
@@ -350,8 +350,8 @@ class ChunkPageStore final : public PageStore, public AsyncPageStore
     static Status         validate_manifest(const ChunkManifest &manifest, const RootCatalog &catalog);
     Status                persist_reference_segments(ChunkManifest *manifest, const ChunkManifest *reuse_base);
     [[nodiscard]] std::shared_ptr<const ChunkManifest> reuse_base_manifest() const;
-    [[nodiscard]] const ChunkPagePack        *find_reusable_pack(const ChunkManifest &base, uint64_t logical_offset,
-                                                                 uint32_t length, ChunkCancellation cancellation = {}) const;
+    [[nodiscard]] const ChunkPagePack *find_reusable_pack(const ChunkManifest &base, uint64_t logical_offset,
+                                                          uint32_t length, ChunkCancellation cancellation = {}) const;
     [[nodiscard]] static const ChunkPagePack *find_pack_at(const ChunkManifest &base, uint64_t logical_offset,
                                                            uint32_t length);
     static uint32_t                           reference_segment_checksum(const ChunkReferenceSegmentImage &segment);

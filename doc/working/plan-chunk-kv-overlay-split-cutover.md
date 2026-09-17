@@ -143,7 +143,12 @@ tail and bounded handoff contract.
   through every observed split, capture p50/p99/p999/errors and correlated
   split metrics, then verify restart replay. Files:
   `tools/bench-chunk-kv-regression.sh`, client load tool, and
-  `doc/working/chunk-kv-split-repro.md`.
+  `doc/working/chunk-kv-split-repro.md`. The 12,000 × 4 KiB, concurrency-32
+  run now completes all three hot write rounds with zero errors and p99 below
+  136 ms. Multi-generation convergence remains blocked when a later prepared
+  overlay names tree manifest 3 but target/catalog recovery reopens manifest 2
+  at the same applied sequence; exact historical tree-root open/pinning is
+  still required before this item can close.
 - [ ] **Run acceptance gates and clean up**: run the R174/R175 gates and the
   sustained split/balance workflow, remove both completed requirements and this
   plan, and update the backlog index in the final cleanup commit. Files:

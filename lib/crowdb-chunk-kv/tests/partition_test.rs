@@ -1510,6 +1510,7 @@ async fn prepared_child_serves_only_after_exact_catalog_proof() {
     };
     prepared.activate_prepared(&proof).unwrap();
     assert_eq!(prepared.lifecycle(), crowdb_chunk_kv::PartitionLifecycle::Serving);
+    prepared.activate_recovered(20).unwrap();
     prepared
         .mutate(
             20,

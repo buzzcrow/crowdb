@@ -441,6 +441,10 @@ async fn matching_grant_refresh_keeps_a_preparing_parent_active() {
         .unwrap();
 
     assert_eq!(partition.snapshot().lifecycle, PartitionLifecycle::SplitPreparing);
+    assert!(
+        !service.registry_observation(1_024, 0).hosted[0].recovering,
+        "a preparing parent must remain eligible for serving-grant renewal"
+    );
 }
 
 #[tokio::test]

@@ -126,8 +126,10 @@ monitor advance them in this order:
 Before child materialization, heartbeat load reports the child as dependent.
 The local maintenance loop performs bounded ownership materialization and a
 serving checkpoint. A heartbeat then proves independent recovery, group 0
-publishes a generation that clears the overlay, and only that catalog state is
-eligible for another split or owner balance.
+publishes a generation that clears both the overlay and the completed split
+`transition_id`, and only that catalog state is eligible for another split or
+owner balance. Releasing both markers atomically prevents a later transfer from
+mistaking the independently recoverable child for an active split participant.
 
 ## 7. Child Balance State Machine
 
@@ -140,9 +142,11 @@ failure. The live-source phases and actions are:
    pinned base, creates the target-owned empty WAL, and records the initial
    source cursor in the target overlay.
 2. `TargetPreparing`: the remote target validates the range, page-root and
-   stream identities, opens shared immutable pages, and replays the source
-   suffix into a `Prepared` overlay. Failure here may abort; source authority
-   is unchanged.
+   stream identities, opens the exact immutable tree-manifest generation named
+   by the source-base proof rather than the latest root, and replays the source
+   suffix into a `Prepared` overlay. A reopen during `CatchupPublished` must
+   resolve the same pinned generation even if a newer root was published in
+   the meantime. Failure here may abort; source authority is unchanged.
 3. `TargetPrepared` or `AwaitingFence`: the monitor requests release only when
    record, byte, estimated catch-up, deadline, capacity, request-rate,
    cooldown, and one-transition-per-owner bounds pass. The source closes new
@@ -189,6 +193,13 @@ The recovery decision matrix is:
 | Serving catalog entry; grant absent or expired         | Keep target prepared and reject admission until the exact grant arrives  |
 | Ambiguous catalog head write                           | Reread head and pages; accept only the byte-exact intended generation     |
 | Conflicting artifact, cursor, range, epoch, or proof   | Fail closed; never infer authority from local state                       |
+
+The tree-manifest generation in a target overlay is a recovery pin, not an
+observation. `TargetPreparing`, `CatchupPublished`, catalog refresh, and restart
+must all open that exact generation and compare its applied sequence with the
+proof. Opening the latest root and merely checking afterward is invalid: a
+concurrent checkpoint may move latest forward, while stale root-cache state may
+leave it behind.
 
 The balance invariants are:
 

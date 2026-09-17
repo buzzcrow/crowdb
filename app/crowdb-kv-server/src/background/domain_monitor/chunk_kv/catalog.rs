@@ -123,11 +123,16 @@ pub async fn publish_materialized_partition(
     if current.artifact.tail_overlay.is_none() {
         return Ok(catalog.head.generation);
     }
-    let mut desired = current.clone();
-    desired.artifact.tail_overlay = None;
+    let desired = independently_recoverable_entry(current.clone());
     let matches = |entry: &ChunkKvRangeCatalogEntry| entry == &current;
     let (head, pages) = replace_one(catalog.head, catalog.pages, matches, vec![desired])?;
     publish(control, head, pages, catalog.head_revision).await
+}
+
+fn independently_recoverable_entry(mut entry: ChunkKvRangeCatalogEntry) -> ChunkKvRangeCatalogEntry {
+    entry.artifact.tail_overlay = None;
+    entry.transition_id = None;
+    entry
 }
 
 pub async fn publish_split(
@@ -340,4 +345,51 @@ fn reject_reused_transition_id(
 
 fn operation_error(error: &KvGroupOperationError) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use crowdb_protocol::chunk_kv::{
+        Id128, KeyRange, OwnerDescriptor, PartitionArtifact, TailOverlayArtifact,
+    };
+    use crowdb_protocol::chunk_stream::StreamName;
+
+    use super::*;
+
+    #[test]
+    fn materialization_releases_overlay_and_completed_split_identity_together() {
+        let transition_id = Id128 { high: 7, low: 8 };
+        let entry = ChunkKvRangeCatalogEntry {
+            partition_id: Id128 { high: 1, low: 2 },
+            range: KeyRange::default(),
+            owner: OwnerDescriptor {
+                instance_id: 3,
+                rpc_endpoint: "127.0.0.1:9003".into(),
+            },
+            owner_epoch: 4,
+            state: ChunkKvRangeCatalogPartitionState::Serving,
+            artifact: PartitionArtifact {
+                tree_id: 5,
+                stream_name: StreamName { high: 6, low: 7 },
+                tail_overlay: Some(TailOverlayArtifact {
+                    source_partition_id: Id128 { high: 9, low: 10 },
+                    source_epoch: 3,
+                    source_stream_name: StreamName { high: 11, low: 12 },
+                    source_stream_manifest_generation: 1,
+                    replay_offset: 0,
+                    cutover_offset: 16,
+                    base_tree_manifest: 1,
+                    base_applied_seq: 2,
+                    cutover_seq: 3,
+                    target_stream_start_seq: 4,
+                }),
+            },
+            transition_id: Some(transition_id),
+        };
+
+        let materialized = independently_recoverable_entry(entry);
+
+        assert!(materialized.artifact.tail_overlay.is_none());
+        assert_eq!(materialized.transition_id, None);
+    }
 }

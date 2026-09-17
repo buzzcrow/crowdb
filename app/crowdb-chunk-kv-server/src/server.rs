@@ -286,6 +286,7 @@ impl ChunkKvService {
                         snapshot.lifecycle,
                         crowdb_chunk_kv::PartitionLifecycle::Prepared
                             | crowdb_chunk_kv::PartitionLifecycle::Serving
+                            | crowdb_chunk_kv::PartitionLifecycle::SplitPreparing
                     ),
                 }
             })
@@ -558,12 +559,25 @@ impl ChunkKvService {
                     "catalog replacement does not match the prepared split children".into(),
                 ));
             }
-            partition
-                .commit_split(&SplitCommitProof {
-                    catalog_revision: catalog_generation,
-                    artifact: artifact.clone(),
-                })
-                .await?;
+            let proof = SplitCommitProof {
+                catalog_revision: catalog_generation,
+                artifact: artifact.clone(),
+            };
+            for child in [&artifact.left, &artifact.right] {
+                let child_id = Id128 {
+                    high: child.partition_id.high,
+                    low: child.partition_id.low,
+                };
+                let child_partition = self.partitions.load().get(&child_id).cloned().ok_or_else(|| {
+                    ChunkKvError::SplitRetry(
+                        "catalog split child is not installed before parent commit".into(),
+                    )
+                })?;
+                if child_partition.is_prepared_split_child() {
+                    child_partition.activate_prepared(&proof)?;
+                }
+            }
+            partition.commit_split(&proof).await?;
             let parent_id = Id128 {
                 high: artifact.parent_id.high,
                 low: artifact.parent_id.low,
