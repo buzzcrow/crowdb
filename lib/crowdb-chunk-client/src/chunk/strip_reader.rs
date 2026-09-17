@@ -145,7 +145,7 @@ impl StripReader {
                 Ok(data) => return Ok((data, failed_segments, vec![*segment])),
                 Err(error) => {
                     failures.push(error.to_string());
-                    push_durable_failure(&mut failed_segments, *segment, &error);
+                    let _ = error;
                 }
             }
         }
@@ -391,7 +391,7 @@ impl StripReader {
                     shards[index] = Some(shard);
                     available = available.saturating_add(1);
                 }
-                Err(error) => push_durable_failure(&mut failed_segments, segments[index], &error),
+                Err(_) => {}
             }
         }
         let decoded = decode_recoverable(strip, scheme, shards, &failed_segments)?;
@@ -512,12 +512,6 @@ fn validate_ec_read(
 fn push_unique(segments: &mut Vec<Segment>, segment: Segment) {
     if !segments.contains(&segment) {
         segments.push(segment);
-    }
-}
-
-fn push_durable_failure(segments: &mut Vec<Segment>, segment: Segment, error: &crate::IoError) {
-    if error.is_durable_read_failure() {
-        push_unique(segments, segment);
     }
 }
 
