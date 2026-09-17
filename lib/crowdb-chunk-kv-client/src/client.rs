@@ -223,6 +223,7 @@ impl ChunkKvClient {
                                 | ChunkKvRpcErrorCode::Overloaded
                                 | ChunkKvRpcErrorCode::WriteStalled
                                 | ChunkKvRpcErrorCode::Recovering
+                                | ChunkKvRpcErrorCode::TargetNotReady
                                 | ChunkKvRpcErrorCode::LeaseExpired
                         )
                     });

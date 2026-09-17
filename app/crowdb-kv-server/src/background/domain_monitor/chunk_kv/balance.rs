@@ -47,6 +47,13 @@ pub async fn plan(control: &Group0ControlPlane, descriptor: &DomainMonitorDescri
         .iter()
         .flat_map(|page| page.entries.iter())
         .collect();
+    if let Some(entry) = entries.iter().copied().find(|entry| {
+        entry.artifact.tail_overlay.is_some()
+            && partition_load(&state, entry).is_some_and(|load| load.independently_recoverable)
+    }) {
+        catalog::publish_materialized_partition(control, entry.partition_id).await?;
+        return Ok(());
+    }
     if plan_split(control, &entries, &state, &policy, now_ms).await? {
         return Ok(());
     }
@@ -161,9 +168,7 @@ async fn plan_split(
     let Some((entry, split_key, _)) = candidates.into_iter().next() else {
         return Ok(false);
     };
-    let target = least_loaded_owner(entries, state)
-        .ok_or_else(|| "chunk-KV split has no healthy child owner".to_string())?;
-    let transition = split_transition(entry, split_key, target, now_ms)?;
+    let transition = split_transition(entry, split_key, now_ms)?;
     persist_new(
         control,
         ChunkKvSplitKey {
@@ -195,8 +200,15 @@ async fn plan_transfer(
         .owner_epoch
         .checked_add(1)
         .ok_or_else(|| "chunk-KV owner epoch overflowed".to_string())?;
+    let transition_id = transfer_id(entry, target_id, target_epoch);
+    let mut target_artifact = entry.artifact.clone();
+    target_artifact.stream_name = crowdb_protocol::chunk_stream::StreamName {
+        high: transition_id.high,
+        low: transition_id.low,
+    };
+    target_artifact.tail_overlay = None;
     let transition = TransferTransition {
-        transition_id: transfer_id(entry, target_id, target_epoch),
+        transition_id,
         partition_id: entry.partition_id,
         range: entry.range.clone(),
         source: entry.owner.clone(),
@@ -207,11 +219,20 @@ async fn plan_transfer(
         },
         target_epoch,
         artifact: entry.artifact.clone(),
+        target_artifact,
+        readiness_limits: crowdb_protocol::chunk_kv::TransferReadinessLimits {
+            max_tail_records: 65_536,
+            max_tail_bytes: 256 * 1024 * 1024,
+            max_estimated_catchup_ms: policy.cooldown_ms.max(1),
+            prepare_deadline_ms: now_ms.saturating_add(policy.cooldown_ms.max(1)),
+            forwarding_grace_ms: policy.cooldown_ms.max(1),
+        },
         planned_at_ms: now_ms,
         old_grant_expires_at_ms: 0,
         phase: TransferPhase::Planned,
         release_proof: None,
         readiness_proof: None,
+        catchup_proof: None,
         failure: None,
     };
     transition.validate().map_err(|error| error.to_string())?;
@@ -341,6 +362,8 @@ fn eligible(
     now_ms: u64,
 ) -> bool {
     entry.state == ChunkKvRangeCatalogPartitionState::Serving
+        && entry.artifact.tail_overlay.is_none()
+        && partition_load(state, entry).is_some_and(|load| load.independently_recoverable)
         && state.healthy.contains_key(&entry.owner.instance_id)
         && !state.active_partitions.contains(&entry.partition_id)
         && !state.busy_owners.contains(&entry.owner.instance_id)
@@ -351,24 +374,6 @@ fn eligible(
                 .copied()
                 .unwrap_or_default(),
         ) >= policy.cooldown_ms
-}
-
-fn least_loaded_owner<'a>(
-    entries: &[&ChunkKvRangeCatalogEntry],
-    state: &'a PlanningState,
-) -> Option<&'a InstanceValue> {
-    state
-        .healthy
-        .values()
-        .filter(|(instance, _)| !state.busy_owners.contains(&instance.instance_id))
-        .min_by_key(|(instance, extra)| {
-            let count = entries
-                .iter()
-                .filter(|entry| entry.owner.instance_id == instance.instance_id)
-                .count();
-            (count, extra.durable_bytes, instance.instance_id)
-        })
-        .map(|(instance, _)| instance)
 }
 
 fn live_byte_median(range: &KeyRange, samples: &[(Vec<u8>, u64)]) -> Option<Vec<u8>> {
@@ -393,7 +398,6 @@ fn live_byte_median(range: &KeyRange, samples: &[(Vec<u8>, u64)]) -> Option<Vec<
 fn split_transition(
     parent: &ChunkKvRangeCatalogEntry,
     split_key: Vec<u8>,
-    right_owner: &InstanceValue,
     now_ms: u64,
 ) -> Result<SplitTransition, String> {
     let transition_id = derived_id(parent, &split_key, b"transition");
@@ -416,11 +420,8 @@ fn split_transition(
         parent,
         &split_key,
         b"right",
-        OwnerDescriptor {
-            instance_id: right_owner.instance_id,
-            rpc_endpoint: right_owner.rpc_endpoint.clone(),
-        },
-        1,
+        parent.owner.clone(),
+        child_epoch,
         KeyRange {
             start: split_key.clone(),
             end: parent.range.end.clone(),

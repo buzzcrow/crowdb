@@ -9,9 +9,12 @@ use crate::MonitorError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TransferAction {
+    PrepareSource { instance_id: u64, owner_epoch: u64 },
+    PrepareTarget { instance_id: u64, owner_epoch: u64 },
     FenceSource { instance_id: u64, owner_epoch: u64 },
     WaitForFence { activation_not_before_ms: u64 },
-    PrepareTarget { instance_id: u64, owner_epoch: u64 },
+    PublishCatchingUp,
+    CatchUpTarget { instance_id: u64, owner_epoch: u64 },
     PublishCatalog,
     Complete,
     Aborted,
@@ -44,9 +47,15 @@ impl TransferStateMachine {
     #[must_use]
     pub fn next_action(&self, source_reachable: bool, max_clock_skew_ms: u64) -> TransferAction {
         match self.transition.phase {
-            TransferPhase::Planned | TransferPhase::AwaitingFence
-                if self.transition.release_proof.is_none() =>
-            {
+            TransferPhase::Planned | TransferPhase::SourcePreparing => TransferAction::PrepareSource {
+                instance_id: self.transition.source.instance_id,
+                owner_epoch: self.transition.source_epoch,
+            },
+            TransferPhase::TargetPreparing => TransferAction::PrepareTarget {
+                instance_id: self.transition.target.instance_id,
+                owner_epoch: self.transition.target_epoch,
+            },
+            TransferPhase::TargetPrepared | TransferPhase::AwaitingFence => {
                 if source_reachable {
                     TransferAction::FenceSource {
                         instance_id: self.transition.source.instance_id,
@@ -61,16 +70,56 @@ impl TransferStateMachine {
                     }
                 }
             }
-            TransferPhase::Planned | TransferPhase::AwaitingFence | TransferPhase::TargetPreparing => {
-                TransferAction::PrepareTarget {
-                    instance_id: self.transition.target.instance_id,
-                    owner_epoch: self.transition.target_epoch,
-                }
-            }
-            TransferPhase::TargetPrepared => TransferAction::PublishCatalog,
+            TransferPhase::TargetCatchingUp => TransferAction::PublishCatchingUp,
+            TransferPhase::CatchupPublished => TransferAction::CatchUpTarget {
+                instance_id: self.transition.target.instance_id,
+                owner_epoch: self.transition.target_epoch,
+            },
+            TransferPhase::TargetReady => TransferAction::PublishCatalog,
             TransferPhase::CatalogCommitted => TransferAction::Complete,
             TransferPhase::Aborted => TransferAction::Aborted,
         }
+    }
+
+    /// Enters source snapshot preparation without changing writer authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the persisted phase cannot prepare the source.
+    pub fn begin_source_prepare(&mut self) -> Result<(), MonitorError> {
+        if matches!(
+            self.transition.phase,
+            TransferPhase::Planned | TransferPhase::SourcePreparing
+        ) {
+            self.transition.phase = TransferPhase::SourcePreparing;
+            return self.validate_current();
+        }
+        Err(MonitorError::PlanFailed(
+            "transfer phase cannot prepare source snapshot".into(),
+        ))
+    }
+
+    /// Persists the exact source base and initial tail cursor for target replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a mismatched target identity or missing overlay.
+    pub fn record_source_base(
+        &mut self,
+        target_artifact: crowdb_protocol::chunk_kv::PartitionArtifact,
+    ) -> Result<(), MonitorError> {
+        if self.transition.phase != TransferPhase::SourcePreparing
+            || target_artifact.tree_id != self.transition.artifact.tree_id
+            || target_artifact.stream_name != self.transition.target_artifact.stream_name
+            || target_artifact.tail_overlay.is_none()
+        {
+            return Err(MonitorError::PlanFailed(
+                "source base does not match the transfer target".into(),
+            ));
+        }
+        self.transition.target_artifact = target_artifact;
+        self.transition.phase = TransferPhase::TargetPreparing;
+        self.validate_current()
     }
 
     /// Records a source fence that proves the old owner stopped admission.
@@ -111,22 +160,13 @@ impl TransferStateMachine {
         })
     }
 
-    /// Advances the persisted plan to target preparation after authority release.
+    /// Advances the persisted plan to target preparation while the source serves.
     ///
     /// # Errors
     ///
-    /// Returns an error if old-owner exclusion is not yet proven.
+    /// Returns an error unless the source base has already been persisted.
     pub fn begin_target_prepare(&mut self) -> Result<(), MonitorError> {
-        if self.transition.release_proof.is_none() {
-            return Err(MonitorError::PlanFailed(
-                "target preparation requires old-owner fence".into(),
-            ));
-        }
-        if matches!(
-            self.transition.phase,
-            TransferPhase::Planned | TransferPhase::AwaitingFence | TransferPhase::TargetPreparing
-        ) {
-            self.transition.phase = TransferPhase::TargetPreparing;
+        if self.transition.phase == TransferPhase::TargetPreparing {
             return Ok(());
         }
         Err(MonitorError::PlanFailed(
@@ -153,7 +193,56 @@ impl TransferStateMachine {
             return Err(MonitorError::PlanFailed("target was not preparing".into()));
         }
         self.transition.readiness_proof = Some(proof);
-        self.transition.phase = TransferPhase::TargetPrepared;
+        if matches!(
+            self.transition.release_proof,
+            Some(AuthorityReleaseProof::LeaseExpired { .. })
+        ) {
+            self.transition.catchup_proof = self.transition.readiness_proof.clone();
+            self.transition.phase = TransferPhase::TargetReady;
+        } else {
+            self.transition.phase = TransferPhase::TargetPrepared;
+        }
+        self.validate_current()
+    }
+
+    /// Records that the catching-up catalog entry is authoritative.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the released target is awaiting publication.
+    pub fn mark_catchup_published(&mut self) -> Result<(), MonitorError> {
+        if self.transition.phase == TransferPhase::CatchupPublished {
+            return Ok(());
+        }
+        if self.transition.phase != TransferPhase::TargetCatchingUp {
+            return Err(MonitorError::PlanFailed(
+                "catch-up publication requires a released source".into(),
+            ));
+        }
+        self.transition.phase = TransferPhase::CatchupPublished;
+        self.validate_current()
+    }
+
+    /// Records final target replay through the released source cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a conflicting proof or incorrect persisted phase.
+    pub fn record_target_caught_up(&mut self, proof: TargetReadinessProof) -> Result<(), MonitorError> {
+        if let Some(existing) = &self.transition.catchup_proof {
+            return if existing == &proof {
+                Ok(())
+            } else {
+                Err(MonitorError::PlanFailed("target catch-up proof conflicts".into()))
+            };
+        }
+        if self.transition.phase != TransferPhase::CatchupPublished {
+            return Err(MonitorError::PlanFailed(
+                "target catch-up requires a published catching-up assignment".into(),
+            ));
+        }
+        self.transition.catchup_proof = Some(proof);
+        self.transition.phase = TransferPhase::TargetReady;
         self.validate_current()
     }
 
@@ -166,7 +255,7 @@ impl TransferStateMachine {
         if self.transition.phase == TransferPhase::CatalogCommitted {
             return Ok(());
         }
-        if self.transition.phase != TransferPhase::TargetPrepared {
+        if self.transition.phase != TransferPhase::TargetReady {
             return Err(MonitorError::PlanFailed(
                 "catalog cutover requires prepared target".into(),
             ));
@@ -181,7 +270,10 @@ impl TransferStateMachine {
     ///
     /// Returns an error after catalog commit or for an empty/conflicting reason.
     pub fn abort(&mut self, reason: &str) -> Result<(), MonitorError> {
-        if reason.is_empty() || self.transition.phase == TransferPhase::CatalogCommitted {
+        if reason.is_empty()
+            || self.transition.phase == TransferPhase::CatalogCommitted
+            || self.transition.release_proof.is_some()
+        {
             return Err(MonitorError::PlanFailed("committed transfer cannot abort".into()));
         }
         if self.transition.phase == TransferPhase::Aborted {
@@ -208,14 +300,35 @@ impl TransferStateMachine {
         }
         if !matches!(
             self.transition.phase,
-            TransferPhase::Planned | TransferPhase::AwaitingFence
+            TransferPhase::TargetPrepared | TransferPhase::AwaitingFence
         ) {
             return Err(MonitorError::PlanFailed(
                 "transfer phase cannot accept a fence".into(),
             ));
         }
+        if let AuthorityReleaseProof::ExplicitFence {
+            durable_tail,
+            durable_tail_offset,
+            ..
+        } = &proof
+        {
+            let overlay = self
+                .transition
+                .target_artifact
+                .tail_overlay
+                .as_mut()
+                .ok_or_else(|| MonitorError::PlanFailed("transfer target overlay is absent".into()))?;
+            if *durable_tail < overlay.cutover_seq || *durable_tail_offset < overlay.cutover_offset {
+                return Err(MonitorError::PlanFailed(
+                    "source release precedes target preparation".into(),
+                ));
+            }
+            overlay.cutover_seq = *durable_tail;
+            overlay.cutover_offset = *durable_tail_offset;
+            overlay.target_stream_start_seq = durable_tail.saturating_add(1);
+        }
         self.transition.release_proof = Some(proof);
-        self.transition.phase = TransferPhase::AwaitingFence;
+        self.transition.phase = TransferPhase::TargetCatchingUp;
         self.validate_current()
     }
 

@@ -53,10 +53,44 @@ impl TransitionProcessor {
     ) -> Result<(), MonitorError> {
         let mut machine = TransferStateMachine::restore(transition)?;
         if machine.transition().source.instance_id == self.instance_id
-            && machine.transition().release_proof.is_none()
+            && machine.transition().phase == TransferPhase::Planned
+        {
+            machine.begin_source_prepare()?;
+            revision = self
+                .store
+                .persist_transfer_transition(machine.transition(), revision)
+                .await?;
+        }
+        if machine.transition().source.instance_id == self.instance_id
+            && machine.transition().phase == TransferPhase::SourcePreparing
+        {
+            let artifact = self
+                .executor
+                .prepare_transfer_source(machine.transition())
+                .await?;
+            machine.record_source_base(artifact)?;
+            revision = self
+                .store
+                .persist_transfer_transition(machine.transition(), revision)
+                .await?;
+        }
+        if machine.transition().target.instance_id == self.instance_id
+            && machine.transition().phase == TransferPhase::TargetPreparing
+        {
+            let proof = self
+                .executor
+                .prepare_transfer_target(machine.transition())
+                .await?;
+            machine.record_target_ready(proof)?;
+            revision = self
+                .store
+                .persist_transfer_transition(machine.transition(), revision)
+                .await?;
+        }
+        if machine.transition().source.instance_id == self.instance_id
             && matches!(
                 machine.transition().phase,
-                TransferPhase::Planned | TransferPhase::AwaitingFence
+                TransferPhase::TargetPrepared | TransferPhase::AwaitingFence
             )
         {
             let proof = self.executor.fence_transfer_source(machine.transition()).await?;
@@ -66,24 +100,14 @@ impl TransitionProcessor {
                 .persist_transfer_transition(machine.transition(), revision)
                 .await?;
         }
-        if machine.transition().target.instance_id != self.instance_id {
-            return Ok(());
-        }
-        if machine.transition().phase == TransferPhase::AwaitingFence
-            && machine.transition().release_proof.is_some()
+        if machine.transition().target.instance_id == self.instance_id
+            && machine.transition().phase == TransferPhase::CatchupPublished
         {
-            machine.begin_target_prepare()?;
-            revision = self
-                .store
-                .persist_transfer_transition(machine.transition(), revision)
-                .await?;
-        }
-        if machine.transition().phase == TransferPhase::TargetPreparing {
             let proof = self
                 .executor
                 .prepare_transfer_target(machine.transition())
                 .await?;
-            machine.record_target_ready(proof)?;
+            machine.record_target_caught_up(proof)?;
             self.store
                 .persist_transfer_transition(machine.transition(), revision)
                 .await?;

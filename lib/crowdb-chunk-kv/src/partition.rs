@@ -104,6 +104,7 @@ pub struct PartitionSnapshot {
     pub lifecycle: PartitionLifecycle,
     pub stream_name: StreamName,
     pub journal_durable_seq: u64,
+    pub journal_durable_offset: u64,
     pub applied_seq: u64,
 }
 
@@ -1258,6 +1259,7 @@ impl Partition {
             lifecycle: self.lifecycle(),
             stream_name: self.journal.stream_name(),
             journal_durable_seq: self.journal_durable_seq.load(Ordering::Acquire),
+            journal_durable_offset: self.journal.tail(),
             applied_seq: self.applied_seq.load(Ordering::Acquire),
         }
     }

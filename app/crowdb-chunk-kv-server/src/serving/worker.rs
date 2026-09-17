@@ -6,9 +6,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use crowdb_chunk_kv::{Partition, PartitionConfig, SplitArtifact};
 use crowdb_protocol::chunk_kv::{
-    AuthorityReleaseProof, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogPartitionState, SplitPhase,
-    SplitReadinessProof, SplitTransition, TailOverlayArtifact, TargetReadinessProof, TransferPhase,
-    TransferTransition,
+    AuthorityReleaseProof, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogPartitionState, PartitionArtifact,
+    SplitPhase, SplitReadinessProof, SplitTransition, TailOverlayArtifact, TargetReadinessProof,
+    TransferPhase, TransferTransition,
 };
 
 use crate::{ChunkKvService, ChunkKvStorage, MonitorError};
@@ -81,7 +81,7 @@ impl TransitionExecutor {
         if transition.source.instance_id != self.instance_id
             || !matches!(
                 transition.phase,
-                TransferPhase::Planned | TransferPhase::AwaitingFence
+                TransferPhase::TargetPrepared | TransferPhase::AwaitingFence
             )
         {
             return Err(plan_error("transfer does not request a local source fence"));
@@ -90,6 +90,24 @@ impl TransitionExecutor {
             .service
             .hosted_partition(transition.partition_id)
             .ok_or_else(|| plan_error("transfer source partition is not hosted"))?;
+        let before = partition.snapshot();
+        let overlay = transition
+            .target_artifact
+            .tail_overlay
+            .as_ref()
+            .ok_or_else(|| plan_error("transfer target overlay is absent"))?;
+        let tail_records = before.journal_durable_seq.saturating_sub(overlay.cutover_seq);
+        let tail_bytes = before
+            .journal_durable_offset
+            .saturating_sub(overlay.cutover_offset);
+        if tail_records > transition.readiness_limits.max_tail_records
+            || tail_bytes > transition.readiness_limits.max_tail_bytes
+            || tail_records > transition.readiness_limits.max_estimated_catchup_ms
+        {
+            return Err(plan_error(
+                "transfer target is outside the source-fence readiness budget",
+            ));
+        }
         partition
             .fence_mutations(transition.source_epoch)
             .await
@@ -99,7 +117,32 @@ impl TransitionExecutor {
             source_instance_id: self.instance_id,
             source_epoch: transition.source_epoch,
             durable_tail: snapshot.journal_durable_seq,
+            durable_tail_offset: snapshot.journal_durable_offset,
         })
+    }
+
+    /// Checkpoints the live source and pins its initial target replay frontier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale transition identity, missing source, or storage failure.
+    pub async fn prepare_transfer_source(
+        &self,
+        transition: &TransferTransition,
+    ) -> Result<PartitionArtifact, MonitorError> {
+        transition
+            .validate()
+            .map_err(|error| plan_error(&error.to_string()))?;
+        if transition.source.instance_id != self.instance_id
+            || transition.phase != TransferPhase::SourcePreparing
+        {
+            return Err(plan_error("transfer does not request local source preparation"));
+        }
+        let partition = self
+            .service
+            .hosted_partition(transition.partition_id)
+            .ok_or_else(|| plan_error("transfer source partition is not hosted"))?;
+        self.storage.prepare_transfer_source(&partition, transition).await
     }
 
     /// Reopens and replays the exact transfer target without activating it.
@@ -115,7 +158,10 @@ impl TransitionExecutor {
             .validate()
             .map_err(|error| plan_error(&error.to_string()))?;
         if transition.target.instance_id != self.instance_id
-            || transition.phase != TransferPhase::TargetPreparing
+            || !matches!(
+                transition.phase,
+                TransferPhase::TargetPreparing | TransferPhase::CatchupPublished
+            )
         {
             return Err(plan_error("transfer does not request local target preparation"));
         }
@@ -125,9 +171,12 @@ impl TransitionExecutor {
             owner: transition.target.clone(),
             owner_epoch: transition.target_epoch,
             state: ChunkKvRangeCatalogPartitionState::Prepared,
-            artifact: transition.artifact.clone(),
+            artifact: transition.target_artifact.clone(),
             transition_id: Some(transition.transition_id),
         };
+        if transition.phase == TransferPhase::CatchupPublished {
+            self.service.remove_partition(transition.partition_id);
+        }
         let partition = self
             .storage
             .recover_partition(&entry)
@@ -140,7 +189,7 @@ impl TransitionExecutor {
         Ok(TargetReadinessProof {
             target_instance_id: self.instance_id,
             target_epoch: transition.target_epoch,
-            artifact: transition.artifact.clone(),
+            artifact: transition.target_artifact.clone(),
             durable_tail: snapshot.journal_durable_seq,
         })
     }
@@ -217,6 +266,11 @@ impl TransitionExecutor {
 #[async_trait]
 pub trait TransitionStorage: Send + Sync {
     async fn recover_partition(&self, entry: &ChunkKvRangeCatalogEntry) -> Result<Partition, MonitorError>;
+    async fn prepare_transfer_source(
+        &self,
+        source: &Partition,
+        transition: &TransferTransition,
+    ) -> Result<PartitionArtifact, MonitorError>;
     async fn prepare_split(
         &self,
         parent: &Partition,
@@ -231,6 +285,14 @@ impl TransitionStorage for ChunkKvStorage {
         ChunkKvStorage::recover_partition(self, entry)
             .await
             .map_err(|error| plan_error(&error.to_string()))
+    }
+
+    async fn prepare_transfer_source(
+        &self,
+        source: &Partition,
+        transition: &TransferTransition,
+    ) -> Result<PartitionArtifact, MonitorError> {
+        ChunkKvStorage::prepare_transfer_source(self, source, transition).await
     }
 
     async fn prepare_split(

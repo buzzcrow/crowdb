@@ -16,7 +16,10 @@ use crowdb_chunk_kv::{
 };
 use crowdb_chunk_stream::{ChunkStream, ProductionStreamRuntime, StreamConfig, StreamName, StreamRegistry};
 use crowdb_kv_client::{BatchOp, ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
-use crowdb_protocol::chunk_kv::{ChunkKvRangeCatalogEntry, SplitChildAssignment, SplitTransition};
+use crowdb_protocol::chunk_kv::{
+    ChunkKvRangeCatalogEntry, PartitionArtifact, SplitChildAssignment, SplitTransition, TailOverlayArtifact,
+    TransferTransition,
+};
 use crowdb_protocol::chunk_stream::{StreamBinding, StreamBindingState};
 use crowdb_tree_ffi::{
     ChunkPageStoreOptions, ChunkRootCatalog, ChunkTransport, OwnedChunkRpcDiskRoute,
@@ -483,6 +486,50 @@ impl ChunkKvStorage {
             .map_err(|error| storage_plan_error(&error.to_string()))?;
         validate_prepared_split(transition, &prepared.artifact)?;
         Ok(prepared)
+    }
+
+    /// Pins a live source checkpoint and creates the target-owned empty WAL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing source binding, checkpoint failure, or target stream conflict.
+    pub async fn prepare_transfer_source(
+        &self,
+        source: &Partition,
+        transition: &TransferTransition,
+    ) -> Result<PartitionArtifact, crate::MonitorError> {
+        let binding = self
+            .streams
+            .registry()
+            .load(transition.artifact.stream_name)
+            .await
+            .map_err(|error| storage_plan_error(&error.to_string()))?
+            .ok_or_else(|| storage_plan_error("transfer source stream binding does not exist"))?;
+        self.open_or_create_empty_stream(
+            transition.target_artifact.stream_name,
+            transition.target_epoch,
+            binding.metadata_group_id,
+        )
+        .await?;
+        let checkpoint = source
+            .checkpoint(transition.source_epoch)
+            .await
+            .map_err(|error| storage_plan_error(&error.to_string()))?;
+        let snapshot = source.snapshot();
+        let mut artifact = transition.target_artifact.clone();
+        artifact.tail_overlay = Some(TailOverlayArtifact {
+            source_partition_id: transition.partition_id,
+            source_epoch: transition.source_epoch,
+            source_stream_name: transition.artifact.stream_name,
+            source_stream_manifest_generation: checkpoint.stream_manifest_generation,
+            replay_offset: checkpoint.replay_offset,
+            cutover_offset: snapshot.journal_durable_offset,
+            base_tree_manifest: checkpoint.tree_manifest,
+            base_applied_seq: checkpoint.applied_seq,
+            cutover_seq: snapshot.journal_durable_seq,
+            target_stream_start_seq: snapshot.journal_durable_seq.saturating_add(1),
+        });
+        Ok(artifact)
     }
 
     async fn split_target(

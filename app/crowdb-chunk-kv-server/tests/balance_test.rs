@@ -30,6 +30,7 @@ fn partition(id: u64, owner: u64, bytes: u64, last_moved_ms: u64) -> PartitionLo
         request_rate: 5,
         last_moved_ms,
         transition_active: false,
+        independently_recoverable: true,
         live_byte_samples: Vec::new(),
     }
 }
@@ -79,4 +80,18 @@ fn balanced_counts_require_weighted_improvement_threshold() {
     assert!(choose_transfer(&owners, &[useful], 1, &config).is_some());
     let harmful = partition(2, 1, 800, 0);
     assert!(choose_transfer(&owners, &[harmful], 1, &config).is_none());
+}
+
+#[test]
+fn transfer_waits_until_split_parent_overlay_is_materialized() {
+    let config = BalanceConfig {
+        cooldown_ms: 0,
+        ..BalanceConfig::default()
+    };
+    let owners = vec![owner(1, 3, 1_000), owner(2, 1, 100)];
+    let mut child = partition(1, 1, 300, 0);
+    child.independently_recoverable = false;
+    assert!(choose_transfer(&owners, std::slice::from_ref(&child), 1, &config).is_none());
+    child.independently_recoverable = true;
+    assert!(choose_transfer(&owners, &[child], 1, &config).is_some());
 }

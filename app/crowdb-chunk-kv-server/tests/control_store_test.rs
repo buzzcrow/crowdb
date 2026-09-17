@@ -10,11 +10,12 @@ use crowdb_chunk_kv_server::{
     Group0Kv, Group0KvError, SplitAction, SplitStateMachine, TransferStateMachine, VersionedValue,
 };
 use crowdb_protocol::chunk_kv::{
-    AuthorityReleaseProof, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage,
-    ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState, DomainFailurePolicy,
-    DomainMonitorDescriptor, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest, Id128, KeyRange,
-    OwnerDescriptor, PartitionArtifact, ServingAssignment, ServingGrant, SplitChildAssignment, SplitPhase,
-    SplitReadinessProof, SplitTransition, TailOverlayArtifact, TransferPhase, TransferTransition,
+    ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
+    ChunkKvRangeCatalogPartitionState, DomainFailurePolicy, DomainMonitorDescriptor,
+    EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest, Id128, KeyRange, OwnerDescriptor,
+    PartitionArtifact, ServingAssignment, ServingGrant, SplitChildAssignment, SplitPhase,
+    SplitReadinessProof, SplitTransition, TailOverlayArtifact, TransferPhase, TransferReadinessLimits,
+    TransferTransition,
 };
 use crowdb_protocol::chunk_stream::StreamName;
 use crowdb_protocol::key::{ChunkKvRangeCatalogHeadKey, ServingGrantKey, TextKey};
@@ -157,6 +158,27 @@ fn descriptor() -> DomainMonitorDescriptor {
 }
 
 fn transfer() -> TransferTransition {
+    let source_artifact = PartitionArtifact {
+        tree_id: 5,
+        stream_name: StreamName { high: 6, low: 7 },
+        tail_overlay: None,
+    };
+    let target_artifact = PartitionArtifact {
+        tree_id: 5,
+        stream_name: StreamName { high: 8, low: 9 },
+        tail_overlay: Some(TailOverlayArtifact {
+            source_partition_id: Id128 { high: 1, low: 2 },
+            source_epoch: 3,
+            source_stream_name: source_artifact.stream_name,
+            source_stream_manifest_generation: 1,
+            replay_offset: 0,
+            cutover_offset: 0,
+            base_tree_manifest: 1,
+            base_applied_seq: 0,
+            cutover_seq: 0,
+            target_stream_start_seq: 1,
+        }),
+    };
     TransferTransition {
         transition_id: Id128 { high: 9, low: 10 },
         partition_id: Id128 { high: 1, low: 2 },
@@ -174,16 +196,21 @@ fn transfer() -> TransferTransition {
             rpc_endpoint: "127.0.0.1:9912".into(),
         },
         target_epoch: 4,
-        artifact: PartitionArtifact {
-            tree_id: 5,
-            stream_name: StreamName { high: 6, low: 7 },
-            tail_overlay: None,
+        artifact: source_artifact,
+        target_artifact,
+        readiness_limits: TransferReadinessLimits {
+            max_tail_records: 100,
+            max_tail_bytes: 1_000_000,
+            max_estimated_catchup_ms: 1_000,
+            prepare_deadline_ms: 1_000,
+            forwarding_grace_ms: 1_000,
         },
         planned_at_ms: 0,
         old_grant_expires_at_ms: 10_000,
         phase: TransferPhase::Planned,
         release_proof: None,
         readiness_proof: None,
+        catchup_proof: None,
         failure: None,
     }
 }
@@ -365,13 +392,9 @@ async fn group0_transfer_store_reconciles_and_resumes_exact_phase() {
     );
 
     let mut machine = TransferStateMachine::restore(planned).unwrap();
-    machine
-        .record_source_fence(AuthorityReleaseProof::ExplicitFence {
-            source_instance_id: 11,
-            source_epoch: 3,
-            durable_tail: 19,
-        })
-        .unwrap();
+    machine.begin_source_prepare().unwrap();
+    let artifact = machine.transition().target_artifact.clone();
+    machine.record_source_base(artifact).unwrap();
     machine.begin_target_prepare().unwrap();
     let preparing = machine.transition().clone();
     let path = crowdb_protocol::key::ChunkKvTransferKey {

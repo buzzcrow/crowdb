@@ -74,6 +74,7 @@ impl ServerMetrics {
                 ChunkKvRpcErrorCode::Internal => increment(&self.internal_errors),
                 ChunkKvRpcErrorCode::WriteStalled
                 | ChunkKvRpcErrorCode::Recovering
+                | ChunkKvRpcErrorCode::TargetNotReady
                 | ChunkKvRpcErrorCode::RequestConflict
                 | ChunkKvRpcErrorCode::InvalidRequest => {}
             },

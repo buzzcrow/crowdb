@@ -38,6 +38,7 @@ pub enum ChunkKvRangeCatalogPartitionState {
     SplitPreparing,
     SplitFenced,
     Transferring,
+    TargetCatchingUp,
     Retired,
     Faulted,
 }
@@ -362,9 +363,13 @@ pub struct ChunkKvInstanceObservation {
 pub enum TransferPhase {
     #[default]
     Planned,
+    SourcePreparing,
     AwaitingFence,
     TargetPreparing,
     TargetPrepared,
+    TargetCatchingUp,
+    CatchupPublished,
+    TargetReady,
     CatalogCommitted,
     Aborted,
 }
@@ -375,6 +380,7 @@ pub enum AuthorityReleaseProof {
         source_instance_id: u64,
         source_epoch: u64,
         durable_tail: u64,
+        durable_tail_offset: u64,
     },
     LeaseExpired {
         activation_not_before_ms: u64,
@@ -390,6 +396,15 @@ pub struct TargetReadinessProof {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferReadinessLimits {
+    pub max_tail_records: u64,
+    pub max_tail_bytes: u64,
+    pub max_estimated_catchup_ms: u64,
+    pub prepare_deadline_ms: u64,
+    pub forwarding_grace_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferTransition {
     pub transition_id: Id128,
     pub partition_id: Id128,
@@ -398,13 +413,18 @@ pub struct TransferTransition {
     pub source_epoch: u64,
     pub target: OwnerDescriptor,
     pub target_epoch: u64,
+    /// Current source tree and stream identity.
     pub artifact: PartitionArtifact,
+    /// Target-owned stream plus the pinned source base/tail overlay.
+    pub target_artifact: PartitionArtifact,
+    pub readiness_limits: TransferReadinessLimits,
     #[serde(default)]
     pub planned_at_ms: u64,
     pub old_grant_expires_at_ms: u64,
     pub phase: TransferPhase,
     pub release_proof: Option<AuthorityReleaseProof>,
     pub readiness_proof: Option<TargetReadinessProof>,
+    pub catchup_proof: Option<TargetReadinessProof>,
     pub failure: Option<String>,
 }
 
@@ -427,6 +447,18 @@ impl TransferTransition {
             && self.target_epoch > self.source_epoch
             && self.artifact.tree_id != 0
             && self.artifact.stream_name != StreamName::default()
+            && self.target_artifact.tree_id == self.artifact.tree_id
+            && self.target_artifact.stream_name != StreamName::default()
+            && (self.target_artifact.stream_name != self.artifact.stream_name
+                || matches!(
+                    self.release_proof,
+                    Some(AuthorityReleaseProof::LeaseExpired { .. })
+                ))
+            && self.readiness_limits.max_tail_records != 0
+            && self.readiness_limits.max_tail_bytes != 0
+            && self.readiness_limits.max_estimated_catchup_ms != 0
+            && self.readiness_limits.prepare_deadline_ms >= self.planned_at_ms
+            && self.readiness_limits.forwarding_grace_ms != 0
             && self
                 .range
                 .end
@@ -452,22 +484,49 @@ impl TransferTransition {
         if let Some(proof) = &self.readiness_proof {
             if proof.target_instance_id != self.target.instance_id
                 || proof.target_epoch != self.target_epoch
-                || proof.artifact != self.artifact
-                || matches!(
-                    self.release_proof,
-                    Some(AuthorityReleaseProof::ExplicitFence { durable_tail, .. })
-                        if proof.durable_tail < durable_tail
-                )
+                || proof.artifact.tree_id != self.target_artifact.tree_id
+                || proof.artifact.stream_name != self.target_artifact.stream_name
+            {
+                return Err(ChunkKvProtocolError::InvalidTransferTransition);
+            }
+        }
+        if let Some(proof) = &self.catchup_proof {
+            if proof.target_instance_id != self.target.instance_id
+                || proof.target_epoch != self.target_epoch
+                || proof.artifact != self.target_artifact
+                || !match self.release_proof {
+                    Some(AuthorityReleaseProof::ExplicitFence { durable_tail, .. }) => {
+                        proof.durable_tail >= durable_tail
+                    }
+                    Some(AuthorityReleaseProof::LeaseExpired { .. }) => true,
+                    None => false,
+                }
             {
                 return Err(ChunkKvProtocolError::InvalidTransferTransition);
             }
         }
         let fields_match_phase = match self.phase {
-            TransferPhase::Planned => self.release_proof.is_none() && self.readiness_proof.is_none(),
-            TransferPhase::AwaitingFence => self.readiness_proof.is_none(),
-            TransferPhase::TargetPreparing => self.release_proof.is_some() && self.readiness_proof.is_none(),
-            TransferPhase::TargetPrepared | TransferPhase::CatalogCommitted => {
-                self.release_proof.is_some() && self.readiness_proof.is_some()
+            TransferPhase::Planned | TransferPhase::SourcePreparing => {
+                self.release_proof.is_none() && self.readiness_proof.is_none() && self.catchup_proof.is_none()
+            }
+            TransferPhase::TargetPreparing => {
+                (self.target_artifact.tail_overlay.is_some() && self.release_proof.is_none()
+                    || self.target_artifact == self.artifact
+                        && matches!(
+                            self.release_proof,
+                            Some(AuthorityReleaseProof::LeaseExpired { .. })
+                        ))
+                    && self.readiness_proof.is_none()
+                    && self.catchup_proof.is_none()
+            }
+            TransferPhase::TargetPrepared | TransferPhase::AwaitingFence => {
+                self.release_proof.is_none() && self.readiness_proof.is_some() && self.catchup_proof.is_none()
+            }
+            TransferPhase::TargetCatchingUp | TransferPhase::CatchupPublished => {
+                self.release_proof.is_some() && self.readiness_proof.is_some() && self.catchup_proof.is_none()
+            }
+            TransferPhase::TargetReady | TransferPhase::CatalogCommitted => {
+                self.release_proof.is_some() && self.readiness_proof.is_some() && self.catchup_proof.is_some()
             }
             TransferPhase::Aborted => self.failure.as_ref().is_some_and(|failure| !failure.is_empty()),
         };
@@ -921,6 +980,7 @@ pub enum ChunkKvRpcErrorCode {
     Overloaded,
     WriteStalled,
     Recovering,
+    TargetNotReady,
     LeaseExpired,
     RequestExpired,
     RequestConflict,

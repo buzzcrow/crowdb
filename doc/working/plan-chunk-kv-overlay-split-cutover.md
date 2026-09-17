@@ -78,7 +78,7 @@ tail and bounded handoff contract.
   refresh-only. Files:
   `app/crowdb-chunk-kv-server/src/`, `lib/crowdb-chunk-kv-client/src/`,
   protocol catalog types, and client/server E2E tests.
-- [ ] **Move physical persistence off cutover**: checkpoint child overlays,
+- [~] **Move physical persistence off cutover**: checkpoint child overlays,
   materialize inherited packs, retain/reclaim parent stream and tree references
   only after every retained child snapshot and retry floor releases its parent
   suffix pin.
@@ -87,33 +87,33 @@ tail and bounded handoff contract.
 
 ## Child-Tree Balance
 
-- [ ] **Define one reusable tail-handoff artifact**: extend the persisted
+- [x] **Define one reusable tail-handoff artifact**: extend the persisted
   transfer transition with a pinned source base manifest, source stream and
   retry floor, preparation cursor, exact handoff cursor, target stream start,
   target epoch, readiness limits, forwarding grace, and source-release proof.
   Reject balance while a child still references its split-parent suffix.
   Files: `lib/crowdb-protocol/src/chunk_kv.rs`, group-0 transition storage,
   protocol tests, and transition tests.
-- [ ] **Prepare the remote target while the source serves**: open the exact
+- [x] **Prepare the remote target while the source serves**: open the exact
   shared range-bounded manifest on the target, validate page and stream
   identities, replay the source tail into a durable target overlay, and enforce
   record, byte, estimated-time, and deadline readiness bounds before requesting
   a source fence. Drop unpublished target state on a preparation failure.
   Files: server transition runtime/storage, chunk-KV overlay recovery, and
   deterministic target preparation tests.
-- [ ] **Hand off one writer at cursor C**: close source assignment, drain only
+- [x] **Hand off one writer at cursor C**: close source assignment, drain only
   requests that already selected it, persist the release proof and final source
   cursor, then publish `TargetCatchingUp`. The source returns a target hint and
   never appends again; the target returns bounded `NotReady` until the sealed
   suffix reaches C, then installs its writer epoch and becomes `Serving`.
   Files: protocol RPC/catalog types, server authority and transition runtime,
   routed client retry handling, and E2E transition tests.
-- [ ] **Recover every balance phase from proofs**: resolve source/target crash,
+- [x] **Recover every balance phase from proofs**: resolve source/target crash,
   ambiguous catalog publication, and lease expiry from transition, catalog,
   manifest, tail, and grant state. Never infer authority from loaded pages,
   heartbeats, or volatile memtables. Files: server monitor/control store,
   transition state machine, startup recovery, and failure-injection tests.
-- [ ] **Materialize and reclaim balance state in background**: checkpoint the
+- [~] **Materialize and reclaim balance state in background**: checkpoint the
   target overlay, materialize shared packs, retain source tree/stream/retry
   history through catalog and forwarding grace, then remove source objects and
   forwarding state only after every pin clears. Files: chunk-KV maintenance,
@@ -134,7 +134,7 @@ tail and bounded handoff contract.
 
 ## Verification and Cleanup
 
-- [ ] **Add deterministic lifecycle tests**: cover grant renewal during
+- [~] **Add deterministic lifecycle tests**: cover grant renewal during
   Preparing, child-tail restart before checkpoint, writer-boundary exactly-once
   behavior, bounded post-cutover admission, stale point route, and catalog
   ambiguity. Files: crate `tests/*_test.rs` and server/client integration

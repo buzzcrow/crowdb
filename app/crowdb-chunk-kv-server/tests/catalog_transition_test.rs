@@ -11,7 +11,7 @@ use crowdb_protocol::chunk_kv::{
     AuthorityReleaseProof, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage,
     ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState, Id128, KeyRange, OwnerDescriptor,
     PartitionArtifact, SplitChildAssignment, SplitPhase, SplitReadinessProof, SplitTransition,
-    TailOverlayArtifact, TargetReadinessProof, TransferPhase, TransferTransition,
+    TailOverlayArtifact, TargetReadinessProof, TransferPhase, TransferReadinessLimits, TransferTransition,
 };
 use crowdb_protocol::chunk_stream::StreamName;
 
@@ -111,7 +111,21 @@ async fn seeded_catalog() -> (
 }
 
 fn prepared_transfer() -> TransferTransition {
-    let artifact = artifact(11);
+    let source_artifact = artifact(11);
+    let mut target_artifact = source_artifact.clone();
+    target_artifact.stream_name = StreamName { high: 5, low: 15 };
+    target_artifact.tail_overlay = Some(TailOverlayArtifact {
+        source_partition_id: id(1),
+        source_epoch: 3,
+        source_stream_name: source_artifact.stream_name,
+        source_stream_manifest_generation: 1,
+        replay_offset: 0,
+        cutover_offset: 40,
+        base_tree_manifest: 1,
+        base_applied_seq: 0,
+        cutover_seq: 40,
+        target_stream_start_seq: 41,
+    });
     TransferTransition {
         transition_id: id(91),
         partition_id: id(1),
@@ -123,19 +137,34 @@ fn prepared_transfer() -> TransferTransition {
         source_epoch: 3,
         target: owner(3),
         target_epoch: 4,
-        artifact: artifact.clone(),
+        artifact: source_artifact,
+        target_artifact: target_artifact.clone(),
+        readiness_limits: TransferReadinessLimits {
+            max_tail_records: 100,
+            max_tail_bytes: 1_000_000,
+            max_estimated_catchup_ms: 1_000,
+            prepare_deadline_ms: 1_000,
+            forwarding_grace_ms: 1_000,
+        },
         planned_at_ms: 0,
         old_grant_expires_at_ms: 100,
-        phase: TransferPhase::TargetPrepared,
+        phase: TransferPhase::TargetReady,
         release_proof: Some(AuthorityReleaseProof::ExplicitFence {
             source_instance_id: 1,
             source_epoch: 3,
             durable_tail: 40,
+            durable_tail_offset: 40,
         }),
         readiness_proof: Some(TargetReadinessProof {
             target_instance_id: 3,
             target_epoch: 4,
-            artifact,
+            artifact: target_artifact.clone(),
+            durable_tail: 40,
+        }),
+        catchup_proof: Some(TargetReadinessProof {
+            target_instance_id: 3,
+            target_epoch: 4,
+            artifact: target_artifact,
             durable_tail: 40,
         }),
         failure: None,
@@ -147,23 +176,27 @@ async fn transfer_rewrites_only_its_page_and_reconciles_committed_retry() {
     let (store, old_head, _) = seeded_catalog().await;
     let cutover = ChunkKvRangeCatalogCutover::new(store.clone());
     let transition = prepared_transfer();
+    let mut catching_up = transition.clone();
+    catching_up.phase = TransferPhase::TargetCatchingUp;
+    catching_up.catchup_proof = None;
 
-    assert_eq!(cutover.publish_transfer(&transition).await.unwrap(), 2);
+    assert_eq!(cutover.publish_transfer(&catching_up).await.unwrap(), 2);
+    assert_eq!(cutover.publish_transfer(&transition).await.unwrap(), 3);
     let (new_head, pages) = ChunkKvRangeCatalogPublisher::new(store.clone())
         .load_current()
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(new_head.previous_generation, Some(1));
+    assert_eq!(new_head.previous_generation, Some(2));
     assert_eq!(new_head.pages[1], old_head.pages[1]);
-    assert_eq!(new_head.pages[0].page_generation, 2);
+    assert_eq!(new_head.pages[0].page_generation, 3);
     assert_eq!(pages[0].entries[0].owner, owner(3));
     assert_eq!(pages[0].entries[0].owner_epoch, 4);
-    assert_eq!(pages[0].entries[0].artifact, artifact(11));
+    assert_eq!(pages[0].entries[0].artifact, transition.target_artifact);
     assert_eq!(pages[0].entries[0].transition_id, Some(id(91)));
 
-    assert_eq!(cutover.publish_transfer(&transition).await.unwrap(), 2);
-    assert_eq!(store.write_counts().await, (3, 2));
+    assert_eq!(cutover.publish_transfer(&transition).await.unwrap(), 3);
+    assert_eq!(store.write_counts().await, (4, 3));
 }
 
 fn prepared_split() -> SplitTransition {
@@ -257,7 +290,9 @@ async fn cutover_rejects_unprepared_or_stale_transition() {
     let cutover = ChunkKvRangeCatalogCutover::new(store);
     let mut transition = prepared_transfer();
     transition.phase = TransferPhase::TargetPreparing;
+    transition.release_proof = None;
     transition.readiness_proof = None;
+    transition.catchup_proof = None;
     assert_eq!(
         cutover.publish_transfer(&transition).await,
         Err(ChunkKvRangeCatalogError::TransitionNotReady)
@@ -269,6 +304,7 @@ async fn cutover_rejects_unprepared_or_stale_transition() {
         source_instance_id: 4,
         source_epoch: 3,
         durable_tail: 40,
+        durable_tail_offset: 40,
     });
     assert_eq!(
         cutover.publish_transfer(&stale).await,

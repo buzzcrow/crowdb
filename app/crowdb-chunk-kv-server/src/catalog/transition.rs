@@ -36,7 +36,10 @@ impl ChunkKvRangeCatalogCutover {
         transition.validate()?;
         if !matches!(
             transition.phase,
-            TransferPhase::TargetPrepared | TransferPhase::CatalogCommitted
+            TransferPhase::TargetCatchingUp
+                | TransferPhase::CatchupPublished
+                | TransferPhase::TargetReady
+                | TransferPhase::CatalogCommitted
         ) {
             return Err(ChunkKvRangeCatalogError::TransitionNotReady);
         }
@@ -50,15 +53,29 @@ impl ChunkKvRangeCatalogCutover {
             reject_reused_transition_id(&pages, transition.transition_id, 1)?;
             return Ok(head.generation);
         }
-        reject_reused_transition_id(&pages, transition.transition_id, 0)?;
+        let advancing = matches!(
+            transition.phase,
+            TransferPhase::TargetReady | TransferPhase::CatalogCommitted
+        );
+        reject_reused_transition_id(&pages, transition.transition_id, usize::from(advancing))?;
         let source = |entry: &ChunkKvRangeCatalogEntry| {
-            entry.partition_id == transition.partition_id
-                && entry.range == transition.range
-                && entry.owner == transition.source
+            let source_serving = entry.owner == transition.source
                 && entry.owner_epoch == transition.source_epoch
                 && entry.state == ChunkKvRangeCatalogPartitionState::Serving
                 && entry.artifact == transition.artifact
-                && entry.transition_id.is_none()
+                && entry.transition_id.is_none();
+            let target_catching_up = entry.owner == transition.target
+                && entry.owner_epoch == transition.target_epoch
+                && entry.state == ChunkKvRangeCatalogPartitionState::TargetCatchingUp
+                && entry.artifact == transition.target_artifact
+                && entry.transition_id == Some(transition.transition_id);
+            entry.partition_id == transition.partition_id
+                && entry.range == transition.range
+                && if advancing {
+                    target_catching_up
+                } else {
+                    source_serving
+                }
         };
         let (next_head, next_pages) = replace_one(head, pages, source, vec![desired])?;
         let generation = next_head.generation;
@@ -116,8 +133,15 @@ fn transfer_entry(transition: &TransferTransition) -> ChunkKvRangeCatalogEntry {
         range: transition.range.clone(),
         owner: transition.target.clone(),
         owner_epoch: transition.target_epoch,
-        state: ChunkKvRangeCatalogPartitionState::Serving,
-        artifact: transition.artifact.clone(),
+        state: if matches!(
+            transition.phase,
+            TransferPhase::TargetCatchingUp | TransferPhase::CatchupPublished
+        ) {
+            ChunkKvRangeCatalogPartitionState::TargetCatchingUp
+        } else {
+            ChunkKvRangeCatalogPartitionState::Serving
+        },
+        artifact: transition.target_artifact.clone(),
         transition_id: Some(transition.transition_id),
     }
 }

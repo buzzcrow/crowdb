@@ -375,6 +375,9 @@ async fn main() {
             let request_rate = requests.saturating_sub(previous_requests).saturating_mul(1_000) / elapsed_ms;
             previous_requests = requests;
             previous_ms = now_ms;
+            if let Err(error) = heartbeat_service.materialize_split_overlays().await {
+                warn!(%error, "chunk KV split-overlay materialization pass failed");
+            }
             let observation = match heartbeat_service
                 .registry_observation_with_load_samples(capacity_bytes, request_rate, 256)
                 .await

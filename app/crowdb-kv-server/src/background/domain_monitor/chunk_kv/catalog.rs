@@ -61,7 +61,10 @@ pub async fn publish_transfer(
     transition.validate().map_err(|error| error.to_string())?;
     if !matches!(
         transition.phase,
-        TransferPhase::TargetPrepared | TransferPhase::CatalogCommitted
+        TransferPhase::TargetCatchingUp
+            | TransferPhase::CatchupPublished
+            | TransferPhase::TargetReady
+            | TransferPhase::CatalogCommitted
     ) {
         return Err("transfer is not ready for range catalog publication".into());
     }
@@ -73,16 +76,57 @@ pub async fn publish_transfer(
         reject_reused_transition_id(&catalog.pages, transition.transition_id, 1)?;
         return Ok(catalog.head.generation);
     }
-    reject_reused_transition_id(&catalog.pages, transition.transition_id, 0)?;
+    let advancing = matches!(
+        transition.phase,
+        TransferPhase::TargetReady | TransferPhase::CatalogCommitted
+    );
+    reject_reused_transition_id(&catalog.pages, transition.transition_id, usize::from(advancing))?;
     let source = |entry: &ChunkKvRangeCatalogEntry| {
-        entry.partition_id == transition.partition_id
-            && entry.range == transition.range
-            && entry.owner == transition.source
+        let source_serving = entry.owner == transition.source
             && entry.owner_epoch == transition.source_epoch
             && entry.state == ChunkKvRangeCatalogPartitionState::Serving
             && entry.artifact == transition.artifact
+            && entry.transition_id.is_none();
+        let target_catching_up = entry.owner == transition.target
+            && entry.owner_epoch == transition.target_epoch
+            && entry.state == ChunkKvRangeCatalogPartitionState::TargetCatchingUp
+            && entry.artifact == transition.target_artifact
+            && entry.transition_id == Some(transition.transition_id);
+        entry.partition_id == transition.partition_id
+            && entry.range == transition.range
+            && if advancing {
+                target_catching_up
+            } else {
+                source_serving
+            }
     };
     let (head, pages) = replace_one(catalog.head, catalog.pages, source, vec![desired])?;
+    publish(control, head, pages, catalog.head_revision).await
+}
+
+pub async fn publish_materialized_partition(
+    control: &Group0ControlPlane,
+    partition_id: crowdb_protocol::chunk_kv::Id128,
+) -> Result<u64, String> {
+    let catalog = load_current(control)
+        .await?
+        .ok_or_else(|| "range catalog is not published".to_string())?;
+    let Some(current) = catalog
+        .pages
+        .iter()
+        .flat_map(|page| &page.entries)
+        .find(|entry| entry.partition_id == partition_id)
+        .cloned()
+    else {
+        return Err("materialized partition is absent from the catalog".into());
+    };
+    if current.artifact.tail_overlay.is_none() {
+        return Ok(catalog.head.generation);
+    }
+    let mut desired = current.clone();
+    desired.artifact.tail_overlay = None;
+    let matches = |entry: &ChunkKvRangeCatalogEntry| entry == &current;
+    let (head, pages) = replace_one(catalog.head, catalog.pages, matches, vec![desired])?;
     publish(control, head, pages, catalog.head_revision).await
 }
 
@@ -187,8 +231,15 @@ fn transfer_entry(transition: &TransferTransition) -> ChunkKvRangeCatalogEntry {
         range: transition.range.clone(),
         owner: transition.target.clone(),
         owner_epoch: transition.target_epoch,
-        state: ChunkKvRangeCatalogPartitionState::Serving,
-        artifact: transition.artifact.clone(),
+        state: if matches!(
+            transition.phase,
+            TransferPhase::TargetCatchingUp | TransferPhase::CatchupPublished
+        ) {
+            ChunkKvRangeCatalogPartitionState::TargetCatchingUp
+        } else {
+            ChunkKvRangeCatalogPartitionState::Serving
+        },
+        artifact: transition.target_artifact.clone(),
         transition_id: Some(transition.transition_id),
     }
 }

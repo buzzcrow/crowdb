@@ -22,7 +22,8 @@ use crowdb_chunk_stream::{
 };
 use crowdb_protocol::chunk_kv::{
     AuthorityReleaseProof, ChunkKvRangeCatalogEntry, Id128, KeyRange, OwnerDescriptor, PartitionArtifact,
-    SplitChildAssignment, SplitPhase, SplitTransition, TransferPhase, TransferTransition,
+    SplitChildAssignment, SplitPhase, SplitTransition, TargetReadinessProof, TransferPhase,
+    TransferReadinessLimits, TransferTransition,
 };
 use tokio::sync::Mutex;
 
@@ -168,6 +169,14 @@ impl TransitionStorage for FakeStorage {
         Ok(self.recovered.clone())
     }
 
+    async fn prepare_transfer_source(
+        &self,
+        _source: &Partition,
+        transition: &TransferTransition,
+    ) -> Result<PartitionArtifact, MonitorError> {
+        Ok(transition.target_artifact.clone())
+    }
+
     async fn prepare_split(
         &self,
         _parent: &Partition,
@@ -198,7 +207,21 @@ impl TransitionStorage for FakeStorage {
 }
 
 fn transfer(phase: TransferPhase) -> TransferTransition {
-    let artifact = artifact(11);
+    let source_artifact = artifact(11);
+    let mut target_artifact = source_artifact.clone();
+    target_artifact.stream_name = StreamName { high: 5, low: 12 };
+    target_artifact.tail_overlay = Some(crowdb_protocol::chunk_kv::TailOverlayArtifact {
+        source_partition_id: id(1),
+        source_epoch: 3,
+        source_stream_name: source_artifact.stream_name,
+        source_stream_manifest_generation: 1,
+        replay_offset: 0,
+        cutover_offset: 0,
+        base_tree_manifest: 1,
+        base_applied_seq: 0,
+        cutover_seq: 0,
+        target_stream_start_seq: 1,
+    });
     TransferTransition {
         transition_id: id(90),
         partition_id: id(1),
@@ -210,18 +233,21 @@ fn transfer(phase: TransferPhase) -> TransferTransition {
         source_epoch: 3,
         target: owner(2),
         target_epoch: 4,
-        artifact: artifact.clone(),
+        artifact: source_artifact,
+        target_artifact,
+        readiness_limits: TransferReadinessLimits {
+            max_tail_records: 100,
+            max_tail_bytes: 1_000_000,
+            max_estimated_catchup_ms: 1_000,
+            prepare_deadline_ms: 1_000,
+            forwarding_grace_ms: 1_000,
+        },
         planned_at_ms: 0,
         old_grant_expires_at_ms: 100,
         phase,
-        release_proof: (phase == TransferPhase::TargetPreparing).then_some(
-            AuthorityReleaseProof::ExplicitFence {
-                source_instance_id: 1,
-                source_epoch: 3,
-                durable_tail: 0,
-            },
-        ),
+        release_proof: None,
         readiness_proof: None,
+        catchup_proof: None,
         failure: None,
     }
 }
@@ -338,13 +364,24 @@ async fn source_worker_fences_before_returning_release_proof() {
 
     assert_eq!(
         worker
-            .fence_transfer_source(&transfer(TransferPhase::Planned))
+            .fence_transfer_source(&{
+                let mut transition = transfer(TransferPhase::TargetPreparing);
+                transition.phase = TransferPhase::TargetPrepared;
+                transition.readiness_proof = Some(TargetReadinessProof {
+                    target_instance_id: 2,
+                    target_epoch: 4,
+                    artifact: transition.target_artifact.clone(),
+                    durable_tail: 0,
+                });
+                transition
+            })
             .await
             .unwrap(),
         AuthorityReleaseProof::ExplicitFence {
             source_instance_id: 1,
             source_epoch: 3,
             durable_tail: 0,
+            durable_tail_offset: 0,
         }
     );
     assert_eq!(source.lifecycle(), PartitionLifecycle::SplitFenced);
@@ -416,8 +453,7 @@ async fn split_worker_reports_only_a_common_child_frontier() {
 async fn processor_persists_target_preparing_before_readiness() {
     let kv = Arc::new(MemoryKv::default());
     let store = Arc::new(Group0ControlStore::new(kv));
-    let mut transition = transfer(TransferPhase::TargetPreparing);
-    transition.phase = TransferPhase::AwaitingFence;
+    let transition = transfer(TransferPhase::TargetPreparing);
     assert_eq!(
         store.persist_transfer_transition(&transition, 0).await.unwrap(),
         1
@@ -446,7 +482,7 @@ async fn processor_persists_target_preparing_before_readiness() {
         .unwrap();
     assert_eq!(stored.phase, TransferPhase::TargetPrepared);
     assert!(stored.readiness_proof.is_some());
-    assert_eq!(revision, 3);
+    assert_eq!(revision, 2);
 }
 
 #[tokio::test]

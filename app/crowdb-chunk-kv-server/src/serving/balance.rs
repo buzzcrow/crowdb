@@ -45,6 +45,8 @@ pub struct PartitionLoad {
     pub request_rate: u64,
     pub last_moved_ms: u64,
     pub transition_active: bool,
+    /// True only after split-parent tail ownership has been materialized.
+    pub independently_recoverable: bool,
     /// Ordered key/live-byte samples supplied by the partition owner.
     pub live_byte_samples: Vec<(Vec<u8>, u64)>,
 }
@@ -155,7 +157,9 @@ pub fn choose_transfer(
 }
 
 fn eligible_partition(partition: &PartitionLoad, now_ms: u64, config: &BalanceConfig) -> bool {
-    !partition.transition_active && now_ms.saturating_sub(partition.last_moved_ms) >= config.cooldown_ms
+    partition.independently_recoverable
+        && !partition.transition_active
+        && now_ms.saturating_sub(partition.last_moved_ms) >= config.cooldown_ms
 }
 
 fn live_byte_median(range: &KeyRange, samples: &[(Vec<u8>, u64)]) -> Option<Vec<u8>> {

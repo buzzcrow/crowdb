@@ -19,7 +19,7 @@ use crowdb_protocol::chunk_kv::{
     AuthorityReleaseProof, ChunkKvRangeBalancePolicy, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead,
     ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState, HostedPartition,
     Id128, KeyRange, OwnerDescriptor, PartitionArtifact, ServingGrant, SplitPhase, SplitTransition,
-    TargetReadinessProof, TransferPhase, TransferTransition,
+    TailOverlayArtifact, TargetReadinessProof, TransferPhase, TransferReadinessLimits, TransferTransition,
 };
 use crowdb_protocol::chunk_kv::{DomainFailurePolicy, DomainMonitorDescriptor};
 use crowdb_protocol::chunk_stream::StreamName;
@@ -290,6 +290,20 @@ async fn chunk_kv_driver_publishes_ready_transfer_then_issues_matching_grant() {
     .await;
     put_json(&control, ChunkKvRangeCatalogHeadKey.to_path(), &head).await;
 
+    let mut target_artifact = artifact.clone();
+    target_artifact.stream_name = StreamName { high: 40, low: 41 };
+    target_artifact.tail_overlay = Some(TailOverlayArtifact {
+        source_partition_id: partition_id,
+        source_epoch: 1,
+        source_stream_name: artifact.stream_name,
+        source_stream_manifest_generation: 1,
+        replay_offset: 0,
+        cutover_offset: 7,
+        base_tree_manifest: 1,
+        base_applied_seq: 0,
+        cutover_seq: 7,
+        target_stream_start_seq: 8,
+    });
     let transition = TransferTransition {
         transition_id,
         partition_id,
@@ -302,20 +316,30 @@ async fn chunk_kv_driver_publishes_ready_transfer_then_issues_matching_grant() {
         target: target.clone(),
         target_epoch: 2,
         artifact: artifact.clone(),
+        target_artifact: target_artifact.clone(),
+        readiness_limits: TransferReadinessLimits {
+            max_tail_records: 100,
+            max_tail_bytes: 1_000_000,
+            max_estimated_catchup_ms: 1_000,
+            prepare_deadline_ms: 1_000,
+            forwarding_grace_ms: 1_000,
+        },
         planned_at_ms: 0,
         old_grant_expires_at_ms: 1,
-        phase: TransferPhase::TargetPrepared,
+        phase: TransferPhase::TargetCatchingUp,
         release_proof: Some(AuthorityReleaseProof::ExplicitFence {
             source_instance_id: 1,
             source_epoch: 1,
             durable_tail: 7,
+            durable_tail_offset: 7,
         }),
         readiness_proof: Some(TargetReadinessProof {
             target_instance_id: 2,
             target_epoch: 2,
-            artifact,
+            artifact: target_artifact.clone(),
             durable_tail: 7,
         }),
+        catchup_proof: None,
         failure: None,
     };
     put_json(
@@ -359,14 +383,38 @@ async fn chunk_kv_driver_publishes_ready_transfer_then_issues_matching_grant() {
         .await
         .unwrap();
 
+    let transition_path = ChunkKvTransferKey { transition_id }.to_path();
+    let persisted = control.get(transition_path.as_bytes()).await.unwrap();
+    let mut ready: TransferTransition = serde_json::from_slice(persisted.value.as_ref().unwrap()).unwrap();
+    assert_eq!(ready.phase, TransferPhase::CatchupPublished);
+    ready.phase = TransferPhase::TargetReady;
+    ready.catchup_proof = Some(TargetReadinessProof {
+        target_instance_id: 2,
+        target_epoch: 2,
+        artifact: target_artifact,
+        durable_tail: 7,
+    });
+    control
+        .compare_and_put(
+            Bytes::from(transition_path),
+            Bytes::from(serde_json::to_vec(&ready).unwrap()),
+            persisted.revision,
+        )
+        .await
+        .unwrap();
+    ChunkKvRangeMonitorDriver::new()
+        .tick(&control, &policy)
+        .await
+        .unwrap();
+
     let published: ChunkKvRangeCatalogHead = get_json(&control, &ChunkKvRangeCatalogHeadKey.to_path()).await;
-    assert_eq!(published.generation, 2);
+    assert_eq!(published.generation, 3);
     let committed: TransferTransition =
         get_json(&control, &ChunkKvTransferKey { transition_id }.to_path()).await;
     assert_eq!(committed.phase, TransferPhase::CatalogCommitted);
     let grant: ServingGrant = get_json(&control, &ServingGrantKey { instance_id: 2 }.to_path()).await;
     grant.validate().unwrap();
-    assert_eq!(grant.catalog_generation, 2);
+    assert_eq!(grant.catalog_generation, 3);
     assert_eq!(grant.assignments[0].owner_epoch, 2);
 }
 
@@ -559,6 +607,7 @@ async fn assert_chunk_kv_split_plan(target_partitions_per_owner: u32, target_par
                             (b"m".to_vec(), 400),
                             (b"z".to_vec(), 100),
                         ],
+                        independently_recoverable: true,
                     }],
                 }),
                 ..ServiceExtra::default()

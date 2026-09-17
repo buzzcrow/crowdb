@@ -128,6 +128,12 @@ async fn plan_dead_owner_transfer(
             .ok_or_else(|| "chunk-KV owner epoch overflowed".to_string())?;
         let transition_id = transfer_id(entry, target.instance_id, target_epoch);
         let old_grant_expires_at_ms = read_grant_expiry(control, entry).await?;
+        let activation_not_before_ms = old_grant_expires_at_ms
+            .checked_add(descriptor.max_clock_skew_ms)
+            .ok_or_else(|| "lease exclusion boundary overflowed".to_string())?;
+        if now_ms < activation_not_before_ms {
+            continue;
+        }
         let transition = TransferTransition {
             transition_id,
             partition_id: entry.partition_id,
@@ -140,11 +146,22 @@ async fn plan_dead_owner_transfer(
             },
             target_epoch,
             artifact: entry.artifact.clone(),
+            target_artifact: entry.artifact.clone(),
+            readiness_limits: crowdb_protocol::chunk_kv::TransferReadinessLimits {
+                max_tail_records: 65_536,
+                max_tail_bytes: 256 * 1024 * 1024,
+                max_estimated_catchup_ms: descriptor.lease_duration_ms,
+                prepare_deadline_ms: now_ms.saturating_add(descriptor.lease_duration_ms),
+                forwarding_grace_ms: descriptor.lease_duration_ms,
+            },
             planned_at_ms: now_ms,
             old_grant_expires_at_ms,
-            phase: TransferPhase::AwaitingFence,
-            release_proof: None,
+            phase: TransferPhase::TargetPreparing,
+            release_proof: Some(AuthorityReleaseProof::LeaseExpired {
+                activation_not_before_ms,
+            }),
             readiness_proof: None,
+            catchup_proof: None,
             failure: None,
         };
         transition.validate().map_err(|error| error.to_string())?;
@@ -186,8 +203,10 @@ async fn advance_dead_owner_exclusion(
     let dead_before = now_ms.saturating_sub(descriptor.dead_after_ms);
     let instances = read_instances(control, descriptor).await?;
     for (mut transition, item) in read_transfers(control).await? {
-        if transition.phase != TransferPhase::AwaitingFence
-            || transition.release_proof.is_some()
+        if !matches!(
+            transition.phase,
+            TransferPhase::TargetPrepared | TransferPhase::AwaitingFence
+        ) || transition.release_proof.is_some()
             || instances
                 .get(&transition.source.instance_id)
                 .is_some_and(|instance| instance.last_heartbeat_ms >= dead_before)
@@ -204,7 +223,7 @@ async fn advance_dead_owner_exclusion(
         transition.release_proof = Some(AuthorityReleaseProof::LeaseExpired {
             activation_not_before_ms,
         });
-        transition.phase = TransferPhase::TargetPreparing;
+        transition.phase = TransferPhase::TargetCatchingUp;
         transition.validate().map_err(|error| error.to_string())?;
         persist_transition(control, &item, &transition).await?;
     }
@@ -218,7 +237,12 @@ async fn publish_ready_transitions(control: &Group0ControlPlane) -> Result<(), S
         .map_err(|error| operation_error(&error))?
     {
         let mut transition: TransferTransition = decode_transition(&item)?;
-        if transition.phase == TransferPhase::TargetPrepared {
+        if transition.phase == TransferPhase::TargetCatchingUp {
+            catalog::publish_transfer(control, &transition).await?;
+            transition.phase = TransferPhase::CatchupPublished;
+            transition.validate().map_err(|error| error.to_string())?;
+            persist_transition(control, &item, &transition).await?;
+        } else if transition.phase == TransferPhase::TargetReady {
             catalog::publish_transfer(control, &transition).await?;
             transition.phase = TransferPhase::CatalogCommitted;
             transition.validate().map_err(|error| error.to_string())?;
