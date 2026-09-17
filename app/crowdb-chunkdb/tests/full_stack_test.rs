@@ -459,6 +459,7 @@ async fn assert_expanded_topology_converges_ec(data_num: u32, code_num: u32, req
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     loop {
         if io.refresh(&service, &hardware).await.is_ok()
+            && harness.pool.refresh_endpoints().await.is_ok()
             && harness.topology.snapshot().healthy_disk_groups().len() == disk_groups.len()
         {
             break;
