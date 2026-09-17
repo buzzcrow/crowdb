@@ -174,6 +174,7 @@ fn prepared_split() -> SplitTransition {
         source_stream_manifest_generation: 1,
         replay_offset: 0,
         cutover_offset: 55,
+        base_tree_manifest: 1,
         base_applied_seq: 55,
         cutover_seq: 55,
         target_stream_start_seq: 56,

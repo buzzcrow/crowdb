@@ -42,14 +42,14 @@ tail and bounded handoff contract.
 
 ## Preparation and Recovery
 
-- [~] **Read filtered parent tails during preparation and recovery**: preserve
+- [x] **Read filtered parent tails during preparation and recovery**: preserve
   parent sequencing while optionally warming child overlays from the sealed
   parent suffix. Validate source records, filter by child range, preserve
   request results, and apply only `(B, C]`; no pre-cutover catch-up or child
   journal duplication is required. Files:
   `lib/crowdb-chunk-kv/src/partition/{split.rs,tree.rs}`, journal adapters,
   and `lib/crowdb-chunk-kv/tests/partition_test.rs`.
-- [ ] **Recover child base plus parent and child tails without a final
+- [x] **Recover child base plus parent and child tails without a final
   checkpoint**: open a prepared child from its base checkpoint, filter replay
   the pinned parent suffix through `C`, then replay its own child journal from
   `C + 1`; validate exact range, source identity, sequence continuity, and
@@ -57,7 +57,7 @@ tail and bounded handoff contract.
   `lib/crowdb-chunk-kv/src/partition.rs`,
   `lib/crowdb-chunk-kv/src/partition/split.rs`, and partition integration
   tests.
-- [ ] **Expose truthful split metrics**: separately record preparation,
+- [~] **Expose truthful split metrics**: separately record preparation,
   base-checkpoint, tail bytes/records and lag, grant renewal failures, actual
   cutover drain/tail, background checkpoint, and client-forwarding outcomes.
   Files: `lib/crowdb-chunk-kv/src/metrics.rs`, server status/metrics wiring,

@@ -237,6 +237,7 @@ fn split_tail_overlay(
         source_stream_manifest_generation: child.parent_stream_manifest_generation,
         replay_offset: child.parent_replay_offset,
         cutover_offset: child.parent_cutover_offset,
+        base_tree_manifest: child.tree_manifest,
         base_applied_seq: child.base_applied_seq,
         cutover_seq: child.applied_seq,
         target_stream_start_seq: child.child_stream_start_seq,

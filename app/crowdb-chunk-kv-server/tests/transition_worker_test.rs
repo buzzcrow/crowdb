@@ -261,6 +261,11 @@ fn split_artifact(transition: &SplitTransition) -> SplitArtifact {
         tree_manifest: 2,
         stream_name: assignment.artifact.stream_name,
         base_applied_seq: 8,
+        parent_id: PartitionId {
+            high: transition.parent_id.high,
+            low: transition.parent_id.low,
+        },
+        parent_epoch: transition.parent_epoch,
         parent_stream_name: StreamName { high: 5, low: 11 },
         parent_stream_manifest_generation: 1,
         parent_replay_offset: 0,

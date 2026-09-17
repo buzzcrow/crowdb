@@ -265,6 +265,8 @@ pub struct PreparedChildArtifact {
     pub tree_manifest: u64,
     pub stream_name: StreamName,
     pub base_applied_seq: u64,
+    pub parent_id: PartitionId,
+    pub parent_epoch: u64,
     pub parent_stream_name: StreamName,
     pub parent_stream_manifest_generation: u64,
     pub parent_replay_offset: u64,

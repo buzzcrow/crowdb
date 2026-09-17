@@ -27,6 +27,7 @@ pub struct PreparedSplitChild {
     checkpoint: Checkpoint,
     tree: Arc<dyn PartitionTree>,
     journal: Arc<dyn PartitionJournal>,
+    parent_journal: Arc<dyn PartitionJournal>,
 }
 
 impl PreparedSplitChild {
@@ -47,7 +48,15 @@ impl PreparedSplitChild {
     ///
     /// Returns a checkpoint, journal, tree, or child identity error.
     pub async fn open(self, config: PartitionConfig) -> Result<Partition> {
-        Partition::recover_prepared(self.artifact, self.checkpoint, config, self.tree, self.journal).await
+        Partition::recover_prepared_overlay(
+            self.artifact,
+            self.checkpoint,
+            config,
+            self.tree,
+            self.journal,
+            self.parent_journal,
+        )
+        .await
     }
 }
 
@@ -138,8 +147,8 @@ impl Partition {
             )
             .await?;
 
-        checkpoint_prepared_tree(left_tree.as_ref()).await?;
-        checkpoint_prepared_tree(right_tree.as_ref()).await?;
+        let left_base = checkpoint_prepared_tree(left_tree.as_ref(), cursor.applied_seq).await?;
+        let right_base = checkpoint_prepared_tree(right_tree.as_ref(), cursor.applied_seq).await?;
 
         let fence_lag_records = cursor
             .catch_up_to_lag(
@@ -182,6 +191,8 @@ impl Partition {
                 right_tree,
                 left_rebuild,
                 right_rebuild,
+                left_base,
+                right_base,
                 cursor,
             },
             cutover_seq,
@@ -197,24 +208,28 @@ impl Partition {
         cutover_seq: u64,
         fence_started: Instant,
     ) -> Result<PreparedSplit> {
-        let left = checkpoint_child(
+        let source = ChildOverlaySource {
+            parent_id: plan.parent_id,
+            parent_epoch: plan.parent_epoch,
+            checkpoint: children.base_checkpoint,
+            cutover_offset: children.cursor.offset,
+            cutover_seq,
+            journal: Arc::clone(&self.journal),
+        };
+        let left = prepare_child(
             &plan.left,
             children.left_target,
             children.left_tree,
-            &children.base_checkpoint,
-            children.cursor.offset,
-            cutover_seq,
-        )
-        .await?;
-        let right = checkpoint_child(
+            children.left_base,
+            &source,
+        )?;
+        let right = prepare_child(
             &plan.right,
             children.right_target,
             children.right_tree,
-            &children.base_checkpoint,
-            children.cursor.offset,
-            cutover_seq,
-        )
-        .await?;
+            children.right_base,
+            &source,
+        )?;
         let artifact = SplitArtifact {
             transition_id: plan.transition_id,
             parent_id: plan.parent_id,
@@ -351,7 +366,18 @@ struct CutoverChildren {
     right_tree: Arc<dyn PartitionTree>,
     left_rebuild: crowdb_tree_ffi::RangeRebuildStats,
     right_rebuild: crowdb_tree_ffi::RangeRebuildStats,
+    left_base: (u64, u64),
+    right_base: (u64, u64),
     cursor: DeltaCursor,
+}
+
+struct ChildOverlaySource {
+    parent_id: crate::PartitionId,
+    parent_epoch: u64,
+    checkpoint: Checkpoint,
+    cutover_offset: u64,
+    cutover_seq: u64,
+    journal: Arc<dyn PartitionJournal>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -444,16 +470,14 @@ async fn apply_child_record(
     Ok(())
 }
 
-async fn checkpoint_child(
+fn prepare_child(
     child: &SplitChild,
     target: SplitChildTarget,
     tree: Arc<dyn PartitionTree>,
-    parent_checkpoint: &Checkpoint,
-    parent_cutover_offset: u64,
-    cutover_seq: u64,
+    (tree_manifest, base_applied_seq): (u64, u64),
+    source: &ChildOverlaySource,
 ) -> Result<PreparedSplitChild> {
-    let (tree_manifest, applied_seq) = tree.checkpoint(0).await?;
-    if applied_seq != cutover_seq || tree.last_applied_seq() != cutover_seq {
+    if tree.last_applied_seq() != source.cutover_seq || base_applied_seq > source.cutover_seq {
         return Err(ChunkKvError::ApplyStateUnknown);
     }
     let artifact = PreparedChildArtifact {
@@ -463,20 +487,23 @@ async fn checkpoint_child(
         tree_id: target.tree_id,
         tree_manifest,
         stream_name: target.journal.stream_name(),
-        base_applied_seq: applied_seq,
-        parent_stream_name: parent_checkpoint.stream_name,
-        parent_stream_manifest_generation: parent_checkpoint.stream_manifest_generation,
-        parent_replay_offset: parent_checkpoint.replay_offset,
-        parent_cutover_offset,
-        applied_seq,
-        child_stream_start_seq: cutover_seq
+        base_applied_seq,
+        parent_id: source.parent_id,
+        parent_epoch: source.parent_epoch,
+        parent_stream_name: source.checkpoint.stream_name,
+        parent_stream_manifest_generation: source.checkpoint.stream_manifest_generation,
+        parent_replay_offset: source.checkpoint.replay_offset,
+        parent_cutover_offset: source.cutover_offset,
+        applied_seq: source.cutover_seq,
+        child_stream_start_seq: source
+            .cutover_seq
             .checked_add(1)
             .ok_or_else(|| ChunkKvError::InvalidRequest("split cutover sequence overflows".into()))?,
     };
     let checkpoint = Checkpoint {
         tree_id: target.tree_id,
         tree_manifest,
-        applied_seq,
+        applied_seq: base_applied_seq,
         stream_name: target.journal.stream_name(),
         stream_manifest_generation: target.journal.manifest_generation(),
         replay_offset: 0,
@@ -486,13 +513,15 @@ async fn checkpoint_child(
         checkpoint,
         tree,
         journal: target.journal,
+        parent_journal: Arc::clone(&source.journal),
     })
 }
 
-async fn checkpoint_prepared_tree(tree: &dyn PartitionTree) -> Result<()> {
-    let (_, applied_seq) = tree.checkpoint(0).await?;
-    if applied_seq > tree.last_applied_seq() {
+async fn checkpoint_prepared_tree(tree: &dyn PartitionTree, expected_seq: u64) -> Result<(u64, u64)> {
+    tree.checkpoint(0).await?;
+    let checkpoint = tree.checkpoint_state()?;
+    if checkpoint.1 != expected_seq || checkpoint.1 > tree.last_applied_seq() {
         return Err(ChunkKvError::ApplyStateUnknown);
     }
-    Ok(())
+    Ok(checkpoint)
 }

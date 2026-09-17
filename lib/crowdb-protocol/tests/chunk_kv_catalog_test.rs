@@ -235,6 +235,7 @@ fn split_transition_requires_exact_coverage_and_common_cutover() {
         source_stream_manifest_generation: 1,
         replay_offset: 0,
         cutover_offset: 11,
+        base_tree_manifest: 1,
         base_applied_seq: 11,
         cutover_seq: 11,
         target_stream_start_seq: 12,

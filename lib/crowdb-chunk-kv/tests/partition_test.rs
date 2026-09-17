@@ -63,6 +63,8 @@ fn split_artifact(plan: &SplitPlan, cutover_seq: u64) -> SplitArtifact {
         tree_manifest: cutover_seq + low,
         stream_name: StreamName { high: 90, low },
         base_applied_seq: cutover_seq,
+        parent_id: plan.parent_id,
+        parent_epoch: plan.parent_epoch,
         parent_stream_name: StreamName { high: 89, low: 1 },
         parent_stream_manifest_generation: 1,
         parent_replay_offset: 0,
@@ -94,6 +96,8 @@ fn empty_prepared_child(
         tree_manifest: 0,
         stream_name,
         base_applied_seq: 0,
+        parent_id: PartitionId { high: 10, low: 1 },
+        parent_epoch: 19,
         parent_stream_name: StreamName { high: 12, low: 11 },
         parent_stream_manifest_generation: 1,
         parent_replay_offset: 0,
@@ -1804,6 +1808,228 @@ async fn native_online_split_reopens_one_manifest_for_both_child_rebuilds() {
         assert_eq!(child.metrics().snapshot().materialization_passes, passes);
         assert_eq!(child.chunk_storage_stats().unwrap().unwrap().shared_packs, 0);
     }
+}
+
+async fn overlay_base_tree(tree_id: u64) -> (Arc<MemoryPartitionTree>, u64) {
+    let tree = Arc::new(MemoryPartitionTree::with_tree_id(tree_id));
+    tree.apply(
+        1,
+        &MutationOperation::Put {
+            key: b"b".to_vec(),
+            value: b"base".to_vec(),
+        },
+    )
+    .await
+    .unwrap();
+    tree.advance_noop(2).await.unwrap();
+    let (manifest, applied) = tree.checkpoint(0).await.unwrap();
+    assert_eq!(applied, 2);
+    (tree, manifest)
+}
+
+struct OverlayFixture {
+    parent_journal: Arc<dyn PartitionJournal>,
+    child_journal: Arc<dyn PartitionJournal>,
+    base_tree: Arc<MemoryPartitionTree>,
+    artifact: PreparedChildArtifact,
+    checkpoint: Checkpoint,
+    proof: SplitCommitProof,
+    operations: Vec<MutationOperation>,
+    responses: Vec<crowdb_chunk_kv::MutationResponse>,
+}
+
+fn overlay_operations() -> Vec<MutationOperation> {
+    vec![
+        MutationOperation::Put {
+            key: b"b".to_vec(),
+            value: b"base".to_vec(),
+        },
+        MutationOperation::Put {
+            key: b"h".to_vec(),
+            value: b"sibling".to_vec(),
+        },
+        MutationOperation::Put {
+            key: b"d".to_vec(),
+            value: b"tail".to_vec(),
+        },
+        MutationOperation::Put {
+            key: b"i".to_vec(),
+            value: b"sibling-tail".to_vec(),
+        },
+        MutationOperation::PutIfAbsent {
+            key: b"b".to_vec(),
+            value: b"ignored".to_vec(),
+        },
+    ]
+}
+
+async fn overlay_fixture() -> OverlayFixture {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let parent_name = StreamName { high: 130, low: 1 };
+    let parent_journal = empty_journal(&store, parent_name, 18).await;
+    let parent = Partition::open(
+        PartitionId { high: 130, low: 1 },
+        PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        18,
+        PartitionConfig::default(),
+        Arc::new(MemoryPartitionTree::with_tree_id(130)),
+        Arc::clone(&parent_journal),
+    )
+    .unwrap();
+    let operations = overlay_operations();
+    let mut responses = Vec::new();
+    for (index, operation) in operations.iter().cloned().enumerate() {
+        responses.push(
+            parent
+                .mutate(18, request(index as u64 + 1), operation)
+                .await
+                .unwrap(),
+        );
+    }
+    let child_name = StreamName { high: 131, low: 1 };
+    let child_journal = empty_journal(&store, child_name, 19).await;
+    let (base_tree, manifest) = overlay_base_tree(131).await;
+    let artifact = PreparedChildArtifact {
+        partition_id: PartitionId { high: 131, low: 1 },
+        range: PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"g".to_vec()),
+        },
+        ownership_epoch: 19,
+        tree_id: 131,
+        tree_manifest: manifest,
+        stream_name: child_name,
+        base_applied_seq: 2,
+        parent_id: PartitionId { high: 130, low: 1 },
+        parent_epoch: 18,
+        parent_stream_name: parent_name,
+        parent_stream_manifest_generation: parent_journal.manifest_generation(),
+        parent_replay_offset: 0,
+        parent_cutover_offset: parent_journal.tail(),
+        applied_seq: 5,
+        child_stream_start_seq: 6,
+    };
+    let checkpoint = Checkpoint {
+        tree_id: 131,
+        tree_manifest: manifest,
+        applied_seq: 2,
+        stream_name: child_name,
+        stream_manifest_generation: child_journal.manifest_generation(),
+        replay_offset: 0,
+    };
+    let mut sibling = artifact.clone();
+    sibling.partition_id = PartitionId { high: 132, low: 1 };
+    sibling.range = PartitionRange {
+        start: Some(b"g".to_vec()),
+        end: Some(b"m".to_vec()),
+    };
+    sibling.tree_id = 132;
+    sibling.stream_name = StreamName { high: 132, low: 1 };
+    let proof = SplitCommitProof {
+        catalog_revision: 9,
+        artifact: SplitArtifact {
+            transition_id: TransitionId { high: 130, low: 9 },
+            parent_id: artifact.parent_id,
+            parent_epoch: artifact.parent_epoch,
+            cutover_seq: artifact.applied_seq,
+            left: artifact.clone(),
+            right: sibling,
+        },
+    };
+    OverlayFixture {
+        parent_journal,
+        child_journal,
+        base_tree,
+        artifact,
+        checkpoint,
+        proof,
+        operations,
+        responses,
+    }
+}
+
+#[tokio::test]
+async fn child_overlay_recovers_parent_results_then_its_own_wal() {
+    let OverlayFixture {
+        parent_journal,
+        child_journal,
+        base_tree,
+        artifact,
+        checkpoint,
+        proof,
+        operations,
+        responses,
+    } = overlay_fixture().await;
+    let child = Partition::recover_prepared_overlay(
+        artifact.clone(),
+        checkpoint.clone(),
+        PartitionConfig::default(),
+        base_tree,
+        Arc::clone(&child_journal),
+        Arc::clone(&parent_journal),
+    )
+    .await
+    .unwrap();
+    child.activate_prepared(&proof).unwrap();
+    assert_eq!(child.get(19, b"d", None).await.unwrap().unwrap().value, b"tail");
+    assert!(matches!(
+        child.get(19, b"h", None).await,
+        Err(ChunkKvError::OutOfRange)
+    ));
+    assert_eq!(
+        child
+            .get(19, b"d", Some(responses[2].journal_position))
+            .await
+            .unwrap()
+            .unwrap()
+            .value,
+        b"tail"
+    );
+    assert_eq!(
+        child.mutate(19, request(5), operations[4].clone()).await.unwrap(),
+        responses[4]
+    );
+    let own = child
+        .mutate(
+            19,
+            request(6),
+            MutationOperation::Put {
+                key: b"e".to_vec(),
+                value: b"child".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(own.mutation_seq, 6);
+    assert_eq!(own.journal_position.stream_name, artifact.stream_name);
+
+    let (cold_tree, _) = overlay_base_tree(131).await;
+    let recovered = Partition::recover_prepared_overlay(
+        artifact,
+        checkpoint,
+        PartitionConfig::default(),
+        cold_tree,
+        child_journal,
+        parent_journal,
+    )
+    .await
+    .unwrap();
+    recovered.activate_prepared(&proof).unwrap();
+    assert_eq!(recovered.snapshot().applied_seq, 6);
+    assert_eq!(
+        recovered.get(19, b"e", None).await.unwrap().unwrap().value,
+        b"child"
+    );
+    assert_eq!(
+        recovered
+            .mutate(19, request(5), operations[4].clone())
+            .await
+            .unwrap(),
+        responses[4]
+    );
 }
 
 #[tokio::test]

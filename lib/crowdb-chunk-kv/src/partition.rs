@@ -147,6 +147,7 @@ pub struct Partition {
     admission_notify: Arc<Notify>,
     split_transition: Arc<Mutex<Option<SplitTransition>>>,
     prepared_artifact: Option<PreparedChildArtifact>,
+    inherited_position: Option<JournalPosition>,
     metrics: Arc<PartitionMetrics>,
     config: Arc<PartitionConfig>,
 }
@@ -601,6 +602,105 @@ impl Partition {
         )
     }
 
+    /// Recovers a split child from its durable base, filtered parent suffix,
+    /// and child journal without checkpointing the warmed overlay.
+    ///
+    /// A tree already warmed through the cutover is accepted for the local
+    /// pre-publication handoff; a reopened base tree deterministically reapplies
+    /// the same parent suffix after restart.
+    ///
+    /// # Errors
+    ///
+    /// Returns an identity, frontier, source-tail, child-tail, or apply error.
+    pub async fn recover_prepared_overlay(
+        artifact: PreparedChildArtifact,
+        checkpoint: Checkpoint,
+        config: PartitionConfig,
+        tree: Arc<dyn PartitionTree>,
+        journal: Arc<dyn PartitionJournal>,
+        parent_journal: Arc<dyn PartitionJournal>,
+    ) -> Result<Self> {
+        validate_prepared_overlay(
+            &artifact,
+            &checkpoint,
+            tree.as_ref(),
+            journal.as_ref(),
+            parent_journal.as_ref(),
+        )?;
+        artifact.range.validate()?;
+        config.validate()?;
+        let tree_frontier = tree.last_applied_seq();
+        let warmed = tree_frontier == artifact.applied_seq;
+        if !warmed && tree_frontier != artifact.base_applied_seq {
+            return Err(ChunkKvError::TreeCorruption(
+                "prepared child tree is neither at base nor cutover".into(),
+            ));
+        }
+        let mut seed = replay_parent_overlay(
+            &artifact,
+            config.retained_results,
+            tree.as_ref(),
+            parent_journal.as_ref(),
+            warmed,
+        )
+        .await?;
+        seed = replay_child_overlay(
+            artifact.partition_id,
+            artifact.ownership_epoch,
+            artifact.applied_seq,
+            config.retained_results,
+            tree.as_ref(),
+            journal.as_ref(),
+            seed,
+        )
+        .await?;
+        seed.retry_replay_offset = 0;
+        Self::start(
+            artifact.partition_id,
+            artifact.range.clone(),
+            artifact.ownership_epoch,
+            config,
+            tree,
+            journal,
+            seed,
+            PartitionLifecycle::Prepared,
+            Some(artifact),
+        )
+    }
+
+    /// Reopens native child storage plus an immutable parent stream snapshot
+    /// and recovers the persisted overlay in `Prepared` state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same identity, tree, source-tail, and child-tail errors as
+    /// [`Self::recover_prepared_overlay`].
+    pub async fn recover_native_prepared_overlay(
+        artifact: PreparedChildArtifact,
+        config: PartitionConfig,
+        tree_config: crowdb_tree_ffi::Config,
+        page_store: Arc<crowdb_tree_ffi::PageStore>,
+        stream: ChunkStream,
+        parent_stream: ChunkStream,
+    ) -> Result<Self> {
+        let checkpoint = Checkpoint {
+            tree_id: artifact.tree_id,
+            tree_manifest: artifact.tree_manifest,
+            applied_seq: artifact.base_applied_seq,
+            stream_name: artifact.stream_name,
+            stream_manifest_generation: stream.manifest_generation(),
+            replay_offset: 0,
+        };
+        let range = artifact.range.clone();
+        let (tree, journal) =
+            native_storage_parts(artifact.tree_id, &range, tree_config, page_store, stream)?;
+        let parent_journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(
+            parent_stream,
+            artifact.parent_stream_name,
+        ));
+        Self::recover_prepared_overlay(artifact, checkpoint, config, tree, journal, parent_journal).await
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn start(
         partition_id: PartitionId,
@@ -655,6 +755,10 @@ impl Partition {
             expired_floor: seed.expired_floor,
         };
         tokio::spawn(run_worker(state, receiver));
+        let inherited_position = prepared_artifact.as_ref().map(|artifact| JournalPosition {
+            stream_name: artifact.parent_stream_name,
+            offset: artifact.parent_cutover_offset,
+        });
         Ok(Self {
             id: partition_id,
             range,
@@ -673,6 +777,7 @@ impl Partition {
             admission_notify,
             split_transition,
             prepared_artifact,
+            inherited_position,
             metrics,
             config,
         })
@@ -1606,6 +1711,11 @@ impl Partition {
     }
 
     async fn wait_applied(&self, position: JournalPosition) -> Result<()> {
+        if self.inherited_position.is_some_and(|inherited| {
+            inherited.stream_name == position.stream_name && inherited.offset >= position.offset
+        }) {
+            return Ok(());
+        }
         if position.stream_name != self.journal.stream_name() {
             return Err(ChunkKvError::InvalidRequest(
                 "journal position belongs to another stream".into(),
@@ -1670,12 +1780,176 @@ fn validate_split_artifact(plan: &SplitPlan, artifact: &SplitArtifact, cutover_s
         || artifact.right.tree_id == 0
         || artifact.left.tree_id == artifact.right.tree_id
         || artifact.left.stream_name == artifact.right.stream_name
+        || artifact.left.parent_id != plan.parent_id
+        || artifact.right.parent_id != plan.parent_id
+        || artifact.left.parent_epoch != plan.parent_epoch
+        || artifact.right.parent_epoch != plan.parent_epoch
+        || artifact.left.parent_stream_name != artifact.right.parent_stream_name
+        || artifact.left.parent_stream_manifest_generation != artifact.right.parent_stream_manifest_generation
+        || artifact.left.parent_replay_offset != artifact.right.parent_replay_offset
+        || artifact.left.parent_cutover_offset != artifact.right.parent_cutover_offset
+        || artifact.left.base_applied_seq > cutover_seq
+        || artifact.right.base_applied_seq > cutover_seq
+        || artifact.left.child_stream_start_seq != cutover_seq.checked_add(1).unwrap_or(0)
+        || artifact.right.child_stream_start_seq != cutover_seq.checked_add(1).unwrap_or(0)
     {
         return Err(ChunkKvError::SplitRetry(
             "split artifact does not exactly match plan and cutover".into(),
         ));
     }
     Ok(())
+}
+
+fn validate_prepared_overlay(
+    artifact: &PreparedChildArtifact,
+    checkpoint: &Checkpoint,
+    tree: &dyn PartitionTree,
+    journal: &dyn PartitionJournal,
+    parent_journal: &dyn PartitionJournal,
+) -> Result<()> {
+    let valid = artifact.ownership_epoch != 0
+        && artifact.tree_id != 0
+        && artifact.tree_id == checkpoint.tree_id
+        && artifact.tree_id == tree.tree_id()
+        && artifact.tree_manifest == checkpoint.tree_manifest
+        && artifact.base_applied_seq == checkpoint.applied_seq
+        && artifact.base_applied_seq <= artifact.applied_seq
+        && artifact.child_stream_start_seq == artifact.applied_seq.checked_add(1).unwrap_or(0)
+        && artifact.parent_id != PartitionId::default()
+        && artifact.parent_epoch != 0
+        && artifact.stream_name == checkpoint.stream_name
+        && artifact.stream_name == journal.stream_name()
+        && checkpoint.stream_manifest_generation != 0
+        && checkpoint.stream_manifest_generation <= journal.manifest_generation()
+        && artifact.parent_stream_name == parent_journal.stream_name()
+        && artifact.parent_stream_name != artifact.stream_name
+        && artifact.parent_stream_manifest_generation != 0
+        && artifact.parent_stream_manifest_generation <= parent_journal.manifest_generation()
+        && artifact.parent_replay_offset <= artifact.parent_cutover_offset
+        && artifact.parent_cutover_offset <= parent_journal.tail();
+    if !valid {
+        return Err(ChunkKvError::InvalidRequest(
+            "prepared overlay identities or frontiers are invalid".into(),
+        ));
+    }
+    let observed_checkpoint = tree.checkpoint_state()?;
+    if observed_checkpoint != (artifact.tree_manifest, artifact.base_applied_seq) {
+        return Err(ChunkKvError::TreeCorruption(format!(
+            "prepared overlay base differs from the tree checkpoint: expected ({}, {}), observed ({}, {})",
+            artifact.tree_manifest, artifact.base_applied_seq, observed_checkpoint.0, observed_checkpoint.1
+        )));
+    }
+    Ok(())
+}
+
+async fn replay_parent_overlay(
+    artifact: &PreparedChildArtifact,
+    retained_results: usize,
+    tree: &dyn PartitionTree,
+    journal: &dyn PartitionJournal,
+    warmed: bool,
+) -> Result<RecoverySeed> {
+    let replay_checkpoint = Checkpoint {
+        tree_id: artifact.tree_id,
+        tree_manifest: artifact.tree_manifest,
+        applied_seq: if warmed {
+            artifact.applied_seq
+        } else {
+            artifact.base_applied_seq
+        },
+        stream_name: artifact.parent_stream_name,
+        stream_manifest_generation: artifact.parent_stream_manifest_generation,
+        replay_offset: artifact.parent_replay_offset,
+    };
+    let mut replay = ReplayState::new(&replay_checkpoint, retained_results);
+    let mut read_offset = artifact.parent_replay_offset;
+    let mut frame_offset = read_offset;
+    let mut buffered = BytesMut::new();
+    while read_offset < artifact.parent_cutover_offset {
+        let remaining = artifact.parent_cutover_offset - read_offset;
+        let max_bytes = usize::try_from(remaining.min(1024 * 1024)).unwrap_or(1024 * 1024);
+        let bytes = journal.read_window(read_offset, max_bytes).await?;
+        if bytes.is_empty() || bytes.len() as u64 > remaining {
+            return Err(ChunkKvError::JournalCorruption(
+                "parent overlay read did not preserve its cutover".into(),
+            ));
+        }
+        read_offset += bytes.len() as u64;
+        buffered.extend_from_slice(&bytes);
+        while let FrameDecode::Complete(decoded) = decode_frame(&buffered)? {
+            validate_replay_record(artifact.parent_id, artifact.parent_epoch, &decoded.record)?;
+            let belongs = artifact.range.contains(decoded.record.operation.key());
+            replay
+                .process(tree, frame_offset, decoded.record, belongs)
+                .await?;
+            buffered.advance(decoded.bytes_consumed);
+            frame_offset += decoded.bytes_consumed as u64;
+        }
+        if buffered.len() > crate::MAX_FRAME_BYTES {
+            return Err(ChunkKvError::JournalCorruption(
+                "parent overlay frame exceeds maximum size".into(),
+            ));
+        }
+    }
+    if !buffered.is_empty()
+        || frame_offset != artifact.parent_cutover_offset
+        || replay.seed.applied_seq != artifact.applied_seq
+        || (artifact.base_applied_seq != artifact.applied_seq
+            && replay.last_new_sequence != Some(artifact.applied_seq))
+    {
+        return Err(ChunkKvError::JournalCorruption(
+            "parent overlay does not reach the exact cutover".into(),
+        ));
+    }
+    replay.seed.applied_position = 0;
+    Ok(replay.seed)
+}
+
+async fn replay_child_overlay(
+    partition_id: PartitionId,
+    ownership_epoch: u64,
+    cutover_seq: u64,
+    retained_results: usize,
+    tree: &dyn PartitionTree,
+    journal: &dyn PartitionJournal,
+    seed: RecoverySeed,
+) -> Result<RecoverySeed> {
+    let mut replay = ReplayState {
+        seed,
+        checkpoint_applied_seq: cutover_seq,
+        stream_name: journal.stream_name(),
+        retained_results,
+        replayed: HashMap::new(),
+        last_new_sequence: None,
+    };
+    let mut read_offset = 0;
+    let mut frame_offset = 0;
+    let mut buffered = BytesMut::new();
+    while read_offset < journal.tail() {
+        let bytes = journal.read_window(read_offset, 1024 * 1024).await?;
+        if bytes.is_empty() {
+            return Err(ChunkKvError::JournalCorruption(
+                "child overlay returned no bytes before its tail".into(),
+            ));
+        }
+        read_offset += bytes.len() as u64;
+        buffered.extend_from_slice(&bytes);
+        while let FrameDecode::Complete(decoded) = decode_frame(&buffered)? {
+            validate_replay_record(partition_id, ownership_epoch, &decoded.record)?;
+            replay.process(tree, frame_offset, decoded.record, true).await?;
+            buffered.advance(decoded.bytes_consumed);
+            frame_offset += decoded.bytes_consumed as u64;
+        }
+        if buffered.len() > crate::MAX_FRAME_BYTES {
+            return Err(ChunkKvError::JournalCorruption(
+                "child overlay frame exceeds maximum size".into(),
+            ));
+        }
+    }
+    if !buffered.is_empty() {
+        return Err(ChunkKvError::IncompleteFrame);
+    }
+    Ok(replay.seed)
 }
 
 async fn replay_suffix(
@@ -1714,7 +1988,7 @@ async fn replay_suffix(
                 break;
             };
             validate_replay_record(partition_id, ownership_epoch, &decoded.record)?;
-            replay.process(tree, frame_offset, decoded.record).await?;
+            replay.process(tree, frame_offset, decoded.record, true).await?;
             let consumed = decoded.bytes_consumed;
             buffered.advance(consumed);
             frame_offset = frame_offset
@@ -1758,6 +2032,7 @@ impl ReplayState {
         tree: &dyn PartitionTree,
         frame_offset: u64,
         record: WalRecord,
+        belongs_to_partition: bool,
     ) -> Result<()> {
         if let Some(previous) = self.replayed.get(&record.mutation_seq) {
             if previous != &record {
@@ -1786,7 +2061,7 @@ impl ReplayState {
                     "journal mutation sequence has a gap".into(),
                 ));
             }
-            if record.result.applied() {
+            if belongs_to_partition && record.result.applied() {
                 tree.apply(record.mutation_seq, &record.operation)
                     .await
                     .map_err(|_| ChunkKvError::ApplyStateUnknown)?;
@@ -1798,21 +2073,23 @@ impl ReplayState {
             self.seed.applied_seq = record.mutation_seq;
         }
         self.seed.applied_position = frame_offset;
-        let response = MutationResponse {
-            mutation_seq: record.mutation_seq,
-            result: record.result.clone(),
-            journal_position: JournalPosition {
-                stream_name: self.stream_name,
-                offset: frame_offset,
-            },
-        };
-        retain_recovered(
-            &mut self.seed,
-            self.retained_results,
-            record.request_id,
-            record.operation_digest,
-            response,
-        )?;
+        if belongs_to_partition {
+            let response = MutationResponse {
+                mutation_seq: record.mutation_seq,
+                result: record.result.clone(),
+                journal_position: JournalPosition {
+                    stream_name: self.stream_name,
+                    offset: frame_offset,
+                },
+            };
+            retain_recovered(
+                &mut self.seed,
+                self.retained_results,
+                record.request_id,
+                record.operation_digest,
+                response,
+            )?;
+        }
         self.last_new_sequence = Some(record.mutation_seq);
         self.replayed.insert(record.mutation_seq, record);
         Ok(())

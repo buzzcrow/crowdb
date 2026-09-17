@@ -10,8 +10,8 @@ use arc_swap::ArcSwap;
 use bytes::Bytes;
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
 use crowdb_chunk_kv::{
-    MutationOperation, Partition, PartitionConfig, PartitionId, PartitionRange, RequestId, SplitArtifact,
-    SplitChild, SplitChildTarget, SplitPlan, StreamPartitionJournal, TransitionId,
+    MutationOperation, Partition, PartitionConfig, PartitionId, PartitionRange, PreparedChildArtifact,
+    RequestId, SplitArtifact, SplitChild, SplitChildTarget, SplitPlan, StreamPartitionJournal, TransitionId,
 };
 use crowdb_chunk_stream::{ChunkStream, ProductionStreamRuntime, StreamConfig, StreamName, StreamRegistry};
 use crowdb_kv_client::{BatchOp, ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
@@ -284,6 +284,53 @@ impl ChunkKvStorage {
                 binding.metadata_group_id,
             )
             .await?;
+        if let Some(overlay) = &entry.artifact.tail_overlay {
+            let parent_stream = self
+                .streams
+                .open_read_only(
+                    overlay.source_stream_name,
+                    self.metadata_store_id,
+                    overlay.source_epoch,
+                )
+                .await
+                .map_err(|error| StorageRuntimeError::Stream(error.to_string()))?;
+            let artifact = PreparedChildArtifact {
+                partition_id: PartitionId {
+                    high: entry.partition_id.high,
+                    low: entry.partition_id.low,
+                },
+                range: PartitionRange {
+                    start: Some(entry.range.start.clone()),
+                    end: entry.range.end.clone(),
+                },
+                ownership_epoch: entry.owner_epoch,
+                tree_id: entry.artifact.tree_id,
+                tree_manifest: overlay.base_tree_manifest,
+                stream_name: entry.artifact.stream_name,
+                base_applied_seq: overlay.base_applied_seq,
+                parent_id: PartitionId {
+                    high: overlay.source_partition_id.high,
+                    low: overlay.source_partition_id.low,
+                },
+                parent_epoch: overlay.source_epoch,
+                parent_stream_name: overlay.source_stream_name,
+                parent_stream_manifest_generation: overlay.source_stream_manifest_generation,
+                parent_replay_offset: overlay.replay_offset,
+                parent_cutover_offset: overlay.cutover_offset,
+                applied_seq: overlay.cutover_seq,
+                child_stream_start_seq: overlay.target_stream_start_seq,
+            };
+            return Partition::recover_native_prepared_overlay(
+                artifact,
+                PartitionConfig::default(),
+                crowdb_tree_ffi::Config::default(),
+                page_store,
+                stream,
+                parent_stream,
+            )
+            .await
+            .map_err(|error| StorageRuntimeError::Partition(error.to_string()));
+        }
         Partition::recover_native_latest_prepared_assignment(
             PartitionId {
                 high: entry.partition_id.high,

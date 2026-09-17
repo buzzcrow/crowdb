@@ -1254,6 +1254,19 @@ fn catalog_contains_split_child(
             && entry.owner_epoch == child.ownership_epoch
             && entry.artifact.tree_id == child.tree_id
             && entry.artifact.stream_name == child.stream_name
+            && entry.artifact.tail_overlay.as_ref().is_some_and(|overlay| {
+                overlay.source_partition_id.high == child.parent_id.high
+                    && overlay.source_partition_id.low == child.parent_id.low
+                    && overlay.source_epoch == child.parent_epoch
+                    && overlay.source_stream_name == child.parent_stream_name
+                    && overlay.source_stream_manifest_generation == child.parent_stream_manifest_generation
+                    && overlay.replay_offset == child.parent_replay_offset
+                    && overlay.cutover_offset == child.parent_cutover_offset
+                    && overlay.base_tree_manifest == child.tree_manifest
+                    && overlay.base_applied_seq == child.base_applied_seq
+                    && overlay.cutover_seq == child.applied_seq
+                    && overlay.target_stream_start_seq == child.child_stream_start_seq
+            })
             && entry.transition_id
                 == Some(Id128 {
                     high: transition_id.high,

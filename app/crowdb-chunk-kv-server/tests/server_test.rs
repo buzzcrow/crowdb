@@ -20,7 +20,7 @@ use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogPartitionState, ChunkKvRpcErrorCode, ClientRequestId, DomainFailurePolicy,
     DomainMonitorDescriptor, Id128, KeyRange, OperationResult, OwnerDescriptor, PartitionArtifact,
     PointOperation, PointRequest, RequestRouting, ScanDirection, ScanRequest, SeekKind, SeekRequest,
-    ServingAssignment, ServingGrant,
+    ServingAssignment, ServingGrant, TailOverlayArtifact,
 };
 
 const INSTANCE_ID: u64 = 7;
@@ -122,6 +122,8 @@ fn prepared_split_child(
             low: 1,
         },
         base_applied_seq: cutover_seq,
+        parent_id: PartitionId { high: 1, low: 2 },
+        parent_epoch: EPOCH,
         parent_stream_name: StreamName { high: 10, low: 11 },
         parent_stream_manifest_generation: 1,
         parent_replay_offset: 0,
@@ -371,7 +373,21 @@ async fn catalog_cutover_commits_the_exact_fenced_split_parent() {
                 artifact: PartitionArtifact {
                     tree_id: child.tree_id,
                     stream_name: child.stream_name,
-                    tail_overlay: None,
+                    tail_overlay: Some(TailOverlayArtifact {
+                        source_partition_id: Id128 {
+                            high: child.parent_id.high,
+                            low: child.parent_id.low,
+                        },
+                        source_epoch: child.parent_epoch,
+                        source_stream_name: child.parent_stream_name,
+                        source_stream_manifest_generation: child.parent_stream_manifest_generation,
+                        replay_offset: child.parent_replay_offset,
+                        cutover_offset: child.parent_cutover_offset,
+                        base_tree_manifest: child.tree_manifest,
+                        base_applied_seq: child.base_applied_seq,
+                        cutover_seq: child.applied_seq,
+                        target_stream_start_seq: child.child_stream_start_seq,
+                    }),
                 },
                 transition_id: Some(Id128 {
                     high: transition_id.high,

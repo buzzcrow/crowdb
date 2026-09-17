@@ -256,6 +256,7 @@ fn split_overlay(cutover_seq: u64) -> TailOverlayArtifact {
         source_stream_manifest_generation: 1,
         replay_offset: 0,
         cutover_offset: cutover_seq,
+        base_tree_manifest: 1,
         base_applied_seq: cutover_seq,
         cutover_seq,
         target_stream_start_seq: cutover_seq + 1,

@@ -56,6 +56,7 @@ pub struct TailOverlayArtifact {
     pub source_stream_manifest_generation: u64,
     pub replay_offset: u64,
     pub cutover_offset: u64,
+    pub base_tree_manifest: u64,
     pub base_applied_seq: u64,
     pub cutover_seq: u64,
     pub target_stream_start_seq: u64,
