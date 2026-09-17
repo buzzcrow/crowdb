@@ -11,7 +11,8 @@ use bytes::Bytes;
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
 use crowdb_chunk_kv::{
     MutationOperation, Partition, PartitionConfig, PartitionId, PartitionRange, PreparedChildArtifact,
-    RequestId, SplitArtifact, SplitChild, SplitChildTarget, SplitPlan, StreamPartitionJournal, TransitionId,
+    PreparedSplit, RequestId, SplitArtifact, SplitChild, SplitChildTarget, SplitPlan, StreamPartitionJournal,
+    TransitionId,
 };
 use crowdb_chunk_stream::{ChunkStream, ProductionStreamRuntime, StreamConfig, StreamName, StreamRegistry};
 use crowdb_kv_client::{BatchOp, ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
@@ -462,7 +463,7 @@ impl ChunkKvStorage {
         parent: &Partition,
         transition: &SplitTransition,
         max_fence_lag_records: u64,
-    ) -> Result<SplitArtifact, crate::MonitorError> {
+    ) -> Result<PreparedSplit, crate::MonitorError> {
         let parent_binding = self
             .streams
             .registry()
@@ -481,7 +482,7 @@ impl ChunkKvStorage {
             .await
             .map_err(|error| storage_plan_error(&error.to_string()))?;
         validate_prepared_split(transition, &prepared.artifact)?;
-        Ok(prepared.artifact)
+        Ok(prepared)
     }
 
     async fn split_target(

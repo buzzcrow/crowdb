@@ -70,8 +70,8 @@ pub struct PreparedSplit {
 }
 
 impl Partition {
-    /// Rebuild two exact children while the parent serves, then fence only the
-    /// bounded delta tail and checkpoint both children at one cutover.
+    /// Rebuild two exact child bases while the parent serves, then fence only
+    /// the bounded delta tail and retain it as an overlay at one cutover.
     ///
     /// # Errors
     ///

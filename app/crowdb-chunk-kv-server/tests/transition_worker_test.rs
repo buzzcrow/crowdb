@@ -12,8 +12,8 @@ use crowdb_chunk_kv::{
     TransitionId,
 };
 use crowdb_chunk_kv_server::{
-    ChunkKvService, Group0ControlStore, Group0Kv, Group0KvError, MonitorError, TransitionExecutor,
-    TransitionProcessor, TransitionStorage, VersionedValue,
+    ChunkKvService, Group0ControlStore, Group0Kv, Group0KvError, MonitorError, PreparedLocalSplit,
+    TransitionExecutor, TransitionProcessor, TransitionStorage, VersionedValue,
 };
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
@@ -171,10 +171,29 @@ impl TransitionStorage for FakeStorage {
     async fn prepare_split(
         &self,
         _parent: &Partition,
-        _transition: &SplitTransition,
+        transition: &SplitTransition,
         _max_fence_lag_records: u64,
-    ) -> Result<SplitArtifact, MonitorError> {
-        Ok(self.split.clone())
+    ) -> Result<PreparedLocalSplit, MonitorError> {
+        let left = partition(
+            transition.left.partition_id,
+            transition.left.range.clone(),
+            transition.left.owner_epoch,
+            &transition.left.artifact,
+            true,
+        )
+        .await;
+        let right = partition(
+            transition.right.partition_id,
+            transition.right.range.clone(),
+            transition.right.owner_epoch,
+            &transition.right.artifact,
+            true,
+        )
+        .await;
+        Ok(PreparedLocalSplit {
+            artifact: self.split.clone(),
+            children: vec![left, right],
+        })
     }
 }
 
@@ -386,6 +405,11 @@ async fn split_worker_reports_only_a_common_child_frontier() {
     assert_eq!(proof.cutover_seq, 8);
     assert_eq!(proof.left_applied_seq, 8);
     assert_eq!(proof.right_applied_seq, 8);
+    assert_eq!(
+        worker.prepare_split_parent(&transition).await.unwrap(),
+        proof,
+        "a durable readiness retry requires both child handles to remain installed"
+    );
 }
 
 #[tokio::test]

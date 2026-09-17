@@ -65,7 +65,7 @@ tail and bounded handoff contract.
 
 ## Writer Handoff and Routing
 
-- [~] **Install local child writers at cutover**: stop assigning new work to
+- [x] **Install local child writers at cutover**: stop assigning new work to
   the parent sequencer at exact `C`, drain only requests that already hold the
   parent writer handle, and atomically reselect all other ingress to one local
   child WAL/memtable. Do not await tail warming, child checkpoint, or

@@ -24,4 +24,4 @@ pub use monitor::{
 pub use split::{SplitAction, SplitStateMachine};
 pub use transfer::{TransferAction, TransferStateMachine};
 pub use transition_runtime::TransitionProcessor;
-pub use worker::{TransitionExecutor, TransitionStorage};
+pub use worker::{PreparedLocalSplit, TransitionExecutor, TransitionStorage};

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use crowdb_chunk_kv::{Partition, SplitArtifact};
+use crowdb_chunk_kv::{Partition, PartitionConfig, SplitArtifact};
 use crowdb_protocol::chunk_kv::{
     AuthorityReleaseProof, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogPartitionState, SplitPhase,
     SplitReadinessProof, SplitTransition, TailOverlayArtifact, TargetReadinessProof, TransferPhase,
@@ -12,6 +12,12 @@ use crowdb_protocol::chunk_kv::{
 };
 
 use crate::{ChunkKvService, ChunkKvStorage, MonitorError};
+
+/// A prepared split artifact together with the process-local child handles.
+pub struct PreparedLocalSplit {
+    pub artifact: SplitArtifact,
+    pub children: Vec<Partition>,
+}
 
 /// Executes process-local storage work requested by persisted transitions.
 pub struct TransitionExecutor {
@@ -169,11 +175,29 @@ impl TransitionExecutor {
             low: transition.transition_id.low,
         };
         let artifact = if let Some(artifact) = parent.prepared_split_artifact(transition_id).await {
+            for child in [&artifact.left, &artifact.right] {
+                let child_id = crowdb_protocol::chunk_kv::Id128 {
+                    high: child.partition_id.high,
+                    low: child.partition_id.low,
+                };
+                if self.service.hosted_partition(child_id).is_none() {
+                    return Err(plan_error(
+                        "prepared split child is not installed; preparation must be rebuilt",
+                    ));
+                }
+            }
             artifact
         } else {
-            self.storage
+            let prepared = self
+                .storage
                 .prepare_split(&parent, transition, self.max_split_fence_lag_records)
-                .await?
+                .await?;
+            for child in &prepared.children {
+                self.service
+                    .install_partition(child)
+                    .map_err(|error| plan_error(&error.to_string()))?;
+            }
+            prepared.artifact
         };
         if artifact.left.applied_seq != artifact.cutover_seq
             || artifact.right.applied_seq != artifact.cutover_seq
@@ -198,7 +222,7 @@ pub trait TransitionStorage: Send + Sync {
         parent: &Partition,
         transition: &SplitTransition,
         max_fence_lag_records: u64,
-    ) -> Result<SplitArtifact, MonitorError>;
+    ) -> Result<PreparedLocalSplit, MonitorError>;
 }
 
 #[async_trait]
@@ -214,8 +238,23 @@ impl TransitionStorage for ChunkKvStorage {
         parent: &Partition,
         transition: &SplitTransition,
         max_fence_lag_records: u64,
-    ) -> Result<SplitArtifact, MonitorError> {
-        ChunkKvStorage::prepare_split(self, parent, transition, max_fence_lag_records).await
+    ) -> Result<PreparedLocalSplit, MonitorError> {
+        let prepared = ChunkKvStorage::prepare_split(self, parent, transition, max_fence_lag_records).await?;
+        let artifact = prepared.artifact.clone();
+        let left = prepared
+            .left
+            .open(PartitionConfig::default())
+            .await
+            .map_err(|error| plan_error(&error.to_string()))?;
+        let right = prepared
+            .right
+            .open(PartitionConfig::default())
+            .await
+            .map_err(|error| plan_error(&error.to_string()))?;
+        Ok(PreparedLocalSplit {
+            artifact,
+            children: vec![left, right],
+        })
     }
 }
 
