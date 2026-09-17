@@ -91,6 +91,23 @@ fn point_failure_round_trip_preserves_redirect_fields() {
 }
 
 #[test]
+fn target_not_ready_round_trip_preserves_retry_delay() {
+    let response = ChunkKvResponse {
+        map_revision: 28,
+        journal_position: None,
+        result: Err(RpcFailure {
+            code: ChunkKvRpcErrorCode::TargetNotReady,
+            message: "catching up".into(),
+            retry_after_ms: Some(10),
+            latest_map_revision: Some(28),
+            owner_hint: None,
+        }),
+    };
+    let (buffer, offset) = encode_point_response(29, 30, &response);
+    assert_eq!(decode_point_response(&buffer[offset..]).unwrap(), response);
+}
+
+#[test]
 fn ordered_request_round_trips_preserve_bounds_and_continuation() {
     let seek = SeekRequest {
         routing: routing(),

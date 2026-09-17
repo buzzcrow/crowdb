@@ -550,6 +550,53 @@ async fn newer_catalog_replaces_hosted_assignments_only_after_recovery() {
 }
 
 #[tokio::test]
+async fn catching_up_target_returns_typed_retry_without_wal_admission() {
+    let (service, _) = fixture().await;
+    let partition_id = Id128 { high: 1, low: 2 };
+    let stream_name = StreamName { high: 30, low: 34 };
+    let target = prepared_partition(
+        PartitionId {
+            high: partition_id.high,
+            low: partition_id.low,
+        },
+        stream_name,
+        EPOCH + 1,
+    )
+    .await;
+    let (head, mut page) = catalog(partition_id, stream_name, EPOCH + 1, 2, Some(1));
+    page.entries[0].state = ChunkKvRangeCatalogPartitionState::TargetCatchingUp;
+    page.entries[0].transition_id = Some(Id128 { high: 40, low: 41 });
+    page.seal().unwrap();
+    let mut head = head;
+    head.pages[0].page_checksum = page.checksum;
+    head.seal().unwrap();
+    service
+        .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&target))
+        .unwrap();
+    let mut route = routing(50);
+    route.map_revision = 2;
+    route.owner_epoch = EPOCH + 1;
+    let before = target.snapshot().journal_durable_seq;
+    let response = service
+        .handle_point(
+            PointRequest {
+                routing: route,
+                operation: PointOperation::Put {
+                    key: b"object".to_vec(),
+                    value: b"metadata".to_vec(),
+                },
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    let failure = response.result.unwrap_err();
+    assert_eq!(failure.code, ChunkKvRpcErrorCode::TargetNotReady);
+    assert_eq!(failure.retry_after_ms, Some(10));
+    assert_eq!(target.snapshot().journal_durable_seq, before);
+}
+
+#[tokio::test]
 async fn direct_put_get_preserves_object_metadata_and_position() {
     let (service, _) = fixture().await;
     let observation = service.registry_observation(1_024, 7);
