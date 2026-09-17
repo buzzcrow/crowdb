@@ -104,9 +104,47 @@ void collect_rebuild_leaves(const std::vector<NativeFrame> &source_frames, const
     std::sort(leaves->begin(), leaves->end(), [](const RebuildLeaf &left, const RebuildLeaf &right) {
         return left.entries.front().key < right.entries.front().key;
     });
-    for (RebuildLeaf &leaf : *leaves) {
-        leaf.page_id = leaf.wholly_contained ? leaf.source_page_id : (*next_page_id)++;
+}
+
+Status fit_rebuild_leaves(uint32_t frame_bytes, uint64_t *next_page_id, std::vector<RebuildLeaf> *leaves)
+{
+    const size_t             capacity = frame_bytes - kFrameHeaderSize - kFrameTrailerSize;
+    std::vector<RebuildLeaf> fitted;
+    for (RebuildLeaf &source : *leaves) {
+        size_t source_bytes = 0;
+        for (const RebuildEntry &entry : source.entries) {
+            const size_t entry_bytes = kLeafSlotSize + entry.key.size() + entry.cell.size();
+            if (entry_bytes > capacity) {
+                return Status::resource_exhausted("range rebuild: leaf entry does not fit destination frame");
+            }
+            source_bytes += entry_bytes;
+        }
+        if (source_bytes <= capacity) {
+            source.page_id = source.wholly_contained ? source.source_page_id : (*next_page_id)++;
+            fitted.push_back(std::move(source));
+            continue;
+        }
+
+        RebuildLeaf part;
+        part.source_page_id = source.source_page_id;
+        size_t part_bytes   = 0;
+        for (RebuildEntry &entry : source.entries) {
+            const size_t entry_bytes = kLeafSlotSize + entry.key.size() + entry.cell.size();
+            if (part_bytes + entry_bytes > capacity) {
+                part.page_id = (*next_page_id)++;
+                fitted.push_back(std::move(part));
+                part                = RebuildLeaf{};
+                part.source_page_id = source.source_page_id;
+                part_bytes          = 0;
+            }
+            part.entries.push_back(std::move(entry));
+            part_bytes += entry_bytes;
+        }
+        part.page_id = (*next_page_id)++;
+        fitted.push_back(std::move(part));
     }
+    *leaves = std::move(fitted);
+    return Status::Ok();
 }
 
 Status build_leaf_frames(const std::vector<NativeFrame> &source_frames, uint32_t frame_bytes,
@@ -244,6 +282,10 @@ Status build_filtered_frames(const std::vector<NativeFrame> &source_frames, cons
     uint64_t                 next_page_id = source_next_page_id;
     std::vector<RebuildLeaf> leaves;
     collect_rebuild_leaves(source_frames, range, &next_page_id, &leaves, stats);
+    Status fit_status = fit_rebuild_leaves(destination_options.frame_bytes, &next_page_id, &leaves);
+    if (!fit_status.ok()) {
+        return fit_status;
+    }
 
     std::vector<RebuildNode> level;
     Status leaf_status = build_leaf_frames(source_frames, destination_options.frame_bytes, &leaves, &next_page_id,

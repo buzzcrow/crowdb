@@ -8,6 +8,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <future>
 #include <iterator>
 #include <map>
@@ -131,6 +132,44 @@ TEST(RangeRebuild, ResidentSourceWithoutPageStoreBuildsDurableChild)
     EXPECT_EQ(live_entries(*destination), (std::map<std::string, std::string>{
                                               {"m", "kept"}
     }));
+}
+
+TEST(RangeRebuild, OversizedSourceLeafSplitsIntoFixedDestinationFrames)
+{
+    MemPageStore source_store(1);
+    Config       options;
+    options.page_store       = &source_store;
+    options.frame_bytes      = 4096;
+    options.leaf_split_bytes = 65536;
+    options.max_inline_value = 2048;
+    Crowdbtree source(options);
+    for (uint64_t index = 0; index < 48; ++index) {
+        ASSERT_TRUE(source.put(Slice("k" + std::to_string(1000 + index)), Slice(std::string(800, 'v'))).ok());
+    }
+    ASSERT_TRUE(source.flush().ok());
+
+    std::vector<NativeFrame> source_frames;
+    ASSERT_TRUE(source.collect_native_frames(&source_frames, nullptr, nullptr, nullptr).ok());
+    ASSERT_TRUE(std::any_of(source_frames.begin(), source_frames.end(), [](const NativeFrame &frame) {
+        return frame_page_type(frame.frame.data()) == page_type::kLeafBase && frame.frame.size() > 4096;
+    }));
+
+    MemPageStore destination_store(1);
+    options.page_store = &destination_store;
+    std::unique_ptr<Crowdbtree> destination;
+    ASSERT_TRUE(
+        rebuild_range(source, KeyRange::bounded(std::string("k1012"), std::string("k1036")), options, &destination)
+            .ok());
+    const auto entries = live_entries(*destination);
+    ASSERT_EQ(entries.size(), 24U);
+    for (uint64_t index = 12; index < 36; ++index) {
+        EXPECT_EQ(entries.at("k" + std::to_string(1000 + index)), std::string(800, 'v'));
+    }
+    std::vector<NativeFrame> destination_frames;
+    ASSERT_TRUE(destination->collect_native_frames(&destination_frames, nullptr, nullptr, nullptr).ok());
+    for (const NativeFrame &frame : destination_frames) {
+        EXPECT_EQ(frame.frame.size(), 4096U);
+    }
 }
 
 TEST(RangeRebuild, NativeIteratorIsBoundedResumableAndPinned)
