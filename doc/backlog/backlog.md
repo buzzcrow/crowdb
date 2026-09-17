@@ -101,11 +101,6 @@ end-to-end Chunk IO performance workloads are landed. The RPC migration items
 
 ### Medium Priority
 
-- **[R171](R171-chunkdb-ad-hoc-ec-read-recovery.md)** — ad-hoc EC read
-  recovery — Area: chunk-client / chunkdb / diskdb — Preserve slice-only ISA-L
-  reconstruction for small reads, while routing eligible full-fragment
-  recoveries to a bounded ChunkDB in-memory coalescer that reuses rebuilt bytes
-  and hands one target to the existing durable repair publication sequence.
 - **[R83](R83-chunkdb-complete-recovery-flow.md)** — chunkdb
   complete recovery flow (real data recovery + speed control) —
   Area: chunkdb / diskdb / diskio — diskdb's recovery is disk-layer
