@@ -19,7 +19,7 @@ use crowdb_kv_client::ServiceRegistryClient;
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::{
     AllocateBlocksRequest, AllocateResponse, CommitBlocksRequest, ExecuteRelocationRequest,
-    ExecuteRelocationResponse, FreeBlocksRequest, Segment,
+    ExecuteRelocationResponse, FreeBlocksRequest, MarkBlocksCorruptRequest, Segment,
 };
 
 const REGISTRY_REFRESH_INTERVAL_MS: u64 = 5_000;
@@ -311,6 +311,23 @@ impl DiskdbClientPool {
         } else {
             Err(errors.join("; "))
         }
+    }
+
+    /// Mark proven-corrupt exact block incarnations on their DiskDB owners.
+    pub async fn mark_blocks_corrupt(&self, segments: Vec<Segment>) -> Result<(), String> {
+        if segments.is_empty() { return Ok(()); }
+        let grouped = self.group_segments(segments, "mark_blocks_corrupt")?;
+        let mut futures = Vec::with_capacity(grouped.len());
+        for (dg_id, segs) in grouped {
+            let endpoint = self.endpoint_for_dg(dg_id).await?;
+            let transport = Arc::clone(&self.transport);
+            futures.push(async move {
+                transport.mark_blocks_corrupt(&endpoint, &MarkBlocksCorruptRequest { segments: segs }).await
+                    .map_err(|error| format!("mark_blocks_corrupt RPC: {error}"))
+            });
+        }
+        let errors: Vec<_> = futures::future::join_all(futures).await.into_iter().filter_map(Result::err).collect();
+        if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
     }
 
     fn group_segments(
