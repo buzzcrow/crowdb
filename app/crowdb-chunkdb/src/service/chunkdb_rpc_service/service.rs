@@ -62,6 +62,7 @@ use crowdb_rpc_ffi::{Buffer, RpcServer, ServerRequest};
 use flatbuffers::FlatBufferBuilder;
 use tokio::runtime::Handle;
 
+use crate::ad_hoc::AdHocRecoveryManager;
 use crate::conversion::ConversionCoordinator;
 use crate::lifecycle::{AppendChunkOutcome, LifecycleError, LifecycleHandler};
 use crate::metrics::{ChunkdbMetrics, RequestGuard, RequestKind};
@@ -80,6 +81,7 @@ pub struct ChunkdbRpcService {
     conversion: Option<Arc<ConversionCoordinator>>,
     owner: Option<Arc<SegmentOwnerResolver>>,
     relocation: Option<Arc<RelocationCoordinator>>,
+    ad_hoc: Option<Arc<AdHocRecoveryManager>>,
 }
 
 impl ChunkdbRpcService {
@@ -91,6 +93,7 @@ impl ChunkdbRpcService {
             conversion: None,
             owner: None,
             relocation: None,
+            ad_hoc: None,
         }
     }
 
@@ -112,6 +115,12 @@ impl ChunkdbRpcService {
     #[must_use]
     pub fn with_relocation(mut self, relocation: Arc<RelocationCoordinator>) -> Self {
         self.relocation = Some(relocation);
+        self
+    }
+
+    #[must_use]
+    pub fn with_ad_hoc(mut self, manager: Option<Arc<AdHocRecoveryManager>>) -> Self {
+        self.ad_hoc = manager;
         self
     }
 
@@ -237,6 +246,15 @@ impl ChunkdbRpcService {
         );
         self.register_replacement_handlers(server);
         self.register_conversion_handlers(server);
+        server.register_handler(
+            FBMsgType::EAdHocEcRecoveryRequest.0 as u16,
+            Self::make_handler(
+                Arc::clone(self),
+                Arc::clone(server),
+                RequestKind::AdHocEcRecovery,
+                Self::handle_ad_hoc_ec_recovery,
+            ),
+        );
     }
 
     fn register_conversion_handlers(self: &Arc<Self>, server: &Arc<RpcServer>) {

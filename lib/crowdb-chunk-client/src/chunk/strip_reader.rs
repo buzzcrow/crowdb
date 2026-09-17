@@ -12,6 +12,7 @@ use crowdb_protocol::diskdb::rpc::Segment;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
+use super::client_recovery::ClientRecovery;
 use crate::{DiskWriter, ReadError, ReadResult};
 
 /// Result of a strip read together with every segment that failed or was
@@ -29,6 +30,7 @@ pub struct StripReader {
     disk_io: Arc<dyn DiskWriter>,
     recovery_memory: Arc<Semaphore>,
     recovery_memory_limit: usize,
+    ad_hoc: Option<Arc<ClientRecovery>>,
 }
 
 impl StripReader {
@@ -41,7 +43,13 @@ impl StripReader {
             disk_io,
             recovery_memory,
             recovery_memory_limit,
+            ad_hoc: None,
         }
+    }
+
+    pub(crate) fn with_ad_hoc(mut self, manager: Arc<ClientRecovery>) -> Self {
+        self.ad_hoc = Some(manager);
+        self
     }
 
     pub async fn read(
@@ -51,7 +59,7 @@ impl StripReader {
         offset: u64,
         length: u64,
     ) -> ReadResult<Bytes> {
-        self.read_observed(strip, durable_bytes, offset, length)
+        self.read_observed(strip, 0, durable_bytes, offset, length)
             .await
             .result
     }
@@ -59,12 +67,13 @@ impl StripReader {
     pub(crate) async fn read_observed(
         &self,
         strip: &ChunkStrip,
+        revision: u64,
         durable_bytes: u64,
         offset: u64,
         length: u64,
     ) -> ObservedStripRead {
         let result = self
-            .read_observed_inner(strip, durable_bytes, offset, length)
+            .read_observed_inner(strip, revision, durable_bytes, offset, length)
             .await;
         match result {
             Ok((data, failed_segments, served_segments)) => ObservedStripRead {
@@ -83,6 +92,7 @@ impl StripReader {
     async fn read_observed_inner(
         &self,
         strip: &ChunkStrip,
+        revision: u64,
         durable_bytes: u64,
         offset: u64,
         length: u64,
@@ -111,7 +121,7 @@ impl StripReader {
             Some(Strip::MirrorStrip(mirror)) => {
                 self.read_mirror(strip, &mirror.segments, offset, length).await
             }
-            Some(Strip::EcStrip(ec)) => self.read_ec(strip, ec, offset, length).await,
+            Some(Strip::EcStrip(ec)) => self.read_ec(strip, revision, ec, offset, length).await,
             None => Err((
                 ReadError::InvalidLocations(format!("strip {} has no body", strip.strip_sequence)),
                 Vec::new(),
@@ -162,6 +172,7 @@ impl StripReader {
     async fn read_ec(
         &self,
         strip: &ChunkStrip,
+        revision: u64,
         ec: &crowdb_protocol::chunkdb::rpc::EcStrip,
         offset: u64,
         length: u64,
@@ -205,10 +216,27 @@ impl StripReader {
             if let Ok(data) = result {
                 output.extend_from_slice(&data);
                 push_unique(&mut served_segments, ec.segments[shard_index]);
-            } else if let Err(error) = result {
-                let durable_target_failure = error.is_durable_read_failure();
-                if durable_target_failure {
-                    push_unique(&mut failed_segments, ec.segments[shard_index]);
+            } else if let Err(_error) = result {
+                if strip.unavailable_segments.contains(&ec.segments[shard_index]) {
+                    if let (Some(manager), Some(chunk_id)) =
+                        (&self.ad_hoc, ec.segments[shard_index].owner_chunk)
+                    {
+                        if let Some(data) = manager
+                            .observe(
+                                chunk_id,
+                                revision,
+                                strip.strip_sequence,
+                                ec.segments[shard_index],
+                                shard_bytes,
+                                local_start,
+                                read_len,
+                            )
+                            .await
+                        {
+                            output.extend_from_slice(&data);
+                            continue;
+                        }
+                    }
                 }
                 if ec.ec_state != EcState::Parity as i32 {
                     return Err((
@@ -229,7 +257,7 @@ impl StripReader {
                         shard_index,
                         local_start,
                         read_len,
-                        durable_target_failure,
+                        strip.unavailable_segments.contains(&ec.segments[shard_index]),
                     )
                     .await
                 {
@@ -384,14 +412,11 @@ impl StripReader {
             };
             let (index, result) =
                 result.map_err(|error| (ReadError::DiskIo(error.to_string()), failed_segments.clone()))?;
-            match result {
-                Ok(data) => {
-                    let mut shard = vec![0; length as usize];
-                    shard[..data.len()].copy_from_slice(&data);
-                    shards[index] = Some(shard);
-                    available = available.saturating_add(1);
-                }
-                Err(_) => {}
+            if let Ok(data) = result {
+                let mut shard = vec![0; length as usize];
+                shard[..data.len()].copy_from_slice(&data);
+                shards[index] = Some(shard);
+                available = available.saturating_add(1);
             }
         }
         let decoded = decode_recoverable(strip, scheme, shards, &failed_segments)?;

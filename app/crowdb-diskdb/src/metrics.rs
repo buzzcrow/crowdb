@@ -27,6 +27,7 @@ pub enum RequestKind {
     AllocateBlocks,
     FreeBlocks,
     CommitBlocks,
+    MarkBlocksCorrupt,
     QueryCapacityStats,
     GetDiskGroupInfo,
     GetDiskInfo,
@@ -39,10 +40,11 @@ pub enum RequestKind {
 }
 
 impl RequestKind {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 13] = [
         Self::AllocateBlocks,
         Self::FreeBlocks,
         Self::CommitBlocks,
+        Self::MarkBlocksCorrupt,
         Self::QueryCapacityStats,
         Self::GetDiskGroupInfo,
         Self::GetDiskInfo,
@@ -59,6 +61,7 @@ impl RequestKind {
             Self::AllocateBlocks => "allocate_blocks",
             Self::FreeBlocks => "free_blocks",
             Self::CommitBlocks => "commit_blocks",
+            Self::MarkBlocksCorrupt => "mark_blocks_corrupt",
             Self::QueryCapacityStats => "query_capacity_stats",
             Self::GetDiskGroupInfo => "get_disk_group_info",
             Self::GetDiskInfo => "get_disk_info",
@@ -83,7 +86,7 @@ struct RequestMetric {
 
 /// Uniform count, inflight, and error metrics for all `DiskDB` RPCs.
 pub struct RequestMetrics {
-    methods: [RequestMetric; 12],
+    methods: [RequestMetric; 13],
 }
 
 impl RequestMetrics {

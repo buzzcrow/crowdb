@@ -615,3 +615,37 @@ table FBCompleteMirrorToEcConversionResponse {
     range_end:uint32;
     chunk:FBChunk;
 }
+
+enum FBAdHocEcRecoveryDisposition : int16 {
+    Started = 0,
+    Coalesced = 1,
+    Stale = 2,
+    Healed = 3,
+    Incompatible = 4,
+    InsufficientShards = 5,
+    Saturated = 6,
+    Marked = 7,
+}
+
+table FBAdHocEcRecoveryRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    version:uint16;
+    chunk_id:crowdb.rpc.proto.FBInt128;
+    expected_modify_ts:uint64;
+    strip_sequence:uint32;
+    failed_segment:crowdb.diskdb.proto.FBSegment;
+    operation_id:crowdb.rpc.proto.FBInt128;
+    request_full_block:bool;
+}
+
+table FBAdHocEcRecoveryResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    ret_code:FBChunkdbRetCode;
+    error_msg:string;
+    range_start:uint32;
+    range_end:uint32;
+    disposition:FBAdHocEcRecoveryDisposition;
+    data:[ubyte];
+}

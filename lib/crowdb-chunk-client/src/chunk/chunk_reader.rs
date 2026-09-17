@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
 use crowdb_protocol::chunkdb::rpc::{
-    Chunk, ChunkState, Location, QueryChunkRequest, ReplaceChunkStripRangeRequest,
+    AdHocEcRecoveryDisposition, AdHocEcRecoveryRequest, Chunk, ChunkState, Location, QueryChunkRequest,
 };
 use crowdb_protocol::common::ChunkId;
 use crowdb_protocol::diskdb::rpc::Segment;
@@ -20,6 +20,7 @@ use crowdb_protocol::frame::{
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
+use super::client_recovery::ClientRecovery;
 use super::strip_reader::StripReader;
 use crate::{ChunkAllocator, DiskWriter, IoError, ReadError, ReadResult};
 
@@ -33,6 +34,9 @@ pub struct ChunkReadPolicy {
     pub recovery_memory_bytes: usize,
     pub layout_safety_margin: Duration,
     pub max_layout_retries: usize,
+    pub ad_hoc_max_jobs: usize,
+    pub ad_hoc_threshold_bytes: u64,
+    pub ad_hoc_window: Duration,
 }
 
 /// A successfully read logical sub-range.
@@ -62,9 +66,12 @@ impl Default for ChunkReadPolicy {
     fn default() -> Self {
         Self {
             stream_window_bytes: DEFAULT_STREAM_WINDOW,
-            recovery_memory_bytes: DEFAULT_STREAM_WINDOW,
+            recovery_memory_bytes: 256 * 1024 * 1024,
             layout_safety_margin: Duration::from_millis(5),
             max_layout_retries: 3,
+            ad_hoc_max_jobs: 32,
+            ad_hoc_threshold_bytes: 1024 * 1024,
+            ad_hoc_window: Duration::from_secs(1),
         }
     }
 }
@@ -75,6 +82,9 @@ impl ChunkReadPolicy {
             || self.recovery_memory_bytes == 0
             || self.recovery_memory_bytes > u32::MAX as usize
             || self.max_layout_retries == 0
+            || self.ad_hoc_max_jobs == 0
+            || self.ad_hoc_threshold_bytes == 0
+            || self.ad_hoc_window.is_zero()
         {
             return Err(ReadError::InvalidLocations("invalid chunk read policy".into()));
         }
@@ -96,11 +106,29 @@ impl ChunkReader {
         disk_io: Arc<dyn DiskWriter>,
         policy: ChunkReadPolicy,
     ) -> ReadResult<Self> {
+        Self::new_with_metrics(chunkdb, disk_io, policy, Arc::default())
+    }
+
+    pub(crate) fn new_with_metrics(
+        chunkdb: Arc<dyn ChunkAllocator>,
+        disk_io: Arc<dyn DiskWriter>,
+        policy: ChunkReadPolicy,
+        metrics: Arc<crate::metrics::ReadRecoveryMetrics>,
+    ) -> ReadResult<Self> {
         policy.validate()?;
         let recovery_memory = Arc::new(Semaphore::new(policy.recovery_memory_bytes));
+        let ad_hoc = Arc::new(ClientRecovery::new(
+            Arc::clone(&chunkdb),
+            Arc::clone(&recovery_memory),
+            policy.ad_hoc_max_jobs,
+            policy.ad_hoc_threshold_bytes,
+            policy.ad_hoc_window,
+            metrics,
+        ));
         Ok(Self {
             chunkdb,
-            strip_reader: StripReader::new(disk_io, recovery_memory, policy.recovery_memory_bytes),
+            strip_reader: StripReader::new(disk_io, recovery_memory, policy.recovery_memory_bytes)
+                .with_ad_hoc(ad_hoc),
             policy,
         })
     }
@@ -620,6 +648,7 @@ impl ChunkReader {
                     .strip_reader
                     .read_observed(
                         strip,
+                        chunk.modify_ts,
                         durable_bytes,
                         part_start - strip_start,
                         part_end - part_start,
@@ -678,32 +707,43 @@ impl ChunkReader {
                 return Err(ReadError::Metadata("failed strip disappeared".into()));
             };
             let old = chunk.strips[index].clone();
-            let mut replacement = old.clone();
             for segment in observation.failed_segments {
-                if !replacement.unavailable_segments.contains(&segment) {
-                    replacement.unavailable_segments.push(segment);
+                if old.unavailable_segments.contains(&segment) {
+                    continue;
                 }
+                let mut replacement = chunk.strips[index].clone();
+                replacement.unavailable_segments.push(segment);
+                replacement.unavailable_segments.sort_by_key(segment_identity);
+                let operation_id = failure_operation_id(chunk_id, &replacement);
+                let response = self
+                    .chunkdb
+                    .ad_hoc_ec_recovery(AdHocEcRecoveryRequest {
+                        version: 1,
+                        chunk_id: Some(chunk_id),
+                        expected_modify_ts: chunk.modify_ts,
+                        strip_sequence: observation.strip_sequence,
+                        failed_segment: Some(segment),
+                        operation_id: Some(operation_id),
+                        request_full_block: false,
+                    })
+                    .await
+                    .map_err(|error| ReadError::Metadata(error.to_string()))?;
+                if response.disposition != AdHocEcRecoveryDisposition::Marked {
+                    return Err(ReadError::Metadata(format!(
+                        "corrupt segment report was {:?}",
+                        response.disposition
+                    )));
+                }
+                *chunk = self
+                    .chunkdb
+                    .query_chunk(QueryChunkRequest {
+                        chunk_id: Some(chunk_id),
+                    })
+                    .await
+                    .map_err(|error| ReadError::Metadata(error.to_string()))?
+                    .chunk
+                    .ok_or_else(|| ReadError::Metadata("corrupt report returned no chunk".into()))?;
             }
-            if replacement == old {
-                continue;
-            }
-            replacement.unavailable_segments.sort_by_key(segment_identity);
-            let operation_id = failure_operation_id(chunk_id, &replacement);
-            let response = self
-                .chunkdb
-                .replace_chunk_strip_range(ReplaceChunkStripRangeRequest {
-                    chunk_id: Some(chunk_id),
-                    expected_modify_ts: chunk.modify_ts,
-                    start_index: u32::try_from(index).unwrap_or(u32::MAX),
-                    old_strips: vec![old],
-                    replacement_strips: vec![replacement],
-                    operation_id: Some(operation_id),
-                })
-                .await
-                .map_err(|error| ReadError::Metadata(error.to_string()))?;
-            *chunk = response
-                .chunk
-                .ok_or_else(|| ReadError::Metadata("failure marker returned no chunk".into()))?;
         }
         Ok(())
     }
@@ -849,6 +889,13 @@ struct StripFailureObservation {
 fn mark_served_segments_corrupt(
     mut observations: Vec<StripFailureObservation>,
 ) -> Vec<StripFailureObservation> {
+    let serving_count: usize = observations
+        .iter()
+        .map(|observation| observation.served_segments.len())
+        .sum();
+    if serving_count != 1 {
+        return Vec::new();
+    }
     for observation in &mut observations {
         for segment in std::mem::take(&mut observation.served_segments) {
             if !observation.failed_segments.contains(&segment) {

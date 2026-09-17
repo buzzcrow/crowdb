@@ -249,10 +249,11 @@ impl ChunkIoClient {
             Arc::clone(&self.failed_disks),
         )
         .unwrap_or_else(|_| unreachable!("existing small-write policy was already validated"));
-        self.reader = ChunkReader::new(
+        self.reader = ChunkReader::new_with_metrics(
             Arc::clone(&self.allocator),
             Arc::clone(&self.disk_writer),
             ChunkReadPolicy::default(),
+            Arc::clone(&metrics.read_recovery),
         )
         .unwrap_or_else(|_| unreachable!("default read policy is valid"));
         self
@@ -260,7 +261,14 @@ impl ChunkIoClient {
 
     /// Replace the object-read memory and layout-retry policy.
     pub fn with_read_policy(mut self, policy: ChunkReadPolicy) -> ReadResult<Self> {
-        self.reader = ChunkReader::new(Arc::clone(&self.allocator), Arc::clone(&self.disk_writer), policy)?;
+        self.reader = ChunkReader::new_with_metrics(
+            Arc::clone(&self.allocator),
+            Arc::clone(&self.disk_writer),
+            policy,
+            self.metrics
+                .as_ref()
+                .map_or_else(Arc::default, |metrics| Arc::clone(&metrics.read_recovery)),
+        )?;
         Ok(self)
     }
 
@@ -526,6 +534,13 @@ impl ChunkAllocator for MetricsChunkAllocator {
             operation.mark_success();
         }
         result
+    }
+
+    async fn ad_hoc_ec_recovery(
+        &self,
+        req: crowdb_protocol::chunkdb::rpc::AdHocEcRecoveryRequest,
+    ) -> Result<crowdb_protocol::chunkdb::rpc::AdHocEcRecoveryResponse> {
+        self.inner.ad_hoc_ec_recovery(req).await
     }
 
     async fn allocate_replacement_segment(

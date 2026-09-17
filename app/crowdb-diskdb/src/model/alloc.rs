@@ -690,7 +690,12 @@ pub async fn mark_blocks_corrupt(
                 reason: "missing disk ID".into(),
             }))
         })?;
-        if !seen.insert((disk_id, segment.zone_index, segment.unit_offset, segment.allocation_ts)) {
+        if !seen.insert((
+            disk_id,
+            segment.zone_index,
+            segment.unit_offset,
+            segment.allocation_ts,
+        )) {
             continue;
         }
         let Some((mut busy, revision)) = kv
@@ -708,6 +713,9 @@ pub async fn mark_blocks_corrupt(
             || busy.owner_chunk != segment.owner_chunk
         {
             return Err(FreeError::IncarnationMismatch);
+        }
+        if busy.commit_state != CommitState::Committed as i32 {
+            return Err(FreeError::Conflict);
         }
         if busy.state == BlockState::Corrupt as i32 {
             marked = marked.saturating_add(1);

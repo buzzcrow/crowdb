@@ -204,6 +204,12 @@ pub struct RepairConfig {
     pub max_concurrency: usize,
     pub memory_bytes: usize,
     pub scan_interval_secs: u64,
+    #[serde(default = "default_ad_hoc_jobs")]
+    pub ad_hoc_max_concurrency: usize,
+}
+
+const fn default_ad_hoc_jobs() -> usize {
+    32
 }
 
 impl Default for RepairConfig {
@@ -211,9 +217,10 @@ impl Default for RepairConfig {
         Self {
             enabled: true,
             allow_unsafe_placement: false,
-            max_concurrency: 4,
-            memory_bytes: 64 * 1024 * 1024,
+            max_concurrency: 32,
+            memory_bytes: 512 * 1024 * 1024,
             scan_interval_secs: 1,
+            ad_hoc_max_concurrency: default_ad_hoc_jobs(),
         }
     }
 }
@@ -228,6 +235,9 @@ impl RepairConfig {
         }
         if self.scan_interval_secs == 0 {
             return Err("repair.scan_interval_secs must be > 0".into());
+        }
+        if self.ad_hoc_max_concurrency == 0 {
+            return Err("repair.ad_hoc_max_concurrency must be positive".into());
         }
         Ok(())
     }

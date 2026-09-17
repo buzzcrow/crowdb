@@ -18,6 +18,7 @@ use crowdb_protocol::diskdb::rpc::Segment;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
+use crate::ad_hoc::{AdHocRecoveryShared, RecoveryKey};
 use crate::conversion::io::ConversionDiskIo;
 use crate::lifecycle::{LifecycleError, LifecycleHandler};
 use crate::metrics::RepairMetrics;
@@ -171,6 +172,7 @@ pub struct RepairStripTaskHandler {
     metrics: Arc<RepairMetrics>,
     permits: Arc<Semaphore>,
     allow_unsafe_placement: bool,
+    ad_hoc: Option<Arc<AdHocRecoveryShared>>,
 }
 
 impl RepairStripTaskHandler {
@@ -194,7 +196,17 @@ impl RepairStripTaskHandler {
             metrics,
             permits: Arc::new(Semaphore::new(max_concurrency.max(1))),
             allow_unsafe_placement,
+            ad_hoc: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_ad_hoc(mut self, shared: Arc<AdHocRecoveryShared>) -> Self {
+        self.memory = shared.memory();
+        self.memory_limit = shared.memory_limit();
+        self.metrics.set_memory_limit(self.memory_limit);
+        self.ad_hoc = Some(shared);
+        self
     }
 
     #[allow(clippy::too_many_lines)]
@@ -315,6 +327,16 @@ impl RepairStripTaskHandler {
                 payload.targets[target_index].phase = RepairTargetPhase::Copied;
                 self.checkpoint(task, &payload).await?;
             }
+            if let Some(shared) = &self.ad_hoc {
+                shared.rebuilt(
+                    RecoveryKey {
+                        chunk_id: payload.chunk_id,
+                        strip_sequence: payload.strip_sequence,
+                        segment: *failed,
+                    },
+                    recovered.shards[index].clone(),
+                );
+            }
             let new_segment = destination;
             replace_segment(&mut replacement, failed, new_segment)?;
             surviving.push(new_segment);
@@ -335,6 +357,15 @@ impl RepairStripTaskHandler {
                 task.operation_id,
             )
             .await?;
+        if let Some(shared) = &self.ad_hoc {
+            for failed in &unavailable {
+                shared.published(RecoveryKey {
+                    chunk_id: payload.chunk_id,
+                    strip_sequence: payload.strip_sequence,
+                    segment: *failed,
+                });
+            }
+        }
         for target in &mut payload.targets {
             if unavailable.contains(&target.source) && target.phase == RepairTargetPhase::Copied {
                 target.phase = RepairTargetPhase::Published;
@@ -671,7 +702,7 @@ fn segment_identity(segment: &Segment) -> (u64, u64, u32, u64, u64) {
     )
 }
 
-fn repair_task_id(strip_sequence: u32, segments: &[Segment]) -> ChunkId {
+pub(crate) fn repair_task_id(strip_sequence: u32, segments: &[Segment]) -> ChunkId {
     let mut high = 0x1110_0000_0000_0002 ^ u64::from(strip_sequence);
     let mut low = 0xcbf2_9ce4_8422_2325_u64;
     for segment in segments {

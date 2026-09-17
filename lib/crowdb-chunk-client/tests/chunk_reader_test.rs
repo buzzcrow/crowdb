@@ -14,10 +14,11 @@ use crowdb_chunk_client::{
 };
 use crowdb_common::ec::{encode, EcScheme};
 use crowdb_protocol::chunkdb::rpc::{
-    AllocateChunkRequest, AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse, Chunk, ChunkState,
-    ChunkStrip, DeleteChunkRequest, DeleteChunkResponse, EcState, EcStrip, Location, MirrorStrip,
-    QueryChunkRequest, QueryChunkResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse,
-    SealChunkRequest, SealChunkResponse, Strip, StripType, UpdateChunkStripRequest, UpdateChunkStripResponse,
+    AdHocEcRecoveryDisposition, AdHocEcRecoveryRequest, AdHocEcRecoveryResponse, AllocateChunkRequest,
+    AllocateChunkResponse, AppendChunkRequest, AppendChunkResponse, Chunk, ChunkState, ChunkStrip,
+    DeleteChunkRequest, DeleteChunkResponse, EcState, EcStrip, Location, MirrorStrip, QueryChunkRequest,
+    QueryChunkResponse, ReplaceChunkStripRangeRequest, ReplaceChunkStripRangeResponse, SealChunkRequest,
+    SealChunkResponse, Strip, StripType, UpdateChunkStripRequest, UpdateChunkStripResponse,
 };
 use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::Segment;
@@ -38,6 +39,8 @@ struct SequenceAllocator {
     first: Chunk,
     current: Mutex<Chunk>,
     first_layout_validity_ms: u64,
+    full_reply: Option<Bytes>,
+    full_calls: AtomicUsize,
 }
 
 #[async_trait]
@@ -78,6 +81,32 @@ impl ChunkAllocator for SequenceAllocator {
             } else {
                 1_000
             },
+        })
+    }
+
+    async fn ad_hoc_ec_recovery(&self, request: AdHocEcRecoveryRequest) -> Result<AdHocEcRecoveryResponse> {
+        if request.request_full_block {
+            self.full_calls.fetch_add(1, Ordering::AcqRel);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            return Ok(AdHocEcRecoveryResponse {
+                disposition: AdHocEcRecoveryDisposition::Started,
+                data: self.full_reply.as_ref().expect("full reply configured").to_vec(),
+            });
+        }
+        let mut current = self.current.lock().unwrap();
+        let strip = current
+            .strips
+            .iter_mut()
+            .find(|strip| strip.strip_sequence == request.strip_sequence)
+            .unwrap();
+        let segment = request.failed_segment.unwrap();
+        if !strip.unavailable_segments.contains(&segment) {
+            strip.unavailable_segments.push(segment);
+        }
+        current.modify_ts = current.modify_ts.saturating_add(1);
+        Ok(AdHocEcRecoveryResponse {
+            disposition: AdHocEcRecoveryDisposition::Marked,
+            data: Vec::new(),
         })
     }
 
@@ -347,6 +376,8 @@ async fn object_reader_discards_bytes_from_an_expired_layout() {
         first: make_chunk(old_segment),
         current: Mutex::new(make_chunk(new_segment)),
         first_layout_validity_ms: 1,
+        full_reply: None,
+        full_calls: AtomicUsize::new(0),
     });
     let disk_io = Arc::new(MemoryDiskIo {
         shards: vec![
@@ -407,6 +438,8 @@ async fn framed_mirror_crc_failure_uses_a_verified_fallback() {
         first: chunk.clone(),
         current: Mutex::new(chunk),
         first_layout_validity_ms: 1_000,
+        full_reply: None,
+        full_calls: AtomicUsize::new(0),
     });
     let disk_io = Arc::new(MemoryDiskIo {
         shards: vec![
@@ -429,4 +462,91 @@ async fn framed_mirror_crc_failure_uses_a_verified_fallback() {
         allocator.current.lock().unwrap().strips[0].unavailable_segments,
         vec![first]
     );
+}
+
+#[tokio::test]
+async fn marked_ec_fragment_shares_one_full_recovery_future() {
+    let id = ChunkId { high: 41, low: 43 };
+    let scheme = EcScheme::new(4, 1);
+    let data: Vec<u8> = (0..4 * SHARD)
+        .map(|index| u8::try_from((index * 7 + 3) % 251).unwrap())
+        .collect();
+    let encoded = encode(scheme, &data).unwrap();
+    let segments: Vec<_> = (1..=5)
+        .map(|index| Segment {
+            owner_chunk: Some(id),
+            ..segment(index)
+        })
+        .collect();
+    let shards = segments
+        .iter()
+        .zip(&encoded)
+        .map(|(segment, bytes)| (segment.disk_id.unwrap(), Bytes::from(bytes.clone())))
+        .collect();
+    let strip = ChunkStrip {
+        unit_kb: 64,
+        capacity: 256,
+        sealed_length: 256,
+        sealed_ts_ms: 1,
+        strip_type: StripType::Ec as i32,
+        strip: Some(Strip::EcStrip(EcStrip {
+            data_num: 4,
+            code_num: 1,
+            ec_state: EcState::Parity as i32,
+            segments: segments.clone(),
+        })),
+        unavailable_segments: vec![segments[0]],
+        ..ChunkStrip::default()
+    };
+    let chunk = Chunk {
+        id: Some(id),
+        state: ChunkState::Sealed as i32,
+        capacity: 256,
+        sealed_length: 256,
+        modify_ts: 3,
+        strips: vec![strip],
+        ..Chunk::default()
+    };
+    let allocator = Arc::new(SequenceAllocator {
+        queries: AtomicUsize::new(0),
+        first: chunk.clone(),
+        current: Mutex::new(chunk),
+        first_layout_validity_ms: 1_000,
+        full_reply: Some(Bytes::from(encoded[0].clone())),
+        full_calls: AtomicUsize::new(0),
+    });
+    let disk_io = Arc::new(MemoryDiskIo {
+        shards,
+        failed: vec![segments[0].disk_id.unwrap()],
+        reads: Arc::new(AtomicUsize::new(0)),
+    });
+    let reader = ChunkReader::new(allocator.clone(), disk_io.clone(), ChunkReadPolicy::default()).unwrap();
+    let location = Location {
+        chunk_id: Some(id),
+        length: SHARD as u64,
+        logical_length: SHARD as u64,
+        ..Location::default()
+    };
+    let (first, second) = tokio::join!(
+        reader.read_range(std::slice::from_ref(&location), 0, SHARD as u64),
+        reader.read_range(std::slice::from_ref(&location), 0, SHARD as u64)
+    );
+    assert_eq!(first.unwrap(), data[..SHARD]);
+    assert_eq!(second.unwrap(), data[..SHARD]);
+    assert_eq!(allocator.full_calls.load(Ordering::Acquire), 1);
+
+    let bounded = ChunkReader::new(
+        allocator.clone(),
+        disk_io,
+        ChunkReadPolicy {
+            recovery_memory_bytes: 32 * KIB,
+            ..ChunkReadPolicy::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        bounded.read_range(&[location], 0, SHARD as u64).await.unwrap(),
+        data[..SHARD]
+    );
+    assert_eq!(allocator.full_calls.load(Ordering::Acquire), 1);
 }

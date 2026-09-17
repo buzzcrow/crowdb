@@ -24,8 +24,9 @@ use crowdb_protocol::diskdb::rpc::{
     AllocateBlocksRequest, AllocateResponse, CommitBlocksRequest, CommitBlocksResponse, CompactZoneRequest,
     CompactZoneResponse, ExecuteRelocationRequest, ExecuteRelocationResponse, FreeBlocksRequest, FreeFailure,
     FreeFailureReason, FreeResponse, GetDiskGroupInfoResponse, GetDiskInfoResponse, GetScanStatusResponse,
-    QueryCapacityStatsRequest, QueryCapacityStatsResponse, RebuildZoneBitmapResponse, RecalcDiskUsageRequest,
-    MarkBlocksCorruptRequest, MarkBlocksCorruptResponse, RecalcDiskUsageResponse, TriggerScanResponse,
+    MarkBlocksCorruptRequest, MarkBlocksCorruptResponse, QueryCapacityStatsRequest,
+    QueryCapacityStatsResponse, RebuildZoneBitmapResponse, RecalcDiskUsageRequest, RecalcDiskUsageResponse,
+    TriggerScanResponse,
 };
 use crowdb_protocol::DiskGroupId;
 
@@ -74,14 +75,27 @@ pub struct DiskdbClient {
 }
 
 impl DiskdbClient {
-    pub async fn mark_blocks_corrupt(&self, req: MarkBlocksCorruptRequest) -> Result<MarkBlocksCorruptResponse> {
-        let segment = req.segments.first().ok_or_else(|| DiskdbClientError::Rpc("segment required".into()))?;
-        let disk_id = segment.disk_id.ok_or_else(|| DiskdbClientError::Rpc("segment.disk_id required".into()))?;
+    /// Mark exact committed block incarnations after verified corruption.
+    ///
+    /// # Errors
+    /// Returns routing, transport, mutation-gate, or incarnation errors.
+    pub async fn mark_blocks_corrupt(
+        &self,
+        req: MarkBlocksCorruptRequest,
+    ) -> Result<MarkBlocksCorruptResponse> {
+        let segment = req
+            .segments
+            .first()
+            .ok_or_else(|| DiskdbClientError::Rpc("segment required".into()))?;
+        let disk_id = segment
+            .disk_id
+            .ok_or_else(|| DiskdbClientError::Rpc("segment.disk_id required".into()))?;
         let dg_id = self.dg_for_disk(disk_id).await?;
         self.with_rpc_retry(dg_id, |endpoint, rpc| {
             let request = req.clone();
             async move { rpc.mark_blocks_corrupt(&endpoint, &request).await }
-        }).await
+        })
+        .await
     }
     #[must_use]
     pub fn new(svc: ServiceRegistryClient, rpc_transport: Arc<DiskdbRpcTransport>) -> Self {

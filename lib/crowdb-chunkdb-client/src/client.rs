@@ -83,6 +83,17 @@ pub struct ChunkdbClient {
 }
 
 impl ChunkdbClient {
+    pub async fn ad_hoc_ec_recovery(
+        &self,
+        req: crowdb_protocol::chunkdb::rpc::AdHocEcRecoveryRequest,
+    ) -> Result<crowdb_protocol::chunkdb::rpc::AdHocEcRecoveryResponse> {
+        let chunk_id = req.chunk_id;
+        self.with_rpc_retry(chunk_id.as_ref(), |transport, endpoint| {
+            let request = req.clone();
+            async move { transport.send_ad_hoc_ec_recovery(&endpoint, &request).await }
+        })
+        .await
+    }
     #[must_use]
     pub fn new(svc: ServiceRegistryClient, rpc_transport: Arc<ChunkdbRpcTransport>) -> Self {
         Self {

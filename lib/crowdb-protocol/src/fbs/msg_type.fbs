@@ -141,6 +141,8 @@ enum FBMsgType : int16 {
     EQuerySegmentOwnerResponse = 3337,
     ERelocateSegmentHandoffRequest = 3338,
     ERelocateSegmentHandoffResponse = 3339,
+    EAdHocEcRecoveryRequest = 3340,
+    EAdHocEcRecoveryResponse = 3341,
     // chunk KV service (range 3700s, see chunk_kv.fbs)
     EChunkKvPointRequest = 3700,
     EChunkKvPointResponse = 3701,

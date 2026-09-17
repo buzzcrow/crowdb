@@ -20,8 +20,9 @@ use crowdb_protocol::common::{ChunkId, DiskId};
 use crowdb_protocol::diskdb::rpc::{
     AllocateResponse, CompactZoneResponse, DiskInfo, DiskType, ExecuteRelocationRequest,
     ExecuteRelocationResponse, FreeFailure, FreeFailureReason, FreeResponse, GetDiskGroupInfoResponse,
-    GetDiskInfoResponse, GetScanStatusResponse, QueryCapacityStatsResponse, RebuildZoneBitmapResponse,
-    MarkBlocksCorruptResponse, RecalcDiskUsageResponse, Segment, TriggerScanResponse, ZoneAllocationState, ZoneUsage,
+    GetDiskInfoResponse, GetScanStatusResponse, MarkBlocksCorruptResponse, QueryCapacityStatsResponse,
+    RebuildZoneBitmapResponse, RecalcDiskUsageResponse, Segment, TriggerScanResponse, ZoneAllocationState,
+    ZoneUsage,
 };
 use crowdb_protocol::diskdb_fb::{
     FBAllocateBlocksRequest, FBAllocateBlocksRequestArgs, FBCommitBlocksRequest, FBCommitBlocksRequestArgs,
@@ -67,17 +68,42 @@ impl std::fmt::Debug for DiskdbRpcTransport {
 }
 
 impl DiskdbRpcTransport {
-    pub async fn mark_blocks_corrupt(&self, rpc_endpoint: &str, req: &crowdb_protocol::diskdb::rpc::MarkBlocksCorruptRequest) -> Result<MarkBlocksCorruptResponse> {
+    pub async fn mark_blocks_corrupt(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::diskdb::rpc::MarkBlocksCorruptRequest,
+    ) -> Result<MarkBlocksCorruptResponse> {
         let req_id = self.next_id();
         let mut fbb = FlatBufferBuilder::new();
         let segments = build_segments(&mut fbb, &req.segments);
-        let off = crowdb_protocol::diskdb_fb::FBMarkBlocksCorruptRequest::create(&mut fbb, &crowdb_protocol::diskdb_fb::FBMarkBlocksCorruptRequestArgs { id: req_id, rpc_create_nano: 0, segments: Some(segments) });
+        let off = crowdb_protocol::diskdb_fb::FBMarkBlocksCorruptRequest::create(
+            &mut fbb,
+            &crowdb_protocol::diskdb_fb::FBMarkBlocksCorruptRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                segments: Some(segments),
+            },
+        );
         fbb.finish(off, None);
-        let resp = self.call(rpc_endpoint, req_id, Buffer::from_bytes(fbb.finished_data()), FBMsgType::EMarkBlocksCorruptRequest.0 as u16).await?;
-        let ctrl = resp.control.as_ref().ok_or_else(|| DiskdbClientError::Rpc("missing control buffer".into()))?;
-        let parsed = flatbuffers::root::<crowdb_protocol::diskdb_fb::FBMarkBlocksCorruptResponse>(ctrl.bytes()).map_err(|_| DiskdbClientError::Rpc("invalid corrupt response".into()))?;
+        let resp = self
+            .call(
+                rpc_endpoint,
+                req_id,
+                Buffer::from_bytes(fbb.finished_data()),
+                FBMsgType::EMarkBlocksCorruptRequest.0 as u16,
+            )
+            .await?;
+        let ctrl = resp
+            .control
+            .as_ref()
+            .ok_or_else(|| DiskdbClientError::Rpc("missing control buffer".into()))?;
+        let parsed =
+            flatbuffers::root::<crowdb_protocol::diskdb_fb::FBMarkBlocksCorruptResponse>(ctrl.bytes())
+                .map_err(|_| DiskdbClientError::Rpc("invalid corrupt response".into()))?;
         check_ret_code(parsed.ret_code(), parsed.error_msg())?;
-        Ok(MarkBlocksCorruptResponse { marked_count: parsed.marked_count() })
+        Ok(MarkBlocksCorruptResponse {
+            marked_count: parsed.marked_count(),
+        })
     }
     /// Create a new crowdb-rpc transport with 2 I/O workers (default).
     /// The `RpcServer` is the client-side transport — it does not listen
