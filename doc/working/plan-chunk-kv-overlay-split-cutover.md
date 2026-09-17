@@ -1,15 +1,18 @@
 <!-- Copyright 2026-present Gian <crow.db@outlook.com> -->
 <!-- Licensed under the Apache License, Version 2.0. -->
 
-# Chunk-KV Overlay Split Cutover Plan
+# Chunk-KV Overlay Split and Child Balance Plan
 
 Upstream: [R174](../backlog/R174-chunk-kv-overlay-split-cutover.md),
+[R175](../backlog/R175-chunk-kv-child-tree-balance.md),
 [chunk-KV design](../design/chunkds/design-crowdb-chunk-kv.md), and
 [chunk-KV server design](../design/chunkds/design-crowdb-chunk-kv-server.md).
 
 Goal: keep split preparation serving, retain a recoverable shared parent
 journal suffix for each child, and reduce cutover to a bounded local old-writer
-to child-writer handoff without a foreground child checkpoint.
+to child-writer handoff without a foreground child checkpoint; after a child is
+independently materialized, move it to a better owner through the same durable
+tail and bounded handoff contract.
 
 ## Contract and Baseline
 
@@ -82,6 +85,53 @@ to child-writer handoff without a foreground child checkpoint.
   Files: chunk-KV partition maintenance, server transition recovery, and tree
   integration tests.
 
+## Child-Tree Balance
+
+- [ ] **Define one reusable tail-handoff artifact**: extend the persisted
+  transfer transition with a pinned source base manifest, source stream and
+  retry floor, preparation cursor, exact handoff cursor, target stream start,
+  target epoch, readiness limits, forwarding grace, and source-release proof.
+  Reject balance while a child still references its split-parent suffix.
+  Files: `lib/crowdb-protocol/src/chunk_kv.rs`, group-0 transition storage,
+  protocol tests, and transition tests.
+- [ ] **Prepare the remote target while the source serves**: open the exact
+  shared range-bounded manifest on the target, validate page and stream
+  identities, replay the source tail into a durable target overlay, and enforce
+  record, byte, estimated-time, and deadline readiness bounds before requesting
+  a source fence. Drop unpublished target state on a preparation failure.
+  Files: server transition runtime/storage, chunk-KV overlay recovery, and
+  deterministic target preparation tests.
+- [ ] **Hand off one writer at cursor C**: close source assignment, drain only
+  requests that already selected it, persist the release proof and final source
+  cursor, then publish `TargetCatchingUp`. The source returns a target hint and
+  never appends again; the target returns bounded `NotReady` until the sealed
+  suffix reaches C, then installs its writer epoch and becomes `Serving`.
+  Files: protocol RPC/catalog types, server authority and transition runtime,
+  routed client retry handling, and E2E transition tests.
+- [ ] **Recover every balance phase from proofs**: resolve source/target crash,
+  ambiguous catalog publication, and lease expiry from transition, catalog,
+  manifest, tail, and grant state. Never infer authority from loaded pages,
+  heartbeats, or volatile memtables. Files: server monitor/control store,
+  transition state machine, startup recovery, and failure-injection tests.
+- [ ] **Materialize and reclaim balance state in background**: checkpoint the
+  target overlay, materialize shared packs, retain source tree/stream/retry
+  history through catalog and forwarding grace, then remove source objects and
+  forwarding state only after every pin clears. Files: chunk-KV maintenance,
+  server transition cleanup, metrics, and GC integration tests.
+
+## Permanent Design
+
+- [ ] **Specify split overlay and local handoff**: write the durable fields,
+  ordered preparation/cutover/recovery steps, minimum-position behavior,
+  request-result ownership, stale-route behavior, retention pins, failure
+  matrix, metrics, and named invariants into the chunk-KV, chunk-stream,
+  server, and routed-client designs as current architecture.
+- [ ] **Specify child balance and remote handoff**: document placement
+  eligibility, independent-child prerequisite, target readiness budgets,
+  `TargetCatchingUp`, source-release and activation proofs, lease interaction,
+  recovery decisions, background materialization, reclamation, observability,
+  and named invariants in the permanent designs.
+
 ## Verification and Cleanup
 
 - [ ] **Add deterministic lifecycle tests**: cover grant renewal during
@@ -94,8 +144,8 @@ to child-writer handoff without a foreground child checkpoint.
   split metrics, then verify restart replay. Files:
   `tools/bench-chunk-kv-regression.sh`, client load tool, and
   `doc/working/chunk-kv-split-repro.md`.
-- [ ] **Run acceptance gates and merge design**: run R174 gates, update
-  permanent chunk-KV/server design with landed behavior, remove R174 and this
+- [ ] **Run acceptance gates and clean up**: run the R174/R175 gates and the
+  sustained split/balance workflow, remove both completed requirements and this
   plan, and update the backlog index in the final cleanup commit. Files:
   `doc/design/chunkds/`, `doc/backlog/`, and this plan.
 
@@ -108,6 +158,7 @@ to child-writer handoff without a foreground child checkpoint.
 - `lib/crowdb-chunk-kv/tests/partition_test.rs`
 - `tools/bench-chunk-kv-regression.sh`
 - `doc/design/chunkds/design-crowdb-chunk-kv*.md`
+- `doc/design/chunkds/design-crowdb-chunk-stream.md`
 
 ## Tests
 
