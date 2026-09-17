@@ -30,6 +30,7 @@ use crowdb_protocol::diskdb::rpc::{DiskValue, FreeFailure, FreeFailureReason, Se
 use crowdb_protocol::diskdb_fb::{
     FBAllocateBlocksRequest, FBAllocateResponse, FBAllocateResponseArgs, FBCommitBlocksRequest,
     FBCommitBlocksResponse, FBCommitBlocksResponseArgs, FBCompactZoneRequest, FBCompactZoneResponse,
+    FBMarkBlocksCorruptRequest, FBMarkBlocksCorruptResponse, FBMarkBlocksCorruptResponseArgs,
     FBCompactZoneResponseArgs, FBDiskGroupInfo, FBDiskGroupInfoArgs, FBDiskGroupRecalcResult,
     FBDiskGroupRecalcResultArgs, FBDiskInfo, FBDiskInfoArgs, FBDiskType, FBDiskdbRetCode,
     FBExecuteRelocationRequest, FBExecuteRelocationResponse, FBExecuteRelocationResponseArgs,
@@ -157,6 +158,10 @@ impl DiskdbRpcService {
                 RequestKind::CommitBlocks,
                 Self::handle_commit,
             ),
+        );
+        server.register_handler(
+            FBMsgType::EMarkBlocksCorruptRequest.0 as u16,
+            Self::make_handler(Arc::clone(self), Arc::clone(server), RequestKind::CommitBlocks, Self::handle_mark_corrupt),
         );
         server.register_handler(
             FBMsgType::EQueryCapacityStatsRequest.0 as u16,

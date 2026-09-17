@@ -25,7 +25,7 @@ use crowdb_protocol::diskdb::rpc::{
     CompactZoneResponse, ExecuteRelocationRequest, ExecuteRelocationResponse, FreeBlocksRequest, FreeFailure,
     FreeFailureReason, FreeResponse, GetDiskGroupInfoResponse, GetDiskInfoResponse, GetScanStatusResponse,
     QueryCapacityStatsRequest, QueryCapacityStatsResponse, RebuildZoneBitmapResponse, RecalcDiskUsageRequest,
-    RecalcDiskUsageResponse, TriggerScanResponse,
+    MarkBlocksCorruptRequest, MarkBlocksCorruptResponse, RecalcDiskUsageResponse, TriggerScanResponse,
 };
 use crowdb_protocol::DiskGroupId;
 
@@ -74,6 +74,15 @@ pub struct DiskdbClient {
 }
 
 impl DiskdbClient {
+    pub async fn mark_blocks_corrupt(&self, req: MarkBlocksCorruptRequest) -> Result<MarkBlocksCorruptResponse> {
+        let segment = req.segments.first().ok_or_else(|| DiskdbClientError::Rpc("segment required".into()))?;
+        let disk_id = segment.disk_id.ok_or_else(|| DiskdbClientError::Rpc("segment.disk_id required".into()))?;
+        let dg_id = self.dg_for_disk(disk_id).await?;
+        self.with_rpc_retry(dg_id, |endpoint, rpc| {
+            let request = req.clone();
+            async move { rpc.mark_blocks_corrupt(&endpoint, &request).await }
+        }).await
+    }
     #[must_use]
     pub fn new(svc: ServiceRegistryClient, rpc_transport: Arc<DiskdbRpcTransport>) -> Self {
         Self {
