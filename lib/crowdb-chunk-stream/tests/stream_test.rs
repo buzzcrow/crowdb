@@ -501,6 +501,38 @@ async fn reopen_recovers_the_durable_active_tail() {
 }
 
 #[tokio::test]
+async fn read_only_open_observes_tail_without_changing_writer_authority() {
+    let store = Arc::new(MemoryStreamStore::new(32));
+    let writer = create_stream(&store, 32, StreamConfig::default()).await;
+    let name = StreamName { high: 1, low: 32 };
+    writer.append(&[Bytes::from_static(b"old")]).await.unwrap();
+    let publications = store.metadata_publish_count();
+
+    let reader = ChunkStream::open_read_only(
+        name,
+        9,
+        StreamConfig::default(),
+        store.clone() as Arc<dyn StreamRegistry>,
+        store.clone() as Arc<dyn StreamMetadataStore>,
+        store.clone() as Arc<dyn StreamChunkStore>,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(reader.tail(), 3);
+    assert_eq!(reader.read_at(0, 3).await.unwrap(), Bytes::from_static(b"old"));
+    assert_eq!(
+        reader.append(&[Bytes::from_static(b"blocked")]).await,
+        Err(StreamError::WriteStalled)
+    );
+    assert_eq!(store.metadata_publish_count(), publications);
+    assert_eq!(
+        writer.append(&[Bytes::from_static(b"new")]).await.unwrap().begin,
+        3
+    );
+}
+
+#[tokio::test]
 async fn append_rotates_an_active_chunk_sealed_by_its_writer_lease() {
     let store = Arc::new(MemoryStreamStore::new(32));
     let stream = create_stream(&store, 32, StreamConfig::default()).await;

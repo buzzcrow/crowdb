@@ -318,10 +318,9 @@ impl ChunkStream {
             return Err(StreamError::StaleWriter);
         }
         let pages = load_extent_pages(metadata.as_ref(), &manifest).await?;
-        let tail = validate_manifest(&manifest, &pages)?;
+        validate_manifest(&manifest, &pages)?;
         let expected = (manifest.writer_epoch, manifest.generation);
         let mut needs_publish = manifest.writer_epoch < writer_epoch;
-        manifest.writer_epoch = writer_epoch;
         let mut rotate_active = false;
         if let Some(active) = &mut manifest.active {
             let durable = chunks.durable_cursor(active.chunk_id, writer_epoch).await?;
@@ -331,12 +330,13 @@ impl ChunkStream {
                 ));
             }
             if !durable.sealed {
-                chunks
-                    .seal(active.chunk_id, writer_epoch, active.physical_start)
-                    .await?;
+                chunks.seal(active.chunk_id, writer_epoch, durable.offset).await?;
             }
+            active.acknowledged_cursor = durable.offset;
             rotate_active = true;
         }
+        let tail = validate_manifest(&manifest, &pages)?;
+        manifest.writer_epoch = writer_epoch;
         let extents = collect_extents(&pages);
         if rotate_active {
             manifest.active.take();
@@ -366,6 +366,63 @@ impl ChunkStream {
         }
         let stream = Self::start(config, metadata, chunks, manifest, extents, &pages)?;
         stream.tail.store(tail, Ordering::Release);
+        Ok(stream)
+    }
+
+    /// Opens one immutable view at the exact current writer epoch.
+    ///
+    /// The handle observes the durable active cursor without sealing, rotating,
+    /// adopting, or publishing the stream. Append and trim remain disabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed storage, corruption, or epoch error.
+    pub async fn open_read_only(
+        stream_name: StreamName,
+        writer_epoch: u64,
+        config: StreamConfig,
+        registry: Arc<dyn StreamRegistry>,
+        metadata: Arc<dyn StreamMetadataStore>,
+        chunks: Arc<dyn StreamChunkStore>,
+    ) -> Result<Self> {
+        config.validate()?;
+        let binding = registry
+            .load(stream_name)
+            .await?
+            .ok_or_else(|| StreamError::InvalidRequest("stream binding does not exist".into()))?;
+        if binding.state != StreamBindingState::Active || writer_epoch == 0 {
+            return Err(StreamError::InvalidRequest(
+                "stream binding or reader epoch is invalid".into(),
+            ));
+        }
+        let mut manifest = metadata
+            .load_current(stream_name)
+            .await?
+            .ok_or_else(|| StreamError::Corruption("stream manifest does not exist".into()))?;
+        if manifest.metadata_group_id != binding.metadata_group_id || manifest.writer_epoch != writer_epoch {
+            return Err(StreamError::StaleWriter);
+        }
+        let pages = load_extent_pages(metadata.as_ref(), &manifest).await?;
+        validate_manifest(&manifest, &pages)?;
+        if let Some(active) = &mut manifest.active {
+            let durable = chunks.durable_cursor(active.chunk_id, writer_epoch).await?;
+            if durable.offset < active.physical_start || durable.offset > active.capacity {
+                return Err(StreamError::Corruption(
+                    "observed active cursor is outside chunk bounds".into(),
+                ));
+            }
+            active.acknowledged_cursor = durable.offset;
+        }
+        validate_manifest(&manifest, &pages)?;
+        let stream = Self::start(
+            config,
+            metadata,
+            chunks,
+            manifest,
+            collect_extents(&pages),
+            &pages,
+        )?;
+        stream.closed.store(true, Ordering::Release);
         Ok(stream)
     }
 
