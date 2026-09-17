@@ -40,6 +40,10 @@ enum Command {
         value_bytes: usize,
         #[arg(long, default_value_t = 10_000)]
         keyspace: u64,
+        #[arg(long, default_value = "object")]
+        key_prefix: String,
+        #[arg(long, default_value_t = 0)]
+        key_offset: u64,
     },
 }
 
@@ -64,7 +68,20 @@ async fn main() {
             concurrency,
             value_bytes,
             keyspace,
-        } => run_load(client, operations, concurrency, value_bytes, keyspace).await,
+            key_prefix,
+            key_offset,
+        } => {
+            run_load(
+                client,
+                operations,
+                concurrency,
+                value_bytes,
+                keyspace,
+                key_prefix,
+                key_offset,
+            )
+            .await
+        }
     };
     if let Err(error) = result {
         exit_error(&error.to_string());
@@ -85,18 +102,27 @@ async fn run_load(
     concurrency: usize,
     value_bytes: usize,
     keyspace: u64,
+    key_prefix: String,
+    key_offset: u64,
 ) -> crowdb_chunk_kv_client::Result<()> {
     if operations == 0 || concurrency == 0 || value_bytes == 0 || keyspace == 0 {
         return Err(crowdb_chunk_kv_client::ClientError::InvalidRequest(
             "load bounds must be nonzero".into(),
         ));
     }
+    let largest_index = operations.saturating_sub(1).min(keyspace - 1);
+    if key_offset > u64::MAX - largest_index {
+        return Err(crowdb_chunk_kv_client::ClientError::InvalidRequest(
+            "key offset and keyspace exceed the key index range".into(),
+        ));
+    }
     let started = Instant::now();
     let mut latencies = stream::iter(0..operations)
         .map(|index| {
             let client = Arc::clone(&client);
+            let key_prefix = key_prefix.clone();
             async move {
-                let key = format!("object/{:020}", index % keyspace).into_bytes();
+                let key = format!("{key_prefix}/{:020}", key_offset + (index % keyspace)).into_bytes();
                 let value = vec![u8::try_from(index % 251).unwrap_or_default(); value_bytes];
                 let operation_started = Instant::now();
                 let response = client.put(key, value).await;

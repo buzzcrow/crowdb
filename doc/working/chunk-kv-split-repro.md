@@ -9,7 +9,9 @@ The workload uses three local KV, DiskDB, DiskIO, ChunkDB, and chunk-KV
 instances. KV and WAL use `mem-block`; DiskIO uses `mem` dummy disks. The
 script configures one rack with unsafe EC, puts into 30,000 distinct keys, and
 triggers automatic chunk-KV partition split at the configured 5 MiB target.
-This is a chunk-KV storage-path test, not an S3 benchmark.
+The load arrives in three consecutive ranges with the shared `object/hot`
+prefix, so each range continues growing the hot lexical range after its prior
+split. This is a chunk-KV storage-path test, not an S3 benchmark.
 
 ## Before running
 
@@ -39,6 +41,13 @@ CHUNK_KV_BENCH_CONCURRENCY=32 \
 CHUNK_KV_BENCH_VALUE_BYTES=4096 \
 pixi run -- bash tools/bench-chunk-kv-regression.sh
 ```
+
+`CHUNK_KV_BENCH_HOT_SPLIT_ROUNDS` controls the number of consecutive key
+ranges (default `3`); `CHUNK_KV_BENCH_OPERATIONS` must divide evenly by it.
+`CHUNK_KV_BENCH_HOT_KEY_PREFIX` changes the shared key prefix.
+`CHUNK_KV_BENCH_TARGET_PARTITION_BYTES` changes the split target (default
+`5242880`). Use a lower target with a proportionally smaller workload for a
+quick local stability run.
 
 The script builds release binaries unless `CHUNK_KV_BENCH_SKIP_BUILD=1` is set.
 Use the default on a fresh checkout. The run directory is printed as
@@ -87,13 +96,25 @@ memory. These values do not establish a safe default budget for R173.
   logs showed a full chunk RPC completion slab and repeated corruption
   reports. The script ended with `automatic split and owner balance did not
   converge`.
-- After the current range-rebuild fix:
+- Before the RPC completion fallback fix:
   `bench-log/chunk-kv-regression-20260917-115123/`. The frame-fit error did
   not recur, but the same load failed with `320 load operations failed`.
   Chunk-KV 1 reported serving grants expiring during `SplitPreparing` from
   03:52:38 UTC; chunk-KV 2 reported `chunk RPC completion slab is full` at
-  03:52:55 UTC. The relationship between these events and the transport
-  failures is not yet established.
+  03:52:55 UTC. The chunk transport now uses the RPC client's pending-map
+  fallback when a completion slab slot is occupied, instead of failing that
+  tree write.
+- The 1 MiB-target sustained-load follow-up remains a client-availability
+  failure: `bench-log/chunk-kv-regression-20260917-141403/` ran 12,000 × 4 KiB
+  puts at concurrency 32 in three hot ranges. The first two 4,000-operation
+  rounds had `errors=0`; the third had `96` errors and `p99_us=5001226`.
+  Server 1 entered `SplitPreparing`, repeatedly rejected recovered-partition
+  activation for that lifecycle, then let its serving grant reach the safety
+  deadline. Its captured metrics show `split_fence_duration_us=3413093`,
+  `lease_rejections=18017`, and `split_fence_lag_records=0`. Thus the moved
+  child checkpoint is a partial fence-duration improvement, not a resolution
+  of split-time client availability; R174 owns the remaining overlay-cutover
+  and serving-grant work.
 - An earlier attempt in `bench-log/chunk-kv-regression-20260917-112752/`
   failed before load because chunk-KV bootstrap timed out reaching DiskDB.
   Do not count its RSS as workload data.

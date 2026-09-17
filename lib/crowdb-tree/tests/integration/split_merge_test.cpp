@@ -67,6 +67,45 @@ TEST(SplitMerge, SplitGrowsMultiLevelTree)
     }
 }
 
+TEST(SplitMerge, SimilarKeysKeepSplittingOneHotRange)
+{
+    Config opt;
+    opt.max_delta_len    = 0;
+    opt.leaf_split_bytes = 512;
+    opt.leaf_merge_bytes = 64;
+    Crowdbtree t(opt);
+
+    // Keep every new key in one narrow lexical interval. Each flush has to
+    // route through the repeatedly splitting hot range instead of distributing
+    // the writes across the tree.
+    std::map<std::string, std::string> oracle;
+    uint64_t                           slot          = 0;
+    size_t                             leaves_before = t.leaf_count();
+    for (uint64_t round = 0; round < 40; ++round) {
+        for (uint64_t offset = 0; offset < 4; ++offset) {
+            const uint64_t       sequence = (offset * 40) + round;
+            std::array<char, 32> key{};
+            snprintf(key.data(), key.size(), "hot/500/%020llu", static_cast<unsigned long long>(sequence));
+            const std::string value =
+                "payload-" + std::to_string(round) + "-" + std::to_string(offset) + std::string(112, 'v');
+            ++slot;
+            ASSERT_TRUE(t.apply(slot, put_one(key.data(), value)).ok());
+            oracle[key.data()] = value;
+        }
+        ASSERT_TRUE(t.flush().ok());
+        EXPECT_GT(t.leaf_count(), leaves_before) << "round=" << round;
+        leaves_before = t.leaf_count();
+    }
+
+    EXPECT_GT(t.height(), 1);
+    for (const auto &[key, expected] : oracle) {
+        std::string value;
+        uint64_t    read_slot = 0;
+        ASSERT_TRUE(t.get(Slice(key), &read_slot, &value)) << "missing " << key;
+        EXPECT_EQ(value, expected) << "wrong value for " << key;
+    }
+}
+
 TEST(SplitMerge, MergeAndRootCollapse)
 {
     Config opt;

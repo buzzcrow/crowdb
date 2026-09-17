@@ -128,6 +128,28 @@ impl Partition {
             applied_seq: base_checkpoint.applied_seq,
             delta_records: 0,
         };
+        loop {
+            let target = self.applied_seq.load(Ordering::Acquire);
+            replay_children_until(
+                self,
+                &mut cursor,
+                target,
+                left_tree.as_ref(),
+                right_tree.as_ref(),
+                &plan.left,
+                &plan.right,
+            )
+            .await?;
+            let latest = self.applied_seq.load(Ordering::Acquire);
+            if latest.saturating_sub(cursor.applied_seq) <= max_fence_lag_records {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        checkpoint_prepared_tree(left_tree.as_ref()).await?;
+        checkpoint_prepared_tree(right_tree.as_ref()).await?;
+
         let fence_lag_records = loop {
             let target = self.applied_seq.load(Ordering::Acquire);
             replay_children_until(
@@ -388,4 +410,12 @@ async fn checkpoint_child(
         tree,
         journal: target.journal,
     })
+}
+
+async fn checkpoint_prepared_tree(tree: &dyn PartitionTree) -> Result<()> {
+    let (_, applied_seq) = tree.checkpoint(0).await?;
+    if applied_seq > tree.last_applied_seq() {
+        return Err(ChunkKvError::ApplyStateUnknown);
+    }
+    Ok(())
 }

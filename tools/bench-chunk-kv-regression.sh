@@ -9,6 +9,9 @@ cd "$(dirname "$0")/.."
 OPERATIONS="${CHUNK_KV_BENCH_OPERATIONS:-30000}"
 CONCURRENCY="${CHUNK_KV_BENCH_CONCURRENCY:-32}"
 VALUE_BYTES="${CHUNK_KV_BENCH_VALUE_BYTES:-512}"
+HOT_SPLIT_ROUNDS="${CHUNK_KV_BENCH_HOT_SPLIT_ROUNDS:-3}"
+HOT_KEY_PREFIX="${CHUNK_KV_BENCH_HOT_KEY_PREFIX:-object/hot}"
+TARGET_PARTITION_BYTES="${CHUNK_KV_BENCH_TARGET_PARTITION_BYTES:-5242880}"
 TIMEOUT_SECS="${CHUNK_KV_BENCH_TIMEOUT:-240}"
 SKIP_BUILD="${CHUNK_KV_BENCH_SKIP_BUILD:-0}"
 RUN_STAMP=$(date +%Y%m%d-%H%M%S)
@@ -47,12 +50,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for value in "$OPERATIONS" "$CONCURRENCY" "$VALUE_BYTES" "$TIMEOUT_SECS"; do
+for value in "$OPERATIONS" "$CONCURRENCY" "$VALUE_BYTES" "$TIMEOUT_SECS" "$HOT_SPLIT_ROUNDS" \
+    "$TARGET_PARTITION_BYTES"; do
     if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
         echo "ERROR: benchmark bounds must be positive integers" >&2
         exit 2
     fi
 done
+if [ $((OPERATIONS % HOT_SPLIT_ROUNDS)) -ne 0 ]; then
+    echo "ERROR: operations must divide evenly across hot split rounds" >&2
+    exit 2
+fi
 
 if [ "$SKIP_BUILD" -eq 0 ]; then
     pixi run build-cpp
@@ -104,7 +112,7 @@ write_config() {
         echo
         echo "[balance]"
         echo "target_partitions_per_owner = 4"
-        echo "target_partition_bytes = 5242880"
+        echo "target_partition_bytes = $TARGET_PARTITION_BYTES"
         echo "minimum_weighted_improvement_percent = 25"
         echo "cooldown_ms = 1000"
         echo "max_owner_request_rate = 0"
@@ -195,20 +203,50 @@ collect_metrics() {
     done
 }
 
+capture_failure_metrics() {
+    local instance metrics
+    collect_metrics
+    {
+        printf '{"admission_backpressure":%s,"recoveries":%s,"split_fences":%s,"split_commits":%s,"split_fence_lag_records":%s,"split_fence_duration_us":%s}\n' \
+            "$ADMISSION_BACKPRESSURE" "$RECOVERIES" "$SPLIT_FENCES" "$SPLIT_COMMITS" \
+            "$SPLIT_FENCE_LAG_RECORDS" "$SPLIT_FENCE_DURATION_US"
+        for instance in 1 2 3; do
+            if metrics=$(curl --silent --fail "http://127.0.0.1:$((15100 + instance))/metrics"); then
+                printf 'server_%s %s\n' "$instance" "$metrics"
+            fi
+        done
+    } >"$LOG_ROOT/load-failure-metrics.log"
+}
+
 RSS_START=0
 for pid in "${CHUNK_KV_PIDS[@]}"; do
     RSS_START=$((RSS_START + $(rss_kib "$pid")))
 done
 
-LOAD_OUTPUT=$(timeout "$TIMEOUT_SECS" pixi run -- ./target/release/crowdb-chunk-kv-cli \
-    --mgmt-seed "$MGMT_SEED" load --operations "$OPERATIONS" \
-    --concurrency "$CONCURRENCY" --value-bytes "$VALUE_BYTES" --keyspace "$OPERATIONS")
-printf '%s\n' "$LOAD_OUTPUT" | tee "$LOG_ROOT/load.log"
-LOAD_LINE=$(sed -n '/^chunk-kv:/p' <<<"$LOAD_OUTPUT" | tail -n 1)
-if [ -z "$LOAD_LINE" ] || ! grep -q 'errors=0' <<<"$LOAD_LINE"; then
-    echo "ERROR: routed load did not complete without errors" >&2
-    exit 1
-fi
+OPERATIONS_PER_ROUND=$((OPERATIONS / HOT_SPLIT_ROUNDS))
+P99=0
+for round in $(seq 0 $((HOT_SPLIT_ROUNDS - 1))); do
+    KEY_OFFSET=$((round * OPERATIONS_PER_ROUND))
+    if ! LOAD_OUTPUT=$(timeout "$TIMEOUT_SECS" pixi run -- ./target/release/crowdb-chunk-kv-cli \
+        --mgmt-seed "$MGMT_SEED" load --operations "$OPERATIONS_PER_ROUND" \
+        --concurrency "$CONCURRENCY" --value-bytes "$VALUE_BYTES" --keyspace "$OPERATIONS_PER_ROUND" \
+        --key-prefix "$HOT_KEY_PREFIX" --key-offset "$KEY_OFFSET"); then
+        printf '%s\n' "$LOAD_OUTPUT" >"$LOG_ROOT/load-round-$round.log"
+        capture_failure_metrics
+        echo "ERROR: routed load failed; retained metrics: $LOG_ROOT/load-failure-metrics.log" >&2
+        exit 1
+    fi
+    printf '%s\n' "$LOAD_OUTPUT" | tee "$LOG_ROOT/load-round-$round.log"
+    LOAD_LINE=$(sed -n '/^chunk-kv:/p' <<<"$LOAD_OUTPUT" | tail -n 1)
+    if [ -z "$LOAD_LINE" ] || ! grep -q 'errors=0' <<<"$LOAD_LINE"; then
+        echo "ERROR: routed load did not complete without errors" >&2
+        exit 1
+    fi
+    ROUND_P99=$(sed -n 's/.* p99_us=\([0-9][0-9]*\).*/\1/p' <<<"$LOAD_LINE")
+    if [ "${ROUND_P99:-0}" -gt "$P99" ]; then
+        P99=$ROUND_P99
+    fi
+done
 
 PARTITIONS=0
 CATALOG_GENERATION=0
@@ -282,7 +320,7 @@ if [ "${REPLAY_PARTITIONS:-0}" -eq 0 ]; then
     exit 1
 fi
 REPLAY_OUTPUT=$(pixi run -- ./target/release/crowdb-chunk-kv-cli --mgmt-seed "$MGMT_SEED" \
-    get object/00000000000000000000)
+    get "$HOT_KEY_PREFIX/00000000000000000000")
 printf '%s\n' "$REPLAY_OUTPUT" >"$LOG_ROOT/replay-get.log"
 if ! grep -q 'result: Ok(Value(Some' <<<"$REPLAY_OUTPUT"; then
     echo "ERROR: restarted chunk-KV server did not replay the written value" >&2
@@ -296,7 +334,6 @@ for pid in "${CHUNK_KV_PIDS[@]:1}"; do
     fi
 done
 RSS_DELTA=$((RSS_END - RSS_START))
-P99=$(sed -n 's/.* p99_us=\([0-9][0-9]*\).*/\1/p' <<<"$LOAD_LINE")
 printf 'operations\tconcurrency\tvalue_bytes\tp99_us\tpartitions\towner_min_partitions\towner_max_partitions\tadmission_backpressure\tsplit_prepare_ms\tsplit_fences\tsplit_commits\tsplit_fence_lag_records\tsplit_fence_duration_us\trecoveries\treplay_ms\treplay_partitions\treplay_partitions_s\trss_start_kib\trss_end_kib\trss_delta_kib\treplay_ready\n' \
     >"$RESULTS_FILE"
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t1\n' \
