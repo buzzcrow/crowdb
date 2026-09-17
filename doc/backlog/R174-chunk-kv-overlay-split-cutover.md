@@ -59,15 +59,15 @@ background checkpoint and parent retirement after stale-route grace
    memtable. Build range-bounded child base trees from one pinned parent
    snapshot, then checkpoint those base manifests while the parent remains
    writable.
-3. Add durable child-tail replication. For every parent record after each
-   child base checkpoint, persist enough child-owned information to rebuild
-   that child's filtered state, including successful and condition-failed
-   results, request identity/digest, source sequence, and source journal
-   position. A child overlay may advance a common source sequence through
-   no-ops, or use an explicit source-to-child cursor mapping, but recovery and
-   read-after-write must not infer ordering from volatile memory. The plan must
-   select one representation and reject mixed representations for one
-   transition.
+3. Pin one shared parent journal suffix instead of duplicating it during
+   preparation. Each child artifact names its base checkpoint `B`, the parent
+   stream identity and retained retry floor, and one sealed parent cutover `C`.
+   A child recovers or lazily warms its overlay by validating parent records,
+   filtering them by the child range, and applying records in `(B, C]`; records
+   at or below `B` reconstruct retained request results without reapplying the
+   tree. The child inherits logical sequence `C` and its own journal begins at
+   `C + 1`. Recovery and read-after-write never infer this source relationship
+   from volatile memory.
 4. Replace the final flush fence with a `SplitCutover` handoff. It atomically
    closes parent sequencer assignment at cutover `C`, drains only requests
    already assigned to that sequencer, verifies both durable child overlays
@@ -75,33 +75,36 @@ background checkpoint and parent retirement after stale-route grace
    tail cursors, child stream identities, request-result floors, parent ID and
    epoch, and `C`. A record cannot be acknowledged as post-cutover until its
    selected child journal has made the result recoverable.
-5. Install child writers before or as part of the handoff. Requests arriving
-   after the parent assignment closes enter bounded per-child post-cutover
-   queues and are ordered only by their selected child sequencer; they append
-   to that child journal and apply to its active memtable before acknowledgement.
-   This queue is bounded by existing admission budgets and returns `Overloaded`
-   rather than retaining unbounded foreground memory. Parent and child writers
-   must never both order mutations for the same child range.
-6. Publish the exact child artifact through one epoch-fenced catalog revision.
-   New routes use child owners and child positions. Old endpoints retain a
-   finite stale-route grace: they serve reads from the authoritative parent
-   view before cutover or forward post-cutover point operations to the selected
-   child without creating a second write authority. They return a current owner
-   hint once forwarding expires. Parent scan tokens never silently cross into a
-   child range and return refresh-required after publication.
+5. Install both local child writers before the handoff. R174 is a local split:
+   both children initially remain on the parent owner; R175 alone may prepare a
+   remote child balance after split commit. Selecting a writer handle is one
+   atomic ingress operation. A request that already holds the parent handle is
+   drained into the parent prefix through `C`; a request that has not selected a
+   handle reselects and directly enters its local child writer. No additional
+   post-cutover queue is required, and parent and child writers never both
+   order mutations for the same child range.
+6. Publish the exact local-child artifact through one epoch-fenced catalog
+   revision. New routes use child owners and child positions. A source server
+   receiving an old point route directly dispatches to its hosted child by key,
+   without using the retired parent tree or a network forward. Parent scan
+   tokens return refresh-required after publication; the client refreshes the
+   catalog and replans across child ranges.
 7. Reads on a child merge its durable base tree with its active and sealed
-   memtables, including the durable tail overlay. A read carrying a returned
-   post-cutover child position waits only for that child applied frontier.
-   Reads accepted by the old parent before catalog publication retain their
-   parent snapshot semantics. Conditional writes consult the same child overlay
-   used by reads, so a condition is evaluated once by its unique sequencer.
-8. Move child checkpoint, pack materialization, parent-journal copying, and
-   parent tree/stream reclamation out of the foreground cutover. Preserve all
-   parent manifests, parent journal prefixes, child base manifests, child
-   tails, and request-result records until the catalog decision, stale-route
-   grace, retry floors, and recovery pins prove them unreachable. A crash or
-   ambiguous catalog outcome resumes or resolves the exact persisted transition;
-   it never reconstructs a cutover from process-local memtables.
+   memtables plus a lazily warmed filtered parent suffix. A child accepts a
+   parent-stream minimum position at or below `C` by warming through that source
+   offset, and accepts a child-stream position through its own applied frontier.
+   Post-cutover writes return only child-stream positions. Reads accepted by
+   the old parent before catalog publication retain their parent snapshot
+   semantics. Conditional writes consult the same child overlay used by reads,
+   so a condition is evaluated once by its unique sequencer.
+8. Move child checkpoint, pack materialization, and parent tree/stream
+   reclamation out of the foreground cutover. Each retained child tree version
+   explicitly carries its parent-suffix reference. Preserve parent manifests,
+   journal prefixes, and request-result records until no retained child version
+   references that suffix and the retry floor has expired or been locally
+   materialized. A crash or ambiguous catalog outcome resumes or resolves the
+   exact persisted transition; it never reconstructs a cutover from
+   process-local memtables.
 9. Expose per-transition preparation duration, base checkpoint duration,
    parent-to-child tail records and bytes, tail replication lag, cutover drain
    duration, post-cutover queue depth, child-overlay apply lag, forwarding
@@ -110,12 +113,12 @@ background checkpoint and parent retirement after stale-route grace
    alongside client p50/p99/p999 and errors while sustained writes overlap
    every observed split.
 
-Edge outcomes are explicit: if child-tail replication cannot remain within
-record, byte, or estimated-time budgets, the parent remains serving and the
-unpublished transition aborts or retries; if a child or journal fails after
-the parent writer closes, the exact artifact and catalog head decide whether
-recovery completes or the parent remains fenced; a client retry preserves its
-request identity across parent forwarding and child ownership; and an owner
+Edge outcomes are explicit: if a child base manifest or parent journal suffix
+is unavailable, the parent remains serving and the unpublished transition
+aborts or retries; if a child or journal fails after the parent writer closes,
+the exact artifact and catalog head decide whether recovery completes or the
+parent remains fenced; a client retry consults the local child result history
+then the retained parent history until its retry floor expires; and an owner
 never serves an uncommitted child as writable.
 
 ## Dependencies
@@ -194,18 +197,3 @@ Required gates:
 - `pixi run -- cargo test -p crowdb-chunk-kv-client --all-targets`
 - `pixi run -- cargo test -p crowdb-chunk-kv-server --all-targets`
 - `pixi run clean-env && pixi run test-server`
-
-## Open Questions
-
-- Should the first release persist a filtered record in each child stream, or
-  retain an explicitly range-filtered parent-stream suffix until background
-  copying completes? Child streams make recovery ownership local but duplicate
-  tail bytes; a shared suffix reduces write amplification but couples child
-  recovery and reclamation to the parent stream.
-- Should stale-route grace forward only point reads/writes, or also support
-  bounded scans? Point forwarding keeps cursor ownership simple; scan forwarding
-  improves old-client continuity but requires a cross-range continuation rule.
-- What workload-specific cutover, post-cutover queue, and client-tail-latency
-  limits should become admission policy? Tight limits protect foreground traffic
-  but can defer splits under sustained overload; relaxed limits improve eventual
-  balance but raise tail latency.

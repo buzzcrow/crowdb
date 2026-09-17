@@ -14,11 +14,11 @@ fenced while remote I/O, tree open, snapshot transfer, or catch-up runs; it
 would couple foreground split availability to cluster placement speed.
 
 The desired operational behavior is a short writer handoff: the remote target
-prepares from a pinned source snapshot and durable tail while the source keeps
-serving, then source writer ownership moves at one exact cursor. Remote
-preparation, background checkpointing, physical page materialization, and
-source cleanup must not extend the foreground cutover. This extends the range
-catalog and serving-grant model in
+opens a pinned source snapshot from shared page chunks and replays the durable
+source tail while the source keeps serving, then source writer ownership moves
+at one exact cursor. Remote preparation, background checkpointing, physical
+page materialization, and source cleanup must not extend the foreground
+cutover. This extends the range catalog and serving-grant model in
 [`design-crowdb-chunk-kv-server.md`](../design/chunkds/design-crowdb-chunk-kv-server.md)
 sections 3 and 6 and must be distinct from the same-owner split transition.
 
@@ -29,13 +29,13 @@ and short writer-handoff contract, but independently chooses target placement,
 remote readiness, source retirement, and stale-route grace.
 
 ```text
-source serving + target prepared from pinned snapshot
+source serving + target reads shared pinned snapshot
                   |
                   +-- target replays durable source tail
                   |
-short source-writer -> target-writer handoff at cursor C
+short source-writer handoff at cursor C
                   |
-catalog/lease target serving + source forwards stale routes
+catalog exposes target catching up, then target writer serves
                   |
 background source cleanup and shared-page materialization
 ```
@@ -46,36 +46,41 @@ background source cleanup and shared-page materialization
    manifest and tail cursor, transition ID, target epoch, expected catalog
    revision, forwarding-grace policy, and commit/abort proofs. A child may have
    only one active split, balance, merge, or transfer transition.
-2. Keep placement selection separate from data movement. The balance monitor
+2. Start balance only after R174 local split has committed and the selected
+   child is independently recoverable: no retained child snapshot may still
+   reference the split parent's journal suffix. Keep placement selection
+   separate from data movement. The balance monitor
    chooses a healthy remote target only when it improves the existing
    owner-count and durable-byte score subject to target headroom, request-rate,
    cooldown, and one-transition-per-owner limits. A target rejection or lack of
    capacity leaves the source serving and records a retryable planning outcome.
 3. Pin a source base manifest and durable journal/retry floor while the source
    continues to serve. The remote target opens the exact range-bounded tree as
-   `Prepared`, validates tree, stream, and page-pack identities, and obtains
-   read-only access to shared immutable packs or a verified copied snapshot.
-   It applies the source's durable tail into the R174-defined target overlay;
-   it does not copy foreground keys through Rust or depend on source memory.
+   `Prepared`, validates tree, stream, and page-pack identities, and directly
+   reads the same immutable shared page chunks named by the source manifest.
+   It applies the source's durable tail into its local overlay; it does not
+   copy foreground keys through Rust, copy tree packs before cutover, or depend
+   on source memory.
 4. Require remote readiness before any source writer fence: the target must
    prove base-manifest validity, tail replay below record, byte, and estimated
    time limits, sufficient request-result history, and a durable target tail
    representation. If it cannot catch up before its preparation deadline, drop
    the unpublished target state and leave the source writer serving.
 5. At a bounded handoff cursor `C`, stop assigning new writes to the source
-   sequencer, drain only previously assigned source work, verify the target
-   durable overlay covers `C`, and persist an exact transfer artifact. Install
-   the target writer for later requests before catalog publication or route
-   them through R174's bounded post-cutover mechanism. The handoff never waits
-   for a source or target checkpoint, complete page materialization, or remote
-   full-tree copy.
-6. Publish one epoch-fenced range-catalog revision replacing the source owner
-   with the exact target owner. The target obtains its serving grant only after
-   catalog commit and source-writer release proof. The source remains
-   read/forward-capable for a finite stale-route grace but cannot append another
-   source mutation; old routes forward point operations to the target or return
-   a current owner hint. Target and source never have simultaneous mutation
-   authority for the range.
+   sequencer, drain only previously assigned source work, record a source
+   writer-release proof naming `C`, and persist an exact transfer artifact.
+   The handoff never waits for a source or target checkpoint, complete page
+   materialization, or remote full-tree copy.
+6. Immediately publish one epoch-fenced catalog revision that names the exact
+   target endpoint in `TargetCatchingUp` state. The source rejects old routes
+   with that target hint and cannot append another source mutation. The target
+   continues replaying the sealed final source suffix through `C`; until then,
+   it may retain a bounded pending request set or return typed `NotReady` with
+   a retry delay. It must not answer a current read or execute a conditional
+   write from an incomplete source prefix. Once its overlay reaches `C`, it
+   installs the target writer epoch, transitions the catalog/serving grant to
+   `Serving`, and handles normal requests. Target and source never have
+   simultaneous mutation authority for the range.
 7. Recover every balance phase from transition, artifact, catalog, manifest,
    tail, and serving-grant proofs. A target crash before commit leaves the
    source serving; an ambiguous publication keeps the source writer closed
@@ -119,6 +124,11 @@ physical cleanup is subordinate to published and recovery references.
   the planner evaluates balance, assert it creates one transition only when the
   count/byte score improves within headroom, rate, cooldown, and concurrency
   limits. Invariant: balancing is improving and bounded. Unit test.
+- Given a child whose retained snapshot still names its split parent's journal
+  suffix, when the planner evaluates balance, assert it defers the move until a
+  locally materialized child checkpoint clears that reference. Invariant: R175
+  moves one independent child and never inherits an unresolved parent split.
+  Integration test.
 - Given sustained source writes during remote preparation, when the target
   opens the pinned manifest and replays the source tail, assert source writes
   remain acknowledged and the target reaches the configured tail budget before
@@ -130,19 +140,23 @@ physical cleanup is subordinate to published and recovery references.
   reclaimable. Invariant: inability to catch up does not force a long cutover.
   Integration test.
 - Given handoff cursor `C` while new requests arrive, when source assignment
-  closes and the target writer installs, assert source records through `C` and
-  target records after `C` are each acknowledged exactly once, recovered after
-  restart, and never ordered by both writers. Invariant: one exact writer
-  handoff preserves all acknowledged mutations. E2E test.
+  closes and the catalog exposes `TargetCatchingUp`, assert old source routes
+  receive the target hint, target requests are boundedly pending or return
+  typed retry delay, and source records through `C` are each acknowledged once.
+  After target reaches `C` and installs its writer, assert later records are
+  acknowledged exactly once and never ordered by both writers. Invariant: one
+  exact writer handoff preserves all acknowledged mutations. E2E test.
 - Given dirty source and target trees with slow background checkpointing, when
   handoff executes, assert its duration excludes checkpoint and materialization
   work and remains within the configured bound. Invariant: physical persistence
   is off the foreground balance path. Integration test.
-- Given catalog publication after a valid target artifact, when a new route
-  reaches the target and a stale route reaches the source during grace, assert
-  the target serves normally and the source forwards the point request or
-  returns a current owner hint without appending locally. Invariant: catalog
-  switch has no dual writer and bounded stale-route behavior. E2E test.
+- Given catalog publication after a valid source release proof, when a new
+  route reaches a target below `C` and a stale route reaches the source, assert
+  the target returns typed retry delay without reading or conditionally writing
+  an incomplete prefix and the source returns its target hint without appending
+  locally. After target reaches `C`, assert the target serves normally.
+  Invariant: catalog switch has no dual writer and bounded not-ready behavior.
+  E2E test.
 - Given a target failure before commit, source failure before or after writer
   closure, or an unknown catalog-publication result, when a monitor resumes the
   transition, assert it selects one proof-backed source-serving, target-serving,
@@ -171,18 +185,3 @@ Required gates:
 - `pixi run -- cargo test -p crowdb-chunk-kv-client --all-targets`
 - `pixi run -- cargo test -p crowdb-chunk-kv-server --all-targets`
 - `pixi run clean-env && pixi run test-server`
-
-## Open Questions
-
-- May a remote target initially read shared page packs directly, or must each
-  deployment profile materialize a local verified copy before it is declared
-  ready? Direct shared access minimizes cutover work; mandatory copying improves
-  fault isolation but can delay balance substantially.
-- Should source forwarding persist for a fixed lease-derived time or until the
-  control plane observes client catalog adoption? A fixed bound is simple and
-  failure-safe; observed adoption may reduce stale retries but needs durable,
-  privacy-safe client observation.
-- Is one target writer installation before catalog publication sufficient, or
-  must the catalog atomically carry an explicit post-cutover queue ownership
-  proof? Preinstallation shortens the handoff; a catalog-bound proof simplifies
-  recovery authority at the cost of another durable transition detail.

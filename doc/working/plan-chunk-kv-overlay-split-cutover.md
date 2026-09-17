@@ -7,9 +7,9 @@ Upstream: [R174](../backlog/R174-chunk-kv-overlay-split-cutover.md),
 [chunk-KV design](../design/chunkds/design-crowdb-chunk-kv.md), and
 [chunk-KV server design](../design/chunkds/design-crowdb-chunk-kv-server.md).
 
-Goal: keep split preparation serving, make each child own a recoverable tail,
-and reduce cutover to a bounded old-writer to child-writer handoff without a
-foreground child checkpoint.
+Goal: keep split preparation serving, retain a recoverable shared parent
+journal suffix for each child, and reduce cutover to a bounded local old-writer
+to child-writer handoff without a foreground child checkpoint.
 
 ## Contract and Baseline
 
@@ -28,27 +28,29 @@ foreground child checkpoint.
   coverage for repeated grant installation through preparation and the lease
   deadline. Files: `lib/crowdb-chunk-kv/src/partition.rs`,
   `app/crowdb-chunk-kv-server/src/{main.rs,server.rs}`, and their tests.
-- [~] **Define child-owned tail artifact fields**: extend protocol and
-  partition types so each child identifies its base checkpoint, durable child
-  journal tail, source-cutover cursor, retained request-result floor, and
-  recovery representation. Child streams are the chosen durable tail owner;
-  do not use a volatile parent memtable or an indefinitely shared parent suffix.
+- [~] **Define shared parent-tail artifact fields**: extend protocol and
+  partition types so each child identifies its base checkpoint, parent stream
+  identity, retained retry floor, source-cutover cursor, and child journal
+  start at `C + 1`. The sealed shared parent suffix is the recovery source until
+  no retained child snapshot references it; do not use a volatile memtable or
+  duplicate parent frames into child streams during preparation.
   Files: `lib/crowdb-protocol/src/`, `lib/crowdb-chunk-kv/src/{types.rs,partition.rs}`,
   and protocol/partition tests.
 
 ## Preparation and Recovery
 
-- [ ] **Replicate filtered durable tails during preparation**: preserve parent
-  sequencing while appending each record's child representation and retained
-  result to the selected child journal, then apply it to the child overlay.
-  Ensure conditional failures, no-ops, request digest conflicts, source order,
-  and byte/record lag are recoverable. Files:
+- [ ] **Read filtered parent tails during preparation and recovery**: preserve
+  parent sequencing while optionally warming child overlays from the sealed
+  parent suffix. Validate source records, filter by child range, preserve
+  request results, and apply only `(B, C]`; no pre-cutover catch-up or child
+  journal duplication is required. Files:
   `lib/crowdb-chunk-kv/src/partition/{split.rs,tree.rs}`, journal adapters,
   and `lib/crowdb-chunk-kv/tests/partition_test.rs`.
-- [ ] **Recover child base plus tail without a final checkpoint**: open a
-  prepared child from its base checkpoint and replay its own durable tail;
-  validate exact child range, source cutover, sequence continuity, and retry
-  results before any catalog activation. Files:
+- [ ] **Recover child base plus parent and child tails without a final
+  checkpoint**: open a prepared child from its base checkpoint, filter replay
+  the pinned parent suffix through `C`, then replay its own child journal from
+  `C + 1`; validate exact range, source identity, sequence continuity, and
+  retry results before any catalog activation. Files:
   `lib/crowdb-chunk-kv/src/partition.rs`,
   `lib/crowdb-chunk-kv/src/partition/split.rs`, and partition integration
   tests.
@@ -60,21 +62,23 @@ foreground child checkpoint.
 
 ## Writer Handoff and Routing
 
-- [ ] **Install child writers at cutover**: stop assigning new work to the
-  parent sequencer at exact `C`, drain only assigned work, verify durable child
-  tails through `C`, and route later mutations to bounded child queues and
-  child WAL/memtables. Do not await child checkpoint or materialization in this
-  path. Files: `lib/crowdb-chunk-kv/src/partition.rs`, split manager/server
-  transition code, and partition tests.
-- [ ] **Publish and handle stale routes**: bind child writer readiness to the
-  exact catalog artifact, use child minimum journal positions after publication,
-  and forward or owner-hint stale point routes without a second parent writer.
-  Keep parent scan tokens refresh-only. Files:
+- [ ] **Install local child writers at cutover**: stop assigning new work to
+  the parent sequencer at exact `C`, drain only requests that already hold the
+  parent writer handle, and atomically reselect all other ingress to one local
+  child WAL/memtable. Do not await tail warming, child checkpoint, or
+  materialization in this path. Files: `lib/crowdb-chunk-kv/src/partition.rs`,
+  split manager/server transition code, and partition tests.
+- [ ] **Publish and handle local stale routes**: bind local child writer
+  readiness to the exact catalog artifact, accept parent and child minimum
+  journal positions after publication, and directly dispatch stale point routes
+  to hosted children without a second parent writer. Keep parent scan tokens
+  refresh-only. Files:
   `app/crowdb-chunk-kv-server/src/`, `lib/crowdb-chunk-kv-client/src/`,
   protocol catalog types, and client/server E2E tests.
 - [ ] **Move physical persistence off cutover**: checkpoint child overlays,
-  materialize inherited packs, retain/reclaim parent stream and tree references,
-  and expire forwarding only after catalog, retry, and recovery pins clear.
+  materialize inherited packs, retain/reclaim parent stream and tree references
+  only after every retained child snapshot and retry floor releases its parent
+  suffix pin.
   Files: chunk-KV partition maintenance, server transition recovery, and tree
   integration tests.
 
