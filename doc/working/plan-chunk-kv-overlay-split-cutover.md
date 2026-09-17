@@ -22,13 +22,13 @@ foreground child checkpoint.
   `lib/crowdb-chunk-kv/src/partition/tree.rs`,
   `app/crowdb-chunk-kv-server/src/{main.rs,server.rs,serving/lease.rs}`,
   `lib/crowdb-chunk-kv-client/src/`.
-- [~] **Make Preparing grant-safe**: treat an already hosted
+- [x] **Make Preparing grant-safe**: treat an already hosted
   `SplitPreparing` parent as active for serving-grant refresh while retaining
   the existing mutation and read lifecycle checks. Add server and partition
   coverage for repeated grant installation through preparation and the lease
   deadline. Files: `lib/crowdb-chunk-kv/src/partition.rs`,
   `app/crowdb-chunk-kv-server/src/{main.rs,server.rs}`, and their tests.
-- [ ] **Define child-owned tail artifact fields**: extend protocol and
+- [~] **Define child-owned tail artifact fields**: extend protocol and
   partition types so each child identifies its base checkpoint, durable child
   journal tail, source-cutover cursor, retained request-result floor, and
   recovery representation. Child streams are the chosen durable tail owner;

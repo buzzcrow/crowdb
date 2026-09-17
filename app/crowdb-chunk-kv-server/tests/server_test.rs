@@ -234,6 +234,46 @@ async fn matching_grant_activation_promotes_a_replayed_partition() {
 }
 
 #[tokio::test]
+async fn matching_grant_refresh_keeps_a_preparing_parent_active() {
+    let (service, partition) = fixture().await;
+    partition
+        .begin_split(SplitPlan {
+            transition_id: TransitionId { high: 22, low: 23 },
+            parent_id: PartitionId { high: 1, low: 2 },
+            parent_epoch: EPOCH,
+            parent_range: PartitionRange {
+                start: Some(Vec::new()),
+                end: None,
+            },
+            split_key: b"m".to_vec(),
+            left: SplitChild {
+                partition_id: PartitionId { high: 22, low: 24 },
+                range: PartitionRange {
+                    start: Some(Vec::new()),
+                    end: Some(b"m".to_vec()),
+                },
+                ownership_epoch: EPOCH + 1,
+            },
+            right: SplitChild {
+                partition_id: PartitionId { high: 22, low: 25 },
+                range: PartitionRange {
+                    start: Some(b"m".to_vec()),
+                    end: None,
+                },
+                ownership_epoch: EPOCH + 1,
+            },
+        })
+        .await
+        .unwrap();
+
+    service
+        .activate_recovered_partition(Id128 { high: 1, low: 2 }, EPOCH)
+        .unwrap();
+
+    assert_eq!(partition.snapshot().lifecycle, PartitionLifecycle::SplitPreparing);
+}
+
+#[tokio::test]
 async fn catalog_cutover_commits_the_exact_fenced_split_parent() {
     let (service, parent) = fixture().await;
     let transition_id = TransitionId { high: 8, low: 9 };

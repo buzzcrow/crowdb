@@ -1562,6 +1562,28 @@ async fn split_control_is_idempotent_and_commits_only_an_exact_artifact() {
 }
 
 #[tokio::test]
+async fn serving_grant_refresh_keeps_a_preparing_parent_active() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        StreamName { high: 14, low: 14 },
+        20,
+        PartitionConfig::default(),
+    )
+    .await;
+    let plan = split_plan(PartitionId { high: 14, low: 14 }, 20);
+    partition.begin_split(plan).await.unwrap();
+
+    partition.activate_recovered(20).unwrap();
+
+    assert_eq!(
+        partition.lifecycle(),
+        crowdb_chunk_kv::PartitionLifecycle::SplitPreparing
+    );
+}
+
+#[tokio::test]
 async fn online_split_rebuilds_both_ranges_and_replays_serving_deltas() {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let tree = Arc::new(MemoryPartitionTree::with_tree_id(90));

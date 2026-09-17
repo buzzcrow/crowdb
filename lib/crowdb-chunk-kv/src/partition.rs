@@ -1371,7 +1371,7 @@ impl Partition {
             ));
         }
         match self.lifecycle() {
-            PartitionLifecycle::Serving => Ok(()),
+            PartitionLifecycle::Serving | PartitionLifecycle::SplitPreparing => Ok(()),
             PartitionLifecycle::Prepared => self
                 .lifecycle
                 .compare_exchange(
