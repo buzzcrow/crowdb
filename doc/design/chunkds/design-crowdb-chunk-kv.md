@@ -34,8 +34,9 @@ cannot bypass partition ordering, trim, or epoch checks.
 
 The tree is range-bounded at construction. Rust never implements the tree page
 path through `crowdb-chunk-client`; the production tree selects R140's native
-page-store backend at runtime. A partition transfer reopens the same tree and
-stream identities under a higher epoch instead of copying their bytes.
+page-store backend at runtime. A balance target opens the source's pinned tree
+manifest directly from shared page chunks and owns a distinct target WAL. It
+does not copy keys through Rust or copy page packs before handoff.
 
 Point reads, ceiling/higher/floor/lower, and bounded forward/reverse scans read
 only the applied tree prefix. A forward scan uses an inclusive lower bound and
@@ -101,27 +102,101 @@ non-OK tree result after durable append is `ApplyStateUnknown`, moves only that
 partition to `Recovering`, and prevents later records from applying. The C ABI
 catches C++ exceptions before they can cross into Rust.
 
-## 5. Split and Transfer Control
+## 5. Overlay Split and Writer Handoff
 
-A `SplitPlan` names a transition, exact parent ID/range/epoch and interior split
-key, and exact child IDs/ranges/epochs. Repeating the same active plan is
-idempotent; changing it or starting another lifecycle operation fails closed.
-`SplitPreparing` continues to admit mutations. Once external catch-up proves
-its configured lag bound, `fence_split` atomically stops new mutations and
-drains all previously admitted work.
+A `SplitPlan` names one transition, the exact parent ID/range/epoch, an
+interior split key, and two adjacent child identities whose ranges exactly
+cover the parent. Repeating the same active plan is idempotent; changing any
+identity, range, epoch, or stream fails closed. Both children initially remain
+on the parent owner. Placement is a later balance operation.
 
-At the drained frontier, the child builder records one immutable
-`SplitArtifact`. Both children must match the plan, use distinct streams, and
-name manifests at the exact common cutover sequence. `commit_split` retires
-the parent only when the catalog proof contains that exact artifact.
-`abort_split` resumes the same parent epoch only with authoritative
-non-publication proof. Missing or mismatched proof leaves the parent fenced.
+Split preparation follows these ordered steps:
 
-Transfer uses the same fence and checkpoint boundary, then opens the existing
-tree and stream under a higher epoch. The old handle remains fenced. R141's
-writer epoch prevents its stream from advancing after authority moves.
+1. Enter `SplitPreparing` while retaining ordinary read, mutation, checkpoint,
+   and serving-grant behavior. The parent remains the only sequencer.
+2. Pin one parent snapshot, range-rebuild two child base trees, and checkpoint
+   both bases while parent admission remains open.
+3. Record for each child its base manifest and sequence `B`, parent partition,
+   epoch, stream and manifest generation, retained replay offset, current
+   parent tail, child stream, and first child sequence.
+4. Warm each child by reading the parent stream snapshot, validating frame and
+   request-result identity, filtering mutations by child range, and advancing
+   sibling records as no-ops. Parent records are referenced, not copied into
+   child WALs.
+5. Refuse the handoff while the remaining tail exceeds the configured bound.
+   Otherwise close parent admission, drain only requests that already selected
+   the parent sequencer, and choose one exact cutover sequence and offset `C`.
+6. Persist one immutable `SplitArtifact`; both child overlays cover `(B, C]`,
+   both logical frontiers equal `C`, and each child WAL begins at `C + 1`.
+   No child checkpoint or page-pack materialization occurs under the fence.
+7. Open both children as `Prepared` and install their process-local handles
+   before publishing readiness. Catalog activation changes their lifecycle to
+   `Serving`; only then may their sequencers accept post-cutover mutations.
 
-## 6. Failure Containment and Observability
+A prepared or restarted child recovers in three layers: open the exact base
+manifest, replay the retained parent suffix through `C` with range filtering,
+then replay its own WAL from `C + 1`. Records at or below the base sequence
+restore retained request outcomes without reapplying tree mutations. Failed
+conditions remain no-ops with their original result. Sequence gaps, a wrong
+source stream or epoch, a mismatched range, or a child WAL beginning anywhere
+other than `C + 1` reject recovery.
+
+The child recognizes two minimum-position namespaces. A retained parent-stream
+position at or below `C` is satisfied by the inherited overlay frontier. A
+child-stream position waits for the child's applied frontier. New mutations
+return only child-stream positions. This preserves read-after-write across a
+catalog split without treating two streams as one offset space.
+
+After activation, bounded background passes materialize shared page ownership
+and checkpoint the complete child view into its own tree root and WAL. Only
+that checkpoint permits the catalog to clear the parent-tail overlay and mark
+the child independently recoverable. Parent manifests, stream bytes, retry
+results, and page packs remain pinned while any catalog artifact, retained
+checkpoint, forwarding grace interval, or retry floor references them.
+
+The split invariants are:
+
+- **SPLIT-ONE-WRITER:** parent and child sequencers never both admit a mutation
+  for the same key range;
+- **SPLIT-COMMON-CUTOVER:** both children inherit the same exact `C`;
+- **SPLIT-OVERLAY-DURABLE:** base plus parent suffix plus child WAL reconstructs
+  values and request outcomes before activation;
+- **SPLIT-NO-FOREGROUND-FLUSH:** the writer fence performs no child checkpoint
+  or ownership materialization; and
+- **SPLIT-PIN-BEFORE-RECLAIM:** physical deletion never precedes the last
+  catalog, snapshot, forwarding, or retry reference.
+
+## 6. Remote Balance Storage Contract
+
+Balancing one independently recoverable child reuses the same base-plus-tail
+representation. A live source checkpoint supplies the pinned base manifest,
+base sequence, stream manifest generation, and replay offset. The target owns
+a distinct WAL, opens the shared tree root as `Prepared`, and replays the
+source stream only through the persisted preparation cursor while the source
+continues serving.
+
+After target readiness, the source checks record, byte, estimated catch-up,
+and preparation-deadline budgets before closing admission. Its release proof
+records the final durable sequence and byte offset `C`. The target artifact is
+then extended to `C`; final recovery reopens the base, source suffix, and
+target WAL exactly as split recovery does. A target cannot serve reads or
+conditional mutations until its caught-up proof covers the release proof.
+After catalog and grant activation, only the target WAL can advance. A
+dead-source recovery may adopt the original stream directly, but only after
+the old lease expiry plus clock skew proves exclusion.
+
+The balance invariants are:
+
+- **BALANCE-PREPARE-WHILE-SERVING:** live target preparation never fences the
+  source writer;
+- **BALANCE-RELEASE-BEFORE-ACTIVATE:** target mutation authority requires a
+  durable source release or lease-exclusion proof;
+- **BALANCE-COMPLETE-PREFIX:** a target serves only after replay through `C`;
+  and
+- **BALANCE-INDEPENDENT-SOURCE:** a child retaining a split-parent suffix is
+  ineligible for another owner handoff.
+
+## 7. Failure Containment and Observability
 
 Range, epoch, size, condition, request-conflict, expiry, and admission errors
 do not damage partition health. Availability failures on a tree read remain
@@ -132,5 +207,8 @@ Checkpoint and GC failures retain the prior manifest and WAL authority.
 Per-partition lock-free counters cover mutation requests and outcomes, ordered
 seeks and scans, range and stale-epoch rejection, admission backpressure, write
 stalls, unknown apply outcomes, recoveries, checkpoints, and split lifecycle
-events. Snapshot frontiers expose lifecycle, stream identity, durable sequence,
-and applied sequence without combining independent partitions.
+events. Split counters distinguish preparation and base-checkpoint time,
+tail records and bytes, fence lag and duration, overlay replay records and
+bytes, and materialization duration. Snapshot frontiers expose lifecycle,
+stream identity, durable sequence and byte offset, and applied sequence without
+combining independent partitions.

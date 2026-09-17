@@ -14,8 +14,10 @@ the only authority to admit data requests.
 The catalog is one checksummed generation head over ordered immutable pages.
 Each entry contains an exact half-open binary-key range, stable partition ID,
 owner endpoint, monotonic owner epoch, lifecycle state, stable tree ID, stable
-stream name, and optional transition ID. Mutable tree and stream frontiers do
-not live in group 0. A valid generation starts at the empty byte string, has
+stream name, optional tail-overlay artifact, and optional transition ID. The
+overlay binds a base manifest and sequence, source partition/epoch/stream and
+manifest generation, retained replay and cutover offsets, cutover sequence,
+and target-WAL start sequence. A valid generation starts at the empty byte string, has
 exact adjacent bounds, ends unbounded, and covers each binary key once.
 
 Publishers validate the complete successor, including retained-partition epoch
@@ -71,13 +73,16 @@ transport retry and rerouting. Endpoint, socket, and connection identities do
 not participate in deduplication.
 
 The contacted server validates deadline, catalog route, owner, grant, and local
-partition before R142 admission. It never proxies. A stale route returns
-`NotMyRange` with the current revision and owner hint without WAL I/O. Point
+partition before R142 admission. After a same-owner split, an old parent point
+route may be remapped directly to the exact hosted child by key and transition
+identity. This is process-local dispatch, not a network proxy, and it preserves
+the original request identity and minimum position. All other stale routes
+return `NotMyRange` with the current revision and owner hint without WAL I/O. Point
 operations preserve get, put, delete, put-if-absent, compare-exchange, and
 conditional-delete conditions and results. Successful and failed conditions
 return the R142 journal position. `Overloaded`, `WriteStalled`, `Recovering`,
-`LeaseExpired`, `RequestExpired`, `RequestConflict`, `NotMyRange`, and
-`RefreshRequired` remain distinct wire outcomes.
+`TargetNotReady`, `LeaseExpired`, `RequestExpired`, `RequestConflict`,
+`NotMyRange`, and `RefreshRequired` remain distinct wire outcomes.
 
 A deadline observed before sequencer admission creates no WAL record. Once the
 sequencer accepts a mutation, dropping the transport response does not cancel
@@ -98,27 +103,120 @@ epoch, or direction mismatch returns `RefreshRequired`; the server never
 guesses a resume position. Multi-partition composition belongs to the routed
 client.
 
-## 6. Transfer and Balance
+## 6. Split Publication
 
-A transfer is a durable idempotent record containing source and target owners,
-strictly advancing epoch, exact range and artifact, old grant deadline, phase,
-authority-release proof, and target-readiness proof. Graceful transfer obtains
-an explicit fence and durable tail. Dead-owner transfer waits through lease
-expiry plus skew. Only then may the target reopen the same manifest and stream,
-recover through the durable tail as `Prepared`, and report an exact proof. The
-catalog cutover follows that proof. Failure retains the artifact and leaves the
-partition unavailable; transfer never copies page or WAL chunks.
+The split transition phases are `Planned`, `ParentPreparing`,
+`ChildrenPrepared`, `CatalogCommitted`, and `Aborted`. The server and group-0
+monitor advance them in this order:
+
+1. Group 0 persists the complete plan before local work begins. Both child
+   owners are the current parent instance and both epochs advance together.
+2. The parent process persists `ParentPreparing`, renews its serving grant as
+   an active owner, builds both bases, performs the bounded writer handoff, and
+   installs both local child handles.
+3. Readiness binds the exact common cutover and both complete tail overlays.
+   It is persisted before catalog publication.
+4. One catalog generation atomically removes the parent and adds both children.
+   A retry accepts an already-published result only if transition IDs, ranges,
+   owners, epochs, trees, streams, and overlays all match.
+5. Catalog reconciliation activates the prepared children under a matching
+   serving grant and retires the parent. A stale parent point route dispatches
+   to the hosted child; parent scan and seek topology must refresh.
+
+Before child materialization, heartbeat load reports the child as dependent.
+The local maintenance loop performs bounded ownership materialization and a
+serving checkpoint. A heartbeat then proves independent recovery, group 0
+publishes a generation that clears the overlay, and only that catalog state is
+eligible for another split or owner balance.
+
+## 7. Child Balance State Machine
+
+A balance transition persists source and target owners, increasing target
+epoch, source and target artifacts, readiness limits, old-grant deadline,
+phase, release proof, initial readiness proof, final catch-up proof, and
+failure. The live-source phases and actions are:
+
+1. `Planned` → `SourcePreparing`: the source remains `Serving`, checkpoints a
+   pinned base, creates the target-owned empty WAL, and records the initial
+   source cursor in the target overlay.
+2. `TargetPreparing`: the remote target validates the range, page-root and
+   stream identities, opens shared immutable pages, and replays the source
+   suffix into a `Prepared` overlay. Failure here may abort; source authority
+   is unchanged.
+3. `TargetPrepared` or `AwaitingFence`: the monitor requests release only when
+   record, byte, estimated catch-up, deadline, capacity, request-rate,
+   cooldown, and one-transition-per-owner bounds pass. The source closes new
+   admission, drains selected requests, and persists sequence and byte cursor
+   `C`. If the source is unreachable, the transition waits until old grant
+   expiry plus skew.
+4. `TargetCatchingUp`: group 0 publishes the target owner and epoch with catalog
+   state `TargetCatchingUp`. The source is no longer catalog authority and
+   returns the target hint without appending. The target receives no serving
+   grant and returns `TargetNotReady` with a bounded retry delay.
+5. `CatchupPublished`: the target reopens the exact base and sealed source
+   suffix through `C`, replays any target WAL, and persists the final catch-up
+   proof. It cannot answer a read or evaluate a condition from a shorter
+   prefix.
+6. `TargetReady`: group 0 replaces the catching-up entry with `Serving` in a
+   second generation. Only a heartbeat advertising the exact prepared target
+   allows a matching serving grant. The transition then becomes
+   `CatalogCommitted`.
+
+An owner-loss transfer created after lease exclusion may adopt the original
+tree and stream under the higher epoch instead of constructing a live overlay.
+This path is valid only after old lease expiry plus skew; writer-epoch adoption
+then fences any lower-epoch stream handle.
+
+Recovery uses persisted evidence only. Before source release, a target failure
+leaves the source serving and target preparation is repeatable. After release,
+abort is forbidden: catalog reread decides whether to publish or resume
+catch-up. An ambiguous catalog write succeeds only if the exact intended entry
+is observed. A restarted target reconstructs from base plus source and target
+tails. A restarted source cannot resume writes after an explicit release or
+lease-exclusion proof. Heartbeats and loaded pages are readiness observations,
+never authority proofs.
+
+The recovery decision matrix is:
+
+| Durable evidence                                      | Authoritative action                                                     |
+|-------------------------------------------------------|--------------------------------------------------------------------------|
+| Plan or source base only; no target readiness         | Keep source serving; retry preparation or abort unpublished target state |
+| Initial target readiness; no source release           | Keep source serving; recheck budgets before requesting the fence         |
+| Explicit release; catalog still names source          | Keep source fenced; publish `TargetCatchingUp` or resolve head ambiguity  |
+| Lease exclusion; catalog still names source           | Recover target under the higher epoch; source cannot reactivate          |
+| Catalog names `TargetCatchingUp`; no final proof       | Return `TargetNotReady`; replay the sealed suffix through `C`             |
+| Final catch-up proof; catching-up catalog entry        | Publish the exact `Serving` successor and then issue the target grant     |
+| Serving catalog entry; grant absent or expired         | Keep target prepared and reject admission until the exact grant arrives  |
+| Ambiguous catalog head write                           | Reread head and pages; accept only the byte-exact intended generation     |
+| Conflicting artifact, cursor, range, epoch, or proof   | Fail closed; never infer authority from local state                       |
+
+The balance invariants are:
+
+- **SERVER-ONE-TRANSITION:** one partition and each participating owner have at
+  most one active topology transition;
+- **SERVER-NO-DUAL-GRANT:** `TargetCatchingUp` is never included in a serving
+  grant;
+- **SERVER-PROOF-BEFORE-PUBLISH:** every catalog phase is justified by the
+  corresponding durable readiness or release proof;
+- **SERVER-AMBIGUITY-FENCES:** an unknown publication outcome never reopens the
+  source writer; and
+- **SERVER-CLEANUP-AFTER-PINS:** source tree, stream, retry history, and shared
+  packs remain retained until catalog references, recovery pins, retry floors,
+  and forwarding grace have all cleared.
+
+## 8. Placement Policy
 
 Balancing targets at least `live_owner_count * target_partitions_per_owner`,
 defaulting to four partitions per owner. Split chooses the largest eligible
 partition and a key near the cumulative live-byte median, never an empty child.
-Placement minimizes partition-count difference first, then durable-byte spread.
-A move must repair count imbalance or improve weighted spread by at least 25%.
-Request rate and target headroom are safety filters. The default per-partition
-cooldown is ten minutes and an owner participates in at most one transfer at a
-time.
+Both split children stay local. Placement later minimizes partition-count
+difference first, then durable-byte spread. A move must repair count imbalance
+or improve weighted spread by at least 25%. Request rate and target headroom are
+safety filters. A child with a parent-tail overlay is ineligible. The default
+per-partition cooldown is ten minutes and an owner participates in at most one
+transfer at a time.
 
-## 7. Lifecycle and Observability
+## 9. Lifecycle and Observability
 
 Startup ensures the monitor, registers the instance, loads a complete catalog,
 opens each assignment's latest tree root and stream manifest as `Prepared`,
@@ -136,14 +234,14 @@ advertise addresses, dedicated 15xxx HTTP/RPC ports, hosted-partition capacity,
 refresh/drain intervals, timing policy, and balance policy. Validation rejects
 unsafe timing, zero bounds, bad addresses, unspecified advertise addresses, and
 empty discovery seeds. Lock-free counters distinguish successes, redirects,
-lease and deadline rejections, overload, and internal errors. Health and
+local stale-route dispatch, lease and deadline rejections, overload, split
+preparation/base/tail/fence/overlay/materialization work, and internal errors.
+Balance observation records selection inputs, base and tail cursors, readiness
+failure, catalog and lease phase, catch-up, and background work. Health and
 heartbeat views derive from the same sorted partition snapshots and catalog
 generation.
 
 ## Open Issues
 
-- Real-process restart coverage still needs to exercise production partition
-  recovery and prepared-child activation against live chunk services.
-- Automatic split planning still needs per-partition live-byte samples in the
-  service-registry observation; the split and placement policy is implemented,
-  but the monitor cannot safely infer a median from aggregate instance bytes.
+- Real-process fault injection should continue expanding coverage of ambiguous
+  catalog writes and process death at every balance phase.

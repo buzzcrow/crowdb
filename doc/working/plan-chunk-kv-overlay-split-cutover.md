@@ -121,12 +121,12 @@ tail and bounded handoff contract.
 
 ## Permanent Design
 
-- [ ] **Specify split overlay and local handoff**: write the durable fields,
+- [x] **Specify split overlay and local handoff**: write the durable fields,
   ordered preparation/cutover/recovery steps, minimum-position behavior,
   request-result ownership, stale-route behavior, retention pins, failure
   matrix, metrics, and named invariants into the chunk-KV, chunk-stream,
   server, and routed-client designs as current architecture.
-- [ ] **Specify child balance and remote handoff**: document placement
+- [x] **Specify child balance and remote handoff**: document placement
   eligibility, independent-child prerequisite, target readiness budgets,
   `TargetCatchingUp`, source-release and activation proofs, lease interaction,
   recovery decisions, background materialization, reclamation, observability,
