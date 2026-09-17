@@ -57,7 +57,7 @@ tail and bounded handoff contract.
   `lib/crowdb-chunk-kv/src/partition.rs`,
   `lib/crowdb-chunk-kv/src/partition/split.rs`, and partition integration
   tests.
-- [~] **Expose truthful split metrics**: separately record preparation,
+- [x] **Expose truthful split metrics**: separately record preparation,
   base-checkpoint, tail bytes/records and lag, grant renewal failures, actual
   cutover drain/tail, background checkpoint, and client-forwarding outcomes.
   Files: `lib/crowdb-chunk-kv/src/metrics.rs`, server status/metrics wiring,
@@ -65,7 +65,7 @@ tail and bounded handoff contract.
 
 ## Writer Handoff and Routing
 
-- [ ] **Install local child writers at cutover**: stop assigning new work to
+- [~] **Install local child writers at cutover**: stop assigning new work to
   the parent sequencer at exact `C`, drain only requests that already hold the
   parent writer handle, and atomically reselect all other ingress to one local
   child WAL/memtable. Do not await tail warming, child checkpoint, or

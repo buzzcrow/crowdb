@@ -21,6 +21,13 @@ pub struct ServerMetrics {
     retired_split_commits: AtomicU64,
     retired_split_fence_lag_records: AtomicU64,
     retired_split_fence_duration_us: AtomicU64,
+    retired_split_tail_records: AtomicU64,
+    retired_split_tail_bytes: AtomicU64,
+    retired_split_preparation_duration_us: AtomicU64,
+    retired_split_base_checkpoint_duration_us: AtomicU64,
+    retired_split_overlay_apply_records: AtomicU64,
+    retired_split_overlay_apply_bytes: AtomicU64,
+    retired_materialization_duration_us: AtomicU64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
@@ -38,6 +45,13 @@ pub struct ServerMetricsSnapshot {
     pub split_commits: u64,
     pub split_fence_lag_records: u64,
     pub split_fence_duration_us: u64,
+    pub split_tail_records: u64,
+    pub split_tail_bytes: u64,
+    pub split_preparation_duration_us: u64,
+    pub split_base_checkpoint_duration_us: u64,
+    pub split_overlay_apply_records: u64,
+    pub split_overlay_apply_bytes: u64,
+    pub materialization_duration_us: u64,
 }
 
 impl ServerMetrics {
@@ -80,6 +94,15 @@ impl ServerMetrics {
             split_commits: self.retired_split_commits.load(Ordering::Relaxed),
             split_fence_lag_records: self.retired_split_fence_lag_records.load(Ordering::Relaxed),
             split_fence_duration_us: self.retired_split_fence_duration_us.load(Ordering::Relaxed),
+            split_tail_records: self.retired_split_tail_records.load(Ordering::Relaxed),
+            split_tail_bytes: self.retired_split_tail_bytes.load(Ordering::Relaxed),
+            split_preparation_duration_us: self.retired_split_preparation_duration_us.load(Ordering::Relaxed),
+            split_base_checkpoint_duration_us: self
+                .retired_split_base_checkpoint_duration_us
+                .load(Ordering::Relaxed),
+            split_overlay_apply_records: self.retired_split_overlay_apply_records.load(Ordering::Relaxed),
+            split_overlay_apply_bytes: self.retired_split_overlay_apply_bytes.load(Ordering::Relaxed),
+            materialization_duration_us: self.retired_materialization_duration_us.load(Ordering::Relaxed),
         }
     }
 
@@ -96,6 +119,20 @@ impl ServerMetrics {
             .fetch_max(metrics.split_fence_lag_records, Ordering::Relaxed);
         self.retired_split_fence_duration_us
             .fetch_max(metrics.split_fence_duration_us, Ordering::Relaxed);
+        self.retired_split_tail_records
+            .fetch_add(metrics.split_delta_records, Ordering::Relaxed);
+        self.retired_split_tail_bytes
+            .fetch_add(metrics.split_tail_bytes, Ordering::Relaxed);
+        self.retired_split_preparation_duration_us
+            .fetch_max(metrics.split_preparation_duration_us, Ordering::Relaxed);
+        self.retired_split_base_checkpoint_duration_us
+            .fetch_max(metrics.split_base_checkpoint_duration_us, Ordering::Relaxed);
+        self.retired_split_overlay_apply_records
+            .fetch_add(metrics.split_overlay_apply_records, Ordering::Relaxed);
+        self.retired_split_overlay_apply_bytes
+            .fetch_add(metrics.split_overlay_apply_bytes, Ordering::Relaxed);
+        self.retired_materialization_duration_us
+            .fetch_add(metrics.materialization_duration_us, Ordering::Relaxed);
     }
 }
 

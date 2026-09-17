@@ -18,6 +18,7 @@ pub use tree::{CrowdbPartitionTree, PartitionTree};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 use bytes::{Buf, Bytes, BytesMut};
 use crowdb_chunk_stream::{ChunkStream, StreamName};
@@ -655,7 +656,11 @@ impl Partition {
         )
         .await?;
         seed.retry_replay_offset = 0;
-        Self::start(
+        let overlay_records = artifact.applied_seq.saturating_sub(artifact.base_applied_seq);
+        let overlay_bytes = artifact
+            .parent_cutover_offset
+            .saturating_sub(artifact.parent_replay_offset);
+        let partition = Self::start(
             artifact.partition_id,
             artifact.range.clone(),
             artifact.ownership_epoch,
@@ -665,7 +670,11 @@ impl Partition {
             seed,
             PartitionLifecycle::Prepared,
             Some(artifact),
-        )
+        )?;
+        partition
+            .metrics
+            .split_overlay_apply(overlay_records, overlay_bytes);
+        Ok(partition)
     }
 
     /// Reopens native child storage plus an immutable parent stream snapshot
@@ -1666,16 +1675,18 @@ impl Partition {
         if self.lifecycle() != PartitionLifecycle::Serving {
             return Err(read_state_error(self.lifecycle()));
         }
+        let started = Instant::now();
         match self.tree.materialize_ownership() {
             Ok((bytes_written, complete)) => {
-                self.metrics.materialization(Ok((bytes_written, complete)));
+                self.metrics
+                    .materialization(Ok((bytes_written, complete)), elapsed_us(started));
                 Ok(MaterializationProgress {
                     bytes_written,
                     complete,
                 })
             }
             Err(error) => {
-                self.metrics.materialization(Err(()));
+                self.metrics.materialization(Err(()), elapsed_us(started));
                 Err(error)
             }
         }
@@ -2154,6 +2165,10 @@ fn retain_recovered(
         seed.retry_replay_offset = oldest.response.journal_position.offset;
     }
     Ok(())
+}
+
+fn elapsed_us(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
 async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<MutationRequest>) {

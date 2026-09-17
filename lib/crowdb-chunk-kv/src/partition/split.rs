@@ -92,9 +92,14 @@ impl Partition {
         }
         validate_targets(self, &plan, &left_target, &right_target)?;
         self.begin_split(plan.clone()).await?;
+        let preparation_started = Instant::now();
         let result = self
             .build_split(&plan, left_target, right_target, max_fence_lag_records)
             .await;
+        if result.is_ok() {
+            self.metrics
+                .split_preparation_duration(elapsed_us(preparation_started));
+        }
         if result.is_err() && self.lifecycle() == PartitionLifecycle::SplitPreparing {
             self.cancel_local_split(plan.transition_id).await;
         }
@@ -147,8 +152,11 @@ impl Partition {
             )
             .await?;
 
+        let checkpoint_started = Instant::now();
         let left_base = checkpoint_prepared_tree(left_tree.as_ref(), cursor.applied_seq).await?;
         let right_base = checkpoint_prepared_tree(right_tree.as_ref(), cursor.applied_seq).await?;
+        self.metrics
+            .split_base_checkpoint_duration(elapsed_us(checkpoint_started));
 
         let fence_lag_records = cursor
             .catch_up_to_lag(
@@ -178,8 +186,11 @@ impl Partition {
                 "split delta replay did not reach the fenced parent".into(),
             ));
         }
-        self.metrics
-            .split_catchup(cursor.delta_records, fence_lag_records);
+        self.metrics.split_catchup(
+            cursor.delta_records,
+            cursor.offset.saturating_sub(base_checkpoint.replay_offset),
+            fence_lag_records,
+        );
 
         self.finish_split(
             plan,
@@ -239,8 +250,7 @@ impl Partition {
             right: right.artifact.clone(),
         };
         self.record_split_artifact(artifact.clone()).await?;
-        self.metrics
-            .split_fence_duration(u64::try_from(fence_started.elapsed().as_micros()).unwrap_or(u64::MAX));
+        self.metrics.split_fence_duration(elapsed_us(fence_started));
         Ok(PreparedSplit {
             artifact,
             left,
@@ -524,4 +534,8 @@ async fn checkpoint_prepared_tree(tree: &dyn PartitionTree, expected_seq: u64) -
         return Err(ChunkKvError::ApplyStateUnknown);
     }
     Ok(checkpoint)
+}
+
+fn elapsed_us(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }

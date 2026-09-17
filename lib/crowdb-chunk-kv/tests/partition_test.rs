@@ -1681,6 +1681,8 @@ async fn online_split_rebuilds_both_ranges_and_replays_serving_deltas() {
     assert_eq!(metrics.split_entries_examined, 4);
     assert_eq!(metrics.split_entries_emitted, 2);
     assert_eq!(metrics.split_delta_records, 2);
+    assert!(metrics.split_tail_bytes > 0);
+    assert!(metrics.split_preparation_duration_us > 0);
     assert!(metrics.split_fence_lag_records <= 8);
     assert!(metrics.split_fence_duration_us > 0);
     let proof = SplitCommitProof {
@@ -1973,6 +1975,9 @@ async fn child_overlay_recovers_parent_results_then_its_own_wal() {
     )
     .await
     .unwrap();
+    let overlay_metrics = child.metrics().snapshot();
+    assert_eq!(overlay_metrics.split_overlay_apply_records, 3);
+    assert!(overlay_metrics.split_overlay_apply_bytes > 0);
     child.activate_prepared(&proof).unwrap();
     assert_eq!(child.get(19, b"d", None).await.unwrap().unwrap().value, b"tail");
     assert!(matches!(

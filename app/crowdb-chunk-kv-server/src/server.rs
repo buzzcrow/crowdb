@@ -174,6 +174,25 @@ impl ChunkKvService {
             result.split_fence_duration_us = result
                 .split_fence_duration_us
                 .max(metrics.split_fence_duration_us);
+            result.split_tail_records = result
+                .split_tail_records
+                .saturating_add(metrics.split_delta_records);
+            result.split_tail_bytes = result.split_tail_bytes.saturating_add(metrics.split_tail_bytes);
+            result.split_preparation_duration_us = result
+                .split_preparation_duration_us
+                .max(metrics.split_preparation_duration_us);
+            result.split_base_checkpoint_duration_us = result
+                .split_base_checkpoint_duration_us
+                .max(metrics.split_base_checkpoint_duration_us);
+            result.split_overlay_apply_records = result
+                .split_overlay_apply_records
+                .saturating_add(metrics.split_overlay_apply_records);
+            result.split_overlay_apply_bytes = result
+                .split_overlay_apply_bytes
+                .saturating_add(metrics.split_overlay_apply_bytes);
+            result.materialization_duration_us = result
+                .materialization_duration_us
+                .saturating_add(metrics.materialization_duration_us);
         }
         result
     }
