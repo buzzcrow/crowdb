@@ -133,10 +133,82 @@ fn prepared_split_child(
     }
 }
 
+fn split_catalog_page(artifact: &SplitArtifact) -> ChunkKvRangeCatalogPage {
+    let mut page = ChunkKvRangeCatalogPage {
+        generation: 2,
+        page_index: 0,
+        entries: [&artifact.left, &artifact.right]
+            .into_iter()
+            .map(|child| ChunkKvRangeCatalogEntry {
+                partition_id: Id128 {
+                    high: child.partition_id.high,
+                    low: child.partition_id.low,
+                },
+                range: KeyRange {
+                    start: child.range.start.clone().unwrap_or_default(),
+                    end: child.range.end.clone(),
+                },
+                owner: OwnerDescriptor {
+                    instance_id: INSTANCE_ID,
+                    rpc_endpoint: "127.0.0.1:9900".into(),
+                },
+                owner_epoch: child.ownership_epoch,
+                state: ChunkKvRangeCatalogPartitionState::Serving,
+                artifact: PartitionArtifact {
+                    tree_id: child.tree_id,
+                    stream_name: child.stream_name,
+                    tail_overlay: Some(TailOverlayArtifact {
+                        source_partition_id: Id128 {
+                            high: child.parent_id.high,
+                            low: child.parent_id.low,
+                        },
+                        source_epoch: child.parent_epoch,
+                        source_stream_name: child.parent_stream_name,
+                        source_stream_manifest_generation: child.parent_stream_manifest_generation,
+                        replay_offset: child.parent_replay_offset,
+                        cutover_offset: child.parent_cutover_offset,
+                        base_tree_manifest: child.tree_manifest,
+                        base_applied_seq: child.base_applied_seq,
+                        cutover_seq: child.applied_seq,
+                        target_stream_start_seq: child.child_stream_start_seq,
+                    }),
+                },
+                transition_id: Some(Id128 {
+                    high: artifact.transition_id.high,
+                    low: artifact.transition_id.low,
+                }),
+            })
+            .collect(),
+        checksum: [0; 32],
+    };
+    page.seal().unwrap();
+    page
+}
+
 async fn prepared_partition(
     partition_id: PartitionId,
     stream_name: StreamName,
     owner_epoch: u64,
+) -> Partition {
+    prepared_partition_range(
+        partition_id,
+        PartitionRange {
+            start: Some(Vec::new()),
+            end: None,
+        },
+        stream_name,
+        owner_epoch,
+        1,
+    )
+    .await
+}
+
+async fn prepared_partition_range(
+    partition_id: PartitionId,
+    range: PartitionRange,
+    stream_name: StreamName,
+    owner_epoch: u64,
+    tree_id: u64,
 ) -> Partition {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let stream = ChunkStream::create(
@@ -157,13 +229,10 @@ async fn prepared_partition(
     .unwrap();
     Partition::recover_prepared_assignment(
         partition_id,
-        PartitionRange {
-            start: Some(Vec::new()),
-            end: None,
-        },
+        range,
         owner_epoch,
         Checkpoint {
-            tree_id: 1,
+            tree_id,
             tree_manifest: 0,
             applied_seq: 0,
             stream_name,
@@ -171,11 +240,83 @@ async fn prepared_partition(
             replay_offset: 0,
         },
         PartitionConfig::default(),
-        Arc::new(MemoryPartitionTree::default()),
+        Arc::new(MemoryPartitionTree::with_tree_id(tree_id)),
         Arc::new(StreamPartitionJournal::new(stream, stream_name)),
     )
     .await
     .unwrap()
+}
+
+async fn activate_split_catalog(
+    service: &ChunkKvService,
+    artifact: &SplitArtifact,
+    page: &ChunkKvRangeCatalogPage,
+) -> Partition {
+    let prepare_child = |child: &PreparedChildArtifact| {
+        prepared_partition_range(
+            child.partition_id,
+            child.range.clone(),
+            child.stream_name,
+            child.ownership_epoch,
+            child.tree_id,
+        )
+    };
+    let (left, right) = tokio::join!(prepare_child(&artifact.left), prepare_child(&artifact.right));
+    service.install_partition(&left).unwrap();
+    service.install_partition(&right).unwrap();
+    service
+        .commit_catalog_splits(page.generation, std::slice::from_ref(page))
+        .await
+        .unwrap();
+
+    let mut head = ChunkKvRangeCatalogHead {
+        generation: page.generation,
+        previous_generation: Some(page.generation - 1),
+        pages: vec![ChunkKvRangeCatalogPageRef {
+            page_generation: page.generation,
+            page_index: page.page_index,
+            first_key: Vec::new(),
+            page_checksum: page.checksum,
+        }],
+        checksum: [0; 32],
+    };
+    head.seal().unwrap();
+    service
+        .install_catalog_and_reconcile(&head, std::slice::from_ref(page), &[])
+        .unwrap();
+    let assignment = |child: &PreparedChildArtifact| ServingAssignment {
+        partition_id: Id128 {
+            high: child.partition_id.high,
+            low: child.partition_id.low,
+        },
+        owner_epoch: child.ownership_epoch,
+    };
+    let mut grant = ServingGrant {
+        instance_id: INSTANCE_ID,
+        lease_sequence: 2,
+        catalog_generation: page.generation,
+        issued_at_ms: 1_100,
+        expires_at_ms: 13_100,
+        assignments: vec![assignment(&artifact.left), assignment(&artifact.right)],
+        assignment_digest: [0; 32],
+    };
+    grant.seal();
+    service
+        .authority()
+        .install(grant, &policy(), 1_100, 50_000)
+        .unwrap();
+    for child in [&artifact.left, &artifact.right] {
+        service
+            .activate_recovered_partition(
+                Id128 {
+                    high: child.partition_id.high,
+                    low: child.partition_id.low,
+                },
+                child.ownership_epoch,
+            )
+            .unwrap();
+    }
+    left
 }
 
 async fn fixture() -> (ChunkKvService, Partition) {
@@ -350,59 +491,29 @@ async fn catalog_cutover_commits_the_exact_fenced_split_parent() {
         right: prepared_split_child(right_id, right_range, 82, cutover_seq),
     };
     parent.record_split_artifact(artifact.clone()).await.unwrap();
-    let mut page = ChunkKvRangeCatalogPage {
-        generation: 2,
-        page_index: 0,
-        entries: [&artifact.left, &artifact.right]
-            .into_iter()
-            .map(|child| ChunkKvRangeCatalogEntry {
-                partition_id: Id128 {
-                    high: child.partition_id.high,
-                    low: child.partition_id.low,
-                },
-                range: KeyRange {
-                    start: child.range.start.clone().unwrap_or_default(),
-                    end: child.range.end.clone(),
-                },
-                owner: OwnerDescriptor {
-                    instance_id: INSTANCE_ID,
-                    rpc_endpoint: "127.0.0.1:9900".into(),
-                },
-                owner_epoch: child.ownership_epoch,
-                state: ChunkKvRangeCatalogPartitionState::Serving,
-                artifact: PartitionArtifact {
-                    tree_id: child.tree_id,
-                    stream_name: child.stream_name,
-                    tail_overlay: Some(TailOverlayArtifact {
-                        source_partition_id: Id128 {
-                            high: child.parent_id.high,
-                            low: child.parent_id.low,
-                        },
-                        source_epoch: child.parent_epoch,
-                        source_stream_name: child.parent_stream_name,
-                        source_stream_manifest_generation: child.parent_stream_manifest_generation,
-                        replay_offset: child.parent_replay_offset,
-                        cutover_offset: child.parent_cutover_offset,
-                        base_tree_manifest: child.tree_manifest,
-                        base_applied_seq: child.base_applied_seq,
-                        cutover_seq: child.applied_seq,
-                        target_stream_start_seq: child.child_stream_start_seq,
-                    }),
-                },
-                transition_id: Some(Id128 {
-                    high: transition_id.high,
-                    low: transition_id.low,
-                }),
-            })
-            .collect(),
-        checksum: [0; 32],
-    };
-    page.seal().unwrap();
+    let page = split_catalog_page(&artifact);
 
-    service.commit_catalog_splits(2, &[page]).await.unwrap();
+    let left = activate_split_catalog(&service, &artifact, &page).await;
+
+    let response = service
+        .handle_point(
+            PointRequest {
+                routing: routing(41),
+                operation: PointOperation::Put {
+                    key: b"left-key".to_vec(),
+                    value: b"after-cutover".to_vec(),
+                },
+            },
+            1_500,
+            50_100,
+        )
+        .await;
 
     assert_eq!(parent.lifecycle(), PartitionLifecycle::Retired);
+    assert!(response.result.is_ok());
+    assert_eq!(left.snapshot().journal_durable_seq, cutover_seq + 1);
     assert_eq!(service.metrics_snapshot().split_commits, 1);
+    assert_eq!(service.metrics_snapshot().split_stale_route_forwards, 1);
 }
 
 #[tokio::test]

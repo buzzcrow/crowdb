@@ -15,6 +15,7 @@ pub struct ServerMetrics {
     deadline_rejections: AtomicU64,
     overload_rejections: AtomicU64,
     internal_errors: AtomicU64,
+    split_stale_route_forwards: AtomicU64,
     retired_admission_backpressure: AtomicU64,
     retired_recoveries: AtomicU64,
     retired_split_fences: AtomicU64,
@@ -39,6 +40,7 @@ pub struct ServerMetricsSnapshot {
     pub deadline_rejections: u64,
     pub overload_rejections: u64,
     pub internal_errors: u64,
+    pub split_stale_route_forwards: u64,
     pub admission_backpressure: u64,
     pub recoveries: u64,
     pub split_fences: u64,
@@ -88,6 +90,7 @@ impl ServerMetrics {
             deadline_rejections: self.deadline_rejections.load(Ordering::Relaxed),
             overload_rejections: self.overload_rejections.load(Ordering::Relaxed),
             internal_errors: self.internal_errors.load(Ordering::Relaxed),
+            split_stale_route_forwards: self.split_stale_route_forwards.load(Ordering::Relaxed),
             admission_backpressure: self.retired_admission_backpressure.load(Ordering::Relaxed),
             recoveries: self.retired_recoveries.load(Ordering::Relaxed),
             split_fences: self.retired_split_fences.load(Ordering::Relaxed),
@@ -104,6 +107,10 @@ impl ServerMetrics {
             split_overlay_apply_bytes: self.retired_split_overlay_apply_bytes.load(Ordering::Relaxed),
             materialization_duration_us: self.retired_materialization_duration_us.load(Ordering::Relaxed),
         }
+    }
+
+    pub(crate) fn split_stale_route_forward(&self) {
+        increment(&self.split_stale_route_forwards);
     }
 
     pub(crate) fn retire_partition(&self, metrics: &crowdb_chunk_kv::PartitionMetricsSnapshot) {

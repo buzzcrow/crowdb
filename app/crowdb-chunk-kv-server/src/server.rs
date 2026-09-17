@@ -34,6 +34,13 @@ struct CatalogSnapshot {
     entries: Vec<ChunkKvRangeCatalogEntry>,
 }
 
+#[derive(Clone, Debug)]
+struct LocalPointForward {
+    parent_epoch: u64,
+    transition_id: Id128,
+    child_ids: [Id128; 2],
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ServerLifecycle {
     Prepared,
@@ -103,6 +110,7 @@ pub struct ChunkKvService {
     authority: Arc<ServingAuthority>,
     catalog: ArcSwap<CatalogSnapshot>,
     partitions: ArcSwap<HashMap<Id128, Partition>>,
+    local_point_forwards: ArcSwap<HashMap<Id128, LocalPointForward>>,
     max_partitions: usize,
     max_scan_response_bytes: usize,
     admitting: AtomicBool,
@@ -140,6 +148,7 @@ impl ChunkKvService {
             authority: Arc::new(ServingAuthority::new(instance_id)),
             catalog: ArcSwap::from_pointee(CatalogSnapshot::default()),
             partitions: ArcSwap::from_pointee(HashMap::new()),
+            local_point_forwards: ArcSwap::from_pointee(HashMap::new()),
             max_partitions,
             max_scan_response_bytes,
             admitting: AtomicBool::new(true),
@@ -489,9 +498,35 @@ impl ChunkKvService {
             partition
                 .commit_split(&SplitCommitProof {
                     catalog_revision: catalog_generation,
-                    artifact,
+                    artifact: artifact.clone(),
                 })
                 .await?;
+            let parent_id = Id128 {
+                high: artifact.parent_id.high,
+                low: artifact.parent_id.low,
+            };
+            let forwarding = LocalPointForward {
+                parent_epoch: artifact.parent_epoch,
+                transition_id: Id128 {
+                    high: artifact.transition_id.high,
+                    low: artifact.transition_id.low,
+                },
+                child_ids: [
+                    Id128 {
+                        high: artifact.left.partition_id.high,
+                        low: artifact.left.partition_id.low,
+                    },
+                    Id128 {
+                        high: artifact.right.partition_id.high,
+                        low: artifact.right.partition_id.low,
+                    },
+                ],
+            };
+            self.local_point_forwards.rcu(|current| {
+                let mut next = (**current).clone();
+                next.insert(parent_id, forwarding.clone());
+                Arc::new(next)
+            });
         }
         Ok(())
     }
@@ -641,30 +676,17 @@ impl ChunkKvService {
         let Some(entry) = catalog.entry_for_key(&key) else {
             return not_my_range(catalog.generation, None);
         };
-        if !matches_routing(&request.routing, catalog.generation, entry, self.instance_id) {
-            return not_my_range(catalog.generation, Some(entry));
-        }
-        if let Err(error) = self.authority.authorize(
-            catalog.generation,
-            request.routing.partition_id,
-            request.routing.owner_epoch,
-            now_monotonic_ms,
-        ) {
-            return authority_failure(catalog.generation, &error, Some(entry));
-        }
-        let partition = self.partitions.load().get(&request.routing.partition_id).cloned();
-        let Some(partition) = partition else {
-            return failure(
-                catalog.generation,
-                ChunkKvRpcErrorCode::Recovering,
-                "assigned partition is not prepared locally".into(),
-            );
-        };
+        let partition =
+            match self.resolve_point_partition(&request.routing, catalog.generation, entry, now_monotonic_ms)
+            {
+                Ok(partition) => partition,
+                Err(response) => return *response,
+            };
 
         match request.operation {
             PointOperation::Get { key } => {
                 let minimum = request.routing.min_journal_position.map(journal_position);
-                match partition.get(request.routing.owner_epoch, &key, minimum).await {
+                match partition.get(entry.owner_epoch, &key, minimum).await {
                     Ok(value) => success(
                         catalog.generation,
                         None,
@@ -680,10 +702,7 @@ impl ChunkKvService {
                     client_sequence: request.routing.request_id.client_sequence,
                 };
                 let mutation = mutation_operation(operation);
-                match partition
-                    .mutate(request.routing.owner_epoch, request_id, mutation)
-                    .await
-                {
+                match partition.mutate(entry.owner_epoch, request_id, mutation).await {
                     Ok(response) => {
                         let position = RpcJournalPosition {
                             stream_name: Id128 {
@@ -1086,6 +1105,61 @@ impl ChunkKvService {
                     .await
             }
         }
+    }
+
+    fn matches_local_point_forward(
+        &self,
+        routing: &RequestRouting,
+        generation: u64,
+        entry: &ChunkKvRangeCatalogEntry,
+    ) -> bool {
+        if routing.map_revision >= generation || entry.owner.instance_id != self.instance_id {
+            return false;
+        }
+        self.local_point_forwards
+            .load()
+            .get(&routing.partition_id)
+            .is_some_and(|forward| {
+                routing.owner_epoch == forward.parent_epoch
+                    && entry.transition_id == Some(forward.transition_id)
+                    && forward.child_ids.contains(&entry.partition_id)
+            })
+    }
+
+    fn resolve_point_partition(
+        &self,
+        routing: &RequestRouting,
+        generation: u64,
+        entry: &ChunkKvRangeCatalogEntry,
+        now_monotonic_ms: u64,
+    ) -> Result<Partition, Box<ChunkKvResponse>> {
+        let current = matches_routing(routing, generation, entry, self.instance_id);
+        let stale_local = !current && self.matches_local_point_forward(routing, generation, entry);
+        if !current && !stale_local {
+            return Err(Box::new(not_my_range(generation, Some(entry))));
+        }
+        if stale_local {
+            self.metrics.split_stale_route_forward();
+        }
+        if let Err(error) = self.authority.authorize(
+            generation,
+            entry.partition_id,
+            entry.owner_epoch,
+            now_monotonic_ms,
+        ) {
+            return Err(Box::new(authority_failure(generation, &error, Some(entry))));
+        }
+        self.partitions
+            .load()
+            .get(&entry.partition_id)
+            .cloned()
+            .ok_or_else(|| {
+                Box::new(failure(
+                    generation,
+                    ChunkKvRpcErrorCode::Recovering,
+                    "assigned partition is not prepared locally".into(),
+                ))
+            })
     }
 }
 

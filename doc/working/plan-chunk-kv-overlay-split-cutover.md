@@ -71,7 +71,7 @@ tail and bounded handoff contract.
   child WAL/memtable. Do not await tail warming, child checkpoint, or
   materialization in this path. Files: `lib/crowdb-chunk-kv/src/partition.rs`,
   split manager/server transition code, and partition tests.
-- [ ] **Publish and handle local stale routes**: bind local child writer
+- [x] **Publish and handle local stale routes**: bind local child writer
   readiness to the exact catalog artifact, accept parent and child minimum
   journal positions after publication, and directly dispatch stale point routes
   to hosted children without a second parent writer. Keep parent scan tokens
