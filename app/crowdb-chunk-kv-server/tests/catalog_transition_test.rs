@@ -11,7 +11,7 @@ use crowdb_protocol::chunk_kv::{
     AuthorityReleaseProof, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage,
     ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState, Id128, KeyRange, OwnerDescriptor,
     PartitionArtifact, SplitChildAssignment, SplitPhase, SplitReadinessProof, SplitTransition,
-    TargetReadinessProof, TransferPhase, TransferTransition,
+    TailOverlayArtifact, TargetReadinessProof, TransferPhase, TransferTransition,
 };
 use crowdb_protocol::chunk_stream::StreamName;
 
@@ -33,6 +33,7 @@ fn artifact(tree_id: u64) -> PartitionArtifact {
             high: 7,
             low: tree_id,
         },
+        tail_overlay: None,
     }
 }
 
@@ -166,6 +167,21 @@ async fn transfer_rewrites_only_its_page_and_reconciles_committed_retry() {
 }
 
 fn prepared_split() -> SplitTransition {
+    let overlay = TailOverlayArtifact {
+        source_partition_id: id(1),
+        source_epoch: 3,
+        source_stream_name: artifact(11).stream_name,
+        source_stream_manifest_generation: 1,
+        replay_offset: 0,
+        cutover_offset: 55,
+        base_applied_seq: 55,
+        cutover_seq: 55,
+        target_stream_start_seq: 56,
+    };
+    let mut left_artifact = artifact(13);
+    left_artifact.tail_overlay = Some(overlay.clone());
+    let mut right_artifact = artifact(14);
+    right_artifact.tail_overlay = Some(overlay.clone());
     SplitTransition {
         transition_id: id(92),
         parent_id: id(1),
@@ -185,7 +201,7 @@ fn prepared_split() -> SplitTransition {
             },
             owner: owner(1),
             owner_epoch: 4,
-            artifact: artifact(13),
+            artifact: left_artifact,
         },
         right: SplitChildAssignment {
             partition_id: id(4),
@@ -195,7 +211,7 @@ fn prepared_split() -> SplitTransition {
             },
             owner: owner(3),
             owner_epoch: 1,
-            artifact: artifact(14),
+            artifact: right_artifact,
         },
         planned_at_ms: 0,
         phase: SplitPhase::ChildrenPrepared,
@@ -203,6 +219,8 @@ fn prepared_split() -> SplitTransition {
             cutover_seq: 55,
             left_applied_seq: 55,
             right_applied_seq: 55,
+            left_tail_overlay: overlay.clone(),
+            right_tail_overlay: overlay,
         }),
         failure: None,
     }

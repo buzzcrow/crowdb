@@ -38,6 +38,7 @@ fn catalog(
             artifact: PartitionArtifact {
                 tree_id: 2,
                 stream_name: StreamName { high: 4, low: 5 },
+                tail_overlay: None,
             },
             transition_id: None,
         }],

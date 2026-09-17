@@ -7,7 +7,8 @@ use async_trait::async_trait;
 use crowdb_chunk_kv::{Partition, SplitArtifact};
 use crowdb_protocol::chunk_kv::{
     AuthorityReleaseProof, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogPartitionState, SplitPhase,
-    SplitReadinessProof, SplitTransition, TargetReadinessProof, TransferPhase, TransferTransition,
+    SplitReadinessProof, SplitTransition, TailOverlayArtifact, TargetReadinessProof, TransferPhase,
+    TransferTransition,
 };
 
 use crate::{ChunkKvService, ChunkKvStorage, MonitorError};
@@ -183,6 +184,8 @@ impl TransitionExecutor {
             cutover_seq: artifact.cutover_seq,
             left_applied_seq: artifact.left.applied_seq,
             right_applied_seq: artifact.right.applied_seq,
+            left_tail_overlay: split_tail_overlay(&artifact, &artifact.left),
+            right_tail_overlay: split_tail_overlay(&artifact, &artifact.right),
         })
     }
 }
@@ -218,4 +221,24 @@ impl TransitionStorage for ChunkKvStorage {
 
 fn plan_error(error: &str) -> MonitorError {
     MonitorError::PlanFailed(error.into())
+}
+
+fn split_tail_overlay(
+    split: &SplitArtifact,
+    child: &crowdb_chunk_kv::PreparedChildArtifact,
+) -> TailOverlayArtifact {
+    TailOverlayArtifact {
+        source_partition_id: crowdb_protocol::chunk_kv::Id128 {
+            high: split.parent_id.high,
+            low: split.parent_id.low,
+        },
+        source_epoch: split.parent_epoch,
+        source_stream_name: child.parent_stream_name,
+        source_stream_manifest_generation: child.parent_stream_manifest_generation,
+        replay_offset: child.parent_replay_offset,
+        cutover_offset: child.parent_cutover_offset,
+        base_applied_seq: child.base_applied_seq,
+        cutover_seq: child.applied_seq,
+        target_stream_start_seq: child.child_stream_start_seq,
+    }
 }

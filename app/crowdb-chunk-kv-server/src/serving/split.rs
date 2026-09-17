@@ -82,6 +82,8 @@ impl SplitStateMachine {
         if self.transition.phase != SplitPhase::ParentPreparing {
             return Err(MonitorError::PlanFailed("split parent was not preparing".into()));
         }
+        self.transition.left.artifact.tail_overlay = Some(proof.left_tail_overlay.clone());
+        self.transition.right.artifact.tail_overlay = Some(proof.right_tail_overlay.clone());
         self.transition.readiness_proof = Some(proof);
         self.transition.phase = SplitPhase::ChildrenPrepared;
         self.validate_current()

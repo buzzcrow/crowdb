@@ -49,9 +49,24 @@ pub struct OwnerDescriptor {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TailOverlayArtifact {
+    pub source_partition_id: Id128,
+    pub source_epoch: u64,
+    pub source_stream_name: StreamName,
+    pub source_stream_manifest_generation: u64,
+    pub replay_offset: u64,
+    pub cutover_offset: u64,
+    pub base_applied_seq: u64,
+    pub cutover_seq: u64,
+    pub target_stream_start_seq: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartitionArtifact {
     pub tree_id: u64,
     pub stream_name: StreamName,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail_overlay: Option<TailOverlayArtifact>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -486,6 +501,8 @@ pub struct SplitReadinessProof {
     pub cutover_seq: u64,
     pub left_applied_seq: u64,
     pub right_applied_seq: u64,
+    pub left_tail_overlay: TailOverlayArtifact,
+    pub right_tail_overlay: TailOverlayArtifact,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -544,6 +561,8 @@ impl SplitTransition {
             if proof.cutover_seq == 0
                 || proof.left_applied_seq != proof.cutover_seq
                 || proof.right_applied_seq != proof.cutover_seq
+                || !self.valid_split_overlay(&proof.left_tail_overlay, &self.left, proof.cutover_seq)
+                || !self.valid_split_overlay(&proof.right_tail_overlay, &self.right, proof.cutover_seq)
             {
                 return Err(ChunkKvProtocolError::InvalidSplitTransition);
             }
@@ -561,6 +580,20 @@ impl SplitTransition {
             return Err(ChunkKvProtocolError::InvalidSplitTransition);
         }
         Ok(())
+    }
+
+    fn valid_split_overlay(
+        &self,
+        overlay: &TailOverlayArtifact,
+        child: &SplitChildAssignment,
+        cutover_seq: u64,
+    ) -> bool {
+        valid_tail_overlay(overlay)
+            && child.artifact.tail_overlay.as_ref() == Some(overlay)
+            && overlay.source_partition_id == self.parent_id
+            && overlay.source_epoch == self.parent_epoch
+            && overlay.source_stream_name == self.parent_artifact.stream_name
+            && overlay.cutover_seq == cutover_seq
     }
 }
 
@@ -984,7 +1017,19 @@ fn valid_name(name: &str) -> bool {
 }
 
 fn valid_artifact(artifact: &PartitionArtifact) -> bool {
-    artifact.tree_id != 0 && artifact.stream_name != StreamName::default()
+    artifact.tree_id != 0
+        && artifact.stream_name != StreamName::default()
+        && artifact.tail_overlay.as_ref().map_or(true, valid_tail_overlay)
+}
+
+fn valid_tail_overlay(overlay: &TailOverlayArtifact) -> bool {
+    overlay.source_partition_id != Id128::default()
+        && overlay.source_epoch != 0
+        && overlay.source_stream_name != StreamName::default()
+        && overlay.source_stream_manifest_generation != 0
+        && overlay.replay_offset <= overlay.cutover_offset
+        && overlay.base_applied_seq <= overlay.cutover_seq
+        && overlay.target_stream_start_seq == overlay.cutover_seq.checked_add(1).unwrap_or(0)
 }
 
 fn valid_split_child(child: &SplitChildAssignment) -> bool {

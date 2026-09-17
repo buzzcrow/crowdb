@@ -84,6 +84,7 @@ fn artifact(tree_id: u64) -> PartitionArtifact {
             high: 5,
             low: tree_id,
         },
+        tail_overlay: None,
     }
 }
 
@@ -259,7 +260,13 @@ fn split_artifact(transition: &SplitTransition) -> SplitArtifact {
         tree_id: assignment.artifact.tree_id,
         tree_manifest: 2,
         stream_name: assignment.artifact.stream_name,
+        base_applied_seq: 8,
+        parent_stream_name: StreamName { high: 5, low: 11 },
+        parent_stream_manifest_generation: 1,
+        parent_replay_offset: 0,
+        parent_cutover_offset: 8,
         applied_seq: 8,
+        child_stream_start_seq: 9,
     };
     SplitArtifact {
         transition_id: TransitionId {

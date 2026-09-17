@@ -6,6 +6,7 @@ use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState,
     DomainFailurePolicy, DomainMonitorDescriptor, Id128, KeyRange, OwnerDescriptor, PartitionArtifact,
     ServingAssignment, ServingGrant, SplitChildAssignment, SplitPhase, SplitReadinessProof, SplitTransition,
+    TailOverlayArtifact,
 };
 use crowdb_protocol::chunk_stream::StreamName;
 
@@ -25,6 +26,7 @@ fn entry(id: u64, start: &[u8], end: Option<&[u8]>, epoch: u64) -> ChunkKvRangeC
         artifact: PartitionArtifact {
             tree_id: id,
             stream_name: StreamName { high: 2, low: id },
+            tail_overlay: None,
         },
         transition_id: None,
     }
@@ -192,6 +194,7 @@ fn split_transition_requires_exact_coverage_and_common_cutover() {
     let artifact = |tree_id, low| PartitionArtifact {
         tree_id,
         stream_name: StreamName { high: 9, low },
+        tail_overlay: None,
     };
     let child = |partition_low, start: &[u8], end: Option<&[u8]>, tree_id| SplitChildAssignment {
         partition_id: Id128 {
@@ -225,11 +228,26 @@ fn split_transition_requires_exact_coverage_and_common_cutover() {
         failure: None,
     };
     transition.validate().unwrap();
+    let overlay = TailOverlayArtifact {
+        source_partition_id: transition.parent_id,
+        source_epoch: transition.parent_epoch,
+        source_stream_name: transition.parent_artifact.stream_name,
+        source_stream_manifest_generation: 1,
+        replay_offset: 0,
+        cutover_offset: 11,
+        base_applied_seq: 11,
+        cutover_seq: 11,
+        target_stream_start_seq: 12,
+    };
+    transition.left.artifact.tail_overlay = Some(overlay.clone());
+    transition.right.artifact.tail_overlay = Some(overlay.clone());
     transition.phase = SplitPhase::ChildrenPrepared;
     transition.readiness_proof = Some(SplitReadinessProof {
         cutover_seq: 11,
         left_applied_seq: 11,
         right_applied_seq: 11,
+        left_tail_overlay: overlay.clone(),
+        right_tail_overlay: overlay,
     });
     transition.validate().unwrap();
 

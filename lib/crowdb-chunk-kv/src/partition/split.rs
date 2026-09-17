@@ -128,46 +128,28 @@ impl Partition {
             applied_seq: base_checkpoint.applied_seq,
             delta_records: 0,
         };
-        loop {
-            let target = self.applied_seq.load(Ordering::Acquire);
-            replay_children_until(
+        cursor
+            .catch_up_to_lag(
                 self,
-                &mut cursor,
-                target,
+                plan,
                 left_tree.as_ref(),
                 right_tree.as_ref(),
-                &plan.left,
-                &plan.right,
+                max_fence_lag_records,
             )
             .await?;
-            let latest = self.applied_seq.load(Ordering::Acquire);
-            if latest.saturating_sub(cursor.applied_seq) <= max_fence_lag_records {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
 
         checkpoint_prepared_tree(left_tree.as_ref()).await?;
         checkpoint_prepared_tree(right_tree.as_ref()).await?;
 
-        let fence_lag_records = loop {
-            let target = self.applied_seq.load(Ordering::Acquire);
-            replay_children_until(
+        let fence_lag_records = cursor
+            .catch_up_to_lag(
                 self,
-                &mut cursor,
-                target,
+                plan,
                 left_tree.as_ref(),
                 right_tree.as_ref(),
-                &plan.left,
-                &plan.right,
+                max_fence_lag_records,
             )
             .await?;
-            let latest = self.applied_seq.load(Ordering::Acquire);
-            if latest.saturating_sub(cursor.applied_seq) <= max_fence_lag_records {
-                break latest.saturating_sub(cursor.applied_seq);
-            }
-            tokio::task::yield_now().await;
-        };
 
         let fence_started = Instant::now();
         self.fence_split(plan.transition_id).await?;
@@ -190,8 +172,49 @@ impl Partition {
         self.metrics
             .split_catchup(cursor.delta_records, fence_lag_records);
 
-        let left = checkpoint_child(&plan.left, left_target, left_tree, cutover_seq).await?;
-        let right = checkpoint_child(&plan.right, right_target, right_tree, cutover_seq).await?;
+        self.finish_split(
+            plan,
+            CutoverChildren {
+                base_checkpoint,
+                left_target,
+                right_target,
+                left_tree,
+                right_tree,
+                left_rebuild,
+                right_rebuild,
+                cursor,
+            },
+            cutover_seq,
+            fence_started,
+        )
+        .await
+    }
+
+    async fn finish_split(
+        &self,
+        plan: &SplitPlan,
+        children: CutoverChildren,
+        cutover_seq: u64,
+        fence_started: Instant,
+    ) -> Result<PreparedSplit> {
+        let left = checkpoint_child(
+            &plan.left,
+            children.left_target,
+            children.left_tree,
+            &children.base_checkpoint,
+            children.cursor.offset,
+            cutover_seq,
+        )
+        .await?;
+        let right = checkpoint_child(
+            &plan.right,
+            children.right_target,
+            children.right_tree,
+            &children.base_checkpoint,
+            children.cursor.offset,
+            cutover_seq,
+        )
+        .await?;
         let artifact = SplitArtifact {
             transition_id: plan.transition_id,
             parent_id: plan.parent_id,
@@ -207,9 +230,9 @@ impl Partition {
             artifact,
             left,
             right,
-            left_rebuild,
-            right_rebuild,
-            delta_records: cursor.delta_records,
+            left_rebuild: children.left_rebuild,
+            right_rebuild: children.right_rebuild,
+            delta_records: children.cursor.delta_records,
         })
     }
 
@@ -285,6 +308,50 @@ struct DeltaCursor {
     offset: u64,
     applied_seq: u64,
     delta_records: u64,
+}
+
+impl DeltaCursor {
+    async fn catch_up_to_lag(
+        &mut self,
+        parent: &Partition,
+        plan: &SplitPlan,
+        left_tree: &dyn PartitionTree,
+        right_tree: &dyn PartitionTree,
+        max_lag_records: u64,
+    ) -> Result<u64> {
+        loop {
+            let target = parent.applied_seq.load(Ordering::Acquire);
+            replay_children_until(
+                parent,
+                self,
+                target,
+                left_tree,
+                right_tree,
+                &plan.left,
+                &plan.right,
+            )
+            .await?;
+            let lag = parent
+                .applied_seq
+                .load(Ordering::Acquire)
+                .saturating_sub(self.applied_seq);
+            if lag <= max_lag_records {
+                return Ok(lag);
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+}
+
+struct CutoverChildren {
+    base_checkpoint: Checkpoint,
+    left_target: SplitChildTarget,
+    right_target: SplitChildTarget,
+    left_tree: Arc<dyn PartitionTree>,
+    right_tree: Arc<dyn PartitionTree>,
+    left_rebuild: crowdb_tree_ffi::RangeRebuildStats,
+    right_rebuild: crowdb_tree_ffi::RangeRebuildStats,
+    cursor: DeltaCursor,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -381,6 +448,8 @@ async fn checkpoint_child(
     child: &SplitChild,
     target: SplitChildTarget,
     tree: Arc<dyn PartitionTree>,
+    parent_checkpoint: &Checkpoint,
+    parent_cutover_offset: u64,
     cutover_seq: u64,
 ) -> Result<PreparedSplitChild> {
     let (tree_manifest, applied_seq) = tree.checkpoint(0).await?;
@@ -394,7 +463,15 @@ async fn checkpoint_child(
         tree_id: target.tree_id,
         tree_manifest,
         stream_name: target.journal.stream_name(),
+        base_applied_seq: applied_seq,
+        parent_stream_name: parent_checkpoint.stream_name,
+        parent_stream_manifest_generation: parent_checkpoint.stream_manifest_generation,
+        parent_replay_offset: parent_checkpoint.replay_offset,
+        parent_cutover_offset,
         applied_seq,
+        child_stream_start_seq: cutover_seq
+            .checked_add(1)
+            .ok_or_else(|| ChunkKvError::InvalidRequest("split cutover sequence overflows".into()))?,
     };
     let checkpoint = Checkpoint {
         tree_id: target.tree_id,

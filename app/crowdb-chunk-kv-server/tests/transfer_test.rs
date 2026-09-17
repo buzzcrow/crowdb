@@ -29,6 +29,7 @@ fn transition() -> TransferTransition {
         artifact: PartitionArtifact {
             tree_id: 1,
             stream_name: StreamName { high: 10, low: 11 },
+            tail_overlay: None,
         },
         planned_at_ms: 0,
         old_grant_expires_at_ms: 20_000,

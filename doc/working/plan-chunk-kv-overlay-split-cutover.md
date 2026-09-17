@@ -31,7 +31,7 @@ tail and bounded handoff contract.
   coverage for repeated grant installation through preparation and the lease
   deadline. Files: `lib/crowdb-chunk-kv/src/partition.rs`,
   `app/crowdb-chunk-kv-server/src/{main.rs,server.rs}`, and their tests.
-- [~] **Define shared parent-tail artifact fields**: extend protocol and
+- [x] **Define shared parent-tail artifact fields**: extend protocol and
   partition types so each child identifies its base checkpoint, parent stream
   identity, retained retry floor, source-cutover cursor, and child journal
   start at `C + 1`. The sealed shared parent suffix is the recovery source until
@@ -42,7 +42,7 @@ tail and bounded handoff contract.
 
 ## Preparation and Recovery
 
-- [ ] **Read filtered parent tails during preparation and recovery**: preserve
+- [~] **Read filtered parent tails during preparation and recovery**: preserve
   parent sequencing while optionally warming child overlays from the sealed
   parent suffix. Validate source records, filter by child range, preserve
   request results, and apply only `(B, C]`; no pre-cutover catch-up or child

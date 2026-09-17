@@ -479,6 +479,7 @@ async fn bootstrap_initial_catalog(
             artifact: PartitionArtifact {
                 tree_id: bootstrap.tree_id,
                 stream_name: bootstrap.stream_name,
+                tail_overlay: None,
             },
             transition_id: None,
         }],

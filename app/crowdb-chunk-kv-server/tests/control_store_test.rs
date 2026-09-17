@@ -14,7 +14,7 @@ use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState, DomainFailurePolicy,
     DomainMonitorDescriptor, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest, Id128, KeyRange,
     OwnerDescriptor, PartitionArtifact, ServingAssignment, ServingGrant, SplitChildAssignment, SplitPhase,
-    SplitReadinessProof, SplitTransition, TransferPhase, TransferTransition,
+    SplitReadinessProof, SplitTransition, TailOverlayArtifact, TransferPhase, TransferTransition,
 };
 use crowdb_protocol::chunk_stream::StreamName;
 use crowdb_protocol::key::{ChunkKvRangeCatalogHeadKey, ServingGrantKey, TextKey};
@@ -108,6 +108,7 @@ fn page(generation: u64) -> ChunkKvRangeCatalogPage {
             artifact: PartitionArtifact {
                 tree_id: 1,
                 stream_name: StreamName { high: 2, low: 3 },
+                tail_overlay: None,
             },
             transition_id: None,
         }],
@@ -176,6 +177,7 @@ fn transfer() -> TransferTransition {
         artifact: PartitionArtifact {
             tree_id: 5,
             stream_name: StreamName { high: 6, low: 7 },
+            tail_overlay: None,
         },
         planned_at_ms: 0,
         old_grant_expires_at_ms: 10_000,
@@ -202,6 +204,7 @@ fn split() -> SplitTransition {
         parent_artifact: PartitionArtifact {
             tree_id: 5,
             stream_name: StreamName { high: 6, low: 7 },
+            tail_overlay: None,
         },
         split_key: b"m".to_vec(),
         left: SplitChildAssignment {
@@ -218,6 +221,7 @@ fn split() -> SplitTransition {
             artifact: PartitionArtifact {
                 tree_id: 24,
                 stream_name: StreamName { high: 25, low: 26 },
+                tail_overlay: None,
             },
         },
         right: SplitChildAssignment {
@@ -234,12 +238,27 @@ fn split() -> SplitTransition {
             artifact: PartitionArtifact {
                 tree_id: 29,
                 stream_name: StreamName { high: 30, low: 31 },
+                tail_overlay: None,
             },
         },
         planned_at_ms: 0,
         phase: SplitPhase::Planned,
         readiness_proof: None,
         failure: None,
+    }
+}
+
+fn split_overlay(cutover_seq: u64) -> TailOverlayArtifact {
+    TailOverlayArtifact {
+        source_partition_id: Id128 { high: 1, low: 2 },
+        source_epoch: 3,
+        source_stream_name: StreamName { high: 6, low: 7 },
+        source_stream_manifest_generation: 1,
+        replay_offset: 0,
+        cutover_offset: cutover_seq,
+        base_applied_seq: cutover_seq,
+        cutover_seq,
+        target_stream_start_seq: cutover_seq + 1,
     }
 }
 
@@ -425,6 +444,8 @@ async fn group0_split_store_resumes_prepared_children_before_catalog_cutover() {
             cutover_seq: 41,
             left_applied_seq: 41,
             right_applied_seq: 41,
+            left_tail_overlay: split_overlay(41),
+            right_tail_overlay: split_overlay(41),
         })
         .unwrap();
     let prepared = machine.transition().clone();

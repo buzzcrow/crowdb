@@ -464,6 +464,7 @@ fn split_child(
                 high: derived_u64(parent, split_key, &[side, b"-stream-high"].concat()),
                 low: derived_u64(parent, split_key, &[side, b"-stream-low"].concat()),
             },
+            tail_overlay: None,
         },
     }
 }

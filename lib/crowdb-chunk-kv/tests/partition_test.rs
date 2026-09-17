@@ -62,7 +62,13 @@ fn split_artifact(plan: &SplitPlan, cutover_seq: u64) -> SplitArtifact {
         tree_id: 100 + low,
         tree_manifest: cutover_seq + low,
         stream_name: StreamName { high: 90, low },
+        base_applied_seq: cutover_seq,
+        parent_stream_name: StreamName { high: 89, low: 1 },
+        parent_stream_manifest_generation: 1,
+        parent_replay_offset: 0,
+        parent_cutover_offset: cutover_seq,
         applied_seq: cutover_seq,
+        child_stream_start_seq: cutover_seq + 1,
     };
     SplitArtifact {
         transition_id: plan.transition_id,
@@ -71,6 +77,29 @@ fn split_artifact(plan: &SplitPlan, cutover_seq: u64) -> SplitArtifact {
         cutover_seq,
         left: child(&plan.left, 1),
         right: child(&plan.right, 2),
+    }
+}
+
+fn empty_prepared_child(
+    partition_id: PartitionId,
+    range: PartitionRange,
+    tree_id: u64,
+    stream_name: StreamName,
+) -> PreparedChildArtifact {
+    PreparedChildArtifact {
+        partition_id,
+        range,
+        ownership_epoch: 20,
+        tree_id,
+        tree_manifest: 0,
+        stream_name,
+        base_applied_seq: 0,
+        parent_stream_name: StreamName { high: 12, low: 11 },
+        parent_stream_manifest_generation: 1,
+        parent_replay_offset: 0,
+        parent_cutover_offset: 0,
+        applied_seq: 0,
+        child_stream_start_seq: 1,
     }
 }
 
@@ -1420,18 +1449,15 @@ async fn prepared_child_serves_only_after_exact_catalog_proof() {
     .await
     .unwrap();
     let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
-    let artifact = PreparedChildArtifact {
-        partition_id: PartitionId { high: 12, low: 1 },
-        range: PartitionRange {
+    let artifact = empty_prepared_child(
+        PartitionId { high: 12, low: 1 },
+        PartitionRange {
             start: Some(b"a".to_vec()),
             end: Some(b"m".to_vec()),
         },
-        ownership_epoch: 20,
-        tree_id: 1,
-        tree_manifest: 0,
+        1,
         stream_name,
-        applied_seq: 0,
-    };
+    );
     assert_prepared_tree_identity_mismatch(&artifact, Arc::clone(&journal)).await;
     let prepared = Partition::recover_prepared(
         artifact.clone(),
@@ -1458,18 +1484,15 @@ async fn prepared_child_serves_only_after_exact_catalog_proof() {
         Err(ChunkKvError::NotServing(_))
     ));
 
-    let other = PreparedChildArtifact {
-        partition_id: PartitionId { high: 12, low: 2 },
-        range: PartitionRange {
+    let other = empty_prepared_child(
+        PartitionId { high: 12, low: 2 },
+        PartitionRange {
             start: Some(b"m".to_vec()),
             end: Some(b"z".to_vec()),
         },
-        ownership_epoch: 20,
-        tree_id: 2,
-        tree_manifest: 0,
-        stream_name: StreamName { high: 12, low: 13 },
-        applied_seq: 0,
-    };
+        2,
+        StreamName { high: 12, low: 13 },
+    );
     let proof = SplitCommitProof {
         catalog_revision: 7,
         artifact: SplitArtifact {

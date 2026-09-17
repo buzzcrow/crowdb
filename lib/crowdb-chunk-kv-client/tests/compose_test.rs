@@ -33,6 +33,7 @@ fn catalog() -> (ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>) {
         artifact: PartitionArtifact {
             tree_id: id,
             stream_name: StreamName { high: 2, low: id },
+            tail_overlay: None,
         },
         transition_id: None,
     };

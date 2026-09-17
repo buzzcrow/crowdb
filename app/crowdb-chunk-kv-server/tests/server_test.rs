@@ -83,6 +83,7 @@ fn catalog(
             artifact: PartitionArtifact {
                 tree_id: 1,
                 stream_name,
+                tail_overlay: None,
             },
             transition_id: None,
         }],
@@ -102,6 +103,32 @@ fn catalog(
     };
     head.seal().unwrap();
     (head, page)
+}
+
+fn prepared_split_child(
+    partition_id: PartitionId,
+    range: PartitionRange,
+    tree_id: u64,
+    cutover_seq: u64,
+) -> PreparedChildArtifact {
+    PreparedChildArtifact {
+        partition_id,
+        range,
+        ownership_epoch: EPOCH + 1,
+        tree_id,
+        tree_manifest: 1,
+        stream_name: StreamName {
+            high: tree_id,
+            low: 1,
+        },
+        base_applied_seq: cutover_seq,
+        parent_stream_name: StreamName { high: 10, low: 11 },
+        parent_stream_manifest_generation: 1,
+        parent_replay_offset: 0,
+        parent_cutover_offset: cutover_seq,
+        applied_seq: cutover_seq,
+        child_stream_start_seq: cutover_seq + 1,
+    }
 }
 
 async fn prepared_partition(
@@ -317,24 +344,8 @@ async fn catalog_cutover_commits_the_exact_fenced_split_parent() {
         parent_id: PartitionId { high: 1, low: 2 },
         parent_epoch: EPOCH,
         cutover_seq,
-        left: PreparedChildArtifact {
-            partition_id: left_id,
-            range: left_range,
-            ownership_epoch: EPOCH + 1,
-            tree_id: 81,
-            tree_manifest: 1,
-            stream_name: StreamName { high: 81, low: 1 },
-            applied_seq: cutover_seq,
-        },
-        right: PreparedChildArtifact {
-            partition_id: right_id,
-            range: right_range,
-            ownership_epoch: EPOCH + 1,
-            tree_id: 82,
-            tree_manifest: 1,
-            stream_name: StreamName { high: 82, low: 1 },
-            applied_seq: cutover_seq,
-        },
+        left: prepared_split_child(left_id, left_range, 81, cutover_seq),
+        right: prepared_split_child(right_id, right_range, 82, cutover_seq),
     };
     parent.record_split_artifact(artifact.clone()).await.unwrap();
     let mut page = ChunkKvRangeCatalogPage {
@@ -360,6 +371,7 @@ async fn catalog_cutover_commits_the_exact_fenced_split_parent() {
                 artifact: PartitionArtifact {
                     tree_id: child.tree_id,
                     stream_name: child.stream_name,
+                    tail_overlay: None,
                 },
                 transition_id: Some(Id128 {
                     high: transition_id.high,

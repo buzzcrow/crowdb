@@ -32,6 +32,7 @@ fn page(generation: u64, owner_epoch: u64) -> ChunkKvRangeCatalogPage {
             artifact: PartitionArtifact {
                 tree_id: 1,
                 stream_name: StreamName { high: 2, low: 3 },
+                tail_overlay: None,
             },
             transition_id: None,
         }],

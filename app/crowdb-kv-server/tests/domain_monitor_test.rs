@@ -238,6 +238,7 @@ async fn chunk_kv_driver_publishes_ready_transfer_then_issues_matching_grant() {
     let artifact = PartitionArtifact {
         tree_id: 11,
         stream_name: StreamName { high: 12, low: 13 },
+        tail_overlay: None,
     };
     let source = OwnerDescriptor {
         instance_id: 1,
@@ -379,6 +380,7 @@ async fn chunk_kv_driver_plans_dead_owner_recovery_once_and_waits_for_target() {
     let artifact = PartitionArtifact {
         tree_id: 21,
         stream_name: StreamName { high: 22, low: 23 },
+        tail_overlay: None,
     };
     let mut page = ChunkKvRangeCatalogPage {
         generation: 1,
@@ -498,6 +500,7 @@ async fn assert_chunk_kv_split_plan(target_partitions_per_owner: u32, target_par
             artifact: PartitionArtifact {
                 tree_id: 33,
                 stream_name: StreamName { high: 34, low: 35 },
+                tail_overlay: None,
             },
             transition_id: None,
         }],

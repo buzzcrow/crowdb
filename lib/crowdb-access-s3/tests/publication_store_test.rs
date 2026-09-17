@@ -94,6 +94,7 @@ fn client(transport: Arc<Transport>) -> ChunkKvClient {
             artifact: PartitionArtifact {
                 tree_id: 1,
                 stream_name: StreamName { high: 1, low: 1 },
+                tail_overlay: None,
             },
             transition_id: None,
         }],
