@@ -19,8 +19,9 @@ are durable. R175 child-owner balance begins immediately after R174 acceptance.
   shared-view publish, tree checkpoint, materialization, or catalog refresh.
 - R175 is the next requirement. Existing transfer and balance code is
   unverified scaffolding until R174 acceptance; it must not affect R174's
-  request path, then becomes the starting point for R175 implementation and
-  acceptance.
+  request path. Proactive child-owner balance is disabled in the group-0
+  planner until R174 is accepted, then becomes the starting point for R175
+  implementation and acceptance. Dead-owner recovery remains independent.
 - Generation is catalog reference information. An old client generation resolves
   through local split lineage. Ownership epoch remains an internal writer/WAL/tree
   durability fence, not an RPC routing precondition.
@@ -34,17 +35,17 @@ The fully rebuilt E2E at `bench-log/chunk-kv-regression-20260918-231648` ran
 completed its online workload with 0 errors in 43.014 s (697 ops/s, p99
 154.205 ms), catalog generation 3, and two partitions. Node1 restart then
 failed immediately on all three attempts with `tree root owner epoch is
-stale`. Rebuilding `crowdb-kv-server` therefore ruled out the stale-publisher
-hypothesis. Root authority advances ahead of a catalog assignment somewhere in
-split preparation or reconciliation; a crash leaves the catalog epoch unable
-to reopen that tree.
+stale`. A shorter reproduction identified `tree_id=1, current_epoch=3,
+requested_epoch=2`: proactive R175 balance preparation advanced the shared
+tree authority while the R174 source catalog still named epoch 2. This is an
+out-of-scope transition leaking into the R174 regression, not evidence that
+the same-process local split itself requires another root epoch.
 
 ### Current Bug and Next Diagnosis
 
-- [~] **Repair retained-parent root authority across restart**: identify the
-  exact tree and requested/current epochs, then prevent split preparation from
-  claiming authority that the catalog has not published. Verify the retained
-  parent entry carries `tail_overlay` and trace
+- [~] **Verify retained-parent restart with balance disabled**: rerun the
+  same-process local split without proactive owner transfer, verify the
+  retained parent entry carries `tail_overlay`, and trace
   `ChunkKvStorage::recover_partition()` through
   `Partition::recover_native_prepared_overlay()`. Files:
   `app/crowdb-chunk-kv-server/src/{catalog/transition.rs,storage.rs,main.rs}`
