@@ -3,7 +3,6 @@
 
 //! `crowdb-chunk-kv-server` process entry point.
 
-use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,8 +17,8 @@ use crowdb_chunk_kv_server::{
 use crowdb_kv_client::{ServiceRegistryClient, WatchNotifyClient, WatchSubscription};
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
-    ChunkKvRangeCatalogPartitionState, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest, Id128,
-    KeyRange, OwnerDescriptor, PartitionArtifact,
+    ChunkKvRangeCatalogPartitionState, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest, KeyRange,
+    OwnerDescriptor, PartitionArtifact,
 };
 use crowdb_protocol::key::{ChunkKvSplitKey, ChunkKvTransferKey, TextKey};
 use tracing::{error, info, warn};
@@ -176,21 +175,14 @@ async fn main() {
     let catalog = Arc::new(ChunkKvRangeCatalogPublisher::new(control_store.clone()));
     match catalog.load_current().await {
         Ok(Some((head, pages))) => {
-            let recovered = match recover_assigned_partitions(
-                &storage,
-                &service,
-                &pages,
-                config.instance_id,
-                &HashSet::new(),
-            )
-            .await
-            {
-                Ok(recovered) => recovered,
-                Err(error) => {
-                    error!(%error, "failed to recover an assigned chunk KV partition");
-                    return;
-                }
-            };
+            let recovered =
+                match recover_assigned_partitions(&storage, &service, &pages, config.instance_id).await {
+                    Ok(recovered) => recovered,
+                    Err(error) => {
+                        error!(%error, "failed to recover an assigned chunk KV partition");
+                        return;
+                    }
+                };
             if let Err(error) = service.install_catalog_and_reconcile(&head, &pages, &recovered) {
                 error!(%error, "failed to install initial chunk KV catalog and partitions");
                 return;
@@ -249,22 +241,11 @@ async fn main() {
             interval.tick().await;
             match refresh_catalog.load_current().await {
                 Ok(Some((head, pages))) => {
-                    let retained_split_parents = match refresh_service
-                        .validated_catalog_split_parents(&pages)
-                        .await
-                    {
-                        Ok(parents) => parents,
-                        Err(error) => {
-                            warn!(%error, "catalog refresh split cutover validation failed; retaining installed catalog");
-                            continue;
-                        }
-                    };
                     let recovered = match recover_assigned_partitions(
                         &refresh_storage,
                         &refresh_service,
                         &pages,
                         refresh_instance_id,
-                        &retained_split_parents,
                     )
                     .await
                     {
@@ -274,13 +255,6 @@ async fn main() {
                             continue;
                         }
                     };
-                    if let Err(error) = refresh_service
-                        .commit_catalog_splits(head.generation, &pages, &recovered)
-                        .await
-                    {
-                        warn!(%error, "catalog refresh could not commit a fenced split parent");
-                        continue;
-                    }
                     match refresh_service.install_catalog_and_reconcile(&head, &pages, &recovered) {
                         Ok(()) => info!(
                             generation = head.generation,
@@ -374,6 +348,18 @@ async fn main() {
         return;
     }
     install_latest_grant(&control_store, &service, &config).await;
+    let materialization_service = Arc::clone(&service);
+    let materialization_interval = std::time::Duration::from_millis(config.catalog_refresh_interval_ms);
+    let materialization_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(materialization_interval);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if let Err(error) = materialization_service.materialize_split_overlays().await {
+                warn!(%error, "chunk KV split-overlay materialization pass failed");
+            }
+        }
+    });
     let heartbeat_service = Arc::clone(&service);
     let heartbeat_registry = Arc::clone(&service_registry);
     let heartbeat_store = Arc::clone(&control_store);
@@ -394,9 +380,6 @@ async fn main() {
             let request_rate = requests.saturating_sub(previous_requests).saturating_mul(1_000) / elapsed_ms;
             previous_requests = requests;
             previous_ms = now_ms;
-            if let Err(error) = heartbeat_service.materialize_split_overlays().await {
-                warn!(%error, "chunk KV split-overlay materialization pass failed");
-            }
             let observation = match heartbeat_service
                 .registry_observation_with_load_samples(capacity_bytes, request_rate, 256)
                 .await
@@ -458,6 +441,7 @@ async fn main() {
         error!(%error, "HTTP management server failed");
     }
     heartbeat_task.abort();
+    materialization_task.abort();
     transition_task.abort();
     refresh_task.abort();
     if let Err(error) = service_registry.unregister("chunk-kv", config.instance_id).await {
@@ -576,7 +560,6 @@ async fn recover_assigned_partitions(
     service: &ChunkKvService,
     pages: &[ChunkKvRangeCatalogPage],
     instance_id: u64,
-    retained_split_parents: &HashSet<Id128>,
 ) -> Result<Vec<crowdb_chunk_kv::Partition>, crowdb_chunk_kv_server::StorageRuntimeError> {
     let mut recovered = Vec::new();
     for entry in pages.iter().flat_map(|page| &page.entries).filter(|entry| {
@@ -586,7 +569,7 @@ async fn recover_assigned_partitions(
                 ChunkKvRangeCatalogPartitionState::Retired | ChunkKvRangeCatalogPartitionState::Faulted
             )
     }) {
-        if !retained_split_parents.contains(&entry.partition_id) && !service.hosts_catalog_assignment(entry) {
+        if !service.hosts_catalog_assignment(entry) {
             recovered.push(storage.recover_partition(entry).await?);
         }
     }

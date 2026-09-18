@@ -454,17 +454,21 @@ async fn group0_split_store_resumes_prepared_child_before_catalog_cutover() {
     let revision = store.persist_split_transition(&planned, 0).await.unwrap();
     let mut machine = SplitStateMachine::restore(planned).unwrap();
     machine.begin_parent_prepare().unwrap();
+    let retained_parent_tail_overlay = split_overlay(41);
+    let mut retained_parent_artifact = split().retained_parent_artifact;
+    retained_parent_artifact.tail_overlay = Some(retained_parent_tail_overlay.clone());
     machine
         .record_child_ready(SplitReadinessProof {
             cutover_seq: 41,
             parent_next_epoch: 4,
-            retained_parent_artifact: split().retained_parent_artifact,
+            retained_parent_artifact,
             retained_parent_tree_manifest: 1,
             retained_parent_root_manifest_generation: 1,
             retained_parent_applied_seq: 41,
             child_applied_seq: 41,
             child_tree_manifest: 1,
             child_root_manifest_generation: 1,
+            retained_parent_tail_overlay,
             child_tail_overlay: split_overlay(41),
         })
         .unwrap();

@@ -264,7 +264,7 @@ impl PartitionTree for MemoryPartitionTree {
         Ok((Arc::new(rebuilt), stats))
     }
 
-    async fn begin_split_memtable_view(&self) -> Result<u64> {
+    async fn begin_split_memtable_view(&self) -> Result<(u64, u64)> {
         let generation = self
             .next_split_view
             .fetch_add(1, Ordering::AcqRel)
@@ -278,12 +278,13 @@ impl PartitionTree for MemoryPartitionTree {
             ));
         }
         views.insert(generation, values);
-        Ok(generation)
+        Ok((generation, self.last_applied.load(Ordering::Acquire)))
     }
 
     async fn publish_split_memtable_view(
         &self,
         generation: u64,
+        journal_frontier: u64,
         destination: &dyn PartitionTree,
         range: &crate::PartitionRange,
     ) -> Result<()> {
@@ -305,7 +306,7 @@ impl PartitionTree for MemoryPartitionTree {
             destination
                 .last_applied
                 .load(Ordering::Acquire)
-                .max(self.last_applied.load(Ordering::Acquire)),
+                .max(journal_frontier),
             Ordering::Release,
         );
         Ok(())

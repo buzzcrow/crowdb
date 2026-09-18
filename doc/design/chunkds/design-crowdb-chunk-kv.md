@@ -130,8 +130,10 @@ Split preparation follows these ordered steps:
    buffered requests directly to their range writer WAL and memtable. Reads
    use the old tree until this route is installed.
 6. Publish one catalog generation that shrinks the retained parent (same ID,
-   new epoch) and inserts exactly one new child. Refresh installs this catalog
-   and serving grant; it does not recover the retained parent as a replacement.
+   new epoch) and inserts exactly one new child. The parent owner already has
+   both writers active, so refresh only publishes this catalog and serving
+   grant to external routing; it does not gate local handoff, recover the
+   retained parent, or replay a cutover.
 
 The child base checkpoint records two independent counters: its logical tree
 snapshot sequence and its chunk root-catalog generation. Immediately after the

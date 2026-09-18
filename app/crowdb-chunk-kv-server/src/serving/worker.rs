@@ -258,13 +258,18 @@ impl TransitionExecutor {
         }
         let parent = self
             .service
-            .hosted_partition(transition.parent_id)
+            .split_transition_parent(transition.parent_id)
             .ok_or_else(|| plan_error("split parent partition is not hosted"))?;
         let transition_id = crowdb_chunk_kv::TransitionId {
             high: transition.transition_id.high,
             low: transition.transition_id.low,
         };
-        let artifact = if let Some(artifact) = parent.prepared_split_artifact(transition_id).await {
+        let artifact = if let Some(artifact) = self
+            .service
+            .local_split_artifact(transition.parent_id, transition_id)
+        {
+            artifact
+        } else if let Some(artifact) = parent.prepared_split_artifact(transition_id).await {
             let child_id = crowdb_protocol::chunk_kv::Id128 {
                 high: artifact.child.partition_id.high,
                 low: artifact.child.partition_id.low,
@@ -285,19 +290,29 @@ impl TransitionExecutor {
                 .map_err(|error| plan_error(&error.to_string()))?;
             prepared.artifact
         };
+        if parent.split_ingress().is_some() {
+            self.service
+                .record_local_split_ready(&artifact)
+                .await
+                .map_err(|error| plan_error(&error.to_string()))?;
+        }
         if artifact.child.applied_seq != artifact.cutover_seq {
             return Err(plan_error("split child does not share the cutover frontier"));
         }
+        let retained_parent_tail_overlay = split_tail_overlay(&artifact, &artifact.retained_parent);
+        let mut retained_parent_artifact = transition.retained_parent_artifact.clone();
+        retained_parent_artifact.tail_overlay = Some(retained_parent_tail_overlay.clone());
         Ok(SplitReadinessProof {
             cutover_seq: artifact.cutover_seq,
             parent_next_epoch: artifact.parent_next_epoch,
-            retained_parent_artifact: transition.retained_parent_artifact.clone(),
+            retained_parent_artifact,
             retained_parent_tree_manifest: artifact.retained_parent.tree_manifest,
             retained_parent_root_manifest_generation: artifact.retained_parent.root_manifest_generation,
             retained_parent_applied_seq: artifact.retained_parent.applied_seq,
             child_applied_seq: artifact.child.applied_seq,
             child_tree_manifest: artifact.child.tree_manifest,
             child_root_manifest_generation: artifact.child.root_manifest_generation,
+            retained_parent_tail_overlay,
             child_tail_overlay: split_tail_overlay(&artifact, &artifact.child),
         })
     }
@@ -347,13 +362,11 @@ impl TransitionStorage for ChunkKvStorage {
         let retained_parent = prepared
             .retained_parent
             .ok_or_else(|| plan_error("split session did not create a retained parent writer"))?
-            .open(PartitionConfig::default())
-            .await
+            .open_warmed(PartitionConfig::default())
             .map_err(|error| plan_error(&error.to_string()))?;
         let child = prepared
             .child
-            .open(PartitionConfig::default())
-            .await
+            .open_warmed(PartitionConfig::default())
             .map_err(|error| plan_error(&error.to_string()))?;
         retained_parent
             .activate_local_split_writer(&artifact)

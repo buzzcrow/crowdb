@@ -958,17 +958,18 @@ ct_status ct_flush(ct_tree *t)
     return to_status(t->tree->flush());
 }
 
-ct_status ct_begin_split_memtable_view(ct_tree *t, uint64_t *out_generation)
+ct_status ct_begin_split_memtable_view(ct_tree *t, uint64_t *out_generation, uint64_t *out_journal_frontier)
 {
     if (t == nullptr || out_generation == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
-    return to_status(t->tree->begin_split_memtable_view(out_generation));
+    return to_status(t->tree->begin_split_memtable_view(out_generation, out_journal_frontier));
 }
 
-ct_status ct_publish_split_memtable_view(ct_tree *source, uint64_t generation, ct_tree *destination,
-                                         const uint8_t *range_start, size_t range_start_len, int has_range_start,
-                                         const uint8_t *range_end, size_t range_end_len, int has_range_end)
+ct_status ct_publish_split_memtable_view(ct_tree *source, uint64_t generation, uint64_t journal_frontier,
+                                         ct_tree *destination, const uint8_t *range_start, size_t range_start_len,
+                                         int has_range_start, const uint8_t *range_end, size_t range_end_len,
+                                         int has_range_end)
 {
     if (source == nullptr || destination == nullptr || (has_range_start != 0 && range_start == nullptr) ||
         (has_range_end != 0 && range_end == nullptr)) {
@@ -982,7 +983,7 @@ ct_status ct_publish_split_memtable_view(ct_tree *source, uint64_t generation, c
     if (has_range_end != 0) {
         end.emplace(reinterpret_cast<const char *>(range_end), range_end_len);
     }
-    return to_status(source->tree->publish_split_memtable_view(generation, *destination->tree,
+    return to_status(source->tree->publish_split_memtable_view(generation, journal_frontier, *destination->tree,
                                                                KeyRange::bounded(std::move(start), std::move(end))));
 }
 
@@ -1336,11 +1337,10 @@ ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t 
     ScanPackedBuf packed;
     size_t        count = 0;
     bool          tr    = false;
-    Status s = t->tree->scan(Slice(reinterpret_cast<const char *>(prefix), plen),
-                             Slice(reinterpret_cast<const char *>(start_key), sklen),
-                             Slice(reinterpret_cast<const char *>(end_key), elen), limit, byte_budget, keys_only != 0,
-                             deadline_ms, nullptr, &tr, include_tombstones != 0, &packed, &count,
-                             has_start_bound != 0, start_inclusive != 0);
+    Status        s     = t->tree->scan(
+        Slice(reinterpret_cast<const char *>(prefix), plen), Slice(reinterpret_cast<const char *>(start_key), sklen),
+        Slice(reinterpret_cast<const char *>(end_key), elen), limit, byte_budget, keys_only != 0, deadline_ms, nullptr,
+        &tr, include_tombstones != 0, &packed, &count, has_start_bound != 0, start_inclusive != 0);
     if (!s.ok()) {
         return to_status(s);
     }

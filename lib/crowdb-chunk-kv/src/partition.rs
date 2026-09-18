@@ -1600,6 +1600,32 @@ impl Partition {
             .and_then(|active| active.artifact.clone())
     }
 
+    /// Completes the process-local handoff after both replacement writers are
+    /// installed.  The old handle remains a dispatcher for stale routes, but
+    /// it no longer represents an unfinished topology transition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless `artifact` is the exact durable artifact of
+    /// the active finalization and the replacement ingress is installed.
+    pub async fn complete_local_split_handoff(&self, artifact: &SplitArtifact) -> Result<()> {
+        if self.lifecycle() != PartitionLifecycle::SplitFinalizing || self.split_ingress().is_none() {
+            return Err(ChunkKvError::SplitRetry(
+                "local split handoff requires a finalized parent ingress".into(),
+            ));
+        }
+        let mut transition = self.split_transition.lock().await;
+        if transition.as_ref().and_then(|active| active.artifact.as_ref()) != Some(artifact) {
+            return Err(ChunkKvError::SplitRetry(
+                "local split handoff does not match the prepared artifact".into(),
+            ));
+        }
+        *transition = None;
+        self.lifecycle
+            .store(lifecycle_code(PartitionLifecycle::Serving), Ordering::Release);
+        Ok(())
+    }
+
     /// Publishes the locally durable split writers to callers that still hold
     /// the pre-split parent handle.  This is deliberately an atomic snapshot:
     /// a request observes either the old parent sequencer or one complete pair

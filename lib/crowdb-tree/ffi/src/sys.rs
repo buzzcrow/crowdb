@@ -381,10 +381,15 @@ extern "C" {
     pub fn ct_put(t: *mut ct_tree, key: *const u8, klen: usize, val: *const u8, vlen: usize) -> c_int;
     pub fn ct_del(t: *mut ct_tree, key: *const u8, klen: usize) -> c_int;
     pub fn ct_flush(t: *mut ct_tree) -> c_int;
-    pub fn ct_begin_split_memtable_view(t: *mut ct_tree, out_generation: *mut u64) -> c_int;
+    pub fn ct_begin_split_memtable_view(
+        t: *mut ct_tree,
+        out_generation: *mut u64,
+        out_journal_frontier: *mut u64,
+    ) -> c_int;
     pub fn ct_publish_split_memtable_view(
         source: *mut ct_tree,
         generation: u64,
+        journal_frontier: u64,
         destination: *mut ct_tree,
         range_start: *const u8,
         range_start_len: usize,

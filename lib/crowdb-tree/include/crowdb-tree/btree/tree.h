@@ -588,7 +588,7 @@ class Crowdbtree
     // and installs a fresh active table for post-prepare writes. Normal flush
     // and reclamation leave that shared view alone until its split session
     // explicitly releases it.
-    Status begin_split_memtable_view(uint64_t *out_generation);
+    Status begin_split_memtable_view(uint64_t *out_generation, uint64_t *out_journal_frontier);
 
     // Releases the split-owned shared view after both derived range trees have
     // durably published it. The generation fences stale release attempts.
@@ -597,7 +597,8 @@ class Crowdbtree
     // Bulk-publishes the split-owned shared view into one range-bounded
     // destination. Source entries remain owned by the session; callers release
     // them only after every destination has durably snapshotted its result.
-    Status publish_split_memtable_view(uint64_t generation, Crowdbtree &destination, const KeyRange &range);
+    Status publish_split_memtable_view(uint64_t generation, uint64_t journal_frontier, Crowdbtree &destination,
+                                       const KeyRange &range);
 
     // Async twin of flush(). flush() only drains
     // L0 (MemTable) into L1 (in-memory B+tree) -- it never touches
@@ -1446,9 +1447,12 @@ class Crowdbtree
         Gauge   *buf_resident   = nullptr;
         Gauge   *buf_dirty      = nullptr;
         // Flush (L0 → L1)
-        LatencySummary *flush_l         = nullptr;
-        Counter        *flush_drain_c   = nullptr;
-        Counter        *flush_entries_c = nullptr;
+        LatencySummary *flush_l              = nullptr;
+        Counter        *flush_drain_c        = nullptr;
+        Counter        *flush_entries_c      = nullptr;
+        LatencySummary *split_view_begin_l   = nullptr;
+        LatencySummary *split_view_publish_l = nullptr;
+        LatencySummary *split_view_release_l = nullptr;
         // MemTable (L0) operation latency
         LatencySummary *mt_apply_l   = nullptr;
         Counter        *mt_get_c     = nullptr;

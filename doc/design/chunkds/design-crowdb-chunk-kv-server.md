@@ -126,10 +126,11 @@ monitor advance them in this order:
    epoch, then inserts the one child entry. A retry accepts an already-published
    result only if transition IDs, ranges, owners, epochs, trees, streams, and
    the child overlay all match.
-5. Catalog reconciliation resumes the retained parent and activates the child
-   under matching serving grants. A stale parent point route dispatches to the
-   retained parent or child by key; old parent scan and seek topology must
-   refresh.
+5. The parent owner has already activated both local writers before publishing
+   the catalog. Catalog reconciliation adopts those handles for external
+   routing; it neither resumes the retained parent nor activates either writer.
+   A stale parent point route dispatches to the retained parent or child by
+   key; old parent scan and seek topology must refresh.
 
 Before child materialization, heartbeat load reports the child as dependent.
 The local maintenance loop performs bounded ownership materialization and a

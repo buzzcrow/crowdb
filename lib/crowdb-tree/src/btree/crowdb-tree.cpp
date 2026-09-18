@@ -1486,10 +1486,11 @@ std::vector<std::shared_ptr<MemTable>> Crowdbtree::all_memtables() const
     return out;
 }
 
-Status Crowdbtree::begin_split_memtable_view(uint64_t *out_generation)
+Status Crowdbtree::begin_split_memtable_view(uint64_t *out_generation, uint64_t *out_journal_frontier)
 {
-    if (out_generation == nullptr) {
-        return Status::invalid_argument("split memtable view requires an output generation");
+    const auto started = std::chrono::steady_clock::now();
+    if (out_generation == nullptr || out_journal_frontier == nullptr) {
+        return Status::invalid_argument("split memtable view requires output parameters");
     }
     std::scoped_lock write_lk(write_mutex_);
     std::unique_lock memtable_lk(memtable_mutex_);
@@ -1503,23 +1504,35 @@ Status Crowdbtree::begin_split_memtable_view(uint64_t *out_generation)
     active_ = std::make_shared<MemTable>(memtable_next_id_.fetch_add(1, std::memory_order_relaxed), &epoch_);
     active_->set_durable_floor(last_applied_slot_.load());
     ++split_memtable_generation_;
-    *out_generation = split_memtable_generation_;
+    *out_generation       = split_memtable_generation_;
+    *out_journal_frontier = contiguous_slot_.load();
+    if (metrics_.split_view_begin_l != nullptr) {
+        metrics_.split_view_begin_l->observe(static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count()));
+    }
     return Status::Ok();
 }
 
 Status Crowdbtree::release_split_memtable_view(uint64_t generation)
 {
+    const auto       started = std::chrono::steady_clock::now();
     std::scoped_lock write_lk(write_mutex_);
     std::unique_lock memtable_lk(memtable_mutex_);
     if (generation == 0 || generation != split_memtable_generation_ || split_shared_memtables_.empty()) {
         return Status::invalid_argument("split memtable view generation is not active");
     }
     split_shared_memtables_.clear();
+    if (metrics_.split_view_release_l != nullptr) {
+        metrics_.split_view_release_l->observe(static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count()));
+    }
     return Status::Ok();
 }
 
-Status Crowdbtree::publish_split_memtable_view(uint64_t generation, Crowdbtree &destination, const KeyRange &range)
+Status Crowdbtree::publish_split_memtable_view(uint64_t generation, uint64_t journal_frontier, Crowdbtree &destination,
+                                               const KeyRange &range)
 {
+    const auto started = std::chrono::steady_clock::now();
     if (&destination == this) {
         return Status::invalid_argument("split memtable destination must differ from its source");
     }
@@ -1543,8 +1556,11 @@ Status Crowdbtree::publish_split_memtable_view(uint64_t generation, Crowdbtree &
         return left.key == right.key ? left.slot > right.slot : left.key < right.key;
     });
 
-    std::scoped_lock        write_lk(write_mutex_, destination.write_mutex_);
-    const uint64_t          cs      = contiguous_slot_.load();
+    std::scoped_lock write_lk(write_mutex_, destination.write_mutex_);
+    // The split view stops at the journal frontier captured when the source
+    // installed its replacement active memtable.  Publishing later must not
+    // advance the destination over post-view journal records.
+    const uint64_t          cs      = journal_frontier;
     uint64_t                page_id = kInvalidPageId;
     Slice                   high_key;
     bool                    have_leaf = false;
@@ -1582,7 +1598,12 @@ Status Crowdbtree::publish_split_memtable_view(uint64_t generation, Crowdbtree &
         destination.publish_group_to_leaf_locked(page_id, cs, std::move(group));
     }
     destination.last_applied_slot_.store(std::max(destination.last_applied_slot_.load(), cs));
+    destination.contiguous_slot_.store(std::max(destination.contiguous_slot_.load(), cs));
     destination.version_.fetch_add(1);
+    if (metrics_.split_view_publish_l != nullptr) {
+        metrics_.split_view_publish_l->observe(static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - started).count()));
+    }
     return Status::Ok();
 }
 
@@ -5166,13 +5187,16 @@ void Crowdbtree::init_metrics(const std::string &prefix, const std::string &back
     std::string io = backend_label.empty() ? prefix : prefix + "." + backend_label;
 
     // ── Logical metrics (backend-independent) ──
-    metrics_.flush_l         = r->register_summary(prefix + ".flush.l");
-    metrics_.flush_drain_c   = r->register_counter(prefix + ".flush.drain.c");
-    metrics_.flush_entries_c = r->register_counter(prefix + ".flush.entries.c");
-    metrics_.mt_apply_l      = r->register_summary(prefix + ".mt.apply.l");
-    metrics_.mt_get_c        = r->register_counter(prefix + ".mt.get.c");
-    metrics_.mt_get_hit_c    = r->register_counter(prefix + ".mt.get.hit.c");
-    metrics_.mt_get_l        = r->register_summary(prefix + ".mt.get.l");
+    metrics_.flush_l              = r->register_summary(prefix + ".flush.l");
+    metrics_.flush_drain_c        = r->register_counter(prefix + ".flush.drain.c");
+    metrics_.flush_entries_c      = r->register_counter(prefix + ".flush.entries.c");
+    metrics_.split_view_begin_l   = r->register_summary(prefix + ".split.view.begin.l");
+    metrics_.split_view_publish_l = r->register_summary(prefix + ".split.view.publish.l");
+    metrics_.split_view_release_l = r->register_summary(prefix + ".split.view.release.l");
+    metrics_.mt_apply_l           = r->register_summary(prefix + ".mt.apply.l");
+    metrics_.mt_get_c             = r->register_counter(prefix + ".mt.get.c");
+    metrics_.mt_get_hit_c         = r->register_counter(prefix + ".mt.get.hit.c");
+    metrics_.mt_get_l             = r->register_summary(prefix + ".mt.get.l");
     metrics_.mt_frozen_g  = r->register_callback_gauge(prefix + ".mt.frozen.g",
                                                        [this] { return static_cast<uint64_t>(frozen_table_count()); });
     metrics_.mt_records_g = r->register_callback_gauge(prefix + ".mt.records.g", [this] {

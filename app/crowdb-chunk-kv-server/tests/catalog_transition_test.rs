@@ -214,6 +214,8 @@ fn prepared_split() -> SplitTransition {
         cutover_seq: 55,
         target_stream_start_seq: 56,
     };
+    let mut retained_parent_artifact = artifact(12);
+    retained_parent_artifact.tail_overlay = Some(overlay.clone());
     let mut child_artifact = artifact(14);
     child_artifact.tail_overlay = Some(overlay.clone());
     SplitTransition {
@@ -226,7 +228,7 @@ fn prepared_split() -> SplitTransition {
         parent_owner: owner(1),
         parent_epoch: 3,
         parent_artifact: artifact(11),
-        retained_parent_artifact: artifact(12),
+        retained_parent_artifact: retained_parent_artifact.clone(),
         parent_next_epoch: 4,
         split_key: b"g".to_vec(),
         child: SplitChildAssignment {
@@ -244,13 +246,14 @@ fn prepared_split() -> SplitTransition {
         readiness_proof: Some(SplitReadinessProof {
             cutover_seq: 55,
             parent_next_epoch: 4,
-            retained_parent_artifact: artifact(12),
+            retained_parent_artifact,
             retained_parent_tree_manifest: 1,
             retained_parent_root_manifest_generation: 1,
             retained_parent_applied_seq: 55,
             child_applied_seq: 55,
             child_tree_manifest: 1,
             child_root_manifest_generation: 1,
+            retained_parent_tail_overlay: overlay.clone(),
             child_tail_overlay: overlay,
         }),
         failure: None,

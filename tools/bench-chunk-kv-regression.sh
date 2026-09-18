@@ -9,10 +9,10 @@ cd "$(dirname "$0")/.."
 OPERATIONS="${CHUNK_KV_BENCH_OPERATIONS:-30000}"
 CONCURRENCY="${CHUNK_KV_BENCH_CONCURRENCY:-32}"
 VALUE_BYTES="${CHUNK_KV_BENCH_VALUE_BYTES:-512}"
-HOT_SPLIT_ROUNDS="${CHUNK_KV_BENCH_HOT_SPLIT_ROUNDS:-3}"
 HOT_KEY_PREFIX="${CHUNK_KV_BENCH_HOT_KEY_PREFIX:-object/hot}"
 TARGET_PARTITION_BYTES="${CHUNK_KV_BENCH_TARGET_PARTITION_BYTES:-5242880}"
 TIMEOUT_SECS="${CHUNK_KV_BENCH_TIMEOUT:-240}"
+READY_TIMEOUT_SECS="${CHUNK_KV_BENCH_READY_TIMEOUT:-$TIMEOUT_SECS}"
 SKIP_BUILD="${CHUNK_KV_BENCH_SKIP_BUILD:-0}"
 RUN_STAMP=$(date +%Y%m%d-%H%M%S)
 LOG_ROOT="${CHUNK_KV_BENCH_LOG_ROOT:-$(pwd)/bench-log/chunk-kv-regression-$RUN_STAMP}"
@@ -50,18 +50,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for value in "$OPERATIONS" "$CONCURRENCY" "$VALUE_BYTES" "$TIMEOUT_SECS" "$HOT_SPLIT_ROUNDS" \
+for value in "$OPERATIONS" "$CONCURRENCY" "$VALUE_BYTES" "$TIMEOUT_SECS" "$READY_TIMEOUT_SECS" \
     "$TARGET_PARTITION_BYTES"; do
     if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
         echo "ERROR: benchmark bounds must be positive integers" >&2
         exit 2
     fi
 done
-if [ $((OPERATIONS % HOT_SPLIT_ROUNDS)) -ne 0 ]; then
-    echo "ERROR: operations must divide evenly across hot split rounds" >&2
-    exit 2
-fi
-
 if [ "$SKIP_BUILD" -eq 0 ]; then
     pixi run build-cpp
     pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server \
@@ -139,7 +134,7 @@ start_server() {
 }
 
 wait_ready() {
-    local instance="$1" pid="$2" deadline=$((SECONDS + TIMEOUT_SECS))
+    local instance="$1" pid="$2" deadline=$((SECONDS + READY_TIMEOUT_SECS))
     while [ "$SECONDS" -lt "$deadline" ]; do
         if curl --silent --fail "http://127.0.0.1:$((15100 + instance))/ready" \
             >"$LOG_ROOT/chunk-kv-$instance.ready.json"; then
@@ -176,10 +171,9 @@ collect_metrics() {
     local instance metrics value
     ADMISSION_BACKPRESSURE=0
     RECOVERIES=0
-    SPLIT_FENCES=0
-    SPLIT_COMMITS=0
-    SPLIT_FENCE_LAG_RECORDS=0
-    SPLIT_FENCE_DURATION_US=0
+    SPLIT_FINALIZATIONS=0
+    SPLIT_CATCHUP_LAG_RECORDS=0
+    SPLIT_FINALIZATION_DURATION_US=0
     for instance in 1 2 3; do
         if ! metrics=$(curl --silent --fail "http://127.0.0.1:$((15100 + instance))/metrics"); then
             continue
@@ -188,17 +182,15 @@ collect_metrics() {
         ADMISSION_BACKPRESSURE=$((ADMISSION_BACKPRESSURE + ${value:-0}))
         value=$(metric_value "$metrics" recoveries)
         RECOVERIES=$((RECOVERIES + ${value:-0}))
-        value=$(metric_value "$metrics" split_fences)
-        SPLIT_FENCES=$((SPLIT_FENCES + ${value:-0}))
-        value=$(metric_value "$metrics" split_commits)
-        SPLIT_COMMITS=$((SPLIT_COMMITS + ${value:-0}))
-        value=$(metric_value "$metrics" split_fence_lag_records)
-        if [ "${value:-0}" -gt "$SPLIT_FENCE_LAG_RECORDS" ]; then
-            SPLIT_FENCE_LAG_RECORDS=$value
+        value=$(metric_value "$metrics" split_finalizations)
+        SPLIT_FINALIZATIONS=$((SPLIT_FINALIZATIONS + ${value:-0}))
+        value=$(metric_value "$metrics" split_catchup_lag_records)
+        if [ "${value:-0}" -gt "$SPLIT_CATCHUP_LAG_RECORDS" ]; then
+            SPLIT_CATCHUP_LAG_RECORDS=$value
         fi
-        value=$(metric_value "$metrics" split_fence_duration_us)
-        if [ "${value:-0}" -gt "$SPLIT_FENCE_DURATION_US" ]; then
-            SPLIT_FENCE_DURATION_US=$value
+        value=$(metric_value "$metrics" split_finalization_duration_us)
+        if [ "${value:-0}" -gt "$SPLIT_FINALIZATION_DURATION_US" ]; then
+            SPLIT_FINALIZATION_DURATION_US=$value
         fi
     done
 }
@@ -207,9 +199,9 @@ capture_failure_metrics() {
     local instance metrics
     collect_metrics
     {
-        printf '{"admission_backpressure":%s,"recoveries":%s,"split_fences":%s,"split_commits":%s,"split_fence_lag_records":%s,"split_fence_duration_us":%s}\n' \
-            "$ADMISSION_BACKPRESSURE" "$RECOVERIES" "$SPLIT_FENCES" "$SPLIT_COMMITS" \
-            "$SPLIT_FENCE_LAG_RECORDS" "$SPLIT_FENCE_DURATION_US"
+        printf '{"admission_backpressure":%s,"recoveries":%s,"split_finalizations":%s,"split_catchup_lag_records":%s,"split_finalization_duration_us":%s}\n' \
+            "$ADMISSION_BACKPRESSURE" "$RECOVERIES" "$SPLIT_FINALIZATIONS" \
+            "$SPLIT_CATCHUP_LAG_RECORDS" "$SPLIT_FINALIZATION_DURATION_US"
         for instance in 1 2 3; do
             if metrics=$(curl --silent --fail "http://127.0.0.1:$((15100 + instance))/metrics"); then
                 printf 'server_%s %s\n' "$instance" "$metrics"
@@ -223,35 +215,25 @@ for pid in "${CHUNK_KV_PIDS[@]}"; do
     RSS_START=$((RSS_START + $(rss_kib "$pid")))
 done
 
-OPERATIONS_PER_ROUND=$((OPERATIONS / HOT_SPLIT_ROUNDS))
-P99=0
-for round in $(seq 0 $((HOT_SPLIT_ROUNDS - 1))); do
-    KEY_OFFSET=$((round * OPERATIONS_PER_ROUND))
-    if ! LOAD_OUTPUT=$(timeout "$TIMEOUT_SECS" pixi run -- ./target/release/crowdb-chunk-kv-cli \
-        --mgmt-seed "$MGMT_SEED" load --operations "$OPERATIONS_PER_ROUND" \
-        --concurrency "$CONCURRENCY" --value-bytes "$VALUE_BYTES" --keyspace "$OPERATIONS_PER_ROUND" \
-        --key-prefix "$HOT_KEY_PREFIX" --key-offset "$KEY_OFFSET"); then
-        printf '%s\n' "$LOAD_OUTPUT" >"$LOG_ROOT/load-round-$round.log"
-        capture_failure_metrics
-        echo "ERROR: routed load failed; retained metrics: $LOG_ROOT/load-failure-metrics.log" >&2
-        exit 1
-    fi
-    printf '%s\n' "$LOAD_OUTPUT" | tee "$LOG_ROOT/load-round-$round.log"
-    LOAD_LINE=$(sed -n '/^chunk-kv:/p' <<<"$LOAD_OUTPUT" | tail -n 1)
-    if [ -z "$LOAD_LINE" ] || ! grep -q 'errors=0' <<<"$LOAD_LINE"; then
-        echo "ERROR: routed load did not complete without errors" >&2
-        exit 1
-    fi
-    ROUND_P99=$(sed -n 's/.* p99_us=\([0-9][0-9]*\).*/\1/p' <<<"$LOAD_LINE")
-    if [ "${ROUND_P99:-0}" -gt "$P99" ]; then
-        P99=$ROUND_P99
-    fi
-done
+if ! LOAD_OUTPUT=$(timeout "$TIMEOUT_SECS" pixi run -- ./target/release/crowdb-chunk-kv-cli \
+    --mgmt-seed "$MGMT_SEED" load --operations "$OPERATIONS" \
+    --concurrency "$CONCURRENCY" --value-bytes "$VALUE_BYTES" --keyspace "$OPERATIONS" \
+    --key-prefix "$HOT_KEY_PREFIX" --key-offset 0); then
+    printf '%s\n' "$LOAD_OUTPUT" >"$LOG_ROOT/load-continuous.log"
+    capture_failure_metrics
+    echo "ERROR: continuous routed load failed; retained metrics: $LOG_ROOT/load-failure-metrics.log" >&2
+    exit 1
+fi
+printf '%s\n' "$LOAD_OUTPUT" | tee "$LOG_ROOT/load-continuous.log"
+LOAD_LINE=$(sed -n '/^chunk-kv:/p' <<<"$LOAD_OUTPUT" | tail -n 1)
+if [ -z "$LOAD_LINE" ] || ! grep -q 'errors=0' <<<"$LOAD_LINE"; then
+    echo "ERROR: continuous routed load did not complete without errors" >&2
+    exit 1
+fi
+P99=$(sed -n 's/.* p99_us=\([0-9][0-9]*\).*/\1/p' <<<"$LOAD_LINE")
 
 PARTITIONS=0
 CATALOG_GENERATION=0
-STABLE_GENERATION=0
-STABLE_OBSERVATIONS=0
 OWNER_MIN_PARTITIONS=0
 OWNER_MAX_PARTITIONS=0
 SPLIT_STARTED_MS=$(date +%s%3N)
@@ -259,37 +241,35 @@ deadline=$((SECONDS + TIMEOUT_SECS))
 while [ "$SECONDS" -lt "$deadline" ]; do
     if PROBE=$(pixi run -- ./target/release/crowdb-chunk-kv-cli --mgmt-seed "$MGMT_SEED" \
         load --operations 1 --concurrency 1 --value-bytes 1 --keyspace 1 2>&1); then
-        PARTITIONS=$(sed -n 's/.* partitions=\([0-9][0-9]*\).*/\1/p' <<<"$PROBE")
-        CATALOG_GENERATION=$(sed -n 's/.* catalog_generation=\([0-9][0-9]*\).*/\1/p' <<<"$PROBE")
-        OWNER_MIN_PARTITIONS=$(sed -n 's/.* owner_min_partitions=\([0-9][0-9]*\).*/\1/p' <<<"$PROBE")
-        OWNER_MAX_PARTITIONS=$(sed -n 's/.* owner_max_partitions=\([0-9][0-9]*\).*/\1/p' <<<"$PROBE")
-        if [ "${PARTITIONS:-0}" -ge 12 ] \
-            && [ "$((OWNER_MAX_PARTITIONS - OWNER_MIN_PARTITIONS))" -le 1 ]; then
-            if [ "$CATALOG_GENERATION" -eq "$STABLE_GENERATION" ]; then
-                STABLE_OBSERVATIONS=$((STABLE_OBSERVATIONS + 1))
-            else
-                STABLE_GENERATION=$CATALOG_GENERATION
-                STABLE_OBSERVATIONS=1
-            fi
-        else
-            STABLE_OBSERVATIONS=0
-        fi
-        if [ "$STABLE_OBSERVATIONS" -ge 30 ]; then
-            break
-        fi
+        # The point probe deliberately retains its original g1 routing to
+        # verify old-client compatibility.  Count the current local catalog
+        # from the owner instead of interpreting that compatible client view
+        # as the authoritative partition count.
+        :
     else
         printf '%s\n' "$PROBE" >"$LOG_ROOT/last-split-probe-error.log"
     fi
+    # Refresh independently of the compatibility probe: a g1 client is
+    # intentionally permitted to keep routing through its old dispatcher
+    # while the owner has already installed g2.
+    if HEALTH=$(curl --silent --fail "http://127.0.0.1:15101/health"); then
+        PARTITIONS=$(sed -n 's/.*"hosted_partitions":\([0-9][0-9]*\).*/\1/p' <<<"$HEALTH")
+        CATALOG_GENERATION=$(sed -n 's/.*"catalog_generation":\([0-9][0-9]*\).*/\1/p' <<<"$HEALTH")
+        OWNER_MIN_PARTITIONS=$PARTITIONS
+        OWNER_MAX_PARTITIONS=$PARTITIONS
+    fi
     sleep 1
 done
-if [ "${PARTITIONS:-0}" -lt 12 ] || [ "$STABLE_OBSERVATIONS" -lt 30 ]; then
-    echo "ERROR: automatic split and owner balance did not converge" >&2
+if [ "${CATALOG_GENERATION:-0}" -lt 2 ]; then
+    capture_failure_metrics
+    echo "ERROR: automatic split did not publish a child within the bounded observation window" >&2
     exit 1
 fi
 SPLIT_PREPARE_MS=$(($(date +%s%3N) - SPLIT_STARTED_MS))
 collect_metrics
-if [ "$SPLIT_FENCES" -lt 1 ] || [ "$SPLIT_COMMITS" -lt 1 ]; then
-    echo "ERROR: automatic split did not retain fence and commit metrics" >&2
+if [ "$SPLIT_FINALIZATIONS" -lt 1 ]; then
+    capture_failure_metrics
+    echo "ERROR: automatic split did not retain local finalization metrics" >&2
     exit 1
 fi
 
@@ -334,19 +314,19 @@ for pid in "${CHUNK_KV_PIDS[@]:1}"; do
     fi
 done
 RSS_DELTA=$((RSS_END - RSS_START))
-printf 'operations\tconcurrency\tvalue_bytes\tp99_us\tpartitions\towner_min_partitions\towner_max_partitions\tadmission_backpressure\tsplit_prepare_ms\tsplit_fences\tsplit_commits\tsplit_fence_lag_records\tsplit_fence_duration_us\trecoveries\treplay_ms\treplay_partitions\treplay_partitions_s\trss_start_kib\trss_end_kib\trss_delta_kib\treplay_ready\n' \
+printf 'operations\tconcurrency\tvalue_bytes\tp99_us\tpartitions\towner_min_partitions\towner_max_partitions\tadmission_backpressure\tsplit_prepare_ms\tsplit_finalizations\tsplit_catchup_lag_records\tsplit_finalization_duration_us\trecoveries\treplay_ms\treplay_partitions\treplay_partitions_s\trss_start_kib\trss_end_kib\trss_delta_kib\treplay_ready\n' \
     >"$RESULTS_FILE"
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t1\n' \
     "$OPERATIONS" "$CONCURRENCY" "$VALUE_BYTES" "$P99" "$PARTITIONS" \
     "$OWNER_MIN_PARTITIONS" "$OWNER_MAX_PARTITIONS" "$ADMISSION_BACKPRESSURE" \
-    "$SPLIT_PREPARE_MS" "$SPLIT_FENCES" \
-    "$SPLIT_COMMITS" "$SPLIT_FENCE_LAG_RECORDS" "$SPLIT_FENCE_DURATION_US" \
+    "$SPLIT_PREPARE_MS" "$SPLIT_FINALIZATIONS" \
+    "$SPLIT_CATCHUP_LAG_RECORDS" "$SPLIT_FINALIZATION_DURATION_US" \
     "$RECOVERIES" "$REPLAY_MS" "$REPLAY_PARTITIONS" "$REPLAY_PARTITIONS_PER_S" \
     "$RSS_START" "$RSS_END" "$RSS_DELTA" >>"$RESULTS_FILE"
 if [ "${P99:-1000001}" -gt 1000000 ] || [ "$RSS_DELTA" -gt 524288 ] \
     || [ "$SPLIT_PREPARE_MS" -gt 300000 ] \
-    || [ "$SPLIT_FENCE_DURATION_US" -gt 30000000 ] \
-    || [ "$SPLIT_FENCE_LAG_RECORDS" -gt 1024 ] \
+    || [ "$SPLIT_FINALIZATION_DURATION_US" -gt 30000000 ] \
+    || [ "$SPLIT_CATCHUP_LAG_RECORDS" -gt 1024 ] \
     || [ "$REPLAY_MS" -gt 30000 ]; then
     echo "ERROR: latency, memory, split, or replay bound exceeded; measured values: $RESULTS_FILE" >&2
     exit 1

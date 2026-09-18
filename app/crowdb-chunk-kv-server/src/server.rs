@@ -9,12 +9,12 @@ use std::time::Instant;
 use arc_swap::ArcSwap;
 use crowdb_chunk_kv::{
     ChunkKvError, CompareCondition, JournalPosition, MutationOperation, MutationResult, Partition, RequestId,
-    SplitCommitProof, ValueRevision,
+    SplitArtifact, ValueRevision,
 };
 use crowdb_protocol::chunk_kv::{
     BatchMutationRequest, BatchMutationResponse, BatchMutationResult, ChunkKvRangeCatalogEntry,
     ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPartitionState, ChunkKvResponse,
-    ChunkKvRpcErrorCode, Id128, MultiGetRequest, MultiGetResponse, OperationResult, OwnerHint,
+    ChunkKvRpcErrorCode, Id128, KeyRange, MultiGetRequest, MultiGetResponse, OperationResult, OwnerHint,
     PointOperation, PointRequest, RequestRouting, RpcCompareCondition, RpcFailure, RpcJournalPosition,
     RpcValue, ScanContinuation, ScanDirection, ScanRequest, SeekKind, SeekRequest,
 };
@@ -32,13 +32,6 @@ const DEFAULT_SCAN_RESPONSE_BYTES: usize = 17 * 1024 * 1024;
 struct CatalogSnapshot {
     generation: u64,
     entries: Vec<ChunkKvRangeCatalogEntry>,
-}
-
-#[derive(Clone, Debug)]
-struct LocalPointForward {
-    parent_epoch: u64,
-    transition_id: Id128,
-    child_ids: [Id128; 2],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,12 +103,22 @@ pub struct ChunkKvService {
     authority: Arc<ServingAuthority>,
     catalog: ArcSwap<CatalogSnapshot>,
     partitions: ArcSwap<HashMap<Id128, Partition>>,
-    local_point_forwards: ArcSwap<HashMap<Id128, LocalPointForward>>,
+    local_split_sessions: ArcSwap<HashMap<Id128, LocalSplitSession>>,
     independently_recoverable: ArcSwap<HashSet<Id128>>,
     max_partitions: usize,
     max_scan_response_bytes: usize,
     admitting: AtomicBool,
     metrics: ServerMetrics,
+}
+
+/// One local split handoff, keyed by its old parent identity.
+///
+/// Its presence is the sole process-local readiness fact for old-topology
+/// dispatch.  The catalog remains the durable cross-process fact.
+#[derive(Clone)]
+struct LocalSplitSession {
+    artifact: SplitArtifact,
+    dispatcher: Partition,
 }
 
 impl ChunkKvService {
@@ -149,7 +152,7 @@ impl ChunkKvService {
             authority: Arc::new(ServingAuthority::new(instance_id)),
             catalog: ArcSwap::from_pointee(CatalogSnapshot::default()),
             partitions: ArcSwap::from_pointee(HashMap::new()),
-            local_point_forwards: ArcSwap::from_pointee(HashMap::new()),
+            local_split_sessions: ArcSwap::from_pointee(HashMap::new()),
             independently_recoverable: ArcSwap::from_pointee(HashSet::new()),
             max_partitions,
             max_scan_response_bytes,
@@ -206,6 +209,23 @@ impl ChunkKvService {
             result.materialization_duration_us = result
                 .materialization_duration_us
                 .saturating_add(metrics.materialization_duration_us);
+        }
+        for session in self.local_split_sessions.load().values() {
+            let metrics = session.dispatcher.metrics().snapshot();
+            result.split_finalizations = result
+                .split_finalizations
+                .saturating_add(metrics.split_finalizations);
+            result.split_commits = result.split_commits.saturating_add(metrics.split_commits);
+            result.split_finalization_duration_us = result
+                .split_finalization_duration_us
+                .max(metrics.split_finalization_duration_us);
+            result.split_tail_records = result
+                .split_tail_records
+                .saturating_add(metrics.split_delta_records);
+            result.split_tail_bytes = result.split_tail_bytes.saturating_add(metrics.split_tail_bytes);
+            result.split_preparation_duration_us = result
+                .split_preparation_duration_us
+                .max(metrics.split_preparation_duration_us);
         }
         result
     }
@@ -289,6 +309,7 @@ impl ChunkKvService {
                         crowdb_chunk_kv::PartitionLifecycle::Prepared
                             | crowdb_chunk_kv::PartitionLifecycle::Serving
                             | crowdb_chunk_kv::PartitionLifecycle::SplitPreparing
+                            | crowdb_chunk_kv::PartitionLifecycle::SplitFinalizing
                     ),
                 }
             })
@@ -473,13 +494,94 @@ impl ChunkKvService {
         Ok(())
     }
 
-    /// Returns whether the exact catalog assignment is already hosted.
+    /// Returns whether the catalog assignment already has a locally prepared
+    /// writer.  A split writer is identified by its durable split lineage,
+    /// rather than by the catalog fields which advertise that lineage.
     #[must_use]
     pub fn hosts_catalog_assignment(&self, entry: &ChunkKvRangeCatalogEntry) -> bool {
         self.partitions
             .load()
             .get(&entry.partition_id)
-            .is_some_and(|partition| partition_matches_entry(partition, entry))
+            .is_some_and(|partition| local_partition_for_entry(partition, entry).is_some())
+            || self.local_split_writer(entry.partition_id).is_some()
+    }
+
+    /// Records the active local writer pair before group-0 advertises it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the old parent dispatches to the exact durable
+    /// retained-parent and child writers.
+    pub async fn record_local_split_ready(&self, artifact: &SplitArtifact) -> Result<(), ChunkKvError> {
+        let parent_id = Id128 {
+            high: artifact.parent_id.high,
+            low: artifact.parent_id.low,
+        };
+        if let Some(session) = self.local_split_sessions.load().get(&parent_id) {
+            return if session.artifact == *artifact {
+                Ok(())
+            } else {
+                Err(ChunkKvError::SplitRetry(
+                    "local split session conflicts with durable artifact".into(),
+                ))
+            };
+        }
+        let parent = self.hosted_partition(parent_id).ok_or(ChunkKvError::OutOfRange)?;
+        let ingress = parent
+            .split_ingress()
+            .ok_or_else(|| ChunkKvError::SplitRetry("prepared split ingress is not active".into()))?;
+        if !split_writer_matches_artifact(&ingress.retained_parent(), &artifact.retained_parent)
+            || !split_writer_matches_artifact(&ingress.child(), &artifact.child)
+        {
+            return Err(ChunkKvError::SplitRetry(
+                "prepared split ingress does not match its durable artifact".into(),
+            ));
+        }
+        let retained_parent = ingress.retained_parent();
+        let child = ingress.child();
+        parent.complete_local_split_handoff(artifact).await?;
+        self.local_split_sessions.rcu(|current| {
+            let mut next = (**current).clone();
+            next.insert(
+                parent_id,
+                LocalSplitSession {
+                    artifact: artifact.clone(),
+                    dispatcher: parent.clone(),
+                },
+            );
+            Arc::new(next)
+        });
+        self.partitions.rcu(|current| {
+            let mut next = (**current).clone();
+            next.insert(parent_id, retained_parent.clone());
+            let child_snapshot = child.snapshot();
+            next.insert(
+                Id128 {
+                    high: child_snapshot.partition_id.high,
+                    low: child_snapshot.partition_id.low,
+                },
+                child.clone(),
+            );
+            Arc::new(next)
+        });
+        Ok(())
+    }
+
+    /// Returns the immutable artifact of the active local handoff.
+    #[must_use]
+    pub(crate) fn local_split_artifact(
+        &self,
+        parent_id: Id128,
+        transition_id: crowdb_chunk_kv::TransitionId,
+    ) -> Option<SplitArtifact> {
+        self.local_split_sessions
+            .load()
+            .get(&parent_id)
+            .filter(|session| {
+                session.artifact.transition_id.high == transition_id.high
+                    && session.artifact.transition_id.low == transition_id.low
+            })
+            .map(|session| session.artifact.clone())
     }
 
     /// Replaces the hosted snapshot with exactly the local, recoverable
@@ -553,137 +655,6 @@ impl ChunkKvService {
         Ok(())
     }
 
-    /// Returns the locally fenced parents retained by one complete split catalog.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the smaller parent or child does not match the
-    /// exact prepared split published by the catalog.
-    pub async fn validated_catalog_split_parents(
-        &self,
-        pages: &[ChunkKvRangeCatalogPage],
-    ) -> Result<HashSet<Id128>, ChunkKvError> {
-        let mut retained_parents = HashSet::new();
-        for partition in self.partitions.load_full().values() {
-            let Some(artifact) = partition.current_prepared_split_artifact().await else {
-                continue;
-            };
-            if !catalog_retained_parent_matches(partition, pages, &artifact) {
-                return Err(ChunkKvError::SplitRetry(
-                    "catalog is missing the prepared split retained parent".into(),
-                ));
-            }
-            if !catalog_contains_split_child(pages, artifact.transition_id, &artifact.child) {
-                return Err(ChunkKvError::SplitRetry(
-                    "catalog retained parent is missing its prepared split child".into(),
-                ));
-            }
-            retained_parents.insert(Id128 {
-                high: artifact.parent_id.high,
-                low: artifact.parent_id.low,
-            });
-        }
-        Ok(retained_parents)
-    }
-
-    /// Commits retained parents and activates prepared children for one validated catalog split.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a published split does not match its prepared
-    /// artifact or its child was not recovered.
-    pub async fn commit_catalog_splits(
-        &self,
-        catalog_generation: u64,
-        pages: &[ChunkKvRangeCatalogPage],
-        recovered: &[Partition],
-    ) -> Result<(), ChunkKvError> {
-        let recovered: HashMap<_, _> = recovered
-            .iter()
-            .map(|partition| {
-                let snapshot = partition.snapshot();
-                (
-                    Id128 {
-                        high: snapshot.partition_id.high,
-                        low: snapshot.partition_id.low,
-                    },
-                    partition.clone(),
-                )
-            })
-            .collect();
-        for partition in self.partitions.load_full().values() {
-            let Some(artifact) = partition.current_prepared_split_artifact().await else {
-                continue;
-            };
-            if !catalog_retained_parent_matches(partition, pages, &artifact) {
-                continue;
-            }
-            if !catalog_contains_split_child(pages, artifact.transition_id, &artifact.child) {
-                return Err(ChunkKvError::SplitRetry(
-                    "catalog update does not match the retained parent and prepared child".into(),
-                ));
-            }
-            let proof = SplitCommitProof {
-                catalog_revision: catalog_generation,
-                artifact: artifact.clone(),
-            };
-            let child_id = Id128 {
-                high: artifact.child.partition_id.high,
-                low: artifact.child.partition_id.low,
-            };
-            let ingress = partition.split_ingress();
-            let (retained_partition, child_partition) = if let Some(ingress) = ingress {
-                (ingress.retained_parent(), ingress.child())
-            } else {
-                let child = self
-                    .partitions
-                    .load()
-                    .get(&child_id)
-                    .cloned()
-                    .or_else(|| recovered.get(&child_id).cloned())
-                    .ok_or_else(|| {
-                        ChunkKvError::SplitRetry(
-                            "catalog split child was not recovered before parent commit".into(),
-                        )
-                    })?;
-                partition.commit_split(&proof).await?;
-                (partition.clone(), child)
-            };
-            if retained_partition.is_prepared_split_child() {
-                retained_partition.activate_split_writer(&proof)?;
-            }
-            if child_partition.is_prepared_split_child() {
-                child_partition.activate_split_writer(&proof)?;
-            }
-            let parent_id = Id128 {
-                high: artifact.parent_id.high,
-                low: artifact.parent_id.low,
-            };
-            let forwarding = LocalPointForward {
-                parent_epoch: artifact.parent_epoch,
-                transition_id: Id128 {
-                    high: artifact.transition_id.high,
-                    low: artifact.transition_id.low,
-                },
-                child_ids: [parent_id, child_id],
-            };
-            self.local_point_forwards.rcu(|current| {
-                let mut next = (**current).clone();
-                next.insert(parent_id, forwarding.clone());
-                Arc::new(next)
-            });
-            if partition.split_ingress().is_some() {
-                self.partitions.rcu(|current| {
-                    let mut next = (**current).clone();
-                    next.insert(parent_id, retained_partition.clone());
-                    next.insert(child_id, child_partition.clone());
-                    Arc::new(next)
-                });
-            }
-        }
-        Ok(())
-    }
-
     fn reconciled_partition_snapshot(
         &self,
         pages: &[ChunkKvRangeCatalogPage],
@@ -715,11 +686,13 @@ impl ChunkKvService {
         for entry in desired {
             let partition = current
                 .get(&entry.partition_id)
-                .filter(|partition| partition_matches_entry(partition, entry))
+                .and_then(|partition| local_partition_for_entry(partition, entry))
+                .or_else(|| self.local_split_writer(entry.partition_id))
                 .or_else(|| {
                     recovered
                         .get(&entry.partition_id)
                         .filter(|partition| partition_matches_entry(partition, entry))
+                        .cloned()
                 })
                 .ok_or_else(|| {
                     ChunkKvError::InvalidRequest(
@@ -741,6 +714,14 @@ impl ChunkKvService {
 
     pub(crate) fn hosted_partition(&self, partition_id: Id128) -> Option<Partition> {
         self.partitions.load().get(&partition_id).cloned()
+    }
+
+    pub(crate) fn split_transition_parent(&self, partition_id: Id128) -> Option<Partition> {
+        self.local_split_sessions
+            .load()
+            .get(&partition_id)
+            .map(|session| session.dispatcher.clone())
+            .or_else(|| self.hosted_partition(partition_id))
     }
 
     /// Activates one replayed assignment after a matching catalog and serving
@@ -766,6 +747,12 @@ impl ChunkKvService {
             return Err(ChunkKvError::NotServing(
                 "catalog does not publish this serving assignment".into(),
             ));
+        }
+        // A local split dispatcher owns both replacement writers.  Its old
+        // parent identity remains a compatibility route for g1 requests, not
+        // a partition that a later grant may reactivate at its obsolete epoch.
+        if self.local_split_sessions.load().contains_key(&partition_id) {
+            return Ok(());
         }
         self.partitions
             .load()
@@ -842,7 +829,10 @@ impl ChunkKvService {
         match request.operation {
             PointOperation::Get { key } => {
                 let minimum = request.routing.min_journal_position.map(journal_position);
-                match partition.get(entry.owner_epoch, &key, minimum).await {
+                match partition
+                    .get(partition.snapshot().ownership_epoch, &key, minimum)
+                    .await
+                {
                     Ok(value) => success(
                         catalog.generation,
                         None,
@@ -858,7 +848,10 @@ impl ChunkKvService {
                     client_sequence: request.routing.request_id.client_sequence,
                 };
                 let mutation = mutation_operation(operation);
-                match partition.mutate(entry.owner_epoch, request_id, mutation).await {
+                match partition
+                    .mutate(partition.snapshot().ownership_epoch, request_id, mutation)
+                    .await
+                {
                     Ok(response) => {
                         let position = RpcJournalPosition {
                             stream_name: Id128 {
@@ -895,25 +888,19 @@ impl ChunkKvService {
         now_monotonic_ms: u64,
     ) -> MultiGetResponse {
         let catalog = self.catalog.load_full();
-        let Some(entry) = catalog.entry_for_partition(request.routing.partition_id) else {
+        let Some(range) = self.logical_range_for_request(request.routing.partition_id, &catalog) else {
             return MultiGetResponse {
                 map_revision: catalog.generation,
                 result: Err(not_my_range_failure(catalog.generation, None)),
             };
         };
-        if request.validate_for_range(&entry.range).is_err() {
+        if request.validate_for_range(&range).is_err() {
             return MultiGetResponse {
                 map_revision: catalog.generation,
                 result: Err(rpc_failure(
                     ChunkKvRpcErrorCode::InvalidRequest,
                     "multi-get group contains an out-of-range key",
                 )),
-            };
-        }
-        if !matches_routing(&request.routing, catalog.generation, entry, self.instance_id) {
-            return MultiGetResponse {
-                map_revision: catalog.generation,
-                result: Err(not_my_range_failure(catalog.generation, Some(entry))),
             };
         }
         let mut values = Vec::with_capacity(request.keys.len());
@@ -961,13 +948,13 @@ impl ChunkKvService {
         now_monotonic_ms: u64,
     ) -> BatchMutationResponse {
         let catalog = self.catalog.load_full();
-        let Some(entry) = catalog.entry_for_partition(request.routing.partition_id) else {
+        let Some(range) = self.logical_range_for_request(request.routing.partition_id, &catalog) else {
             return BatchMutationResponse {
                 map_revision: catalog.generation,
                 result: Err(not_my_range_failure(catalog.generation, None)),
             };
         };
-        if request.validate_for_range(&entry.range).is_err() {
+        if request.validate_for_range(&range).is_err() {
             return BatchMutationResponse {
                 map_revision: catalog.generation,
                 result: Err(rpc_failure(
@@ -985,12 +972,6 @@ impl ChunkKvService {
             min_journal_position: None,
             deadline_ms: request.routing.deadline_ms,
         };
-        if !matches_routing(&routing, catalog.generation, entry, self.instance_id) {
-            return BatchMutationResponse {
-                map_revision: catalog.generation,
-                result: Err(not_my_range_failure(catalog.generation, Some(entry))),
-            };
-        }
         let mut results = Vec::with_capacity(request.operations.len());
         for item in request.operations {
             let response = self
@@ -1068,18 +1049,15 @@ impl ChunkKvService {
         let Some(entry) = catalog.entry_for_key(&request.key) else {
             return not_my_range(catalog.generation, None);
         };
-        if !matches_routing(&request.routing, catalog.generation, entry, self.instance_id) {
-            return not_my_range(catalog.generation, Some(entry));
-        }
         if let Err(error) = self.authority.authorize(
             catalog.generation,
-            request.routing.partition_id,
-            request.routing.owner_epoch,
+            entry.partition_id,
+            entry.owner_epoch,
             now_monotonic_ms,
         ) {
             return authority_failure(catalog.generation, &error, Some(entry));
         }
-        let Some(partition) = self.partitions.load().get(&request.routing.partition_id).cloned() else {
+        let Some(partition) = self.partition_for_catalog_entry(entry) else {
             return failure(
                 catalog.generation,
                 ChunkKvRpcErrorCode::Recovering,
@@ -1087,27 +1065,12 @@ impl ChunkKvService {
             );
         };
         let minimum = request.routing.min_journal_position.map(journal_position);
+        let writer_epoch = partition.snapshot().ownership_epoch;
         let result = match request.kind {
-            SeekKind::Ceiling => {
-                partition
-                    .ceiling(request.routing.owner_epoch, &request.key, minimum)
-                    .await
-            }
-            SeekKind::Higher => {
-                partition
-                    .higher(request.routing.owner_epoch, &request.key, minimum)
-                    .await
-            }
-            SeekKind::Floor => {
-                partition
-                    .floor(request.routing.owner_epoch, &request.key, minimum)
-                    .await
-            }
-            SeekKind::Lower => {
-                partition
-                    .lower(request.routing.owner_epoch, &request.key, minimum)
-                    .await
-            }
+            SeekKind::Ceiling => partition.ceiling(writer_epoch, &request.key, minimum).await,
+            SeekKind::Higher => partition.higher(writer_epoch, &request.key, minimum).await,
+            SeekKind::Floor => partition.floor(writer_epoch, &request.key, minimum).await,
+            SeekKind::Lower => partition.lower(writer_epoch, &request.key, minimum).await,
         };
         match result {
             Ok(value) => success(
@@ -1169,9 +1132,6 @@ impl ChunkKvService {
         let Some(entry) = catalog.entry_for_partition(request.routing.partition_id) else {
             return not_my_range(catalog.generation, None);
         };
-        if !matches_routing(&request.routing, catalog.generation, entry, self.instance_id) {
-            return not_my_range(catalog.generation, Some(entry));
-        }
         let clipped = match validate_and_clip_scan(&request, &entry.range) {
             Ok(clipped) => clipped,
             Err(ScanValidationError::RefreshRequired) => {
@@ -1194,13 +1154,13 @@ impl ChunkKvService {
         };
         if let Err(error) = self.authority.authorize(
             catalog.generation,
-            request.routing.partition_id,
-            request.routing.owner_epoch,
+            entry.partition_id,
+            entry.owner_epoch,
             now_monotonic_ms,
         ) {
             return authority_failure(catalog.generation, &error, Some(entry));
         }
-        let Some(partition) = self.partitions.load().get(&request.routing.partition_id).cloned() else {
+        let Some(partition) = self.partition_for_catalog_entry(entry) else {
             return failure(
                 catalog.generation,
                 ChunkKvRpcErrorCode::Recovering,
@@ -1221,12 +1181,13 @@ impl ChunkKvService {
     ) -> Result<crowdb_chunk_kv::ScanPage, ChunkKvError> {
         let minimum = request.routing.min_journal_position.map(journal_position);
         let limit = clipped.limit as usize;
+        let writer_epoch = partition.snapshot().ownership_epoch;
         match clipped.direction {
             ScanDirection::Forward => {
                 if let Some(resume_after) = clipped.resume_after.as_deref() {
                     partition
                         .scan_forward_after(
-                            request.routing.owner_epoch,
+                            writer_epoch,
                             resume_after,
                             clipped.end.as_deref(),
                             limit,
@@ -1237,7 +1198,7 @@ impl ChunkKvService {
                 } else {
                     partition
                         .scan_forward(
-                            request.routing.owner_epoch,
+                            writer_epoch,
                             Some(&clipped.start),
                             clipped.end.as_deref(),
                             limit,
@@ -1251,7 +1212,7 @@ impl ChunkKvService {
                 let start_before = clipped.resume_after.as_deref().or(clipped.end.as_deref());
                 partition
                     .scan_reverse(
-                        request.routing.owner_epoch,
+                        writer_epoch,
                         start_before,
                         Some(&clipped.start),
                         limit,
@@ -1263,25 +1224,6 @@ impl ChunkKvService {
         }
     }
 
-    fn matches_local_point_forward(
-        &self,
-        routing: &RequestRouting,
-        generation: u64,
-        entry: &ChunkKvRangeCatalogEntry,
-    ) -> bool {
-        if routing.map_revision >= generation || entry.owner.instance_id != self.instance_id {
-            return false;
-        }
-        self.local_point_forwards
-            .load()
-            .get(&routing.partition_id)
-            .is_some_and(|forward| {
-                routing.owner_epoch == forward.parent_epoch
-                    && entry.transition_id == Some(forward.transition_id)
-                    && forward.child_ids.contains(&entry.partition_id)
-            })
-    }
-
     fn resolve_point_partition(
         &self,
         routing: &RequestRouting,
@@ -1289,12 +1231,7 @@ impl ChunkKvService {
         entry: &ChunkKvRangeCatalogEntry,
         now_monotonic_ms: u64,
     ) -> Result<Partition, Box<ChunkKvResponse>> {
-        let current = matches_routing(routing, generation, entry, self.instance_id);
-        let stale_local = !current && self.matches_local_point_forward(routing, generation, entry);
-        if !current && !stale_local {
-            return Err(Box::new(not_my_range(generation, Some(entry))));
-        }
-        if stale_local {
+        if !matches_routing(routing, generation, entry, self.instance_id) {
             self.metrics.split_stale_route_forward();
         }
         if let Err(error) = self.authority.authorize(
@@ -1305,17 +1242,56 @@ impl ChunkKvService {
         ) {
             return Err(Box::new(authority_failure(generation, &error, Some(entry))));
         }
-        self.partitions
+        self.partition_for_catalog_entry(entry).ok_or_else(|| {
+            Box::new(failure(
+                generation,
+                ChunkKvRpcErrorCode::Recovering,
+                "assigned partition is not prepared locally".into(),
+            ))
+        })
+    }
+
+    fn partition_for_catalog_entry(&self, entry: &ChunkKvRangeCatalogEntry) -> Option<Partition> {
+        self.local_split_sessions
             .load()
             .get(&entry.partition_id)
+            .map(|session| &session.dispatcher)
+            .filter(|partition| partition_matches_entry(partition, entry))
             .cloned()
-            .ok_or_else(|| {
-                Box::new(failure(
-                    generation,
-                    ChunkKvRpcErrorCode::Recovering,
-                    "assigned partition is not prepared locally".into(),
-                ))
+            .or_else(|| self.partitions.load().get(&entry.partition_id).cloned())
+    }
+
+    fn logical_range_for_request(&self, partition_id: Id128, catalog: &CatalogSnapshot) -> Option<KeyRange> {
+        self.local_split_sessions
+            .load()
+            .get(&partition_id)
+            .map(|session| {
+                let dispatcher = &session.dispatcher;
+                let range = dispatcher.snapshot().range;
+                KeyRange {
+                    start: range.start.unwrap_or_default(),
+                    end: range.end,
+                }
             })
+            .or_else(|| {
+                catalog
+                    .entry_for_partition(partition_id)
+                    .map(|entry| entry.range.clone())
+            })
+    }
+
+    fn local_split_writer(&self, partition_id: Id128) -> Option<Partition> {
+        self.local_split_sessions.load().values().find_map(|session| {
+            let dispatcher = &session.dispatcher;
+            let ingress = dispatcher.split_ingress()?;
+            [ingress.retained_parent(), ingress.child()]
+                .into_iter()
+                .find(|writer| {
+                    let snapshot = writer.snapshot();
+                    snapshot.partition_id.high == partition_id.high
+                        && snapshot.partition_id.low == partition_id.low
+                })
+        })
     }
 }
 
@@ -1395,6 +1371,27 @@ fn partition_matches_entry(partition: &Partition, entry: &ChunkKvRangeCatalogEnt
         && snapshot.range.start.as_deref() == Some(entry.range.start.as_slice())
         && snapshot.range.end == entry.range.end
         && snapshot.stream_name == entry.artifact.stream_name
+}
+
+fn local_partition_for_entry(partition: &Partition, entry: &ChunkKvRangeCatalogEntry) -> Option<Partition> {
+    if partition_matches_entry(partition, entry) {
+        return Some(partition.clone());
+    }
+    let ingress = partition.split_ingress()?;
+    [ingress.retained_parent(), ingress.child()]
+        .into_iter()
+        .find(|writer| partition_matches_entry(writer, entry))
+}
+
+fn split_writer_matches_artifact(
+    partition: &Partition,
+    artifact: &crowdb_chunk_kv::PreparedSplitWriterArtifact,
+) -> bool {
+    let snapshot = partition.snapshot();
+    snapshot.partition_id == artifact.partition_id
+        && snapshot.ownership_epoch == artifact.ownership_epoch
+        && snapshot.range == artifact.range
+        && snapshot.stream_name == artifact.stream_name
 }
 
 fn matches_routing(
@@ -1488,66 +1485,6 @@ fn scan_success(
             continuation,
         },
     )
-}
-
-fn catalog_retained_parent_matches(
-    partition: &Partition,
-    pages: &[ChunkKvRangeCatalogPage],
-    artifact: &crowdb_chunk_kv::SplitArtifact,
-) -> bool {
-    let snapshot = partition.split_ingress().map_or_else(
-        || partition.snapshot(),
-        |ingress| ingress.retained_parent().snapshot(),
-    );
-    pages.iter().flat_map(|page| &page.entries).any(|entry| {
-        entry.partition_id.high == artifact.parent_id.high
-            && entry.partition_id.low == artifact.parent_id.low
-            && entry.range.start == snapshot.range.start.clone().unwrap_or_default()
-            && entry.range.end == Some(artifact.child.range.start.clone().unwrap_or_default())
-            && entry.owner_epoch == artifact.parent_next_epoch
-            && entry.artifact.tree_id == artifact.retained_parent.tree_id
-            && entry.artifact.stream_name == artifact.retained_parent.stream_name
-            && entry.transition_id
-                == Some(Id128 {
-                    high: artifact.transition_id.high,
-                    low: artifact.transition_id.low,
-                })
-    })
-}
-
-fn catalog_contains_split_child(
-    pages: &[ChunkKvRangeCatalogPage],
-    transition_id: crowdb_chunk_kv::TransitionId,
-    child: &crowdb_chunk_kv::PreparedSplitWriterArtifact,
-) -> bool {
-    pages.iter().flat_map(|page| &page.entries).any(|entry| {
-        entry.partition_id.high == child.partition_id.high
-            && entry.partition_id.low == child.partition_id.low
-            && entry.range.start == child.range.start.clone().unwrap_or_default()
-            && entry.range.end == child.range.end
-            && entry.owner_epoch == child.ownership_epoch
-            && entry.artifact.tree_id == child.tree_id
-            && entry.artifact.stream_name == child.stream_name
-            && entry.artifact.tail_overlay.as_ref().is_some_and(|overlay| {
-                overlay.source_partition_id.high == child.parent_id.high
-                    && overlay.source_partition_id.low == child.parent_id.low
-                    && overlay.source_epoch == child.parent_epoch
-                    && overlay.source_stream_name == child.parent_stream_name
-                    && overlay.source_stream_manifest_generation == child.parent_stream_manifest_generation
-                    && overlay.replay_offset == child.parent_replay_offset
-                    && overlay.cutover_offset == child.parent_cutover_offset
-                    && overlay.base_tree_manifest == child.tree_manifest
-                    && overlay.base_root_manifest_generation == child.root_manifest_generation
-                    && overlay.base_applied_seq == child.base_applied_seq
-                    && overlay.cutover_seq == child.applied_seq
-                    && overlay.target_stream_start_seq == child.child_stream_start_seq
-            })
-            && entry.transition_id
-                == Some(Id128 {
-                    high: transition_id.high,
-                    low: transition_id.low,
-                })
-    })
 }
 
 fn success(

@@ -488,10 +488,22 @@ impl ChunkKvStorage {
                 transition.parent_next_epoch,
                 parent_binding.metadata_group_id,
             )
-            .await?;
+            .await
+            .map_err(|error| {
+                storage_plan_error(&format!(
+                    "retained split writer setup failed (tree_id={}, owner_epoch={}): {error}",
+                    transition.retained_parent_artifact.tree_id, transition.parent_next_epoch
+                ))
+            })?;
         let child = self
             .split_target(&transition.child, parent_binding.metadata_group_id)
-            .await?;
+            .await
+            .map_err(|error| {
+                storage_plan_error(&format!(
+                    "child split writer setup failed (tree_id={}, owner_epoch={}): {error}",
+                    transition.child.artifact.tree_id, transition.child.owner_epoch
+                ))
+            })?;
         let prepared = parent
             .prepare_split_session(
                 split_plan(transition),
@@ -502,7 +514,12 @@ impl ChunkKvStorage {
                 max_catchup_lag_records,
             )
             .await
-            .map_err(|error| storage_plan_error(&error.to_string()))?;
+            .map_err(|error| {
+                storage_plan_error(&format!(
+                    "split session build failed (parent_tree_id={}, parent_stream={:?}): {error}",
+                    transition.parent_artifact.tree_id, transition.parent_artifact.stream_name,
+                ))
+            })?;
         validate_prepared_split(transition, &prepared.artifact)?;
         Ok(prepared)
     }

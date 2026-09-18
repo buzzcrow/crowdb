@@ -569,6 +569,8 @@ pub struct SplitReadinessProof {
     pub child_applied_seq: u64,
     pub child_tree_manifest: u64,
     pub child_root_manifest_generation: u64,
+    /// Shared historical parent stream required to recover the retained half.
+    pub retained_parent_tail_overlay: TailOverlayArtifact,
     pub child_tail_overlay: TailOverlayArtifact,
 }
 
@@ -633,6 +635,7 @@ impl SplitTransition {
                 || proof.child_applied_seq != proof.cutover_seq
                 || proof.child_tree_manifest == 0
                 || proof.child_root_manifest_generation == 0
+                || !self.valid_retained_parent_overlay(&proof.retained_parent_tail_overlay, proof.cutover_seq)
                 || !self.valid_split_overlay(&proof.child_tail_overlay, &self.child, proof.cutover_seq)
             {
                 return Err(ChunkKvProtocolError::InvalidSplitTransition);
@@ -661,6 +664,15 @@ impl SplitTransition {
     ) -> bool {
         valid_tail_overlay(overlay)
             && child.artifact.tail_overlay.as_ref() == Some(overlay)
+            && overlay.source_partition_id == self.parent_id
+            && overlay.source_epoch == self.parent_epoch
+            && overlay.source_stream_name == self.parent_artifact.stream_name
+            && overlay.cutover_seq == cutover_seq
+    }
+
+    fn valid_retained_parent_overlay(&self, overlay: &TailOverlayArtifact, cutover_seq: u64) -> bool {
+        valid_tail_overlay(overlay)
+            && self.retained_parent_artifact.tail_overlay.as_ref() == Some(overlay)
             && overlay.source_partition_id == self.parent_id
             && overlay.source_epoch == self.parent_epoch
             && overlay.source_stream_name == self.parent_artifact.stream_name

@@ -208,16 +208,20 @@ impl Crowdbtree {
     }
 
     /// Starts one split-owned shared memtable view and returns its generation fence.
-    pub fn begin_split_memtable_view(&self) -> Result<u64, CtError> {
+    pub fn begin_split_memtable_view(&self) -> Result<(u64, u64), CtError> {
         let mut generation = 0;
-        check(unsafe { sys::ct_begin_split_memtable_view(self.as_ptr(), &mut generation) })?;
-        Ok(generation)
+        let mut journal_frontier = 0;
+        check(unsafe {
+            sys::ct_begin_split_memtable_view(self.as_ptr(), &mut generation, &mut journal_frontier)
+        })?;
+        Ok((generation, journal_frontier))
     }
 
     /// Bulk-publishes the split-owned shared memtable view into one range tree.
     pub fn publish_split_memtable_view(
         &self,
         generation: u64,
+        journal_frontier: u64,
         destination: &Self,
         range: &KeyRange,
     ) -> Result<(), CtError> {
@@ -229,6 +233,7 @@ impl Crowdbtree {
             sys::ct_publish_split_memtable_view(
                 self.as_ptr(),
                 generation,
+                journal_frontier,
                 destination.as_ptr(),
                 start.map_or(std::ptr::null(), <[u8]>::as_ptr),
                 start.map_or(0, <[u8]>::len),

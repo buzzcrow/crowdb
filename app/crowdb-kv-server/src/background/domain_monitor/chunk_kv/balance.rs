@@ -32,7 +32,7 @@ struct PlanningState {
 }
 
 pub async fn plan(control: &Group0ControlPlane, descriptor: &DomainMonitorDescriptor) -> Result<(), String> {
-    let Some(catalog) = catalog::load_current(control).await? else {
+    let Some(mut catalog) = catalog::load_current(control).await? else {
         return Ok(());
     };
     let policy = descriptor.chunk_kv_range_balance.clone().unwrap_or_default();
@@ -52,8 +52,19 @@ pub async fn plan(control: &Group0ControlPlane, descriptor: &DomainMonitorDescri
             && partition_load(&state, entry).is_some_and(|load| load.independently_recoverable)
     }) {
         catalog::publish_materialized_partition(control, entry.partition_id).await?;
-        return Ok(());
+        // Materialization only releases an immutable parent-stream overlay.
+        // It does not affect request routing, so immediately plan from the
+        // refreshed catalog instead of inserting a control-plane idle cycle
+        // before the next independent split.
+        catalog = catalog::load_current(control)
+            .await?
+            .ok_or_else(|| "catalog disappeared after split materialization".to_string())?;
     }
+    let entries: Vec<_> = catalog
+        .pages
+        .iter()
+        .flat_map(|page| page.entries.iter())
+        .collect();
     if plan_split(control, &entries, &state, &policy, now_ms).await? {
         return Ok(());
     }
@@ -357,6 +368,7 @@ fn eligible(
     now_ms: u64,
 ) -> bool {
     entry.state == ChunkKvRangeCatalogPartitionState::Serving
+        && entry.transition_id.is_none()
         && entry.artifact.tail_overlay.is_none()
         && partition_load(state, entry).is_some_and(|load| load.independently_recoverable)
         && state.healthy.contains_key(&entry.owner.instance_id)

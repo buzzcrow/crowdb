@@ -18,9 +18,9 @@ use crowdb_chunk_stream::{
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
     ChunkKvRangeCatalogPartitionState, ChunkKvRpcErrorCode, ClientRequestId, DomainFailurePolicy,
-    DomainMonitorDescriptor, Id128, KeyRange, OperationResult, OwnerDescriptor, PartitionArtifact,
-    PointOperation, PointRequest, RequestRouting, ScanDirection, ScanRequest, SeekKind, SeekRequest,
-    ServingAssignment, ServingGrant, TailOverlayArtifact,
+    DomainMonitorDescriptor, Id128, KeyRange, MultiGetRequest, OperationResult, OwnerDescriptor,
+    PartitionArtifact, PointOperation, PointRequest, RequestRouting, ScanDirection, ScanRequest, SeekKind,
+    SeekRequest, ServingAssignment, ServingGrant,
 };
 
 const INSTANCE_ID: u64 = 7;
@@ -105,109 +105,26 @@ fn catalog(
     (head, page)
 }
 
-fn prepared_split_child(
-    partition_id: PartitionId,
-    range: PartitionRange,
-    tree_id: u64,
-    cutover_seq: u64,
-) -> PreparedSplitWriterArtifact {
+fn prepared_writer_artifact(writer: &Partition) -> PreparedSplitWriterArtifact {
+    let snapshot = writer.snapshot();
     PreparedSplitWriterArtifact {
-        partition_id,
-        range,
-        ownership_epoch: EPOCH + 1,
-        tree_id,
-        tree_manifest: 1,
+        partition_id: snapshot.partition_id,
+        range: snapshot.range,
+        ownership_epoch: snapshot.ownership_epoch,
+        tree_id: 1,
+        tree_manifest: 0,
         root_manifest_generation: 1,
-        stream_name: StreamName {
-            high: tree_id,
-            low: 1,
-        },
-        base_applied_seq: cutover_seq,
+        stream_name: snapshot.stream_name,
+        base_applied_seq: 0,
         parent_id: PartitionId { high: 1, low: 2 },
         parent_epoch: EPOCH,
         parent_stream_name: StreamName { high: 30, low: 31 },
         parent_stream_manifest_generation: 1,
         parent_replay_offset: 0,
-        parent_cutover_offset: cutover_seq,
-        applied_seq: cutover_seq,
-        child_stream_start_seq: cutover_seq + 1,
+        parent_cutover_offset: 0,
+        applied_seq: 0,
+        child_stream_start_seq: 1,
     }
-}
-
-fn split_catalog_page(artifact: &SplitArtifact) -> ChunkKvRangeCatalogPage {
-    let transition_id = Some(Id128 {
-        high: artifact.transition_id.high,
-        low: artifact.transition_id.low,
-    });
-    let child = &artifact.child;
-    let mut page = ChunkKvRangeCatalogPage {
-        generation: 2,
-        page_index: 0,
-        entries: vec![
-            ChunkKvRangeCatalogEntry {
-                partition_id: Id128 {
-                    high: artifact.parent_id.high,
-                    low: artifact.parent_id.low,
-                },
-                range: KeyRange {
-                    start: Vec::new(),
-                    end: Some(child.range.start.clone().unwrap_or_default()),
-                },
-                owner: OwnerDescriptor {
-                    instance_id: INSTANCE_ID,
-                    rpc_endpoint: "127.0.0.1:9900".into(),
-                },
-                owner_epoch: artifact.parent_next_epoch,
-                state: ChunkKvRangeCatalogPartitionState::Serving,
-                artifact: PartitionArtifact {
-                    tree_id: artifact.retained_parent.tree_id,
-                    stream_name: artifact.retained_parent.stream_name,
-                    tail_overlay: None,
-                },
-                transition_id,
-            },
-            ChunkKvRangeCatalogEntry {
-                partition_id: Id128 {
-                    high: child.partition_id.high,
-                    low: child.partition_id.low,
-                },
-                range: KeyRange {
-                    start: child.range.start.clone().unwrap_or_default(),
-                    end: child.range.end.clone(),
-                },
-                owner: OwnerDescriptor {
-                    instance_id: INSTANCE_ID,
-                    rpc_endpoint: "127.0.0.1:9900".into(),
-                },
-                owner_epoch: child.ownership_epoch,
-                state: ChunkKvRangeCatalogPartitionState::Serving,
-                artifact: PartitionArtifact {
-                    tree_id: child.tree_id,
-                    stream_name: child.stream_name,
-                    tail_overlay: Some(TailOverlayArtifact {
-                        source_partition_id: Id128 {
-                            high: child.parent_id.high,
-                            low: child.parent_id.low,
-                        },
-                        source_epoch: child.parent_epoch,
-                        source_stream_name: child.parent_stream_name,
-                        source_stream_manifest_generation: child.parent_stream_manifest_generation,
-                        replay_offset: child.parent_replay_offset,
-                        cutover_offset: child.parent_cutover_offset,
-                        base_root_manifest_generation: child.root_manifest_generation,
-                        base_tree_manifest: child.tree_manifest,
-                        base_applied_seq: child.base_applied_seq,
-                        cutover_seq: child.applied_seq,
-                        target_stream_start_seq: child.child_stream_start_seq,
-                    }),
-                },
-                transition_id,
-            },
-        ],
-        checksum: [0; 32],
-    };
-    page.seal().unwrap();
-    page
 }
 
 async fn prepared_partition(
@@ -271,95 +188,6 @@ async fn prepared_partition_range(
     )
     .await
     .unwrap()
-}
-
-async fn activate_split_catalog(
-    service: &ChunkKvService,
-    artifact: &SplitArtifact,
-    page: &ChunkKvRangeCatalogPage,
-) -> Partition {
-    let prepare_child = |child: &PreparedSplitWriterArtifact| {
-        prepared_partition_range(
-            child.partition_id,
-            child.range.clone(),
-            child.stream_name,
-            child.ownership_epoch,
-            child.tree_id,
-        )
-    };
-    let child = prepare_child(&artifact.child).await;
-    service
-        .commit_catalog_splits(
-            page.generation,
-            std::slice::from_ref(page),
-            std::slice::from_ref(&child),
-        )
-        .await
-        .unwrap();
-
-    let mut head = ChunkKvRangeCatalogHead {
-        generation: page.generation,
-        previous_generation: Some(page.generation - 1),
-        pages: vec![ChunkKvRangeCatalogPageRef {
-            page_generation: page.generation,
-            page_index: page.page_index,
-            first_key: Vec::new(),
-            page_checksum: page.checksum,
-        }],
-        checksum: [0; 32],
-    };
-    head.seal().unwrap();
-    service
-        .install_catalog_and_reconcile(&head, std::slice::from_ref(page), std::slice::from_ref(&child))
-        .unwrap();
-    let mut grant = ServingGrant {
-        instance_id: INSTANCE_ID,
-        lease_sequence: 2,
-        catalog_generation: page.generation,
-        issued_at_ms: 1_100,
-        expires_at_ms: 13_100,
-        assignments: vec![
-            ServingAssignment {
-                partition_id: Id128 {
-                    high: artifact.parent_id.high,
-                    low: artifact.parent_id.low,
-                },
-                owner_epoch: artifact.parent_next_epoch,
-            },
-            ServingAssignment {
-                partition_id: Id128 {
-                    high: artifact.child.partition_id.high,
-                    low: artifact.child.partition_id.low,
-                },
-                owner_epoch: artifact.child.ownership_epoch,
-            },
-        ],
-        assignment_digest: [0; 32],
-    };
-    grant.seal();
-    service
-        .authority()
-        .install(grant, &policy(), 1_100, 50_000)
-        .unwrap();
-    service
-        .activate_recovered_partition(
-            Id128 {
-                high: artifact.parent_id.high,
-                low: artifact.parent_id.low,
-            },
-            artifact.parent_next_epoch,
-        )
-        .unwrap();
-    service
-        .activate_recovered_partition(
-            Id128 {
-                high: artifact.child.partition_id.high,
-                low: artifact.child.partition_id.low,
-            },
-            artifact.child.ownership_epoch,
-        )
-        .unwrap();
-    child
 }
 
 async fn fixture() -> (ChunkKvService, Partition) {
@@ -484,14 +312,11 @@ async fn matching_grant_refresh_keeps_a_preparing_parent_active() {
 }
 
 #[tokio::test]
-async fn catalog_cutover_commits_the_exact_finalizing_split_parent() {
+async fn prepared_split_lineage_suppresses_catalog_recovery() {
     let (service, parent) = fixture().await;
-    let transition_id = TransitionId { high: 8, low: 9 };
-    let child_id = PartitionId { high: 8, low: 11 };
-    let child_range = PartitionRange {
-        start: Some(b"m".to_vec()),
-        end: None,
-    };
+    let transition_id = TransitionId { high: 22, low: 23 };
+    let child_id = PartitionId { high: 22, low: 25 };
+    let split_key = b"m".to_vec();
     parent
         .begin_split(SplitPlan {
             transition_id,
@@ -502,61 +327,82 @@ async fn catalog_cutover_commits_the_exact_finalizing_split_parent() {
                 end: None,
             },
             parent_next_epoch: EPOCH + 1,
-            split_key: b"m".to_vec(),
+            split_key: split_key.clone(),
             child: SplitChild {
                 partition_id: child_id,
+                range: PartitionRange {
+                    start: Some(split_key.clone()),
+                    end: None,
+                },
                 ownership_epoch: EPOCH + 1,
-                range: child_range.clone(),
             },
         })
         .await
         .unwrap();
-    parent.begin_split_finalization(transition_id).await.unwrap();
-    let cutover_seq = parent.snapshot().applied_seq;
-    let mut retained_parent = prepared_split_child(
+    let retained = prepared_partition_range(
         PartitionId { high: 1, low: 2 },
         PartitionRange {
             start: Some(Vec::new()),
-            end: Some(b"m".to_vec()),
+            end: Some(split_key.clone()),
         },
-        1,
-        cutover_seq,
-    );
-    retained_parent.stream_name = StreamName { high: 30, low: 31 };
+        StreamName { high: 40, low: 41 },
+        EPOCH + 1,
+        40,
+    )
+    .await;
+    let child = prepared_partition_range(
+        child_id,
+        PartitionRange {
+            start: Some(split_key.clone()),
+            end: None,
+        },
+        StreamName { high: 40, low: 42 },
+        EPOCH + 1,
+        41,
+    )
+    .await;
+    parent
+        .install_split_ingress(retained.clone(), child.clone())
+        .await
+        .unwrap();
     let artifact = SplitArtifact {
         transition_id,
         parent_id: PartitionId { high: 1, low: 2 },
         parent_epoch: EPOCH,
         parent_next_epoch: EPOCH + 1,
-        shared_view_generation: 0,
-        cutover_seq,
-        retained_parent,
-        child: prepared_split_child(child_id, child_range, 82, cutover_seq),
+        shared_view_generation: 1,
+        cutover_seq: 0,
+        retained_parent: prepared_writer_artifact(&retained),
+        child: prepared_writer_artifact(&child),
     };
+    parent.begin_split_finalization(transition_id).await.unwrap();
     parent.record_split_artifact(artifact.clone()).await.unwrap();
-    let page = split_catalog_page(&artifact);
-
-    let _child = activate_split_catalog(&service, &artifact, &page).await;
-
-    let response = service
-        .handle_point(
-            PointRequest {
-                routing: routing(41),
-                operation: PointOperation::Put {
-                    key: b"left-key".to_vec(),
-                    value: b"after-cutover".to_vec(),
-                },
-            },
-            1_500,
-            50_100,
-        )
-        .await;
-
+    service.record_local_split_ready(&artifact).await.unwrap();
     assert_eq!(parent.lifecycle(), PartitionLifecycle::Serving);
-    assert!(response.result.is_ok());
-    assert_eq!(parent.snapshot().journal_durable_seq, cutover_seq + 1);
-    assert_eq!(service.metrics_snapshot().split_commits, 1);
-    assert_eq!(service.metrics_snapshot().split_stale_route_forwards, 1);
+    service.remove_partition(Id128 { high: 1, low: 2 });
+    service.remove_partition(Id128 { high: 22, low: 25 });
+
+    let child_snapshot = child.snapshot();
+    let entry = ChunkKvRangeCatalogEntry {
+        partition_id: Id128 { high: 22, low: 25 },
+        range: KeyRange {
+            start: split_key,
+            end: None,
+        },
+        owner: OwnerDescriptor {
+            instance_id: INSTANCE_ID,
+            rpc_endpoint: "127.0.0.1:9900".into(),
+        },
+        owner_epoch: child_snapshot.ownership_epoch,
+        state: ChunkKvRangeCatalogPartitionState::Serving,
+        artifact: PartitionArtifact {
+            tree_id: 41,
+            stream_name: child_snapshot.stream_name,
+            tail_overlay: None,
+        },
+        transition_id: Some(Id128 { high: 22, low: 23 }),
+    };
+    assert!(service.hosts_catalog_assignment(&entry));
 }
 
 #[tokio::test]
@@ -682,7 +528,42 @@ async fn direct_put_get_preserves_object_metadata_and_position() {
 }
 
 #[tokio::test]
-async fn stale_route_and_expired_deadline_append_nothing() {
+async fn multi_get_accepts_a_stale_catalog_route() {
+    let (service, _) = fixture().await;
+    let key = b"bucket/object".to_vec();
+    let put = service
+        .handle_point(
+            PointRequest {
+                routing: routing(71),
+                operation: PointOperation::Put {
+                    key: key.clone(),
+                    value: b"chunk=44".to_vec(),
+                },
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    assert!(put.result.is_ok());
+
+    let mut stale = routing(72);
+    stale.map_revision = 99;
+    stale.owner_epoch = EPOCH + 99;
+    let response = service
+        .handle_multi_get(
+            MultiGetRequest {
+                routing: stale,
+                keys: vec![key],
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    assert!(response.result.is_ok());
+}
+
+#[tokio::test]
+async fn stale_route_is_served_and_expired_deadline_appends_nothing() {
     let (service, partition) = fixture().await;
     assert_eq!(service.health(50_100).lifecycle, ServerLifecycle::Serving);
     let before = partition.snapshot().journal_durable_seq;
@@ -701,7 +582,8 @@ async fn stale_route_and_expired_deadline_append_nothing() {
             50_100,
         )
         .await;
-    assert_eq!(response.result.unwrap_err().code, ChunkKvRpcErrorCode::NotMyRange);
+    assert!(response.result.is_ok());
+    let after_stale_route = partition.snapshot().journal_durable_seq;
 
     let response = service
         .handle_point(
@@ -719,7 +601,8 @@ async fn stale_route_and_expired_deadline_append_nothing() {
         response.result.unwrap_err().code,
         ChunkKvRpcErrorCode::RequestExpired
     );
-    assert_eq!(partition.snapshot().journal_durable_seq, before);
+    assert!(after_stale_route > before);
+    assert_eq!(partition.snapshot().journal_durable_seq, after_stale_route);
 }
 
 #[tokio::test]

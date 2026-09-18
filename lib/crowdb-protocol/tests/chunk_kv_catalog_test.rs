@@ -242,6 +242,7 @@ fn split_transition_requires_retained_parent_and_exact_child_cutover() {
         cutover_seq: 11,
         target_stream_start_seq: 12,
     };
+    transition.retained_parent_artifact.tail_overlay = Some(overlay.clone());
     transition.child.artifact.tail_overlay = Some(overlay.clone());
     transition.phase = SplitPhase::ChildPrepared;
     transition.readiness_proof = Some(SplitReadinessProof {
@@ -254,6 +255,7 @@ fn split_transition_requires_retained_parent_and_exact_child_cutover() {
         child_applied_seq: 11,
         child_tree_manifest: 1,
         child_root_manifest_generation: 1,
+        retained_parent_tail_overlay: overlay.clone(),
         child_tail_overlay: overlay,
     });
     transition.validate().unwrap();

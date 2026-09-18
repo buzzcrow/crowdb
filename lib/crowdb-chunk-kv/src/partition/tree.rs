@@ -49,7 +49,7 @@ pub trait PartitionTree: Send + Sync {
         std::sync::Arc<dyn PartitionTree>,
         crowdb_tree_ffi::RangeRebuildStats,
     )>;
-    async fn begin_split_memtable_view(&self) -> Result<u64> {
+    async fn begin_split_memtable_view(&self) -> Result<(u64, u64)> {
         Err(ChunkKvError::InvalidRequest(
             "partition tree does not support split memtable views".into(),
         ))
@@ -57,6 +57,7 @@ pub trait PartitionTree: Send + Sync {
     async fn publish_split_memtable_view(
         &self,
         _generation: u64,
+        _journal_frontier: u64,
         _destination: &dyn PartitionTree,
         _range: &crate::PartitionRange,
     ) -> Result<()> {
@@ -387,13 +388,14 @@ impl PartitionTree for CrowdbPartitionTree {
         ))
     }
 
-    async fn begin_split_memtable_view(&self) -> Result<u64> {
+    async fn begin_split_memtable_view(&self) -> Result<(u64, u64)> {
         self.tree.begin_split_memtable_view().map_err(map_tree_read_error)
     }
 
     async fn publish_split_memtable_view(
         &self,
         generation: u64,
+        journal_frontier: u64,
         destination: &dyn PartitionTree,
         range: &crate::PartitionRange,
     ) -> Result<()> {
@@ -406,7 +408,7 @@ impl PartitionTree for CrowdbPartitionTree {
             end: range.end.clone(),
         };
         self.tree
-            .publish_split_memtable_view(generation, &destination.tree, &range)
+            .publish_split_memtable_view(generation, journal_frontier, &destination.tree, &range)
             .map_err(map_tree_read_error)
     }
 

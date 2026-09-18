@@ -1825,10 +1825,9 @@ async fn split_session_builds_two_durable_writers_before_ingress() {
     let retained = prepared
         .retained_parent
         .unwrap()
-        .open(PartitionConfig::default())
-        .await
+        .open_warmed(PartitionConfig::default())
         .unwrap();
-    let child = prepared.child.open(PartitionConfig::default()).await.unwrap();
+    let child = prepared.child.open_warmed(PartitionConfig::default()).unwrap();
     retained.activate_local_split_writer(&artifact).unwrap();
     child.activate_local_split_writer(&artifact).unwrap();
     parent

@@ -66,6 +66,53 @@ impl PreparedSplitWriter {
         )
         .await
     }
+
+    /// Hands an already caught-up in-process writer to the local dispatcher.
+    ///
+    /// The tree has already received the complete filtered parent suffix, so
+    /// re-reading that suffix is only required after a process restart.  The
+    /// durable artifact remains attached to the returned writer; recovery
+    /// continues to use [`Self::open`] and therefore rebuilds retry state from
+    /// the parent and child journals.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the durable base no longer identifies this
+    /// warmed tree or the tree did not reach the recorded cutover.
+    pub fn open_warmed(self, config: PartitionConfig) -> Result<Partition> {
+        super::validate_prepared_overlay(
+            &self.artifact,
+            &self.checkpoint,
+            self.tree.as_ref(),
+            self.journal.as_ref(),
+            self.parent_journal.as_ref(),
+        )?;
+        config.validate()?;
+        if self.tree.last_applied_seq() != self.artifact.applied_seq {
+            return Err(ChunkKvError::TreeCorruption(
+                "warmed split writer does not reach its cutover frontier".into(),
+            ));
+        }
+        Partition::start(
+            self.artifact.partition_id,
+            self.artifact.range.clone(),
+            self.artifact.ownership_epoch,
+            config,
+            self.tree,
+            self.journal,
+            super::RecoverySeed {
+                applied_seq: self.artifact.applied_seq,
+                applied_position: 0,
+                retry_replay_offset: 0,
+                results: std::collections::HashMap::new(),
+                result_order: std::collections::VecDeque::new(),
+                expired_floor: std::collections::HashMap::new(),
+                recovered: false,
+            },
+            PartitionLifecycle::Prepared,
+            Some(self.artifact),
+        )
+    }
 }
 
 pub struct PreparedSplit {
@@ -107,14 +154,19 @@ impl Partition {
             ownership_epoch: plan.parent_next_epoch,
         };
         self.begin_split(plan.clone()).await?;
-        let shared_view_generation = self.tree.begin_split_memtable_view().await?;
+        let (base_checkpoint, source) = self.split_base_snapshot(&plan).await?;
+        let (shared_view_generation, shared_view_journal_frontier) =
+            self.tree.begin_split_memtable_view().await?;
         let preparation_started = Instant::now();
         let result = self
             .build_split_session(
                 &plan,
                 retained_spec,
                 targets,
+                base_checkpoint,
+                source,
                 shared_view_generation,
+                shared_view_journal_frontier,
                 max_catchup_lag_records,
             )
             .await;
@@ -130,6 +182,12 @@ impl Partition {
         {
             self.cancel_local_split(plan.transition_id).await;
         }
+        if result.is_err() {
+            let _ = self
+                .tree
+                .release_split_memtable_view(shared_view_generation)
+                .await;
+        }
         result
     }
 
@@ -139,7 +197,10 @@ impl Partition {
         plan: &SplitPlan,
         retained_spec: SplitChild,
         targets: SplitSessionTargets,
+        base_checkpoint: Checkpoint,
+        source: Arc<dyn PartitionTree>,
         shared_view_generation: u64,
+        shared_view_journal_frontier: u64,
         max_catchup_lag_records: u64,
     ) -> Result<PreparedSplit> {
         if max_catchup_lag_records == 0 {
@@ -147,7 +208,6 @@ impl Partition {
                 "split catch-up lag bound must be nonzero".into(),
             ));
         }
-        let (base_checkpoint, source) = self.split_base_snapshot(plan).await?;
         let (retained_tree, retained_rebuild) = source
             .rebuild_range(
                 targets.retained_parent.tree_id,
@@ -171,8 +231,38 @@ impl Partition {
         }
         self.metrics.split_rebuild(retained_rebuild);
         self.metrics.split_rebuild(child_rebuild);
-        let mut retained_cursor = DeltaCursor::from_checkpoint(&base_checkpoint);
-        let mut child_cursor = DeltaCursor::from_checkpoint(&base_checkpoint);
+        if shared_view_journal_frontier < base_checkpoint.applied_seq {
+            return Err(ChunkKvError::JournalCorruption(format!(
+                "split shared-view frontier {} precedes base checkpoint {}",
+                shared_view_journal_frontier, base_checkpoint.applied_seq
+            )));
+        }
+        self.tree
+            .publish_split_memtable_view(
+                shared_view_generation,
+                shared_view_journal_frontier,
+                retained_tree.as_ref(),
+                &retained_spec.range,
+            )
+            .await?;
+        self.tree
+            .publish_split_memtable_view(
+                shared_view_generation,
+                shared_view_journal_frontier,
+                child_tree.as_ref(),
+                &plan.child.range,
+            )
+            .await?;
+        let mut retained_cursor = DeltaCursor {
+            offset: base_checkpoint.replay_offset,
+            applied_seq: shared_view_journal_frontier,
+            delta_records: 0,
+        };
+        let mut child_cursor = DeltaCursor {
+            offset: base_checkpoint.replay_offset,
+            applied_seq: shared_view_journal_frontier,
+            delta_records: 0,
+        };
         retained_cursor
             .catch_up_to_lag(
                 self,
@@ -183,6 +273,31 @@ impl Partition {
             )
             .await?;
         let catchup_lag_records = child_cursor
+            .catch_up_to_lag(
+                self,
+                plan,
+                child_tree.as_ref(),
+                &plan.child,
+                max_catchup_lag_records,
+            )
+            .await?;
+        let retained_base =
+            checkpoint_prepared_tree(retained_tree.as_ref(), retained_cursor.applied_seq).await?;
+        let child_base = checkpoint_prepared_tree(child_tree.as_ref(), child_cursor.applied_seq).await?;
+        retained_tree.unpin_generation(plan.transition_id)?;
+        retained_tree.pin_generation(plan.transition_id, retained_base.1)?;
+        child_tree.unpin_generation(plan.transition_id)?;
+        child_tree.pin_generation(plan.transition_id, child_base.1)?;
+        retained_cursor
+            .catch_up_to_lag(
+                self,
+                plan,
+                retained_tree.as_ref(),
+                &retained_spec,
+                max_catchup_lag_records,
+            )
+            .await?;
+        child_cursor
             .catch_up_to_lag(
                 self,
                 plan,
@@ -229,34 +344,14 @@ impl Partition {
             cutover_seq,
             journal: Arc::clone(&self.journal),
         };
-        let retained_base = checkpoint_prepared_tree(retained_tree.as_ref(), cutover_seq).await?;
-        let child_base = checkpoint_prepared_tree(child_tree.as_ref(), cutover_seq).await?;
-        retained_tree.unpin_generation(plan.transition_id)?;
-        retained_tree.pin_generation(plan.transition_id, retained_base.1)?;
-        child_tree.unpin_generation(plan.transition_id)?;
-        child_tree.pin_generation(plan.transition_id, child_base.1)?;
-        let mut retained = prepare_writer(
+        let retained = prepare_writer(
             &retained_spec,
             targets.retained_parent,
             retained_tree,
             retained_base,
             &source,
         )?;
-        let mut child = prepare_writer(&plan.child, targets.child, child_tree, child_base, &source)?;
-        self.tree
-            .publish_split_memtable_view(
-                shared_view_generation,
-                retained.tree.as_ref(),
-                &retained_spec.range,
-            )
-            .await?;
-        self.tree
-            .publish_split_memtable_view(shared_view_generation, child.tree.as_ref(), &plan.child.range)
-            .await?;
-        let retained_final = checkpoint_prepared_tree(retained.tree.as_ref(), cutover_seq).await?;
-        let child_final = checkpoint_prepared_tree(child.tree.as_ref(), cutover_seq).await?;
-        rebase_prepared_writer(&mut retained, retained_final)?;
-        rebase_prepared_writer(&mut child, child_final)?;
+        let child = prepare_writer(&plan.child, targets.child, child_tree, child_base, &source)?;
         let artifact = SplitArtifact {
             transition_id: plan.transition_id,
             parent_id: plan.parent_id,
@@ -532,28 +627,6 @@ impl Partition {
     }
 }
 
-fn rebase_prepared_writer(
-    writer: &mut PreparedSplitWriter,
-    (tree_manifest, root_manifest_generation, applied_seq): (u64, u64, u64),
-) -> Result<()> {
-    if applied_seq != writer.artifact.applied_seq {
-        return Err(ChunkKvError::ApplyStateUnknown);
-    }
-    writer.artifact.tree_manifest = tree_manifest;
-    writer.artifact.root_manifest_generation = root_manifest_generation;
-    writer.artifact.base_applied_seq = applied_seq;
-    writer.checkpoint = Checkpoint {
-        tree_id: writer.artifact.tree_id,
-        tree_manifest,
-        root_manifest_generation,
-        applied_seq,
-        stream_name: writer.artifact.stream_name,
-        stream_manifest_generation: writer.journal.manifest_generation(),
-        replay_offset: 0,
-    };
-    Ok(())
-}
-
 fn prepare_retained_parent(
     plan: &SplitPlan,
     (tree_manifest, root_manifest_generation, applied_seq): (u64, u64, u64),
@@ -603,14 +676,6 @@ struct DeltaCursor {
 }
 
 impl DeltaCursor {
-    fn from_checkpoint(checkpoint: &Checkpoint) -> Self {
-        Self {
-            offset: checkpoint.replay_offset,
-            applied_seq: checkpoint.applied_seq,
-            delta_records: 0,
-        }
-    }
-
     async fn catch_up_to_lag(
         &mut self,
         parent: &Partition,
@@ -717,9 +782,12 @@ async fn apply_writer_record(
         return Ok(());
     }
     if record.mutation_seq != cursor.applied_seq.saturating_add(1) {
-        return Err(ChunkKvError::JournalCorruption(
-            "split delta contains a mutation sequence gap".into(),
-        ));
+        return Err(ChunkKvError::JournalCorruption(format!(
+            "split delta sequence gap at journal offset {}: expected {}, got {}",
+            cursor.offset,
+            cursor.applied_seq.saturating_add(1),
+            record.mutation_seq
+        )));
     }
     if !parent_range.contains(record.operation.key()) {
         return Err(ChunkKvError::JournalCorruption(
