@@ -311,6 +311,21 @@ async fn assert_old_parent_ordered_reads(service: &ChunkKvService) {
         panic!("expected seek to cross the local writer boundary")
     };
     assert_eq!(value.key, b"t");
+    let reverse_seek = service
+        .handle_seek(
+            SeekRequest {
+                routing: routing(86),
+                key: b"t".to_vec(),
+                kind: SeekKind::Lower,
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    let OperationResult::Value(Some(value)) = reverse_seek.result.unwrap() else {
+        panic!("expected reverse seek to cross the local writer boundary")
+    };
+    assert_eq!(value.key, b"b");
     let scan = service
         .handle_scan(
             ScanRequest {
@@ -333,6 +348,27 @@ async fn assert_old_parent_ordered_reads(service: &ChunkKvService) {
         [b"b", b"t"]
     );
     assert!(continuation.is_none());
+    let reverse = service
+        .handle_scan(
+            ScanRequest {
+                routing: routing(87),
+                start: Some(b"b".to_vec()),
+                end: Some(b"z".to_vec()),
+                direction: ScanDirection::Reverse,
+                limit: 8,
+                continuation: None,
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    let OperationResult::Scan { items, .. } = reverse.result.unwrap() else {
+        panic!("expected reverse scan result")
+    };
+    assert_eq!(
+        items.iter().map(|item| item.key.as_slice()).collect::<Vec<_>>(),
+        [b"t", b"b"]
+    );
 }
 
 async fn assert_old_parent_scan_continuation(service: &ChunkKvService) {

@@ -88,6 +88,14 @@ partitions, and read a pre-restart value. The exact-manifest and stale stream
 errors did not recur. R174 remains active for the direct-ingress cleanup and
 the complete two-half negative restart coverage below; R175 remains disabled.
 
+The mixed real-process run at
+`bench-log/chunk-kv-regression-20260919-015121` completed 10,000 operations at
+4 KiB with 25% reads, concurrency 32, 0 errors, and p99 92.922 ms. It reached
+catalog generation 12 and five local partitions with zero admission
+backpressure, then restarted node 1 in 1.053 s, recovered all five partitions,
+and read a pre-restart value. The remaining R174 blocker is the direct-ingress
+sequence-linearization bug recorded below.
+
 ### Current Bug and Next Diagnosis
 
 - [x] **Verify repeated local split and restart**: repeated same-ID successor
@@ -322,7 +330,7 @@ verified by its own remote-owner E2E.
   behavior, bounded post-cutover admission, stale point route, and catalog
   ambiguity. Files: crate `tests/*_test.rs` and server/client integration
   tests.
-- [~] **Add sustained split E2E**: keep routed 1 MiB-target hot traffic live
+- [x] **Add sustained split E2E**: keep routed 1 MiB-target hot traffic live
   through every observed split, capture p50/p99/p999/errors and correlated
   split metrics, then verify restart replay. Files:
   `tools/bench-chunk-kv-regression.sh`, client load tool, and
@@ -331,10 +339,9 @@ verified by its own remote-owner E2E.
   exceed the five-second RPC deadline, and are later persisted by the server.
   The acceptance test must fail if post-split workload does not progress within
   30 seconds; do not mask the defect by extending the client deadline.
-  The workload now supports a deterministic read percentage and defaults to
-  25% reads of keys written earlier in each 100-operation window. The next
-  real-process run must validate this mixed path through split and restart
-  before the item is complete.
+  The workload supports a deterministic read percentage and defaults to 25%
+  reads of keys written earlier in each 100-operation window. The mixed run
+  above completed repeated splits and exact restart recovery within bounds.
 - [ ] **Run acceptance gates and clean up**: run the R174/R175 gates and the
   sustained split/balance workflow, remove both completed requirements and this
   plan, and update the backlog index in the final cleanup commit. Files:
