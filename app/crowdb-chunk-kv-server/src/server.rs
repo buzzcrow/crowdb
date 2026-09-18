@@ -20,6 +20,7 @@ use crowdb_protocol::chunk_kv::{
 };
 use crowdb_protocol::common::{ChunkKvExtra, ChunkKvPartitionLoad};
 use thiserror::Error;
+use tracing::info;
 
 use crate::{
     validate_and_clip_scan, AuthorityError, ChunkKvRangeCatalogError, ClippedScan, ScanValidationError,
@@ -564,6 +565,18 @@ impl ChunkKvService {
             );
             Arc::new(next)
         });
+        info!(
+            transition_id_high = artifact.transition_id.high,
+            transition_id_low = artifact.transition_id.low,
+            parent_id_high = artifact.parent_id.high,
+            parent_id_low = artifact.parent_id.low,
+            parent_epoch = artifact.parent_epoch,
+            parent_next_epoch = artifact.parent_next_epoch,
+            child_id_high = artifact.child.partition_id.high,
+            child_id_low = artifact.child.partition_id.low,
+            cutover_seq = artifact.cutover_seq,
+            "local split writers installed"
+        );
         Ok(())
     }
 
@@ -717,11 +730,12 @@ impl ChunkKvService {
     }
 
     pub(crate) fn split_transition_parent(&self, partition_id: Id128) -> Option<Partition> {
-        self.local_split_sessions
-            .load()
-            .get(&partition_id)
-            .map(|session| session.dispatcher.clone())
-            .or_else(|| self.hosted_partition(partition_id))
+        self.hosted_partition(partition_id).or_else(|| {
+            self.local_split_sessions
+                .load()
+                .get(&partition_id)
+                .map(|session| session.dispatcher.clone())
+        })
     }
 
     /// Activates one replayed assignment after a matching catalog and serving

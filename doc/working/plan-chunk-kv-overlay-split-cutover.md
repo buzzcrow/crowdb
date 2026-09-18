@@ -50,9 +50,11 @@ is unknown`.
 
 ### Current Bug and Next Diagnosis
 
-- [~] **Repair repeated local split session selection and restart**: make a
-  second local split select the exact current writer rather than its old-parent
-  dispatcher, verify the retained parent entry carries `tail_overlay`, and trace
+- [~] **Verify repeated local split and restart**: a second local split now
+  selects the exact current writer before falling back to its old-parent
+  dispatcher, covered by `repeated_local_split_uses_current_retained_writer`.
+  Rerun the real-process regression, verify the retained parent entry carries
+  `tail_overlay`, and trace
   `ChunkKvStorage::recover_partition()` through
   `Partition::recover_native_prepared_overlay()`. Files:
   `app/crowdb-chunk-kv-server/src/{catalog/transition.rs,storage.rs,main.rs}`

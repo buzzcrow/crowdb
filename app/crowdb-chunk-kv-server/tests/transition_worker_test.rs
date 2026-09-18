@@ -8,8 +8,8 @@ use async_trait::async_trait;
 use crowdb_chunk_kv::memory::MemoryPartitionTree;
 use crowdb_chunk_kv::{
     Checkpoint, Partition, PartitionConfig, PartitionId, PartitionJournal, PartitionLifecycle,
-    PartitionRange, PartitionTree, PreparedSplitWriterArtifact, SplitArtifact, StreamPartitionJournal,
-    TransitionId,
+    PartitionRange, PartitionTree, PreparedSplitWriterArtifact, SplitArtifact, SplitChild, SplitPlan,
+    StreamPartitionJournal, TransitionId,
 };
 use crowdb_chunk_kv_server::{
     ChunkKvService, Group0ControlStore, Group0Kv, Group0KvError, MonitorError, PreparedLocalSplit,
@@ -162,6 +162,7 @@ async fn partition(
 struct FakeStorage {
     recovered: Partition,
     split: SplitArtifact,
+    expected_split_parent_range: Option<PartitionRange>,
 }
 
 #[async_trait]
@@ -180,10 +181,13 @@ impl TransitionStorage for FakeStorage {
 
     async fn prepare_split(
         &self,
-        _parent: &Partition,
+        parent: &Partition,
         transition: &SplitTransition,
         _max_catchup_lag_records: u64,
     ) -> Result<PreparedLocalSplit, MonitorError> {
+        if let Some(expected) = &self.expected_split_parent_range {
+            assert_eq!(&parent.snapshot().range, expected);
+        }
         let child = partition(
             transition.child.partition_id,
             transition.child.range.clone(),
@@ -367,6 +371,7 @@ async fn source_worker_quiesces_before_returning_release_proof() {
         Arc::new(FakeStorage {
             recovered: unused,
             split: split_artifact(&split_transition()),
+            expected_split_parent_range: None,
         }),
         8,
     )
@@ -408,6 +413,7 @@ async fn target_worker_recovers_but_does_not_activate_assignment() {
         Arc::new(FakeStorage {
             recovered: recovered.clone(),
             split: split_artifact(&split_transition()),
+            expected_split_parent_range: None,
         }),
         8,
     )
@@ -443,6 +449,7 @@ async fn split_worker_reports_only_a_common_child_frontier() {
         Arc::new(FakeStorage {
             recovered: unused,
             split: split_artifact(&transition),
+            expected_split_parent_range: None,
         }),
         8,
     )
@@ -457,6 +464,146 @@ async fn split_worker_reports_only_a_common_child_frontier() {
         proof,
         "a durable readiness retry requires the child handle to remain installed"
     );
+}
+
+async fn service_after_local_split(first: &SplitTransition) -> (Arc<ChunkKvService>, PartitionRange) {
+    let parent = partition(
+        first.parent_id,
+        first.parent_range.clone(),
+        first.parent_epoch,
+        &first.parent_artifact,
+        false,
+    )
+    .await;
+    let retained_range = PartitionRange {
+        start: Some(first.parent_range.start.clone()),
+        end: Some(first.split_key.clone()),
+    };
+    let retained = partition(
+        first.parent_id,
+        KeyRange {
+            start: first.parent_range.start.clone(),
+            end: Some(first.split_key.clone()),
+        },
+        first.parent_next_epoch,
+        &first.retained_parent_artifact,
+        true,
+    )
+    .await;
+    let child = partition(
+        first.child.partition_id,
+        first.child.range.clone(),
+        first.child.owner_epoch,
+        &first.child.artifact,
+        true,
+    )
+    .await;
+    let transition_id = TransitionId {
+        high: first.transition_id.high,
+        low: first.transition_id.low,
+    };
+    parent
+        .begin_split(SplitPlan {
+            transition_id,
+            parent_id: PartitionId {
+                high: first.parent_id.high,
+                low: first.parent_id.low,
+            },
+            parent_epoch: first.parent_epoch,
+            parent_range: PartitionRange {
+                start: Some(first.parent_range.start.clone()),
+                end: first.parent_range.end.clone(),
+            },
+            parent_next_epoch: first.parent_next_epoch,
+            split_key: first.split_key.clone(),
+            child: SplitChild {
+                partition_id: PartitionId {
+                    high: first.child.partition_id.high,
+                    low: first.child.partition_id.low,
+                },
+                range: PartitionRange {
+                    start: Some(first.child.range.start.clone()),
+                    end: first.child.range.end.clone(),
+                },
+                ownership_epoch: first.child.owner_epoch,
+            },
+        })
+        .await
+        .unwrap();
+    parent
+        .install_split_ingress(retained.clone(), child)
+        .await
+        .unwrap();
+    parent.begin_split_finalization(transition_id).await.unwrap();
+    let mut first_artifact = split_artifact(first);
+    first_artifact.shared_view_generation = 1;
+    first_artifact.cutover_seq = 0;
+    first_artifact.retained_parent.base_applied_seq = 0;
+    first_artifact.retained_parent.applied_seq = 0;
+    first_artifact.retained_parent.parent_cutover_offset = 0;
+    first_artifact.retained_parent.child_stream_start_seq = 1;
+    first_artifact.child.base_applied_seq = 0;
+    first_artifact.child.applied_seq = 0;
+    first_artifact.child.parent_cutover_offset = 0;
+    first_artifact.child.child_stream_start_seq = 1;
+    parent
+        .record_split_artifact(first_artifact.clone())
+        .await
+        .unwrap();
+
+    let service = Arc::new(ChunkKvService::new(1, 8).unwrap());
+    service.install_partition(&parent).unwrap();
+    service.record_local_split_ready(&first_artifact).await.unwrap();
+    (service, retained_range)
+}
+
+#[tokio::test]
+async fn repeated_local_split_uses_current_retained_writer() {
+    let first = split_transition();
+    let (service, retained_range) = service_after_local_split(&first).await;
+
+    let second = SplitTransition {
+        transition_id: id(92),
+        parent_id: first.parent_id,
+        parent_range: KeyRange {
+            start: first.parent_range.start,
+            end: Some(first.split_key),
+        },
+        parent_owner: owner(1),
+        parent_epoch: 4,
+        parent_artifact: first.retained_parent_artifact,
+        retained_parent_artifact: artifact(14),
+        parent_next_epoch: 5,
+        split_key: b"g".to_vec(),
+        child: SplitChildAssignment {
+            partition_id: id(4),
+            range: KeyRange {
+                start: b"g".to_vec(),
+                end: Some(b"m".to_vec()),
+            },
+            owner: owner(1),
+            owner_epoch: 5,
+            artifact: artifact(15),
+        },
+        planned_at_ms: 0,
+        phase: SplitPhase::ParentPreparing,
+        readiness_proof: None,
+        failure: None,
+    };
+    let unused = partition(id(9), KeyRange::default(), 1, &artifact(99), true).await;
+    let worker = TransitionExecutor::with_storage(
+        1,
+        service,
+        Arc::new(FakeStorage {
+            recovered: unused,
+            split: split_artifact(&second),
+            expected_split_parent_range: Some(retained_range),
+        }),
+        8,
+    )
+    .unwrap();
+
+    worker.prepare_split_parent(&second).await.unwrap();
 }
 
 #[tokio::test]
@@ -477,6 +624,7 @@ async fn processor_persists_target_preparing_before_readiness() {
             Arc::new(FakeStorage {
                 recovered,
                 split: split_artifact(&split_transition()),
+                expected_split_parent_range: None,
             }),
             8,
         )
@@ -520,6 +668,7 @@ async fn processor_resumes_planned_split_through_durable_readiness() {
             Arc::new(FakeStorage {
                 recovered,
                 split: split_artifact(&transition),
+                expected_split_parent_range: None,
             }),
             8,
         )

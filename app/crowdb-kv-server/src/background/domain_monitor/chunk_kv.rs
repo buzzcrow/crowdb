@@ -16,6 +16,7 @@ use crowdb_protocol::chunk_kv::{
 use crowdb_protocol::common::InstanceValue;
 use crowdb_protocol::key::{ChunkKvSplitKey, ChunkKvTransferKey, InstanceKey, ServingGrantKey, TextKey};
 use sha2::{Digest, Sha256};
+use tracing::info;
 
 use crate::group0_control_plane::Group0ControlPlane;
 
@@ -256,10 +257,21 @@ async fn publish_ready_transitions(control: &Group0ControlPlane) -> Result<(), S
     {
         let mut transition: SplitTransition = decode_transition(&item)?;
         if transition.phase == SplitPhase::ChildPrepared {
-            catalog::publish_split(control, &transition).await?;
+            let generation = catalog::publish_split(control, &transition).await?;
             transition.phase = SplitPhase::CatalogCommitted;
             transition.validate().map_err(|error| error.to_string())?;
             persist_transition(control, &item, &transition).await?;
+            info!(
+                transition_id_high = transition.transition_id.high,
+                transition_id_low = transition.transition_id.low,
+                parent_id_high = transition.parent_id.high,
+                parent_id_low = transition.parent_id.low,
+                parent_next_epoch = transition.parent_next_epoch,
+                child_id_high = transition.child.partition_id.high,
+                child_id_low = transition.child.partition_id.low,
+                catalog_generation = generation,
+                "local split catalog committed"
+            );
         }
     }
     Ok(())

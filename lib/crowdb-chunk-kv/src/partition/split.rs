@@ -123,6 +123,16 @@ pub struct PreparedSplit {
     pub delta_records: u64,
 }
 
+struct SplitSessionBuild {
+    retained_spec: SplitChild,
+    targets: SplitSessionTargets,
+    base_checkpoint: Checkpoint,
+    source: Arc<dyn PartitionTree>,
+    shared_view_generation: u64,
+    shared_view_journal_frontier: u64,
+    max_catchup_lag_records: u64,
+}
+
 impl Partition {
     /// Completes the durable retained-parent target after the common split
     /// frontier is established.  Callers use this session form so the catalog
@@ -161,13 +171,15 @@ impl Partition {
         let result = self
             .build_split_session(
                 &plan,
-                retained_spec,
-                targets,
-                base_checkpoint,
-                source,
-                shared_view_generation,
-                shared_view_journal_frontier,
-                max_catchup_lag_records,
+                SplitSessionBuild {
+                    retained_spec,
+                    targets,
+                    base_checkpoint,
+                    source,
+                    shared_view_generation,
+                    shared_view_journal_frontier,
+                    max_catchup_lag_records,
+                },
             )
             .await;
         if result.is_ok() {
@@ -192,17 +204,16 @@ impl Partition {
     }
 
     #[allow(clippy::too_many_lines)]
-    async fn build_split_session(
-        &self,
-        plan: &SplitPlan,
-        retained_spec: SplitChild,
-        targets: SplitSessionTargets,
-        base_checkpoint: Checkpoint,
-        source: Arc<dyn PartitionTree>,
-        shared_view_generation: u64,
-        shared_view_journal_frontier: u64,
-        max_catchup_lag_records: u64,
-    ) -> Result<PreparedSplit> {
+    async fn build_split_session(&self, plan: &SplitPlan, build: SplitSessionBuild) -> Result<PreparedSplit> {
+        let SplitSessionBuild {
+            retained_spec,
+            targets,
+            base_checkpoint,
+            source,
+            shared_view_generation,
+            shared_view_journal_frontier,
+            max_catchup_lag_records,
+        } = build;
         if max_catchup_lag_records == 0 {
             return Err(ChunkKvError::InvalidRequest(
                 "split catch-up lag bound must be nonzero".into(),

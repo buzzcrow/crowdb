@@ -16,6 +16,7 @@ use crowdb_protocol::chunk_stream::StreamName;
 use crowdb_protocol::common::{ChunkKvExtra, ChunkKvPartitionLoad, InstanceValue};
 use crowdb_protocol::key::{ChunkKvSplitKey, ChunkKvTransferKey, TextKey};
 use sha2::{Digest, Sha256};
+use tracing::info;
 
 use crate::group0_control_plane::Group0ControlPlane;
 
@@ -192,6 +193,17 @@ async fn plan_split(
         &transition,
     )
     .await?;
+    info!(
+        transition_id_high = transition.transition_id.high,
+        transition_id_low = transition.transition_id.low,
+        parent_id_high = transition.parent_id.high,
+        parent_id_low = transition.parent_id.low,
+        parent_epoch = transition.parent_epoch,
+        parent_next_epoch = transition.parent_next_epoch,
+        child_id_high = transition.child.partition_id.high,
+        child_id_low = transition.child.partition_id.low,
+        "local split planned"
+    );
     Ok(true)
 }
 
