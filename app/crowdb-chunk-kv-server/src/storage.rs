@@ -274,7 +274,15 @@ impl ChunkKvStorage {
             .await
             .map_err(|error| StorageRuntimeError::Stream(error.to_string()))?
             .ok_or_else(|| StorageRuntimeError::Stream("assigned stream binding does not exist".into()))?;
-        let stream = self.open_stream(stream_name, entry.owner_epoch).await?;
+        let stream = self
+            .open_stream(stream_name, entry.owner_epoch)
+            .await
+            .map_err(|error| {
+                StorageRuntimeError::Stream(format!(
+                    "target stream {stream_name:?} at owner epoch {}: {error}",
+                    entry.owner_epoch
+                ))
+            })?;
         let open_generation = entry
             .artifact
             .tail_overlay
@@ -303,34 +311,13 @@ impl ChunkKvStorage {
                     overlay.source_epoch,
                 )
                 .await
-                .map_err(|error| StorageRuntimeError::Stream(error.to_string()))?;
-            let artifact = PreparedSplitWriterArtifact {
-                partition_id: PartitionId {
-                    high: entry.partition_id.high,
-                    low: entry.partition_id.low,
-                },
-                range: PartitionRange {
-                    start: Some(entry.range.start.clone()),
-                    end: entry.range.end.clone(),
-                },
-                ownership_epoch: entry.owner_epoch,
-                tree_id: entry.artifact.tree_id,
-                tree_manifest: overlay.base_tree_manifest,
-                root_manifest_generation: overlay.base_root_manifest_generation,
-                stream_name: entry.artifact.stream_name,
-                base_applied_seq: overlay.base_applied_seq,
-                parent_id: PartitionId {
-                    high: overlay.source_partition_id.high,
-                    low: overlay.source_partition_id.low,
-                },
-                parent_epoch: overlay.source_epoch,
-                parent_stream_name: overlay.source_stream_name,
-                parent_stream_manifest_generation: overlay.source_stream_manifest_generation,
-                parent_replay_offset: overlay.replay_offset,
-                parent_cutover_offset: overlay.cutover_offset,
-                applied_seq: overlay.cutover_seq,
-                child_stream_start_seq: overlay.target_stream_start_seq,
-            };
+                .map_err(|error| {
+                    StorageRuntimeError::Stream(format!(
+                        "overlay source stream {:?} at source epoch {}: {error}",
+                        overlay.source_stream_name, overlay.source_epoch
+                    ))
+                })?;
+            let artifact = prepared_overlay_artifact(entry, overlay);
             return Partition::recover_native_prepared_overlay(
                 artifact,
                 PartitionConfig::default(),
@@ -673,6 +660,39 @@ impl ChunkKvStorage {
             return Err(storage_plan_error("split child WAL is not empty"));
         }
         Ok(stream)
+    }
+}
+
+fn prepared_overlay_artifact(
+    entry: &ChunkKvRangeCatalogEntry,
+    overlay: &TailOverlayArtifact,
+) -> PreparedSplitWriterArtifact {
+    PreparedSplitWriterArtifact {
+        partition_id: PartitionId {
+            high: entry.partition_id.high,
+            low: entry.partition_id.low,
+        },
+        range: PartitionRange {
+            start: Some(entry.range.start.clone()),
+            end: entry.range.end.clone(),
+        },
+        ownership_epoch: entry.owner_epoch,
+        tree_id: entry.artifact.tree_id,
+        tree_manifest: overlay.base_tree_manifest,
+        root_manifest_generation: overlay.base_root_manifest_generation,
+        stream_name: entry.artifact.stream_name,
+        base_applied_seq: overlay.base_applied_seq,
+        parent_id: PartitionId {
+            high: overlay.source_partition_id.high,
+            low: overlay.source_partition_id.low,
+        },
+        parent_epoch: overlay.source_epoch,
+        parent_stream_name: overlay.source_stream_name,
+        parent_stream_manifest_generation: overlay.source_stream_manifest_generation,
+        parent_replay_offset: overlay.replay_offset,
+        parent_cutover_offset: overlay.cutover_offset,
+        applied_seq: overlay.cutover_seq,
+        child_stream_start_seq: overlay.target_stream_start_seq,
     }
 }
 

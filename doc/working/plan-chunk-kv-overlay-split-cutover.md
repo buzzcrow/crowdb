@@ -5,6 +5,7 @@
 
 Upstream: [R174](../backlog/R174-chunk-kv-overlay-split-cutover.md),
 [R175](../backlog/R175-chunk-kv-child-tree-balance.md),
+[R173](../backlog/R173-s3-console-cluster-cli.md),
 [chunk-KV design](../design/chunkds/design-crowdb-chunk-kv.md), and
 [chunk-KV server design](../design/chunkds/design-crowdb-chunk-kv-server.md).
 
@@ -12,6 +13,8 @@ Goal: complete R174's local, no-request-blocking split: retain the existing
 parent as the left partition, create one child, route post-prepare writes
 directly to independent writers, and publish g2 only after both local writers
 are durable. R175 child-owner balance begins immediately after R174 acceptance.
+After R175 acceptance, continue with R173 so the CLI can deploy the cluster and
+perform bucket and object CRUD.
 
 ## Scope Decision
 
@@ -22,6 +25,9 @@ are durable. R175 child-owner balance begins immediately after R174 acceptance.
   request path. Proactive child-owner balance is disabled in the group-0
   planner until R174 is accepted, then becomes the starting point for R175
   implementation and acceptance. Dead-owner recovery remains independent.
+- R173 follows R175. Its operator acceptance target is a CLI-deployed cluster
+  with working bucket and object CRUD; it does not broaden the active R174 or
+  R175 storage work.
 - Generation is catalog reference information. An old client generation resolves
   through local split lineage. Ownership epoch remains an internal writer/WAL/tree
   durability fence, not an RPC routing precondition.
@@ -62,18 +68,40 @@ writes with 0 errors and p99 109.352 ms, then advanced restart to an exact
 manifest mismatch: the artifact recorded tree manifest 4/root manifest 2,
 while reopening root manifest 2 exposed tree checkpoint 2 rather than 4.
 
+The mismatch was an observation bug, not a failed root publication.
+`ct_snapshot_state` returned the mutable in-memory tree `version_`; range
+rebuild, split-view publication, and flush advance that counter independently
+of the durable snapshot sequence. The tree now records the durable snapshot
+sequence and applied frontier separately at successful snapshot commit and
+recovery. The native exact-generation regression rebuilds a range, advances
+and checkpoints it, then reopens the recorded root generation and observes the
+same checkpoint. The change also exposed a catalog cleanup assumption that
+only the child owned an overlay. Materialization now clears each retained or
+child overlay independently and removes the shared transition identity only
+after both are independent.
+
+The rebuilt real-process run at
+`bench-log/chunk-kv-regression-20260919-011301` completed 10,000 × 4 KiB writes
+with 0 errors and p99 106.813 ms, completed three consecutive local splits to
+four hosted partitions, then restarted node 1 in 1.051 s, recovered all four
+partitions, and read a pre-restart value. The exact-manifest and stale stream
+errors did not recur. R174 remains active for the direct-ingress cleanup and
+the complete two-half negative restart coverage below; R175 remains disabled.
+
 ### Current Bug and Next Diagnosis
 
-- [~] **Verify repeated local split and restart**: repeated same-ID successor
+- [x] **Verify repeated local split and restart**: repeated same-ID successor
   sessions, current-writer selection, and the retained catalog artifact are
   corrected. Split lifecycle logs now identify planned, readiness, installed,
   and catalog-committed transitions with writer epochs and durable frontiers.
-  Add the native exact-generation recovery regression and determine why root
-  manifest generation 2 reopens tree checkpoint 2 after the split recorded
-  checkpoint 4. Files:
+  The native exact-generation regression proves the root generation and
+  durable checkpoint reopen as one identity, and the real-process restart
+  recovered all four partitions after three local splits. Files:
   `app/crowdb-chunk-kv-server/src/{catalog/transition.rs,storage.rs,main.rs}`
+  `app/crowdb-kv-server/src/background/domain_monitor/chunk_kv/catalog.rs`,
+  `lib/crowdb-tree/{include/crowdb-tree/btree/tree.h,src/{c_api.cpp,snapshot/persist.cpp},ffi/tests/ffi_test.rs}`,
   and `lib/crowdb-chunk-kv/src/partition.rs`.
-- [ ] **Add a restart regression test for both split halves**: construct a
+- [~] **Add a restart regression test for both split halves**: construct a
   committed retained-parent-plus-child catalog, stop the source process, and
   assert that recovery opens both entries through the prepared-overlay path and
   serves a pre-split key from each side. This must fail when either catalog

@@ -784,6 +784,16 @@ class Crowdbtree
         return version_.load();
     }
 
+    [[nodiscard]] uint64_t durable_snapshot_seq() const
+    {
+        return durable_snapshot_seq_.load(std::memory_order_acquire);
+    }
+
+    [[nodiscard]] uint64_t durable_snapshot_last_applied_slot() const
+    {
+        return durable_snapshot_last_applied_slot_.load(std::memory_order_acquire);
+    }
+
     [[nodiscard]] uint64_t root_page_id() const
     {
         return root_page_id_.load();
@@ -1364,6 +1374,8 @@ class Crowdbtree
     std::atomic<uint64_t> contiguous_slot_{0};
     std::atomic<uint64_t> last_applied_slot_{0};
     std::atomic<uint64_t> version_{0};
+    std::atomic<uint64_t> durable_snapshot_seq_{0};
+    std::atomic<uint64_t> durable_snapshot_last_applied_slot_{0};
 
     struct MappingMaterializationState
     {

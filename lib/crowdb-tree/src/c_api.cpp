@@ -572,8 +572,8 @@ ct_status ct_snapshot_state(const ct_tree *t, uint64_t *out_snapshot_seq, uint64
     if (t == nullptr || out_snapshot_seq == nullptr || out_last_applied == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
-    *out_snapshot_seq = t->tree->version();
-    *out_last_applied = t->tree->last_applied_slot();
+    *out_snapshot_seq = t->tree->durable_snapshot_seq();
+    *out_last_applied = t->tree->durable_snapshot_last_applied_slot();
     return static_cast<ct_status>(Code::kOk);
 }
 

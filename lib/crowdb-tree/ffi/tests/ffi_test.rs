@@ -562,6 +562,58 @@ fn callback_root_catalog_opens_exact_manifest_without_latest_fallback() {
 }
 
 #[test]
+fn exact_manifest_tracks_durable_snapshot_after_range_rebuild() {
+    let catalog = Arc::new(ChunkRootCatalog::open_memory(12).unwrap());
+    let source = Crowdbtree::open(&Config::default()).unwrap();
+    source.apply_put(1, b"b", b"base").unwrap();
+    source.flush().unwrap();
+
+    let options = ChunkPageStoreOptions {
+        tree_id: 46,
+        owner_epoch: 12,
+        open_generation: 0,
+        pack_bytes: 4096,
+        iu_size: 1,
+        max_concurrent_packs: 2,
+        materialization_bytes_per_pass: 4096,
+    };
+    let store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
+    let config = Config {
+        page_store: Some(Arc::clone(&store)),
+        ..Config::default()
+    };
+    let (rebuilt, _) = source.rebuild_range(&config).unwrap();
+    assert_eq!(rebuilt.snapshot_state().unwrap(), (1, 1));
+
+    rebuilt.apply_put(2, b"c", b"tail").unwrap();
+    rebuilt.flush().unwrap();
+    let checkpoint = rebuilt.snapshot_info().unwrap();
+    let generation = store.chunk_manifest_generation().unwrap();
+    assert_eq!(rebuilt.snapshot_state().unwrap(), checkpoint);
+    drop(rebuilt);
+    drop(store);
+
+    let exact_store = Arc::new(
+        PageStore::open_chunk(
+            ChunkPageStoreOptions {
+                open_generation: generation,
+                ..options
+            },
+            Arc::clone(&catalog),
+            None,
+        )
+        .unwrap(),
+    );
+    let exact = Crowdbtree::open(&Config {
+        page_store: Some(exact_store),
+        ..Config::default()
+    })
+    .unwrap();
+    assert_eq!(exact.snapshot_state().unwrap(), checkpoint);
+    assert_eq!(exact.get(b"c").unwrap(), Some((2, b"tail".to_vec())));
+}
+
+#[test]
 fn published_manifest_is_visible_through_the_same_page_store() {
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-callback-read-own-write");
     let backend = Arc::new(FileRootCatalogStore {

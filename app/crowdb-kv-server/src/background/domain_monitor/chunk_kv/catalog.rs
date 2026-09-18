@@ -134,14 +134,14 @@ fn release_materialized_split(
     head: ChunkKvRangeCatalogHead,
     mut pages: Vec<ChunkKvRangeCatalogPage>,
     transition_id: crowdb_protocol::chunk_kv::Id128,
-    child_id: crowdb_protocol::chunk_kv::Id128,
+    partition_id: crowdb_protocol::chunk_kv::Id128,
 ) -> Result<(ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>), String> {
     let generation = head
         .generation
         .checked_add(1)
         .ok_or_else(|| "range catalog generation overflowed".to_string())?;
     let mut matched = 0;
-    let mut child_matched = false;
+    let mut partition_matched = false;
     for page in &mut pages {
         let mut changed = false;
         for entry in &mut page.entries {
@@ -149,25 +149,43 @@ fn release_materialized_split(
                 continue;
             }
             matched += 1;
-            changed = true;
-            if entry.partition_id == child_id {
+            if entry.partition_id == partition_id {
                 if entry.artifact.tail_overlay.is_none() {
-                    return Err("materialized split child overlay is absent".into());
+                    return Err("materialized split partition overlay is absent".into());
                 }
                 entry.artifact.tail_overlay = None;
-                child_matched = true;
-            } else if entry.artifact.tail_overlay.is_some() {
-                return Err("retained split parent unexpectedly has a tail overlay".into());
+                partition_matched = true;
+                changed = true;
             }
-            entry.transition_id = None;
         }
         if changed {
             page.generation = generation;
-            page.seal().map_err(|error| error.to_string())?;
         }
     }
-    if matched != 2 || !child_matched {
-        return Err("completed split must release one retained parent and one child".into());
+    if matched != 2 || !partition_matched {
+        return Err("materialized split must match one partition in an exact writer pair".into());
+    }
+    let all_materialized = pages
+        .iter()
+        .flat_map(|page| &page.entries)
+        .filter(|entry| entry.transition_id == Some(transition_id))
+        .all(|entry| entry.artifact.tail_overlay.is_none());
+    if all_materialized {
+        for page in &mut pages {
+            let mut changed = false;
+            for entry in &mut page.entries {
+                if entry.transition_id == Some(transition_id) {
+                    entry.transition_id = None;
+                    changed = true;
+                }
+            }
+            if changed {
+                page.generation = generation;
+            }
+        }
+    }
+    for page in pages.iter_mut().filter(|page| page.generation == generation) {
+        page.seal().map_err(|error| error.to_string())?;
     }
     let mut references = head.pages;
     for page in pages.iter().filter(|page| page.generation == generation) {
@@ -421,8 +439,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn materialization_releases_overlay_and_completed_split_identity_together() {
+    fn materialization_releases_each_overlay_before_completed_split_identity() {
         let transition_id = Id128 { high: 7, low: 8 };
+        let parent_id = Id128 { high: 1, low: 1 };
         let child_id = Id128 { high: 1, low: 2 };
         let child = ChunkKvRangeCatalogEntry {
             partition_id: child_id,
@@ -456,13 +475,12 @@ mod tests {
             transition_id: Some(transition_id),
         };
         let mut parent = child.clone();
-        parent.partition_id = Id128 { high: 1, low: 1 };
+        parent.partition_id = parent_id;
         parent.range = KeyRange {
             start: Vec::new(),
             end: Some(b"m".to_vec()),
         };
         parent.artifact.tree_id = 4;
-        parent.artifact.tail_overlay = None;
         let mut page = ChunkKvRangeCatalogPage {
             generation: 1,
             page_index: 0,
@@ -478,7 +496,23 @@ mod tests {
         };
         head.seal().unwrap();
 
-        let (_, pages) = release_materialized_split(head, vec![page], transition_id, child_id).unwrap();
+        let (head, pages) = release_materialized_split(head, vec![page], transition_id, parent_id).unwrap();
+        let parent = pages[0]
+            .entries
+            .iter()
+            .find(|entry| entry.partition_id == parent_id)
+            .unwrap();
+        let child = pages[0]
+            .entries
+            .iter()
+            .find(|entry| entry.partition_id == child_id)
+            .unwrap();
+        assert!(parent.artifact.tail_overlay.is_none());
+        assert!(child.artifact.tail_overlay.is_some());
+        assert_eq!(parent.transition_id, Some(transition_id));
+        assert_eq!(child.transition_id, Some(transition_id));
+
+        let (_, pages) = release_materialized_split(head, pages, transition_id, child_id).unwrap();
 
         assert!(pages[0]
             .entries

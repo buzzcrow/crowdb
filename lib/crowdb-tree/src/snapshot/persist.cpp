@@ -954,6 +954,8 @@ void Crowdbtree::commit_prepared_snapshot(const PreparedSnapshot &prepared)
 void Crowdbtree::finalize_prepared_snapshot(PreparedSnapshot &prepared)
 {
     commit_prepared_snapshot(prepared);
+    durable_snapshot_last_applied_slot_.store(prepared.last_applied_slot, std::memory_order_release);
+    durable_snapshot_seq_.store(prepared.seq, std::memory_order_release);
     if (opt_.page_store->block_size() == 0) {
         return;
     }
@@ -1671,6 +1673,8 @@ Status Crowdbtree::open(const Config &opt, std::unique_ptr<Crowdbtree> *out)
     tree->last_applied_slot_.store(anchor.last_applied_slot);
     tree->contiguous_slot_.store(anchor.last_applied_slot);
     tree->version_.store(anchor.snapshot_seq);
+    tree->durable_snapshot_last_applied_slot_.store(anchor.last_applied_slot, std::memory_order_release);
+    tree->durable_snapshot_seq_.store(anchor.snapshot_seq, std::memory_order_release);
     tree->leaf_count_.store(anchor.leaf_count, std::memory_order_relaxed);
     tree->inner_count_.store(anchor.inner_count, std::memory_order_relaxed);
 
