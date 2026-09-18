@@ -1477,6 +1477,16 @@ std::shared_ptr<MemTable> Crowdbtree::current_active() const
 
 std::vector<std::shared_ptr<MemTable>> Crowdbtree::all_memtables() const
 {
+    auto out = local_memtables();
+    if (Crowdbtree *source = split_overlay_source_.load(std::memory_order_acquire); source != nullptr) {
+        auto inherited = source->local_memtables();
+        out.insert(out.end(), inherited.begin(), inherited.end());
+    }
+    return out;
+}
+
+std::vector<std::shared_ptr<MemTable>> Crowdbtree::local_memtables() const
+{
     std::shared_lock<std::shared_mutex>    lk(memtable_mutex_);
     std::vector<std::shared_ptr<MemTable>> out;
     out.reserve(split_shared_memtables_.size() + frozen_.size() + 1);
@@ -1484,6 +1494,33 @@ std::vector<std::shared_ptr<MemTable>> Crowdbtree::all_memtables() const
     out.insert(out.end(), frozen_.begin(), frozen_.end());
     out.push_back(active_);
     return out;
+}
+
+Status Crowdbtree::install_split_memtable_overlay(Crowdbtree &source, uint64_t journal_frontier)
+{
+    if (&source == this) {
+        return Status::invalid_argument("split memtable overlay source must differ from destination");
+    }
+    Crowdbtree *expected = nullptr;
+    if (!split_overlay_source_.compare_exchange_strong(expected, &source, std::memory_order_acq_rel) &&
+        expected != &source) {
+        return Status::invalid_argument("another split memtable overlay is already installed");
+    }
+    force_advance_slot(journal_frontier);
+    last_applied_slot_.store(std::max(last_applied_slot_.load(), journal_frontier));
+    return Status::Ok();
+}
+
+Status Crowdbtree::clear_split_memtable_overlay(Crowdbtree &source)
+{
+    Crowdbtree *expected = &source;
+    if (!split_overlay_source_.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel)) {
+        if (expected == nullptr) {
+            return Status::Ok();
+        }
+        return Status::invalid_argument("split memtable overlay source does not match");
+    }
+    return Status::Ok();
 }
 
 Status Crowdbtree::begin_split_memtable_view(uint64_t *out_generation, uint64_t *out_journal_frontier)

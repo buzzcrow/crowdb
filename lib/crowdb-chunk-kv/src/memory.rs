@@ -22,6 +22,9 @@ pub struct MemoryPartitionTree {
     rebuild_paused: Arc<AtomicBool>,
     rebuild_started: Arc<Notify>,
     rebuild_resume: Arc<Notify>,
+    split_publish_paused: Arc<AtomicBool>,
+    split_publish_started: Arc<Notify>,
+    split_publish_resume: Arc<Notify>,
     split_views: Mutex<BTreeMap<u64, BTreeMap<Vec<u8>, ValueRevision>>>,
     next_split_view: AtomicU64,
 }
@@ -36,6 +39,9 @@ impl Default for MemoryPartitionTree {
             rebuild_paused: Arc::new(AtomicBool::new(false)),
             rebuild_started: Arc::new(Notify::new()),
             rebuild_resume: Arc::new(Notify::new()),
+            split_publish_paused: Arc::new(AtomicBool::new(false)),
+            split_publish_started: Arc::new(Notify::new()),
+            split_publish_resume: Arc::new(Notify::new()),
             split_views: Mutex::default(),
             next_split_view: AtomicU64::new(0),
         }
@@ -69,6 +75,22 @@ impl MemoryPartitionTree {
     pub fn resume_rebuild(&self) {
         self.rebuild_paused.store(false, Ordering::Release);
         self.rebuild_resume.notify_waiters();
+    }
+
+    pub fn pause_split_publish(&self) {
+        self.split_publish_paused.store(true, Ordering::Release);
+    }
+
+    pub async fn wait_for_split_publish(&self) {
+        let notified = self.split_publish_started.notified();
+        if self.split_publish_paused.load(Ordering::Acquire) {
+            notified.await;
+        }
+    }
+
+    pub fn resume_split_publish(&self) {
+        self.split_publish_paused.store(false, Ordering::Release);
+        self.split_publish_resume.notify_waiters();
     }
 }
 
@@ -220,6 +242,9 @@ impl PartitionTree for MemoryPartitionTree {
             rebuild_paused: Arc::clone(&self.rebuild_paused),
             rebuild_started: Arc::clone(&self.rebuild_started),
             rebuild_resume: Arc::clone(&self.rebuild_resume),
+            split_publish_paused: Arc::clone(&self.split_publish_paused),
+            split_publish_started: Arc::clone(&self.split_publish_started),
+            split_publish_resume: Arc::clone(&self.split_publish_resume),
             split_views: Mutex::default(),
             next_split_view: AtomicU64::new(0),
         };
@@ -258,6 +283,9 @@ impl PartitionTree for MemoryPartitionTree {
             rebuild_paused: Arc::clone(&self.rebuild_paused),
             rebuild_started: Arc::clone(&self.rebuild_started),
             rebuild_resume: Arc::clone(&self.rebuild_resume),
+            split_publish_paused: Arc::clone(&self.split_publish_paused),
+            split_publish_started: Arc::clone(&self.split_publish_started),
+            split_publish_resume: Arc::clone(&self.split_publish_resume),
             split_views: Mutex::default(),
             next_split_view: AtomicU64::new(0),
         };
@@ -281,6 +309,29 @@ impl PartitionTree for MemoryPartitionTree {
         Ok((generation, self.last_applied.load(Ordering::Acquire)))
     }
 
+    async fn install_split_memtable_overlay(
+        &self,
+        source: &dyn PartitionTree,
+        journal_frontier: u64,
+    ) -> Result<()> {
+        let source = source.as_any().downcast_ref::<Self>().ok_or_else(|| {
+            crate::ChunkKvError::InvalidRequest("memory split overlay requires a memory source".into())
+        })?;
+        let inherited = source.values.read().await.clone();
+        let mut values = self.values.write().await;
+        for (key, value) in inherited {
+            if value.revision <= journal_frontier {
+                values.entry(key).or_insert(value);
+            }
+        }
+        self.last_applied.fetch_max(journal_frontier, Ordering::AcqRel);
+        Ok(())
+    }
+
+    async fn clear_split_memtable_overlay(&self, _source: &dyn PartitionTree) -> Result<()> {
+        Ok(())
+    }
+
     async fn publish_split_memtable_view(
         &self,
         generation: u64,
@@ -288,6 +339,12 @@ impl PartitionTree for MemoryPartitionTree {
         destination: &dyn PartitionTree,
         range: &crate::PartitionRange,
     ) -> Result<()> {
+        if self.split_publish_paused.load(Ordering::Acquire) {
+            self.split_publish_started.notify_one();
+            while self.split_publish_paused.load(Ordering::Acquire) {
+                self.split_publish_resume.notified().await;
+            }
+        }
         let destination = destination.as_any().downcast_ref::<Self>().ok_or_else(|| {
             crate::ChunkKvError::InvalidRequest("memory split view requires a memory destination".into())
         })?;

@@ -445,6 +445,8 @@ ct_status ct_del(ct_tree *t, const uint8_t *key, size_t klen);
 
 ct_status ct_flush(ct_tree *t);
 ct_status ct_begin_split_memtable_view(ct_tree *t, uint64_t *out_generation, uint64_t *out_journal_frontier);
+ct_status ct_install_split_memtable_overlay(ct_tree *destination, ct_tree *source, uint64_t journal_frontier);
+ct_status ct_clear_split_memtable_overlay(ct_tree *destination, ct_tree *source);
 ct_status ct_publish_split_memtable_view(ct_tree *source, uint64_t generation, uint64_t journal_frontier,
                                          ct_tree *destination, const uint8_t *range_start, size_t range_start_len,
                                          int has_range_start, const uint8_t *range_end, size_t range_end_len,

@@ -386,6 +386,12 @@ extern "C" {
         out_generation: *mut u64,
         out_journal_frontier: *mut u64,
     ) -> c_int;
+    pub fn ct_install_split_memtable_overlay(
+        destination: *mut ct_tree,
+        source: *mut ct_tree,
+        journal_frontier: u64,
+    ) -> c_int;
+    pub fn ct_clear_split_memtable_overlay(destination: *mut ct_tree, source: *mut ct_tree) -> c_int;
     pub fn ct_publish_split_memtable_view(
         source: *mut ct_tree,
         generation: u64,

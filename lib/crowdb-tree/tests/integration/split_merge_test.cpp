@@ -520,6 +520,49 @@ TEST(SplitMerge, SplitSharedMemtablePublishesTwoRangeTreesInBulk)
     ASSERT_TRUE(source.release_split_memtable_view(generation).ok());
 }
 
+TEST(SplitMerge, SplitOverlayServesBeforeSourceMemtableSeal)
+{
+    Config source_opt;
+    source_opt.memtable_flush_bytes   = 1ULL << 40;
+    source_opt.memtable_flush_entries = 1U << 30;
+    Crowdbtree source(source_opt);
+    ASSERT_TRUE(source.apply(1, put_one("apple", "left-before")).ok());
+    ASSERT_TRUE(source.apply(2, put_one("zebra", "right-before")).ok());
+
+    Config left_opt;
+    left_opt.key_range = KeyRange::bounded(std::nullopt, std::string("m"));
+    Config right_opt;
+    right_opt.key_range = KeyRange::bounded(std::string("m"), std::nullopt);
+    Crowdbtree left(left_opt);
+    Crowdbtree right(right_opt);
+    ASSERT_TRUE(left.install_split_memtable_overlay(source, 2).ok());
+    ASSERT_TRUE(right.install_split_memtable_overlay(source, 2).ok());
+
+    uint64_t    slot = 0;
+    std::string value;
+    EXPECT_TRUE(left.get(Slice("apple"), &slot, &value));
+    EXPECT_EQ(value, "left-before");
+    EXPECT_TRUE(right.get(Slice("zebra"), &slot, &value));
+    EXPECT_EQ(value, "right-before");
+    ASSERT_TRUE(right.apply(3, put_one("zebra", "right-after")).ok());
+
+    uint64_t generation       = 0;
+    uint64_t journal_frontier = 0;
+    ASSERT_TRUE(source.begin_split_memtable_view(&generation, &journal_frontier).ok());
+    EXPECT_EQ(journal_frontier, 2U);
+    ASSERT_TRUE(source.publish_split_memtable_view(generation, 2, left, left_opt.key_range).ok());
+    ASSERT_TRUE(source.publish_split_memtable_view(generation, 2, right, right_opt.key_range).ok());
+    ASSERT_TRUE(left.clear_split_memtable_overlay(source).ok());
+    ASSERT_TRUE(right.clear_split_memtable_overlay(source).ok());
+    ASSERT_TRUE(source.release_split_memtable_view(generation).ok());
+
+    EXPECT_TRUE(left.get(Slice("apple"), &slot, &value));
+    EXPECT_EQ(value, "left-before");
+    EXPECT_TRUE(right.get(Slice("zebra"), &slot, &value));
+    EXPECT_EQ(slot, 3U);
+    EXPECT_EQ(value, "right-after");
+}
+
 TEST(SplitMerge, RepeatedSharedViewsKeepBothReplayFrontiersContinuous)
 {
     constexpr uint64_t kRounds   = 32;

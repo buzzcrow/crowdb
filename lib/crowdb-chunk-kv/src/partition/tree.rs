@@ -54,6 +54,20 @@ pub trait PartitionTree: Send + Sync {
             "partition tree does not support split memtable views".into(),
         ))
     }
+    async fn install_split_memtable_overlay(
+        &self,
+        _source: &dyn PartitionTree,
+        _journal_frontier: u64,
+    ) -> Result<()> {
+        Err(ChunkKvError::InvalidRequest(
+            "partition tree does not support split memtable overlays".into(),
+        ))
+    }
+    async fn clear_split_memtable_overlay(&self, _source: &dyn PartitionTree) -> Result<()> {
+        Err(ChunkKvError::InvalidRequest(
+            "partition tree does not support split memtable overlays".into(),
+        ))
+    }
     async fn publish_split_memtable_view(
         &self,
         _generation: u64,
@@ -390,6 +404,28 @@ impl PartitionTree for CrowdbPartitionTree {
 
     async fn begin_split_memtable_view(&self) -> Result<(u64, u64)> {
         self.tree.begin_split_memtable_view().map_err(map_tree_read_error)
+    }
+
+    async fn install_split_memtable_overlay(
+        &self,
+        source: &dyn PartitionTree,
+        journal_frontier: u64,
+    ) -> Result<()> {
+        let source = source.as_any().downcast_ref::<Self>().ok_or_else(|| {
+            ChunkKvError::InvalidRequest("split overlay source is not a native tree".into())
+        })?;
+        self.tree
+            .install_split_memtable_overlay(&source.tree, journal_frontier)
+            .map_err(map_tree_read_error)
+    }
+
+    async fn clear_split_memtable_overlay(&self, source: &dyn PartitionTree) -> Result<()> {
+        let source = source.as_any().downcast_ref::<Self>().ok_or_else(|| {
+            ChunkKvError::InvalidRequest("split overlay source is not a native tree".into())
+        })?;
+        self.tree
+            .clear_split_memtable_overlay(&source.tree)
+            .map_err(map_tree_read_error)
     }
 
     async fn publish_split_memtable_view(

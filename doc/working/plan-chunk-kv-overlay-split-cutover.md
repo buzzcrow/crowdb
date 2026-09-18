@@ -85,16 +85,18 @@ The rebuilt real-process run at
 with 0 errors and p99 106.813 ms, completed three consecutive local splits to
 four hosted partitions, then restarted node 1 in 1.051 s, recovered all four
 partitions, and read a pre-restart value. The exact-manifest and stale stream
-errors did not recur. R174 remains active for the direct-ingress cleanup and
-the complete two-half negative restart coverage below; R175 remains disabled.
+errors did not recur. R174 remains active for durable pre-publication cutover
+recovery; R175 remains disabled.
 
 The mixed real-process run at
 `bench-log/chunk-kv-regression-20260919-015121` completed 10,000 operations at
 4 KiB with 25% reads, concurrency 32, 0 errors, and p99 92.922 ms. It reached
 catalog generation 12 and five local partitions with zero admission
 backpressure, then restarted node 1 in 1.053 s, recovered all five partitions,
-and read a pre-restart value. The remaining R174 blocker is the direct-ingress
-sequence-linearization bug recorded below.
+and read a pre-restart value. Direct ingress now has a worker-ordered route
+frontier and serves through shared-view publication. The remaining R174
+blocker is persisting that frontier before either new writer acknowledges a
+mutation.
 
 ### Current Bug and Next Diagnosis
 
@@ -119,13 +121,13 @@ sequence-linearization bug recorded below.
   same parent journal and verifies an in-range pre-split tail key on each side;
   the catalog cutover regression independently requires the exact retained and
   child overlays on both published entries.
-- [ ] **Finish direct ingress cleanup**: `SplitIngressRoute::Buffering`,
-  `begin_split_finalization()`, and the old parent drain remain in
-  `partition/split.rs`. The local session cleanup prevents their state from
-  persisting after handoff, but does not yet satisfy the desired design where
-  writers receive post-prepare WAL/memtable mutations before shared-view bulk
-  publish. Remove the buffer and move shared-view bulk persistence behind
-  immediate writer ingress.
+- [x] **Finish direct ingress cleanup**: the session path has no buffering or
+  admission drain. One ordered worker control item fixes `C`, installs two
+  live writers, and makes raced old-queue requests forward by key. Native
+  writer trees borrow the source L0 generations for immediate reads and
+  conditional mutations; source rotation and filtered bulk publication occur
+  afterward. `begin_split_finalization()` remains only on the legacy
+  single-child API, not the server split-session path.
 - [x] **Serve stale local topology through one lineage**: after g2 publication,
   a g1 parent route resolves to its local dispatcher. Point, multi-get, batch,
   seek, and scan use current writer epochs internally; seek crosses the split
@@ -160,6 +162,20 @@ sequence-linearization bug recorded below.
   `C`. Raced requests reaching the old queue after the marker are forwarded by
   key. This removes the need for `SplitIngressRoute::Buffering` without making
   seal, checkpoint, or artifact publication part of the foreground handoff.
+
+### Bugs
+
+- **The process-local cutover frontier is not yet durable before child
+  acknowledgements.** Direct ingress now starts both live writers at `C` and
+  serves requests while shared-view publication continues, but group-0 does
+  not persist the resulting `SplitReadinessProof` until preparation returns.
+  A process crash in that interval can leave acknowledged child-WAL records
+  while the persisted transition still says only `ParentPreparing` and does
+  not name `C`. Recovery needs a durable cutover record, written before route
+  installation, that binds the transition, both writer streams, and `C`; or
+  equivalent transition-store publication that does not wait for filtered
+  memtable persistence. This recovery issue exceeded the 10-minute debugging
+  budget and remains the R174 blocker.
 
 ## Data-Path Gate Audit and Handling Notes
 
@@ -215,18 +231,18 @@ sequence-linearization bug recorded below.
   batch, seek, and scan. Do not remove an API-specific route check until its
   resolver preserves the old logical parent range. Files:
   `app/crowdb-chunk-kv-server/src/server.rs` and server tests.
-- [~] **Remove buffered split ingress**: replace the buffer route with two live
+- [x] **Remove buffered split ingress**: replace the buffer route with two live
   writer routes and make worker construction available before shared-view bulk
   persistence. Files: `lib/crowdb-chunk-kv/src/{partition.rs,partition/split.rs}`
   and partition tests.
-- [ ] **Move shared-view bulk persistence after ingress installation**: publish
+- [x] **Move shared-view bulk persistence after ingress installation**: publish
   and snapshot both filtered views in background, record durable frontiers, and
   release the shared generation only after both succeed. Files:
   `lib/crowdb-chunk-kv/src/{partition/split.rs,partition/tree.rs}` and tree
   integration tests.
 ## Writer Handoff and Routing
 
-- [ ] **Replace buffered cutover with direct dual-writer ingress**: remove
+- [x] **Replace buffered cutover with direct dual-writer ingress**: remove
   `SplitIngressRoute::Buffering`, `SplitIngressBuffer`, and sequential
   `forward_into`. Establish retained-parent and child writer memtables, then
   atomically install one key router before the shared-view bulk work. Every
@@ -245,7 +261,7 @@ sequence-linearization bug recorded below.
   `app/crowdb-chunk-kv-server/src/{serving/worker.rs,server.rs,main.rs}`, and
   split lifecycle tests.
 
-- [ ] **Persist the immutable shared view in background**: bulk publish the
+- [x] **Persist the immutable shared view in background**: bulk publish the
   prepare-entry shared view by range into both trees, durable-snapshot both
   frontiers, and only then release it. Do not read/delete individual memtable
   entries. The live writer memtables/WALs remain independent throughout. Files:
@@ -336,16 +352,17 @@ verified by its own remote-owner E2E.
   tests.
   Grant renewal, both-half overlay restart, stale routes, ordered lineage,
   catalog ambiguity, and generation pins are covered. The exact no-overlap
-  writer-boundary case remains coupled to the direct-ingress bug above.
+  A deterministic paused-publish test proves both writers accept mutations and
+  child conditions see inherited data before bulk publication completes. The
+  remaining negative case is crash recovery between route installation and
+  durable readiness publication.
 - [x] **Add sustained split E2E**: keep routed 1 MiB-target hot traffic live
   through every observed split, capture p50/p99/p999/errors and correlated
   split metrics, then verify restart replay. Files:
   `tools/bench-chunk-kv-regression.sh`, client load tool, and
-  `doc/working/chunk-kv-split-repro.md`. The current 12,000 × 4 KiB,
-  concurrency-32 run fails in round two: 64 requests enter buffered cutover,
-  exceed the five-second RPC deadline, and are later persisted by the server.
-  The acceptance test must fail if post-split workload does not progress within
-  30 seconds; do not mask the defect by extending the client deadline.
+  `doc/working/chunk-kv-split-repro.md`. The acceptance test fails if
+  post-split workload does not progress within 30 seconds; it does not extend
+  the client deadline to mask a foreground split stall.
   The workload supports a deterministic read percentage and defaults to 25%
   reads of keys written earlier in each 100-operation window. The mixed run
   above completed repeated splits and exact restart recovery within bounds.

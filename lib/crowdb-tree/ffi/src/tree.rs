@@ -217,6 +217,22 @@ impl Crowdbtree {
         Ok((generation, journal_frontier))
     }
 
+    /// Borrows the source's current L0 generations for immediate split reads.
+    pub fn install_split_memtable_overlay(
+        &self,
+        source: &Self,
+        journal_frontier: u64,
+    ) -> Result<(), CtError> {
+        check(unsafe {
+            sys::ct_install_split_memtable_overlay(self.as_ptr(), source.as_ptr(), journal_frontier)
+        })
+    }
+
+    /// Stops borrowing the source L0 after filtered publication completes.
+    pub fn clear_split_memtable_overlay(&self, source: &Self) -> Result<(), CtError> {
+        check(unsafe { sys::ct_clear_split_memtable_overlay(self.as_ptr(), source.as_ptr()) })
+    }
+
     /// Bulk-publishes the split-owned shared memtable view into one range tree.
     pub fn publish_split_memtable_view(
         &self,

@@ -1762,7 +1762,7 @@ async fn serving_grant_refresh_keeps_a_preparing_parent_active() {
 
 #[allow(clippy::too_many_lines)]
 #[tokio::test]
-async fn split_session_builds_two_durable_writers_before_ingress() {
+async fn split_session_installs_two_live_writers_at_ingress_frontier() {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let parent_tree = Arc::new(MemoryPartitionTree::with_tree_id(810));
     let parent = partition(
@@ -1871,6 +1871,109 @@ async fn split_session_builds_two_durable_writers_before_ingress() {
     assert_eq!(
         child.get(9, b"i", None).await.unwrap().unwrap().value,
         b"right-new"[..]
+    );
+}
+
+#[tokio::test]
+async fn split_routes_writes_before_shared_memtable_publish_finishes() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let parent_tree = Arc::new(MemoryPartitionTree::with_tree_id(820));
+    let parent = partition(
+        &store,
+        Arc::clone(&parent_tree),
+        StreamName { high: 820, low: 1 },
+        8,
+        PartitionConfig::default(),
+    )
+    .await;
+    parent
+        .mutate(
+            8,
+            request(820),
+            MutationOperation::Put {
+                key: b"h".to_vec(),
+                value: b"before-cutover".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    parent_tree.pause_split_publish();
+    let split_parent = parent.clone();
+    let split_store = Arc::clone(&store);
+    let split = tokio::spawn(async move {
+        split_parent
+            .prepare_split_session(
+                split_plan(PartitionId { high: 820, low: 1 }, 8),
+                SplitSessionTargets {
+                    retained_parent: SplitWriterTarget {
+                        tree_id: 821,
+                        tree_config: crowdb_tree_ffi::Config::default(),
+                        journal: empty_journal(&split_store, StreamName { high: 821, low: 1 }, 9).await,
+                    },
+                    child: SplitWriterTarget {
+                        tree_id: 822,
+                        tree_config: crowdb_tree_ffi::Config::default(),
+                        journal: empty_journal(&split_store, StreamName { high: 822, low: 1 }, 9).await,
+                    },
+                },
+                8,
+            )
+            .await
+    });
+    parent_tree.wait_for_split_publish().await;
+
+    let conditional = parent
+        .mutate(
+            8,
+            request(821),
+            MutationOperation::PutIfAbsent {
+                key: b"h".to_vec(),
+                value: b"wrong".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        conditional.result,
+        MutationResult::ConditionFailed { .. }
+    ));
+    parent
+        .mutate(
+            8,
+            request(822),
+            MutationOperation::Put {
+                key: b"i".to_vec(),
+                value: b"child-live".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    parent
+        .mutate(
+            8,
+            request(823),
+            MutationOperation::Put {
+                key: b"c".to_vec(),
+                value: b"parent-live".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+
+    parent_tree.resume_split_publish();
+    let prepared = split.await.unwrap().unwrap();
+    assert_eq!(prepared.artifact.cutover_seq, 1);
+    assert_eq!(
+        parent.get(8, b"h", None).await.unwrap().unwrap().value,
+        b"before-cutover"[..]
+    );
+    assert_eq!(
+        parent.get(8, b"i", None).await.unwrap().unwrap().value,
+        b"child-live"[..]
+    );
+    assert_eq!(
+        parent.get(8, b"c", None).await.unwrap().unwrap().value,
+        b"parent-live"[..]
     );
 }
 

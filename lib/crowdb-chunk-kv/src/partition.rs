@@ -131,6 +131,11 @@ struct MutationRequest {
     completion: oneshot::Sender<Result<MutationResponse>>,
 }
 
+enum WorkerRequest {
+    Mutation(MutationRequest),
+    SplitCutover(Box<split::SplitCutoverRequest>),
+}
+
 #[derive(Clone)]
 pub struct Partition {
     id: PartitionId,
@@ -139,7 +144,7 @@ pub struct Partition {
     lifecycle: Arc<AtomicU8>,
     journal: Arc<dyn PartitionJournal>,
     tree: Arc<dyn PartitionTree>,
-    sender: mpsc::Sender<MutationRequest>,
+    sender: mpsc::Sender<WorkerRequest>,
     queued_requests: Arc<AtomicUsize>,
     queued_bytes: Arc<AtomicU64>,
     journal_durable_seq: Arc<AtomicU64>,
@@ -173,6 +178,7 @@ struct WorkerState {
     retry_replay_offset: Arc<AtomicU64>,
     applied_notify: Arc<Notify>,
     admission_notify: Arc<Notify>,
+    split_ingress: Arc<ArcSwapOption<SplitIngressRoute>>,
     metrics: Arc<PartitionMetrics>,
     config: Arc<PartitionConfig>,
     next_seq: u64,
@@ -211,7 +217,8 @@ struct SplitTransition {
     artifact: Option<SplitArtifact>,
 }
 
-/// Lock-free request routing installed after both split writers are durable.
+/// Lock-free request routing installed once both split writers own live WALs
+/// and memtables at the ordered route frontier.
 /// The legacy parent handle remains valid while callers still hold it, but it
 /// no longer appends to its old WAL or memtable.
 #[derive(Clone)]
@@ -222,59 +229,7 @@ pub struct SplitIngress {
 }
 
 enum SplitIngressRoute {
-    Buffering(Arc<SplitIngressBuffer>),
     Writers(Box<SplitIngress>),
-}
-
-struct BufferedSplitMutation {
-    request_id: RequestId,
-    operation: MutationOperation,
-    completion: oneshot::Sender<Result<MutationResponse>>,
-}
-
-/// Bounded, lock-free admission path used only while the old WAL tail is
-/// replayed into both split writers.  Requests are never rejected solely
-/// because a split is reaching its durable frontier.
-struct SplitIngressBuffer {
-    sender: mpsc::Sender<BufferedSplitMutation>,
-    receiver: Mutex<mpsc::Receiver<BufferedSplitMutation>>,
-}
-
-impl SplitIngressBuffer {
-    fn new(capacity: usize) -> Arc<Self> {
-        let (sender, receiver) = mpsc::channel(capacity);
-        Arc::new(Self {
-            sender,
-            receiver: Mutex::new(receiver),
-        })
-    }
-
-    async fn enqueue(&self, request_id: RequestId, operation: MutationOperation) -> Result<MutationResponse> {
-        let (completion, response) = oneshot::channel();
-        self.sender
-            .try_send(BufferedSplitMutation {
-                request_id,
-                operation,
-                completion,
-            })
-            .map_err(|_| ChunkKvError::Overloaded)?;
-        response.await.map_err(|_| ChunkKvError::WriteStalled)?
-    }
-
-    async fn forward_into(&self, ingress: &SplitIngress) {
-        let mut receiver = self.receiver.lock().await;
-        while let Ok(request) = receiver.try_recv() {
-            let writer = ingress.writer_for(request.operation.key()).clone();
-            let result = writer
-                .mutate(
-                    writer.ownership_epoch.load(Ordering::Acquire),
-                    request.request_id,
-                    request.operation,
-                )
-                .await;
-            let _ = request.completion.send(result);
-        }
-    }
 }
 
 impl SplitIngress {
@@ -868,6 +823,7 @@ impl Partition {
             retry_replay_offset: Arc::clone(&retry_replay_offset),
             applied_notify: Arc::clone(&applied_notify),
             admission_notify: Arc::clone(&admission_notify),
+            split_ingress: Arc::clone(&split_ingress),
             metrics: Arc::clone(&metrics),
             config: Arc::clone(&config),
             next_seq,
@@ -921,18 +877,14 @@ impl Partition {
     ) -> Result<MutationResponse> {
         self.metrics.mutation_request();
         if let Some(route) = self.split_ingress.load_full() {
-            return match route.as_ref() {
-                SplitIngressRoute::Buffering(buffer) => buffer.enqueue(request_id, operation).await,
-                SplitIngressRoute::Writers(ingress) => {
-                    let writer = ingress.writer_for(operation.key());
-                    Box::pin(writer.mutate(
-                        writer.ownership_epoch.load(Ordering::Acquire),
-                        request_id,
-                        operation,
-                    ))
-                    .await
-                }
-            };
+            let SplitIngressRoute::Writers(ingress) = route.as_ref();
+            let writer = ingress.writer_for(operation.key());
+            return Box::pin(writer.mutate(
+                writer.ownership_epoch.load(Ordering::Acquire),
+                request_id,
+                operation,
+            ))
+            .await;
         }
         self.validate_epoch(ownership_epoch)?;
         if !accepts_mutations(self.lifecycle()) {
@@ -968,7 +920,7 @@ impl Partition {
             reserved_bytes,
             completion,
         };
-        if self.sender.try_send(request).is_err() {
+        if self.sender.try_send(WorkerRequest::Mutation(request)).is_err() {
             release_admission(
                 &self.queued_requests,
                 &self.queued_bytes,
@@ -994,13 +946,12 @@ impl Partition {
     ) -> Result<Option<ValueRevision>> {
         self.metrics.point_read();
         if let Some(route) = self.split_ingress.load_full() {
-            if let SplitIngressRoute::Writers(ingress) = route.as_ref() {
-                let writer = ingress.writer_for(key);
-                let writer_epoch = writer.ownership_epoch.load(Ordering::Acquire);
-                let writer_stream = writer.snapshot().stream_name;
-                let position = min_journal_position.filter(|position| position.stream_name == writer_stream);
-                return Box::pin(writer.get(writer_epoch, key, position)).await;
-            }
+            let SplitIngressRoute::Writers(ingress) = route.as_ref();
+            let writer = ingress.writer_for(key);
+            let writer_epoch = writer.ownership_epoch.load(Ordering::Acquire);
+            let writer_stream = writer.snapshot().stream_name;
+            let position = min_journal_position.filter(|position| position.stream_name == writer_stream);
+            return Box::pin(writer.get(writer_epoch, key, position)).await;
         }
         self.validate_epoch(ownership_epoch)?;
         if !self.range.load().contains(key) {
@@ -1559,11 +1510,9 @@ impl Partition {
     /// Returns an error unless the artifact exactly matches the active plan
     /// and current cutover frontier.
     pub async fn record_split_artifact(&self, artifact: SplitArtifact) -> Result<()> {
-        if self.lifecycle() != PartitionLifecycle::SplitFinalizing
-            || self.queued_requests.load(Ordering::Acquire) != 0
-        {
+        if self.lifecycle() != PartitionLifecycle::SplitFinalizing {
             return Err(ChunkKvError::SplitRetry(
-                "split artifact requires a drained parent finalization".into(),
+                "split artifact requires an installed writer route".into(),
             ));
         }
         let mut transition = self.split_transition.lock().await;
@@ -1636,7 +1585,7 @@ impl Partition {
         Ok(())
     }
 
-    /// Publishes the locally durable split writers to callers that still hold
+    /// Publishes the locally active split writers to callers that still hold
     /// the pre-split parent handle.  This is deliberately an atomic snapshot:
     /// a request observes either the old parent sequencer or one complete pair
     /// of new writers, never a half-installed route.
@@ -1669,56 +1618,21 @@ impl Partition {
             retained_parent,
             child,
         };
-        let buffered = self
-            .split_ingress
-            .load_full()
-            .and_then(|route| match route.as_ref() {
-                SplitIngressRoute::Buffering(buffer) => Some(Arc::clone(buffer)),
-                SplitIngressRoute::Writers(_) => None,
-            });
         self.split_ingress
             .store(Some(Arc::new(SplitIngressRoute::Writers(Box::new(
                 ingress.clone(),
             )))));
-        if let Some(buffer) = buffered {
-            buffer.forward_into(&ingress).await;
-        }
         Ok(())
     }
 
-    /// Atomically diverts new parent requests into a bounded session buffer.
-    /// Previously admitted parent mutations are allowed to finish on the old
-    /// WAL; the buffer is released only after both new writers are durable.
-    pub(crate) fn begin_split_ingress_buffer(&self) -> Result<()> {
-        if self.lifecycle() != PartitionLifecycle::SplitPreparing {
-            return Err(ChunkKvError::SplitRetry(
-                "split ingress buffer requires an active split preparation".into(),
-            ));
-        }
-        let buffer = SplitIngressBuffer::new(self.config.queue_requests);
-        let previous = self.split_ingress.compare_and_swap(
-            std::ptr::null(),
-            Some(Arc::new(SplitIngressRoute::Buffering(buffer))),
-        );
-        if previous.is_some() {
-            return Err(ChunkKvError::SplitRetry(
-                "split ingress route is already installed".into(),
-            ));
-        }
-        Ok(())
-    }
-
-    /// Returns the locally installed split writers, if both have become
-    /// durable.  Catalog reconciliation uses this to adopt the retained
-    /// parent directly instead of reconstructing it from the old range.
+    /// Returns the locally installed split writers. Catalog reconciliation
+    /// uses this to adopt the retained parent directly instead of
+    /// reconstructing it from the old range.
     #[must_use]
     pub fn split_ingress(&self) -> Option<SplitIngress> {
-        self.split_ingress
-            .load_full()
-            .and_then(|route| match route.as_ref() {
-                SplitIngressRoute::Writers(ingress) => Some((**ingress).clone()),
-                SplitIngressRoute::Buffering(_) => None,
-            })
+        self.split_ingress.load_full().map(|route| match route.as_ref() {
+            SplitIngressRoute::Writers(ingress) => (**ingress).clone(),
+        })
     }
 
     /// Commits the retained parent only for an exact durable catalog proof.
@@ -1829,6 +1743,9 @@ impl Partition {
             return Err(ChunkKvError::SplitRetry(
                 "local split activation does not match its durable artifact".into(),
             ));
+        }
+        if self.lifecycle() == PartitionLifecycle::Serving {
+            return Ok(());
         }
         self.lifecycle
             .compare_exchange(
@@ -2570,16 +2487,27 @@ fn elapsed_us(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
 }
 
-async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<MutationRequest>) {
+async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<WorkerRequest>) {
     let mut pending = None;
     loop {
-        let first = match pending.take() {
+        let next = match pending.take() {
             Some(request) => request,
             None => match receiver.recv().await {
                 Some(request) => request,
                 None => break,
             },
         };
+        let first = match next {
+            WorkerRequest::SplitCutover(request) => {
+                split::install_split_cutover(&mut state, *request).await;
+                continue;
+            }
+            WorkerRequest::Mutation(request) => request,
+        };
+        if let Some(route) = state.split_ingress.load_full() {
+            forward_raced_mutation(&state, route.as_ref(), first).await;
+            continue;
+        }
         let lifecycle = lifecycle_from_code(state.lifecycle.load(Ordering::Acquire));
         if !accepts_mutations(lifecycle) && lifecycle != PartitionLifecycle::SplitFinalizing {
             finish_request(&state, first, Err(write_state_error(lifecycle)));
@@ -2588,8 +2516,15 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<Mutatio
         let mut requests = vec![first];
         let mut bytes = requests[0].reserved_bytes;
         while requests.len() < state.config.batch_requests && bytes < state.config.batch_bytes {
-            let Ok(request) = receiver.try_recv() else {
+            let Ok(next) = receiver.try_recv() else {
                 break;
+            };
+            let request = match next {
+                WorkerRequest::Mutation(request) => request,
+                control @ WorkerRequest::SplitCutover(_) => {
+                    pending = Some(control);
+                    break;
+                }
             };
             if bytes
                 .checked_add(request.reserved_bytes)
@@ -2598,12 +2533,25 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<Mutatio
                 bytes += request.reserved_bytes;
                 requests.push(request);
             } else {
-                pending = Some(request);
+                pending = Some(WorkerRequest::Mutation(request));
                 break;
             }
         }
         process_batch(&mut state, requests).await;
     }
+}
+
+async fn forward_raced_mutation(state: &WorkerState, route: &SplitIngressRoute, request: MutationRequest) {
+    let SplitIngressRoute::Writers(ingress) = route;
+    let writer = ingress.writer_for(request.operation.key());
+    let result = writer
+        .mutate(
+            writer.ownership_epoch.load(Ordering::Acquire),
+            request.request_id,
+            request.operation.clone(),
+        )
+        .await;
+    finish_request(state, request, result);
 }
 
 async fn process_batch(state: &mut WorkerState, requests: Vec<MutationRequest>) {

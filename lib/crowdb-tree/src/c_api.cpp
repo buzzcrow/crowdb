@@ -966,6 +966,22 @@ ct_status ct_begin_split_memtable_view(ct_tree *t, uint64_t *out_generation, uin
     return to_status(t->tree->begin_split_memtable_view(out_generation, out_journal_frontier));
 }
 
+ct_status ct_install_split_memtable_overlay(ct_tree *destination, ct_tree *source, uint64_t journal_frontier)
+{
+    if (destination == nullptr || source == nullptr) {
+        return to_status(Status::invalid_argument("split memtable overlay requires two trees"));
+    }
+    return to_status(destination->tree->install_split_memtable_overlay(*source->tree, journal_frontier));
+}
+
+ct_status ct_clear_split_memtable_overlay(ct_tree *destination, ct_tree *source)
+{
+    if (destination == nullptr || source == nullptr) {
+        return to_status(Status::invalid_argument("split memtable overlay requires two trees"));
+    }
+    return to_status(destination->tree->clear_split_memtable_overlay(*source->tree));
+}
+
 ct_status ct_publish_split_memtable_view(ct_tree *source, uint64_t generation, uint64_t journal_frontier,
                                          ct_tree *destination, const uint8_t *range_start, size_t range_start_len,
                                          int has_range_start, const uint8_t *range_end, size_t range_end_len,

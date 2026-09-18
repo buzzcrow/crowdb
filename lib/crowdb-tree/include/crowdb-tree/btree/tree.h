@@ -590,6 +590,15 @@ class Crowdbtree
     // explicitly releases it.
     Status begin_split_memtable_view(uint64_t *out_generation, uint64_t *out_journal_frontier);
 
+    // Makes the source's current L0 generations immediately visible to this
+    // range-bounded writer at `journal_frontier`. The source outlives the
+    // destination until clear_split_memtable_overlay() completes.
+    Status install_split_memtable_overlay(Crowdbtree &source, uint64_t journal_frontier);
+
+    // Stops consulting the source L0 after its filtered entries have been
+    // bulk-published into this writer.
+    Status clear_split_memtable_overlay(Crowdbtree &source);
+
     // Releases the split-owned shared view after both derived range trees have
     // durably published it. The generation fences stale release attempts.
     Status release_split_memtable_view(uint64_t generation);
@@ -952,6 +961,7 @@ class Crowdbtree
     // another thread (drain empties a table's *contents*; it does not free
     // the MemTable object out from under a reader still holding a ref).
     [[nodiscard]] std::vector<std::shared_ptr<MemTable>> all_memtables() const;
+    [[nodiscard]] std::vector<std::shared_ptr<MemTable>> local_memtables() const;
     // If active_ meets the size/entry threshold (or `force`), freeze it
     // (push onto frozen_) and install a fresh active_. `force` also bypasses
     // the max_memtable_count cap on the frozen_ queue depth (flush() always
@@ -1358,6 +1368,7 @@ class Crowdbtree
     std::shared_ptr<MemTable>              active_;
     std::deque<std::shared_ptr<MemTable>>  frozen_;
     std::vector<std::shared_ptr<MemTable>> split_shared_memtables_;
+    std::atomic<Crowdbtree *>              split_overlay_source_{nullptr};
     uint64_t                               split_memtable_generation_ = 0;
     std::atomic<uint64_t>                  memtable_next_id_{1}; // monotonic MemTable id for logging
 
