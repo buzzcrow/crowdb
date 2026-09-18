@@ -39,13 +39,20 @@ stale`. A shorter reproduction identified `tree_id=1, current_epoch=3,
 requested_epoch=2`: proactive R175 balance preparation advanced the shared
 tree authority while the R174 source catalog still named epoch 2. This is an
 out-of-scope transition leaking into the R174 regression, not evidence that
-the same-process local split itself requires another root epoch.
+the same-process local split itself requires another root epoch. After
+disabling proactive balance, the run at
+`bench-log/chunk-kv-regression-20260918-233758` no longer produced that epoch
+divergence. It completed 10,000 × 4 KiB writes with 0 errors and p99 109.279
+ms, then exposed a pure local-split lifecycle defect: a second split plan for
+an already split local writer repeatedly failed with `split plan does not
+identify this parent range`; restart then failed with `tree apply completion
+is unknown`.
 
 ### Current Bug and Next Diagnosis
 
-- [~] **Verify retained-parent restart with balance disabled**: rerun the
-  same-process local split without proactive owner transfer, verify the
-  retained parent entry carries `tail_overlay`, and trace
+- [~] **Repair repeated local split session selection and restart**: make a
+  second local split select the exact current writer rather than its old-parent
+  dispatcher, verify the retained parent entry carries `tail_overlay`, and trace
   `ChunkKvStorage::recover_partition()` through
   `Partition::recover_native_prepared_overlay()`. Files:
   `app/crowdb-chunk-kv-server/src/{catalog/transition.rs,storage.rs,main.rs}`
