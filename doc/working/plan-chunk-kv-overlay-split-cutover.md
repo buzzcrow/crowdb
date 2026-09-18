@@ -101,12 +101,16 @@ the complete two-half negative restart coverage below; R175 remains disabled.
   `app/crowdb-kv-server/src/background/domain_monitor/chunk_kv/catalog.rs`,
   `lib/crowdb-tree/{include/crowdb-tree/btree/tree.h,src/{c_api.cpp,snapshot/persist.cpp},ffi/tests/ffi_test.rs}`,
   and `lib/crowdb-chunk-kv/src/partition.rs`.
-- [~] **Add a restart regression test for both split halves**: construct a
+- [x] **Add a restart regression test for both split halves**: construct a
   committed retained-parent-plus-child catalog, stop the source process, and
   assert that recovery opens both entries through the prepared-overlay path and
   serves a pre-split key from each side. This must fail when either catalog
   artifact omits its parent-stream overlay. Files:
   `app/crowdb-chunk-kv-server/tests/` and storage/server test helpers.
+  The deterministic partition regression reopens both writer ranges from the
+  same parent journal and verifies an in-range pre-split tail key on each side;
+  the catalog cutover regression independently requires the exact retained and
+  child overlays on both published entries.
 - [ ] **Finish direct ingress cleanup**: `SplitIngressRoute::Buffering`,
   `begin_split_finalization()`, and the old parent drain remain in
   `partition/split.rs`. The local session cleanup prevents their state from

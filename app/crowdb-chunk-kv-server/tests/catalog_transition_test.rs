@@ -276,6 +276,20 @@ async fn split_shrinks_parent_and_adds_exact_child_in_one_generation() {
     assert_eq!(pages[0].entries.len(), 2);
     assert_eq!(pages[0].entries[0].range.end.as_deref(), Some(b"g".as_slice()));
     assert_eq!(pages[0].entries[1].range.start, b"g");
+    assert_eq!(
+        pages[0].entries[0].artifact.tail_overlay,
+        transition
+            .readiness_proof
+            .as_ref()
+            .map(|proof| proof.retained_parent_tail_overlay.clone())
+    );
+    assert_eq!(
+        pages[0].entries[1].artifact.tail_overlay,
+        transition
+            .readiness_proof
+            .as_ref()
+            .map(|proof| proof.child_tail_overlay.clone())
+    );
     assert!(pages[0]
         .entries
         .iter()

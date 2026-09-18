@@ -2067,6 +2067,7 @@ async fn overlay_base_tree(tree_id: u64) -> (Arc<MemoryPartitionTree>, u64) {
 }
 
 struct OverlayFixture {
+    store: Arc<MemoryStreamStore>,
     parent_journal: Arc<dyn PartitionJournal>,
     child_journal: Arc<dyn PartitionJournal>,
     base_tree: Arc<MemoryPartitionTree>,
@@ -2175,6 +2176,7 @@ async fn overlay_fixture() -> OverlayFixture {
         },
     };
     OverlayFixture {
+        store,
         parent_journal,
         child_journal,
         base_tree,
@@ -2187,8 +2189,103 @@ async fn overlay_fixture() -> OverlayFixture {
 }
 
 #[tokio::test]
+async fn both_split_halves_recover_pre_split_keys_from_parent_overlay() {
+    let OverlayFixture {
+        store,
+        parent_journal,
+        child_journal: retained_journal,
+        base_tree: retained_tree,
+        artifact: retained_artifact,
+        checkpoint: retained_checkpoint,
+        ..
+    } = overlay_fixture().await;
+    let retained_artifact = PreparedSplitWriterArtifact {
+        partition_id: retained_artifact.parent_id,
+        ..retained_artifact
+    };
+    let child_stream_name = StreamName { high: 132, low: 1 };
+    let child_journal = empty_journal(&store, child_stream_name, 19).await;
+    let (child_tree, child_manifest) = overlay_base_tree(132).await;
+    let child_artifact = PreparedSplitWriterArtifact {
+        partition_id: PartitionId { high: 132, low: 1 },
+        range: PartitionRange {
+            start: Some(b"g".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        tree_id: 132,
+        tree_manifest: child_manifest,
+        root_manifest_generation: child_manifest,
+        stream_name: child_stream_name,
+        ..retained_artifact.clone()
+    };
+    let child_checkpoint = Checkpoint {
+        tree_id: child_artifact.tree_id,
+        tree_manifest: child_artifact.tree_manifest,
+        root_manifest_generation: child_artifact.root_manifest_generation,
+        applied_seq: child_artifact.base_applied_seq,
+        stream_name: child_artifact.stream_name,
+        stream_manifest_generation: child_journal.manifest_generation(),
+        replay_offset: 0,
+    };
+    let proof = SplitCommitProof {
+        catalog_revision: 10,
+        artifact: SplitArtifact {
+            transition_id: TransitionId { high: 130, low: 10 },
+            parent_id: retained_artifact.parent_id,
+            parent_epoch: retained_artifact.parent_epoch,
+            parent_next_epoch: retained_artifact.ownership_epoch,
+            shared_view_generation: 0,
+            cutover_seq: retained_artifact.applied_seq,
+            retained_parent: retained_artifact.clone(),
+            child: child_artifact.clone(),
+        },
+    };
+
+    let retained = Partition::recover_prepared_overlay(
+        retained_artifact,
+        retained_checkpoint,
+        PartitionConfig::default(),
+        retained_tree,
+        retained_journal,
+        Arc::clone(&parent_journal),
+    )
+    .await
+    .unwrap();
+    let child = Partition::recover_prepared_overlay(
+        child_artifact,
+        child_checkpoint,
+        PartitionConfig::default(),
+        child_tree,
+        child_journal,
+        parent_journal,
+    )
+    .await
+    .unwrap();
+    retained.activate_split_writer(&proof).unwrap();
+    child.activate_split_writer(&proof).unwrap();
+
+    assert_eq!(
+        retained.get(19, b"d", None).await.unwrap().unwrap().value,
+        b"tail"
+    );
+    assert_eq!(
+        child.get(19, b"i", None).await.unwrap().unwrap().value,
+        b"sibling-tail"
+    );
+    assert!(matches!(
+        retained.get(19, b"i", None).await,
+        Err(ChunkKvError::OutOfRange)
+    ));
+    assert!(matches!(
+        child.get(19, b"d", None).await,
+        Err(ChunkKvError::OutOfRange)
+    ));
+}
+
+#[tokio::test]
 async fn child_overlay_recovers_parent_results_then_its_own_wal() {
     let OverlayFixture {
+        store: _,
         parent_journal,
         child_journal,
         base_tree,
