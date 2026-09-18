@@ -203,11 +203,12 @@ impl PartitionTree for CrowdbPartitionTree {
         limit: usize,
         byte_budget: usize,
     ) -> Result<(Vec<ScanEntry>, bool)> {
-        let scan = match start_key {
-            Some(start_key) => self.tree.scan_from(
+        let scan = match (start_key, start_inclusive) {
+            // A continuation is always exclusive and uses ct_scan's native
+            // lower-bound contract.
+            (Some(start_after), false) => self.tree.scan(
                 b"",
-                start_key,
-                start_inclusive,
+                start_after,
                 end_key.unwrap_or_default(),
                 limit,
                 byte_budget,
@@ -215,7 +216,18 @@ impl PartitionTree for CrowdbPartitionTree {
                 0,
                 false,
             ),
-            None => self.tree.scan(
+            (Some(start_key), true) => self.tree.scan_from(
+                b"",
+                start_key,
+                true,
+                end_key.unwrap_or_default(),
+                limit,
+                byte_budget,
+                false,
+                0,
+                false,
+            ),
+            (None, _) => self.tree.scan(
                 b"",
                 b"",
                 end_key.unwrap_or_default(),

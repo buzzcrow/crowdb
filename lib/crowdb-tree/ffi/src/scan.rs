@@ -243,44 +243,25 @@ impl Crowdbtree {
         let mut count = 0u64;
         let mut truncated: c_int = 0;
         let status = unsafe {
-            if has_start_bound {
-                sys::ct_scan_from(
-                    self.as_ptr(),
-                    prefix.as_ptr(),
-                    prefix.len(),
-                    start_key.as_ptr(),
-                    start_key.len(),
-                    if start_inclusive { 1 } else { 0 },
-                    end_key.as_ptr(),
-                    end_key.len(),
-                    limit,
-                    byte_budget,
-                    if keys_only { 1 } else { 0 },
-                    deadline_ms,
-                    if include_tombstones { 1 } else { 0 },
-                    &mut buf,
-                    &mut count,
-                    &mut truncated,
-                )
-            } else {
-                sys::ct_scan(
-                    self.as_ptr(),
-                    prefix.as_ptr(),
-                    prefix.len(),
-                    start_key.as_ptr(),
-                    start_key.len(),
-                    end_key.as_ptr(),
-                    end_key.len(),
-                    limit,
-                    byte_budget,
-                    if keys_only { 1 } else { 0 },
-                    deadline_ms,
-                    if include_tombstones { 1 } else { 0 },
-                    &mut buf,
-                    &mut count,
-                    &mut truncated,
-                )
-            }
+            sys::ct_scan(
+                self.as_ptr(),
+                prefix.as_ptr(),
+                prefix.len(),
+                start_key.as_ptr(),
+                start_key.len(),
+                if has_start_bound { 1 } else { 0 },
+                if start_inclusive { 1 } else { 0 },
+                end_key.as_ptr(),
+                end_key.len(),
+                limit,
+                byte_budget,
+                if keys_only { 1 } else { 0 },
+                deadline_ms,
+                if include_tombstones { 1 } else { 0 },
+                &mut buf,
+                &mut count,
+                &mut truncated,
+            )
         };
         check(status)?;
         let bytes = take_buf(buf);

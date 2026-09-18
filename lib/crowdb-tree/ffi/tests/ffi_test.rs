@@ -199,6 +199,28 @@ fn scan_from_honors_inclusive_and_exclusive_lower_bounds() {
 }
 
 #[test]
+fn scan_start_after_pages_with_the_unified_scan_ffi() {
+    let tree = Crowdbtree::open(&Config::default()).unwrap();
+    for index in 0..300_u64 {
+        tree.apply_put(index + 1, format!("key-{index:04}").as_bytes(), b"value")
+            .unwrap();
+    }
+    tree.flush().unwrap();
+    let (first, truncated) = tree
+        .scan(b"", b"", b"", 256, 1024 * 1024, false, 0, false)
+        .unwrap();
+    assert!(truncated);
+    assert_eq!(first.len(), 256);
+    let cursor = first.last().unwrap().key.clone();
+    let (second, truncated) = tree
+        .scan(b"", &cursor, b"", 256, 1024 * 1024, false, 0, false)
+        .unwrap();
+    assert!(!truncated);
+    assert_eq!(second.len(), 44);
+    assert!(second.iter().all(|entry| entry.key > cursor));
+}
+
+#[test]
 fn reverse_seek_merges_l0_l1_and_tombstones() {
     let tree = Crowdbtree::open(&Config::default()).unwrap();
     for (slot, key) in [b"".as_slice(), b"b", b"d"].into_iter().enumerate() {
