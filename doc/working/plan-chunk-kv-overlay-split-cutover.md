@@ -265,12 +265,16 @@ sequence-linearization bug recorded below.
   exact epoch checks inside WAL/tree ownership and durable artifact validation.
   Files: `app/crowdb-chunk-kv-server/src/{server.rs,serving/lease.rs,main.rs}`
   and lease/server tests.
-- [ ] **Move physical persistence off cutover**: prune and checkpoint the
+- [x] **Move physical persistence off cutover**: prune and checkpoint the
   retained parent, checkpoint the child overlay, materialize inherited packs,
   and retain/reclaim parent stream and tree references only after the child
   snapshot and retry floor release the parent-suffix pin.
   Files: chunk-KV partition maintenance, server transition recovery, and tree
   integration tests.
+  Both writer base checkpoints precede final handoff; the cutover records
+  durable parent-tail overlays without checkpointing dirty writer pages.
+  Ownership materialization and overlay cleanup run in their independent
+  background tasks after catalog publication.
 
 ## Child-Tree Balance (R175, starts after R174 acceptance)
 
@@ -325,11 +329,14 @@ verified by its own remote-owner E2E.
   every exact retained/child generation.
 ## Verification and Cleanup
 
-- [ ] **Add deterministic lifecycle tests**: cover grant renewal during
+- [~] **Add deterministic lifecycle tests**: cover grant renewal during
   Preparing, child-tail restart before checkpoint, writer-boundary exactly-once
   behavior, bounded post-cutover admission, stale point route, and catalog
   ambiguity. Files: crate `tests/*_test.rs` and server/client integration
   tests.
+  Grant renewal, both-half overlay restart, stale routes, ordered lineage,
+  catalog ambiguity, and generation pins are covered. The exact no-overlap
+  writer-boundary case remains coupled to the direct-ingress bug above.
 - [x] **Add sustained split E2E**: keep routed 1 MiB-target hot traffic live
   through every observed split, capture p50/p99/p999/errors and correlated
   split metrics, then verify restart replay. Files:
