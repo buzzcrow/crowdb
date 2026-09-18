@@ -827,7 +827,9 @@ impl KvRootCatalogStore {
                 }
             };
             if current_epoch > owner_epoch {
-                return Err(StorageRuntimeError::Tree("tree root owner epoch is stale".into()));
+                return Err(StorageRuntimeError::Tree(format!(
+                    "tree root owner epoch is stale: tree_id={tree_id}, current_epoch={current_epoch}, requested_epoch={owner_epoch}"
+                )));
             }
             if current_epoch == owner_epoch {
                 break;

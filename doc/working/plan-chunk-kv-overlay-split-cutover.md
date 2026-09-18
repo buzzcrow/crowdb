@@ -29,24 +29,22 @@ are durable. R175 child-owner balance begins immediately after R174 acceptance.
 
 ### Current Evidence
 
-The latest E2E at `bench-log/chunk-kv-regression-20260918-202250` ran 30,000 ×
-4 KiB writes with concurrency 32 and a 60-second control window. It completed
-its online workload with 0 errors in 44.854 s (668 ops/s, p99 153.795 ms),
-catalog generation 3, two partitions. Node1 restart then failed three times with
-  `tree apply completion is unknown`; no `results.tsv` or `replay-get.log` was
-  produced. This run rebuilt `crowdb-cli`, `crowdb-chunk-kv-server`, and the
-  client but not `crowdb-kv-server` (the group-0 catalog publisher). That
-  stale publisher may deserialize/re-persist the old readiness proof and drop
-  the new retained-parent overlay field, so this is not yet a valid verdict on
-  the recovery-code change.
+The fully rebuilt E2E at `bench-log/chunk-kv-regression-20260918-231648` ran
+30,000 × 4 KiB writes with concurrency 32 and a 60-second control window. It
+completed its online workload with 0 errors in 43.014 s (697 ops/s, p99
+154.205 ms), catalog generation 3, and two partitions. Node1 restart then
+failed immediately on all three attempts with `tree root owner epoch is
+stale`. Rebuilding `crowdb-kv-server` therefore ruled out the stale-publisher
+hypothesis. Root authority advances ahead of a catalog assignment somewhere in
+split preparation or reconciliation; a crash leaves the catalog epoch unable
+to reopen that tree.
 
 ### Current Bug and Next Diagnosis
 
-- [~] **Verify retained-parent overlay restart recovery with every publisher
-  rebuilt**: rebuild `crowdb-kv-server` together with the chunk-KV server,
-  client, and CLI before rerunning. Inspect the catalog generated from
-  `SplitStateMachine::record_child_ready()` and verify its retained-parent
-  entry carries `tail_overlay`; then trace
+- [~] **Repair retained-parent root authority across restart**: identify the
+  exact tree and requested/current epochs, then prevent split preparation from
+  claiming authority that the catalog has not published. Verify the retained
+  parent entry carries `tail_overlay` and trace
   `ChunkKvStorage::recover_partition()` through
   `Partition::recover_native_prepared_overlay()`. Files:
   `app/crowdb-chunk-kv-server/src/{catalog/transition.rs,storage.rs,main.rs}`
