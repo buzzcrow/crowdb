@@ -114,21 +114,33 @@ remains on the parent owner. Placement is a later balance operation.
 
 Split preparation follows these ordered steps:
 
-1. Enter `SplitPreparing`, capture one split-owned shared memtable view, and
-   range-rebuild both physical writers from one exact old-parent tree view.
-2. While the old parent continues serving, replay its WAL into both ranges.
-   Each writer filters the other range as no-ops, so both retain the same
-   logical frontier.
-3. Atomically switch the old parent handle to bounded split-session ingress.
-   Requests already admitted to the old WAL drain; later requests wait in the
-   ingress buffer rather than being rejected or appended to the old parent.
-4. Replay the last old-parent suffix, bulk-publish the shared memtable view to
-   both range trees, and durable-checkpoint both writers at the common
-   frontier `C`. Release the shared view only after both durable frontiers are
-   recorded in one immutable `SplitArtifact`.
-5. Activate both local writers behind the old parent handle, then release the
-   buffered requests directly to their range writer WAL and memtable. Reads
-   use the old tree until this route is installed.
+1. Enter `SplitPreparing` and range-rebuild the child base from one exact
+   pinned parent tree view. The parent remains the only mutation sequencer and
+   continues its normal WAL and memtable path while the child tree, WAL, and
+   live memtable are prepared.
+2. The parent mutation worker processes one ordered `SplitCutover` marker after
+   all earlier mutations are durable and applied. The marker records the
+   right-range inheritance frontier `C` and installs key routing. Mutations at
+   or below `C` remain in parent order; later right-range mutations enter the
+   child WAL and live memtable. Later left-range mutations continue through
+   the retained parent. A request that raced with route installation and
+   reaches the old parent queue after the marker is forwarded by key rather
+   than assigned an old-parent sequence.
+3. The route change does not seal, publish, checkpoint, or wait for a
+   memtable. The child immediately reads its base, its live memtable, and the
+   right-range portion of the parent generation containing `C`. Conditional
+   mutations consult that same merged view.
+4. Independently rotate the parent memtable. The detached generation enters
+   one split-owned shared queue and the parent installs a fresh active
+   memtable bounded to its retained range. Left-range writes may have entered
+   the detached generation after `C`; they remain parent data and do not
+   advance the child's inherited frontier.
+5. In background, bulk-publish the shared generation once into each range:
+   only the retained range into the parent and only entries at or below `C` in
+   the child range into the child. Newer live-writer revisions win over an
+   older shared entry. Release the shared generation only after both filtered
+   publications and their durable frontiers are recorded in one immutable
+   `SplitArtifact`.
 6. Publish one catalog generation that shrinks the retained parent (same ID,
    new epoch) and inserts exactly one new child. The parent owner already has
    both writers active, so refresh only publishes this catalog and serving
@@ -177,12 +189,14 @@ The split invariants are:
   owner, and lower range boundary and creates exactly one new child;
 - **SPLIT-ONE-WRITER:** before `C` the old parent sequences the full range;
   after `C` the retained parent and child sequence disjoint ranges;
-- **SPLIT-COMMON-CUTOVER:** the retained parent and new child share the same
-  exact `C`;
+- **SPLIT-ROUTE-FRONTIER:** `C` is the last parent-ordered right-range
+  mutation, not the later physical seal frontier; child mutations begin after
+  `C` and a raced old-parent admission is forwarded instead of resequenced;
 - **SPLIT-OVERLAY-DURABLE:** base plus parent suffix plus child WAL reconstructs
   values and request outcomes before activation;
-- **SPLIT-NO-FOREGROUND-REJECT:** finalization buffers ingress rather than
-  rejecting mutations, and it performs no ownership materialization; and
+- **SPLIT-NO-FOREGROUND-WAIT:** routing does not wait for memtable seal,
+  filtered publication, checkpoint, catalog publication, or ownership
+  materialization; and
 - **SPLIT-PIN-BEFORE-RECLAIM:** physical deletion never precedes the last
   catalog, snapshot, forwarding, or retry reference.
 

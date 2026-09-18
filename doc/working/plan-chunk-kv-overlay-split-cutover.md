@@ -148,18 +148,18 @@ sequence-linearization bug recorded below.
    through tree storage, then implement direct dual-writer ingress and repeat
    both E2Es. R175 balance remains out of scope until these R174 gates pass.
 
-### Bugs
+### Resolved Design Decision
 
-- **Direct-ingress cutover lacks a sequence-linearization primitive.** Removing
-  `SplitIngressRoute::Buffering` directly is unsafe: old-parent mutations
-  admitted before the route swap may complete after newly routed writer
-  mutations, while both currently continue from the same cutover sequence.
-  That can duplicate sequence numbers or omit the late parent mutation from
-  the writer artifact. A safe implementation needs either a mutation-worker
-  barrier that installs the complete writer route at one exact frontier, or
-  writer construction that can accept post-prepare WAL/memtable mutations
-  before shared-view persistence. This exceeded the 10-minute investigation
-  budget and is deferred while independent R174 lineage work continues.
+- **Route frontier and memtable seal are independent.** The parent mutation
+  worker processes an ordered `SplitCutover` marker that records the last
+  parent-ordered right-range sequence `C` and installs direct range routing.
+  It does not seal the parent memtable. The child starts its WAL and live
+  memtable immediately; the parent may continue adding only left-range entries
+  to its current memtable. A later rotation places that generation in the
+  shared split queue, and background publication filters the child side at
+  `C`. Raced requests reaching the old queue after the marker are forwarded by
+  key. This removes the need for `SplitIngressRoute::Buffering` without making
+  seal, checkpoint, or artifact publication part of the foreground handoff.
 
 ## Data-Path Gate Audit and Handling Notes
 
@@ -215,7 +215,7 @@ sequence-linearization bug recorded below.
   batch, seek, and scan. Do not remove an API-specific route check until its
   resolver preserves the old logical parent range. Files:
   `app/crowdb-chunk-kv-server/src/server.rs` and server tests.
-- [ ] **Remove buffered split ingress**: replace the buffer route with two live
+- [~] **Remove buffered split ingress**: replace the buffer route with two live
   writer routes and make worker construction available before shared-view bulk
   persistence. Files: `lib/crowdb-chunk-kv/src/{partition.rs,partition/split.rs}`
   and partition tests.

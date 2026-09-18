@@ -78,21 +78,21 @@ background parent pruning, child checkpoint, and dependency release
    tree. The child inherits logical sequence `C` and its own journal begins at
    `C + 1`. Recovery and read-after-write never infer this source relationship
    from volatile memory.
-5. Replace the final flush fence with a `SplitCutover` handoff. It atomically
-   closes parent sequencer assignment at cutover `C`, drains only requests
-   already assigned to that sequencer, verifies the durable child overlay
-   covers `C`, and persists an artifact binding the exact child base manifest,
-   child tail cursor and stream, request-result floor, retained parent identity
-   and next epoch, and `C`. A record cannot be acknowledged as post-cutover
-   until the selected retained-parent or child journal has made the result
-   recoverable.
-6. Install the next-epoch retained-parent writer and the local child writer
-   before the handoff. R174 is local; R175 alone may later prepare a remote
-   child balance. Selecting a writer handle is one atomic ingress operation. A
-   request that already holds the old parent handle drains through `C`; a
-   request that has not selected a handle reselects by key and enters either
-   the smaller retained parent or the child. No additional post-cutover queue
-   is required, and the two new writers cover disjoint ranges.
+5. Replace the final flush fence with an ordered `SplitCutover` marker in the
+   parent mutation worker. After all earlier mutations are durable and applied,
+   the marker records the last parent-ordered right-range sequence `C` and
+   installs key routing. It does not seal a memtable, drain foreground
+   admission, publish a shared view, or checkpoint a tree. A request racing
+   with route installation that reaches the old queue after the marker is
+   forwarded to its selected writer rather than assigned another parent
+   sequence.
+6. Start the local child writer before the marker. After the marker, right
+   mutations enter the child WAL and live memtable while left mutations remain
+   on the retained parent. Rotate and seal the parent memtable independently,
+   enqueue the detached generation as a shared split view, then bulk-publish
+   its two filtered ranges in background. The child import is bounded by `C`;
+   a later global parent seal sequence may include left-range records and must
+   not advance child authority. No additional post-cutover queue is required.
 7. Publish the exact retained-parent and child artifacts through one
    epoch-fenced catalog revision. New routes use the smaller parent entry or
    child entry. A source server receiving an old point route dispatches by key
@@ -176,8 +176,11 @@ never serves an uncommitted child as writable.
   order, retained results, and retry outcomes from its durable base plus tail.
   Invariant: a child overlay is restart authority. E2E test.
 - Given parent sequence `C` is selected while new requests arrive, when the
-  old writer closes, assert requests at or below `C` occur once in the parent
-  order and later requests occur once in exactly one child journal order.
+  worker installs range routing and the parent memtable is sealed later,
+  assert requests at or below `C` occur once in parent order, raced old-queue
+  requests are forwarded, and later requests occur once in exactly one writer
+  journal order. Also assert the later seal frontier does not advance the
+  child's inherited frontier.
   Invariant: cutover has no overlapping writer and no lost acknowledged write.
   E2E test.
 - Given requests for both sides arrive during writer handoff, when the
