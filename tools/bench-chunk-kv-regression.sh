@@ -9,6 +9,7 @@ cd "$(dirname "$0")/.."
 OPERATIONS="${CHUNK_KV_BENCH_OPERATIONS:-30000}"
 CONCURRENCY="${CHUNK_KV_BENCH_CONCURRENCY:-32}"
 VALUE_BYTES="${CHUNK_KV_BENCH_VALUE_BYTES:-512}"
+READ_PERCENT="${CHUNK_KV_BENCH_READ_PERCENT:-25}"
 HOT_KEY_PREFIX="${CHUNK_KV_BENCH_HOT_KEY_PREFIX:-object/hot}"
 TARGET_PARTITION_BYTES="${CHUNK_KV_BENCH_TARGET_PARTITION_BYTES:-5242880}"
 TIMEOUT_SECS="${CHUNK_KV_BENCH_TIMEOUT:-60}"
@@ -57,6 +58,10 @@ for value in "$OPERATIONS" "$CONCURRENCY" "$VALUE_BYTES" "$TIMEOUT_SECS" "$READY
         exit 2
     fi
 done
+if ! [[ "$READ_PERCENT" =~ ^[0-9]+$ ]] || [ "$READ_PERCENT" -gt 100 ]; then
+    echo "ERROR: read percent must be an integer from 0 through 100" >&2
+    exit 2
+fi
 if [ "$SKIP_BUILD" -eq 0 ]; then
     pixi run build-cpp
     pixi run -- cargo build --release -p crowdb-cli -p crowdb-kv-server \
@@ -218,7 +223,7 @@ done
 if ! LOAD_OUTPUT=$(timeout "$TIMEOUT_SECS" pixi run -- ./target/release/crowdb-chunk-kv-cli \
     --mgmt-seed "$MGMT_SEED" load --operations "$OPERATIONS" \
     --concurrency "$CONCURRENCY" --value-bytes "$VALUE_BYTES" --keyspace "$OPERATIONS" \
-    --key-prefix "$HOT_KEY_PREFIX" --key-offset 0); then
+    --key-prefix "$HOT_KEY_PREFIX" --key-offset 0 --read-percent "$READ_PERCENT"); then
     printf '%s\n' "$LOAD_OUTPUT" >"$LOG_ROOT/load-continuous.log"
     capture_failure_metrics
     echo "ERROR: continuous routed load failed; retained metrics: $LOG_ROOT/load-failure-metrics.log" >&2
@@ -314,10 +319,10 @@ for pid in "${CHUNK_KV_PIDS[@]:1}"; do
     fi
 done
 RSS_DELTA=$((RSS_END - RSS_START))
-printf 'operations\tconcurrency\tvalue_bytes\tp99_us\tpartitions\towner_min_partitions\towner_max_partitions\tadmission_backpressure\tsplit_prepare_ms\tsplit_finalizations\tsplit_catchup_lag_records\tsplit_finalization_duration_us\trecoveries\treplay_ms\treplay_partitions\treplay_partitions_s\trss_start_kib\trss_end_kib\trss_delta_kib\treplay_ready\n' \
+printf 'operations\tconcurrency\tvalue_bytes\tread_percent\tp99_us\tpartitions\towner_min_partitions\towner_max_partitions\tadmission_backpressure\tsplit_prepare_ms\tsplit_finalizations\tsplit_catchup_lag_records\tsplit_finalization_duration_us\trecoveries\treplay_ms\treplay_partitions\treplay_partitions_s\trss_start_kib\trss_end_kib\trss_delta_kib\treplay_ready\n' \
     >"$RESULTS_FILE"
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t1\n' \
-    "$OPERATIONS" "$CONCURRENCY" "$VALUE_BYTES" "$P99" "$PARTITIONS" \
+    "$OPERATIONS" "$CONCURRENCY" "$VALUE_BYTES" "$READ_PERCENT" "$P99" "$PARTITIONS" \
     "$OWNER_MIN_PARTITIONS" "$OWNER_MAX_PARTITIONS" "$ADMISSION_BACKPRESSURE" \
     "$SPLIT_PREPARE_MS" "$SPLIT_FINALIZATIONS" \
     "$SPLIT_CATCHUP_LAG_RECORDS" "$SPLIT_FINALIZATION_DURATION_US" \

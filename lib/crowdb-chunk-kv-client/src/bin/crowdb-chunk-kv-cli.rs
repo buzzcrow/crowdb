@@ -44,7 +44,19 @@ enum Command {
         key_prefix: String,
         #[arg(long, default_value_t = 0)]
         key_offset: u64,
+        #[arg(long, default_value_t = 0)]
+        read_percent: u8,
     },
+}
+
+struct LoadConfig {
+    operations: u64,
+    concurrency: usize,
+    value_bytes: usize,
+    keyspace: u64,
+    key_prefix: String,
+    key_offset: u64,
+    read_percent: u8,
 }
 
 #[tokio::main]
@@ -70,15 +82,19 @@ async fn main() {
             keyspace,
             key_prefix,
             key_offset,
+            read_percent,
         } => {
             run_load(
                 client,
-                operations,
-                concurrency,
-                value_bytes,
-                keyspace,
-                key_prefix,
-                key_offset,
+                LoadConfig {
+                    operations,
+                    concurrency,
+                    value_bytes,
+                    keyspace,
+                    key_prefix,
+                    key_offset,
+                    read_percent,
+                },
             )
             .await
         }
@@ -96,18 +112,19 @@ fn production_client(mgmt_seeds: Vec<String>) -> Result<ChunkKvClient, String> {
     ChunkKvClient::new(config, catalog, transport).map_err(|error| error.to_string())
 }
 
-async fn run_load(
-    client: Arc<ChunkKvClient>,
-    operations: u64,
-    concurrency: usize,
-    value_bytes: usize,
-    keyspace: u64,
-    key_prefix: String,
-    key_offset: u64,
-) -> crowdb_chunk_kv_client::Result<()> {
-    if operations == 0 || concurrency == 0 || value_bytes == 0 || keyspace == 0 {
+async fn run_load(client: Arc<ChunkKvClient>, config: LoadConfig) -> crowdb_chunk_kv_client::Result<()> {
+    let LoadConfig {
+        operations,
+        concurrency,
+        value_bytes,
+        keyspace,
+        key_prefix,
+        key_offset,
+        read_percent,
+    } = config;
+    if operations == 0 || concurrency == 0 || value_bytes == 0 || keyspace == 0 || read_percent > 100 {
         return Err(crowdb_chunk_kv_client::ClientError::InvalidRequest(
-            "load bounds must be nonzero".into(),
+            "load bounds must be nonzero and read percent must not exceed 100".into(),
         ));
     }
     let largest_index = operations.saturating_sub(1).min(keyspace - 1);
@@ -122,12 +139,22 @@ async fn run_load(
             let client = Arc::clone(&client);
             let key_prefix = key_prefix.clone();
             async move {
-                let key = format!("{key_prefix}/{:020}", key_offset + (index % keyspace)).into_bytes();
+                let (read, key_index) = load_operation(index, read_percent);
+                let key = format!("{key_prefix}/{:020}", key_offset + (key_index % keyspace)).into_bytes();
                 let value = vec![u8::try_from(index % 251).unwrap_or_default(); value_bytes];
                 let operation_started = Instant::now();
-                let response = client.put(key, value).await;
+                let success = if read {
+                    client
+                        .get(key, None)
+                        .await
+                        .is_ok_and(|response| response.result.is_ok())
+                } else {
+                    client
+                        .put(key, value)
+                        .await
+                        .is_ok_and(|response| response.result.is_ok())
+                };
                 let latency = u64::try_from(operation_started.elapsed().as_micros()).unwrap_or(u64::MAX);
-                let success = response.is_ok_and(|response| response.result.is_ok());
                 (latency, success)
             }
         })
@@ -162,10 +189,11 @@ async fn run_load(
         total_us / u128::from(operations)
     };
     println!(
-        "chunk-kv: workload=put operations={operations} errors={errors} seconds={seconds:.3} \
+        "chunk-kv: workload={} read_percent={read_percent} operations={operations} errors={errors} seconds={seconds:.3} \
          ops_s={:.0} avg_us={average} p50_us={} p99_us={} catalog_generation={generation} \
          partitions={partitions} owner_min_partitions={owner_min_partitions} \
          owner_max_partitions={owner_max_partitions}",
+        if read_percent == 0 { "put" } else { "mix" },
         operations_per_second,
         percentile(&latencies, 50),
         percentile(&latencies, 99),
@@ -177,6 +205,19 @@ async fn run_load(
             "{errors} load operations failed"
         )))
     }
+}
+
+fn load_operation(index: u64, read_percent: u8) -> (bool, u64) {
+    let write_percent = 100_u64.saturating_sub(u64::from(read_percent));
+    let read = index % 100 >= write_percent;
+    (
+        read,
+        if read {
+            index.saturating_sub(write_percent)
+        } else {
+            index
+        },
+    )
 }
 
 fn percentile(latencies: &[(u64, bool)], percentile: usize) -> u64 {
@@ -195,4 +236,18 @@ fn percentile(latencies: &[(u64, bool)], percentile: usize) -> u64 {
 fn exit_error(error: &str) -> ! {
     eprintln!("ERROR: {error}");
     std::process::exit(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_operation;
+
+    #[test]
+    fn mixed_load_reads_keys_written_earlier_in_each_window() {
+        assert_eq!(load_operation(74, 25), (false, 74));
+        assert_eq!(load_operation(75, 25), (true, 0));
+        assert_eq!(load_operation(99, 25), (true, 24));
+        assert_eq!(load_operation(100, 25), (false, 100));
+        assert_eq!(load_operation(175, 25), (true, 100));
+    }
 }

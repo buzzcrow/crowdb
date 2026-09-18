@@ -304,13 +304,17 @@ verified by its own remote-owner E2E.
 
 ## Exact Manifest Recovery
 
-- [ ] **Retain exact generations through restart**: persist a transition-scoped
+- [x] **Retain exact generations through restart**: persist a transition-scoped
   manifest pin before publishing an artifact that references the generation,
   constrain manifest and referenced-pack reclamation by the oldest live pin,
   and release it only after catalog publication clears the overlay and
   transition identity. Use immutable snapshots and CAS rather than a read-path
   lock. Files: chunk root-catalog callbacks and storage, split/balance
   transition persistence, materialization cleanup, and GC tests.
+  Callback and KV-backed root catalogs persist idempotent transition pins,
+  reclamation honors the oldest generation, catalog installation releases a
+  pin only after its overlay disappears, and the real-process restart reopened
+  every exact retained/child generation.
 ## Verification and Cleanup
 
 - [ ] **Add deterministic lifecycle tests**: cover grant renewal during
@@ -318,7 +322,7 @@ verified by its own remote-owner E2E.
   behavior, bounded post-cutover admission, stale point route, and catalog
   ambiguity. Files: crate `tests/*_test.rs` and server/client integration
   tests.
-- [ ] **Add sustained split E2E**: keep routed 1 MiB-target hot traffic live
+- [~] **Add sustained split E2E**: keep routed 1 MiB-target hot traffic live
   through every observed split, capture p50/p99/p999/errors and correlated
   split metrics, then verify restart replay. Files:
   `tools/bench-chunk-kv-regression.sh`, client load tool, and
@@ -327,6 +331,10 @@ verified by its own remote-owner E2E.
   exceed the five-second RPC deadline, and are later persisted by the server.
   The acceptance test must fail if post-split workload does not progress within
   30 seconds; do not mask the defect by extending the client deadline.
+  The workload now supports a deterministic read percentage and defaults to
+  25% reads of keys written earlier in each 100-operation window. The next
+  real-process run must validate this mixed path through split and restart
+  before the item is complete.
 - [ ] **Run acceptance gates and clean up**: run the R174/R175 gates and the
   sustained split/balance workflow, remove both completed requirements and this
   plan, and update the backlog index in the final cleanup commit. Files:
