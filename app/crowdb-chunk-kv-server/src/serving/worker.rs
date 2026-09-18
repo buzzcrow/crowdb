@@ -10,6 +10,7 @@ use crowdb_protocol::chunk_kv::{
     SplitPhase, SplitReadinessProof, SplitTransition, TailOverlayArtifact, TargetReadinessProof,
     TransferPhase, TransferTransition,
 };
+use tracing::info;
 
 use crate::{ChunkKvService, ChunkKvStorage, MonitorError};
 
@@ -302,6 +303,19 @@ impl TransitionExecutor {
         let retained_parent_tail_overlay = split_tail_overlay(&artifact, &artifact.retained_parent);
         let mut retained_parent_artifact = transition.retained_parent_artifact.clone();
         retained_parent_artifact.tail_overlay = Some(retained_parent_tail_overlay.clone());
+        info!(
+            transition_id_high = transition.transition_id.high,
+            transition_id_low = transition.transition_id.low,
+            parent_id_high = transition.parent_id.high,
+            parent_id_low = transition.parent_id.low,
+            parent_epoch = transition.parent_epoch,
+            expected_source_stream_high = transition.parent_artifact.stream_name.high,
+            expected_source_stream_low = transition.parent_artifact.stream_name.low,
+            observed_source_stream_high = retained_parent_tail_overlay.source_stream_name.high,
+            observed_source_stream_low = retained_parent_tail_overlay.source_stream_name.low,
+            cutover_seq = artifact.cutover_seq,
+            "local split readiness prepared"
+        );
         Ok(SplitReadinessProof {
             cutover_seq: artifact.cutover_seq,
             parent_next_epoch: artifact.parent_next_epoch,

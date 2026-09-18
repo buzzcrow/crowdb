@@ -2456,11 +2456,19 @@ impl ReplayState {
             if belongs_to_partition && record.result.applied() {
                 tree.apply(record.mutation_seq, &record.operation)
                     .await
-                    .map_err(|_| ChunkKvError::ApplyStateUnknown)?;
+                    .map_err(|error| {
+                        ChunkKvError::Internal(format!(
+                            "replay tree apply failed at mutation sequence {}: {error}",
+                            record.mutation_seq
+                        ))
+                    })?;
             } else {
-                tree.advance_noop(record.mutation_seq)
-                    .await
-                    .map_err(|_| ChunkKvError::ApplyStateUnknown)?;
+                tree.advance_noop(record.mutation_seq).await.map_err(|error| {
+                    ChunkKvError::Internal(format!(
+                        "replay tree no-op failed at mutation sequence {}: {error}",
+                        record.mutation_seq
+                    ))
+                })?;
             }
             self.seed.applied_seq = record.mutation_seq;
         }

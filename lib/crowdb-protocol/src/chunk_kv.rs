@@ -623,22 +623,52 @@ impl SplitTransition {
             && self.child.range.start == self.split_key
             && self.child.range.end == self.parent_range.end;
         if !valid_identity || !exact_ranges {
-            return Err(ChunkKvProtocolError::InvalidSplitTransition);
+            return Err(ChunkKvProtocolError::InvalidSplitTransition(
+                "identity, artifact, epoch, or range coverage",
+            ));
         }
         if let Some(proof) = &self.readiness_proof {
-            if proof.cutover_seq == 0
-                || proof.parent_next_epoch != self.parent_next_epoch
-                || proof.retained_parent_artifact != self.retained_parent_artifact
-                || proof.retained_parent_tree_manifest == 0
-                || proof.retained_parent_root_manifest_generation == 0
-                || proof.retained_parent_applied_seq != proof.cutover_seq
-                || proof.child_applied_seq != proof.cutover_seq
-                || proof.child_tree_manifest == 0
-                || proof.child_root_manifest_generation == 0
-                || !self.valid_retained_parent_overlay(&proof.retained_parent_tail_overlay, proof.cutover_seq)
-                || !self.valid_split_overlay(&proof.child_tail_overlay, &self.child, proof.cutover_seq)
+            let invalid_readiness = if proof.cutover_seq == 0 {
+                Some("zero cutover sequence")
+            } else if proof.parent_next_epoch != self.parent_next_epoch {
+                Some("readiness parent epoch")
+            } else if proof.retained_parent_artifact != self.retained_parent_artifact {
+                Some("readiness retained-parent artifact")
+            } else if proof.retained_parent_tree_manifest == 0 {
+                Some("zero retained-parent tree manifest")
+            } else if proof.retained_parent_root_manifest_generation == 0 {
+                Some("zero retained-parent root manifest generation")
+            } else if proof.retained_parent_applied_seq != proof.cutover_seq {
+                Some("retained-parent cutover frontier")
+            } else if proof.child_applied_seq != proof.cutover_seq {
+                Some("child cutover frontier")
+            } else if proof.child_tree_manifest == 0 {
+                Some("zero child tree manifest")
+            } else if proof.child_root_manifest_generation == 0 {
+                Some("zero child root manifest generation")
+            } else if !valid_tail_overlay(&proof.retained_parent_tail_overlay) {
+                Some("retained-parent tail overlay fields")
+            } else if self.retained_parent_artifact.tail_overlay.as_ref()
+                != Some(&proof.retained_parent_tail_overlay)
             {
-                return Err(ChunkKvProtocolError::InvalidSplitTransition);
+                Some("retained-parent tail overlay artifact")
+            } else if proof.retained_parent_tail_overlay.source_partition_id != self.parent_id {
+                Some("retained-parent tail overlay source partition")
+            } else if proof.retained_parent_tail_overlay.source_epoch != self.parent_epoch {
+                Some("retained-parent tail overlay source epoch")
+            } else if proof.retained_parent_tail_overlay.source_stream_name
+                != self.parent_artifact.stream_name
+            {
+                Some("retained-parent tail overlay source stream")
+            } else if proof.retained_parent_tail_overlay.cutover_seq != proof.cutover_seq {
+                Some("retained-parent tail overlay cutover")
+            } else if !self.valid_split_overlay(&proof.child_tail_overlay, &self.child, proof.cutover_seq) {
+                Some("child tail overlay")
+            } else {
+                None
+            };
+            if let Some(reason) = invalid_readiness {
+                return Err(ChunkKvProtocolError::InvalidSplitTransition(reason));
             }
         }
         let fields_match_phase = match self.phase {
@@ -651,7 +681,9 @@ impl SplitTransition {
             SplitPhase::Aborted => self.failure.as_ref().is_some_and(|failure| !failure.is_empty()),
         };
         if !fields_match_phase {
-            return Err(ChunkKvProtocolError::InvalidSplitTransition);
+            return Err(ChunkKvProtocolError::InvalidSplitTransition(
+                "phase-bound readiness or failure fields",
+            ));
         }
         Ok(())
     }
@@ -664,15 +696,6 @@ impl SplitTransition {
     ) -> bool {
         valid_tail_overlay(overlay)
             && child.artifact.tail_overlay.as_ref() == Some(overlay)
-            && overlay.source_partition_id == self.parent_id
-            && overlay.source_epoch == self.parent_epoch
-            && overlay.source_stream_name == self.parent_artifact.stream_name
-            && overlay.cutover_seq == cutover_seq
-    }
-
-    fn valid_retained_parent_overlay(&self, overlay: &TailOverlayArtifact, cutover_seq: u64) -> bool {
-        valid_tail_overlay(overlay)
-            && self.retained_parent_artifact.tail_overlay.as_ref() == Some(overlay)
             && overlay.source_partition_id == self.parent_id
             && overlay.source_epoch == self.parent_epoch
             && overlay.source_stream_name == self.parent_artifact.stream_name
@@ -1087,8 +1110,8 @@ pub enum ChunkKvProtocolError {
     InvalidRpcRequest,
     #[error("chunk KV transfer transition is invalid")]
     InvalidTransferTransition,
-    #[error("chunk KV split transition is invalid")]
-    InvalidSplitTransition,
+    #[error("chunk KV split transition is invalid: {0}")]
+    InvalidSplitTransition(&'static str),
     #[error("protocol record encoding failed")]
     Encoding,
 }

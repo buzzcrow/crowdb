@@ -519,13 +519,16 @@ impl ChunkKvService {
             low: artifact.parent_id.low,
         };
         if let Some(session) = self.local_split_sessions.load().get(&parent_id) {
-            return if session.artifact == *artifact {
-                Ok(())
-            } else {
-                Err(ChunkKvError::SplitRetry(
+            if session.artifact == *artifact {
+                return Ok(());
+            }
+            if session.artifact.transition_id == artifact.transition_id
+                || session.artifact.parent_next_epoch != artifact.parent_epoch
+            {
+                return Err(ChunkKvError::SplitRetry(
                     "local split session conflicts with durable artifact".into(),
-                ))
-            };
+                ));
+            }
         }
         let parent = self.hosted_partition(parent_id).ok_or(ChunkKvError::OutOfRange)?;
         let ingress = parent
@@ -575,6 +578,17 @@ impl ChunkKvService {
             child_id_high = artifact.child.partition_id.high,
             child_id_low = artifact.child.partition_id.low,
             cutover_seq = artifact.cutover_seq,
+            retained_base_seq = artifact.retained_parent.base_applied_seq,
+            retained_applied_seq = artifact.retained_parent.applied_seq,
+            retained_tree_manifest = artifact.retained_parent.tree_manifest,
+            retained_root_manifest_generation = artifact.retained_parent.root_manifest_generation,
+            retained_parent_stream_manifest_generation =
+                artifact.retained_parent.parent_stream_manifest_generation,
+            child_base_seq = artifact.child.base_applied_seq,
+            child_applied_seq = artifact.child.applied_seq,
+            child_tree_manifest = artifact.child.tree_manifest,
+            child_root_manifest_generation = artifact.child.root_manifest_generation,
+            child_parent_stream_manifest_generation = artifact.child.parent_stream_manifest_generation,
             "local split writers installed"
         );
         Ok(())

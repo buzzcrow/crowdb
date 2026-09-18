@@ -504,6 +504,6 @@ fn map_tree_read_error(error: crowdb_tree_ffi::CtError) -> ChunkKvError {
     }
 }
 
-fn map_tree_apply_error(_error: crowdb_tree_ffi::CtError) -> ChunkKvError {
-    ChunkKvError::ApplyStateUnknown
+fn map_tree_apply_error(error: crowdb_tree_ffi::CtError) -> ChunkKvError {
+    ChunkKvError::Internal(format!("tree apply failed: {error}"))
 }

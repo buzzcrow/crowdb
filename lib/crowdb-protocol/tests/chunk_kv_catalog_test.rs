@@ -263,12 +263,16 @@ fn split_transition_requires_retained_parent_and_exact_child_cutover() {
     transition.child.range.start = b"n".to_vec();
     assert_eq!(
         transition.validate(),
-        Err(ChunkKvProtocolError::InvalidSplitTransition)
+        Err(ChunkKvProtocolError::InvalidSplitTransition(
+            "identity, artifact, epoch, or range coverage"
+        ))
     );
     transition.child.range.start = b"m".to_vec();
     transition.readiness_proof.as_mut().unwrap().child_applied_seq = 10;
     assert_eq!(
         transition.validate(),
-        Err(ChunkKvProtocolError::InvalidSplitTransition)
+        Err(ChunkKvProtocolError::InvalidSplitTransition(
+            "child cutover frontier"
+        ))
     );
 }

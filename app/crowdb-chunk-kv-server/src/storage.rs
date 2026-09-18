@@ -340,7 +340,7 @@ impl ChunkKvStorage {
                 parent_stream,
             )
             .await
-            .map_err(|error| StorageRuntimeError::Partition(error.to_string()));
+            .map_err(|error| overlay_recovery_error(entry, overlay, &error));
         }
         Partition::recover_native_latest_prepared_assignment(
             PartitionId {
@@ -359,7 +359,7 @@ impl ChunkKvStorage {
             stream,
         )
         .await
-        .map_err(|error| StorageRuntimeError::Partition(error.to_string()))
+        .map_err(|error| assignment_recovery_error(entry, &error))
     }
 
     /// Creates the explicitly configured initial full-range partition and
@@ -787,6 +787,31 @@ fn validate_prepared_split(
 
 fn storage_plan_error(error: &str) -> crate::MonitorError {
     crate::MonitorError::PlanFailed(error.into())
+}
+
+fn overlay_recovery_error(
+    entry: &ChunkKvRangeCatalogEntry,
+    overlay: &TailOverlayArtifact,
+    error: &impl std::fmt::Display,
+) -> StorageRuntimeError {
+    StorageRuntimeError::Partition(format!(
+        "overlay recovery failed (partition={:?}, epoch={}, tree={}, base_seq={}, cutover_seq={}): {error}",
+        entry.partition_id,
+        entry.owner_epoch,
+        entry.artifact.tree_id,
+        overlay.base_applied_seq,
+        overlay.cutover_seq
+    ))
+}
+
+fn assignment_recovery_error(
+    entry: &ChunkKvRangeCatalogEntry,
+    error: &impl std::fmt::Display,
+) -> StorageRuntimeError {
+    StorageRuntimeError::Partition(format!(
+        "assignment recovery failed (partition={:?}, epoch={}, tree={}): {error}",
+        entry.partition_id, entry.owner_epoch, entry.artifact.tree_id
+    ))
 }
 
 struct KvRootCatalogStore {

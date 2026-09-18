@@ -313,7 +313,7 @@ fn split_entries(transition: &SplitTransition) -> Vec<ChunkKvRangeCatalogEntry> 
             owner: transition.parent_owner.clone(),
             owner_epoch: transition.parent_next_epoch,
             state: ChunkKvRangeCatalogPartitionState::Serving,
-            artifact: transition.parent_artifact.clone(),
+            artifact: transition.retained_parent_artifact.clone(),
             transition_id: Some(transition.transition_id),
         },
         ChunkKvRangeCatalogEntry {

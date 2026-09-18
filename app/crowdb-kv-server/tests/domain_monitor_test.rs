@@ -640,6 +640,65 @@ async fn assert_chunk_kv_split_plan(target_partitions_per_owner: u32, target_par
     assert_eq!(transition.parent_id, partition_id);
     assert_eq!(transition.split_key, b"m");
     assert_eq!(transition.phase, SplitPhase::Planned);
+
+    let mut prepared = transition;
+    let overlay = TailOverlayArtifact {
+        source_partition_id: prepared.parent_id,
+        source_epoch: prepared.parent_epoch,
+        source_stream_name: prepared.parent_artifact.stream_name,
+        source_stream_manifest_generation: 1,
+        replay_offset: 0,
+        cutover_offset: 10,
+        base_root_manifest_generation: 1,
+        base_tree_manifest: 1,
+        base_applied_seq: 10,
+        cutover_seq: 11,
+        target_stream_start_seq: 12,
+    };
+    prepared.retained_parent_artifact.tail_overlay = Some(overlay.clone());
+    prepared.child.artifact.tail_overlay = Some(overlay.clone());
+    prepared.phase = SplitPhase::ChildPrepared;
+    prepared.readiness_proof = Some(crowdb_protocol::chunk_kv::SplitReadinessProof {
+        cutover_seq: 11,
+        parent_next_epoch: prepared.parent_next_epoch,
+        retained_parent_artifact: prepared.retained_parent_artifact.clone(),
+        retained_parent_tree_manifest: 1,
+        retained_parent_root_manifest_generation: 1,
+        retained_parent_applied_seq: 11,
+        child_applied_seq: 11,
+        child_tree_manifest: 1,
+        child_root_manifest_generation: 1,
+        retained_parent_tail_overlay: overlay.clone(),
+        child_tail_overlay: overlay,
+    });
+    prepared.validate().unwrap();
+    control
+        .compare_and_put(
+            transitions[0].key.clone(),
+            Bytes::from(serde_json::to_vec(&prepared).unwrap()),
+            transitions[0].revision,
+        )
+        .await
+        .unwrap();
+    driver.tick(&control, &policy).await.unwrap();
+
+    let published_head: ChunkKvRangeCatalogHead =
+        get_json(&control, &ChunkKvRangeCatalogHeadKey.to_path()).await;
+    let published_page: ChunkKvRangeCatalogPage = get_json(
+        &control,
+        &ChunkKvRangeCatalogPageKey {
+            generation: published_head.generation,
+            page_index: 0,
+        }
+        .to_path(),
+    )
+    .await;
+    let retained = published_page
+        .entries
+        .iter()
+        .find(|entry| entry.partition_id == prepared.parent_id)
+        .unwrap();
+    assert_eq!(retained.artifact, prepared.retained_parent_artifact);
 }
 
 #[tokio::test]

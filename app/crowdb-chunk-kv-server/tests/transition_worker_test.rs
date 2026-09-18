@@ -466,7 +466,90 @@ async fn split_worker_reports_only_a_common_child_frontier() {
     );
 }
 
-async fn service_after_local_split(first: &SplitTransition) -> (Arc<ChunkKvService>, PartitionRange) {
+fn local_split_plan(transition: &SplitTransition) -> SplitPlan {
+    SplitPlan {
+        transition_id: TransitionId {
+            high: transition.transition_id.high,
+            low: transition.transition_id.low,
+        },
+        parent_id: PartitionId {
+            high: transition.parent_id.high,
+            low: transition.parent_id.low,
+        },
+        parent_epoch: transition.parent_epoch,
+        parent_range: PartitionRange {
+            start: Some(transition.parent_range.start.clone()),
+            end: transition.parent_range.end.clone(),
+        },
+        parent_next_epoch: transition.parent_next_epoch,
+        split_key: transition.split_key.clone(),
+        child: SplitChild {
+            partition_id: PartitionId {
+                high: transition.child.partition_id.high,
+                low: transition.child.partition_id.low,
+            },
+            range: PartitionRange {
+                start: Some(transition.child.range.start.clone()),
+                end: transition.child.range.end.clone(),
+            },
+            ownership_epoch: transition.child.owner_epoch,
+        },
+    }
+}
+
+fn zero_seq_split_artifact(transition: &SplitTransition) -> SplitArtifact {
+    let mut artifact = split_artifact(transition);
+    artifact.shared_view_generation = 1;
+    artifact.cutover_seq = 0;
+    for writer in [&mut artifact.retained_parent, &mut artifact.child] {
+        writer.base_applied_seq = 0;
+        writer.applied_seq = 0;
+        writer.parent_cutover_offset = 0;
+        writer.child_stream_start_seq = 1;
+    }
+    artifact
+}
+
+async fn install_zero_seq_local_split(
+    service: &ChunkKvService,
+    parent: &Partition,
+    transition: &SplitTransition,
+) -> Partition {
+    let retained = partition(
+        transition.parent_id,
+        KeyRange {
+            start: transition.parent_range.start.clone(),
+            end: Some(transition.split_key.clone()),
+        },
+        transition.parent_next_epoch,
+        &transition.retained_parent_artifact,
+        true,
+    )
+    .await;
+    let child = partition(
+        transition.child.partition_id,
+        transition.child.range.clone(),
+        transition.child.owner_epoch,
+        &transition.child.artifact,
+        true,
+    )
+    .await;
+    let artifact = zero_seq_split_artifact(transition);
+    retained.activate_recovered(transition.parent_next_epoch).unwrap();
+    child.activate_recovered(transition.child.owner_epoch).unwrap();
+    let plan = local_split_plan(transition);
+    parent.begin_split(plan.clone()).await.unwrap();
+    parent
+        .install_split_ingress(retained.clone(), child)
+        .await
+        .unwrap();
+    parent.begin_split_finalization(plan.transition_id).await.unwrap();
+    parent.record_split_artifact(artifact.clone()).await.unwrap();
+    service.record_local_split_ready(&artifact).await.unwrap();
+    retained
+}
+
+async fn service_after_local_split(first: &SplitTransition) -> (Arc<ChunkKvService>, Partition) {
     let parent = partition(
         first.parent_id,
         first.parent_range.clone(),
@@ -475,92 +558,16 @@ async fn service_after_local_split(first: &SplitTransition) -> (Arc<ChunkKvServi
         false,
     )
     .await;
-    let retained_range = PartitionRange {
-        start: Some(first.parent_range.start.clone()),
-        end: Some(first.split_key.clone()),
-    };
-    let retained = partition(
-        first.parent_id,
-        KeyRange {
-            start: first.parent_range.start.clone(),
-            end: Some(first.split_key.clone()),
-        },
-        first.parent_next_epoch,
-        &first.retained_parent_artifact,
-        true,
-    )
-    .await;
-    let child = partition(
-        first.child.partition_id,
-        first.child.range.clone(),
-        first.child.owner_epoch,
-        &first.child.artifact,
-        true,
-    )
-    .await;
-    let transition_id = TransitionId {
-        high: first.transition_id.high,
-        low: first.transition_id.low,
-    };
-    parent
-        .begin_split(SplitPlan {
-            transition_id,
-            parent_id: PartitionId {
-                high: first.parent_id.high,
-                low: first.parent_id.low,
-            },
-            parent_epoch: first.parent_epoch,
-            parent_range: PartitionRange {
-                start: Some(first.parent_range.start.clone()),
-                end: first.parent_range.end.clone(),
-            },
-            parent_next_epoch: first.parent_next_epoch,
-            split_key: first.split_key.clone(),
-            child: SplitChild {
-                partition_id: PartitionId {
-                    high: first.child.partition_id.high,
-                    low: first.child.partition_id.low,
-                },
-                range: PartitionRange {
-                    start: Some(first.child.range.start.clone()),
-                    end: first.child.range.end.clone(),
-                },
-                ownership_epoch: first.child.owner_epoch,
-            },
-        })
-        .await
-        .unwrap();
-    parent
-        .install_split_ingress(retained.clone(), child)
-        .await
-        .unwrap();
-    parent.begin_split_finalization(transition_id).await.unwrap();
-    let mut first_artifact = split_artifact(first);
-    first_artifact.shared_view_generation = 1;
-    first_artifact.cutover_seq = 0;
-    first_artifact.retained_parent.base_applied_seq = 0;
-    first_artifact.retained_parent.applied_seq = 0;
-    first_artifact.retained_parent.parent_cutover_offset = 0;
-    first_artifact.retained_parent.child_stream_start_seq = 1;
-    first_artifact.child.base_applied_seq = 0;
-    first_artifact.child.applied_seq = 0;
-    first_artifact.child.parent_cutover_offset = 0;
-    first_artifact.child.child_stream_start_seq = 1;
-    parent
-        .record_split_artifact(first_artifact.clone())
-        .await
-        .unwrap();
-
     let service = Arc::new(ChunkKvService::new(1, 8).unwrap());
     service.install_partition(&parent).unwrap();
-    service.record_local_split_ready(&first_artifact).await.unwrap();
-    (service, retained_range)
+    let retained = install_zero_seq_local_split(&service, &parent, first).await;
+    (service, retained)
 }
 
 #[tokio::test]
 async fn repeated_local_split_uses_current_retained_writer() {
     let first = split_transition();
-    let (service, retained_range) = service_after_local_split(&first).await;
+    let (service, retained) = service_after_local_split(&first).await;
 
     let second = SplitTransition {
         transition_id: id(92),
@@ -593,17 +600,18 @@ async fn repeated_local_split_uses_current_retained_writer() {
     let unused = partition(id(9), KeyRange::default(), 1, &artifact(99), true).await;
     let worker = TransitionExecutor::with_storage(
         1,
-        service,
+        Arc::clone(&service),
         Arc::new(FakeStorage {
             recovered: unused,
             split: split_artifact(&second),
-            expected_split_parent_range: Some(retained_range),
+            expected_split_parent_range: Some(retained.snapshot().range),
         }),
         8,
     )
     .unwrap();
 
     worker.prepare_split_parent(&second).await.unwrap();
+    install_zero_seq_local_split(&service, &retained, &second).await;
 }
 
 #[tokio::test]

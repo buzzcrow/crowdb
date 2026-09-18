@@ -43,20 +43,34 @@ the same-process local split itself requires another root epoch. After
 disabling proactive balance, the run at
 `bench-log/chunk-kv-regression-20260918-233758` no longer produced that epoch
 divergence. It completed 10,000 × 4 KiB writes with 0 errors and p99 109.279
-ms, then exposed a pure local-split lifecycle defect: a second split plan for
-an already split local writer repeatedly failed with `split plan does not
-identify this parent range`; restart then failed with `tree apply completion
-is unknown`.
+ms. The later runs through
+`bench-log/chunk-kv-regression-20260919-002026` isolated two repeated-split
+defects: parent lookup selected the old dispatcher before the current retained
+writer, and the one-session-per-parent registry rejected the next epoch under
+the same stable parent ID. Both are corrected and covered by
+`repeated_local_split_uses_current_retained_writer`; three consecutive writer
+installations now complete without either old error.
+
+Those runs also found that group-0 published the retained catalog entry with
+the pre-split `parent_artifact`, even though the live retained writer used
+`retained_parent_artifact`. That combined a new owner epoch with the old
+tree/stream identity, caused the next split's source-stream validation to fail,
+and made restart replay the wrong tree. The publisher now uses the retained
+artifact, with a domain-monitor regression assertion. The first rebuilt run,
+`bench-log/chunk-kv-regression-20260919-002916`, completed 10,000 × 4 KiB
+writes with 0 errors and p99 109.352 ms, then advanced restart to an exact
+manifest mismatch: the artifact recorded tree manifest 4/root manifest 2,
+while reopening root manifest 2 exposed tree checkpoint 2 rather than 4.
 
 ### Current Bug and Next Diagnosis
 
-- [~] **Verify repeated local split and restart**: a second local split now
-  selects the exact current writer before falling back to its old-parent
-  dispatcher, covered by `repeated_local_split_uses_current_retained_writer`.
-  Rerun the real-process regression, verify the retained parent entry carries
-  `tail_overlay`, and trace
-  `ChunkKvStorage::recover_partition()` through
-  `Partition::recover_native_prepared_overlay()`. Files:
+- [~] **Verify repeated local split and restart**: repeated same-ID successor
+  sessions, current-writer selection, and the retained catalog artifact are
+  corrected. Split lifecycle logs now identify planned, readiness, installed,
+  and catalog-committed transitions with writer epochs and durable frontiers.
+  Add the native exact-generation recovery regression and determine why root
+  manifest generation 2 reopens tree checkpoint 2 after the split recorded
+  checkpoint 4. Files:
   `app/crowdb-chunk-kv-server/src/{catalog/transition.rs,storage.rs,main.rs}`
   and `lib/crowdb-chunk-kv/src/partition.rs`.
 - [ ] **Add a restart regression test for both split halves**: construct a
