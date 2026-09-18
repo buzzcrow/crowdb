@@ -112,6 +112,14 @@ impl TransitionProcessor {
                 .persist_transfer_transition(machine.transition(), revision)
                 .await?;
         }
+        if (machine.transition().target.instance_id == self.instance_id
+            && machine.transition().phase == TransferPhase::CatalogCommitted)
+            || (machine.transition().source.instance_id == self.instance_id
+                && machine.transition().phase == TransferPhase::Aborted)
+        {
+            self.executor
+                .release_transfer_generation_pin(machine.transition())?;
+        }
         Ok(())
     }
 
@@ -133,10 +141,16 @@ impl TransitionProcessor {
         }
         if machine.transition().phase == SplitPhase::ParentPreparing {
             let proof = self.executor.prepare_split_parent(machine.transition()).await?;
-            machine.record_children_ready(proof)?;
+            machine.record_child_ready(proof)?;
             self.store
                 .persist_split_transition(machine.transition(), revision)
                 .await?;
+        }
+        if matches!(
+            machine.transition().phase,
+            SplitPhase::CatalogCommitted | SplitPhase::Aborted
+        ) {
+            self.executor.release_split_generation_pin(machine.transition())?;
         }
         Ok(())
     }

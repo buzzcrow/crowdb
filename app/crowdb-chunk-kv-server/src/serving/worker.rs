@@ -16,7 +16,8 @@ use crate::{ChunkKvService, ChunkKvStorage, MonitorError};
 /// A prepared split artifact together with the process-local child handles.
 pub struct PreparedLocalSplit {
     pub artifact: SplitArtifact,
-    pub children: Vec<Partition>,
+    pub retained_parent: Partition,
+    pub child: Partition,
 }
 
 /// Executes process-local storage work requested by persisted transitions.
@@ -24,7 +25,7 @@ pub struct TransitionExecutor {
     instance_id: u64,
     service: Arc<ChunkKvService>,
     storage: Arc<dyn TransitionStorage>,
-    max_split_fence_lag_records: u64,
+    max_split_catchup_lag_records: u64,
 }
 
 impl TransitionExecutor {
@@ -32,14 +33,14 @@ impl TransitionExecutor {
     ///
     /// # Errors
     ///
-    /// Returns an error when the split fence budget is zero.
+    /// Returns an error when the split catch-up budget is zero.
     pub fn new(
         instance_id: u64,
         service: Arc<ChunkKvService>,
         storage: Arc<ChunkKvStorage>,
-        max_split_fence_lag_records: u64,
+        max_split_catchup_lag_records: u64,
     ) -> Result<Self, MonitorError> {
-        Self::with_storage(instance_id, service, storage, max_split_fence_lag_records)
+        Self::with_storage(instance_id, service, storage, max_split_catchup_lag_records)
     }
 
     /// Creates a worker with an injected storage backend.
@@ -51,18 +52,18 @@ impl TransitionExecutor {
         instance_id: u64,
         service: Arc<ChunkKvService>,
         storage: Arc<dyn TransitionStorage>,
-        max_split_fence_lag_records: u64,
+        max_split_catchup_lag_records: u64,
     ) -> Result<Self, MonitorError> {
-        if instance_id == 0 || max_split_fence_lag_records == 0 {
+        if instance_id == 0 || max_split_catchup_lag_records == 0 {
             return Err(MonitorError::PlanFailed(
-                "transition worker identity and split fence budget must be nonzero".into(),
+                "transition worker identity and split catch-up budget must be nonzero".into(),
             ));
         }
         Ok(Self {
             instance_id,
             service,
             storage,
-            max_split_fence_lag_records,
+            max_split_catchup_lag_records,
         })
     }
 
@@ -109,7 +110,7 @@ impl TransitionExecutor {
             ));
         }
         partition
-            .fence_mutations(transition.source_epoch)
+            .suspend_for_transfer(transition.source_epoch)
             .await
             .map_err(|error| plan_error(&error.to_string()))?;
         let snapshot = partition.snapshot();
@@ -143,6 +144,46 @@ impl TransitionExecutor {
             .hosted_partition(transition.partition_id)
             .ok_or_else(|| plan_error("transfer source partition is not hosted"))?;
         self.storage.prepare_transfer_source(&partition, transition).await
+    }
+
+    /// Idempotently releases a transfer's exact-root pin after durable
+    /// transition evidence no longer requires its overlay.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the hosted partition cannot delete the durable
+    /// pin.
+    pub fn release_transfer_generation_pin(
+        &self,
+        transition: &TransferTransition,
+    ) -> Result<(), MonitorError> {
+        let Some(partition) = self.service.hosted_partition(transition.partition_id) else {
+            return Ok(());
+        };
+        partition
+            .release_generation_pin(crowdb_chunk_kv::TransitionId {
+                high: transition.transition_id.high,
+                low: transition.transition_id.low,
+            })
+            .map_err(|error| plan_error(&error.to_string()))
+    }
+
+    /// Idempotently releases a split child's exact-root pin after completion
+    /// or an authoritative unpublished abort.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the hosted child cannot delete the durable pin.
+    pub fn release_split_generation_pin(&self, transition: &SplitTransition) -> Result<(), MonitorError> {
+        let Some(partition) = self.service.hosted_partition(transition.child.partition_id) else {
+            return Ok(());
+        };
+        partition
+            .release_generation_pin(crowdb_chunk_kv::TransitionId {
+                high: transition.transition_id.high,
+                low: transition.transition_id.low,
+            })
+            .map_err(|error| plan_error(&error.to_string()))
     }
 
     /// Reopens and replays the exact transfer target without activating it.
@@ -194,7 +235,7 @@ impl TransitionExecutor {
         })
     }
 
-    /// Rebuilds both children from the local parent and returns one common cutover.
+    /// Rebuilds one child from the retained local parent and returns their common cutover.
     ///
     /// A repeated call reuses an in-memory prepared artifact. After process
     /// restart it rebuilds the same durable child identities from the current
@@ -224,41 +265,40 @@ impl TransitionExecutor {
             low: transition.transition_id.low,
         };
         let artifact = if let Some(artifact) = parent.prepared_split_artifact(transition_id).await {
-            for child in [&artifact.left, &artifact.right] {
-                let child_id = crowdb_protocol::chunk_kv::Id128 {
-                    high: child.partition_id.high,
-                    low: child.partition_id.low,
-                };
-                if self.service.hosted_partition(child_id).is_none() {
-                    return Err(plan_error(
-                        "prepared split child is not installed; preparation must be rebuilt",
-                    ));
-                }
+            let child_id = crowdb_protocol::chunk_kv::Id128 {
+                high: artifact.child.partition_id.high,
+                low: artifact.child.partition_id.low,
+            };
+            if self.service.hosted_partition(child_id).is_none() {
+                return Err(plan_error(
+                    "prepared split child is not installed; preparation must be rebuilt",
+                ));
             }
             artifact
         } else {
             let prepared = self
                 .storage
-                .prepare_split(&parent, transition, self.max_split_fence_lag_records)
+                .prepare_split(&parent, transition, self.max_split_catchup_lag_records)
                 .await?;
-            for child in &prepared.children {
-                self.service
-                    .install_partition(child)
-                    .map_err(|error| plan_error(&error.to_string()))?;
-            }
+            self.service
+                .install_partition(&prepared.child)
+                .map_err(|error| plan_error(&error.to_string()))?;
             prepared.artifact
         };
-        if artifact.left.applied_seq != artifact.cutover_seq
-            || artifact.right.applied_seq != artifact.cutover_seq
-        {
-            return Err(plan_error("split children do not share the cutover frontier"));
+        if artifact.child.applied_seq != artifact.cutover_seq {
+            return Err(plan_error("split child does not share the cutover frontier"));
         }
         Ok(SplitReadinessProof {
             cutover_seq: artifact.cutover_seq,
-            left_applied_seq: artifact.left.applied_seq,
-            right_applied_seq: artifact.right.applied_seq,
-            left_tail_overlay: split_tail_overlay(&artifact, &artifact.left),
-            right_tail_overlay: split_tail_overlay(&artifact, &artifact.right),
+            parent_next_epoch: artifact.parent_next_epoch,
+            retained_parent_artifact: transition.retained_parent_artifact.clone(),
+            retained_parent_tree_manifest: artifact.retained_parent.tree_manifest,
+            retained_parent_root_manifest_generation: artifact.retained_parent.root_manifest_generation,
+            retained_parent_applied_seq: artifact.retained_parent.applied_seq,
+            child_applied_seq: artifact.child.applied_seq,
+            child_tree_manifest: artifact.child.tree_manifest,
+            child_root_manifest_generation: artifact.child.root_manifest_generation,
+            child_tail_overlay: split_tail_overlay(&artifact, &artifact.child),
         })
     }
 }
@@ -275,7 +315,7 @@ pub trait TransitionStorage: Send + Sync {
         &self,
         parent: &Partition,
         transition: &SplitTransition,
-        max_fence_lag_records: u64,
+        max_catchup_lag_records: u64,
     ) -> Result<PreparedLocalSplit, MonitorError>;
 }
 
@@ -299,23 +339,36 @@ impl TransitionStorage for ChunkKvStorage {
         &self,
         parent: &Partition,
         transition: &SplitTransition,
-        max_fence_lag_records: u64,
+        max_catchup_lag_records: u64,
     ) -> Result<PreparedLocalSplit, MonitorError> {
-        let prepared = ChunkKvStorage::prepare_split(self, parent, transition, max_fence_lag_records).await?;
+        let prepared =
+            ChunkKvStorage::prepare_split(self, parent, transition, max_catchup_lag_records).await?;
         let artifact = prepared.artifact.clone();
-        let left = prepared
-            .left
+        let retained_parent = prepared
+            .retained_parent
+            .ok_or_else(|| plan_error("split session did not create a retained parent writer"))?
             .open(PartitionConfig::default())
             .await
             .map_err(|error| plan_error(&error.to_string()))?;
-        let right = prepared
-            .right
+        let child = prepared
+            .child
             .open(PartitionConfig::default())
+            .await
+            .map_err(|error| plan_error(&error.to_string()))?;
+        retained_parent
+            .activate_local_split_writer(&artifact)
+            .map_err(|error| plan_error(&error.to_string()))?;
+        child
+            .activate_local_split_writer(&artifact)
+            .map_err(|error| plan_error(&error.to_string()))?;
+        parent
+            .install_split_ingress(retained_parent.clone(), child.clone())
             .await
             .map_err(|error| plan_error(&error.to_string()))?;
         Ok(PreparedLocalSplit {
             artifact,
-            children: vec![left, right],
+            retained_parent,
+            child,
         })
     }
 }
@@ -326,7 +379,7 @@ fn plan_error(error: &str) -> MonitorError {
 
 fn split_tail_overlay(
     split: &SplitArtifact,
-    child: &crowdb_chunk_kv::PreparedChildArtifact,
+    child: &crowdb_chunk_kv::PreparedSplitWriterArtifact,
 ) -> TailOverlayArtifact {
     TailOverlayArtifact {
         source_partition_id: crowdb_protocol::chunk_kv::Id128 {
@@ -338,6 +391,7 @@ fn split_tail_overlay(
         source_stream_manifest_generation: child.parent_stream_manifest_generation,
         replay_offset: child.parent_replay_offset,
         cutover_offset: child.parent_cutover_offset,
+        base_root_manifest_generation: child.root_manifest_generation,
         base_tree_manifest: child.tree_manifest,
         base_applied_seq: child.base_applied_seq,
         cutover_seq: child.applied_seq,

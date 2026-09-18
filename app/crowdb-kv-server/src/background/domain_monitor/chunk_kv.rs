@@ -255,7 +255,7 @@ async fn publish_ready_transitions(control: &Group0ControlPlane) -> Result<(), S
         .map_err(|error| operation_error(&error))?
     {
         let mut transition: SplitTransition = decode_transition(&item)?;
-        if transition.phase == SplitPhase::ChildrenPrepared {
+        if transition.phase == SplitPhase::ChildPrepared {
             catalog::publish_split(control, &transition).await?;
             transition.phase = SplitPhase::CatalogCommitted;
             transition.validate().map_err(|error| error.to_string())?;

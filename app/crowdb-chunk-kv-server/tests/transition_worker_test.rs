@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use crowdb_chunk_kv::memory::MemoryPartitionTree;
 use crowdb_chunk_kv::{
     Checkpoint, Partition, PartitionConfig, PartitionId, PartitionJournal, PartitionLifecycle,
-    PartitionRange, PartitionTree, PreparedChildArtifact, SplitArtifact, StreamPartitionJournal,
+    PartitionRange, PartitionTree, PreparedSplitWriterArtifact, SplitArtifact, StreamPartitionJournal,
     TransitionId,
 };
 use crowdb_chunk_kv_server::{
@@ -131,6 +131,7 @@ async fn partition(
             Checkpoint {
                 tree_id: artifact.tree_id,
                 tree_manifest: 0,
+                root_manifest_generation: 1,
                 applied_seq: 0,
                 stream_name: artifact.stream_name,
                 stream_manifest_generation: 1,
@@ -181,27 +182,31 @@ impl TransitionStorage for FakeStorage {
         &self,
         _parent: &Partition,
         transition: &SplitTransition,
-        _max_fence_lag_records: u64,
+        _max_catchup_lag_records: u64,
     ) -> Result<PreparedLocalSplit, MonitorError> {
-        let left = partition(
-            transition.left.partition_id,
-            transition.left.range.clone(),
-            transition.left.owner_epoch,
-            &transition.left.artifact,
+        let child = partition(
+            transition.child.partition_id,
+            transition.child.range.clone(),
+            transition.child.owner_epoch,
+            &transition.child.artifact,
             true,
         )
         .await;
-        let right = partition(
-            transition.right.partition_id,
-            transition.right.range.clone(),
-            transition.right.owner_epoch,
-            &transition.right.artifact,
+        let retained_parent = partition(
+            transition.parent_id,
+            KeyRange {
+                start: transition.parent_range.start.clone(),
+                end: Some(transition.split_key.clone()),
+            },
+            transition.parent_next_epoch,
+            &transition.retained_parent_artifact,
             true,
         )
         .await;
         Ok(PreparedLocalSplit {
             artifact: self.split.clone(),
-            children: vec![left, right],
+            retained_parent,
+            child,
         })
     }
 }
@@ -217,6 +222,7 @@ fn transfer(phase: TransferPhase) -> TransferTransition {
         source_stream_manifest_generation: 1,
         replay_offset: 0,
         cutover_offset: 0,
+        base_root_manifest_generation: 1,
         base_tree_manifest: 1,
         base_applied_seq: 0,
         cutover_seq: 0,
@@ -263,25 +269,17 @@ fn split_transition() -> SplitTransition {
         parent_owner: owner(1),
         parent_epoch: 3,
         parent_artifact: artifact(11),
+        retained_parent_artifact: artifact(12),
+        parent_next_epoch: 4,
         split_key: b"m".to_vec(),
-        left: SplitChildAssignment {
-            partition_id: id(2),
-            range: KeyRange {
-                start: Vec::new(),
-                end: Some(b"m".to_vec()),
-            },
-            owner: owner(1),
-            owner_epoch: 4,
-            artifact: artifact(12),
-        },
-        right: SplitChildAssignment {
+        child: SplitChildAssignment {
             partition_id: id(3),
             range: KeyRange {
                 start: b"m".to_vec(),
                 end: None,
             },
-            owner: owner(2),
-            owner_epoch: 1,
+            owner: owner(1),
+            owner_epoch: 4,
             artifact: artifact(13),
         },
         planned_at_ms: 0,
@@ -292,7 +290,7 @@ fn split_transition() -> SplitTransition {
 }
 
 fn split_artifact(transition: &SplitTransition) -> SplitArtifact {
-    let child = |assignment: &SplitChildAssignment| PreparedChildArtifact {
+    let child = |assignment: &SplitChildAssignment| PreparedSplitWriterArtifact {
         partition_id: PartitionId {
             high: assignment.partition_id.high,
             low: assignment.partition_id.low,
@@ -304,6 +302,7 @@ fn split_artifact(transition: &SplitTransition) -> SplitArtifact {
         ownership_epoch: assignment.owner_epoch,
         tree_id: assignment.artifact.tree_id,
         tree_manifest: 2,
+        root_manifest_generation: 2,
         stream_name: assignment.artifact.stream_name,
         base_applied_seq: 8,
         parent_id: PartitionId {
@@ -328,14 +327,25 @@ fn split_artifact(transition: &SplitTransition) -> SplitArtifact {
             low: transition.parent_id.low,
         },
         parent_epoch: transition.parent_epoch,
+        parent_next_epoch: transition.parent_next_epoch,
+        shared_view_generation: 0,
         cutover_seq: 8,
-        left: child(&transition.left),
-        right: child(&transition.right),
+        retained_parent: child(&SplitChildAssignment {
+            partition_id: transition.parent_id,
+            range: KeyRange {
+                start: transition.parent_range.start.clone(),
+                end: Some(transition.split_key.clone()),
+            },
+            owner: transition.parent_owner.clone(),
+            owner_epoch: transition.parent_next_epoch,
+            artifact: transition.retained_parent_artifact.clone(),
+        }),
+        child: child(&transition.child),
     }
 }
 
 #[tokio::test]
-async fn source_worker_fences_before_returning_release_proof() {
+async fn source_worker_quiesces_before_returning_release_proof() {
     let parent_artifact = artifact(11);
     let source = partition(
         id(1),
@@ -384,7 +394,7 @@ async fn source_worker_fences_before_returning_release_proof() {
             durable_tail_offset: 0,
         }
     );
-    assert_eq!(source.lifecycle(), PartitionLifecycle::SplitFenced);
+    assert_eq!(source.lifecycle(), PartitionLifecycle::WriteStalled);
 }
 
 #[tokio::test]
@@ -440,12 +450,12 @@ async fn split_worker_reports_only_a_common_child_frontier() {
 
     let proof = worker.prepare_split_parent(&transition).await.unwrap();
     assert_eq!(proof.cutover_seq, 8);
-    assert_eq!(proof.left_applied_seq, 8);
-    assert_eq!(proof.right_applied_seq, 8);
+    assert_eq!(proof.child_applied_seq, 8);
+    assert_eq!(proof.parent_next_epoch, 4);
     assert_eq!(
         worker.prepare_split_parent(&transition).await.unwrap(),
         proof,
-        "a durable readiness retry requires both child handles to remain installed"
+        "a durable readiness retry requires the child handle to remain installed"
     );
 }
 
@@ -523,7 +533,7 @@ async fn processor_resumes_planned_split_through_durable_readiness() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(stored.phase, SplitPhase::ChildrenPrepared);
+    assert_eq!(stored.phase, SplitPhase::ChildPrepared);
     assert_eq!(stored.readiness_proof.unwrap().cutover_seq, 8);
     assert_eq!(revision, 3);
 }

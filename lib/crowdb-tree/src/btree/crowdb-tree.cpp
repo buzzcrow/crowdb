@@ -1479,10 +1479,111 @@ std::vector<std::shared_ptr<MemTable>> Crowdbtree::all_memtables() const
 {
     std::shared_lock<std::shared_mutex>    lk(memtable_mutex_);
     std::vector<std::shared_ptr<MemTable>> out;
-    out.reserve(frozen_.size() + 1);
+    out.reserve(split_shared_memtables_.size() + frozen_.size() + 1);
+    out.insert(out.end(), split_shared_memtables_.begin(), split_shared_memtables_.end());
     out.insert(out.end(), frozen_.begin(), frozen_.end());
     out.push_back(active_);
     return out;
+}
+
+Status Crowdbtree::begin_split_memtable_view(uint64_t *out_generation)
+{
+    if (out_generation == nullptr) {
+        return Status::invalid_argument("split memtable view requires an output generation");
+    }
+    std::scoped_lock write_lk(write_mutex_);
+    std::unique_lock memtable_lk(memtable_mutex_);
+    if (!split_shared_memtables_.empty()) {
+        return Status::invalid_argument("a split memtable view is already active");
+    }
+    split_shared_memtables_.reserve(frozen_.size() + 1);
+    split_shared_memtables_.insert(split_shared_memtables_.end(), frozen_.begin(), frozen_.end());
+    frozen_.clear();
+    split_shared_memtables_.push_back(active_);
+    active_ = std::make_shared<MemTable>(memtable_next_id_.fetch_add(1, std::memory_order_relaxed), &epoch_);
+    active_->set_durable_floor(last_applied_slot_.load());
+    ++split_memtable_generation_;
+    *out_generation = split_memtable_generation_;
+    return Status::Ok();
+}
+
+Status Crowdbtree::release_split_memtable_view(uint64_t generation)
+{
+    std::scoped_lock write_lk(write_mutex_);
+    std::unique_lock memtable_lk(memtable_mutex_);
+    if (generation == 0 || generation != split_memtable_generation_ || split_shared_memtables_.empty()) {
+        return Status::invalid_argument("split memtable view generation is not active");
+    }
+    split_shared_memtables_.clear();
+    return Status::Ok();
+}
+
+Status Crowdbtree::publish_split_memtable_view(uint64_t generation, Crowdbtree &destination, const KeyRange &range)
+{
+    if (&destination == this) {
+        return Status::invalid_argument("split memtable destination must differ from its source");
+    }
+    Status range_status = range.validate();
+    if (!range_status.ok()) {
+        return range_status;
+    }
+    std::vector<mem_entry> entries;
+    {
+        std::shared_lock memtable_lk(memtable_mutex_);
+        if (generation == 0 || generation != split_memtable_generation_ || split_shared_memtables_.empty()) {
+            return Status::invalid_argument("split memtable view generation is not active");
+        }
+        for (const auto &table : split_shared_memtables_) {
+            auto snapshot = table->snapshot();
+            entries.insert(entries.end(), std::make_move_iterator(snapshot.begin()),
+                           std::make_move_iterator(snapshot.end()));
+        }
+    }
+    std::sort(entries.begin(), entries.end(), [](const mem_entry &left, const mem_entry &right) {
+        return left.key == right.key ? left.slot > right.slot : left.key < right.key;
+    });
+
+    std::scoped_lock        write_lk(write_mutex_, destination.write_mutex_);
+    const uint64_t          cs      = contiguous_slot_.load();
+    uint64_t                page_id = kInvalidPageId;
+    Slice                   high_key;
+    bool                    have_leaf = false;
+    std::vector<leaf_entry> group;
+    for (size_t index = 0; index < entries.size();) {
+        mem_entry        &entry = entries[index];
+        const std::string key   = entry.key;
+        ++index;
+        while (index < entries.size() && entries[index].key == key) {
+            ++index;
+        }
+        if (entry.slot > cs || !range.contains(Slice(key))) {
+            continue;
+        }
+        Slice key_slice(key);
+        // An empty high key is the rightmost leaf's +infinity sentinel.  It
+        // must retain the rest of this bulk publish as one leaf group; treating
+        // it as an ordinary empty key would re-find and publish every entry
+        // separately.
+        if (!have_leaf || (!high_key.empty() && key_slice.compare(high_key) > 0)) {
+            if (!group.empty()) {
+                destination.publish_group_to_leaf_locked(page_id, cs, std::move(group));
+                group.clear();
+            }
+            page_id    = find_leaf_page_id([&destination](uint64_t page) { return destination.resident(page); },
+                                           destination.root_page_id_.load(), key_slice);
+            auto *head = destination.resident(page_id);
+            auto *leaf = chain_leaf_base(head);
+            high_key   = leaf != nullptr ? leaf->high_key() : Slice();
+            have_leaf  = true;
+        }
+        group.push_back({.key = key, .cell = std::move(entry.cell)});
+    }
+    if (!group.empty()) {
+        destination.publish_group_to_leaf_locked(page_id, cs, std::move(group));
+    }
+    destination.last_applied_slot_.store(std::max(destination.last_applied_slot_.load(), cs));
+    destination.version_.fetch_add(1);
+    return Status::Ok();
 }
 
 bool Crowdbtree::maybe_freeze_active(bool force)

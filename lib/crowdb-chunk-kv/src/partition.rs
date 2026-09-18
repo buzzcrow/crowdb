@@ -12,7 +12,7 @@ mod tree;
 
 pub use frame::{decode_frame, encode_frame, DecodedFrame, FrameDecode, MAX_FRAME_BYTES};
 pub use journal::{PartitionJournal, StreamPartitionJournal};
-pub use split::{PreparedSplit, PreparedSplitChild, SplitChildTarget};
+pub use split::{PreparedSplit, PreparedSplitWriter, SplitSessionTargets, SplitWriterTarget};
 pub use tree::{CrowdbPartitionTree, PartitionTree};
 
 use std::collections::HashMap;
@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use arc_swap::{ArcSwap, ArcSwapOption};
 use bytes::{Buf, Bytes, BytesMut};
 use crowdb_chunk_stream::{ChunkStream, StreamName};
 use tokio::sync::{mpsc, oneshot, Mutex, Notify};
@@ -27,8 +28,8 @@ use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 use crate::{
     canonical_operation_digest, Checkpoint, ChunkKvError, CompareCondition, JournalPosition,
     MutationOperation, MutationResult, PartitionId, PartitionLifecycle, PartitionMetrics, PartitionRange,
-    PreparedChildArtifact, RequestId, Result, SplitAbortProof, SplitArtifact, SplitCommitProof, SplitPlan,
-    TransitionId, ValueRevision, WalRecord,
+    PreparedSplitWriterArtifact, RequestId, Result, SplitAbortProof, SplitArtifact, SplitCommitProof,
+    SplitPlan, TransitionId, ValueRevision, WalRecord,
 };
 
 #[derive(Clone, Debug)]
@@ -133,7 +134,7 @@ struct MutationRequest {
 #[derive(Clone)]
 pub struct Partition {
     id: PartitionId,
-    range: PartitionRange,
+    range: Arc<ArcSwap<PartitionRange>>,
     ownership_epoch: Arc<AtomicU64>,
     lifecycle: Arc<AtomicU8>,
     journal: Arc<dyn PartitionJournal>,
@@ -145,10 +146,14 @@ pub struct Partition {
     applied_seq: Arc<AtomicU64>,
     applied_position: Arc<AtomicU64>,
     retry_replay_offset: Arc<AtomicU64>,
+    checkpoint_pin_generation: Arc<AtomicU64>,
+    checkpoint_pin_transition_high: Arc<AtomicU64>,
+    checkpoint_pin_transition_low: Arc<AtomicU64>,
     applied_notify: Arc<Notify>,
     admission_notify: Arc<Notify>,
     split_transition: Arc<Mutex<Option<SplitTransition>>>,
-    prepared_artifact: Option<PreparedChildArtifact>,
+    split_ingress: Arc<ArcSwapOption<SplitIngressRoute>>,
+    prepared_artifact: Option<PreparedSplitWriterArtifact>,
     inherited_position: Option<JournalPosition>,
     metrics: Arc<PartitionMetrics>,
     config: Arc<PartitionConfig>,
@@ -156,7 +161,7 @@ pub struct Partition {
 
 struct WorkerState {
     partition_id: PartitionId,
-    ownership_epoch: u64,
+    ownership_epoch: Arc<AtomicU64>,
     lifecycle: Arc<AtomicU8>,
     journal: Arc<dyn PartitionJournal>,
     tree: Arc<dyn PartitionTree>,
@@ -204,6 +209,92 @@ struct ReplayState {
 struct SplitTransition {
     plan: SplitPlan,
     artifact: Option<SplitArtifact>,
+}
+
+/// Lock-free request routing installed after both split writers are durable.
+/// The legacy parent handle remains valid while callers still hold it, but it
+/// no longer appends to its old WAL or memtable.
+#[derive(Clone)]
+pub struct SplitIngress {
+    split_key: Arc<[u8]>,
+    retained_parent: Partition,
+    child: Partition,
+}
+
+enum SplitIngressRoute {
+    Buffering(Arc<SplitIngressBuffer>),
+    Writers(Box<SplitIngress>),
+}
+
+struct BufferedSplitMutation {
+    request_id: RequestId,
+    operation: MutationOperation,
+    completion: oneshot::Sender<Result<MutationResponse>>,
+}
+
+/// Bounded, lock-free admission path used only while the old WAL tail is
+/// replayed into both split writers.  Requests are never rejected solely
+/// because a split is reaching its durable frontier.
+struct SplitIngressBuffer {
+    sender: mpsc::Sender<BufferedSplitMutation>,
+    receiver: Mutex<mpsc::Receiver<BufferedSplitMutation>>,
+}
+
+impl SplitIngressBuffer {
+    fn new(capacity: usize) -> Arc<Self> {
+        let (sender, receiver) = mpsc::channel(capacity);
+        Arc::new(Self {
+            sender,
+            receiver: Mutex::new(receiver),
+        })
+    }
+
+    async fn enqueue(&self, request_id: RequestId, operation: MutationOperation) -> Result<MutationResponse> {
+        let (completion, response) = oneshot::channel();
+        self.sender
+            .try_send(BufferedSplitMutation {
+                request_id,
+                operation,
+                completion,
+            })
+            .map_err(|_| ChunkKvError::Overloaded)?;
+        response.await.map_err(|_| ChunkKvError::WriteStalled)?
+    }
+
+    async fn forward_into(&self, ingress: &SplitIngress) {
+        let mut receiver = self.receiver.lock().await;
+        while let Ok(request) = receiver.try_recv() {
+            let writer = ingress.writer_for(request.operation.key()).clone();
+            let result = writer
+                .mutate(
+                    writer.ownership_epoch.load(Ordering::Acquire),
+                    request.request_id,
+                    request.operation,
+                )
+                .await;
+            let _ = request.completion.send(result);
+        }
+    }
+}
+
+impl SplitIngress {
+    #[must_use]
+    pub fn retained_parent(&self) -> Partition {
+        self.retained_parent.clone()
+    }
+
+    #[must_use]
+    pub fn child(&self) -> Partition {
+        self.child.clone()
+    }
+
+    fn writer_for(&self, key: &[u8]) -> &Partition {
+        if key < self.split_key.as_ref() {
+            &self.retained_parent
+        } else {
+            &self.child
+        }
+    }
 }
 
 struct PreparedMutation {
@@ -488,6 +579,7 @@ impl Partition {
         let stream_manifest_generation = stream.manifest_generation();
         let (tree, journal) = native_storage_parts(tree_id, &range, tree_config, page_store, stream)?;
         let (tree_manifest, applied_seq) = tree.checkpoint_state()?;
+        let root_manifest_generation = tree.root_manifest_generation()?;
         Self::recover_assignment(
             partition_id,
             range,
@@ -495,6 +587,7 @@ impl Partition {
             Checkpoint {
                 tree_id,
                 tree_manifest,
+                root_manifest_generation,
                 applied_seq,
                 stream_name,
                 stream_manifest_generation,
@@ -549,7 +642,7 @@ impl Partition {
     /// Returns an error when the artifact, checkpoint, tree, or journal does
     /// not identify the same complete child frontier.
     pub async fn recover_prepared(
-        artifact: PreparedChildArtifact,
+        artifact: PreparedSplitWriterArtifact,
         checkpoint: Checkpoint,
         config: PartitionConfig,
         tree: Arc<dyn PartitionTree>,
@@ -557,6 +650,7 @@ impl Partition {
     ) -> Result<Self> {
         if artifact.ownership_epoch == 0
             || artifact.tree_id == 0
+            || artifact.root_manifest_generation == 0
             || checkpoint.stream_manifest_generation == 0
             || checkpoint.stream_manifest_generation > journal.manifest_generation()
             || artifact.stream_name != checkpoint.stream_name
@@ -564,6 +658,7 @@ impl Partition {
             || artifact.tree_id != checkpoint.tree_id
             || artifact.tree_id != tree.tree_id()
             || artifact.tree_manifest != checkpoint.tree_manifest
+            || artifact.root_manifest_generation != checkpoint.root_manifest_generation
             || artifact.applied_seq != checkpoint.applied_seq
         {
             return Err(ChunkKvError::InvalidRequest(
@@ -615,7 +710,7 @@ impl Partition {
     ///
     /// Returns an identity, frontier, source-tail, child-tail, or apply error.
     pub async fn recover_prepared_overlay(
-        artifact: PreparedChildArtifact,
+        artifact: PreparedSplitWriterArtifact,
         checkpoint: Checkpoint,
         config: PartitionConfig,
         tree: Arc<dyn PartitionTree>,
@@ -686,7 +781,7 @@ impl Partition {
     /// Returns the same identity, tree, source-tail, and child-tail errors as
     /// [`Self::recover_prepared_overlay`].
     pub async fn recover_native_prepared_overlay(
-        artifact: PreparedChildArtifact,
+        artifact: PreparedSplitWriterArtifact,
         config: PartitionConfig,
         tree_config: crowdb_tree_ffi::Config,
         page_store: Arc<crowdb_tree_ffi::PageStore>,
@@ -696,6 +791,7 @@ impl Partition {
         let checkpoint = Checkpoint {
             tree_id: artifact.tree_id,
             tree_manifest: artifact.tree_manifest,
+            root_manifest_generation: artifact.root_manifest_generation,
             applied_seq: artifact.base_applied_seq,
             stream_name: artifact.stream_name,
             stream_manifest_generation: stream.manifest_generation(),
@@ -721,7 +817,7 @@ impl Partition {
         journal: Arc<dyn PartitionJournal>,
         seed: RecoverySeed,
         initial_lifecycle: PartitionLifecycle,
-        prepared_artifact: Option<PreparedChildArtifact>,
+        prepared_artifact: Option<PreparedSplitWriterArtifact>,
     ) -> Result<Self> {
         let next_seq = seed
             .applied_seq
@@ -729,15 +825,20 @@ impl Partition {
             .ok_or_else(|| ChunkKvError::Faulted("mutation sequence exhausted".into()))?;
         let (sender, receiver) = mpsc::channel(config.queue_requests);
         let lifecycle = Arc::new(AtomicU8::new(lifecycle_code(initial_lifecycle)));
+        let ownership_epoch = Arc::new(AtomicU64::new(ownership_epoch));
         let queued_requests = Arc::new(AtomicUsize::new(0));
         let queued_bytes = Arc::new(AtomicU64::new(0));
         let journal_durable_seq = Arc::new(AtomicU64::new(seed.applied_seq));
         let applied_seq = Arc::new(AtomicU64::new(seed.applied_seq));
         let applied_position = Arc::new(AtomicU64::new(seed.applied_position));
         let retry_replay_offset = Arc::new(AtomicU64::new(seed.retry_replay_offset));
+        let checkpoint_pin_generation = Arc::new(AtomicU64::new(0));
+        let checkpoint_pin_transition_high = Arc::new(AtomicU64::new(0));
+        let checkpoint_pin_transition_low = Arc::new(AtomicU64::new(0));
         let applied_notify = Arc::new(Notify::new());
         let admission_notify = Arc::new(Notify::new());
         let split_transition = Arc::new(Mutex::new(None));
+        let split_ingress = Arc::new(ArcSwapOption::empty());
         let metrics = Arc::new(PartitionMetrics::default());
         if seed.recovered {
             metrics.recovery();
@@ -745,7 +846,7 @@ impl Partition {
         let config = Arc::new(config);
         let state = WorkerState {
             partition_id,
-            ownership_epoch,
+            ownership_epoch: Arc::clone(&ownership_epoch),
             lifecycle: Arc::clone(&lifecycle),
             journal: Arc::clone(&journal),
             tree: Arc::clone(&tree),
@@ -771,8 +872,8 @@ impl Partition {
         });
         Ok(Self {
             id: partition_id,
-            range,
-            ownership_epoch: Arc::new(AtomicU64::new(ownership_epoch)),
+            range: Arc::new(ArcSwap::from_pointee(range)),
+            ownership_epoch,
             lifecycle,
             journal,
             tree,
@@ -783,9 +884,13 @@ impl Partition {
             applied_seq,
             applied_position,
             retry_replay_offset,
+            checkpoint_pin_generation,
+            checkpoint_pin_transition_high,
+            checkpoint_pin_transition_low,
             applied_notify,
             admission_notify,
             split_transition,
+            split_ingress,
             prepared_artifact,
             inherited_position,
             metrics,
@@ -805,6 +910,20 @@ impl Partition {
         operation: MutationOperation,
     ) -> Result<MutationResponse> {
         self.metrics.mutation_request();
+        if let Some(route) = self.split_ingress.load_full() {
+            return match route.as_ref() {
+                SplitIngressRoute::Buffering(buffer) => buffer.enqueue(request_id, operation).await,
+                SplitIngressRoute::Writers(ingress) => {
+                    let writer = ingress.writer_for(operation.key());
+                    Box::pin(writer.mutate(
+                        writer.ownership_epoch.load(Ordering::Acquire),
+                        request_id,
+                        operation,
+                    ))
+                    .await
+                }
+            };
+        }
         self.validate_epoch(ownership_epoch)?;
         if !accepts_mutations(self.lifecycle()) {
             return Err(write_state_error(self.lifecycle()));
@@ -864,8 +983,17 @@ impl Partition {
         min_journal_position: Option<JournalPosition>,
     ) -> Result<Option<ValueRevision>> {
         self.metrics.point_read();
+        if let Some(route) = self.split_ingress.load_full() {
+            if let SplitIngressRoute::Writers(ingress) = route.as_ref() {
+                let writer = ingress.writer_for(key);
+                let writer_epoch = writer.ownership_epoch.load(Ordering::Acquire);
+                let writer_stream = writer.snapshot().stream_name;
+                let position = min_journal_position.filter(|position| position.stream_name == writer_stream);
+                return Box::pin(writer.get(writer_epoch, key, position)).await;
+            }
+        }
         self.validate_epoch(ownership_epoch)?;
-        if !self.range.contains(key) {
+        if !self.range.load().contains(key) {
             self.metrics.range_reject();
             return Err(ChunkKvError::OutOfRange);
         }
@@ -873,7 +1001,7 @@ impl Partition {
             PartitionLifecycle::Serving
             | PartitionLifecycle::WriteStalled
             | PartitionLifecycle::SplitPreparing
-            | PartitionLifecycle::SplitFenced => {}
+            | PartitionLifecycle::SplitFinalizing => {}
             state => return Err(read_state_error(state)),
         }
         if let Some(position) = min_journal_position {
@@ -927,7 +1055,8 @@ impl Partition {
                 "seek key exceeds configured key limit".into(),
             ));
         }
-        if !self.range.contains(key) {
+        let range = self.range.load_full();
+        if !range.contains(key) {
             self.metrics.range_reject();
             return Err(ChunkKvError::OutOfRange);
         }
@@ -940,10 +1069,10 @@ impl Partition {
             .saturating_add(self.config.max_value_bytes);
         let (mut entries, _) = self
             .tree
-            .scan_forward(Some(key), inclusive, self.range.end.as_deref(), 1, byte_budget)
+            .scan_forward(Some(key), inclusive, range.end.as_deref(), 1, byte_budget)
             .await?;
         if entries.iter().any(|entry| {
-            !self.range.contains(&entry.key)
+            !range.contains(&entry.key)
                 || entry.key.as_ref() < key
                 || (!inclusive && entry.key.as_ref() == key)
         }) {
@@ -999,7 +1128,8 @@ impl Partition {
                 "seek key exceeds configured key limit".into(),
             ));
         }
-        if !self.range.contains(key) {
+        let range = self.range.load_full();
+        if !range.contains(key) {
             self.metrics.range_reject();
             return Err(ChunkKvError::OutOfRange);
         }
@@ -1008,10 +1138,10 @@ impl Partition {
         }
         let entry = self
             .tree
-            .seek_reverse(key, inclusive, self.range.start.as_deref())
+            .seek_reverse(key, inclusive, range.start.as_deref())
             .await?;
         if entry.as_ref().is_some_and(|entry| {
-            !self.range.contains(&entry.key)
+            !range.contains(&entry.key)
                 || entry.key.as_ref() > key
                 || (!inclusive && entry.key.as_ref() == key)
         }) {
@@ -1119,8 +1249,9 @@ impl Partition {
         if let Some(position) = min_journal_position {
             self.wait_applied(position).await?;
         }
-        let partition_start = self.range.start.as_deref();
-        let partition_end = self.range.end.as_deref();
+        let range = self.range.load_full();
+        let partition_start = range.start.as_deref();
+        let partition_end = range.end.as_deref();
         if start_key
             .zip(partition_end)
             .is_some_and(|(start, end)| start >= end)
@@ -1147,7 +1278,7 @@ impl Partition {
             .tree
             .scan_forward(clipped_start, start_inclusive, clipped_end, limit, byte_budget)
             .await?;
-        if entries.iter().any(|entry| !self.range.contains(&entry.key)) {
+        if entries.iter().any(|entry| !range.contains(&entry.key)) {
             return Err(ChunkKvError::TreeCorruption(
                 "tree scan returned a key outside the partition".into(),
             ));
@@ -1200,8 +1331,9 @@ impl Partition {
         if let Some(position) = min_journal_position {
             self.wait_applied(position).await?;
         }
-        let partition_start = self.range.start.as_deref();
-        let partition_end = self.range.end.as_deref();
+        let range = self.range.load_full();
+        let partition_start = range.start.as_deref();
+        let partition_end = range.end.as_deref();
         if start_before
             .zip(partition_start)
             .is_some_and(|(start, partition_start)| start <= partition_start)
@@ -1229,7 +1361,7 @@ impl Partition {
             .tree
             .scan_reverse(clipped_start, clipped_begin, limit, byte_budget)
             .await?;
-        if entries.iter().any(|entry| !self.range.contains(&entry.key))
+        if entries.iter().any(|entry| !range.contains(&entry.key))
             || entries.windows(2).any(|pair| pair[0].key <= pair[1].key)
         {
             return Err(ChunkKvError::TreeCorruption(
@@ -1245,7 +1377,7 @@ impl Partition {
             PartitionLifecycle::Serving
             | PartitionLifecycle::WriteStalled
             | PartitionLifecycle::SplitPreparing
-            | PartitionLifecycle::SplitFenced => Ok(()),
+            | PartitionLifecycle::SplitFinalizing => Ok(()),
             state => Err(read_state_error(state)),
         }
     }
@@ -1254,7 +1386,7 @@ impl Partition {
     pub fn snapshot(&self) -> PartitionSnapshot {
         PartitionSnapshot {
             partition_id: self.id,
-            range: self.range.clone(),
+            range: self.range.load().as_ref().clone(),
             ownership_epoch: self.ownership_epoch.load(Ordering::Acquire),
             lifecycle: self.lifecycle(),
             stream_name: self.journal.stream_name(),
@@ -1262,6 +1394,55 @@ impl Partition {
             journal_durable_offset: self.journal.tail(),
             applied_seq: self.applied_seq.load(Ordering::Acquire),
         }
+    }
+
+    #[must_use]
+    pub fn tree_id(&self) -> u64 {
+        self.tree.tree_id()
+    }
+
+    /// Persists an exact root-generation reference before publishing a
+    /// topology artifact that depends on it.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error when the generation is absent or conflicts
+    /// with the transition's existing pin.
+    pub fn retain_generation_pin(&self, transition_id: TransitionId, generation: u64) -> Result<()> {
+        let current = self.checkpoint_pin_generation.load(Ordering::Acquire);
+        if current != 0
+            && (current != generation
+                || self.checkpoint_pin_transition_high.load(Ordering::Acquire) != transition_id.high
+                || self.checkpoint_pin_transition_low.load(Ordering::Acquire) != transition_id.low)
+        {
+            return Err(ChunkKvError::InvalidRequest(
+                "another transition already pins the partition checkpoint lineage".into(),
+            ));
+        }
+        self.tree.pin_generation(transition_id, generation)?;
+        self.checkpoint_pin_transition_high
+            .store(transition_id.high, Ordering::Relaxed);
+        self.checkpoint_pin_transition_low
+            .store(transition_id.low, Ordering::Relaxed);
+        self.checkpoint_pin_generation
+            .store(generation, Ordering::Release);
+        Ok(())
+    }
+
+    /// Releases this partition tree's durable generation pin after the
+    /// authoritative catalog has removed its overlay dependency.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error when durable pin deletion cannot complete.
+    pub fn release_generation_pin(&self, transition_id: TransitionId) -> Result<()> {
+        self.tree.unpin_generation(transition_id)?;
+        if self.checkpoint_pin_transition_high.load(Ordering::Acquire) == transition_id.high
+            && self.checkpoint_pin_transition_low.load(Ordering::Acquire) == transition_id.low
+        {
+            self.checkpoint_pin_generation.store(0, Ordering::Release);
+        }
+        Ok(())
     }
 
     #[must_use]
@@ -1274,21 +1455,21 @@ impl Partition {
         &self.metrics
     }
 
-    /// Fences new mutations and waits for all previously admitted work.
+    /// Stops a transfer source after all previously admitted work completes.
     ///
     /// # Errors
     ///
     /// Returns a stale-epoch or incompatible-lifecycle error.
-    pub async fn fence_mutations(&self, ownership_epoch: u64) -> Result<()> {
+    pub async fn suspend_for_transfer(&self, ownership_epoch: u64) -> Result<()> {
         self.validate_epoch(ownership_epoch)?;
         match self.lifecycle.compare_exchange(
             lifecycle_code(PartitionLifecycle::Serving),
-            lifecycle_code(PartitionLifecycle::SplitFenced),
+            lifecycle_code(PartitionLifecycle::WriteStalled),
             Ordering::AcqRel,
             Ordering::Acquire,
         ) {
             Ok(_) => {}
-            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::SplitFenced => {}
+            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::WriteStalled => {}
             Err(observed) => return Err(write_state_error(lifecycle_from_code(observed))),
         }
         self.wait_for_admitted_mutations().await;
@@ -1303,7 +1484,7 @@ impl Partition {
     /// or a parent that is not serving.
     pub async fn begin_split(&self, plan: SplitPlan) -> Result<()> {
         plan.validate()?;
-        if plan.parent_id != self.id || plan.parent_range != self.range {
+        if plan.parent_id != self.id || plan.parent_range != *self.range.load_full() {
             return Err(ChunkKvError::InvalidRequest(
                 "split plan does not identify this parent range".into(),
             ));
@@ -1332,12 +1513,12 @@ impl Partition {
         Ok(())
     }
 
-    /// Fences and drains the parent after serving catch-up reaches its budget.
+    /// Starts the buffered finalization after serving catch-up reaches its budget.
     ///
     /// # Errors
     ///
     /// Returns an error for an unknown transition or incompatible lifecycle.
-    pub async fn fence_split(&self, transition_id: TransitionId) -> Result<()> {
+    pub async fn begin_split_finalization(&self, transition_id: TransitionId) -> Result<()> {
         {
             let transition = self.split_transition.lock().await;
             if transition.as_ref().map(|active| active.plan.transition_id) != Some(transition_id) {
@@ -1348,16 +1529,16 @@ impl Partition {
         }
         match self.lifecycle.compare_exchange(
             lifecycle_code(PartitionLifecycle::SplitPreparing),
-            lifecycle_code(PartitionLifecycle::SplitFenced),
+            lifecycle_code(PartitionLifecycle::SplitFinalizing),
             Ordering::AcqRel,
             Ordering::Acquire,
         ) {
             Ok(_) => {}
-            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::SplitFenced => {}
+            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::SplitFinalizing => {}
             Err(observed) => return Err(write_state_error(lifecycle_from_code(observed))),
         }
         self.wait_for_admitted_mutations().await;
-        self.metrics.split_fence();
+        self.metrics.split_finalization();
         Ok(())
     }
 
@@ -1368,11 +1549,11 @@ impl Partition {
     /// Returns an error unless the artifact exactly matches the active plan
     /// and current cutover frontier.
     pub async fn record_split_artifact(&self, artifact: SplitArtifact) -> Result<()> {
-        if self.lifecycle() != PartitionLifecycle::SplitFenced
+        if self.lifecycle() != PartitionLifecycle::SplitFinalizing
             || self.queued_requests.load(Ordering::Acquire) != 0
         {
             return Err(ChunkKvError::SplitRetry(
-                "split artifact requires a drained parent fence".into(),
+                "split artifact requires a drained parent finalization".into(),
             ));
         }
         let mut transition = self.split_transition.lock().await;
@@ -1395,7 +1576,7 @@ impl Partition {
     /// Returns the exact prepared split artifact for an idempotent worker retry.
     #[must_use]
     pub async fn prepared_split_artifact(&self, transition_id: TransitionId) -> Option<SplitArtifact> {
-        if self.lifecycle() != PartitionLifecycle::SplitFenced {
+        if self.lifecycle() != PartitionLifecycle::SplitFinalizing {
             return None;
         }
         self.split_transition
@@ -1409,7 +1590,7 @@ impl Partition {
     /// Returns the prepared artifact while this parent awaits catalog commit.
     #[must_use]
     pub async fn current_prepared_split_artifact(&self) -> Option<SplitArtifact> {
-        if self.lifecycle() != PartitionLifecycle::SplitFenced {
+        if self.lifecycle() != PartitionLifecycle::SplitFinalizing {
             return None;
         }
         self.split_transition
@@ -1419,15 +1600,100 @@ impl Partition {
             .and_then(|active| active.artifact.clone())
     }
 
-    /// Retires the parent only for an exact durable catalog publication proof.
+    /// Publishes the locally durable split writers to callers that still hold
+    /// the pre-split parent handle.  This is deliberately an atomic snapshot:
+    /// a request observes either the old parent sequencer or one complete pair
+    /// of new writers, never a half-installed route.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless the routing pair exactly covers the active
+    /// split plan and both writer epochs are the planned post-split epochs.
+    pub async fn install_split_ingress(&self, retained_parent: Partition, child: Partition) -> Result<()> {
+        let transition = self.split_transition.lock().await;
+        let active = transition
+            .as_ref()
+            .ok_or_else(|| ChunkKvError::SplitRetry("no split transition is active".into()))?;
+        let retained = retained_parent.snapshot();
+        let child_snapshot = child.snapshot();
+        let (expected_parent, expected_child) = active.plan.parent_range.split(&active.plan.split_key)?;
+        if retained.partition_id != self.id
+            || retained.ownership_epoch != active.plan.parent_next_epoch
+            || retained.range != expected_parent
+            || child_snapshot.partition_id != active.plan.child.partition_id
+            || child_snapshot.ownership_epoch != active.plan.child.ownership_epoch
+            || child_snapshot.range != expected_child
+        {
+            return Err(ChunkKvError::SplitRetry(
+                "split ingress writers do not match the active plan".into(),
+            ));
+        }
+        let ingress = SplitIngress {
+            split_key: Arc::from(active.plan.split_key.clone()),
+            retained_parent,
+            child,
+        };
+        let buffered = self
+            .split_ingress
+            .load_full()
+            .and_then(|route| match route.as_ref() {
+                SplitIngressRoute::Buffering(buffer) => Some(Arc::clone(buffer)),
+                SplitIngressRoute::Writers(_) => None,
+            });
+        self.split_ingress
+            .store(Some(Arc::new(SplitIngressRoute::Writers(Box::new(
+                ingress.clone(),
+            )))));
+        if let Some(buffer) = buffered {
+            buffer.forward_into(&ingress).await;
+        }
+        Ok(())
+    }
+
+    /// Atomically diverts new parent requests into a bounded session buffer.
+    /// Previously admitted parent mutations are allowed to finish on the old
+    /// WAL; the buffer is released only after both new writers are durable.
+    pub(crate) fn begin_split_ingress_buffer(&self) -> Result<()> {
+        if self.lifecycle() != PartitionLifecycle::SplitPreparing {
+            return Err(ChunkKvError::SplitRetry(
+                "split ingress buffer requires an active split preparation".into(),
+            ));
+        }
+        let buffer = SplitIngressBuffer::new(self.config.queue_requests);
+        let previous = self.split_ingress.compare_and_swap(
+            std::ptr::null(),
+            Some(Arc::new(SplitIngressRoute::Buffering(buffer))),
+        );
+        if previous.is_some() {
+            return Err(ChunkKvError::SplitRetry(
+                "split ingress route is already installed".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Returns the locally installed split writers, if both have become
+    /// durable.  Catalog reconciliation uses this to adopt the retained
+    /// parent directly instead of reconstructing it from the old range.
+    #[must_use]
+    pub fn split_ingress(&self) -> Option<SplitIngress> {
+        self.split_ingress
+            .load_full()
+            .and_then(|route| match route.as_ref() {
+                SplitIngressRoute::Writers(ingress) => Some((**ingress).clone()),
+                SplitIngressRoute::Buffering(_) => None,
+            })
+    }
+
+    /// Commits the retained parent only for an exact durable catalog proof.
     ///
     /// # Errors
     ///
     /// Returns an error for an absent, stale, or mismatched proof.
     pub async fn commit_split(&self, proof: &SplitCommitProof) -> Result<()> {
-        if proof.catalog_revision == 0 || self.lifecycle() != PartitionLifecycle::SplitFenced {
+        if proof.catalog_revision == 0 || self.lifecycle() != PartitionLifecycle::SplitFinalizing {
             return Err(ChunkKvError::SplitRetry(
-                "split commit proof is absent or parent is not fenced".into(),
+                "split commit proof is absent or parent is not finalizing".into(),
             ));
         }
         let transition = self.split_transition.lock().await;
@@ -1437,8 +1703,17 @@ impl Partition {
                 "split commit proof does not match the prepared artifact".into(),
             ));
         }
+        self.ownership_epoch
+            .store(proof.artifact.parent_next_epoch, Ordering::Release);
+        let active = transition
+            .as_ref()
+            .ok_or_else(|| ChunkKvError::SplitRetry("split transition disappeared".into()))?;
+        self.range.store(Arc::new(PartitionRange {
+            start: active.plan.parent_range.start.clone(),
+            end: Some(active.plan.split_key.clone()),
+        }));
         self.lifecycle
-            .store(lifecycle_code(PartitionLifecycle::Retired), Ordering::Release);
+            .store(lifecycle_code(PartitionLifecycle::Serving), Ordering::Release);
         self.metrics.split_commit();
         Ok(())
     }
@@ -1454,11 +1729,69 @@ impl Partition {
         let expected = self.prepared_artifact.as_ref().ok_or_else(|| {
             ChunkKvError::SplitRetry("partition was not opened from a prepared artifact".into())
         })?;
-        if proof.catalog_revision == 0
-            || (&proof.artifact.left != expected && &proof.artifact.right != expected)
-        {
+        if proof.catalog_revision == 0 || &proof.artifact.child != expected {
             return Err(ChunkKvError::SplitRetry(
                 "catalog proof does not contain the exact prepared child".into(),
+            ));
+        }
+        self.lifecycle
+            .compare_exchange(
+                lifecycle_code(PartitionLifecycle::Prepared),
+                lifecycle_code(PartitionLifecycle::Serving),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(|observed| read_state_error(lifecycle_from_code(observed)))?;
+        Ok(())
+    }
+
+    /// Activates either durable writer of one locally installed split session.
+    /// Unlike [`Self::activate_prepared`], retained-parent and child artifacts
+    /// are both accepted; external catalog publication still validates the
+    /// complete enclosing split proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the proof does not name this prepared writer or
+    /// its lifecycle cannot transition to serving.
+    pub fn activate_split_writer(&self, proof: &SplitCommitProof) -> Result<()> {
+        let expected = self.prepared_artifact.as_ref().ok_or_else(|| {
+            ChunkKvError::SplitRetry("partition was not opened from a prepared split writer".into())
+        })?;
+        if proof.catalog_revision == 0
+            || (expected != &proof.artifact.child && expected != &proof.artifact.retained_parent)
+        {
+            return Err(ChunkKvError::SplitRetry(
+                "catalog proof does not contain the prepared split writer".into(),
+            ));
+        }
+        self.lifecycle
+            .compare_exchange(
+                lifecycle_code(PartitionLifecycle::Prepared),
+                lifecycle_code(PartitionLifecycle::Serving),
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .map_err(|observed| read_state_error(lifecycle_from_code(observed)))?;
+        Ok(())
+    }
+
+    /// Enables a durable split writer only behind its old-parent ingress
+    /// route.  It does not grant external catalog service: callers must keep
+    /// the writer out of the catalog snapshot until the group-0 generation is
+    /// published.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the artifact does not name this prepared writer
+    /// or its lifecycle cannot transition to serving.
+    pub fn activate_local_split_writer(&self, artifact: &SplitArtifact) -> Result<()> {
+        let expected = self.prepared_artifact.as_ref().ok_or_else(|| {
+            ChunkKvError::SplitRetry("partition was not opened from a prepared split writer".into())
+        })?;
+        if expected != &artifact.child && expected != &artifact.retained_parent {
+            return Err(ChunkKvError::SplitRetry(
+                "local split activation does not match its durable artifact".into(),
             ));
         }
         self.lifecycle
@@ -1538,30 +1871,31 @@ impl Partition {
             ));
         }
         match self.lifecycle() {
-            PartitionLifecycle::SplitPreparing | PartitionLifecycle::SplitFenced => {}
+            PartitionLifecycle::SplitPreparing | PartitionLifecycle::SplitFinalizing => {}
             state => return Err(write_state_error(state)),
         }
         *transition = None;
+        self.split_ingress.store(None);
         self.lifecycle
             .store(lifecycle_code(PartitionLifecycle::Serving), Ordering::Release);
         self.metrics.split_abort();
         Ok(())
     }
 
-    /// Creates an exact checkpoint while mutation admission is fenced.
+    /// Creates an exact checkpoint while a transfer source is quiesced.
     ///
     /// # Errors
     ///
     /// Returns an error unless the partition is drained and fenced, or if the
     /// tree checkpoint fails.
-    pub async fn checkpoint_fenced(&self, ownership_epoch: u64) -> Result<Checkpoint> {
+    pub async fn checkpoint_quiesced(&self, ownership_epoch: u64) -> Result<Checkpoint> {
         self.validate_epoch(ownership_epoch)?;
         let _maintenance = self.split_transition.lock().await;
-        if self.lifecycle() != PartitionLifecycle::SplitFenced
+        if self.lifecycle() != PartitionLifecycle::WriteStalled
             || self.queued_requests.load(Ordering::Acquire) != 0
         {
             return Err(ChunkKvError::InvalidRequest(
-                "checkpoint requires a drained mutation fence".into(),
+                "checkpoint requires a quiesced mutation source".into(),
             ));
         }
         self.create_checkpoint().await
@@ -1578,10 +1912,15 @@ impl Partition {
     pub async fn checkpoint(&self, ownership_epoch: u64) -> Result<Checkpoint> {
         self.validate_epoch(ownership_epoch)?;
         let _maintenance = self.split_transition.lock().await;
+        if self.checkpoint_pin_generation.load(Ordering::Acquire) != 0 {
+            return Err(ChunkKvError::SplitRetry(
+                "checkpoint publication is suppressed by an exact-root transition pin".into(),
+            ));
+        }
         match self.lifecycle() {
             PartitionLifecycle::Serving
             | PartitionLifecycle::WriteStalled
-            | PartitionLifecycle::SplitFenced => self.create_checkpoint().await,
+            | PartitionLifecycle::SplitFinalizing => self.create_checkpoint().await,
             state => Err(read_state_error(state)),
         }
     }
@@ -1590,6 +1929,7 @@ impl Partition {
         let replay_offset = self.retry_replay_offset.load(Ordering::Acquire);
         let stream_manifest_generation = self.journal.manifest_generation();
         let (tree_manifest, applied_seq) = self.tree.checkpoint(replay_offset).await?;
+        let root_manifest_generation = self.tree.root_manifest_generation()?;
         if applied_seq > self.journal_durable_seq.load(Ordering::Acquire)
             || self.tree.last_applied_seq() < applied_seq
         {
@@ -1599,6 +1939,7 @@ impl Partition {
         Ok(Checkpoint {
             tree_id: self.tree.tree_id(),
             tree_manifest,
+            root_manifest_generation,
             applied_seq,
             stream_name: self.journal.stream_name(),
             stream_manifest_generation,
@@ -1654,7 +1995,7 @@ impl Partition {
                 self.config.metadata_reclaim_pages_per_pass,
             )
             .await?;
-        let tree_bytes = self.tree.reclaim_before(checkpoint.tree_manifest)?;
+        let tree_bytes = self.tree.reclaim_before(checkpoint.root_manifest_generation)?;
         let orphan_bytes = self.tree.reclaim_orphans()?;
         self.metrics
             .reclaim(journal_bytes, metadata_pages, tree_bytes, orphan_bytes);
@@ -1717,7 +2058,7 @@ impl Partition {
     }
 
     fn validate_operation(&self, operation: &MutationOperation) -> Result<()> {
-        if !self.range.contains(operation.key()) {
+        if !self.range.load().contains(operation.key()) {
             self.metrics.range_reject();
             return Err(ChunkKvError::OutOfRange);
         }
@@ -1794,31 +2135,26 @@ fn validate_split_artifact(plan: &SplitPlan, artifact: &SplitArtifact, cutover_s
     if artifact.transition_id != plan.transition_id
         || artifact.parent_id != plan.parent_id
         || artifact.parent_epoch != plan.parent_epoch
+        || artifact.parent_next_epoch != plan.parent_next_epoch
         || artifact.cutover_seq != cutover_seq
-        || artifact.left.partition_id != plan.left.partition_id
-        || artifact.left.range != plan.left.range
-        || artifact.left.ownership_epoch != plan.left.ownership_epoch
-        || artifact.right.partition_id != plan.right.partition_id
-        || artifact.right.range != plan.right.range
-        || artifact.right.ownership_epoch != plan.right.ownership_epoch
-        || artifact.left.applied_seq != cutover_seq
-        || artifact.right.applied_seq != cutover_seq
-        || artifact.left.tree_id == 0
-        || artifact.right.tree_id == 0
-        || artifact.left.tree_id == artifact.right.tree_id
-        || artifact.left.stream_name == artifact.right.stream_name
-        || artifact.left.parent_id != plan.parent_id
-        || artifact.right.parent_id != plan.parent_id
-        || artifact.left.parent_epoch != plan.parent_epoch
-        || artifact.right.parent_epoch != plan.parent_epoch
-        || artifact.left.parent_stream_name != artifact.right.parent_stream_name
-        || artifact.left.parent_stream_manifest_generation != artifact.right.parent_stream_manifest_generation
-        || artifact.left.parent_replay_offset != artifact.right.parent_replay_offset
-        || artifact.left.parent_cutover_offset != artifact.right.parent_cutover_offset
-        || artifact.left.base_applied_seq > cutover_seq
-        || artifact.right.base_applied_seq > cutover_seq
-        || artifact.left.child_stream_start_seq != cutover_seq.checked_add(1).unwrap_or(0)
-        || artifact.right.child_stream_start_seq != cutover_seq.checked_add(1).unwrap_or(0)
+        || artifact.child.partition_id != plan.child.partition_id
+        || artifact.child.range != plan.child.range
+        || artifact.child.ownership_epoch != plan.child.ownership_epoch
+        || artifact.child.applied_seq != cutover_seq
+        || artifact.child.tree_id == 0
+        || artifact.child.parent_id != plan.parent_id
+        || artifact.child.parent_epoch != plan.parent_epoch
+        || artifact.child.base_applied_seq > cutover_seq
+        || artifact.child.child_stream_start_seq != cutover_seq.checked_add(1).unwrap_or(0)
+        || artifact.retained_parent.partition_id != plan.parent_id
+        || artifact.retained_parent.range != plan.parent_range.split(&plan.split_key)?.0
+        || artifact.retained_parent.ownership_epoch != plan.parent_next_epoch
+        || artifact.retained_parent.applied_seq != cutover_seq
+        || artifact.retained_parent.tree_id == 0
+        || artifact.retained_parent.parent_id != plan.parent_id
+        || artifact.retained_parent.parent_epoch != plan.parent_epoch
+        || artifact.retained_parent.base_applied_seq > cutover_seq
+        || artifact.retained_parent.child_stream_start_seq != cutover_seq.checked_add(1).unwrap_or(0)
     {
         return Err(ChunkKvError::SplitRetry(
             "split artifact does not exactly match plan and cutover".into(),
@@ -1828,7 +2164,7 @@ fn validate_split_artifact(plan: &SplitPlan, artifact: &SplitArtifact, cutover_s
 }
 
 fn validate_prepared_overlay(
-    artifact: &PreparedChildArtifact,
+    artifact: &PreparedSplitWriterArtifact,
     checkpoint: &Checkpoint,
     tree: &dyn PartitionTree,
     journal: &dyn PartitionJournal,
@@ -1838,7 +2174,9 @@ fn validate_prepared_overlay(
         && artifact.tree_id != 0
         && artifact.tree_id == checkpoint.tree_id
         && artifact.tree_id == tree.tree_id()
+        && artifact.root_manifest_generation != 0
         && artifact.tree_manifest == checkpoint.tree_manifest
+        && artifact.root_manifest_generation == checkpoint.root_manifest_generation
         && artifact.base_applied_seq == checkpoint.applied_seq
         && artifact.base_applied_seq <= artifact.applied_seq
         && artifact.child_stream_start_seq == artifact.applied_seq.checked_add(1).unwrap_or(0)
@@ -1870,7 +2208,7 @@ fn validate_prepared_overlay(
 }
 
 async fn replay_parent_overlay(
-    artifact: &PreparedChildArtifact,
+    artifact: &PreparedSplitWriterArtifact,
     retained_results: usize,
     tree: &dyn PartitionTree,
     journal: &dyn PartitionJournal,
@@ -1879,6 +2217,7 @@ async fn replay_parent_overlay(
     let replay_checkpoint = Checkpoint {
         tree_id: artifact.tree_id,
         tree_manifest: artifact.tree_manifest,
+        root_manifest_generation: artifact.root_manifest_generation,
         applied_seq: if warmed {
             artifact.applied_seq
         } else {
@@ -2198,7 +2537,7 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<Mutatio
             },
         };
         let lifecycle = lifecycle_from_code(state.lifecycle.load(Ordering::Acquire));
-        if !accepts_mutations(lifecycle) && lifecycle != PartitionLifecycle::SplitFenced {
+        if !accepts_mutations(lifecycle) && lifecycle != PartitionLifecycle::SplitFinalizing {
             finish_request(&state, first, Err(write_state_error(lifecycle)));
             continue;
         }
@@ -2288,7 +2627,7 @@ async fn prepare_batch(state: &mut WorkerState, requests: Vec<MutationRequest>) 
         let result = resolve_condition(mutation_seq, &request.operation, current.as_ref());
         let record = WalRecord {
             partition_id: state.partition_id,
-            ownership_epoch: state.ownership_epoch,
+            ownership_epoch: state.ownership_epoch.load(Ordering::Acquire),
             mutation_seq,
             request_id: request.request_id,
             operation_digest: request.digest,
@@ -2562,7 +2901,7 @@ fn lifecycle_code(state: PartitionLifecycle) -> u8 {
         PartitionLifecycle::Prepared => 3,
         PartitionLifecycle::Serving => 4,
         PartitionLifecycle::SplitPreparing => 5,
-        PartitionLifecycle::SplitFenced => 6,
+        PartitionLifecycle::SplitFinalizing => 6,
         PartitionLifecycle::Retired => 7,
         PartitionLifecycle::Faulted => 8,
     }
@@ -2583,7 +2922,7 @@ fn lifecycle_from_code(code: u8) -> PartitionLifecycle {
         3 => PartitionLifecycle::Prepared,
         4 => PartitionLifecycle::Serving,
         5 => PartitionLifecycle::SplitPreparing,
-        6 => PartitionLifecycle::SplitFenced,
+        6 => PartitionLifecycle::SplitFinalizing,
         7 => PartitionLifecycle::Retired,
         _ => PartitionLifecycle::Faulted,
     }

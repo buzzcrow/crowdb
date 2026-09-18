@@ -123,16 +123,69 @@ pub async fn publish_materialized_partition(
     if current.artifact.tail_overlay.is_none() {
         return Ok(catalog.head.generation);
     }
-    let desired = independently_recoverable_entry(current.clone());
-    let matches = |entry: &ChunkKvRangeCatalogEntry| entry == &current;
-    let (head, pages) = replace_one(catalog.head, catalog.pages, matches, vec![desired])?;
+    let transition_id = current
+        .transition_id
+        .ok_or_else(|| "materialized split child has no transition identity".to_string())?;
+    let (head, pages) = release_materialized_split(catalog.head, catalog.pages, transition_id, partition_id)?;
     publish(control, head, pages, catalog.head_revision).await
 }
 
-fn independently_recoverable_entry(mut entry: ChunkKvRangeCatalogEntry) -> ChunkKvRangeCatalogEntry {
-    entry.artifact.tail_overlay = None;
-    entry.transition_id = None;
-    entry
+fn release_materialized_split(
+    head: ChunkKvRangeCatalogHead,
+    mut pages: Vec<ChunkKvRangeCatalogPage>,
+    transition_id: crowdb_protocol::chunk_kv::Id128,
+    child_id: crowdb_protocol::chunk_kv::Id128,
+) -> Result<(ChunkKvRangeCatalogHead, Vec<ChunkKvRangeCatalogPage>), String> {
+    let generation = head
+        .generation
+        .checked_add(1)
+        .ok_or_else(|| "range catalog generation overflowed".to_string())?;
+    let mut matched = 0;
+    let mut child_matched = false;
+    for page in &mut pages {
+        let mut changed = false;
+        for entry in &mut page.entries {
+            if entry.transition_id != Some(transition_id) {
+                continue;
+            }
+            matched += 1;
+            changed = true;
+            if entry.partition_id == child_id {
+                if entry.artifact.tail_overlay.is_none() {
+                    return Err("materialized split child overlay is absent".into());
+                }
+                entry.artifact.tail_overlay = None;
+                child_matched = true;
+            } else if entry.artifact.tail_overlay.is_some() {
+                return Err("retained split parent unexpectedly has a tail overlay".into());
+            }
+            entry.transition_id = None;
+        }
+        if changed {
+            page.generation = generation;
+            page.seal().map_err(|error| error.to_string())?;
+        }
+    }
+    if matched != 2 || !child_matched {
+        return Err("completed split must release one retained parent and one child".into());
+    }
+    let mut references = head.pages;
+    for page in pages.iter().filter(|page| page.generation == generation) {
+        let reference = references
+            .iter_mut()
+            .find(|reference| reference.page_index == page.page_index)
+            .ok_or_else(|| "changed range catalog page has no head reference".to_string())?;
+        *reference = page_reference(page)?;
+    }
+    let mut next = ChunkKvRangeCatalogHead {
+        generation,
+        previous_generation: Some(head.generation),
+        pages: references,
+        checksum: [0; 32],
+    };
+    next.seal().map_err(|error| error.to_string())?;
+    next.validate_pages(&pages).map_err(|error| error.to_string())?;
+    Ok((next, pages))
 }
 
 pub async fn publish_split(
@@ -142,7 +195,7 @@ pub async fn publish_split(
     transition.validate().map_err(|error| error.to_string())?;
     if !matches!(
         transition.phase,
-        SplitPhase::ChildrenPrepared | SplitPhase::CatalogCommitted
+        SplitPhase::ChildPrepared | SplitPhase::CatalogCommitted
     ) {
         return Err("split is not ready for range catalog publication".into());
     }
@@ -250,18 +303,29 @@ fn transfer_entry(transition: &TransferTransition) -> ChunkKvRangeCatalogEntry {
 }
 
 fn split_entries(transition: &SplitTransition) -> Vec<ChunkKvRangeCatalogEntry> {
-    [&transition.left, &transition.right]
-        .into_iter()
-        .map(|child| ChunkKvRangeCatalogEntry {
-            partition_id: child.partition_id,
-            range: child.range.clone(),
-            owner: child.owner.clone(),
-            owner_epoch: child.owner_epoch,
+    vec![
+        ChunkKvRangeCatalogEntry {
+            partition_id: transition.parent_id,
+            range: crowdb_protocol::chunk_kv::KeyRange {
+                start: transition.parent_range.start.clone(),
+                end: Some(transition.split_key.clone()),
+            },
+            owner: transition.parent_owner.clone(),
+            owner_epoch: transition.parent_next_epoch,
             state: ChunkKvRangeCatalogPartitionState::Serving,
-            artifact: child.artifact.clone(),
+            artifact: transition.parent_artifact.clone(),
             transition_id: Some(transition.transition_id),
-        })
-        .collect()
+        },
+        ChunkKvRangeCatalogEntry {
+            partition_id: transition.child.partition_id,
+            range: transition.child.range.clone(),
+            owner: transition.child.owner.clone(),
+            owner_epoch: transition.child.owner_epoch,
+            state: ChunkKvRangeCatalogPartitionState::Serving,
+            artifact: transition.child.artifact.clone(),
+            transition_id: Some(transition.transition_id),
+        },
+    ]
 }
 
 fn replace_one<F>(
@@ -359,9 +423,13 @@ mod tests {
     #[test]
     fn materialization_releases_overlay_and_completed_split_identity_together() {
         let transition_id = Id128 { high: 7, low: 8 };
-        let entry = ChunkKvRangeCatalogEntry {
-            partition_id: Id128 { high: 1, low: 2 },
-            range: KeyRange::default(),
+        let child_id = Id128 { high: 1, low: 2 };
+        let child = ChunkKvRangeCatalogEntry {
+            partition_id: child_id,
+            range: KeyRange {
+                start: b"m".to_vec(),
+                end: None,
+            },
             owner: OwnerDescriptor {
                 instance_id: 3,
                 rpc_endpoint: "127.0.0.1:9003".into(),
@@ -378,6 +446,7 @@ mod tests {
                     source_stream_manifest_generation: 1,
                     replay_offset: 0,
                     cutover_offset: 16,
+                    base_root_manifest_generation: 1,
                     base_tree_manifest: 1,
                     base_applied_seq: 2,
                     cutover_seq: 3,
@@ -386,10 +455,34 @@ mod tests {
             },
             transition_id: Some(transition_id),
         };
+        let mut parent = child.clone();
+        parent.partition_id = Id128 { high: 1, low: 1 };
+        parent.range = KeyRange {
+            start: Vec::new(),
+            end: Some(b"m".to_vec()),
+        };
+        parent.artifact.tree_id = 4;
+        parent.artifact.tail_overlay = None;
+        let mut page = ChunkKvRangeCatalogPage {
+            generation: 1,
+            page_index: 0,
+            entries: vec![parent, child],
+            checksum: [0; 32],
+        };
+        page.seal().unwrap();
+        let mut head = ChunkKvRangeCatalogHead {
+            generation: 1,
+            previous_generation: None,
+            pages: vec![page_reference(&page).unwrap()],
+            checksum: [0; 32],
+        };
+        head.seal().unwrap();
 
-        let materialized = independently_recoverable_entry(entry);
+        let (_, pages) = release_materialized_split(head, vec![page], transition_id, child_id).unwrap();
 
-        assert!(materialized.artifact.tail_overlay.is_none());
-        assert_eq!(materialized.transition_id, None);
+        assert!(pages[0]
+            .entries
+            .iter()
+            .all(|entry| entry.artifact.tail_overlay.is_none() && entry.transition_id.is_none()));
     }
 }

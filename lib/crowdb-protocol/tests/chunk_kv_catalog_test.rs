@@ -186,7 +186,7 @@ fn successor_reuses_unchanged_pages_and_rejects_epoch_regression() {
 }
 
 #[test]
-fn split_transition_requires_exact_coverage_and_common_cutover() {
+fn split_transition_requires_retained_parent_and_exact_child_cutover() {
     let owner = OwnerDescriptor {
         instance_id: 8,
         rpc_endpoint: "127.0.0.1:9008".into(),
@@ -219,9 +219,10 @@ fn split_transition_requires_exact_coverage_and_common_cutover() {
         parent_owner: owner.clone(),
         parent_epoch: 4,
         parent_artifact: artifact(5, 5),
+        retained_parent_artifact: artifact(6, 6),
+        parent_next_epoch: 5,
         split_key: b"m".to_vec(),
-        left: child(2, b"a", Some(b"m"), 6),
-        right: child(3, b"m", Some(b"z"), 7),
+        child: child(3, b"m", Some(b"z"), 7),
         planned_at_ms: 0,
         phase: SplitPhase::ParentPreparing,
         readiness_proof: None,
@@ -235,30 +236,35 @@ fn split_transition_requires_exact_coverage_and_common_cutover() {
         source_stream_manifest_generation: 1,
         replay_offset: 0,
         cutover_offset: 11,
+        base_root_manifest_generation: 1,
         base_tree_manifest: 1,
         base_applied_seq: 11,
         cutover_seq: 11,
         target_stream_start_seq: 12,
     };
-    transition.left.artifact.tail_overlay = Some(overlay.clone());
-    transition.right.artifact.tail_overlay = Some(overlay.clone());
-    transition.phase = SplitPhase::ChildrenPrepared;
+    transition.child.artifact.tail_overlay = Some(overlay.clone());
+    transition.phase = SplitPhase::ChildPrepared;
     transition.readiness_proof = Some(SplitReadinessProof {
         cutover_seq: 11,
-        left_applied_seq: 11,
-        right_applied_seq: 11,
-        left_tail_overlay: overlay.clone(),
-        right_tail_overlay: overlay,
+        parent_next_epoch: 5,
+        retained_parent_artifact: transition.retained_parent_artifact.clone(),
+        retained_parent_tree_manifest: 1,
+        retained_parent_root_manifest_generation: 1,
+        retained_parent_applied_seq: 11,
+        child_applied_seq: 11,
+        child_tree_manifest: 1,
+        child_root_manifest_generation: 1,
+        child_tail_overlay: overlay,
     });
     transition.validate().unwrap();
 
-    transition.right.range.start = b"n".to_vec();
+    transition.child.range.start = b"n".to_vec();
     assert_eq!(
         transition.validate(),
         Err(ChunkKvProtocolError::InvalidSplitTransition)
     );
-    transition.right.range.start = b"m".to_vec();
-    transition.readiness_proof.as_mut().unwrap().right_applied_seq = 10;
+    transition.child.range.start = b"m".to_vec();
+    transition.readiness_proof.as_mut().unwrap().child_applied_seq = 10;
     assert_eq!(
         transition.validate(),
         Err(ChunkKvProtocolError::InvalidSplitTransition)

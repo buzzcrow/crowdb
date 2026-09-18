@@ -8,13 +8,23 @@ Upstream: [R174](../backlog/R174-chunk-kv-overlay-split-cutover.md),
 [chunk-KV design](../design/chunkds/design-crowdb-chunk-kv.md), and
 [chunk-KV server design](../design/chunkds/design-crowdb-chunk-kv-server.md).
 
-Goal: keep split preparation serving, retain a recoverable shared parent
-journal suffix for each child, and reduce cutover to a bounded local old-writer
-to child-writer handoff without a foreground child checkpoint; after a child is
+Goal: keep split preparation serving, retain the existing parent as the left
+partition, split its fixed shared memtable into durable child and retained-parent
+trees, route post-prepare writes directly to disjoint next-generation memtables,
+and publish only after both local writers are ready; after the child is
 independently materialized, move it to a better owner through the same durable
 tail and bounded handoff contract.
 
 ## Contract and Baseline
+
+- [x] **Correct split identity semantics**: replace the parent-to-two-new-child
+  model with retained parent `[start, split_key)` plus one new child
+  `[split_key, end)`. Preserve the parent's partition, tree, stream, owner, and
+  lower boundary; allocate its next epoch and one child identity in the durable
+  plan. Make catalog publication update the parent and insert the child in one
+  generation. Files: protocol and chunk-KV split types, group-0 planner and
+  catalog publication, server transition runtime, permanent designs, backlog,
+  and focused tests.
 
 - [x] **Map current split and authority boundaries**: trace parent sequencer,
   child journals, child recovery, artifact validation, serving-grant refresh,
@@ -32,7 +42,7 @@ tail and bounded handoff contract.
   deadline. Files: `lib/crowdb-chunk-kv/src/partition.rs`,
   `app/crowdb-chunk-kv-server/src/{main.rs,server.rs}`, and their tests.
 - [x] **Define shared parent-tail artifact fields**: extend protocol and
-  partition types so each child identifies its base checkpoint, parent stream
+  partition types so the child identifies its base checkpoint, parent stream
   identity, retained retry floor, source-cutover cursor, and child journal
   start at `C + 1`. The sealed shared parent suffix is the recovery source until
   no retained child snapshot references it; do not use a volatile memtable or
@@ -65,6 +75,22 @@ tail and bounded handoff contract.
 
 ## Writer Handoff and Routing
 
+- [~] **Split the shared memtable before publication**: fork the old parent
+  memtable into a split-owned shared view at prepare entry, retain it as the
+  immutable common view, and
+  route every subsequent admitted request by key to either the retained-parent
+  next-generation memtable or the child memtable. Rebuild and flush the shared
+  view into both range trees through one native split-session handle without
+  materializing or deleting individual entries. The shared view is not a
+  generic frozen table and ordinary flush never owns it. The handle releases
+  the shared generation only after both filtered page batches have durable snapshots;
+  persist durable WAL ownership and install both local writers before group-0
+  exposes g2.
+  Files: `lib/crowdb-tree/{include/crowdb-tree/c_api.h,src/btree/,ffi/src/}`,
+  `lib/crowdb-chunk-kv/src/{partition.rs,partition/split.rs,partition/tree.rs}`,
+  `app/crowdb-chunk-kv-server/src/{serving/worker.rs,server.rs,main.rs}`, and
+  split lifecycle tests.
+
 - [x] **Install local child writers at cutover**: stop assigning new work to
   the parent sequencer at exact `C`, drain only requests that already hold the
   parent writer handle, and atomically reselect all other ingress to one local
@@ -74,14 +100,14 @@ tail and bounded handoff contract.
 - [x] **Publish and handle local stale routes**: bind local child writer
   readiness to the exact catalog artifact, accept parent and child minimum
   journal positions after publication, and directly dispatch stale point routes
-  to hosted children without a second parent writer. Keep parent scan tokens
+  by key to the retained parent or hosted child. Keep old parent scan tokens
   refresh-only. Files:
   `app/crowdb-chunk-kv-server/src/`, `lib/crowdb-chunk-kv-client/src/`,
   protocol catalog types, and client/server E2E tests.
-- [~] **Move physical persistence off cutover**: checkpoint child overlays,
-  materialize inherited packs, retain/reclaim parent stream and tree references
-  only after every retained child snapshot and retry floor releases its parent
-  suffix pin.
+- [ ] **Move physical persistence off cutover**: prune and checkpoint the
+  retained parent, checkpoint the child overlay, materialize inherited packs,
+  and retain/reclaim parent stream and tree references only after the child
+  snapshot and retry floor release the parent-suffix pin.
   Files: chunk-KV partition maintenance, server transition recovery, and tree
   integration tests.
 
@@ -113,7 +139,7 @@ tail and bounded handoff contract.
   manifest, tail, and grant state. Never infer authority from loaded pages,
   heartbeats, or volatile memtables. Files: server monitor/control store,
   transition state machine, startup recovery, and failure-injection tests.
-- [~] **Materialize and reclaim balance state in background**: checkpoint the
+- [ ] **Materialize and reclaim balance state in background**: checkpoint the
   target overlay, materialize shared packs, retain source tree/stream/retry
   history through catalog and forwarding grace, then remove source objects and
   forwarding state only after every pin clears. Files: chunk-KV maintenance,
@@ -132,9 +158,40 @@ tail and bounded handoff contract.
   recovery decisions, background materialization, reclamation, observability,
   and named invariants in the permanent designs.
 
+## Exact Manifest Recovery
+
+- [x] **Open the artifact's exact tree manifest**: add an explicit latest or
+  exact-generation mode to the chunk page-store ABI and Rust wrapper. In exact
+  mode, resolve `RootCatalog::load_generation` before tree recovery, hold that
+  immutable manifest as the bootstrap layout regardless of current-root cache
+  age, reject absence or identity mismatch without falling back to latest, and
+  replace the bootstrap only after this store successfully publishes its own
+  successor. Persist root-catalog generation separately from the tree snapshot
+  sequence and pass every split and balance overlay's exact root generation
+  into this mode before opening the native tree. Files:
+  `lib/crowdb-tree/{include/crowdb-tree/c_api.h,src/backend/chunk/,ffi/src/}`,
+  `app/crowdb-chunk-kv-server/src/storage.rs`, and tree/partition tests.
+- [~] **Retain exact generations through restart**: persist a transition-scoped
+  manifest pin before publishing an artifact that references the generation,
+  constrain manifest and referenced-pack reclamation by the oldest live pin,
+  and release it only after catalog publication clears the overlay and
+  transition identity. Use immutable snapshots and CAS rather than a read-path
+  lock. Files: chunk root-catalog callbacks and storage, split/balance
+  transition persistence, materialization cleanup, and GC tests.
+- [x] **Fence checkpoint branching during balance**: after the source publishes
+  its pinned base, keep subsequent source mutations in the durable WAL and
+  suppress source tree checkpoints until handoff resolves. Require target
+  publication to compare against the pinned current generation so it cannot
+  branch from an older root. Files: partition maintenance, transfer worker,
+  transition recovery, and deterministic concurrency tests.
+- [x] **Document exact-root and pin ownership**: specify bootstrap-layout cache
+  behavior, typed exact-open failures, persistent pin ordering, publication
+  fencing, and reclamation release in the tree chunk-storage and chunk-KV
+  server designs.
+
 ## Verification and Cleanup
 
-- [~] **Add deterministic lifecycle tests**: cover grant renewal during
+- [ ] **Add deterministic lifecycle tests**: cover grant renewal during
   Preparing, child-tail restart before checkpoint, writer-boundary exactly-once
   behavior, bounded post-cutover admission, stale point route, and catalog
   ambiguity. Files: crate `tests/*_test.rs` and server/client integration

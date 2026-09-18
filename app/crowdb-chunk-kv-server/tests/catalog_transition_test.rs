@@ -121,6 +121,7 @@ fn prepared_transfer() -> TransferTransition {
         source_stream_manifest_generation: 1,
         replay_offset: 0,
         cutover_offset: 40,
+        base_root_manifest_generation: 1,
         base_tree_manifest: 1,
         base_applied_seq: 0,
         cutover_seq: 40,
@@ -207,15 +208,14 @@ fn prepared_split() -> SplitTransition {
         source_stream_manifest_generation: 1,
         replay_offset: 0,
         cutover_offset: 55,
+        base_root_manifest_generation: 1,
         base_tree_manifest: 1,
         base_applied_seq: 55,
         cutover_seq: 55,
         target_stream_start_seq: 56,
     };
-    let mut left_artifact = artifact(13);
-    left_artifact.tail_overlay = Some(overlay.clone());
-    let mut right_artifact = artifact(14);
-    right_artifact.tail_overlay = Some(overlay.clone());
+    let mut child_artifact = artifact(14);
+    child_artifact.tail_overlay = Some(overlay.clone());
     SplitTransition {
         transition_id: id(92),
         parent_id: id(1),
@@ -226,42 +226,39 @@ fn prepared_split() -> SplitTransition {
         parent_owner: owner(1),
         parent_epoch: 3,
         parent_artifact: artifact(11),
+        retained_parent_artifact: artifact(12),
+        parent_next_epoch: 4,
         split_key: b"g".to_vec(),
-        left: SplitChildAssignment {
-            partition_id: id(3),
-            range: KeyRange {
-                start: Vec::new(),
-                end: Some(b"g".to_vec()),
-            },
-            owner: owner(1),
-            owner_epoch: 4,
-            artifact: left_artifact,
-        },
-        right: SplitChildAssignment {
+        child: SplitChildAssignment {
             partition_id: id(4),
             range: KeyRange {
                 start: b"g".to_vec(),
                 end: Some(b"m".to_vec()),
             },
-            owner: owner(3),
-            owner_epoch: 1,
-            artifact: right_artifact,
+            owner: owner(1),
+            owner_epoch: 4,
+            artifact: child_artifact,
         },
         planned_at_ms: 0,
-        phase: SplitPhase::ChildrenPrepared,
+        phase: SplitPhase::ChildPrepared,
         readiness_proof: Some(SplitReadinessProof {
             cutover_seq: 55,
-            left_applied_seq: 55,
-            right_applied_seq: 55,
-            left_tail_overlay: overlay.clone(),
-            right_tail_overlay: overlay,
+            parent_next_epoch: 4,
+            retained_parent_artifact: artifact(12),
+            retained_parent_tree_manifest: 1,
+            retained_parent_root_manifest_generation: 1,
+            retained_parent_applied_seq: 55,
+            child_applied_seq: 55,
+            child_tree_manifest: 1,
+            child_root_manifest_generation: 1,
+            child_tail_overlay: overlay,
         }),
         failure: None,
     }
 }
 
 #[tokio::test]
-async fn split_replaces_parent_with_exact_children_in_one_generation() {
+async fn split_shrinks_parent_and_adds_exact_child_in_one_generation() {
     let (store, old_head, _) = seeded_catalog().await;
     let cutover = ChunkKvRangeCatalogCutover::new(store.clone());
     let transition = prepared_split();

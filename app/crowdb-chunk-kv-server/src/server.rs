@@ -177,14 +177,16 @@ impl ChunkKvService {
                 .admission_backpressure
                 .saturating_add(metrics.admission_backpressure);
             result.recoveries = result.recoveries.saturating_add(metrics.recoveries);
-            result.split_fences = result.split_fences.saturating_add(metrics.split_fences);
+            result.split_finalizations = result
+                .split_finalizations
+                .saturating_add(metrics.split_finalizations);
             result.split_commits = result.split_commits.saturating_add(metrics.split_commits);
-            result.split_fence_lag_records = result
-                .split_fence_lag_records
-                .max(metrics.split_fence_lag_records);
-            result.split_fence_duration_us = result
-                .split_fence_duration_us
-                .max(metrics.split_fence_duration_us);
+            result.split_catchup_lag_records = result
+                .split_catchup_lag_records
+                .max(metrics.split_catchup_lag_records);
+            result.split_finalization_duration_us = result
+                .split_finalization_duration_us
+                .max(metrics.split_finalization_duration_us);
             result.split_tail_records = result
                 .split_tail_records
                 .saturating_add(metrics.split_delta_records);
@@ -514,10 +516,26 @@ impl ChunkKvService {
         recovered: &[Partition],
     ) -> Result<(), ChunkKvRangeCatalogReconcileError> {
         let candidate = Arc::new(CatalogSnapshot::from_catalog(head, pages)?);
-        if candidate.generation <= self.catalog.load().generation {
+        let previous = self.catalog.load_full();
+        if candidate.generation <= previous.generation {
             return Err(ChunkKvRangeCatalogError::GenerationConflict.into());
         }
         let next = self.reconciled_partition_snapshot(pages, recovered)?;
+        let mut released_pins = Vec::new();
+        for entry in &candidate.entries {
+            if entry.artifact.tail_overlay.is_some() {
+                continue;
+            }
+            let Some(prior) = previous.entry_for_partition(entry.partition_id) else {
+                continue;
+            };
+            let (Some(_), Some(transition_id)) = (&prior.artifact.tail_overlay, prior.transition_id) else {
+                continue;
+            };
+            if let Some(partition) = next.get(&entry.partition_id) {
+                released_pins.push((partition.clone(), transition_id));
+            }
+        }
         self.activate_catalog(&candidate)?;
         let current = self.partitions.load_full();
         for (partition_id, partition) in current.iter() {
@@ -526,58 +544,117 @@ impl ChunkKvService {
             }
         }
         self.partitions.store(next);
+        for (partition, transition_id) in released_pins {
+            partition.release_generation_pin(crowdb_chunk_kv::TransitionId {
+                high: transition_id.high,
+                low: transition_id.low,
+            })?;
+        }
         Ok(())
     }
 
-    /// Commits fenced split parents only after the replacement children are
-    /// present in one validated catalog generation.
+    /// Returns the locally fenced parents retained by one complete split catalog.
     ///
     /// # Errors
     ///
-    /// Returns an error when a removed fenced parent does not match the exact
-    /// child artifacts published by the catalog.
-    pub async fn commit_catalog_splits(
+    /// Returns an error when the smaller parent or child does not match the
+    /// exact prepared split published by the catalog.
+    pub async fn validated_catalog_split_parents(
         &self,
-        catalog_generation: u64,
         pages: &[ChunkKvRangeCatalogPage],
-    ) -> Result<(), ChunkKvError> {
+    ) -> Result<HashSet<Id128>, ChunkKvError> {
+        let mut retained_parents = HashSet::new();
         for partition in self.partitions.load_full().values() {
             let Some(artifact) = partition.current_prepared_split_artifact().await else {
                 continue;
             };
-            let parent_remains = pages.iter().flat_map(|page| &page.entries).any(|entry| {
-                entry.partition_id.high == artifact.parent_id.high
-                    && entry.partition_id.low == artifact.parent_id.low
+            if !catalog_retained_parent_matches(partition, pages, &artifact) {
+                return Err(ChunkKvError::SplitRetry(
+                    "catalog is missing the prepared split retained parent".into(),
+                ));
+            }
+            if !catalog_contains_split_child(pages, artifact.transition_id, &artifact.child) {
+                return Err(ChunkKvError::SplitRetry(
+                    "catalog retained parent is missing its prepared split child".into(),
+                ));
+            }
+            retained_parents.insert(Id128 {
+                high: artifact.parent_id.high,
+                low: artifact.parent_id.low,
             });
-            if parent_remains {
+        }
+        Ok(retained_parents)
+    }
+
+    /// Commits retained parents and activates prepared children for one validated catalog split.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a published split does not match its prepared
+    /// artifact or its child was not recovered.
+    pub async fn commit_catalog_splits(
+        &self,
+        catalog_generation: u64,
+        pages: &[ChunkKvRangeCatalogPage],
+        recovered: &[Partition],
+    ) -> Result<(), ChunkKvError> {
+        let recovered: HashMap<_, _> = recovered
+            .iter()
+            .map(|partition| {
+                let snapshot = partition.snapshot();
+                (
+                    Id128 {
+                        high: snapshot.partition_id.high,
+                        low: snapshot.partition_id.low,
+                    },
+                    partition.clone(),
+                )
+            })
+            .collect();
+        for partition in self.partitions.load_full().values() {
+            let Some(artifact) = partition.current_prepared_split_artifact().await else {
+                continue;
+            };
+            if !catalog_retained_parent_matches(partition, pages, &artifact) {
                 continue;
             }
-            if !catalog_contains_split_child(pages, artifact.transition_id, &artifact.left)
-                || !catalog_contains_split_child(pages, artifact.transition_id, &artifact.right)
-            {
+            if !catalog_contains_split_child(pages, artifact.transition_id, &artifact.child) {
                 return Err(ChunkKvError::SplitRetry(
-                    "catalog replacement does not match the prepared split children".into(),
+                    "catalog update does not match the retained parent and prepared child".into(),
                 ));
             }
             let proof = SplitCommitProof {
                 catalog_revision: catalog_generation,
                 artifact: artifact.clone(),
             };
-            for child in [&artifact.left, &artifact.right] {
-                let child_id = Id128 {
-                    high: child.partition_id.high,
-                    low: child.partition_id.low,
-                };
-                let child_partition = self.partitions.load().get(&child_id).cloned().ok_or_else(|| {
-                    ChunkKvError::SplitRetry(
-                        "catalog split child is not installed before parent commit".into(),
-                    )
-                })?;
-                if child_partition.is_prepared_split_child() {
-                    child_partition.activate_prepared(&proof)?;
-                }
+            let child_id = Id128 {
+                high: artifact.child.partition_id.high,
+                low: artifact.child.partition_id.low,
+            };
+            let ingress = partition.split_ingress();
+            let (retained_partition, child_partition) = if let Some(ingress) = ingress {
+                (ingress.retained_parent(), ingress.child())
+            } else {
+                let child = self
+                    .partitions
+                    .load()
+                    .get(&child_id)
+                    .cloned()
+                    .or_else(|| recovered.get(&child_id).cloned())
+                    .ok_or_else(|| {
+                        ChunkKvError::SplitRetry(
+                            "catalog split child was not recovered before parent commit".into(),
+                        )
+                    })?;
+                partition.commit_split(&proof).await?;
+                (partition.clone(), child)
+            };
+            if retained_partition.is_prepared_split_child() {
+                retained_partition.activate_split_writer(&proof)?;
             }
-            partition.commit_split(&proof).await?;
+            if child_partition.is_prepared_split_child() {
+                child_partition.activate_split_writer(&proof)?;
+            }
             let parent_id = Id128 {
                 high: artifact.parent_id.high,
                 low: artifact.parent_id.low,
@@ -588,22 +665,21 @@ impl ChunkKvService {
                     high: artifact.transition_id.high,
                     low: artifact.transition_id.low,
                 },
-                child_ids: [
-                    Id128 {
-                        high: artifact.left.partition_id.high,
-                        low: artifact.left.partition_id.low,
-                    },
-                    Id128 {
-                        high: artifact.right.partition_id.high,
-                        low: artifact.right.partition_id.low,
-                    },
-                ],
+                child_ids: [parent_id, child_id],
             };
             self.local_point_forwards.rcu(|current| {
                 let mut next = (**current).clone();
                 next.insert(parent_id, forwarding.clone());
                 Arc::new(next)
             });
+            if partition.split_ingress().is_some() {
+                self.partitions.rcu(|current| {
+                    let mut next = (**current).clone();
+                    next.insert(parent_id, retained_partition.clone());
+                    next.insert(child_id, child_partition.clone());
+                    Arc::new(next)
+                });
+            }
         }
         Ok(())
     }
@@ -1414,10 +1490,35 @@ fn scan_success(
     )
 }
 
+fn catalog_retained_parent_matches(
+    partition: &Partition,
+    pages: &[ChunkKvRangeCatalogPage],
+    artifact: &crowdb_chunk_kv::SplitArtifact,
+) -> bool {
+    let snapshot = partition.split_ingress().map_or_else(
+        || partition.snapshot(),
+        |ingress| ingress.retained_parent().snapshot(),
+    );
+    pages.iter().flat_map(|page| &page.entries).any(|entry| {
+        entry.partition_id.high == artifact.parent_id.high
+            && entry.partition_id.low == artifact.parent_id.low
+            && entry.range.start == snapshot.range.start.clone().unwrap_or_default()
+            && entry.range.end == Some(artifact.child.range.start.clone().unwrap_or_default())
+            && entry.owner_epoch == artifact.parent_next_epoch
+            && entry.artifact.tree_id == artifact.retained_parent.tree_id
+            && entry.artifact.stream_name == artifact.retained_parent.stream_name
+            && entry.transition_id
+                == Some(Id128 {
+                    high: artifact.transition_id.high,
+                    low: artifact.transition_id.low,
+                })
+    })
+}
+
 fn catalog_contains_split_child(
     pages: &[ChunkKvRangeCatalogPage],
     transition_id: crowdb_chunk_kv::TransitionId,
-    child: &crowdb_chunk_kv::PreparedChildArtifact,
+    child: &crowdb_chunk_kv::PreparedSplitWriterArtifact,
 ) -> bool {
     pages.iter().flat_map(|page| &page.entries).any(|entry| {
         entry.partition_id.high == child.partition_id.high
@@ -1436,6 +1537,7 @@ fn catalog_contains_split_child(
                     && overlay.replay_offset == child.parent_replay_offset
                     && overlay.cutover_offset == child.parent_cutover_offset
                     && overlay.base_tree_manifest == child.tree_manifest
+                    && overlay.base_root_manifest_generation == child.root_manifest_generation
                     && overlay.base_applied_seq == child.base_applied_seq
                     && overlay.cutover_seq == child.applied_seq
                     && overlay.target_stream_start_seq == child.child_stream_start_seq

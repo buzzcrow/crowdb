@@ -9,8 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use tokio::sync::Notify;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::{MutationOperation, PartitionTree, Result, ScanEntry, ValueRevision};
 
@@ -23,6 +22,8 @@ pub struct MemoryPartitionTree {
     rebuild_paused: Arc<AtomicBool>,
     rebuild_started: Arc<Notify>,
     rebuild_resume: Arc<Notify>,
+    split_views: Mutex<BTreeMap<u64, BTreeMap<Vec<u8>, ValueRevision>>>,
+    next_split_view: AtomicU64,
 }
 
 impl Default for MemoryPartitionTree {
@@ -35,6 +36,8 @@ impl Default for MemoryPartitionTree {
             rebuild_paused: Arc::new(AtomicBool::new(false)),
             rebuild_started: Arc::new(Notify::new()),
             rebuild_resume: Arc::new(Notify::new()),
+            split_views: Mutex::default(),
+            next_split_view: AtomicU64::new(0),
         }
     }
 }
@@ -71,6 +74,9 @@ impl MemoryPartitionTree {
 
 #[async_trait]
 impl PartitionTree for MemoryPartitionTree {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
     fn tree_id(&self) -> u64 {
         self.tree_id
     }
@@ -214,6 +220,8 @@ impl PartitionTree for MemoryPartitionTree {
             rebuild_paused: Arc::clone(&self.rebuild_paused),
             rebuild_started: Arc::clone(&self.rebuild_started),
             rebuild_resume: Arc::clone(&self.rebuild_resume),
+            split_views: Mutex::default(),
+            next_split_view: AtomicU64::new(0),
         };
         Ok((applied, applied, Arc::new(snapshot)))
     }
@@ -250,8 +258,66 @@ impl PartitionTree for MemoryPartitionTree {
             rebuild_paused: Arc::clone(&self.rebuild_paused),
             rebuild_started: Arc::clone(&self.rebuild_started),
             rebuild_resume: Arc::clone(&self.rebuild_resume),
+            split_views: Mutex::default(),
+            next_split_view: AtomicU64::new(0),
         };
         Ok((Arc::new(rebuilt), stats))
+    }
+
+    async fn begin_split_memtable_view(&self) -> Result<u64> {
+        let generation = self
+            .next_split_view
+            .fetch_add(1, Ordering::AcqRel)
+            .checked_add(1)
+            .ok_or_else(|| crate::ChunkKvError::Faulted("split view generation exhausted".into()))?;
+        let values = self.values.read().await.clone();
+        let mut views = self.split_views.lock().await;
+        if !views.is_empty() {
+            return Err(crate::ChunkKvError::SplitRetry(
+                "split memtable view is already active".into(),
+            ));
+        }
+        views.insert(generation, values);
+        Ok(generation)
+    }
+
+    async fn publish_split_memtable_view(
+        &self,
+        generation: u64,
+        destination: &dyn PartitionTree,
+        range: &crate::PartitionRange,
+    ) -> Result<()> {
+        let destination = destination.as_any().downcast_ref::<Self>().ok_or_else(|| {
+            crate::ChunkKvError::InvalidRequest("memory split view requires a memory destination".into())
+        })?;
+        let view = self
+            .split_views
+            .lock()
+            .await
+            .get(&generation)
+            .cloned()
+            .ok_or_else(|| crate::ChunkKvError::SplitRetry("split memtable view is stale".into()))?;
+        let mut values = destination.values.write().await;
+        for (key, value) in view.into_iter().filter(|(key, _)| range.contains(key)) {
+            values.insert(key, value);
+        }
+        destination.last_applied.store(
+            destination
+                .last_applied
+                .load(Ordering::Acquire)
+                .max(self.last_applied.load(Ordering::Acquire)),
+            Ordering::Release,
+        );
+        Ok(())
+    }
+
+    async fn release_split_memtable_view(&self, generation: u64) -> Result<()> {
+        if self.split_views.lock().await.remove(&generation).is_none() {
+            return Err(crate::ChunkKvError::SplitRetry(
+                "split memtable view is stale".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn last_applied_seq(&self) -> u64 {

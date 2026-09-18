@@ -374,6 +374,7 @@ class ChunkPackPipelineImpl final : public ChunkPackPipeline, public std::enable
         store->packs_reused_.fetch_add(manifest->packs_reused, std::memory_order_relaxed);
         store->pack_bytes_reused_.fetch_add(manifest->pack_bytes_reused, std::memory_order_relaxed);
         store->cached_layout_.store(manifest, std::memory_order_release);
+        store->bootstrap_layout_.store(nullptr, std::memory_order_release);
         store->layout_valid_until_ms_.store(monotonic_millis() + store->config_.layout_validity_ms,
                                             std::memory_order_release);
         store->staged_initialized_ = false;

@@ -446,3 +446,60 @@ TEST(SplitMerge, LeafInnerCountParityAfterMerges)
     EXPECT_EQ(t.leaf_count_atomic(), t.leaf_count());
     EXPECT_EQ(t.inner_count_atomic(), inner_count_walk(t));
 }
+
+TEST(SplitMerge, SplitSharedMemtableSurvivesOrdinaryFlush)
+{
+    Config opt;
+    opt.memtable_flush_bytes   = 1ULL << 40;
+    opt.memtable_flush_entries = 1U << 30;
+    Crowdbtree t(opt);
+
+    ASSERT_TRUE(t.apply(1, put_one("before", "shared")).ok());
+    uint64_t generation = 0;
+    ASSERT_TRUE(t.begin_split_memtable_view(&generation).ok());
+    ASSERT_NE(generation, 0U);
+    ASSERT_TRUE(t.apply(2, put_one("after", "private")).ok());
+
+    ASSERT_TRUE(t.flush().ok());
+    uint64_t    slot = 0;
+    std::string value;
+    EXPECT_TRUE(t.get(Slice("before"), &slot, &value));
+    EXPECT_EQ(value, "shared");
+    EXPECT_TRUE(t.get(Slice("after"), &slot, &value));
+    EXPECT_EQ(value, "private");
+
+    EXPECT_FALSE(t.release_split_memtable_view(generation + 1).ok());
+    ASSERT_TRUE(t.release_split_memtable_view(generation).ok());
+}
+
+TEST(SplitMerge, SplitSharedMemtablePublishesTwoRangeTreesInBulk)
+{
+    Config source_opt;
+    source_opt.memtable_flush_bytes   = 1ULL << 40;
+    source_opt.memtable_flush_entries = 1U << 30;
+    Crowdbtree source(source_opt);
+    ASSERT_TRUE(source.apply(1, put_one("apple", "left")).ok());
+    ASSERT_TRUE(source.apply(2, put_one("zebra", "right")).ok());
+
+    uint64_t generation = 0;
+    ASSERT_TRUE(source.begin_split_memtable_view(&generation).ok());
+    Config left_opt;
+    left_opt.key_range = KeyRange::bounded(std::nullopt, std::string("m"));
+    Config right_opt;
+    right_opt.key_range = KeyRange::bounded(std::string("m"), std::nullopt);
+    Crowdbtree left(left_opt);
+    Crowdbtree right(right_opt);
+    ASSERT_TRUE(source.publish_split_memtable_view(generation, left, left_opt.key_range).ok());
+    ASSERT_TRUE(source.publish_split_memtable_view(generation, right, right_opt.key_range).ok());
+
+    uint64_t    slot = 0;
+    std::string value;
+    EXPECT_TRUE(left.get(Slice("apple"), &slot, &value));
+    EXPECT_EQ(value, "left");
+    EXPECT_FALSE(left.get(Slice("zebra"), &slot, &value));
+    EXPECT_TRUE(right.get(Slice("zebra"), &slot, &value));
+    EXPECT_EQ(value, "right");
+    EXPECT_FALSE(right.get(Slice("apple"), &slot, &value));
+    EXPECT_TRUE(source.get(Slice("apple"), &slot, &value));
+    ASSERT_TRUE(source.release_split_memtable_view(generation).ok());
+}

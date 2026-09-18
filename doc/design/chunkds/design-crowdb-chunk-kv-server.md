@@ -15,7 +15,8 @@ The catalog is one checksummed generation head over ordered immutable pages.
 Each entry contains an exact half-open binary-key range, stable partition ID,
 owner endpoint, monotonic owner epoch, lifecycle state, stable tree ID, stable
 stream name, optional tail-overlay artifact, and optional transition ID. The
-overlay binds a base manifest and sequence, source partition/epoch/stream and
+overlay separately binds a chunk root-catalog generation, a tree snapshot
+sequence and applied sequence, source partition/epoch/stream and stream
 manifest generation, retained replay and cutover offsets, cutover sequence,
 and target-WAL start sequence. A valid generation starts at the empty byte string, has
 exact adjacent bounds, ends unbounded, and covers each binary key once.
@@ -106,22 +107,29 @@ client.
 ## 6. Split Publication
 
 The split transition phases are `Planned`, `ParentPreparing`,
-`ChildrenPrepared`, `CatalogCommitted`, and `Aborted`. The server and group-0
+`ChildPrepared`, `CatalogCommitted`, and `Aborted`. The server and group-0
 monitor advance them in this order:
 
-1. Group 0 persists the complete plan before local work begins. Both child
-   owners are the current parent instance and both epochs advance together.
+1. Group 0 persists the complete plan before local work begins. The existing
+   parent keeps its identity, tree, stream, owner, and lower boundary; its next
+   epoch and the one new child's identity, range, epoch, tree, and stream are
+   fixed by the plan.
 2. The parent process persists `ParentPreparing`, renews its serving grant as
-   an active owner, builds both bases, performs the bounded writer handoff, and
-   installs both local child handles.
-3. Readiness binds the exact common cutover and both complete tail overlays.
+   an active owner, checkpoints the exact parent base, builds the child's
+   range-bounded base, performs the bounded writer handoff, and installs the
+   local child handle.
+3. Readiness binds the exact common cutover, the retained-parent next epoch,
+   and the child's complete tail overlay.
    It is persisted before catalog publication.
-4. One catalog generation atomically removes the parent and adds both children.
-   A retry accepts an already-published result only if transition IDs, ranges,
-   owners, epochs, trees, streams, and overlays all match.
-5. Catalog reconciliation activates the prepared children under a matching
-   serving grant and retires the parent. A stale parent point route dispatches
-   to the hosted child; parent scan and seek topology must refresh.
+4. One catalog generation atomically replaces the old parent entry with a
+   smaller entry having the same partition/tree/stream identity and the next
+   epoch, then inserts the one child entry. A retry accepts an already-published
+   result only if transition IDs, ranges, owners, epochs, trees, streams, and
+   the child overlay all match.
+5. Catalog reconciliation resumes the retained parent and activates the child
+   under matching serving grants. A stale parent point route dispatches to the
+   retained parent or child by key; old parent scan and seek topology must
+   refresh.
 
 Before child materialization, heartbeat load reports the child as dependent.
 The local maintenance loop performs bounded ownership materialization and a
@@ -130,6 +138,16 @@ publishes a generation that clears both the overlay and the completed split
 `transition_id`, and only that catalog state is eligible for another split or
 owner balance. Releasing both markers atomically prevents a later transfer from
 mistaking the independently recoverable child for an active split participant.
+
+The child root-catalog generation is pinned under the split transition identity
+before the server persists child readiness. The pin key is scoped by child tree
+ID and its value is the exact root generation; it survives both tree and server
+restart. Root reclamation treats the oldest durable pin as an upper bound. The
+owner releases the pin only after installing the newer catalog generation whose
+child has no overlay and whose parent and child have no split marker. Pin delete
+is idempotent and remains reconciliation work after an ambiguous response or a
+crash. An abort before readiness removes unpublished child state and its pin;
+after readiness, durable transition and catalog evidence decide cleanup.
 
 ## 7. Child Balance State Machine
 
@@ -194,12 +212,21 @@ The recovery decision matrix is:
 | Ambiguous catalog head write                           | Reread head and pages; accept only the byte-exact intended generation     |
 | Conflicting artifact, cursor, range, epoch, or proof   | Fail closed; never infer authority from local state                       |
 
-The tree-manifest generation in a target overlay is a recovery pin, not an
-observation. `TargetPreparing`, `CatchupPublished`, catalog refresh, and restart
-must all open that exact generation and compare its applied sequence with the
-proof. Opening the latest root and merely checking afterward is invalid: a
-concurrent checkpoint may move latest forward, while stale root-cache state may
-leave it behind.
+The root-catalog generation in a target overlay is a recovery pin, not an
+observation. It is distinct from the tree snapshot sequence stored inside that
+root. `TargetPreparing`, `CatchupPublished`, catalog refresh, and restart must
+all open the exact root generation and then compare the recovered tree snapshot
+sequence and applied sequence with the proof. Opening the latest root and
+merely checking afterward is invalid: a concurrent checkpoint may move latest
+forward, while stale root-cache state may leave it behind.
+
+For both split and balance, exact-open initializes the page store from the named
+immutable root and bypasses latest-root cache refresh until that store publishes
+its own successor. Successor publication compares the exact bootstrap generation
+and checksum with the current root first; if another writer has advanced the
+lineage, publication fails instead of branching. The transition pin is persisted
+before readiness publication and is removed only after authoritative catalog
+state no longer contains the corresponding overlay and transition dependency.
 
 The balance invariants are:
 
@@ -220,7 +247,7 @@ The balance invariants are:
 Balancing targets at least `live_owner_count * target_partitions_per_owner`,
 defaulting to four partitions per owner. Split chooses the largest eligible
 partition and a key near the cumulative live-byte median, never an empty child.
-Both split children stay local. Placement later minimizes partition-count
+The retained parent and new split child stay local. Placement later minimizes partition-count
 difference first, then durable-byte spread. A move must repair count imbalance
 or improve weighted spread by at least 25%. Request rate and target headroom are
 safety filters. A child with a parent-tail overlay is ineligible. The default

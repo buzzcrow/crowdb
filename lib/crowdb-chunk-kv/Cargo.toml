@@ -15,6 +15,7 @@ workspace = true
 test-util = ["crowdb-chunk-stream/test-util"]
 
 [dependencies]
+arc-swap = "1.9"
 async-trait = "0.1"
 bincode = "1"
 bytes = "1"

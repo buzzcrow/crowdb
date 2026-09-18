@@ -102,11 +102,7 @@ async fn planning_state(
         }
     }
     for (transition, _) in read_splits(control).await? {
-        for partition_id in [
-            transition.parent_id,
-            transition.left.partition_id,
-            transition.right.partition_id,
-        ] {
+        for partition_id in [transition.parent_id, transition.child.partition_id] {
             remember_change(&mut state.last_changed_ms, partition_id, transition.planned_at_ms);
         }
         if !matches!(
@@ -116,8 +112,7 @@ async fn planning_state(
             state.pending_split_increase = state.pending_split_increase.saturating_add(1);
             state.active_partitions.insert(transition.parent_id);
             state.busy_owners.insert(transition.parent_owner.instance_id);
-            state.busy_owners.insert(transition.left.owner.instance_id);
-            state.busy_owners.insert(transition.right.owner.instance_id);
+            state.busy_owners.insert(transition.child.owner.instance_id);
         }
     }
     Ok(state)
@@ -405,18 +400,7 @@ fn split_transition(
         .owner_epoch
         .checked_add(1)
         .ok_or_else(|| "chunk-KV split owner epoch overflowed".to_string())?;
-    let left = split_child(
-        parent,
-        &split_key,
-        b"left",
-        parent.owner.clone(),
-        child_epoch,
-        KeyRange {
-            start: parent.range.start.clone(),
-            end: Some(split_key.clone()),
-        },
-    );
-    let right = split_child(
+    let child = split_child(
         parent,
         &split_key,
         b"right",
@@ -434,9 +418,10 @@ fn split_transition(
         parent_owner: parent.owner.clone(),
         parent_epoch: parent.owner_epoch,
         parent_artifact: parent.artifact.clone(),
+        retained_parent_artifact: split_artifact(parent, &split_key, b"left"),
+        parent_next_epoch: child_epoch,
         split_key,
-        left,
-        right,
+        child,
         planned_at_ms: now_ms,
         phase: SplitPhase::Planned,
         readiness_proof: None,
@@ -459,14 +444,18 @@ fn split_child(
         range,
         owner,
         owner_epoch,
-        artifact: PartitionArtifact {
-            tree_id: derived_u64(parent, split_key, &[side, b"-tree"].concat()),
-            stream_name: StreamName {
-                high: derived_u64(parent, split_key, &[side, b"-stream-high"].concat()),
-                low: derived_u64(parent, split_key, &[side, b"-stream-low"].concat()),
-            },
-            tail_overlay: None,
+        artifact: split_artifact(parent, split_key, side),
+    }
+}
+
+fn split_artifact(parent: &ChunkKvRangeCatalogEntry, split_key: &[u8], side: &[u8]) -> PartitionArtifact {
+    PartitionArtifact {
+        tree_id: derived_u64(parent, split_key, &[side, b"-tree"].concat()),
+        stream_name: StreamName {
+            high: derived_u64(parent, split_key, &[side, b"-stream-high"].concat()),
+            low: derived_u64(parent, split_key, &[side, b"-stream-low"].concat()),
         },
+        tail_overlay: None,
     }
 }
 

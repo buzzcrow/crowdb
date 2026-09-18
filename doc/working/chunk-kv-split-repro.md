@@ -110,7 +110,7 @@ memory. These values do not establish a safe default budget for R173.
   rounds had `errors=0`; the third had `96` errors and `p99_us=5001226`.
   Server 1 entered `SplitPreparing`, repeatedly rejected recovered-partition
   activation for that lifecycle, then let its serving grant reach the safety
-  deadline. Its captured metrics show `split_fence_duration_us=3413093`,
+  deadline. Its captured metrics show `split_finalization_duration_us=3413093`,
   `lease_rejections=18017`, and `split_fence_lag_records=0`. Thus the moved
   child checkpoint is a partial fence-duration improvement, not a resolution
   of split-time client availability; R174 owns the remaining overlay-cutover

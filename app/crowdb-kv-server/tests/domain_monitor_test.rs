@@ -299,6 +299,7 @@ async fn chunk_kv_driver_publishes_ready_transfer_then_issues_matching_grant() {
         source_stream_manifest_generation: 1,
         replay_offset: 0,
         cutover_offset: 7,
+        base_root_manifest_generation: 1,
         base_tree_manifest: 1,
         base_applied_seq: 0,
         cutover_seq: 7,

@@ -173,6 +173,7 @@ fn transfer() -> TransferTransition {
             source_stream_manifest_generation: 1,
             replay_offset: 0,
             cutover_offset: 0,
+            base_root_manifest_generation: 1,
             base_tree_manifest: 1,
             base_applied_seq: 0,
             cutover_seq: 0,
@@ -233,35 +234,24 @@ fn split() -> SplitTransition {
             stream_name: StreamName { high: 6, low: 7 },
             tail_overlay: None,
         },
-        split_key: b"m".to_vec(),
-        left: SplitChildAssignment {
-            partition_id: Id128 { high: 22, low: 23 },
-            range: KeyRange {
-                start: Vec::new(),
-                end: Some(b"m".to_vec()),
-            },
-            owner: OwnerDescriptor {
-                instance_id: 11,
-                rpc_endpoint: "127.0.0.1:9911".into(),
-            },
-            owner_epoch: 1,
-            artifact: PartitionArtifact {
-                tree_id: 24,
-                stream_name: StreamName { high: 25, low: 26 },
-                tail_overlay: None,
-            },
+        retained_parent_artifact: PartitionArtifact {
+            tree_id: 8,
+            stream_name: StreamName { high: 6, low: 8 },
+            tail_overlay: None,
         },
-        right: SplitChildAssignment {
+        parent_next_epoch: 4,
+        split_key: b"m".to_vec(),
+        child: SplitChildAssignment {
             partition_id: Id128 { high: 27, low: 28 },
             range: KeyRange {
                 start: b"m".to_vec(),
                 end: None,
             },
             owner: OwnerDescriptor {
-                instance_id: 12,
-                rpc_endpoint: "127.0.0.1:9912".into(),
+                instance_id: 11,
+                rpc_endpoint: "127.0.0.1:9911".into(),
             },
-            owner_epoch: 1,
+            owner_epoch: 4,
             artifact: PartitionArtifact {
                 tree_id: 29,
                 stream_name: StreamName { high: 30, low: 31 },
@@ -283,6 +273,7 @@ fn split_overlay(cutover_seq: u64) -> TailOverlayArtifact {
         source_stream_manifest_generation: 1,
         replay_offset: 0,
         cutover_offset: cutover_seq,
+        base_root_manifest_generation: 1,
         base_tree_manifest: 1,
         base_applied_seq: cutover_seq,
         cutover_seq,
@@ -456,7 +447,7 @@ async fn group0_transfer_store_reconciles_and_resumes_exact_phase() {
 }
 
 #[tokio::test]
-async fn group0_split_store_resumes_prepared_children_before_catalog_cutover() {
+async fn group0_split_store_resumes_prepared_child_before_catalog_cutover() {
     let kv = Arc::new(TestKv::default());
     let store = Group0ControlStore::new(kv.clone());
     let planned = split();
@@ -464,12 +455,17 @@ async fn group0_split_store_resumes_prepared_children_before_catalog_cutover() {
     let mut machine = SplitStateMachine::restore(planned).unwrap();
     machine.begin_parent_prepare().unwrap();
     machine
-        .record_children_ready(SplitReadinessProof {
+        .record_child_ready(SplitReadinessProof {
             cutover_seq: 41,
-            left_applied_seq: 41,
-            right_applied_seq: 41,
-            left_tail_overlay: split_overlay(41),
-            right_tail_overlay: split_overlay(41),
+            parent_next_epoch: 4,
+            retained_parent_artifact: split().retained_parent_artifact,
+            retained_parent_tree_manifest: 1,
+            retained_parent_root_manifest_generation: 1,
+            retained_parent_applied_seq: 41,
+            child_applied_seq: 41,
+            child_tree_manifest: 1,
+            child_root_manifest_generation: 1,
+            child_tail_overlay: split_overlay(41),
         })
         .unwrap();
     let prepared = machine.transition().clone();

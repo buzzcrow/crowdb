@@ -5,13 +5,16 @@
 
 ## Problem
 
-The current chunk-KV split prepares child trees while the parent continues to
-accept mutations, but the final `SplitFenced` phase drains parent admission,
-replays the final parent journal suffix, checkpoints both children, records the
-artifact, and only then permits catalog publication. Moving the first complete
-child checkpoint into preparation reduces this interval, but a high-rate or
-wide-keyspace workload can dirty most child pages again before the fence. The
-final checkpoint can therefore approach a complete flush.
+The current chunk-KV split prepares replacement trees while the parent
+continues to accept mutations, but the old final split phase drained parent
+admission, replays the final parent journal suffix, checkpoints the replacement
+trees, records the artifact, and only then permits catalog publication. It also
+models split as deleting the parent and creating two new children. The required
+identity model instead retains the parent as one smaller partition and creates
+only one child. Moving a complete child checkpoint into preparation reduces
+the flush interval, but a high-rate or wide-keyspace workload can dirty most
+child pages again before the fence. The final checkpoint can therefore
+approach a complete flush.
 
 The 2026-09-17 three-node 1 MiB-target test with 12,000 4 KiB writes at
 concurrency 32 exposed the foreground consequence: the third 4,000-operation
@@ -20,8 +23,8 @@ serving-grant renewal overlapped. A 3.413 s recorded write fence alone does not
 describe the user-visible interruption. Preparing must remain an ordinary
 serving state, and a split must not make a client wait for a child tree flush.
 
-The permanent design currently defines one parent journal, two exact child
-ranges, an immutable common-cutover artifact, and mutation fencing in
+The permanent design defines one parent journal, a retained-parent range and
+one exact child range, an immutable common-cutover artifact, and mutation fencing in
 [`design-crowdb-chunk-kv.md`](../design/chunkds/design-crowdb-chunk-kv.md)
 section 5. It does not define durable ownership of the child suffix between a
 preparation checkpoint and cutover. A memtable alone cannot fill that gap: it
@@ -36,15 +39,15 @@ the old sequencer at one exact cutover; it never waits for a child checkpoint
 or for background page materialization.
 
 ```text
-parent serving: parent WAL + parent tree/memtables
+parent serving: parent WAL + parent tree/memtables over [start, end)
        |
-       +-- prepare base manifests and durable child-tail overlays
+       +-- pin exact parent base and prepare one durable child-tail overlay
        |
 short writer handoff at sequence C
        |
-children serving: child base manifest + child WAL/memtable overlay
+retained parent serves [start, split) + child serves [split, end)
        |
-background checkpoint and parent retirement after stale-route grace
+background parent pruning, child checkpoint, and dependency release
 ```
 
 1. Extend the permanent chunk-KV, chunk-KV server, chunk-stream, and client
@@ -53,43 +56,50 @@ background checkpoint and parent retirement after stale-route grace
    routing, and reclamation pins. `SplitPreparing` is explicitly a serving
    lifecycle for both data admission and serving-grant renewal; it must not
    lower owner health or cause a valid grant to expire.
-2. Keep the parent as the only mutation sequencer during preparation. It
+2. Define the identity transformation explicitly. The parent retains its
+   partition ID, tree ID, stream name, owner, and lower range boundary; its
+   range becomes `[old_start, split_key)` and its owner epoch advances. Create
+   exactly one child for `[split_key, old_end)` with a new partition ID, tree,
+   stream, and epoch. One catalog generation updates the parent entry and
+   inserts the child entry. It never deletes the parent or creates a second
+   replacement for the retained half.
+3. Keep the parent as the only mutation sequencer during preparation. It
    continues its normal WAL, tree, and memtable path; preparation must neither
    stop parent flush nor attempt to destructively divide an active parent
-   memtable. Build range-bounded child base trees from one pinned parent
-   snapshot, then checkpoint those base manifests while the parent remains
-   writable.
-3. Pin one shared parent journal suffix instead of duplicating it during
-   preparation. Each child artifact names its base checkpoint `B`, the parent
+   memtable. Build one range-bounded child base tree from one pinned parent
+   snapshot, then checkpoint that base manifest while the parent remains
+   writable. The retained parent continues using its existing tree and stream.
+4. Pin one shared parent journal suffix instead of duplicating it during
+   preparation. The child artifact names its base checkpoint `B`, the parent
    stream identity and retained retry floor, and one sealed parent cutover `C`.
-   A child recovers or lazily warms its overlay by validating parent records,
-   filtering them by the child range, and applying records in `(B, C]`; records
+   The child recovers or lazily warms its overlay by validating parent records,
+   filtering them by its range, and applying records in `(B, C]`; records
    at or below `B` reconstruct retained request results without reapplying the
    tree. The child inherits logical sequence `C` and its own journal begins at
    `C + 1`. Recovery and read-after-write never infer this source relationship
    from volatile memory.
-4. Replace the final flush fence with a `SplitCutover` handoff. It atomically
+5. Replace the final flush fence with a `SplitCutover` handoff. It atomically
    closes parent sequencer assignment at cutover `C`, drains only requests
-   already assigned to that sequencer, verifies both durable child overlays
-   cover `C`, and persists an artifact binding the exact base manifests, child
-   tail cursors, child stream identities, request-result floors, parent ID and
-   epoch, and `C`. A record cannot be acknowledged as post-cutover until its
-   selected child journal has made the result recoverable.
-5. Install both local child writers before the handoff. R174 is a local split:
-   both children initially remain on the parent owner; R175 alone may prepare a
-   remote child balance after split commit. Selecting a writer handle is one
-   atomic ingress operation. A request that already holds the parent handle is
-   drained into the parent prefix through `C`; a request that has not selected a
-   handle reselects and directly enters its local child writer. No additional
-   post-cutover queue is required, and parent and child writers never both
-   order mutations for the same child range.
-6. Publish the exact local-child artifact through one epoch-fenced catalog
-   revision. New routes use child owners and child positions. A source server
-   receiving an old point route directly dispatches to its hosted child by key,
-   without using the retired parent tree or a network forward. Parent scan
-   tokens return refresh-required after publication; the client refreshes the
-   catalog and replans across child ranges.
-7. Reads on a child merge its durable base tree with its active and sealed
+   already assigned to that sequencer, verifies the durable child overlay
+   covers `C`, and persists an artifact binding the exact child base manifest,
+   child tail cursor and stream, request-result floor, retained parent identity
+   and next epoch, and `C`. A record cannot be acknowledged as post-cutover
+   until the selected retained-parent or child journal has made the result
+   recoverable.
+6. Install the next-epoch retained-parent writer and the local child writer
+   before the handoff. R174 is local; R175 alone may later prepare a remote
+   child balance. Selecting a writer handle is one atomic ingress operation. A
+   request that already holds the old parent handle drains through `C`; a
+   request that has not selected a handle reselects by key and enters either
+   the smaller retained parent or the child. No additional post-cutover queue
+   is required, and the two new writers cover disjoint ranges.
+7. Publish the exact retained-parent and child artifacts through one
+   epoch-fenced catalog revision. New routes use the smaller parent entry or
+   child entry. A source server receiving an old point route dispatches by key
+   to the retained parent or hosted child without a network forward. Old parent
+   scan tokens return refresh-required after publication; the client refreshes
+   the catalog and replans across both ranges.
+8. Reads on the child merge its durable base tree with its active and sealed
    memtables plus a lazily warmed filtered parent suffix. A child accepts a
    parent-stream minimum position at or below `C` by warming through that source
    offset, and accepts a child-stream position through its own applied frontier.
@@ -97,15 +107,23 @@ background checkpoint and parent retirement after stale-route grace
    the old parent before catalog publication retain their parent snapshot
    semantics. Conditional writes consult the same child overlay used by reads,
    so a condition is evaluated once by its unique sequencer.
-8. Move child checkpoint, pack materialization, and parent tree/stream
-   reclamation out of the foreground cutover. Each retained child tree version
+9. Move retained-parent pruning/checkpoint, child checkpoint, pack
+   materialization, and obsolete parent history reclamation out of the
+   foreground cutover. Each retained child tree version
    explicitly carries its parent-suffix reference. Preserve parent manifests,
    journal prefixes, and request-result records until no retained child version
    references that suffix and the retry floor has expired or been locally
    materialized. A crash or ambiguous catalog outcome resumes or resolves the
    exact persisted transition; it never reconstructs a cutover from
    process-local memtables.
-9. Expose per-transition preparation duration, base checkpoint duration,
+10. Persist an exact-generation pin keyed by child tree and split transition
+    before recording child readiness. The value is the child's chunk
+    root-catalog generation, not its logical tree snapshot sequence. Root
+    reclamation cannot pass the oldest pin. After background materialization,
+    publish one catalog generation that clears the child overlay and both split
+    markers; only after the owner installs that generation may it delete the
+    pin. Pin create/delete are idempotent so crash recovery may repeat them.
+11. Expose per-transition preparation duration, base checkpoint duration,
    parent-to-child tail records and bytes, tail replication lag, cutover drain
    duration, post-cutover queue depth, child-overlay apply lag, forwarding
    count, grant-renewal failures, stale-route outcomes, and background
@@ -113,7 +131,7 @@ background checkpoint and parent retirement after stale-route grace
    alongside client p50/p99/p999 and errors while sustained writes overlap
    every observed split.
 
-Edge outcomes are explicit: if a child base manifest or parent journal suffix
+Edge outcomes are explicit: if the child base manifest or parent journal suffix
 is unavailable, the parent remains serving and the unpublished transition
 aborts or retries; if a child or journal fails after the parent writer closes,
 the exact artifact and catalog head decide whether recovery completes or the
@@ -142,13 +160,18 @@ never serves an uncommitted child as writable.
   acknowledged, serving-grant renewal succeeds, and no lease rejection is
   attributed to `SplitPreparing`. Invariant: preparation remains serving. E2E
   test.
-- Given writes that touch all child pages after their base checkpoints, when
+- Given a split plan, when it is validated and published, assert the parent ID,
+  tree ID, stream name, owner, and lower boundary are preserved, its range ends
+  at the split key with an advanced epoch, exactly one new child starts at the
+  split key, and their union equals the old range. Invariant: split is retained
+  parent plus one child. Unit test.
+- Given writes that touch all child pages after the base checkpoint, when
   cutover occurs, assert foreground cutover does not invoke a child checkpoint
   and completes within the configured drain and handoff limit. Invariant:
   foreground latency is independent of dirty child-page volume. Integration
   test.
-- Given records before and after each child base checkpoint, including failed
-  conditions and duplicate request retries, when either child restarts before
+- Given records before and after the child base checkpoint, including failed
+  conditions and duplicate request retries, when the child restarts before
   its next checkpoint, assert recovery reconstructs the same values, source
   order, retained results, and retry outcomes from its durable base plus tail.
   Invariant: a child overlay is restart authority. E2E test.
@@ -157,14 +180,15 @@ never serves an uncommitted child as writable.
   order and later requests occur once in exactly one child journal order.
   Invariant: cutover has no overlapping writer and no lost acknowledged write.
   E2E test.
-- Given a request arrives during writer handoff, when its selected child writer
-  becomes ready, assert it is boundedly queued, durably appended to that child,
-  and acknowledged without requiring a child checkpoint; when the bound is
+- Given requests for both sides arrive during writer handoff, when the
+  next-epoch retained-parent and child writers become ready, assert each is
+  boundedly queued, durably appended to the range-selected writer, and
+  acknowledged without requiring a child checkpoint; when the bound is
   exhausted, assert it receives `Overloaded` without WAL append. Invariant:
   cutover backpressure is bounded and durable. Integration test.
 - Given a client uses an old parent route before catalog cache refresh, when a
   post-cutover point read or write arrives during grace, assert the old endpoint
-  forwards it to the exact child or returns a current owner hint, and no second
+  dispatches it by key to the retained parent or exact child, and no old-epoch
   parent mutation is created. Invariant: stale routing preserves unique writer
   authority. E2E test.
 - Given a child position returned after cutover, when a read uses that minimum

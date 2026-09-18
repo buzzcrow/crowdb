@@ -148,6 +148,7 @@ using ct_chunk_page_store_options = struct
 {
     uint64_t tree_id;
     uint64_t owner_epoch;
+    uint64_t open_generation; // 0 => latest; otherwise exact immutable generation
     size_t   pack_bytes;
     uint32_t iu_size;                        // 0 => 64 KiB page framing
     size_t   max_concurrent_packs;           // 0 => 8
@@ -234,6 +235,9 @@ struct ct_root_catalog_callbacks
     uint64_t (*discard_reference_segments)(void *context, uint64_t tree_id, const uint64_t *object_ids,
                                            size_t object_count);
     uint64_t (*reclaim_before)(void *context, uint64_t tree_id, uint64_t generation);
+    ct_status (*pin_generation)(void *context, uint64_t tree_id, uint64_t transition_high, uint64_t transition_low,
+                                uint64_t generation);
+    ct_status (*unpin_generation)(void *context, uint64_t tree_id, uint64_t transition_high, uint64_t transition_low);
     void (*drop_context)(void *context);
 };
 
@@ -249,8 +253,13 @@ void      ct_chunk_transport_free(ct_chunk_transport *transport);
 ct_status ct_chunk_page_store_get_stats(const ct_page_store *store, ct_chunk_page_store_stats *out);
 ct_status ct_chunk_page_store_set_wal_replay_offset(ct_page_store *store, uint64_t offset);
 ct_status ct_chunk_page_store_get_wal_replay_offset(const ct_page_store *store, uint64_t *offset);
+ct_status ct_chunk_page_store_get_manifest_generation(const ct_page_store *store, uint64_t *generation);
 uint64_t  ct_chunk_page_store_reclaim_orphans(ct_page_store *store);
 uint64_t  ct_root_catalog_reclaim_before(ct_root_catalog *catalog, uint64_t tree_id, uint64_t generation);
+ct_status ct_root_catalog_pin_generation(ct_root_catalog *catalog, uint64_t tree_id, uint64_t transition_high,
+                                         uint64_t transition_low, uint64_t generation);
+ct_status ct_root_catalog_unpin_generation(ct_root_catalog *catalog, uint64_t tree_id, uint64_t transition_high,
+                                           uint64_t transition_low);
 ct_status ct_open(const ct_options *opt, ct_tree **out);
 ct_status ct_rebuild_range(ct_tree *source, const ct_options *destination_options, ct_tree **out,
                            ct_range_rebuild_stats *stats);
@@ -435,6 +444,11 @@ ct_status ct_put(ct_tree *t, const uint8_t *key, size_t klen, const uint8_t *val
 ct_status ct_del(ct_tree *t, const uint8_t *key, size_t klen);
 
 ct_status ct_flush(ct_tree *t);
+ct_status ct_begin_split_memtable_view(ct_tree *t, uint64_t *out_generation);
+ct_status ct_publish_split_memtable_view(ct_tree *source, uint64_t generation, ct_tree *destination,
+                                         const uint8_t *range_start, size_t range_start_len, int has_range_start,
+                                         const uint8_t *range_end, size_t range_end_len, int has_range_end);
+ct_status ct_release_split_memtable_view(ct_tree *t, uint64_t generation);
 
 // Point read. *found is 0/1; on found, *slot and *value (owned) are set.
 ct_status ct_get(ct_tree *t, const uint8_t *key, size_t klen, int32_t *found, uint64_t *slot, ct_buf *value);

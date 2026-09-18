@@ -18,7 +18,7 @@ allowed. A split key must be strictly inside the source range and its two
 child ranges must be adjacent and exactly cover the parent.
 
 The lifecycle is `Closed`, `Recovering`, `WriteStalled`, `Prepared`,
-`Serving`, `SplitPreparing`, `SplitFenced`, `Retired`, or `Faulted`.
+`Serving`, `SplitPreparing`, `SplitFinalizing`, `Retired`, or `Faulted`.
 Data-path admission reads atomics and reserves bounded request and byte
 capacity. Lifecycle control closes mutation admission and waits
 asynchronously for the admitted count to reach zero. The manager registry and
@@ -105,33 +105,42 @@ catches C++ exceptions before they can cross into Rust.
 ## 5. Overlay Split and Writer Handoff
 
 A `SplitPlan` names one transition, the exact parent ID/range/epoch, an
-interior split key, and two adjacent child identities whose ranges exactly
-cover the parent. Repeating the same active plan is idempotent; changing any
-identity, range, epoch, or stream fails closed. Both children initially remain
-on the parent owner. Placement is a later balance operation.
+interior split key, the parent's next epoch, and one new child identity. The
+existing parent retains its partition, tree, stream, and owner identities and
+shrinks to `[old_start, split_key)`; the new child receives
+`[split_key, old_end)`. Repeating the same active plan is idempotent; changing
+any identity, range, epoch, or stream fails closed. The new child initially
+remains on the parent owner. Placement is a later balance operation.
 
 Split preparation follows these ordered steps:
 
-1. Enter `SplitPreparing` while retaining ordinary read, mutation, checkpoint,
-   and serving-grant behavior. The parent remains the only sequencer.
-2. Pin one parent snapshot, range-rebuild two child base trees, and checkpoint
-   both bases while parent admission remains open.
-3. Record for each child its base manifest and sequence `B`, parent partition,
-   epoch, stream and manifest generation, retained replay offset, current
-   parent tail, child stream, and first child sequence.
-4. Warm each child by reading the parent stream snapshot, validating frame and
-   request-result identity, filtering mutations by child range, and advancing
-   sibling records as no-ops. Parent records are referenced, not copied into
-   child WALs.
-5. Refuse the handoff while the remaining tail exceeds the configured bound.
-   Otherwise close parent admission, drain only requests that already selected
-   the parent sequencer, and choose one exact cutover sequence and offset `C`.
-6. Persist one immutable `SplitArtifact`; both child overlays cover `(B, C]`,
-   both logical frontiers equal `C`, and each child WAL begins at `C + 1`.
-   No child checkpoint or page-pack materialization occurs under the fence.
-7. Open both children as `Prepared` and install their process-local handles
-   before publishing readiness. Catalog activation changes their lifecycle to
-   `Serving`; only then may their sequencers accept post-cutover mutations.
+1. Enter `SplitPreparing`, capture one split-owned shared memtable view, and
+   range-rebuild both physical writers from one exact old-parent tree view.
+2. While the old parent continues serving, replay its WAL into both ranges.
+   Each writer filters the other range as no-ops, so both retain the same
+   logical frontier.
+3. Atomically switch the old parent handle to bounded split-session ingress.
+   Requests already admitted to the old WAL drain; later requests wait in the
+   ingress buffer rather than being rejected or appended to the old parent.
+4. Replay the last old-parent suffix, bulk-publish the shared memtable view to
+   both range trees, and durable-checkpoint both writers at the common
+   frontier `C`. Release the shared view only after both durable frontiers are
+   recorded in one immutable `SplitArtifact`.
+5. Activate both local writers behind the old parent handle, then release the
+   buffered requests directly to their range writer WAL and memtable. Reads
+   use the old tree until this route is installed.
+6. Publish one catalog generation that shrinks the retained parent (same ID,
+   new epoch) and inserts exactly one new child. Refresh installs this catalog
+   and serving grant; it does not recover the retained parent as a replacement.
+
+The child base checkpoint records two independent counters: its logical tree
+snapshot sequence and its chunk root-catalog generation. Immediately after the
+child base is durable, preparation persists
+`root/<child_tree_id>/pin/<transition_id> = child_root_generation`. Readiness is
+not recorded until that operation succeeds. A retry with the same generation is
+idempotent; another generation under the same transition identity is corruption.
+If local child construction fails before readiness, preparation removes the pin
+while the parent is still the sole authority.
 
 A prepared or restarted child recovers in three layers: open the exact base
 manifest, replay the retained parent suffix through `C` with range filtering,
@@ -147,22 +156,31 @@ child-stream position waits for the child's applied frontier. New mutations
 return only child-stream positions. This preserves read-after-write across a
 catalog split without treating two streams as one offset space.
 
-After activation, bounded background passes materialize shared page ownership
-and checkpoint the complete child view into its own tree root and WAL. Only
-that checkpoint permits the catalog to clear the parent-tail overlay and mark
-the child independently recoverable. Parent manifests, stream bytes, retry
-results, and page packs remain pinned while any catalog artifact, retained
+After activation, bounded background passes independently prune the retained
+parent tree to its smaller range and materialize the child's shared page
+ownership. A checkpoint of the complete child view into its own tree root and
+WAL permits the catalog to clear the parent-tail overlay and mark the child
+independently recoverable. Parent manifests, stream bytes, retry results, and
+page packs remain pinned while the child catalog artifact, a retained
 checkpoint, forwarding grace interval, or retry floor references them.
+The catalog generation that clears the child overlay also clears the retained
+parent and child transition markers atomically. Only after the child owner has
+installed that authoritative generation may it idempotently release the
+transition's child-root pin. A crash between catalog installation and unpin is
+a retention leak resolved by reconciliation, never permission to reclaim early.
 
 The split invariants are:
 
-- **SPLIT-ONE-WRITER:** parent and child sequencers never both admit a mutation
-  for the same key range;
-- **SPLIT-COMMON-CUTOVER:** both children inherit the same exact `C`;
+- **SPLIT-PARENT-STABLE:** split preserves the parent partition, tree, stream,
+  owner, and lower range boundary and creates exactly one new child;
+- **SPLIT-ONE-WRITER:** before `C` the old parent sequences the full range;
+  after `C` the retained parent and child sequence disjoint ranges;
+- **SPLIT-COMMON-CUTOVER:** the retained parent and new child share the same
+  exact `C`;
 - **SPLIT-OVERLAY-DURABLE:** base plus parent suffix plus child WAL reconstructs
   values and request outcomes before activation;
-- **SPLIT-NO-FOREGROUND-FLUSH:** the writer fence performs no child checkpoint
-  or ownership materialization; and
+- **SPLIT-NO-FOREGROUND-REJECT:** finalization buffers ingress rather than
+  rejecting mutations, and it performs no ownership materialization; and
 - **SPLIT-PIN-BEFORE-RECLAIM:** physical deletion never precedes the last
   catalog, snapshot, forwarding, or retry reference.
 
@@ -208,7 +226,7 @@ Per-partition lock-free counters cover mutation requests and outcomes, ordered
 seeks and scans, range and stale-epoch rejection, admission backpressure, write
 stalls, unknown apply outcomes, recoveries, checkpoints, and split lifecycle
 events. Split counters distinguish preparation and base-checkpoint time,
-tail records and bytes, fence lag and duration, overlay replay records and
+tail records and bytes, catch-up lag and finalization duration, overlay replay records and
 bytes, and materialization duration. Snapshot frontiers expose lifecycle,
 stream identity, durable sequence and byte offset, and applied sequence without
 combining independent partitions.

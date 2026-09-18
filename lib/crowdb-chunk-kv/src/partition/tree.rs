@@ -1,12 +1,15 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use std::any::Any;
+
 use async_trait::async_trait;
 
 use crate::{ChunkKvError, MutationOperation, Result, ScanEntry, ValueRevision};
 
 #[async_trait]
 pub trait PartitionTree: Send + Sync {
+    fn as_any(&self) -> &dyn Any;
     fn tree_id(&self) -> u64;
     async fn get(&self, key: &[u8]) -> Result<Option<ValueRevision>>;
     async fn scan_forward(
@@ -46,6 +49,26 @@ pub trait PartitionTree: Send + Sync {
         std::sync::Arc<dyn PartitionTree>,
         crowdb_tree_ffi::RangeRebuildStats,
     )>;
+    async fn begin_split_memtable_view(&self) -> Result<u64> {
+        Err(ChunkKvError::InvalidRequest(
+            "partition tree does not support split memtable views".into(),
+        ))
+    }
+    async fn publish_split_memtable_view(
+        &self,
+        _generation: u64,
+        _destination: &dyn PartitionTree,
+        _range: &crate::PartitionRange,
+    ) -> Result<()> {
+        Err(ChunkKvError::InvalidRequest(
+            "partition tree does not support split memtable views".into(),
+        ))
+    }
+    async fn release_split_memtable_view(&self, _generation: u64) -> Result<()> {
+        Err(ChunkKvError::InvalidRequest(
+            "partition tree does not support split memtable views".into(),
+        ))
+    }
     /// Returns the currently opened durable `(manifest, applied sequence)`.
     ///
     /// # Errors
@@ -53,6 +76,15 @@ pub trait PartitionTree: Send + Sync {
     /// Returns a typed tree read error when durable snapshot state is
     /// unavailable or corrupt.
     fn checkpoint_state(&self) -> Result<(u64, u64)>;
+    /// Returns the chunk root-catalog generation backing the opened tree. A
+    /// non-chunk implementation uses its tree snapshot sequence.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error when the durable root identity is unavailable.
+    fn root_manifest_generation(&self) -> Result<u64> {
+        self.checkpoint_state().map(|checkpoint| checkpoint.0)
+    }
     fn last_applied_seq(&self) -> u64;
     /// Returns chunk-backend counters, or `None` for another backend.
     ///
@@ -69,6 +101,23 @@ pub trait PartitionTree: Send + Sync {
     /// Returns a storage maintenance error.
     fn reclaim_before(&self, _generation: u64) -> Result<u64> {
         Ok(0)
+    }
+    /// Persists a transition-scoped reference to one exact root generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error when the generation is absent or conflicts
+    /// with an existing transition pin.
+    fn pin_generation(&self, _transition: crate::TransitionId, _generation: u64) -> Result<()> {
+        Ok(())
+    }
+    /// Removes a transition-scoped root-generation reference idempotently.
+    ///
+    /// # Errors
+    ///
+    /// Returns a storage error when durable pin deletion cannot complete.
+    fn unpin_generation(&self, _transition: crate::TransitionId) -> Result<()> {
+        Ok(())
     }
     /// Reclaims objects abandoned before manifest publication.
     ///
@@ -132,6 +181,9 @@ impl CrowdbPartitionTree {
 
 #[async_trait]
 impl PartitionTree for CrowdbPartitionTree {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
     fn tree_id(&self) -> u64 {
         self.tree_id
     }
@@ -323,12 +375,52 @@ impl PartitionTree for CrowdbPartitionTree {
         ))
     }
 
+    async fn begin_split_memtable_view(&self) -> Result<u64> {
+        self.tree.begin_split_memtable_view().map_err(map_tree_read_error)
+    }
+
+    async fn publish_split_memtable_view(
+        &self,
+        generation: u64,
+        destination: &dyn PartitionTree,
+        range: &crate::PartitionRange,
+    ) -> Result<()> {
+        let destination = destination
+            .as_any()
+            .downcast_ref::<Self>()
+            .ok_or_else(|| ChunkKvError::InvalidRequest("split destination is not a native tree".into()))?;
+        let range = crowdb_tree_ffi::KeyRange::Bounded {
+            start: range.start.clone(),
+            end: range.end.clone(),
+        };
+        self.tree
+            .publish_split_memtable_view(generation, &destination.tree, &range)
+            .map_err(map_tree_read_error)
+    }
+
+    async fn release_split_memtable_view(&self, generation: u64) -> Result<()> {
+        self.tree
+            .release_split_memtable_view(generation)
+            .map_err(map_tree_read_error)
+    }
+
     fn last_applied_seq(&self) -> u64 {
         self.tree.stats().contiguous_slot
     }
 
     fn checkpoint_state(&self) -> Result<(u64, u64)> {
         self.tree.snapshot_state().map_err(map_tree_read_error)
+    }
+
+    fn root_manifest_generation(&self) -> Result<u64> {
+        self.config
+            .as_ref()
+            .and_then(|config| config.page_store.as_ref())
+            .filter(|store| store.is_chunk_backed())
+            .map_or_else(
+                || self.checkpoint_state().map(|checkpoint| checkpoint.0),
+                |store| store.chunk_manifest_generation().map_err(map_tree_read_error),
+            )
     }
 
     fn chunk_stats(&self) -> Result<Option<crowdb_tree_ffi::ChunkPageStoreStats>> {
@@ -348,6 +440,28 @@ impl PartitionTree for CrowdbPartitionTree {
             .map_or(0, |store| {
                 store.reclaim_chunk_generations_before(self.tree_id, generation)
             }))
+    }
+
+    fn pin_generation(&self, transition: crate::TransitionId, generation: u64) -> Result<()> {
+        self.config
+            .as_ref()
+            .and_then(|config| config.page_store.as_ref())
+            .map_or(Ok(()), |store| {
+                store
+                    .pin_chunk_generation(self.tree_id, transition.high, transition.low, generation)
+                    .map_err(map_tree_read_error)
+            })
+    }
+
+    fn unpin_generation(&self, transition: crate::TransitionId) -> Result<()> {
+        self.config
+            .as_ref()
+            .and_then(|config| config.page_store.as_ref())
+            .map_or(Ok(()), |store| {
+                store
+                    .unpin_chunk_generation(self.tree_id, transition.high, transition.low)
+                    .map_err(map_tree_read_error)
+            })
     }
 
     fn reclaim_orphans(&self) -> Result<u64> {

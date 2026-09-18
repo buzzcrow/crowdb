@@ -24,6 +24,7 @@ fn transition() -> TransferTransition {
             source_stream_manifest_generation: 1,
             replay_offset: 0,
             cutover_offset: 10,
+            base_root_manifest_generation: 1,
             base_tree_manifest: 1,
             base_applied_seq: 10,
             cutover_seq: 10,

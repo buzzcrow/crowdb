@@ -36,7 +36,7 @@ pub enum ChunkKvRangeCatalogPartitionState {
     Prepared,
     Serving,
     SplitPreparing,
-    SplitFenced,
+    SplitFinalizing,
     Transferring,
     TargetCatchingUp,
     Retired,
@@ -57,6 +57,7 @@ pub struct TailOverlayArtifact {
     pub source_stream_manifest_generation: u64,
     pub replay_offset: u64,
     pub cutover_offset: u64,
+    pub base_root_manifest_generation: u64,
     pub base_tree_manifest: u64,
     pub base_applied_seq: u64,
     pub cutover_seq: u64,
@@ -542,7 +543,7 @@ pub enum SplitPhase {
     #[default]
     Planned,
     ParentPreparing,
-    ChildrenPrepared,
+    ChildPrepared,
     CatalogCommitted,
     Aborted,
 }
@@ -559,10 +560,16 @@ pub struct SplitChildAssignment {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SplitReadinessProof {
     pub cutover_seq: u64,
-    pub left_applied_seq: u64,
-    pub right_applied_seq: u64,
-    pub left_tail_overlay: TailOverlayArtifact,
-    pub right_tail_overlay: TailOverlayArtifact,
+    pub parent_next_epoch: u64,
+    /// Durable retained-parent tree/WAL identity produced by the split session.
+    pub retained_parent_artifact: PartitionArtifact,
+    pub retained_parent_tree_manifest: u64,
+    pub retained_parent_root_manifest_generation: u64,
+    pub retained_parent_applied_seq: u64,
+    pub child_applied_seq: u64,
+    pub child_tree_manifest: u64,
+    pub child_root_manifest_generation: u64,
+    pub child_tail_overlay: TailOverlayArtifact,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -573,9 +580,12 @@ pub struct SplitTransition {
     pub parent_owner: OwnerDescriptor,
     pub parent_epoch: u64,
     pub parent_artifact: PartitionArtifact,
+    /// New durable identity for the retained half.  The pre-split parent
+    /// artifact remains the shared-view source only and is never republished.
+    pub retained_parent_artifact: PartitionArtifact,
+    pub parent_next_epoch: u64,
     pub split_key: Vec<u8>,
-    pub left: SplitChildAssignment,
-    pub right: SplitChildAssignment,
+    pub child: SplitChildAssignment,
     #[serde(default)]
     pub planned_at_ms: u64,
     pub phase: SplitPhase,
@@ -589,40 +599,41 @@ impl SplitTransition {
     /// # Errors
     ///
     /// Returns an error for invalid identities, bounds, artifacts, or phase
-    /// fields that cannot represent one atomic parent-to-children cutover.
+    /// fields that cannot represent one atomic retained-parent-to-child cutover.
     pub fn validate(&self) -> Result<(), ChunkKvProtocolError> {
         let valid_identity = self.transition_id != Id128::default()
             && self.parent_id != Id128::default()
-            && self.left.partition_id != Id128::default()
-            && self.right.partition_id != Id128::default()
-            && self.parent_id != self.left.partition_id
-            && self.parent_id != self.right.partition_id
-            && self.left.partition_id != self.right.partition_id
+            && self.child.partition_id != Id128::default()
+            && self.parent_id != self.child.partition_id
             && self.parent_owner.instance_id != 0
             && !self.parent_owner.rpc_endpoint.is_empty()
             && self.parent_epoch != 0
+            && self.parent_next_epoch > self.parent_epoch
             && valid_artifact(&self.parent_artifact)
-            && valid_split_child(&self.left)
-            && valid_split_child(&self.right);
+            && valid_artifact(&self.retained_parent_artifact)
+            && valid_split_child(&self.child);
         let exact_ranges = self.split_key > self.parent_range.start
             && self
                 .parent_range
                 .end
                 .as_ref()
                 .map_or(true, |end| self.split_key < *end)
-            && self.left.range.start == self.parent_range.start
-            && self.left.range.end.as_ref() == Some(&self.split_key)
-            && self.right.range.start == self.split_key
-            && self.right.range.end == self.parent_range.end;
+            && self.child.range.start == self.split_key
+            && self.child.range.end == self.parent_range.end;
         if !valid_identity || !exact_ranges {
             return Err(ChunkKvProtocolError::InvalidSplitTransition);
         }
         if let Some(proof) = &self.readiness_proof {
             if proof.cutover_seq == 0
-                || proof.left_applied_seq != proof.cutover_seq
-                || proof.right_applied_seq != proof.cutover_seq
-                || !self.valid_split_overlay(&proof.left_tail_overlay, &self.left, proof.cutover_seq)
-                || !self.valid_split_overlay(&proof.right_tail_overlay, &self.right, proof.cutover_seq)
+                || proof.parent_next_epoch != self.parent_next_epoch
+                || proof.retained_parent_artifact != self.retained_parent_artifact
+                || proof.retained_parent_tree_manifest == 0
+                || proof.retained_parent_root_manifest_generation == 0
+                || proof.retained_parent_applied_seq != proof.cutover_seq
+                || proof.child_applied_seq != proof.cutover_seq
+                || proof.child_tree_manifest == 0
+                || proof.child_root_manifest_generation == 0
+                || !self.valid_split_overlay(&proof.child_tail_overlay, &self.child, proof.cutover_seq)
             {
                 return Err(ChunkKvProtocolError::InvalidSplitTransition);
             }
@@ -631,7 +642,7 @@ impl SplitTransition {
             SplitPhase::Planned | SplitPhase::ParentPreparing => {
                 self.readiness_proof.is_none() && self.failure.is_none()
             }
-            SplitPhase::ChildrenPrepared | SplitPhase::CatalogCommitted => {
+            SplitPhase::ChildPrepared | SplitPhase::CatalogCommitted => {
                 self.readiness_proof.is_some() && self.failure.is_none()
             }
             SplitPhase::Aborted => self.failure.as_ref().is_some_and(|failure| !failure.is_empty()),
@@ -1088,6 +1099,7 @@ fn valid_tail_overlay(overlay: &TailOverlayArtifact) -> bool {
         && overlay.source_epoch != 0
         && overlay.source_stream_name != StreamName::default()
         && overlay.source_stream_manifest_generation != 0
+        && overlay.base_root_manifest_generation != 0
         && overlay.replay_offset <= overlay.cutover_offset
         && overlay.base_applied_seq <= overlay.cutover_seq
         && overlay.target_stream_start_seq == overlay.cutover_seq.checked_add(1).unwrap_or(0)

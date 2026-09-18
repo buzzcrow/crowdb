@@ -207,6 +207,44 @@ impl Crowdbtree {
         check(unsafe { sys::ct_flush(self.as_ptr()) })
     }
 
+    /// Starts one split-owned shared memtable view and returns its generation fence.
+    pub fn begin_split_memtable_view(&self) -> Result<u64, CtError> {
+        let mut generation = 0;
+        check(unsafe { sys::ct_begin_split_memtable_view(self.as_ptr(), &mut generation) })?;
+        Ok(generation)
+    }
+
+    /// Bulk-publishes the split-owned shared memtable view into one range tree.
+    pub fn publish_split_memtable_view(
+        &self,
+        generation: u64,
+        destination: &Self,
+        range: &KeyRange,
+    ) -> Result<(), CtError> {
+        let (start, end) = match range {
+            KeyRange::Unbounded => (None, None),
+            KeyRange::Bounded { start, end } => (start.as_deref(), end.as_deref()),
+        };
+        check(unsafe {
+            sys::ct_publish_split_memtable_view(
+                self.as_ptr(),
+                generation,
+                destination.as_ptr(),
+                start.map_or(std::ptr::null(), <[u8]>::as_ptr),
+                start.map_or(0, <[u8]>::len),
+                i32::from(start.is_some()),
+                end.map_or(std::ptr::null(), <[u8]>::as_ptr),
+                end.map_or(0, <[u8]>::len),
+                i32::from(end.is_some()),
+            )
+        })
+    }
+
+    /// Releases a shared memtable view after every destination is durable.
+    pub fn release_split_memtable_view(&self, generation: u64) -> Result<(), CtError> {
+        check(unsafe { sys::ct_release_split_memtable_view(self.as_ptr(), generation) })
+    }
+
     pub fn last_applied_slot(&self) -> u64 {
         unsafe { sys::ct_last_applied_slot(self.as_ptr()) }
     }

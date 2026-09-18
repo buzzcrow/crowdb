@@ -11,28 +11,36 @@ use bytes::{Buf, BytesMut};
 
 use super::{decode_frame, FrameDecode, Partition, PartitionJournal, PartitionTree};
 use crate::{
-    Checkpoint, ChunkKvError, PartitionConfig, PartitionLifecycle, PreparedChildArtifact, Result,
+    Checkpoint, ChunkKvError, PartitionConfig, PartitionLifecycle, PreparedSplitWriterArtifact, Result,
     SplitArtifact, SplitChild, SplitPlan, WalRecord, MAX_FRAME_BYTES,
 };
 
 #[derive(Clone)]
-pub struct SplitChildTarget {
+/// Durable destination for either writer in a split session.
+pub struct SplitWriterTarget {
     pub tree_id: u64,
     pub tree_config: crowdb_tree_ffi::Config,
     pub journal: Arc<dyn PartitionJournal>,
 }
 
-pub struct PreparedSplitChild {
-    artifact: PreparedChildArtifact,
+/// The two independently durable writers created by a split session.
+#[derive(Clone)]
+pub struct SplitSessionTargets {
+    pub retained_parent: SplitWriterTarget,
+    pub child: SplitWriterTarget,
+}
+
+pub struct PreparedSplitWriter {
+    artifact: crate::PreparedSplitWriterArtifact,
     checkpoint: Checkpoint,
     tree: Arc<dyn PartitionTree>,
     journal: Arc<dyn PartitionJournal>,
     parent_journal: Arc<dyn PartitionJournal>,
 }
 
-impl PreparedSplitChild {
+impl PreparedSplitWriter {
     #[must_use]
-    pub fn artifact(&self) -> &PreparedChildArtifact {
+    pub fn artifact(&self) -> &crate::PreparedSplitWriterArtifact {
         &self.artifact
     }
 
@@ -41,12 +49,12 @@ impl PreparedSplitChild {
         &self.checkpoint
     }
 
-    /// Open the completed child in `Prepared` state. Catalog proof is still
-    /// required before it can serve.
+    /// Opens one completed split writer in `Prepared` state. Catalog proof is
+    /// still required before it can serve.
     ///
     /// # Errors
     ///
-    /// Returns a checkpoint, journal, tree, or child identity error.
+    /// Returns a checkpoint, journal, tree, or writer identity error.
     pub async fn open(self, config: PartitionConfig) -> Result<Partition> {
         Partition::recover_prepared_overlay(
             self.artifact,
@@ -62,45 +70,261 @@ impl PreparedSplitChild {
 
 pub struct PreparedSplit {
     pub artifact: SplitArtifact,
-    pub left: PreparedSplitChild,
-    pub right: PreparedSplitChild,
-    pub left_rebuild: crowdb_tree_ffi::RangeRebuildStats,
-    pub right_rebuild: crowdb_tree_ffi::RangeRebuildStats,
+    pub retained_parent: Option<PreparedSplitWriter>,
+    pub child: PreparedSplitWriter,
+    pub child_rebuild: crowdb_tree_ffi::RangeRebuildStats,
     pub delta_records: u64,
 }
 
 impl Partition {
-    /// Rebuild two exact child bases while the parent serves, then fence only
-    /// the bounded delta tail and retain it as an overlay at one cutover.
+    /// Completes the durable retained-parent target after the common split
+    /// frontier is established.  Callers use this session form so the catalog
+    /// can publish two new writer identities rather than shrinking the old
+    /// tree in place.
     ///
     /// # Errors
     ///
-    /// Returns a split retry, storage, journal, or apply error. A failure
-    /// before the final fence resumes the parent; a failure after fencing
-    /// leaves it fenced for authoritative resolution.
-    pub async fn prepare_split(
+    /// Returns an error if either target is invalid, the shared view cannot
+    /// be published durably to both writers, or split preparation fails.
+    pub async fn prepare_split_session(
         &self,
         plan: SplitPlan,
-        left_target: SplitChildTarget,
-        right_target: SplitChildTarget,
-        max_fence_lag_records: u64,
+        targets: SplitSessionTargets,
+        max_catchup_lag_records: u64,
     ) -> Result<PreparedSplit> {
-        if max_fence_lag_records == 0 {
+        validate_target(self, &plan, &targets.child)?;
+        validate_target(self, &plan, &targets.retained_parent)?;
+        if targets.child.tree_id == targets.retained_parent.tree_id
+            || targets.child.journal.stream_name() == targets.retained_parent.journal.stream_name()
+        {
             return Err(ChunkKvError::InvalidRequest(
-                "split fence lag bound must be nonzero".into(),
+                "split writer storage identities must be distinct".into(),
             ));
         }
-        validate_targets(self, &plan, &left_target, &right_target)?;
+        let retained_spec = SplitChild {
+            partition_id: plan.parent_id,
+            range: plan.parent_range.split(&plan.split_key)?.0,
+            ownership_epoch: plan.parent_next_epoch,
+        };
         self.begin_split(plan.clone()).await?;
+        let shared_view_generation = self.tree.begin_split_memtable_view().await?;
         let preparation_started = Instant::now();
         let result = self
-            .build_split(&plan, left_target, right_target, max_fence_lag_records)
+            .build_split_session(
+                &plan,
+                retained_spec,
+                targets,
+                shared_view_generation,
+                max_catchup_lag_records,
+            )
             .await;
         if result.is_ok() {
             self.metrics
                 .split_preparation_duration(elapsed_us(preparation_started));
         }
-        if result.is_err() && self.lifecycle() == PartitionLifecycle::SplitPreparing {
+        if result.is_err()
+            && matches!(
+                self.lifecycle(),
+                PartitionLifecycle::SplitPreparing | PartitionLifecycle::SplitFinalizing
+            )
+        {
+            self.cancel_local_split(plan.transition_id).await;
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_lines)]
+    async fn build_split_session(
+        &self,
+        plan: &SplitPlan,
+        retained_spec: SplitChild,
+        targets: SplitSessionTargets,
+        shared_view_generation: u64,
+        max_catchup_lag_records: u64,
+    ) -> Result<PreparedSplit> {
+        if max_catchup_lag_records == 0 {
+            return Err(ChunkKvError::InvalidRequest(
+                "split catch-up lag bound must be nonzero".into(),
+            ));
+        }
+        let (base_checkpoint, source) = self.split_base_snapshot(plan).await?;
+        let (retained_tree, retained_rebuild) = source
+            .rebuild_range(
+                targets.retained_parent.tree_id,
+                &retained_spec.range,
+                targets.retained_parent.tree_config.clone(),
+            )
+            .await?;
+        let (child_tree, child_rebuild) = source
+            .rebuild_range(
+                targets.child.tree_id,
+                &plan.child.range,
+                targets.child.tree_config.clone(),
+            )
+            .await?;
+        if retained_tree.last_applied_seq() != base_checkpoint.applied_seq
+            || child_tree.last_applied_seq() != base_checkpoint.applied_seq
+        {
+            return Err(ChunkKvError::TreeCorruption(
+                "split writers do not share the parent base frontier".into(),
+            ));
+        }
+        self.metrics.split_rebuild(retained_rebuild);
+        self.metrics.split_rebuild(child_rebuild);
+        let mut retained_cursor = DeltaCursor::from_checkpoint(&base_checkpoint);
+        let mut child_cursor = DeltaCursor::from_checkpoint(&base_checkpoint);
+        retained_cursor
+            .catch_up_to_lag(
+                self,
+                plan,
+                retained_tree.as_ref(),
+                &retained_spec,
+                max_catchup_lag_records,
+            )
+            .await?;
+        let catchup_lag_records = child_cursor
+            .catch_up_to_lag(
+                self,
+                plan,
+                child_tree.as_ref(),
+                &plan.child,
+                max_catchup_lag_records,
+            )
+            .await?;
+        self.begin_split_ingress_buffer()?;
+        let finalization_started = Instant::now();
+        self.begin_split_finalization(plan.transition_id).await?;
+        let cutover_seq = self.applied_seq.load(Ordering::Acquire);
+        replay_writer_until(
+            self,
+            &mut retained_cursor,
+            cutover_seq,
+            retained_tree.as_ref(),
+            &plan.parent_range,
+            &retained_spec,
+        )
+        .await?;
+        replay_writer_until(
+            self,
+            &mut child_cursor,
+            cutover_seq,
+            child_tree.as_ref(),
+            &plan.parent_range,
+            &plan.child,
+        )
+        .await?;
+        if retained_cursor.applied_seq != cutover_seq
+            || child_cursor.applied_seq != cutover_seq
+            || retained_cursor.offset != child_cursor.offset
+        {
+            return Err(ChunkKvError::JournalCorruption(
+                "split writers did not reach one common durable frontier".into(),
+            ));
+        }
+        let source = SplitSourceFrontier {
+            parent_id: plan.parent_id,
+            parent_epoch: plan.parent_epoch,
+            checkpoint: base_checkpoint,
+            cutover_offset: child_cursor.offset,
+            cutover_seq,
+            journal: Arc::clone(&self.journal),
+        };
+        let retained_base = checkpoint_prepared_tree(retained_tree.as_ref(), cutover_seq).await?;
+        let child_base = checkpoint_prepared_tree(child_tree.as_ref(), cutover_seq).await?;
+        retained_tree.unpin_generation(plan.transition_id)?;
+        retained_tree.pin_generation(plan.transition_id, retained_base.1)?;
+        child_tree.unpin_generation(plan.transition_id)?;
+        child_tree.pin_generation(plan.transition_id, child_base.1)?;
+        let mut retained = prepare_writer(
+            &retained_spec,
+            targets.retained_parent,
+            retained_tree,
+            retained_base,
+            &source,
+        )?;
+        let mut child = prepare_writer(&plan.child, targets.child, child_tree, child_base, &source)?;
+        self.tree
+            .publish_split_memtable_view(
+                shared_view_generation,
+                retained.tree.as_ref(),
+                &retained_spec.range,
+            )
+            .await?;
+        self.tree
+            .publish_split_memtable_view(shared_view_generation, child.tree.as_ref(), &plan.child.range)
+            .await?;
+        let retained_final = checkpoint_prepared_tree(retained.tree.as_ref(), cutover_seq).await?;
+        let child_final = checkpoint_prepared_tree(child.tree.as_ref(), cutover_seq).await?;
+        rebase_prepared_writer(&mut retained, retained_final)?;
+        rebase_prepared_writer(&mut child, child_final)?;
+        let artifact = SplitArtifact {
+            transition_id: plan.transition_id,
+            parent_id: plan.parent_id,
+            parent_epoch: plan.parent_epoch,
+            parent_next_epoch: plan.parent_next_epoch,
+            shared_view_generation,
+            cutover_seq,
+            retained_parent: retained.artifact.clone(),
+            child: child.artifact.clone(),
+        };
+        self.record_split_artifact(artifact.clone()).await?;
+        self.tree
+            .release_split_memtable_view(shared_view_generation)
+            .await?;
+        self.metrics.split_catchup(
+            retained_cursor
+                .delta_records
+                .saturating_add(child_cursor.delta_records),
+            child_cursor
+                .offset
+                .saturating_sub(source.checkpoint.replay_offset),
+            catchup_lag_records,
+        );
+        self.metrics
+            .split_finalization_duration(elapsed_us(finalization_started));
+        Ok(PreparedSplit {
+            artifact,
+            retained_parent: Some(retained),
+            child,
+            child_rebuild,
+            delta_records: child_cursor.delta_records,
+        })
+    }
+
+    /// Legacy single-writer split preparation. Split sessions must use
+    /// [`Self::prepare_split_session`] so both durable writers are created
+    /// from the same shared view.
+    ///
+    /// # Errors
+    ///
+    /// Returns a split retry, storage, journal, or apply error.
+    pub async fn prepare_split(
+        &self,
+        plan: SplitPlan,
+        child_target: SplitWriterTarget,
+        max_catchup_lag_records: u64,
+    ) -> Result<PreparedSplit> {
+        if max_catchup_lag_records == 0 {
+            return Err(ChunkKvError::InvalidRequest(
+                "split catch-up lag bound must be nonzero".into(),
+            ));
+        }
+        validate_target(self, &plan, &child_target)?;
+        self.begin_split(plan.clone()).await?;
+        let preparation_started = Instant::now();
+        let result = self
+            .build_split(&plan, child_target, max_catchup_lag_records)
+            .await;
+        if result.is_ok() {
+            self.metrics
+                .split_preparation_duration(elapsed_us(preparation_started));
+        }
+        if result.is_err()
+            && matches!(
+                self.lifecycle(),
+                PartitionLifecycle::SplitPreparing | PartitionLifecycle::SplitFinalizing
+            )
+        {
             self.cancel_local_split(plan.transition_id).await;
         }
         result
@@ -109,33 +333,23 @@ impl Partition {
     async fn build_split(
         &self,
         plan: &SplitPlan,
-        left_target: SplitChildTarget,
-        right_target: SplitChildTarget,
-        max_fence_lag_records: u64,
+        child_target: SplitWriterTarget,
+        max_catchup_lag_records: u64,
     ) -> Result<PreparedSplit> {
         let (base_checkpoint, source) = self.split_base_snapshot(plan).await?;
-        let (left_tree, left_rebuild) = source
+        let (child_tree, child_rebuild) = source
             .rebuild_range(
-                left_target.tree_id,
-                &plan.left.range,
-                left_target.tree_config.clone(),
+                child_target.tree_id,
+                &plan.child.range,
+                child_target.tree_config.clone(),
             )
             .await?;
-        let (right_tree, right_rebuild) = source
-            .rebuild_range(
-                right_target.tree_id,
-                &plan.right.range,
-                right_target.tree_config.clone(),
-            )
-            .await?;
-        if left_tree.last_applied_seq() != base_checkpoint.applied_seq
-            || right_tree.last_applied_seq() != base_checkpoint.applied_seq
-        {
+        if child_tree.last_applied_seq() != base_checkpoint.applied_seq {
             return Err(ChunkKvError::TreeCorruption(
-                "split children do not share the base frontier".into(),
+                "split child does not share the parent base frontier".into(),
             ));
         }
-        self.metrics.split_rebuild(left_rebuild, right_rebuild);
+        self.metrics.split_rebuild(child_rebuild);
 
         let mut cursor = DeltaCursor {
             offset: base_checkpoint.replay_offset,
@@ -146,68 +360,63 @@ impl Partition {
             .catch_up_to_lag(
                 self,
                 plan,
-                left_tree.as_ref(),
-                right_tree.as_ref(),
-                max_fence_lag_records,
+                child_tree.as_ref(),
+                &plan.child,
+                max_catchup_lag_records,
             )
             .await?;
 
         let checkpoint_started = Instant::now();
-        let left_base = checkpoint_prepared_tree(left_tree.as_ref(), cursor.applied_seq).await?;
-        let right_base = checkpoint_prepared_tree(right_tree.as_ref(), cursor.applied_seq).await?;
+        let child_base = checkpoint_prepared_tree(child_tree.as_ref(), cursor.applied_seq).await?;
         self.metrics
             .split_base_checkpoint_duration(elapsed_us(checkpoint_started));
 
-        let fence_lag_records = cursor
+        let catchup_lag_records = cursor
             .catch_up_to_lag(
                 self,
                 plan,
-                left_tree.as_ref(),
-                right_tree.as_ref(),
-                max_fence_lag_records,
+                child_tree.as_ref(),
+                &plan.child,
+                max_catchup_lag_records,
             )
             .await?;
 
-        let fence_started = Instant::now();
-        self.fence_split(plan.transition_id).await?;
+        self.begin_split_ingress_buffer()?;
+        let finalization_started = Instant::now();
+        self.begin_split_finalization(plan.transition_id).await?;
         let cutover_seq = self.applied_seq.load(Ordering::Acquire);
-        replay_children_until(
+        replay_writer_until(
             self,
             &mut cursor,
             cutover_seq,
-            left_tree.as_ref(),
-            right_tree.as_ref(),
-            &plan.left,
-            &plan.right,
+            child_tree.as_ref(),
+            &plan.parent_range,
+            &plan.child,
         )
         .await?;
         if cursor.applied_seq != cutover_seq {
             return Err(ChunkKvError::JournalCorruption(
-                "split delta replay did not reach the fenced parent".into(),
+                "split delta replay did not reach the common frontier".into(),
             ));
         }
         self.metrics.split_catchup(
             cursor.delta_records,
             cursor.offset.saturating_sub(base_checkpoint.replay_offset),
-            fence_lag_records,
+            catchup_lag_records,
         );
 
         self.finish_split(
             plan,
-            CutoverChildren {
+            CutoverChild {
                 base_checkpoint,
-                left_target,
-                right_target,
-                left_tree,
-                right_tree,
-                left_rebuild,
-                right_rebuild,
-                left_base,
-                right_base,
+                child_target,
+                child_tree,
+                child_rebuild,
+                child_base,
                 cursor,
             },
             cutover_seq,
-            fence_started,
+            finalization_started,
         )
         .await
     }
@@ -215,49 +424,63 @@ impl Partition {
     async fn finish_split(
         &self,
         plan: &SplitPlan,
-        children: CutoverChildren,
+        child_state: CutoverChild,
         cutover_seq: u64,
-        fence_started: Instant,
+        finalization_started: Instant,
     ) -> Result<PreparedSplit> {
-        let source = ChildOverlaySource {
+        // A restarted ParentPreparing attempt may have left a pin after the
+        // child checkpoint but before readiness became durable. No published
+        // artifact can reference it in this phase, so replace that stale pin
+        // with the exact generation produced by this retry.
+        child_state.child_tree.unpin_generation(plan.transition_id)?;
+        child_state
+            .child_tree
+            .pin_generation(plan.transition_id, child_state.child_base.1)?;
+        let source = SplitSourceFrontier {
             parent_id: plan.parent_id,
             parent_epoch: plan.parent_epoch,
-            checkpoint: children.base_checkpoint,
-            cutover_offset: children.cursor.offset,
+            checkpoint: child_state.base_checkpoint,
+            cutover_offset: child_state.cursor.offset,
             cutover_seq,
             journal: Arc::clone(&self.journal),
         };
-        let left = prepare_child(
-            &plan.left,
-            children.left_target,
-            children.left_tree,
-            children.left_base,
+        let child = match prepare_writer(
+            &plan.child,
+            child_state.child_target,
+            Arc::clone(&child_state.child_tree),
+            child_state.child_base,
             &source,
-        )?;
-        let right = prepare_child(
-            &plan.right,
-            children.right_target,
-            children.right_tree,
-            children.right_base,
-            &source,
-        )?;
+        ) {
+            Ok(child) => child,
+            Err(error) => {
+                let _ = child_state.child_tree.unpin_generation(plan.transition_id);
+                return Err(error);
+            }
+        };
+        let retained_checkpoint = checkpoint_prepared_tree(self.tree.as_ref(), cutover_seq).await?;
+        let retained_parent = prepare_retained_parent(plan, retained_checkpoint, &source)?;
         let artifact = SplitArtifact {
             transition_id: plan.transition_id,
             parent_id: plan.parent_id,
             parent_epoch: plan.parent_epoch,
+            parent_next_epoch: plan.parent_next_epoch,
+            shared_view_generation: 0,
             cutover_seq,
-            left: left.artifact.clone(),
-            right: right.artifact.clone(),
+            retained_parent,
+            child: child.artifact.clone(),
         };
-        self.record_split_artifact(artifact.clone()).await?;
-        self.metrics.split_fence_duration(elapsed_us(fence_started));
+        if let Err(error) = self.record_split_artifact(artifact.clone()).await {
+            let _ = child_state.child_tree.unpin_generation(plan.transition_id);
+            return Err(error);
+        }
+        self.metrics
+            .split_finalization_duration(elapsed_us(finalization_started));
         Ok(PreparedSplit {
             artifact,
-            left,
-            right,
-            left_rebuild: children.left_rebuild,
-            right_rebuild: children.right_rebuild,
-            delta_records: children.cursor.delta_records,
+            retained_parent: None,
+            child,
+            child_rebuild: child_state.child_rebuild,
+            delta_records: child_state.cursor.delta_records,
         })
     }
 
@@ -273,6 +496,7 @@ impl Partition {
         let replay_offset = self.retry_replay_offset.load(Ordering::Acquire);
         let stream_manifest_generation = self.journal.manifest_generation();
         let (tree_manifest, applied_seq, source) = self.tree.checkpoint_snapshot(replay_offset).await?;
+        let root_manifest_generation = self.tree.root_manifest_generation()?;
         if applied_seq > self.journal_durable_seq.load(Ordering::Acquire) {
             return Err(ChunkKvError::ApplyStateUnknown);
         }
@@ -280,6 +504,7 @@ impl Partition {
             Checkpoint {
                 tree_id: self.tree.tree_id(),
                 tree_manifest,
+                root_manifest_generation,
                 applied_seq,
                 stream_name: self.journal.stream_name(),
                 stream_manifest_generation,
@@ -292,9 +517,13 @@ impl Partition {
     async fn cancel_local_split(&self, transition_id: crate::TransitionId) {
         let mut transition = self.split_transition.lock().await;
         if transition.as_ref().map(|active| active.plan.transition_id) == Some(transition_id)
-            && self.lifecycle() == PartitionLifecycle::SplitPreparing
+            && matches!(
+                self.lifecycle(),
+                PartitionLifecycle::SplitPreparing | PartitionLifecycle::SplitFinalizing
+            )
         {
             *transition = None;
+            self.split_ingress.store(None);
             self.lifecycle.store(
                 super::lifecycle_code(PartitionLifecycle::Serving),
                 Ordering::Release,
@@ -303,27 +532,65 @@ impl Partition {
     }
 }
 
-fn validate_targets(
-    parent: &Partition,
-    plan: &SplitPlan,
-    left: &SplitChildTarget,
-    right: &SplitChildTarget,
+fn rebase_prepared_writer(
+    writer: &mut PreparedSplitWriter,
+    (tree_manifest, root_manifest_generation, applied_seq): (u64, u64, u64),
 ) -> Result<()> {
-    if left.tree_id == 0
-        || right.tree_id == 0
-        || left.tree_id == right.tree_id
-        || left.tree_id == parent.tree.tree_id()
-        || right.tree_id == parent.tree.tree_id()
-        || left.journal.tail() != 0
-        || right.journal.tail() != 0
-        || left.journal.stream_name() == right.journal.stream_name()
-        || left.journal.stream_name() == parent.journal.stream_name()
-        || right.journal.stream_name() == parent.journal.stream_name()
-        || left.journal.manifest_generation() == 0
-        || right.journal.manifest_generation() == 0
+    if applied_seq != writer.artifact.applied_seq {
+        return Err(ChunkKvError::ApplyStateUnknown);
+    }
+    writer.artifact.tree_manifest = tree_manifest;
+    writer.artifact.root_manifest_generation = root_manifest_generation;
+    writer.artifact.base_applied_seq = applied_seq;
+    writer.checkpoint = Checkpoint {
+        tree_id: writer.artifact.tree_id,
+        tree_manifest,
+        root_manifest_generation,
+        applied_seq,
+        stream_name: writer.artifact.stream_name,
+        stream_manifest_generation: writer.journal.manifest_generation(),
+        replay_offset: 0,
+    };
+    Ok(())
+}
+
+fn prepare_retained_parent(
+    plan: &SplitPlan,
+    (tree_manifest, root_manifest_generation, applied_seq): (u64, u64, u64),
+    source: &SplitSourceFrontier,
+) -> Result<PreparedSplitWriterArtifact> {
+    let (range, _) = plan.parent_range.split(&plan.split_key)?;
+    Ok(PreparedSplitWriterArtifact {
+        partition_id: plan.parent_id,
+        range,
+        ownership_epoch: plan.parent_next_epoch,
+        tree_id: source.checkpoint.tree_id,
+        tree_manifest,
+        root_manifest_generation,
+        stream_name: source.checkpoint.stream_name,
+        base_applied_seq: applied_seq,
+        parent_id: source.parent_id,
+        parent_epoch: source.parent_epoch,
+        parent_stream_name: source.checkpoint.stream_name,
+        parent_stream_manifest_generation: source.checkpoint.stream_manifest_generation,
+        parent_replay_offset: source.checkpoint.replay_offset,
+        parent_cutover_offset: source.cutover_offset,
+        applied_seq,
+        child_stream_start_seq: applied_seq
+            .checked_add(1)
+            .ok_or_else(|| ChunkKvError::InvalidRequest("split cutover sequence overflows".into()))?,
+    })
+}
+
+fn validate_target(parent: &Partition, plan: &SplitPlan, target: &SplitWriterTarget) -> Result<()> {
+    if target.tree_id == 0
+        || target.tree_id == parent.tree.tree_id()
+        || target.journal.tail() != 0
+        || target.journal.stream_name() == parent.journal.stream_name()
+        || target.journal.manifest_generation() == 0
     {
         return Err(ChunkKvError::InvalidRequest(
-            "split child storage identities must be distinct and empty".into(),
+            "split writer storage identities must be distinct and empty".into(),
         ));
     }
     plan.validate()
@@ -336,26 +603,25 @@ struct DeltaCursor {
 }
 
 impl DeltaCursor {
+    fn from_checkpoint(checkpoint: &Checkpoint) -> Self {
+        Self {
+            offset: checkpoint.replay_offset,
+            applied_seq: checkpoint.applied_seq,
+            delta_records: 0,
+        }
+    }
+
     async fn catch_up_to_lag(
         &mut self,
         parent: &Partition,
         plan: &SplitPlan,
-        left_tree: &dyn PartitionTree,
-        right_tree: &dyn PartitionTree,
+        writer_tree: &dyn PartitionTree,
+        writer: &SplitChild,
         max_lag_records: u64,
     ) -> Result<u64> {
         loop {
             let target = parent.applied_seq.load(Ordering::Acquire);
-            replay_children_until(
-                parent,
-                self,
-                target,
-                left_tree,
-                right_tree,
-                &plan.left,
-                &plan.right,
-            )
-            .await?;
+            replay_writer_until(parent, self, target, writer_tree, &plan.parent_range, writer).await?;
             let lag = parent
                 .applied_seq
                 .load(Ordering::Acquire)
@@ -368,20 +634,16 @@ impl DeltaCursor {
     }
 }
 
-struct CutoverChildren {
+struct CutoverChild {
     base_checkpoint: Checkpoint,
-    left_target: SplitChildTarget,
-    right_target: SplitChildTarget,
-    left_tree: Arc<dyn PartitionTree>,
-    right_tree: Arc<dyn PartitionTree>,
-    left_rebuild: crowdb_tree_ffi::RangeRebuildStats,
-    right_rebuild: crowdb_tree_ffi::RangeRebuildStats,
-    left_base: (u64, u64),
-    right_base: (u64, u64),
+    child_target: SplitWriterTarget,
+    child_tree: Arc<dyn PartitionTree>,
+    child_rebuild: crowdb_tree_ffi::RangeRebuildStats,
+    child_base: (u64, u64, u64),
     cursor: DeltaCursor,
 }
 
-struct ChildOverlaySource {
+struct SplitSourceFrontier {
     parent_id: crate::PartitionId,
     parent_epoch: u64,
     checkpoint: Checkpoint,
@@ -391,14 +653,13 @@ struct ChildOverlaySource {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn replay_children_until(
+async fn replay_writer_until(
     parent: &Partition,
     cursor: &mut DeltaCursor,
     target_seq: u64,
-    left_tree: &dyn PartitionTree,
-    right_tree: &dyn PartitionTree,
-    left: &SplitChild,
-    right: &SplitChild,
+    writer_tree: &dyn PartitionTree,
+    parent_range: &crate::PartitionRange,
+    writer: &SplitChild,
 ) -> Result<()> {
     const WINDOW_BYTES: usize = 1024 * 1024;
     let tail = parent.journal.tail();
@@ -425,7 +686,7 @@ async fn replay_children_until(
                 parent.ownership_epoch.load(Ordering::Acquire),
                 &decoded.record,
             )?;
-            apply_child_record(cursor, &decoded.record, left_tree, right_tree, left, right).await?;
+            apply_writer_record(cursor, &decoded.record, writer_tree, parent_range, writer).await?;
             let consumed = decoded.bytes_consumed;
             buffered.advance(consumed);
             frame_offset = frame_offset
@@ -445,13 +706,12 @@ async fn replay_children_until(
     Ok(())
 }
 
-async fn apply_child_record(
+async fn apply_writer_record(
     cursor: &mut DeltaCursor,
     record: &WalRecord,
-    left_tree: &dyn PartitionTree,
-    right_tree: &dyn PartitionTree,
-    left: &SplitChild,
-    right: &SplitChild,
+    writer_tree: &dyn PartitionTree,
+    parent_range: &crate::PartitionRange,
+    writer: &SplitChild,
 ) -> Result<()> {
     if record.mutation_seq <= cursor.applied_seq {
         return Ok(());
@@ -461,41 +721,38 @@ async fn apply_child_record(
             "split delta contains a mutation sequence gap".into(),
         ));
     }
-    let matches_left = left.range.contains(record.operation.key());
-    let matches_right = right.range.contains(record.operation.key());
-    if matches_left == matches_right {
+    if !parent_range.contains(record.operation.key()) {
         return Err(ChunkKvError::JournalCorruption(
-            "split delta does not belong to exactly one child".into(),
+            "split delta is outside the retained-parent and child ranges".into(),
         ));
     }
-    for (tree, matches) in [(left_tree, matches_left), (right_tree, matches_right)] {
-        if matches && record.result.applied() {
-            tree.apply(record.mutation_seq, &record.operation).await?;
-        } else {
-            tree.advance_noop(record.mutation_seq).await?;
-        }
+    if writer.range.contains(record.operation.key()) && record.result.applied() {
+        writer_tree.apply(record.mutation_seq, &record.operation).await?;
+    } else {
+        writer_tree.advance_noop(record.mutation_seq).await?;
     }
     cursor.applied_seq = record.mutation_seq;
     cursor.delta_records = cursor.delta_records.saturating_add(1);
     Ok(())
 }
 
-fn prepare_child(
-    child: &SplitChild,
-    target: SplitChildTarget,
+fn prepare_writer(
+    writer: &SplitChild,
+    target: SplitWriterTarget,
     tree: Arc<dyn PartitionTree>,
-    (tree_manifest, base_applied_seq): (u64, u64),
-    source: &ChildOverlaySource,
-) -> Result<PreparedSplitChild> {
+    (tree_manifest, root_manifest_generation, base_applied_seq): (u64, u64, u64),
+    source: &SplitSourceFrontier,
+) -> Result<PreparedSplitWriter> {
     if tree.last_applied_seq() != source.cutover_seq || base_applied_seq > source.cutover_seq {
         return Err(ChunkKvError::ApplyStateUnknown);
     }
-    let artifact = PreparedChildArtifact {
-        partition_id: child.partition_id,
-        range: child.range.clone(),
-        ownership_epoch: child.ownership_epoch,
+    let artifact = PreparedSplitWriterArtifact {
+        partition_id: writer.partition_id,
+        range: writer.range.clone(),
+        ownership_epoch: writer.ownership_epoch,
         tree_id: target.tree_id,
         tree_manifest,
+        root_manifest_generation,
         stream_name: target.journal.stream_name(),
         base_applied_seq,
         parent_id: source.parent_id,
@@ -513,12 +770,13 @@ fn prepare_child(
     let checkpoint = Checkpoint {
         tree_id: target.tree_id,
         tree_manifest,
+        root_manifest_generation,
         applied_seq: base_applied_seq,
         stream_name: target.journal.stream_name(),
         stream_manifest_generation: target.journal.manifest_generation(),
         replay_offset: 0,
     };
-    Ok(PreparedSplitChild {
+    Ok(PreparedSplitWriter {
         artifact,
         checkpoint,
         tree,
@@ -527,13 +785,13 @@ fn prepare_child(
     })
 }
 
-async fn checkpoint_prepared_tree(tree: &dyn PartitionTree, expected_seq: u64) -> Result<(u64, u64)> {
+async fn checkpoint_prepared_tree(tree: &dyn PartitionTree, expected_seq: u64) -> Result<(u64, u64, u64)> {
     tree.checkpoint(0).await?;
     let checkpoint = tree.checkpoint_state()?;
     if checkpoint.1 != expected_seq || checkpoint.1 > tree.last_applied_seq() {
         return Err(ChunkKvError::ApplyStateUnknown);
     }
-    Ok(checkpoint)
+    Ok((checkpoint.0, tree.root_manifest_generation()?, checkpoint.1))
 }
 
 fn elapsed_us(started: Instant) -> u64 {

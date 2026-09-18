@@ -34,7 +34,7 @@ pub struct ChunkKvServerConfig {
     pub group0_mgmt_seeds: Vec<String>,
     pub max_hosted_partitions: usize,
     pub catalog_refresh_interval_ms: u64,
-    pub max_split_fence_lag_records: u64,
+    pub max_split_catchup_lag_records: u64,
     pub shutdown_drain_timeout_ms: u64,
     pub rpc_workers: u32,
     pub storage: StorageConfig,
@@ -53,7 +53,7 @@ impl Default for ChunkKvServerConfig {
             group0_mgmt_seeds: vec![format!("http://127.0.0.1:{KV_SERVER_MGMT_BASE}")],
             max_hosted_partitions: 256,
             catalog_refresh_interval_ms: 5_000,
-            max_split_fence_lag_records: 1_024,
+            max_split_catchup_lag_records: 1_024,
             shutdown_drain_timeout_ms: 30_000,
             rpc_workers: 2,
             storage: StorageConfig::default(),
@@ -103,7 +103,7 @@ impl ChunkKvServerConfig {
         }
         if self.max_hosted_partitions == 0
             || self.catalog_refresh_interval_ms == 0
-            || self.max_split_fence_lag_records == 0
+            || self.max_split_catchup_lag_records == 0
             || self.shutdown_drain_timeout_ms == 0
             || self.rpc_workers == 0
         {

@@ -17,7 +17,7 @@ fn defaults_close_the_documented_timing_contract() {
     assert_eq!(config.balance.target_partitions_per_owner, 4);
     assert_eq!(config.balance.minimum_weighted_improvement_percent, 25);
     assert_eq!(config.balance.cooldown_ms, 600_000);
-    assert_eq!(config.max_split_fence_lag_records, 1_024);
+    assert_eq!(config.max_split_catchup_lag_records, 1_024);
     assert_eq!(config.storage.metadata_store_id, 1);
     assert_eq!(config.storage.stream_writer_lease_ms, 30_000);
     assert_eq!(config.storage.diskio_connections_per_endpoint, 1);
@@ -46,9 +46,9 @@ fn invalid_identity_address_and_capacity_fail_closed() {
     config.max_hosted_partitions = 0;
     assert!(config.validate().is_err());
     config.max_hosted_partitions = 1;
-    config.max_split_fence_lag_records = 0;
+    config.max_split_catchup_lag_records = 0;
     assert!(config.validate().is_err());
-    config.max_split_fence_lag_records = 1;
+    config.max_split_catchup_lag_records = 1;
     config.storage.metadata_store_id = 0;
     config.storage.stream_writer_lease_ms = 0;
     assert!(config.validate().is_err());

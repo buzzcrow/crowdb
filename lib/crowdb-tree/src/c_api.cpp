@@ -958,6 +958,42 @@ ct_status ct_flush(ct_tree *t)
     return to_status(t->tree->flush());
 }
 
+ct_status ct_begin_split_memtable_view(ct_tree *t, uint64_t *out_generation)
+{
+    if (t == nullptr || out_generation == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    return to_status(t->tree->begin_split_memtable_view(out_generation));
+}
+
+ct_status ct_publish_split_memtable_view(ct_tree *source, uint64_t generation, ct_tree *destination,
+                                         const uint8_t *range_start, size_t range_start_len, int has_range_start,
+                                         const uint8_t *range_end, size_t range_end_len, int has_range_end)
+{
+    if (source == nullptr || destination == nullptr || (has_range_start != 0 && range_start == nullptr) ||
+        (has_range_end != 0 && range_end == nullptr)) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    std::optional<std::string> start;
+    std::optional<std::string> end;
+    if (has_range_start != 0) {
+        start.emplace(reinterpret_cast<const char *>(range_start), range_start_len);
+    }
+    if (has_range_end != 0) {
+        end.emplace(reinterpret_cast<const char *>(range_end), range_end_len);
+    }
+    return to_status(source->tree->publish_split_memtable_view(generation, *destination->tree,
+                                                               KeyRange::bounded(std::move(start), std::move(end))));
+}
+
+ct_status ct_release_split_memtable_view(ct_tree *t, uint64_t generation)
+{
+    if (t == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    return to_status(t->tree->release_split_memtable_view(generation));
+}
+
 ct_status ct_get(ct_tree *t, const uint8_t *key, size_t klen, int32_t *found, uint64_t *slot, ct_buf *value)
 {
     if (t == nullptr || found == nullptr) {

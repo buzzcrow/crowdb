@@ -584,6 +584,21 @@ class Crowdbtree
     // flush().
     Status flush();
 
+    // Moves the currently visible L0 tables into one split-owned shared view
+    // and installs a fresh active table for post-prepare writes. Normal flush
+    // and reclamation leave that shared view alone until its split session
+    // explicitly releases it.
+    Status begin_split_memtable_view(uint64_t *out_generation);
+
+    // Releases the split-owned shared view after both derived range trees have
+    // durably published it. The generation fences stale release attempts.
+    Status release_split_memtable_view(uint64_t generation);
+
+    // Bulk-publishes the split-owned shared view into one range-bounded
+    // destination. Source entries remain owned by the session; callers release
+    // them only after every destination has durably snapshotted its result.
+    Status publish_split_memtable_view(uint64_t generation, Crowdbtree &destination, const KeyRange &range);
+
     // Async twin of flush(). flush() only drains
     // L0 (MemTable) into L1 (in-memory B+tree) -- it never touches
     // Config::page_store (only snapshot() writes durable bytes), so unlike
@@ -1328,10 +1343,12 @@ class Crowdbtree
     // through several freeze/relocate cycles under a sustained out-of-order
     // write pattern, which is expected and bounded by how long the
     // underlying gap stays open, not by this mechanism.
-    mutable std::shared_mutex             memtable_mutex_;
-    std::shared_ptr<MemTable>             active_;
-    std::deque<std::shared_ptr<MemTable>> frozen_;
-    std::atomic<uint64_t>                 memtable_next_id_{1}; // monotonic MemTable id for logging
+    mutable std::shared_mutex              memtable_mutex_;
+    std::shared_ptr<MemTable>              active_;
+    std::deque<std::shared_ptr<MemTable>>  frozen_;
+    std::vector<std::shared_ptr<MemTable>> split_shared_memtables_;
+    uint64_t                               split_memtable_generation_ = 0;
+    std::atomic<uint64_t>                  memtable_next_id_{1}; // monotonic MemTable id for logging
 
     // internal_error slot tracker (replaces the caller-supplied contiguous_slot). Holds
     // received-but-not-yet-contiguous slots above contiguous_slot_; the contiguous
