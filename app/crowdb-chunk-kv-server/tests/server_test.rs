@@ -190,6 +190,178 @@ async fn prepared_partition_range(
     .unwrap()
 }
 
+fn install_local_split_catalog(
+    service: &ChunkKvService,
+    retained: &Partition,
+    child: &Partition,
+    split_key: &[u8],
+) {
+    let owner = OwnerDescriptor {
+        instance_id: INSTANCE_ID,
+        rpc_endpoint: "127.0.0.1:9900".into(),
+    };
+    let entry = |partition_id, range, tree_id, stream_name| ChunkKvRangeCatalogEntry {
+        partition_id,
+        range,
+        owner: owner.clone(),
+        owner_epoch: EPOCH + 1,
+        state: ChunkKvRangeCatalogPartitionState::Serving,
+        artifact: PartitionArtifact {
+            tree_id,
+            stream_name,
+            tail_overlay: None,
+        },
+        transition_id: Some(Id128 { high: 22, low: 23 }),
+    };
+    let mut page = ChunkKvRangeCatalogPage {
+        generation: 2,
+        page_index: 0,
+        entries: vec![
+            entry(
+                Id128 { high: 1, low: 2 },
+                KeyRange {
+                    start: Vec::new(),
+                    end: Some(split_key.to_vec()),
+                },
+                40,
+                retained.snapshot().stream_name,
+            ),
+            entry(
+                Id128 { high: 22, low: 25 },
+                KeyRange {
+                    start: split_key.to_vec(),
+                    end: None,
+                },
+                41,
+                child.snapshot().stream_name,
+            ),
+        ],
+        checksum: [0; 32],
+    };
+    page.seal().unwrap();
+    let mut head = ChunkKvRangeCatalogHead {
+        generation: 2,
+        previous_generation: Some(1),
+        pages: vec![ChunkKvRangeCatalogPageRef {
+            page_generation: 2,
+            page_index: 0,
+            first_key: Vec::new(),
+            page_checksum: page.checksum,
+        }],
+        checksum: [0; 32],
+    };
+    head.seal().unwrap();
+    service
+        .install_catalog_and_reconcile(&head, &[page], &[])
+        .unwrap();
+    let mut grant = ServingGrant {
+        instance_id: INSTANCE_ID,
+        lease_sequence: 2,
+        catalog_generation: 2,
+        issued_at_ms: 1_100,
+        expires_at_ms: 13_100,
+        assignments: vec![
+            ServingAssignment {
+                partition_id: Id128 { high: 1, low: 2 },
+                owner_epoch: EPOCH + 1,
+            },
+            ServingAssignment {
+                partition_id: Id128 { high: 22, low: 25 },
+                owner_epoch: EPOCH + 1,
+            },
+        ],
+        assignment_digest: [0; 32],
+    };
+    grant.seal();
+    service
+        .authority()
+        .install(grant, &policy(), 1_100, 50_000)
+        .unwrap();
+}
+
+async fn assert_old_parent_ordered_reads(service: &ChunkKvService) {
+    for (sequence, key) in [(80, b"b".as_slice()), (81, b"t".as_slice())] {
+        let response = service
+            .handle_point(
+                PointRequest {
+                    routing: routing(sequence),
+                    operation: PointOperation::Put {
+                        key: key.to_vec(),
+                        value: key.to_vec(),
+                    },
+                },
+                1_500,
+                50_100,
+            )
+            .await;
+        assert!(response.result.is_ok());
+    }
+    let seek = service
+        .handle_seek(
+            SeekRequest {
+                routing: routing(82),
+                key: b"b".to_vec(),
+                kind: SeekKind::Higher,
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    let OperationResult::Value(Some(value)) = seek.result.unwrap() else {
+        panic!("expected seek to cross the local writer boundary")
+    };
+    assert_eq!(value.key, b"t");
+    let scan = service
+        .handle_scan(
+            ScanRequest {
+                routing: routing(83),
+                start: Some(b"b".to_vec()),
+                end: Some(b"z".to_vec()),
+                direction: ScanDirection::Forward,
+                limit: 8,
+                continuation: None,
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    let OperationResult::Scan { items, continuation } = scan.result.unwrap() else {
+        panic!("expected scan result")
+    };
+    assert_eq!(
+        items.iter().map(|item| item.key.as_slice()).collect::<Vec<_>>(),
+        [b"b", b"t"]
+    );
+    assert!(continuation.is_none());
+}
+
+async fn assert_old_parent_scan_continuation(service: &ChunkKvService) {
+    let request = |sequence, continuation| ScanRequest {
+        routing: routing(sequence),
+        start: Some(b"b".to_vec()),
+        end: Some(b"z".to_vec()),
+        direction: ScanDirection::Forward,
+        limit: 1,
+        continuation,
+    };
+    let first_page = service.handle_scan(request(84, None), 1_500, 50_100).await;
+    let OperationResult::Scan {
+        items,
+        continuation: Some(continuation),
+    } = first_page.result.unwrap()
+    else {
+        panic!("expected a split-lineage continuation")
+    };
+    assert_eq!(items[0].key, b"b");
+    let second_page = service
+        .handle_scan(request(85, Some(continuation)), 1_500, 50_100)
+        .await;
+    let OperationResult::Scan { items, .. } = second_page.result.unwrap() else {
+        panic!("expected continued split-lineage scan")
+    };
+    assert_eq!(items[0].key, b"t");
+}
+
 async fn fixture() -> (ChunkKvService, Partition) {
     let stream_name = StreamName { high: 30, low: 31 };
     let store = Arc::new(MemoryStreamStore::new(4_096));
@@ -375,10 +547,18 @@ async fn prepared_split_lineage_suppresses_catalog_recovery() {
         retained_parent: prepared_writer_artifact(&retained),
         child: prepared_writer_artifact(&child),
     };
+    retained.activate_recovered(EPOCH + 1).unwrap();
+    child.activate_recovered(EPOCH + 1).unwrap();
     parent.begin_split_finalization(transition_id).await.unwrap();
     parent.record_split_artifact(artifact.clone()).await.unwrap();
     service.record_local_split_ready(&artifact).await.unwrap();
     assert_eq!(parent.lifecycle(), PartitionLifecycle::Serving);
+
+    assert_old_parent_ordered_reads(&service).await;
+    install_local_split_catalog(&service, &retained, &child, &split_key);
+    assert_old_parent_ordered_reads(&service).await;
+    assert_old_parent_scan_continuation(&service).await;
+
     service.remove_partition(Id128 { high: 1, low: 2 });
     service.remove_partition(Id128 { high: 22, low: 25 });
 

@@ -847,12 +847,16 @@ impl ChunkKvService {
         if entry.state == ChunkKvRangeCatalogPartitionState::TargetCatchingUp {
             return target_not_ready(catalog.generation);
         }
-        let partition =
-            match self.resolve_point_partition(&request.routing, catalog.generation, entry, now_monotonic_ms)
-            {
-                Ok(partition) => partition,
-                Err(response) => return *response,
-            };
+        let partition = match self.resolve_point_partition(
+            &request.routing,
+            &key,
+            catalog.generation,
+            entry,
+            now_monotonic_ms,
+        ) {
+            Ok(partition) => partition,
+            Err(response) => return *response,
+        };
 
         match request.operation {
             PointOperation::Get { key } => {
@@ -1085,7 +1089,12 @@ impl ChunkKvService {
         ) {
             return authority_failure(catalog.generation, &error, Some(entry));
         }
-        let Some(partition) = self.partition_for_catalog_entry(entry) else {
+        if let Some(response) =
+            self.authorize_local_lineage(&request.routing, &catalog, now_monotonic_ms, entry.partition_id)
+        {
+            return response;
+        }
+        let Some(partition) = self.partition_for_request(&request.routing, &request.key, entry) else {
             return failure(
                 catalog.generation,
                 ChunkKvRpcErrorCode::Recovering,
@@ -1094,12 +1103,9 @@ impl ChunkKvService {
         };
         let minimum = request.routing.min_journal_position.map(journal_position);
         let writer_epoch = partition.snapshot().ownership_epoch;
-        let result = match request.kind {
-            SeekKind::Ceiling => partition.ceiling(writer_epoch, &request.key, minimum).await,
-            SeekKind::Higher => partition.higher(writer_epoch, &request.key, minimum).await,
-            SeekKind::Floor => partition.floor(writer_epoch, &request.key, minimum).await,
-            SeekKind::Lower => partition.lower(writer_epoch, &request.key, minimum).await,
-        };
+        let result = self
+            .execute_seek(&partition, &request, writer_epoch, minimum)
+            .await;
         match result {
             Ok(value) => success(
                 catalog.generation,
@@ -1160,7 +1166,10 @@ impl ChunkKvService {
         let Some(entry) = catalog.entry_for_partition(request.routing.partition_id) else {
             return not_my_range(catalog.generation, None);
         };
-        let clipped = match validate_and_clip_scan(&request, &entry.range) {
+        let logical_range = self
+            .logical_range_for_request(request.routing.partition_id, &catalog)
+            .unwrap_or_else(|| entry.range.clone());
+        let clipped = match validate_and_clip_scan(&request, &logical_range) {
             Ok(clipped) => clipped,
             Err(ScanValidationError::RefreshRequired) => {
                 return failure(
@@ -1188,7 +1197,12 @@ impl ChunkKvService {
         ) {
             return authority_failure(catalog.generation, &error, Some(entry));
         }
-        let Some(partition) = self.partition_for_catalog_entry(entry) else {
+        if let Some(response) =
+            self.authorize_local_lineage(&request.routing, &catalog, now_monotonic_ms, entry.partition_id)
+        {
+            return response;
+        }
+        let Some(partition) = self.partition_for_request(&request.routing, &clipped.start, entry) else {
             return failure(
                 catalog.generation,
                 ChunkKvRpcErrorCode::Recovering,
@@ -1207,8 +1221,72 @@ impl ChunkKvService {
         request: &ScanRequest,
         clipped: &ClippedScan,
     ) -> Result<crowdb_chunk_kv::ScanPage, ChunkKvError> {
+        if let Some(ingress) = partition.split_ingress() {
+            return self.execute_split_scan(&ingress, request, clipped).await;
+        }
+        self.execute_partition_scan(
+            partition,
+            request,
+            clipped,
+            clipped.limit as usize,
+            self.max_scan_response_bytes,
+        )
+        .await
+    }
+
+    async fn execute_split_scan(
+        &self,
+        ingress: &crowdb_chunk_kv::SplitIngress,
+        request: &ScanRequest,
+        clipped: &ClippedScan,
+    ) -> Result<crowdb_chunk_kv::ScanPage, ChunkKvError> {
+        let writers = match clipped.direction {
+            ScanDirection::Forward => [ingress.retained_parent(), ingress.child()],
+            ScanDirection::Reverse => [ingress.child(), ingress.retained_parent()],
+        };
+        let mut entries = Vec::new();
+        let mut remaining_bytes = self.max_scan_response_bytes;
+        for (index, writer) in writers.iter().enumerate() {
+            let remaining = (clipped.limit as usize).saturating_sub(entries.len());
+            if remaining == 0 || remaining_bytes == 0 {
+                return Ok(crowdb_chunk_kv::ScanPage {
+                    entries,
+                    truncated: true,
+                });
+            }
+            let page = self
+                .execute_partition_scan(writer, request, clipped, remaining, remaining_bytes)
+                .await?;
+            remaining_bytes = remaining_bytes.saturating_sub(scan_page_bytes(&page));
+            entries.extend(page.entries);
+            if page.truncated {
+                return Ok(crowdb_chunk_kv::ScanPage {
+                    entries,
+                    truncated: true,
+                });
+            }
+            if entries.len() == clipped.limit as usize && index + 1 < writers.len() {
+                return Ok(crowdb_chunk_kv::ScanPage {
+                    entries,
+                    truncated: true,
+                });
+            }
+        }
+        Ok(crowdb_chunk_kv::ScanPage {
+            entries,
+            truncated: false,
+        })
+    }
+
+    async fn execute_partition_scan(
+        &self,
+        partition: &Partition,
+        request: &ScanRequest,
+        clipped: &ClippedScan,
+        limit: usize,
+        byte_budget: usize,
+    ) -> Result<crowdb_chunk_kv::ScanPage, ChunkKvError> {
         let minimum = request.routing.min_journal_position.map(journal_position);
-        let limit = clipped.limit as usize;
         let writer_epoch = partition.snapshot().ownership_epoch;
         match clipped.direction {
             ScanDirection::Forward => {
@@ -1219,8 +1297,8 @@ impl ChunkKvService {
                             resume_after,
                             clipped.end.as_deref(),
                             limit,
-                            self.max_scan_response_bytes,
-                            minimum,
+                            byte_budget,
+                            minimum_for_writer(partition, minimum),
                         )
                         .await
                 } else {
@@ -1230,8 +1308,8 @@ impl ChunkKvService {
                             Some(&clipped.start),
                             clipped.end.as_deref(),
                             limit,
-                            self.max_scan_response_bytes,
-                            minimum,
+                            byte_budget,
+                            minimum_for_writer(partition, minimum),
                         )
                         .await
                 }
@@ -1244,17 +1322,68 @@ impl ChunkKvService {
                         start_before,
                         Some(&clipped.start),
                         limit,
-                        self.max_scan_response_bytes,
-                        minimum,
+                        byte_budget,
+                        minimum_for_writer(partition, minimum),
                     )
                     .await
             }
         }
     }
 
+    async fn execute_seek(
+        &self,
+        partition: &Partition,
+        request: &SeekRequest,
+        writer_epoch: u64,
+        minimum: Option<JournalPosition>,
+    ) -> Result<Option<crowdb_chunk_kv::ScanEntry>, ChunkKvError> {
+        let Some(ingress) = partition.split_ingress() else {
+            return execute_writer_seek(partition, request, writer_epoch, minimum).await;
+        };
+        let writer = ingress.writer_for_key(&request.key);
+        let result = execute_writer_seek(
+            &writer,
+            request,
+            writer.snapshot().ownership_epoch,
+            minimum_for_writer(&writer, minimum),
+        )
+        .await?;
+        if result.is_some() {
+            return Ok(result);
+        }
+        match request.kind {
+            SeekKind::Ceiling | SeekKind::Higher if request.key.as_slice() < ingress.split_key() => {
+                let child = ingress.child();
+                child
+                    .ceiling(
+                        child.snapshot().ownership_epoch,
+                        ingress.split_key(),
+                        minimum_for_writer(&child, minimum),
+                    )
+                    .await
+            }
+            SeekKind::Floor | SeekKind::Lower if request.key.as_slice() >= ingress.split_key() => {
+                let retained = ingress.retained_parent();
+                let mut page = retained
+                    .scan_reverse(
+                        retained.snapshot().ownership_epoch,
+                        Some(ingress.split_key()),
+                        None,
+                        1,
+                        self.max_scan_response_bytes,
+                        minimum_for_writer(&retained, minimum),
+                    )
+                    .await?;
+                Ok(page.entries.pop())
+            }
+            _ => Ok(None),
+        }
+    }
+
     fn resolve_point_partition(
         &self,
         routing: &RequestRouting,
+        key: &[u8],
         generation: u64,
         entry: &ChunkKvRangeCatalogEntry,
         now_monotonic_ms: u64,
@@ -1270,13 +1399,61 @@ impl ChunkKvService {
         ) {
             return Err(Box::new(authority_failure(generation, &error, Some(entry))));
         }
-        self.partition_for_catalog_entry(entry).ok_or_else(|| {
+        self.partition_for_request(routing, key, entry).ok_or_else(|| {
             Box::new(failure(
                 generation,
                 ChunkKvRpcErrorCode::Recovering,
                 "assigned partition is not prepared locally".into(),
             ))
         })
+    }
+
+    fn partition_for_request(
+        &self,
+        routing: &RequestRouting,
+        key: &[u8],
+        entry: &ChunkKvRangeCatalogEntry,
+    ) -> Option<Partition> {
+        self.local_split_sessions
+            .load()
+            .get(&routing.partition_id)
+            .map(|session| session.dispatcher.clone())
+            .filter(|dispatcher| dispatcher.snapshot().range.contains(key))
+            .or_else(|| self.partition_for_catalog_entry(entry))
+    }
+
+    fn authorize_local_lineage(
+        &self,
+        routing: &RequestRouting,
+        catalog: &CatalogSnapshot,
+        now_monotonic_ms: u64,
+        already_authorized: Id128,
+    ) -> Option<ChunkKvResponse> {
+        let sessions = self.local_split_sessions.load();
+        let session = sessions.get(&routing.partition_id)?;
+        let ingress = session.dispatcher.split_ingress()?;
+        for writer in [ingress.retained_parent(), ingress.child()] {
+            let snapshot = writer.snapshot();
+            let partition_id = Id128 {
+                high: snapshot.partition_id.high,
+                low: snapshot.partition_id.low,
+            };
+            if partition_id == already_authorized {
+                continue;
+            }
+            let Some(entry) = catalog.entry_for_partition(partition_id) else {
+                continue;
+            };
+            if let Err(error) = self.authority.authorize(
+                catalog.generation,
+                entry.partition_id,
+                entry.owner_epoch,
+                now_monotonic_ms,
+            ) {
+                return Some(authority_failure(catalog.generation, &error, Some(entry)));
+            }
+        }
+        None
     }
 
     fn partition_for_catalog_entry(&self, entry: &ChunkKvRangeCatalogEntry) -> Option<Partition> {
@@ -1321,6 +1498,30 @@ impl ChunkKvService {
                 })
         })
     }
+}
+
+async fn execute_writer_seek(
+    partition: &Partition,
+    request: &SeekRequest,
+    writer_epoch: u64,
+    minimum: Option<JournalPosition>,
+) -> Result<Option<crowdb_chunk_kv::ScanEntry>, ChunkKvError> {
+    match request.kind {
+        SeekKind::Ceiling => partition.ceiling(writer_epoch, &request.key, minimum).await,
+        SeekKind::Higher => partition.higher(writer_epoch, &request.key, minimum).await,
+        SeekKind::Floor => partition.floor(writer_epoch, &request.key, minimum).await,
+        SeekKind::Lower => partition.lower(writer_epoch, &request.key, minimum).await,
+    }
+}
+
+fn minimum_for_writer(partition: &Partition, minimum: Option<JournalPosition>) -> Option<JournalPosition> {
+    minimum.filter(|position| position.stream_name == partition.snapshot().stream_name)
+}
+
+fn scan_page_bytes(page: &crowdb_chunk_kv::ScanPage) -> usize {
+    page.entries.iter().fold(0usize, |total, entry| {
+        total.saturating_add(entry.key.len().saturating_add(entry.value.value.len()))
+    })
 }
 
 async fn sample_live_bytes(

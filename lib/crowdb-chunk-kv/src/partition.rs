@@ -288,6 +288,16 @@ impl SplitIngress {
         self.child.clone()
     }
 
+    #[must_use]
+    pub fn writer_for_key(&self, key: &[u8]) -> Partition {
+        self.writer_for(key).clone()
+    }
+
+    #[must_use]
+    pub fn split_key(&self) -> &[u8] {
+        &self.split_key
+    }
+
     fn writer_for(&self, key: &[u8]) -> &Partition {
         if key < self.split_key.as_ref() {
             &self.retained_parent

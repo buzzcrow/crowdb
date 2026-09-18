@@ -118,6 +118,11 @@ the complete two-half negative restart coverage below; R175 remains disabled.
   writers receive post-prepare WAL/memtable mutations before shared-view bulk
   publish. Remove the buffer and move shared-view bulk persistence behind
   immediate writer ingress.
+- [x] **Serve stale local topology through one lineage**: after g2 publication,
+  a g1 parent route resolves to its local dispatcher. Point, multi-get, batch,
+  seek, and scan use current writer epochs internally; seek crosses the split
+  boundary, directional scans merge both writers, and continuation retains the
+  old logical topology. Cross-writer reads validate both current assignments.
 
 ### Next-Test Order
 
@@ -134,6 +139,19 @@ the complete two-half negative restart coverage below; R175 remains disabled.
 4. After restart passes, run the mixed read/write split load that forces gets
    through tree storage, then implement direct dual-writer ingress and repeat
    both E2Es. R175 balance remains out of scope until these R174 gates pass.
+
+### Bugs
+
+- **Direct-ingress cutover lacks a sequence-linearization primitive.** Removing
+  `SplitIngressRoute::Buffering` directly is unsafe: old-parent mutations
+  admitted before the route swap may complete after newly routed writer
+  mutations, while both currently continue from the same cutover sequence.
+  That can duplicate sequence numbers or omit the late parent mutation from
+  the writer artifact. A safe implementation needs either a mutation-worker
+  barrier that installs the complete writer route at one exact frontier, or
+  writer construction that can accept post-prepare WAL/memtable mutations
+  before shared-view persistence. This exceeded the 10-minute investigation
+  budget and is deferred while independent R174 lineage work continues.
 
 ## Data-Path Gate Audit and Handling Notes
 
@@ -184,7 +202,7 @@ the complete two-half negative restart coverage below; R175 remains disabled.
 
 ### Immediate Cleanup Sequence
 
-- [ ] **Centralize local lineage resolution**: introduce one resolver for
+- [x] **Centralize local lineage resolution**: introduce one resolver for
   current writers and old-parent dispatchers, then use it from point, multi-get,
   batch, seek, and scan. Do not remove an API-specific route check until its
   resolver preserves the old logical parent range. Files:
@@ -226,14 +244,14 @@ the complete two-half negative restart coverage below; R175 remains disabled.
   `lib/crowdb-tree/{include/crowdb-tree/c_api.h,src/btree/,ffi/src}`,
   `lib/crowdb-chunk-kv/src/{partition/split.rs,partition/tree.rs}`, and tree
   and partition integration tests.
-- [ ] **Serve old topology through local lineage**: remove stale-generation and
+- [x] **Serve old topology through local lineage**: remove stale-generation and
   client-epoch rejection from multi-get, batch mutation, seek, and scan; route
   a g1 parent point/seek by key to the local pair and merge a g1 scan across
   both writer ranges. Keep malformed request, real deadline, local drain, and
   unavailable durability/lease failures as request rejection. Files:
   `app/crowdb-chunk-kv-server/src/`, `lib/crowdb-chunk-kv-client/src/`,
   protocol catalog types, and client/server E2E tests.
-- [ ] **Separate owner lease from catalog reference**: authorize a locally
+- [x] **Separate owner lease from catalog reference**: authorize a locally
   ready split lineage under a live owner lease without requiring request or
   catalog generation, or a client's old epoch, to equal the new writer. Keep
   exact epoch checks inside WAL/tree ownership and durable artifact validation.
