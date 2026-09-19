@@ -383,7 +383,9 @@ impl ChunkKvService {
                         high: snapshot.partition_id.high,
                         low: snapshot.partition_id.low,
                     })
-                    .is_some_and(|entry| entry.artifact.tail_overlay.is_none()),
+                    .is_some_and(|entry| {
+                        entry.artifact.tail_overlay.is_none() && partition_matches_entry(&partition, entry)
+                    }),
             });
         }
         observation
@@ -418,6 +420,9 @@ impl ChunkKvService {
             let Some(partition) = partitions.get(&entry.partition_id) else {
                 continue;
             };
+            if partition.snapshot().lifecycle != crowdb_chunk_kv::PartitionLifecycle::Serving {
+                continue;
+            }
             if !partition
                 .materialize_split_ownership(entry.owner_epoch)
                 .await?

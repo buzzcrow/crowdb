@@ -18,10 +18,10 @@ perform bucket and object CRUD.
 
 ## Scope Decision
 
-- R174 remains active. Its foreground path does not make a request wait for
+- R174 is accepted. Its foreground path does not make a request wait for
   shared-view publish, tree checkpoint, materialization, or catalog refresh,
-  but sustained restart recovery still has the exact-root bug recorded below.
-- R175 is paused until R174 restart recovery passes. Existing transfer and balance code remains unverified
+  and the sustained four-partition restart regression passes.
+- R175 is active. Existing transfer and balance code remains unverified
   scaffolding until reviewed against the completed R174 lineage. Proactive
   child-owner balance stays disabled in the group-0 planner during that work;
   dead-owner recovery remains independent.
@@ -128,7 +128,14 @@ materialization marker must be keyed by `(partition_id, owner_epoch)`; keying
 only by partition ID let a successor epoch appear independently recoverable
 and start the next split before its own overlay was materialized.
 
-## Open Bugs
+The corrected 60,000-operation run at
+`bench-log/chunk-kv-regression-20260919-095848` completed in 108.926 s with
+zero errors, p99 222.639 ms, three split finalizations, four local partitions,
+zero catch-up lag and admission backpressure, then restarted in 2.083 s,
+recovered all four partitions, and read a pre-restart value. The exact-root
+failure did not recur.
+
+## Resolved Bugs
 
 - **R174 exact latest-root recovery after materialization**: the retained
   partition `(1, 1)` recorded split base checkpoint 10751 and cutover 17695.
@@ -137,12 +144,16 @@ and start the next split before its own overlay was materialized.
   cutover succeeds. Restart nevertheless reopened the latest durable root at
   checkpoint 10751, while the retained writer WAL correctly began at 17696.
   Recovery therefore failed with `expected 10752, got 17696 at offset 0`.
-  This is not a missing WAL record: the durable latest-root selection regressed
-  to the split base after catalog cleanup. Reproduction:
+  This was not a missing WAL record. Before the owner installed the split
+  catalog, its heartbeat matched the new retained writer to the old catalog
+  entry by partition ID alone. Since that old entry had no overlay, group-0
+  prematurely cleared the new epoch's overlay without materialization. The
+  fallback now requires the exact partition ID, epoch, range, and stream.
+  Reproduction:
   `bench-log/chunk-kv-regression-20260919-091542/chunk-kv-1-log/`.
-  Investigation exceeded the agreed ten-minute bound; keep R174 active, do
-  not start R175, and resume at the root-catalog publication/open path rather
-  than adding another split state or buffer.
+  Regression and passing run:
+  `prepared_split_lineage_suppresses_catalog_recovery` and
+  `bench-log/chunk-kv-regression-20260919-095848`.
 - **Inherited retry positions must not move a writer WAL watermark**:
   retained and child writers inherit bounded parent retry results so an old
   request can return without another append. Those results contain parent

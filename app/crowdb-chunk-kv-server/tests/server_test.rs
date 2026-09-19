@@ -433,6 +433,51 @@ async fn assert_retained_seek_needs_no_child_grant(service: &ChunkKvService) {
     assert_eq!(value.key, b"b");
 }
 
+async fn assert_all_partition_loads_recoverable(service: &ChunkKvService, expected: bool) {
+    let observation = service
+        .registry_observation_with_load_samples(1_024, 0, 0)
+        .await
+        .unwrap();
+    assert!(
+        observation
+            .partition_loads
+            .iter()
+            .all(|load| load.independently_recoverable == expected),
+        "all observed partition writers should have recoverability={expected}"
+    );
+}
+
+fn assert_hosts_exact_child_assignment(
+    service: &ChunkKvService,
+    child: &Partition,
+    split_key: Vec<u8>,
+) {
+    let child_snapshot = child.snapshot();
+    let entry = ChunkKvRangeCatalogEntry {
+        partition_id: Id128 { high: 22, low: 25 },
+        range: KeyRange {
+            start: split_key,
+            end: None,
+        },
+        owner: OwnerDescriptor {
+            instance_id: INSTANCE_ID,
+            rpc_endpoint: "127.0.0.1:9900".into(),
+        },
+        owner_epoch: child_snapshot.ownership_epoch,
+        state: ChunkKvRangeCatalogPartitionState::Serving,
+        artifact: PartitionArtifact {
+            tree_id: 41,
+            stream_name: child_snapshot.stream_name,
+            tail_overlay: None,
+        },
+        transition_id: Some(Id128 { high: 22, low: 23 }),
+    };
+    assert!(service.hosts_catalog_assignment(&entry));
+    let mut stale_entry = entry;
+    stale_entry.owner_epoch = stale_entry.owner_epoch.saturating_add(1);
+    assert!(!service.hosts_catalog_assignment(&stale_entry));
+}
+
 async fn fixture() -> (ChunkKvService, Partition) {
     let stream_name = StreamName { high: 30, low: 31 };
     let store = Arc::new(MemoryStreamStore::new(4_096));
@@ -624,40 +669,18 @@ async fn prepared_split_lineage_suppresses_catalog_recovery() {
     parent.record_split_artifact(artifact.clone()).await.unwrap();
     service.record_local_split_ready(&artifact).await.unwrap();
     assert_eq!(parent.lifecycle(), PartitionLifecycle::Serving);
+    assert_all_partition_loads_recoverable(&service, false).await;
 
     assert_old_parent_ordered_reads(&service).await;
     install_local_split_catalog(&service, &retained, &child, &split_key);
+    assert_all_partition_loads_recoverable(&service, true).await;
     assert_old_parent_ordered_reads(&service).await;
     assert_old_parent_scan_continuation(&service).await;
     assert_retained_seek_needs_no_child_grant(&service).await;
 
     service.remove_partition(Id128 { high: 1, low: 2 });
     service.remove_partition(Id128 { high: 22, low: 25 });
-
-    let child_snapshot = child.snapshot();
-    let entry = ChunkKvRangeCatalogEntry {
-        partition_id: Id128 { high: 22, low: 25 },
-        range: KeyRange {
-            start: split_key,
-            end: None,
-        },
-        owner: OwnerDescriptor {
-            instance_id: INSTANCE_ID,
-            rpc_endpoint: "127.0.0.1:9900".into(),
-        },
-        owner_epoch: child_snapshot.ownership_epoch,
-        state: ChunkKvRangeCatalogPartitionState::Serving,
-        artifact: PartitionArtifact {
-            tree_id: 41,
-            stream_name: child_snapshot.stream_name,
-            tail_overlay: None,
-        },
-        transition_id: Some(Id128 { high: 22, low: 23 }),
-    };
-    assert!(service.hosts_catalog_assignment(&entry));
-    let mut stale_entry = entry;
-    stale_entry.owner_epoch = stale_entry.owner_epoch.saturating_add(1);
-    assert!(!service.hosts_catalog_assignment(&stale_entry));
+    assert_hosts_exact_child_assignment(&service, &child, split_key);
 }
 
 #[tokio::test]
