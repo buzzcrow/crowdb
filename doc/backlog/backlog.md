@@ -40,12 +40,6 @@ R152–R166 delivered the limited basic S3 service, including the restart
 acceptance baseline. R167–R169 defer multipart upload and shared-storage GC
 without blocking basic large-object deletion. R170 separately adds optional
 cuObject/RDMA acceleration after the TCP baseline is correct and measured.
-- **[R173](R173-s3-console-cluster-cli.md)** — S3 cluster deployment, CLI
-  operations, and benchmark — Area: console / access server / S3 — Plan and
-  deploy the storage, access-server, and web services from usable capacity plus
-  replication or EC input; add one-tenant bucket/object operations and
-  deterministic S3 workloads through shared console operations, ready for a
-  future S3 UI without duplicating behavior.
 - **[R167](R167-s3-multipart-upload.md)** — multipart upload — Area: access
   server / S3 — **Deferred.** Add durable part state, atomic completion, cleanup,
   and multipart integrity after the basic milestone stabilizes.

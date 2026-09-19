@@ -43,7 +43,7 @@ design is detailed in the sub-design `design-crowdb-console-ui.md`.
   - [7.5 `kv server delete` — graceful + require-empty](#75-kv-server-delete--graceful--require-empty)
   - [7.6 Bench subcommand](#76-bench-subcommand)
   - [7.7 Bench lifecycle verbs (deploy / prepare / run / teardown)](#77-bench-lifecycle-verbs-deploy--prepare--run--teardown)
-  - [7.8 Persistent S3 mini-cluster](#78-persistent-s3-mini-cluster)
+  - [7.8 S3 mini-clusters and benchmarks](#78-s3-mini-clusters-and-benchmarks)
 - [8. Error Model and Operation Logging](#8-error-model-and-operation-logging)
 - [9. Observability](#9-observability)
 - [10. Open Questions](#10-open-questions)
@@ -729,7 +729,7 @@ config extension. The `runtime/` directory is gitignored. The
 `crowdb-kv-server` child processes survive CLI exit because
 `lifecycle::deploy_local` spawns them with `kill_on_drop(false)`.
 
-### 7.8 Persistent S3 mini-cluster
+### 7.8 S3 mini-clusters and benchmarks
 
 `crowdb-cli s3 cluster start --data-dir <path>` is the simple local operator
 path. The location, rather than the caller's global console configuration, is
@@ -748,11 +748,16 @@ normal S3 bucket metadata, object metadata, streams, and object bytes therefore
 survive a complete stop and restart. `stop` terminates recorded processes but
 does not remove configuration or storage. `status` is read-only.
 
+First start is transactional. The complete marker is published only after the
+access endpoint is ready; failure stops the processes created by that
+invocation. A later start archives an incomplete initialization directory next
+to the selected location before retrying, preserving its logs for diagnosis
+without treating it as a recoverable cluster.
+
 The mini topology is intentionally loopback and places its simulated nodes in
 one rack, so ChunkDB explicitly permits colocated fragments. This is not the
-production capacity contract: the normal R173 planner must still reject a
-requested copy or EC scheme unless distinct healthy failure domains satisfy
-it.
+production capacity contract: a production planner must reject a requested
+copy or EC scheme unless distinct healthy failure domains satisfy it.
 
 The local access-server binds only to `127.0.0.1` and explicitly enables its
 trusted-network authentication mode. This keeps the local CRUD path small: the
@@ -764,9 +769,45 @@ S3 errors, and do not fall back to another mutation.
 
 The durable record is deliberately small. `console.toml` retains service PIDs
 and reproducible launch specifications; `s3-mini-cluster.json` retains only the
-format version, loopback endpoint, and non-secret tenant name. Runtime liveness
-is derived from the recorded PIDs, not represented by additional compound
-cluster states.
+format version, storage profile, loopback endpoint, and non-secret tenant name.
+The access master key is injected into a child only while it starts and is not
+persisted in either record. Runtime liveness is derived from recorded PIDs,
+not represented by additional compound cluster states.
+
+`crowdb-cli bench s3` owns a separate, invocation-scoped memory profile. KV and
+WAL blocks use memory backing, DiskIO uses memory disks, and chunk-KV keeps its
+readable tree and value path in memory. The memory disks retain a large logical
+address space while allocating resident pages on demand; logical capacity is
+therefore independent of the benchmark's resident-memory budget. The benchmark
+always stops its cluster, while leaving the stopped work directory and logs as
+diagnostic artifacts.
+
+The benchmark has write, read, range-read, list, and deterministic weighted
+mix workloads. It prepares a fixed dataset, runs warm-up outside measurement,
+then admits requests until either the operation limit or duration limit is
+reached. Workers keep local latency and failure accumulators and use only an
+atomic admission counter on the request path. Cleanup deletes only prepared or
+actually written benchmark objects, with bounded asynchronous concurrency.
+
+Results report backing choices, measured duration, attempts, successes,
+failures, throughput, average latency, p50, p99, prepared bytes, and process
+peak resident bytes. Read validates the full response length, range-read
+validates the selected interval length, and list validates ordering and
+continuation progress. Failures are separated into metadata, protocol,
+transport, and resource categories. RSS is sampled asynchronously; exceeding
+the configured budget makes the run fail instead of publishing valid
+throughput.
+
+The following invariants apply:
+
+- **S3-C1 — Recovery boundary:** only a complete marker identifies a
+  restartable file-backed cluster, and stop never removes its stored data.
+- **S3-C2 — Real request path:** every benchmark operation traverses the normal
+  S3 endpoint and validates the response property relevant to its workload.
+- **S3-C3 — Bounded execution:** duration, operation count, concurrency, and
+  resident memory are explicit limits; exhausting memory is an error.
+- **S3-C4 — Simple ownership:** persistent operator data and ephemeral
+  benchmark data use separate storage profiles and lifecycle ownership.
 
 ## 8. Error Model and Operation Logging
 

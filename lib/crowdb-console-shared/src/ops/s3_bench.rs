@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures::stream::{self, StreamExt};
 use reqwest::Method;
 use serde::Serialize;
 
@@ -192,6 +193,7 @@ pub struct S3BenchOperationStats {
 struct WorkerStats {
     operations: [OperationAccumulator; 4],
     failures: S3BenchFailures,
+    written_operations: Vec<u64>,
 }
 
 #[derive(Default)]
@@ -231,7 +233,7 @@ async fn run_attached(config: &S3BenchConfig, estimated_dataset_bytes: u64) -> R
         .request(Method::PUT, Some(BENCH_BUCKET), None, &[], None, None)
         .await?;
     prepare_dataset(&client, config).await?;
-    run_warmup(&client, config).await?;
+    let warmup_writes = run_warmup(&client, config).await?;
 
     let sampling = Arc::new(AtomicBool::new(true));
     let peak_resident = Arc::new(AtomicU64::new(cluster_resident_bytes(&config.work_dir)));
@@ -263,7 +265,7 @@ async fn run_attached(config: &S3BenchConfig, estimated_dataset_bytes: u64) -> R
     sampling.store(false, Ordering::Release);
     sampler.await.map_err(|error| Error::Config(error.to_string()))?;
     let peak_resident_bytes = peak_resident.load(Ordering::Acquire);
-    cleanup(&client, admitted.load(Ordering::Relaxed), config).await?;
+    cleanup(&client, &combined.written_operations, &warmup_writes, config).await?;
     if peak_resident_bytes > config.memory_budget_bytes {
         return Err(validation(
             "memory_budget_bytes",
@@ -318,12 +320,16 @@ async fn prepare_dataset(client: &S3HttpClient, config: &S3BenchConfig) -> Resul
     Ok(())
 }
 
-async fn run_warmup(client: &S3HttpClient, config: &S3BenchConfig) -> Result<()> {
+async fn run_warmup(client: &S3HttpClient, config: &S3BenchConfig) -> Result<Vec<u64>> {
+    let mut written_operations = Vec::new();
     for index in 0..config.warmup_operations {
         let workload = selected_workload(config.workload, config.mix, config.seed ^ index);
         execute(client, config, workload, index, true).await?;
+        if workload == S3BenchWorkload::Write {
+            written_operations.push(index);
+        }
     }
-    Ok(())
+    Ok(written_operations)
 }
 
 async fn run_worker(
@@ -342,6 +348,9 @@ async fn run_worker(
         }
         random = xorshift(random);
         let workload = selected_workload(config.workload, config.mix, random);
+        if workload == S3BenchWorkload::Write {
+            stats.written_operations.push(operation);
+        }
         let index = operation_index(workload);
         stats.operations[index].attempts += 1;
         let started = Instant::now();
@@ -430,15 +439,34 @@ async fn execute(
     Ok(())
 }
 
-async fn cleanup(client: &S3HttpClient, admitted: u64, config: &S3BenchConfig) -> Result<()> {
-    for index in 0..config.dataset_objects {
-        delete_key(client, &dataset_key(index)).await?;
-    }
-    for operation in 0..admitted.min(config.operations) {
-        delete_key(client, &format!("write-{operation:020}")).await?;
-    }
-    for operation in 0..config.warmup_operations {
-        delete_key(client, &format!("warmup-{operation:020}")).await?;
+async fn cleanup(
+    client: &S3HttpClient,
+    written_operations: &[u64],
+    warmup_writes: &[u64],
+    config: &S3BenchConfig,
+) -> Result<()> {
+    let mut keys =
+        Vec::with_capacity(config.dataset_objects + written_operations.len() + warmup_writes.len());
+    keys.extend((0..config.dataset_objects).map(dataset_key));
+    keys.extend(
+        written_operations
+            .iter()
+            .map(|operation| format!("write-{operation:020}")),
+    );
+    keys.extend(
+        warmup_writes
+            .iter()
+            .map(|operation| format!("warmup-{operation:020}")),
+    );
+    let results = stream::iter(keys.into_iter().map(|key| {
+        let client = client.clone();
+        async move { delete_key(&client, &key).await }
+    }))
+    .buffer_unordered(config.concurrency)
+    .collect::<Vec<_>>()
+    .await;
+    for result in results {
+        result?;
     }
     client
         .request(Method::DELETE, Some(BENCH_BUCKET), None, &[], None, None)
@@ -556,6 +584,7 @@ fn merge_stats(combined: &mut WorkerStats, mut worker: WorkerStats) {
     combined.failures.protocol += worker.failures.protocol;
     combined.failures.transport += worker.failures.transport;
     combined.failures.resource += worker.failures.resource;
+    combined.written_operations.append(&mut worker.written_operations);
 }
 
 fn classify_failure(failures: &mut S3BenchFailures, error: &Error) {
