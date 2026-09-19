@@ -27,6 +27,49 @@ pub enum BenchVerb {
     /// End-to-end chunk data IO benchmark.
     #[command(subcommand)]
     Chunkio(ChunkioBenchVerb),
+    /// S3 HTTP workloads over an invocation-owned memory cluster.
+    #[command(subcommand)]
+    S3(S3BenchVerb),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum S3BenchVerb {
+    Write(S3Args),
+    Read(S3Args),
+    RangeRead(S3Args),
+    List(S3Args),
+    Mix(S3Args),
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct S3Args {
+    /// Empty directory used for the invocation-owned memory cluster.
+    #[arg(long)]
+    pub work_dir: std::path::PathBuf,
+    #[arg(long, default_value_t = 4 * 1024)]
+    pub object_size: usize,
+    #[arg(long, default_value_t = 128)]
+    pub dataset_objects: usize,
+    #[arg(long, default_value_t = 32)]
+    pub concurrency: usize,
+    /// Maximum measured operations; duration may stop admission first.
+    #[arg(long, default_value_t = 60_000)]
+    pub operations: u64,
+    #[arg(long, default_value_t = 20)]
+    pub duration_secs: u64,
+    #[arg(long, default_value_t = 100)]
+    pub warmup_operations: u64,
+    #[arg(long, default_value_t = 1)]
+    pub seed: u64,
+    #[arg(long, default_value_t = 2 * 1024 * 1024 * 1024)]
+    pub memory_budget_bytes: u64,
+    #[arg(long, default_value_t = 100)]
+    pub list_limit: usize,
+    #[arg(long, default_value = "w20R70RR5L5")]
+    pub ratio: String,
+    /// Also write the JSON result to this path.
+    #[arg(long)]
+    pub output: Option<std::path::PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -475,6 +518,7 @@ pub async fn run_bench_verb(cli: &Cli, verb: BenchVerb) -> ExitCode {
         BenchVerb::Diskdb(verb) => super::disk::db::run(cli, verb).await,
         BenchVerb::Chunkdb(verb) => super::chunk::run(cli, verb).await,
         BenchVerb::Chunkio(verb) => super::io::run(cli, verb).await,
+        BenchVerb::S3(verb) => super::s3::run(cli, verb).await,
         BenchVerb::Kv(kv) => match kv {
             KvBenchVerb::Prepare(args) => super::kv::prepare::run(cli, args).await,
             KvBenchVerb::Read(args) => super::kv::read::run(cli, args).await,

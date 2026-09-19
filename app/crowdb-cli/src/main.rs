@@ -111,6 +111,7 @@ impl Cli {
                     BenchVerb::Diskdb(_) => "diskdb",
                     BenchVerb::Chunkdb(_) => "chunkdb",
                     BenchVerb::Chunkio(_) => "chunkio",
+                    BenchVerb::S3(_) => "s3",
                 };
                 format!("bench-{v}")
             }

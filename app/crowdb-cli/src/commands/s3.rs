@@ -85,6 +85,9 @@ pub enum S3ObjectVerb {
         key: String,
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Inclusive byte range formatted as START-END.
+        #[arg(long, value_parser = parse_range)]
+        range: Option<(u64, u64)>,
     },
     Delete {
         #[arg(long)]
@@ -185,7 +188,8 @@ async fn run_object(verb: S3ObjectVerb) -> crowdb_console_shared::error::Result<
             bucket,
             key,
             output,
-        } => get_object(&data_dir, &bucket, &key, output).await,
+            range,
+        } => get_object(&data_dir, &bucket, &key, output, range).await,
         S3ObjectVerb::Delete {
             data_dir,
             bucket,
@@ -251,16 +255,38 @@ async fn get_object(
     bucket: &str,
     key: &str,
     output: Option<PathBuf>,
+    range: Option<(u64, u64)>,
 ) -> crowdb_console_shared::error::Result<Option<Vec<u8>>> {
-    let (_, body) =
-        crowdb_console_shared::ops::s3::request(data_dir, Method::GET, Some(bucket), Some(key), &[], None)
-            .await?;
+    let (_, body) = crowdb_console_shared::ops::s3::request_with_range(
+        data_dir,
+        Method::GET,
+        Some(bucket),
+        Some(key),
+        &[],
+        None,
+        range,
+    )
+    .await?;
     if let Some(path) = output {
         std::fs::write(path, body)?;
         Ok(None)
     } else {
         Ok(Some(body))
     }
+}
+
+fn parse_range(value: &str) -> Result<(u64, u64), String> {
+    let (start, end) = value
+        .split_once('-')
+        .ok_or_else(|| "range must use START-END".to_string())?;
+    let start = start
+        .parse::<u64>()
+        .map_err(|_| "invalid range start".to_string())?;
+    let end = end.parse::<u64>().map_err(|_| "invalid range end".to_string())?;
+    if start > end {
+        return Err("range start must not exceed end".into());
+    }
+    Ok((start, end))
 }
 
 async fn list_objects(
