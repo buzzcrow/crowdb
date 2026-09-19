@@ -184,7 +184,10 @@ impl TransitionStorage for LiveCatchupStorage {
         target: &Partition,
         _entry: &ChunkKvRangeCatalogEntry,
     ) -> Result<(), MonitorError> {
-        assert_eq!(target.snapshot().partition_id, self.recovered.snapshot().partition_id);
+        assert_eq!(
+            target.snapshot().partition_id,
+            self.recovered.snapshot().partition_id
+        );
         self.catchup_calls.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }

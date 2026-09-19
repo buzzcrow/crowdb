@@ -2649,7 +2649,6 @@ async fn live_transfer_target_replays_only_the_suffix_after_preparation() {
         base_tree,
         artifact: final_artifact,
         checkpoint,
-        proof,
         responses,
         ..
     } = overlay_fixture().await;
@@ -2670,15 +2669,61 @@ async fn live_transfer_target_replays_only_the_suffix_after_preparation() {
     .await
     .unwrap();
     assert_eq!(target.snapshot().applied_seq, 2);
+    let first_waiter = tokio::spawn({
+        let target = target.clone();
+        async move { target.await_transfer_initialization().await }
+    });
+    let second_waiter = tokio::spawn({
+        let target = target.clone();
+        async move { target.await_transfer_initialization().await }
+    });
+    tokio::task::yield_now().await;
+    assert!(!first_waiter.is_finished());
+    assert!(!second_waiter.is_finished());
+
+    let write = target
+        .append_prepared_transfer_mutation(
+            final_artifact.clone(),
+            19,
+            request(6),
+            MutationOperation::Put {
+                key: b"e".to_vec(),
+                value: b"new-owner".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(write.mutation_seq, 6);
+    let retry = target
+        .append_prepared_transfer_mutation(
+            final_artifact.clone(),
+            19,
+            request(6),
+            MutationOperation::Put {
+                key: b"e".to_vec(),
+                value: b"new-owner".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(retry, write);
+    assert_eq!(target.snapshot().journal_durable_seq, 6);
+    assert_eq!(target.snapshot().applied_seq, 2);
+    assert_eq!(target.lifecycle(), crowdb_chunk_kv::PartitionLifecycle::Prepared);
 
     target
         .catch_up_prepared_transfer(final_artifact, parent_journal)
         .await
         .unwrap();
-    assert_eq!(target.snapshot().applied_seq, 5);
-    assert_eq!(target.lifecycle(), crowdb_chunk_kv::PartitionLifecycle::Prepared);
-    target.activate_prepared(&proof).unwrap();
+    first_waiter.await.unwrap().unwrap();
+    second_waiter.await.unwrap().unwrap();
+    assert_eq!(target.snapshot().applied_seq, 6);
+    assert_eq!(target.lifecycle(), crowdb_chunk_kv::PartitionLifecycle::Serving);
     assert_eq!(target.get(19, b"d", None).await.unwrap().unwrap().value, b"tail");
+    assert_eq!(
+        target.get(19, b"e", None).await.unwrap().unwrap().value,
+        b"new-owner"
+    );
     assert_eq!(
         target
             .get(19, b"d", Some(responses[2].journal_position))

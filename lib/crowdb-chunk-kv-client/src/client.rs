@@ -16,6 +16,7 @@ use crate::{
 };
 
 const CATALOG_REFRESH_INTERVAL_MS: u64 = 5_000;
+const MAX_TARGET_INITIALIZATION_ATTEMPTS: u32 = 3;
 
 pub struct ChunkKvClient {
     pub(crate) config: ClientConfig,
@@ -173,6 +174,7 @@ impl ChunkKvClient {
             .ok_or(ClientError::Deadline)?;
         let mut attempts = 0_u32;
         let mut refreshes = 0_u32;
+        let mut target_initialization_attempts = 0_u32;
         let mut last_transport_error = None;
         let mut last_response = None;
 
@@ -215,29 +217,11 @@ impl ChunkKvClient {
                     }
                 }
                 Ok(Ok(response)) => {
-                    let retry = response.result.as_ref().err().is_some_and(|failure| {
-                        matches!(
-                            failure.code,
-                            ChunkKvRpcErrorCode::NotMyRange
-                                | ChunkKvRpcErrorCode::RefreshRequired
-                                | ChunkKvRpcErrorCode::Overloaded
-                                | ChunkKvRpcErrorCode::WriteStalled
-                                | ChunkKvRpcErrorCode::Recovering
-                                | ChunkKvRpcErrorCode::TargetNotReady
-                                | ChunkKvRpcErrorCode::LeaseExpired
-                        )
-                    });
-                    if !retry {
+                    let Some(refresh_route) =
+                        response_retry_route(&response, &mut target_initialization_attempts)
+                    else {
                         return Ok(response);
-                    }
-                    let refresh_route = response.result.as_ref().err().is_some_and(|failure| {
-                        matches!(
-                            failure.code,
-                            ChunkKvRpcErrorCode::NotMyRange
-                                | ChunkKvRpcErrorCode::RefreshRequired
-                                | ChunkKvRpcErrorCode::LeaseExpired
-                        )
-                    });
+                    };
                     last_response = Some(response);
                     if refresh_route && refreshes < self.config.max_route_refreshes {
                         refreshes += 1;
@@ -249,7 +233,16 @@ impl ChunkKvClient {
                 let remaining = deadline
                     .checked_duration_since(Instant::now())
                     .ok_or(ClientError::Deadline)?;
-                tokio::time::sleep(self.config.retry_backoff.min(remaining)).await;
+                let response_delay = last_response
+                    .as_ref()
+                    .and_then(|response| response.result.as_ref().err())
+                    .and_then(|failure| {
+                        (failure.code == ChunkKvRpcErrorCode::TargetNotReady)
+                            .then_some(failure.retry_after_ms)
+                            .flatten()
+                    })
+                    .map(std::time::Duration::from_millis);
+                tokio::time::sleep(response_delay.unwrap_or(self.config.retry_backoff).min(remaining)).await;
             }
         }
         if let Some(response) = last_response {
@@ -292,6 +285,37 @@ impl ChunkKvClient {
             self.last_catalog_refresh_ms.store(0, Ordering::Release);
         }
     }
+}
+
+fn response_retry_route(
+    response: &ChunkKvResponse,
+    target_initialization_attempts: &mut u32,
+) -> Option<bool> {
+    let failure = response.result.as_ref().err()?;
+    if failure.code == ChunkKvRpcErrorCode::TargetNotReady {
+        *target_initialization_attempts += 1;
+        if *target_initialization_attempts >= MAX_TARGET_INITIALIZATION_ATTEMPTS {
+            return None;
+        }
+    }
+    let retry = matches!(
+        failure.code,
+        ChunkKvRpcErrorCode::NotMyRange
+            | ChunkKvRpcErrorCode::RefreshRequired
+            | ChunkKvRpcErrorCode::Overloaded
+            | ChunkKvRpcErrorCode::WriteStalled
+            | ChunkKvRpcErrorCode::Recovering
+            | ChunkKvRpcErrorCode::TargetNotReady
+            | ChunkKvRpcErrorCode::LeaseExpired
+    );
+    retry.then_some({
+        matches!(
+            failure.code,
+            ChunkKvRpcErrorCode::NotMyRange
+                | ChunkKvRpcErrorCode::RefreshRequired
+                | ChunkKvRpcErrorCode::LeaseExpired
+        )
+    })
 }
 
 pub(crate) fn wall_now_ms() -> u64 {

@@ -207,8 +207,14 @@ failure. The live-source phases and actions are:
    narrow target journal authority: ordinary unconditional mutations append
    immediately to the target WAL from `C+1`, while reads and conditional
    mutations coroutine-await target initialization within their request
-   deadlines. Awaiting does not block an executor thread and uses no separate
-   transfer request queue.
+   deadlines. Each wait is capped by the smaller of the remaining request
+   deadline and a server initialization-wait budget. A process-wide lock-free
+   admission counter bounds total initialization waiters; a full counter or
+   server-cap timeout returns `TargetNotReady` with a retry delay. Awaiting does
+   not block an executor thread and uses no separate transfer request queue.
+   Successful unconditional writes mean the target WAL append is durable; they
+   do not consume initialization-wait capacity. Every state other than
+   `TargetCatchingUp` retains its simpler existing request path.
 5. `CatchupPublished`: the existing target coroutine incrementally replays only
    the sealed source suffix after its preparation cursor through `C`, then
    persists the final catch-up proof. Target-WAL records already admitted after
@@ -274,7 +280,8 @@ The balance invariants are:
 - **SERVER-LIVE-TARGET-CONTINUITY:** normal catch-up retains the prepared target
   handle and replays only the remaining suffix; exact-root reopen is recovery;
 - **SERVER-ASYNC-INITIALIZATION:** readiness waits suspend Rust futures and
-  never block executor threads or create a transfer-owned request queue;
+  never block executor threads or create a transfer-owned request queue; only
+  `TargetCatchingUp` requests enter this bounded path;
 - **SERVER-AMBIGUITY-FENCES:** an unknown publication outcome never reopens the
   source writer; and
 - **SERVER-CLEANUP-AFTER-PINS:** source tree, stream, retry history, and shared

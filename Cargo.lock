@@ -684,6 +684,7 @@ dependencies = [
  "crowdb-chunk-kv",
  "crowdb-chunk-stream",
  "crowdb-tree-ffi",
+ "futures",
  "serde",
  "sha2",
  "thiserror 2.0.18",

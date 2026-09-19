@@ -1129,10 +1129,7 @@ fn valid_tail_overlay(overlay: &TailOverlayArtifact) -> bool {
         && overlay.target_stream_start_seq == overlay.cutover_seq.checked_add(1).unwrap_or(0)
 }
 
-fn valid_initial_target_readiness(
-    transition: &TransferTransition,
-    proof: &TargetReadinessProof,
-) -> bool {
+fn valid_initial_target_readiness(transition: &TransferTransition, proof: &TargetReadinessProof) -> bool {
     if proof.target_instance_id != transition.target.instance_id
         || proof.target_epoch != transition.target_epoch
         || !valid_artifact(&proof.artifact)
@@ -1176,11 +1173,15 @@ fn valid_transfer_release(transition: &TransferTransition, proof: &AuthorityRele
         } => {
             *source_instance_id == transition.source.instance_id
                 && *source_epoch == transition.source_epoch
-                && transition.target_artifact.tail_overlay.as_ref().is_some_and(|overlay| {
-                    overlay.cutover_seq == *durable_tail
-                        && overlay.cutover_offset == *durable_tail_offset
-                        && overlay.target_stream_start_seq == durable_tail.checked_add(1).unwrap_or(0)
-                })
+                && transition
+                    .target_artifact
+                    .tail_overlay
+                    .as_ref()
+                    .is_some_and(|overlay| {
+                        overlay.cutover_seq == *durable_tail
+                            && overlay.cutover_offset == *durable_tail_offset
+                            && overlay.target_stream_start_seq == durable_tail.checked_add(1).unwrap_or(0)
+                    })
         }
         AuthorityReleaseProof::LeaseExpired {
             activation_not_before_ms,

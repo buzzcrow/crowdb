@@ -229,14 +229,19 @@ the normal handoff path.
 
 Once the release proof fixes `C`, ordinary unconditional mutations may append
 immediately to the target WAL beginning at `C+1`; they do not wait for source
-tail replay, a checkpoint, or page materialization. Their application remains
-ordered after the source suffix, and response completion follows the normal
-durable/apply contract asynchronously. Reads and conditional mutations await
+tail replay, a checkpoint, or page materialization. Success means that target
+WAL append is durable; their tree application remains ordered after the source
+suffix and proceeds asynchronously. Reads and conditional mutations await
 the initialization coroutine because they require the complete source prefix.
 After the coroutine applies through `C`, the partition enters its normal
 serving path: reads execute directly and conditional mutations evaluate
 against the complete view. Target-WAL application then continues in order.
-No request handler retains a thread while awaiting initialization.
+No request handler retains a thread while awaiting initialization. Both each
+wait and the process-wide waiter count are bounded; capacity exhaustion returns
+the same retryable initializing result as a bounded wait timeout.
+Only catalog entries in `TargetCatchingUp` execute these checks. A `Serving`
+entry takes the ordinary direct read or mutation path without inspecting an
+initialization future or touching waiter accounting.
 
 After catalog and grant activation, only the target WAL can advance. A
 dead-source recovery may adopt the original stream directly, but only after

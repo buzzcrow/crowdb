@@ -2,14 +2,14 @@
 // Licensed under the Apache License, Version 2.0.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
 use crowdb_chunk_kv::{
-    ChunkKvError, CompareCondition, JournalPosition, MutationOperation, MutationResult, Partition, RequestId,
-    SplitArtifact, ValueRevision,
+    ChunkKvError, CompareCondition, JournalPosition, MutationOperation, MutationResult, Partition,
+    PreparedSplitWriterArtifact, RequestId, SplitArtifact, ValueRevision,
 };
 use crowdb_protocol::chunk_kv::{
     BatchMutationRequest, BatchMutationResponse, BatchMutationResult, ChunkKvRangeCatalogEntry,
@@ -28,6 +28,8 @@ use crate::{
 };
 
 const DEFAULT_SCAN_RESPONSE_BYTES: usize = 17 * 1024 * 1024;
+const DEFAULT_INITIALIZATION_WAITERS: usize = 1_024;
+const DEFAULT_INITIALIZATION_WAIT_MS: u64 = 250;
 
 #[derive(Clone, Debug, Default)]
 struct CatalogSnapshot {
@@ -108,6 +110,9 @@ pub struct ChunkKvService {
     independently_recoverable: ArcSwap<HashSet<(Id128, u64)>>,
     max_partitions: usize,
     max_scan_response_bytes: usize,
+    max_initialization_waiters: usize,
+    initialization_wait_ms: u64,
+    initialization_waiters: AtomicUsize,
     admitting: AtomicBool,
     metrics: ServerMetrics,
 }
@@ -122,6 +127,16 @@ struct LocalSplitSession {
     dispatcher: Partition,
 }
 
+struct InitializationWaiter<'a> {
+    count: &'a AtomicUsize,
+}
+
+impl Drop for InitializationWaiter<'_> {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 impl ChunkKvService {
     /// Creates an empty, fenced service instance.
     ///
@@ -129,7 +144,13 @@ impl ChunkKvService {
     ///
     /// Returns an invalid-request error for zero identity or capacity.
     pub fn new(instance_id: u64, max_partitions: usize) -> Result<Self, ChunkKvError> {
-        Self::new_with_limits(instance_id, max_partitions, DEFAULT_SCAN_RESPONSE_BYTES)
+        Self::new_with_limits(
+            instance_id,
+            max_partitions,
+            DEFAULT_SCAN_RESPONSE_BYTES,
+            DEFAULT_INITIALIZATION_WAITERS,
+            DEFAULT_INITIALIZATION_WAIT_MS,
+        )
     }
 
     /// Creates an empty service with explicit hosting and scan response bounds.
@@ -141,8 +162,15 @@ impl ChunkKvService {
         instance_id: u64,
         max_partitions: usize,
         max_scan_response_bytes: usize,
+        max_initialization_waiters: usize,
+        initialization_wait_ms: u64,
     ) -> Result<Self, ChunkKvError> {
-        if instance_id == 0 || max_partitions == 0 || max_scan_response_bytes == 0 {
+        if instance_id == 0
+            || max_partitions == 0
+            || max_scan_response_bytes == 0
+            || max_initialization_waiters == 0
+            || initialization_wait_ms == 0
+        {
             return Err(ChunkKvError::InvalidRequest(
                 "server instance identity and capacity bounds must be nonzero".into(),
             ));
@@ -157,6 +185,9 @@ impl ChunkKvService {
             independently_recoverable: ArcSwap::from_pointee(HashSet::new()),
             max_partitions,
             max_scan_response_bytes,
+            max_initialization_waiters,
+            initialization_wait_ms,
+            initialization_waiters: AtomicUsize::new(0),
             admitting: AtomicBool::new(true),
             metrics: ServerMetrics::default(),
         })
@@ -856,20 +887,69 @@ impl ChunkKvService {
         let Some(entry) = catalog.entry_for_key(&key) else {
             return not_my_range(catalog.generation, None);
         };
-        if entry.state == ChunkKvRangeCatalogPartitionState::TargetCatchingUp {
-            return target_not_ready(catalog.generation);
-        }
-        let partition = match self.resolve_point_partition(
-            &request.routing,
-            &key,
-            catalog.generation,
-            entry,
-            now_monotonic_ms,
-        ) {
-            Ok(partition) => partition,
-            Err(response) => return *response,
+        let mut transfer_append_artifact = None;
+        let partition = if entry.state == ChunkKvRangeCatalogPartitionState::TargetCatchingUp {
+            if !matches_routing(&request.routing, catalog.generation, entry, self.instance_id) {
+                return not_my_range(catalog.generation, Some(entry));
+            }
+            let Some(partition) = self
+                .hosted_partition(entry.partition_id)
+                .filter(|partition| partition_matches_entry(partition, entry))
+            else {
+                return target_not_ready(catalog.generation);
+            };
+            if operation_requires_initialized_view(&request.operation) {
+                if let Err(response) = self
+                    .await_target_initialization(
+                        &partition,
+                        request.routing.deadline_ms,
+                        now_wall_ms,
+                        catalog.generation,
+                        entry,
+                    )
+                    .await
+                {
+                    return *response;
+                }
+            } else if partition.lifecycle() != crowdb_chunk_kv::PartitionLifecycle::Serving {
+                let Some(artifact) = final_transfer_artifact(&partition, entry) else {
+                    return target_not_ready(catalog.generation);
+                };
+                transfer_append_artifact = Some(artifact);
+            }
+            partition
+        } else {
+            match self.resolve_point_partition(
+                &request.routing,
+                &key,
+                catalog.generation,
+                entry,
+                now_monotonic_ms,
+            ) {
+                Ok(partition) => partition,
+                Err(response) => return *response,
+            }
         };
 
+        self.execute_point_operation(
+            &partition,
+            entry,
+            catalog.generation,
+            request,
+            transfer_append_artifact,
+        )
+        .await
+    }
+
+    async fn execute_point_operation(
+        &self,
+        partition: &Partition,
+        entry: &ChunkKvRangeCatalogEntry,
+        map_revision: u64,
+        request: PointRequest,
+        transfer_append_artifact: Option<PreparedSplitWriterArtifact>,
+    ) -> ChunkKvResponse {
+        let key = request.operation.key().to_vec();
         match request.operation {
             PointOperation::Get { key } => {
                 let minimum = request.routing.min_journal_position.map(journal_position);
@@ -878,11 +958,11 @@ impl ChunkKvService {
                     .await
                 {
                     Ok(value) => success(
-                        catalog.generation,
+                        map_revision,
                         None,
                         OperationResult::Value(value.map(|value| rpc_value(key, value))),
                     ),
-                    Err(error) => partition_failure(catalog.generation, &error, Some(entry)),
+                    Err(error) => partition_failure(map_revision, &error, Some(entry)),
                 }
             }
             operation => {
@@ -892,10 +972,15 @@ impl ChunkKvService {
                     client_sequence: request.routing.request_id.client_sequence,
                 };
                 let mutation = mutation_operation(operation);
-                match partition
-                    .mutate(partition.snapshot().ownership_epoch, request_id, mutation)
-                    .await
-                {
+                let ownership_epoch = partition.snapshot().ownership_epoch;
+                let mutation = if let Some(artifact) = transfer_append_artifact {
+                    partition
+                        .append_prepared_transfer_mutation(artifact, ownership_epoch, request_id, mutation)
+                        .await
+                } else {
+                    partition.mutate(ownership_epoch, request_id, mutation).await
+                };
+                match mutation {
                     Ok(response) => {
                         let position = RpcJournalPosition {
                             stream_name: Id128 {
@@ -916,11 +1001,56 @@ impl ChunkKvService {
                                 observed: observed.map(|value| rpc_value(key, value)),
                             },
                         };
-                        success(catalog.generation, Some(position), result)
+                        success(map_revision, Some(position), result)
                     }
-                    Err(error) => partition_failure(catalog.generation, &error, Some(entry)),
+                    Err(error) => partition_failure(map_revision, &error, Some(entry)),
                 }
             }
+        }
+    }
+
+    async fn await_target_initialization(
+        &self,
+        partition: &Partition,
+        deadline_ms: Option<u64>,
+        now_wall_ms: u64,
+        map_revision: u64,
+        entry: &ChunkKvRangeCatalogEntry,
+    ) -> Result<(), Box<ChunkKvResponse>> {
+        if self
+            .initialization_waiters
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < self.max_initialization_waiters).then_some(current + 1)
+            })
+            .is_err()
+        {
+            return Err(Box::new(target_not_ready(map_revision)));
+        }
+        let _waiter = InitializationWaiter {
+            count: &self.initialization_waiters,
+        };
+        let deadline_remaining = deadline_ms.map(|deadline| deadline.saturating_sub(now_wall_ms));
+        let wait_ms = deadline_remaining.map_or(self.initialization_wait_ms, |remaining| {
+            remaining.min(self.initialization_wait_ms)
+        });
+        match tokio::time::timeout(
+            Duration::from_millis(wait_ms),
+            partition.await_transfer_initialization(),
+        )
+        .await
+        {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(Box::new(partition_failure(map_revision, &error, Some(entry)))),
+            Err(_)
+                if deadline_remaining.is_some_and(|remaining| remaining <= self.initialization_wait_ms) =>
+            {
+                Err(Box::new(failure(
+                    map_revision,
+                    ChunkKvRpcErrorCode::RequestExpired,
+                    "request deadline elapsed while target initialized".into(),
+                )))
+            }
+            Err(_) => Err(Box::new(target_not_ready(map_revision))),
         }
     }
 
@@ -1634,6 +1764,35 @@ fn partition_matches_entry(partition: &Partition, entry: &ChunkKvRangeCatalogEnt
         && snapshot.stream_name == entry.artifact.stream_name
 }
 
+fn final_transfer_artifact(
+    partition: &Partition,
+    entry: &ChunkKvRangeCatalogEntry,
+) -> Option<PreparedSplitWriterArtifact> {
+    let overlay = entry.artifact.tail_overlay.as_ref()?;
+    let mut artifact = partition.prepared_transfer_artifact()?;
+    let exact_base = artifact.partition_id.high == entry.partition_id.high
+        && artifact.partition_id.low == entry.partition_id.low
+        && artifact.ownership_epoch == entry.owner_epoch
+        && artifact.tree_id == entry.artifact.tree_id
+        && artifact.tree_manifest == overlay.base_tree_manifest
+        && artifact.root_manifest_generation == overlay.base_root_manifest_generation
+        && artifact.base_applied_seq == overlay.base_applied_seq
+        && artifact.parent_id.high == overlay.source_partition_id.high
+        && artifact.parent_id.low == overlay.source_partition_id.low
+        && artifact.parent_epoch == overlay.source_epoch
+        && artifact.parent_stream_name == overlay.source_stream_name
+        && artifact.parent_stream_manifest_generation == overlay.source_stream_manifest_generation
+        && artifact.parent_replay_offset == overlay.replay_offset
+        && overlay.target_stream_start_seq == overlay.cutover_seq.checked_add(1)?;
+    if !exact_base {
+        return None;
+    }
+    artifact.parent_cutover_offset = overlay.cutover_offset;
+    artifact.applied_seq = overlay.cutover_seq;
+    artifact.child_stream_start_seq = overlay.target_stream_start_seq;
+    Some(artifact)
+}
+
 fn local_partition_for_entry(partition: &Partition, entry: &ChunkKvRangeCatalogEntry) -> Option<Partition> {
     if partition_matches_entry(partition, entry) {
         return Some(partition.clone());
@@ -1697,6 +1856,16 @@ fn mutation_operation(operation: PointOperation) -> MutationOperation {
             condition: compare_condition(condition),
         },
     }
+}
+
+fn operation_requires_initialized_view(operation: &PointOperation) -> bool {
+    matches!(
+        operation,
+        PointOperation::Get { .. }
+            | PointOperation::PutIfAbsent { .. }
+            | PointOperation::CompareExchange { .. }
+            | PointOperation::ConditionalDelete { .. }
+    )
 }
 
 fn compare_condition(condition: RpcCompareCondition) -> CompareCondition {

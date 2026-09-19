@@ -428,7 +428,7 @@ its remote-owner E2E; proactive balance remains disabled until then.
   advances only `P+1..C`. The transition worker uses it whenever the live
   target remains hosted and falls back to exact-root recovery only when that
   handle is absent.
-- [~] **Coroutine-await reads and conditions, append ordinary writes**: while
+- [x] **Coroutine-await reads and conditions, append ordinary writes**: while
   the target is initializing, read and conditional-mutation handlers await the
   shared initialization future within their existing deadline. Ordinary
   unconditional mutations append to the target WAL from `C+1` immediately and
@@ -436,7 +436,15 @@ its remote-owner E2E; proactive balance remains disabled until then.
   readiness polling, executor-thread wait, or hot-path lock. Files:
   `lib/crowdb-chunk-kv/src/partition.rs`,
   `app/crowdb-chunk-kv-server/src/server.rs`, RPC tests, and client deadline
-  tests.
+  tests. Only `TargetCatchingUp` enters this branch. Each coroutine wait uses
+  the smaller of the request deadline and server cap, a lock-free process-wide
+  counter bounds total waiters, and capacity/timeout returns `TargetNotReady`.
+  The client honors its delay and returns failure after three unsuccessful
+  initialization attempts with the original request identity.
+  The shared future now wakes all coroutine waiters after exact catch-up.
+  Ordinary writes durably append to the target WAL before initialization and
+  are replayed after the source suffix; retries reuse that WAL result. Serving
+  requests retain their original direct path and do not touch waiter state.
 - [ ] **Complete the bounded writer handoff**: stop assigning source-WAL
   records, drain only records already assigned there, persist `C`, publish
   `TargetCatchingUp`, and make the source return the target hint without

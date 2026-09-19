@@ -346,7 +346,7 @@ impl ChunkKvStorage {
             stream,
         )
         .await
-            .map_err(|error| assignment_recovery_error(entry, &error))
+        .map_err(|error| assignment_recovery_error(entry, &error))
     }
 
     /// Advances one already-open transfer target from its preparation cursor

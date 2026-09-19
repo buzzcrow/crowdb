@@ -20,7 +20,7 @@ use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogPartitionState, ChunkKvRpcErrorCode, ClientRequestId, DomainFailurePolicy,
     DomainMonitorDescriptor, Id128, KeyRange, MultiGetRequest, OperationResult, OwnerDescriptor,
     PartitionArtifact, PointOperation, PointRequest, RequestRouting, ScanDirection, ScanRequest, SeekKind,
-    SeekRequest, ServingAssignment, ServingGrant,
+    SeekRequest, ServingAssignment, ServingGrant, TailOverlayArtifact,
 };
 
 const INSTANCE_ID: u64 = 7;
@@ -188,6 +188,87 @@ async fn prepared_partition_range(
     )
     .await
     .unwrap()
+}
+
+async fn pending_transfer_fixture() -> (Partition, PreparedSplitWriterArtifact, Arc<dyn PartitionJournal>) {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let source_name = StreamName { high: 50, low: 1 };
+    let target_name = StreamName { high: 50, low: 2 };
+    let open_journal = |stream: ChunkStream, name| -> Arc<dyn PartitionJournal> {
+        Arc::new(StreamPartitionJournal::new(stream, name))
+    };
+    let binding = |stream_name| StreamBinding {
+        stream_name,
+        metadata_group_id: 7,
+        binding_generation: 1,
+        state: StreamBindingState::Active,
+        owner_kind: Some("chunk-kv-partition".into()),
+    };
+    let source = ChunkStream::create(
+        binding(source_name),
+        EPOCH,
+        StreamConfig::default(),
+        store.clone() as Arc<dyn StreamRegistry>,
+        store.clone() as Arc<dyn StreamMetadataStore>,
+        store.clone() as Arc<dyn StreamChunkStore>,
+    )
+    .await
+    .unwrap();
+    let target = ChunkStream::create(
+        binding(target_name),
+        EPOCH + 1,
+        StreamConfig::default(),
+        store.clone() as Arc<dyn StreamRegistry>,
+        store.clone() as Arc<dyn StreamMetadataStore>,
+        store as Arc<dyn StreamChunkStore>,
+    )
+    .await
+    .unwrap();
+    let artifact = PreparedSplitWriterArtifact {
+        partition_id: PartitionId { high: 1, low: 2 },
+        range: PartitionRange {
+            start: Some(Vec::new()),
+            end: None,
+        },
+        ownership_epoch: EPOCH + 1,
+        tree_id: 55,
+        tree_manifest: 0,
+        root_manifest_generation: 1,
+        stream_name: target_name,
+        base_applied_seq: 0,
+        parent_id: PartitionId { high: 9, low: 9 },
+        parent_epoch: EPOCH,
+        parent_stream_name: source_name,
+        parent_stream_manifest_generation: 1,
+        parent_replay_offset: 0,
+        parent_cutover_offset: 0,
+        applied_seq: 0,
+        child_stream_start_seq: 1,
+    };
+    let source_journal = open_journal(source, source_name);
+    let partition = Partition::recover_prepared_overlay(
+        artifact.clone(),
+        Checkpoint {
+            tree_id: 55,
+            tree_manifest: 0,
+            root_manifest_generation: 1,
+            applied_seq: 0,
+            stream_name: target_name,
+            stream_manifest_generation: 1,
+            replay_offset: 0,
+        },
+        PartitionConfig::default(),
+        Arc::new(MemoryPartitionTree::with_tree_id(55)),
+        open_journal(target, target_name),
+        Arc::clone(&source_journal),
+    )
+    .await
+    .unwrap();
+    (partition, artifact, source_journal)
+}
+
+async fn pending_transfer_partition() -> Partition {
+    pending_transfer_fixture().await.0
 }
 
 fn install_local_split_catalog(
@@ -447,11 +528,7 @@ async fn assert_all_partition_loads_recoverable(service: &ChunkKvService, expect
     );
 }
 
-fn assert_hosts_exact_child_assignment(
-    service: &ChunkKvService,
-    child: &Partition,
-    split_key: Vec<u8>,
-) {
+fn assert_hosts_exact_child_assignment(service: &ChunkKvService, child: &Partition, split_key: Vec<u8>) {
     let child_snapshot = child.snapshot();
     let entry = ChunkKvRangeCatalogEntry {
         partition_id: Id128 { high: 22, low: 25 },
@@ -717,22 +794,31 @@ async fn newer_catalog_replaces_hosted_assignments_only_after_recovery() {
 }
 
 #[tokio::test]
-async fn catching_up_target_returns_typed_retry_without_wal_admission() {
+async fn catching_up_target_appends_unconditional_write_before_initialization() {
     let (service, _) = fixture().await;
     let partition_id = Id128 { high: 1, low: 2 };
-    let stream_name = StreamName { high: 30, low: 34 };
-    let target = prepared_partition(
-        PartitionId {
-            high: partition_id.high,
-            low: partition_id.low,
-        },
-        stream_name,
-        EPOCH + 1,
-    )
-    .await;
+    let (target, final_artifact, source_journal) = pending_transfer_fixture().await;
+    let stream_name = target.snapshot().stream_name;
     let (head, mut page) = catalog(partition_id, stream_name, EPOCH + 1, 2, Some(1));
     page.entries[0].state = ChunkKvRangeCatalogPartitionState::TargetCatchingUp;
     page.entries[0].transition_id = Some(Id128 { high: 40, low: 41 });
+    page.entries[0].artifact.tree_id = final_artifact.tree_id;
+    page.entries[0].artifact.tail_overlay = Some(TailOverlayArtifact {
+        source_partition_id: Id128 {
+            high: final_artifact.parent_id.high,
+            low: final_artifact.parent_id.low,
+        },
+        source_epoch: final_artifact.parent_epoch,
+        source_stream_name: final_artifact.parent_stream_name,
+        source_stream_manifest_generation: final_artifact.parent_stream_manifest_generation,
+        replay_offset: final_artifact.parent_replay_offset,
+        cutover_offset: final_artifact.parent_cutover_offset,
+        base_root_manifest_generation: final_artifact.root_manifest_generation,
+        base_tree_manifest: final_artifact.tree_manifest,
+        base_applied_seq: final_artifact.base_applied_seq,
+        cutover_seq: final_artifact.applied_seq,
+        target_stream_start_seq: final_artifact.child_stream_start_seq,
+    });
     page.seal().unwrap();
     let mut head = head;
     head.pages[0].page_checksum = page.checksum;
@@ -743,7 +829,6 @@ async fn catching_up_target_returns_typed_retry_without_wal_admission() {
     let mut route = routing(50);
     route.map_revision = 2;
     route.owner_epoch = EPOCH + 1;
-    let before = target.snapshot().journal_durable_seq;
     let response = service
         .handle_point(
             PointRequest {
@@ -757,10 +842,76 @@ async fn catching_up_target_returns_typed_retry_without_wal_admission() {
             50_100,
         )
         .await;
-    let failure = response.result.unwrap_err();
-    assert_eq!(failure.code, ChunkKvRpcErrorCode::TargetNotReady);
-    assert_eq!(failure.retry_after_ms, Some(10));
-    assert_eq!(target.snapshot().journal_durable_seq, before);
+    assert!(response.result.is_ok());
+    assert_eq!(target.snapshot().journal_durable_seq, 1);
+    assert_eq!(target.snapshot().applied_seq, 0);
+    assert_eq!(target.lifecycle(), PartitionLifecycle::Prepared);
+
+    target
+        .catch_up_prepared_transfer(final_artifact, source_journal)
+        .await
+        .unwrap();
+    assert_eq!(target.snapshot().applied_seq, 1);
+    assert_eq!(target.lifecycle(), PartitionLifecycle::Serving);
+    assert_eq!(
+        target
+            .get(EPOCH + 1, b"object", None)
+            .await
+            .unwrap()
+            .unwrap()
+            .value,
+        b"metadata"
+    );
+}
+
+#[tokio::test]
+async fn catching_up_read_waits_are_time_and_count_bounded() {
+    let target = pending_transfer_partition().await;
+    let service = Arc::new(ChunkKvService::new_with_limits(7, 4, 1_024, 1, 20).unwrap());
+    let (head, mut page) = catalog(
+        Id128 { high: 1, low: 2 },
+        target.snapshot().stream_name,
+        EPOCH + 1,
+        1,
+        None,
+    );
+    page.entries[0].state = ChunkKvRangeCatalogPartitionState::TargetCatchingUp;
+    page.entries[0].transition_id = Some(Id128 { high: 40, low: 42 });
+    page.seal().unwrap();
+    let mut head = head;
+    head.pages[0].page_checksum = page.checksum;
+    head.seal().unwrap();
+    service
+        .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&target))
+        .unwrap();
+    let request = |sequence| {
+        let mut route = routing(sequence);
+        route.owner_epoch = EPOCH + 1;
+        route.deadline_ms = Some(10_000);
+        PointRequest {
+            routing: route,
+            operation: PointOperation::Get {
+                key: b"object".to_vec(),
+            },
+        }
+    };
+    let first = tokio::spawn({
+        let service = Arc::clone(&service);
+        async move { service.handle_point(request(51), 1_500, 50_100).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+
+    let capacity_limited = service.handle_point(request(52), 1_500, 50_100).await;
+    let timed_out = first.await.unwrap();
+
+    assert_eq!(
+        capacity_limited.result.unwrap_err().code,
+        ChunkKvRpcErrorCode::TargetNotReady
+    );
+    assert_eq!(
+        timed_out.result.unwrap_err().code,
+        ChunkKvRpcErrorCode::TargetNotReady
+    );
 }
 
 #[tokio::test]

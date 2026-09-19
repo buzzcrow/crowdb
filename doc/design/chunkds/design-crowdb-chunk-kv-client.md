@@ -28,10 +28,13 @@ epoch and serving lease remain the final authority.
 
 Each operation has one total deadline covering discovery, refresh, transport,
 and backoff. `NotMyRange`, `RefreshRequired`, lease loss, and connection loss
-cause bounded rerouting. `TargetNotReady` uses its retry delay without
-inventing another owner or changing request identity; overload, recovery, and
-write-stall responses behave the same way. The route-refresh and total-attempt
-budgets are independent and explicit in `ClientConfig`.
+cause bounded rerouting. Only `TargetNotReady` enters the initialization retry
+path: it uses the server retry delay without refreshing the route, inventing
+another owner, or changing request identity, and returns the third unsuccessful
+response to the caller. Normal serving requests do not execute this retry
+bookkeeping. Overload, recovery, and write-stall responses retain the general
+retry policy. The route-refresh and total-attempt budgets are independent and
+explicit in `ClientConfig`.
 
 ## Request Identity
 

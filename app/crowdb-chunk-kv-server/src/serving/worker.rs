@@ -218,9 +218,7 @@ impl TransitionExecutor {
         };
         let partition = if transition.phase == TransferPhase::CatchupPublished {
             if let Some(partition) = self.service.hosted_partition(transition.partition_id) {
-                self.storage
-                    .catch_up_transfer_target(&partition, &entry)
-                    .await?;
+                self.storage.catch_up_transfer_target(&partition, &entry).await?;
                 partition
             } else {
                 self.storage
@@ -244,7 +242,11 @@ impl TransitionExecutor {
             target_instance_id: self.instance_id,
             target_epoch: transition.target_epoch,
             artifact: transition.target_artifact.clone(),
-            durable_tail: snapshot.journal_durable_seq,
+            durable_tail: transition
+                .target_artifact
+                .tail_overlay
+                .as_ref()
+                .map_or(snapshot.journal_durable_seq, |overlay| overlay.cutover_seq),
         })
     }
 

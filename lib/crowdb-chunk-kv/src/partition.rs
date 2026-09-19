@@ -24,6 +24,8 @@ use std::time::Instant;
 use arc_swap::{ArcSwap, ArcSwapOption};
 use bytes::{Buf, Bytes, BytesMut};
 use crowdb_chunk_stream::{ChunkStream, StreamName};
+use futures::future::{BoxFuture, Shared};
+use futures::{future, FutureExt};
 use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 
 use crate::{
@@ -136,6 +138,7 @@ enum WorkerRequest {
     Mutation(MutationRequest),
     SplitCutover(Box<split::SplitCutoverRequest>),
     TransferCatchUp(Box<transfer::TransferCatchUpRequest>),
+    TransferAppend(Box<transfer::TransferAppendRequest>),
 }
 
 #[derive(Clone)]
@@ -162,6 +165,7 @@ pub struct Partition {
     split_ingress: Arc<ArcSwapOption<SplitIngress>>,
     prepared_artifact: Arc<ArcSwapOption<PreparedSplitWriterArtifact>>,
     inherited_position: Arc<ArcSwapOption<JournalPosition>>,
+    initialization: Shared<BoxFuture<'static, Result<()>>>,
     metrics: Arc<PartitionMetrics>,
     config: Arc<PartitionConfig>,
 }
@@ -183,6 +187,7 @@ struct WorkerState {
     split_ingress: Arc<ArcSwapOption<SplitIngress>>,
     prepared_artifact: Arc<ArcSwapOption<PreparedSplitWriterArtifact>>,
     inherited_position: Arc<ArcSwapOption<JournalPosition>>,
+    initialization_completion: Option<oneshot::Sender<Result<()>>>,
     metrics: Arc<PartitionMetrics>,
     config: Arc<PartitionConfig>,
     next_seq: u64,
@@ -810,15 +815,24 @@ impl Partition {
             metrics.recovery();
         }
         let config = Arc::new(config);
+        let (initialization, initialization_completion) = if prepared_artifact.is_some() {
+            let (completion, response) = oneshot::channel();
+            let initialization = async move { response.await.unwrap_or(Err(ChunkKvError::WriteStalled)) }
+                .boxed()
+                .shared();
+            (initialization, Some(completion))
+        } else {
+            (future::ready(Ok(())).boxed().shared(), None)
+        };
         let prepared_artifact = Arc::new(ArcSwapOption::new(prepared_artifact.map(Arc::new)));
-        let inherited_position = Arc::new(ArcSwapOption::new(
-            prepared_artifact.load_full().map(|artifact| {
+        let inherited_position = Arc::new(ArcSwapOption::new(prepared_artifact.load_full().map(
+            |artifact| {
                 Arc::new(JournalPosition {
                     stream_name: artifact.parent_stream_name,
                     offset: artifact.parent_cutover_offset,
                 })
-            }),
-        ));
+            },
+        )));
         let state = WorkerState {
             partition_id,
             ownership_epoch: Arc::clone(&ownership_epoch),
@@ -836,6 +850,7 @@ impl Partition {
             split_ingress: Arc::clone(&split_ingress),
             prepared_artifact: Arc::clone(&prepared_artifact),
             inherited_position: Arc::clone(&inherited_position),
+            initialization_completion,
             metrics: Arc::clone(&metrics),
             config: Arc::clone(&config),
             next_seq,
@@ -867,6 +882,7 @@ impl Partition {
             split_ingress,
             prepared_artifact,
             inherited_position,
+            initialization,
             metrics,
             config,
         })
@@ -1413,6 +1429,25 @@ impl Partition {
     #[must_use]
     pub fn lifecycle(&self) -> PartitionLifecycle {
         lifecycle_from_code(self.lifecycle.load(Ordering::Acquire))
+    }
+
+    /// Coroutine-waits for a prepared transfer target to cover its final
+    /// source cursor. Cloned callers share one completion future.
+    ///
+    /// # Errors
+    ///
+    /// Returns the catch-up failure or a stalled-worker error.
+    pub async fn await_transfer_initialization(&self) -> Result<()> {
+        self.initialization.clone().await
+    }
+
+    /// Returns the exact durable base used to open this prepared transfer
+    /// target. The caller may extend only its source cutover frontier.
+    #[must_use]
+    pub fn prepared_transfer_artifact(&self) -> Option<PreparedSplitWriterArtifact> {
+        self.prepared_artifact
+            .load_full()
+            .map(|artifact| artifact.as_ref().clone())
     }
 
     #[must_use]
@@ -2031,9 +2066,14 @@ impl Partition {
     }
 
     async fn wait_applied(&self, position: JournalPosition) -> Result<()> {
-        if self.inherited_position.load().as_deref().is_some_and(|inherited| {
-            inherited.stream_name == position.stream_name && inherited.offset >= position.offset
-        }) {
+        if self
+            .inherited_position
+            .load()
+            .as_deref()
+            .is_some_and(|inherited| {
+                inherited.stream_name == position.stream_name && inherited.offset >= position.offset
+            })
+        {
             return Ok(());
         }
         if position.stream_name != self.journal.stream_name() {
@@ -2509,6 +2549,10 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<WorkerR
                 transfer::catch_up(&mut state, *request).await;
                 continue;
             }
+            WorkerRequest::TransferAppend(request) => {
+                transfer::append_mutation(&mut state, *request).await;
+                continue;
+            }
             WorkerRequest::Mutation(request) => request,
         };
         if let Some(ingress) = state.split_ingress.load_full() {
@@ -2528,7 +2572,9 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<WorkerR
             };
             let request = match next {
                 WorkerRequest::Mutation(request) => request,
-                control @ (WorkerRequest::SplitCutover(_) | WorkerRequest::TransferCatchUp(_)) => {
+                control @ (WorkerRequest::SplitCutover(_)
+                | WorkerRequest::TransferCatchUp(_)
+                | WorkerRequest::TransferAppend(_)) => {
                     pending = Some(control);
                     break;
                 }

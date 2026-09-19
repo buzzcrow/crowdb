@@ -21,6 +21,7 @@ bincode = "1"
 bytes = "1"
 crowdb-chunk-stream = { path = "../crowdb-chunk-stream" }
 crowdb-tree-ffi = { path = "../crowdb-tree/ffi", features = ["chunk-rpc"] }
+futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 thiserror = { workspace = true }
