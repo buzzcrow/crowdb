@@ -45,6 +45,7 @@ def main():
         "verify-after-chunkdb-restart",
         "verify-after-diskdb-restart",
         "verify-after-diskio-restart",
+        "verify-after-chunk-kv-restart",
     ):
         deadline = time.monotonic() + (20 if phase.startswith("verify-after-") else 0)
         while True:

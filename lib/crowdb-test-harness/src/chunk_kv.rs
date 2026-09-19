@@ -146,6 +146,31 @@ metadata_group_id = 1
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
+
+    /// Restart the same logical server with its original identity and ports.
+    pub async fn restart(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let binary = crowdb_chunk_kv_server_bin().unwrap_or_else(|| {
+            panic!("crowdb-chunk-kv-server binary not found; build it or set CROWDB_CHUNK_KV_SERVER_BIN")
+        });
+        let log_file = std::fs::File::create(&self.log_path).expect("recreate Chunk-KV log");
+        let log_error = log_file.try_clone().expect("clone Chunk-KV log");
+        self.child = Command::new(binary)
+            .args(["--config", self.config_path.to_str().expect("UTF-8 config path")])
+            .arg("--log-dir")
+            .arg(crate::test_dirs::test_log_dir())
+            .arg("--log")
+            .stdout(Stdio::from(log_file))
+            .stderr(Stdio::from(log_error))
+            .spawn()
+            .expect("restart crowdb-chunk-kv-server");
+        eprintln!(
+            "crowdb-chunk-kv-server restarted; log: {}",
+            self.log_path.display()
+        );
+        self.wait_for_ready().await;
+    }
 }
 
 impl Drop for ChunkKvProcess {
