@@ -118,16 +118,47 @@ impl PreparedSplitWriter {
         )
     }
 
-    async fn start_live(&mut self, config: PartitionConfig, split: &SplitArtifact) -> Result<Partition> {
-        let partition = Partition::recover_prepared_overlay(
-            self.artifact.clone(),
-            self.checkpoint.clone(),
+    async fn start_live(
+        &mut self,
+        config: PartitionConfig,
+        split: &SplitArtifact,
+        seed: super::RecoverySeed,
+    ) -> Result<Partition> {
+        super::validate_prepared_overlay(
+            &self.artifact,
+            &self.checkpoint,
+            self.tree.as_ref(),
+            self.journal.as_ref(),
+            self.parent_journal.as_ref(),
+        )?;
+        config.validate()?;
+        if self.tree.last_applied_seq() != self.artifact.applied_seq {
+            return Err(ChunkKvError::TreeCorruption(
+                "live split writer does not reach its cutover frontier".into(),
+            ));
+        }
+        let mut seed = super::replay_child_overlay(
+            self.artifact.partition_id,
+            self.artifact.ownership_epoch,
+            self.artifact.applied_seq,
+            config.retained_results,
+            self.tree.as_ref(),
+            self.journal.as_ref(),
+            seed,
+        )
+        .await?;
+        seed.retry_replay_offset = 0;
+        let partition = Partition::start(
+            self.artifact.partition_id,
+            self.artifact.range.clone(),
+            self.artifact.ownership_epoch,
             config,
             Arc::clone(&self.tree),
             Arc::clone(&self.journal),
-            Arc::clone(&self.parent_journal),
-        )
-        .await?;
+            seed,
+            PartitionLifecycle::Prepared,
+            Some(self.artifact.clone()),
+        )?;
         partition.activate_local_split_writer(split)?;
         self.live = Some(partition.clone());
         Ok(partition)
@@ -205,8 +236,19 @@ async fn install_split_cutover_inner(
         child: child.artifact.clone(),
     };
     let config = (*request.parent.config).clone();
-    let retained_partition = retained.start_live(config.clone(), &artifact).await?;
-    let child_partition = child.start_live(config, &artifact).await?;
+    let seed = super::RecoverySeed {
+        applied_seq: cutover_seq,
+        applied_position: 0,
+        retry_replay_offset: 0,
+        results: state.results.clone(),
+        result_order: state.result_order.clone(),
+        expired_floor: state.expired_floor.clone(),
+        recovered: false,
+    };
+    let retained_partition = retained
+        .start_live(config.clone(), &artifact, seed.clone())
+        .await?;
+    let child_partition = child.start_live(config, &artifact, seed).await?;
     request
         .parent
         .install_split_ingress(retained_partition, child_partition)

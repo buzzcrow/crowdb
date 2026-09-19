@@ -118,23 +118,29 @@ Split preparation follows these ordered steps:
    pinned parent tree view. The parent remains the only mutation sequencer and
    continues its normal WAL and memtable path while the child tree, WAL, and
    live memtable are prepared.
-2. The parent mutation worker processes one ordered `SplitCutover` marker after
-   all earlier mutations are durable and applied. The marker records the
-   right-range inheritance frontier `C` and installs key routing. Mutations at
-   or below `C` remain in parent order; later right-range mutations enter the
-   child WAL and live memtable. Later left-range mutations continue through
-   the retained parent. A request that raced with route installation and
-   reaches the old parent queue after the marker is forwarded by key rather
-   than assigned an old-parent sequence.
+2. Both destination stores and base trees are opened, and all fallible
+   preparation that does not depend on the final frontier is completed while
+   the parent continues serving. The parent mutation worker then processes one
+   ordered `SplitCutover` marker after all earlier mutations are durable and
+   applied. The marker records the right-range inheritance frontier `C`,
+   attaches the fixed parent view, seeds both writers from its bounded request
+   result cache instead of rescanning parent history, replays any previously
+   acknowledged destination-WAL tail, and installs key routing. Destination
+   tail replay is bounded preparation retry work; the marker performs no base
+   rebuild, parent-history replay, checkpoint, filtered publication, or
+   materialization. Mutations at or below `C` remain in parent order; later
+   right-range mutations enter the child WAL and live memtable.
+   Later left-range mutations continue through the retained parent. A request
+   that raced with route installation and reaches the old parent queue after
+   the marker is forwarded by key rather than assigned an old-parent sequence.
 3. The route change does not seal, publish, checkpoint, or wait for a
    memtable. The child immediately reads its base, its live memtable, and the
    right-range portion of the parent generation containing `C`. Conditional
    mutations consult that same merged view.
-4. Independently rotate the parent memtable. The detached generation enters
-   one split-owned shared queue and the parent installs a fresh active
-   memtable bounded to its retained range. Left-range writes may have entered
-   the detached generation after `C`; they remain parent data and do not
-   advance the child's inherited frontier.
+4. Independently rotate the old parent memtable at its fixed `C` frontier. The
+   detached generation enters one split-owned shared queue. Post-route writes
+   are already isolated in the retained-parent or child writer memtable and
+   are not members of this shared generation.
 5. In background, bulk-publish the shared generation once into each range:
    only the retained range into the parent and only entries at or below `C` in
    the child range into the child. Newer live-writer revisions win over an
@@ -195,8 +201,8 @@ The split invariants are:
 - **SPLIT-OVERLAY-DURABLE:** base plus parent suffix plus child WAL reconstructs
   values and request outcomes before activation;
 - **SPLIT-NO-FOREGROUND-WAIT:** routing does not wait for memtable seal,
-  filtered publication, checkpoint, catalog publication, or ownership
-  materialization; and
+  parent-history replay, filtered publication, checkpoint, catalog publication,
+  or ownership materialization; and
 - **SPLIT-PIN-BEFORE-RECLAIM:** physical deletion never precedes the last
   catalog, snapshot, forwarding, or retry reference.
 

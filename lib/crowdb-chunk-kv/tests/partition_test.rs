@@ -1793,7 +1793,7 @@ async fn split_session_installs_two_live_writers_at_ingress_frontier() {
         )
         .await
         .unwrap();
-    parent
+    let inherited_position = parent
         .mutate(
             8,
             request(811),
@@ -1803,7 +1803,8 @@ async fn split_session_installs_two_live_writers_at_ingress_frontier() {
             },
         )
         .await
-        .unwrap();
+        .unwrap()
+        .journal_position;
     let plan = split_plan(PartitionId { high: 810, low: 1 }, 8);
     let prepared = parent
         .prepare_split_session(
@@ -1866,14 +1867,46 @@ async fn split_session_installs_two_live_writers_at_ingress_frontier() {
         )
         .await
         .unwrap();
+    let child_seq_before_retry = child.snapshot().journal_durable_seq;
+    let retried = parent
+        .mutate(
+            8,
+            request(811),
+            MutationOperation::Put {
+                key: b"h".to_vec(),
+                value: b"right-base".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(retried.mutation_seq, 2);
+    assert_eq!(child.snapshot().journal_durable_seq, child_seq_before_retry);
     assert_eq!(
         retained.get(9, b"b", None).await.unwrap().unwrap().value,
         b"left-base"[..]
     );
     assert_eq!(
-        child.get(9, b"h", None).await.unwrap().unwrap().value,
+        parent
+            .get(8, b"h", Some(inherited_position))
+            .await
+            .unwrap()
+            .unwrap()
+            .value,
         b"right-base"[..]
     );
+    assert!(matches!(
+        parent
+            .get(
+                8,
+                b"h",
+                Some(crowdb_chunk_kv::JournalPosition {
+                    stream_name: StreamName { high: 999, low: 1 },
+                    offset: inherited_position.offset,
+                }),
+            )
+            .await,
+        Err(ChunkKvError::InvalidRequest(_))
+    ));
     assert_eq!(
         retained.get(9, b"c", None).await.unwrap().unwrap().value,
         b"left-new"[..]

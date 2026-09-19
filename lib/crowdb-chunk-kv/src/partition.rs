@@ -157,7 +157,7 @@ pub struct Partition {
     applied_notify: Arc<Notify>,
     admission_notify: Arc<Notify>,
     split_transition: Arc<Mutex<Option<SplitTransition>>>,
-    split_ingress: Arc<ArcSwapOption<SplitIngressRoute>>,
+    split_ingress: Arc<ArcSwapOption<SplitIngress>>,
     prepared_artifact: Option<PreparedSplitWriterArtifact>,
     inherited_position: Option<JournalPosition>,
     metrics: Arc<PartitionMetrics>,
@@ -178,7 +178,7 @@ struct WorkerState {
     retry_replay_offset: Arc<AtomicU64>,
     applied_notify: Arc<Notify>,
     admission_notify: Arc<Notify>,
-    split_ingress: Arc<ArcSwapOption<SplitIngressRoute>>,
+    split_ingress: Arc<ArcSwapOption<SplitIngress>>,
     metrics: Arc<PartitionMetrics>,
     config: Arc<PartitionConfig>,
     next_seq: u64,
@@ -193,6 +193,7 @@ struct RetainedResult {
     response: MutationResponse,
 }
 
+#[derive(Clone)]
 struct RecoverySeed {
     applied_seq: u64,
     applied_position: u64,
@@ -226,10 +227,6 @@ pub struct SplitIngress {
     split_key: Arc<[u8]>,
     retained_parent: Partition,
     child: Partition,
-}
-
-enum SplitIngressRoute {
-    Writers(Box<SplitIngress>),
 }
 
 impl SplitIngress {
@@ -876,8 +873,7 @@ impl Partition {
         operation: MutationOperation,
     ) -> Result<MutationResponse> {
         self.metrics.mutation_request();
-        if let Some(route) = self.split_ingress.load_full() {
-            let SplitIngressRoute::Writers(ingress) = route.as_ref();
+        if let Some(ingress) = self.split_ingress.load_full() {
             let writer = ingress.writer_for(operation.key());
             return Box::pin(writer.mutate(
                 writer.ownership_epoch.load(Ordering::Acquire),
@@ -945,13 +941,10 @@ impl Partition {
         min_journal_position: Option<JournalPosition>,
     ) -> Result<Option<ValueRevision>> {
         self.metrics.point_read();
-        if let Some(route) = self.split_ingress.load_full() {
-            let SplitIngressRoute::Writers(ingress) = route.as_ref();
+        if let Some(ingress) = self.split_ingress.load_full() {
             let writer = ingress.writer_for(key);
             let writer_epoch = writer.ownership_epoch.load(Ordering::Acquire);
-            let writer_stream = writer.snapshot().stream_name;
-            let position = min_journal_position.filter(|position| position.stream_name == writer_stream);
-            return Box::pin(writer.get(writer_epoch, key, position)).await;
+            return Box::pin(writer.get(writer_epoch, key, min_journal_position)).await;
         }
         self.validate_epoch(ownership_epoch)?;
         if !self.range.load().contains(key) {
@@ -1618,10 +1611,7 @@ impl Partition {
             retained_parent,
             child,
         };
-        self.split_ingress
-            .store(Some(Arc::new(SplitIngressRoute::Writers(Box::new(
-                ingress.clone(),
-            )))));
+        self.split_ingress.store(Some(Arc::new(ingress.clone())));
         Ok(())
     }
 
@@ -1630,9 +1620,7 @@ impl Partition {
     /// reconstructing it from the old range.
     #[must_use]
     pub fn split_ingress(&self) -> Option<SplitIngress> {
-        self.split_ingress.load_full().map(|route| match route.as_ref() {
-            SplitIngressRoute::Writers(ingress) => (**ingress).clone(),
-        })
+        self.split_ingress.load_full().map(|ingress| (*ingress).clone())
     }
 
     /// Commits the retained parent only for an exact durable catalog proof.
@@ -2504,8 +2492,8 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<WorkerR
             }
             WorkerRequest::Mutation(request) => request,
         };
-        if let Some(route) = state.split_ingress.load_full() {
-            forward_raced_mutation(&state, route.as_ref(), first).await;
+        if let Some(ingress) = state.split_ingress.load_full() {
+            forward_raced_mutation(&state, ingress.as_ref(), first).await;
             continue;
         }
         let lifecycle = lifecycle_from_code(state.lifecycle.load(Ordering::Acquire));
@@ -2541,8 +2529,7 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<WorkerR
     }
 }
 
-async fn forward_raced_mutation(state: &WorkerState, route: &SplitIngressRoute, request: MutationRequest) {
-    let SplitIngressRoute::Writers(ingress) = route;
+async fn forward_raced_mutation(state: &WorkerState, ingress: &SplitIngress, request: MutationRequest) {
     let writer = ingress.writer_for(request.operation.key());
     let result = writer
         .mutate(

@@ -398,6 +398,41 @@ async fn assert_old_parent_scan_continuation(service: &ChunkKvService) {
     assert_eq!(items[0].key, b"t");
 }
 
+async fn assert_retained_seek_needs_no_child_grant(service: &ChunkKvService) {
+    let mut grant = ServingGrant {
+        instance_id: INSTANCE_ID,
+        lease_sequence: 3,
+        catalog_generation: 2,
+        issued_at_ms: 1_200,
+        expires_at_ms: 13_200,
+        assignments: vec![ServingAssignment {
+            partition_id: Id128 { high: 1, low: 2 },
+            owner_epoch: EPOCH + 1,
+        }],
+        assignment_digest: [0; 32],
+    };
+    grant.seal();
+    service
+        .authority()
+        .install(grant, &policy(), 1_200, 50_200)
+        .unwrap();
+    let response = service
+        .handle_seek(
+            SeekRequest {
+                routing: routing(88),
+                key: b"b".to_vec(),
+                kind: SeekKind::Ceiling,
+            },
+            1_500,
+            50_300,
+        )
+        .await;
+    let OperationResult::Value(Some(value)) = response.result.unwrap() else {
+        panic!("expected the resolved retained writer without child authority")
+    };
+    assert_eq!(value.key, b"b");
+}
+
 async fn fixture() -> (ChunkKvService, Partition) {
     let stream_name = StreamName { high: 30, low: 31 };
     let store = Arc::new(MemoryStreamStore::new(4_096));
@@ -594,6 +629,7 @@ async fn prepared_split_lineage_suppresses_catalog_recovery() {
     install_local_split_catalog(&service, &retained, &child, &split_key);
     assert_old_parent_ordered_reads(&service).await;
     assert_old_parent_scan_continuation(&service).await;
+    assert_retained_seek_needs_no_child_grant(&service).await;
 
     service.remove_partition(Id128 { high: 1, low: 2 });
     service.remove_partition(Id128 { high: 22, low: 25 });

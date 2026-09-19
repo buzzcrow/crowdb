@@ -65,6 +65,15 @@ one-second self-fence margin fence the old owner by ten seconds. A replacement
 waits until the old wall-clock expiry plus skew unless an explicit source fence
 is durably proven.
 
+Client catalog revisions and owner epochs are routing references, not serving
+authority. A server may resolve an older reference through a process-local
+lineage, but it always authorizes the resolved current assignment against one
+internally consistent catalog and aggregate grant. The grant's catalog
+generation and exact `(partition_id, owner_epoch)` assignment remain mandatory;
+the selected partition repeats the epoch check at its WAL and tree boundary.
+This separates stale-client tolerance from owner fencing without weakening
+either fence.
+
 ## 4. Request Contract
 
 Every request carries a random 128-bit client instance ID, nonzero monotonic
@@ -73,17 +82,28 @@ journal position, and optional deadline. The logical request identity survives
 transport retry and rerouting. Endpoint, socket, and connection identities do
 not participate in deduplication.
 
-The contacted server validates deadline, catalog route, owner, grant, and local
-partition before R142 admission. After a same-owner split, an old parent point
-route may be remapped directly to the exact hosted child by key and transition
-identity. This is process-local dispatch, not a network proxy, and it preserves
-the original request identity and minimum position. All other stale routes
-return `NotMyRange` with the current revision and owner hint without WAL I/O. Point
-operations preserve get, put, delete, put-if-absent, compare-exchange, and
-conditional-delete conditions and results. Successful and failed conditions
-return the R142 journal position. `Overloaded`, `WriteStalled`, `Recovering`,
-`TargetNotReady`, `LeaseExpired`, `RequestExpired`, `RequestConflict`,
-`NotMyRange`, and `RefreshRequired` remain distinct wire outcomes.
+The contacted server validates the deadline and request envelope, resolves the
+key or logical range against its current catalog and recorded local lineage,
+then authorizes every partition it will access against the current aggregate
+grant before R142 admission. A client topology mismatch is observed for
+refresh and metrics but is not itself an admission failure when the current
+owner can resolve and authorize the request locally. A same-owner split keeps
+an old parent dispatcher for point, multi-get, batch, seek, and scan requests;
+the dispatcher selects the current writer by key and never proxies to another
+node. If the current assignment is remote, unprepared, catching up, or absent
+from the local grant, the server returns the corresponding typed failure and
+performs no WAL I/O.
+
+Lineage dispatch preserves the original request identity and minimum journal
+position. A selected writer accepts either its own stream position or an
+inherited source-stream position covered by its durable overlay; it rejects an
+unrelated stream instead of silently discarding the ordering requirement.
+Point operations preserve get, put, delete, put-if-absent, compare-exchange,
+and conditional-delete conditions and results. Successful and failed
+conditions return the R142 journal position. `Overloaded`, `WriteStalled`,
+`Recovering`, `TargetNotReady`, `LeaseExpired`, `RequestExpired`,
+`RequestConflict`, `NotMyRange`, and `RefreshRequired` remain distinct wire
+outcomes.
 
 A deadline observed before sequencer admission creates no WAL record. Once the
 sequencer accepts a mutation, dropping the transport response does not cancel
@@ -93,16 +113,22 @@ read-after-write ordering.
 
 ## 5. Ordered Reads
 
-Seek provides ceiling, higher, floor, and lower operations within one partition
-view. Scan intervals are validated and clipped to the routed half-open range
-before execution. A forward scan includes its lower bound and excludes its
-upper bound. Its continuation resumes strictly after the last emitted key so a
-page boundary neither duplicates nor skips a key. Reverse scans use the
-corresponding exclusive upper cursor. A continuation binds direction, last key,
-partition ID, owner epoch, and catalog revision. Any split, transfer, revision,
-epoch, or direction mismatch returns `RefreshRequired`; the server never
-guesses a resume position. Multi-partition composition belongs to the routed
-client.
+Seek provides ceiling, higher, floor, and lower operations within one logical
+partition view. A same-owner split seek may cross the local writer boundary.
+Scan intervals are validated and clipped once against the logical routed range;
+the dispatcher visits retained and child writers in key order, or reverse key
+order for a reverse scan. A forward scan includes its lower bound and excludes
+its upper bound. Its continuation resumes strictly after the last emitted key
+so the split key and page boundaries neither duplicate nor skip a key. Reverse
+scans use the corresponding exclusive upper cursor.
+
+A continuation binds direction, last key, and the request's logical partition,
+epoch, and catalog revision. It remains valid across a same-owner split while
+that exact local lineage is retained, because the last key determines the next
+writer. A mismatched continuation envelope or an owner transfer that removes
+the local lineage returns `RefreshRequired` or `NotMyRange`; the server never
+guesses a remote resume position. Multi-partition composition belongs to the
+routed client.
 
 ## 6. Split Publication
 
@@ -129,8 +155,9 @@ monitor advance them in this order:
 5. The parent owner has already activated both local writers before publishing
    the catalog. Catalog reconciliation adopts those handles for external
    routing; it neither resumes the retained parent nor activates either writer.
-   A stale parent point route dispatches to the retained parent or child by
-   key; old parent scan and seek topology must refresh.
+   An old parent route dispatches point, grouped, seek, and scan operations
+   through the retained local lineage. The current catalog and grant authorize
+   the actual writer or writers used by the operation.
 
 Before child materialization, heartbeat load reports the child as dependent.
 The local maintenance loop performs bounded ownership materialization and a

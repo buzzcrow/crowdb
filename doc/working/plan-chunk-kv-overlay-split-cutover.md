@@ -107,6 +107,15 @@ read a pre-restart value. The deterministic retry regression also preloads
 both stable writer journals at `C+1` and proves preparation preserves their
 acknowledged tails. R174 is accepted; R175 is now active.
 
+The simplified data-path gate run at
+`bench-log/chunk-kv-regression-20260919-084055` completed 10,000 mixed
+operations at 4 KiB, 25% reads, and concurrency 32 with 0 errors and p99
+94.244 ms. It completed three splits to four partitions with two recorded
+split finalizations, zero catch-up lag and admission backpressure, restarted in
+3.113 s, recovered five partition handles, and reached ready state. The
+cutover marker now seeds both writers from the bounded parent retry cache
+instead of rescanning parent WAL history.
+
 ### Current Status
 
 - [x] **Verify repeated local split and restart**: repeated same-ID successor
@@ -186,52 +195,94 @@ acknowledged tails. R174 is accepted; R175 is now active.
 
 ## Data-Path Gate Audit and Handling Notes
 
-| Path | Existing gate | Request effect | Decision and implementation note |
-|---|---|---|---|
-| Split mutation | `SplitIngressRoute::Buffering` then `forward_into` | Completion waits for final checkpoint/publish; bounded queue can reject | Remove. Construct/install the two writer ingress route before shared-view bulk work. Each mutation selects its writer by split key and appends directly to that writer WAL/memtable. |
-| Split mutation | Buffer capacity returns `Overloaded` | A split-time burst can reject writes | Remove with the buffer route. Normal per-writer admission remains the only bounded write admission. |
-| Split finalization | `begin_split_finalization()` waits for old admitted mutations | Old drain is a cutover gate | Remove from foreground handoff. The only atomic foreground change is replacing parent ingress with the two-writer route; all durable shared-view work continues behind it. |
-| Split read | Buffering reads old parent while buffered writes have no visible writer state | Read-your-write and split-time visibility are incomplete | Remove buffering. Once direct ingress is installed, reads use the same key router and selected writer tree/memtable. |
-| Shared memtable | Shared-view publish/checkpoint lies between buffer and writer installation | Bulk persistence delays client completion | Keep bulk range publish, but move it behind direct ingress. It owns only prepare-entry data; release after both durable frontiers, never by per-entry read/delete. |
-| Point routing | Stale point route is observed but current catalog/grant still selects one entry | Mostly corrected, but lease/catalog coupling remains | Keep stale-route metric only. Resolve key through local lineage first; pass the selected writer's internal epoch to the partition API. |
-| Multi-get and batch | `matches_routing()` rejects stale generation/epoch | Old clients fail while point requests succeed | Remove RPC topology equality check. Validate each key/range, then use the same local lineage resolver as point requests. |
-| Seek | Current catalog chooses one writer | A g1 parent seek can miss the child side | Resolve the supplied key through the parent dispatcher when local lineage exists, then call that writer. |
-| Scan | Current catalog range and continuation topology are required | g1 parent scan returns refresh/not-my-range after g2 | Add a dispatcher scan: clip once against the old logical parent range, scan retained writer then child in forward order (reverse order for reverse scan), and encode continuation with logical parent topology plus writer boundary. |
-| Serving authority | Grant generation and exact `(partition, epoch)` assignment gate authorization | Local ready writers can be fenced by catalog-reference mismatch | Retain live owner lease, but authorize known local split lineage independently of client generation. Epoch remains checked only at the selected writer/WAL/tree boundary. |
-| Catalog reconcile | Exact id/epoch/range/stream comparison triggers recovery | Retained parent may be re-opened as a replacement | Keep exact comparison for ordinary recovery. For a recorded local split artifact, adopt its writer identity directly; never recover a retained parent merely because g2 shrank its range. |
-| Grant activation and registry | Split-finalizing parent was treated as recovering | Group-0 stops renewing g1 lease during prepare | Keep it advertised as serving while it owns old ingress; this is already corrected. Activation must recognize a local dispatcher instead of reactivating the old parent epoch. |
-| Heartbeat | Materialization previously ran inline in the heartbeat loop | A slow bulk pass expires the serving lease | Keep materialization in its independent task; heartbeat only observes, renews, and installs grants. This is already corrected. |
-| Registry | `SplitFinalizing` was previously reported as recovering | Group-0 incorrectly removes a still-serving old ingress | Keep `SplitFinalizing` non-recovering until direct ingress replaces it. This is already corrected. |
-| Balance eligibility | `transition_id.is_none()` and unresolved overlay checks | Delays a later balance, not foreground I/O | Retain. This is control-plane serialization and must not be consulted by request dispatch. |
-| Catalog publication | Exact g1 parent CAS and exact artifact proof | Prevents stale control-plane overwrite | Retain. It is an atomic publication invariant, not a client-routing predicate. |
-| Journal recovery | Stream name, replay offset, cutover offset, sequence continuity | Detects loss/replay corruption | Retain. Historical stream plus offsets is the parent journal lineage; no process-local parent object is required after restart. |
+The final data path has three layers. Client topology is never serving
+authority, and background durability or cleanup never becomes request
+admission state.
 
-### Implementation Comments
+### Foreground Request Path
 
-- `partition.rs`: replace the buffer route with a route that contains two live
-  writers and the split key. Its mutation method must be a single atomic route
-  selection followed by writer admission; it must not await split maintenance.
-- `partition/split.rs`: preparation creates the immutable shared view and the
-  writer runtime state separately. The shared view is bulk-published from its
-  fixed generation; later writer WAL/memtable data is excluded by construction.
-  The durable artifact records both shared-view writer frontiers and historical
-  stream replay/cutover offsets.
-- `server.rs`: centralize lineage resolution. Point, multi-get, batch, seek,
-  and scan all call it, rather than each comparing a client route to catalog g2.
-  The resolver may choose a current writer or an old-parent dispatcher, but it
-  never proxies to a remote node.
-- `serving/lease.rs`: separate lease liveness from catalog-reference equality.
-  A request needs a live local owner lease and a locally known lineage; it does
-  not need to name the latest generation. Durable writer epoch validation stays
-  below this layer.
-- `main.rs` and reconciliation: a recorded local artifact suppresses recovery
-  for both retained parent and child. Catalog refresh installs catalog/grant
-  state only; it must not perform a second retained-parent cutover.
-- Tests must assert the negative properties: no queued split mutations, no
-  per-entry shared-view drain, no stale-route rejection for supported APIs, and
-  no request latency tied to shared-view checkpoint duration.
+- Validate the request envelope and deadline, resolve the key or logical range
+  against the current catalog plus any recorded local split lineage, and
+  observe stale client topology only for metrics and refresh hints.
+- Authorize every writer the operation will actually access against one current
+  catalog and aggregate serving grant. The grant generation and exact
+  `(partition_id, owner_epoch)` assignment remain mandatory even when the
+  client's generation or epoch is stale.
+- Pass the resolved writer's current epoch into its partition API. Normal
+  per-writer request and byte admission are the only bounded mutation queues.
+- Preserve a minimum journal position across lineage dispatch. The writer
+  decides whether it belongs to its own stream, is covered by an inherited
+  source frontier, or is unrelated and invalid.
+- Point and seek normally authorize one writer. A boundary-crossing seek or
+  logical-parent scan authorizes the additional writer only when it is used.
+
+### Background Publication Path
+
+- `SplitCutover` fixes `C` and installs the complete two-writer route at one
+  parent-worker queue position. Base rebuild, checkpoint, parent-tail catch-up,
+  and all other work that does not require `C` finish before that marker. The
+  marker uses the bounded in-memory retry cache instead of replaying parent
+  history; only a previously acknowledged destination tail may be replayed
+  before route installation. Requests never wait for checkpoint or filtered
+  publication.
+- The detached old-parent generation contains only history through `C`.
+  Post-route mutations are already isolated in retained-parent or child
+  WALs/memtables. Bulk-publish the generation once per range and release it only
+  after both durable frontiers are recorded.
+- Catalog publication, materialization, heartbeat observation, and balance
+  eligibility run independently. They may delay topology cleanup or a later
+  transition but are never consulted by request dispatch.
+
+### Recovery and Reclamation Path
+
+- Exact catalog CAS, artifact identity, root generation, stream manifest,
+  replay/cutover offsets, and sequence continuity remain fail-closed recovery
+  invariants rather than client-routing predicates.
+- Reconciliation adopts an exact matching local writer. When no such runtime
+  exists, including process restart, it recovers the exact catalog artifact;
+  range shrink alone neither proves reuse nor forces replacement.
+- Tree generations, source stream bytes, retry results, and shared packs remain
+  pinned until every catalog, overlay, forwarding, recovery, and retry-floor
+  reference is gone.
 
 ### Immediate Cleanup Sequence
+
+- [x] **Preserve lineage read ordering and simplify ingress storage**: pass
+  minimum journal positions unchanged to split writers so their inherited
+  frontier validation remains effective, replace the single-variant
+  `SplitIngressRoute` with `ArcSwapOption<SplitIngress>`, and add deterministic
+  inherited, unrelated-stream, and raced-route tests. Files:
+  `lib/crowdb-chunk-kv/src/partition.rs`, server ordered-read helpers, and
+  partition/server tests. `SplitIngress` is now the directly swapped route,
+  inherited parent positions reach `Partition::wait_applied`, unrelated stream
+  positions fail closed, and both affected crate suites pass.
+- [x] **Authorize only resolved writers**: consolidate point, seek, and scan
+  resolution so client topology remains a routing reference while current
+  catalog/grant assignments authorize exactly the writer set used. Preserve
+  old logical-parent scan and continuation behavior without adding a combined
+  lifecycle state. Files: `app/crowdb-chunk-kv-server/src/server.rs` and server
+  tests. Point operations now receive the selected writer directly; seek
+  authorizes its primary writer first and authorizes the second writer only
+  when the first lookup crosses the split boundary. Scans authorize both
+  writers because they visit both ranges. A retained-only grant regression
+  proves a local seek does not depend on unused child authority.
+- [x] **Minimize the worker cutover marker**: keep destination tree rebuild,
+  checkpoint, and parent-tail catch-up outside the parent queue marker. At `C`,
+  seed both live writers from the mutation worker's bounded retry cache instead
+  of rescanning parent WAL history; replay only an existing destination tail,
+  attach the fixed view, and install the route. The paused preparation test
+  proves parent mutations progress before the marker and the paused
+  bulk-publish test proves they progress after it. Files:
+  `lib/crowdb-chunk-kv/src/{partition.rs,partition/split.rs}` and partition
+  tests. The retry regression still preloads both destination WALs at `C+1`,
+  while the writer-install regression proves a pre-cutover request result is
+  served from the seeded cache without another append.
+- [x] **Verify the simplified gate contract**: run chunk-KV and server tests,
+  Rust formatting and lint, then the real-process mixed split regression. The
+  regression must retain zero request errors and successful restart replay.
+  Files: affected test suites and `tools/bench-chunk-kv-regression.sh`. Rust
+  formatting, `rs-lint`, both affected suites, and the real-process mixed
+  split/restart regression pass.
 
 - [x] **Centralize local lineage resolution**: introduce one resolver for
   current writers and old-parent dispatchers, then use it from point, multi-get,
