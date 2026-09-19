@@ -17,5 +17,6 @@ pub mod hardware;
 pub mod kv_data;
 pub mod kv_logical;
 pub mod kv_server;
+pub mod s3;
 
 pub use context::OpContext;

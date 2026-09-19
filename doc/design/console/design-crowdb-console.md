@@ -43,6 +43,7 @@ design is detailed in the sub-design `design-crowdb-console-ui.md`.
   - [7.5 `kv server delete` — graceful + require-empty](#75-kv-server-delete--graceful--require-empty)
   - [7.6 Bench subcommand](#76-bench-subcommand)
   - [7.7 Bench lifecycle verbs (deploy / prepare / run / teardown)](#77-bench-lifecycle-verbs-deploy--prepare--run--teardown)
+  - [7.8 Persistent S3 mini-cluster](#78-persistent-s3-mini-cluster)
 - [8. Error Model and Operation Logging](#8-error-model-and-operation-logging)
 - [9. Observability](#9-observability)
 - [10. Open Questions](#10-open-questions)
@@ -727,6 +728,45 @@ short structural smoke without changing the default regression matrix.
 config extension. The `runtime/` directory is gitignored. The
 `crowdb-kv-server` child processes survive CLI exit because
 `lifecycle::deploy_local` spawns them with `kill_on_drop(false)`.
+
+### 7.8 Persistent S3 mini-cluster
+
+`crowdb-cli s3 cluster start --data-dir <path>` is the simple local operator
+path. The location, rather than the caller's global console configuration, is
+the cluster identity and recovery boundary:
+
+- a missing or empty location is initialized as a three-node cluster;
+- a location containing `s3-mini-cluster.json` and `console.toml` is restarted
+  with the same service identities, endpoints, launch commands, KV/WAL/tree
+  directories, and DiskIO files;
+- a non-empty location without the marker is rejected without modification.
+
+The initial dependency order is KV, DiskDB, DiskIO, ChunkDB, chunk-KV, then
+access-server. Every service must become ready before its dependent starts.
+Each node owns one sparse, file-backed DiskIO file below the data directory;
+normal S3 bucket metadata, object metadata, streams, and object bytes therefore
+survive a complete stop and restart. `stop` terminates recorded processes but
+does not remove configuration or storage. `status` is read-only.
+
+The mini topology is intentionally loopback and places its simulated nodes in
+one rack, so ChunkDB explicitly permits colocated fragments. This is not the
+production capacity contract: the normal R173 planner must still reject a
+requested copy or EC scheme unless distinct healthy failure domains satisfy
+it.
+
+The local access-server binds only to `127.0.0.1` and explicitly enables its
+trusted-network authentication mode. This keeps the local CRUD path small: the
+shared `ops::s3` client sends the ordinary S3 HTTP operations directly, and the
+CLI only parses input and streams output. It is not a production authentication
+mode and must never be used for a non-loopback listener. Bucket and object
+commands take the same `--data-dir`, discover the persisted endpoint, preserve
+S3 errors, and do not fall back to another mutation.
+
+The durable record is deliberately small. `console.toml` retains service PIDs
+and reproducible launch specifications; `s3-mini-cluster.json` retains only the
+format version, loopback endpoint, and non-secret tenant name. Runtime liveness
+is derived from the recorded PIDs, not represented by additional compound
+cluster states.
 
 ## 8. Error Model and Operation Logging
 

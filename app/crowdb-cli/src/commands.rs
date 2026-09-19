@@ -12,6 +12,7 @@ pub(crate) mod chunk;
 pub(crate) mod cluster;
 pub(crate) mod kv;
 pub(crate) mod port_alloc;
+pub(crate) mod s3;
 
 pub(crate) use bench::{run_bench_verb, BenchVerb};
 pub(crate) use chunk::{run_chunk_diskdb_verb, run_chunk_stub_verb, ChunkDiskdbVerb, ChunkStubVerb};
@@ -21,6 +22,7 @@ pub(crate) use kv::{
     KvDataVerb, KvServerVerb, ReplicaVerb, StoreVerb,
 };
 pub(crate) use port_alloc::{run as run_port_alloc, PortAllocArgs};
+pub(crate) use s3::{run_s3_verb, S3Verb};
 
 use std::process::ExitCode;
 

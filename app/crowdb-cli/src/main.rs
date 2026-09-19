@@ -19,9 +19,9 @@ use crowdb_protocol::KV_SERVER_MGMT_BASE;
 
 use commands::{
     run_bench_verb, run_chunk_diskdb_verb, run_chunk_stub_verb, run_cluster_verb, run_group_verb,
-    run_kv_data_verb, run_kv_server_verb, run_port_alloc, run_replica_verb, run_store_verb, BenchVerb,
+    run_kv_data_verb, run_kv_server_verb, run_port_alloc, run_replica_verb, run_s3_verb, run_store_verb, BenchVerb,
     ChunkDiskdbVerb, ChunkStubVerb, ClusterVerb, GroupVerb, KvDataVerb, KvServerVerb, PortAllocArgs,
-    ReplicaVerb, StoreVerb,
+    ReplicaVerb, S3Verb, StoreVerb,
 };
 
 #[derive(Parser, Debug)]
@@ -114,6 +114,7 @@ impl Cli {
                 };
                 format!("bench-{v}")
             }
+            Domain::S3 { .. } => "s3".to_string(),
             Domain::PortAlloc { .. } => "port-alloc".to_string(),
         }
     }
@@ -141,6 +142,11 @@ enum Domain {
     Bench {
         #[command(subcommand)]
         verb: BenchVerb,
+    },
+    /// Persistent S3 mini-cluster and bucket/object operations.
+    S3 {
+        #[command(subcommand)]
+        verb: S3Verb,
     },
     /// Flock-coordinated port allocation for tests and cluster
     /// bootstrap. No tokio, no RPC — handled before the runtime is
@@ -249,6 +255,7 @@ async fn dispatch(mut cli: Cli) -> ExitCode {
             ChunkVerb::Stub(sv) => run_chunk_stub_verb(&cli, sv).await,
         },
         Domain::Bench { verb } => run_bench_verb(&cli, verb).await,
+        Domain::S3 { verb } => run_s3_verb(&cli, verb).await,
         Domain::PortAlloc { args } => run_port_alloc(&args),
     }
 }

@@ -582,10 +582,7 @@ pub async fn restart_storage_services(ctx: &OpContext) -> Result<u64> {
     let launches = services
         .iter()
         .map(|server| {
-            let pid = server.pid.ok_or_else(|| Error::Validation {
-                field: "pid".into(),
-                message: format!("{} has no tracked process", server.id),
-            })?;
+            let pid = server.pid.unwrap_or(0);
             let spec = ctx
                 .config()
                 .local_launches
@@ -600,7 +597,9 @@ pub async fn restart_storage_services(ctx: &OpContext) -> Result<u64> {
         .collect::<Result<std::collections::HashMap<_, _>>>()?;
     for server in &services {
         let (pid, _) = &launches[&server.id];
-        lifecycle::stop_pid_with_timeout(*pid, std::time::Duration::from_secs(15))?;
+        if *pid != 0 {
+            lifecycle::stop_pid_with_timeout(*pid, std::time::Duration::from_secs(15))?;
+        }
     }
     let restart_epoch_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -814,6 +813,44 @@ pub async fn local_deploy_combined(
         chunk.diskio_rpc_workers,
         chunk.metrics_interval,
         diskio_dummy_disk_type,
+        None,
+    )
+    .await?;
+    let chunkdb = local_deploy_chunkdb(ctx, workspace, chunk).await?;
+    Ok(LocalCombinedDeploySummary {
+        kv_nodes: 3,
+        racks: 1,
+        diskdb_instances: diskdb.instance_count,
+        chunkdb_instances: chunkdb.instance_count,
+        diskio_instances: diskio,
+    })
+}
+
+/// Deploy the same local storage stack with sparse, file-backed `DiskIO` media.
+/// The files live below `workspace` and are reused across process restarts.
+///
+/// # Errors
+/// Returns an error when topology provisioning, file creation, process startup,
+/// or a required readiness check fails.
+pub async fn local_deploy_combined_file_backed(
+    ctx: &OpContext,
+    workspace: &std::path::Path,
+    tunables: Option<&KvDeployTunables>,
+    disk: &LocalDiskdbDeployConfig,
+    chunk: &LocalChunkdbDeployConfig,
+) -> Result<LocalCombinedDeploySummary> {
+    local_deploy(ctx, 3, Some(workspace), tunables).await?;
+    for group_id in &disk.data_groups {
+        crate::ops::kv_logical::add_group(ctx, 0, *group_id, 100 + *group_id, &[1, 2, 3]).await?;
+    }
+    let diskdb = local_deploy_diskdb(ctx, workspace, disk).await?;
+    let diskio = local_deploy_diskio(
+        ctx,
+        workspace,
+        chunk.diskio_rpc_workers,
+        chunk.metrics_interval,
+        "null",
+        Some(disk.capacity_bytes),
     )
     .await?;
     let chunkdb = local_deploy_chunkdb(ctx, workspace, chunk).await?;
@@ -832,6 +869,7 @@ async fn local_deploy_diskio(
     rpc_workers: Option<u32>,
     metrics_interval: Option<u64>,
     dummy_disk_type: &str,
+    file_capacity: Option<u64>,
 ) -> Result<usize> {
     if !matches!(dummy_disk_type, "null" | "mem") {
         return Err(Error::Validation {
@@ -869,6 +907,21 @@ async fn local_deploy_diskio(
             .join(format!("rack{}", node.rack_id))
             .join(format!("node{}", node.id))
             .join(&server_id);
+        let disks = if let Some(capacity) = file_capacity {
+            let disk_dir = node_dir.join("data");
+            std::fs::create_dir_all(&disk_dir)?;
+            let path = disk_dir.join("disk.dat");
+            if !path.exists() {
+                std::fs::File::create(&path)?.set_len(capacity)?;
+            }
+            vec![lifecycle::DiskioLocalDisk {
+                id: format!("{:x}:{:x}", node.id * 100 + 1, 1_u64),
+                path,
+                zone_capacity: capacity,
+            }]
+        } else {
+            Vec::new()
+        };
         let deployed = lifecycle::deploy_diskio_local(
             &DiskioDeployRequest {
                 server_id: server_id.clone(),
@@ -881,6 +934,8 @@ async fn local_deploy_diskio(
                 dummy_disk_type: dummy_disk_type.to_owned(),
                 rpc_workers,
                 metrics_interval,
+                o_direct: file_capacity.is_none(),
+                disks,
             },
             node,
             &node_dir,

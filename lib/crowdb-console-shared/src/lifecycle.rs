@@ -9,6 +9,7 @@
 //! ignored for transport. C4 replaces this module's body with `russh`,
 //! preserving the public API.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
@@ -21,6 +22,15 @@ use tracing::{debug, warn};
 use crate::clients::http::ServerClient;
 use crate::config::{LocalLaunchSpec, NodeEntry};
 use crate::error::{Error, Result};
+
+/// Start a long-lived local service in its own session. CLI invocations are
+/// commonly run below a short-lived shell or `pixi run`; session detachment
+/// prevents that parent from sending the service a terminal hangup on exit.
+pub(crate) fn detached_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new("setsid");
+    command.arg(program);
+    command
+}
 
 /// Inputs for a deploy. The console picks the ports; the user provides ids.
 #[derive(Debug, Clone, Default)]
@@ -114,7 +124,7 @@ pub async fn restart_local_service(server_id: &str, pid: u32, spec: &LocalLaunch
         .create(true)
         .append(true)
         .open(&output_path)?;
-    let mut command = Command::new(&spec.program);
+    let mut command = detached_command(&spec.program);
     command
         .args(&spec.args)
         .envs(&spec.env)
@@ -128,7 +138,7 @@ pub async fn restart_local_service(server_id: &str, pid: u32, spec: &LocalLaunch
         message: format!("restarted {server_id} child has no pid"),
     })?;
     if let Some(url) = &spec.readiness_url {
-        wait_for_diskdb_ready(&mut child, url, &output_path, new_pid, Duration::from_secs(30)).await?;
+        wait_for_diskdb_ready(&mut child, url, &output_path, new_pid, Duration::from_secs(60)).await?;
     } else {
         tokio::time::sleep(Duration::from_millis(200)).await;
         if let Some(status) = child.try_wait()? {
@@ -172,6 +182,17 @@ pub struct DiskioDeployRequest {
     pub dummy_disk_type: String,
     pub rpc_workers: Option<u32>,
     pub metrics_interval: Option<u64>,
+    pub o_direct: bool,
+    /// File-backed disks owned by this process. Empty retains the benchmark
+    /// dummy-disk behavior.
+    pub disks: Vec<DiskioLocalDisk>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiskioLocalDisk {
+    pub id: String,
+    pub path: PathBuf,
+    pub zone_capacity: u64,
 }
 
 /// Spawn `crowdb-kv-server` locally. The `node.host` is folded into the
@@ -319,7 +340,7 @@ async fn deploy_local_in_workspace(
     let mgmt_url = format!("http://{}:{}", node.host, req.rest_port);
     let rpc_url = format!("http://{}:{}", node.host, req.rpc_port);
 
-    let mut cmd = Command::new(&launch_binary);
+    let mut cmd = detached_command(&launch_binary);
     cmd.arg("--management-addr")
         .arg("127.0.0.1")
         .arg("--management-port")
@@ -977,7 +998,11 @@ async fn wait_for_diskdb_ready(
             node_id: url.to_string(),
             status: format!("client build failed: {e}"),
         })?;
-    let health_url = format!("{url}/health");
+    let health_url = if url.ends_with("/ready") {
+        url.to_owned()
+    } else {
+        format!("{url}/health")
+    };
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if let Some(status) = child.try_wait().map_err(Error::Io)? {
@@ -1056,7 +1081,7 @@ pub async fn deploy_diskdb_local(
         None => format!("http://{}:{}", node.host, crowdb_protocol::DISKDB_HTTP_BASE),
     };
 
-    let mut cmd = Command::new(&launch_binary);
+    let mut cmd = detached_command(&launch_binary);
     cmd.arg("--config").arg(&config_path);
     cmd.arg("--log-dir").arg(workspace_dir.join("log"));
     if let Some(interval) = req.metrics_interval {
@@ -1192,7 +1217,7 @@ pub async fn deploy_chunkdb_local(
         .create(true)
         .append(true)
         .open(&output_path)?;
-    let mut command = Command::new(&launch_binary);
+    let mut command = detached_command(&launch_binary);
     command
         .arg("--config")
         .arg(&config_path)
@@ -1274,34 +1299,14 @@ pub async fn deploy_diskio_local(
     std::fs::create_dir_all(&log_dir)?;
     std::fs::create_dir_all(&config_dir)?;
     let config_path = config_dir.join("crowdb_diskio_config.toml");
-    let seeds = req
-        .kv_server_mgmt_seeds
-        .iter()
-        .map(|seed| format!("{seed:?}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let config = format!(
-        "[server]\nbind_address = {:?}\nlisten_port = {}\nrpc_workers = {}\nnode_id = {}\ndummy_disk_type = {:?}\no_direct = true\n\n[engine]\nthread_pool_size = 4\nsq_entries = 256\n\n[group0]\nkv_seeds = [{}]\ninstance_id = {}\nrack_id = {}\ndisk_group_id = {}\nsync_interval_ms = 1000\nauto_discover_disks = true\n\n[metrics]\nlog_dir = {:?}\ninterval_secs = {}\n",
-        node.host,
-        req.rpc_port,
-        req.rpc_workers.unwrap_or(4),
-        req.node_id,
-        req.dummy_disk_type,
-        seeds,
-        req.instance_id,
-        req.rack_id,
-        req.disk_group_id,
-        log_dir.to_string_lossy(),
-        req.metrics_interval.unwrap_or(5),
-    );
-    std::fs::write(&config_path, config)?;
+    std::fs::write(&config_path, diskio_config(req, node, &log_dir))?;
     let output_path = log_dir.join("crowdb-diskio.stdout.log");
     let output = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&output_path)?;
     let endpoint = format!("http://{}:{}", node.host, req.rpc_port);
-    let mut command = Command::new(&launch_binary);
+    let mut command = detached_command(&launch_binary);
     command
         .arg("--config")
         .arg(&config_path)
@@ -1347,6 +1352,41 @@ pub async fn deploy_diskio_local(
             readiness_url: None,
         },
     })
+}
+
+fn diskio_config(req: &DiskioDeployRequest, node: &NodeEntry, log_dir: &Path) -> String {
+    let seeds = req
+        .kv_server_mgmt_seeds
+        .iter()
+        .map(|seed| format!("{seed:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut config = format!(
+        "[server]\nbind_address = {:?}\nlisten_port = {}\nrpc_workers = {}\nnode_id = {}\ndummy_disk_type = {:?}\no_direct = {}\n\n[engine]\nthread_pool_size = 4\nsq_entries = 256\n\n[group0]\nkv_seeds = [{}]\ninstance_id = {}\nrack_id = {}\ndisk_group_id = {}\nsync_interval_ms = 1000\nauto_discover_disks = true\n\n[metrics]\nlog_dir = {:?}\ninterval_secs = {}\n",
+        node.host,
+        req.rpc_port,
+        req.rpc_workers.unwrap_or(4),
+        req.node_id,
+        req.dummy_disk_type,
+        req.o_direct,
+        seeds,
+        req.instance_id,
+        req.rack_id,
+        req.disk_group_id,
+        log_dir.to_string_lossy(),
+        req.metrics_interval.unwrap_or(5),
+    );
+    for disk in &req.disks {
+        write!(
+            config,
+            "\n[[disk]]\nid = {:?}\npath = {:?}\nzone_capacity = {}\n",
+            disk.id,
+            disk.path.to_string_lossy(),
+            disk.zone_capacity,
+        )
+        .expect("writing to a String cannot fail");
+    }
+    config
 }
 
 fn diskio_launch_args(config_path: &Path) -> Vec<String> {

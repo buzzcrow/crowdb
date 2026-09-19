@@ -147,6 +147,29 @@ failure did not recur.
   source object reclamation remain follow-up work. They are outside the
   foreground handoff and do not block the R173 persistent mini-cluster path.
 
+## R173 Persistent Mini-Cluster Tasks
+
+- [x] Define the final `--data-dir` contract: empty initializes, a recognized
+  directory restarts, and unrelated non-empty directories fail closed.
+- [x] Add file-backed DiskIO deployment and retain exact launch commands,
+  endpoints, identities, and process IDs for restart.
+- [x] Add `s3 cluster start|status|stop` and start chunk-KV plus access-server
+  after the existing KV/DiskDB/DiskIO/ChunkDB stack is ready.
+- [x] Add shared thin HTTP operations and CLI bucket/object CRUD and list.
+- [x] Prove create, byte-exact CRUD, full stop, restart, and post-restart read
+  against a real release stack. The run at `/tmp/crowdb-r173-e2e` created 14
+  services, wrote `persistent-value`, stopped every service, reopened the same
+  directory, restored 14/14 services, and returned the same 16 bytes plus the
+  persisted bucket and object listings.
+- [x] Add focused CLI/shared coverage for empty/existing/foreign
+  directories and the persisted service record.
+- [x] Run the affected gates: `pixi run fmt`, `pixi run rs-lint`, the focused
+  shared mini-cluster tests, and `pixi run test-console-cli` all pass.
+
+Deferred from the immediate operator path: capacity planning, authenticated
+remote credentials, Web deployment, and S3 benchmark verbs remain R173
+follow-up work. They do not add states to the local persistent lifecycle.
+
 ## Resolved Bugs
 
 - **R174 exact latest-root recovery after materialization**: the retained
