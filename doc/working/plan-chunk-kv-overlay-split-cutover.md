@@ -18,9 +18,10 @@ perform bucket and object CRUD.
 
 ## Scope Decision
 
-- R174 is accepted. A split does not make a request wait for shared-view
-  publish, tree checkpoint, materialization, or catalog refresh.
-- R175 is active. Existing transfer and balance code remains unverified
+- R174 remains active. Its foreground path does not make a request wait for
+  shared-view publish, tree checkpoint, materialization, or catalog refresh,
+  but sustained restart recovery still has the exact-root bug recorded below.
+- R175 is paused until R174 restart recovery passes. Existing transfer and balance code remains unverified
   scaffolding until reviewed against the completed R174 lineage. Proactive
   child-owner balance stays disabled in the group-0 planner during that work;
   dead-owner recovery remains independent.
@@ -31,7 +32,7 @@ perform bucket and object CRUD.
   through local split lineage. Ownership epoch remains an internal writer/WAL/tree
   durability fence, not an RPC routing precondition.
 
-## Session Status — 2026-09-18
+## Session Status — 2026-09-19
 
 ### Current Evidence
 
@@ -115,6 +116,39 @@ split finalizations, zero catch-up lag and admission backpressure, restarted in
 3.113 s, recovered five partition handles, and reached ready state. The
 cutover marker now seeds both writers from the bounded parent retry cache
 instead of rescanning parent WAL history.
+
+The 60,000-operation run at
+`bench-log/chunk-kv-regression-20260919-091542` kept 4 KiB mixed traffic live
+for 109.919 s at concurrency 32 and 25% reads. It completed all 60,000
+operations with zero errors, p99 237.644 ms, and three hosted partitions at
+workload completion. Three local split writer pairs were installed with
+explicit retained/child stream identities. Restart then reproduced the open
+bug below. This run also verified that a completed epoch's process-local
+materialization marker must be keyed by `(partition_id, owner_epoch)`; keying
+only by partition ID let a successor epoch appear independently recoverable
+and start the next split before its own overlay was materialized.
+
+## Open Bugs
+
+- **R174 exact latest-root recovery after materialization**: the retained
+  partition `(1, 1)` recorded split base checkpoint 10751 and cutover 17695.
+  Its overlay was later cleared from the catalog, which is only permitted
+  after materialization reports complete and a checkpoint at least through
+  cutover succeeds. Restart nevertheless reopened the latest durable root at
+  checkpoint 10751, while the retained writer WAL correctly began at 17696.
+  Recovery therefore failed with `expected 10752, got 17696 at offset 0`.
+  This is not a missing WAL record: the durable latest-root selection regressed
+  to the split base after catalog cleanup. Reproduction:
+  `bench-log/chunk-kv-regression-20260919-091542/chunk-kv-1-log/`.
+  Investigation exceeded the agreed ten-minute bound; keep R174 active, do
+  not start R175, and resume at the root-catalog publication/open path rather
+  than adding another split state or buffer.
+- **Inherited retry positions must not move a writer WAL watermark**:
+  retained and child writers inherit bounded parent retry results so an old
+  request can return without another append. Those results contain parent
+  stream positions and must not advance a new writer's replay offset. The
+  mutation worker now selects the oldest retained result belonging to its own
+  stream, with a deterministic split-session regression.
 
 ### Current Status
 

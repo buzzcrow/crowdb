@@ -105,7 +105,7 @@ pub struct ChunkKvService {
     catalog: ArcSwap<CatalogSnapshot>,
     partitions: ArcSwap<HashMap<Id128, Partition>>,
     local_split_sessions: ArcSwap<HashMap<Id128, LocalSplitSession>>,
-    independently_recoverable: ArcSwap<HashSet<Id128>>,
+    independently_recoverable: ArcSwap<HashSet<(Id128, u64)>>,
     max_partitions: usize,
     max_scan_response_bytes: usize,
     admitting: AtomicBool,
@@ -370,10 +370,13 @@ impl ChunkKvService {
                 },
                 durable_bytes,
                 live_byte_samples,
-                independently_recoverable: self.independently_recoverable.load().contains(&Id128 {
-                    high: snapshot.partition_id.high,
-                    low: snapshot.partition_id.low,
-                }) || self
+                independently_recoverable: self.independently_recoverable.load().contains(&(
+                    Id128 {
+                        high: snapshot.partition_id.high,
+                        low: snapshot.partition_id.low,
+                    },
+                    snapshot.ownership_epoch,
+                )) || self
                     .catalog
                     .load()
                     .entry_for_partition(Id128 {
@@ -408,7 +411,7 @@ impl ChunkKvService {
                 || self
                     .independently_recoverable
                     .load()
-                    .contains(&entry.partition_id)
+                    .contains(&(entry.partition_id, entry.owner_epoch))
             {
                 continue;
             }
@@ -431,7 +434,7 @@ impl ChunkKvService {
             }
             self.independently_recoverable.rcu(|current| {
                 let mut next = (**current).clone();
-                next.insert(entry.partition_id);
+                next.insert((entry.partition_id, entry.owner_epoch));
                 Arc::new(next)
             });
             completed.push(entry.partition_id);
@@ -504,7 +507,7 @@ impl ChunkKvService {
             .load()
             .get(&entry.partition_id)
             .is_some_and(|partition| local_partition_for_entry(partition, entry).is_some())
-            || self.local_split_writer(entry.partition_id).is_some()
+            || self.local_split_writer(entry).is_some()
     }
 
     /// Records the active local writer pair before group-0 advertises it.
@@ -577,6 +580,10 @@ impl ChunkKvService {
             parent_next_epoch = artifact.parent_next_epoch,
             child_id_high = artifact.child.partition_id.high,
             child_id_low = artifact.child.partition_id.low,
+            retained_stream_high = artifact.retained_parent.stream_name.high,
+            retained_stream_low = artifact.retained_parent.stream_name.low,
+            child_stream_high = artifact.child.stream_name.high,
+            child_stream_low = artifact.child.stream_name.low,
             cutover_seq = artifact.cutover_seq,
             retained_base_seq = artifact.retained_parent.base_applied_seq,
             retained_applied_seq = artifact.retained_parent.applied_seq,
@@ -714,7 +721,7 @@ impl ChunkKvService {
             let partition = current
                 .get(&entry.partition_id)
                 .and_then(|partition| local_partition_for_entry(partition, entry))
-                .or_else(|| self.local_split_writer(entry.partition_id))
+                .or_else(|| self.local_split_writer(entry))
                 .or_else(|| {
                     recovered
                         .get(&entry.partition_id)
@@ -1468,17 +1475,13 @@ impl ChunkKvService {
             })
     }
 
-    fn local_split_writer(&self, partition_id: Id128) -> Option<Partition> {
+    fn local_split_writer(&self, entry: &ChunkKvRangeCatalogEntry) -> Option<Partition> {
         self.local_split_sessions.load().values().find_map(|session| {
             let dispatcher = &session.dispatcher;
             let ingress = dispatcher.split_ingress()?;
             [ingress.retained_parent(), ingress.child()]
                 .into_iter()
-                .find(|writer| {
-                    let snapshot = writer.snapshot();
-                    snapshot.partition_id.high == partition_id.high
-                        && snapshot.partition_id.low == partition_id.low
-                })
+                .find(|writer| partition_matches_entry(writer, entry))
         })
     }
 }

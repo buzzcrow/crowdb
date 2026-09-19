@@ -2349,13 +2349,16 @@ impl ReplayState {
             }
             return Ok(());
         }
-        if self
-            .last_new_sequence
-            .is_some_and(|last| last.checked_add(1) != Some(record.mutation_seq))
-        {
-            return Err(ChunkKvError::JournalCorruption(
-                "journal mutation sequence has a gap".into(),
-            ));
+        if let Some(last) = self.last_new_sequence {
+            let expected = last.checked_add(1).ok_or_else(|| {
+                ChunkKvError::JournalCorruption("journal mutation sequence overflows".into())
+            })?;
+            if expected != record.mutation_seq {
+                return Err(ChunkKvError::JournalCorruption(format!(
+                    "journal mutation sequence has a gap: expected {expected}, got {} at offset {frame_offset}",
+                    record.mutation_seq
+                )));
+            }
         }
         if record.mutation_seq > self.checkpoint_applied_seq {
             let expected = self
@@ -2364,9 +2367,10 @@ impl ReplayState {
                 .checked_add(1)
                 .ok_or_else(|| ChunkKvError::JournalCorruption("mutation sequence overflows".into()))?;
             if record.mutation_seq != expected {
-                return Err(ChunkKvError::JournalCorruption(
-                    "journal mutation sequence has a gap".into(),
-                ));
+                return Err(ChunkKvError::JournalCorruption(format!(
+                    "journal mutation sequence has a gap after checkpoint {}: expected {expected}, got {} at offset {frame_offset}",
+                    self.checkpoint_applied_seq, record.mutation_seq
+                )));
             }
             if belongs_to_partition && record.result.applied() {
                 tree.apply(record.mutation_seq, &record.operation)
@@ -2785,8 +2789,9 @@ fn retain_result(
     }
     if let Some(oldest) = state
         .result_order
-        .front()
-        .and_then(|request_id| state.results.get(request_id))
+        .iter()
+        .filter_map(|request_id| state.results.get(request_id))
+        .find(|result| result.response.journal_position.stream_name == state.journal.stream_name())
     {
         state
             .retry_replay_offset

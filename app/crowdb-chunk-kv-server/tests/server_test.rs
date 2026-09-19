@@ -655,6 +655,9 @@ async fn prepared_split_lineage_suppresses_catalog_recovery() {
         transition_id: Some(Id128 { high: 22, low: 23 }),
     };
     assert!(service.hosts_catalog_assignment(&entry));
+    let mut stale_entry = entry;
+    stale_entry.owner_epoch = stale_entry.owner_epoch.saturating_add(1);
+    assert!(!service.hosts_catalog_assignment(&stale_entry));
 }
 
 #[tokio::test]

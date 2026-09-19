@@ -1774,12 +1774,16 @@ async fn serving_grant_refresh_keeps_a_preparing_parent_active() {
 async fn split_session_installs_two_live_writers_at_ingress_frontier() {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let parent_tree = Arc::new(MemoryPartitionTree::with_tree_id(810));
+    let config = PartitionConfig {
+        retained_results: 2,
+        ..PartitionConfig::default()
+    };
     let parent = partition(
         &store,
         Arc::clone(&parent_tree),
         StreamName { high: 810, low: 1 },
         8,
-        PartitionConfig::default(),
+        config.clone(),
     )
     .await;
     parent
@@ -1836,9 +1840,9 @@ async fn split_session_installs_two_live_writers_at_ingress_frontier() {
     let retained = prepared
         .retained_parent
         .unwrap()
-        .open_warmed(PartitionConfig::default())
+        .open_warmed(config.clone())
         .unwrap();
-    let child = prepared.child.open_warmed(PartitionConfig::default()).unwrap();
+    let child = prepared.child.open_warmed(config).unwrap();
     retained.activate_local_split_writer(&artifact).unwrap();
     child.activate_local_split_writer(&artifact).unwrap();
     parent
@@ -1914,6 +1918,33 @@ async fn split_session_installs_two_live_writers_at_ingress_frontier() {
     assert_eq!(
         child.get(9, b"i", None).await.unwrap().unwrap().value,
         b"right-new"[..]
+    );
+    let retained_replay_start = parent
+        .mutate(
+            8,
+            request(814),
+            MutationOperation::Put {
+                key: b"d".to_vec(),
+                value: b"left-newer".to_vec(),
+            },
+        )
+        .await
+        .unwrap()
+        .journal_position;
+    parent
+        .mutate(
+            8,
+            request(815),
+            MutationOperation::Put {
+                key: b"e".to_vec(),
+                value: b"left-newest".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        retained.checkpoint(9).await.unwrap().replay_offset,
+        retained_replay_start.offset
     );
 }
 

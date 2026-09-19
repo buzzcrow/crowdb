@@ -13,6 +13,7 @@ READ_PERCENT="${CHUNK_KV_BENCH_READ_PERCENT:-25}"
 HOT_KEY_PREFIX="${CHUNK_KV_BENCH_HOT_KEY_PREFIX:-object/hot}"
 TARGET_PARTITION_BYTES="${CHUNK_KV_BENCH_TARGET_PARTITION_BYTES:-5242880}"
 TIMEOUT_SECS="${CHUNK_KV_BENCH_TIMEOUT:-60}"
+LOAD_TIMEOUT_SECS="${CHUNK_KV_BENCH_LOAD_TIMEOUT:-$TIMEOUT_SECS}"
 READY_TIMEOUT_SECS="${CHUNK_KV_BENCH_READY_TIMEOUT:-$TIMEOUT_SECS}"
 SKIP_BUILD="${CHUNK_KV_BENCH_SKIP_BUILD:-0}"
 RUN_STAMP=$(date +%Y%m%d-%H%M%S)
@@ -51,7 +52,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for value in "$OPERATIONS" "$CONCURRENCY" "$VALUE_BYTES" "$TIMEOUT_SECS" "$READY_TIMEOUT_SECS" \
+for value in "$OPERATIONS" "$CONCURRENCY" "$VALUE_BYTES" "$TIMEOUT_SECS" "$LOAD_TIMEOUT_SECS" \
+    "$READY_TIMEOUT_SECS" \
     "$TARGET_PARTITION_BYTES"; do
     if ! [[ "$value" =~ ^[1-9][0-9]*$ ]]; then
         echo "ERROR: benchmark bounds must be positive integers" >&2
@@ -220,7 +222,7 @@ for pid in "${CHUNK_KV_PIDS[@]}"; do
     RSS_START=$((RSS_START + $(rss_kib "$pid")))
 done
 
-if ! LOAD_OUTPUT=$(timeout "$TIMEOUT_SECS" pixi run -- ./target/release/crowdb-chunk-kv-cli \
+if ! LOAD_OUTPUT=$(timeout "$LOAD_TIMEOUT_SECS" pixi run -- ./target/release/crowdb-chunk-kv-cli \
     --mgmt-seed "$MGMT_SEED" load --operations "$OPERATIONS" \
     --concurrency "$CONCURRENCY" --value-bytes "$VALUE_BYTES" --keyspace "$OPERATIONS" \
     --key-prefix "$HOT_KEY_PREFIX" --key-offset 0 --read-percent "$READ_PERCENT"); then
@@ -280,7 +282,17 @@ fi
 
 OLD_PID=${CHUNK_KV_PIDS[0]}
 kill -TERM "$OLD_PID"
-wait "$OLD_PID" || true
+# Keep the intentional restart inside the registry dead-owner window. The
+# service stops admission promptly, but storage-client teardown can outlive
+# that window and must not turn this split/replay check into a failover test.
+restart_stop_deadline=$((SECONDS + 3))
+while kill -0 "$OLD_PID" 2>/dev/null && [ "$SECONDS" -lt "$restart_stop_deadline" ]; do
+    sleep 0.1
+done
+if kill -0 "$OLD_PID" 2>/dev/null; then
+    kill -KILL "$OLD_PID" 2>/dev/null || true
+fi
+wait "$OLD_PID" 2>/dev/null || true
 REPLAY_STARTED_MS=$(date +%s%3N)
 RESTARTED_PID=0
 for attempt in 1 2 3; do
