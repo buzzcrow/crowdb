@@ -43,6 +43,11 @@ pub enum S3ClusterVerb {
         #[arg(long)]
         data_dir: PathBuf,
     },
+    /// Stop processes, release ports, and permanently remove the cluster.
+    Delete {
+        #[arg(long)]
+        data_dir: PathBuf,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -141,6 +146,7 @@ async fn run_cluster(cli: &Cli, verb: S3ClusterVerb) -> ExitCode {
         S3ClusterVerb::Start { data_dir } => crowdb_console_shared::ops::s3::start(&data_dir).await,
         S3ClusterVerb::Status { data_dir } => crowdb_console_shared::ops::s3::status(&data_dir),
         S3ClusterVerb::Stop { data_dir } => crowdb_console_shared::ops::s3::stop(&data_dir),
+        S3ClusterVerb::Delete { data_dir } => crowdb_console_shared::ops::s3::delete(&data_dir),
     };
     match result {
         Ok(status) if cli.json => print_json(cli, &status),

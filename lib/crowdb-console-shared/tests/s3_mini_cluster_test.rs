@@ -81,5 +81,6 @@ async fn persistent_cluster_survives_stop_restart_and_range_read() {
         .await
         .expect("range read");
     assert_eq!(range, b"object");
-    s3::stop(dir.path()).expect("final stop");
+    s3::delete(dir.path()).expect("delete cluster");
+    assert!(!dir.path().exists());
 }

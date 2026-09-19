@@ -772,7 +772,9 @@ access-server. Every service must become ready before its dependent starts.
 Each node owns one sparse, file-backed DiskIO file below the data directory;
 normal S3 bucket metadata, object metadata, streams, and object bytes therefore
 survive a complete stop and restart. `stop` terminates recorded processes but
-does not remove configuration or storage. `status` is read-only.
+does not remove configuration or storage. `delete` stops the cluster, releases
+its persistent port claims, and removes the named location. `status` is
+read-only.
 
 First start is transactional. The complete marker is published only after the
 access endpoint is ready; failure stops the processes created by that

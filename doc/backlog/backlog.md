@@ -57,11 +57,6 @@ cuObject/RDMA acceleration after the TCP baseline is correct and measured.
   parallel logical spans directly to or from client registered memory.
 ### High Priority
 
-- **[R176](R176-runtime-namespace.md)** — unified runtime namespace — Area:
-  test harness / console / protocol — Make one namespace own a complete
-  environment's stable service ports plus data, config, log, and artifact
-  paths; reclaim dead ephemeral claims, persist local-cluster assignments, and
-  make restart reuse identity instead of silently allocating a replacement.
 - **[R103](R103-chunkdb-range-migration.md)** — chunkdb range ownership
   migration — Area: chunkdb / kv — Implement the full
   `Copying`/`Cutover`/`Complete` migration flow for transferring chunkdb

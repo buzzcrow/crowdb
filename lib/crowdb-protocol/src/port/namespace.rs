@@ -361,6 +361,19 @@ impl RuntimeNamespace {
         Ok(())
     }
 
+    /// Release every port claim while preserving the namespace tree.
+    ///
+    /// This is used when a failed persistent initialization is archived for
+    /// diagnostics and will never be restarted under the same identity.
+    ///
+    /// # Errors
+    /// Returns an error when the global claim registry cannot be updated.
+    pub fn release(mut self) -> Result<(), RuntimeNamespaceError> {
+        self.release_claims()?;
+        self.released = true;
+        Ok(())
+    }
+
     fn save_manifest(&self) -> Result<(), RuntimeNamespaceError> {
         let path = self.root.join("namespace.json");
         let temporary = self.root.join("namespace.json.new");

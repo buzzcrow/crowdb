@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use crowdb_protocol::port::alloc::{alloc_port, PortAllocConfig};
+use crowdb_protocol::port::namespace::{assign_process_ports, RuntimeNamespace};
 use crowdb_protocol::ServicePort;
 use serde::Serialize;
 
@@ -22,6 +22,7 @@ const CONFIG_FILE: &str = "console.toml";
 const MARKER_FILE: &str = "s3-mini-cluster.json";
 const INITIALIZING_FILE: &str = "s3-mini-cluster.initializing.json";
 const MASTER_KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+const NAMESPACE_ID: &str = "s3-mini-cluster";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -120,6 +121,9 @@ async fn start_with_profile(
     }
 
     std::fs::create_dir_all(data_dir)?;
+    if storage_profile == StorageProfile::Persistent {
+        RuntimeNamespace::persistent(data_dir, NAMESPACE_ID).map_err(namespace_error)?;
+    }
     let config = ConsoleConfig::default();
     let ctx = OpContext::new(
         "127.0.0.1:10000".into(),
@@ -201,6 +205,12 @@ fn archive_incomplete_attempt(data_dir: &Path) -> Result<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis());
     let archived = data_dir.with_file_name(format!("{name}.failed-{timestamp}"));
+    if data_dir.join("namespace.json").is_file() {
+        RuntimeNamespace::persistent(data_dir, NAMESPACE_ID)
+            .map_err(namespace_error)?
+            .release()
+            .map_err(namespace_error)?;
+    }
     std::fs::rename(data_dir, &archived)?;
     Ok(())
 }
@@ -336,6 +346,21 @@ pub fn stop(data_dir: &Path) -> Result<MiniClusterStatus> {
     Ok(status_from(data_dir, false, &config, record.endpoint))
 }
 
+/// Stop and permanently delete a persistent local S3 mini-cluster.
+///
+/// # Errors
+/// Returns an error when the location is not a recognized cluster, process
+/// state cannot be persisted, claims cannot be released, or files cannot be
+/// removed.
+pub fn delete(data_dir: &Path) -> Result<MiniClusterStatus> {
+    let status = stop(data_dir)?;
+    RuntimeNamespace::persistent(data_dir, NAMESPACE_ID)
+        .map_err(namespace_error)?
+        .delete()
+        .map_err(namespace_error)?;
+    Ok(status)
+}
+
 fn validate_location(data_dir: &Path) -> Result<()> {
     if !data_dir.exists() {
         return Ok(());
@@ -384,9 +409,8 @@ fn add_service(ctx: &OpContext, service: SpawnedService) -> Result<()> {
 
 async fn spawn_chunk_kv(data_dir: &Path, seeds: &[String]) -> Result<SpawnedService> {
     let binary = find_binary("CROWDB_CHUNK_KV_SERVER_BIN", "crowdb-chunk-kv-server")?;
-    let ports = PortAllocConfig::new(data_dir);
-    let rpc_port = alloc_port(ServicePort::ChunkKvRpc, 0, &ports).map_err(port_error)?;
-    let http_port = alloc_port(ServicePort::ChunkKvHttp, 0, &ports).map_err(port_error)?;
+    let rpc_port = assign_cluster_port(data_dir, ServicePort::ChunkKvRpc, "chunk-kv-1-rpc")?;
+    let http_port = assign_cluster_port(data_dir, ServicePort::ChunkKvHttp, "chunk-kv-1-http")?;
     let workdir = data_dir.join("services/chunk-kv-1");
     let log_dir = workdir.join("log");
     std::fs::create_dir_all(&log_dir)?;
@@ -423,7 +447,7 @@ async fn spawn_chunk_kv(data_dir: &Path, seeds: &[String]) -> Result<SpawnedServ
 
 async fn spawn_access(data_dir: &Path, seeds: &[String]) -> Result<SpawnedService> {
     let binary = find_binary("CROWDB_ACCESS_SERVER_BIN", "crowdb-access-server")?;
-    let port = alloc_port(ServicePort::Web, 1, &PortAllocConfig::new(data_dir)).map_err(port_error)?;
+    let port = assign_cluster_port(data_dir, ServicePort::AccessServerHttp, "access-server-1")?;
     let workdir = data_dir.join("services/access-server-1");
     std::fs::create_dir_all(workdir.join("log"))?;
     let mut env = BTreeMap::new();
@@ -449,6 +473,30 @@ async fn spawn_access(data_dir: &Path, seeds: &[String]) -> Result<SpawnedServic
         entry: server_entry("access-server-1", ServiceType::AccessServer, port, port, pid),
         launch: persisted_launch,
     })
+}
+
+fn assign_cluster_port(data_dir: &Path, service: ServicePort, identity: &str) -> Result<u16> {
+    if data_dir.join("namespace.json").is_file() {
+        return RuntimeNamespace::persistent(data_dir, NAMESPACE_ID)
+            .map_err(namespace_error)?
+            .assign_named_port(service, identity)
+            .map_err(namespace_error);
+    }
+    assign_process_ports(service, 0, 1)
+        .map_err(namespace_error)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::Validation {
+            field: "port_alloc".into(),
+            message: "port allocator returned no assignment".into(),
+        })
+}
+
+fn namespace_error(error: impl std::fmt::Display) -> Error {
+    Error::Validation {
+        field: "runtime_namespace".into(),
+        message: error.to_string(),
+    }
 }
 
 fn server_entry(id: &str, service_type: ServiceType, rest_port: u16, rpc_port: u16, pid: u32) -> ServerEntry {
@@ -560,13 +608,6 @@ fn status_from(
             .filter(|server| server.pid.is_some_and(lifecycle::process_is_alive))
             .count(),
         total_services: config.servers.len(),
-    }
-}
-
-fn port_error(error: impl std::fmt::Display) -> Error {
-    Error::Validation {
-        field: "port".into(),
-        message: error.to_string(),
     }
 }
 
