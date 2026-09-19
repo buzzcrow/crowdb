@@ -189,10 +189,12 @@ failure. The live-source phases and actions are:
    source cursor in the target overlay.
 2. `TargetPreparing`: the remote target validates the range, page-root and
    stream identities, opens the exact immutable tree-manifest generation named
-   by the source-base proof rather than the latest root, and replays the source
-   suffix into a `Prepared` overlay. A reopen during `CatchupPublished` must
-   resolve the same pinned generation even if a newer root was published in
-   the meantime. Failure here may abort; source authority is unchanged.
+   by the source-base proof rather than the latest root, and starts one shared
+   async initialization coroutine that replays the source suffix into a
+   `Prepared` overlay. The source remains writable. The live target handle and
+   coroutine survive into final catch-up; reopening the same pinned generation
+   is required only after target process or handle loss. Failure here may abort;
+   source authority is unchanged.
 3. `TargetPrepared` or `AwaitingFence`: the monitor requests release only when
    record, byte, estimated catch-up, deadline, capacity, request-rate,
    cooldown, and one-transition-per-owner bounds pass. The source closes new
@@ -201,12 +203,17 @@ failure. The live-source phases and actions are:
    expiry plus skew.
 4. `TargetCatchingUp`: group 0 publishes the target owner and epoch with catalog
    state `TargetCatchingUp`. The source is no longer catalog authority and
-   returns the target hint without appending. The target receives no serving
-   grant and returns `TargetNotReady` with a bounded retry delay.
-5. `CatchupPublished`: the target reopens the exact base and sealed source
-   suffix through `C`, replays any target WAL, and persists the final catch-up
-   proof. It cannot answer a read or evaluate a condition from a shorter
-   prefix.
+   returns the target hint without appending. The persisted release proof is
+   narrow target journal authority: ordinary unconditional mutations append
+   immediately to the target WAL from `C+1`, while reads and conditional
+   mutations coroutine-await target initialization within their request
+   deadlines. Awaiting does not block an executor thread and uses no separate
+   transfer request queue.
+5. `CatchupPublished`: the existing target coroutine incrementally replays only
+   the sealed source suffix after its preparation cursor through `C`, then
+   persists the final catch-up proof. Target-WAL records already admitted after
+   `C` remain durable and are applied after that complete source prefix. The
+   target cannot answer a read or evaluate a condition from a shorter prefix.
 6. `TargetReady`: group 0 replaces the catching-up entry with `Serving` in a
    second generation. Only a heartbeat advertising the exact prepared target
    allows a matching serving grant. The transition then becomes
@@ -228,17 +235,17 @@ never authority proofs.
 
 The recovery decision matrix is:
 
-| Durable evidence                                      | Authoritative action                                                     |
-|-------------------------------------------------------|--------------------------------------------------------------------------|
-| Plan or source base only; no target readiness         | Keep source serving; retry preparation or abort unpublished target state |
-| Initial target readiness; no source release           | Keep source serving; recheck budgets before requesting the fence         |
-| Explicit release; catalog still names source          | Keep source fenced; publish `TargetCatchingUp` or resolve head ambiguity  |
-| Lease exclusion; catalog still names source           | Recover target under the higher epoch; source cannot reactivate          |
-| Catalog names `TargetCatchingUp`; no final proof       | Return `TargetNotReady`; replay the sealed suffix through `C`             |
-| Final catch-up proof; catching-up catalog entry        | Publish the exact `Serving` successor and then issue the target grant     |
-| Serving catalog entry; grant absent or expired         | Keep target prepared and reject admission until the exact grant arrives  |
-| Ambiguous catalog head write                           | Reread head and pages; accept only the byte-exact intended generation     |
-| Conflicting artifact, cursor, range, epoch, or proof   | Fail closed; never infer authority from local state                       |
+| Durable evidence                                    | Authoritative action                                                                        |
+|-----------------------------------------------------|---------------------------------------------------------------------------------------------|
+| Plan or source base only; no target readiness       | Keep source serving; retry preparation or abort unpublished target state                    |
+| Initial target readiness; no source release         | Keep source serving; recheck budgets before requesting the fence                            |
+| Explicit release; catalog still names source        | Keep source fenced; publish `TargetCatchingUp` or resolve head ambiguity                     |
+| Lease exclusion; catalog still names source         | Recover target under the higher epoch; source cannot reactivate                             |
+| Catalog names `TargetCatchingUp`; no final proof     | Coroutine-await reads/conditions; append unconditional target WAL; replay through `C`        |
+| Final catch-up proof; catching-up catalog entry      | Publish the exact `Serving` successor and then issue the target grant                        |
+| Serving catalog entry; grant absent or expired       | Keep target prepared and reject admission until the exact grant arrives                     |
+| Ambiguous catalog head write                         | Reread head and pages; accept only the byte-exact intended generation                       |
+| Conflicting artifact, cursor, range, epoch, or proof | Fail closed; never infer authority from local state                                          |
 
 The root-catalog generation in a target overlay is a recovery pin, not an
 observation. It is distinct from the tree snapshot sequence stored inside that
@@ -264,6 +271,10 @@ The balance invariants are:
   grant;
 - **SERVER-PROOF-BEFORE-PUBLISH:** every catalog phase is justified by the
   corresponding durable readiness or release proof;
+- **SERVER-LIVE-TARGET-CONTINUITY:** normal catch-up retains the prepared target
+  handle and replays only the remaining suffix; exact-root reopen is recovery;
+- **SERVER-ASYNC-INITIALIZATION:** readiness waits suspend Rust futures and
+  never block executor threads or create a transfer-owned request queue;
 - **SERVER-AMBIGUITY-FENCES:** an unknown publication outcome never reopens the
   source writer; and
 - **SERVER-CLEANUP-AFTER-PINS:** source tree, stream, retry history, and shared

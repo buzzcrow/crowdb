@@ -211,16 +211,33 @@ The split invariants are:
 Balancing one independently recoverable child reuses the same base-plus-tail
 representation. A live source checkpoint supplies the pinned base manifest,
 base sequence, stream manifest generation, and replay offset. The target owns
-a distinct WAL, opens the shared tree root as `Prepared`, and replays the
-source stream only through the persisted preparation cursor while the source
-continues serving.
+a distinct WAL and opens the shared tree root as `Prepared`. One shared async
+initialization coroutine replays the source stream while the source continues
+serving. It first reaches a persisted preparation cursor `P`, then follows the
+small moving source tail. Awaiting this coroutine suspends only the caller's
+Rust future; it does not block an executor thread, poll an atomic frontier, or
+place the request in a transfer-owned pending queue.
 
 After target readiness, the source checks record, byte, estimated catch-up,
-and preparation-deadline budgets before closing admission. Its release proof
-records the final durable sequence and byte offset `C`. The target artifact is
-then extended to `C`; final recovery reopens the base, source suffix, and
-target WAL exactly as split recovery does. A target cannot serve reads or
-conditional mutations until its caught-up proof covers the release proof.
+and preparation-deadline budgets before changing journal ownership. It stops
+assigning new records to the source WAL, drains only records already assigned
+there, and records their final durable sequence and byte offset as `C`. The
+target artifact is extended from `P` to `C`. The live target keeps its opened
+tree, memtable, and replay coroutine and reads only `P+1..C`; reopening the
+pinned base and replaying the complete retained suffix is crash recovery, not
+the normal handoff path.
+
+Once the release proof fixes `C`, ordinary unconditional mutations may append
+immediately to the target WAL beginning at `C+1`; they do not wait for source
+tail replay, a checkpoint, or page materialization. Their application remains
+ordered after the source suffix, and response completion follows the normal
+durable/apply contract asynchronously. Reads and conditional mutations await
+the initialization coroutine because they require the complete source prefix.
+After the coroutine applies through `C`, the partition enters its normal
+serving path: reads execute directly and conditional mutations evaluate
+against the complete view. Target-WAL application then continues in order.
+No request handler retains a thread while awaiting initialization.
+
 After catalog and grant activation, only the target WAL can advance. A
 dead-source recovery may adopt the original stream directly, but only after
 the old lease expiry plus clock skew proves exclusion.
@@ -231,8 +248,11 @@ The balance invariants are:
   source writer;
 - **BALANCE-RELEASE-BEFORE-ACTIVATE:** target mutation authority requires a
   durable source release or lease-exclusion proof;
+- **BALANCE-APPEND-WITHOUT-TREE-WAIT:** after release, unconditional target
+  mutations may enter the target WAL before source-tail application completes;
 - **BALANCE-COMPLETE-PREFIX:** a target serves only after replay through `C`;
-  and
+- **BALANCE-ASYNC-READINESS:** reads and conditional mutations coroutine-await
+  initialization without an executor-thread block or transfer request queue;
 - **BALANCE-INDEPENDENT-SOURCE:** a child retaining a split-parent suffix is
   ineligible for another owner handoff.
 

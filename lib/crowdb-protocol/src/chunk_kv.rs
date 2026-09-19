@@ -468,26 +468,15 @@ impl TransferTransition {
         if !valid_identity {
             return Err(ChunkKvProtocolError::InvalidTransferTransition);
         }
-        if let Some(proof) = &self.release_proof {
-            match proof {
-                AuthorityReleaseProof::ExplicitFence {
-                    source_instance_id,
-                    source_epoch,
-                    ..
-                } if *source_instance_id == self.source.instance_id && *source_epoch == self.source_epoch => {
-                }
-                AuthorityReleaseProof::LeaseExpired {
-                    activation_not_before_ms,
-                } if *activation_not_before_ms >= self.old_grant_expires_at_ms => {}
-                _ => return Err(ChunkKvProtocolError::InvalidTransferTransition),
-            }
+        if self
+            .release_proof
+            .as_ref()
+            .is_some_and(|proof| !valid_transfer_release(self, proof))
+        {
+            return Err(ChunkKvProtocolError::InvalidTransferTransition);
         }
         if let Some(proof) = &self.readiness_proof {
-            if proof.target_instance_id != self.target.instance_id
-                || proof.target_epoch != self.target_epoch
-                || proof.artifact.tree_id != self.target_artifact.tree_id
-                || proof.artifact.stream_name != self.target_artifact.stream_name
-            {
+            if !valid_initial_target_readiness(self, proof) {
                 return Err(ChunkKvProtocolError::InvalidTransferTransition);
             }
         }
@@ -497,7 +486,7 @@ impl TransferTransition {
                 || proof.artifact != self.target_artifact
                 || !match self.release_proof {
                     Some(AuthorityReleaseProof::ExplicitFence { durable_tail, .. }) => {
-                        proof.durable_tail >= durable_tail
+                        proof.durable_tail == durable_tail
                     }
                     Some(AuthorityReleaseProof::LeaseExpired { .. }) => true,
                     None => false,
@@ -1138,6 +1127,76 @@ fn valid_tail_overlay(overlay: &TailOverlayArtifact) -> bool {
         && overlay.replay_offset <= overlay.cutover_offset
         && overlay.base_applied_seq <= overlay.cutover_seq
         && overlay.target_stream_start_seq == overlay.cutover_seq.checked_add(1).unwrap_or(0)
+}
+
+fn valid_initial_target_readiness(
+    transition: &TransferTransition,
+    proof: &TargetReadinessProof,
+) -> bool {
+    if proof.target_instance_id != transition.target.instance_id
+        || proof.target_epoch != transition.target_epoch
+        || !valid_artifact(&proof.artifact)
+        || proof.artifact.tree_id != transition.target_artifact.tree_id
+        || proof.artifact.stream_name != transition.target_artifact.stream_name
+    {
+        return false;
+    }
+    match &transition.release_proof {
+        None => {
+            proof.artifact == transition.target_artifact
+                && proof
+                    .artifact
+                    .tail_overlay
+                    .as_ref()
+                    .is_some_and(|overlay| proof.durable_tail == overlay.cutover_seq)
+        }
+        Some(AuthorityReleaseProof::ExplicitFence { .. }) => match (
+            proof.artifact.tail_overlay.as_ref(),
+            transition.target_artifact.tail_overlay.as_ref(),
+        ) {
+            (Some(prepared), Some(final_overlay)) => {
+                proof.durable_tail == prepared.cutover_seq
+                    && same_transfer_overlay_base(prepared, final_overlay)
+                    && prepared.cutover_seq <= final_overlay.cutover_seq
+                    && prepared.cutover_offset <= final_overlay.cutover_offset
+            }
+            _ => false,
+        },
+        Some(AuthorityReleaseProof::LeaseExpired { .. }) => proof.artifact == transition.target_artifact,
+    }
+}
+
+fn valid_transfer_release(transition: &TransferTransition, proof: &AuthorityReleaseProof) -> bool {
+    match proof {
+        AuthorityReleaseProof::ExplicitFence {
+            source_instance_id,
+            source_epoch,
+            durable_tail,
+            durable_tail_offset,
+        } => {
+            *source_instance_id == transition.source.instance_id
+                && *source_epoch == transition.source_epoch
+                && transition.target_artifact.tail_overlay.as_ref().is_some_and(|overlay| {
+                    overlay.cutover_seq == *durable_tail
+                        && overlay.cutover_offset == *durable_tail_offset
+                        && overlay.target_stream_start_seq == durable_tail.checked_add(1).unwrap_or(0)
+                })
+        }
+        AuthorityReleaseProof::LeaseExpired {
+            activation_not_before_ms,
+        } => *activation_not_before_ms >= transition.old_grant_expires_at_ms,
+    }
+}
+
+fn same_transfer_overlay_base(left: &TailOverlayArtifact, right: &TailOverlayArtifact) -> bool {
+    left.source_partition_id == right.source_partition_id
+        && left.source_epoch == right.source_epoch
+        && left.source_stream_name == right.source_stream_name
+        && left.source_stream_manifest_generation == right.source_stream_manifest_generation
+        && left.replay_offset == right.replay_offset
+        && left.base_root_manifest_generation == right.base_root_manifest_generation
+        && left.base_tree_manifest == right.base_tree_manifest
+        && left.base_applied_seq == right.base_applied_seq
 }
 
 fn valid_split_child(child: &SplitChildAssignment) -> bool {

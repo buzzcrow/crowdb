@@ -114,15 +114,8 @@ fn graceful_transfer_requires_exact_fence_and_readiness_proofs() {
             artifact: lagging_artifact,
             durable_tail: 11,
         })
-        .unwrap();
-    assert!(lagging
-        .record_source_fence(AuthorityReleaseProof::ExplicitFence {
-            source_instance_id: 5,
-            source_epoch: 6,
-            durable_tail: 12,
-            durable_tail_offset: 12,
-        })
-        .is_ok());
+        .unwrap_err();
+    assert_eq!(lagging.transition().phase, TransferPhase::TargetPreparing);
 
     let mut machine = TransferStateMachine::restore(transition()).unwrap();
     let fence = AuthorityReleaseProof::ExplicitFence {
@@ -148,6 +141,14 @@ fn graceful_transfer_requires_exact_fence_and_readiness_proofs() {
         TransferAction::PublishCatchingUp
     );
     machine.mark_catchup_published().unwrap();
+    let overrun = TargetReadinessProof {
+        target_instance_id: 7,
+        target_epoch: 8,
+        artifact: machine.transition().target_artifact.clone(),
+        durable_tail: 13,
+    };
+    machine.record_target_caught_up(overrun).unwrap_err();
+    assert_eq!(machine.transition().phase, TransferPhase::CatchupPublished);
     let caught_up = TargetReadinessProof {
         target_instance_id: 7,
         target_epoch: 8,

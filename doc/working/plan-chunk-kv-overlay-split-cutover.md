@@ -397,31 +397,48 @@ admission state.
 
 ## Child-Tree Balance (R175, starts after R174 acceptance)
 
-The code named below is prior scaffolding, not an accepted R175 implementation.
-Each item remains pending until reviewed against the completed R174 lineage and
-verified by its own remote-owner E2E.
+The existing transfer types and two-generation catalog publication are
+scaffolding. They are accepted only after the following live-target path passes
+its remote-owner E2E; proactive balance remains disabled until then.
 
-- [~] **Define one reusable tail-handoff artifact**: extend the persisted
-  transfer transition with a pinned source base manifest, source stream and
-  retry floor, preparation cursor, exact handoff cursor, target stream start,
-  target epoch, readiness limits, forwarding grace, and source-release proof.
-  Reject balance while a child still references its split-parent suffix.
-  Files: `lib/crowdb-protocol/src/chunk_kv.rs`, group-0 transition storage,
-  protocol tests, and transition tests.
-- [ ] **Prepare the remote target while the source serves**: open the exact
-  shared range-bounded manifest on the target, validate page and stream
-  identities, replay the source tail into a durable target overlay, and enforce
-  record, byte, estimated-time, and deadline readiness bounds before requesting
-  a source fence. Drop unpublished target state on a preparation failure.
-  Files: server transition runtime/storage, chunk-KV overlay recovery, and
-  deterministic target preparation tests.
-- [ ] **Hand off one writer at cursor C**: close source assignment, drain only
-  requests that already selected it, persist the release proof and final source
-  cursor, then publish `TargetCatchingUp`. The source returns a target hint and
-  never appends again; the target returns bounded `NotReady` until the sealed
-  suffix reaches C, then installs its writer epoch and becomes `Serving`.
-  Files: protocol RPC/catalog types, server authority and transition runtime,
-  routed client retry handling, and E2E transition tests.
+- [x] **Make the handoff proof exact without adding phases**: retain the
+  initial readiness artifact as preparation cursor `P`, extend only the target
+  artifact to final cursor `C`, and validate exact base/root/stream identity,
+  monotonic cursors, target WAL start `C+1`, and release proof. The release plus
+  `TargetCatchingUp` catalog entry is narrow authority for unconditional target
+  WAL append; it is not read or conditional-mutation authority. Reject balance
+  while the child still names a split-parent overlay. Files:
+  `lib/crowdb-protocol/src/chunk_kv.rs`, group-0 transition planning/storage,
+  protocol tests, and server transition tests.
+  Validation now preserves the initial readiness artifact at `P`, requires its
+  exact base identity, binds explicit release to target overlay `C`, requires
+  final readiness exactly at `C`, and rejects invalid proofs without mutating
+  the in-memory reducer.
+- [~] **Keep one live async target initialization**: open the exact shared
+  range-bounded root, replay through `P` while the source serves, then retain
+  the same target tree, memtable, source journal handle, and coroutine through
+  final catch-up. Add an ordered worker control operation that advances only
+  `P+1..C`; never remove and reopen the live target during a normal handoff.
+  Exact-root reopen remains the crash-recovery path. Files:
+  `lib/crowdb-chunk-kv/src/partition.rs`, its owned partition modules,
+  `app/crowdb-chunk-kv-server/src/{storage.rs,serving/worker.rs}`, and
+  deterministic incremental-catch-up tests.
+- [ ] **Coroutine-await reads and conditions, append ordinary writes**: while
+  the target is initializing, read and conditional-mutation handlers await the
+  shared initialization future within their existing deadline. Ordinary
+  unconditional mutations append to the target WAL from `C+1` immediately and
+  apply only after the source suffix. Do not add a transfer pending queue,
+  readiness polling, executor-thread wait, or hot-path lock. Files:
+  `lib/crowdb-chunk-kv/src/partition.rs`,
+  `app/crowdb-chunk-kv-server/src/server.rs`, RPC tests, and client deadline
+  tests.
+- [ ] **Complete the bounded writer handoff**: stop assigning source-WAL
+  records, drain only records already assigned there, persist `C`, publish
+  `TargetCatchingUp`, and make the source return the target hint without
+  another append. Once initialization covers `C`, publish `Serving` and issue
+  the exact target grant without waiting for checkpoint or materialization.
+  Files: server authority, transition runtime, group-0 catalog monitor, routed
+  client handling, and E2E transition tests.
 - [ ] **Recover every balance phase from proofs**: resolve source/target crash,
   ambiguous catalog publication, and lease expiry from transition, catalog,
   manifest, tail, and grant state. Never infer authority from loaded pages,

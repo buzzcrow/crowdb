@@ -192,17 +192,20 @@ impl TransferStateMachine {
         if self.transition.phase != TransferPhase::TargetPreparing {
             return Err(MonitorError::PlanFailed("target was not preparing".into()));
         }
-        self.transition.readiness_proof = Some(proof);
+        let mut candidate = self.transition.clone();
+        candidate.readiness_proof = Some(proof);
         if matches!(
-            self.transition.release_proof,
+            candidate.release_proof,
             Some(AuthorityReleaseProof::LeaseExpired { .. })
         ) {
-            self.transition.catchup_proof = self.transition.readiness_proof.clone();
-            self.transition.phase = TransferPhase::TargetReady;
+            candidate.catchup_proof = candidate.readiness_proof.clone();
+            candidate.phase = TransferPhase::TargetReady;
         } else {
-            self.transition.phase = TransferPhase::TargetPrepared;
+            candidate.phase = TransferPhase::TargetPrepared;
         }
-        self.validate_current()
+        validate_transition(&candidate)?;
+        self.transition = candidate;
+        Ok(())
     }
 
     /// Records that the catching-up catalog entry is authoritative.
@@ -241,9 +244,12 @@ impl TransferStateMachine {
                 "target catch-up requires a published catching-up assignment".into(),
             ));
         }
-        self.transition.catchup_proof = Some(proof);
-        self.transition.phase = TransferPhase::TargetReady;
-        self.validate_current()
+        let mut candidate = self.transition.clone();
+        candidate.catchup_proof = Some(proof);
+        candidate.phase = TransferPhase::TargetReady;
+        validate_transition(&candidate)?;
+        self.transition = candidate;
+        Ok(())
     }
 
     /// Marks the catalog cutover only after a prepared target proof.
@@ -306,14 +312,14 @@ impl TransferStateMachine {
                 "transfer phase cannot accept a fence".into(),
             ));
         }
+        let mut candidate = self.transition.clone();
         if let AuthorityReleaseProof::ExplicitFence {
             durable_tail,
             durable_tail_offset,
             ..
         } = &proof
         {
-            let overlay = self
-                .transition
+            let overlay = candidate
                 .target_artifact
                 .tail_overlay
                 .as_mut()
@@ -327,9 +333,11 @@ impl TransferStateMachine {
             overlay.cutover_offset = *durable_tail_offset;
             overlay.target_stream_start_seq = durable_tail.saturating_add(1);
         }
-        self.transition.release_proof = Some(proof);
-        self.transition.phase = TransferPhase::TargetCatchingUp;
-        self.validate_current()
+        candidate.release_proof = Some(proof);
+        candidate.phase = TransferPhase::TargetCatchingUp;
+        validate_transition(&candidate)?;
+        self.transition = candidate;
+        Ok(())
     }
 
     fn validate_current(&self) -> Result<(), MonitorError> {
@@ -337,4 +345,10 @@ impl TransferStateMachine {
             .validate()
             .map_err(|error| MonitorError::PlanFailed(error.to_string()))
     }
+}
+
+fn validate_transition(transition: &TransferTransition) -> Result<(), MonitorError> {
+    transition
+        .validate()
+        .map_err(|error| MonitorError::PlanFailed(error.to_string()))
 }
