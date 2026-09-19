@@ -323,7 +323,9 @@ Configuration exposes identity, group-0 seeds, separate RPC listen and routable
 advertise addresses, dedicated 15xxx HTTP/RPC ports, hosted-partition capacity,
 refresh/drain intervals, timing policy, and balance policy. Validation rejects
 unsafe timing, zero bounds, bad addresses, unspecified advertise addresses, and
-empty discovery seeds. Lock-free counters distinguish successes, redirects,
+empty discovery seeds. Automatic child-owner balance is enabled by default and
+may be disabled explicitly with the balance policy's `enabled` setting without
+disabling local partition splitting. Lock-free counters distinguish successes, redirects,
 local stale-route dispatch, lease and deadline rejections, overload, split
 preparation/base/tail/fence/overlay/materialization work, and internal errors.
 Balance observation records selection inputs, base and tail cursors, readiness

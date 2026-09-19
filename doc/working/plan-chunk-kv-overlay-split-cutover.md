@@ -432,9 +432,9 @@ admission state.
 
 ## Child-Tree Balance (R175, starts after R174 acceptance)
 
-The existing transfer types and two-generation catalog publication are
-scaffolding. They are accepted only after the following live-target path passes
-its remote-owner E2E; proactive balance remains disabled until then.
+The existing transfer types and two-generation catalog publication implement
+the live-target path below. Proactive balance is configuration-controlled and
+enabled by default; operators can disable it independently of local splitting.
 
 - [x] **Make the handoff proof exact without adding phases**: retain the
   initial readiness artifact as preparation cursor `P`, extend only the target

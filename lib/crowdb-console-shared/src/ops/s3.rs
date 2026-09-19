@@ -274,7 +274,7 @@ async fn spawn_chunk_kv(data_dir: &Path, seeds: &[String]) -> Result<SpawnedServ
     std::fs::write(
         &config_path,
         format!(
-            "instance_id = 10000\nrpc_listen_addr = \"127.0.0.1:{rpc_port}\"\nrpc_advertise_addr = \"127.0.0.1:{rpc_port}\"\nhttp_listen_addr = \"127.0.0.1:{http_port}\"\ngroup0_mgmt_seeds = [{seed_toml}]\ncatalog_refresh_interval_ms = 200\n\n[balance]\ntarget_partitions_per_owner = 1\ntarget_partition_bytes = 9223372036854775807\nminimum_weighted_improvement_percent = 100\ncooldown_ms = 9223372036854775807\nmax_owner_request_rate = 0\n\n[storage]\nmetadata_store_id = 0\nstream_mirror_copies = 1\n\n[bootstrap_partition]\npartition_id = {{ high = 1, low = 1 }}\ntree_id = 1\nstream_name = {{ high = 2, low = 1 }}\nowner_epoch = 1\nmetadata_group_id = 1\n"
+            "instance_id = 10000\nrpc_listen_addr = \"127.0.0.1:{rpc_port}\"\nrpc_advertise_addr = \"127.0.0.1:{rpc_port}\"\nhttp_listen_addr = \"127.0.0.1:{http_port}\"\ngroup0_mgmt_seeds = [{seed_toml}]\ncatalog_refresh_interval_ms = 200\n\n[balance]\nenabled = true\ntarget_partitions_per_owner = 1\ntarget_partition_bytes = 9223372036854775807\nminimum_weighted_improvement_percent = 100\ncooldown_ms = 9223372036854775807\nmax_owner_request_rate = 0\n\n[storage]\nmetadata_store_id = 0\nstream_mirror_copies = 1\n\n[bootstrap_partition]\npartition_id = {{ high = 1, low = 1 }}\ntree_id = 1\nstream_name = {{ high = 2, low = 1 }}\nowner_epoch = 1\nmetadata_group_id = 1\n"
         ),
     )?;
     let launch = LocalLaunchSpec {

@@ -74,7 +74,7 @@ impl ChunkKvServerConfig {
         let encoded = std::fs::read_to_string(path).map_err(|error| ConfigError::Read(error.to_string()))?;
         let mut config: Self =
             toml::from_str(&encoded).map_err(|error| ConfigError::Decode(error.to_string()))?;
-        config.monitor.chunk_kv_range_balance = Some(balance_policy(&config.balance));
+        config.monitor.chunk_kv_range_balance = config.balance.enabled.then(|| balance_policy(&config.balance));
         config.validate()?;
         Ok(config)
     }
@@ -125,7 +125,8 @@ impl ChunkKvServerConfig {
         {
             return Err(ConfigError::Invalid("balance policy is invalid".into()));
         }
-        if self.monitor.chunk_kv_range_balance.as_ref() != Some(&balance_policy(&self.balance)) {
+        let expected_balance_policy = self.balance.enabled.then(|| balance_policy(&self.balance));
+        if self.monitor.chunk_kv_range_balance != expected_balance_policy {
             return Err(ConfigError::Invalid(
                 "monitor and server balance policy differ".into(),
             ));

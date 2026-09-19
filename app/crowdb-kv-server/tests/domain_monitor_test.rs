@@ -761,6 +761,160 @@ async fn chunk_kv_driver_plans_size_driven_split() {
     assert_chunk_kv_split_plan(1, 100).await;
 }
 
+#[tokio::test]
+async fn chunk_kv_driver_enables_child_owner_balance_from_policy() {
+    use crowdb_kv_server::background::domain_monitor::ChunkKvRangeMonitorDriver;
+
+    let (_, store) = registry_with_group_zero(PxLocalReplicaRole::Leader);
+    let control = Group0ControlPlane::acquire(&store).await.unwrap();
+    put_balance_fixture(&control).await;
+
+    let driver = ChunkKvRangeMonitorDriver::new();
+    let mut policy = descriptor();
+    policy.domain = "chunk-kv".into();
+    policy.service_registry_name = "chunk-kv".into();
+    driver.tick(&control, &policy).await.unwrap();
+    assert!(control
+        .scan_all_prefix(Bytes::from(ChunkKvTransferKey::text_prefix_all()), 16)
+        .await
+        .unwrap()
+        .is_empty());
+
+    policy.chunk_kv_range_balance = Some(ChunkKvRangeBalancePolicy {
+        target_partitions_per_owner: 1,
+        target_partition_bytes: u64::MAX,
+        cooldown_ms: 1,
+        ..ChunkKvRangeBalancePolicy::default()
+    });
+    driver.tick(&control, &policy).await.unwrap();
+    let transfers = control
+        .scan_all_prefix(Bytes::from(ChunkKvTransferKey::text_prefix_all()), 16)
+        .await
+        .unwrap();
+    assert_eq!(transfers.len(), 1);
+    let transfer: TransferTransition = serde_json::from_slice(&transfers[0].value).unwrap();
+    assert_eq!(transfer.source.instance_id, 1);
+    assert_eq!(transfer.target.instance_id, 2);
+}
+
+async fn put_balance_fixture(control: &Group0ControlPlane) {
+    let partition_ids = [Id128 { high: 41, low: 1 }, Id128 { high: 41, low: 2 }];
+    let mut page = ChunkKvRangeCatalogPage {
+        generation: 1,
+        page_index: 0,
+        entries: partition_ids
+            .iter()
+            .enumerate()
+            .map(|(index, partition_id)| ChunkKvRangeCatalogEntry {
+                partition_id: *partition_id,
+                range: KeyRange {
+                    start: if index == 0 { Vec::new() } else { b"m".to_vec() },
+                    end: (index == 0).then(|| b"m".to_vec()),
+                },
+                owner: OwnerDescriptor {
+                    instance_id: 1,
+                    rpc_endpoint: "127.0.0.1:17001".into(),
+                },
+                owner_epoch: 1,
+                state: ChunkKvRangeCatalogPartitionState::Serving,
+                artifact: PartitionArtifact {
+                    tree_id: 50 + index as u64,
+                    stream_name: StreamName {
+                        high: 51,
+                        low: index as u64 + 1,
+                    },
+                    tail_overlay: None,
+                },
+                transition_id: None,
+            })
+            .collect(),
+        checksum: [0; 32],
+    };
+    page.seal().unwrap();
+    let mut head = ChunkKvRangeCatalogHead {
+        generation: 1,
+        previous_generation: None,
+        pages: vec![ChunkKvRangeCatalogPageRef {
+            page_generation: 1,
+            page_index: 0,
+            first_key: Vec::new(),
+            page_checksum: page.checksum,
+        }],
+        checksum: [0; 32],
+    };
+    head.seal().unwrap();
+    put_json(
+        control,
+        ChunkKvRangeCatalogPageKey {
+            generation: 1,
+            page_index: 0,
+        }
+        .to_path(),
+        &page,
+    )
+    .await;
+    put_json(control, ChunkKvRangeCatalogHeadKey.to_path(), &head).await;
+
+    let source_loads = partition_ids
+        .iter()
+        .map(|partition_id| ChunkKvPartitionLoad {
+            partition_id: *partition_id,
+            durable_bytes: 100,
+            live_byte_samples: vec![(b"a".to_vec(), 100)],
+            independently_recoverable: true,
+        })
+        .collect();
+    for (instance_id, chunk_kv) in [
+        (
+            1,
+            ChunkKvExtra {
+                capacity_bytes: 1_000,
+                durable_bytes: 200,
+                request_rate: 0,
+                hosted: partition_ids
+                    .iter()
+                    .map(|partition_id| HostedPartition {
+                        partition_id: *partition_id,
+                        owner_epoch: 1,
+                        recovering: false,
+                    })
+                    .collect(),
+                partition_loads: source_loads,
+            },
+        ),
+        (
+            2,
+            ChunkKvExtra {
+                capacity_bytes: 1_000,
+                ..ChunkKvExtra::default()
+            },
+        ),
+    ] {
+        put_chunk_kv_instance(control, instance_id, chunk_kv).await;
+    }
+}
+
+async fn put_chunk_kv_instance(control: &Group0ControlPlane, instance_id: u64, chunk_kv: ChunkKvExtra) {
+    put_json(
+        control,
+        InstanceKey {
+            service: "chunk-kv".into(),
+            instance_id,
+        }
+        .to_path(),
+        &InstanceValue {
+            instance_id,
+            rpc_endpoint: format!("127.0.0.1:{}", 17_000 + instance_id),
+            last_heartbeat_ms: u64::MAX,
+            extra: Some(ServiceExtra {
+                chunk_kv: Some(chunk_kv),
+                ..ServiceExtra::default()
+            }),
+        },
+    )
+    .await;
+}
+
 async fn put_json<T: serde::Serialize>(control: &Group0ControlPlane, path: String, value: &T) {
     control
         .compare_and_put(

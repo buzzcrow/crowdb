@@ -24,10 +24,6 @@ use super::{
     catalog, operation_error, read_instances, read_splits, read_transfers, transfer_id, wall_time_ms,
 };
 
-// Same-owner local split is validated independently. Remote child-owner
-// balancing remains disabled until that contract is accepted.
-const CHILD_OWNER_BALANCE_ENABLED: bool = false;
-
 struct PlanningState {
     healthy: HashMap<u64, (InstanceValue, ChunkKvExtra)>,
     active_partitions: HashSet<Id128>,
@@ -40,6 +36,7 @@ pub async fn plan(control: &Group0ControlPlane, descriptor: &DomainMonitorDescri
     let Some(mut catalog) = catalog::load_current(control).await? else {
         return Ok(());
     };
+    let child_owner_balance_enabled = descriptor.chunk_kv_range_balance.is_some();
     let policy = descriptor.chunk_kv_range_balance.clone().unwrap_or_default();
     policy.validate().map_err(|error| error.to_string())?;
     let now_ms = wall_time_ms();
@@ -73,7 +70,7 @@ pub async fn plan(control: &Group0ControlPlane, descriptor: &DomainMonitorDescri
     if plan_split(control, &entries, &state, &policy, now_ms).await? {
         return Ok(());
     }
-    if CHILD_OWNER_BALANCE_ENABLED {
+    if child_owner_balance_enabled {
         plan_transfer(control, &entries, &state, &policy, now_ms).await
     } else {
         Ok(())

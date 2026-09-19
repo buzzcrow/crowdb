@@ -67,6 +67,7 @@ group0_mgmt_seeds = [{seeds}]
 catalog_refresh_interval_ms = 200
 
 [balance]
+enabled = true
 target_partitions_per_owner = 1
 target_partition_bytes = 9223372036854775807
 minimum_weighted_improvement_percent = 100

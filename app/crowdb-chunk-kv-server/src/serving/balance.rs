@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BalanceConfig {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
     pub target_partitions_per_owner: usize,
     pub target_partition_bytes: u64,
     pub minimum_weighted_improvement_percent: u32,
@@ -16,6 +18,7 @@ pub struct BalanceConfig {
 impl Default for BalanceConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             target_partitions_per_owner: 4,
             target_partition_bytes: 1 << 30,
             minimum_weighted_improvement_percent: 25,
@@ -23,6 +26,10 @@ impl Default for BalanceConfig {
             max_owner_request_rate: 0,
         }
     }
+}
+
+const fn default_enabled() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
