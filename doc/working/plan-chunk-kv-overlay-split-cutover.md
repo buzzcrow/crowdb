@@ -18,13 +18,12 @@ perform bucket and object CRUD.
 
 ## Scope Decision
 
-- R174 is the only active requirement. A split must not make a request wait for
-  shared-view publish, tree checkpoint, materialization, or catalog refresh.
-- R175 is the next requirement. Existing transfer and balance code is
-  unverified scaffolding until R174 acceptance; it must not affect R174's
-  request path. Proactive child-owner balance is disabled in the group-0
-  planner until R174 is accepted, then becomes the starting point for R175
-  implementation and acceptance. Dead-owner recovery remains independent.
+- R174 is accepted. A split does not make a request wait for shared-view
+  publish, tree checkpoint, materialization, or catalog refresh.
+- R175 is active. Existing transfer and balance code remains unverified
+  scaffolding until reviewed against the completed R174 lineage. Proactive
+  child-owner balance stays disabled in the group-0 planner during that work;
+  dead-owner recovery remains independent.
 - R173 follows R175. Its operator acceptance target is a CLI-deployed cluster
   with working bucket and object CRUD; it does not broaden the active R174 or
   R175 storage work.
@@ -85,8 +84,8 @@ The rebuilt real-process run at
 with 0 errors and p99 106.813 ms, completed three consecutive local splits to
 four hosted partitions, then restarted node 1 in 1.051 s, recovered all four
 partitions, and read a pre-restart value. The exact-manifest and stale stream
-errors did not recur. R174 remains active for durable pre-publication cutover
-recovery; R175 remains disabled.
+errors did not recur. R174 remains active while the existing split-writer WAL
+tail retry is verified; R175 remains disabled.
 
 The mixed real-process run at
 `bench-log/chunk-kv-regression-20260919-015121` completed 10,000 operations at
@@ -94,11 +93,21 @@ The mixed real-process run at
 catalog generation 12 and five local partitions with zero admission
 backpressure, then restarted node 1 in 1.053 s, recovered all five partitions,
 and read a pre-restart value. Direct ingress now has a worker-ordered route
-frontier and serves through shared-view publication. The remaining R174
-blocker is persisting that frontier before either new writer acknowledges a
-mutation.
+frontier and serves through shared-view publication. Split-writer streams have
+stable identities before routing and now remain valid retry inputs after they
+contain acknowledged mutations.
 
-### Current Bug and Next Diagnosis
+The final R174 real-process run at
+`bench-log/chunk-kv-regression-20260919-081253` completed 10,000 mixed
+operations at 4 KiB, 25% reads, and concurrency 32 with 0 errors and p99
+94.951 ms. It completed three consecutive local splits to four partitions,
+reported two retained split finalizations with zero catch-up lag and admission
+backpressure, restarted node 1 in 1.051 s, recovered all four partitions, and
+read a pre-restart value. The deterministic retry regression also preloads
+both stable writer journals at `C+1` and proves preparation preserves their
+acknowledged tails. R174 is accepted; R175 is now active.
+
+### Current Status
 
 - [x] **Verify repeated local split and restart**: repeated same-ID successor
   sessions, current-writer selection, and the retained catalog artifact are
@@ -148,7 +157,7 @@ mutation.
    restart/read replay.
 4. After restart passes, run the mixed read/write split load that forces gets
    through tree storage, then implement direct dual-writer ingress and repeat
-   both E2Es. R175 balance remains out of scope until these R174 gates pass.
+   both E2Es. Completed by the final R174 run above.
 
 ### Resolved Design Decision
 
@@ -163,19 +172,17 @@ mutation.
   key. This removes the need for `SplitIngressRoute::Buffering` without making
   seal, checkpoint, or artifact publication part of the foreground handoff.
 
-### Bugs
+### Resolved Recovery Correction
 
-- **The process-local cutover frontier is not yet durable before child
-  acknowledgements.** Direct ingress now starts both live writers at `C` and
-  serves requests while shared-view publication continues, but group-0 does
-  not persist the resulting `SplitReadinessProof` until preparation returns.
-  A process crash in that interval can leave acknowledged child-WAL records
-  while the persisted transition still says only `ParentPreparing` and does
-  not name `C`. Recovery needs a durable cutover record, written before route
-  installation, that binds the transition, both writer streams, and `C`; or
-  equivalent transition-store publication that does not wait for filtered
-  memtable persistence. This recovery issue exceeded the 10-minute debugging
-  budget and remains the R174 blocker.
+- **Readiness publication is not a data-durability boundary.** The persisted
+  `ParentPreparing` transition already assigns stable retained-parent and
+  child stream identities. Acknowledged post-route mutations are durable in
+  those independent journals even before `SplitReadinessProof` publication;
+  shared-view publication owns only the old parent's `<= C` history. Retry now
+  permits non-empty split-writer streams, rebuilds the filtered parent base,
+  and uses the existing prepared-overlay recovery path to replay each writer's
+  `> C` journal tail. Transfer preparation retains its empty-target check. No
+  extra cutover state or foreground durability barrier is required.
 
 ## Data-Path Gate Audit and Handling Notes
 
@@ -298,7 +305,7 @@ The code named below is prior scaffolding, not an accepted R175 implementation.
 Each item remains pending until reviewed against the completed R174 lineage and
 verified by its own remote-owner E2E.
 
-- [ ] **Define one reusable tail-handoff artifact**: extend the persisted
+- [~] **Define one reusable tail-handoff artifact**: extend the persisted
   transfer transition with a pinned source base manifest, source stream and
   retry floor, preparation cursor, exact handoff cursor, target stream start,
   target epoch, readiness limits, forwarding grace, and source-release proof.
@@ -345,17 +352,18 @@ verified by its own remote-owner E2E.
   every exact retained/child generation.
 ## Verification and Cleanup
 
-- [~] **Add deterministic lifecycle tests**: cover grant renewal during
+- [x] **Add deterministic lifecycle tests**: cover grant renewal during
   Preparing, child-tail restart before checkpoint, writer-boundary exactly-once
   behavior, bounded post-cutover admission, stale point route, and catalog
   ambiguity. Files: crate `tests/*_test.rs` and server/client integration
   tests.
   Grant renewal, both-half overlay restart, stale routes, ordered lineage,
-  catalog ambiguity, and generation pins are covered. The exact no-overlap
-  A deterministic paused-publish test proves both writers accept mutations and
-  child conditions see inherited data before bulk publication completes. The
-  remaining negative case is crash recovery between route installation and
-  durable readiness publication.
+  catalog ambiguity, and generation pins are covered. A deterministic
+  paused-publish test proves both writers accept mutations and
+  child conditions see inherited data before bulk publication completes. A
+  retry regression preloads acknowledged `C+1` mutations in both writer
+  journals, then verifies preparation preserves and serves both tails after
+  rebuilding the shared `<= C` history.
 - [x] **Add sustained split E2E**: keep routed 1 MiB-target hot traffic live
   through every observed split, capture p50/p99/p999/errors and correlated
   split metrics, then verify restart replay. Files:

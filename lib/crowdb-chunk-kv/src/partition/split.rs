@@ -118,27 +118,16 @@ impl PreparedSplitWriter {
         )
     }
 
-    fn start_live(&mut self, config: PartitionConfig, split: &SplitArtifact) -> Result<Partition> {
-        config.validate()?;
-        let partition = Partition::start(
-            self.artifact.partition_id,
-            self.artifact.range.clone(),
-            self.artifact.ownership_epoch,
+    async fn start_live(&mut self, config: PartitionConfig, split: &SplitArtifact) -> Result<Partition> {
+        let partition = Partition::recover_prepared_overlay(
+            self.artifact.clone(),
+            self.checkpoint.clone(),
             config,
             Arc::clone(&self.tree),
             Arc::clone(&self.journal),
-            super::RecoverySeed {
-                applied_seq: self.artifact.applied_seq,
-                applied_position: 0,
-                retry_replay_offset: 0,
-                results: std::collections::HashMap::new(),
-                result_order: std::collections::VecDeque::new(),
-                expired_floor: std::collections::HashMap::new(),
-                recovered: false,
-            },
-            PartitionLifecycle::Prepared,
-            Some(self.artifact.clone()),
-        )?;
+            Arc::clone(&self.parent_journal),
+        )
+        .await?;
         partition.activate_local_split_writer(split)?;
         self.live = Some(partition.clone());
         Ok(partition)
@@ -216,8 +205,8 @@ async fn install_split_cutover_inner(
         child: child.artifact.clone(),
     };
     let config = (*request.parent.config).clone();
-    let retained_partition = retained.start_live(config.clone(), &artifact)?;
-    let child_partition = child.start_live(config, &artifact)?;
+    let retained_partition = retained.start_live(config.clone(), &artifact).await?;
+    let child_partition = child.start_live(config, &artifact).await?;
     request
         .parent
         .install_split_ingress(retained_partition, child_partition)
@@ -449,6 +438,7 @@ impl Partition {
         self.tree
             .release_split_memtable_view(shared_view_generation)
             .await?;
+        self.metrics.split_finalization();
         self.metrics.split_catchup(
             retained_cursor
                 .delta_records
@@ -738,12 +728,11 @@ fn prepare_retained_parent(
 fn validate_target(parent: &Partition, plan: &SplitPlan, target: &SplitWriterTarget) -> Result<()> {
     if target.tree_id == 0
         || target.tree_id == parent.tree.tree_id()
-        || target.journal.tail() != 0
         || target.journal.stream_name() == parent.journal.stream_name()
         || target.journal.manifest_generation() == 0
     {
         return Err(ChunkKvError::InvalidRequest(
-            "split writer storage identities must be distinct and empty".into(),
+            "split writer storage identities must be distinct".into(),
         ));
     }
     plan.validate()

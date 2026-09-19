@@ -534,10 +534,11 @@ impl ChunkKvStorage {
             .await
             .map_err(|error| storage_plan_error(&error.to_string()))?
             .ok_or_else(|| storage_plan_error("transfer source stream binding does not exist"))?;
-        self.open_or_create_empty_stream(
+        self.open_or_create_stream(
             transition.target_artifact.stream_name,
             transition.target_epoch,
             binding.metadata_group_id,
+            true,
         )
         .await?;
         let checkpoint = source
@@ -587,7 +588,7 @@ impl ChunkKvStorage {
         metadata_group_id: u64,
     ) -> Result<SplitWriterTarget, crate::MonitorError> {
         let stream = self
-            .open_or_create_empty_stream(artifact.stream_name, owner_epoch, metadata_group_id)
+            .open_or_create_stream(artifact.stream_name, owner_epoch, metadata_group_id, false)
             .await?;
         let page_store = self
             .open_durable_tree_page_store(
@@ -614,11 +615,12 @@ impl ChunkKvStorage {
         })
     }
 
-    async fn open_or_create_empty_stream(
+    async fn open_or_create_stream(
         &self,
         stream_name: StreamName,
         writer_epoch: u64,
         metadata_group_id: u64,
+        require_empty: bool,
     ) -> Result<ChunkStream, crate::MonitorError> {
         let registry = self.streams.registry();
         let expected = StreamBinding {
@@ -656,8 +658,8 @@ impl ChunkKvStorage {
                 .await
                 .map_err(|error| storage_plan_error(&error.to_string()))?,
         };
-        if stream.tail() != 0 {
-            return Err(storage_plan_error("split child WAL is not empty"));
+        if require_empty && stream.tail() != 0 {
+            return Err(storage_plan_error("target WAL is not empty"));
         }
         Ok(stream)
     }

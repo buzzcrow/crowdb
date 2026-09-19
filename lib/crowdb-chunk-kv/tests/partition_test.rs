@@ -3,12 +3,14 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
 use crowdb_chunk_kv::memory::MemoryPartitionTree;
 use crowdb_chunk_kv::{
-    Checkpoint, ChunkKvError, CompareCondition, MutationOperation, MutationResult, Partition,
-    PartitionConfig, PartitionId, PartitionJournal, PartitionManager, PartitionRange, PartitionTree,
-    PreparedSplitWriterArtifact, RequestId, SplitAbortProof, SplitArtifact, SplitChild, SplitCommitProof,
-    SplitPlan, SplitSessionTargets, SplitWriterTarget, StreamPartitionJournal, TransitionId,
+    canonical_operation_digest, encode_frame, Checkpoint, ChunkKvError, CompareCondition, MutationOperation,
+    MutationResult, Partition, PartitionConfig, PartitionId, PartitionJournal, PartitionManager,
+    PartitionRange, PartitionTree, PreparedSplitWriterArtifact, RequestId, SplitAbortProof, SplitArtifact,
+    SplitChild, SplitCommitProof, SplitPlan, SplitSessionTargets, SplitWriterTarget, StreamPartitionJournal,
+    TransitionId, WalRecord,
 };
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
@@ -179,6 +181,13 @@ async fn empty_journal(
     .await
     .unwrap();
     Arc::new(StreamPartitionJournal::new(stream, stream_name))
+}
+
+async fn append_record(journal: &dyn PartitionJournal, record: &WalRecord) {
+    journal
+        .append_frames(&[Bytes::from(encode_frame(record).unwrap())])
+        .await
+        .unwrap();
 }
 
 #[tokio::test]
@@ -1820,6 +1829,7 @@ async fn split_session_installs_two_live_writers_at_ingress_frontier() {
     assert_ne!(prepared.artifact.shared_view_generation, 0);
     assert_eq!(prepared.artifact.retained_parent.applied_seq, 2);
     assert_eq!(prepared.artifact.child.applied_seq, 2);
+    assert_eq!(parent.metrics().snapshot().split_finalizations, 1);
 
     let artifact = prepared.artifact.clone();
     let retained = prepared
@@ -1871,6 +1881,103 @@ async fn split_session_installs_two_live_writers_at_ingress_frontier() {
     assert_eq!(
         child.get(9, b"i", None).await.unwrap().unwrap().value,
         b"right-new"[..]
+    );
+}
+
+#[tokio::test]
+async fn split_session_replays_existing_writer_journals_on_retry() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let parent_id = PartitionId { high: 815, low: 1 };
+    let parent = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::with_tree_id(815)),
+        StreamName { high: 815, low: 1 },
+        8,
+        PartitionConfig::default(),
+    )
+    .await;
+    for (sequence, key) in [(1, b"b".as_slice()), (2, b"h".as_slice())] {
+        parent
+            .mutate(
+                8,
+                request(815 + sequence),
+                MutationOperation::Put {
+                    key: key.to_vec(),
+                    value: b"before-cutover".to_vec(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let plan = split_plan(parent_id, 8);
+    let retained_journal = empty_journal(&store, StreamName { high: 816, low: 1 }, 9).await;
+    let child_journal = empty_journal(&store, StreamName { high: 817, low: 1 }, 9).await;
+    for (journal, partition_id, request_id, key, value) in [
+        (
+            retained_journal.as_ref(),
+            parent_id,
+            request(818),
+            b"c".as_slice(),
+            b"retained-after-cutover".as_slice(),
+        ),
+        (
+            child_journal.as_ref(),
+            plan.child.partition_id,
+            request(819),
+            b"i".as_slice(),
+            b"child-after-cutover".as_slice(),
+        ),
+    ] {
+        let operation = MutationOperation::Put {
+            key: key.to_vec(),
+            value: value.to_vec(),
+        };
+        append_record(
+            journal,
+            &WalRecord {
+                partition_id,
+                ownership_epoch: 9,
+                mutation_seq: 3,
+                request_id,
+                operation_digest: canonical_operation_digest(&operation),
+                result: MutationResult::Applied { revision: 3 },
+                operation,
+            },
+        )
+        .await;
+    }
+
+    let prepared = parent
+        .prepare_split_session(
+            plan,
+            SplitSessionTargets {
+                retained_parent: SplitWriterTarget {
+                    tree_id: 816,
+                    tree_config: crowdb_tree_ffi::Config::default(),
+                    journal: retained_journal,
+                },
+                child: SplitWriterTarget {
+                    tree_id: 817,
+                    tree_config: crowdb_tree_ffi::Config::default(),
+                    journal: child_journal,
+                },
+            },
+            8,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(prepared.artifact.cutover_seq, 2);
+    let ingress = parent.split_ingress().unwrap();
+    assert_eq!(ingress.retained_parent().snapshot().applied_seq, 3);
+    assert_eq!(ingress.child().snapshot().applied_seq, 3);
+    assert_eq!(
+        parent.get(8, b"c", None).await.unwrap().unwrap().value,
+        b"retained-after-cutover"[..]
+    );
+    assert_eq!(
+        parent.get(8, b"i", None).await.unwrap().unwrap().value,
+        b"child-after-cutover"[..]
     );
 }
 
