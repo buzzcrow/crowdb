@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -18,6 +18,7 @@ use crowdb_kv_client::HardwareClient;
 use crowdb_protocol::chunkdb::rpc::DeleteChunkRangeRequest;
 use crowdb_protocol::common::{ChunkId, DiskId, HwStatus, NodeValue, RackValue};
 use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue};
+use crowdb_protocol::ServicePort;
 use crowdb_rpc_ffi::RpcServer;
 use crowdb_test_harness::chunk_kv::ChunkKvProcess;
 use crowdb_test_harness::chunkdb::{
@@ -26,6 +27,7 @@ use crowdb_test_harness::chunkdb::{
 use crowdb_test_harness::cluster::KvCluster;
 use crowdb_test_harness::diskdb::DiskdbProcess;
 use crowdb_test_harness::diskio::{DiskArg, DiskioGroup0Identity, DiskioProcess, DiskioStartOpts};
+use crowdb_test_harness::test_dirs::TestRuntime;
 use hyper::body::Bytes;
 use serde_json::json;
 
@@ -176,7 +178,12 @@ impl FullStackSetup {
         let case = TestCase::start("restart::access_server_recovers_objects");
         drop(self.access_server.take().expect("primary access server"));
         self.verify_restart("verify", &self.second_listen);
-        let (mut process, listen) = start_access_server(&self.access_binary, &self.seeds);
+        let (mut process, listen) = start_access_server(
+            self.cluster.runtime_mut(),
+            &self.access_binary,
+            &self.seeds,
+            "primary",
+        );
         wait_for_tcp(&mut process, &listen).await;
         self.verify_restart("verify", &listen);
         self.restarted_access = Some(process);
@@ -207,6 +214,10 @@ impl FullStackSetup {
             &self.secret_key,
         )
         .await;
+        self.cluster
+            .runtime_mut()
+            .record_process(self.diskdb.child.id())
+            .expect("record restarted DiskDB process");
         case.pass();
     }
 
@@ -221,14 +232,18 @@ impl FullStackSetup {
 
     async fn restart_chunk_kv(&mut self) {
         let case = TestCase::start("restart::chunk_kv_recovers_objects");
-        self.chunk_kv.restart().await;
+        self.chunk_kv.restart_in(self.cluster.runtime_mut()).await;
         self.verify_restart("verify-after-chunk-kv-restart", &self.second_listen);
         case.pass();
     }
 
     async fn run_benchmarks(&self) {
         let case = TestCase::start("benchmark::direct_chunk_path");
-        run_direct_chunk_benchmark(&self.cluster.mgmt_endpoints).await;
+        run_direct_chunk_benchmark(
+            &self.cluster.mgmt_endpoints,
+            &self.cluster.runtime().artifacts_dir(),
+        )
+        .await;
         case.pass();
 
         let case = TestCase::start("benchmark::s3_request_path");
@@ -237,6 +252,7 @@ impl FullStackSetup {
             self.second_access_server.child.id(),
             &self.access_key,
             &self.secret_key,
+            &self.cluster.runtime().artifacts_dir(),
         );
         case.pass();
     }
@@ -309,9 +325,11 @@ async fn start_full_stack() -> FullStackSetup {
 
     let seeds = cluster.mgmt_endpoints.join(",");
     let (access_key, secret_key) = issue_credentials(&access_binary, &seeds);
-    let (mut access_server, listen) = start_access_server(&access_binary, &seeds);
+    let (mut access_server, listen) =
+        start_access_server(cluster.runtime_mut(), &access_binary, &seeds, "primary");
     wait_for_tcp(&mut access_server, &listen).await;
-    let (mut second_access_server, second_listen) = start_access_server(&access_binary, &seeds);
+    let (mut second_access_server, second_listen) =
+        start_access_server(cluster.runtime_mut(), &access_binary, &seeds, "secondary");
     wait_for_tcp(&mut second_access_server, &second_listen).await;
     assert_access_ready(&listen);
     FullStackSetup {
@@ -461,13 +479,20 @@ fn issue_credentials(access_binary: &Path, seeds: &str) -> (String, String) {
     )
 }
 
-fn start_access_server(access_binary: &Path, seeds: &str) -> (AccessServerProcess, String) {
-    let listen = format!("127.0.0.1:{}", reserve_ephemeral_port());
-    let log_path = crowdb_test_harness::test_dirs::test_log_dir().join(format!(
-        "crowdb-access-s3-e2e-{}-{}.log",
-        std::process::id(),
-        listen.replace(':', "-")
-    ));
+fn start_access_server(
+    runtime: &mut TestRuntime,
+    access_binary: &Path,
+    seeds: &str,
+    identity: &str,
+) -> (AccessServerProcess, String) {
+    let port = runtime
+        .assign_named_port(ServicePort::AccessServerHttp, identity)
+        .expect("assign access-server port");
+    let listen = format!("127.0.0.1:{port}");
+    let service_root = runtime
+        .service_dir("access-server", identity)
+        .expect("create access-server runtime directory");
+    let log_path = service_root.join("log").join("access-server.log");
     let log = std::fs::File::create(&log_path).expect("create access-server log");
     let child = Command::new(access_binary)
         .env("CROWDB_S3_LISTEN", &listen)
@@ -484,6 +509,9 @@ fn start_access_server(access_binary: &Path, seeds: &str) -> (AccessServerProces
         .stderr(Stdio::from(log))
         .spawn()
         .expect("start crowdb-access-server");
+    runtime
+        .record_process(child.id())
+        .expect("record access-server process");
     (AccessServerProcess { child, log_path }, listen)
 }
 
@@ -538,7 +566,7 @@ fn run_restart_phase(phase: &str, listen: &str, access_key: &str, secret_key: &s
     );
 }
 
-fn run_benchmark(listen: &str, server_pid: u32, access_key: &str, secret_key: &str) {
+fn run_benchmark(listen: &str, server_pid: u32, access_key: &str, secret_key: &str, artifacts_dir: &Path) {
     let python_binary = std::env::var_os("CROWDB_S3_E2E_PYTHON").unwrap_or_else(|| "python".into());
     let result = Command::new(python_binary)
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/s3_e2e/benchmark.py"))
@@ -567,13 +595,12 @@ fn run_benchmark(listen: &str, server_pid: u32, access_key: &str, secret_key: &s
         String::from_utf8_lossy(&result.stdout).contains("\"server_process\": {"),
         "benchmark did not capture access-server CPU/RSS"
     );
-    let artifact = crowdb_test_harness::test_dirs::test_log_dir()
-        .join(format!("crowdb-s3-e2e-benchmark-{}.json", std::process::id()));
+    let artifact = artifacts_dir.join("s3-request-path.json");
     std::fs::write(&artifact, result.stdout).expect("write S3 baseline samples");
     eprintln!("S3 benchmark samples: {}", artifact.display());
 }
 
-async fn run_direct_chunk_benchmark(seeds: &[String]) {
+async fn run_direct_chunk_benchmark(seeds: &[String], artifacts_dir: &Path) {
     let chunks = Arc::new(
         ChunkIoClient::connect(ChunkIoClientConfig {
             management_seeds: seeds.to_vec(),
@@ -643,10 +670,7 @@ async fn run_direct_chunk_benchmark(seeds: &[String]) {
             }
         }
     }
-    let artifact = crowdb_test_harness::test_dirs::test_log_dir().join(format!(
-        "crowdb-direct-chunk-e2e-benchmark-{}.json",
-        std::process::id()
-    ));
+    let artifact = artifacts_dir.join("direct-chunk-path.json");
     std::fs::write(
         &artifact,
         serde_json::to_vec_pretty(&json!({
@@ -804,14 +828,6 @@ fn output_value<'a>(output: &'a str, name: &str) -> &'a str {
         .lines()
         .find_map(|line| line.strip_prefix(name).and_then(|value| value.strip_prefix('=')))
         .unwrap_or_else(|| panic!("issuer omitted {name}: {output}"))
-}
-
-fn reserve_ephemeral_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("reserve access-server port")
-        .local_addr()
-        .expect("reserved address")
-        .port()
 }
 
 async fn wait_for_tcp(process: &mut AccessServerProcess, address: &str) {

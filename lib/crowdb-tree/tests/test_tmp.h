@@ -1,11 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-// Shared test utility: RAII temp directory under crowdb-tree/.test-tmp/.
-// All test-generated data lives under the project tree (gitignored)
-// instead of /tmp, so it can be cleaned up uniformly and never leaks
-// into git commits.
+// Shared test utility under the workspace runtime namespace.
 #pragma once
+
+#include "crowdb-common/runtime_path.h"
 
 #include <unistd.h>
 
@@ -21,14 +20,11 @@ namespace crowdb::tree_test
 
 inline std::string test_tmp_root()
 {
-    // __FILE__ is tests/integration/*.cpp or tests/unit/*.cpp;
-    // the crowdb-tree root is two levels up from the test source dir.
-    // At runtime we use a fixed path relative to the repo for determinism.
     static const char *env = std::getenv("CROWDB_TREE_TEST_TMP");
     if ((env != nullptr) && env[0] != '\0') {
         return env;
     }
-    return ".test-tmp";
+    return crowdb::common::test_runtime_path("crowdb-tree").string();
 }
 
 // RAII temp directory. Creates a unique subdirectory under test_tmp_root()

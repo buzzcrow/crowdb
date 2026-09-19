@@ -366,7 +366,7 @@ async fn deploy_local_in_workspace(
     if let Some(dir) = workspace_dir {
         // The workspace dir is the server root; waldata/conf/ctdata/log
         // are direct children.
-        cmd.arg("--root").arg(dir);
+        cmd.arg("--root").arg(dir).arg("--log-dir").arg(dir.join("log"));
         // Merge stdout and stderr into one file. We open a temp file before
         // spawn (PID unknown), then rename it with the PID after spawn.
         let log_dir = dir.join("log");
@@ -380,15 +380,19 @@ async fn deploy_local_in_workspace(
         cmd.stdout(Stdio::from(out.try_clone().map_err(Error::Io)?));
         cmd.stderr(Stdio::from(out));
     } else {
-        // Non-workspace deploy: create a unique temp dir as the node
+        // Non-workspace deploy: create a unique ephemeral namespace as the node
         // root (waldata/conf/ctdata/log derived under it). Remove any
         // stale directory from a previous run so the server boots in
         // first-boot mode, not restore mode.
-        let root =
-            std::path::Path::new("temp-data").join(format!("crowdb-kv-server-deploy-{}", req.rest_port));
+        let root = crowdb_protocol::port::namespace::runtime_root()
+            .join("ephemeral")
+            .join(format!("crowdb-kv-server-deploy-{}", req.rest_port));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).map_err(Error::Io)?;
-        cmd.arg("--root").arg(&root);
+        cmd.arg("--root")
+            .arg(&root)
+            .arg("--log-dir")
+            .arg(root.join("log"));
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
     }
@@ -543,15 +547,15 @@ pub fn process_is_alive(pid: u32) -> bool {
 pub(crate) fn remote_start_command(req: &DeployRequest, server_bin: &str) -> String {
     // `nohup ... &` + redirected fds detaches the child from the SSH
     // channel; the trailing `echo $!` prints the pid we want to capture.
-    // The node root is a per-port dir under /tmp; waldata/conf/ctdata/log
-    // are derived subdirs.
+    // The node root is a durable per-port namespace below the remote home.
     let config_arg = req
         .config
         .as_ref()
         .map_or_else(String::new, |c| format!(" --config {}", c.display()));
     format!(
-        "nohup {bin}{config_arg} --root /tmp/crowdb-kv-server-{mp} --management-addr 127.0.0.1 --management-port {mp} --ports {gp} \
-         >/tmp/crowdb-kv-server.{mp}.out 2>/tmp/crowdb-kv-server.{mp}.err </dev/null & echo $!",
+        "root=\"$HOME/.crowdb-runtime/persistent/remote/kv-{mp}\"; mkdir -p \"$root/log\"; \
+         nohup {bin}{config_arg} --root \"$root\" --management-addr 127.0.0.1 --management-port {mp} --ports {gp} \
+         >\"$root/log/stdout.log\" 2>\"$root/log/stderr.log\" </dev/null & echo $!",
         bin = server_bin,
         mp = req.rest_port,
         gp = req.rpc_port,

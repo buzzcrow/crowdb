@@ -4,6 +4,7 @@
 // DiskIOUring tests: single/multi-pipeline submit, fd routing, cancel_fd,
 // batch submit, multi-CQ polling.
 #include "crowdb-common/diskio_uring.h"
+#include "crowdb-common/runtime_path.h"
 
 #include <fcntl.h>
 #include <gtest/gtest.h>
@@ -24,7 +25,7 @@ namespace
 {
 std::string temp_path()
 {
-    std::string root = "/tmp/crowdb-common-diskio-uring-tests";
+    std::string root = crowdb::common::test_runtime_path("crowdb-common-diskio-uring").string();
     std::filesystem::create_directories(root);
     std::array<char, 128> tmpl{};
     std::snprintf(tmpl.data(), tmpl.size(), "%s/ux_XXXXXX", root.c_str());

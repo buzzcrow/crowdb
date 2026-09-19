@@ -20,7 +20,7 @@ DURATION_SECS="${CHUNK_STREAM_BENCH_DURATION:-10}"
 TIMEOUT_SECS="${CHUNK_STREAM_BENCH_TIMEOUT:-180}"
 SKIP_BUILD="${CHUNK_STREAM_BENCH_SKIP_BUILD:-0}"
 RUN_STAMP=$(date +%Y%m%d-%H%M%S)
-LOG_ROOT="${CHUNK_STREAM_BENCH_LOG_ROOT:-$(pwd)/bench-log/chunk-stream-regression-$RUN_STAMP}"
+LOG_ROOT="${CHUNK_STREAM_BENCH_LOG_ROOT:-${CROWDB_RUNTIME_ROOT:-$(pwd)/.crowdb-runtime}/artifacts/bench/chunk-stream-regression-$RUN_STAMP}"
 RESULTS_FILE="${CHUNK_STREAM_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
 REGRESSION_LOG_ROOT="$LOG_ROOT"
 source tools/bench-regression-common.sh

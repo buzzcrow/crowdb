@@ -34,6 +34,14 @@ struct NamespaceManifest {
     owner_pid: u32,
     owner_start: String,
     assignments: BTreeMap<String, u16>,
+    #[serde(default)]
+    processes: Vec<ProcessOwner>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ProcessOwner {
+    pid: u32,
+    start: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -143,6 +151,7 @@ impl RuntimeNamespace {
                 owner_pid,
                 owner_start,
                 assignments: BTreeMap::new(),
+                processes: Vec::new(),
             },
             cleanup: mode == NamespaceMode::Ephemeral,
             released: false,
@@ -319,6 +328,23 @@ impl RuntimeNamespace {
         self.cleanup = false;
     }
 
+    /// Record a child process owned by this namespace for targeted cleanup.
+    ///
+    /// # Errors
+    /// Returns an error when the process identity cannot be observed or the
+    /// manifest cannot be persisted.
+    pub fn record_process(&mut self, pid: u32) -> Result<(), RuntimeNamespaceError> {
+        let start = process_start(pid).ok_or_else(|| {
+            RuntimeNamespaceError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("process {pid} is not running"),
+            ))
+        })?;
+        self.manifest.processes.retain(|process| process.pid != pid);
+        self.manifest.processes.push(ProcessOwner { pid, start });
+        self.save_manifest()
+    }
+
     /// Release every port claim and remove this namespace tree.
     ///
     /// This is the explicit destructive lifecycle operation for persistent
@@ -452,6 +478,97 @@ pub fn runtime_root() -> PathBuf {
     }
 }
 
+/// Allocate compatibility ports owned by the current process in the global
+/// namespace registry.
+///
+/// This keeps older test callers coordinated with explicit
+/// [`RuntimeNamespace`] environments during migration.
+///
+/// # Errors
+/// Returns an error when the registry cannot be read or written, or no
+/// consecutive range is available.
+pub fn assign_process_ports(
+    service: ServicePort,
+    start_instance: u16,
+    count: u16,
+) -> Result<Vec<u16>, RuntimeNamespaceError> {
+    assign_owned_process_ports(service, start_instance, count, std::process::id())
+}
+
+/// Allocate compatibility ports owned by a caller-supplied live process.
+///
+/// This supports short-lived allocator commands on behalf of a longer-lived
+/// E2E runner. Claims are reclaimed only after that runner exits.
+///
+/// # Errors
+/// Returns an error when the owner is not alive, the registry cannot be read
+/// or written, or no consecutive range is available.
+pub fn assign_owned_process_ports(
+    service: ServicePort,
+    start_instance: u16,
+    count: u16,
+    pid: u32,
+) -> Result<Vec<u16>, RuntimeNamespaceError> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    let start = process_start(pid).ok_or_else(|| {
+        RuntimeNamespaceError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("port claim owner process {pid} is not running"),
+        ))
+    })?;
+    let owner = format!("legacy-process-{pid}-{start}");
+    let registry_path = runtime_root().join("ports").join("claims.json");
+    let mut registry = lock_registry(&registry_path)?;
+    let mut claims = read_claims(&mut registry)?;
+    claims.retain(claim_is_live);
+    let claimed = claims.iter().map(|claim| claim.port).collect::<HashSet<_>>();
+    let last_start = service.range_size().saturating_sub(count);
+    let ports = (start_instance..=last_start)
+        .map(|candidate| {
+            (0..count)
+                .map(|offset| service.port(candidate + offset))
+                .collect::<Vec<_>>()
+        })
+        .find(|ports| {
+            ports
+                .iter()
+                .all(|port| !claimed.contains(port) && port_is_free(*port))
+        })
+        .ok_or_else(|| RuntimeNamespaceError::Exhausted {
+            service,
+            identity: owner.clone(),
+        })?;
+    claims.extend(ports.iter().map(|port| PortClaim {
+        port: *port,
+        namespace_id: owner.clone(),
+        mode: NamespaceMode::Ephemeral,
+        owner_pid: pid,
+        owner_start: start.clone(),
+    }));
+    write_claims(&mut registry, &claims)?;
+    Ok(ports)
+}
+
+/// Release compatibility claims owned by the current process.
+///
+/// # Errors
+/// Returns an error when the registry cannot be read or written.
+pub fn release_process_ports() -> Result<(), RuntimeNamespaceError> {
+    let registry_path = runtime_root().join("ports").join("claims.json");
+    if !registry_path.exists() {
+        return Ok(());
+    }
+    let pid = std::process::id();
+    let start = process_start(pid).unwrap_or_else(|| format!("process-{pid}"));
+    let owner = format!("legacy-process-{pid}-{start}");
+    let mut registry = lock_registry(&registry_path)?;
+    let mut claims = read_claims(&mut registry)?;
+    claims.retain(|claim| claim.namespace_id != owner);
+    write_claims(&mut registry, &claims)
+}
+
 #[cfg(target_os = "linux")]
 fn process_start(pid: u32) -> Option<String> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
@@ -461,5 +578,10 @@ fn process_start(pid: u32) -> Option<String> {
 
 #[cfg(not(target_os = "linux"))]
 fn process_start(pid: u32) -> Option<String> {
-    (pid == std::process::id()).then(|| format!("process-{pid}"))
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .ok()
+        .filter(std::process::ExitStatus::success)
+        .map(|_| format!("process-{pid}"))
 }

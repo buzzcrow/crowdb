@@ -31,8 +31,11 @@ use crowdb_kv_server::store_registry::KvStoreRegistry;
 async fn main() {
     let args = Cli::parse();
 
-    // Resolve log directory: --log-dir > config.log_dir > "log".
-    let log_dir = args.log_dir.clone().unwrap_or_else(|| "log".to_string());
+    // The required node root owns every generated path, including logs.
+    let log_dir = args
+        .log_dir
+        .clone()
+        .unwrap_or_else(|| args.root.join("log").to_string_lossy().into_owned());
 
     // Derive C++ log level: --log-level > RUST_LOG first global > "info".
     let cpp_level = args

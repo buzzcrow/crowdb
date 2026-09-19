@@ -36,7 +36,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 RUN_STAMP=$(date +%Y%m%d-%H%M%S)
-LOG_ROOT="${KV_READ_BENCH_LOG_ROOT:-$(pwd)/bench-log/kv-read-regression-$RUN_STAMP}"
+LOG_ROOT="${KV_READ_BENCH_LOG_ROOT:-${CROWDB_RUNTIME_ROOT:-$(pwd)/.crowdb-runtime}/artifacts/bench/kv-read-regression-$RUN_STAMP}"
 RESULTS_FILE="${KV_READ_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
 REGRESSION_LOG_ROOT="$LOG_ROOT"
 source tools/bench-regression-common.sh

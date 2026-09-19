@@ -47,8 +47,8 @@ struct Cli {
     /// Root directory for this run's logs. Each invocation creates a
     /// per-run subfolder `<root>/cli-<command-chain>-<YYYYMMDD-HHMMSS>/`
     /// holding the tracing log, crowdb-rpc transport log, and ops log.
-    /// Defaults to `cli-log/` (resolved from CWD). Regression scripts
-    /// typically pass a fixed root (e.g. `bench-log`) so runs accumulate
+    /// Defaults to `.crowdb-runtime/artifacts/cli/`. Regression scripts
+    /// typically pass a fixed artifact root so runs accumulate
     /// a reviewable history.
     #[arg(long, global = true, env = "CROWDB_LOG_ROOT")]
     log_root: Option<PathBuf>,
@@ -186,7 +186,7 @@ fn main() -> ExitCode {
     // Port-alloc is a synchronous bootstrap tool: no tokio runtime,
     // no RPC, no log files. Short-circuit before the heavy init so
     // the E2E fixture (which calls it many times) stays fast and
-    // doesn't litter `cli-log/` directories.
+    // doesn't create invocation log directories.
     if let Domain::PortAlloc { args } = &cli.command {
         return run_port_alloc(args);
     }
@@ -195,12 +195,12 @@ fn main() -> ExitCode {
     // invocations don't interleave. The folder is
     // `<log_root>/cli-<command-chain>-<YYYYMMDD-HHMMSS>/` and holds the
     // tracing log, the C++ crowdb-rpc transport log, and the ops log.
-    // `--log-root` defaults to `cli-log/` (CWD-relative); regression
-    // scripts pass a fixed root (e.g. `bench-log`) to accumulate runs.
+    // `--log-root` defaults to the workspace runtime artifacts tree; regression
+    // scripts pass a fixed artifact root to accumulate runs.
     let log_root = cli.log_root.clone().unwrap_or_else(|| {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join("cli-log")
+        crowdb_protocol::port::namespace::runtime_root()
+            .join("artifacts")
+            .join("cli")
     });
     let invocation_dir = log_root.join(format!(
         "cli-{}-{}",
@@ -219,7 +219,7 @@ fn main() -> ExitCode {
         "warn,crowdb_cli=info,crowdb_console_shared=info,crowdb_kv_client=info",
     );
     crowdb_rpc_ffi::init_logging(
-        invocation_dir.to_str().unwrap_or("cli-log"),
+        invocation_dir.to_str().unwrap_or(".crowdb-runtime/artifacts/cli"),
         "info",
         50,
         5,

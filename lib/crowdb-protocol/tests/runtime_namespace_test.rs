@@ -1,6 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
+use crowdb_protocol::port::alloc;
 use crowdb_protocol::port::namespace::RuntimeNamespace;
 use crowdb_protocol::ServicePort;
 
@@ -59,4 +60,16 @@ fn persistent_namespace_reopens_saved_assignments() {
         first_port
     );
     reopened.delete().expect("delete persistent namespace");
+}
+
+#[test]
+fn compatibility_allocator_shares_the_namespace_registry() {
+    alloc::reset_test_claims();
+    let legacy = alloc::alloc_test_port(ServicePort::Web);
+    let mut namespace = RuntimeNamespace::ephemeral("allocator-compatibility").expect("create namespace");
+    let namespaced = namespace
+        .assign_port(ServicePort::Web, 0)
+        .expect("assign namespaced port");
+    assert_ne!(legacy, namespaced);
+    alloc::reset_test_claims();
 }

@@ -120,7 +120,12 @@ impl TomlFileEngine {
 
     #[must_use]
     pub fn default_path() -> Option<PathBuf> {
-        Some(PathBuf::from("runtime-data/crowdb-kv.db.toml"))
+        Some(
+            crowdb_protocol::port::namespace::runtime_root()
+                .join("persistent")
+                .join("console")
+                .join("crowdb-kv.db.toml"),
+        )
     }
 
     #[must_use]
@@ -495,7 +500,7 @@ impl ServerEntry {
 impl ConsoleConfig {
     /// Default config file path.
     ///
-    /// Config is persisted to `runtime-data/crowdb-kv.db.toml` in the project root.
+    /// Config is persisted below the workspace persistent runtime namespace.
     /// This file stores registered crowdb-kv-server instances for the console.
     #[must_use]
     pub(crate) fn default_path() -> Option<PathBuf> {
@@ -1206,10 +1211,10 @@ mod tests {
         cfg.local_launches.insert(
             "b".into(),
             LocalLaunchSpec {
-                program: "/tmp/deploy/bin/crowdb-diskdb".into(),
+                program: "/example/deploy/bin/crowdb-diskdb".into(),
                 args: vec!["--config".into(), "conf/server.toml".into()],
-                workdir: "/tmp/deploy".into(),
-                env: std::collections::BTreeMap::from([("LD_LIBRARY_PATH".into(), "/tmp/lib".into())]),
+                workdir: "/example/deploy".into(),
+                env: std::collections::BTreeMap::from([("LD_LIBRARY_PATH".into(), "/example/lib".into())]),
                 readiness_url: Some("http://127.0.0.1:10002".into()),
             },
         );
@@ -1278,15 +1283,13 @@ mod tests {
     }
 
     #[test]
-    fn default_path_points_to_runtime_data() {
-        assert_eq!(
-            TomlFileEngine::default_path().unwrap(),
-            std::path::PathBuf::from("runtime-data/crowdb-kv.db.toml")
-        );
-        assert_eq!(
-            ConsoleConfig::default_path().unwrap(),
-            std::path::PathBuf::from("runtime-data/crowdb-kv.db.toml")
-        );
+    fn default_path_points_to_persistent_runtime_namespace() {
+        let expected = crowdb_protocol::port::namespace::runtime_root()
+            .join("persistent")
+            .join("console")
+            .join("crowdb-kv.db.toml");
+        assert_eq!(TomlFileEngine::default_path().unwrap(), expected);
+        assert_eq!(ConsoleConfig::default_path().unwrap(), expected);
     }
 
     #[test]

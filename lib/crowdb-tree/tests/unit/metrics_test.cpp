@@ -4,11 +4,13 @@
 #include "crowdb-common/metrics/metrics.h"
 #include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
+#include "test_tmp.h"
 
 #include <gtest/gtest.h>
 
 #include <cstdio>
 #include <fstream>
+#include <memory>
 #include <string>
 
 namespace crowdb::tree
@@ -200,18 +202,17 @@ TEST(MetricsRegistry, FlushFormat)
     s->observe(1'200'000);
     s->observe(800'000);
 
-    std::string tmp = "/tmp/crowtree_metrics_test_XXXXXX";
-    FILE       *fp  = tmpfile();
+    crowdb::tree_test::TempFile                   tmp("metrics_");
+    std::unique_ptr<FILE, decltype(&std::fclose)> fp(std::fopen(tmp.path.c_str(), "w+"), &std::fclose);
     ASSERT_NE(fp, nullptr);
-    reg.flush_to(fp, 5.0, "2026-07-15T16:30:05.123Z");
-    std::fflush(fp);
+    reg.flush_to(fp.get(), 5.0, "2026-07-15T16:30:05.123Z");
+    std::fflush(fp.get());
 
     // Read back via rewind + fread
-    std::rewind(fp);
+    ASSERT_EQ(std::fseek(fp.get(), 0, SEEK_SET), 0);
     char   buf[4096];
-    size_t n = std::fread(buf, 1, sizeof(buf) - 1, fp);
+    size_t n = std::fread(buf, 1, sizeof(buf) - 1, fp.get());
     buf[n]   = '\0';
-    std::fclose(fp);
 
     std::string output(buf);
     EXPECT_NE(output.find("metrics\n"), std::string::npos);

@@ -18,7 +18,7 @@ fn invocation_log_directory_has_cli_prefix() {
         eprintln!("skipping: crowdb-cli binary not built ({})", cli.display());
         return;
     }
-    let root = tempdir("cli-log-prefix");
+    let root = tempdir("cli-output-prefix");
     let config = root.join("missing-console.toml");
     let output = Command::new(cli)
         .arg("--log-root")

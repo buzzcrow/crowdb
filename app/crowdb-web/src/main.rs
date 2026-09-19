@@ -58,12 +58,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Layered logging: INFO+ to rotating file, WARN+ to console.
     // RUST_LOG overrides both sinks for debugging. The file layer uses
-    // ~/.crowdb-kv/log/ by default; the guard must outlive the process
+    // the persistent console namespace by default; the guard must outlive the process
     // so the non-blocking appender flushes on exit.
     let log_dir = args.log_dir.clone().unwrap_or_else(|| {
-        dirs::home_dir()
-            .unwrap_or_else(std::env::temp_dir)
-            .join(".crowdb-kv")
+        crowdb_protocol::port::namespace::runtime_root()
+            .join("persistent")
+            .join("console")
             .join("log")
     });
     let log_dir_str = log_dir.to_string_lossy().to_string();

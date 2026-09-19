@@ -5,6 +5,7 @@
 // Loaded from TOML and overlaid by CLI args; validated before startup.
 #pragma once
 
+#include "crowdb-common/runtime_path.h"
 #include "crowdb-protocol/timing.h"
 #include "disk/disk_properties.h"
 #include "disk/types.h"
@@ -75,8 +76,9 @@ struct DioConfig
 
     // Metrics logging. When metrics_interval_secs > 0, system metrics
     // (CPU, RSS, TCP, DRAM BW) are flushed to a log file every interval.
-    std::string metrics_log_dir       = "log"; // directory for metrics log files
-    uint32_t    metrics_interval_secs = 5;     // 0 disables metrics logging
+    std::string metrics_log_dir =
+        (crowdb::common::runtime_root() / "persistent" / "manual" / "diskio" / "log").string();
+    uint32_t metrics_interval_secs = 5; // 0 disables metrics logging
 
     // Parse CLI args. Returns true on success, false on error (msg in err).
     static bool parse_args(int argc, char *argv[], DioConfig &out, std::string &err);

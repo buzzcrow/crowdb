@@ -50,7 +50,7 @@
 #     same sanitizer runtime.
 #   - ASAN_OPTIONS: detect_leaks=1 (LSan), abort_on_error=0 (don't abort
 #     on first error — let the process exit normally so we can check
-#     the exit code), log_path writes per-process ASan logs to /tmp.
+#     the exit code), log_path writes per-process ASan logs to the runtime artifacts tree.
 #   - Debug build (not release) — ASan needs debug info for stack traces.
 #
 # Leak interpretation:
@@ -74,7 +74,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-RESULTS_FILE="doc/working/sanitize-regression.tsv"
+RUNTIME_ROOT="${CROWDB_RUNTIME_ROOT:-${PIXI_PROJECT_ROOT:-$(pwd)}/.crowdb-runtime}"
+RUNTIME_DIR="$RUNTIME_ROOT/artifacts/sanitize-regression"
+rm -rf "$RUNTIME_DIR"
+mkdir -p "$RUNTIME_DIR"
+RESULTS_FILE="$RUNTIME_DIR/sanitize-regression.tsv"
 DURATION=5
 KEYSPACE=1000
 VALUE_SIZE=128
@@ -91,8 +95,8 @@ CROWDB_CLI="$(cd "$(dirname "$0")/.." && pwd)/target/debug/crowdb-cli"
 LIBASAN="$(cd "$(dirname "$0")/.." && pixi run -- pwd)/.pixi/envs/default/lib/libasan.so"
 
 # Clean up stale ASan logs from previous runs.
-rm -f /tmp/asan-sanitize-*.* 2>/dev/null || true
-rm -f /tmp/sanitize-unexpected-asan-sanitize-* 2>/dev/null || true
+rm -f ${RUNTIME_DIR}/asan-sanitize-*.* 2>/dev/null || true
+rm -f ${RUNTIME_DIR}/sanitize-unexpected-asan-sanitize-* 2>/dev/null || true
 
 # --- Phase 1: Build with ASan + LSan enabled ---
 echo "=== building with CROWDB_ASAN=1 (debug) ==="
@@ -185,13 +189,13 @@ run_bench() {
     local extra_args=("$@")
     echo ">>> $label ..."
     local config_file
-    config_file=$(cat "/tmp/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
+    config_file=$(cat "${RUNTIME_DIR}/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
     if [ -z "$config_file" ] || [ ! -f "$config_file" ]; then
         echo "    ERROR: no config for deploy '$deploy'"
         echo -e "$label\t0\t0\tFAIL(config)" >> "$RESULTS_FILE"
         return
     fi
-    local log_prefix="/tmp/asan-sanitize-${label}"
+    local log_prefix="${RUNTIME_DIR}/asan-sanitize-${label}"
     rm -f "${log_prefix}."* 2>/dev/null || true
     local output rc
     if output=$(asan_cli "$log_prefix" --config "$config_file" \
@@ -238,13 +242,13 @@ run_prepare() {
     local deploy="$1" label="$2"
     echo ">>> $label ..."
     local config_file
-    config_file=$(cat "/tmp/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
+    config_file=$(cat "${RUNTIME_DIR}/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
     if [ -z "$config_file" ] || [ ! -f "$config_file" ]; then
         echo "    ERROR: no config for deploy '$deploy'"
         GATE_FAILED=1
         return
     fi
-    local log_prefix="/tmp/asan-sanitize-${label}"
+    local log_prefix="${RUNTIME_DIR}/asan-sanitize-${label}"
     rm -f "${log_prefix}."* 2>/dev/null || true
     local output rc
     if output=$(asan_cli "$log_prefix" --config "$config_file" \
@@ -277,15 +281,15 @@ run_prepare() {
 # Deploy a 3-node cluster with default tunables for sanitize testing.
 deploy_cluster() {
     local name="$1"
-    local config_file="/tmp/sanitize-reg-${name}.toml"
+    local config_file="${RUNTIME_DIR}/sanitize-reg-${name}.toml"
     echo "=== deploying cluster '$name' ==="
     rm -f "$config_file"
-    local log_prefix="/tmp/asan-sanitize-deploy-${name}"
+    local log_prefix="${RUNTIME_DIR}/asan-sanitize-deploy-${name}"
     rm -f "${log_prefix}."* 2>/dev/null || true
     asan_cli "$log_prefix" --config "$config_file" \
         cluster local-deploy -n 3 -t kv \
         --kv-backend mem-block --wal-backend mem-block 2>&1 | tail -3 || true
-    echo "$config_file" > "/tmp/sanitize-reg-${name}.cfgpath"
+    echo "$config_file" > "${RUNTIME_DIR}/sanitize-reg-${name}.cfgpath"
     # The deploy process exits with 1 due to tokio runtime leak noise.
     # Accept only the exact known tokio leak signature.
     local logs
@@ -300,7 +304,7 @@ deploy_cluster() {
                 rm -f "$log"
             else
                 echo "    deploy process: UNEXPECTED leak — $summary"
-                mv "$log" "/tmp/sanitize-unexpected-$(basename "$log")"
+                mv "$log" "${RUNTIME_DIR}/sanitize-unexpected-$(basename "$log")"
                 GATE_FAILED=1
             fi
         done
@@ -313,9 +317,9 @@ deploy_cluster() {
 teardown_cluster() {
     local name="$1"
     local config_file
-    config_file=$(cat "/tmp/sanitize-reg-${name}.cfgpath" 2>/dev/null || echo "")
+    config_file=$(cat "${RUNTIME_DIR}/sanitize-reg-${name}.cfgpath" 2>/dev/null || echo "")
     if [ -n "$config_file" ] && [ -f "$config_file" ]; then
-        local log_prefix="/tmp/asan-sanitize-destroy-${name}"
+        local log_prefix="${RUNTIME_DIR}/asan-sanitize-destroy-${name}"
         rm -f "${log_prefix}."* 2>/dev/null || true
         asan_cli "$log_prefix" --config "$config_file" \
             cluster destroy 2>&1 | tail -2 || true
@@ -324,11 +328,11 @@ teardown_cluster() {
         fi
         # Services inherit the deployment ASan log prefix. Their reports are
         # emitted only when cluster destroy terminates them.
-        local service_log_prefix="/tmp/asan-sanitize-deploy-${name}"
+        local service_log_prefix="${RUNTIME_DIR}/asan-sanitize-deploy-${name}"
         if ! check_asan_logs "$service_log_prefix" "service-shutdown"; then
             GATE_FAILED=1
         fi
-        rm -f "$config_file" "/tmp/sanitize-reg-${name}.cfgpath"
+        rm -f "$config_file" "${RUNTIME_DIR}/sanitize-reg-${name}.cfgpath"
     fi
 }
 
@@ -338,10 +342,10 @@ teardown_cluster() {
 # small capacity to keep memory bounded under ASan.
 deploy_combined_cluster() {
     local name="$1"
-    local config_file="/tmp/sanitize-reg-${name}.toml"
+    local config_file="${RUNTIME_DIR}/sanitize-reg-${name}.toml"
     echo "=== deploying combined cluster '$name' ==="
     rm -f "$config_file"
-    local log_prefix="/tmp/asan-sanitize-deploy-${name}"
+    local log_prefix="${RUNTIME_DIR}/asan-sanitize-deploy-${name}"
     rm -f "${log_prefix}."* 2>/dev/null || true
     asan_cli "$log_prefix" --config "$config_file" \
         cluster local-deploy -t combined \
@@ -351,7 +355,7 @@ deploy_combined_cluster() {
         --disk-capacity-bytes 4294967296 --disk-zone-size-bytes 1073741824 \
         --disk-unit-size-bytes 1048576 --chunkdb-instances 3 \
         --allow-unsafe-ec 2>&1 | tail -3 || true
-    echo "$config_file" > "/tmp/sanitize-reg-${name}.cfgpath"
+    echo "$config_file" > "${RUNTIME_DIR}/sanitize-reg-${name}.cfgpath"
     # The deploy process exits with 1 due to tokio runtime leak noise.
     local logs
     logs=$(ls "${log_prefix}."* 2>/dev/null || true)
@@ -365,7 +369,7 @@ deploy_combined_cluster() {
                 rm -f "$log"
             else
                 echo "    deploy process: UNEXPECTED leak — $summary"
-                mv "$log" "/tmp/sanitize-unexpected-$(basename "$log")"
+                mv "$log" "${RUNTIME_DIR}/sanitize-unexpected-$(basename "$log")"
                 GATE_FAILED=1
             fi
         done
@@ -378,13 +382,13 @@ run_diskdb_bench() {
     local deploy="$1" workload="$2" concurrency="$3" label="$4"
     echo ">>> $label ..."
     local config_file
-    config_file=$(cat "/tmp/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
+    config_file=$(cat "${RUNTIME_DIR}/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
     if [ -z "$config_file" ] || [ ! -f "$config_file" ]; then
         echo "    ERROR: no config for deploy '$deploy'"
         echo -e "$label\t0\t0\tFAIL(config)" >> "$RESULTS_FILE"
         return
     fi
-    local log_prefix="/tmp/asan-sanitize-${label}"
+    local log_prefix="${RUNTIME_DIR}/asan-sanitize-${label}"
     rm -f "${log_prefix}."* 2>/dev/null || true
     local output rc
     if output=$(asan_cli "$log_prefix" --config "$config_file" \
@@ -425,13 +429,13 @@ run_chunkdb_bench() {
     local deploy="$1" workload="$2" concurrency="$3" label="$4"
     echo ">>> $label ..."
     local config_file
-    config_file=$(cat "/tmp/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
+    config_file=$(cat "${RUNTIME_DIR}/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
     if [ -z "$config_file" ] || [ ! -f "$config_file" ]; then
         echo "    ERROR: no config for deploy '$deploy'"
         echo -e "$label\t0\t0\tFAIL(config)" >> "$RESULTS_FILE"
         return
     fi
-    local log_prefix="/tmp/asan-sanitize-${label}"
+    local log_prefix="${RUNTIME_DIR}/asan-sanitize-${label}"
     rm -f "${log_prefix}."* 2>/dev/null || true
     local output rc
     if output=$(asan_cli "$log_prefix" --config "$config_file" \
@@ -475,13 +479,13 @@ run_chunkio_bench() {
     local extra_args=("$@")
     echo ">>> $label ..."
     local config_file
-    config_file=$(cat "/tmp/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
+    config_file=$(cat "${RUNTIME_DIR}/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
     if [ -z "$config_file" ] || [ ! -f "$config_file" ]; then
         echo "    ERROR: no config for deploy '$deploy'"
         echo -e "$label\t0\t0\tFAIL(config)" >> "$RESULTS_FILE"
         return
     fi
-    local log_prefix="/tmp/asan-sanitize-${label}"
+    local log_prefix="${RUNTIME_DIR}/asan-sanitize-${label}"
     rm -f "${log_prefix}."* 2>/dev/null || true
     local output rc
     if output=$(asan_cli "$log_prefix" --config "$config_file" \
@@ -523,16 +527,16 @@ run_chunkio_bench() {
 # Deploy a standalone RPC echo server under ASan.
 deploy_rpc_server() {
     local name="$1" workers="${2:-1}"
-    local config_file="/tmp/sanitize-reg-${name}.toml"
+    local config_file="${RUNTIME_DIR}/sanitize-reg-${name}.toml"
     echo "=== deploying RPC server '$name' ==="
     rm -f "$config_file"
-    local log_prefix="/tmp/asan-sanitize-deploy-${name}"
+    local log_prefix="${RUNTIME_DIR}/asan-sanitize-deploy-${name}"
     rm -f "${log_prefix}."* 2>/dev/null || true
     local output
     output=$(asan_cli "$log_prefix" --config "$config_file" \
         cluster local-deploy -t rpc \
         --io-engines 1 --io-workers "$workers" 2>&1) || true
-    echo "$config_file" > "/tmp/sanitize-reg-${name}.cfgpath"
+    echo "$config_file" > "${RUNTIME_DIR}/sanitize-reg-${name}.cfgpath"
     local port
     port=$(echo "$output" | grep -oP 'port=\K[0-9]+' | head -1)
     if [ -z "$port" ]; then
@@ -540,7 +544,7 @@ deploy_rpc_server() {
         echo "$output" | tail -5
         return 1
     fi
-    echo "$port" > "/tmp/sanitize-reg-${name}.port"
+    echo "$port" > "${RUNTIME_DIR}/sanitize-reg-${name}.port"
     echo "    RPC server on port=$port"
     local logs
     logs=$(ls "${log_prefix}."* 2>/dev/null || true)
@@ -554,7 +558,7 @@ deploy_rpc_server() {
                 rm -f "$log"
             else
                 echo "    deploy process: UNEXPECTED leak — $summary"
-                mv "$log" "/tmp/sanitize-unexpected-$(basename "$log")"
+                mv "$log" "${RUNTIME_DIR}/sanitize-unexpected-$(basename "$log")"
                 GATE_FAILED=1
             fi
         done
@@ -566,21 +570,21 @@ deploy_rpc_server() {
 teardown_rpc_server() {
     local name="$1"
     local config_file
-    config_file=$(cat "/tmp/sanitize-reg-${name}.cfgpath" 2>/dev/null || echo "")
+    config_file=$(cat "${RUNTIME_DIR}/sanitize-reg-${name}.cfgpath" 2>/dev/null || echo "")
     if [ -n "$config_file" ] && [ -f "$config_file" ]; then
-        local log_prefix="/tmp/asan-sanitize-destroy-${name}"
+        local log_prefix="${RUNTIME_DIR}/asan-sanitize-destroy-${name}"
         rm -f "${log_prefix}."* 2>/dev/null || true
         asan_cli "$log_prefix" --config "$config_file" \
             cluster destroy 2>&1 | tail -2 || true
         if ! check_asan_logs "$log_prefix" "destroy-process"; then
             GATE_FAILED=1
         fi
-        local service_log_prefix="/tmp/asan-sanitize-deploy-${name}"
+        local service_log_prefix="${RUNTIME_DIR}/asan-sanitize-deploy-${name}"
         if ! check_asan_logs "$service_log_prefix" "rpc-server-shutdown"; then
             GATE_FAILED=1
         fi
-        rm -f "$config_file" "/tmp/sanitize-reg-${name}.cfgpath" \
-              "/tmp/sanitize-reg-${name}.port"
+        rm -f "$config_file" "${RUNTIME_DIR}/sanitize-reg-${name}.cfgpath" \
+              "${RUNTIME_DIR}/sanitize-reg-${name}.port"
     fi
 }
 
@@ -590,15 +594,15 @@ run_rpc_bench() {
     local deploy="$1" threads="$2" conn="$3" label="$4"
     echo ">>> $label ..."
     local config_file
-    config_file=$(cat "/tmp/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
+    config_file=$(cat "${RUNTIME_DIR}/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
     local port
-    port=$(cat "/tmp/sanitize-reg-${deploy}.port" 2>/dev/null || echo "")
+    port=$(cat "${RUNTIME_DIR}/sanitize-reg-${deploy}.port" 2>/dev/null || echo "")
     if [ -z "$config_file" ] || [ ! -f "$config_file" ] || [ -z "$port" ]; then
         echo "    ERROR: no config/port for deploy '$deploy'"
         echo -e "$label\t0\t0\tFAIL" >> "$RESULTS_FILE"
         return
     fi
-    local log_prefix="/tmp/asan-sanitize-${label}"
+    local log_prefix="${RUNTIME_DIR}/asan-sanitize-${label}"
     rm -f "${log_prefix}."* 2>/dev/null || true
     local output rc
     if output=$(asan_cli "$log_prefix" --config "$config_file" \
@@ -640,13 +644,13 @@ run_chunkio_read_bench() {
     local deploy="$1" concurrency="$2" label="$3" verb="${4:-read-small}"
     echo ">>> $label ..."
     local config_file
-    config_file=$(cat "/tmp/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
+    config_file=$(cat "${RUNTIME_DIR}/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
     if [ -z "$config_file" ] || [ ! -f "$config_file" ]; then
         echo "    ERROR: no config for deploy '$deploy'"
         echo -e "$label\t0\t0\tFAIL" >> "$RESULTS_FILE"
         return
     fi
-    local log_prefix="/tmp/asan-sanitize-${label}"
+    local log_prefix="${RUNTIME_DIR}/asan-sanitize-${label}"
     rm -f "${log_prefix}."* 2>/dev/null || true
     local output rc
     if output=$(asan_cli "$log_prefix" --config "$config_file" \
@@ -687,13 +691,13 @@ run_chunkio_small_write_bench() {
     local deploy="$1" concurrency="$2" label="$3"
     echo ">>> $label ..."
     local config_file
-    config_file=$(cat "/tmp/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
+    config_file=$(cat "${RUNTIME_DIR}/sanitize-reg-${deploy}.cfgpath" 2>/dev/null || echo "")
     if [ -z "$config_file" ] || [ ! -f "$config_file" ]; then
         echo "    ERROR: no config for deploy '$deploy'"
         echo -e "$label\t0\t0\tFAIL" >> "$RESULTS_FILE"
         return
     fi
-    local log_prefix="/tmp/asan-sanitize-${label}"
+    local log_prefix="${RUNTIME_DIR}/asan-sanitize-${label}"
     rm -f "${log_prefix}."* 2>/dev/null || true
     local output rc
     if output=$(asan_cli "$log_prefix" --config "$config_file" \

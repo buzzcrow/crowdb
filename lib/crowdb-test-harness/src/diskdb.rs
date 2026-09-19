@@ -185,6 +185,9 @@ interval_secs = 2
             .stderr(Stdio::from(log_file2));
 
         let child = cmd.spawn().expect("start crowdb-diskdb");
+        runtime
+            .record_process(child.id())
+            .unwrap_or_else(|error| panic!("record DiskDB process: {error}"));
         eprintln!("crowdb-diskdb log: {}", log_path.display());
 
         Self {

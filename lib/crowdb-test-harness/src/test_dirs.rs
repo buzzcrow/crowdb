@@ -149,6 +149,11 @@ impl TestRuntime {
         self.namespace.assign_named_port(service, identity)
     }
 
+    /// Record a child process for targeted runtime cleanup.
+    pub fn record_process(&mut self, pid: u32) -> Result<(), RuntimeNamespaceError> {
+        self.namespace.record_process(pid)
+    }
+
     /// Preserve the namespace tree after this guard is dropped.
     #[must_use]
     pub fn keep(mut self) -> PathBuf {
@@ -174,7 +179,7 @@ pub struct TestDir {
 }
 
 impl TestDir {
-    /// Create a new unique directory under `test-data/`.
+    /// Create a new unique directory under the ephemeral runtime root.
     ///
     /// # Errors
     /// Returns `io::Error` if `create_dir_all` fails.
@@ -209,7 +214,7 @@ impl Drop for TestDir {
     }
 }
 
-/// Create a [`TestDir`] under `test-data/` with the given tag.
+/// Create a [`TestDir`] under the ephemeral runtime root with the given tag.
 /// Convenience wrapper for `TestDir::new(tag).unwrap()`.
 ///
 /// # Panics

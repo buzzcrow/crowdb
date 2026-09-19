@@ -25,6 +25,7 @@ design is detailed in the sub-design `design-crowdb-console-ui.md`.
   - [4.1 Persisted state (config file)](#41-persisted-state-config-file)
   - [4.2 Monitor task](#42-monitor-task)
   - [4.3 Persistent Cluster Config](#43-persistent-cluster-config)
+  - [4.4 Local runtime namespace](#44-local-runtime-namespace)
 - [5. Node Access Model](#5-node-access-model)
   - [5.1 Two transports per node](#51-two-transports-per-node)
   - [5.2 SSH defaults (russh)](#52-ssh-defaults-russh)
@@ -62,12 +63,11 @@ design is detailed in the sub-design `design-crowdb-console-ui.md`.
 - Authentication, authorization, multi-tenancy, audit logging.
 - Persisting console state beyond local config files.
 
-Local deployments use one stable directory per server process:
-`rack<id>/node<id>/<service>-<server-id>/`. Each server owns its `bin/`,
-`conf/`, and `log/` directories. KV servers additionally keep `waldata/`
-and `ctdata/` directly under the server directory. Process IDs belong in
-log filenames and persisted runtime state, not directory names, so a restart
-continues to use the same server directory.
+Local deployments use one stable directory per logical server below their
+runtime namespace. Each server owns its `data/`, `config/`, `log/`, and
+`artifacts/` directories. Process IDs are recorded as live-process ownership,
+not used as logical directory identities, so restart continues to use the same
+server directory and port assignments.
 
 The default simulated topology is one rack containing all requested nodes.
 Benchmarks that need distinct failure domains create additional racks
@@ -219,7 +219,8 @@ Identity is `(store_id[, group_id[, replica_id]])`.
 
 ### 4.1 Persisted state (config file)
 
-- Single TOML file: `~/.lib/crowdb-kv/console.toml` (override with `$CROWDB_CONSOLE_CONFIG`).
+- Single TOML file: `.crowdb-runtime/persistent/console/crowdb-kv.db.toml`
+  (override with `$CROWDB_CONSOLE_CONFIG`).
 - Contents:
   - `rack` / `node` entries (id, rack_id, host, SSH creds).
   - Optional per-node server deployment record: management endpoint,
@@ -329,6 +330,28 @@ command's invocation directory.
   reconfiguration (direct HTTP mutation + `membership_epoch` fence).
   No new consensus primitive required.
 
+### 4.4 Local runtime namespace
+
+The default local root is `.crowdb-runtime/`, divided into `ephemeral/`,
+`persistent/`, `artifacts/`, and `ports/`. A mini-cluster or retained console
+deployment is one persistent namespace. Its manifest stores the namespace
+identity and the mapping from each `(service kind, logical instance)` to a
+port. Service paths live below
+`services/<service>/<logical-instance>/{data,config,log,artifacts}`.
+
+`start_new` creates an identity and its assignments. `restart` reuses the
+same paths and assignments and never asks for replacement ports. `stop`
+terminates recorded processes while preserving the manifest and data.
+Deletion is the only operation that releases persistent claims and removes
+the namespace. If a recorded port is held by another owner, restart reports
+the conflict; it does not silently select a different endpoint.
+
+Disposable deployment and E2E fixtures use ephemeral namespaces with the
+same layout. All local CROWDB data, generated configuration, logs, benchmark
+output, and coordination state stay below this root; no default path uses the
+system temporary directory. Ordinary clean operations preserve persistent
+namespaces.
+
 ## 5. Node Access Model
 
 ### 5.1 Two transports per node
@@ -348,7 +371,8 @@ command's invocation directory.
 **SSH credential storage lifecycle** — two phases:
 
 - **Bootstrap phase** (before group 0 exists) — SSH creds are stored
-  in the shared TOML config file `runtime-data/crowdb.temp.toml`
+  in the shared TOML config file below
+  `.crowdb-runtime/persistent/console/`
   (via `TomlFileEngine::default_path()` in
   `lib/crowdb-console-shared/src/config.rs`). This file stores
   rack/node/server/store/group/disk-group/disk entries, with SSH creds
@@ -374,7 +398,8 @@ command's invocation directory.
 
 **Local-fork path** (`ssh_user` empty, for tests/dev on `127.0.0.1`):
 1. `tokio::process::Command::new(crowdb-kv-server)` with the same args.
-2. Stage the binary into a per-node workspace directory (`runtime-data/N-<node_id>/`).
+2. Stage the binary into the node's stable service directory in the runtime
+   namespace.
 3. Detach the child (do not kill on drop); track the pid.
 4. Health-check via `/health`.
 
@@ -700,7 +725,8 @@ deploy metadata:
   3-node cluster via `BenchFixture` (embedded console-web), then
   detaches the fixture so the `crowdb-kv-server` processes survive CLI
   exit. The deploy metadata (node pids, endpoints, tunables) is
-  serialized to `runtime/<name>/handle.json` (`ClusterHandle`). The
+  serialized below `.crowdb-runtime/persistent/bench/<name>/handle.json`
+  (`ClusterHandle`). The
   `--kind` flag dispatches to kv (default), rpc (spawns
   `crowdb-rpc-fb-server`), or chunk/storage (not yet implemented).
 - **`bench prepare --target <n> --keys N`** — loads handle, builds a
@@ -710,7 +736,7 @@ deploy metadata:
 - **`bench run --target <n> --workload read ...`** — loads handle,
   builds an `AttachedKvTarget` (implements `BenchTarget` with no-op
   provision/cleanup), and calls the shared `run_bench` runner. Reports
-  go to `runtime/<name>/runs/<timestamp>/`. The cluster stays running
+  go to that namespace's `artifacts/runs/<timestamp>/`. The cluster stays running
   after the run — multiple `bench run` invocations can attach to the
   same deploy.
 - **`bench teardown --target <n>`** — loads handle, SIGTERMs the node
@@ -724,8 +750,8 @@ sentinel accepts environment overrides for case selection and duration; KV
 read, write, and scan also accept a reduced keyspace. These controls provide a
 short structural smoke without changing the default regression matrix.
 
-`ClusterHandle` is a runtime artifact (JSON under `runtime/`), not a
-config extension. The `runtime/` directory is gitignored. The
+`ClusterHandle` is persistent namespace metadata, not a config extension. The
+single `.crowdb-runtime/` root is gitignored. The
 `crowdb-kv-server` child processes survive CLI exit because
 `lifecycle::deploy_local` spawns them with `kill_on_drop(false)`.
 
@@ -877,7 +903,7 @@ depends on a `crowdb-web` endpoint. The flow:
 3. **Destroy group 0** — tear down group-0/store-0 itself (last, after
    all user resources are gone).
 4. **Delete topology** — remove all nodes and racks from
-   `runtime-data/crowdb.temp.toml`.
+   the persistent console configuration.
 5. **Fast path** — if group 0 is not created (e.g. `cluster init`
    failed or was never run), skip steps 1-3 and use the TOML config
    info (rack/node entries) to clean up any stray processes and clear

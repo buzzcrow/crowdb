@@ -152,6 +152,12 @@ fn prepare_runtime(
     (port, service_root.join("log").join("diskio.log"))
 }
 
+fn record_child(runtime: &mut crate::test_dirs::TestRuntime, child: &std::process::Child) {
+    runtime
+        .record_process(child.id())
+        .unwrap_or_else(|error| panic!("record DiskIO process: {error}"));
+}
+
 impl DiskioProcess {
     pub fn log_content(&self) -> String {
         std::fs::read_to_string(&self.log_path).unwrap_or_default()
@@ -246,6 +252,7 @@ impl DiskioProcess {
         }
 
         let mut child = cmd.spawn().expect("start crowdb-diskio");
+        record_child(runtime, &child);
         eprintln!("crowdb-diskio ({}) log: {}", opts.dummy_disk, log_path.display());
 
         let observed_port = {

@@ -25,14 +25,14 @@
 #   8 KiB        4     4,305.08     33.6       541      9,980     352,321,536
 #   8 KiB       32    12,812.89    100.1       772     25,816     520,093,696
 #   8 KiB      128    32,430.72    253.4     1,141     29,215     306,184,192
-# Results: bench-log/chunkio-small-write-20260910-103318. The 8 KiB 256-thread
+# Results: .crowdb-runtime/artifacts/bench/chunkio-small-write-20260910-103318. The 8 KiB 256-thread
 # case is excluded (7 batch watchdog expirations at extreme concurrency).
 # Historical A/B baseline (60s, mirror vs EC): EC/mirror ratios were 100.23%
-# (32t) and 92.01% (128t). Sources: bench-log/chunkio-small-write-20260910-081757
-# and bench-log/chunkio-small-write-128-repro-20260910.
+# (32t) and 92.01% (128t). Sources: .crowdb-runtime/artifacts/bench/chunkio-small-write-20260910-081757
+# and .crowdb-runtime/artifacts/bench/chunkio-small-write-128-repro-20260910.
 # A fresh-deployment lifecycle verification passed all ten 20-second cases;
 # every KV process began at 0.16 GiB RSS and exited before the next case.
-# Source: bench-log/chunkio-small-write-rss-reset-20260910.
+# Source: .crowdb-runtime/artifacts/bench/chunkio-small-write-rss-reset-20260910.
 #
 # Intel i9-7960X (2026-09-10, same hw, rerun later same day):
 #   Same build/config as the 2026-09-10 reference. All ten cases passed
@@ -70,7 +70,7 @@ DISKIO_CONNECTIONS="${CHUNKIO_SMALL_BENCH_DISKIO_CONNECTIONS:-8}"
 DISKIO_RPC_WORKERS="${CHUNKIO_SMALL_BENCH_DISKIO_RPC_WORKERS:-4}"
 SERVER_RPC_WORKERS="${CHUNKIO_SMALL_BENCH_SERVER_RPC_WORKERS:-}"
 RUN_STAMP=$(date +%Y%m%d-%H%M%S)
-LOG_ROOT="${CHUNKIO_SMALL_BENCH_LOG_ROOT:-$(pwd)/bench-log/chunkio-small-write-$RUN_STAMP}"
+LOG_ROOT="${CHUNKIO_SMALL_BENCH_LOG_ROOT:-${CROWDB_RUNTIME_ROOT:-$(pwd)/.crowdb-runtime}/artifacts/bench/chunkio-small-write-$RUN_STAMP}"
 RESULTS_FILE="${CHUNKIO_SMALL_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
 REGRESSION_LOG_ROOT="$LOG_ROOT"
 source tools/bench-regression-common.sh

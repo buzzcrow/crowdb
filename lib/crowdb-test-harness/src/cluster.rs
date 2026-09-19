@@ -281,6 +281,11 @@ impl KvCluster {
     }
 
     /// Runtime owner shared by every service in this test environment.
+    pub fn runtime(&self) -> &crate::test_dirs::TestRuntime {
+        &self.runtime
+    }
+
+    /// Mutable runtime owner shared by every service in this test environment.
     pub fn runtime_mut(&mut self) -> &mut crate::test_dirs::TestRuntime {
         &mut self.runtime
     }
@@ -290,10 +295,14 @@ impl KvCluster {
     /// The test data roots remain owned by the cluster, so WAL and tree state
     /// are recovered instead of recreated.
     pub async fn crash_and_restart(&mut self) {
-        for node in &mut self.nodes {
-            node.crash_and_restart()
+        for index in 0..self.nodes.len() {
+            self.nodes[index]
+                .crash_and_restart()
                 .await
-                .unwrap_or_else(|error| panic!("restart kv node {}: {error}", node.node_id));
+                .unwrap_or_else(|error| panic!("restart kv node {}: {error}", self.nodes[index].node_id));
+            self.runtime
+                .record_process(self.nodes[index].handle.child.id())
+                .unwrap_or_else(|error| panic!("record restarted kv node: {error}"));
         }
         wire_topology(&self.nodes, 0).await;
         wire_topology(&self.nodes, 1).await;
@@ -370,6 +379,7 @@ async fn start_kv_node_with_groups(
         .assign_port(ServicePort::KvServerListen, instance)
         .map_err(std_io::Error::other)?;
     let (child, base_url) = spawn_kv_process(&root, node_id, group_ids, replica_id, mgmt_port, listen_port)?;
+    runtime.record_process(child.id()).map_err(std_io::Error::other)?;
     let handle = ServerHandle {
         child,
         base_url,

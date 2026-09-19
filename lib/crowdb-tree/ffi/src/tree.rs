@@ -534,9 +534,9 @@ pub fn ct_add_log_stderr(level: &str) {
 static TEST_LOGGING_INIT: Once = Once::new();
 
 /// Initialize C++ spdlog to write to a per-process directory under
-/// `<workspace_root>/test-logs/`. Idempotent (guarded by `Once`); safe
+/// `<workspace_root>/.crowdb-runtime/ephemeral/`. Idempotent (guarded by `Once`); safe
 /// to call from every test. Redirects C++ tree/engine logs to files
-/// under `test-logs/crowdb-tree-test-<pid>/` instead of stderr. Error-
+/// under the process runtime namespace instead of stderr. Error-
 /// level messages are also mirrored to stderr so they are visible in CI
 /// output for debugging. No-op when the C++ build was compiled without
 /// `CROWDB_HAVE_SPDLOG`.
@@ -562,9 +562,13 @@ fn workspace_root() -> std::path::PathBuf {
     dir
 }
 
-/// `<workspace_root>/test-logs/` — created if it does not exist.
+/// Process-local log root below the workspace runtime namespace.
 fn test_log_dir() -> std::path::PathBuf {
-    let dir = workspace_root().join("test-logs");
+    let dir = workspace_root()
+        .join(".crowdb-runtime")
+        .join("ephemeral")
+        .join(format!("legacy-process-{}", std::process::id()))
+        .join("log");
     let _ = std::fs::create_dir_all(&dir);
     dir
 }

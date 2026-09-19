@@ -36,6 +36,8 @@ pub enum ServiceArg {
     DiskioRpc,
     #[value(name = "web")]
     Web,
+    #[value(name = "access-http")]
+    AccessHttp,
 }
 
 impl From<ServiceArg> for ServicePort {
@@ -51,6 +53,7 @@ impl From<ServiceArg> for ServicePort {
             ServiceArg::ChunkdbRpc => Self::ChunkdbRpc,
             ServiceArg::DiskioRpc => Self::DiskioRpc,
             ServiceArg::Web => Self::Web,
+            ServiceArg::AccessHttp => Self::AccessServerHttp,
         }
     }
 }
@@ -58,8 +61,8 @@ impl From<ServiceArg> for ServicePort {
 /// Port-alloc arguments. Mirrors the former `crowdb-port-alloc` CLI.
 #[derive(Args, Debug)]
 pub struct PortAllocArgs {
-    /// Workspace root directory (claim file lives under
-    /// `<root>/.crowdb-port-alloc/claims`). Default: current directory.
+    /// Compatibility allocator root. Prefer namespace-owned assignments for
+    /// subprocesses and persistent clusters.
     #[arg(long)]
     pub root: Option<PathBuf>,
 
@@ -78,6 +81,11 @@ pub struct PortAllocArgs {
     /// Number of consecutive ports to allocate. Default: 1.
     #[arg(long, default_value_t = 1)]
     pub count: u16,
+
+    /// Live runner PID that owns the claims. Intended for E2E allocators whose
+    /// CLI subprocess exits immediately after printing the assigned ports.
+    #[arg(long)]
+    pub owner_pid: Option<u32>,
 
     /// Delete the claim file and exit.
     #[arg(long)]
@@ -120,7 +128,25 @@ pub fn run(args: &PortAllocArgs) -> ExitCode {
             eprintln!("error: --service is required (unless --reset or --mark-failed)");
             return ExitCode::FAILURE;
         };
-        if args.count <= 1 {
+        if let Some(owner_pid) = args.owner_pid {
+            match crowdb_protocol::port::namespace::assign_owned_process_ports(
+                service,
+                args.instance,
+                args.count,
+                owner_pid,
+            ) {
+                Ok(ports) => {
+                    for port in ports {
+                        println!("{port}");
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        } else if args.count <= 1 {
             match port_alloc::alloc_port(service, args.instance, &cfg) {
                 Ok(port) => {
                     println!("{port}");

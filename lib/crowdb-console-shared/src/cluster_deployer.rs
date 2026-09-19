@@ -16,7 +16,7 @@
 
 use std::time::{Duration, Instant};
 
-use crowdb_protocol::port::alloc::{self as port_alloc, PortAllocConfig};
+use crowdb_protocol::port::namespace::assign_process_ports;
 use crowdb_protocol::ServicePort;
 
 use crate::clients::console::{
@@ -351,21 +351,16 @@ impl CrowdbClusterDeployer {
         nodes: &[NodeId],
         topo: &TopologyDescriptor,
     ) -> Result<Vec<NodeInfo>> {
-        let port_cfg = PortAllocConfig::default();
         let n = u16::try_from(nodes.len()).unwrap_or(u16::MAX);
         let rest_ports =
-            port_alloc::alloc_port_range(ServicePort::KvServerMgmt, 0, n, &port_cfg).map_err(|e| {
-                Error::Validation {
-                    field: "port_alloc".into(),
-                    message: e.to_string(),
-                }
+            assign_process_ports(ServicePort::KvServerMgmt, 0, n).map_err(|e| Error::Validation {
+                field: "port_alloc".into(),
+                message: e.to_string(),
             })?;
         let rpc_ports =
-            port_alloc::alloc_port_range(ServicePort::KvServerListen, 0, n, &port_cfg).map_err(|e| {
-                Error::Validation {
-                    field: "port_alloc".into(),
-                    message: e.to_string(),
-                }
+            assign_process_ports(ServicePort::KvServerListen, 0, n).map_err(|e| Error::Validation {
+                field: "port_alloc".into(),
+                message: e.to_string(),
             })?;
         let mut deploy_handles = Vec::with_capacity(nodes.len());
         for (i, &node_id) in nodes.iter().enumerate() {
@@ -467,26 +462,21 @@ impl CrowdbClusterDeployer {
     ) -> Result<Vec<DiskdbInfo>> {
         let mut diskdb_instances = Vec::new();
         if topo.deploy_diskdb {
-            let port_cfg = PortAllocConfig::default();
             let n = u16::try_from(nodes.len()).unwrap_or(u16::MAX);
-            let listen_ports = port_alloc::alloc_port_range(ServicePort::DiskdbListen, 0, n, &port_cfg)
-                .map_err(|e| Error::Validation {
+            let listen_ports =
+                assign_process_ports(ServicePort::DiskdbListen, 0, n).map_err(|e| Error::Validation {
                     field: "port_alloc".into(),
                     message: e.to_string(),
                 })?;
             let http_ports =
-                port_alloc::alloc_port_range(ServicePort::DiskdbHttp, 0, n, &port_cfg).map_err(|e| {
-                    Error::Validation {
-                        field: "port_alloc".into(),
-                        message: e.to_string(),
-                    }
+                assign_process_ports(ServicePort::DiskdbHttp, 0, n).map_err(|e| Error::Validation {
+                    field: "port_alloc".into(),
+                    message: e.to_string(),
                 })?;
             let rpc_ports =
-                port_alloc::alloc_port_range(ServicePort::DiskdbRpc, 0, n, &port_cfg).map_err(|e| {
-                    Error::Validation {
-                        field: "port_alloc".into(),
-                        message: e.to_string(),
-                    }
+                assign_process_ports(ServicePort::DiskdbRpc, 0, n).map_err(|e| Error::Validation {
+                    field: "port_alloc".into(),
+                    message: e.to_string(),
                 })?;
             for (i, &node_id) in nodes.iter().enumerate() {
                 let rpc_port = rpc_ports[i];

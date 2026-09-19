@@ -8,6 +8,7 @@
 // 2. Good-disk isolation: a slow disk doesn't block a good disk.
 // 3. Cancellation frees SQ slots.
 // 4. BlockingEngine backpressure analog: more jobs than threads.
+#include "crowdb-common/runtime_path.h"
 #include "disk/block_disk.h"
 #include "disk/types.h"
 #include "engine/blocking/blocking_engine.h"
@@ -38,12 +39,9 @@ namespace
 
 std::string temp_file(int64_t size)
 {
-    const char *root = getenv("TMPDIR");
-    if (root == nullptr) {
-        root = "/tmp";
-    }
-    char tmpl[128];
-    std::snprintf(tmpl, sizeof(tmpl), "%s/dx_XXXXXX", root);
+    const std::string root = crowdb::common::test_runtime_path("crowdb-diskio-sq-full").string();
+    char              tmpl[128];
+    std::snprintf(tmpl, sizeof(tmpl), "%s/dx_XXXXXX", root.c_str());
     std::vector<char> buf(tmpl, tmpl + std::strlen(tmpl) + 1);
     int               fd = mkstemp(buf.data());
     if (fd >= 0) {

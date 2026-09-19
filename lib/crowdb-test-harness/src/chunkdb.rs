@@ -280,6 +280,9 @@ lock_hold_warn_threshold_ms = 1000
             .stderr(Stdio::from(log_file2));
 
         let child = cmd.spawn().expect("start crowdb-chunkdb");
+        runtime
+            .record_process(child.id())
+            .unwrap_or_else(|error| panic!("record ChunkDB process: {error}"));
         eprintln!("crowdb-chunkdb log: {}", log_path.display());
 
         Self {

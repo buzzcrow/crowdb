@@ -7,7 +7,9 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 build_dir="$repo_root/lib/crowdb-tree/build"
 fixture_dir="$repo_root/tools/tree-link-isolation"
-probe_dir=$(mktemp -d)
+probe_dir="$repo_root/.crowdb-runtime/ephemeral/tree-link-isolation-$$"
+rm -rf "$probe_dir"
+mkdir -p "$probe_dir"
 trap 'rm -rf "$probe_dir"' EXIT
 
 cmake -S "$repo_root/lib/crowdb-tree" -B "$build_dir" -DCMAKE_BUILD_TYPE=Release

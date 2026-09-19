@@ -25,7 +25,7 @@ roots without using the system temporary directory.
   `.crowdb-runtime/{ephemeral,persistent,artifacts,ports}` roots and a versioned
   namespace manifest with per-service directories. Files: protocol/test-harness
   runtime modules and tests.
-- [~] **Make claims owner-aware**: move tests to the workspace-global registry,
+- [x] **Make claims owner-aware**: move tests to the workspace-global registry,
   record namespace owner plus process-start identity, atomically reclaim dead
   ephemeral claims, and retain persistent claims. Files: protocol port
   allocator and tests.
@@ -43,7 +43,9 @@ roots without using the system temporary directory.
   start, restart, and replacement. Files: test-harness service modules.
 - [~] **Migrate harness consumers**: update process-spawning tests in KV server,
   DiskDB, ChunkDB, access-server, console-shared, CLI, and web; retain port zero
-  only when an in-process listener owns the bound socket. Files: Rust E2E tests.
+  only when an in-process listener owns the bound socket. The compatibility
+  test allocator uses the owner-aware registry; persistent console callers are
+  completed with the Phase 3 task. Files: Rust E2E tests.
 
 ## Phase 3: Persistent and local deployments
 
@@ -51,36 +53,39 @@ roots without using the system temporary directory.
   local cluster records; stop preserves them, restart validates/reuses them,
   and deletion or explicit release removes them. Files: console-shared cluster
   and S3 lifecycle, CLI adapters, tests.
-- [ ] **Unify default local paths**: migrate console, web, benchmarks, CLI logs,
+- [x] **Unify default local paths**: migrate console, web, benchmarks, CLI logs,
   and local service defaults from `runtime-data`, `log`, `cli-log`, and
   `temp-data` into the appropriate runtime namespace class. Files: console/web
   config and deployment modules, benchmark scripts and tests.
 
 ## Phase 4: Non-Rust producers and cleanup
 
-- [ ] **Migrate C++ test paths**: route tree, RPC, common, and DiskIO test data
+- [x] **Migrate C++ test paths**: route tree, RPC, common, and DiskIO test data
   and logs through the workspace runtime root; remove hard-coded system-temp
   paths while keeping failed-run diagnostics. Files: C++ test helpers and
   runners.
-- [ ] **Migrate tools**: replace sanitizer, profiling, regression, and helper
+- [x] **Migrate tools**: replace sanitizer, profiling, regression, and helper
   `/tmp` files with namespaced workspace artifacts. Files: `tools/` scripts and
   pixi task environment.
-- [ ] **Consolidate ignore rules**: ignore `.crowdb-runtime/` and remove obsolete
+- [x] **Consolidate ignore rules**: ignore `.crowdb-runtime/` and remove obsolete
   generated-path entries only after their producers are migrated. Files:
   `.gitignore`.
-- [ ] **Make cleanup manifest-driven**: make `clean-env` terminate recorded
+- [x] **Make cleanup manifest-driven**: make `clean-env` terminate recorded
   ephemeral processes and remove ephemeral/stale resources; make `clean`
   preserve persistent namespaces and remove filename-pattern and `/tmp` sweeps.
   Files: `pixi.toml`, cleanup helper and tests.
 
 ## Phase 5: Design, gates, and closure
 
-- [ ] **Update permanent design**: document runtime ownership, stable restart,
+- [x] **Update permanent design**: document runtime ownership, stable restart,
   persistent conflict behavior, workspace locality, and cleanup safety as
   current architecture. Files: test strategy and console design.
-- [ ] **Run acceptance and quality gates**: protocol, harness, console, CLI,
+- [~] **Run acceptance and quality gates**: protocol, harness, console, CLI,
   web, named boto3 suite, clean behavior, fmt, clippy, and `rs-lint`; investigate
-  failures from first divergence under the requirement retry rules.
+  failures from first divergence under the requirement retry rules. Current
+  evidence passes all listed gates, including the 17-case S3 suite and
+  manifest-driven `clean-env`; rerun the affected persistent CLI cases after
+  Phase 3 lands.
 - [ ] **Close requirement**: remove the backlog entry, R176 detail, and this
   plan after all acceptance evidence passes.
 
@@ -104,3 +109,10 @@ roots without using the system temporary directory.
   ordinary clean.
 - E2E: parallel process-spawning suites, S3 17-case full stack, persistent CLI
   stop/restart CRUD, and cleanup tasks with seeded ephemeral/persistent roots.
+
+## Open Issues
+
+- Persistent console deployment still uses its retained cluster record as the
+  restart authority while some first-start port selection goes through the
+  compatibility allocator. Phase 3 will move those assignments into the
+  namespace manifest and add explicit namespace release to cluster deletion.

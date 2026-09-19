@@ -76,16 +76,10 @@ fn epoch_to_local(millis: u128) -> (u32, u32, u32, u32, u32, u32, u32) {
 }
 
 fn tempdir(tag: &str) -> PathBuf {
-    // Use a fixed `test-logs/` directory inside the project root so logs,
-    // WAL files, and config persist for inspection after test runs.
+    // Preserve logs, WAL files, and config below the ephemeral runtime class.
     // A timestamp postfix prevents conflicts when the same test is run twice
     // in parallel (e.g. from different terminals).
-    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("test-logs");
+    let base = crowdb_test_harness::test_dirs::ephemeral_root().join("web-e2e");
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -736,7 +730,7 @@ async fn restart_recovery(
     std::env::set_var("CROWDB_KV_WAL_TEXT", "1");
 
     let mut cluster = setup_cluster(tag, rack_nodes, &bin, election_profile).await;
-    eprintln!("test-logs: {}", cluster.dir.display());
+    eprintln!("runtime logs: {}", cluster.dir.display());
 
     // Step 0: Initialize the system group so non-zero stores can be created.
     // Retry with backoff — a node's KV server may fail to bind its RPC

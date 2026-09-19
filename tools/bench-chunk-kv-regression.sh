@@ -17,7 +17,7 @@ LOAD_TIMEOUT_SECS="${CHUNK_KV_BENCH_LOAD_TIMEOUT:-$TIMEOUT_SECS}"
 READY_TIMEOUT_SECS="${CHUNK_KV_BENCH_READY_TIMEOUT:-$TIMEOUT_SECS}"
 SKIP_BUILD="${CHUNK_KV_BENCH_SKIP_BUILD:-0}"
 RUN_STAMP=$(date +%Y%m%d-%H%M%S)
-LOG_ROOT="${CHUNK_KV_BENCH_LOG_ROOT:-$(pwd)/bench-log/chunk-kv-regression-$RUN_STAMP}"
+LOG_ROOT="${CHUNK_KV_BENCH_LOG_ROOT:-${CROWDB_RUNTIME_ROOT:-$(pwd)/.crowdb-runtime}/artifacts/bench/chunk-kv-regression-$RUN_STAMP}"
 RESULTS_FILE="${CHUNK_KV_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
 REGRESSION_LOG_ROOT="$LOG_ROOT"
 source tools/bench-regression-common.sh
@@ -73,7 +73,7 @@ fi
 
 mkdir -p "$LOG_ROOT"
 regression_init
-stop_auxiliary_processes "^$(pwd)/bench-log/chunk-kv-regression-.*/cli-cluster-local-deploy-.*/deploy/.*bin/crowdb-(chunkdb|diskdb|diskio)"
+stop_auxiliary_processes "^${CROWDB_RUNTIME_ROOT:-$(pwd)/.crowdb-runtime}/artifacts/bench/chunk-kv-regression-.*/cli-cluster-local-deploy-.*/deploy/.*bin/crowdb-(chunkdb|diskdb|diskio)"
 DEPLOYED=0
 for attempt in 1 2 3; do
     REGRESSION_CONFIG="$LOG_ROOT/console-attempt-$attempt.toml"

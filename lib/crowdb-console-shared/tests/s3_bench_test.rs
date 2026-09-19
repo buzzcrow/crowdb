@@ -4,6 +4,7 @@
 use std::time::Duration;
 
 use crowdb_console_shared::ops::s3_bench::{self, MixWeights, S3BenchConfig, S3BenchWorkload};
+use crowdb_test_harness::test_dirs::TestDir;
 
 #[test]
 fn mixed_weights_are_case_insensitive_and_deterministic() {
@@ -35,10 +36,8 @@ fn mixed_weights_reject_ambiguous_or_invalid_terms() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "starts the complete memory-backed storage and S3 process stack"]
 async fn memory_mix_exercises_every_s3_operation() {
-    let work_dir = std::env::temp_dir().join(format!("crowdb-s3-memory-bench-e2e-{}", std::process::id()));
-    if work_dir.exists() {
-        std::fs::remove_dir_all(&work_dir).expect("remove stale work dir");
-    }
+    let runtime = TestDir::new("s3-memory-bench").expect("create benchmark runtime");
+    let work_dir = runtime.path().to_path_buf();
     let result = s3_bench::run(S3BenchConfig {
         work_dir,
         workload: S3BenchWorkload::Mix,

@@ -72,16 +72,15 @@ jobs:
         ps aux | grep -E 'crowdb|cargo' | grep -v grep || true
         echo "=== Disk space ==="
         df -h
-        echo "=== /tmp crowdb files ==="
-        ls -la /tmp/crowdb* 2>/dev/null || true
+        echo "=== CROWDB runtime files ==="
+        find .crowdb-runtime -maxdepth 4 -type f -print 2>/dev/null || true
     - name: Upload test logs on failure
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: test-logs-cpp-${{ github.run_attempt }}
+        name: runtime-cpp-${{ github.run_attempt }}
         path: |
-          test-logs/
-          /tmp/crowdb-*
+          .crowdb-runtime/
         if-no-files-found: ignore
         retention-days: 7
 
@@ -118,16 +117,15 @@ jobs:
         ps aux | grep -E 'crowdb|cargo' | grep -v grep || true
         echo "=== Disk space ==="
         df -h
-        echo "=== /tmp crowdb files ==="
-        ls -la /tmp/crowdb* 2>/dev/null || true
+        echo "=== CROWDB runtime files ==="
+        find .crowdb-runtime -maxdepth 4 -type f -print 2>/dev/null || true
     - name: Upload test logs on failure
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: test-logs-unit-${{ github.run_attempt }}
+        name: runtime-unit-${{ github.run_attempt }}
         path: |
-          test-logs/
-          /tmp/crowdb-*
+          .crowdb-runtime/
         if-no-files-found: ignore
         retention-days: 7
 
@@ -164,16 +162,15 @@ jobs:
         ps aux | grep -E 'crowdb|cargo' | grep -v grep || true
         echo "=== Disk space ==="
         df -h
-        echo "=== /tmp crowdb files ==="
-        ls -la /tmp/crowdb* 2>/dev/null || true
+        echo "=== CROWDB runtime files ==="
+        find .crowdb-runtime -maxdepth 4 -type f -print 2>/dev/null || true
     - name: Upload test logs on failure
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: test-logs-server-${{ github.run_attempt }}
+        name: runtime-server-${{ github.run_attempt }}
         path: |
-          test-logs/
-          /tmp/crowdb-*
+          .crowdb-runtime/
         if-no-files-found: ignore
         retention-days: 7
     - name: Clean subprocesses
@@ -211,16 +208,15 @@ jobs:
         ps aux | grep -E 'crowdb|cargo' | grep -v grep || true
         echo "=== Disk space ==="
         df -h
-        echo "=== /tmp crowdb files ==="
-        ls -la /tmp/crowdb* 2>/dev/null || true
+        echo "=== CROWDB runtime files ==="
+        find .crowdb-runtime -maxdepth 4 -type f -print 2>/dev/null || true
     - name: Upload test logs on failure
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: test-logs-s3-e2e-${{ github.run_attempt }}
+        name: runtime-s3-e2e-${{ github.run_attempt }}
         path: |
-          test-logs/
-          /tmp/crowdb-*
+          .crowdb-runtime/
         if-no-files-found: ignore
         retention-days: 7
     - name: Clean subprocesses
@@ -262,16 +258,15 @@ jobs:
         ps aux | grep -E 'crowdb|cargo' | grep -v grep || true
         echo "=== Disk space ==="
         df -h
-        echo "=== /tmp crowdb files ==="
-        ls -la /tmp/crowdb* 2>/dev/null || true
+        echo "=== CROWDB runtime files ==="
+        find .crowdb-runtime -maxdepth 4 -type f -print 2>/dev/null || true
     - name: Upload test logs on failure
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: test-logs-console-${{ github.run_attempt }}
+        name: runtime-console-${{ github.run_attempt }}
         path: |
-          test-logs/
-          /tmp/crowdb-*
+          .crowdb-runtime/
         if-no-files-found: ignore
         retention-days: 7
     - name: Clean subprocesses
@@ -316,16 +311,15 @@ jobs:
         ps aux | grep -E 'crowdb|cargo' | grep -v grep || true
         echo "=== Disk space ==="
         df -h
-        echo "=== /tmp crowdb files ==="
-        ls -la /tmp/crowdb* 2>/dev/null || true
+        echo "=== CROWDB runtime files ==="
+        find .crowdb-runtime -maxdepth 4 -type f -print 2>/dev/null || true
     - name: Upload test logs on failure
       if: failure()
       uses: actions/upload-artifact@v4
       with:
-        name: test-logs-ui-${{ github.run_attempt }}
+        name: runtime-ui-${{ github.run_attempt }}
         path: |
-          test-logs/
-          /tmp/crowdb-*
+          .crowdb-runtime/
         if-no-files-found: ignore
         retention-days: 7
     - name: Upload Playwright report on failure

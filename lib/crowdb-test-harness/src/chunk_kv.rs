@@ -117,6 +117,9 @@ metadata_group_id = 1
             .stderr(Stdio::from(log_error))
             .spawn()
             .expect("start crowdb-chunk-kv-server");
+        runtime
+            .record_process(child.id())
+            .unwrap_or_else(|error| panic!("record Chunk-KV process: {error}"));
         eprintln!("crowdb-chunk-kv-server log: {}", log_path.display());
         Self {
             child,
@@ -163,6 +166,23 @@ metadata_group_id = 1
 
     /// Restart the same logical server with its original identity and ports.
     pub async fn restart(&mut self) {
+        self.restart_child().await;
+        if let Some(runtime) = &mut self.runtime {
+            runtime
+                .record_process(self.child.id())
+                .unwrap_or_else(|error| panic!("record restarted Chunk-KV process: {error}"));
+        }
+    }
+
+    /// Restart a server that belongs to a caller-owned shared namespace.
+    pub async fn restart_in(&mut self, runtime: &mut crate::test_dirs::TestRuntime) {
+        self.restart_child().await;
+        runtime
+            .record_process(self.child.id())
+            .unwrap_or_else(|error| panic!("record restarted Chunk-KV process: {error}"));
+    }
+
+    async fn restart_child(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
         let binary = crowdb_chunk_kv_server_bin().unwrap_or_else(|| {

@@ -31,7 +31,7 @@ CASES="${CHUNKIO_BENCH_CASES:-}"
 TIMEOUT_SECS="${CHUNKIO_BENCH_TIMEOUT:-120}"
 PREFETCH_CHUNKS="${CHUNKIO_PREFETCH_CHUNKS:-10}"
 RUN_STAMP=$(date +%Y%m%d-%H%M%S)
-LOG_ROOT="${CHUNKIO_BENCH_LOG_ROOT:-$(pwd)/bench-log/chunkio-write-regression-$RUN_STAMP}"
+LOG_ROOT="${CHUNKIO_BENCH_LOG_ROOT:-${CROWDB_RUNTIME_ROOT:-$(pwd)/.crowdb-runtime}/artifacts/bench/chunkio-write-regression-$RUN_STAMP}"
 RESULTS_FILE="${CHUNKIO_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
 REGRESSION_LOG_ROOT="$LOG_ROOT"
 source tools/bench-regression-common.sh

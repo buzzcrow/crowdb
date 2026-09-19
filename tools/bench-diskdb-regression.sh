@@ -110,7 +110,7 @@ KV_CLIENT_WORKERS=2
 DISK_CAPACITY="${DISKDB_BENCH_DISK_CAPACITY:-4398046511104}"
 ZONE_SIZE="${DISKDB_BENCH_ZONE_SIZE:-274877906944}"
 RUN_STAMP=$(date +%Y%m%d-%H%M%S)
-LOG_ROOT="${DISKDB_BENCH_LOG_ROOT:-$(pwd)/bench-log/diskdb-regression-$RUN_STAMP}"
+LOG_ROOT="${DISKDB_BENCH_LOG_ROOT:-${CROWDB_RUNTIME_ROOT:-$(pwd)/.crowdb-runtime}/artifacts/bench/diskdb-regression-$RUN_STAMP}"
 RESULTS_FILE="${DISKDB_BENCH_RESULTS:-$LOG_ROOT/results.tsv}"
 REGRESSION_LOG_ROOT="$LOG_ROOT"
 source tools/bench-regression-common.sh

@@ -69,7 +69,7 @@ struct Cli {
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
     rpc_workers: Option<u32>,
 
-    /// Log directory. Default: "log" (relative to CWD).
+    /// Log directory. Defaults to the manual `ChunkDB` runtime namespace.
     #[arg(long)]
     log_dir: Option<String>,
 
@@ -104,7 +104,12 @@ struct Cli {
 async fn main() {
     let args = Cli::parse();
 
-    let log_dir = args.log_dir.clone().unwrap_or_else(|| "log".to_string());
+    let log_dir = args.log_dir.clone().unwrap_or_else(|| {
+        crowdb_protocol::port::namespace::runtime_root()
+            .join("persistent/manual/chunkdb/log")
+            .to_string_lossy()
+            .into_owned()
+    });
     let cpp_level = args
         .log_level
         .clone()

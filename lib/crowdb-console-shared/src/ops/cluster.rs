@@ -1554,19 +1554,20 @@ pub async fn local_deploy(
 }
 
 /// Default workspace path for `local_deploy` when no explicit
-/// `workspace_dir` is provided. Uses a project-local `cli-deploy/`
-/// directory (resolved from CWD) so logs and data survive for
-/// inspection instead of being lost in `/tmp`.
+/// `workspace_dir` is provided. Uses one project-local ephemeral namespace so
+/// logs and data remain inspectable without scattering files in the CWD.
 fn default_workspace() -> std::path::PathBuf {
-    let base = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    base.join("cli-deploy").join(format!(
-        "{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-    ))
+    crowdb_protocol::port::namespace::runtime_root()
+        .join("ephemeral")
+        .join("cli-deploy")
+        .join(format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ))
 }
 
 /// Phase 1: write rack 1 + nodes 1..=N into the config (idempotent).

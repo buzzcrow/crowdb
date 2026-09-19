@@ -8,10 +8,11 @@
 // as key=value lines (parsed by the CLI bench runner).
 //
 // Usage: crowdb-rpc-fb-server [--port=18080] [--io-engines=1] [--io-workers=1]
-//        [--enable-nagle] [--logdir=./log] [--metrics-interval=5]
+//        [--enable-nagle] [--logdir=<path>] [--metrics-interval=5]
 // Short aliases: -p -e -w -n -l -m (e.g. -p=18080 -e=2 -w=4).
-// Defaults --logdir to ./log (relative to CWD) when not specified.
+// The default log directory is below the workspace runtime root.
 
+#include "crowdb-common/runtime_path.h"
 #include "crowdb-rpc/c_api.h"
 
 #include <gflags/gflags.h>
@@ -45,7 +46,7 @@ DEFINE_bool(n, false, "Alias for --enable_nagle");
 DEFINE_bool(quickack, false, "Enable TCP_QUICKACK on connections (Linux only). Breaks Nagle + delayed-ACK deadlock.");
 DEFINE_bool(event_write, false, "Event-write mode: submit() enqueues to I/O worker for coalesced writev.");
 DEFINE_uint32(send_queue_capacity, 4096, "Per-connection send queue capacity (backpressure bound).");
-DEFINE_string(logdir, "", "Log directory for server + metrics logs. Default: ./log.");
+DEFINE_string(logdir, "", "Log directory for server + metrics logs. Default: workspace runtime root.");
 DEFINE_string(l, "", "Alias for --logdir");
 DEFINE_uint32(metrics_interval, 5, "Metrics flush interval in seconds.");
 DEFINE_uint32(m, 5, "Alias for --metrics_interval");
@@ -85,11 +86,10 @@ int main(int argc, char *argv[])
     if (gflags::GetCommandLineFlagInfo("m", &info) && !info.is_default)
         FLAGS_metrics_interval = FLAGS_m;
 
-    // Init logging — default to ./log (relative to CWD) so a manually-
-    // started server always writes files alongside the bench run.
+    // Keep manual runs inside the same durable workspace runtime hierarchy.
     std::string log_dir_arg = FLAGS_logdir;
     if (log_dir_arg.empty()) {
-        log_dir_arg = "log";
+        log_dir_arg = (crowdb::common::runtime_root() / "persistent" / "manual" / "rpc-fb-server" / "log").string();
     }
     std::error_code ec;
     std::filesystem::create_directories(log_dir_arg, ec);

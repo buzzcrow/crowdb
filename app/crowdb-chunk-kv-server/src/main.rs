@@ -42,8 +42,8 @@ struct Cli {
     rpc_addr: Option<String>,
 
     /// Log directory.
-    #[arg(long, default_value = "log")]
-    log_dir: String,
+    #[arg(long)]
+    log_dir: Option<String>,
 
     /// Also emit warning and error logs to the console.
     #[arg(short = 'l', long)]
@@ -62,9 +62,15 @@ struct Cli {
 #[allow(clippy::too_many_lines)]
 async fn main() {
     let args = Cli::parse();
+    let log_dir = args.log_dir.clone().unwrap_or_else(|| {
+        crowdb_protocol::port::namespace::runtime_root()
+            .join("persistent/manual/chunk-kv/log")
+            .to_string_lossy()
+            .into_owned()
+    });
     let _log_guards = if args.log {
         crowdb_common::logging::init_file_and_console_logging_split(
-            &args.log_dir,
+            &log_dir,
             "crowdb-chunk-kv-server",
             args.log_max_file_mb,
             args.log_max_files,
@@ -73,7 +79,7 @@ async fn main() {
         )
     } else {
         crowdb_common::logging::init_file_logging(
-            &args.log_dir,
+            &log_dir,
             "crowdb-chunk-kv-server",
             args.log_max_file_mb,
             args.log_max_files,
@@ -82,14 +88,14 @@ async fn main() {
     }
     .expect("failed to initialize chunk KV server logging");
     crowdb_tree_ffi::ct_init_logging(
-        &args.log_dir,
+        &log_dir,
         "info",
         args.log_max_file_mb,
         args.log_max_files,
         "crowdb-chunk-kv-server-tree",
     );
     crowdb_rpc_ffi::init_logging(
-        &args.log_dir,
+        &log_dir,
         "info",
         args.log_max_file_mb,
         args.log_max_files,

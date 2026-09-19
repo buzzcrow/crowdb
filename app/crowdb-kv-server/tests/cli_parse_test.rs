@@ -85,18 +85,30 @@ fn parse_root_is_required() {
 
 #[test]
 fn management_port_rejects_zero() {
-    let result = Cli::try_parse_from(["crowdb-kv-server", "--root", "/tmp/n1", "--management-port", "0"]);
+    let result = Cli::try_parse_from([
+        "crowdb-kv-server",
+        "--root",
+        ".crowdb-runtime/ephemeral/cli-parse/n1",
+        "--management-port",
+        "0",
+    ]);
     assert!(result.is_err());
 }
 
 #[test]
 fn wal_backend_accepts_explicit_uring() {
-    let cli = Cli::parse_from(["crowdb-kv-server", "--root", "/tmp/n1", "--wal-backend", "uring"]);
+    let cli = Cli::parse_from([
+        "crowdb-kv-server",
+        "--root",
+        ".crowdb-runtime/ephemeral/cli-parse/n1",
+        "--wal-backend",
+        "uring",
+    ]);
     assert_eq!(cli.wal_backend, "uring");
     let invalid = Cli::try_parse_from([
         "crowdb-kv-server",
         "--root",
-        "/tmp/n1",
+        ".crowdb-runtime/ephemeral/cli-parse/n1",
         "--wal-backend",
         "automatic",
     ]);
@@ -118,23 +130,43 @@ fn explicit_uring_initialization_never_silently_falls_back() {
 
 #[test]
 fn rpc_workers_is_only_an_explicit_override() {
-    let defaults = Cli::parse_from(["crowdb-kv-server", "--root", "/tmp/n1"]);
+    let defaults = Cli::parse_from([
+        "crowdb-kv-server",
+        "--root",
+        ".crowdb-runtime/ephemeral/cli-parse/n1",
+    ]);
     assert_eq!(defaults.rpc_workers, None);
     assert_eq!(defaults.election_profile, None);
     assert_eq!(defaults.max_inflight, None);
     assert_eq!(defaults.peer_pool_size, None);
     assert_eq!(defaults.send_queue_capacity, None);
 
-    let overridden = Cli::parse_from(["crowdb-kv-server", "--root", "/tmp/n1", "--rpc-workers", "7"]);
+    let overridden = Cli::parse_from([
+        "crowdb-kv-server",
+        "--root",
+        ".crowdb-runtime/ephemeral/cli-parse/n1",
+        "--rpc-workers",
+        "7",
+    ]);
     assert_eq!(overridden.rpc_workers, Some(7));
 
-    let invalid = Cli::try_parse_from(["crowdb-kv-server", "--root", "/tmp/n1", "--rpc-workers", "0"]);
+    let invalid = Cli::try_parse_from([
+        "crowdb-kv-server",
+        "--root",
+        ".crowdb-runtime/ephemeral/cli-parse/n1",
+        "--rpc-workers",
+        "0",
+    ]);
     assert!(invalid.is_err());
 }
 
 #[test]
 fn config_values_survive_absent_cli_and_explicit_values_override() {
-    let defaults = Cli::parse_from(["crowdb-kv-server", "--root", "/tmp/n1"]);
+    let defaults = Cli::parse_from([
+        "crowdb-kv-server",
+        "--root",
+        ".crowdb-runtime/ephemeral/cli-parse/n1",
+    ]);
     let mut config = CrowDBConfig::default();
     config.paxos.max_inflight_proposals = 19;
     config.server.peer_pool_size = 7;
@@ -155,7 +187,7 @@ fn config_values_survive_absent_cli_and_explicit_values_override() {
     let overrides = Cli::parse_from([
         "crowdb-kv-server",
         "--root",
-        "/tmp/n1",
+        ".crowdb-runtime/ephemeral/cli-parse/n1",
         "--max-inflight",
         "23",
         "--peer-pool-size",

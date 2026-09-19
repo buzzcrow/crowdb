@@ -3,6 +3,7 @@
 
 // BlockingEngine tests: write/read/fsync round-trip, concurrent writes,
 // null disk error handling.
+#include "crowdb-common/runtime_path.h"
 #include "disk/disk.h"
 #include "disk/types.h"
 #include "engine/blocking/blocking_engine.h"
@@ -23,7 +24,7 @@ namespace
 {
 std::string temp_path()
 {
-    std::string root = "/tmp/crowdb-diskio-blocking-tests";
+    std::string root = crowdb::common::test_runtime_path("crowdb-diskio-blocking").string();
     std::filesystem::create_directories(root);
     char tmpl[128];
     std::snprintf(tmpl, sizeof(tmpl), "%s/dx_XXXXXX", root.c_str());
@@ -106,7 +107,7 @@ class TestDisk : public crowdb::diskio::Disk
 
   private:
     crowdb::diskio::DiskId    id_;
-    int                     fd_;
+    int                       fd_;
     crowdb::diskio::IoEngine *engine_;
 };
 } // namespace
@@ -117,7 +118,7 @@ TEST(BlockingEngine, WriteReadRoundTrip)
     ASSERT_EQ(::truncate(path.c_str(), 1 << 16), 0);
 
     crowdb::diskio::BlockingEngine engine(4);
-    TestDisk                     disk({1, 1}, path, &engine);
+    TestDisk                       disk({1, 1}, path, &engine);
 
     std::vector<uint8_t> in(4096);
     for (size_t i = 0; i < in.size(); ++i) {
@@ -152,7 +153,7 @@ TEST(BlockingEngine, FsyncAfterWrite)
     ASSERT_EQ(::truncate(path.c_str(), 4096), 0);
 
     crowdb::diskio::BlockingEngine engine(2);
-    TestDisk                     disk({2, 2}, path, &engine);
+    TestDisk                       disk({2, 2}, path, &engine);
 
     std::vector<uint8_t> in(4096, 0xAB);
     std::atomic<bool>    write_done{false};
@@ -179,7 +180,7 @@ TEST(BlockingEngine, ConcurrentWritesAllComplete)
     ASSERT_EQ(::truncate(path.c_str(), 100 * 4096), 0);
 
     crowdb::diskio::BlockingEngine engine(4);
-    TestDisk                     disk({3, 3}, path, &engine);
+    TestDisk                       disk({3, 3}, path, &engine);
 
     constexpr int        kOps = 50;
     std::atomic<int>     completed{0};
@@ -207,7 +208,7 @@ TEST(BlockingEngine, ConcurrentWritesAllComplete)
 TEST(BlockingEngine, NullDiskReturnsError)
 {
     crowdb::diskio::BlockingEngine engine(2);
-    std::atomic<int>             got_res{0};
+    std::atomic<int>               got_res{0};
     engine.submit_write(nullptr, 0, nullptr, 0, [&](int res) { got_res.store(res); });
     EXPECT_EQ(got_res.load(), -EBADF);
     engine.stop();
@@ -220,9 +221,9 @@ TEST(BlockingEngine, StopJoinsAllThreads)
 
     {
         crowdb::diskio::BlockingEngine engine(4);
-        TestDisk                     disk({4, 4}, path, &engine);
-        std::vector<uint8_t>         in(4096, 0xCD);
-        std::atomic<bool>            done{false};
+        TestDisk                       disk({4, 4}, path, &engine);
+        std::vector<uint8_t>           in(4096, 0xCD);
+        std::atomic<bool>              done{false};
         engine.submit_write(&disk, 0, in.data(), in.size(), [&](int) { done.store(true, std::memory_order_release); });
         ASSERT_TRUE(wait_for([&] { return done.load(std::memory_order_acquire); }));
     } // engine destructor calls stop()

@@ -3,6 +3,7 @@
 
 // Startup integration test: launch the crowdb-diskio binary as a
 // subprocess, connect a client, write + read + fsync, then shut down.
+#include "crowdb-common/runtime_path.h"
 #include "crowdb-rpc/buffer.h"
 #include "crowdb-rpc/c_api.h"
 #include "crowdb-rpc/client/client.h"
@@ -62,12 +63,9 @@ std::string find_binary()
 // Create a temp file of the given size.
 std::string temp_file(int64_t size)
 {
-    const char *root = getenv("TMPDIR");
-    if (root == nullptr) {
-        root = "/tmp";
-    }
-    char tmpl[128];
-    std::snprintf(tmpl, sizeof(tmpl), "%s/dx_XXXXXX", root);
+    const std::string root = crowdb::common::test_runtime_path("crowdb-diskio-startup").string();
+    char              tmpl[128];
+    std::snprintf(tmpl, sizeof(tmpl), "%s/dx_XXXXXX", root.c_str());
     std::vector<char> buf(tmpl, tmpl + std::strlen(tmpl) + 1);
     int               fd = mkstemp(buf.data());
     if (fd >= 0) {
