@@ -1246,6 +1246,10 @@ async fn transfer_quiesce_drains_admitted_work_and_rejects_later_writes() {
     let fence = tokio::spawn(async move { fence_partition.suspend_for_transfer(10).await });
     tokio::task::yield_now().await;
     assert_eq!(
+        partition.lifecycle(),
+        crowdb_chunk_kv::PartitionLifecycle::TransferFencing
+    );
+    assert_eq!(
         partition
             .mutate(
                 10,
@@ -1259,6 +1263,10 @@ async fn transfer_quiesce_drains_admitted_work_and_rejects_later_writes() {
     store.resume_writes();
     writer.await.unwrap().unwrap();
     fence.await.unwrap().unwrap();
+    assert_eq!(
+        partition.lifecycle(),
+        crowdb_chunk_kv::PartitionLifecycle::WriteStalled
+    );
 
     let checkpoint = partition.checkpoint_quiesced(10).await.unwrap();
     assert_eq!(checkpoint.applied_seq, 1);

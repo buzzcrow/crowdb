@@ -197,9 +197,10 @@ failure. The live-source phases and actions are:
    source authority is unchanged.
 3. `TargetPrepared` or `AwaitingFence`: the monitor requests release only when
    record, byte, estimated catch-up, deadline, capacity, request-rate,
-   cooldown, and one-transition-per-owner bounds pass. The source closes new
-   admission, drains selected requests, and persists sequence and byte cursor
-   `C`. If the source is unreachable, the transition waits until old grant
+   cooldown, and one-transition-per-owner bounds pass. The source enters one
+   explicit fencing lifecycle that closes new admission while the existing
+   mutation worker drains only already-admitted requests, then persists
+   sequence and byte cursor `C`. If the source is unreachable, the transition waits until old grant
    expiry plus skew.
 4. `TargetCatchingUp`: group 0 publishes the target owner and epoch with catalog
    state `TargetCatchingUp`. The source is no longer catalog authority and

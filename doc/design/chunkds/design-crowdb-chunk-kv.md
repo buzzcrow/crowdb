@@ -221,7 +221,10 @@ place the request in a transfer-owned pending queue.
 After target readiness, the source checks record, byte, estimated catch-up,
 and preparation-deadline budgets before changing journal ownership. It stops
 assigning new records to the source WAL, drains only records already assigned
-there, and records their final durable sequence and byte offset as `C`. The
+there, and records their final durable sequence and byte offset as `C`. One
+short `TransferFencing` lifecycle closes public mutation admission while the
+existing mutation worker drains the already-admitted set; it is not a second
+queue or an independent authority flag. The
 target artifact is extended from `P` to `C`. The live target keeps its opened
 tree, memtable, and replay coroutine and reads only `P+1..C`; reopening the
 pinned base and replaying the complete retained suffix is crash recovery, not

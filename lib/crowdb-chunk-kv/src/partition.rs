@@ -980,6 +980,7 @@ impl Partition {
         }
         match self.lifecycle() {
             PartitionLifecycle::Serving
+            | PartitionLifecycle::TransferFencing
             | PartitionLifecycle::WriteStalled
             | PartitionLifecycle::SplitPreparing
             | PartitionLifecycle::SplitFinalizing => {}
@@ -1464,6 +1465,18 @@ impl Partition {
         self.validate_epoch(ownership_epoch)?;
         match self.lifecycle.compare_exchange(
             lifecycle_code(PartitionLifecycle::Serving),
+            lifecycle_code(PartitionLifecycle::TransferFencing),
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => {}
+            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::TransferFencing => {}
+            Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::WriteStalled => {}
+            Err(observed) => return Err(write_state_error(lifecycle_from_code(observed))),
+        }
+        self.wait_for_admitted_mutations().await;
+        match self.lifecycle.compare_exchange(
+            lifecycle_code(PartitionLifecycle::TransferFencing),
             lifecycle_code(PartitionLifecycle::WriteStalled),
             Ordering::AcqRel,
             Ordering::Acquire,
@@ -1472,7 +1485,6 @@ impl Partition {
             Err(observed) if lifecycle_from_code(observed) == PartitionLifecycle::WriteStalled => {}
             Err(observed) => return Err(write_state_error(lifecycle_from_code(observed))),
         }
-        self.wait_for_admitted_mutations().await;
         Ok(())
     }
 
@@ -2560,7 +2572,7 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<WorkerR
             continue;
         }
         let lifecycle = lifecycle_from_code(state.lifecycle.load(Ordering::Acquire));
-        if !accepts_mutations(lifecycle) && lifecycle != PartitionLifecycle::SplitFinalizing {
+        if !worker_accepts_mutations(lifecycle) {
             finish_request(&state, first, Err(write_state_error(lifecycle)));
             continue;
         }
@@ -2949,6 +2961,7 @@ fn lifecycle_code(state: PartitionLifecycle) -> u8 {
         PartitionLifecycle::SplitFinalizing => 6,
         PartitionLifecycle::Retired => 7,
         PartitionLifecycle::Faulted => 8,
+        PartitionLifecycle::TransferFencing => 9,
     }
 }
 
@@ -2957,6 +2970,14 @@ fn accepts_mutations(state: PartitionLifecycle) -> bool {
         state,
         PartitionLifecycle::Serving | PartitionLifecycle::SplitPreparing
     )
+}
+
+fn worker_accepts_mutations(state: PartitionLifecycle) -> bool {
+    accepts_mutations(state)
+        || matches!(
+            state,
+            PartitionLifecycle::TransferFencing | PartitionLifecycle::SplitFinalizing
+        )
 }
 
 fn lifecycle_from_code(code: u8) -> PartitionLifecycle {
@@ -2969,6 +2990,7 @@ fn lifecycle_from_code(code: u8) -> PartitionLifecycle {
         5 => PartitionLifecycle::SplitPreparing,
         6 => PartitionLifecycle::SplitFinalizing,
         7 => PartitionLifecycle::Retired,
+        9 => PartitionLifecycle::TransferFencing,
         _ => PartitionLifecycle::Faulted,
     }
 }
@@ -2976,7 +2998,7 @@ fn lifecycle_from_code(code: u8) -> PartitionLifecycle {
 fn write_state_error(state: PartitionLifecycle) -> ChunkKvError {
     match state {
         PartitionLifecycle::Recovering => ChunkKvError::Recovering,
-        PartitionLifecycle::WriteStalled => ChunkKvError::WriteStalled,
+        PartitionLifecycle::WriteStalled | PartitionLifecycle::TransferFencing => ChunkKvError::WriteStalled,
         PartitionLifecycle::Faulted => ChunkKvError::Faulted("partition faulted".into()),
         _ => ChunkKvError::NotServing(format!("{state:?}")),
     }

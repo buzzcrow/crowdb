@@ -445,13 +445,18 @@ its remote-owner E2E; proactive balance remains disabled until then.
   Ordinary writes durably append to the target WAL before initialization and
   are replayed after the source suffix; retries reuse that WAL result. Serving
   requests retain their original direct path and do not touch waiter state.
-- [ ] **Complete the bounded writer handoff**: stop assigning source-WAL
+- [x] **Complete the bounded writer handoff**: stop assigning source-WAL
   records, drain only records already assigned there, persist `C`, publish
   `TargetCatchingUp`, and make the source return the target hint without
   another append. Once initialization covers `C`, publish `Serving` and issue
   the exact target grant without waiting for checkpoint or materialization.
   Files: server authority, transition runtime, group-0 catalog monitor, routed
   client handling, and E2E transition tests.
+  Source fencing now has one explicit lifecycle that rejects new mutation
+  admission while the existing worker drains every previously admitted write
+  before recording `C`. The target catalog path accepts WAL-only writes,
+  rejects stale routes with the target hint, replays those target records after
+  `C`, and reaches `Serving` without a checkpoint or materialization barrier.
 - [ ] **Recover every balance phase from proofs**: resolve source/target crash,
   ambiguous catalog publication, and lease expiry from transition, catalog,
   manifest, tail, and grant state. Never infer authority from loaded pages,

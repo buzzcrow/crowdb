@@ -826,6 +826,27 @@ async fn catching_up_target_appends_unconditional_write_before_initialization() 
     service
         .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&target))
         .unwrap();
+    let stale = service
+        .handle_point(
+            PointRequest {
+                routing: routing(49),
+                operation: PointOperation::Put {
+                    key: b"object".to_vec(),
+                    value: b"stale".to_vec(),
+                },
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    let stale_failure = stale.result.unwrap_err();
+    assert_eq!(stale_failure.code, ChunkKvRpcErrorCode::NotMyRange);
+    assert_eq!(
+        stale_failure.owner_hint.unwrap().owner_epoch,
+        final_artifact.ownership_epoch
+    );
+    assert_eq!(target.snapshot().journal_durable_seq, 0);
+
     let mut route = routing(50);
     route.map_revision = 2;
     route.owner_epoch = EPOCH + 1;

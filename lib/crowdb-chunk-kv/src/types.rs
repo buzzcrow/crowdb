@@ -99,6 +99,7 @@ pub enum PartitionLifecycle {
     WriteStalled,
     Prepared,
     Serving,
+    TransferFencing,
     SplitPreparing,
     SplitFinalizing,
     Retired,
