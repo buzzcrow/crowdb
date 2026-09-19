@@ -134,6 +134,11 @@ fn graceful_transfer_requires_exact_fence_and_readiness_proofs() {
     };
     machine.record_target_ready(proof.clone()).unwrap();
     machine.record_target_ready(proof).unwrap();
+    assert_eq!(
+        machine.next_action(true, 1_000),
+        TransferAction::AwaitTargetConfirmation
+    );
+    machine.authorize_source_fence().unwrap();
     machine.record_source_fence(fence.clone()).unwrap();
     machine.record_source_fence(fence).unwrap();
     assert_eq!(

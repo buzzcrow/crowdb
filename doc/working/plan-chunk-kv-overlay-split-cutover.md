@@ -21,13 +21,13 @@ perform bucket and object CRUD.
 - R174 is accepted. Its foreground path does not make a request wait for
   shared-view publish, tree checkpoint, materialization, or catalog refresh,
   and the sustained four-partition restart regression passes.
-- R175 is active. Existing transfer and balance code remains unverified
-  scaffolding until reviewed against the completed R174 lineage. Proactive
-  child-owner balance stays disabled in the group-0 planner during that work;
-  dead-owner recovery remains independent.
-- R173 follows R175. Its operator acceptance target is a CLI-deployed cluster
-  with working bucket and object CRUD; it does not broaden the active R174 or
-  R175 storage work.
+- R175 is accepted at the operational cutoff: the smooth live-target handoff,
+  bounded initialization path, WAL-only foreground writes, exact fence, and
+  primary recovery proofs pass their focused gates. Remaining hardening is
+  recorded under Open Issues.
+- R173 is active. Its operator acceptance target is a CLI-deployed persistent
+  mini cluster with working bucket/object CRUD and list; an existing data
+  directory is reopened, while an empty location is initialized.
 - Generation is catalog reference information. An old client generation resolves
   through local split lineage. Ownership epoch remains an internal writer/WAL/tree
   durability fence, not an RPC routing precondition.
@@ -134,6 +134,18 @@ zero errors, p99 222.639 ms, three split finalizations, four local partitions,
 zero catch-up lag and admission backpressure, then restarted in 2.083 s,
 recovered all four partitions, and read a pre-restart value. The exact-root
 failure did not recur.
+
+## Open Issues
+
+- R175's proof-backed happy path and primary restart paths are operational, but
+  the complete source/target crash matrix still lacks process-level fault
+  injection. In particular, a target that disappears after group 0 records
+  `AwaitingFence` can cause an availability pause until that durable target is
+  restarted; the epoch/catalog proofs still prevent dual writers. Per the
+  implementation cutoff, leave this for a later hardening pass.
+- R175 background transfer materialization, forwarding-grace expiry, and final
+  source object reclamation remain follow-up work. They are outside the
+  foreground handoff and do not block the R173 persistent mini-cluster path.
 
 ## Resolved Bugs
 
@@ -457,11 +469,16 @@ its remote-owner E2E; proactive balance remains disabled until then.
   before recording `C`. The target catalog path accepts WAL-only writes,
   rejects stale routes with the target hint, replays those target records after
   `C`, and reaches `Serving` without a checkpoint or materialization barrier.
-- [ ] **Recover every balance phase from proofs**: resolve source/target crash,
+- [~] **Recover every balance phase from proofs**: resolve source/target crash,
   ambiguous catalog publication, and lease expiry from transition, catalog,
   manifest, tail, and grant state. Never infer authority from loaded pages,
   heartbeats, or volatile memtables. Files: server monitor/control store,
   transition state machine, startup recovery, and failure-injection tests.
+  Live fencing now requires a fresh group-0 observation of the exact prepared
+  target. If the source dies before explicit fencing, recovery discards the
+  unpublished target overlay and adopts the lease-excluded source stream so
+  the complete durable tail is replayed. The remaining process-level crash
+  matrix is recorded under Open Issues and does not block R173.
 - [ ] **Materialize and reclaim balance state in background**: checkpoint the
   target overlay, materialize shared packs, retain source tree/stream/retry
   history through catalog and forwarding grace, then remove source objects and

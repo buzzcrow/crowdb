@@ -201,7 +201,12 @@ failure. The live-source phases and actions are:
    explicit fencing lifecycle that closes new admission while the existing
    mutation worker drains only already-admitted requests, then persists
    sequence and byte cursor `C`. If the source is unreachable, the transition waits until old grant
-   expiry plus skew.
+   expiry plus skew. A live handoff enters `AwaitingFence` only after group 0
+   observes a healthy target heartbeat hosting the exact partition and target
+   epoch. If the source dies before an explicit fence, the unpublished target
+   overlay is discarded and the lease-excluded target reopens the source
+   stream directly, so recovery observes its complete durable tail rather than
+   treating preparation cursor `P` as the final cursor.
 4. `TargetCatchingUp`: group 0 publishes the target owner and epoch with catalog
    state `TargetCatchingUp`. The source is no longer catalog authority and
    returns the target hint without appending. The persisted release proof is

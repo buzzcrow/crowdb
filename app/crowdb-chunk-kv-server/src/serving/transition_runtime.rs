@@ -88,10 +88,7 @@ impl TransitionProcessor {
                 .await?;
         }
         if machine.transition().source.instance_id == self.instance_id
-            && matches!(
-                machine.transition().phase,
-                TransferPhase::TargetPrepared | TransferPhase::AwaitingFence
-            )
+            && machine.transition().phase == TransferPhase::AwaitingFence
         {
             let proof = self.executor.fence_transfer_source(machine.transition()).await?;
             machine.record_source_fence(proof)?;

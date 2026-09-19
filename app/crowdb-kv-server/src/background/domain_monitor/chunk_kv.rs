@@ -58,6 +58,7 @@ impl DomainMonitorDriver for ChunkKvRangeMonitorDriver {
             plan_dead_owner_transfer(control, descriptor).await?;
             advance_dead_owner_exclusion(control, descriptor).await?;
             balance::plan(control, descriptor).await?;
+            authorize_live_source_fences(control, descriptor).await?;
             publish_ready_transitions(control).await?;
             issue_serving_grants(control, descriptor).await
         })
@@ -221,10 +222,45 @@ async fn advance_dead_owner_exclusion(
         if now_ms < activation_not_before_ms {
             continue;
         }
+        transition.target_artifact = transition.artifact.clone();
+        transition.readiness_proof = None;
+        transition.catchup_proof = None;
         transition.release_proof = Some(AuthorityReleaseProof::LeaseExpired {
             activation_not_before_ms,
         });
-        transition.phase = TransferPhase::TargetCatchingUp;
+        transition.phase = TransferPhase::TargetPreparing;
+        transition.validate().map_err(|error| error.to_string())?;
+        persist_transition(control, &item, &transition).await?;
+    }
+    Ok(())
+}
+
+async fn authorize_live_source_fences(
+    control: &Group0ControlPlane,
+    descriptor: &DomainMonitorDescriptor,
+) -> Result<(), String> {
+    let healthy_after = wall_time_ms().saturating_sub(descriptor.suspect_after_ms);
+    let instances = read_instances(control, descriptor).await?;
+    for (mut transition, item) in read_transfers(control).await? {
+        if transition.phase != TransferPhase::TargetPrepared || transition.release_proof.is_some() {
+            continue;
+        }
+        let target_ready = instances
+            .get(&transition.target.instance_id)
+            .filter(|instance| instance.last_heartbeat_ms >= healthy_after)
+            .and_then(|instance| instance.extra.as_ref())
+            .and_then(|extra| extra.chunk_kv.as_ref())
+            .is_some_and(|extra| {
+                extra.hosted.iter().any(|hosted| {
+                    hosted.partition_id == transition.partition_id
+                        && hosted.owner_epoch == transition.target_epoch
+                        && !hosted.recovering
+                })
+            });
+        if !target_ready {
+            continue;
+        }
+        transition.phase = TransferPhase::AwaitingFence;
         transition.validate().map_err(|error| error.to_string())?;
         persist_transition(control, &item, &transition).await?;
     }

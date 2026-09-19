@@ -11,6 +11,7 @@ use crate::MonitorError;
 pub enum TransferAction {
     PrepareSource { instance_id: u64, owner_epoch: u64 },
     PrepareTarget { instance_id: u64, owner_epoch: u64 },
+    AwaitTargetConfirmation,
     FenceSource { instance_id: u64, owner_epoch: u64 },
     WaitForFence { activation_not_before_ms: u64 },
     PublishCatchingUp,
@@ -55,7 +56,14 @@ impl TransferStateMachine {
                 instance_id: self.transition.target.instance_id,
                 owner_epoch: self.transition.target_epoch,
             },
-            TransferPhase::TargetPrepared | TransferPhase::AwaitingFence => {
+            TransferPhase::TargetPrepared if source_reachable => TransferAction::AwaitTargetConfirmation,
+            TransferPhase::TargetPrepared => TransferAction::WaitForFence {
+                activation_not_before_ms: self
+                    .transition
+                    .old_grant_expires_at_ms
+                    .saturating_add(max_clock_skew_ms),
+            },
+            TransferPhase::AwaitingFence => {
                 if source_reachable {
                     TransferAction::FenceSource {
                         instance_id: self.transition.source.instance_id,
@@ -132,6 +140,25 @@ impl TransferStateMachine {
             return Err(MonitorError::PlanFailed("expected explicit source fence".into()));
         }
         self.install_release_proof(proof)
+    }
+
+    /// Records the group-0 observation that the exact prepared target remains
+    /// healthy immediately before source fencing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error unless exact target readiness is already durable.
+    pub fn authorize_source_fence(&mut self) -> Result<(), MonitorError> {
+        if self.transition.phase == TransferPhase::AwaitingFence {
+            return Ok(());
+        }
+        if self.transition.phase != TransferPhase::TargetPrepared {
+            return Err(MonitorError::PlanFailed(
+                "source fence authorization requires a prepared target".into(),
+            ));
+        }
+        self.transition.phase = TransferPhase::AwaitingFence;
+        self.validate_current()
     }
 
     /// Records lease exclusion only after expiry plus the clock-skew budget.
@@ -304,10 +331,16 @@ impl TransferStateMachine {
                 ))
             };
         }
-        if !matches!(
-            self.transition.phase,
-            TransferPhase::TargetPrepared | TransferPhase::AwaitingFence
-        ) {
+        let valid_phase = match &proof {
+            AuthorityReleaseProof::ExplicitFence { .. } => {
+                self.transition.phase == TransferPhase::AwaitingFence
+            }
+            AuthorityReleaseProof::LeaseExpired { .. } => matches!(
+                self.transition.phase,
+                TransferPhase::TargetPrepared | TransferPhase::AwaitingFence
+            ),
+        };
+        if !valid_phase {
             return Err(MonitorError::PlanFailed(
                 "transfer phase cannot accept a fence".into(),
             ));

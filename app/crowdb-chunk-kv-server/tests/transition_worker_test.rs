@@ -426,7 +426,7 @@ async fn source_worker_quiesces_before_returning_release_proof() {
         worker
             .fence_transfer_source(&{
                 let mut transition = transfer(TransferPhase::TargetPreparing);
-                transition.phase = TransferPhase::TargetPrepared;
+                transition.phase = TransferPhase::AwaitingFence;
                 transition.readiness_proof = Some(TargetReadinessProof {
                     target_instance_id: 2,
                     target_epoch: 4,

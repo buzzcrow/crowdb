@@ -327,13 +327,8 @@ async fn chunk_kv_driver_publishes_ready_transfer_then_issues_matching_grant() {
         },
         planned_at_ms: 0,
         old_grant_expires_at_ms: 1,
-        phase: TransferPhase::TargetCatchingUp,
-        release_proof: Some(AuthorityReleaseProof::ExplicitFence {
-            source_instance_id: 1,
-            source_epoch: 1,
-            durable_tail: 7,
-            durable_tail_offset: 7,
-        }),
+        phase: TransferPhase::TargetPrepared,
+        release_proof: None,
         readiness_proof: Some(TargetReadinessProof {
             target_instance_id: 2,
             target_epoch: 2,
@@ -349,6 +344,43 @@ async fn chunk_kv_driver_publishes_ready_transfer_then_issues_matching_grant() {
         &transition,
     )
     .await;
+    put_json(
+        &control,
+        InstanceKey {
+            service: "chunk-kv".into(),
+            instance_id: 1,
+        }
+        .to_path(),
+        &InstanceValue {
+            instance_id: 1,
+            rpc_endpoint: "127.0.0.1:17001".into(),
+            last_heartbeat_ms: u64::MAX,
+            extra: Some(ServiceExtra {
+                chunk_kv: Some(ChunkKvExtra {
+                    hosted: vec![HostedPartition {
+                        partition_id,
+                        owner_epoch: 1,
+                        recovering: false,
+                    }],
+                    ..ChunkKvExtra::default()
+                }),
+                ..ServiceExtra::default()
+            }),
+        },
+    )
+    .await;
+    let mut policy = descriptor();
+    policy.domain = "chunk-kv".into();
+    policy.service_registry_name = "chunk-kv".into();
+    ChunkKvRangeMonitorDriver::new()
+        .tick(&control, &policy)
+        .await
+        .unwrap();
+    let transition_path = ChunkKvTransferKey { transition_id }.to_path();
+    let waiting = control.get(transition_path.as_bytes()).await.unwrap();
+    let waiting: TransferTransition = serde_json::from_slice(waiting.value.as_ref().unwrap()).unwrap();
+    assert_eq!(waiting.phase, TransferPhase::TargetPrepared);
+
     let instance = InstanceValue {
         instance_id: 2,
         rpc_endpoint: target.rpc_endpoint,
@@ -375,16 +407,34 @@ async fn chunk_kv_driver_publishes_ready_transfer_then_issues_matching_grant() {
         &instance,
     )
     .await;
-    let mut policy = descriptor();
-    policy.domain = "chunk-kv".into();
-    policy.service_registry_name = "chunk-kv".into();
 
     ChunkKvRangeMonitorDriver::new()
         .tick(&control, &policy)
         .await
         .unwrap();
 
-    let transition_path = ChunkKvTransferKey { transition_id }.to_path();
+    let persisted = control.get(transition_path.as_bytes()).await.unwrap();
+    let mut ready: TransferTransition = serde_json::from_slice(persisted.value.as_ref().unwrap()).unwrap();
+    assert_eq!(ready.phase, TransferPhase::AwaitingFence);
+    ready.phase = TransferPhase::TargetCatchingUp;
+    ready.release_proof = Some(AuthorityReleaseProof::ExplicitFence {
+        source_instance_id: 1,
+        source_epoch: 1,
+        durable_tail: 7,
+        durable_tail_offset: 7,
+    });
+    control
+        .compare_and_put(
+            Bytes::from(transition_path.clone()),
+            Bytes::from(serde_json::to_vec(&ready).unwrap()),
+            persisted.revision,
+        )
+        .await
+        .unwrap();
+    ChunkKvRangeMonitorDriver::new()
+        .tick(&control, &policy)
+        .await
+        .unwrap();
     let persisted = control.get(transition_path.as_bytes()).await.unwrap();
     let mut ready: TransferTransition = serde_json::from_slice(persisted.value.as_ref().unwrap()).unwrap();
     assert_eq!(ready.phase, TransferPhase::CatchupPublished);
