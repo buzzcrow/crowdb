@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -163,6 +164,47 @@ struct FakeStorage {
     recovered: Partition,
     split: SplitArtifact,
     expected_split_parent_range: Option<PartitionRange>,
+}
+
+struct LiveCatchupStorage {
+    recovered: Partition,
+    recover_calls: AtomicUsize,
+    catchup_calls: AtomicUsize,
+}
+
+#[async_trait]
+impl TransitionStorage for LiveCatchupStorage {
+    async fn recover_partition(&self, _entry: &ChunkKvRangeCatalogEntry) -> Result<Partition, MonitorError> {
+        self.recover_calls.fetch_add(1, Ordering::Relaxed);
+        Ok(self.recovered.clone())
+    }
+
+    async fn catch_up_transfer_target(
+        &self,
+        target: &Partition,
+        _entry: &ChunkKvRangeCatalogEntry,
+    ) -> Result<(), MonitorError> {
+        assert_eq!(target.snapshot().partition_id, self.recovered.snapshot().partition_id);
+        self.catchup_calls.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn prepare_transfer_source(
+        &self,
+        _source: &Partition,
+        transition: &TransferTransition,
+    ) -> Result<PartitionArtifact, MonitorError> {
+        Ok(transition.target_artifact.clone())
+    }
+
+    async fn prepare_split(
+        &self,
+        _parent: &Partition,
+        _transition: &SplitTransition,
+        _max_catchup_lag_records: u64,
+    ) -> Result<PreparedLocalSplit, MonitorError> {
+        Err(MonitorError::PlanFailed("split is not used".into()))
+    }
 }
 
 #[async_trait]
@@ -427,6 +469,46 @@ async fn target_worker_recovers_but_does_not_activate_assignment() {
     assert_eq!(proof.target_epoch, 4);
     assert_eq!(proof.durable_tail, 0);
     assert_eq!(recovered.lifecycle(), PartitionLifecycle::Prepared);
+}
+
+#[tokio::test]
+async fn final_target_catchup_reuses_the_live_prepared_partition() {
+    let mut transition = transfer(TransferPhase::CatchupPublished);
+    transition.readiness_proof = Some(TargetReadinessProof {
+        target_instance_id: 2,
+        target_epoch: 4,
+        artifact: transition.target_artifact.clone(),
+        durable_tail: 0,
+    });
+    transition.release_proof = Some(AuthorityReleaseProof::ExplicitFence {
+        source_instance_id: 1,
+        source_epoch: 3,
+        durable_tail: 0,
+        durable_tail_offset: 0,
+    });
+    transition.validate().unwrap();
+    let recovered = partition(
+        id(1),
+        transition.range.clone(),
+        transition.target_epoch,
+        &transition.target_artifact,
+        true,
+    )
+    .await;
+    let service = Arc::new(ChunkKvService::new(2, 4).unwrap());
+    service.install_partition(&recovered).unwrap();
+    let storage = Arc::new(LiveCatchupStorage {
+        recovered,
+        recover_calls: AtomicUsize::new(0),
+        catchup_calls: AtomicUsize::new(0),
+    });
+    let worker = TransitionExecutor::with_storage(2, service, storage.clone(), 8).unwrap();
+
+    let proof = worker.prepare_transfer_target(&transition).await.unwrap();
+
+    assert_eq!(proof.durable_tail, 0);
+    assert_eq!(storage.catchup_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(storage.recover_calls.load(Ordering::Relaxed), 0);
 }
 
 #[tokio::test]

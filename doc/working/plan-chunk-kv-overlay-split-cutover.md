@@ -414,7 +414,7 @@ its remote-owner E2E; proactive balance remains disabled until then.
   exact base identity, binds explicit release to target overlay `C`, requires
   final readiness exactly at `C`, and rejects invalid proofs without mutating
   the in-memory reducer.
-- [~] **Keep one live async target initialization**: open the exact shared
+- [x] **Keep one live async target initialization**: open the exact shared
   range-bounded root, replay through `P` while the source serves, then retain
   the same target tree, memtable, source journal handle, and coroutine through
   final catch-up. Add an ordered worker control operation that advances only
@@ -423,7 +423,12 @@ its remote-owner E2E; proactive balance remains disabled until then.
   `lib/crowdb-chunk-kv/src/partition.rs`, its owned partition modules,
   `app/crowdb-chunk-kv-server/src/{storage.rs,serving/worker.rs}`, and
   deterministic incremental-catch-up tests.
-- [ ] **Coroutine-await reads and conditions, append ordinary writes**: while
+  `TransferCatchUp` now runs through the existing mutation worker, retains the
+  prepared handle, validates the exact base and monotonic source suffix, and
+  advances only `P+1..C`. The transition worker uses it whenever the live
+  target remains hosted and falls back to exact-root recovery only when that
+  handle is absent.
+- [~] **Coroutine-await reads and conditions, append ordinary writes**: while
   the target is initializing, read and conditional-mutation handlers await the
   shared initialization future within their existing deadline. Ordinary
   unconditional mutations append to the target WAL from `C+1` immediately and

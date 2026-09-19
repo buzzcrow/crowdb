@@ -216,18 +216,30 @@ impl TransitionExecutor {
             artifact: transition.target_artifact.clone(),
             transition_id: Some(transition.transition_id),
         };
-        if transition.phase == TransferPhase::CatchupPublished {
-            self.service.remove_partition(transition.partition_id);
-        }
-        let partition = self
-            .storage
-            .recover_partition(&entry)
-            .await
-            .map_err(|error| plan_error(&error.to_string()))?;
+        let partition = if transition.phase == TransferPhase::CatchupPublished {
+            if let Some(partition) = self.service.hosted_partition(transition.partition_id) {
+                self.storage
+                    .catch_up_transfer_target(&partition, &entry)
+                    .await?;
+                partition
+            } else {
+                self.storage
+                    .recover_partition(&entry)
+                    .await
+                    .map_err(|error| plan_error(&error.to_string()))?
+            }
+        } else {
+            self.storage
+                .recover_partition(&entry)
+                .await
+                .map_err(|error| plan_error(&error.to_string()))?
+        };
         let snapshot = partition.snapshot();
-        self.service
-            .install_partition(&partition)
-            .map_err(|error| plan_error(&error.to_string()))?;
+        if self.service.hosted_partition(transition.partition_id).is_none() {
+            self.service
+                .install_partition(&partition)
+                .map_err(|error| plan_error(&error.to_string()))?;
+        }
         Ok(TargetReadinessProof {
             target_instance_id: self.instance_id,
             target_epoch: transition.target_epoch,
@@ -335,6 +347,13 @@ impl TransitionExecutor {
 #[async_trait]
 pub trait TransitionStorage: Send + Sync {
     async fn recover_partition(&self, entry: &ChunkKvRangeCatalogEntry) -> Result<Partition, MonitorError>;
+    async fn catch_up_transfer_target(
+        &self,
+        _target: &Partition,
+        _entry: &ChunkKvRangeCatalogEntry,
+    ) -> Result<(), MonitorError> {
+        Err(plan_error("live transfer catch-up is not implemented"))
+    }
     async fn prepare_transfer_source(
         &self,
         source: &Partition,
@@ -354,6 +373,14 @@ impl TransitionStorage for ChunkKvStorage {
         ChunkKvStorage::recover_partition(self, entry)
             .await
             .map_err(|error| plan_error(&error.to_string()))
+    }
+
+    async fn catch_up_transfer_target(
+        &self,
+        target: &Partition,
+        entry: &ChunkKvRangeCatalogEntry,
+    ) -> Result<(), MonitorError> {
+        ChunkKvStorage::catch_up_transfer_target(self, target, entry).await
     }
 
     async fn prepare_transfer_source(

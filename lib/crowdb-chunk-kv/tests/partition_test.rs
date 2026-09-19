@@ -2642,6 +2642,55 @@ async fn child_overlay_recovers_parent_results_then_its_own_wal() {
 }
 
 #[tokio::test]
+async fn live_transfer_target_replays_only_the_suffix_after_preparation() {
+    let OverlayFixture {
+        parent_journal,
+        child_journal,
+        base_tree,
+        artifact: final_artifact,
+        checkpoint,
+        proof,
+        responses,
+        ..
+    } = overlay_fixture().await;
+    let prepared_artifact = PreparedSplitWriterArtifact {
+        parent_cutover_offset: responses[2].journal_position.offset,
+        applied_seq: 2,
+        child_stream_start_seq: 3,
+        ..final_artifact.clone()
+    };
+    let target = Partition::recover_prepared_overlay(
+        prepared_artifact,
+        checkpoint,
+        PartitionConfig::default(),
+        base_tree,
+        child_journal,
+        Arc::clone(&parent_journal),
+    )
+    .await
+    .unwrap();
+    assert_eq!(target.snapshot().applied_seq, 2);
+
+    target
+        .catch_up_prepared_transfer(final_artifact, parent_journal)
+        .await
+        .unwrap();
+    assert_eq!(target.snapshot().applied_seq, 5);
+    assert_eq!(target.lifecycle(), crowdb_chunk_kv::PartitionLifecycle::Prepared);
+    target.activate_prepared(&proof).unwrap();
+    assert_eq!(target.get(19, b"d", None).await.unwrap().unwrap().value, b"tail");
+    assert_eq!(
+        target
+            .get(19, b"d", Some(responses[2].journal_position))
+            .await
+            .unwrap()
+            .unwrap()
+            .value,
+        b"tail"
+    );
+}
+
+#[tokio::test]
 async fn split_abort_requires_exact_nonpublication_proof_before_resuming() {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let partition = partition(

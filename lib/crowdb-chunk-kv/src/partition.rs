@@ -8,6 +8,7 @@
 mod frame;
 mod journal;
 mod split;
+mod transfer;
 mod tree;
 
 pub use frame::{decode_frame, encode_frame, DecodedFrame, FrameDecode, MAX_FRAME_BYTES};
@@ -134,6 +135,7 @@ struct MutationRequest {
 enum WorkerRequest {
     Mutation(MutationRequest),
     SplitCutover(Box<split::SplitCutoverRequest>),
+    TransferCatchUp(Box<transfer::TransferCatchUpRequest>),
 }
 
 #[derive(Clone)]
@@ -158,8 +160,8 @@ pub struct Partition {
     admission_notify: Arc<Notify>,
     split_transition: Arc<Mutex<Option<SplitTransition>>>,
     split_ingress: Arc<ArcSwapOption<SplitIngress>>,
-    prepared_artifact: Option<PreparedSplitWriterArtifact>,
-    inherited_position: Option<JournalPosition>,
+    prepared_artifact: Arc<ArcSwapOption<PreparedSplitWriterArtifact>>,
+    inherited_position: Arc<ArcSwapOption<JournalPosition>>,
     metrics: Arc<PartitionMetrics>,
     config: Arc<PartitionConfig>,
 }
@@ -179,6 +181,8 @@ struct WorkerState {
     applied_notify: Arc<Notify>,
     admission_notify: Arc<Notify>,
     split_ingress: Arc<ArcSwapOption<SplitIngress>>,
+    prepared_artifact: Arc<ArcSwapOption<PreparedSplitWriterArtifact>>,
+    inherited_position: Arc<ArcSwapOption<JournalPosition>>,
     metrics: Arc<PartitionMetrics>,
     config: Arc<PartitionConfig>,
     next_seq: u64,
@@ -806,6 +810,15 @@ impl Partition {
             metrics.recovery();
         }
         let config = Arc::new(config);
+        let prepared_artifact = Arc::new(ArcSwapOption::new(prepared_artifact.map(Arc::new)));
+        let inherited_position = Arc::new(ArcSwapOption::new(
+            prepared_artifact.load_full().map(|artifact| {
+                Arc::new(JournalPosition {
+                    stream_name: artifact.parent_stream_name,
+                    offset: artifact.parent_cutover_offset,
+                })
+            }),
+        ));
         let state = WorkerState {
             partition_id,
             ownership_epoch: Arc::clone(&ownership_epoch),
@@ -821,6 +834,8 @@ impl Partition {
             applied_notify: Arc::clone(&applied_notify),
             admission_notify: Arc::clone(&admission_notify),
             split_ingress: Arc::clone(&split_ingress),
+            prepared_artifact: Arc::clone(&prepared_artifact),
+            inherited_position: Arc::clone(&inherited_position),
             metrics: Arc::clone(&metrics),
             config: Arc::clone(&config),
             next_seq,
@@ -829,10 +844,6 @@ impl Partition {
             expired_floor: seed.expired_floor,
         };
         tokio::spawn(run_worker(state, receiver));
-        let inherited_position = prepared_artifact.as_ref().map(|artifact| JournalPosition {
-            stream_name: artifact.parent_stream_name,
-            offset: artifact.parent_cutover_offset,
-        });
         Ok(Self {
             id: partition_id,
             range: Arc::new(ArcSwap::from_pointee(range)),
@@ -1664,10 +1675,10 @@ impl Partition {
     /// Returns an error for an absent catalog revision, mismatched artifact,
     /// or non-prepared lifecycle.
     pub fn activate_prepared(&self, proof: &SplitCommitProof) -> Result<()> {
-        let expected = self.prepared_artifact.as_ref().ok_or_else(|| {
+        let expected = self.prepared_artifact.load_full().ok_or_else(|| {
             ChunkKvError::SplitRetry("partition was not opened from a prepared artifact".into())
         })?;
-        if proof.catalog_revision == 0 || &proof.artifact.child != expected {
+        if proof.catalog_revision == 0 || proof.artifact.child != *expected {
             return Err(ChunkKvError::SplitRetry(
                 "catalog proof does not contain the exact prepared child".into(),
             ));
@@ -1693,11 +1704,11 @@ impl Partition {
     /// Returns an error when the proof does not name this prepared writer or
     /// its lifecycle cannot transition to serving.
     pub fn activate_split_writer(&self, proof: &SplitCommitProof) -> Result<()> {
-        let expected = self.prepared_artifact.as_ref().ok_or_else(|| {
+        let expected = self.prepared_artifact.load_full().ok_or_else(|| {
             ChunkKvError::SplitRetry("partition was not opened from a prepared split writer".into())
         })?;
         if proof.catalog_revision == 0
-            || (expected != &proof.artifact.child && expected != &proof.artifact.retained_parent)
+            || (*expected != proof.artifact.child && *expected != proof.artifact.retained_parent)
         {
             return Err(ChunkKvError::SplitRetry(
                 "catalog proof does not contain the prepared split writer".into(),
@@ -1724,10 +1735,10 @@ impl Partition {
     /// Returns an error when the artifact does not name this prepared writer
     /// or its lifecycle cannot transition to serving.
     pub fn activate_local_split_writer(&self, artifact: &SplitArtifact) -> Result<()> {
-        let expected = self.prepared_artifact.as_ref().ok_or_else(|| {
+        let expected = self.prepared_artifact.load_full().ok_or_else(|| {
             ChunkKvError::SplitRetry("partition was not opened from a prepared split writer".into())
         })?;
-        if expected != &artifact.child && expected != &artifact.retained_parent {
+        if *expected != artifact.child && *expected != artifact.retained_parent {
             return Err(ChunkKvError::SplitRetry(
                 "local split activation does not match its durable artifact".into(),
             ));
@@ -1751,7 +1762,7 @@ impl Partition {
     /// it can serve.
     #[must_use]
     pub fn is_prepared_split_child(&self) -> bool {
-        self.prepared_artifact.is_some()
+        self.prepared_artifact.load().is_some()
     }
 
     /// Activates a replayed assignment after its owner validates external
@@ -1769,7 +1780,7 @@ impl Partition {
         ) {
             return Ok(());
         }
-        if self.prepared_artifact.is_some() {
+        if self.prepared_artifact.load().is_some() {
             return Err(ChunkKvError::InvalidRequest(
                 "prepared split child requires a split commit proof".into(),
             ));
@@ -2020,7 +2031,7 @@ impl Partition {
     }
 
     async fn wait_applied(&self, position: JournalPosition) -> Result<()> {
-        if self.inherited_position.is_some_and(|inherited| {
+        if self.inherited_position.load().as_deref().is_some_and(|inherited| {
             inherited.stream_name == position.stream_name && inherited.offset >= position.offset
         }) {
             return Ok(());
@@ -2494,6 +2505,10 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<WorkerR
                 split::install_split_cutover(&mut state, *request).await;
                 continue;
             }
+            WorkerRequest::TransferCatchUp(request) => {
+                transfer::catch_up(&mut state, *request).await;
+                continue;
+            }
             WorkerRequest::Mutation(request) => request,
         };
         if let Some(ingress) = state.split_ingress.load_full() {
@@ -2513,7 +2528,7 @@ async fn run_worker(mut state: WorkerState, mut receiver: mpsc::Receiver<WorkerR
             };
             let request = match next {
                 WorkerRequest::Mutation(request) => request,
-                control @ WorkerRequest::SplitCutover(_) => {
+                control @ (WorkerRequest::SplitCutover(_) | WorkerRequest::TransferCatchUp(_)) => {
                     pending = Some(control);
                     break;
                 }

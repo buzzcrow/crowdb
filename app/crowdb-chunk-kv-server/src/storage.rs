@@ -10,9 +10,9 @@ use arc_swap::ArcSwap;
 use bytes::Bytes;
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
 use crowdb_chunk_kv::{
-    MutationOperation, Partition, PartitionConfig, PartitionId, PartitionRange, PreparedSplit,
-    PreparedSplitWriterArtifact, RequestId, SplitArtifact, SplitChild, SplitPlan, SplitWriterTarget,
-    StreamPartitionJournal, TransitionId,
+    MutationOperation, Partition, PartitionConfig, PartitionId, PartitionJournal, PartitionRange,
+    PreparedSplit, PreparedSplitWriterArtifact, RequestId, SplitArtifact, SplitChild, SplitPlan,
+    SplitWriterTarget, StreamPartitionJournal, TransitionId,
 };
 use crowdb_chunk_stream::{ChunkStream, ProductionStreamRuntime, StreamConfig, StreamName, StreamRegistry};
 use crowdb_kv_client::{BatchOp, ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
@@ -346,7 +346,43 @@ impl ChunkKvStorage {
             stream,
         )
         .await
-        .map_err(|error| assignment_recovery_error(entry, &error))
+            .map_err(|error| assignment_recovery_error(entry, &error))
+    }
+
+    /// Advances one already-open transfer target from its preparation cursor
+    /// to the final source release cursor without reopening the base tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing overlay/source stream or incremental
+    /// replay failure.
+    pub async fn catch_up_transfer_target(
+        &self,
+        target: &Partition,
+        entry: &ChunkKvRangeCatalogEntry,
+    ) -> Result<(), crate::MonitorError> {
+        let overlay = entry
+            .artifact
+            .tail_overlay
+            .as_ref()
+            .ok_or_else(|| storage_plan_error("transfer target overlay is absent"))?;
+        let parent_stream = self
+            .streams
+            .open_read_only(
+                overlay.source_stream_name,
+                self.metadata_store_id,
+                overlay.source_epoch,
+            )
+            .await
+            .map_err(|error| storage_plan_error(&error.to_string()))?;
+        let parent_journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(
+            parent_stream,
+            overlay.source_stream_name,
+        ));
+        target
+            .catch_up_prepared_transfer(prepared_overlay_artifact(entry, overlay), parent_journal)
+            .await
+            .map_err(|error| storage_plan_error(&error.to_string()))
     }
 
     /// Creates the explicitly configured initial full-range partition and
