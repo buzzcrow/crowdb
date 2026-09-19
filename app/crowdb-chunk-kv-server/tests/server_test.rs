@@ -9,7 +9,7 @@ use crowdb_chunk_kv::{
     PartitionRange, PartitionTree, PreparedSplitWriterArtifact, SplitArtifact, SplitChild, SplitPlan,
     StreamPartitionJournal, TransitionId,
 };
-use crowdb_chunk_kv_server::{ChunkKvService, ServerLifecycle};
+use crowdb_chunk_kv_server::{ChunkKvService, ServerLifecycle, TransferStateMachine};
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
     ChunkStream, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig, StreamMetadataStore,
@@ -17,10 +17,11 @@ use crowdb_chunk_stream::{
 };
 use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
-    ChunkKvRangeCatalogPartitionState, ChunkKvRpcErrorCode, ClientRequestId, DomainFailurePolicy,
-    DomainMonitorDescriptor, Id128, KeyRange, MultiGetRequest, OperationResult, OwnerDescriptor,
-    PartitionArtifact, PointOperation, PointRequest, RequestRouting, ScanDirection, ScanRequest, SeekKind,
-    SeekRequest, ServingAssignment, ServingGrant, TailOverlayArtifact,
+    AuthorityReleaseProof, ChunkKvRangeCatalogPartitionState, ChunkKvRpcErrorCode, ClientRequestId,
+    DomainFailurePolicy, DomainMonitorDescriptor, Id128, KeyRange, MultiGetRequest, OperationResult,
+    OwnerDescriptor, PartitionArtifact, PointOperation, PointRequest, RequestRouting, ScanDirection,
+    ScanRequest, SeekKind, SeekRequest, ServingAssignment, ServingGrant, TailOverlayArtifact,
+    TargetReadinessProof, TransferPhase, TransferReadinessLimits, TransferTransition,
 };
 
 const INSTANCE_ID: u64 = 7;
@@ -269,6 +270,95 @@ async fn pending_transfer_fixture() -> (Partition, PreparedSplitWriterArtifact, 
 
 async fn pending_transfer_partition() -> Partition {
     pending_transfer_fixture().await.0
+}
+
+fn committed_transfer(artifact: &PreparedSplitWriterArtifact) -> TransferTransition {
+    let source_artifact = PartitionArtifact {
+        tree_id: artifact.tree_id,
+        stream_name: artifact.parent_stream_name,
+        tail_overlay: None,
+    };
+    let target_artifact = PartitionArtifact {
+        tree_id: artifact.tree_id,
+        stream_name: artifact.stream_name,
+        tail_overlay: Some(TailOverlayArtifact {
+            source_partition_id: Id128 {
+                high: artifact.parent_id.high,
+                low: artifact.parent_id.low,
+            },
+            source_epoch: artifact.parent_epoch,
+            source_stream_name: artifact.parent_stream_name,
+            source_stream_manifest_generation: artifact.parent_stream_manifest_generation,
+            replay_offset: artifact.parent_replay_offset,
+            cutover_offset: artifact.parent_cutover_offset,
+            base_root_manifest_generation: artifact.root_manifest_generation,
+            base_tree_manifest: artifact.tree_manifest,
+            base_applied_seq: artifact.base_applied_seq,
+            cutover_seq: artifact.applied_seq,
+            target_stream_start_seq: artifact.child_stream_start_seq,
+        }),
+    };
+    let mut machine = TransferStateMachine::restore(TransferTransition {
+        transition_id: Id128 { high: 60, low: 61 },
+        partition_id: Id128 {
+            high: artifact.partition_id.high,
+            low: artifact.partition_id.low,
+        },
+        range: KeyRange {
+            start: artifact.range.start.clone().unwrap_or_default(),
+            end: artifact.range.end.clone(),
+        },
+        source: OwnerDescriptor {
+            instance_id: 6,
+            rpc_endpoint: "127.0.0.1:9906".into(),
+        },
+        source_epoch: artifact.parent_epoch,
+        target: OwnerDescriptor {
+            instance_id: INSTANCE_ID,
+            rpc_endpoint: "127.0.0.1:9900".into(),
+        },
+        target_epoch: artifact.ownership_epoch,
+        artifact: source_artifact,
+        target_artifact,
+        readiness_limits: TransferReadinessLimits {
+            max_tail_records: 100,
+            max_tail_bytes: 1_000_000,
+            max_estimated_catchup_ms: 1_000,
+            prepare_deadline_ms: 1_000,
+            forwarding_grace_ms: 1_000,
+        },
+        planned_at_ms: 0,
+        old_grant_expires_at_ms: 100,
+        phase: TransferPhase::Planned,
+        release_proof: None,
+        readiness_proof: None,
+        catchup_proof: None,
+        failure: None,
+    })
+    .unwrap();
+    machine.begin_source_prepare().unwrap();
+    machine.record_source_base(machine.transition().target_artifact.clone()).unwrap();
+    machine.begin_target_prepare().unwrap();
+    let readiness = TargetReadinessProof {
+        target_instance_id: INSTANCE_ID,
+        target_epoch: artifact.ownership_epoch,
+        artifact: machine.transition().target_artifact.clone(),
+        durable_tail: artifact.applied_seq,
+    };
+    machine.record_target_ready(readiness.clone()).unwrap();
+    machine.authorize_source_fence().unwrap();
+    machine
+        .record_source_fence(AuthorityReleaseProof::ExplicitFence {
+            source_instance_id: 6,
+            source_epoch: artifact.parent_epoch,
+            durable_tail: artifact.applied_seq,
+            durable_tail_offset: artifact.parent_cutover_offset,
+        })
+        .unwrap();
+    machine.mark_catchup_published().unwrap();
+    machine.record_target_caught_up(readiness).unwrap();
+    machine.commit_catalog().unwrap();
+    machine.transition().clone()
 }
 
 fn install_local_split_catalog(
@@ -637,6 +727,56 @@ async fn matching_grant_activation_promotes_a_replayed_partition() {
         .unwrap();
 
     assert_eq!(partition.snapshot().lifecycle, PartitionLifecycle::Serving);
+}
+
+#[tokio::test]
+async fn committed_transfer_activates_a_recovered_overlay() {
+    let (partition, artifact, _) = pending_transfer_fixture().await;
+    let transition = committed_transfer(&artifact);
+    let mut page = ChunkKvRangeCatalogPage {
+        generation: 1,
+        page_index: 0,
+        entries: vec![ChunkKvRangeCatalogEntry {
+            partition_id: transition.partition_id,
+            range: transition.range.clone(),
+            owner: transition.target.clone(),
+            owner_epoch: transition.target_epoch,
+            state: ChunkKvRangeCatalogPartitionState::Serving,
+            artifact: transition.target_artifact.clone(),
+            transition_id: Some(transition.transition_id),
+        }],
+        checksum: [0; 32],
+    };
+    page.seal().unwrap();
+    let mut head = ChunkKvRangeCatalogHead {
+        generation: 1,
+        previous_generation: None,
+        pages: vec![ChunkKvRangeCatalogPageRef {
+            page_generation: 1,
+            page_index: 0,
+            first_key: Vec::new(),
+            page_checksum: page.checksum,
+        }],
+        checksum: [0; 32],
+    };
+    head.seal().unwrap();
+    let service = ChunkKvService::new(INSTANCE_ID, 4).unwrap();
+    service
+        .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&partition))
+        .unwrap();
+
+    assert!(service
+        .activate_recovered_partition(transition.partition_id, transition.target_epoch)
+        .is_err());
+    let mut mismatched = transition.clone();
+    mismatched.transition_id.low += 1;
+    assert!(service
+        .activate_recovered_transfer_partition(transition.partition_id, transition.target_epoch, &mismatched)
+        .is_err());
+    service
+        .activate_recovered_transfer_partition(transition.partition_id, transition.target_epoch, &transition)
+        .unwrap();
+    assert_eq!(partition.lifecycle(), PartitionLifecycle::Serving);
 }
 
 #[tokio::test]

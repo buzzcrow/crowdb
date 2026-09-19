@@ -113,6 +113,7 @@ write_config() {
         echo "diskio_rpc_workers = 2"
         echo
         echo "[balance]"
+        echo "enabled = true"
         echo "target_partitions_per_owner = 4"
         echo "target_partition_bytes = $TARGET_PARTITION_BYTES"
         echo "minimum_weighted_improvement_percent = 25"
@@ -243,6 +244,7 @@ PARTITIONS=0
 CATALOG_GENERATION=0
 OWNER_MIN_PARTITIONS=0
 OWNER_MAX_PARTITIONS=0
+OWNERS_WITH_PARTITIONS=0
 SPLIT_STARTED_MS=$(date +%s%3N)
 deadline=$((SECONDS + TIMEOUT_SECS))
 while [ "$SECONDS" -lt "$deadline" ]; do
@@ -259,11 +261,32 @@ while [ "$SECONDS" -lt "$deadline" ]; do
     # Refresh independently of the compatibility probe: a g1 client is
     # intentionally permitted to keep routing through its old dispatcher
     # while the owner has already installed g2.
-    if HEALTH=$(curl --silent --fail "http://127.0.0.1:15101/health"); then
-        PARTITIONS=$(sed -n 's/.*"hosted_partitions":\([0-9][0-9]*\).*/\1/p' <<<"$HEALTH")
-        CATALOG_GENERATION=$(sed -n 's/.*"catalog_generation":\([0-9][0-9]*\).*/\1/p' <<<"$HEALTH")
-        OWNER_MIN_PARTITIONS=$PARTITIONS
-        OWNER_MAX_PARTITIONS=$PARTITIONS
+    PARTITIONS=0
+    OWNER_MIN_PARTITIONS=2147483647
+    OWNER_MAX_PARTITIONS=0
+    OWNERS_WITH_PARTITIONS=0
+    for instance in 1 2 3; do
+        if ! HEALTH=$(curl --silent --fail "http://127.0.0.1:$((15100 + instance))/health"); then
+            continue
+        fi
+        OWNER_PARTITIONS=$(sed -n 's/.*"serving_partitions":\([0-9][0-9]*\).*/\1/p' <<<"$HEALTH")
+        OWNER_GENERATION=$(sed -n 's/.*"catalog_generation":\([0-9][0-9]*\).*/\1/p' <<<"$HEALTH")
+        PARTITIONS=$((PARTITIONS + ${OWNER_PARTITIONS:-0}))
+        if [ "${OWNER_PARTITIONS:-0}" -lt "$OWNER_MIN_PARTITIONS" ]; then
+            OWNER_MIN_PARTITIONS=${OWNER_PARTITIONS:-0}
+        fi
+        if [ "${OWNER_PARTITIONS:-0}" -gt "$OWNER_MAX_PARTITIONS" ]; then
+            OWNER_MAX_PARTITIONS=${OWNER_PARTITIONS:-0}
+        fi
+        if [ "${OWNER_PARTITIONS:-0}" -gt 0 ]; then
+            OWNERS_WITH_PARTITIONS=$((OWNERS_WITH_PARTITIONS + 1))
+        fi
+        if [ "${OWNER_GENERATION:-0}" -gt "$CATALOG_GENERATION" ]; then
+            CATALOG_GENERATION=${OWNER_GENERATION:-0}
+        fi
+    done
+    if [ "$OWNERS_WITH_PARTITIONS" -ge 2 ] && [ "$CATALOG_GENERATION" -ge 2 ]; then
+        break
     fi
     sleep 1
 done
@@ -277,6 +300,11 @@ collect_metrics
 if [ "$SPLIT_FINALIZATIONS" -lt 1 ]; then
     capture_failure_metrics
     echo "ERROR: automatic split did not retain local finalization metrics" >&2
+    exit 1
+fi
+if [ "$OWNERS_WITH_PARTITIONS" -lt 2 ]; then
+    capture_failure_metrics
+    echo "ERROR: automatic child-owner balance did not place a partition on a remote owner" >&2
     exit 1
 fi
 
@@ -331,11 +359,11 @@ for pid in "${CHUNK_KV_PIDS[@]:1}"; do
     fi
 done
 RSS_DELTA=$((RSS_END - RSS_START))
-printf 'operations\tconcurrency\tvalue_bytes\tread_percent\tp99_us\tpartitions\towner_min_partitions\towner_max_partitions\tadmission_backpressure\tsplit_prepare_ms\tsplit_finalizations\tsplit_catchup_lag_records\tsplit_finalization_duration_us\trecoveries\treplay_ms\treplay_partitions\treplay_partitions_s\trss_start_kib\trss_end_kib\trss_delta_kib\treplay_ready\n' \
+printf 'operations\tconcurrency\tvalue_bytes\tread_percent\tp99_us\tpartitions\towners_with_partitions\towner_min_partitions\towner_max_partitions\tadmission_backpressure\tsplit_prepare_ms\tsplit_finalizations\tsplit_catchup_lag_records\tsplit_finalization_duration_us\trecoveries\treplay_ms\treplay_partitions\treplay_partitions_s\trss_start_kib\trss_end_kib\trss_delta_kib\treplay_ready\n' \
     >"$RESULTS_FILE"
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t1\n' \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t1\n' \
     "$OPERATIONS" "$CONCURRENCY" "$VALUE_BYTES" "$READ_PERCENT" "$P99" "$PARTITIONS" \
-    "$OWNER_MIN_PARTITIONS" "$OWNER_MAX_PARTITIONS" "$ADMISSION_BACKPRESSURE" \
+    "$OWNERS_WITH_PARTITIONS" "$OWNER_MIN_PARTITIONS" "$OWNER_MAX_PARTITIONS" "$ADMISSION_BACKPRESSURE" \
     "$SPLIT_PREPARE_MS" "$SPLIT_FINALIZATIONS" \
     "$SPLIT_CATCHUP_LAG_RECORDS" "$SPLIT_FINALIZATION_DURATION_US" \
     "$RECOVERIES" "$REPLAY_MS" "$REPLAY_PARTITIONS" "$REPLAY_PARTITIONS_PER_S" \

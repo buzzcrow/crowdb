@@ -135,6 +135,15 @@ zero catch-up lag and admission backpressure, then restarted in 2.083 s,
 recovered all four partitions, and read a pre-restart value. The exact-root
 failure did not recur.
 
+The default-enabled R175 run at
+`bench-log/chunk-kv-regression-20260919-160015` completed 12,000 mixed 4 KiB
+operations with 25% reads and concurrency 32 in 9.592 s, with zero errors and
+p99 99.937 ms. It completed two split finalizations, moved a partition to a
+second serving owner, materialized the committed transfer overlay, and reached
+three partitions across two owners with no admission backpressure or monitor
+transition errors. Source restart completed in 1.052 s, recovered two assigned
+partitions, and read a pre-restart value.
+
 ## Open Issues
 
 - R175's proof-backed happy path and primary restart paths are operational, but
@@ -143,6 +152,13 @@ failure did not recur.
   `AwaitingFence` can cause an availability pause until that durable target is
   restarted; the epoch/catalog proofs still prevent dual writers. Per the
   implementation cutoff, leave this for a later hardening pass.
+- Killing the source while a remote target is only prepared and a newer local
+  split is still materializing can advance a stream writer epoch before the
+  source catalog assignment changes. An immediate source restart then rejects
+  the older catalog epoch as stale, while group 0 reports transition identity
+  reuse. The normal committed-transfer path is covered separately; this exact
+  crash-phase interleaving exceeded the ten-minute debugging cutoff and remains
+  in the process-level fault-injection matrix.
 - R175 background transfer materialization, forwarding-grace expiry, and final
   source object reclamation remain follow-up work. They are outside the
   foreground handoff and do not block the R173 persistent mini-cluster path.
@@ -502,11 +518,15 @@ enabled by default; operators can disable it independently of local splitting.
   unpublished target overlay and adopts the lease-excluded source stream so
   the complete durable tail is replayed. The remaining process-level crash
   matrix is recorded under Open Issues and does not block R173.
-- [ ] **Materialize and reclaim balance state in background**: checkpoint the
+- [~] **Materialize and reclaim balance state in background**: checkpoint the
   target overlay, materialize shared packs, retain source tree/stream/retry
   history through catalog and forwarding grace, then remove source objects and
   forwarding state only after every pin clears. Files: chunk-KV maintenance,
   server transition cleanup, metrics, and GC integration tests.
+  The target now checkpoints and reports independent recovery, after which
+  group 0 clears the single transfer overlay and transition identity without
+  applying the two-entry split cleanup rule. Physical source object deletion
+  and forwarding-grace expiry remain deferred under Open Issues.
 
 ## Exact Manifest Recovery
 

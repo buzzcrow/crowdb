@@ -50,10 +50,24 @@ pub async fn plan(control: &Group0ControlPlane, descriptor: &DomainMonitorDescri
         .flat_map(|page| page.entries.iter())
         .collect();
     if let Some(entry) = entries.iter().copied().find(|entry| {
-        entry.artifact.tail_overlay.is_some()
+        entry.state == ChunkKvRangeCatalogPartitionState::Serving
+            && entry.artifact.tail_overlay.is_some()
             && partition_load(&state, entry).is_some_and(|load| load.independently_recoverable)
     }) {
-        catalog::publish_materialized_partition(control, entry.partition_id).await?;
+        let committed_transfer = read_transfers(control).await?.into_iter().any(|(transition, _)| {
+            transition.phase == TransferPhase::CatalogCommitted
+                && entry.transition_id == Some(transition.transition_id)
+                && entry.partition_id == transition.partition_id
+                && entry.range == transition.range
+                && entry.owner == transition.target
+                && entry.owner_epoch == transition.target_epoch
+                && entry.artifact == transition.target_artifact
+        });
+        if committed_transfer {
+            catalog::publish_materialized_transfer(control, entry.partition_id).await?;
+        } else {
+            catalog::publish_materialized_partition(control, entry.partition_id).await?;
+        }
         // Materialization only releases an immutable parent-stream overlay.
         // It does not affect request routing, so immediately plan from the
         // refreshed catalog instead of inserting a control-plane idle cycle

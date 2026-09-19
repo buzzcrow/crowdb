@@ -16,7 +16,8 @@ use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPartitionState, ChunkKvResponse,
     ChunkKvRpcErrorCode, Id128, KeyRange, MultiGetRequest, MultiGetResponse, OperationResult, OwnerHint,
     PointOperation, PointRequest, RequestRouting, RpcCompareCondition, RpcFailure, RpcJournalPosition,
-    RpcValue, ScanContinuation, ScanDirection, ScanRequest, SeekKind, SeekRequest,
+    RpcValue, ScanContinuation, ScanDirection, ScanRequest, SeekKind, SeekRequest, TransferPhase,
+    TransferTransition,
 };
 use crowdb_protocol::common::{ChunkKvExtra, ChunkKvPartitionLoad};
 use thiserror::Error;
@@ -59,6 +60,7 @@ pub struct ServerHealth {
     pub lifecycle: ServerLifecycle,
     pub catalog_generation: u64,
     pub partitions: Vec<HostedPartitionHealth>,
+    pub serving_partitions: usize,
 }
 
 #[derive(Debug, Error)]
@@ -277,7 +279,8 @@ impl ChunkKvService {
 
     #[must_use]
     pub fn health(&self, now_monotonic_ms: u64) -> ServerHealth {
-        let catalog_generation = self.catalog.load().generation;
+        let catalog = self.catalog.load();
+        let catalog_generation = catalog.generation;
         let mut partitions: Vec<HostedPartitionHealth> = self
             .partitions
             .load()
@@ -309,11 +312,25 @@ impl ChunkKvService {
         } else {
             ServerLifecycle::Prepared
         };
+        let serving_partitions = catalog
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry.owner.instance_id == self.instance_id
+                    && entry.state == ChunkKvRangeCatalogPartitionState::Serving
+                    && partitions.iter().any(|partition| {
+                        partition.partition_id == entry.partition_id
+                            && partition.owner_epoch == entry.owner_epoch
+                            && partition.lifecycle == crowdb_chunk_kv::PartitionLifecycle::Serving
+                    })
+            })
+            .count();
         ServerHealth {
             instance_id: self.instance_id,
             lifecycle,
             catalog_generation,
             partitions,
+            serving_partitions,
         }
     }
 
@@ -830,6 +847,57 @@ impl ChunkKvService {
             .get(&partition_id)
             .ok_or(ChunkKvError::OutOfRange)?
             .activate_recovered(owner_epoch)
+    }
+
+    /// Returns the catalog transition attached to one hosted assignment.
+    #[must_use]
+    pub fn catalog_transition_id(&self, partition_id: Id128) -> Option<Id128> {
+        self.catalog
+            .load()
+            .entry_for_partition(partition_id)
+            .and_then(|entry| entry.transition_id)
+    }
+
+    /// Activates a recovered overlay only when a committed transfer exactly
+    /// proves the current catalog assignment.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authority, identity, epoch, or lifecycle error without
+    /// activating the target when any durable proof differs.
+    pub fn activate_recovered_transfer_partition(
+        &self,
+        partition_id: Id128,
+        owner_epoch: u64,
+        transition: &TransferTransition,
+    ) -> Result<(), ChunkKvError> {
+        transition
+            .validate()
+            .map_err(|error| ChunkKvError::InvalidRequest(error.to_string()))?;
+        let catalog = self.catalog.load();
+        let entry = catalog
+            .entry_for_partition(partition_id)
+            .ok_or(ChunkKvError::OutOfRange)?;
+        let exact = transition.phase == TransferPhase::CatalogCommitted
+            && entry.transition_id == Some(transition.transition_id)
+            && transition.partition_id == partition_id
+            && transition.range == entry.range
+            && transition.target == entry.owner
+            && transition.target.instance_id == self.instance_id
+            && transition.target_epoch == owner_epoch
+            && transition.target_epoch == entry.owner_epoch
+            && transition.target_artifact == entry.artifact
+            && entry.state == ChunkKvRangeCatalogPartitionState::Serving;
+        if !exact {
+            return Err(ChunkKvError::NotServing(
+                "committed transfer does not prove this serving assignment".into(),
+            ));
+        }
+        self.partitions
+            .load()
+            .get(&partition_id)
+            .ok_or(ChunkKvError::OutOfRange)?
+            .activate_recovered_transfer(owner_epoch)
     }
 
     /// Handles a point request directly; it never proxies to another owner.

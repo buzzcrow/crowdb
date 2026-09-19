@@ -536,9 +536,7 @@ async fn install_latest_grant(
                 warn!(%error, "rejected chunk KV serving grant");
             } else if service.health(now_monotonic_ms).catalog_generation == catalog_generation {
                 for assignment in assignments {
-                    if let Err(error) =
-                        service.activate_recovered_partition(assignment.partition_id, assignment.owner_epoch)
-                    {
+                    if let Err(error) = activate_granted_assignment(store, service, &assignment).await {
                         warn!(
                             partition_id_high = assignment.partition_id.high,
                             partition_id_low = assignment.partition_id.low,
@@ -553,6 +551,34 @@ async fn install_latest_grant(
         Ok(None) => service.authority().clear(),
         Err(error) => warn!(%error, "serving-grant refresh failed; retaining local lease deadline"),
     }
+}
+
+async fn activate_granted_assignment(
+    store: &Group0ControlStore,
+    service: &ChunkKvService,
+    assignment: &crowdb_protocol::chunk_kv::ServingAssignment,
+) -> Result<(), String> {
+    let Some(transition_id) = service.catalog_transition_id(assignment.partition_id) else {
+        return service
+            .activate_recovered_partition(assignment.partition_id, assignment.owner_epoch)
+            .map_err(|error| error.to_string());
+    };
+    let transition = store
+        .load_transfer_transition(transition_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Some((transition, _)) = transition {
+        return service
+            .activate_recovered_transfer_partition(
+                assignment.partition_id,
+                assignment.owner_epoch,
+                &transition,
+            )
+            .map_err(|error| error.to_string());
+    }
+    service
+        .activate_recovered_partition(assignment.partition_id, assignment.owner_epoch)
+        .map_err(|error| error.to_string())
 }
 
 async fn recover_assigned_partitions(
