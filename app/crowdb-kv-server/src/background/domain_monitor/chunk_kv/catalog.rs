@@ -151,12 +151,8 @@ pub async fn publish_materialized_transfer(
     let transition_id = current
         .transition_id
         .ok_or_else(|| "materialized transfer target has no transition identity".to_string())?;
-    let (head, pages) = release_materialized_transfer(
-        catalog.head,
-        catalog.pages,
-        transition_id,
-        partition_id,
-    )?;
+    let (head, pages) =
+        release_materialized_transfer(catalog.head, catalog.pages, transition_id, partition_id)?;
     publish(control, head, pages, catalog.head_revision).await
 }
 
@@ -652,7 +648,8 @@ mod tests {
         };
         head.seal().unwrap();
 
-        let (head, pages) = release_materialized_transfer(head, vec![page], transition_id, partition_id).unwrap();
+        let (head, pages) =
+            release_materialized_transfer(head, vec![page], transition_id, partition_id).unwrap();
         entry.artifact.tail_overlay = None;
         entry.transition_id = None;
         assert_eq!(head.generation, 2);

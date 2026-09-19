@@ -337,3 +337,11 @@ generation.
 
 - Real-process fault injection should continue expanding coverage of ambiguous
   catalog writes and process death at every balance phase.
+- A source crash while a remote target is only prepared and a newer local split
+  is still materializing can advance stream writer authority ahead of the
+  catalog assignment. Immediate source recovery then fails closed on the stale
+  catalog epoch. Recovery should reconcile this exact interleaving without
+  weakening the single-writer or exact-transition proofs.
+- Completed transfers remove their catalog overlay, but physical reclamation of
+  the departed source tree and stream, plus expiry of the stale-route
+  forwarding grace period, still need a manifest-fenced background policy.

@@ -19,9 +19,9 @@ use crowdb_protocol::KV_SERVER_MGMT_BASE;
 
 use commands::{
     run_bench_verb, run_chunk_diskdb_verb, run_chunk_stub_verb, run_cluster_verb, run_group_verb,
-    run_kv_data_verb, run_kv_server_verb, run_port_alloc, run_replica_verb, run_s3_verb, run_store_verb, BenchVerb,
-    ChunkDiskdbVerb, ChunkStubVerb, ClusterVerb, GroupVerb, KvDataVerb, KvServerVerb, PortAllocArgs,
-    ReplicaVerb, S3Verb, StoreVerb,
+    run_kv_data_verb, run_kv_server_verb, run_port_alloc, run_replica_verb, run_s3_verb, run_store_verb,
+    BenchVerb, ChunkDiskdbVerb, ChunkStubVerb, ClusterVerb, GroupVerb, KvDataVerb, KvServerVerb,
+    PortAllocArgs, ReplicaVerb, S3Verb, StoreVerb,
 };
 
 #[derive(Parser, Debug)]

@@ -16,8 +16,8 @@ use crowdb_chunk_stream::{
     StreamName, StreamRegistry,
 };
 use crowdb_protocol::chunk_kv::{
-    ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
-    AuthorityReleaseProof, ChunkKvRangeCatalogPartitionState, ChunkKvRpcErrorCode, ClientRequestId,
+    AuthorityReleaseProof, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage,
+    ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState, ChunkKvRpcErrorCode, ClientRequestId,
     DomainFailurePolicy, DomainMonitorDescriptor, Id128, KeyRange, MultiGetRequest, OperationResult,
     OwnerDescriptor, PartitionArtifact, PointOperation, PointRequest, RequestRouting, ScanDirection,
     ScanRequest, SeekKind, SeekRequest, ServingAssignment, ServingGrant, TailOverlayArtifact,
@@ -337,7 +337,9 @@ fn committed_transfer(artifact: &PreparedSplitWriterArtifact) -> TransferTransit
     })
     .unwrap();
     machine.begin_source_prepare().unwrap();
-    machine.record_source_base(machine.transition().target_artifact.clone()).unwrap();
+    machine
+        .record_source_base(machine.transition().target_artifact.clone())
+        .unwrap();
     machine.begin_target_prepare().unwrap();
     let readiness = TargetReadinessProof {
         target_instance_id: INSTANCE_ID,

@@ -147,8 +147,9 @@ TEST(AsyncScan, MatchesSyncScanOutputIncludingTruncation)
     ct_buf   sync_entries = {};
     uint64_t sync_count   = 0;
     int32_t  sync_trunc   = 0;
-    ASSERT_EQ(ct_scan(t, nullptr, 0, nullptr, 0, 0, 0, nullptr, 0, 12, 0, 0, 0, 0, &sync_entries, &sync_count, &sync_trunc),
-              0);
+    ASSERT_EQ(
+        ct_scan(t, nullptr, 0, nullptr, 0, 0, 0, nullptr, 0, 12, 0, 0, 0, 0, &sync_entries, &sync_count, &sync_trunc),
+        0);
     auto sync_map = unpack_entries(sync_entries, sync_count);
     ct_free_buf(&sync_entries);
 

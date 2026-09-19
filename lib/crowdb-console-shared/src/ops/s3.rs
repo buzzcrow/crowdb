@@ -15,9 +15,7 @@ use serde::Serialize;
 use crate::config::{ConsoleConfig, LocalLaunchSpec, ServerEntry, ServiceType};
 use crate::error::{Error, Result};
 use crate::lifecycle;
-use crate::ops::cluster::{
-    self, KvDeployTunables, LocalChunkdbDeployConfig, LocalDiskdbDeployConfig,
-};
+use crate::ops::cluster::{self, KvDeployTunables, LocalChunkdbDeployConfig, LocalDiskdbDeployConfig};
 use crate::ops::OpContext;
 
 const CONFIG_FILE: &str = "console.toml";
@@ -180,7 +178,12 @@ async fn restart(data_dir: &Path) -> Result<MiniClusterStatus> {
             .cloned()
             .ok_or_else(|| Error::Config(format!("{} has no launch specification", server.id)))?;
         let pid = lifecycle::restart_local_service(&server.id, server.pid.unwrap_or(0), &launch).await?;
-        if let Some(entry) = ctx.config_mut().servers.iter_mut().find(|entry| entry.id == server.id) {
+        if let Some(entry) = ctx
+            .config_mut()
+            .servers
+            .iter_mut()
+            .find(|entry| entry.id == server.id)
+        {
             entry.pid = Some(pid);
         }
         ctx.config().save(&config_path(data_dir))?;
@@ -269,7 +272,11 @@ async fn spawn_chunk_kv(data_dir: &Path, seeds: &[String]) -> Result<SpawnedServ
     let workdir = data_dir.join("services/chunk-kv-1");
     let log_dir = workdir.join("log");
     std::fs::create_dir_all(&log_dir)?;
-    let seed_toml = seeds.iter().map(|s| format!("{s:?}")).collect::<Vec<_>>().join(", ");
+    let seed_toml = seeds
+        .iter()
+        .map(|s| format!("{s:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     let config_path = workdir.join("chunk-kv.toml");
     std::fs::write(
         &config_path,
@@ -343,8 +350,13 @@ fn server_entry(id: &str, service_type: ServiceType, rest_port: u16, rpc_port: u
 }
 
 async fn spawn(spec: &LocalLaunchSpec, id: &str) -> Result<u32> {
-    let log_path = Path::new(&spec.workdir).join("log").join(format!("{id}.stdout.log"));
-    let log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path)?;
+    let log_path = Path::new(&spec.workdir)
+        .join("log")
+        .join(format!("{id}.stdout.log"));
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
     let mut child = lifecycle::detached_command(&spec.program)
         .args(&spec.args)
         .envs(&spec.env)
@@ -353,7 +365,9 @@ async fn spawn(spec: &LocalLaunchSpec, id: &str) -> Result<u32> {
         .stderr(Stdio::from(log))
         .kill_on_drop(false)
         .spawn()?;
-    let pid = child.id().ok_or_else(|| Error::Config(format!("{id} has no pid")))?;
+    let pid = child
+        .id()
+        .ok_or_else(|| Error::Config(format!("{id} has no pid")))?;
     if let Some(url) = &spec.readiness_url {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(1))
@@ -362,14 +376,25 @@ async fn spawn(spec: &LocalLaunchSpec, id: &str) -> Result<u32> {
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             if let Some(status) = child.try_wait()? {
-                return Err(Error::UpstreamRpc { node_id: id.into(), status: format!("exited before ready: {status}; log={}", log_path.display()) });
+                return Err(Error::UpstreamRpc {
+                    node_id: id.into(),
+                    status: format!("exited before ready: {status}; log={}", log_path.display()),
+                });
             }
-            if client.get(url).send().await.is_ok_and(|response| response.status().is_success()) {
+            if client
+                .get(url)
+                .send()
+                .await
+                .is_ok_and(|response| response.status().is_success())
+            {
                 break;
             }
             if Instant::now() >= deadline {
                 let _ = child.kill().await;
-                return Err(Error::UpstreamRpc { node_id: id.into(), status: format!("readiness timeout; log={}", log_path.display()) });
+                return Err(Error::UpstreamRpc {
+                    node_id: id.into(),
+                    status: format!("readiness timeout; log={}", log_path.display()),
+                });
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -379,7 +404,10 @@ async fn spawn(spec: &LocalLaunchSpec, id: &str) -> Result<u32> {
 }
 
 fn find_binary(env: &str, name: &str) -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os(env).map(PathBuf::from).filter(|path| path.is_file()) {
+    if let Some(path) = std::env::var_os(env)
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+    {
         return Ok(path);
     }
     if let Ok(exe) = std::env::current_exe() {
@@ -390,25 +418,43 @@ fn find_binary(env: &str, name: &str) -> Result<PathBuf> {
             }
         }
     }
-    Err(Error::NotFound { kind: "binary".into(), id: format!("{name} (set {env})") })
+    Err(Error::NotFound {
+        kind: "binary".into(),
+        id: format!("{name} (set {env})"),
+    })
 }
 
-fn status_from(data_dir: &Path, created: bool, config: &ConsoleConfig, endpoint: String) -> MiniClusterStatus {
+fn status_from(
+    data_dir: &Path,
+    created: bool,
+    config: &ConsoleConfig,
+    endpoint: String,
+) -> MiniClusterStatus {
     MiniClusterStatus {
         created,
         endpoint,
         data_dir: data_dir.to_path_buf(),
-        running_services: config.servers.iter().filter(|server| server.pid.is_some_and(lifecycle::process_is_alive)).count(),
+        running_services: config
+            .servers
+            .iter()
+            .filter(|server| server.pid.is_some_and(lifecycle::process_is_alive))
+            .count(),
         total_services: config.servers.len(),
     }
 }
 
 fn port_error(error: impl std::fmt::Display) -> Error {
-    Error::Validation { field: "port".into(), message: error.to_string() }
+    Error::Validation {
+        field: "port".into(),
+        message: error.to_string(),
+    }
 }
 
 fn http_error(error: &reqwest::Error) -> Error {
-    Error::UpstreamRpc { node_id: "s3".into(), status: error.to_string() }
+    Error::UpstreamRpc {
+        node_id: "s3".into(),
+        status: error.to_string(),
+    }
 }
 
 /// Send one thin S3 HTTP operation to the endpoint persisted in `data_dir`.
@@ -436,7 +482,11 @@ pub async fn request(
     }
     if !query.is_empty() {
         url.push('?');
-        url.push_str(&form_urlencoded::Serializer::new(String::new()).extend_pairs(query.iter().map(|(k, v)| (*k, v.as_str()))).finish());
+        url.push_str(
+            &form_urlencoded::Serializer::new(String::new())
+                .extend_pairs(query.iter().map(|(k, v)| (*k, v.as_str())))
+                .finish(),
+        );
     }
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
@@ -448,19 +498,29 @@ pub async fn request(
     }
     let response = request.send().await.map_err(|error| http_error(&error))?;
     let status = response.status().as_u16();
-    let bytes = response.bytes().await.map_err(|error| http_error(&error))?.to_vec();
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| http_error(&error))?
+        .to_vec();
     if !(200..300).contains(&status) {
-        return Err(Error::UpstreamRpc { node_id: "s3".into(), status: format!("HTTP {status}: {}", String::from_utf8_lossy(&bytes)) });
+        return Err(Error::UpstreamRpc {
+            node_id: "s3".into(),
+            status: format!("HTTP {status}: {}", String::from_utf8_lossy(&bytes)),
+        });
     }
     Ok((status, bytes))
 }
 
 fn encode_path(value: &str) -> String {
-    value.bytes().map(|byte| {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
-            char::from(byte).to_string()
-        } else {
-            format!("%{byte:02X}")
-        }
-    }).collect()
+    value
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+                char::from(byte).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect()
 }
