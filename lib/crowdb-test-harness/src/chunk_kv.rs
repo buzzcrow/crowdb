@@ -7,7 +7,6 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use crowdb_protocol::port::alloc::alloc_test_port;
 use crowdb_protocol::ServicePort;
 
 static INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -42,17 +41,32 @@ pub struct ChunkKvProcess {
     pub http_port: u16,
     pub config_path: std::path::PathBuf,
     pub log_path: std::path::PathBuf,
+    runtime: Option<crate::test_dirs::TestRuntime>,
 }
 
 impl ChunkKvProcess {
     pub fn start(kv_seeds: &[String]) -> Self {
+        let mut runtime = crate::test_dirs::TestRuntime::new("chunk-kv")
+            .unwrap_or_else(|error| panic!("create Chunk-KV runtime namespace: {error}"));
+        let mut process = Self::start_in(&mut runtime, kv_seeds);
+        process.runtime = Some(runtime);
+        process
+    }
+
+    /// Start Chunk-KV inside a shared runtime namespace.
+    pub fn start_in(runtime: &mut crate::test_dirs::TestRuntime, kv_seeds: &[String]) -> Self {
         let binary = crowdb_chunk_kv_server_bin().unwrap_or_else(|| {
             panic!("crowdb-chunk-kv-server binary not found; build it or set CROWDB_CHUNK_KV_SERVER_BIN")
         });
-        let rpc_port = alloc_test_port(ServicePort::ChunkKvRpc);
-        let http_port = alloc_test_port(ServicePort::ChunkKvHttp);
         let instance = INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
         let instance_id = 10_000 + instance;
+        let logical_identity = format!("instance-{instance_id}");
+        let rpc_port = runtime
+            .assign_named_port(ServicePort::ChunkKvRpc, &logical_identity)
+            .unwrap_or_else(|error| panic!("assign Chunk-KV RPC port: {error}"));
+        let http_port = runtime
+            .assign_named_port(ServicePort::ChunkKvHttp, &logical_identity)
+            .unwrap_or_else(|error| panic!("assign Chunk-KV HTTP port: {error}"));
         let seeds = kv_seeds
             .iter()
             .map(|value| format!("\"{value}\""))
@@ -86,19 +100,18 @@ owner_epoch = 1
 metadata_group_id = 1
 "#
         );
-        let config_path = crate::test_dirs::test_data_dir()
-            .join(format!("chunk-kv-config-{}-{instance}.toml", std::process::id()));
+        let service_root = runtime
+            .service_dir("chunk-kv", &logical_identity)
+            .unwrap_or_else(|error| panic!("create Chunk-KV service root: {error}"));
+        let config_path = service_root.join("config").join("chunk-kv.toml");
         std::fs::write(&config_path, config).expect("write Chunk-KV config");
-        let log_path = crate::test_dirs::test_log_dir().join(format!(
-            "crowdb-chunk-kv-e2e-{}-{instance}.log",
-            std::process::id()
-        ));
+        let log_path = service_root.join("log").join("chunk-kv.log");
         let log_file = std::fs::File::create(&log_path).expect("create Chunk-KV log");
         let log_error = log_file.try_clone().expect("clone Chunk-KV log");
         let child = Command::new(binary)
             .args(["--config", config_path.to_str().expect("UTF-8 config path")])
             .arg("--log-dir")
-            .arg(crate::test_dirs::test_log_dir())
+            .arg(service_root.join("log"))
             .arg("--log")
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_error))
@@ -111,6 +124,7 @@ metadata_group_id = 1
             http_port,
             config_path,
             log_path,
+            runtime: None,
         }
     }
 
@@ -159,7 +173,7 @@ metadata_group_id = 1
         self.child = Command::new(binary)
             .args(["--config", self.config_path.to_str().expect("UTF-8 config path")])
             .arg("--log-dir")
-            .arg(crate::test_dirs::test_log_dir())
+            .arg(self.log_path.parent().expect("Chunk-KV log directory"))
             .arg("--log")
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_error))

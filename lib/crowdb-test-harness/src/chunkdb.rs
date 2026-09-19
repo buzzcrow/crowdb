@@ -5,13 +5,11 @@
 //! client construction for chunkdb E2E tests.
 
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crowdb_chunkdb_client::{ChunkdbClient, ChunkdbRpcTransport, RetryConfig};
 use crowdb_kv_client::ServiceRegistryClient;
-use crowdb_protocol::port::alloc::alloc_test_port;
 use crowdb_protocol::ServicePort;
 
 use crate::hardware::INSTANCE_ID;
@@ -19,8 +17,6 @@ use crate::hardware::INSTANCE_ID;
 // Re-export hardware helpers for convenience.
 pub use crate::cluster::crowdb_kv_server_bin;
 pub use crate::hardware::{seed_hardware, standard_disk_ids_4};
-
-static CHUNKDB_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Find the crowdb-chunkdb binary.
 pub fn crowdb_chunkdb_bin() -> Option<std::path::PathBuf> {
@@ -55,6 +51,38 @@ pub struct ChunkdbProcess {
     pub http_port: i32,
     pub config_path: std::path::PathBuf,
     pub log_path: std::path::PathBuf,
+    runtime: Option<crate::test_dirs::TestRuntime>,
+}
+
+struct ChunkdbRuntime {
+    listen_port: i32,
+    rpc_port: i32,
+    http_port: i32,
+    config_path: std::path::PathBuf,
+    log_path: std::path::PathBuf,
+}
+
+fn prepare_runtime(runtime: &mut crate::test_dirs::TestRuntime) -> ChunkdbRuntime {
+    let assign = |runtime: &mut crate::test_dirs::TestRuntime, service, label| {
+        i32::from(
+            runtime
+                .assign_named_port(service, "instance-1")
+                .unwrap_or_else(|error| panic!("assign ChunkDB {label} port: {error}")),
+        )
+    };
+    let listen_port = assign(runtime, ServicePort::ChunkdbListen, "listen");
+    let rpc_port = assign(runtime, ServicePort::ChunkdbRpc, "RPC");
+    let http_port = assign(runtime, ServicePort::ChunkdbHttp, "HTTP");
+    let root = runtime
+        .service_dir("chunkdb", "instance-1")
+        .unwrap_or_else(|error| panic!("create ChunkDB service root: {error}"));
+    ChunkdbRuntime {
+        listen_port,
+        rpc_port,
+        http_port,
+        config_path: root.join("config").join("chunkdb.toml"),
+        log_path: root.join("log").join("chunkdb.log"),
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -135,6 +163,19 @@ impl ChunkdbProcess {
     }
 
     pub fn start_with_options(kv_seeds: &[String], options: ChunkdbStartOptions) -> Self {
+        let mut runtime = crate::test_dirs::TestRuntime::new("chunkdb")
+            .unwrap_or_else(|error| panic!("create ChunkDB runtime namespace: {error}"));
+        let mut process = Self::start_with_options_in(&mut runtime, kv_seeds, options);
+        process.runtime = Some(runtime);
+        process
+    }
+
+    /// Start ChunkDB inside a shared runtime namespace.
+    pub fn start_with_options_in(
+        runtime: &mut crate::test_dirs::TestRuntime,
+        kv_seeds: &[String],
+        options: ChunkdbStartOptions,
+    ) -> Self {
         let bin = crowdb_chunkdb_bin().unwrap_or_else(|| {
             panic!("crowdb-chunkdb binary not found; set CROWDB_CHUNKDB_BIN or build app/crowdb-chunkdb")
         });
@@ -149,14 +190,15 @@ impl ChunkdbProcess {
         // differ by 200, so rpc_port = listen_port + 200, the offset
         // the client derives (without it the subprocess falls back to
         // the hardcoded default 0.0.0.0:9961 and collides across tests).
-        let listen_port = i32::from(alloc_test_port(ServicePort::ChunkdbListen));
-        let rpc_port = i32::from(alloc_test_port(ServicePort::ChunkdbRpc));
+        let paths = prepare_runtime(runtime);
+        let listen_port = paths.listen_port;
+        let rpc_port = paths.rpc_port;
         debug_assert_eq!(
             rpc_port - listen_port,
             i32::from(crowdb_protocol::CHUNKDB_RPC_BASE) - i32::from(crowdb_protocol::CHUNKDB_LISTEN_BASE),
             "allocator must preserve the listen->rpc offset"
         );
-        let http_port = i32::from(alloc_test_port(ServicePort::ChunkdbHttp));
+        let http_port = paths.http_port;
 
         let config_content = format!(
             r#"[server]
@@ -222,18 +264,15 @@ lock_hold_warn_threshold_ms = 1000
                 .join(", "),
         );
 
-        let inst = CHUNKDB_INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let config_path = crate::test_dirs::test_data_dir()
-            .join(format!("chunkdb-config-{}-{inst}.toml", std::process::id()));
+        let config_path = paths.config_path;
         std::fs::write(&config_path, &config_content).expect("write config");
 
-        let log_path = crate::test_dirs::test_log_dir()
-            .join(format!("crowdb-chunkdb-e2e-{}-{inst}.log", std::process::id()));
+        let log_path = paths.log_path;
         let log_file = std::fs::File::create(&log_path).expect("create log file");
         let log_file2 = log_file.try_clone().expect("clone log file");
 
         let mut cmd = Command::new(&bin);
-        let test_log_dir = crate::test_dirs::test_log_dir();
+        let test_log_dir = log_path.parent().expect("ChunkDB log directory");
         cmd.args(["--config", config_path.to_str().unwrap()])
             .arg("--log-dir")
             .arg(test_log_dir.to_str().unwrap())
@@ -249,6 +288,7 @@ lock_hold_warn_threshold_ms = 1000
             http_port,
             config_path,
             log_path,
+            runtime: None,
         }
     }
 

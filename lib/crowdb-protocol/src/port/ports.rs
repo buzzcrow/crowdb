@@ -128,6 +128,25 @@ pub enum ServicePort {
 }
 
 impl ServicePort {
+    /// Stable manifest key for this listener kind.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::KvServerMgmt => "kv_server_mgmt",
+            Self::KvServerListen => "kv_server_listen",
+            Self::DiskdbListen => "diskdb_listen",
+            Self::DiskdbHttp => "diskdb_http",
+            Self::DiskdbRpc => "diskdb_rpc",
+            Self::ChunkdbListen => "chunkdb_listen",
+            Self::ChunkdbHttp => "chunkdb_http",
+            Self::ChunkdbRpc => "chunkdb_rpc",
+            Self::DiskioRpc => "diskio_rpc",
+            Self::Web => "web",
+            Self::ChunkKvHttp => "chunk_kv_http",
+            Self::ChunkKvRpc => "chunk_kv_rpc",
+        }
+    }
+
     /// Base (start) port for this service type.
     #[must_use]
     pub const fn base(self) -> u16 {

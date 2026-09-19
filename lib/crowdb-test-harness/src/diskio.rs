@@ -5,7 +5,6 @@
 //! binary discovery for disk-io E2E tests.
 
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -13,6 +12,7 @@ use crowdb_diskio_client::{
     DiskId as DioDiskId, DiskIoRetCode, TestWireDiskioClient as DiskioClient,
     TestWireDiskioError as DiskioError,
 };
+use crowdb_protocol::ServicePort;
 use crowdb_rpc_ffi::RpcServer;
 
 use crate::hardware::{DG_ID, INSTANCE_ID, NODE_ID, RACK_ID};
@@ -131,14 +131,25 @@ pub struct DiskArg {
     pub zone_capacity: i64,
 }
 
-/// Monotonic counter for unique log file names when multiple diskio
-/// processes start in parallel (tests run concurrently by default).
-static DISKIO_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 pub struct DiskioProcess {
     pub child: std::process::Child,
     pub port: i32,
     pub log_path: std::path::PathBuf,
+    runtime: Option<crate::test_dirs::TestRuntime>,
+}
+
+fn prepare_runtime(
+    runtime: &mut crate::test_dirs::TestRuntime,
+    instance_id: u64,
+) -> (u16, std::path::PathBuf) {
+    let logical_identity = format!("instance-{instance_id}");
+    let port = runtime
+        .assign_named_port(ServicePort::DiskioRpc, &logical_identity)
+        .unwrap_or_else(|error| panic!("assign DiskIO RPC port: {error}"));
+    let service_root = runtime
+        .service_dir("diskio", &logical_identity)
+        .unwrap_or_else(|error| panic!("create DiskIO service root: {error}"));
+    (port, service_root.join("log").join("diskio.log"))
 }
 
 impl DiskioProcess {
@@ -161,6 +172,19 @@ impl DiskioProcess {
 
     /// Start a DiskIO process for one explicit group-0 disk-group owner.
     pub fn start_for_group(opts: &DiskioStartOpts<'_>, identity: DiskioGroup0Identity) -> Self {
+        let mut runtime = crate::test_dirs::TestRuntime::new("diskio")
+            .unwrap_or_else(|error| panic!("create DiskIO runtime namespace: {error}"));
+        let mut process = Self::start_for_group_in(&mut runtime, opts, identity);
+        process.runtime = Some(runtime);
+        process
+    }
+
+    /// Start a DiskIO process inside a shared runtime namespace.
+    pub fn start_for_group_in(
+        runtime: &mut crate::test_dirs::TestRuntime,
+        opts: &DiskioStartOpts<'_>,
+        identity: DiskioGroup0Identity,
+    ) -> Self {
         let bin = crowdb_diskio_bin().unwrap_or_else(|| {
             panic!("crowdb-diskio binary not found; set CROWDB_DISKIO_BIN or build app/crowdb-diskio")
         });
@@ -170,18 +194,12 @@ impl DiskioProcess {
             )
         });
 
-        let inst = DISKIO_INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let log_path = crate::test_dirs::test_log_dir().join(format!(
-            "crowdb-diskio-e2e-{}-{}-{}.log",
-            opts.dummy_disk,
-            std::process::id(),
-            inst,
-        ));
+        let (assigned_port, log_path) = prepare_runtime(runtime, identity.instance_id);
         let log_file = std::fs::File::create(&log_path).expect("create log file");
         let log_file2 = log_file.try_clone().expect("clone log file");
 
         let mut cmd = Command::new(&bin);
-        cmd.args(["--port", "0", "--bind", "127.0.0.1"])
+        cmd.args(["--port", &assigned_port.to_string(), "--bind", "127.0.0.1"])
             .env("LD_LIBRARY_PATH", lib_dir.to_str().unwrap())
             .stdout(Stdio::from(log_file))
             .stderr(Stdio::from(log_file2));
@@ -230,7 +248,7 @@ impl DiskioProcess {
         let mut child = cmd.spawn().expect("start crowdb-diskio");
         eprintln!("crowdb-diskio ({}) log: {}", opts.dummy_disk, log_path.display());
 
-        let port = {
+        let observed_port = {
             let deadline = std::time::Instant::now() + Duration::from_secs(10);
             let mut port = None;
             while std::time::Instant::now() < deadline && port.is_none() {
@@ -259,11 +277,20 @@ impl DiskioProcess {
             })
         };
 
-        eprintln!("crowdb-diskio ({}) started on port {port}", opts.dummy_disk);
+        assert_eq!(
+            observed_port,
+            i32::from(assigned_port),
+            "DiskIO bound an unexpected port"
+        );
+        eprintln!(
+            "crowdb-diskio ({}) started on port {assigned_port}",
+            opts.dummy_disk
+        );
         Self {
             child,
-            port,
+            port: i32::from(assigned_port),
             log_path,
+            runtime: None,
         }
     }
 

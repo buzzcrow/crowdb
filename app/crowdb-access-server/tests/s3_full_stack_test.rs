@@ -26,7 +26,6 @@ use crowdb_test_harness::chunkdb::{
 use crowdb_test_harness::cluster::KvCluster;
 use crowdb_test_harness::diskdb::DiskdbProcess;
 use crowdb_test_harness::diskio::{DiskArg, DiskioGroup0Identity, DiskioProcess, DiskioStartOpts};
-use crowdb_test_harness::test_dirs::TestDir;
 use hyper::body::Bytes;
 use serde_json::json;
 
@@ -52,7 +51,6 @@ struct FullStackSetup {
     access_binary: PathBuf,
     cluster: KvCluster,
     identity: DiskioGroup0Identity,
-    _disk_data: TestDir,
     disk_arg: DiskArg,
     diskdb: DiskdbProcess,
     rpc: Arc<RpcServer>,
@@ -188,17 +186,13 @@ impl FullStackSetup {
     async fn restart_chunkdb(&mut self) {
         let case = TestCase::start("restart::chunkdb_recovers_objects");
         let previous = self.chunkdb.take().expect("chunkdb process");
-        self.chunkdb = Some(
-            verify_chunkdb_restart(
-                previous,
-                &self.cluster.mgmt_endpoints,
-                self.chunkdb_options,
-                &self.second_listen,
-                &self.access_key,
-                &self.secret_key,
-            )
-            .await,
-        );
+        drop(previous);
+        let seeds = self.cluster.mgmt_endpoints.clone();
+        let chunkdb =
+            ChunkdbProcess::start_with_options_in(self.cluster.runtime_mut(), &seeds, self.chunkdb_options);
+        chunkdb.wait_for_ready().await;
+        self.verify_restart("verify-after-chunkdb-restart", &self.second_listen);
+        self.chunkdb = Some(chunkdb);
         case.pass();
     }
 
@@ -220,7 +214,7 @@ impl FullStackSetup {
         let case = TestCase::start("restart::diskio_recovers_objects");
         drop(self.diskio.take().expect("diskio process"));
         self.diskio =
-            Some(start_durable_diskio(&self.cluster, &self.rpc, self.identity, &self.disk_arg).await);
+            Some(start_durable_diskio(&mut self.cluster, &self.rpc, self.identity, &self.disk_arg).await);
         self.verify_restart("verify-after-diskio-restart", &self.second_listen);
         case.pass();
     }
@@ -260,11 +254,15 @@ impl FullStackSetup {
 
 async fn start_full_stack() -> FullStackSetup {
     let access_binary = binary("crowdb-access-server", "CROWDB_ACCESS_SERVER_BIN");
-    let cluster = KvCluster::start().await;
+    let mut cluster = KvCluster::start().await;
     let identities = seed_compact_hardware(&cluster.make_hardware_client()).await;
     let identity = identities[0];
-    let disk_data = TestDir::new("s3-durable-disk").expect("create disk test directory");
-    let disk_path = disk_data.path().join("disk.dat");
+    let disk_path = cluster
+        .runtime_mut()
+        .service_dir("diskio", &format!("instance-{}", identity.instance_id))
+        .expect("create durable DiskIO directory")
+        .join("data")
+        .join("disk.dat");
     let capacity = 16_384_u64 * 1024 * 1024;
     std::fs::File::create(&disk_path)
         .expect("create block disk")
@@ -278,7 +276,8 @@ async fn start_full_stack() -> FullStackSetup {
     };
 
     let diskdb_started_at = unix_time_ms();
-    let diskdb = DiskdbProcess::start_for_instance(&cluster.mgmt_endpoints, 999, Some(16_384));
+    let seeds = cluster.mgmt_endpoints.clone();
+    let diskdb = DiskdbProcess::start_for_instance_in(cluster.runtime_mut(), &seeds, 999, Some(16_384));
     diskdb.wait_for_ready().await;
     diskdb
         .wait_for_registry_ready(
@@ -292,20 +291,20 @@ async fn start_full_stack() -> FullStackSetup {
         .expect("listen for diskio readiness client");
     rpc.start();
     std::thread::sleep(Duration::from_millis(50));
-    let diskio = start_durable_diskio(&cluster, &rpc, identity, &disk_arg).await;
+    let diskio = start_durable_diskio(&mut cluster, &rpc, identity, &disk_arg).await;
 
     let chunkdb_options = ChunkdbStartOptions {
         placement_mode: ChunkdbPlacementMode::UnsafeColocated,
         repair_allow_unsafe_placement: true,
         ..ChunkdbStartOptions::default()
     };
-    let chunkdb = ChunkdbProcess::start_with_options(&cluster.mgmt_endpoints, chunkdb_options);
+    let chunkdb = ChunkdbProcess::start_with_options_in(cluster.runtime_mut(), &seeds, chunkdb_options);
     chunkdb.wait_for_ready().await;
     chunkdb
         .wait_for_registry_ready(&cluster.make_service_registry_client())
         .await;
     assert_range_delete_contract(&cluster).await;
-    let mut chunk_kv = ChunkKvProcess::start(&cluster.mgmt_endpoints);
+    let mut chunk_kv = ChunkKvProcess::start_in(cluster.runtime_mut(), &seeds);
     chunk_kv.wait_for_ready().await;
 
     let seeds = cluster.mgmt_endpoints.join(",");
@@ -319,7 +318,6 @@ async fn start_full_stack() -> FullStackSetup {
         access_binary,
         cluster,
         identity,
-        _disk_data: disk_data,
         disk_arg,
         diskdb,
         rpc,
@@ -339,15 +337,17 @@ async fn start_full_stack() -> FullStackSetup {
 }
 
 async fn start_durable_diskio(
-    cluster: &KvCluster,
+    cluster: &mut KvCluster,
     rpc: &Arc<RpcServer>,
     identity: DiskioGroup0Identity,
     disk: &DiskArg,
 ) -> DiskioProcess {
-    let diskio = DiskioProcess::start_for_group(
+    let seeds = cluster.mgmt_endpoints.clone();
+    let diskio = DiskioProcess::start_for_group_in(
+        cluster.runtime_mut(),
         &DiskioStartOpts {
             dummy_disk: "null",
-            kv_seeds: &cluster.mgmt_endpoints,
+            kv_seeds: &seeds,
             disks: std::slice::from_ref(disk),
             fault_error_rate: 0.0,
             fault_latency_ms: None,
@@ -392,21 +392,6 @@ async fn assert_range_delete_contract(cluster: &KvCluster) {
         })
         .await;
     assert!(matches!(range_delete, Err(ChunkdbClientError::Unimplemented(_))));
-}
-
-async fn verify_chunkdb_restart(
-    previous: ChunkdbProcess,
-    seeds: &[String],
-    options: ChunkdbStartOptions,
-    listen: &str,
-    access_key: &str,
-    secret_key: &str,
-) -> ChunkdbProcess {
-    drop(previous);
-    let chunkdb = ChunkdbProcess::start_with_options(seeds, options);
-    chunkdb.wait_for_ready().await;
-    run_restart_phase("verify-after-chunkdb-restart", listen, access_key, secret_key);
-    chunkdb
 }
 
 async fn verify_diskdb_restart(

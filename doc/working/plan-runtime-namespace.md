@@ -21,27 +21,27 @@ roots without using the system temporary directory.
 
 ## Phase 1: Namespace core
 
-- [~] **Define runtime hierarchy**: expose the repository-local
+- [x] **Define runtime hierarchy**: expose the repository-local
   `.crowdb-runtime/{ephemeral,persistent,artifacts,ports}` roots and a versioned
   namespace manifest with per-service directories. Files: protocol/test-harness
   runtime modules and tests.
-- [ ] **Make claims owner-aware**: move tests to the workspace-global registry,
+- [~] **Make claims owner-aware**: move tests to the workspace-global registry,
   record namespace owner plus process-start identity, atomically reclaim dead
   ephemeral claims, and retain persistent claims. Files: protocol port
   allocator and tests.
-- [ ] **Add stable assignments**: map `ServicePort` plus logical instance to one
+- [x] **Add stable assignments**: map `ServicePort` plus logical instance to one
   persisted port, detect conflicting owners, and make restart lookup allocation
   free. Files: protocol namespace and tests.
 
 ## Phase 2: Shared process harness
 
-- [ ] **Namespace KV clusters**: give `KvCluster` one namespace and place each
+- [x] **Namespace KV clusters**: give `KvCluster` one namespace and place each
   node's data, config, and logs below its service identity; preserve assignment
   across crash/restart. Files: test-harness cluster and tests.
-- [ ] **Namespace storage services**: migrate DiskDB, DiskIO, ChunkDB, and
+- [x] **Namespace storage services**: migrate DiskDB, DiskIO, ChunkDB, and
   chunk-KV constructors to namespace assignments and service roots; distinguish
   start, restart, and replacement. Files: test-harness service modules.
-- [ ] **Migrate harness consumers**: update process-spawning tests in KV server,
+- [~] **Migrate harness consumers**: update process-spawning tests in KV server,
   DiskDB, ChunkDB, access-server, console-shared, CLI, and web; retain port zero
   only when an in-process listener owns the bound socket. Files: Rust E2E tests.
 

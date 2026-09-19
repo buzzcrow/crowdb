@@ -4,4 +4,5 @@
 //! Port allocation and service port constants.
 
 pub mod alloc;
+pub mod namespace;
 pub mod ports;

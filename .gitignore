@@ -30,6 +30,9 @@ app/crowdb-web/ui/e2e/runtime-data/
 app/crowdb-web/ui/e2e/log/
 
 # ── Runtime artifacts (WAL, config, logs) ───────────────────────
+# Unified generated runtime root. Legacy entries below remain until every
+# producer is migrated.
+/.crowdb-runtime/
 # Top-level artifact dirs (anchored to repo root).
 /log/
 /runtime-data/

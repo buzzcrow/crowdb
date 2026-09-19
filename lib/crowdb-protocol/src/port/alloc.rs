@@ -311,10 +311,27 @@ static TEST_CFG: OnceLock<PortAllocConfig> = OnceLock::new();
 fn test_cfg() -> &'static PortAllocConfig {
     TEST_CFG.get_or_init(|| {
         let pid = std::process::id();
-        let root = std::env::temp_dir().join(format!("crowdb-port-alloc-test-{pid}"));
+        let root = workspace_runtime_root()
+            .join("ports")
+            .join(format!("legacy-process-{pid}"));
         let _ = fs::create_dir_all(&root);
         PortAllocConfig::new(root)
     })
+}
+
+fn workspace_runtime_root() -> PathBuf {
+    if let Some(root) = std::env::var_os("CROWDB_RUNTIME_ROOT") {
+        return PathBuf::from(root);
+    }
+    let mut root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    loop {
+        if root.join("pixi.toml").is_file() {
+            return root.join(".crowdb-runtime");
+        }
+        if !root.pop() {
+            return PathBuf::from(".crowdb-runtime");
+        }
+    }
 }
 
 /// Allocate a single port for `service` from the per-process test
@@ -356,7 +373,10 @@ mod tests {
 
     fn unique_cfg() -> PortAllocConfig {
         let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("crowdb-port-alloc-test-{id}"));
+        let dir = workspace_runtime_root()
+            .join("ephemeral")
+            .join("port-allocator-tests")
+            .join(format!("{}-{id}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         // Each test gets a unique offset so probes land in a range
         // above the real-service ports (10000-15999) but below the Linux
