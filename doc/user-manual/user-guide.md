@@ -3,65 +3,254 @@
 
 # CROWDB User Guide
 
-CROWDB is a high-performance distributed storage platform, a foundation
-layer for building storage systems where you own the hot path all the
-way down to the metal. The foundation is **crowdb-kv**, a distributed
-key-value cluster built on multi-group Multi-Paxos. This guide covers
-crowdb-kv operations: starting a cluster, performing basic KV operations,
-managing topology, and running upgrades.
+CROWDB is a distributed storage platform with an S3-compatible object data
+plane and a multi-group Multi-Paxos key-value foundation. This guide starts
+with the shortest usable path: create a persistent local S3 cluster and use
+bucket and object operations. The later sections cover the underlying KV
+cluster, physical topology, individual servers, upgrades, and recovery.
 
-crowdb-kv provides three interfaces for cluster management and data
-access:
+CROWDB provides three user-facing interfaces:
 
 - **Web UI** — the `crowdb-web` service provides a visual dashboard
   with cluster topology, group health, a KV Operator panel (store/group
   selector, paginated scan, inline CRUD, demo data injection), and
   Swagger UI for browsing the OpenAPI spec of any registered
   `crowdb-kv-server` instance.
-- **CLI** — the `crowdb-cli` CLI tool is a thin wrapper over the same
-  service HTTP API. It talks to a `crowdb-web` service
-  (`--ip` / `--port`, default `127.0.0.1:9920`); the service resolves
-  upstream `crowdb-kv-server` nodes. Use `--json` for machine-readable
-  output.
-- **RESTful API** — the service HTTP API is the underlying transport
-  for both the Web UI and the CLI. All endpoints are documented in
-  §7 (API Reference).
+- **CLI** — `crowdb-cli s3` owns the local S3 cluster lifecycle and sends
+  bucket/object requests directly to the cluster recorded by `--data-dir`.
+  Lower-level management commands discover services through group 0 and call
+  them directly. Use `--json` where supported for machine-readable output.
+- **HTTP APIs** — the local access server exposes the S3 HTTP API. The
+  console service exposes the lower-level cluster management API documented
+  in §8.
 
-The examples below show both CLI and curl for each operation. All
-curl examples assume these shell variables are set once:
+S3 examples use the loopback access endpoint. The first local cluster normally
+receives `127.0.0.1:16000`; when that port is already assigned, use the
+`endpoint` printed by `s3 cluster start` or `s3 cluster status.
 
 ```bash
-IP=127.0.0.1        # crowdb-web service IP
-PORT=9920           # crowdb-web service port
+S3_ENDPOINT=http://127.0.0.1:16000
 ```
-
-CLI commands omit `--ip`/`--port` for brevity; they default to
-`127.0.0.1:9920` (override with `--ip`/`--port` or the
-`CROWDB_KV_IP`/`CROWDB_KV_PORT` env vars).
 
 ### Prerequisites
 
 Before following the steps below:
 
-- **Build the binaries** — `pixi run build` produces `crowdb-web`,
-  `crowdb-kv-server`, and `crowdb-cli` in `target/debug/`.
-- **Start `crowdb-web`** — the CLI and Web UI both talk to this service.
-  ```bash
-  crowdb-web --port 9920
-  ```
-  Add `--test-mode` for an in-memory config (no persisted TOML; changes
-  are lost on restart).
-- **Set `CROWDB_KV_SERVER_BIN`** — the `server deploy` command spawns
-  `crowdb-kv-server` on each node. It searches for the binary in this
-  order: `$CROWDB_KV_SERVER_BIN`, a sibling of the running `crowdb-web`
-  process, then `$PATH`. Set the env var explicitly if the binary is
-  elsewhere:
-  ```bash
-  export CROWDB_KV_SERVER_BIN=/path/to/crowdb-kv-server
-  ```
-- **Node hosts** — the examples below use `--host 127.0.0.1` for a
-  single-machine deployment (all nodes on localhost). For a real
-  multi-node cluster, use each machine's reachable hostname or IP.
+- Run `pixi run build` from the repository root.
+- Add `target/release` to `PATH`, or invoke the binaries by their full paths.
+- Choose a dedicated cluster directory. The directory is the persistent
+  cluster identity and contains configuration, logs, and data files.
+
+---
+
+## 1. Quick Start: Persistent Local S3
+
+### 1.1 Start or restart the cluster
+
+Choose a directory and start the cluster:
+
+```bash
+S3_DATA_DIR="$PWD/.crowdb-runtime/persistent/s3-local"
+crowdb-cli s3 cluster start --data-dir "$S3_DATA_DIR"
+```
+
+An absent or empty directory creates a new file-backed cluster. A recognized
+cluster directory restarts the same cluster with its existing data and port
+assignments. A non-empty directory that is not a CROWDB cluster is rejected
+without modification.
+
+The command prints the S3 endpoint, running service count, and data directory.
+The default local endpoint is:
+
+```bash
+S3_ENDPOINT=http://127.0.0.1:16000
+```
+
+If the command prints a different endpoint because the default port is already
+assigned, update `S3_ENDPOINT` before using the `curl` examples.
+
+Inspect the recorded processes without changing them:
+
+```bash
+crowdb-cli s3 cluster status --data-dir "$S3_DATA_DIR"
+```
+
+Cluster lifecycle is a local CLI operation; it does not currently have an HTTP
+management endpoint.
+
+### 1.2 Bucket operations
+
+Create a bucket:
+
+```bash
+crowdb-cli s3 bucket add --data-dir "$S3_DATA_DIR" photos
+curl -X PUT "$S3_ENDPOINT/photos"
+```
+
+List buckets:
+
+```bash
+crowdb-cli s3 bucket list --data-dir "$S3_DATA_DIR"
+curl "$S3_ENDPOINT/"
+```
+
+Check that a bucket exists:
+
+```bash
+crowdb-cli s3 bucket inspect --data-dir "$S3_DATA_DIR" photos
+curl -I "$S3_ENDPOINT/photos"
+```
+
+Remove an empty bucket:
+
+```bash
+crowdb-cli s3 bucket remove --data-dir "$S3_DATA_DIR" photos
+curl -X DELETE "$S3_ENDPOINT/photos"
+```
+
+Removing a non-empty bucket returns the S3 error and leaves its objects intact.
+
+### 1.3 Object CRUD
+
+Create the bucket used by the following examples, then upload an object from a
+file or standard input:
+
+```bash
+crowdb-cli s3 bucket add --data-dir "$S3_DATA_DIR" documents
+
+crowdb-cli s3 object put --data-dir "$S3_DATA_DIR" \
+  documents reports/hello.txt --input ./hello.txt
+
+printf 'hello from CROWDB\n' | crowdb-cli s3 object put \
+  --data-dir "$S3_DATA_DIR" documents reports/stdin.txt
+
+curl -X PUT --data-binary @hello.txt \
+  "$S3_ENDPOINT/documents/reports/hello.txt"
+```
+
+`put` creates a new object or replaces the bytes of an existing key.
+
+Read an object to standard output or a file:
+
+```bash
+crowdb-cli s3 object get --data-dir "$S3_DATA_DIR" \
+  documents reports/hello.txt
+
+crowdb-cli s3 object get --data-dir "$S3_DATA_DIR" \
+  documents reports/hello.txt --output ./downloaded.txt
+
+curl "$S3_ENDPOINT/documents/reports/hello.txt" \
+  --output ./downloaded-with-curl.txt
+```
+
+Check that an object exists:
+
+```bash
+crowdb-cli s3 object inspect --data-dir "$S3_DATA_DIR" \
+  documents reports/hello.txt
+
+curl -I "$S3_ENDPOINT/documents/reports/hello.txt"
+```
+
+Delete an object:
+
+```bash
+crowdb-cli s3 object delete --data-dir "$S3_DATA_DIR" \
+  documents reports/hello.txt
+
+curl -X DELETE "$S3_ENDPOINT/documents/reports/hello.txt"
+```
+
+### 1.4 List objects
+
+List the first 100 keys below a prefix:
+
+```bash
+crowdb-cli s3 object list --data-dir "$S3_DATA_DIR" documents \
+  --prefix reports/ --limit 100
+
+curl --get "$S3_ENDPOINT/documents" \
+  --data-urlencode 'list-type=2' \
+  --data-urlencode 'prefix=reports/' \
+  --data-urlencode 'max-keys=100'
+```
+
+When a response is truncated, pass its opaque continuation token unchanged:
+
+```bash
+crowdb-cli s3 object list --data-dir "$S3_DATA_DIR" documents \
+  --prefix reports/ --limit 100 --continuation "$TOKEN"
+
+curl --get "$S3_ENDPOINT/documents" \
+  --data-urlencode 'list-type=2' \
+  --data-urlencode 'prefix=reports/' \
+  --data-urlencode 'max-keys=100' \
+  --data-urlencode "continuation-token=$TOKEN"
+```
+
+### 1.5 Read a byte range
+
+Ranges are inclusive. `--range 3-9` returns seven bytes:
+
+```bash
+crowdb-cli s3 object get --data-dir "$S3_DATA_DIR" \
+  documents reports/hello.txt --range 3-9
+
+curl -H 'Range: bytes=3-9' \
+  "$S3_ENDPOINT/documents/reports/hello.txt"
+```
+
+### 1.6 Stop, restart, and delete
+
+Stop every process while preserving the cluster directory and stored objects:
+
+```bash
+crowdb-cli s3 cluster stop --data-dir "$S3_DATA_DIR"
+```
+
+Restart from the same directory and read the same data:
+
+```bash
+crowdb-cli s3 cluster start --data-dir "$S3_DATA_DIR"
+crowdb-cli s3 object get --data-dir "$S3_DATA_DIR" \
+  documents reports/hello.txt
+```
+
+Permanently stop the cluster, release its port assignments, and remove its
+directory:
+
+```bash
+crowdb-cli s3 cluster delete --data-dir "$S3_DATA_DIR"
+```
+
+`delete` is destructive. Use `stop` when the cluster must be started again.
+Cluster lifecycle does not currently have an HTTP management endpoint.
+
+---
+
+## 2. Advanced: Bootstrap a KV Cluster
+
+The remaining sections describe lower-level cluster and server administration.
+They are not required for the local S3 workflow above.
+
+Management CLI commands omit `--sysmd-ip` and `--sysmd-port` for brevity. They
+default to the group-0 discovery endpoint `127.0.0.1:10000`; override them with
+command options or the `CROWDB_SYSMD_IP`/`CROWDB_SYSMD_PORT` environment
+variables. The following console HTTP `curl` examples assume:
+
+```bash
+IP=127.0.0.1
+PORT=14000
+```
+
+Before using these commands:
+
+- Start `crowdb-web` with `crowdb-web --port 14000`. Add `--test-mode` for an
+  in-memory console configuration that is lost on restart.
+- Set `CROWDB_KV_SERVER_BIN` when `crowdb-kv-server` is not next to
+  `crowdb-web` and not available through `PATH`.
+- Use each machine's reachable hostname or IP instead of `127.0.0.1` for a
+  multi-machine deployment.
 
 ### Server configuration files
 
@@ -82,11 +271,7 @@ same paths when restarting services. Keep manually managed files with the
 server's data and deployment records; group 0 currently stores topology, not
 process configuration.
 
----
-
-## 1. Quick Start: Bootstrap a 3-Node Cluster
-
-### 1.1 Register the physical topology
+### 2.1 Register the physical topology
 
 Create a rack, add nodes, and deploy a server on each node. The
 `deploy` command starts `crowdb-kv-server` on the target node (via SSH
@@ -123,7 +308,7 @@ curl -X POST "http://$IP:$PORT/api/nodes/n1/server/deploy" \
   -d '{"rest_port":2001,"rpc_port":20001}'
 ```
 
-### 1.2 Initialize the cluster
+### 2.2 Initialize the cluster
 
 Before creating data stores or groups, the cluster must be
 initialized. This creates the system group (store 0, group 0) which
@@ -157,7 +342,7 @@ For a single-node dev cluster, pass one node:
 crowdb-cli cluster init --nodes n1
 ```
 
-### 1.3 Create a store and group
+### 2.3 Create a store and group
 
 A store is the logical container that owns one or more groups.
 
@@ -185,7 +370,7 @@ curl -X POST "http://$IP:$PORT/api/stores/3/groups" -H 'Content-Type: applicatio
 If the cluster has not been initialized, store/group creation returns
 `409 Conflict` with a message directing you to run `cluster init` first.
 
-### 1.4 Add the remaining replicas
+### 2.4 Add the remaining replicas
 
 **CLI:**
 
@@ -213,7 +398,7 @@ The service orchestrates the full add-replica flow: creates the local
 group on the target node, wires remotes bidirectionally, and the new
 replica catches up via snapshot streaming before joining the voting set.
 
-### 1.5 Verify and smoke test
+### 2.5 Verify and smoke test
 
 **CLI:**
 
@@ -243,7 +428,7 @@ curl "http://$IP:$PORT/api/stores/3/groups/3/kv/get?key=hello"
 
 ---
 
-## 2. KV Operations
+## 3. KV Operations
 
 All KV operations target a specific `(store_id, group_id)`.
 
@@ -282,7 +467,7 @@ curl "http://$IP:$PORT/api/stores/3/groups/3/kv/scan?prefix=user:&limit=100"
 The Web UI KV Operator panel provides the same operations with a
 store/group selector, paginated scan, and inline editing.
 
-### 2.1 Scan modes
+### 3.1 Scan modes
 
 CROWDB provides two range-read modes for different use cases:
 
@@ -298,9 +483,9 @@ CROWDB provides two range-read modes for different use cases:
   specific slot; every page is served from the same frozen view. No key
   vanishes, no value drifts, no phantom keys appear. Use for backup,
   analytics, and any consumer that needs a consistent point-in-time
-  view. See §2.2 below.
+  view. See §3.2 below.
 
-### 2.2 Snapshot versioning
+### 3.2 Snapshot versioning
 
 A snapshot scan pins a point-in-time view of the keyspace. Creating a
 snapshot flushes the in-memory write buffer (L0) into the durable tree
@@ -375,9 +560,9 @@ curl -X POST "http://$IP:$PORT/api/stores/3/groups/3/gc-watermark" \
 
 ---
 
-## 3. Cluster Management
+## 4. Cluster Management
 
-### 3.1 Check cluster health
+### 4.1 Check cluster health
 
 **CLI:**
 
@@ -410,7 +595,7 @@ curl "http://$IP:$PORT/api/stores/3/groups/3"
 # unavailable: quorum lost
 ```
 
-### 3.2 Add a read replica
+### 4.2 Add a read replica
 
 **CLI:**
 
@@ -429,7 +614,7 @@ curl -X POST "http://$IP:$PORT/api/stores/3/groups/3/replicas" \
 The new replica streams a snapshot from the leader, catches up, then
 joins the voting set automatically.
 
-### 3.3 Remove a replica
+### 4.3 Remove a replica
 
 **CLI:**
 
@@ -446,7 +631,7 @@ curl -X DELETE "http://$IP:$PORT/api/stores/3/groups/3/replicas/3"
 If the target is the leader, the service asks it to step down first,
 waits for a new leader, then removes the replica.
 
-### 3.4 Replace a failed node
+### 4.4 Replace a failed node
 
 1. Provision the new machine with the same node ID, management port,
    and RPC port.
@@ -486,7 +671,7 @@ a new replica with a new replica ID instead of reusing the old one.
 
 ---
 
-## 4. Rolling Upgrade
+## 5. Rolling Upgrade
 
 Upgrade one node at a time. Wait for each node to rejoin and catch up
 before moving to the next.
@@ -558,7 +743,7 @@ A brief latency spike during leader transition is normal.
 
 ---
 
-## 5. Emergency: Loss of Quorum
+## 6. Emergency: Loss of Quorum
 
 If two of three nodes fail, the remaining node cannot elect itself
 leader. Writes and linearizable reads block.
@@ -576,7 +761,7 @@ leadership.
 
 ---
 
-## 6. Backup
+## 7. Backup
 
 CROWDB durability comes from the per-store WAL (`--wal-root`), the
 per-node config cache (`--config-root`), and the durable KV engine
@@ -594,13 +779,29 @@ bootstrap args are needed. If the config is lost, use explicit
 
 ---
 
-## 7. API Reference
+## 8. API Reference
 
 **CLI:**
 
-The `crowdb-cli` CLI groups commands by resource type. All commands accept
-`--ip <addr>` (default `127.0.0.1`), `--port <port>` (default `9920`),
-and `--json` for JSON output.
+Local S3 commands use `--data-dir` to discover the cluster and access endpoint:
+
+- **`crowdb-cli s3 cluster start --data-dir <path>`** — create or restart
+- **`crowdb-cli s3 cluster status --data-dir <path>`** — inspect process liveness
+- **`crowdb-cli s3 cluster stop --data-dir <path>`** — stop and preserve data
+- **`crowdb-cli s3 cluster delete --data-dir <path>`** — stop and delete permanently
+- **`crowdb-cli s3 bucket add --data-dir <path> <bucket>`**
+- **`crowdb-cli s3 bucket remove --data-dir <path> <bucket>`**
+- **`crowdb-cli s3 bucket list --data-dir <path>`**
+- **`crowdb-cli s3 bucket inspect --data-dir <path> <bucket>`**
+- **`crowdb-cli s3 object put --data-dir <path> <bucket> <key> [--input <file>]`**
+- **`crowdb-cli s3 object get --data-dir <path> <bucket> <key> [--output <file>] [--range <start-end>]`**
+- **`crowdb-cli s3 object delete --data-dir <path> <bucket> <key>`**
+- **`crowdb-cli s3 object inspect --data-dir <path> <bucket> <key>`**
+- **`crowdb-cli s3 object list --data-dir <path> <bucket> [--prefix <prefix>] [--limit <n>] [--continuation <token>]`**
+
+Lower-level management commands accept `--sysmd-ip <addr>` (default
+`127.0.0.1`), `--sysmd-port <port>` (default `10000`), and `--json` for JSON
+output.
 
 - **`crowdb-cli cluster status`** — servers + store/group summary
 - **`crowdb-cli cluster topology`** — full logical + physical hierarchy
@@ -638,6 +839,26 @@ and `--json` for JSON output.
 - **`crowdb-cli snapshot release --store-id <s> --group-id <g> --handle <h>`** — release a snapshot
 
 **curl:**
+
+#### S3 data plane
+
+These endpoints use `S3_ENDPOINT`, whose local default is
+`http://127.0.0.1:16000`. Cluster lifecycle and benchmark operations do not
+currently have HTTP endpoints.
+
+| Operation              | Endpoint                                                   |
+| ---------------------- | ---------------------------------------------------------- |
+| List buckets           | `GET /`                                                    |
+| Create bucket          | `PUT /{bucket}`                                             |
+| Inspect bucket         | `HEAD /{bucket}`                                            |
+| Delete empty bucket    | `DELETE /{bucket}`                                          |
+| Put or replace object  | `PUT /{bucket}/{key}`                                       |
+| Get object             | `GET /{bucket}/{key}`                                       |
+| Get inclusive range    | `GET /{bucket}/{key}` with `Range: bytes={start}-{end}`     |
+| Inspect object         | `HEAD /{bucket}/{key}`                                      |
+| Delete object          | `DELETE /{bucket}/{key}`                                    |
+| List objects           | `GET /{bucket}?list-type=2&prefix=...&max-keys=...`         |
+| Continue object list   | `GET /{bucket}?list-type=2&continuation-token=...`          |
 
 #### Cluster lifecycle
 
