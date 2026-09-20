@@ -51,6 +51,44 @@ async fn execute(workload: S3BenchWorkload, args: S3Args) -> crowdb_console_shar
     if let Some(path) = output {
         std::fs::write(path, &json)?;
     }
-    println!("{}", String::from_utf8_lossy(&json));
+    println!("=== S3 benchmark ===");
+    println!(
+        "  workload: {}  operations: {}  errors: {}  duration: {}ms  ops/s: {}",
+        result.workload,
+        result.total_operations,
+        result.total_errors,
+        result.duration_ms,
+        result.operations_per_second
+    );
+    println!(
+        "  object_size: {}  dataset_objects: {}  peak_resident: {} / {} bytes",
+        result.object_size, result.dataset_objects, result.peak_resident_bytes, result.memory_budget_bytes
+    );
+    println!(
+        "  backing: kv={} wal={} diskio={} chunk-kv={}",
+        result.backing.kv, result.backing.wal, result.backing.diskio, result.backing.chunk_kv
+    );
+    if result.total_errors > 0 {
+        println!(
+            "  failures: metadata={} protocol={} transport={} resource={}",
+            result.failures.metadata,
+            result.failures.protocol,
+            result.failures.transport,
+            result.failures.resource
+        );
+    }
+    for (name, stats) in [
+        ("write", result.by_operation.write.as_ref()),
+        ("read", result.by_operation.read.as_ref()),
+        ("range-read", result.by_operation.range_read.as_ref()),
+        ("list", result.by_operation.list.as_ref()),
+    ] {
+        if let Some(stats) = stats {
+            println!(
+                "  {name}: attempts={} successes={} failures={} avg={}us p50={}us p99={}us",
+                stats.attempts, stats.successes, stats.failures, stats.average_us, stats.p50_us, stats.p99_us
+            );
+        }
+    }
     Ok(())
 }

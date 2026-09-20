@@ -34,7 +34,7 @@ export function ToastContainer() {
   if (toasts.length === 0) return null;
 
   return (
-    <div className="tw-fixed tw-bottom-6 tw-right-6 tw-z-50 tw-flex tw-flex-col tw-gap-3 tw-w-full tw-max-w-sm">
+    <div className="tw-fixed tw-bottom-6 tw-right-6 tw-z-50 tw-flex tw-flex-col tw-gap-3 tw-w-full tw-max-w-sm tw-pointer-events-none">
       {toasts.map(toast => (
         <div
           key={toast.id}
@@ -52,7 +52,7 @@ export function ToastContainer() {
                 <Button
                   variant="link"
                   size="sm"
-                  className="tw-p-0 tw-h-auto tw-text-sm"
+                  className="tw-pointer-events-auto tw-p-0 tw-h-auto tw-text-sm"
                   onClick={toast.action.onClick}
                 >
                   {toast.action.label}
@@ -62,7 +62,7 @@ export function ToastContainer() {
           </div>
           <button
             onClick={() => removeToast(toast.id)}
-            className="tw-flex-shrink-0 tw-text-gray-400 hover:tw-text-gray-600 dark:tw-text-gray-500 dark:hover:tw-text-gray-300 tw-transition-colors"
+            className="tw-pointer-events-auto tw-flex-shrink-0 tw-text-gray-400 hover:tw-text-gray-600 dark:tw-text-gray-500 dark:hover:tw-text-gray-300 tw-transition-colors"
             aria-label="Close notification"
           >
             <X className="tw-h-4 tw-w-4" />

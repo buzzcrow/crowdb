@@ -289,6 +289,36 @@ pub fn init_file_logging(
     Ok(LogGuards { _file: file_guard })
 }
 
+/// Initializes console-only logging without creating a log directory.
+///
+/// `RUST_LOG` overrides `default_filter` when it is set and non-empty.
+/// This is intended for short-lived operator commands whose diagnostics are
+/// useful interactively but do not justify a persistent per-invocation file.
+///
+/// # Errors
+/// Returns `Err` when another tracing subscriber is already installed.
+pub fn init_console_logging(default_filter: &str) -> Result<(), String> {
+    let filter = std::env::var("RUST_LOG")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| EnvFilter::new(default_filter), EnvFilter::new);
+    let console_layer = fmt::layer()
+        .with_ansi(true)
+        .with_target(true)
+        .with_thread_names(true)
+        .with_writer(std::io::stderr)
+        .with_filter(filter);
+
+    tracing_subscriber::registry()
+        .with(console_layer)
+        .try_init()
+        .map_err(|error| {
+            format!(
+                "failed to initialize tracing subscriber; next step: initialize logging only once per process: {error}"
+            )
+        })
+}
+
 /// Opens a rotating log file with a caller-supplied prefix.
 /// File naming: `{prefix}-{YYYYMMDD-HHMMSS.mmm}-{pid}.log`.
 ///

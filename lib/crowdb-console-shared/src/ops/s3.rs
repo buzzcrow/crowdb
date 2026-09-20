@@ -23,6 +23,7 @@ const MARKER_FILE: &str = "s3-mini-cluster.json";
 const INITIALIZING_FILE: &str = "s3-mini-cluster.initializing.json";
 const MASTER_KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const NAMESPACE_ID: &str = "s3-mini-cluster";
+const BODY_PREVIEW_LIMIT: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -61,7 +62,7 @@ pub fn config_path(data_dir: &Path) -> PathBuf {
 /// Returns an error for an unrecognized directory or invalid persisted data.
 pub fn load(data_dir: &Path) -> Result<(ConsoleConfig, MiniClusterRecord)> {
     let marker = std::fs::read(data_dir.join(MARKER_FILE)).map_err(|error| Error::Validation {
-        field: "data_dir".into(),
+        field: "root".into(),
         message: format!("{} is not a CROWDB S3 mini-cluster: {error}", data_dir.display()),
     })?;
     let record = serde_json::from_slice(&marker).map_err(|error| Error::Config(error.to_string()))?;
@@ -113,7 +114,7 @@ async fn start_with_profile(
         }
         if storage_profile == StorageProfile::Memory {
             return Err(Error::Validation {
-                field: "data_dir".into(),
+                field: "root".into(),
                 message: "memory benchmark clusters cannot be restarted".into(),
             });
         }
@@ -198,7 +199,7 @@ fn archive_incomplete_attempt(data_dir: &Path) -> Result<()> {
         .file_name()
         .and_then(|value| value.to_str())
         .ok_or_else(|| Error::Validation {
-            field: "data_dir".into(),
+            field: "root".into(),
             message: "incomplete cluster directory has no archiveable name".into(),
         })?;
     let timestamp = std::time::SystemTime::now()
@@ -370,7 +371,7 @@ fn validate_location(data_dir: &Path) -> Result<()> {
         return Ok(());
     }
     Err(Error::Validation {
-        field: "data_dir".into(),
+        field: "root".into(),
         message: format!(
             "{} is non-empty and has no {MARKER_FILE}; refusing to overwrite it",
             data_dir.display()
@@ -654,6 +655,103 @@ pub async fn request_with_range(
         .await
 }
 
+/// Send one S3 operation and retain its HTTP request and response metadata.
+///
+/// Unlike [`request_with_range`], an HTTP error status is returned as an
+/// exchange so an interactive caller can show the response headers and body.
+/// Transport and local configuration failures still return [`Error`].
+///
+/// # Errors
+/// Returns an error for malformed input, invalid cluster state, or transport
+/// failure.
+pub async fn request_exchange_with_range(
+    data_dir: &Path,
+    method: reqwest::Method,
+    bucket: Option<&str>,
+    object: Option<&str>,
+    query: &[(&str, String)],
+    body: Option<Vec<u8>>,
+    range: Option<(u64, u64)>,
+) -> Result<S3HttpExchange> {
+    request_exchange_with_headers(
+        data_dir,
+        method,
+        bucket,
+        object,
+        query,
+        body,
+        range,
+        reqwest::header::HeaderMap::new(),
+    )
+    .await
+}
+
+/// Send one S3 operation with caller-supplied request headers and retain the
+/// complete HTTP exchange metadata.
+///
+/// # Errors
+/// Returns an error for malformed input, invalid cluster state, or transport
+/// failure.
+#[allow(clippy::too_many_arguments)]
+pub async fn request_exchange_with_headers(
+    data_dir: &Path,
+    method: reqwest::Method,
+    bucket: Option<&str>,
+    object: Option<&str>,
+    query: &[(&str, String)],
+    body: Option<Vec<u8>>,
+    range: Option<(u64, u64)>,
+    headers: reqwest::header::HeaderMap,
+) -> Result<S3HttpExchange> {
+    let (_, record) = load(data_dir)?;
+    S3HttpClient::new(record.endpoint)?
+        .request_exchange_with_headers(method, bucket, object, query, body, range, headers)
+        .await
+}
+
+/// Captured metadata for an outbound S3 HTTP request.
+#[derive(Debug)]
+pub struct S3HttpRequest {
+    pub method: reqwest::Method,
+    pub url: reqwest::Url,
+    pub headers: reqwest::header::HeaderMap,
+    /// `None` means no body was supplied; `Some(0)` is an explicit empty body.
+    pub body_bytes: Option<usize>,
+    /// Bounded copy of a textual request body for interactive display.
+    pub body_preview: Option<Vec<u8>>,
+    pub body_preview_truncated: bool,
+}
+
+/// One completed S3 HTTP request/response exchange.
+#[derive(Debug)]
+pub struct S3HttpExchange {
+    pub request: S3HttpRequest,
+    pub status: reqwest::StatusCode,
+    pub response_headers: reqwest::header::HeaderMap,
+    pub response_body: Vec<u8>,
+}
+
+impl S3HttpExchange {
+    /// Convert the captured exchange to the compact result used by non-CLI
+    /// callers, preserving the existing non-success error behavior.
+    ///
+    /// # Errors
+    /// Returns an upstream error for a non-2xx HTTP response.
+    pub fn into_result(self) -> Result<(u16, Vec<u8>)> {
+        if !self.status.is_success() {
+            return Err(Error::UpstreamRpc {
+                node_id: "s3".into(),
+                status: format!(
+                    "HTTP {}: {}",
+                    self.status.as_u16(),
+                    String::from_utf8_lossy(&self.response_body)
+                ),
+            });
+        }
+        Ok((self.status.as_u16(), self.response_body))
+    }
+}
+
 /// Reusable thin client for one local S3 endpoint.
 #[derive(Clone)]
 pub struct S3HttpClient {
@@ -696,6 +794,54 @@ impl S3HttpClient {
         body: Option<Vec<u8>>,
         range: Option<(u64, u64)>,
     ) -> Result<(u16, Vec<u8>)> {
+        self.request_exchange(method, bucket, object, query, body, range)
+            .await?
+            .into_result()
+    }
+
+    /// Send one S3 request and retain HTTP metadata even for non-2xx status.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid range, request construction failure, or
+    /// transport/protocol failure.
+    pub async fn request_exchange(
+        &self,
+        method: reqwest::Method,
+        bucket: Option<&str>,
+        object: Option<&str>,
+        query: &[(&str, String)],
+        body: Option<Vec<u8>>,
+        range: Option<(u64, u64)>,
+    ) -> Result<S3HttpExchange> {
+        self.request_exchange_with_headers(
+            method,
+            bucket,
+            object,
+            query,
+            body,
+            range,
+            reqwest::header::HeaderMap::new(),
+        )
+        .await
+    }
+
+    /// Send one S3 request with caller-supplied headers and retain HTTP
+    /// metadata even for a non-2xx status.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid range, request construction failure, or
+    /// transport/protocol failure.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn request_exchange_with_headers(
+        &self,
+        method: reqwest::Method,
+        bucket: Option<&str>,
+        object: Option<&str>,
+        query: &[(&str, String)],
+        body: Option<Vec<u8>>,
+        range: Option<(u64, u64)>,
+        headers: reqwest::header::HeaderMap,
+    ) -> Result<S3HttpExchange> {
         let mut url = self.endpoint.clone();
         if let Some(bucket) = bucket {
             url.push('/');
@@ -713,7 +859,7 @@ impl S3HttpClient {
                     .finish(),
             );
         }
-        let mut request = self.client.request(method, url);
+        let mut request = self.client.request(method, url).headers(headers);
         if let Some((start, end)) = range {
             if start > end {
                 return Err(Error::Validation {
@@ -723,23 +869,74 @@ impl S3HttpClient {
             }
             request = request.header(reqwest::header::RANGE, format!("bytes={start}-{end}"));
         }
+        let body_bytes = body.as_ref().map(Vec::len);
+        let textual_body = request
+            .try_clone()
+            .and_then(|builder| builder.build().ok())
+            .and_then(|request| request.headers().get(reqwest::header::CONTENT_TYPE).cloned())
+            .and_then(|value| value.to_str().ok().map(str::to_ascii_lowercase))
+            .is_some_and(|value| {
+                value.starts_with("text/") || value.contains("json") || value.contains("xml")
+            });
+        let body_preview = body
+            .as_ref()
+            .filter(|_| textual_body)
+            .map(|body| body.iter().copied().take(BODY_PREVIEW_LIMIT).collect::<Vec<_>>());
+        let body_preview_truncated =
+            body_bytes.is_some_and(|bytes| textual_body && bytes > BODY_PREVIEW_LIMIT);
         if let Some(body) = body {
-            request = request.body(body);
+            request = request
+                .header(reqwest::header::CONTENT_LENGTH, body.len())
+                .body(body);
         }
-        let response = request.send().await.map_err(|error| http_error(&error))?;
-        let status = response.status().as_u16();
-        let bytes = response
+        let mut request = request.build().map_err(|error| http_error(&error))?;
+        if !request.headers().contains_key(reqwest::header::HOST) {
+            let host = request.url().host_str().ok_or_else(|| Error::Validation {
+                field: "endpoint".into(),
+                message: "S3 endpoint has no host".into(),
+            })?;
+            let host = if host.contains(':') {
+                format!("[{host}]")
+            } else {
+                host.to_string()
+            };
+            let authority = request
+                .url()
+                .port()
+                .map_or(host.clone(), |port| format!("{host}:{port}"));
+            let value =
+                reqwest::header::HeaderValue::from_str(&authority).map_err(|error| Error::Validation {
+                    field: "endpoint".into(),
+                    message: format!("invalid S3 endpoint authority: {error}"),
+                })?;
+            request.headers_mut().insert(reqwest::header::HOST, value);
+        }
+        let request_summary = S3HttpRequest {
+            method: request.method().clone(),
+            url: request.url().clone(),
+            headers: request.headers().clone(),
+            body_bytes,
+            body_preview,
+            body_preview_truncated,
+        };
+        let response = self
+            .client
+            .execute(request)
+            .await
+            .map_err(|error| http_error(&error))?;
+        let status = response.status();
+        let response_headers = response.headers().clone();
+        let response_body = response
             .bytes()
             .await
             .map_err(|error| http_error(&error))?
             .to_vec();
-        if !(200..300).contains(&status) {
-            return Err(Error::UpstreamRpc {
-                node_id: "s3".into(),
-                status: format!("HTTP {status}: {}", String::from_utf8_lossy(&bytes)),
-            });
-        }
-        Ok((status, bytes))
+        Ok(S3HttpExchange {
+            request: request_summary,
+            status,
+            response_headers,
+            response_body,
+        })
     }
 }
 

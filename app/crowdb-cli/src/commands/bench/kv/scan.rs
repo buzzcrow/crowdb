@@ -163,7 +163,8 @@ pub async fn run(cli: &Cli, args: ScanArgs) -> ExitCode {
     };
     let json = serde_json::to_value(&result).unwrap_or_default();
     tracing::info!(report = %json, "bench_report");
-    crate::commands::print_json(cli, &result)
+    println!("{result}");
+    ExitCode::SUCCESS
 }
 
 /// Parse a `--value-size-mix` string like `64:70,1024:20,16384:10`

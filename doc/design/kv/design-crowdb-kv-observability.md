@@ -373,8 +373,9 @@ and C++ logs for a process land under that directory. Defaults:
   `CrowDBConfig.log_dir` (config field, default `root/log`) when
   `--log-dir` is not given.
 - `crowdb-web` — `~/.crowdb-kv/log`.
-- `crowdb-cli` — `cli-log/{command-slug}-{timestamp}/` (per-invocation
-  directory, controlled by `--log-root`).
+- `crowdb-cli` — multi-service lifecycle, server deployment, and benchmark
+  commands use `<cwd>/cli-log/cli-{command-slug}-{timestamp}/`; short
+  inspection and data operations are console-only and create no file log.
 
 The test harness passes `--log-dir <test_log_dir>` so child-process
 file logs land in `test-logs/` alongside redirected stderr.

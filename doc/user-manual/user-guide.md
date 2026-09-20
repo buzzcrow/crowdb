@@ -17,9 +17,9 @@ CROWDB provides three user-facing interfaces:
   Swagger UI for browsing the OpenAPI spec of any registered
   `crowdb-kv-server` instance.
 - **CLI** — `crowdb-cli s3` owns the local S3 cluster lifecycle and sends
-  bucket/object requests directly to the cluster recorded by `--data-dir`.
+  bucket/object requests directly to the cluster recorded by `--root`.
   Lower-level management commands discover services through group 0 and call
-  them directly. Use `--json` where supported for machine-readable output.
+  them directly. Output is a human-readable console transcript.
 - **HTTP APIs** — the local access server exposes the S3 HTTP API. The
   console service exposes the lower-level cluster management API documented
   in §8.
@@ -50,8 +50,8 @@ Before following the steps below:
 Choose a directory and start the cluster:
 
 ```bash
-S3_DATA_DIR="$PWD/.crowdb-runtime/persistent/s3-local"
-crowdb-cli s3 cluster start --data-dir "$S3_DATA_DIR"
+S3_ROOT="$PWD/.crowdb-runtime/persistent/s3-local"
+crowdb-cli s3 cluster start --root "$S3_ROOT"
 ```
 
 An absent or empty directory creates a new file-backed cluster. A recognized
@@ -59,7 +59,7 @@ cluster directory restarts the same cluster with its existing data and port
 assignments. A non-empty directory that is not a CROWDB cluster is rejected
 without modification.
 
-The command prints the S3 endpoint, running service count, and data directory.
+The command prints the S3 endpoint, running service count, and cluster root.
 The default local endpoint is:
 
 ```bash
@@ -72,7 +72,7 @@ assigned, update `S3_ENDPOINT` before using the `curl` examples.
 Inspect the recorded processes without changing them:
 
 ```bash
-crowdb-cli s3 cluster status --data-dir "$S3_DATA_DIR"
+crowdb-cli s3 cluster status --root "$S3_ROOT"
 ```
 
 Cluster lifecycle is a local CLI operation; it does not currently have an HTTP
@@ -83,28 +83,28 @@ management endpoint.
 Create a bucket:
 
 ```bash
-crowdb-cli s3 bucket add --data-dir "$S3_DATA_DIR" photos
+crowdb-cli s3 bucket put --root "$S3_ROOT" photos
 curl -X PUT "$S3_ENDPOINT/photos"
 ```
 
 List buckets:
 
 ```bash
-crowdb-cli s3 bucket list --data-dir "$S3_DATA_DIR"
+crowdb-cli s3 bucket list --root "$S3_ROOT"
 curl "$S3_ENDPOINT/"
 ```
 
-Check that a bucket exists:
+GET one bucket and show its XML result:
 
 ```bash
-crowdb-cli s3 bucket inspect --data-dir "$S3_DATA_DIR" photos
-curl -I "$S3_ENDPOINT/photos"
+crowdb-cli s3 bucket get --root "$S3_ROOT" photos
+curl "$S3_ENDPOINT/photos"
 ```
 
 Remove an empty bucket:
 
 ```bash
-crowdb-cli s3 bucket remove --data-dir "$S3_DATA_DIR" photos
+crowdb-cli s3 bucket delete --root "$S3_ROOT" photos
 curl -X DELETE "$S3_ENDPOINT/photos"
 ```
 
@@ -113,16 +113,22 @@ Removing a non-empty bucket returns the S3 error and leaves its objects intact.
 ### 1.3 Object CRUD
 
 Create the bucket used by the following examples, then upload an object from a
-file or standard input:
+file, literal text, generated random bytes, or standard input:
 
 ```bash
-crowdb-cli s3 bucket add --data-dir "$S3_DATA_DIR" documents
+crowdb-cli s3 bucket put --root "$S3_ROOT" documents
 
-crowdb-cli s3 object put --data-dir "$S3_DATA_DIR" \
-  documents reports/hello.txt --input ./hello.txt
+crowdb-cli s3 object put --root "$S3_ROOT" \
+  documents reports/hello.txt --file ./hello.txt
+
+crowdb-cli s3 object put --root "$S3_ROOT" \
+  documents reports/text.txt --text 'object content'
+
+crowdb-cli s3 object put --root "$S3_ROOT" \
+  documents reports/random.bin --random-size 1048576
 
 printf 'hello from CROWDB\n' | crowdb-cli s3 object put \
-  --data-dir "$S3_DATA_DIR" documents reports/stdin.txt
+  --root "$S3_ROOT" documents reports/stdin.txt
 
 curl -X PUT --data-binary @hello.txt \
   "$S3_ENDPOINT/documents/reports/hello.txt"
@@ -133,10 +139,10 @@ curl -X PUT --data-binary @hello.txt \
 Read an object to standard output or a file:
 
 ```bash
-crowdb-cli s3 object get --data-dir "$S3_DATA_DIR" \
+crowdb-cli s3 object get --root "$S3_ROOT" \
   documents reports/hello.txt
 
-crowdb-cli s3 object get --data-dir "$S3_DATA_DIR" \
+crowdb-cli s3 object get --root "$S3_ROOT" \
   documents reports/hello.txt --output ./downloaded.txt
 
 curl "$S3_ENDPOINT/documents/reports/hello.txt" \
@@ -146,7 +152,7 @@ curl "$S3_ENDPOINT/documents/reports/hello.txt" \
 Check that an object exists:
 
 ```bash
-crowdb-cli s3 object inspect --data-dir "$S3_DATA_DIR" \
+crowdb-cli s3 object head --root "$S3_ROOT" \
   documents reports/hello.txt
 
 curl -I "$S3_ENDPOINT/documents/reports/hello.txt"
@@ -155,7 +161,7 @@ curl -I "$S3_ENDPOINT/documents/reports/hello.txt"
 Delete an object:
 
 ```bash
-crowdb-cli s3 object delete --data-dir "$S3_DATA_DIR" \
+crowdb-cli s3 object delete --root "$S3_ROOT" \
   documents reports/hello.txt
 
 curl -X DELETE "$S3_ENDPOINT/documents/reports/hello.txt"
@@ -166,7 +172,7 @@ curl -X DELETE "$S3_ENDPOINT/documents/reports/hello.txt"
 List the first 100 keys below a prefix:
 
 ```bash
-crowdb-cli s3 object list --data-dir "$S3_DATA_DIR" documents \
+crowdb-cli s3 object list --root "$S3_ROOT" documents \
   --prefix reports/ --limit 100
 
 curl --get "$S3_ENDPOINT/documents" \
@@ -178,7 +184,7 @@ curl --get "$S3_ENDPOINT/documents" \
 When a response is truncated, pass its opaque continuation token unchanged:
 
 ```bash
-crowdb-cli s3 object list --data-dir "$S3_DATA_DIR" documents \
+crowdb-cli s3 object list --root "$S3_ROOT" documents \
   --prefix reports/ --limit 100 --continuation "$TOKEN"
 
 curl --get "$S3_ENDPOINT/documents" \
@@ -193,7 +199,7 @@ curl --get "$S3_ENDPOINT/documents" \
 Ranges are inclusive. `--range 3-9` returns seven bytes:
 
 ```bash
-crowdb-cli s3 object get --data-dir "$S3_DATA_DIR" \
+crowdb-cli s3 object get --root "$S3_ROOT" \
   documents reports/hello.txt --range 3-9
 
 curl -H 'Range: bytes=3-9' \
@@ -205,14 +211,14 @@ curl -H 'Range: bytes=3-9' \
 Stop every process while preserving the cluster directory and stored objects:
 
 ```bash
-crowdb-cli s3 cluster stop --data-dir "$S3_DATA_DIR"
+crowdb-cli s3 cluster stop --root "$S3_ROOT"
 ```
 
 Restart from the same directory and read the same data:
 
 ```bash
-crowdb-cli s3 cluster start --data-dir "$S3_DATA_DIR"
-crowdb-cli s3 object get --data-dir "$S3_DATA_DIR" \
+crowdb-cli s3 cluster start --root "$S3_ROOT"
+crowdb-cli s3 object get --root "$S3_ROOT" \
   documents reports/hello.txt
 ```
 
@@ -220,7 +226,7 @@ Permanently stop the cluster, release its port assignments, and remove its
 directory:
 
 ```bash
-crowdb-cli s3 cluster delete --data-dir "$S3_DATA_DIR"
+crowdb-cli s3 cluster delete --root "$S3_ROOT"
 ```
 
 `delete` is destructive. Use `stop` when the cluster must be started again.
@@ -233,10 +239,11 @@ Cluster lifecycle does not currently have an HTTP management endpoint.
 The remaining sections describe lower-level cluster and server administration.
 They are not required for the local S3 workflow above.
 
-Management CLI commands omit `--sysmd-ip` and `--sysmd-port` for brevity. They
-default to the group-0 discovery endpoint `127.0.0.1:10000`; override them with
-command options or the `CROWDB_SYSMD_IP`/`CROWDB_SYSMD_PORT` environment
-variables. The following console HTTP `curl` examples assume:
+Management CLI commands omit `--system-ip` and `--system-port` for brevity.
+They default to the system-group discovery endpoint `127.0.0.1:10000`; either
+flag may point to any system-group node because leader discovery is automatic.
+The `CROWDB_SYSTEM_IP`/`CROWDB_SYSTEM_PORT` environment variables provide the
+same overrides. The following console HTTP `curl` examples assume:
 
 ```bash
 IP=127.0.0.1
@@ -783,25 +790,24 @@ bootstrap args are needed. If the config is lost, use explicit
 
 **CLI:**
 
-Local S3 commands use `--data-dir` to discover the cluster and access endpoint:
+Local S3 commands use `--root` to identify the cluster root and discover its access endpoint:
 
-- **`crowdb-cli s3 cluster start --data-dir <path>`** — create or restart
-- **`crowdb-cli s3 cluster status --data-dir <path>`** — inspect process liveness
-- **`crowdb-cli s3 cluster stop --data-dir <path>`** — stop and preserve data
-- **`crowdb-cli s3 cluster delete --data-dir <path>`** — stop and delete permanently
-- **`crowdb-cli s3 bucket add --data-dir <path> <bucket>`**
-- **`crowdb-cli s3 bucket remove --data-dir <path> <bucket>`**
-- **`crowdb-cli s3 bucket list --data-dir <path>`**
-- **`crowdb-cli s3 bucket inspect --data-dir <path> <bucket>`**
-- **`crowdb-cli s3 object put --data-dir <path> <bucket> <key> [--input <file>]`**
-- **`crowdb-cli s3 object get --data-dir <path> <bucket> <key> [--output <file>] [--range <start-end>]`**
-- **`crowdb-cli s3 object delete --data-dir <path> <bucket> <key>`**
-- **`crowdb-cli s3 object inspect --data-dir <path> <bucket> <key>`**
-- **`crowdb-cli s3 object list --data-dir <path> <bucket> [--prefix <prefix>] [--limit <n>] [--continuation <token>]`**
+- **`crowdb-cli s3 cluster start --root <path>`** — create or restart
+- **`crowdb-cli s3 cluster status --root <path>`** — inspect process liveness
+- **`crowdb-cli s3 cluster stop --root <path>`** — stop and preserve data
+- **`crowdb-cli s3 cluster delete --root <path>`** — stop and delete permanently
+- **`crowdb-cli s3 bucket put --root <path> <bucket>`**
+- **`crowdb-cli s3 bucket delete --root <path> <bucket>`**
+- **`crowdb-cli s3 bucket list --root <path>`**
+- **`crowdb-cli s3 bucket get --root <path> <bucket>`**
+- **`crowdb-cli s3 object put --root <path> <bucket> <key> [--file <path> | --text <content> | --random-size <bytes>]`**
+- **`crowdb-cli s3 object get --root <path> <bucket> <key> [--output <file>] [--range <start-end>]`**
+- **`crowdb-cli s3 object delete --root <path> <bucket> <key>`**
+- **`crowdb-cli s3 object head --root <path> <bucket> <key>`**
+- **`crowdb-cli s3 object list --root <path> <bucket> [--prefix <prefix>] [--limit <n>] [--continuation <token>]`**
 
-Lower-level management commands accept `--sysmd-ip <addr>` (default
-`127.0.0.1`), `--sysmd-port <port>` (default `10000`), and `--json` for JSON
-output.
+Lower-level management commands accept `--system-ip <addr>` (default
+`127.0.0.1`) and `--system-port <port>` (default `10000`).
 
 - **`crowdb-cli cluster status`** — servers + store/group summary
 - **`crowdb-cli cluster topology`** — full logical + physical hierarchy

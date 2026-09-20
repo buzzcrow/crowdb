@@ -6,7 +6,7 @@
 //!
 //! The runner writes periodic `rust` + `cpp-rpc` blocks to a single
 //! metrics log file (`crowdb-cli-metrics-*.log`) in
-//! the CLI's per-invocation log dir. The C++ crowdb-rpc process-level
+//! the CLI's latest-run benchmark log dir. The C++ crowdb-rpc process-level
 //! counters (e.g. `rpc.client.*`) are flushed into the same file via a
 //! `set_cpp_flush` callback that calls
 //! `crowdb_rpc_ffi::flush_cpp_global_metrics` — the same pattern
@@ -37,7 +37,7 @@ impl BenchMetrics {
     ///
     /// `metrics_interval == 0` disables the runner (no metrics log
     /// file); the recorder still works with a standalone registry.
-    /// `log_dir` is the per-invocation dir from `cli.log_dir`.
+    /// `log_dir` is the latest-run benchmark dir from `cli.log_dir`.
     ///
     /// When enabled, a `set_cpp_flush` callback is installed so the
     /// C++ crowdb-rpc global registry (`rpc.client.*`) is flushed into
@@ -61,7 +61,7 @@ impl BenchMetrics {
             };
         }
 
-        let file = match open_named_log(log_dir, "crowdb-cli-metrics", 50, 5) {
+        let file = match open_named_log(log_dir, "crowdb-cli-metrics", 50, 1) {
             Ok(f) => f,
             Err(e) => {
                 eprintln!("warn: failed to open metrics log: {e}");

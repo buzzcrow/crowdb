@@ -18,7 +18,7 @@
 pub mod console;
 pub mod http;
 
-/// Log one outbound HTTP call as a structured `tracing::info!` event.
+/// Log one outbound HTTP call as a structured `tracing::debug!` event.
 /// Replaces the former `ops_log::append_http` record; the line lands in
 /// the process's tracing log (`crowdb-cli-*.log` / `console-web-*.log`).
 /// `body_summary` carries an error detail or short response note (no secrets).
@@ -32,7 +32,7 @@ pub(crate) fn log_ops_http(
 ) {
     let dur = u64::try_from(duration_ms).unwrap_or(u64::MAX);
     if let Some(body) = body_summary {
-        tracing::info!(
+        tracing::debug!(
             corr_id = corr_id,
             method = method,
             url = url,
@@ -42,7 +42,7 @@ pub(crate) fn log_ops_http(
             "ops http",
         );
     } else {
-        tracing::info!(
+        tracing::debug!(
             corr_id = corr_id,
             method = method,
             url = url,

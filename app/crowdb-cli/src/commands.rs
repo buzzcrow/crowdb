@@ -31,39 +31,20 @@ use crowdb_console_shared::ConsoleConfigEngine;
 
 use crate::Cli;
 
-/// Print a JSON value (if `--json`) or skip. Returns `ExitCode::SUCCESS`
-/// on success.
-pub(crate) fn print_json<T: serde::Serialize>(cli: &Cli, value: &T) -> ExitCode {
-    if cli.json {
-        match serde_json::to_string_pretty(value) {
-            Ok(s) => {
-                println!("{s}");
-                ExitCode::SUCCESS
-            }
-            Err(e) => {
-                eprintln!("error: serialize json: {e}");
-                ExitCode::from(2)
-            }
-        }
-    } else {
-        ExitCode::SUCCESS
-    }
-}
-
-/// Build an [`OpContext`] from the CLI global flags. The sysmd endpoint
-/// is `http://{sysmd_ip}:{sysmd_port}` (a group-0 mgmt URL) and the
-/// config is loaded from the configured path (or the default).
+/// Build an [`OpContext`] from the CLI global flags. The system endpoint
+/// is `http://{system_ip}:{system_port}` and the
+/// CLI state is loaded from the fixed runtime location.
 ///
 /// When the config has server entries, their mgmt URLs are added as
 /// additional seeds so the client can discover the group-0 leader even
-/// if `--sysmd-port` doesn't point at a running server (e.g. after
+/// if `--system-port` doesn't point at a running server (e.g. after
 /// `local-deploy` which allocates dynamic ports).
 pub(crate) fn op_context(cli: &Cli) -> Result<OpContext, ExitCode> {
     let config = load_config(cli)?;
-    let mgmt_url = format!("http://{}:{}", cli.sysmd_ip, cli.sysmd_port);
-    let group0_endpoint = format!("{}:{}", cli.sysmd_ip, cli.sysmd_port);
+    let mgmt_url = format!("http://{}:{}", cli.system_ip, cli.system_port);
+    let group0_endpoint = format!("{}:{}", cli.system_ip, cli.system_port);
 
-    // Collect mgmt seeds: the explicit --sysmd-port endpoint plus all
+    // Collect mgmt seeds: the explicit --system-port endpoint plus all
     // server URLs from the config (so local-deploy'd servers are found).
     let mut seeds = vec![mgmt_url];
     for server in &config.servers {
@@ -90,10 +71,9 @@ pub(crate) fn op_context(cli: &Cli) -> Result<OpContext, ExitCode> {
     Ok(OpContext::new(effective_g0, seeds, config))
 }
 
-/// Load the console config from the CLI's `--config` path or the
-/// default location.
-pub(crate) fn load_config(cli: &Cli) -> Result<crowdb_console_shared::ConsoleConfig, ExitCode> {
-    let path = config_path(cli);
+/// Load the CLI's internal persisted state from its fixed runtime location.
+pub(crate) fn load_config(_cli: &Cli) -> Result<crowdb_console_shared::ConsoleConfig, ExitCode> {
+    let path = config_path();
     if !path.exists() {
         return Ok(crowdb_console_shared::ConsoleConfig::default());
     }
@@ -104,27 +84,24 @@ pub(crate) fn load_config(cli: &Cli) -> Result<crowdb_console_shared::ConsoleCon
     })
 }
 
-/// Resolve the config file path from the CLI's `--config` flag or the
-/// default location.
-fn config_path(cli: &Cli) -> std::path::PathBuf {
-    cli.config
-        .clone()
-        .or_else(|| {
-            std::env::var("CROWDB_CONSOLE_CONFIG")
-                .ok()
-                .map(std::path::PathBuf::from)
-        })
-        .unwrap_or_else(|| {
-            dirs::config_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join("crowdb-kv")
-                .join("console.toml")
-        })
+/// Resolve the private CLI state file. The environment override is reserved
+/// for isolated test and benchmark harnesses and is intentionally not a CLI
+/// option.
+fn config_path() -> std::path::PathBuf {
+    std::env::var_os("CROWDB_CLI_STATE").map_or_else(
+        || {
+            crowdb_protocol::port::namespace::runtime_root()
+                .join("persistent")
+                .join("console")
+                .join("crowdb-kv.db.toml")
+        },
+        std::path::PathBuf::from,
+    )
 }
 
 /// Persist the config from an [`OpContext`] back to the config file.
-pub(crate) fn commit_config(cli: &Cli, ctx: &OpContext) -> Result<(), ExitCode> {
-    let path = config_path(cli);
+pub(crate) fn commit_config(_cli: &Cli, ctx: &OpContext) -> Result<(), ExitCode> {
+    let path = config_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             eprintln!("error: create config dir {}: {e}", parent.display());

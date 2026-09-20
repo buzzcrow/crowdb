@@ -36,7 +36,7 @@ async fn connect(
     diskio_rpc_workers: u32,
 ) -> Result<ChunkIoClient, ExitCode> {
     let config = crate::commands::load_config(cli)?;
-    let mut seeds = vec![format!("http://{}:{}", cli.sysmd_ip, cli.sysmd_port)];
+    let mut seeds = vec![format!("http://{}:{}", cli.system_ip, cli.system_port)];
     for server in config
         .servers
         .iter()
@@ -121,9 +121,7 @@ async fn run_large_write(cli: &Cli, args: ChunkioArgs) -> ExitCode {
     )
     .await;
     metrics.stop().await;
-    if !output(cli, &result, || print_large_write(&args, &result)) {
-        return ExitCode::FAILURE;
-    }
+    print_large_write(&args, &result);
     success(result.errors, result.incomplete_objects)
 }
 
@@ -177,9 +175,7 @@ async fn run_small_write(cli: &Cli, args: ChunkioSmallWriteArgs) -> ExitCode {
     )
     .await;
     metrics.stop().await;
-    if !output(cli, &result, || print_small_write(&args, &result)) {
-        return ExitCode::FAILURE;
-    }
+    print_small_write(&args, &result);
     success(result.errors, result.incomplete_objects)
 }
 
@@ -232,28 +228,8 @@ async fn run_read(cli: &Cli, args: ChunkioReadArgs, workload: ReadBenchmarkWorkl
     )
     .await;
     metrics.stop().await;
-    if !output(cli, &result, || print_read(workload, &args, &result)) {
-        return ExitCode::FAILURE;
-    }
+    print_read(workload, &args, &result);
     success(result.errors, result.incomplete_reads)
-}
-
-fn output<T: serde::Serialize>(cli: &Cli, result: &T, print_text: impl FnOnce()) -> bool {
-    if cli.json {
-        match serde_json::to_string_pretty(result) {
-            Ok(json) => {
-                println!("{json}");
-                true
-            }
-            Err(error) => {
-                eprintln!("encode chunkio result: {error}");
-                false
-            }
-        }
-    } else {
-        print_text();
-        true
-    }
 }
 
 fn success(errors: u64, incomplete: u64) -> ExitCode {
