@@ -19,7 +19,7 @@ the cuObject data endpoint only in AccessServer would also reintroduce a network
 and host-memory bounce for bytes physically owned by DiskIO nodes.
 
 The compatible extension boundary and distributed flow are
-`doc/design/accessserver/design-crowdb-access-server-accelerated-transfer.md`.
+`doc/design/access-server/s3/design-crowdb-access-s3-rdma.md`.
 NVIDIA's documented architecture places control in the gateway and cuObjServer
 payload operations in data nodes.
 

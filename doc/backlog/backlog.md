@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R177** — Bump this line in the same commit when adding a new item.
+**Next R number: R186** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -55,6 +55,47 @@ cuObject/RDMA acceleration after the TCP baseline is correct and measured.
   stable.** Keep acceleration in a separate optional library and requirement;
   AccessServer coordinates while DiskIO-owned cuObjServer endpoints transfer
   parallel logical spans directly to or from client registered memory.
+
+### Planned — Native Iceberg storage
+
+R177 is the program blueprint and resolves the shared design questions. R178
+through R184 form the correctness milestone; R185 is a later cache optimization.
+
+- **[R177](R177-access-iceberg-catalog-foundation.md)** — native Iceberg storage
+  blueprint — Area: access server / Iceberg / Chunk-KV / chunk I/O — Fix the
+  authority model, v1/v2/v3 core profile, program invariants, requirement order,
+  and all cross-cutting design decisions.
+- **[R178](R178-access-iceberg-catalog-domain.md)** — catalog domain and service
+  foundation — Area: access server / Iceberg / Chunk-KV — Build the Iceberg
+  library, one active CatalogId domain, management lifecycle, key/value envelope,
+  server wiring, and `/v1/config` baseline.
+- **[R179](R179-access-iceberg-namespace.md)** — namespace authority and REST
+  operations — Area: access server / Iceberg / Chunk-KV — Add stable NamespaceId,
+  multipart identifiers, properties, bounded listing, and fenced empty-only drop.
+- **[R180](R180-access-iceberg-fileio.md)** — native immutable files and FileIO —
+  Area: access server / Iceberg / chunk I/O — Add immutable metadata, manifest,
+  data, delete, deletion-vector, and statistics files; streaming/range I/O;
+  durable multipart; delegated access; and metadata projections.
+- **[R181](R181-access-iceberg-table-lifecycle.md)** — table metadata and lifecycle
+  — Area: access server / Iceberg / Chunk-KV — Add stable TableId, v1/v2/v3
+  metadata validation, list/load, cross-namespace rename, and logical drop.
+- **[R182](R182-access-iceberg-table-commit.md)** — atomic table commits and
+  recovery — Area: access server / Iceberg / Chunk-KV / chunk I/O — Add create,
+  staged create, complete requirements/updates, version upgrades, head CAS,
+  idempotency, conflict classification, and crash recovery.
+- **[R183](R183-access-iceberg-reclamation.md)** — reachability and bounded
+  reclamation — Area: access server / Iceberg / chunk I/O — Prove v1/v2/v3
+  snapshot and operation reachability before reclaiming candidates, purged tables,
+  staged files, or retired catalogs.
+- **[R184](R184-access-iceberg-rest-conformance.md)** — REST integration and core
+  conformance — Area: access server / Iceberg — Compose the public REST service,
+  authentication, exact endpoint discovery and errors, compatibility kit, official
+  clients, and compute-engine smoke tests.
+- **[R185](R185-access-iceberg-cache-invalidation.md)** — bounded cache and
+  invalidation — Area: access server / Iceberg / Group 0 / Chunk-KV — **Deferred
+  until R178–R184 stabilize and establish an uncached baseline.** Add one budgeted
+  cache manager, qualified entries, internal-RPC invalidation, and TTL safety nets.
+
 ### High Priority
 
 - **[R103](R103-chunkdb-range-migration.md)** — chunkdb range ownership

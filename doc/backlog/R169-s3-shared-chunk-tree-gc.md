@@ -18,7 +18,7 @@ age-based deletion can race snapshots/readers or discard the only recovery
 evidence for an ambiguous operation.
 
 The lifecycle scope is
-`doc/design/accessserver/design-crowdb-access-server-s3.md` §5; generic tree
+`doc/design/access-server/s3/design-crowdb-access-s3.md` §5; generic tree
 strip reclamation is R147.
 
 ## Solution

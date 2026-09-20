@@ -7,11 +7,11 @@ Accelerated Transfer is an optional data plane for cuObject-compatible S3 and
 native Dataset operations. It is compiled and operated independently from the
 basic protocol implementations.
 
-Depends on: [Access Server](design-crowdb-access-server.md),
-[S3](design-crowdb-access-server-s3.md),
-[Dataset](design-crowdb-access-server-dataset.md),
-[DiskIO](../diskio/design-crowdb-diskio.md), and
-[RPC RDMA](../rpc/design-crowdb-rpc-rdma.md).
+Depends on: [Access Server](../design-crowdb-access-server.md),
+[S3](design-crowdb-access-s3.md),
+[Dataset](../dataset/design-crowdb-access-dataset.md),
+[DiskIO](../../diskio/design-crowdb-diskio.md), and
+[RPC RDMA](../../rpc/design-crowdb-rpc-rdma.md).
 
 Satisfies: direct transfer between DiskIO-owned buffers and client registered
 memory without an Access Server payload bounce.

@@ -59,15 +59,17 @@ cluster directory restarts the same cluster with its existing data and port
 assignments. A non-empty directory that is not a CROWDB cluster is rejected
 without modification.
 
-The command prints the S3 endpoint, running service count, and cluster root.
-The default local endpoint is:
+The command prints the S3 endpoint, Web management URL, running service count,
+and cluster root. The default local endpoints are:
 
 ```bash
 S3_ENDPOINT=http://127.0.0.1:16000
+WEB_URL=http://127.0.0.1:14000
 ```
 
-If the command prints a different endpoint because the default port is already
-assigned, update `S3_ENDPOINT` before using the `curl` examples.
+If the command prints different endpoints because a default port is already
+assigned, use the printed values. Open `WEB_URL` for the topology, service, and
+cluster management console.
 
 Inspect the recorded processes without changing them:
 
@@ -75,8 +77,8 @@ Inspect the recorded processes without changing them:
 crowdb-cli s3 cluster status --root "$S3_ROOT"
 ```
 
-Cluster lifecycle is a local CLI operation; it does not currently have an HTTP
-management endpoint.
+The CLI owns S3 mini-cluster lifecycle. The bundled Web service loads that
+mini-cluster's console registry and presents its running services.
 
 ### 1.2 Bucket operations
 
@@ -250,7 +252,8 @@ IP=127.0.0.1
 PORT=14000
 ```
 
-Before using these commands:
+An S3 mini-cluster already starts `crowdb-web` with its persisted registry.
+For a separately managed cluster, before using these commands:
 
 - Start `crowdb-web` with `crowdb-web --port 14000`. Add `--test-mode` for an
   in-memory console configuration that is lost on restart.

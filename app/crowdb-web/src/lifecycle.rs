@@ -548,18 +548,24 @@ pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<Server
         .servers
         .iter()
         .map(|s| {
-            let pid = if s.service_type == ServiceType::Diskdb {
-                s.node_id.and_then(|n| state.diskdb_runtime_pid(n.to_string()))
-            } else {
-                s.node_id.and_then(|n| state.runtime_pid(n.to_string()))
+            let runtime_pid = match s.node_id {
+                Some(node_id) if s.service_type == ServiceType::Diskdb => {
+                    state.diskdb_runtime_pid(node_id.to_string())
+                }
+                Some(node_id) => state.runtime_pid(node_id.to_string()),
+                None => None,
             };
+            let pid = runtime_pid.or_else(|| {
+                s.pid
+                    .filter(|pid| crowdb_console_shared::lifecycle::process_is_alive(*pid))
+            });
             // KV health comes from the monitor cache (probed via the KV
             // server's /topology), overridden to Down when no PID is
             // tracked. DDB has no topology probe, so its health is derived
             // from PID presence alone — the shared node record reflects KV
             // health and must not flip the DDB badge when KV is stopped or
             // restarted while DDB keeps running.
-            let health = if s.service_type == ServiceType::Diskdb {
+            let health = if s.node_id.is_none() || s.service_type == ServiceType::Diskdb {
                 if pid.is_some() {
                     NodeHealth::Up
                 } else {
@@ -568,7 +574,7 @@ pub async fn http_list_servers(State(state): State<AppState>) -> Json<Vec<Server
             } else if pid.is_some() {
                 s.node_id
                     .and_then(|n| snap.get(&n))
-                    .map_or(NodeHealth::Unknown, |rec| rec.health)
+                    .map_or(NodeHealth::Up, |rec| rec.health)
             } else {
                 NodeHealth::Down
             };
