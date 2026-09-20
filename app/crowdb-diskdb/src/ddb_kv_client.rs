@@ -245,6 +245,29 @@ impl DdbKvClient {
             .map(|outcome| outcome.revision)
     }
 
+    /// Replace one busy record only when its observed revision remains current.
+    pub async fn replace_busy_cas(
+        &self,
+        bind: Bind,
+        disk_id: &DiskId,
+        zone_index: u32,
+        unit_offset: u64,
+        expected_revision: u64,
+        value: &BusyBlockValue,
+    ) -> Result<u64> {
+        let key = BusyBlockKey {
+            disk_id: *disk_id,
+            zone_index,
+            unit_offset,
+        };
+        let bytes = bincode::serialize(value).expect("serialize BusyBlockValue");
+        let (store_id, group_id) = bind;
+        self.kv
+            .put_cas(store_id, group_id, &key.to_bytes(), &bytes, expected_revision)
+            .await
+            .map(|outcome| outcome.revision)
+    }
+
     /// Persist a batch of busy-block records in one `batch_write`
     /// (multi-block allocate; one round-trip per data group).
     pub async fn persist_busy_batch(

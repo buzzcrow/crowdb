@@ -45,6 +45,7 @@ fn catalog(
                     high: generation,
                     low: *owner,
                 },
+                tail_overlay: None,
             },
             transition_id: None,
         })

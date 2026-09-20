@@ -3,6 +3,7 @@
 
 // UringEngine tests: write/read/fsync round-trip, in-flight tracking,
 // cancel_fd, O_DIRECT alignment check.
+#include "crowdb-common/runtime_path.h"
 #include "engine/uring/uring_engine.h"
 
 #include <gtest/gtest.h>
@@ -29,7 +30,7 @@ namespace
 {
 std::string temp_path()
 {
-    std::string root = "/tmp/crowdb-diskio-uring-tests";
+    std::string root = crowdb::common::test_runtime_path("crowdb-diskio-uring").string();
     std::filesystem::create_directories(root);
     char tmpl[128];
     std::snprintf(tmpl, sizeof(tmpl), "%s/dx_XXXXXX", root.c_str());

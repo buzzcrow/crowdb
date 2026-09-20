@@ -2,7 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 //! CLI e2e (R126 direct-to-group-0): `cluster status` and `cluster rack
-//! list` route directly through `--sysmd-ip` / `--sysmd-port` against a
+//! list` route directly through `--system-ip` / `--system-port` against a
 //! real `crowdb-kv-server` with group 0 initialized — no `crowdb-web`
 //! intermediary.
 

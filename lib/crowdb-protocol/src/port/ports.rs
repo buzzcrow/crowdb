@@ -42,13 +42,16 @@
 //!   - `15100`–`15599` — HTTP management API (stride 1)
 //!   - `15200`–`15699` — crowdb-rpc listener (stride 1)
 //!   - `15700`–`15999` — spare
+//! - `16000`–`16999` — crowdb-access-server (prefix 16)
+//!   - `16000`–`16499` — S3 HTTP service (stride 1)
+//!   - `16500`–`16999` — spare
 //!
 //! The group-0 kv-server mgmt port (`10000`) is the famous bootstrap
 //! discovery port — any client can contact group-0 to read the service
 //! registry and learn all living services' IP + port.
 //!
 //! Future service types should pick a base outside these ranges (next
-//! free prefix: 15xxx) and document it here.
+//! free prefix: 17xxx) and document it here.
 
 /// crowdb-kv-server HTTP management API — base port. Also the famous
 /// group-0 bootstrap discovery port.
@@ -92,6 +95,9 @@ pub const CHUNK_KV_HTTP_BASE: u16 = 15100;
 /// crowdb-chunk-kv-server crowdb-rpc listener — base port.
 pub const CHUNK_KV_RPC_BASE: u16 = 15200;
 
+/// crowdb-access-server S3 HTTP service — base port.
+pub const ACCESS_SERVER_HTTP_BASE: u16 = 16000;
+
 /// CROWDB service type for default port allocation.
 ///
 /// Use [`ServicePort::port`] to compute the listen port for the
@@ -125,9 +131,31 @@ pub enum ServicePort {
     ChunkKvHttp,
     /// crowdb-chunk-kv-server crowdb-rpc listener.
     ChunkKvRpc,
+    /// crowdb-access-server S3 HTTP service.
+    AccessServerHttp,
 }
 
 impl ServicePort {
+    /// Stable manifest key for this listener kind.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::KvServerMgmt => "kv_server_mgmt",
+            Self::KvServerListen => "kv_server_listen",
+            Self::DiskdbListen => "diskdb_listen",
+            Self::DiskdbHttp => "diskdb_http",
+            Self::DiskdbRpc => "diskdb_rpc",
+            Self::ChunkdbListen => "chunkdb_listen",
+            Self::ChunkdbHttp => "chunkdb_http",
+            Self::ChunkdbRpc => "chunkdb_rpc",
+            Self::DiskioRpc => "diskio_rpc",
+            Self::Web => "web",
+            Self::ChunkKvHttp => "chunk_kv_http",
+            Self::ChunkKvRpc => "chunk_kv_rpc",
+            Self::AccessServerHttp => "access_server_http",
+        }
+    }
+
     /// Base (start) port for this service type.
     #[must_use]
     pub const fn base(self) -> u16 {
@@ -144,6 +172,7 @@ impl ServicePort {
             Self::Web => WEB_BASE,
             Self::ChunkKvHttp => CHUNK_KV_HTTP_BASE,
             Self::ChunkKvRpc => CHUNK_KV_RPC_BASE,
+            Self::AccessServerHttp => ACCESS_SERVER_HTTP_BASE,
         }
     }
 

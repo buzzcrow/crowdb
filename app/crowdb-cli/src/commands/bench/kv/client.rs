@@ -38,8 +38,8 @@ impl Default for KvClientTunables {
     }
 }
 
-/// Build a `CrowdbKvClient` from the CLI's `--config` + `--sysmd-*` flags
-/// with the given `read_endpoint_policy`. Seeds the group-0 leader hint
+/// Build a `CrowdbKvClient` from private CLI state plus `--system-*`
+/// with the given `read_endpoint_policy`. Seeds the system-group hint
 /// from the first config server's RPC URL (same logic as `op_context`).
 ///
 /// # Errors
@@ -50,8 +50,8 @@ pub(crate) fn build_kv_client(
     tunables: &KvClientTunables,
 ) -> Result<CrowdbKvClient, ExitCode> {
     let config = crate::commands::load_config(cli)?;
-    let mgmt_url = format!("http://{}:{}", cli.sysmd_ip, cli.sysmd_port);
-    let group0_endpoint = format!("{}:{}", cli.sysmd_ip, cli.sysmd_port);
+    let mgmt_url = format!("http://{}:{}", cli.system_ip, cli.system_port);
+    let group0_endpoint = format!("{}:{}", cli.system_ip, cli.system_port);
 
     let mut seeds = vec![mgmt_url];
     for server in &config.servers {

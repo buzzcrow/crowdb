@@ -77,7 +77,11 @@ impl AppState {
         let runtime_root = path
             .as_ref()
             .and_then(|path| path.parent().map(std::path::Path::to_path_buf))
-            .unwrap_or_else(|| PathBuf::from("runtime-data"));
+            .unwrap_or_else(|| {
+                crowdb_protocol::port::namespace::runtime_root()
+                    .join("persistent")
+                    .join("console")
+            });
         let engine = path.map(|path| Arc::new(TomlFileEngine::new(path)) as Arc<dyn ConsoleConfigEngine>);
         Self::with_config_engine(config, engine, runtime_root)
     }
@@ -602,11 +606,11 @@ mod tests {
         std::env::set_current_dir(&root).unwrap();
 
         let state =
-            AppState::with_config_engine(ConsoleConfig::default(), None, PathBuf::from("runtime-data"));
+            AppState::with_config_engine(ConsoleConfig::default(), None, PathBuf::from("example-runtime"));
         let workspace = state.prepare_node_workspace("n1").unwrap();
 
         assert!(workspace.is_absolute());
-        assert!(workspace.ends_with(PathBuf::from("runtime-data/N-n1")));
+        assert!(workspace.ends_with(PathBuf::from("example-runtime/N-n1")));
         assert!(workspace.join("bin").is_dir());
         assert!(workspace.join("log").is_dir());
         assert!(workspace.join("waldata").is_dir());

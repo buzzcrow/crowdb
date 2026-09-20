@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 #include "dio_config.h"
+#include "crowdb-common/runtime_path.h"
 
 #include <gtest/gtest.h>
 #include <unistd.h>
@@ -19,7 +20,7 @@ class TempConfig
 {
   public:
     explicit TempConfig(const std::string &content)
-        : path_(std::filesystem::temp_directory_path() /
+        : path_(crowdb::common::test_runtime_path("crowdb-diskio-config") /
                 ("crowdb-diskio-config-" + std::to_string(::getpid()) + "-" + std::to_string(next_id_++) + ".toml"))
     {
         std::ofstream output(path_);

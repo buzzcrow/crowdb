@@ -669,3 +669,69 @@ pub async fn commit_blocks(
     }
     Ok(u32::try_from(unique.len()).unwrap_or(u32::MAX))
 }
+
+/// Mark exact committed busy-block incarnations corrupt after data integrity
+/// verification has proved their contents invalid.
+///
+/// Each update reads and CASes the durable record. This prevents a delayed
+/// report from changing a newly allocated incarnation at the same location.
+pub async fn mark_blocks_corrupt(
+    dg: &Arc<DdbDiskGroup>,
+    segments: &[Segment],
+    kv: &DdbKvClient,
+) -> std::result::Result<u32, FreeError> {
+    let bind = dg.bind();
+    let mut seen = std::collections::HashSet::with_capacity(segments.len());
+    let mut marked = 0u32;
+    for segment in segments {
+        let disk_id = segment.disk_id.ok_or_else(|| {
+            FreeError::Kv(Arc::new(crowdb_kv_client::Error::SysdataDecode {
+                key: "segment.disk_id".into(),
+                reason: "missing disk ID".into(),
+            }))
+        })?;
+        if !seen.insert((
+            disk_id,
+            segment.zone_index,
+            segment.unit_offset,
+            segment.allocation_ts,
+        )) {
+            continue;
+        }
+        let Some((mut busy, revision)) = kv
+            .get_busy(bind, &disk_id, segment.zone_index, segment.unit_offset)
+            .await?
+        else {
+            return Err(FreeError::NotBusy {
+                disk_id,
+                zone_index: segment.zone_index,
+                unit_offset: segment.unit_offset,
+            });
+        };
+        if busy.allocation_ts != segment.allocation_ts
+            || busy.unit_count != segment.unit_count
+            || busy.owner_chunk != segment.owner_chunk
+        {
+            return Err(FreeError::IncarnationMismatch);
+        }
+        if busy.commit_state != CommitState::Committed as i32 {
+            return Err(FreeError::Conflict);
+        }
+        if busy.state == BlockState::Corrupt as i32 {
+            marked = marked.saturating_add(1);
+            continue;
+        }
+        busy.state = BlockState::Corrupt as i32;
+        kv.replace_busy_cas(
+            bind,
+            &disk_id,
+            segment.zone_index,
+            segment.unit_offset,
+            revision,
+            &busy,
+        )
+        .await?;
+        marked = marked.saturating_add(1);
+    }
+    Ok(marked)
+}

@@ -15,7 +15,7 @@ use std::process::ExitCode;
 
 use clap::Subcommand;
 
-use crate::commands::{commit_config, op_context, print_json};
+use crate::commands::{commit_config, op_context};
 use crate::Cli;
 
 #[derive(Subcommand, Debug)]
@@ -197,9 +197,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     if let Err(c) = commit_config(cli, &ctx) {
                         return c;
                     }
-                    if cli.json {
-                        return print_json(cli, &summary);
-                    }
                     println!(
                         "cluster initialized: store {}, group {}, {} nodes",
                         summary.store_id,
@@ -305,9 +302,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                         if let Err(code) = commit_config(cli, &ctx) {
                             return code;
                         }
-                        if cli.json {
-                            return print_json(cli, &summary);
-                        }
                         println!(
                             "local-deploy combined: {} KV nodes, {} racks, {} DiskDB, {} ChunkDB, {} DiskIO",
                             summary.kv_nodes,
@@ -365,9 +359,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                         if let Err(c) = commit_config(cli, &ctx) {
                             return c;
                         }
-                        if cli.json {
-                            return print_json(cli, &summary);
-                        }
                         println!(
                             "local-deploy complete: {} nodes (rack {}, nodes [{}]), group 0 bootstrapped",
                             summary.node_count,
@@ -411,9 +402,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                         if let Err(c) = commit_config(cli, &ctx) {
                             return c;
                         }
-                        if cli.json {
-                            return print_json(cli, &summary);
-                        }
                         println!(
                             "local-deploy rpc: port={}, pid={}, io_engines={}, io_workers={}, nagle={}",
                             summary.port, summary.pid, summary.io_engines, summary.io_workers, summary.nagle
@@ -452,9 +440,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     Ok(summary) => {
                         if let Err(code) = commit_config(cli, &ctx) {
                             return code;
-                        }
-                        if cli.json {
-                            return print_json(cli, &summary);
                         }
                         println!(
                             "local-deploy diskdb: {} instances, {} disk-groups, {} disks, data-groups {:?}",
@@ -496,9 +481,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                         if let Err(code) = commit_config(cli, &ctx) {
                             return code;
                         }
-                        if cli.json {
-                            return print_json(cli, &summary);
-                        }
                         println!("local-deploy chunkdb: {} instances", summary.instance_count);
                         ExitCode::SUCCESS
                     }
@@ -525,9 +507,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                     if let Err(c) = commit_config(cli, &ctx) {
                         return c;
                     }
-                    if !cli.json {
-                        println!("cluster destroy complete");
-                    }
+                    println!("cluster destroy complete");
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -543,9 +523,7 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             };
             match crowdb_console_shared::ops::cluster::reset(&ctx).await {
                 Ok(()) => {
-                    if !cli.json {
-                        println!("cluster reset complete");
-                    }
+                    println!("cluster reset complete");
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -578,9 +556,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
                             return code;
                         }
                     }
-                    if cli.json {
-                        return print_json(cli, &result);
-                    }
                     println!(
                         "cluster clean: wiped {} nodes, restarted {} services, leader = {}",
                         result.wiped_nodes, result.restarted_services, result.new_leader
@@ -600,9 +575,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             };
             match crowdb_console_shared::ops::cluster::status(&ctx).await {
                 Ok(stores) => {
-                    if cli.json {
-                        return print_json(cli, &stores);
-                    }
                     if stores.is_empty() {
                         println!("(no stores)");
                     } else {
@@ -642,9 +614,6 @@ pub async fn run_cluster_verb(cli: &Cli, verb: ClusterVerb) -> ExitCode {
             };
             match crowdb_console_shared::ops::cluster::topology(&ctx, node_id).await {
                 Ok(stores) => {
-                    if cli.json {
-                        return print_json(cli, &stores);
-                    }
                     for s in &stores {
                         println!(
                             "store {} listen={}",
@@ -675,10 +644,8 @@ fn nonzero<T: Copy + PartialEq + Default>(v: T) -> Option<T> {
     (v != T::default()).then_some(v)
 }
 
-/// Resolve the `local-deploy` workspace from the CLI's per-invocation
-/// log dir. The workspace lands at `<log_dir>/deploy/` so server data
-/// dirs stay separate from the CLI's own log files. Returns `None`
-/// (falling back to the lib default) when `log_dir` is unset.
+/// Resolve a command-owned deployment workspace when one is configured.
+/// Ordinary CLI commands leave `log_dir` empty and use the library default.
 fn deploy_workspace(cli: &Cli) -> Option<std::path::PathBuf> {
     if cli.log_dir.as_os_str().is_empty() {
         None

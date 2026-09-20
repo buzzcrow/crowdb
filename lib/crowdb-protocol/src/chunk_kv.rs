@@ -36,8 +36,9 @@ pub enum ChunkKvRangeCatalogPartitionState {
     Prepared,
     Serving,
     SplitPreparing,
-    SplitFenced,
+    SplitFinalizing,
     Transferring,
+    TargetCatchingUp,
     Retired,
     Faulted,
 }
@@ -49,9 +50,26 @@ pub struct OwnerDescriptor {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TailOverlayArtifact {
+    pub source_partition_id: Id128,
+    pub source_epoch: u64,
+    pub source_stream_name: StreamName,
+    pub source_stream_manifest_generation: u64,
+    pub replay_offset: u64,
+    pub cutover_offset: u64,
+    pub base_root_manifest_generation: u64,
+    pub base_tree_manifest: u64,
+    pub base_applied_seq: u64,
+    pub cutover_seq: u64,
+    pub target_stream_start_seq: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartitionArtifact {
     pub tree_id: u64,
     pub stream_name: StreamName,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail_overlay: Option<TailOverlayArtifact>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -346,9 +364,13 @@ pub struct ChunkKvInstanceObservation {
 pub enum TransferPhase {
     #[default]
     Planned,
+    SourcePreparing,
     AwaitingFence,
     TargetPreparing,
     TargetPrepared,
+    TargetCatchingUp,
+    CatchupPublished,
+    TargetReady,
     CatalogCommitted,
     Aborted,
 }
@@ -359,6 +381,7 @@ pub enum AuthorityReleaseProof {
         source_instance_id: u64,
         source_epoch: u64,
         durable_tail: u64,
+        durable_tail_offset: u64,
     },
     LeaseExpired {
         activation_not_before_ms: u64,
@@ -374,6 +397,15 @@ pub struct TargetReadinessProof {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferReadinessLimits {
+    pub max_tail_records: u64,
+    pub max_tail_bytes: u64,
+    pub max_estimated_catchup_ms: u64,
+    pub prepare_deadline_ms: u64,
+    pub forwarding_grace_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferTransition {
     pub transition_id: Id128,
     pub partition_id: Id128,
@@ -382,13 +414,18 @@ pub struct TransferTransition {
     pub source_epoch: u64,
     pub target: OwnerDescriptor,
     pub target_epoch: u64,
+    /// Current source tree and stream identity.
     pub artifact: PartitionArtifact,
+    /// Target-owned stream plus the pinned source base/tail overlay.
+    pub target_artifact: PartitionArtifact,
+    pub readiness_limits: TransferReadinessLimits,
     #[serde(default)]
     pub planned_at_ms: u64,
     pub old_grant_expires_at_ms: u64,
     pub phase: TransferPhase,
     pub release_proof: Option<AuthorityReleaseProof>,
     pub readiness_proof: Option<TargetReadinessProof>,
+    pub catchup_proof: Option<TargetReadinessProof>,
     pub failure: Option<String>,
 }
 
@@ -411,6 +448,18 @@ impl TransferTransition {
             && self.target_epoch > self.source_epoch
             && self.artifact.tree_id != 0
             && self.artifact.stream_name != StreamName::default()
+            && self.target_artifact.tree_id == self.artifact.tree_id
+            && self.target_artifact.stream_name != StreamName::default()
+            && (self.target_artifact.stream_name != self.artifact.stream_name
+                || matches!(
+                    self.release_proof,
+                    Some(AuthorityReleaseProof::LeaseExpired { .. })
+                ))
+            && self.readiness_limits.max_tail_records != 0
+            && self.readiness_limits.max_tail_bytes != 0
+            && self.readiness_limits.max_estimated_catchup_ms != 0
+            && self.readiness_limits.prepare_deadline_ms >= self.planned_at_ms
+            && self.readiness_limits.forwarding_grace_ms != 0
             && self
                 .range
                 .end
@@ -419,39 +468,55 @@ impl TransferTransition {
         if !valid_identity {
             return Err(ChunkKvProtocolError::InvalidTransferTransition);
         }
-        if let Some(proof) = &self.release_proof {
-            match proof {
-                AuthorityReleaseProof::ExplicitFence {
-                    source_instance_id,
-                    source_epoch,
-                    ..
-                } if *source_instance_id == self.source.instance_id && *source_epoch == self.source_epoch => {
-                }
-                AuthorityReleaseProof::LeaseExpired {
-                    activation_not_before_ms,
-                } if *activation_not_before_ms >= self.old_grant_expires_at_ms => {}
-                _ => return Err(ChunkKvProtocolError::InvalidTransferTransition),
-            }
+        if self
+            .release_proof
+            .as_ref()
+            .is_some_and(|proof| !valid_transfer_release(self, proof))
+        {
+            return Err(ChunkKvProtocolError::InvalidTransferTransition);
         }
         if let Some(proof) = &self.readiness_proof {
+            if !valid_initial_target_readiness(self, proof) {
+                return Err(ChunkKvProtocolError::InvalidTransferTransition);
+            }
+        }
+        if let Some(proof) = &self.catchup_proof {
             if proof.target_instance_id != self.target.instance_id
                 || proof.target_epoch != self.target_epoch
-                || proof.artifact != self.artifact
-                || matches!(
-                    self.release_proof,
-                    Some(AuthorityReleaseProof::ExplicitFence { durable_tail, .. })
-                        if proof.durable_tail < durable_tail
-                )
+                || proof.artifact != self.target_artifact
+                || !match self.release_proof {
+                    Some(AuthorityReleaseProof::ExplicitFence { durable_tail, .. }) => {
+                        proof.durable_tail == durable_tail
+                    }
+                    Some(AuthorityReleaseProof::LeaseExpired { .. }) => true,
+                    None => false,
+                }
             {
                 return Err(ChunkKvProtocolError::InvalidTransferTransition);
             }
         }
         let fields_match_phase = match self.phase {
-            TransferPhase::Planned => self.release_proof.is_none() && self.readiness_proof.is_none(),
-            TransferPhase::AwaitingFence => self.readiness_proof.is_none(),
-            TransferPhase::TargetPreparing => self.release_proof.is_some() && self.readiness_proof.is_none(),
-            TransferPhase::TargetPrepared | TransferPhase::CatalogCommitted => {
-                self.release_proof.is_some() && self.readiness_proof.is_some()
+            TransferPhase::Planned | TransferPhase::SourcePreparing => {
+                self.release_proof.is_none() && self.readiness_proof.is_none() && self.catchup_proof.is_none()
+            }
+            TransferPhase::TargetPreparing => {
+                (self.target_artifact.tail_overlay.is_some() && self.release_proof.is_none()
+                    || self.target_artifact == self.artifact
+                        && matches!(
+                            self.release_proof,
+                            Some(AuthorityReleaseProof::LeaseExpired { .. })
+                        ))
+                    && self.readiness_proof.is_none()
+                    && self.catchup_proof.is_none()
+            }
+            TransferPhase::TargetPrepared | TransferPhase::AwaitingFence => {
+                self.release_proof.is_none() && self.readiness_proof.is_some() && self.catchup_proof.is_none()
+            }
+            TransferPhase::TargetCatchingUp | TransferPhase::CatchupPublished => {
+                self.release_proof.is_some() && self.readiness_proof.is_some() && self.catchup_proof.is_none()
+            }
+            TransferPhase::TargetReady | TransferPhase::CatalogCommitted => {
+                self.release_proof.is_some() && self.readiness_proof.is_some() && self.catchup_proof.is_some()
             }
             TransferPhase::Aborted => self.failure.as_ref().is_some_and(|failure| !failure.is_empty()),
         };
@@ -467,7 +532,7 @@ pub enum SplitPhase {
     #[default]
     Planned,
     ParentPreparing,
-    ChildrenPrepared,
+    ChildPrepared,
     CatalogCommitted,
     Aborted,
 }
@@ -484,8 +549,18 @@ pub struct SplitChildAssignment {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SplitReadinessProof {
     pub cutover_seq: u64,
-    pub left_applied_seq: u64,
-    pub right_applied_seq: u64,
+    pub parent_next_epoch: u64,
+    /// Durable retained-parent tree/WAL identity produced by the split session.
+    pub retained_parent_artifact: PartitionArtifact,
+    pub retained_parent_tree_manifest: u64,
+    pub retained_parent_root_manifest_generation: u64,
+    pub retained_parent_applied_seq: u64,
+    pub child_applied_seq: u64,
+    pub child_tree_manifest: u64,
+    pub child_root_manifest_generation: u64,
+    /// Shared historical parent stream required to recover the retained half.
+    pub retained_parent_tail_overlay: TailOverlayArtifact,
+    pub child_tail_overlay: TailOverlayArtifact,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -496,9 +571,12 @@ pub struct SplitTransition {
     pub parent_owner: OwnerDescriptor,
     pub parent_epoch: u64,
     pub parent_artifact: PartitionArtifact,
+    /// New durable identity for the retained half.  The pre-split parent
+    /// artifact remains the shared-view source only and is never republished.
+    pub retained_parent_artifact: PartitionArtifact,
+    pub parent_next_epoch: u64,
     pub split_key: Vec<u8>,
-    pub left: SplitChildAssignment,
-    pub right: SplitChildAssignment,
+    pub child: SplitChildAssignment,
     #[serde(default)]
     pub planned_at_ms: u64,
     pub phase: SplitPhase,
@@ -512,55 +590,105 @@ impl SplitTransition {
     /// # Errors
     ///
     /// Returns an error for invalid identities, bounds, artifacts, or phase
-    /// fields that cannot represent one atomic parent-to-children cutover.
+    /// fields that cannot represent one atomic retained-parent-to-child cutover.
     pub fn validate(&self) -> Result<(), ChunkKvProtocolError> {
         let valid_identity = self.transition_id != Id128::default()
             && self.parent_id != Id128::default()
-            && self.left.partition_id != Id128::default()
-            && self.right.partition_id != Id128::default()
-            && self.parent_id != self.left.partition_id
-            && self.parent_id != self.right.partition_id
-            && self.left.partition_id != self.right.partition_id
+            && self.child.partition_id != Id128::default()
+            && self.parent_id != self.child.partition_id
             && self.parent_owner.instance_id != 0
             && !self.parent_owner.rpc_endpoint.is_empty()
             && self.parent_epoch != 0
+            && self.parent_next_epoch > self.parent_epoch
             && valid_artifact(&self.parent_artifact)
-            && valid_split_child(&self.left)
-            && valid_split_child(&self.right);
+            && valid_artifact(&self.retained_parent_artifact)
+            && valid_split_child(&self.child);
         let exact_ranges = self.split_key > self.parent_range.start
             && self
                 .parent_range
                 .end
                 .as_ref()
                 .map_or(true, |end| self.split_key < *end)
-            && self.left.range.start == self.parent_range.start
-            && self.left.range.end.as_ref() == Some(&self.split_key)
-            && self.right.range.start == self.split_key
-            && self.right.range.end == self.parent_range.end;
+            && self.child.range.start == self.split_key
+            && self.child.range.end == self.parent_range.end;
         if !valid_identity || !exact_ranges {
-            return Err(ChunkKvProtocolError::InvalidSplitTransition);
+            return Err(ChunkKvProtocolError::InvalidSplitTransition(
+                "identity, artifact, epoch, or range coverage",
+            ));
         }
         if let Some(proof) = &self.readiness_proof {
-            if proof.cutover_seq == 0
-                || proof.left_applied_seq != proof.cutover_seq
-                || proof.right_applied_seq != proof.cutover_seq
+            let invalid_readiness = if proof.cutover_seq == 0 {
+                Some("zero cutover sequence")
+            } else if proof.parent_next_epoch != self.parent_next_epoch {
+                Some("readiness parent epoch")
+            } else if proof.retained_parent_artifact != self.retained_parent_artifact {
+                Some("readiness retained-parent artifact")
+            } else if proof.retained_parent_tree_manifest == 0 {
+                Some("zero retained-parent tree manifest")
+            } else if proof.retained_parent_root_manifest_generation == 0 {
+                Some("zero retained-parent root manifest generation")
+            } else if proof.retained_parent_applied_seq != proof.cutover_seq {
+                Some("retained-parent cutover frontier")
+            } else if proof.child_applied_seq != proof.cutover_seq {
+                Some("child cutover frontier")
+            } else if proof.child_tree_manifest == 0 {
+                Some("zero child tree manifest")
+            } else if proof.child_root_manifest_generation == 0 {
+                Some("zero child root manifest generation")
+            } else if !valid_tail_overlay(&proof.retained_parent_tail_overlay) {
+                Some("retained-parent tail overlay fields")
+            } else if self.retained_parent_artifact.tail_overlay.as_ref()
+                != Some(&proof.retained_parent_tail_overlay)
             {
-                return Err(ChunkKvProtocolError::InvalidSplitTransition);
+                Some("retained-parent tail overlay artifact")
+            } else if proof.retained_parent_tail_overlay.source_partition_id != self.parent_id {
+                Some("retained-parent tail overlay source partition")
+            } else if proof.retained_parent_tail_overlay.source_epoch != self.parent_epoch {
+                Some("retained-parent tail overlay source epoch")
+            } else if proof.retained_parent_tail_overlay.source_stream_name
+                != self.parent_artifact.stream_name
+            {
+                Some("retained-parent tail overlay source stream")
+            } else if proof.retained_parent_tail_overlay.cutover_seq != proof.cutover_seq {
+                Some("retained-parent tail overlay cutover")
+            } else if !self.valid_split_overlay(&proof.child_tail_overlay, &self.child, proof.cutover_seq) {
+                Some("child tail overlay")
+            } else {
+                None
+            };
+            if let Some(reason) = invalid_readiness {
+                return Err(ChunkKvProtocolError::InvalidSplitTransition(reason));
             }
         }
         let fields_match_phase = match self.phase {
             SplitPhase::Planned | SplitPhase::ParentPreparing => {
                 self.readiness_proof.is_none() && self.failure.is_none()
             }
-            SplitPhase::ChildrenPrepared | SplitPhase::CatalogCommitted => {
+            SplitPhase::ChildPrepared | SplitPhase::CatalogCommitted => {
                 self.readiness_proof.is_some() && self.failure.is_none()
             }
             SplitPhase::Aborted => self.failure.as_ref().is_some_and(|failure| !failure.is_empty()),
         };
         if !fields_match_phase {
-            return Err(ChunkKvProtocolError::InvalidSplitTransition);
+            return Err(ChunkKvProtocolError::InvalidSplitTransition(
+                "phase-bound readiness or failure fields",
+            ));
         }
         Ok(())
+    }
+
+    fn valid_split_overlay(
+        &self,
+        overlay: &TailOverlayArtifact,
+        child: &SplitChildAssignment,
+        cutover_seq: u64,
+    ) -> bool {
+        valid_tail_overlay(overlay)
+            && child.artifact.tail_overlay.as_ref() == Some(overlay)
+            && overlay.source_partition_id == self.parent_id
+            && overlay.source_epoch == self.parent_epoch
+            && overlay.source_stream_name == self.parent_artifact.stream_name
+            && overlay.cutover_seq == cutover_seq
     }
 }
 
@@ -887,6 +1015,7 @@ pub enum ChunkKvRpcErrorCode {
     Overloaded,
     WriteStalled,
     Recovering,
+    TargetNotReady,
     LeaseExpired,
     RequestExpired,
     RequestConflict,
@@ -970,8 +1099,8 @@ pub enum ChunkKvProtocolError {
     InvalidRpcRequest,
     #[error("chunk KV transfer transition is invalid")]
     InvalidTransferTransition,
-    #[error("chunk KV split transition is invalid")]
-    InvalidSplitTransition,
+    #[error("chunk KV split transition is invalid: {0}")]
+    InvalidSplitTransition(&'static str),
     #[error("protocol record encoding failed")]
     Encoding,
 }
@@ -984,7 +1113,91 @@ fn valid_name(name: &str) -> bool {
 }
 
 fn valid_artifact(artifact: &PartitionArtifact) -> bool {
-    artifact.tree_id != 0 && artifact.stream_name != StreamName::default()
+    artifact.tree_id != 0
+        && artifact.stream_name != StreamName::default()
+        && artifact.tail_overlay.as_ref().map_or(true, valid_tail_overlay)
+}
+
+fn valid_tail_overlay(overlay: &TailOverlayArtifact) -> bool {
+    overlay.source_partition_id != Id128::default()
+        && overlay.source_epoch != 0
+        && overlay.source_stream_name != StreamName::default()
+        && overlay.source_stream_manifest_generation != 0
+        && overlay.base_root_manifest_generation != 0
+        && overlay.replay_offset <= overlay.cutover_offset
+        && overlay.base_applied_seq <= overlay.cutover_seq
+        && overlay.target_stream_start_seq == overlay.cutover_seq.checked_add(1).unwrap_or(0)
+}
+
+fn valid_initial_target_readiness(transition: &TransferTransition, proof: &TargetReadinessProof) -> bool {
+    if proof.target_instance_id != transition.target.instance_id
+        || proof.target_epoch != transition.target_epoch
+        || !valid_artifact(&proof.artifact)
+        || proof.artifact.tree_id != transition.target_artifact.tree_id
+        || proof.artifact.stream_name != transition.target_artifact.stream_name
+    {
+        return false;
+    }
+    match &transition.release_proof {
+        None => {
+            proof.artifact == transition.target_artifact
+                && proof
+                    .artifact
+                    .tail_overlay
+                    .as_ref()
+                    .is_some_and(|overlay| proof.durable_tail == overlay.cutover_seq)
+        }
+        Some(AuthorityReleaseProof::ExplicitFence { .. }) => match (
+            proof.artifact.tail_overlay.as_ref(),
+            transition.target_artifact.tail_overlay.as_ref(),
+        ) {
+            (Some(prepared), Some(final_overlay)) => {
+                proof.durable_tail == prepared.cutover_seq
+                    && same_transfer_overlay_base(prepared, final_overlay)
+                    && prepared.cutover_seq <= final_overlay.cutover_seq
+                    && prepared.cutover_offset <= final_overlay.cutover_offset
+            }
+            _ => false,
+        },
+        Some(AuthorityReleaseProof::LeaseExpired { .. }) => proof.artifact == transition.target_artifact,
+    }
+}
+
+fn valid_transfer_release(transition: &TransferTransition, proof: &AuthorityReleaseProof) -> bool {
+    match proof {
+        AuthorityReleaseProof::ExplicitFence {
+            source_instance_id,
+            source_epoch,
+            durable_tail,
+            durable_tail_offset,
+        } => {
+            *source_instance_id == transition.source.instance_id
+                && *source_epoch == transition.source_epoch
+                && transition
+                    .target_artifact
+                    .tail_overlay
+                    .as_ref()
+                    .is_some_and(|overlay| {
+                        overlay.cutover_seq == *durable_tail
+                            && overlay.cutover_offset == *durable_tail_offset
+                            && overlay.target_stream_start_seq == durable_tail.checked_add(1).unwrap_or(0)
+                    })
+        }
+        AuthorityReleaseProof::LeaseExpired {
+            activation_not_before_ms,
+        } => *activation_not_before_ms >= transition.old_grant_expires_at_ms,
+    }
+}
+
+fn same_transfer_overlay_base(left: &TailOverlayArtifact, right: &TailOverlayArtifact) -> bool {
+    left.source_partition_id == right.source_partition_id
+        && left.source_epoch == right.source_epoch
+        && left.source_stream_name == right.source_stream_name
+        && left.source_stream_manifest_generation == right.source_stream_manifest_generation
+        && left.replay_offset == right.replay_offset
+        && left.base_root_manifest_generation == right.base_root_manifest_generation
+        && left.base_tree_manifest == right.base_tree_manifest
+        && left.base_applied_seq == right.base_applied_seq
 }
 
 fn valid_split_child(child: &SplitChildAssignment) -> bool {

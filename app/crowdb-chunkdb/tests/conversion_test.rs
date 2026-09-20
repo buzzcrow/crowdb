@@ -48,8 +48,9 @@ fn conversion_policy_rejects_invalid_bounds() {
 fn repair_policy_has_bounded_defaults_and_rejects_zero_limits() {
     let config = ChunkdbConfig::default();
     assert!(config.repair.enabled);
-    assert_eq!(config.repair.max_concurrency, 4);
-    assert_eq!(config.repair.memory_bytes, 64 * 1024 * 1024);
+    assert_eq!(config.repair.max_concurrency, 32);
+    assert_eq!(config.repair.ad_hoc_max_concurrency, 32);
+    assert_eq!(config.repair.memory_bytes, 512 * 1024 * 1024);
     assert_eq!(config.repair.scan_interval_secs, 1);
 
     let mut config = ChunkdbConfig::default();

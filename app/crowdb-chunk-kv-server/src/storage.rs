@@ -10,12 +10,16 @@ use arc_swap::ArcSwap;
 use bytes::Bytes;
 use crowdb_chunk_client::{ChunkIoClient, ChunkIoClientConfig, ChunkReadPolicy, SmallWritePolicy};
 use crowdb_chunk_kv::{
-    MutationOperation, Partition, PartitionConfig, PartitionId, PartitionRange, RequestId, SplitArtifact,
-    SplitChild, SplitChildTarget, SplitPlan, StreamPartitionJournal, TransitionId,
+    MutationOperation, Partition, PartitionConfig, PartitionId, PartitionJournal, PartitionRange,
+    PreparedSplit, PreparedSplitWriterArtifact, RequestId, SplitArtifact, SplitChild, SplitPlan,
+    SplitWriterTarget, StreamPartitionJournal, TransitionId,
 };
 use crowdb_chunk_stream::{ChunkStream, ProductionStreamRuntime, StreamConfig, StreamName, StreamRegistry};
 use crowdb_kv_client::{BatchOp, ClientConfig, CrowdbKvClient, GetOutcome, ReadMode};
-use crowdb_protocol::chunk_kv::{ChunkKvRangeCatalogEntry, SplitChildAssignment, SplitTransition};
+use crowdb_protocol::chunk_kv::{
+    ChunkKvRangeCatalogEntry, PartitionArtifact, SplitChildAssignment, SplitTransition, TailOverlayArtifact,
+    TransferTransition,
+};
 use crowdb_protocol::chunk_stream::{StreamBinding, StreamBindingState};
 use crowdb_tree_ffi::{
     ChunkPageStoreOptions, ChunkRootCatalog, ChunkTransport, OwnedChunkRpcDiskRoute,
@@ -252,7 +256,7 @@ impl ChunkKvStorage {
     }
 
     /// Reopens an assigned tree root and WAL, replays through the durable tail,
-    /// and returns a partition fenced in `Prepared` state.
+    /// and returns a partition in `Prepared` state.
     ///
     /// # Errors
     ///
@@ -270,12 +274,26 @@ impl ChunkKvStorage {
             .await
             .map_err(|error| StorageRuntimeError::Stream(error.to_string()))?
             .ok_or_else(|| StorageRuntimeError::Stream("assigned stream binding does not exist".into()))?;
-        let stream = self.open_stream(stream_name, entry.owner_epoch).await?;
+        let stream = self
+            .open_stream(stream_name, entry.owner_epoch)
+            .await
+            .map_err(|error| {
+                StorageRuntimeError::Stream(format!(
+                    "target stream {stream_name:?} at owner epoch {}: {error}",
+                    entry.owner_epoch
+                ))
+            })?;
+        let open_generation = entry
+            .artifact
+            .tail_overlay
+            .as_ref()
+            .map_or(0, |overlay| overlay.base_root_manifest_generation);
         let page_store = self
             .open_durable_tree_page_store(
                 ChunkPageStoreOptions {
                     tree_id: entry.artifact.tree_id,
                     owner_epoch: entry.owner_epoch,
+                    open_generation,
                     pack_bytes: 0,
                     iu_size: 0,
                     max_concurrent_packs: 0,
@@ -284,6 +302,33 @@ impl ChunkKvStorage {
                 binding.metadata_group_id,
             )
             .await?;
+        if let Some(overlay) = &entry.artifact.tail_overlay {
+            let parent_stream = self
+                .streams
+                .open_read_only(
+                    overlay.source_stream_name,
+                    self.metadata_store_id,
+                    overlay.source_epoch,
+                )
+                .await
+                .map_err(|error| {
+                    StorageRuntimeError::Stream(format!(
+                        "overlay source stream {:?} at source epoch {}: {error}",
+                        overlay.source_stream_name, overlay.source_epoch
+                    ))
+                })?;
+            let artifact = prepared_overlay_artifact(entry, overlay);
+            return Partition::recover_native_prepared_overlay(
+                artifact,
+                PartitionConfig::default(),
+                crowdb_tree_ffi::Config::default(),
+                page_store,
+                stream,
+                parent_stream,
+            )
+            .await
+            .map_err(|error| overlay_recovery_error(entry, overlay, &error));
+        }
         Partition::recover_native_latest_prepared_assignment(
             PartitionId {
                 high: entry.partition_id.high,
@@ -301,7 +346,43 @@ impl ChunkKvStorage {
             stream,
         )
         .await
-        .map_err(|error| StorageRuntimeError::Partition(error.to_string()))
+        .map_err(|error| assignment_recovery_error(entry, &error))
+    }
+
+    /// Advances one already-open transfer target from its preparation cursor
+    /// to the final source release cursor without reopening the base tree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing overlay/source stream or incremental
+    /// replay failure.
+    pub async fn catch_up_transfer_target(
+        &self,
+        target: &Partition,
+        entry: &ChunkKvRangeCatalogEntry,
+    ) -> Result<(), crate::MonitorError> {
+        let overlay = entry
+            .artifact
+            .tail_overlay
+            .as_ref()
+            .ok_or_else(|| storage_plan_error("transfer target overlay is absent"))?;
+        let parent_stream = self
+            .streams
+            .open_read_only(
+                overlay.source_stream_name,
+                self.metadata_store_id,
+                overlay.source_epoch,
+            )
+            .await
+            .map_err(|error| storage_plan_error(&error.to_string()))?;
+        let parent_journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(
+            parent_stream,
+            overlay.source_stream_name,
+        ));
+        target
+            .catch_up_prepared_transfer(prepared_overlay_artifact(entry, overlay), parent_journal)
+            .await
+            .map_err(|error| storage_plan_error(&error.to_string()))
     }
 
     /// Creates the explicitly configured initial full-range partition and
@@ -355,6 +436,7 @@ impl ChunkKvStorage {
                 ChunkPageStoreOptions {
                     tree_id: config.tree_id,
                     owner_epoch: config.owner_epoch,
+                    open_generation: 0,
                     pack_bytes: 0,
                     iu_size: 0,
                     max_concurrent_packs: 0,
@@ -400,11 +482,11 @@ impl ChunkKvStorage {
         Ok(partition)
     }
 
-    /// Rebuilds both durable split children from the authoritative parent.
+    /// Rebuilds one durable split child from the retained authoritative parent.
     ///
     /// Existing child streams and tree roots are reopened under the same
     /// stable identities, so a `ParentPreparing` retry after restart replaces
-    /// incomplete preparation with a newly fenced common frontier.
+    /// incomplete preparation with a newly recorded common frontier.
     ///
     /// # Errors
     ///
@@ -414,8 +496,8 @@ impl ChunkKvStorage {
         &self,
         parent: &Partition,
         transition: &SplitTransition,
-        max_fence_lag_records: u64,
-    ) -> Result<SplitArtifact, crate::MonitorError> {
+        max_catchup_lag_records: u64,
+    ) -> Result<PreparedSplit, crate::MonitorError> {
         let parent_binding = self
             .streams
             .registry()
@@ -423,33 +505,133 @@ impl ChunkKvStorage {
             .await
             .map_err(|error| storage_plan_error(&error.to_string()))?
             .ok_or_else(|| storage_plan_error("split parent stream binding does not exist"))?;
-        let left = self
-            .split_target(&transition.left, parent_binding.metadata_group_id)
-            .await?;
-        let right = self
-            .split_target(&transition.right, parent_binding.metadata_group_id)
-            .await?;
+        let retained_parent = self
+            .split_target_artifact(
+                &transition.retained_parent_artifact,
+                transition.parent_next_epoch,
+                parent_binding.metadata_group_id,
+            )
+            .await
+            .map_err(|error| {
+                storage_plan_error(&format!(
+                    "retained split writer setup failed (tree_id={}, owner_epoch={}): {error}",
+                    transition.retained_parent_artifact.tree_id, transition.parent_next_epoch
+                ))
+            })?;
+        let child = self
+            .split_target(&transition.child, parent_binding.metadata_group_id)
+            .await
+            .map_err(|error| {
+                storage_plan_error(&format!(
+                    "child split writer setup failed (tree_id={}, owner_epoch={}): {error}",
+                    transition.child.artifact.tree_id, transition.child.owner_epoch
+                ))
+            })?;
         let prepared = parent
-            .prepare_split(split_plan(transition), left, right, max_fence_lag_records)
+            .prepare_split_session(
+                split_plan(transition),
+                crowdb_chunk_kv::SplitSessionTargets {
+                    retained_parent,
+                    child,
+                },
+                max_catchup_lag_records,
+            )
+            .await
+            .map_err(|error| {
+                storage_plan_error(&format!(
+                    "split session build failed (parent_tree_id={}, parent_stream={:?}): {error}",
+                    transition.parent_artifact.tree_id, transition.parent_artifact.stream_name,
+                ))
+            })?;
+        validate_prepared_split(transition, &prepared.artifact)?;
+        Ok(prepared)
+    }
+
+    /// Pins a live source checkpoint and creates the target-owned empty WAL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing source binding, checkpoint failure, or target stream conflict.
+    pub async fn prepare_transfer_source(
+        &self,
+        source: &Partition,
+        transition: &TransferTransition,
+    ) -> Result<PartitionArtifact, crate::MonitorError> {
+        source
+            .release_generation_pin(crowdb_chunk_kv::TransitionId {
+                high: transition.transition_id.high,
+                low: transition.transition_id.low,
+            })
+            .map_err(|error| storage_plan_error(&error.to_string()))?;
+        let binding = self
+            .streams
+            .registry()
+            .load(transition.artifact.stream_name)
+            .await
+            .map_err(|error| storage_plan_error(&error.to_string()))?
+            .ok_or_else(|| storage_plan_error("transfer source stream binding does not exist"))?;
+        self.open_or_create_stream(
+            transition.target_artifact.stream_name,
+            transition.target_epoch,
+            binding.metadata_group_id,
+            true,
+        )
+        .await?;
+        let checkpoint = source
+            .checkpoint(transition.source_epoch)
             .await
             .map_err(|error| storage_plan_error(&error.to_string()))?;
-        validate_prepared_split(transition, &prepared.artifact)?;
-        Ok(prepared.artifact)
+        source
+            .retain_generation_pin(
+                crowdb_chunk_kv::TransitionId {
+                    high: transition.transition_id.high,
+                    low: transition.transition_id.low,
+                },
+                checkpoint.root_manifest_generation,
+            )
+            .map_err(|error| storage_plan_error(&error.to_string()))?;
+        let snapshot = source.snapshot();
+        let mut artifact = transition.target_artifact.clone();
+        artifact.tail_overlay = Some(TailOverlayArtifact {
+            source_partition_id: transition.partition_id,
+            source_epoch: transition.source_epoch,
+            source_stream_name: transition.artifact.stream_name,
+            source_stream_manifest_generation: checkpoint.stream_manifest_generation,
+            replay_offset: checkpoint.replay_offset,
+            cutover_offset: snapshot.journal_durable_offset,
+            base_tree_manifest: checkpoint.tree_manifest,
+            base_root_manifest_generation: checkpoint.root_manifest_generation,
+            base_applied_seq: checkpoint.applied_seq,
+            cutover_seq: snapshot.journal_durable_seq,
+            target_stream_start_seq: snapshot.journal_durable_seq.saturating_add(1),
+        });
+        Ok(artifact)
     }
 
     async fn split_target(
         &self,
         child: &SplitChildAssignment,
         metadata_group_id: u64,
-    ) -> Result<SplitChildTarget, crate::MonitorError> {
+    ) -> Result<SplitWriterTarget, crate::MonitorError> {
+        self.split_target_artifact(&child.artifact, child.owner_epoch, metadata_group_id)
+            .await
+    }
+
+    async fn split_target_artifact(
+        &self,
+        artifact: &PartitionArtifact,
+        owner_epoch: u64,
+        metadata_group_id: u64,
+    ) -> Result<SplitWriterTarget, crate::MonitorError> {
         let stream = self
-            .open_or_create_empty_stream(child.artifact.stream_name, child.owner_epoch, metadata_group_id)
+            .open_or_create_stream(artifact.stream_name, owner_epoch, metadata_group_id, false)
             .await?;
         let page_store = self
             .open_durable_tree_page_store(
                 ChunkPageStoreOptions {
-                    tree_id: child.artifact.tree_id,
-                    owner_epoch: child.owner_epoch,
+                    tree_id: artifact.tree_id,
+                    owner_epoch,
+                    open_generation: 0,
                     pack_bytes: 0,
                     iu_size: 0,
                     max_concurrent_packs: 0,
@@ -459,21 +641,22 @@ impl ChunkKvStorage {
             )
             .await
             .map_err(|error| storage_plan_error(&error.to_string()))?;
-        Ok(SplitChildTarget {
-            tree_id: child.artifact.tree_id,
+        Ok(SplitWriterTarget {
+            tree_id: artifact.tree_id,
             tree_config: crowdb_tree_ffi::Config {
                 page_store: Some(page_store),
                 ..crowdb_tree_ffi::Config::default()
             },
-            journal: Arc::new(StreamPartitionJournal::new(stream, child.artifact.stream_name)),
+            journal: Arc::new(StreamPartitionJournal::new(stream, artifact.stream_name)),
         })
     }
 
-    async fn open_or_create_empty_stream(
+    async fn open_or_create_stream(
         &self,
         stream_name: StreamName,
         writer_epoch: u64,
         metadata_group_id: u64,
+        require_empty: bool,
     ) -> Result<ChunkStream, crate::MonitorError> {
         let registry = self.streams.registry();
         let expected = StreamBinding {
@@ -511,10 +694,43 @@ impl ChunkKvStorage {
                 .await
                 .map_err(|error| storage_plan_error(&error.to_string()))?,
         };
-        if stream.tail() != 0 {
-            return Err(storage_plan_error("split child WAL is not empty"));
+        if require_empty && stream.tail() != 0 {
+            return Err(storage_plan_error("target WAL is not empty"));
         }
         Ok(stream)
+    }
+}
+
+fn prepared_overlay_artifact(
+    entry: &ChunkKvRangeCatalogEntry,
+    overlay: &TailOverlayArtifact,
+) -> PreparedSplitWriterArtifact {
+    PreparedSplitWriterArtifact {
+        partition_id: PartitionId {
+            high: entry.partition_id.high,
+            low: entry.partition_id.low,
+        },
+        range: PartitionRange {
+            start: Some(entry.range.start.clone()),
+            end: entry.range.end.clone(),
+        },
+        ownership_epoch: entry.owner_epoch,
+        tree_id: entry.artifact.tree_id,
+        tree_manifest: overlay.base_tree_manifest,
+        root_manifest_generation: overlay.base_root_manifest_generation,
+        stream_name: entry.artifact.stream_name,
+        base_applied_seq: overlay.base_applied_seq,
+        parent_id: PartitionId {
+            high: overlay.source_partition_id.high,
+            low: overlay.source_partition_id.low,
+        },
+        parent_epoch: overlay.source_epoch,
+        parent_stream_name: overlay.source_stream_name,
+        parent_stream_manifest_generation: overlay.source_stream_manifest_generation,
+        parent_replay_offset: overlay.replay_offset,
+        parent_cutover_offset: overlay.cutover_offset,
+        applied_seq: overlay.cutover_seq,
+        child_stream_start_seq: overlay.target_stream_start_seq,
     }
 }
 
@@ -564,9 +780,9 @@ fn split_plan(transition: &SplitTransition) -> SplitPlan {
         parent_id: partition_id(transition.parent_id),
         parent_range: partition_range(&transition.parent_range),
         parent_epoch: transition.parent_epoch,
+        parent_next_epoch: transition.parent_next_epoch,
         split_key: transition.split_key.clone(),
-        left: split_child(&transition.left),
-        right: split_child(&transition.right),
+        child: split_child(&transition.child),
     }
 }
 
@@ -603,15 +819,21 @@ fn validate_prepared_split(
         })
         && artifact.parent_id == partition_id(transition.parent_id)
         && artifact.parent_epoch == transition.parent_epoch
-        && artifact.left.partition_id == partition_id(transition.left.partition_id)
-        && artifact.left.tree_id == transition.left.artifact.tree_id
-        && artifact.left.stream_name == transition.left.artifact.stream_name
-        && artifact.right.partition_id == partition_id(transition.right.partition_id)
-        && artifact.right.tree_id == transition.right.artifact.tree_id
-        && artifact.right.stream_name == transition.right.artifact.stream_name
+        && artifact.parent_next_epoch == transition.parent_next_epoch
+        && artifact.retained_parent.partition_id == partition_id(transition.parent_id)
+        && artifact.retained_parent.range
+            == PartitionRange {
+                start: Some(transition.parent_range.start.clone()),
+                end: Some(transition.split_key.clone()),
+            }
+        && artifact.retained_parent.ownership_epoch == transition.parent_next_epoch
+        && artifact.retained_parent.tree_id == transition.retained_parent_artifact.tree_id
+        && artifact.retained_parent.stream_name == transition.retained_parent_artifact.stream_name
+        && artifact.child.partition_id == partition_id(transition.child.partition_id)
+        && artifact.child.tree_id == transition.child.artifact.tree_id
+        && artifact.child.stream_name == transition.child.artifact.stream_name
         && artifact.cutover_seq != 0
-        && artifact.left.applied_seq == artifact.cutover_seq
-        && artifact.right.applied_seq == artifact.cutover_seq;
+        && artifact.child.applied_seq == artifact.cutover_seq;
     if exact {
         Ok(())
     } else {
@@ -623,6 +845,31 @@ fn validate_prepared_split(
 
 fn storage_plan_error(error: &str) -> crate::MonitorError {
     crate::MonitorError::PlanFailed(error.into())
+}
+
+fn overlay_recovery_error(
+    entry: &ChunkKvRangeCatalogEntry,
+    overlay: &TailOverlayArtifact,
+    error: &impl std::fmt::Display,
+) -> StorageRuntimeError {
+    StorageRuntimeError::Partition(format!(
+        "overlay recovery failed (partition={:?}, epoch={}, tree={}, base_seq={}, cutover_seq={}): {error}",
+        entry.partition_id,
+        entry.owner_epoch,
+        entry.artifact.tree_id,
+        overlay.base_applied_seq,
+        overlay.cutover_seq
+    ))
+}
+
+fn assignment_recovery_error(
+    entry: &ChunkKvRangeCatalogEntry,
+    error: &impl std::fmt::Display,
+) -> StorageRuntimeError {
+    StorageRuntimeError::Partition(format!(
+        "assignment recovery failed (partition={:?}, epoch={}, tree={}): {error}",
+        entry.partition_id, entry.owner_epoch, entry.artifact.tree_id
+    ))
 }
 
 struct KvRootCatalogStore {
@@ -663,7 +910,9 @@ impl KvRootCatalogStore {
                 }
             };
             if current_epoch > owner_epoch {
-                return Err(StorageRuntimeError::Tree("tree root owner epoch is stale".into()));
+                return Err(StorageRuntimeError::Tree(format!(
+                    "tree root owner epoch is stale: tree_id={tree_id}, current_epoch={current_epoch}, requested_epoch={owner_epoch}"
+                )));
             }
             if current_epoch == owner_epoch {
                 break;
@@ -868,6 +1117,35 @@ impl RootCatalogStore for KvRootCatalogStore {
         if tree_id != self.tree_id || generation <= 2 {
             return 0;
         }
+        let pin_prefix = catalog_pin_prefix(tree_id);
+        let pinned_generation = match self.wait(self.kv.scan(
+            self.store_id,
+            self.group_id,
+            &pin_prefix,
+            &[],
+            &[],
+            0,
+            ReadMode::Linearizable,
+            None,
+            false,
+            None,
+        )) {
+            Ok(outcome) => {
+                let mut oldest = None;
+                for (_, value) in outcome.items {
+                    let Some(pin) = decode_u64(&value) else {
+                        return 0;
+                    };
+                    oldest = Some(oldest.map_or(pin, |current: u64| current.min(pin)));
+                }
+                oldest
+            }
+            Err(_) => return 0,
+        };
+        let generation = pinned_generation.map_or(generation, |pin| generation.min(pin));
+        if generation <= 2 {
+            return 0;
+        }
         let floor_key = catalog_key(tree_id, b"reclaim-floor", 0);
         let (floor, revision) = match self.wait(self.get(&floor_key)) {
             Ok(Some((value, revision))) => match decode_u64(&value) {
@@ -896,6 +1174,62 @@ impl RootCatalogStore for KvRootCatalogStore {
         )
         .map_or(0, |_| end - floor)
     }
+
+    fn pin_generation(
+        &self,
+        tree_id: u64,
+        transition_high: u64,
+        transition_low: u64,
+        generation: u64,
+    ) -> Result<(), crowdb_tree_ffi::CtError> {
+        if tree_id != self.tree_id || (transition_high == 0 && transition_low == 0) || generation == 0 {
+            return Err(crowdb_tree_ffi::CtError::InvalidArgument);
+        }
+        if self
+            .wait(self.get(&catalog_key(tree_id, b"manifest", generation)))
+            .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?
+            .is_none()
+        {
+            return Err(crowdb_tree_ffi::CtError::NotFound);
+        }
+        let key = catalog_pin_key(tree_id, transition_high, transition_low);
+        for _ in 0..3 {
+            if let Some((value, _)) = self
+                .wait(self.get(&key))
+                .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)?
+            {
+                return if decode_u64(&value) == Some(generation) {
+                    Ok(())
+                } else {
+                    Err(crowdb_tree_ffi::CtError::InvalidArgument)
+                };
+            }
+            match self.wait(
+                self.kv
+                    .put_cas(self.store_id, self.group_id, &key, &generation.to_be_bytes(), 0),
+            ) {
+                Ok(_) => return Ok(()),
+                Err(crowdb_kv_client::Error::CasFailed { .. } | crowdb_kv_client::Error::CasBusy) => {}
+                Err(_) => return Err(crowdb_tree_ffi::CtError::Unavailable),
+            }
+        }
+        Err(crowdb_tree_ffi::CtError::Unavailable)
+    }
+
+    fn unpin_generation(
+        &self,
+        tree_id: u64,
+        transition_high: u64,
+        transition_low: u64,
+    ) -> Result<(), crowdb_tree_ffi::CtError> {
+        if tree_id != self.tree_id || (transition_high == 0 && transition_low == 0) {
+            return Err(crowdb_tree_ffi::CtError::InvalidArgument);
+        }
+        let key = catalog_pin_key(tree_id, transition_high, transition_low);
+        self.wait(self.kv.delete(self.store_id, self.group_id, &key, None))
+            .map(|_| ())
+            .map_err(|_| crowdb_tree_ffi::CtError::Unavailable)
+    }
 }
 
 fn catalog_key(tree_id: u64, kind: &[u8], object_id: u64) -> Vec<u8> {
@@ -905,6 +1239,20 @@ fn catalog_key(tree_id: u64, kind: &[u8], object_id: u64) -> Vec<u8> {
     key.extend_from_slice(kind);
     key.push(b'/');
     key.extend_from_slice(&object_id.to_be_bytes());
+    key
+}
+
+fn catalog_pin_prefix(tree_id: u64) -> Vec<u8> {
+    let mut key = b"\0crowdb/chunk-kv/root/v1/".to_vec();
+    key.extend_from_slice(&tree_id.to_be_bytes());
+    key.extend_from_slice(b"/pin/");
+    key
+}
+
+fn catalog_pin_key(tree_id: u64, transition_high: u64, transition_low: u64) -> Vec<u8> {
+    let mut key = catalog_pin_prefix(tree_id);
+    key.extend_from_slice(&transition_high.to_be_bytes());
+    key.extend_from_slice(&transition_low.to_be_bytes());
     key
 }
 

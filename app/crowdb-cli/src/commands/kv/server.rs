@@ -10,7 +10,7 @@ use clap::Subcommand;
 use crowdb_console_shared::lifecycle::DeployRequest;
 use crowdb_protocol::NodeId;
 
-use crate::commands::{commit_config, op_context, print_json};
+use crate::commands::{commit_config, op_context};
 use crate::Cli;
 
 #[derive(Subcommand, Debug)]
@@ -73,17 +73,6 @@ pub async fn run_kv_server_verb(cli: &Cli, verb: KvServerVerb) -> ExitCode {
                     if let Err(c) = commit_config(cli, &ctx) {
                         return c;
                     }
-                    if cli.json {
-                        return print_json(
-                            cli,
-                            &serde_json::json!({
-                                "node_id": node_id,
-                                "mgmt_url": d.mgmt_url,
-                                "rpc_url": d.rpc_url,
-                                "pid": d.pid,
-                            }),
-                        );
-                    }
                     println!(
                         "deployed server on node {} -> {} (pid {}, rpc {})",
                         node_id, d.mgmt_url, d.pid, d.rpc_url
@@ -113,17 +102,6 @@ pub async fn run_kv_server_verb(cli: &Cli, verb: KvServerVerb) -> ExitCode {
                     if let Err(c) = commit_config(cli, &ctx) {
                         return c;
                     }
-                    if cli.json {
-                        return print_json(
-                            cli,
-                            &serde_json::json!({
-                                "node_id": node_id,
-                                "mgmt_url": d.mgmt_url,
-                                "rpc_url": d.rpc_url,
-                                "pid": d.pid,
-                            }),
-                        );
-                    }
                     println!(
                         "restarted server on node {} -> {} (pid {}, rpc {})",
                         node_id, d.mgmt_url, d.pid, d.rpc_url
@@ -152,9 +130,6 @@ pub async fn run_kv_server_verb(cli: &Cli, verb: KvServerVerb) -> ExitCode {
                 Ok(sent) => {
                     if let Err(c) = commit_config(cli, &ctx) {
                         return c;
-                    }
-                    if cli.json {
-                        return print_json(cli, &serde_json::json!({"sent": sent}));
                     }
                     if sent {
                         println!("sent SIGTERM to server on node {node_id}");
@@ -186,9 +161,7 @@ pub async fn run_kv_server_verb(cli: &Cli, verb: KvServerVerb) -> ExitCode {
                     if let Err(c) = commit_config(cli, &ctx) {
                         return c;
                     }
-                    if !cli.json {
-                        println!("deleted server on node {node_id}");
-                    }
+                    println!("deleted server on node {node_id}");
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -203,9 +176,6 @@ pub async fn run_kv_server_verb(cli: &Cli, verb: KvServerVerb) -> ExitCode {
                 Err(c) => return c,
             };
             let servers = crowdb_console_shared::ops::kv_server::list(&ctx);
-            if cli.json {
-                return print_json(cli, &servers);
-            }
             if servers.is_empty() {
                 println!("(no servers deployed)");
                 return ExitCode::SUCCESS;

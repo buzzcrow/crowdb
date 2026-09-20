@@ -15,7 +15,7 @@ use std::sync::Arc;
 use crowdb_kv_client::RangeBindingClient;
 use crowdb_protocol::common::{HwStatus, NodeValue, RackValue, ReplicaValue};
 use crowdb_protocol::mgmt::{RemoteReplicaInfo, SystemInitRequest};
-use crowdb_protocol::port::alloc::{self as port_alloc, PortAllocConfig};
+use crowdb_protocol::port::namespace::{assign_process_ports, RuntimeNamespace};
 use crowdb_protocol::ServicePort;
 
 use crate::clients::http::ServerClient;
@@ -582,10 +582,7 @@ pub async fn restart_storage_services(ctx: &OpContext) -> Result<u64> {
     let launches = services
         .iter()
         .map(|server| {
-            let pid = server.pid.ok_or_else(|| Error::Validation {
-                field: "pid".into(),
-                message: format!("{} has no tracked process", server.id),
-            })?;
+            let pid = server.pid.unwrap_or(0);
             let spec = ctx
                 .config()
                 .local_launches
@@ -600,7 +597,9 @@ pub async fn restart_storage_services(ctx: &OpContext) -> Result<u64> {
         .collect::<Result<std::collections::HashMap<_, _>>>()?;
     for server in &services {
         let (pid, _) = &launches[&server.id];
-        lifecycle::stop_pid_with_timeout(*pid, std::time::Duration::from_secs(15))?;
+        if *pid != 0 {
+            lifecycle::stop_pid_with_timeout(*pid, std::time::Duration::from_secs(15))?;
+        }
     }
     let restart_epoch_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -814,6 +813,44 @@ pub async fn local_deploy_combined(
         chunk.diskio_rpc_workers,
         chunk.metrics_interval,
         diskio_dummy_disk_type,
+        None,
+    )
+    .await?;
+    let chunkdb = local_deploy_chunkdb(ctx, workspace, chunk).await?;
+    Ok(LocalCombinedDeploySummary {
+        kv_nodes: 3,
+        racks: 1,
+        diskdb_instances: diskdb.instance_count,
+        chunkdb_instances: chunkdb.instance_count,
+        diskio_instances: diskio,
+    })
+}
+
+/// Deploy the same local storage stack with sparse, file-backed `DiskIO` media.
+/// The files live below `workspace` and are reused across process restarts.
+///
+/// # Errors
+/// Returns an error when topology provisioning, file creation, process startup,
+/// or a required readiness check fails.
+pub async fn local_deploy_combined_file_backed(
+    ctx: &OpContext,
+    workspace: &std::path::Path,
+    tunables: Option<&KvDeployTunables>,
+    disk: &LocalDiskdbDeployConfig,
+    chunk: &LocalChunkdbDeployConfig,
+) -> Result<LocalCombinedDeploySummary> {
+    local_deploy(ctx, 3, Some(workspace), tunables).await?;
+    for group_id in &disk.data_groups {
+        crate::ops::kv_logical::add_group(ctx, 0, *group_id, 100 + *group_id, &[1, 2, 3]).await?;
+    }
+    let diskdb = local_deploy_diskdb(ctx, workspace, disk).await?;
+    let diskio = local_deploy_diskio(
+        ctx,
+        workspace,
+        chunk.diskio_rpc_workers,
+        chunk.metrics_interval,
+        "null",
+        Some(disk.capacity_bytes),
     )
     .await?;
     let chunkdb = local_deploy_chunkdb(ctx, workspace, chunk).await?;
@@ -832,6 +869,7 @@ async fn local_deploy_diskio(
     rpc_workers: Option<u32>,
     metrics_interval: Option<u64>,
     dummy_disk_type: &str,
+    file_capacity: Option<u64>,
 ) -> Result<usize> {
     if !matches!(dummy_disk_type, "null" | "mem") {
         return Err(Error::Validation {
@@ -855,12 +893,7 @@ async fn local_deploy_diskio(
             status: "leader unavailable before DiskIO deployment".into(),
         })?;
     let count = u16::try_from(nodes.len()).unwrap_or(u16::MAX);
-    let ports =
-        port_alloc::alloc_port_range(ServicePort::DiskioRpc, 0, count, &PortAllocConfig::new(workspace))
-            .map_err(|error| Error::Validation {
-                field: "port_alloc".into(),
-                message: error.to_string(),
-            })?;
+    let ports = alloc_workspace_ports(workspace, ServicePort::DiskioRpc, 0, count)?;
     let mut expected_owners = HashMap::with_capacity(nodes.len());
 
     for (index, node) in nodes.iter().enumerate() {
@@ -869,6 +902,21 @@ async fn local_deploy_diskio(
             .join(format!("rack{}", node.rack_id))
             .join(format!("node{}", node.id))
             .join(&server_id);
+        let disks = if let Some(capacity) = file_capacity {
+            let disk_dir = node_dir.join("data");
+            std::fs::create_dir_all(&disk_dir)?;
+            let path = disk_dir.join("disk.dat");
+            if !path.exists() {
+                std::fs::File::create(&path)?.set_len(capacity)?;
+            }
+            vec![lifecycle::DiskioLocalDisk {
+                id: format!("{:x}:{:x}", node.id * 100 + 1, 1_u64),
+                path,
+                zone_capacity: capacity,
+            }]
+        } else {
+            Vec::new()
+        };
         let deployed = lifecycle::deploy_diskio_local(
             &DiskioDeployRequest {
                 server_id: server_id.clone(),
@@ -881,6 +929,8 @@ async fn local_deploy_diskio(
                 dummy_disk_type: dummy_disk_type.to_owned(),
                 rpc_workers,
                 metrics_interval,
+                o_direct: file_capacity.is_none(),
+                disks,
             },
             node,
             &node_dir,
@@ -975,22 +1025,9 @@ pub async fn local_deploy_chunkdb(
             message: "deploy KV before ChunkDB".into(),
         });
     }
-    let port_config = PortAllocConfig::new(workspace);
     let count = u16::try_from(instance_count).unwrap_or(u16::MAX);
-    let http_ports =
-        port_alloc::alloc_port_range(ServicePort::ChunkdbHttp, 0, count, &port_config).map_err(|error| {
-            Error::Validation {
-                field: "port_alloc".into(),
-                message: error.to_string(),
-            }
-        })?;
-    let rpc_ports =
-        port_alloc::alloc_port_range(ServicePort::ChunkdbRpc, 0, count, &port_config).map_err(|error| {
-            Error::Validation {
-                field: "port_alloc".into(),
-                message: error.to_string(),
-            }
-        })?;
+    let http_ports = alloc_workspace_ports(workspace, ServicePort::ChunkdbHttp, 0, count)?;
+    let rpc_ports = alloc_workspace_ports(workspace, ServicePort::ChunkdbRpc, 0, count)?;
     let deployments = futures::future::join_all(nodes.into_iter().take(instance_count).enumerate().map(
         |(index, node)| {
             let instance_id = 20_000 + u64::try_from(index).unwrap_or(u64::MAX);
@@ -1292,14 +1329,8 @@ struct DiskdbPorts {
 
 fn alloc_diskdb_ports(workspace: &std::path::Path, node_count: usize) -> Result<DiskdbPorts> {
     std::fs::create_dir_all(workspace)?;
-    let port_cfg = PortAllocConfig::new(workspace);
     let count = u16::try_from(node_count).unwrap_or(u16::MAX);
-    let alloc = |service| {
-        port_alloc::alloc_port_range(service, 0, count, &port_cfg).map_err(|error| Error::Validation {
-            field: "port_alloc".into(),
-            message: error.to_string(),
-        })
-    };
+    let alloc = |service| alloc_workspace_ports(workspace, service, 0, count);
     Ok(DiskdbPorts {
         listen: alloc(ServicePort::DiskdbListen)?,
         http: alloc(ServicePort::DiskdbHttp)?,
@@ -1499,19 +1530,50 @@ pub async fn local_deploy(
 }
 
 /// Default workspace path for `local_deploy` when no explicit
-/// `workspace_dir` is provided. Uses a project-local `cli-deploy/`
-/// directory (resolved from CWD) so logs and data survive for
-/// inspection instead of being lost in `/tmp`.
+/// `workspace_dir` is provided. Uses one project-local ephemeral namespace so
+/// logs and data remain inspectable without scattering files in the CWD.
 fn default_workspace() -> std::path::PathBuf {
-    let base = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    base.join("cli-deploy").join(format!(
-        "{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-    ))
+    crowdb_protocol::port::namespace::runtime_root()
+        .join("ephemeral")
+        .join("cli-deploy")
+        .join(format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ))
+}
+
+fn alloc_workspace_ports(
+    workspace: &std::path::Path,
+    service: ServicePort,
+    start_instance: u16,
+    count: u16,
+) -> Result<Vec<u16>> {
+    if workspace.join("namespace.json").is_file() {
+        let mut namespace = RuntimeNamespace::persistent(workspace, "s3-mini-cluster").map_err(|error| {
+            Error::Validation {
+                field: "runtime_namespace".into(),
+                message: error.to_string(),
+            }
+        })?;
+        return (start_instance..start_instance.saturating_add(count))
+            .map(|instance| {
+                namespace
+                    .assign_port(service, instance)
+                    .map_err(|error| Error::Validation {
+                        field: "runtime_namespace".into(),
+                        message: error.to_string(),
+                    })
+            })
+            .collect();
+    }
+    assign_process_ports(service, start_instance, count).map_err(|error| Error::Validation {
+        field: "port_alloc".into(),
+        message: error.to_string(),
+    })
 }
 
 /// Phase 1: write rack 1 + nodes 1..=N into the config (idempotent).
@@ -1551,22 +1613,9 @@ async fn deploy_servers(
     node_ids: &[u64],
     tunables: Option<&KvDeployTunables>,
 ) -> Result<()> {
-    let port_cfg = PortAllocConfig::new(workspace);
     let n = u16::try_from(node_ids.len()).unwrap_or(u16::MAX);
-    let rest_ports =
-        port_alloc::alloc_port_range(ServicePort::KvServerMgmt, 0, n, &port_cfg).map_err(|e| {
-            Error::Validation {
-                field: "port_alloc".into(),
-                message: e.to_string(),
-            }
-        })?;
-    let rpc_ports =
-        port_alloc::alloc_port_range(ServicePort::KvServerListen, 0, n, &port_cfg).map_err(|e| {
-            Error::Validation {
-                field: "port_alloc".into(),
-                message: e.to_string(),
-            }
-        })?;
+    let rest_ports = alloc_workspace_ports(workspace, ServicePort::KvServerMgmt, 0, n)?;
+    let rpc_ports = alloc_workspace_ports(workspace, ServicePort::KvServerListen, 0, n)?;
     for (i, nid) in node_ids.iter().enumerate() {
         let rest_port = rest_ports[i];
         let rpc_port = rpc_ports[i];
@@ -1699,11 +1748,7 @@ pub async fn local_deploy_rpc(
     let workspace = workspace_dir.map_or_else(default_workspace, std::path::PathBuf::from);
 
     let port = if cfg.port == 0 {
-        let port_cfg = PortAllocConfig::new(&workspace);
-        port_alloc::alloc_port(ServicePort::KvServerListen, 0, &port_cfg).map_err(|e| Error::Validation {
-            field: "port_alloc".into(),
-            message: e.to_string(),
-        })?
+        alloc_workspace_ports(&workspace, ServicePort::KvServerListen, 0, 1)?[0]
     } else {
         cfg.port
     };

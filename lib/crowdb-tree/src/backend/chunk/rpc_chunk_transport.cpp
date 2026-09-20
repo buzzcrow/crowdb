@@ -140,12 +140,12 @@ Status call_rpc(const ct_chunk_rpc_route &route, uint64_t request_id, uint16_t m
     }
 
     RpcCallState state;
-    const auto   submit = crowdb_rpc_client_send_slab(reinterpret_cast<crowdb_rpc_client_t>(route.client),
-                                                      reinterpret_cast<crowdb_rpc_server_t>(route.server),
-                                                      reinterpret_cast<crowdb_rpc_conn_t>(route.connection), request_id,
-                                                      control_buffer, data_buffer, message_type, &rpc_complete, &state);
+    const auto   submit = crowdb_rpc_client_send(reinterpret_cast<crowdb_rpc_client_t>(route.client),
+                                                 reinterpret_cast<crowdb_rpc_server_t>(route.server),
+                                                 reinterpret_cast<crowdb_rpc_conn_t>(route.connection), request_id,
+                                                 control_buffer, data_buffer, message_type, &rpc_complete, &state);
     if (submit != CROWDB_RPC_OK) {
-        return submit == CROWDB_RPC_ERR_SEND_QUEUE ? Status::resource_exhausted("chunk RPC completion slab is full")
+        return submit == CROWDB_RPC_ERR_SEND_QUEUE ? Status::resource_exhausted("chunk RPC submission queue is full")
                                                    : Status::unavailable("chunk RPC submission failed");
     }
     while (!state.done.load(std::memory_order_acquire)) {
@@ -562,13 +562,13 @@ struct RpcChunkTransport::Impl::AsyncWrite
             return;
         }
         consumed += part;
-        const crowdb_rpc_status submit = crowdb_rpc_client_send_slab(
+        const crowdb_rpc_status submit = crowdb_rpc_client_send(
             reinterpret_cast<crowdb_rpc_client_t>(route.client), reinterpret_cast<crowdb_rpc_server_t>(route.server),
             reinterpret_cast<crowdb_rpc_conn_t>(route.connection), request_id, control, payload,
             crowdb::rpc::proto::FBMsgType_EDiskWriteRequest, &AsyncWrite::rpc_complete, this);
         if (submit != CROWDB_RPC_OK) {
             finish(this, submit == CROWDB_RPC_ERR_SEND_QUEUE
-                             ? Status::resource_exhausted("chunk RPC completion slab is full")
+                             ? Status::resource_exhausted("chunk RPC submission queue is full")
                              : Status::unavailable("chunk RPC submission failed"));
         }
     }
@@ -750,8 +750,8 @@ Status RpcChunkTransport::advance_write(ChunkId chunk_id, uint64_t expected_byte
     builder.Finish(request);
     std::vector<uint8_t> control(builder.GetBufferPointer(), builder.GetBufferPointer() + builder.GetSize());
     RpcResult            result;
-    Status               status = call_rpc(impl_->options.chunkdb, request_id,
-                                           crowdb::rpc::proto::FBMsgType_EAdvanceChunkWriteRequest, control, nullptr, 0, &result);
+    Status status = call_rpc(impl_->options.chunkdb, request_id,
+                             crowdb::rpc::proto::FBMsgType_EAdvanceChunkWriteRequest, control, nullptr, 0, &result);
     if (!status.ok()) {
         return status;
     }

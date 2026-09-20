@@ -34,7 +34,7 @@ pub struct ChunkKvServerConfig {
     pub group0_mgmt_seeds: Vec<String>,
     pub max_hosted_partitions: usize,
     pub catalog_refresh_interval_ms: u64,
-    pub max_split_fence_lag_records: u64,
+    pub max_split_catchup_lag_records: u64,
     pub shutdown_drain_timeout_ms: u64,
     pub rpc_workers: u32,
     pub storage: StorageConfig,
@@ -53,7 +53,7 @@ impl Default for ChunkKvServerConfig {
             group0_mgmt_seeds: vec![format!("http://127.0.0.1:{KV_SERVER_MGMT_BASE}")],
             max_hosted_partitions: 256,
             catalog_refresh_interval_ms: 5_000,
-            max_split_fence_lag_records: 1_024,
+            max_split_catchup_lag_records: 1_024,
             shutdown_drain_timeout_ms: 30_000,
             rpc_workers: 2,
             storage: StorageConfig::default(),
@@ -74,7 +74,8 @@ impl ChunkKvServerConfig {
         let encoded = std::fs::read_to_string(path).map_err(|error| ConfigError::Read(error.to_string()))?;
         let mut config: Self =
             toml::from_str(&encoded).map_err(|error| ConfigError::Decode(error.to_string()))?;
-        config.monitor.chunk_kv_range_balance = Some(balance_policy(&config.balance));
+        config.monitor.chunk_kv_range_balance =
+            config.balance.enabled.then(|| balance_policy(&config.balance));
         config.validate()?;
         Ok(config)
     }
@@ -103,7 +104,7 @@ impl ChunkKvServerConfig {
         }
         if self.max_hosted_partitions == 0
             || self.catalog_refresh_interval_ms == 0
-            || self.max_split_fence_lag_records == 0
+            || self.max_split_catchup_lag_records == 0
             || self.shutdown_drain_timeout_ms == 0
             || self.rpc_workers == 0
         {
@@ -125,7 +126,8 @@ impl ChunkKvServerConfig {
         {
             return Err(ConfigError::Invalid("balance policy is invalid".into()));
         }
-        if self.monitor.chunk_kv_range_balance.as_ref() != Some(&balance_policy(&self.balance)) {
+        let expected_balance_policy = self.balance.enabled.then(|| balance_policy(&self.balance));
+        if self.monitor.chunk_kv_range_balance != expected_balance_policy {
             return Err(ConfigError::Invalid(
                 "monitor and server balance policy differ".into(),
             ));

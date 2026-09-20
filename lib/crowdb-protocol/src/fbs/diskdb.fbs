@@ -262,6 +262,20 @@ table FBCommitBlocksResponse {
     committed_count:uint32;
 }
 
+table FBMarkBlocksCorruptRequest {
+    id:uint64;
+    rpc_create_nano:uint64;
+    segments:[FBSegment];
+}
+
+table FBMarkBlocksCorruptResponse {
+    id:uint64;
+    rpc_create_nano:uint64;
+    ret_code:FBDiskdbRetCode;
+    error_msg:string;
+    marked_count:uint32;
+}
+
 // ── Query capacity stats ─────────────────────────────────────────
 
 table FBQueryCapacityStatsRequest {

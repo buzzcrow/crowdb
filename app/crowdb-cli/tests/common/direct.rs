@@ -3,7 +3,7 @@
 
 //! Shared CLI e2e harness (R126 direct-to-group-0): spawn a real
 //! `crowdb-kv-server`, initialize group 0 on it, and run the compiled
-//! `crowdb-cli` binary against it with `--sysmd-ip` / `--sysmd-port`.
+//! `crowdb-cli` binary against it with `--system-ip` / `--system-port`.
 //!
 //! Unlike the old `console.rs` harness, this does NOT spawn a
 //! `crowdb-web` intermediary — the CLI talks directly to group-0
@@ -194,17 +194,16 @@ async fn wait_for_group0_leader(client: &ServerClient, timeout: Duration) {
     panic!("group 0 leader not elected within {timeout:?}");
 }
 
-/// Run the CLI with `--sysmd-ip 127.0.0.1 --sysmd-port <mgmt_port>
-/// --config <config_path>` plus `args`, capturing `(exit_code, stdout,
-/// stderr)`.
+/// Run the CLI with a system-group endpoint and isolated private state plus
+/// `args`, capturing `(exit_code, stdout, stderr)`.
 pub fn run(cli: &PathBuf, mgmt_port: u16, config_path: &PathBuf, args: &[&str]) -> (i32, String, String) {
     let out = Command::new(cli)
-        .arg("--sysmd-ip")
+        .current_dir(config_path.parent().expect("config parent"))
+        .arg("--system-ip")
         .arg("127.0.0.1")
-        .arg("--sysmd-port")
+        .arg("--system-port")
         .arg(mgmt_port.to_string())
-        .arg("--config")
-        .arg(config_path)
+        .env("CROWDB_CLI_STATE", config_path)
         .args(args)
         .output()
         .expect("spawn cli");

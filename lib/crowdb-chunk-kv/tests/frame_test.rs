@@ -98,7 +98,7 @@ fn partition_ranges_are_half_open_and_split_exactly() {
 }
 
 #[test]
-fn split_plan_requires_exact_distinct_children() {
+fn split_plan_requires_retained_parent_and_exact_child() {
     let parent = PartitionRange {
         start: Some(b"a".to_vec()),
         end: Some(b"z".to_vec()),
@@ -108,16 +108,9 @@ fn split_plan_requires_exact_distinct_children() {
         parent_id: PartitionId { high: 1, low: 1 },
         parent_range: parent.clone(),
         parent_epoch: 4,
+        parent_next_epoch: 5,
         split_key: b"m".to_vec(),
-        left: SplitChild {
-            partition_id: PartitionId { high: 2, low: 1 },
-            range: PartitionRange {
-                start: Some(b"a".to_vec()),
-                end: Some(b"m".to_vec()),
-            },
-            ownership_epoch: 5,
-        },
-        right: SplitChild {
+        child: SplitChild {
             partition_id: PartitionId { high: 2, low: 2 },
             range: PartitionRange {
                 start: Some(b"m".to_vec()),
@@ -129,9 +122,9 @@ fn split_plan_requires_exact_distinct_children() {
     plan.validate().unwrap();
 
     let mut changed = plan.clone();
-    changed.right.range.start = Some(b"n".to_vec());
+    changed.child.range.start = Some(b"n".to_vec());
     assert!(changed.validate().is_err());
     let mut duplicate = plan;
-    duplicate.right.partition_id = duplicate.left.partition_id;
+    duplicate.child.partition_id = duplicate.parent_id;
     assert!(duplicate.validate().is_err());
 }

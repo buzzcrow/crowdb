@@ -4,22 +4,26 @@
 set -u
 
 TIMEFORMAT='%R'
+RUNTIME_ROOT="${CROWDB_RUNTIME_ROOT:-${PIXI_PROJECT_ROOT:-$(pwd)}/.crowdb-runtime}"
+OUTPUT_DIR="$RUNTIME_ROOT/artifacts/measure-tests"
+mkdir -p "$OUTPUT_DIR"
 
 run_one() {
   local suite="$1"
   local t
-  t=$( { time pixi run "$suite" > "/tmp/measure-${suite}.out" 2>&1; } 2>&1 )
+  local output="$OUTPUT_DIR/measure-${suite}.out"
+  t=$( { time pixi run "$suite" > "$output" 2>&1; } 2>&1 )
   local rc=$?
   local count=""
   if [[ "$suite" == *-ct ]]; then
-    count=$(grep -oE '[0-9]+ tests' "/tmp/measure-${suite}.out" | head -1 | grep -oE '^[0-9]+')
+    count=$(grep -oE '[0-9]+ tests' "$output" | head -1 | grep -oE '^[0-9]+')
   else
-    count=$(grep -oE 'test result: ok\. [0-9]+ passed' "/tmp/measure-${suite}.out" \
+    count=$(grep -oE 'test result: ok\. [0-9]+ passed' "$output" \
             | grep -oE '[0-9]+ passed' | grep -oE '^[0-9]+' | awk '{s+=$1} END{print s+0}')
   fi
   printf '%s\t%s\t%s\n' "$suite" "$count" "$t"
   if [[ $rc -ne 0 ]]; then
-    printf '# WARN: %s exited rc=%s (see /tmp/measure-%s.out)\n' "$suite" "$rc" "$suite" >&2
+    printf '# WARN: %s exited rc=%s (see %s)\n' "$suite" "$rc" "$output" >&2
   fi
 }
 

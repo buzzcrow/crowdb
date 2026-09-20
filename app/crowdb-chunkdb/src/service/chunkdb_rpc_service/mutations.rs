@@ -13,6 +13,90 @@ use super::{
 use crate::conversion::ConversionError;
 
 impl ChunkdbRpcService {
+    pub(super) fn handle_ad_hoc_ec_recovery(
+        &self,
+        req: ServerRequest,
+        server: &Arc<RpcServer>,
+        request: RequestGuard,
+    ) {
+        use crowdb_protocol::chunkdb::rpc::{
+            AdHocEcRecoveryDisposition as Disposition, AdHocEcRecoveryRequest,
+        };
+        use crowdb_protocol::chunkdb_fb::{
+            FBAdHocEcRecoveryDisposition as FbDisposition, FBAdHocEcRecoveryRequest,
+            FBAdHocEcRecoveryResponse, FBAdHocEcRecoveryResponseArgs,
+        };
+        let req_id = req.request_id;
+        let create_nano = req.rpc_create_nano;
+        let msg_type = FBMsgType::EAdHocEcRecoveryResponse.0 as u16;
+        let handle = req.conn_handle as usize;
+        let manager = self.ad_hoc.clone();
+        let server = Arc::clone(server);
+        self.rt.spawn(async move {
+            let parsed = flatbuffers::root::<FBAdHocEcRecoveryRequest>(req.control());
+            let request_data = parsed.ok().map(|frame| AdHocEcRecoveryRequest {
+                version: frame.version(),
+                chunk_id: frame.chunk_id().map(|id| ChunkId {
+                    high: id.high(),
+                    low: id.low(),
+                }),
+                expected_modify_ts: frame.expected_modify_ts(),
+                strip_sequence: frame.strip_sequence(),
+                failed_segment: frame.failed_segment().map(parse_fb_segment),
+                operation_id: frame.operation_id().map(|id| ChunkId {
+                    high: id.high(),
+                    low: id.low(),
+                }),
+                request_full_block: frame.request_full_block(),
+            });
+            let result = match (manager, request_data) {
+                (Some(manager), Some(data)) => manager.request(data).await,
+                (None, _) => Err("ad-hoc recovery is unavailable".into()),
+                (_, None) => Err("invalid ad-hoc recovery request".into()),
+            };
+            let mut request = request;
+            let (code, message, disposition, data) = match result {
+                Ok(result) => {
+                    request.mark_success();
+                    let disposition = match result.disposition {
+                        Disposition::Started => FbDisposition::Started,
+                        Disposition::Coalesced => FbDisposition::Coalesced,
+                        Disposition::Stale => FbDisposition::Stale,
+                        Disposition::Healed => FbDisposition::Healed,
+                        Disposition::Incompatible => FbDisposition::Incompatible,
+                        Disposition::InsufficientShards => FbDisposition::InsufficientShards,
+                        Disposition::Saturated => FbDisposition::Saturated,
+                        Disposition::Marked => FbDisposition::Marked,
+                    };
+                    (FBChunkdbRetCode::Success, None, disposition, result.data)
+                }
+                Err(message) => (
+                    FBChunkdbRetCode::Unavailable,
+                    Some(message),
+                    FbDisposition::Saturated,
+                    Vec::new(),
+                ),
+            };
+            let mut builder = flatbuffers::FlatBufferBuilder::new();
+            let error_msg = message.as_deref().map(|value| builder.create_string(value));
+            let bytes = (!data.is_empty()).then(|| builder.create_vector(&data));
+            let response = FBAdHocEcRecoveryResponse::create(
+                &mut builder,
+                &FBAdHocEcRecoveryResponseArgs {
+                    id: req_id,
+                    rpc_create_nano: create_nano,
+                    ret_code: code,
+                    error_msg,
+                    range_start: 0,
+                    range_end: 0,
+                    disposition,
+                    data: bytes,
+                },
+            );
+            builder.finish(response, None);
+            submit_fb_response(&server, handle as *mut _, builder.collapse(), msg_type, req_id);
+        });
+    }
     pub(super) fn handle_trigger_conversion(
         &self,
         req: ServerRequest,

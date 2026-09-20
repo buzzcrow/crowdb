@@ -207,6 +207,65 @@ impl Crowdbtree {
         check(unsafe { sys::ct_flush(self.as_ptr()) })
     }
 
+    /// Starts one split-owned shared memtable view and returns its generation fence.
+    pub fn begin_split_memtable_view(&self) -> Result<(u64, u64), CtError> {
+        let mut generation = 0;
+        let mut journal_frontier = 0;
+        check(unsafe {
+            sys::ct_begin_split_memtable_view(self.as_ptr(), &mut generation, &mut journal_frontier)
+        })?;
+        Ok((generation, journal_frontier))
+    }
+
+    /// Borrows the source's current L0 generations for immediate split reads.
+    pub fn install_split_memtable_overlay(
+        &self,
+        source: &Self,
+        journal_frontier: u64,
+    ) -> Result<(), CtError> {
+        check(unsafe {
+            sys::ct_install_split_memtable_overlay(self.as_ptr(), source.as_ptr(), journal_frontier)
+        })
+    }
+
+    /// Stops borrowing the source L0 after filtered publication completes.
+    pub fn clear_split_memtable_overlay(&self, source: &Self) -> Result<(), CtError> {
+        check(unsafe { sys::ct_clear_split_memtable_overlay(self.as_ptr(), source.as_ptr()) })
+    }
+
+    /// Bulk-publishes the split-owned shared memtable view into one range tree.
+    pub fn publish_split_memtable_view(
+        &self,
+        generation: u64,
+        journal_frontier: u64,
+        destination: &Self,
+        range: &KeyRange,
+    ) -> Result<(), CtError> {
+        let (start, end) = match range {
+            KeyRange::Unbounded => (None, None),
+            KeyRange::Bounded { start, end } => (start.as_deref(), end.as_deref()),
+        };
+        check(unsafe {
+            sys::ct_publish_split_memtable_view(
+                self.as_ptr(),
+                generation,
+                journal_frontier,
+                destination.as_ptr(),
+                start.map_or(std::ptr::null(), <[u8]>::as_ptr),
+                start.map_or(0, <[u8]>::len),
+                i32::from(start.is_some()),
+                end.map_or(std::ptr::null(), <[u8]>::as_ptr),
+                end.map_or(0, <[u8]>::len),
+                i32::from(end.is_some()),
+            )
+        })
+    }
+
+    /// Releases a shared memtable view after every destination is durable.
+    pub fn release_split_memtable_view(&self, generation: u64) -> Result<(), CtError> {
+        check(unsafe { sys::ct_release_split_memtable_view(self.as_ptr(), generation) })
+    }
+
     pub fn last_applied_slot(&self) -> u64 {
         unsafe { sys::ct_last_applied_slot(self.as_ptr()) }
     }
@@ -475,9 +534,9 @@ pub fn ct_add_log_stderr(level: &str) {
 static TEST_LOGGING_INIT: Once = Once::new();
 
 /// Initialize C++ spdlog to write to a per-process directory under
-/// `<workspace_root>/test-logs/`. Idempotent (guarded by `Once`); safe
+/// `<workspace_root>/.crowdb-runtime/ephemeral/`. Idempotent (guarded by `Once`); safe
 /// to call from every test. Redirects C++ tree/engine logs to files
-/// under `test-logs/crowdb-tree-test-<pid>/` instead of stderr. Error-
+/// under the process runtime namespace instead of stderr. Error-
 /// level messages are also mirrored to stderr so they are visible in CI
 /// output for debugging. No-op when the C++ build was compiled without
 /// `CROWDB_HAVE_SPDLOG`.
@@ -503,9 +562,13 @@ fn workspace_root() -> std::path::PathBuf {
     dir
 }
 
-/// `<workspace_root>/test-logs/` — created if it does not exist.
+/// Process-local log root below the workspace runtime namespace.
 fn test_log_dir() -> std::path::PathBuf {
-    let dir = workspace_root().join("test-logs");
+    let dir = workspace_root()
+        .join(".crowdb-runtime")
+        .join("ephemeral")
+        .join(format!("legacy-process-{}", std::process::id()))
+        .join("log");
     let _ = std::fs::create_dir_all(&dir);
     dir
 }

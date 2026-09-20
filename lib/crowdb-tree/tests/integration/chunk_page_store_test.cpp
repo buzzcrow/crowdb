@@ -1510,6 +1510,24 @@ TEST(ChunkPageStore, ManifestPinsDelayReclamationButKeepOnlyFallback)
     EXPECT_NE(catalog->load_generation(12, 3), nullptr);
 }
 
+TEST(ChunkPageStore, PersistentTransitionPinSurvivesReaderRelease)
+{
+    auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
+    auto           transport = std::make_shared<MemoryChunkTransport>();
+    ChunkPageStore store({.tree_id = 13, .owner_epoch = 1, .pack_bytes = 4096, .iu_size = 1}, catalog, transport);
+    publish_raw_generation(&store, 1);
+    ASSERT_TRUE(catalog->pin_generation(13, 7, 8, 1).ok());
+    publish_raw_generation(&store, 2);
+    publish_raw_generation(&store, 3);
+    EXPECT_EQ(catalog->reclaim_before(13, 4), 0U);
+    EXPECT_NE(catalog->load_generation(13, 1), nullptr);
+    EXPECT_GT(catalog->pinned_bytes(13), 0U);
+
+    ASSERT_TRUE(catalog->unpin_generation(13, 7, 8).ok());
+    EXPECT_GT(catalog->reclaim_before(13, 4), 0U);
+    EXPECT_EQ(catalog->load_generation(13, 1), nullptr);
+}
+
 TEST(ChunkPageStore, LayoutCacheRefreshesAtValidityBoundary)
 {
     auto           catalog   = std::make_shared<MemoryRootCatalog>(1);
@@ -1754,6 +1772,7 @@ TEST(ChunkPageStore, CApiFactoryInjectsBackendWithoutChangingOpen)
     ct_chunk_page_store_options store_options = {
         .tree_id                        = 77,
         .owner_epoch                    = 11,
+        .open_generation                = 0,
         .pack_bytes                     = 4096,
         .iu_size                        = 1,
         .max_concurrent_packs           = 2,

@@ -3,12 +3,14 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
 use crowdb_chunk_kv::memory::MemoryPartitionTree;
 use crowdb_chunk_kv::{
-    Checkpoint, ChunkKvError, CompareCondition, MutationOperation, MutationResult, Partition,
-    PartitionConfig, PartitionId, PartitionJournal, PartitionManager, PartitionRange, PartitionTree,
-    PreparedChildArtifact, RequestId, SplitAbortProof, SplitArtifact, SplitChild, SplitChildTarget,
-    SplitCommitProof, SplitPlan, StreamPartitionJournal, TransitionId,
+    canonical_operation_digest, encode_frame, Checkpoint, ChunkKvError, CompareCondition, MutationOperation,
+    MutationResult, Partition, PartitionConfig, PartitionId, PartitionJournal, PartitionManager,
+    PartitionRange, PartitionTree, PreparedSplitWriterArtifact, RequestId, SplitAbortProof, SplitArtifact,
+    SplitChild, SplitCommitProof, SplitPlan, SplitSessionTargets, SplitWriterTarget, StreamPartitionJournal,
+    TransitionId, WalRecord,
 };
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
@@ -34,16 +36,9 @@ fn split_plan(parent_id: PartitionId, parent_epoch: u64) -> SplitPlan {
             end: Some(b"m".to_vec()),
         },
         parent_epoch,
+        parent_next_epoch: parent_epoch + 1,
         split_key: b"g".to_vec(),
-        left: SplitChild {
-            partition_id: PartitionId { high: 21, low: 1 },
-            range: PartitionRange {
-                start: Some(b"a".to_vec()),
-                end: Some(b"g".to_vec()),
-            },
-            ownership_epoch: parent_epoch + 1,
-        },
-        right: SplitChild {
+        child: SplitChild {
             partition_id: PartitionId { high: 21, low: 2 },
             range: PartitionRange {
                 start: Some(b"g".to_vec()),
@@ -55,22 +50,66 @@ fn split_plan(parent_id: PartitionId, parent_epoch: u64) -> SplitPlan {
 }
 
 fn split_artifact(plan: &SplitPlan, cutover_seq: u64) -> SplitArtifact {
-    let child = |spec: &SplitChild, low| PreparedChildArtifact {
+    let child = |spec: &SplitChild, low| PreparedSplitWriterArtifact {
         partition_id: spec.partition_id,
         range: spec.range.clone(),
         ownership_epoch: spec.ownership_epoch,
         tree_id: 100 + low,
         tree_manifest: cutover_seq + low,
+        root_manifest_generation: cutover_seq + low,
         stream_name: StreamName { high: 90, low },
+        base_applied_seq: cutover_seq,
+        parent_id: plan.parent_id,
+        parent_epoch: plan.parent_epoch,
+        parent_stream_name: StreamName { high: 89, low: 1 },
+        parent_stream_manifest_generation: 1,
+        parent_replay_offset: 0,
+        parent_cutover_offset: cutover_seq,
         applied_seq: cutover_seq,
+        child_stream_start_seq: cutover_seq + 1,
     };
     SplitArtifact {
         transition_id: plan.transition_id,
         parent_id: plan.parent_id,
         parent_epoch: plan.parent_epoch,
+        parent_next_epoch: plan.parent_next_epoch,
+        shared_view_generation: 0,
         cutover_seq,
-        left: child(&plan.left, 1),
-        right: child(&plan.right, 2),
+        retained_parent: child(
+            &SplitChild {
+                partition_id: plan.parent_id,
+                range: plan.parent_range.split(&plan.split_key).unwrap().0,
+                ownership_epoch: plan.parent_next_epoch,
+            },
+            1,
+        ),
+        child: child(&plan.child, 2),
+    }
+}
+
+fn empty_prepared_child(
+    partition_id: PartitionId,
+    range: PartitionRange,
+    tree_id: u64,
+    stream_name: StreamName,
+) -> PreparedSplitWriterArtifact {
+    PreparedSplitWriterArtifact {
+        partition_id,
+        range,
+        ownership_epoch: 20,
+        tree_id,
+        tree_manifest: 0,
+        root_manifest_generation: 1,
+        stream_name,
+        base_applied_seq: 0,
+        parent_id: PartitionId { high: 10, low: 1 },
+        parent_epoch: 19,
+        parent_stream_name: StreamName { high: 12, low: 11 },
+        parent_stream_manifest_generation: 1,
+        parent_replay_offset: 0,
+        parent_cutover_offset: 0,
+        applied_seq: 0,
+        child_stream_start_seq: 1,
     }
 }
 
@@ -144,6 +183,114 @@ async fn empty_journal(
     Arc::new(StreamPartitionJournal::new(stream, stream_name))
 }
 
+async fn append_record(journal: &dyn PartitionJournal, record: &WalRecord) {
+    journal
+        .append_frames(&[Bytes::from(encode_frame(record).unwrap())])
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn split_ingress_routes_old_parent_requests_to_both_new_writers() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let parent_id = PartitionId { high: 700, low: 1 };
+    let parent_range = PartitionRange {
+        start: Some(b"a".to_vec()),
+        end: Some(b"z".to_vec()),
+    };
+    let parent = Partition::open(
+        parent_id,
+        parent_range.clone(),
+        1,
+        PartitionConfig::default(),
+        Arc::new(MemoryPartitionTree::with_tree_id(700)),
+        empty_journal(&store, StreamName { high: 700, low: 1 }, 1).await,
+    )
+    .unwrap();
+    let plan = SplitPlan {
+        transition_id: TransitionId { high: 700, low: 2 },
+        parent_id,
+        parent_range,
+        parent_epoch: 1,
+        parent_next_epoch: 2,
+        split_key: b"m".to_vec(),
+        child: SplitChild {
+            partition_id: PartitionId { high: 700, low: 3 },
+            range: PartitionRange {
+                start: Some(b"m".to_vec()),
+                end: Some(b"z".to_vec()),
+            },
+            ownership_epoch: 2,
+        },
+    };
+    parent.begin_split(plan.clone()).await.unwrap();
+    let retained = Partition::open(
+        parent_id,
+        PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        2,
+        PartitionConfig::default(),
+        Arc::new(MemoryPartitionTree::with_tree_id(701)),
+        empty_journal(&store, StreamName { high: 700, low: 4 }, 2).await,
+    )
+    .unwrap();
+    let child = Partition::open(
+        plan.child.partition_id,
+        plan.child.range.clone(),
+        2,
+        PartitionConfig::default(),
+        Arc::new(MemoryPartitionTree::with_tree_id(702)),
+        empty_journal(&store, StreamName { high: 700, low: 5 }, 2).await,
+    )
+    .unwrap();
+    parent
+        .install_split_ingress(retained.clone(), child.clone())
+        .await
+        .unwrap();
+
+    parent
+        .mutate(
+            1,
+            request(700),
+            MutationOperation::Put {
+                key: b"b".to_vec(),
+                value: b"left".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    parent
+        .mutate(
+            1,
+            request(701),
+            MutationOperation::Put {
+                key: b"t".to_vec(),
+                value: b"right".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        retained.get(2, b"b", None).await.unwrap().unwrap().value,
+        b"left"[..]
+    );
+    assert_eq!(
+        child.get(2, b"t", None).await.unwrap().unwrap().value,
+        b"right"[..]
+    );
+    assert_eq!(
+        parent.get(1, b"b", None).await.unwrap().unwrap().value,
+        b"left"[..]
+    );
+    assert_eq!(
+        parent.get(1, b"t", None).await.unwrap().unwrap().value,
+        b"right"[..]
+    );
+}
+
 fn chunk_page_store(tree_id: u64, owner_epoch: u64) -> Arc<PageStore> {
     let catalog = Arc::new(ChunkRootCatalog::open_memory(owner_epoch).unwrap());
     Arc::new(
@@ -151,6 +298,7 @@ fn chunk_page_store(tree_id: u64, owner_epoch: u64) -> Arc<PageStore> {
             ChunkPageStoreOptions {
                 tree_id,
                 owner_epoch,
+                open_generation: 0,
                 pack_bytes: 4_096,
                 iu_size: 1,
                 max_concurrent_packs: 2,
@@ -180,7 +328,7 @@ async fn finish_materialization(partition: &Partition, ownership_epoch: u64) -> 
 }
 
 async fn assert_prepared_tree_identity_mismatch(
-    artifact: &PreparedChildArtifact,
+    artifact: &PreparedSplitWriterArtifact,
     journal: Arc<dyn PartitionJournal>,
 ) {
     let result = Partition::recover_prepared(
@@ -188,6 +336,7 @@ async fn assert_prepared_tree_identity_mismatch(
         Checkpoint {
             tree_id: artifact.tree_id + 1,
             tree_manifest: artifact.tree_manifest,
+            root_manifest_generation: artifact.root_manifest_generation,
             applied_seq: artifact.applied_seq,
             stream_name: artifact.stream_name,
             stream_manifest_generation: 1,
@@ -322,8 +471,8 @@ async fn native_partition_constructor_owns_tree_and_stream_storage() {
         partition.get(4, b"b", None).await.unwrap().unwrap().value,
         b"native"
     );
-    partition.fence_mutations(4).await.unwrap();
-    assert_eq!(partition.checkpoint_fenced(4).await.unwrap().tree_id, 44);
+    partition.suspend_for_transfer(4).await.unwrap();
+    assert_eq!(partition.checkpoint_quiesced(4).await.unwrap().tree_id, 44);
 }
 
 #[tokio::test]
@@ -407,6 +556,7 @@ async fn chunk_root_checkpoint_supplies_the_wal_replay_offset() {
     let options = ChunkPageStoreOptions {
         tree_id: 45,
         owner_epoch: 4,
+        open_generation: 0,
         pack_bytes: 4_096,
         iu_size: 1,
         max_concurrent_packs: 2,
@@ -444,8 +594,8 @@ async fn chunk_root_checkpoint_supplies_the_wal_replay_offset() {
             .await
             .unwrap();
     }
-    partition.fence_mutations(4).await.unwrap();
-    let checkpoint = partition.checkpoint_fenced(4).await.unwrap();
+    partition.suspend_for_transfer(4).await.unwrap();
+    let checkpoint = partition.checkpoint_quiesced(4).await.unwrap();
     assert!(checkpoint.replay_offset > 0);
     assert_eq!(page_store.wal_replay_offset().unwrap(), checkpoint.replay_offset);
     drop(partition);
@@ -902,6 +1052,7 @@ async fn recovery_replays_recorded_results_and_restores_deduplication() {
         Checkpoint {
             tree_id: 1,
             tree_manifest: 0,
+            root_manifest_generation: 1,
             applied_seq: 0,
             stream_name,
             stream_manifest_generation: 1,
@@ -979,6 +1130,7 @@ async fn recovery_rejects_a_tree_root_other_than_the_checkpoint() {
         Checkpoint {
             tree_id: 1,
             tree_manifest: 1,
+            root_manifest_generation: 1,
             applied_seq: 0,
             stream_name,
             stream_manifest_generation: 1,
@@ -1050,6 +1202,7 @@ async fn recovery_rejects_a_frame_bound_to_another_physical_chunk() {
         Checkpoint {
             tree_id: 1,
             tree_manifest: 0,
+            root_manifest_generation: 1,
             applied_seq: 0,
             stream_name,
             stream_manifest_generation: 1,
@@ -1064,7 +1217,7 @@ async fn recovery_rejects_a_frame_bound_to_another_physical_chunk() {
 }
 
 #[tokio::test]
-async fn mutation_fence_drains_admitted_work_and_rejects_later_writes() {
+async fn transfer_quiesce_drains_admitted_work_and_rejects_later_writes() {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     store.pause_writes();
     let partition = partition(
@@ -1090,8 +1243,12 @@ async fn mutation_fence_drains_admitted_work_and_rejects_later_writes() {
     });
     store.wait_for_write().await;
     let fence_partition = partition.clone();
-    let fence = tokio::spawn(async move { fence_partition.fence_mutations(10).await });
+    let fence = tokio::spawn(async move { fence_partition.suspend_for_transfer(10).await });
     tokio::task::yield_now().await;
+    assert_eq!(
+        partition.lifecycle(),
+        crowdb_chunk_kv::PartitionLifecycle::TransferFencing
+    );
     assert_eq!(
         partition
             .mutate(
@@ -1100,14 +1257,18 @@ async fn mutation_fence_drains_admitted_work_and_rejects_later_writes() {
                 MutationOperation::Delete { key: b"key".to_vec() }
             )
             .await,
-        Err(ChunkKvError::NotServing("SplitFenced".into()))
+        Err(ChunkKvError::WriteStalled)
     );
     assert!(!fence.is_finished());
     store.resume_writes();
     writer.await.unwrap().unwrap();
     fence.await.unwrap().unwrap();
+    assert_eq!(
+        partition.lifecycle(),
+        crowdb_chunk_kv::PartitionLifecycle::WriteStalled
+    );
 
-    let checkpoint = partition.checkpoint_fenced(10).await.unwrap();
+    let checkpoint = partition.checkpoint_quiesced(10).await.unwrap();
     assert_eq!(checkpoint.applied_seq, 1);
     assert_eq!(checkpoint.tree_manifest, 1);
     assert_eq!(checkpoint.replay_offset, 0);
@@ -1159,6 +1320,42 @@ async fn serving_checkpoint_captures_a_recoverable_tree_frontier() {
     assert_eq!(checkpoint.tree_manifest, checkpoint.applied_seq);
     assert_eq!(checkpoint.applied_seq, 1);
     assert_eq!(checkpoint.replay_offset, 0);
+}
+
+#[tokio::test]
+async fn transition_generation_pin_suppresses_source_checkpoint_branching() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        StreamName { high: 7, low: 9 },
+        10,
+        PartitionConfig::default(),
+    )
+    .await;
+    partition
+        .mutate(
+            10,
+            request(63),
+            MutationOperation::Put {
+                key: b"key".to_vec(),
+                value: b"value".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    let checkpoint = partition.checkpoint(10).await.unwrap();
+    let transition = TransitionId { high: 70, low: 71 };
+
+    partition
+        .retain_generation_pin(transition, checkpoint.root_manifest_generation)
+        .unwrap();
+    assert!(matches!(
+        partition.checkpoint(10).await,
+        Err(ChunkKvError::SplitRetry(_))
+    ));
+    partition.release_generation_pin(transition).unwrap();
+    assert!(partition.checkpoint(10).await.is_ok());
 }
 
 #[tokio::test]
@@ -1344,8 +1541,8 @@ async fn transfer_reuses_tree_and_stream_under_higher_epoch() {
     )
     .await
     .unwrap();
-    old.fence_mutations(16).await.unwrap();
-    let checkpoint = old.checkpoint_fenced(16).await.unwrap();
+    old.suspend_for_transfer(16).await.unwrap();
+    let checkpoint = old.checkpoint_quiesced(16).await.unwrap();
 
     let registry: Arc<dyn StreamRegistry> = store.clone();
     let metadata: Arc<dyn StreamMetadataStore> = store.clone();
@@ -1395,7 +1592,7 @@ async fn transfer_reuses_tree_and_stream_under_higher_epoch() {
             MutationOperation::Delete { key: b"key".to_vec() }
         )
         .await,
-        Err(ChunkKvError::NotServing("SplitFenced".into()))
+        Err(ChunkKvError::WriteStalled)
     );
 }
 
@@ -1420,24 +1617,22 @@ async fn prepared_child_serves_only_after_exact_catalog_proof() {
     .await
     .unwrap();
     let journal: Arc<dyn PartitionJournal> = Arc::new(StreamPartitionJournal::new(stream, stream_name));
-    let artifact = PreparedChildArtifact {
-        partition_id: PartitionId { high: 12, low: 1 },
-        range: PartitionRange {
+    let artifact = empty_prepared_child(
+        PartitionId { high: 12, low: 1 },
+        PartitionRange {
             start: Some(b"a".to_vec()),
             end: Some(b"m".to_vec()),
         },
-        ownership_epoch: 20,
-        tree_id: 1,
-        tree_manifest: 0,
+        1,
         stream_name,
-        applied_seq: 0,
-    };
+    );
     assert_prepared_tree_identity_mismatch(&artifact, Arc::clone(&journal)).await;
     let prepared = Partition::recover_prepared(
         artifact.clone(),
         Checkpoint {
             tree_id: 1,
             tree_manifest: 0,
+            root_manifest_generation: 1,
             applied_seq: 0,
             stream_name,
             stream_manifest_generation: 1,
@@ -1458,31 +1653,22 @@ async fn prepared_child_serves_only_after_exact_catalog_proof() {
         Err(ChunkKvError::NotServing(_))
     ));
 
-    let other = PreparedChildArtifact {
-        partition_id: PartitionId { high: 12, low: 2 },
-        range: PartitionRange {
-            start: Some(b"m".to_vec()),
-            end: Some(b"z".to_vec()),
-        },
-        ownership_epoch: 20,
-        tree_id: 2,
-        tree_manifest: 0,
-        stream_name: StreamName { high: 12, low: 13 },
-        applied_seq: 0,
-    };
     let proof = SplitCommitProof {
         catalog_revision: 7,
         artifact: SplitArtifact {
             transition_id: TransitionId { high: 70, low: 71 },
             parent_id: PartitionId { high: 10, low: 1 },
             parent_epoch: 19,
+            parent_next_epoch: 20,
+            shared_view_generation: 0,
             cutover_seq: 0,
-            left: artifact,
-            right: other,
+            retained_parent: artifact.clone(),
+            child: artifact,
         },
     };
     prepared.activate_prepared(&proof).unwrap();
     assert_eq!(prepared.lifecycle(), crowdb_chunk_kv::PartitionLifecycle::Serving);
+    prepared.activate_recovered(20).unwrap();
     prepared
         .mutate(
             20,
@@ -1527,7 +1713,10 @@ async fn split_control_is_idempotent_and_commits_only_an_exact_artifact() {
         )
         .await
         .unwrap();
-    partition.fence_split(plan.transition_id).await.unwrap();
+    partition
+        .begin_split_finalization(plan.transition_id)
+        .await
+        .unwrap();
     let artifact = split_artifact(&plan, 1);
     partition.record_split_artifact(artifact.clone()).await.unwrap();
     assert_eq!(
@@ -1536,7 +1725,7 @@ async fn split_control_is_idempotent_and_commits_only_an_exact_artifact() {
     );
 
     let mut wrong = artifact.clone();
-    wrong.right.tree_manifest += 1;
+    wrong.child.tree_manifest += 1;
     assert!(partition
         .commit_split(&SplitCommitProof {
             catalog_revision: 3,
@@ -1546,7 +1735,7 @@ async fn split_control_is_idempotent_and_commits_only_an_exact_artifact() {
         .is_err());
     assert_eq!(
         partition.lifecycle(),
-        crowdb_chunk_kv::PartitionLifecycle::SplitFenced
+        crowdb_chunk_kv::PartitionLifecycle::SplitFinalizing
     );
     partition
         .commit_split(&SplitCommitProof {
@@ -1557,12 +1746,418 @@ async fn split_control_is_idempotent_and_commits_only_an_exact_artifact() {
         .unwrap();
     assert_eq!(
         partition.lifecycle(),
-        crowdb_chunk_kv::PartitionLifecycle::Retired
+        crowdb_chunk_kv::PartitionLifecycle::Serving
+    );
+    assert_eq!(partition.snapshot().ownership_epoch, plan.parent_next_epoch);
+    assert_eq!(
+        partition.snapshot().range.end.as_deref(),
+        Some(plan.split_key.as_slice())
     );
 }
 
 #[tokio::test]
-async fn online_split_rebuilds_both_ranges_and_replays_serving_deltas() {
+async fn serving_grant_refresh_keeps_a_preparing_parent_active() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let partition = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::default()),
+        StreamName { high: 14, low: 14 },
+        20,
+        PartitionConfig::default(),
+    )
+    .await;
+    let plan = split_plan(PartitionId { high: 14, low: 14 }, 20);
+    partition.begin_split(plan).await.unwrap();
+
+    partition.activate_recovered(20).unwrap();
+
+    assert_eq!(
+        partition.lifecycle(),
+        crowdb_chunk_kv::PartitionLifecycle::SplitPreparing
+    );
+}
+
+#[allow(clippy::too_many_lines)]
+#[tokio::test]
+async fn split_session_installs_two_live_writers_at_ingress_frontier() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let parent_tree = Arc::new(MemoryPartitionTree::with_tree_id(810));
+    let config = PartitionConfig {
+        retained_results: 2,
+        ..PartitionConfig::default()
+    };
+    let parent = partition(
+        &store,
+        Arc::clone(&parent_tree),
+        StreamName { high: 810, low: 1 },
+        8,
+        config.clone(),
+    )
+    .await;
+    parent
+        .mutate(
+            8,
+            request(810),
+            MutationOperation::Put {
+                key: b"b".to_vec(),
+                value: b"left-base".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    let inherited_position = parent
+        .mutate(
+            8,
+            request(811),
+            MutationOperation::Put {
+                key: b"h".to_vec(),
+                value: b"right-base".to_vec(),
+            },
+        )
+        .await
+        .unwrap()
+        .journal_position;
+    let plan = split_plan(PartitionId { high: 810, low: 1 }, 8);
+    let prepared = parent
+        .prepare_split_session(
+            plan.clone(),
+            SplitSessionTargets {
+                retained_parent: SplitWriterTarget {
+                    tree_id: 811,
+                    tree_config: crowdb_tree_ffi::Config::default(),
+                    journal: empty_journal(&store, StreamName { high: 811, low: 1 }, 9).await,
+                },
+                child: SplitWriterTarget {
+                    tree_id: 812,
+                    tree_config: crowdb_tree_ffi::Config::default(),
+                    journal: empty_journal(&store, StreamName { high: 812, low: 1 }, 9).await,
+                },
+            },
+            8,
+        )
+        .await
+        .unwrap();
+    assert_eq!(prepared.artifact.retained_parent.tree_id, 811);
+    assert_eq!(prepared.artifact.child.tree_id, 812);
+    assert_ne!(prepared.artifact.shared_view_generation, 0);
+    assert_eq!(prepared.artifact.retained_parent.applied_seq, 2);
+    assert_eq!(prepared.artifact.child.applied_seq, 2);
+    assert_eq!(parent.metrics().snapshot().split_finalizations, 1);
+
+    let artifact = prepared.artifact.clone();
+    let retained = prepared
+        .retained_parent
+        .unwrap()
+        .open_warmed(config.clone())
+        .unwrap();
+    let child = prepared.child.open_warmed(config).unwrap();
+    retained.activate_local_split_writer(&artifact).unwrap();
+    child.activate_local_split_writer(&artifact).unwrap();
+    parent
+        .install_split_ingress(retained.clone(), child.clone())
+        .await
+        .unwrap();
+    parent
+        .mutate(
+            8,
+            request(812),
+            MutationOperation::Put {
+                key: b"c".to_vec(),
+                value: b"left-new".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    parent
+        .mutate(
+            8,
+            request(813),
+            MutationOperation::Put {
+                key: b"i".to_vec(),
+                value: b"right-new".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    let child_seq_before_retry = child.snapshot().journal_durable_seq;
+    let retried = parent
+        .mutate(
+            8,
+            request(811),
+            MutationOperation::Put {
+                key: b"h".to_vec(),
+                value: b"right-base".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(retried.mutation_seq, 2);
+    assert_eq!(child.snapshot().journal_durable_seq, child_seq_before_retry);
+    assert_eq!(
+        retained.get(9, b"b", None).await.unwrap().unwrap().value,
+        b"left-base"[..]
+    );
+    assert_eq!(
+        parent
+            .get(8, b"h", Some(inherited_position))
+            .await
+            .unwrap()
+            .unwrap()
+            .value,
+        b"right-base"[..]
+    );
+    assert!(matches!(
+        parent
+            .get(
+                8,
+                b"h",
+                Some(crowdb_chunk_kv::JournalPosition {
+                    stream_name: StreamName { high: 999, low: 1 },
+                    offset: inherited_position.offset,
+                }),
+            )
+            .await,
+        Err(ChunkKvError::InvalidRequest(_))
+    ));
+    assert_eq!(
+        retained.get(9, b"c", None).await.unwrap().unwrap().value,
+        b"left-new"[..]
+    );
+    assert_eq!(
+        child.get(9, b"i", None).await.unwrap().unwrap().value,
+        b"right-new"[..]
+    );
+    let retained_replay_start = parent
+        .mutate(
+            8,
+            request(814),
+            MutationOperation::Put {
+                key: b"d".to_vec(),
+                value: b"left-newer".to_vec(),
+            },
+        )
+        .await
+        .unwrap()
+        .journal_position;
+    parent
+        .mutate(
+            8,
+            request(815),
+            MutationOperation::Put {
+                key: b"e".to_vec(),
+                value: b"left-newest".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        retained.checkpoint(9).await.unwrap().replay_offset,
+        retained_replay_start.offset
+    );
+}
+
+#[tokio::test]
+async fn split_session_replays_existing_writer_journals_on_retry() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let parent_id = PartitionId { high: 815, low: 1 };
+    let parent = partition(
+        &store,
+        Arc::new(MemoryPartitionTree::with_tree_id(815)),
+        StreamName { high: 815, low: 1 },
+        8,
+        PartitionConfig::default(),
+    )
+    .await;
+    for (sequence, key) in [(1, b"b".as_slice()), (2, b"h".as_slice())] {
+        parent
+            .mutate(
+                8,
+                request(815 + sequence),
+                MutationOperation::Put {
+                    key: key.to_vec(),
+                    value: b"before-cutover".to_vec(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let plan = split_plan(parent_id, 8);
+    let retained_journal = empty_journal(&store, StreamName { high: 816, low: 1 }, 9).await;
+    let child_journal = empty_journal(&store, StreamName { high: 817, low: 1 }, 9).await;
+    for (journal, partition_id, request_id, key, value) in [
+        (
+            retained_journal.as_ref(),
+            parent_id,
+            request(818),
+            b"c".as_slice(),
+            b"retained-after-cutover".as_slice(),
+        ),
+        (
+            child_journal.as_ref(),
+            plan.child.partition_id,
+            request(819),
+            b"i".as_slice(),
+            b"child-after-cutover".as_slice(),
+        ),
+    ] {
+        let operation = MutationOperation::Put {
+            key: key.to_vec(),
+            value: value.to_vec(),
+        };
+        append_record(
+            journal,
+            &WalRecord {
+                partition_id,
+                ownership_epoch: 9,
+                mutation_seq: 3,
+                request_id,
+                operation_digest: canonical_operation_digest(&operation),
+                result: MutationResult::Applied { revision: 3 },
+                operation,
+            },
+        )
+        .await;
+    }
+
+    let prepared = parent
+        .prepare_split_session(
+            plan,
+            SplitSessionTargets {
+                retained_parent: SplitWriterTarget {
+                    tree_id: 816,
+                    tree_config: crowdb_tree_ffi::Config::default(),
+                    journal: retained_journal,
+                },
+                child: SplitWriterTarget {
+                    tree_id: 817,
+                    tree_config: crowdb_tree_ffi::Config::default(),
+                    journal: child_journal,
+                },
+            },
+            8,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(prepared.artifact.cutover_seq, 2);
+    let ingress = parent.split_ingress().unwrap();
+    assert_eq!(ingress.retained_parent().snapshot().applied_seq, 3);
+    assert_eq!(ingress.child().snapshot().applied_seq, 3);
+    assert_eq!(
+        parent.get(8, b"c", None).await.unwrap().unwrap().value,
+        b"retained-after-cutover"[..]
+    );
+    assert_eq!(
+        parent.get(8, b"i", None).await.unwrap().unwrap().value,
+        b"child-after-cutover"[..]
+    );
+}
+
+#[tokio::test]
+async fn split_routes_writes_before_shared_memtable_publish_finishes() {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let parent_tree = Arc::new(MemoryPartitionTree::with_tree_id(820));
+    let parent = partition(
+        &store,
+        Arc::clone(&parent_tree),
+        StreamName { high: 820, low: 1 },
+        8,
+        PartitionConfig::default(),
+    )
+    .await;
+    parent
+        .mutate(
+            8,
+            request(820),
+            MutationOperation::Put {
+                key: b"h".to_vec(),
+                value: b"before-cutover".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    parent_tree.pause_split_publish();
+    let split_parent = parent.clone();
+    let split_store = Arc::clone(&store);
+    let split = tokio::spawn(async move {
+        split_parent
+            .prepare_split_session(
+                split_plan(PartitionId { high: 820, low: 1 }, 8),
+                SplitSessionTargets {
+                    retained_parent: SplitWriterTarget {
+                        tree_id: 821,
+                        tree_config: crowdb_tree_ffi::Config::default(),
+                        journal: empty_journal(&split_store, StreamName { high: 821, low: 1 }, 9).await,
+                    },
+                    child: SplitWriterTarget {
+                        tree_id: 822,
+                        tree_config: crowdb_tree_ffi::Config::default(),
+                        journal: empty_journal(&split_store, StreamName { high: 822, low: 1 }, 9).await,
+                    },
+                },
+                8,
+            )
+            .await
+    });
+    parent_tree.wait_for_split_publish().await;
+
+    let conditional = parent
+        .mutate(
+            8,
+            request(821),
+            MutationOperation::PutIfAbsent {
+                key: b"h".to_vec(),
+                value: b"wrong".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        conditional.result,
+        MutationResult::ConditionFailed { .. }
+    ));
+    parent
+        .mutate(
+            8,
+            request(822),
+            MutationOperation::Put {
+                key: b"i".to_vec(),
+                value: b"child-live".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    parent
+        .mutate(
+            8,
+            request(823),
+            MutationOperation::Put {
+                key: b"c".to_vec(),
+                value: b"parent-live".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+
+    parent_tree.resume_split_publish();
+    let prepared = split.await.unwrap().unwrap();
+    assert_eq!(prepared.artifact.cutover_seq, 1);
+    assert_eq!(
+        parent.get(8, b"h", None).await.unwrap().unwrap().value,
+        b"before-cutover"[..]
+    );
+    assert_eq!(
+        parent.get(8, b"i", None).await.unwrap().unwrap().value,
+        b"child-live"[..]
+    );
+    assert_eq!(
+        parent.get(8, b"c", None).await.unwrap().unwrap().value,
+        b"parent-live"[..]
+    );
+}
+
+#[tokio::test]
+async fn online_split_retains_parent_and_replays_child_serving_deltas() {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let tree = Arc::new(MemoryPartitionTree::with_tree_id(90));
     let parent = partition(
@@ -1588,23 +2183,14 @@ async fn online_split_rebuilds_both_ranges_and_replays_serving_deltas() {
     }
     tree.pause_rebuild();
     let plan = split_plan(PartitionId { high: 12, low: 12 }, 18);
-    let left_target = SplitChildTarget {
-        tree_id: 91,
-        tree_config: crowdb_tree_ffi::Config::default(),
-        journal: empty_journal(&store, StreamName { high: 91, low: 1 }, 19).await,
-    };
-    let right_target = SplitChildTarget {
+    let child_target = SplitWriterTarget {
         tree_id: 92,
         tree_config: crowdb_tree_ffi::Config::default(),
         journal: empty_journal(&store, StreamName { high: 92, low: 1 }, 19).await,
     };
     let split_parent = parent.clone();
     let split_plan = plan.clone();
-    let split = tokio::spawn(async move {
-        split_parent
-            .prepare_split(split_plan, left_target, right_target, 8)
-            .await
-    });
+    let split = tokio::spawn(async move { split_parent.prepare_split(split_plan, child_target, 8).await });
     tree.wait_for_rebuild().await;
     for (sequence, key) in [(3, b"d".as_slice()), (4, b"i".as_slice())] {
         parent
@@ -1626,46 +2212,47 @@ async fn online_split_rebuilds_both_ranges_and_replays_serving_deltas() {
     assert_eq!(prepared.delta_records, 2);
     assert_eq!(
         parent.lifecycle(),
-        crowdb_chunk_kv::PartitionLifecycle::SplitFenced
+        crowdb_chunk_kv::PartitionLifecycle::SplitFinalizing
     );
     let metrics = parent.metrics().snapshot();
-    assert_eq!(metrics.split_entries_examined, 4);
-    assert_eq!(metrics.split_entries_emitted, 2);
+    assert_eq!(metrics.split_entries_examined, 2);
+    assert_eq!(metrics.split_entries_emitted, 1);
     assert_eq!(metrics.split_delta_records, 2);
-    assert!(metrics.split_fence_lag_records <= 8);
-    assert!(metrics.split_fence_duration_us > 0);
+    assert!(metrics.split_tail_bytes > 0);
+    assert!(metrics.split_preparation_duration_us > 0);
+    assert!(metrics.split_catchup_lag_records <= 8);
+    assert!(metrics.split_finalization_duration_us > 0);
     let proof = SplitCommitProof {
         catalog_revision: 7,
         artifact: prepared.artifact.clone(),
     };
-    let left = prepared.left.open(PartitionConfig::default()).await.unwrap();
-    let right = prepared.right.open(PartitionConfig::default()).await.unwrap();
-    left.activate_prepared(&proof).unwrap();
-    right.activate_prepared(&proof).unwrap();
+    let child = prepared.child.open(PartitionConfig::default()).await.unwrap();
+    child.activate_prepared(&proof).unwrap();
     assert_eq!(
-        left.materialize_split_ownership(19).await.unwrap(),
+        child.materialize_split_ownership(19).await.unwrap(),
         crowdb_chunk_kv::MaterializationProgress {
             bytes_written: 0,
             complete: true,
         }
     );
-    assert_eq!(left.metrics().snapshot().materialization_passes, 1);
-    for key in [b"b".as_slice(), b"d".as_slice()] {
-        assert_eq!(left.get(19, key, None).await.unwrap().unwrap().value, key);
-    }
     for key in [b"h".as_slice(), b"i".as_slice()] {
-        assert_eq!(right.get(19, key, None).await.unwrap().unwrap().value, key);
+        assert_eq!(child.get(19, key, None).await.unwrap().unwrap().value, key);
     }
     assert!(matches!(
-        left.get(19, b"h", None).await,
+        child.get(19, b"b", None).await,
         Err(ChunkKvError::OutOfRange)
     ));
     parent.commit_split(&proof).await.unwrap();
-    assert_eq!(parent.lifecycle(), crowdb_chunk_kv::PartitionLifecycle::Retired);
+    assert_eq!(parent.lifecycle(), crowdb_chunk_kv::PartitionLifecycle::Serving);
+    assert_eq!(parent.snapshot().ownership_epoch, 19);
+    assert_eq!(parent.snapshot().range.end.as_deref(), Some(b"g".as_slice()));
+    for key in [b"b".as_slice(), b"d".as_slice()] {
+        assert_eq!(parent.get(19, key, None).await.unwrap().unwrap().value, key);
+    }
 }
 
 #[tokio::test]
-async fn native_online_split_reopens_one_manifest_for_both_child_rebuilds() {
+async fn native_online_split_rebuilds_one_child_from_the_exact_parent_manifest() {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let parent_stream_name = StreamName { high: 120, low: 120 };
     let parent_stream = ChunkStream::create(
@@ -1718,15 +2305,7 @@ async fn native_online_split_reopens_one_manifest_for_both_child_rebuilds() {
     let prepared = parent
         .prepare_split(
             plan,
-            SplitChildTarget {
-                tree_id: 191,
-                tree_config: crowdb_tree_ffi::Config {
-                    page_store: Some(chunk_page_store(191, 19)),
-                    ..crowdb_tree_ffi::Config::default()
-                },
-                journal: empty_journal(&store, StreamName { high: 191, low: 1 }, 19).await,
-            },
-            SplitChildTarget {
+            SplitWriterTarget {
                 tree_id: 192,
                 tree_config: crowdb_tree_ffi::Config {
                     page_store: Some(chunk_page_store(192, 19)),
@@ -1739,26 +2318,429 @@ async fn native_online_split_reopens_one_manifest_for_both_child_rebuilds() {
         .await
         .unwrap();
     assert_eq!(prepared.artifact.cutover_seq, 2);
-    assert_eq!(
-        prepared.left.artifact().tree_manifest,
-        prepared.right.artifact().tree_manifest
-    );
-    assert!(prepared.left.artifact().tree_manifest > 0);
-    assert_eq!(prepared.left_rebuild.entries_emitted, 1);
-    assert_eq!(prepared.right_rebuild.entries_emitted, 1);
+    assert!(prepared.child.artifact().tree_manifest > 0);
+    assert_eq!(prepared.child_rebuild.entries_emitted, 1);
     let proof = SplitCommitProof {
         catalog_revision: 8,
         artifact: prepared.artifact.clone(),
     };
-    let left = prepared.left.open(PartitionConfig::default()).await.unwrap();
-    let right = prepared.right.open(PartitionConfig::default()).await.unwrap();
-    left.activate_prepared(&proof).unwrap();
-    right.activate_prepared(&proof).unwrap();
-    for child in [&left, &right] {
-        let passes = finish_materialization(child, 19).await;
-        assert_eq!(child.metrics().snapshot().materialization_passes, passes);
-        assert_eq!(child.chunk_storage_stats().unwrap().unwrap().shared_packs, 0);
+    let child = prepared.child.open(PartitionConfig::default()).await.unwrap();
+    child.activate_prepared(&proof).unwrap();
+    let passes = finish_materialization(&child, 19).await;
+    assert_eq!(child.metrics().snapshot().materialization_passes, passes);
+    assert_eq!(child.chunk_storage_stats().unwrap().unwrap().shared_packs, 0);
+}
+
+async fn overlay_base_tree(tree_id: u64) -> (Arc<MemoryPartitionTree>, u64) {
+    let tree = Arc::new(MemoryPartitionTree::with_tree_id(tree_id));
+    tree.apply(
+        1,
+        &MutationOperation::Put {
+            key: b"b".to_vec(),
+            value: b"base".to_vec(),
+        },
+    )
+    .await
+    .unwrap();
+    tree.advance_noop(2).await.unwrap();
+    let (manifest, applied) = tree.checkpoint(0).await.unwrap();
+    assert_eq!(applied, 2);
+    (tree, manifest)
+}
+
+struct OverlayFixture {
+    store: Arc<MemoryStreamStore>,
+    parent_journal: Arc<dyn PartitionJournal>,
+    child_journal: Arc<dyn PartitionJournal>,
+    base_tree: Arc<MemoryPartitionTree>,
+    artifact: PreparedSplitWriterArtifact,
+    checkpoint: Checkpoint,
+    proof: SplitCommitProof,
+    operations: Vec<MutationOperation>,
+    responses: Vec<crowdb_chunk_kv::MutationResponse>,
+}
+
+fn overlay_operations() -> Vec<MutationOperation> {
+    vec![
+        MutationOperation::Put {
+            key: b"b".to_vec(),
+            value: b"base".to_vec(),
+        },
+        MutationOperation::Put {
+            key: b"h".to_vec(),
+            value: b"sibling".to_vec(),
+        },
+        MutationOperation::Put {
+            key: b"d".to_vec(),
+            value: b"tail".to_vec(),
+        },
+        MutationOperation::Put {
+            key: b"i".to_vec(),
+            value: b"sibling-tail".to_vec(),
+        },
+        MutationOperation::PutIfAbsent {
+            key: b"b".to_vec(),
+            value: b"ignored".to_vec(),
+        },
+    ]
+}
+
+async fn overlay_fixture() -> OverlayFixture {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let parent_name = StreamName { high: 130, low: 1 };
+    let parent_journal = empty_journal(&store, parent_name, 18).await;
+    let parent = Partition::open(
+        PartitionId { high: 130, low: 1 },
+        PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        18,
+        PartitionConfig::default(),
+        Arc::new(MemoryPartitionTree::with_tree_id(130)),
+        Arc::clone(&parent_journal),
+    )
+    .unwrap();
+    let operations = overlay_operations();
+    let mut responses = Vec::new();
+    for (index, operation) in operations.iter().cloned().enumerate() {
+        responses.push(
+            parent
+                .mutate(18, request(index as u64 + 1), operation)
+                .await
+                .unwrap(),
+        );
     }
+    let child_name = StreamName { high: 131, low: 1 };
+    let child_journal = empty_journal(&store, child_name, 19).await;
+    let (base_tree, manifest) = overlay_base_tree(131).await;
+    let artifact = PreparedSplitWriterArtifact {
+        partition_id: PartitionId { high: 131, low: 1 },
+        range: PartitionRange {
+            start: Some(b"a".to_vec()),
+            end: Some(b"g".to_vec()),
+        },
+        ownership_epoch: 19,
+        tree_id: 131,
+        tree_manifest: manifest,
+        root_manifest_generation: manifest,
+        stream_name: child_name,
+        base_applied_seq: 2,
+        parent_id: PartitionId { high: 130, low: 1 },
+        parent_epoch: 18,
+        parent_stream_name: parent_name,
+        parent_stream_manifest_generation: parent_journal.manifest_generation(),
+        parent_replay_offset: 0,
+        parent_cutover_offset: parent_journal.tail(),
+        applied_seq: 5,
+        child_stream_start_seq: 6,
+    };
+    let checkpoint = Checkpoint {
+        tree_id: 131,
+        tree_manifest: manifest,
+        root_manifest_generation: manifest,
+        applied_seq: 2,
+        stream_name: child_name,
+        stream_manifest_generation: child_journal.manifest_generation(),
+        replay_offset: 0,
+    };
+    let proof = SplitCommitProof {
+        catalog_revision: 9,
+        artifact: SplitArtifact {
+            transition_id: TransitionId { high: 130, low: 9 },
+            parent_id: artifact.parent_id,
+            parent_epoch: artifact.parent_epoch,
+            parent_next_epoch: artifact.parent_epoch + 1,
+            shared_view_generation: 0,
+            cutover_seq: artifact.applied_seq,
+            retained_parent: artifact.clone(),
+            child: artifact.clone(),
+        },
+    };
+    OverlayFixture {
+        store,
+        parent_journal,
+        child_journal,
+        base_tree,
+        artifact,
+        checkpoint,
+        proof,
+        operations,
+        responses,
+    }
+}
+
+#[tokio::test]
+async fn both_split_halves_recover_pre_split_keys_from_parent_overlay() {
+    let OverlayFixture {
+        store,
+        parent_journal,
+        child_journal: retained_journal,
+        base_tree: retained_tree,
+        artifact: retained_artifact,
+        checkpoint: retained_checkpoint,
+        ..
+    } = overlay_fixture().await;
+    let retained_artifact = PreparedSplitWriterArtifact {
+        partition_id: retained_artifact.parent_id,
+        ..retained_artifact
+    };
+    let child_stream_name = StreamName { high: 132, low: 1 };
+    let child_journal = empty_journal(&store, child_stream_name, 19).await;
+    let (child_tree, child_manifest) = overlay_base_tree(132).await;
+    let child_artifact = PreparedSplitWriterArtifact {
+        partition_id: PartitionId { high: 132, low: 1 },
+        range: PartitionRange {
+            start: Some(b"g".to_vec()),
+            end: Some(b"m".to_vec()),
+        },
+        tree_id: 132,
+        tree_manifest: child_manifest,
+        root_manifest_generation: child_manifest,
+        stream_name: child_stream_name,
+        ..retained_artifact.clone()
+    };
+    let child_checkpoint = Checkpoint {
+        tree_id: child_artifact.tree_id,
+        tree_manifest: child_artifact.tree_manifest,
+        root_manifest_generation: child_artifact.root_manifest_generation,
+        applied_seq: child_artifact.base_applied_seq,
+        stream_name: child_artifact.stream_name,
+        stream_manifest_generation: child_journal.manifest_generation(),
+        replay_offset: 0,
+    };
+    let proof = SplitCommitProof {
+        catalog_revision: 10,
+        artifact: SplitArtifact {
+            transition_id: TransitionId { high: 130, low: 10 },
+            parent_id: retained_artifact.parent_id,
+            parent_epoch: retained_artifact.parent_epoch,
+            parent_next_epoch: retained_artifact.ownership_epoch,
+            shared_view_generation: 0,
+            cutover_seq: retained_artifact.applied_seq,
+            retained_parent: retained_artifact.clone(),
+            child: child_artifact.clone(),
+        },
+    };
+
+    let retained = Partition::recover_prepared_overlay(
+        retained_artifact,
+        retained_checkpoint,
+        PartitionConfig::default(),
+        retained_tree,
+        retained_journal,
+        Arc::clone(&parent_journal),
+    )
+    .await
+    .unwrap();
+    let child = Partition::recover_prepared_overlay(
+        child_artifact,
+        child_checkpoint,
+        PartitionConfig::default(),
+        child_tree,
+        child_journal,
+        parent_journal,
+    )
+    .await
+    .unwrap();
+    retained.activate_split_writer(&proof).unwrap();
+    child.activate_split_writer(&proof).unwrap();
+
+    assert_eq!(
+        retained.get(19, b"d", None).await.unwrap().unwrap().value,
+        b"tail"
+    );
+    assert_eq!(
+        child.get(19, b"i", None).await.unwrap().unwrap().value,
+        b"sibling-tail"
+    );
+    assert!(matches!(
+        retained.get(19, b"i", None).await,
+        Err(ChunkKvError::OutOfRange)
+    ));
+    assert!(matches!(
+        child.get(19, b"d", None).await,
+        Err(ChunkKvError::OutOfRange)
+    ));
+}
+
+#[tokio::test]
+async fn child_overlay_recovers_parent_results_then_its_own_wal() {
+    let OverlayFixture {
+        store: _,
+        parent_journal,
+        child_journal,
+        base_tree,
+        artifact,
+        checkpoint,
+        proof,
+        operations,
+        responses,
+    } = overlay_fixture().await;
+    let child = Partition::recover_prepared_overlay(
+        artifact.clone(),
+        checkpoint.clone(),
+        PartitionConfig::default(),
+        base_tree,
+        Arc::clone(&child_journal),
+        Arc::clone(&parent_journal),
+    )
+    .await
+    .unwrap();
+    let overlay_metrics = child.metrics().snapshot();
+    assert_eq!(overlay_metrics.split_overlay_apply_records, 3);
+    assert!(overlay_metrics.split_overlay_apply_bytes > 0);
+    child.activate_prepared(&proof).unwrap();
+    assert_eq!(child.get(19, b"d", None).await.unwrap().unwrap().value, b"tail");
+    assert!(matches!(
+        child.get(19, b"h", None).await,
+        Err(ChunkKvError::OutOfRange)
+    ));
+    assert_eq!(
+        child
+            .get(19, b"d", Some(responses[2].journal_position))
+            .await
+            .unwrap()
+            .unwrap()
+            .value,
+        b"tail"
+    );
+    assert_eq!(
+        child.mutate(19, request(5), operations[4].clone()).await.unwrap(),
+        responses[4]
+    );
+    let own = child
+        .mutate(
+            19,
+            request(6),
+            MutationOperation::Put {
+                key: b"e".to_vec(),
+                value: b"child".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(own.mutation_seq, 6);
+    assert_eq!(own.journal_position.stream_name, artifact.stream_name);
+
+    let (cold_tree, _) = overlay_base_tree(131).await;
+    let recovered = Partition::recover_prepared_overlay(
+        artifact,
+        checkpoint,
+        PartitionConfig::default(),
+        cold_tree,
+        child_journal,
+        parent_journal,
+    )
+    .await
+    .unwrap();
+    recovered.activate_prepared(&proof).unwrap();
+    assert_eq!(recovered.snapshot().applied_seq, 6);
+    assert_eq!(
+        recovered.get(19, b"e", None).await.unwrap().unwrap().value,
+        b"child"
+    );
+    assert_eq!(
+        recovered
+            .mutate(19, request(5), operations[4].clone())
+            .await
+            .unwrap(),
+        responses[4]
+    );
+}
+
+#[tokio::test]
+async fn live_transfer_target_replays_only_the_suffix_after_preparation() {
+    let OverlayFixture {
+        parent_journal,
+        child_journal,
+        base_tree,
+        artifact: final_artifact,
+        checkpoint,
+        responses,
+        ..
+    } = overlay_fixture().await;
+    let prepared_artifact = PreparedSplitWriterArtifact {
+        parent_cutover_offset: responses[2].journal_position.offset,
+        applied_seq: 2,
+        child_stream_start_seq: 3,
+        ..final_artifact.clone()
+    };
+    let target = Partition::recover_prepared_overlay(
+        prepared_artifact,
+        checkpoint,
+        PartitionConfig::default(),
+        base_tree,
+        child_journal,
+        Arc::clone(&parent_journal),
+    )
+    .await
+    .unwrap();
+    assert_eq!(target.snapshot().applied_seq, 2);
+    let first_waiter = tokio::spawn({
+        let target = target.clone();
+        async move { target.await_transfer_initialization().await }
+    });
+    let second_waiter = tokio::spawn({
+        let target = target.clone();
+        async move { target.await_transfer_initialization().await }
+    });
+    tokio::task::yield_now().await;
+    assert!(!first_waiter.is_finished());
+    assert!(!second_waiter.is_finished());
+
+    let write = target
+        .append_prepared_transfer_mutation(
+            final_artifact.clone(),
+            19,
+            request(6),
+            MutationOperation::Put {
+                key: b"e".to_vec(),
+                value: b"new-owner".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(write.mutation_seq, 6);
+    let retry = target
+        .append_prepared_transfer_mutation(
+            final_artifact.clone(),
+            19,
+            request(6),
+            MutationOperation::Put {
+                key: b"e".to_vec(),
+                value: b"new-owner".to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(retry, write);
+    assert_eq!(target.snapshot().journal_durable_seq, 6);
+    assert_eq!(target.snapshot().applied_seq, 2);
+    assert_eq!(target.lifecycle(), crowdb_chunk_kv::PartitionLifecycle::Prepared);
+
+    target
+        .catch_up_prepared_transfer(final_artifact, parent_journal)
+        .await
+        .unwrap();
+    first_waiter.await.unwrap().unwrap();
+    second_waiter.await.unwrap().unwrap();
+    assert_eq!(target.snapshot().applied_seq, 6);
+    assert_eq!(target.lifecycle(), crowdb_chunk_kv::PartitionLifecycle::Serving);
+    assert_eq!(target.get(19, b"d", None).await.unwrap().unwrap().value, b"tail");
+    assert_eq!(
+        target.get(19, b"e", None).await.unwrap().unwrap().value,
+        b"new-owner"
+    );
+    assert_eq!(
+        target
+            .get(19, b"d", Some(responses[2].journal_position))
+            .await
+            .unwrap()
+            .unwrap()
+            .value,
+        b"tail"
+    );
 }
 
 #[tokio::test]

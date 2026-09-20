@@ -53,11 +53,42 @@ impl TransitionProcessor {
     ) -> Result<(), MonitorError> {
         let mut machine = TransferStateMachine::restore(transition)?;
         if machine.transition().source.instance_id == self.instance_id
-            && machine.transition().release_proof.is_none()
-            && matches!(
-                machine.transition().phase,
-                TransferPhase::Planned | TransferPhase::AwaitingFence
-            )
+            && machine.transition().phase == TransferPhase::Planned
+        {
+            machine.begin_source_prepare()?;
+            revision = self
+                .store
+                .persist_transfer_transition(machine.transition(), revision)
+                .await?;
+        }
+        if machine.transition().source.instance_id == self.instance_id
+            && machine.transition().phase == TransferPhase::SourcePreparing
+        {
+            let artifact = self
+                .executor
+                .prepare_transfer_source(machine.transition())
+                .await?;
+            machine.record_source_base(artifact)?;
+            revision = self
+                .store
+                .persist_transfer_transition(machine.transition(), revision)
+                .await?;
+        }
+        if machine.transition().target.instance_id == self.instance_id
+            && machine.transition().phase == TransferPhase::TargetPreparing
+        {
+            let proof = self
+                .executor
+                .prepare_transfer_target(machine.transition())
+                .await?;
+            machine.record_target_ready(proof)?;
+            revision = self
+                .store
+                .persist_transfer_transition(machine.transition(), revision)
+                .await?;
+        }
+        if machine.transition().source.instance_id == self.instance_id
+            && machine.transition().phase == TransferPhase::AwaitingFence
         {
             let proof = self.executor.fence_transfer_source(machine.transition()).await?;
             machine.record_source_fence(proof)?;
@@ -66,27 +97,25 @@ impl TransitionProcessor {
                 .persist_transfer_transition(machine.transition(), revision)
                 .await?;
         }
-        if machine.transition().target.instance_id != self.instance_id {
-            return Ok(());
-        }
-        if machine.transition().phase == TransferPhase::AwaitingFence
-            && machine.transition().release_proof.is_some()
+        if machine.transition().target.instance_id == self.instance_id
+            && machine.transition().phase == TransferPhase::CatchupPublished
         {
-            machine.begin_target_prepare()?;
-            revision = self
-                .store
-                .persist_transfer_transition(machine.transition(), revision)
-                .await?;
-        }
-        if machine.transition().phase == TransferPhase::TargetPreparing {
             let proof = self
                 .executor
                 .prepare_transfer_target(machine.transition())
                 .await?;
-            machine.record_target_ready(proof)?;
+            machine.record_target_caught_up(proof)?;
             self.store
                 .persist_transfer_transition(machine.transition(), revision)
                 .await?;
+        }
+        if (machine.transition().target.instance_id == self.instance_id
+            && machine.transition().phase == TransferPhase::CatalogCommitted)
+            || (machine.transition().source.instance_id == self.instance_id
+                && machine.transition().phase == TransferPhase::Aborted)
+        {
+            self.executor
+                .release_transfer_generation_pin(machine.transition())?;
         }
         Ok(())
     }
@@ -109,10 +138,16 @@ impl TransitionProcessor {
         }
         if machine.transition().phase == SplitPhase::ParentPreparing {
             let proof = self.executor.prepare_split_parent(machine.transition()).await?;
-            machine.record_children_ready(proof)?;
+            machine.record_child_ready(proof)?;
             self.store
                 .persist_split_transition(machine.transition(), revision)
                 .await?;
+        }
+        if matches!(
+            machine.transition().phase,
+            SplitPhase::CatalogCommitted | SplitPhase::Aborted
+        ) {
+            self.executor.release_split_generation_pin(machine.transition())?;
         }
         Ok(())
     }

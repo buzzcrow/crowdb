@@ -10,7 +10,7 @@ int main()
     if (ct_memory_root_catalog_open(1, &catalog) != 0) {
         return 1;
     }
-    const ct_chunk_page_store_options options{.tree_id = 1, .owner_epoch = 1};
+    const ct_chunk_page_store_options options{.tree_id = 1, .owner_epoch = 1, .open_generation = 0};
     const ct_status                   status = ct_chunk_page_store_open(&options, catalog, &store);
     auto *volatile rpc_constructor           = &ct_rpc_chunk_transport_open;
     const bool linked                        = rpc_constructor != nullptr;

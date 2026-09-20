@@ -10,7 +10,7 @@ use clap::Subcommand;
 use crowdb_console_shared::config::NodeEntry;
 use crowdb_protocol::{NodeId, RackId};
 
-use crate::commands::{commit_config, op_context, print_json};
+use crate::commands::{commit_config, op_context};
 use crate::Cli;
 
 // ── rack ─────────────────────────────────────────────────────────
@@ -49,9 +49,6 @@ pub async fn run_rack_verb(cli: &Cli, verb: RackVerb) -> ExitCode {
                     if let Err(c) = commit_config(cli, &ctx) {
                         return c;
                     }
-                    if cli.json {
-                        return print_json(cli, &entry);
-                    }
                     println!("added rack {}", entry.id);
                     ExitCode::SUCCESS
                 }
@@ -78,9 +75,7 @@ pub async fn run_rack_verb(cli: &Cli, verb: RackVerb) -> ExitCode {
                     if let Err(c) = commit_config(cli, &ctx) {
                         return c;
                     }
-                    if !cli.json {
-                        println!("removed rack {id}");
-                    }
+                    println!("removed rack {id}");
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -95,9 +90,6 @@ pub async fn run_rack_verb(cli: &Cli, verb: RackVerb) -> ExitCode {
                 Err(c) => return c,
             };
             let racks = crowdb_console_shared::ops::hardware::list_racks(&ctx);
-            if cli.json {
-                return print_json(cli, &racks);
-            }
             if racks.is_empty() {
                 println!("(no racks)");
                 return ExitCode::SUCCESS;
@@ -184,9 +176,6 @@ pub async fn run_node_verb(cli: &Cli, verb: NodeVerb) -> ExitCode {
                     if let Err(c) = commit_config(cli, &ctx) {
                         return c;
                     }
-                    if cli.json {
-                        return print_json(cli, &e);
-                    }
                     println!("added node {} (rack {})", e.id, e.rack_id);
                     ExitCode::SUCCESS
                 }
@@ -213,9 +202,7 @@ pub async fn run_node_verb(cli: &Cli, verb: NodeVerb) -> ExitCode {
                     if let Err(c) = commit_config(cli, &ctx) {
                         return c;
                     }
-                    if !cli.json {
-                        println!("removed node {id}");
-                    }
+                    println!("removed node {id}");
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -230,7 +217,7 @@ pub async fn run_node_verb(cli: &Cli, verb: NodeVerb) -> ExitCode {
                 Err(c) => return c,
             };
             let nodes = crowdb_console_shared::ops::hardware::list_nodes(&ctx, None);
-            print_node_table(cli, &nodes)
+            print_node_table(&nodes)
         }
         NodeVerb::ListRack { rack } => {
             let rack_id: RackId = match rack.parse() {
@@ -245,15 +232,12 @@ pub async fn run_node_verb(cli: &Cli, verb: NodeVerb) -> ExitCode {
                 Err(c) => return c,
             };
             let nodes = crowdb_console_shared::ops::hardware::list_nodes(&ctx, Some(rack_id));
-            print_node_table(cli, &nodes)
+            print_node_table(&nodes)
         }
     }
 }
 
-fn print_node_table(cli: &Cli, nodes: &[NodeEntry]) -> ExitCode {
-    if cli.json {
-        return print_json(cli, &nodes.to_vec());
-    }
+fn print_node_table(nodes: &[NodeEntry]) -> ExitCode {
     if nodes.is_empty() {
         println!("(no nodes)");
         return ExitCode::SUCCESS;

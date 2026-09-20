@@ -5,14 +5,12 @@
 //! concurrent benchmark for diskdb-client E2E tests.
 
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crowdb_diskdb_client::{DiskdbClient, DiskdbRpcTransport, RetryConfig};
 use crowdb_kv_client::ServiceRegistryClient;
 use crowdb_protocol::common::ChunkId;
-use crowdb_protocol::port::alloc::alloc_test_port;
 use crowdb_protocol::ServicePort;
 
 use crate::hardware::{DG_ID, INSTANCE_ID, STORE_ID, UNIT_SIZE_BYTES, ZONE_SIZE_UNITS};
@@ -20,8 +18,6 @@ use crate::hardware::{DG_ID, INSTANCE_ID, STORE_ID, UNIT_SIZE_BYTES, ZONE_SIZE_U
 // Re-export hardware helpers for convenience.
 pub use crate::cluster::crowdb_kv_server_bin;
 pub use crate::hardware::{seed_hardware, standard_disk_ids_3};
-
-static DISKDB_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub fn make_chunk_id(high: u64, low: u64) -> ChunkId {
     ChunkId { high, low }
@@ -62,6 +58,7 @@ pub struct DiskdbProcess {
     pub http_port: i32,
     pub config_path: std::path::PathBuf,
     pub log_path: std::path::PathBuf,
+    runtime: Option<crate::test_dirs::TestRuntime>,
 }
 
 impl DiskdbProcess {
@@ -83,6 +80,20 @@ impl DiskdbProcess {
 
     /// Start one diskdb owner with an explicit group-0 instance identity.
     pub fn start_for_instance(kv_seeds: &[String], instance_id: u64, zone_size_units: Option<u64>) -> Self {
+        let mut runtime = crate::test_dirs::TestRuntime::new("diskdb")
+            .unwrap_or_else(|error| panic!("create DiskDB runtime namespace: {error}"));
+        let mut process = Self::start_for_instance_in(&mut runtime, kv_seeds, instance_id, zone_size_units);
+        process.runtime = Some(runtime);
+        process
+    }
+
+    /// Start one DiskDB owner inside a shared runtime namespace.
+    pub fn start_for_instance_in(
+        runtime: &mut crate::test_dirs::TestRuntime,
+        kv_seeds: &[String],
+        instance_id: u64,
+        zone_size_units: Option<u64>,
+    ) -> Self {
         let bin = crowdb_diskdb_bin().unwrap_or_else(|| {
             panic!("crowdb-diskdb binary not found; set CROWDB_DISKDB_BIN or build app/crowdb-diskdb")
         });
@@ -96,14 +107,27 @@ impl DiskdbProcess {
         // ports pairwise distinct. DiskdbListen and DiskdbRpc bases
         // differ by 200, so rpc_port = listen_port + 200, the offset
         // the client derives.
-        let listen_port = i32::from(alloc_test_port(ServicePort::DiskdbListen));
-        let rpc_port = i32::from(alloc_test_port(ServicePort::DiskdbRpc));
+        let logical_identity = format!("instance-{instance_id}");
+        let listen_port = i32::from(
+            runtime
+                .assign_named_port(ServicePort::DiskdbListen, &logical_identity)
+                .unwrap_or_else(|error| panic!("assign DiskDB listen port: {error}")),
+        );
+        let rpc_port = i32::from(
+            runtime
+                .assign_named_port(ServicePort::DiskdbRpc, &logical_identity)
+                .unwrap_or_else(|error| panic!("assign DiskDB RPC port: {error}")),
+        );
         debug_assert_eq!(
             rpc_port - listen_port,
             i32::from(crowdb_protocol::DISKDB_RPC_BASE) - i32::from(crowdb_protocol::DISKDB_LISTEN_BASE),
             "allocator must preserve the listen->rpc offset"
         );
-        let http_port = i32::from(alloc_test_port(ServicePort::DiskdbHttp));
+        let http_port = i32::from(
+            runtime
+                .assign_named_port(ServicePort::DiskdbHttp, &logical_identity)
+                .unwrap_or_else(|error| panic!("assign DiskDB HTTP port: {error}")),
+        );
 
         let storage_section = if let Some(zone_size_units) = zone_size_units {
             let zone_size_bytes = zone_size_units * u64::from(UNIT_SIZE_BYTES);
@@ -142,18 +166,18 @@ interval_secs = 2
                 .join(", "),
         );
 
-        let inst = DISKDB_INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let config_path = crate::test_dirs::test_data_dir()
-            .join(format!("diskdb-config-{}-{inst}.toml", std::process::id()));
+        let service_root = runtime
+            .service_dir("diskdb", &logical_identity)
+            .unwrap_or_else(|error| panic!("create DiskDB service root: {error}"));
+        let config_path = service_root.join("config").join("diskdb.toml");
         std::fs::write(&config_path, &config_content).expect("write config");
 
-        let log_path = crate::test_dirs::test_log_dir()
-            .join(format!("crowdb-diskdb-e2e-{}-{inst}.log", std::process::id()));
+        let log_path = service_root.join("log").join("diskdb.log");
         let log_file = std::fs::File::create(&log_path).expect("create log file");
         let log_file2 = log_file.try_clone().expect("clone log file");
 
         let mut cmd = Command::new(&bin);
-        let test_log_dir = crate::test_dirs::test_log_dir();
+        let test_log_dir = service_root.join("log");
         cmd.args(["--config", config_path.to_str().unwrap()])
             .arg("--log-dir")
             .arg(test_log_dir.to_str().unwrap())
@@ -161,6 +185,9 @@ interval_secs = 2
             .stderr(Stdio::from(log_file2));
 
         let child = cmd.spawn().expect("start crowdb-diskdb");
+        runtime
+            .record_process(child.id())
+            .unwrap_or_else(|error| panic!("record DiskDB process: {error}"));
         eprintln!("crowdb-diskdb log: {}", log_path.display());
 
         Self {
@@ -171,6 +198,7 @@ interval_secs = 2
             http_port,
             config_path,
             log_path,
+            runtime: None,
         }
     }
 
@@ -239,6 +267,27 @@ interval_secs = 2
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    /// Restart the same logical server with its original identity and ports.
+    pub async fn restart(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let binary = crowdb_diskdb_bin().unwrap_or_else(|| {
+            panic!("crowdb-diskdb binary not found; set CROWDB_DISKDB_BIN or build app/crowdb-diskdb")
+        });
+        let log_file = std::fs::File::create(&self.log_path).expect("recreate DiskDB log");
+        let log_error = log_file.try_clone().expect("clone DiskDB log");
+        self.child = Command::new(binary)
+            .args(["--config", self.config_path.to_str().expect("UTF-8 config path")])
+            .arg("--log-dir")
+            .arg(self.log_path.parent().expect("DiskDB log directory"))
+            .stdout(Stdio::from(log_file))
+            .stderr(Stdio::from(log_error))
+            .spawn()
+            .expect("restart crowdb-diskdb");
+        eprintln!("crowdb-diskdb restarted; log: {}", self.log_path.display());
+        self.wait_for_ready().await;
     }
 }
 

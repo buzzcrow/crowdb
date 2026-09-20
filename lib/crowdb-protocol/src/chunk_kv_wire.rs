@@ -495,6 +495,7 @@ fn encode_error_code(code: ChunkKvRpcErrorCode) -> FBChunkKvRetCode {
         ChunkKvRpcErrorCode::RefreshRequired => FBChunkKvRetCode::RefreshRequired,
         ChunkKvRpcErrorCode::InvalidRequest => FBChunkKvRetCode::InvalidRequest,
         ChunkKvRpcErrorCode::Internal => FBChunkKvRetCode::Internal,
+        ChunkKvRpcErrorCode::TargetNotReady => FBChunkKvRetCode::TargetNotReady,
     }
 }
 
@@ -510,6 +511,7 @@ fn decode_error_code(code: FBChunkKvRetCode) -> Result<ChunkKvRpcErrorCode, Chun
         FBChunkKvRetCode::RefreshRequired => Ok(ChunkKvRpcErrorCode::RefreshRequired),
         FBChunkKvRetCode::InvalidRequest => Ok(ChunkKvRpcErrorCode::InvalidRequest),
         FBChunkKvRetCode::Internal => Ok(ChunkKvRpcErrorCode::Internal),
+        FBChunkKvRetCode::TargetNotReady => Ok(ChunkKvRpcErrorCode::TargetNotReady),
         _ => Err(ChunkKvWireError::InvalidResponse),
     }
 }

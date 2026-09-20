@@ -12,7 +12,7 @@ static TEST_SUBSCRIBER_INIT: Once = Once::new();
 
 pub fn init_test_subscriber() {
     TEST_SUBSCRIBER_INIT.call_once(|| {
-        // Always init C++ spdlog to test-logs/ so transport/engine logs
+        // Always init C++ spdlog in the runtime namespace so transport/engine logs
         // (e.g. socket_transport.cpp worker teardown) go to files instead
         // of stderr. Error-level messages are mirrored to stderr by the
         // C++ logging init for CI visibility. Tree first, then rpc.

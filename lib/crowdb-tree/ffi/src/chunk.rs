@@ -15,6 +15,9 @@ use crowdb_rpc_ffi::OwnedClientRoute;
 pub struct ChunkPageStoreOptions {
     pub tree_id: u64,
     pub owner_epoch: u64,
+    /// Zero opens the latest root; a nonzero value opens exactly that immutable
+    /// manifest generation without falling back to the current root.
+    pub open_generation: u64,
     pub pack_bytes: usize,
     pub iu_size: u32,
     pub max_concurrent_packs: usize,
@@ -88,6 +91,23 @@ pub trait RootCatalogStore: Send + Sync + 'static {
     fn reclaim_before(&self, _tree_id: u64, _generation: u64) -> u64 {
         0
     }
+    fn pin_generation(
+        &self,
+        _tree_id: u64,
+        _transition_high: u64,
+        _transition_low: u64,
+        _generation: u64,
+    ) -> Result<(), CtError> {
+        Ok(())
+    }
+    fn unpin_generation(
+        &self,
+        _tree_id: u64,
+        _transition_high: u64,
+        _transition_low: u64,
+    ) -> Result<(), CtError> {
+        Ok(())
+    }
 }
 
 impl ChunkRootCatalog {
@@ -114,6 +134,8 @@ impl ChunkRootCatalog {
             allocate_reference_segment_id: Some(catalog_allocate_reference_segment_id),
             discard_reference_segments: Some(catalog_discard_reference_segments),
             reclaim_before: Some(catalog_reclaim_before),
+            pin_generation: Some(catalog_pin_generation),
+            unpin_generation: Some(catalog_unpin_generation),
             drop_context: Some(catalog_drop_context),
         };
         let mut out = std::ptr::null_mut();
@@ -130,6 +152,35 @@ impl ChunkRootCatalog {
 
     pub fn reclaim_before(&self, tree_id: u64, generation: u64) -> u64 {
         unsafe { sys::ct_root_catalog_reclaim_before(self.ptr.as_ptr(), tree_id, generation) }
+    }
+
+    pub fn pin_generation(
+        &self,
+        tree_id: u64,
+        transition_high: u64,
+        transition_low: u64,
+        generation: u64,
+    ) -> Result<(), CtError> {
+        check(unsafe {
+            sys::ct_root_catalog_pin_generation(
+                self.ptr.as_ptr(),
+                tree_id,
+                transition_high,
+                transition_low,
+                generation,
+            )
+        })
+    }
+
+    pub fn unpin_generation(
+        &self,
+        tree_id: u64,
+        transition_high: u64,
+        transition_low: u64,
+    ) -> Result<(), CtError> {
+        check(unsafe {
+            sys::ct_root_catalog_unpin_generation(self.ptr.as_ptr(), tree_id, transition_high, transition_low)
+        })
     }
 }
 
@@ -304,6 +355,41 @@ unsafe extern "C" fn catalog_reclaim_before(context: *mut c_void, tree_id: u64, 
         catalog_store_ref(context).reclaim_before(tree_id, generation)
     }))
     .unwrap_or(0)
+}
+
+unsafe extern "C" fn catalog_pin_generation(
+    context: *mut c_void,
+    tree_id: u64,
+    transition_high: u64,
+    transition_low: u64,
+    generation: u64,
+) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if context.is_null() {
+            return -2;
+        }
+        catalog_store_ref(context)
+            .pin_generation(tree_id, transition_high, transition_low, generation)
+            .map_or_else(error_code, |()| 0)
+    }))
+    .unwrap_or(-6)
+}
+
+unsafe extern "C" fn catalog_unpin_generation(
+    context: *mut c_void,
+    tree_id: u64,
+    transition_high: u64,
+    transition_low: u64,
+) -> i32 {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if context.is_null() {
+            return -2;
+        }
+        catalog_store_ref(context)
+            .unpin_generation(tree_id, transition_high, transition_low)
+            .map_or_else(error_code, |()| 0)
+    }))
+    .unwrap_or(-6)
 }
 
 unsafe extern "C" fn catalog_drop_context(context: *mut c_void) {
@@ -488,6 +574,7 @@ impl PageStore {
         let raw = sys::ct_chunk_page_store_options {
             tree_id: options.tree_id,
             owner_epoch: options.owner_epoch,
+            open_generation: options.open_generation,
             pack_bytes: options.pack_bytes,
             iu_size: options.iu_size,
             max_concurrent_packs: options.max_concurrent_packs,
@@ -573,6 +660,16 @@ impl PageStore {
         Ok(offset)
     }
 
+    /// Returns the root-catalog manifest generation currently backing this
+    /// page-store view. This is distinct from the tree snapshot sequence.
+    pub fn chunk_manifest_generation(&self) -> Result<u64, CtError> {
+        let mut generation = 0;
+        check(unsafe {
+            sys::ct_chunk_page_store_get_manifest_generation(self.ptr.as_ptr(), &mut generation)
+        })?;
+        Ok(generation)
+    }
+
     pub fn reclaim_chunk_orphans(&self) -> u64 {
         unsafe { sys::ct_chunk_page_store_reclaim_orphans(self.ptr.as_ptr()) }
     }
@@ -584,5 +681,28 @@ impl PageStore {
         self.chunk_catalog
             .as_ref()
             .map_or(0, |catalog| catalog.reclaim_before(tree_id, generation))
+    }
+
+    pub fn pin_chunk_generation(
+        &self,
+        tree_id: u64,
+        transition_high: u64,
+        transition_low: u64,
+        generation: u64,
+    ) -> Result<(), CtError> {
+        self.chunk_catalog.as_ref().map_or(Ok(()), |catalog| {
+            catalog.pin_generation(tree_id, transition_high, transition_low, generation)
+        })
+    }
+
+    pub fn unpin_chunk_generation(
+        &self,
+        tree_id: u64,
+        transition_high: u64,
+        transition_low: u64,
+    ) -> Result<(), CtError> {
+        self.chunk_catalog.as_ref().map_or(Ok(()), |catalog| {
+            catalog.unpin_generation(tree_id, transition_high, transition_low)
+        })
     }
 }

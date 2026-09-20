@@ -124,6 +124,31 @@ impl ProductionStreamRuntime {
         .await
     }
 
+    /// Opens an exact-epoch read-only stream view without changing writer
+    /// authority or rotating the active chunk.
+    ///
+    /// # Errors
+    ///
+    /// Returns a registry, metadata, configuration, corruption, or epoch error.
+    pub async fn open_read_only(
+        &self,
+        stream_name: StreamName,
+        metadata_store_id: u64,
+        writer_epoch: u64,
+    ) -> Result<ChunkStream> {
+        let binding = self.active_binding(stream_name).await?;
+        let metadata = self.metadata(metadata_store_id, binding.metadata_group_id)?;
+        ChunkStream::open_read_only(
+            stream_name,
+            writer_epoch,
+            self.config.clone(),
+            self.registry.clone(),
+            metadata,
+            self.chunks.clone(),
+        )
+        .await
+    }
+
     async fn active_binding(&self, stream_name: StreamName) -> Result<StreamBinding> {
         let registry: &dyn StreamRegistry = self.registry.as_ref();
         let binding = registry

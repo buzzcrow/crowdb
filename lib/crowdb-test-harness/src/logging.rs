@@ -4,7 +4,7 @@
 //! One-shot C++ spdlog initialization for test processes.
 //!
 //! Uses `#[ctor]` to run before `main()` (or before the first `#[test]`)
-//! so C++ info/debug logs go to `test-logs/` files instead of stderr.
+//! so C++ info/debug logs go to namespaced files instead of stderr.
 //! Only error-level messages are mirrored to stderr for CI visibility.
 //! No manual calls needed — any test binary that links `crowdb-test-harness`
 //! with a `diskio`/`diskdb`/`chunkdb` feature gets this automatically.

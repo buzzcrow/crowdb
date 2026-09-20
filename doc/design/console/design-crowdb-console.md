@@ -25,6 +25,7 @@ design is detailed in the sub-design `design-crowdb-console-ui.md`.
   - [4.1 Persisted state (config file)](#41-persisted-state-config-file)
   - [4.2 Monitor task](#42-monitor-task)
   - [4.3 Persistent Cluster Config](#43-persistent-cluster-config)
+  - [4.4 Local runtime namespace](#44-local-runtime-namespace)
 - [5. Node Access Model](#5-node-access-model)
   - [5.1 Two transports per node](#51-two-transports-per-node)
   - [5.2 SSH defaults (russh)](#52-ssh-defaults-russh)
@@ -43,6 +44,7 @@ design is detailed in the sub-design `design-crowdb-console-ui.md`.
   - [7.5 `kv server delete` — graceful + require-empty](#75-kv-server-delete--graceful--require-empty)
   - [7.6 Bench subcommand](#76-bench-subcommand)
   - [7.7 Bench lifecycle verbs (deploy / prepare / run / teardown)](#77-bench-lifecycle-verbs-deploy--prepare--run--teardown)
+  - [7.8 S3 mini-clusters and benchmarks](#78-s3-mini-clusters-and-benchmarks)
 - [8. Error Model and Operation Logging](#8-error-model-and-operation-logging)
 - [9. Observability](#9-observability)
 - [10. Open Questions](#10-open-questions)
@@ -61,12 +63,11 @@ design is detailed in the sub-design `design-crowdb-console-ui.md`.
 - Authentication, authorization, multi-tenancy, audit logging.
 - Persisting console state beyond local config files.
 
-Local deployments use one stable directory per server process:
-`rack<id>/node<id>/<service>-<server-id>/`. Each server owns its `bin/`,
-`conf/`, and `log/` directories. KV servers additionally keep `waldata/`
-and `ctdata/` directly under the server directory. Process IDs belong in
-log filenames and persisted runtime state, not directory names, so a restart
-continues to use the same server directory.
+Local deployments use one stable directory per logical server below their
+runtime namespace. Each server owns its `data/`, `config/`, `log/`, and
+`artifacts/` directories. Process IDs are recorded as live-process ownership,
+not used as logical directory identities, so restart continues to use the same
+server directory and port assignments.
 
 The default simulated topology is one rack containing all requested nodes.
 Benchmarks that need distinct failure domains create additional racks
@@ -102,8 +103,9 @@ path through the shared `ops` module:
 - **CLI**: `user → crowdb-cli → shared (ops module) → group-0 sysdata + crowdb-kv-server mgmt`
 
 Both frontends build an `OpContext` and call the same `ops::*`
-functions. The CLI builds one per invocation from `--sysmd-ip` /
-`--sysmd-port`; the web backend builds one per request via
+functions. The CLI builds one per invocation from `--system-ip` /
+`--system-port`; either endpoint may name any system-group node because the
+client discovers the leader. The web backend builds one per request via
 `AppState::op_context()`, sharing the cached `CrowdbKvClient`
 (topology cache + connection pool) and snapshotting the persisted
 `ConsoleConfig`. Mutations inside `ops::*` update the per-request
@@ -147,7 +149,7 @@ call.
 - The web SPA **does not** reimplement business logic; it calls
   `shared` via the Axum backend, never `crowdb-kv-server` directly.
 - Both frontends build an `OpContext` and call `shared`'s `ops`
-  module directly — the CLI from `--sysmd-ip` / `--sysmd-port` global
+  module directly — the CLI from `--system-ip` / `--system-port` global
   flags, the web backend via `AppState::op_context()` (sharing the
   cached `CrowdbKvClient` + snapshotting `ConsoleConfig`).
 - Both frontends share the same `shared` entry points, so any feature
@@ -218,7 +220,9 @@ Identity is `(store_id[, group_id[, replica_id]])`.
 
 ### 4.1 Persisted state (config file)
 
-- Single TOML file: `~/.lib/crowdb-kv/console.toml` (override with `$CROWDB_CONSOLE_CONFIG`).
+- Single internal TOML file:
+  `.crowdb-runtime/persistent/console/crowdb-kv.db.toml`. It is CLI state, not
+  a user-facing command option.
 - Contents:
   - `rack` / `node` entries (id, rack_id, host, SSH creds).
   - Optional per-node server deployment record: management endpoint,
@@ -328,6 +332,28 @@ command's invocation directory.
   reconfiguration (direct HTTP mutation + `membership_epoch` fence).
   No new consensus primitive required.
 
+### 4.4 Local runtime namespace
+
+The default local root is `.crowdb-runtime/`, divided into `ephemeral/`,
+`persistent/`, `artifacts/`, and `ports/`. A mini-cluster or retained console
+deployment is one persistent namespace. Its manifest stores the namespace
+identity and the mapping from each `(service kind, logical instance)` to a
+port. Service paths live below
+`services/<service>/<logical-instance>/{data,config,log,artifacts}`.
+
+`start_new` creates an identity and its assignments. `restart` reuses the
+same paths and assignments and never asks for replacement ports. `stop`
+terminates recorded processes while preserving the manifest and data.
+Deletion is the only operation that releases persistent claims and removes
+the namespace. If a recorded port is held by another owner, restart reports
+the conflict; it does not silently select a different endpoint.
+
+Disposable deployment and E2E fixtures use ephemeral namespaces with the
+same layout. All local CROWDB data, generated configuration, logs, benchmark
+output, and coordination state stay below this root; no default path uses the
+system temporary directory. Ordinary clean operations preserve persistent
+namespaces.
+
 ## 5. Node Access Model
 
 ### 5.1 Two transports per node
@@ -347,7 +373,8 @@ command's invocation directory.
 **SSH credential storage lifecycle** — two phases:
 
 - **Bootstrap phase** (before group 0 exists) — SSH creds are stored
-  in the shared TOML config file `runtime-data/crowdb.temp.toml`
+  in the shared TOML config file below
+  `.crowdb-runtime/persistent/console/`
   (via `TomlFileEngine::default_path()` in
   `lib/crowdb-console-shared/src/config.rs`). This file stores
   rack/node/server/store/group/disk-group/disk entries, with SSH creds
@@ -373,7 +400,8 @@ command's invocation directory.
 
 **Local-fork path** (`ssh_user` empty, for tests/dev on `127.0.0.1`):
 1. `tokio::process::Command::new(crowdb-kv-server)` with the same args.
-2. Stage the binary into a per-node workspace directory (`runtime-data/N-<node_id>/`).
+2. Stage the binary into the node's stable service directory in the runtime
+   namespace.
 3. Detach the child (do not kill on drop); track the pid.
 4. Health-check via `/health`.
 
@@ -495,17 +523,24 @@ backend-facing contract here:
 
 - Binary: `crowdb-cli` (four-domain structure: `crowdb-cli <domain> <verb>`).
 - Parser: `clap` derive; one module per domain under `commands/`.
-- **Direct-to-group-0 call path.** Every verb builds an `OpContext`
-  seeded with `--sysmd-ip` / `--sysmd-port` (a group-0 mgmt endpoint)
-  and talks directly to group-0 sysdata via `CrowdbSysmdClient` and to
+- **Direct-to-system-group call path.** Every verb builds an `OpContext`
+  seeded with `--system-ip` / `--system-port` (any system-group management
+  endpoint) and talks directly to system metadata via `CrowdbSysmdClient` and to
   individual `crowdb-kv-server` mgmt APIs via `ServerClient`. There is
-  no `crowdb-web` intermediary. The global connection flags are
-  `--sysmd-ip` (default `127.0.0.1`, env `CROWDB_SYSMD_IP`) and
-  `--sysmd-port` (default: group-0 REST port, env `CROWDB_SYSMD_PORT`).
-- **Short flag aliases.** Global args occupy `-I` (sysmd-ip), `-O`
-  (sysmd-port), `-p` (config), `-j` (json) across all subcommands.
-- Output: human-readable by default; `--json` flag emits JSON for
-  scripting.
+  no `crowdb-web` intermediary. Leader discovery is automatic. The global
+  connection flags are `--system-ip` (default `127.0.0.1`, env
+  `CROWDB_SYSTEM_IP`) and `--system-port` (default system-group management
+  port, env `CROWDB_SYSTEM_PORT`).
+- Output is console-first and human-readable. Every invocation identifies the
+  copyable command and final result. HTTP operations show request/response
+  headers and body disposition; JSON and XML response bodies are pretty
+  printed, while binary bodies are represented by type and byte count. ANSI
+  colors distinguish commands, HTTP sections, body metadata, warnings, errors,
+  and final success/failure.
+- Every non-benchmark command logs only to the console. Each benchmark writes
+  the same tracing events to the console and to
+  `<cwd>/cli-log/bench-<family>/`; a new run replaces that family's previous
+  directory so benchmark logs do not accumulate.
 
 The full command hierarchy is defined in the `clap` derive structs;
 this section covers design rules only.
@@ -612,13 +647,13 @@ lifecycle uses `--node`.
 ### 7.3 `cluster init` — bootstrap special case
 
 `cluster init` is the only command that runs before group 0 exists.
-It takes `--nodes <n1,n2,n3>` directly (not `--sysmd-ip` /
-`--sysmd-port`) and bootstraps group-0/store-0 on those nodes via
+It takes `--nodes <n1,n2,n3>` directly (not `--system-ip` /
+`--system-port`) and bootstraps group-0/store-0 on those nodes via
 direct node REST calls (the `POST /system/init` mechanism, §4.3),
 wires remotes, and writes the hardware + KV-cluster topology into
 group-0 sysdata. After `cluster init` completes, subsequent commands
-use `--sysmd-ip` / `--sysmd-port` to connect to the newly created
-group 0.
+use `--system-ip` / `--system-port` to connect to any node in the newly
+created system group.
 
 ### 7.4 `cluster clean` — data wipe boundary
 
@@ -699,7 +734,8 @@ deploy metadata:
   3-node cluster via `BenchFixture` (embedded console-web), then
   detaches the fixture so the `crowdb-kv-server` processes survive CLI
   exit. The deploy metadata (node pids, endpoints, tunables) is
-  serialized to `runtime/<name>/handle.json` (`ClusterHandle`). The
+  serialized below `.crowdb-runtime/persistent/bench/<name>/handle.json`
+  (`ClusterHandle`). The
   `--kind` flag dispatches to kv (default), rpc (spawns
   `crowdb-rpc-fb-server`), or chunk/storage (not yet implemented).
 - **`bench prepare --target <n> --keys N`** — loads handle, builds a
@@ -709,7 +745,7 @@ deploy metadata:
 - **`bench run --target <n> --workload read ...`** — loads handle,
   builds an `AttachedKvTarget` (implements `BenchTarget` with no-op
   provision/cleanup), and calls the shared `run_bench` runner. Reports
-  go to `runtime/<name>/runs/<timestamp>/`. The cluster stays running
+  go to that namespace's `artifacts/runs/<timestamp>/`. The cluster stays running
   after the run — multiple `bench run` invocations can attach to the
   same deploy.
 - **`bench teardown --target <n>`** — loads handle, SIGTERMs the node
@@ -723,23 +759,108 @@ sentinel accepts environment overrides for case selection and duration; KV
 read, write, and scan also accept a reduced keyspace. These controls provide a
 short structural smoke without changing the default regression matrix.
 
-`ClusterHandle` is a runtime artifact (JSON under `runtime/`), not a
-config extension. The `runtime/` directory is gitignored. The
+`ClusterHandle` is persistent namespace metadata, not a config extension. The
+single `.crowdb-runtime/` root is gitignored. The
 `crowdb-kv-server` child processes survive CLI exit because
 `lifecycle::deploy_local` spawns them with `kill_on_drop(false)`.
+
+### 7.8 S3 mini-clusters and benchmarks
+
+`crowdb-cli s3 cluster start --root <path>` is the simple local operator
+path. The location, rather than the caller's global console configuration, is
+the cluster identity and recovery boundary:
+
+- a missing or empty location is initialized as a three-node cluster;
+- a location containing `s3-mini-cluster.json` and `console.toml` is restarted
+  with the same service identities, endpoints, launch commands, KV/WAL/tree
+  directories, and DiskIO files;
+- a non-empty location without the marker is rejected without modification.
+
+The initial dependency order is KV, DiskDB, DiskIO, ChunkDB, chunk-KV, then
+access-server. Every service must become ready before its dependent starts.
+Each node owns one sparse, file-backed DiskIO file below the cluster root;
+normal S3 bucket metadata, object metadata, streams, and object bytes therefore
+survive a complete stop and restart. `stop` terminates recorded processes but
+does not remove configuration or storage. `delete` stops the cluster, releases
+its persistent port claims, and removes the named location. `status` is
+read-only.
+
+First start is transactional. The complete marker is published only after the
+access endpoint is ready; failure stops the processes created by that
+invocation. A later start archives an incomplete initialization directory next
+to the selected location before retrying, preserving its logs for diagnosis
+without treating it as a recoverable cluster.
+
+The mini topology is intentionally loopback and places its simulated nodes in
+one rack, so ChunkDB explicitly permits colocated fragments. This is not the
+production capacity contract: a production planner must reject a requested
+copy or EC scheme unless distinct healthy failure domains satisfy it.
+
+The local access-server binds only to `127.0.0.1` and explicitly enables its
+trusted-network authentication mode. This keeps the local CRUD path small: the
+shared `ops::s3` client sends ordinary S3 HTTP operations directly and returns
+structured exchange metadata; the CLI renders the console transcript and
+streams the result. It is not a production authentication mode and must never
+be used for a non-loopback listener. Bucket and object
+commands take the same `--root`, discover the persisted endpoint, preserve
+S3 errors, and do not fall back to another mutation.
+
+The durable record is deliberately small. `console.toml` retains service PIDs
+and reproducible launch specifications; `s3-mini-cluster.json` retains only the
+format version, storage profile, loopback endpoint, and non-secret tenant name.
+The access master key is injected into a child only while it starts and is not
+persisted in either record. Runtime liveness is derived from recorded PIDs,
+not represented by additional compound cluster states.
+
+`crowdb-cli bench s3` owns a separate, invocation-scoped memory profile. KV and
+WAL blocks use memory backing, DiskIO uses memory disks, and chunk-KV keeps its
+readable tree and value path in memory. The memory disks retain a large logical
+address space while allocating resident pages on demand; logical capacity is
+therefore independent of the benchmark's resident-memory budget. The benchmark
+always stops its cluster, while leaving the stopped work directory and logs as
+diagnostic artifacts.
+
+The benchmark has write, read, range-read, list, and deterministic weighted
+mix workloads. It prepares a fixed dataset, runs warm-up outside measurement,
+then admits requests until either the operation limit or duration limit is
+reached. Workers keep local latency and failure accumulators and use only an
+atomic admission counter on the request path. Cleanup deletes only prepared or
+actually written benchmark objects, with bounded asynchronous concurrency.
+
+Results report backing choices, measured duration, attempts, successes,
+failures, throughput, average latency, p50, p99, prepared bytes, and process
+peak resident bytes. Read validates the full response length, range-read
+validates the selected interval length, and list validates ordering and
+continuation progress. Failures are separated into metadata, protocol,
+transport, and resource categories. RSS is sampled asynchronously; exceeding
+the configured budget makes the run fail instead of publishing valid
+throughput.
+
+The following invariants apply:
+
+- **S3-C1 — Recovery boundary:** only a complete marker identifies a
+  restartable file-backed cluster, and stop never removes its stored data.
+- **S3-C2 — Real request path:** every benchmark operation traverses the normal
+  S3 endpoint and validates the response property relevant to its workload.
+- **S3-C3 — Bounded execution:** duration, operation count, concurrency, and
+  resident memory are explicit limits; exhausting memory is an error.
+- **S3-C4 — Simple ownership:** persistent operator data and ephemeral
+  benchmark data use separate storage profiles and lifecycle ownership.
 
 ## 8. Error Model and Operation Logging
 
 - `shared::Error` enum covers `NodeUnreachable`, `UpstreamRpc`,
   `Validation`, `NotFound`, `Conflict`. HTTP maps to 4xx/5xx; CLI maps
   to exit codes (0 ok, 1 user error, 2 cluster/network error).
-- **Operation log** — a per-session file under `~/.lib/crowdb-kv/log/` records
-  every outbound action (HTTP/crowdb-rpc/SSH) with enough detail to reproduce
-  by copy-pasting the equivalent curl/crowdb-cli/ssh command.
-- Each CLI process writes beneath
-  `<log-root>/cli-<command-chain>-<timestamp>/`. The `cli-` namespace makes
-  command artifacts distinct from server directories and aggregate result
-  files.
+- **Console transcript** — every invocation prints the copyable command and
+  result. Direct S3 requests additionally show request/response headers and a
+  body marker. Text is visible, XML/JSON is formatted, and binary content is
+  summarized by byte count without duplicating it in the trace.
+- **Retained diagnostics** — only benchmark commands write files. The latest
+  run for each benchmark family lives beneath `<cwd>/cli-log/bench-<family>/`
+  and replaces the previous run. Benchmark tracing is also mirrored to the
+  console. Routine outbound HTTP calls are debug-level so default output keeps
+  lifecycle events, warnings, and errors without per-request noise.
 
 ## 9. Observability
 
@@ -786,8 +907,8 @@ config back to `AppState.config` and persists to TOML.
 — group-0 discovery + direct node teardown — so the CLI no longer
 depends on a `crowdb-web` endpoint. The flow:
 
-1. **Discovery** — connect to group 0 (via `--sysmd-ip` /
-   `--sysmd-port`) to enumerate all resources: user stores/groups/
+1. **Discovery** — connect to the system group (via `--system-ip` /
+   `--system-port`) to enumerate all resources: user stores/groups/
    replicas, diskdb/chunkdb/diskio instances, server entries, topology.
 2. **Teardown in dependency order** — erase resources one by one:
    remove user groups → user stores → clean group-0 sysdata (rack
@@ -796,7 +917,7 @@ depends on a `crowdb-web` endpoint. The flow:
 3. **Destroy group 0** — tear down group-0/store-0 itself (last, after
    all user resources are gone).
 4. **Delete topology** — remove all nodes and racks from
-   `runtime-data/crowdb.temp.toml`.
+   the persistent console configuration.
 5. **Fast path** — if group 0 is not created (e.g. `cluster init`
    failed or was never run), skip steps 1-3 and use the TOML config
    info (rack/node entries) to clean up any stray processes and clear

@@ -2,7 +2,8 @@ use super::{
     alloc, build_allocate_response, build_commit_response, build_execute_relocation_response,
     build_free_response, map_free_error, mutation_gate, parse_segments, submit_error, submit_fb_response,
     AllocError, AllocateParams, Arc, ChunkId, DiskId, DiskdbRpcService, FBAllocateBlocksRequest,
-    FBCommitBlocksRequest, FBDiskdbRetCode, FBExecuteRelocationRequest, FBFreeBlocksRequest, FBMsgType,
+    FBCommitBlocksRequest, FBDiskdbRetCode, FBExecuteRelocationRequest, FBFreeBlocksRequest,
+    FBMarkBlocksCorruptRequest, FBMarkBlocksCorruptResponse, FBMarkBlocksCorruptResponseArgs, FBMsgType,
     RequestGuard, RpcServer, Segment, ServerRequest, MAX_ALLOCATE_COUNT,
 };
 
@@ -24,6 +25,119 @@ fn segment_from_fb(segment: &crowdb_protocol::diskdb_fb::FBSegment) -> Segment {
 }
 
 impl DiskdbRpcService {
+    #[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
+    pub(super) fn handle_mark_corrupt(
+        &self,
+        req: ServerRequest,
+        server: &Arc<RpcServer>,
+        request: RequestGuard,
+    ) {
+        let req_id = req.request_id;
+        let create_nano = req.rpc_create_nano;
+        let msg_type = FBMsgType::EMarkBlocksCorruptResponse.0 as u16;
+        let Ok(frame) = flatbuffers::root::<FBMarkBlocksCorruptRequest>(req.control()) else {
+            submit_error(
+                server,
+                req.conn_handle,
+                req_id,
+                create_nano,
+                msg_type,
+                FBDiskdbRetCode::InvalidArgument,
+                "invalid corrupt request",
+            );
+            return;
+        };
+        let Some(segments) = parse_segments(frame.segments()).filter(|segments| !segments.is_empty()) else {
+            submit_error(
+                server,
+                req.conn_handle,
+                req_id,
+                create_nano,
+                msg_type,
+                FBDiskdbRetCode::InvalidArgument,
+                "segments required",
+            );
+            return;
+        };
+        if let Err((code, message)) = mutation_gate::validate(&self.container) {
+            submit_error(
+                server,
+                req.conn_handle,
+                req_id,
+                create_nano,
+                msg_type,
+                code,
+                message,
+            );
+            return;
+        }
+        let disk_id = segments[0].disk_id.expect("parsed segment has disk ID");
+        let Some(dg) = self.find_disk_group_for_disk(&disk_id) else {
+            submit_error(
+                server,
+                req.conn_handle,
+                req_id,
+                create_nano,
+                msg_type,
+                FBDiskdbRetCode::NotOwner,
+                "disk not owned",
+            );
+            return;
+        };
+        if segments.iter().any(|segment| {
+            segment.disk_id.map_or(true, |id| {
+                self.find_disk_group_for_disk(&id)
+                    .map_or(true, |owner| !Arc::ptr_eq(&dg, &owner))
+            })
+        }) {
+            submit_error(
+                server,
+                req.conn_handle,
+                req_id,
+                create_nano,
+                msg_type,
+                FBDiskdbRetCode::NotOwner,
+                "segments have different owners",
+            );
+            return;
+        }
+        let kv = Arc::clone(&self.kv);
+        let server = Arc::clone(server);
+        let handle = req.conn_handle as usize;
+        self.rt.spawn(async move {
+            let mut request = request;
+            let (code, message, count) = match alloc::mark_blocks_corrupt(&dg, &segments, &kv).await {
+                Ok(count) => {
+                    request.mark_success();
+                    (FBDiskdbRetCode::Success, None, count)
+                }
+                Err(error) => {
+                    let (code, message) = map_free_error(&error);
+                    (code, Some(message), 0)
+                }
+            };
+            let mut fbb = flatbuffers::FlatBufferBuilder::new();
+            let error = message.as_deref().map(|value| fbb.create_string(value));
+            let response = FBMarkBlocksCorruptResponse::create(
+                &mut fbb,
+                &FBMarkBlocksCorruptResponseArgs {
+                    id: req_id,
+                    rpc_create_nano: create_nano,
+                    ret_code: code,
+                    error_msg: error,
+                    marked_count: count,
+                },
+            );
+            fbb.finish(response, None);
+            submit_fb_response(
+                &server,
+                handle as *mut std::ffi::c_void,
+                fbb.collapse(),
+                msg_type,
+                req_id,
+            );
+        });
+    }
     #[allow(clippy::needless_pass_by_value, reason = "make_handler uniform signature")]
     #[allow(clippy::too_many_lines)]
     pub(super) fn handle_execute_relocation(

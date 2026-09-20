@@ -16,6 +16,7 @@ use crowdb_protocol::chunk_kv::{
 use crowdb_protocol::common::InstanceValue;
 use crowdb_protocol::key::{ChunkKvSplitKey, ChunkKvTransferKey, InstanceKey, ServingGrantKey, TextKey};
 use sha2::{Digest, Sha256};
+use tracing::info;
 
 use crate::group0_control_plane::Group0ControlPlane;
 
@@ -57,6 +58,7 @@ impl DomainMonitorDriver for ChunkKvRangeMonitorDriver {
             plan_dead_owner_transfer(control, descriptor).await?;
             advance_dead_owner_exclusion(control, descriptor).await?;
             balance::plan(control, descriptor).await?;
+            authorize_live_source_fences(control, descriptor).await?;
             publish_ready_transitions(control).await?;
             issue_serving_grants(control, descriptor).await
         })
@@ -128,6 +130,12 @@ async fn plan_dead_owner_transfer(
             .ok_or_else(|| "chunk-KV owner epoch overflowed".to_string())?;
         let transition_id = transfer_id(entry, target.instance_id, target_epoch);
         let old_grant_expires_at_ms = read_grant_expiry(control, entry).await?;
+        let activation_not_before_ms = old_grant_expires_at_ms
+            .checked_add(descriptor.max_clock_skew_ms)
+            .ok_or_else(|| "lease exclusion boundary overflowed".to_string())?;
+        if now_ms < activation_not_before_ms {
+            continue;
+        }
         let transition = TransferTransition {
             transition_id,
             partition_id: entry.partition_id,
@@ -140,11 +148,22 @@ async fn plan_dead_owner_transfer(
             },
             target_epoch,
             artifact: entry.artifact.clone(),
+            target_artifact: entry.artifact.clone(),
+            readiness_limits: crowdb_protocol::chunk_kv::TransferReadinessLimits {
+                max_tail_records: 65_536,
+                max_tail_bytes: 256 * 1024 * 1024,
+                max_estimated_catchup_ms: descriptor.lease_duration_ms,
+                prepare_deadline_ms: now_ms.saturating_add(descriptor.lease_duration_ms),
+                forwarding_grace_ms: descriptor.lease_duration_ms,
+            },
             planned_at_ms: now_ms,
             old_grant_expires_at_ms,
-            phase: TransferPhase::AwaitingFence,
-            release_proof: None,
+            phase: TransferPhase::TargetPreparing,
+            release_proof: Some(AuthorityReleaseProof::LeaseExpired {
+                activation_not_before_ms,
+            }),
             readiness_proof: None,
+            catchup_proof: None,
             failure: None,
         };
         transition.validate().map_err(|error| error.to_string())?;
@@ -186,8 +205,10 @@ async fn advance_dead_owner_exclusion(
     let dead_before = now_ms.saturating_sub(descriptor.dead_after_ms);
     let instances = read_instances(control, descriptor).await?;
     for (mut transition, item) in read_transfers(control).await? {
-        if transition.phase != TransferPhase::AwaitingFence
-            || transition.release_proof.is_some()
+        if !matches!(
+            transition.phase,
+            TransferPhase::TargetPrepared | TransferPhase::AwaitingFence
+        ) || transition.release_proof.is_some()
             || instances
                 .get(&transition.source.instance_id)
                 .is_some_and(|instance| instance.last_heartbeat_ms >= dead_before)
@@ -201,10 +222,45 @@ async fn advance_dead_owner_exclusion(
         if now_ms < activation_not_before_ms {
             continue;
         }
+        transition.target_artifact = transition.artifact.clone();
+        transition.readiness_proof = None;
+        transition.catchup_proof = None;
         transition.release_proof = Some(AuthorityReleaseProof::LeaseExpired {
             activation_not_before_ms,
         });
         transition.phase = TransferPhase::TargetPreparing;
+        transition.validate().map_err(|error| error.to_string())?;
+        persist_transition(control, &item, &transition).await?;
+    }
+    Ok(())
+}
+
+async fn authorize_live_source_fences(
+    control: &Group0ControlPlane,
+    descriptor: &DomainMonitorDescriptor,
+) -> Result<(), String> {
+    let healthy_after = wall_time_ms().saturating_sub(descriptor.suspect_after_ms);
+    let instances = read_instances(control, descriptor).await?;
+    for (mut transition, item) in read_transfers(control).await? {
+        if transition.phase != TransferPhase::TargetPrepared || transition.release_proof.is_some() {
+            continue;
+        }
+        let target_ready = instances
+            .get(&transition.target.instance_id)
+            .filter(|instance| instance.last_heartbeat_ms >= healthy_after)
+            .and_then(|instance| instance.extra.as_ref())
+            .and_then(|extra| extra.chunk_kv.as_ref())
+            .is_some_and(|extra| {
+                extra.hosted.iter().any(|hosted| {
+                    hosted.partition_id == transition.partition_id
+                        && hosted.owner_epoch == transition.target_epoch
+                        && !hosted.recovering
+                })
+            });
+        if !target_ready {
+            continue;
+        }
+        transition.phase = TransferPhase::AwaitingFence;
         transition.validate().map_err(|error| error.to_string())?;
         persist_transition(control, &item, &transition).await?;
     }
@@ -218,7 +274,12 @@ async fn publish_ready_transitions(control: &Group0ControlPlane) -> Result<(), S
         .map_err(|error| operation_error(&error))?
     {
         let mut transition: TransferTransition = decode_transition(&item)?;
-        if transition.phase == TransferPhase::TargetPrepared {
+        if transition.phase == TransferPhase::TargetCatchingUp {
+            catalog::publish_transfer(control, &transition).await?;
+            transition.phase = TransferPhase::CatchupPublished;
+            transition.validate().map_err(|error| error.to_string())?;
+            persist_transition(control, &item, &transition).await?;
+        } else if transition.phase == TransferPhase::TargetReady {
             catalog::publish_transfer(control, &transition).await?;
             transition.phase = TransferPhase::CatalogCommitted;
             transition.validate().map_err(|error| error.to_string())?;
@@ -231,11 +292,22 @@ async fn publish_ready_transitions(control: &Group0ControlPlane) -> Result<(), S
         .map_err(|error| operation_error(&error))?
     {
         let mut transition: SplitTransition = decode_transition(&item)?;
-        if transition.phase == SplitPhase::ChildrenPrepared {
-            catalog::publish_split(control, &transition).await?;
+        if transition.phase == SplitPhase::ChildPrepared {
+            let generation = catalog::publish_split(control, &transition).await?;
             transition.phase = SplitPhase::CatalogCommitted;
             transition.validate().map_err(|error| error.to_string())?;
             persist_transition(control, &item, &transition).await?;
+            info!(
+                transition_id_high = transition.transition_id.high,
+                transition_id_low = transition.transition_id.low,
+                parent_id_high = transition.parent_id.high,
+                parent_id_low = transition.parent_id.low,
+                parent_next_epoch = transition.parent_next_epoch,
+                child_id_high = transition.child.partition_id.high,
+                child_id_low = transition.child.partition_id.low,
+                catalog_generation = generation,
+                "local split catalog committed"
+            );
         }
     }
     Ok(())

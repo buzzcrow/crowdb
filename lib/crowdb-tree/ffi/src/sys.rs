@@ -26,6 +26,8 @@ pub struct ct_root_catalog_callbacks {
     pub discard_reference_segments:
         Option<unsafe extern "C" fn(*mut std::ffi::c_void, u64, *const u64, usize) -> u64>,
     pub reclaim_before: Option<unsafe extern "C" fn(*mut std::ffi::c_void, u64, u64) -> u64>,
+    pub pin_generation: Option<unsafe extern "C" fn(*mut std::ffi::c_void, u64, u64, u64, u64) -> c_int>,
+    pub unpin_generation: Option<unsafe extern "C" fn(*mut std::ffi::c_void, u64, u64, u64) -> c_int>,
     pub drop_context: Option<unsafe extern "C" fn(*mut std::ffi::c_void)>,
 }
 
@@ -56,6 +58,7 @@ pub struct ct_chunk_transport {
 pub struct ct_chunk_page_store_options {
     pub tree_id: u64,
     pub owner_epoch: u64,
+    pub open_generation: u64,
     pub pack_bytes: usize,
     pub iu_size: u32,
     pub max_concurrent_packs: usize,
@@ -295,6 +298,10 @@ extern "C" {
     ) -> c_int;
     pub fn ct_chunk_page_store_set_wal_replay_offset(store: *mut ct_page_store, offset: u64) -> c_int;
     pub fn ct_chunk_page_store_get_wal_replay_offset(store: *const ct_page_store, offset: *mut u64) -> c_int;
+    pub fn ct_chunk_page_store_get_manifest_generation(
+        store: *const ct_page_store,
+        generation: *mut u64,
+    ) -> c_int;
     pub fn ct_chunk_page_store_reclaim_orphans(store: *mut ct_page_store) -> u64;
     pub fn ct_materialize_ownership(tree: *mut ct_tree, bytes_written: *mut u64, complete: *mut i32)
         -> c_int;
@@ -303,6 +310,19 @@ extern "C" {
         tree_id: u64,
         generation: u64,
     ) -> u64;
+    pub fn ct_root_catalog_pin_generation(
+        catalog: *mut ct_root_catalog,
+        tree_id: u64,
+        transition_high: u64,
+        transition_low: u64,
+        generation: u64,
+    ) -> c_int;
+    pub fn ct_root_catalog_unpin_generation(
+        catalog: *mut ct_root_catalog,
+        tree_id: u64,
+        transition_high: u64,
+        transition_low: u64,
+    ) -> c_int;
     pub fn ct_open(opt: *const ct_options, out: *mut *mut ct_tree) -> c_int;
     pub fn ct_rebuild_range(
         source: *mut ct_tree,
@@ -361,6 +381,30 @@ extern "C" {
     pub fn ct_put(t: *mut ct_tree, key: *const u8, klen: usize, val: *const u8, vlen: usize) -> c_int;
     pub fn ct_del(t: *mut ct_tree, key: *const u8, klen: usize) -> c_int;
     pub fn ct_flush(t: *mut ct_tree) -> c_int;
+    pub fn ct_begin_split_memtable_view(
+        t: *mut ct_tree,
+        out_generation: *mut u64,
+        out_journal_frontier: *mut u64,
+    ) -> c_int;
+    pub fn ct_install_split_memtable_overlay(
+        destination: *mut ct_tree,
+        source: *mut ct_tree,
+        journal_frontier: u64,
+    ) -> c_int;
+    pub fn ct_clear_split_memtable_overlay(destination: *mut ct_tree, source: *mut ct_tree) -> c_int;
+    pub fn ct_publish_split_memtable_view(
+        source: *mut ct_tree,
+        generation: u64,
+        journal_frontier: u64,
+        destination: *mut ct_tree,
+        range_start: *const u8,
+        range_start_len: usize,
+        has_range_start: c_int,
+        range_end: *const u8,
+        range_end_len: usize,
+        has_range_end: c_int,
+    ) -> c_int;
+    pub fn ct_release_split_memtable_view(t: *mut ct_tree, generation: u64) -> c_int;
     pub fn ct_get(
         t: *mut ct_tree,
         key: *const u8,
@@ -373,25 +417,9 @@ extern "C" {
         t: *mut ct_tree,
         prefix: *const u8,
         plen: usize,
-        start_after: *const u8,
-        salen: usize,
-        end_key: *const u8,
-        elen: usize,
-        limit: usize,
-        byte_budget: usize,
-        keys_only: c_int,
-        deadline_ms: u64,
-        include_tombstones: c_int,
-        out_entries: *mut ct_buf,
-        out_count: *mut u64,
-        truncated: *mut c_int,
-    ) -> c_int;
-    pub fn ct_scan_from(
-        t: *mut ct_tree,
-        prefix: *const u8,
-        plen: usize,
         start_key: *const u8,
         sklen: usize,
+        has_start_bound: c_int,
         start_inclusive: c_int,
         end_key: *const u8,
         elen: usize,

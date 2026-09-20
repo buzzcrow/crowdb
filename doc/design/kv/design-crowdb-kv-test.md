@@ -12,6 +12,7 @@ Satisfies: [`design-crowdb-kv.md`](design-crowdb-kv.md) §17
 - [2. Architecture Stack](#2-architecture-stack)
 - [3. Test Binary Map](#3-test-binary-map)
 - [4. Cross-Cutting Coverage Rules](#4-cross-cutting-coverage-rules)
+  - [4.1 Runtime resource ownership](#41-runtime-resource-ownership)
 - [5. Layer Scope](#5-layer-scope)
 - [6. crowdb-tree C++ Test Layers](#6-crowdb-tree-c-test-layers)
 - [7. Sequencing](#7-sequencing)
@@ -145,6 +146,34 @@ Deployment, UI E2E) that creates a multi-replica cluster must cover:
    resume. This is the most operationally sensitive scenario; the test must
    not block indefinitely waiting for election.
 
+### 4.1 Runtime resource ownership
+
+Every test environment that starts subprocesses owns one runtime namespace.
+The default root is the workspace-local `.crowdb-runtime/`; tests do not use
+the system temporary directory. Its lifecycle classes are:
+
+- `ephemeral/` for disposable test and development environments;
+- `persistent/` for restartable local clusters;
+- `artifacts/` for exported logs, profiles, sanitizer reports, and benchmark
+  output;
+- `ports/` for the cross-process assignment registry.
+
+A namespace manifest binds one logical service identity to its `data/`,
+`config/`, `log/`, and `artifacts/` directories and to stable `ServicePort`
+assignments. Starting two environments produces disjoint roots and ports.
+Restarting a logical service reuses its existing assignment; replacement uses
+a new identity. Child-process port handoff never uses port zero or a released
+probe socket. An in-process listener may use port zero only while retaining
+the bound socket itself.
+
+Ephemeral claims include the owning PID and process-start identity so stale
+claims can be reclaimed without confusing PID reuse. Persistent assignments
+remain claimed across stop/restart and a conflicting port is reported rather
+than silently renumbered. Successful tests release their namespace; a panic
+preserves its tree for diagnosis. `pixi run clean-env` removes only recorded
+ephemeral processes and state. `pixi run clean` additionally removes
+rebuildable artifacts and build output, but preserves `persistent/`.
+
 ## 5. Layer Scope
 
 Each layer tests only the logic that belongs to it; a failure points at the
@@ -156,8 +185,8 @@ lowest broken layer. Detailed per-layer coverage checklists live in
   roles}`, `kv/{mem_kv,op}`, and the `PxLocalReplica` election state
   machine (role transitions, vote granting, heartbeat, lease, term fencing).
 - **WAL subsystem** — `WalEngine` and WAL internals: durable log, segment
-  management, replay, GC, I/O backends, pipeline writer. Uses real temp
-  filesystems or in-memory simulated disks.
+  management, replay, GC, I/O backends, pipeline writer. Uses namespaced
+  workspace-local filesystems or in-memory simulated disks.
 - **Slot subsystem** — `PxSlotList` lock-free chunked sparse array:
   single-threaded ops, concurrent stress, reclamation watermark
   interactions with long-lived read guards.

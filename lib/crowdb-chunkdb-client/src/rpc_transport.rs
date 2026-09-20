@@ -85,6 +85,69 @@ impl std::fmt::Debug for ChunkdbRpcTransport {
 }
 
 impl ChunkdbRpcTransport {
+    pub async fn send_ad_hoc_ec_recovery(
+        &self,
+        rpc_endpoint: &str,
+        req: &crowdb_protocol::chunkdb::rpc::AdHocEcRecoveryRequest,
+    ) -> Result<crowdb_protocol::chunkdb::rpc::AdHocEcRecoveryResponse> {
+        use crowdb_protocol::chunkdb::rpc::{
+            AdHocEcRecoveryDisposition as Disposition, AdHocEcRecoveryResponse,
+        };
+        use crowdb_protocol::chunkdb_fb::{
+            FBAdHocEcRecoveryDisposition as FbDisposition, FBAdHocEcRecoveryRequest,
+            FBAdHocEcRecoveryRequestArgs, FBAdHocEcRecoveryResponse,
+        };
+        let req_id = self.next_id();
+        let conn = self.conn_for(rpc_endpoint)?;
+        let mut builder = FlatBufferBuilder::new();
+        let chunk = req.chunk_id.map(|id| FBInt128::new(id.high, id.low));
+        let operation = req.operation_id.map(|id| FBInt128::new(id.high, id.low));
+        let failed = req.failed_segment.map(|segment| build_fb_segment(&segment));
+        let request = FBAdHocEcRecoveryRequest::create(
+            &mut builder,
+            &FBAdHocEcRecoveryRequestArgs {
+                id: req_id,
+                rpc_create_nano: 0,
+                version: req.version,
+                chunk_id: chunk.as_ref(),
+                expected_modify_ts: req.expected_modify_ts,
+                strip_sequence: req.strip_sequence,
+                failed_segment: failed.as_ref(),
+                operation_id: operation.as_ref(),
+                request_full_block: req.request_full_block,
+            },
+        );
+        builder.finish(request, None);
+        let response = call_rpc(
+            self,
+            &conn,
+            req_id,
+            Buffer::from_bytes(builder.finished_data()),
+            FBMsgType::EAdHocEcRecoveryRequest.0 as u16,
+            rpc_endpoint,
+        )
+        .await?;
+        let response = flatbuffers::root::<FBAdHocEcRecoveryResponse>(response.bytes())
+            .map_err(|_| ChunkdbClientError::Rpc("ad-hoc recovery response malformed".into()))?;
+        check_ret_code(response.ret_code(), response.error_msg())?;
+        let disposition = match response.disposition() {
+            FbDisposition::Started => Disposition::Started,
+            FbDisposition::Coalesced => Disposition::Coalesced,
+            FbDisposition::Stale => Disposition::Stale,
+            FbDisposition::Healed => Disposition::Healed,
+            FbDisposition::Incompatible => Disposition::Incompatible,
+            FbDisposition::InsufficientShards => Disposition::InsufficientShards,
+            FbDisposition::Saturated => Disposition::Saturated,
+            FbDisposition::Marked => Disposition::Marked,
+            _ => return Err(ChunkdbClientError::Rpc("unknown recovery disposition".into())),
+        };
+        Ok(AdHocEcRecoveryResponse {
+            disposition,
+            data: response
+                .data()
+                .map_or_else(Vec::new, |data| data.bytes().to_vec()),
+        })
+    }
     /// Create a new crowdb-rpc transport with 2 I/O workers (default).
     /// The `RpcServer` is the client-side transport — it does not listen
     /// but is used to establish connections to remote endpoints.

@@ -21,7 +21,7 @@ use crowdb_diskdb::model::alloc;
 use crowdb_diskdb::model::disk_group_container::DdbDiskGroupContainer;
 use crowdb_kv_client::{GetOutcome, HardwareClient};
 use crowdb_protocol::common::{ChunkId, DiskId, HwStatus, NodeValue, RackValue};
-use crowdb_protocol::diskdb::rpc::{CommitState, DiskGroupValue, DiskType, DiskValue};
+use crowdb_protocol::diskdb::rpc::{BlockState, CommitState, DiskGroupValue, DiskType, DiskValue};
 use crowdb_protocol::key::{BinaryKey, BusyBlockKey, FreeBlockKey};
 use crowdb_protocol::DiskIdExt;
 
@@ -277,6 +277,33 @@ async fn diskdb_e2e_allocate_free() {
     let committed_record: crowdb_protocol::diskdb::rpc::BusyBlockValue =
         bincode::deserialize(&committed_val).expect("deserialize committed BusyBlockValue");
     assert_eq!(committed_record.commit_state, CommitState::Committed as i32);
+
+    let stale = crowdb_protocol::diskdb::rpc::Segment {
+        allocation_ts: segment.allocation_ts.saturating_add(1),
+        ..segment
+    };
+    assert!(matches!(
+        alloc::mark_blocks_corrupt(&dg, &[stale], &alloc_kv).await,
+        Err(alloc::FreeError::IncarnationMismatch)
+    ));
+    assert_eq!(
+        alloc::mark_blocks_corrupt(&dg, &[segment], &alloc_kv)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        alloc::mark_blocks_corrupt(&dg, &[segment], &alloc_kv)
+            .await
+            .unwrap(),
+        1
+    );
+    let corrupt_val = kv_get(&kv_client, &busy_bytes)
+        .await
+        .expect("corrupt busy record");
+    let corrupt_record: crowdb_protocol::diskdb::rpc::BusyBlockValue =
+        bincode::deserialize(&corrupt_val).expect("deserialize corrupt BusyBlockValue");
+    assert_eq!(corrupt_record.state, BlockState::Corrupt as i32);
 
     // 10. Free the block.
     let free_kv = cluster.make_ddb_kv_client();

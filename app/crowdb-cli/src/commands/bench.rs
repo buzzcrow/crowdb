@@ -16,6 +16,7 @@ pub mod loader;
 pub mod metrics;
 pub mod result;
 pub mod rpc;
+pub mod s3;
 pub mod verb;
 
 pub use verb::{run_bench_verb, BenchVerb};

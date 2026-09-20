@@ -11,6 +11,7 @@
     clippy::doc_markdown
 )]
 
+pub mod ad_hoc;
 pub mod allocator;
 pub mod chunkdb_config;
 pub mod conversion;

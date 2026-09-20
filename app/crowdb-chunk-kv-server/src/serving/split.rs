@@ -13,7 +13,7 @@ pub enum SplitAction {
     Aborted,
 }
 
-/// Idempotent reducer for one persisted parent-to-children split.
+/// Idempotent reducer for one persisted retained-parent-to-child split.
 pub struct SplitStateMachine {
     transition: SplitTransition,
 }
@@ -43,7 +43,7 @@ impl SplitStateMachine {
                 instance_id: self.transition.parent_owner.instance_id,
                 owner_epoch: self.transition.parent_epoch,
             },
-            SplitPhase::ChildrenPrepared => SplitAction::PublishCatalog,
+            SplitPhase::ChildPrepared => SplitAction::PublishCatalog,
             SplitPhase::CatalogCommitted => SplitAction::Complete,
             SplitPhase::Aborted => SplitAction::Aborted,
         }
@@ -66,12 +66,12 @@ impl SplitStateMachine {
         }
     }
 
-    /// Records the exact common cutover frontier reported by both children.
+    /// Records the exact common cutover frontier reported by the child.
     ///
     /// # Errors
     ///
     /// Returns an error outside parent preparation or for conflicting proof.
-    pub fn record_children_ready(&mut self, proof: SplitReadinessProof) -> Result<(), MonitorError> {
+    pub fn record_child_ready(&mut self, proof: SplitReadinessProof) -> Result<(), MonitorError> {
         if let Some(existing) = &self.transition.readiness_proof {
             return if existing == &proof {
                 Ok(())
@@ -82,12 +82,15 @@ impl SplitStateMachine {
         if self.transition.phase != SplitPhase::ParentPreparing {
             return Err(MonitorError::PlanFailed("split parent was not preparing".into()));
         }
+        self.transition.retained_parent_artifact.tail_overlay =
+            Some(proof.retained_parent_tail_overlay.clone());
+        self.transition.child.artifact.tail_overlay = Some(proof.child_tail_overlay.clone());
         self.transition.readiness_proof = Some(proof);
-        self.transition.phase = SplitPhase::ChildrenPrepared;
+        self.transition.phase = SplitPhase::ChildPrepared;
         self.validate_current()
     }
 
-    /// Marks the atomic catalog replacement after both children are ready.
+    /// Marks the atomic catalog update after the retained parent and child are ready.
     ///
     /// # Errors
     ///
@@ -96,9 +99,9 @@ impl SplitStateMachine {
         if self.transition.phase == SplitPhase::CatalogCommitted {
             return Ok(());
         }
-        if self.transition.phase != SplitPhase::ChildrenPrepared {
+        if self.transition.phase != SplitPhase::ChildPrepared {
             return Err(MonitorError::PlanFailed(
-                "split catalog cutover requires prepared children".into(),
+                "split catalog cutover requires a prepared child".into(),
             ));
         }
         self.transition.phase = SplitPhase::CatalogCommitted;

@@ -8,7 +8,7 @@ use std::process::ExitCode;
 use clap::Subcommand;
 use crowdb_kv_client::GetOutcome;
 
-use crate::commands::{op_context, print_json};
+use crate::commands::op_context;
 use crate::Cli;
 
 #[derive(Subcommand, Debug)]
@@ -105,12 +105,6 @@ pub async fn run_kv_data_verb(cli: &Cli, verb: KvDataVerb) -> ExitCode {
             .await
             {
                 Ok(outcome) => {
-                    if cli.json {
-                        return print_json(
-                            cli,
-                            &serde_json::json!({"revision": outcome.revision, "request_id": outcome.request_id}),
-                        );
-                    }
                     println!("put ok (revision {})", outcome.revision);
                     ExitCode::SUCCESS
                 }
@@ -131,16 +125,6 @@ pub async fn run_kv_data_verb(cli: &Cli, verb: KvDataVerb) -> ExitCode {
             };
             match crowdb_console_shared::ops::kv_data::get(&ctx, store_id, group_id, key.as_bytes()).await {
                 Ok(GetOutcome::Found { value, revision }) => {
-                    if cli.json {
-                        return print_json(
-                            cli,
-                            &serde_json::json!({
-                                "found": true,
-                                "value": String::from_utf8_lossy(&value),
-                                "revision": revision,
-                            }),
-                        );
-                    }
                     println!(
                         "found: {} (revision {})",
                         String::from_utf8_lossy(&value),
@@ -149,9 +133,6 @@ pub async fn run_kv_data_verb(cli: &Cli, verb: KvDataVerb) -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Ok(GetOutcome::NotFound) => {
-                    if cli.json {
-                        return print_json(cli, &serde_json::json!({"found": false}));
-                    }
                     println!("not found");
                     ExitCode::SUCCESS
                 }
@@ -174,9 +155,7 @@ pub async fn run_kv_data_verb(cli: &Cli, verb: KvDataVerb) -> ExitCode {
                 .await
             {
                 Ok(_) => {
-                    if !cli.json {
-                        println!("deleted");
-                    }
+                    println!("deleted");
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -210,22 +189,6 @@ pub async fn run_kv_data_verb(cli: &Cli, verb: KvDataVerb) -> ExitCode {
             .await
             {
                 Ok(outcome) => {
-                    if cli.json {
-                        let items: Vec<_> = outcome
-                            .items
-                            .iter()
-                            .map(|(k, v)| {
-                                serde_json::json!({
-                                    "key": String::from_utf8_lossy(k).to_string(),
-                                    "value": String::from_utf8_lossy(v).to_string(),
-                                })
-                            })
-                            .collect();
-                        return print_json(
-                            cli,
-                            &serde_json::json!({"items": items, "truncated": outcome.truncated}),
-                        );
-                    }
                     for (k, v) in &outcome.items {
                         println!("{}  {}", String::from_utf8_lossy(k), String::from_utf8_lossy(v));
                     }
@@ -254,12 +217,6 @@ async fn run_snapshot_verb(cli: &Cli, verb: SnapshotVerb) -> ExitCode {
             };
             match crowdb_console_shared::ops::kv_data::create_snapshot(&ctx, store_id, group_id).await {
                 Ok(resp) => {
-                    if cli.json {
-                        return print_json(
-                            cli,
-                            &serde_json::json!({"snapshot_handle": resp.snapshot_handle}),
-                        );
-                    }
                     println!("snapshot created: handle {}", resp.snapshot_handle);
                     ExitCode::SUCCESS
                 }
@@ -280,9 +237,6 @@ async fn run_snapshot_verb(cli: &Cli, verb: SnapshotVerb) -> ExitCode {
             };
             match crowdb_console_shared::ops::kv_data::list_snapshots(&ctx, store_id, group_id).await {
                 Ok(snapshots) => {
-                    if cli.json {
-                        return print_json(cli, &snapshots);
-                    }
                     for s in &snapshots {
                         println!("handle {} slot {}", s.snapshot_handle, s.at_slot);
                     }
@@ -319,9 +273,7 @@ async fn run_snapshot_verb(cli: &Cli, verb: SnapshotVerb) -> ExitCode {
             .await
             {
                 Ok(_) => {
-                    if !cli.json {
-                        println!("released snapshot {snapshot_handle}");
-                    }
+                    println!("released snapshot {snapshot_handle}");
                     ExitCode::SUCCESS
                 }
                 Err(e) => {

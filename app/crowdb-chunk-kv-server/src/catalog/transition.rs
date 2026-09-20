@@ -36,7 +36,10 @@ impl ChunkKvRangeCatalogCutover {
         transition.validate()?;
         if !matches!(
             transition.phase,
-            TransferPhase::TargetPrepared | TransferPhase::CatalogCommitted
+            TransferPhase::TargetCatchingUp
+                | TransferPhase::CatchupPublished
+                | TransferPhase::TargetReady
+                | TransferPhase::CatalogCommitted
         ) {
             return Err(ChunkKvRangeCatalogError::TransitionNotReady);
         }
@@ -50,15 +53,29 @@ impl ChunkKvRangeCatalogCutover {
             reject_reused_transition_id(&pages, transition.transition_id, 1)?;
             return Ok(head.generation);
         }
-        reject_reused_transition_id(&pages, transition.transition_id, 0)?;
+        let advancing = matches!(
+            transition.phase,
+            TransferPhase::TargetReady | TransferPhase::CatalogCommitted
+        );
+        reject_reused_transition_id(&pages, transition.transition_id, usize::from(advancing))?;
         let source = |entry: &ChunkKvRangeCatalogEntry| {
-            entry.partition_id == transition.partition_id
-                && entry.range == transition.range
-                && entry.owner == transition.source
+            let source_serving = entry.owner == transition.source
                 && entry.owner_epoch == transition.source_epoch
                 && entry.state == ChunkKvRangeCatalogPartitionState::Serving
                 && entry.artifact == transition.artifact
-                && entry.transition_id.is_none()
+                && entry.transition_id.is_none();
+            let target_catching_up = entry.owner == transition.target
+                && entry.owner_epoch == transition.target_epoch
+                && entry.state == ChunkKvRangeCatalogPartitionState::TargetCatchingUp
+                && entry.artifact == transition.target_artifact
+                && entry.transition_id == Some(transition.transition_id);
+            entry.partition_id == transition.partition_id
+                && entry.range == transition.range
+                && if advancing {
+                    target_catching_up
+                } else {
+                    source_serving
+                }
         };
         let (next_head, next_pages) = replace_one(head, pages, source, vec![desired])?;
         let generation = next_head.generation;
@@ -66,7 +83,8 @@ impl ChunkKvRangeCatalogCutover {
         Ok(generation)
     }
 
-    /// Atomically replaces one parent range with two prepared child ranges.
+    /// Atomically replaces one old parent entry with its retained parent range
+    /// and one new child range.
     ///
     /// # Errors
     ///
@@ -76,7 +94,7 @@ impl ChunkKvRangeCatalogCutover {
         transition.validate()?;
         if !matches!(
             transition.phase,
-            SplitPhase::ChildrenPrepared | SplitPhase::CatalogCommitted
+            SplitPhase::ChildPrepared | SplitPhase::CatalogCommitted
         ) {
             return Err(ChunkKvRangeCatalogError::TransitionNotReady);
         }
@@ -116,25 +134,43 @@ fn transfer_entry(transition: &TransferTransition) -> ChunkKvRangeCatalogEntry {
         range: transition.range.clone(),
         owner: transition.target.clone(),
         owner_epoch: transition.target_epoch,
-        state: ChunkKvRangeCatalogPartitionState::Serving,
-        artifact: transition.artifact.clone(),
+        state: if matches!(
+            transition.phase,
+            TransferPhase::TargetCatchingUp | TransferPhase::CatchupPublished
+        ) {
+            ChunkKvRangeCatalogPartitionState::TargetCatchingUp
+        } else {
+            ChunkKvRangeCatalogPartitionState::Serving
+        },
+        artifact: transition.target_artifact.clone(),
         transition_id: Some(transition.transition_id),
     }
 }
 
 fn split_entries(transition: &SplitTransition) -> Vec<ChunkKvRangeCatalogEntry> {
-    [&transition.left, &transition.right]
-        .into_iter()
-        .map(|child| ChunkKvRangeCatalogEntry {
-            partition_id: child.partition_id,
-            range: child.range.clone(),
-            owner: child.owner.clone(),
-            owner_epoch: child.owner_epoch,
+    vec![
+        ChunkKvRangeCatalogEntry {
+            partition_id: transition.parent_id,
+            range: crowdb_protocol::chunk_kv::KeyRange {
+                start: transition.parent_range.start.clone(),
+                end: Some(transition.split_key.clone()),
+            },
+            owner: transition.parent_owner.clone(),
+            owner_epoch: transition.parent_next_epoch,
             state: ChunkKvRangeCatalogPartitionState::Serving,
-            artifact: child.artifact.clone(),
+            artifact: transition.retained_parent_artifact.clone(),
             transition_id: Some(transition.transition_id),
-        })
-        .collect()
+        },
+        ChunkKvRangeCatalogEntry {
+            partition_id: transition.child.partition_id,
+            range: transition.child.range.clone(),
+            owner: transition.child.owner.clone(),
+            owner_epoch: transition.child.owner_epoch,
+            state: ChunkKvRangeCatalogPartitionState::Serving,
+            artifact: transition.child.artifact.clone(),
+            transition_id: Some(transition.transition_id),
+        },
+    ]
 }
 
 fn replace_one<F>(

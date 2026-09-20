@@ -4,6 +4,7 @@
 // DiskioServer loopback tests: start an RPC server with DiskioServer
 // handlers, connect a client, send write/read/fsync requests, verify
 // responses. Uses BlockingEngine + BlockDisk for real I/O.
+#include "crowdb-common/runtime_path.h"
 #include "crowdb-rpc/buffer.h"
 #include "crowdb-rpc/c_api.h"
 #include "crowdb-rpc/client/client.h"
@@ -49,12 +50,9 @@ namespace
 // Temp file helper.
 std::string temp_path()
 {
-    const char *root = getenv("TMPDIR");
-    if (root == nullptr) {
-        root = "/tmp";
-    }
-    char tmpl[128];
-    std::snprintf(tmpl, sizeof(tmpl), "%s/dx_XXXXXX", root);
+    const std::string root = crowdb::common::test_runtime_path("crowdb-diskio-server").string();
+    char              tmpl[128];
+    std::snprintf(tmpl, sizeof(tmpl), "%s/dx_XXXXXX", root.c_str());
     std::vector<char> buf(tmpl, tmpl + std::strlen(tmpl) + 1);
     int               fd = mkstemp(buf.data());
     if (fd >= 0) {

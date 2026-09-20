@@ -99,8 +99,9 @@ pub enum PartitionLifecycle {
     WriteStalled,
     Prepared,
     Serving,
+    TransferFencing,
     SplitPreparing,
-    SplitFenced,
+    SplitFinalizing,
     Retired,
     Faulted,
 }
@@ -186,7 +187,10 @@ pub struct JournalPosition {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checkpoint {
     pub tree_id: u64,
+    /// Native tree snapshot sequence stored inside the root image.
     pub tree_manifest: u64,
+    /// Chunk root-catalog generation that makes the snapshot image reachable.
+    pub root_manifest_generation: u64,
     pub applied_seq: u64,
     pub stream_name: StreamName,
     pub stream_manifest_generation: u64,
@@ -212,44 +216,40 @@ pub struct SplitPlan {
     pub parent_id: PartitionId,
     pub parent_range: PartitionRange,
     pub parent_epoch: u64,
+    pub parent_next_epoch: u64,
     pub split_key: Vec<u8>,
-    pub left: SplitChild,
-    pub right: SplitChild,
+    pub child: SplitChild,
 }
 
 impl SplitPlan {
-    /// Validates exact child identity, epoch, and half-open range coverage.
+    /// Validates the retained-parent epoch and exact child identity and range.
     ///
     /// # Errors
     ///
     /// Returns an error for a zero identity/epoch, a non-interior split key,
-    /// duplicate partition IDs, or child ranges that do not exactly cover the
-    /// parent.
+    /// a reused partition ID, or a child range that is not the parent's exact
+    /// right half.
     pub fn validate(&self) -> Result<()> {
         self.parent_range.validate()?;
-        self.left.range.validate()?;
-        self.right.range.validate()?;
+        self.child.range.validate()?;
         if self.transition_id == TransitionId::default()
             || self.parent_epoch == 0
-            || self.left.ownership_epoch == 0
-            || self.right.ownership_epoch == 0
+            || self.parent_next_epoch == 0
+            || self.child.ownership_epoch == 0
         {
             return Err(ChunkKvError::InvalidRequest(
                 "split identities and epochs must be nonzero".into(),
             ));
         }
-        if self.parent_id == self.left.partition_id
-            || self.parent_id == self.right.partition_id
-            || self.left.partition_id == self.right.partition_id
-        {
+        if self.parent_next_epoch <= self.parent_epoch || self.parent_id == self.child.partition_id {
             return Err(ChunkKvError::InvalidRequest(
-                "split partition identities must be distinct".into(),
+                "split parent epoch must advance and child identity must be distinct".into(),
             ));
         }
-        let (expected_left, expected_right) = self.parent_range.split(&self.split_key)?;
-        if self.left.range != expected_left || self.right.range != expected_right {
+        let (_, expected_child) = self.parent_range.split(&self.split_key)?;
+        if self.child.range != expected_child {
             return Err(ChunkKvError::InvalidRequest(
-                "split child ranges must exactly cover the parent".into(),
+                "split child must be the exact right half of the parent".into(),
             ));
         }
         Ok(())
@@ -257,14 +257,26 @@ impl SplitPlan {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PreparedChildArtifact {
+/// Durable state of either writer created by a split session.  The retained
+/// parent keeps its partition identity; only the right-hand writer is a new
+/// child partition.
+pub struct PreparedSplitWriterArtifact {
     pub partition_id: PartitionId,
     pub range: PartitionRange,
     pub ownership_epoch: u64,
     pub tree_id: u64,
     pub tree_manifest: u64,
+    pub root_manifest_generation: u64,
     pub stream_name: StreamName,
+    pub base_applied_seq: u64,
+    pub parent_id: PartitionId,
+    pub parent_epoch: u64,
+    pub parent_stream_name: StreamName,
+    pub parent_stream_manifest_generation: u64,
+    pub parent_replay_offset: u64,
+    pub parent_cutover_offset: u64,
     pub applied_seq: u64,
+    pub child_stream_start_seq: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -272,9 +284,14 @@ pub struct SplitArtifact {
     pub transition_id: TransitionId,
     pub parent_id: PartitionId,
     pub parent_epoch: u64,
+    pub parent_next_epoch: u64,
+    /// Generation of the source tree's split-owned shared memtable view.
+    /// It is released only after both writer frontiers below are durable.
+    pub shared_view_generation: u64,
     pub cutover_seq: u64,
-    pub left: PreparedChildArtifact,
-    pub right: PreparedChildArtifact,
+    /// Durable retained-parent writer frontier.
+    pub retained_parent: PreparedSplitWriterArtifact,
+    pub child: PreparedSplitWriterArtifact,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

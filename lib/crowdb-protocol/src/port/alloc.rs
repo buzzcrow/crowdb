@@ -23,7 +23,7 @@ use super::ports::ServicePort;
 
 /// Default sub-directory name under the workspace root for the claim
 /// file.
-const CLAIM_DIR: &str = ".crowdb-port-alloc";
+const CLAIM_DIR: &str = "ports/legacy";
 
 /// Claim file name.
 const CLAIM_FILE: &str = "claims";
@@ -32,7 +32,7 @@ const CLAIM_FILE: &str = "claims";
 #[derive(Debug, Clone)]
 pub struct PortAllocConfig {
     /// Workspace root directory. The claim file lives at
-    /// `<root>/.crowdb-port-alloc/claims`.
+    /// `<root>/ports/legacy/claims`.
     pub root: PathBuf,
     /// Port offset for multi-session isolation. Each service's base
     /// port is shifted by `offset`: `ServicePort::port(instance) +
@@ -64,7 +64,7 @@ impl PortAllocConfig {
 
 impl Default for PortAllocConfig {
     fn default() -> Self {
-        Self::new(std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        Self::new(super::namespace::runtime_root())
     }
 }
 
@@ -301,20 +301,20 @@ pub fn read_claimed_ports(cfg: &PortAllocConfig) -> Result<HashSet<u16>, PortAll
 
 // ── Test convenience functions ───────────────────────────────────
 
-use std::sync::OnceLock;
-
-static TEST_CFG: OnceLock<PortAllocConfig> = OnceLock::new();
-
-/// Per-process test claim-file root: `$TMPDIR/crowdb-port-alloc-test-{pid}`.
-/// All test convenience calls share this claim file so parallel tests
-/// within one binary don't collide. The flock serializes access.
-fn test_cfg() -> &'static PortAllocConfig {
-    TEST_CFG.get_or_init(|| {
-        let pid = std::process::id();
-        let root = std::env::temp_dir().join(format!("crowdb-port-alloc-test-{pid}"));
-        let _ = fs::create_dir_all(&root);
-        PortAllocConfig::new(root)
-    })
+#[cfg(test)]
+fn workspace_runtime_root() -> PathBuf {
+    if let Some(root) = std::env::var_os("CROWDB_RUNTIME_ROOT") {
+        return PathBuf::from(root);
+    }
+    let mut root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    loop {
+        if root.join("pixi.toml").is_file() {
+            return root.join(".crowdb-runtime");
+        }
+        if !root.pop() {
+            return PathBuf::from(".crowdb-runtime");
+        }
+    }
 }
 
 /// Allocate a single port for `service` from the per-process test
@@ -325,7 +325,17 @@ fn test_cfg() -> &'static PortAllocConfig {
 /// filesystem error, or overflow).
 #[must_use]
 pub fn alloc_test_port(service: ServicePort) -> u16 {
-    alloc_port(service, 0, test_cfg()).unwrap_or_else(|e| panic!("alloc_test_port({service:?}) failed: {e}"))
+    super::namespace::assign_process_ports(service, 0, 1)
+        .and_then(|ports| {
+            ports
+                .into_iter()
+                .next()
+                .ok_or_else(|| super::namespace::RuntimeNamespaceError::Exhausted {
+                    service,
+                    identity: "current-process".to_string(),
+                })
+        })
+        .unwrap_or_else(|error| panic!("alloc_test_port({service:?}) failed: {error}"))
 }
 
 /// Allocate `count` consecutive ports for `service` from the
@@ -337,14 +347,14 @@ pub fn alloc_test_port(service: ServicePort) -> u16 {
 /// found, filesystem error, or overflow).
 #[must_use]
 pub fn alloc_test_port_range(service: ServicePort, count: u16) -> Vec<u16> {
-    alloc_port_range(service, 0, count, test_cfg())
-        .unwrap_or_else(|e| panic!("alloc_test_port_range({service:?}, {count}) failed: {e}"))
+    super::namespace::assign_process_ports(service, 0, count)
+        .unwrap_or_else(|error| panic!("alloc_test_port_range({service:?}, {count}) failed: {error}"))
 }
 
 /// Reset the per-process test claim file. Call between test suites to
 /// avoid exhaustion.
 pub fn reset_test_claims() {
-    let _ = reset_claims(test_cfg());
+    let _ = super::namespace::release_process_ports();
 }
 
 #[cfg(test)]
@@ -356,7 +366,10 @@ mod tests {
 
     fn unique_cfg() -> PortAllocConfig {
         let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("crowdb-port-alloc-test-{id}"));
+        let dir = workspace_runtime_root()
+            .join("ephemeral")
+            .join("port-allocator-tests")
+            .join(format!("{}-{id}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         // Each test gets a unique offset so probes land in a range
         // above the real-service ports (10000-15999) but below the Linux

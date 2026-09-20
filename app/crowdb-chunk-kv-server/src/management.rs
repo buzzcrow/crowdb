@@ -31,6 +31,7 @@ struct HealthResponse {
     lifecycle: &'static str,
     catalog_generation: u64,
     hosted_partitions: usize,
+    serving_partitions: usize,
     ready: bool,
 }
 
@@ -67,6 +68,7 @@ fn health_response(state: &ManagementState) -> HealthResponse {
         lifecycle: lifecycle_name(health.lifecycle),
         catalog_generation: health.catalog_generation,
         hosted_partitions: health.partitions.len(),
+        serving_partitions: health.serving_partitions,
         ready: health.lifecycle == ServerLifecycle::Serving,
     }
 }

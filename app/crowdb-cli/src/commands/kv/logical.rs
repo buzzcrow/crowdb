@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use clap::Subcommand;
 
-use crate::commands::{commit_config, op_context, print_json};
+use crate::commands::{commit_config, op_context};
 use crate::Cli;
 
 // ── store ────────────────────────────────────────────────────────
@@ -54,9 +54,6 @@ pub async fn run_store_verb(cli: &Cli, verb: StoreVerb) -> ExitCode {
                     if let Err(c) = commit_config(cli, &ctx) {
                         return c;
                     }
-                    if cli.json {
-                        return print_json(cli, &hosting);
-                    }
                     println!(
                         "added store {store_id} on nodes: {}",
                         hosting
@@ -90,9 +87,7 @@ pub async fn run_store_verb(cli: &Cli, verb: StoreVerb) -> ExitCode {
                     if let Err(c) = commit_config(cli, &ctx) {
                         return c;
                     }
-                    if !cli.json {
-                        println!("removed store {store_id}");
-                    }
+                    println!("removed store {store_id}");
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -108,9 +103,6 @@ pub async fn run_store_verb(cli: &Cli, verb: StoreVerb) -> ExitCode {
             };
             match crowdb_console_shared::ops::kv_logical::list_stores(&ctx).await {
                 Ok(stores) => {
-                    if cli.json {
-                        return print_json(cli, &stores);
-                    }
                     if stores.is_empty() {
                         println!("(no stores)");
                     } else {
@@ -214,9 +206,7 @@ pub async fn run_group_verb(cli: &Cli, verb: GroupVerb) -> ExitCode {
                     if let Err(c) = commit_config(cli, &ctx) {
                         return c;
                     }
-                    if !cli.json {
-                        println!("added group {group_id} in store {store_id}");
-                    }
+                    println!("added group {group_id} in store {store_id}");
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -249,9 +239,7 @@ pub async fn run_group_verb(cli: &Cli, verb: GroupVerb) -> ExitCode {
                     if let Err(c) = commit_config(cli, &ctx) {
                         return c;
                     }
-                    if !cli.json {
-                        println!("removed group {group_id} in store {store_id}");
-                    }
+                    println!("removed group {group_id} in store {store_id}");
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
@@ -274,9 +262,6 @@ pub async fn run_group_verb(cli: &Cli, verb: GroupVerb) -> ExitCode {
             };
             match crowdb_console_shared::ops::kv_logical::list_groups(&ctx, store_id).await {
                 Ok(groups) => {
-                    if cli.json {
-                        return print_json(cli, &groups);
-                    }
                     if groups.is_empty() {
                         println!("(no groups in store {store_id})");
                     } else {
@@ -371,9 +356,6 @@ pub async fn run_replica_verb(cli: &Cli, verb: ReplicaVerb) -> ExitCode {
                     if let Err(c) = commit_config(cli, &ctx) {
                         return c;
                     }
-                    if cli.json {
-                        return print_json(cli, &serde_json::json!({"replica_id": new_rid}));
-                    }
                     println!("added replica {new_rid} to group {group_id} in store {store_id}");
                     ExitCode::SUCCESS
                 }
@@ -419,9 +401,7 @@ pub async fn run_replica_verb(cli: &Cli, verb: ReplicaVerb) -> ExitCode {
                     if let Err(c) = commit_config(cli, &ctx) {
                         return c;
                     }
-                    if !cli.json {
-                        println!("removed replica {rid} from group {group_id} in store {store_id}");
-                    }
+                    println!("removed replica {rid} from group {group_id} in store {store_id}");
                     ExitCode::SUCCESS
                 }
                 Err(e) => {

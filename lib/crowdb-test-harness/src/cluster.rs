@@ -16,7 +16,6 @@ use serde_json::Value;
 
 #[cfg(feature = "kv-client")]
 use crowdb_kv_client::{ClientConfig, CrowdbKvClient, HardwareClient, RetryConfig, ServiceRegistryClient};
-use crowdb_protocol::port::alloc as port_alloc;
 use crowdb_protocol::ServicePort;
 
 // ── process management ──────────────────────────────────────────
@@ -24,7 +23,7 @@ use crowdb_protocol::ServicePort;
 struct ServerHandle {
     child: Child,
     base_url: String,
-    root: crate::test_dirs::TestDir,
+    root: PathBuf,
     management_port: u16,
     listen_port: u16,
 }
@@ -102,7 +101,7 @@ impl KvNode {
     async fn crash_and_restart(&mut self) -> std_io::Result<()> {
         terminate(&mut self.handle.child);
         let (child, base_url) = spawn_kv_process(
-            self.handle.root.path(),
+            &self.handle.root,
             self.node_id,
             &self.group_ids,
             self.replica_id,
@@ -254,13 +253,16 @@ pub struct KvCluster {
     /// `mgmt_seeds` so client topology refresh can recover from a
     /// stale leader hint.
     pub mgmt_endpoints: Vec<String>,
+    runtime: crate::test_dirs::TestRuntime,
 }
 
 impl KvCluster {
     /// Start a 1-node cluster with store 0, groups 0 and 1.
     pub async fn start() -> Self {
+        let mut runtime = crate::test_dirs::TestRuntime::new("kv-cluster")
+            .unwrap_or_else(|error| panic!("create KV runtime namespace: {error}"));
         let mut nodes = Vec::new();
-        let node = start_kv_node_with_groups(0, &[0, 1], 1)
+        let node = start_kv_node_with_groups(&mut runtime, 0, &[0, 1], 1)
             .await
             .unwrap_or_else(|e| panic!("start kv node 0: {e}"));
         nodes.push(node);
@@ -274,7 +276,18 @@ impl KvCluster {
             group0_leader_endpoint,
             group1_leader_endpoint,
             mgmt_endpoints,
+            runtime,
         }
+    }
+
+    /// Runtime owner shared by every service in this test environment.
+    pub fn runtime(&self) -> &crate::test_dirs::TestRuntime {
+        &self.runtime
+    }
+
+    /// Mutable runtime owner shared by every service in this test environment.
+    pub fn runtime_mut(&mut self) -> &mut crate::test_dirs::TestRuntime {
+        &mut self.runtime
     }
 
     /// Crash every KV process and reopen the same stores on the same ports.
@@ -282,10 +295,14 @@ impl KvCluster {
     /// The test data roots remain owned by the cluster, so WAL and tree state
     /// are recovered instead of recreated.
     pub async fn crash_and_restart(&mut self) {
-        for node in &mut self.nodes {
-            node.crash_and_restart()
+        for index in 0..self.nodes.len() {
+            self.nodes[index]
+                .crash_and_restart()
                 .await
-                .unwrap_or_else(|error| panic!("restart kv node {}: {error}", node.node_id));
+                .unwrap_or_else(|error| panic!("restart kv node {}: {error}", self.nodes[index].node_id));
+            self.runtime
+                .record_process(self.nodes[index].handle.child.id())
+                .unwrap_or_else(|error| panic!("record restarted kv node: {error}"));
         }
         wire_topology(&self.nodes, 0).await;
         wire_topology(&self.nodes, 1).await;
@@ -345,21 +362,24 @@ fn test_client_config(mgmt_seeds: Vec<String>) -> ClientConfig {
 
 /// Start a kv-server node hosting multiple groups on one store.
 async fn start_kv_node_with_groups(
+    runtime: &mut crate::test_dirs::TestRuntime,
     node_id: u64,
     group_ids: &[u64],
     replica_id: u64,
 ) -> std_io::Result<KvNode> {
-    let root = crate::test_dirs::TestDir::new("kv-node")?;
-    let mgmt_port = port_alloc::alloc_test_port(ServicePort::KvServerMgmt);
-    let listen_port = port_alloc::alloc_test_port(ServicePort::KvServerListen);
-    let (child, base_url) = spawn_kv_process(
-        root.path(),
-        node_id,
-        group_ids,
-        replica_id,
-        mgmt_port,
-        listen_port,
-    )?;
+    let instance = u16::try_from(node_id).map_err(std_io::Error::other)?;
+    let service_root = runtime
+        .service_dir("kv-server", &format!("node-{node_id}"))
+        .map_err(std_io::Error::other)?;
+    let root = service_root.join("data");
+    let mgmt_port = runtime
+        .assign_port(ServicePort::KvServerMgmt, instance)
+        .map_err(std_io::Error::other)?;
+    let listen_port = runtime
+        .assign_port(ServicePort::KvServerListen, instance)
+        .map_err(std_io::Error::other)?;
+    let (child, base_url) = spawn_kv_process(&root, node_id, group_ids, replica_id, mgmt_port, listen_port)?;
+    runtime.record_process(child.id()).map_err(std_io::Error::other)?;
     let handle = ServerHandle {
         child,
         base_url,

@@ -108,10 +108,22 @@ generation and ownership epoch. Only that compare-and-publish operation makes
 the checkpoint visible. Stale, failed, or ambiguous work remains unreachable
 and is accounted as orphan data.
 
-Recovery opens the newest epoch-valid, fully verified manifest. It may fall
-back only to the preceding complete retained generation. Corruption and
+Recovery normally opens the newest epoch-valid, fully verified manifest. It
+may fall back only to the preceding complete retained generation. A caller
+holding topology recovery evidence may instead request one exact immutable
+root-catalog generation. Exact open never falls back to current, never accepts
+a cached generation with a different identity, and retains that bootstrap
+layout until the opened store successfully publishes its own successor. A
+successor publication first proves that the bootstrap is still current, so an
+old exact view cannot create a divergent root branch. Corruption, absence, and
 temporary availability remain distinct typed outcomes; an unavailable mirror
 does not poison mappings or convert a retryable read into corruption.
+
+The root-catalog manifest generation and the tree snapshot sequence are
+different identities. The former orders publication of page-pack reachability;
+the latter is stored inside the tree image and orders logical tree snapshots.
+Recovery evidence records and validates both rather than using either counter
+as a substitute for the other.
 
 The tree owner sets a monotonic WAL replay offset before snapshot publication.
 The offset and tree snapshot become visible in the same root manifest. WAL
@@ -164,6 +176,39 @@ and reclaim candidates but does not physically release strips. Expired-writer
 sealing and physical strip GC are independent maintenance services so either can
 resume after a tree or ChunkDB restart.
 
+A topology transition that publishes an exact root generation uses a durable
+generation pin, not only a process-local reader reference. Its logical record is
+`root/<tree_id>/pin/<transition_id> = generation`; the durable chunk-KV catalog
+encodes each numeric identity in big-endian bytes below its root-catalog prefix.
+Creating the same transition-to-generation mapping is idempotent, while trying
+to reuse the transition identity for another generation fails closed. Pin
+creation also verifies that the named manifest still exists.
+
+If a process crashes after pinning but before persisting transition readiness,
+the durable phase still proves that no artifact can name the abandoned root.
+The repeated preparation removes that stale unpublished pin and installs the
+new attempt's generation before recording readiness. Once readiness is durable,
+the pin identity is immutable until catalog cleanup.
+
+The ordered pin protocol is:
+
+1. Produce and durably publish root generation `g`.
+2. Persist the transition pin for `g` before making any split or transfer
+   artifact that names `g` publishable.
+3. Exact-open `g` on every recovery or target preparation; absence is an error
+   and never falls back to latest.
+4. Materialize and checkpoint an independently recoverable successor, then
+   publish catalog state that no longer names the exact-root overlay and clears
+   its transition marker.
+5. Only after observing that authoritative catalog generation, delete the pin.
+   Deletion is idempotent, so recovery may repeat it after an ambiguous result.
+
+`reclaim_before(tree_id, n)` scans the durable pins for that tree and caps its
+effective upper bound at the oldest pinned generation. Manifest metadata and
+packs reachable from that generation therefore survive process and server
+restart. A crash may temporarily leak a pin, but cannot permit early deletion;
+the transition/materialization reconciler retries the final idempotent unpin.
+
 ## 8. Correctness Invariants
 
 - **I1 — Durable before visible:** every referenced mirror and metadata image is
@@ -187,6 +232,12 @@ resume after a tree or ChunkDB restart.
 - **I10 — Root/WAL checkpoint:** a manifest's WAL replay offset becomes visible
   atomically with its tree snapshot and never regresses within one lineage;
   WAL trimming follows root publication.
+- **I11 — Exact root identity:** an exact-generation open reads only the named
+  root-catalog manifest and cannot publish a successor after another current
+  generation has won.
+- **I12 — Persistent transition pin:** a root generation named by a publishable
+  topology artifact remains reclaim-ineligible across restart until an
+  authoritative overlay-free catalog generation has been observed.
 
 ## 9. Configuration and Metrics
 

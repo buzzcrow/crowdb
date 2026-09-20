@@ -30,8 +30,12 @@ Depends on: [chunk IO](../chunkio/design-crowdb-chunkio.md),
 `crowdb-chunk-stream` is an asynchronous Rust library. `StreamName` is an
 opaque, time-ordered 128-bit identity bound to a logical partition, never to a
 process or node. It renders as 32 hexadecimal digits. `ChunkStream` exposes
-`create`, `open`, `tail`, vectored `append`, exact `read_at`, seekable bounded
-sequential reading, `trim_prefix`, and `close`.
+`create`, `open`, `open_read_only`, `tail`, vectored `append`, exact `read_at`,
+seekable bounded sequential reading, `trim_prefix`, and `close`.
+`open_read_only` opens one exact durable epoch without adopting writer
+authority, allocating a successor chunk, sealing the active extent, or
+publishing metadata. It is the source-tail handle used by split and balance
+overlays.
 
 Every nonempty `append` returns the selected chunk identity and exact logical
 range. A zero-length ordinary append returns no chunk identity and performs no
@@ -162,6 +166,14 @@ publishing compares against the exact prior epoch and generation. A lower
 epoch is rejected, and a previously open lower-epoch writer can no longer
 write or advance the cursor.
 
+Read-only open is deliberately different from writer open. It validates the
+requested historical epoch against the durable manifest, captures its
+generation, trim point, extents, active descriptor, and acknowledged cursor,
+and never runs adoption. Consequently a target can replay a source suffix while
+the source writer continues appending. Its captured durable end is finite; a
+later read-only open is required to observe a newer preparation or release
+cursor.
+
 ## 6. Reads
 
 Reads reject ranges below `trim_offset` or beyond the current durable tail.
@@ -189,6 +201,12 @@ identity. A journal compares that identity with its frame trailer. The durable
 acknowledged cursor remains the read and recovery upper bound; identity
 validation never promotes residual bytes beyond it.
 
+An overlay reader supplies both a lower replay offset and an exact upper
+cutover offset. The consumer owns record framing, range filtering, sequence
+continuity, and retry-result semantics. The stream guarantees only that bytes
+within the captured interval come from the validated source epoch and manifest
+and that EOF occurs at the captured acknowledged cursor.
+
 ## 7. Trim and Reclamation
 
 `trim_prefix(g)` rejects regression and `g > tail`. It first publishes the new
@@ -207,6 +225,14 @@ reader/checkpoint retention supplies the oldest still-readable manifest
 generation to `reclaim_metadata_before`. Each call deletes only older extent
 pages and is bounded by a caller-supplied page count; the current generation is
 never eligible.
+
+Shared-tail consumers contribute retention pins outside the stream. A caller
+may advance trim or metadata reclamation only after no catalog artifact,
+checkpoint, recovery operation, retry floor, or forwarding grace interval
+references the affected source offsets or manifest generation. Reopening a
+read-only handle is not a substitute for a pin: once the authoritative caller
+releases the last pin, later trim may make that historical interval
+unreadable.
 
 ## 8. Bounds and Observation
 
@@ -262,7 +288,12 @@ The central invariants are:
 - logical offsets never renumber after rollover or trim;
 - logical trim publication precedes physical deletion;
 - immutable page coverage is gap-free over the retained sealed interval;
-- an ownership epoch can advance but cannot regress; and
+- an ownership epoch can advance but cannot regress;
+- read-only open never changes writer epoch, manifest generation, active chunk,
+  or durable cursor;
+- a captured read-only tail is finite and cannot silently widen during replay;
+- trim and metadata reclamation stay behind every externally owned overlay
+  pin; and
 - watchdogs observe without cancelling, retrying, or completing IO.
 
 ## Open Issues

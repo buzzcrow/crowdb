@@ -38,6 +38,7 @@ fn catalog(
             artifact: PartitionArtifact {
                 tree_id: 2,
                 stream_name: StreamName { high: 4, low: 5 },
+                tail_overlay: None,
             },
             transition_id: None,
         }],
@@ -77,6 +78,29 @@ impl ChunkKvRangeCatalogSource for ScriptedCatalog {
 #[derive(Default)]
 struct ScriptedTransport {
     requests: Mutex<Vec<(String, PointRequest)>>,
+}
+
+#[derive(Default)]
+struct InitializingTransport {
+    requests: Mutex<Vec<PointRequest>>,
+}
+
+#[async_trait]
+impl ChunkKvTransport for InitializingTransport {
+    async fn point(&self, _endpoint: &str, request: &PointRequest) -> Result<ChunkKvResponse> {
+        self.requests.lock().unwrap().push(request.clone());
+        Ok(ChunkKvResponse {
+            map_revision: request.routing.map_revision,
+            journal_position: None,
+            result: Err(RpcFailure {
+                code: ChunkKvRpcErrorCode::TargetNotReady,
+                message: "initializing".into(),
+                retry_after_ms: Some(1),
+                latest_map_revision: Some(request.routing.map_revision),
+                owner_hint: None,
+            }),
+        })
+    }
 }
 
 #[async_trait]
@@ -162,4 +186,26 @@ async fn cold_client_needs_group_zero_but_warm_client_routes_from_cache() {
         cold.get(b"object".to_vec(), None).await,
         Err(ClientError::CatalogUnavailable(_))
     ));
+}
+
+#[tokio::test]
+async fn target_initialization_delay_retries_exactly_three_times() {
+    let source = Arc::new(ScriptedCatalog {
+        generations: Mutex::new(vec![catalog(2, 2, 4)]),
+    });
+    let transport = Arc::new(InitializingTransport::default());
+    let client = ChunkKvClient::new(config(), source, transport.clone()).unwrap();
+    client.refresh_catalog().await.unwrap();
+
+    let response = client.get(b"object".to_vec(), None).await.unwrap();
+
+    assert_eq!(
+        response.result.unwrap_err().code,
+        ChunkKvRpcErrorCode::TargetNotReady
+    );
+    let requests = transport.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(requests
+        .windows(2)
+        .all(|pair| pair[0].routing.request_id == pair[1].routing.request_id));
 }

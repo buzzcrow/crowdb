@@ -677,12 +677,14 @@ dependencies = [
 name = "crowdb-chunk-kv"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "async-trait",
  "bincode",
  "bytes",
  "crowdb-chunk-kv",
  "crowdb-chunk-stream",
  "crowdb-tree-ffi",
+ "futures",
  "serde",
  "sha2",
  "thiserror 2.0.18",
@@ -826,10 +828,10 @@ dependencies = [
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
  "crowdb-web",
- "dirs",
  "flatbuffers",
  "hex",
  "libc",
+ "quick-xml",
  "rand 0.8.6",
  "reqwest",
  "serde",
@@ -2731,6 +2733,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.38.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b66c2058c55a409d601666cffe35f04333cf1013010882cec174a7467cd4e21c"
+dependencies = [
+ "memchr",
 ]
 
 [[package]]

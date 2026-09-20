@@ -31,14 +31,20 @@ pub struct PartitionMetrics {
     split_pages_reused: AtomicU64,
     split_pages_rebuilt: AtomicU64,
     split_delta_records: AtomicU64,
-    split_fence_lag_records: AtomicU64,
-    split_fence_duration_us: AtomicU64,
-    split_fences: AtomicU64,
+    split_tail_bytes: AtomicU64,
+    split_catchup_lag_records: AtomicU64,
+    split_preparation_duration_us: AtomicU64,
+    split_base_checkpoint_duration_us: AtomicU64,
+    split_finalization_duration_us: AtomicU64,
+    split_overlay_apply_records: AtomicU64,
+    split_overlay_apply_bytes: AtomicU64,
+    split_finalizations: AtomicU64,
     split_commits: AtomicU64,
     split_aborts: AtomicU64,
     materialization_passes: AtomicU64,
     materialization_bytes: AtomicU64,
     materialization_failures: AtomicU64,
+    materialization_duration_us: AtomicU64,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -69,14 +75,20 @@ pub struct PartitionMetricsSnapshot {
     pub split_pages_reused: u64,
     pub split_pages_rebuilt: u64,
     pub split_delta_records: u64,
-    pub split_fence_lag_records: u64,
-    pub split_fence_duration_us: u64,
-    pub split_fences: u64,
+    pub split_tail_bytes: u64,
+    pub split_catchup_lag_records: u64,
+    pub split_preparation_duration_us: u64,
+    pub split_base_checkpoint_duration_us: u64,
+    pub split_finalization_duration_us: u64,
+    pub split_overlay_apply_records: u64,
+    pub split_overlay_apply_bytes: u64,
+    pub split_finalizations: u64,
     pub split_commits: u64,
     pub split_aborts: u64,
     pub materialization_passes: u64,
     pub materialization_bytes: u64,
     pub materialization_failures: u64,
+    pub materialization_duration_us: u64,
 }
 
 impl PartitionMetrics {
@@ -109,14 +121,20 @@ impl PartitionMetrics {
             split_pages_reused: self.split_pages_reused.load(Ordering::Relaxed),
             split_pages_rebuilt: self.split_pages_rebuilt.load(Ordering::Relaxed),
             split_delta_records: self.split_delta_records.load(Ordering::Relaxed),
-            split_fence_lag_records: self.split_fence_lag_records.load(Ordering::Relaxed),
-            split_fence_duration_us: self.split_fence_duration_us.load(Ordering::Relaxed),
-            split_fences: self.split_fences.load(Ordering::Relaxed),
+            split_tail_bytes: self.split_tail_bytes.load(Ordering::Relaxed),
+            split_catchup_lag_records: self.split_catchup_lag_records.load(Ordering::Relaxed),
+            split_preparation_duration_us: self.split_preparation_duration_us.load(Ordering::Relaxed),
+            split_base_checkpoint_duration_us: self.split_base_checkpoint_duration_us.load(Ordering::Relaxed),
+            split_finalization_duration_us: self.split_finalization_duration_us.load(Ordering::Relaxed),
+            split_overlay_apply_records: self.split_overlay_apply_records.load(Ordering::Relaxed),
+            split_overlay_apply_bytes: self.split_overlay_apply_bytes.load(Ordering::Relaxed),
+            split_finalizations: self.split_finalizations.load(Ordering::Relaxed),
             split_commits: self.split_commits.load(Ordering::Relaxed),
             split_aborts: self.split_aborts.load(Ordering::Relaxed),
             materialization_passes: self.materialization_passes.load(Ordering::Relaxed),
             materialization_bytes: self.materialization_bytes.load(Ordering::Relaxed),
             materialization_failures: self.materialization_failures.load(Ordering::Relaxed),
+            materialization_duration_us: self.materialization_duration_us.load(Ordering::Relaxed),
         }
     }
 
@@ -197,42 +215,47 @@ impl PartitionMetrics {
         self.split_begins.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn split_rebuild(
-        &self,
-        left: crowdb_tree_ffi::RangeRebuildStats,
-        right: crowdb_tree_ffi::RangeRebuildStats,
-    ) {
-        self.split_entries_examined.fetch_add(
-            left.entries_examined.saturating_add(right.entries_examined),
-            Ordering::Relaxed,
-        );
-        self.split_entries_emitted.fetch_add(
-            left.entries_emitted.saturating_add(right.entries_emitted),
-            Ordering::Relaxed,
-        );
-        self.split_pages_reused.fetch_add(
-            left.pages_reused.saturating_add(right.pages_reused),
-            Ordering::Relaxed,
-        );
-        self.split_pages_rebuilt.fetch_add(
-            left.pages_rebuilt.saturating_add(right.pages_rebuilt),
-            Ordering::Relaxed,
-        );
+    pub(crate) fn split_rebuild(&self, child: crowdb_tree_ffi::RangeRebuildStats) {
+        self.split_entries_examined
+            .fetch_add(child.entries_examined, Ordering::Relaxed);
+        self.split_entries_emitted
+            .fetch_add(child.entries_emitted, Ordering::Relaxed);
+        self.split_pages_reused
+            .fetch_add(child.pages_reused, Ordering::Relaxed);
+        self.split_pages_rebuilt
+            .fetch_add(child.pages_rebuilt, Ordering::Relaxed);
     }
 
-    pub(crate) fn split_catchup(&self, delta_records: u64, fence_lag_records: u64) {
+    pub(crate) fn split_catchup(&self, delta_records: u64, tail_bytes: u64, catchup_lag_records: u64) {
         self.split_delta_records
             .fetch_add(delta_records, Ordering::Relaxed);
-        self.split_fence_lag_records
-            .store(fence_lag_records, Ordering::Relaxed);
+        self.split_tail_bytes.fetch_add(tail_bytes, Ordering::Relaxed);
+        self.split_catchup_lag_records
+            .store(catchup_lag_records, Ordering::Relaxed);
     }
 
-    pub(crate) fn split_fence(&self) {
-        self.split_fences.fetch_add(1, Ordering::Relaxed);
+    pub(crate) fn split_preparation_duration(&self, duration_us: u64) {
+        self.split_preparation_duration_us
+            .fetch_max(duration_us, Ordering::Relaxed);
     }
 
-    pub(crate) fn split_fence_duration(&self, duration_us: u64) {
-        self.split_fence_duration_us
+    pub(crate) fn split_base_checkpoint_duration(&self, duration_us: u64) {
+        self.split_base_checkpoint_duration_us
+            .fetch_max(duration_us, Ordering::Relaxed);
+    }
+
+    pub(crate) fn split_overlay_apply(&self, records: u64, bytes: u64) {
+        self.split_overlay_apply_records
+            .fetch_add(records, Ordering::Relaxed);
+        self.split_overlay_apply_bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    pub(crate) fn split_finalization(&self) {
+        self.split_finalizations.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn split_finalization_duration(&self, duration_us: u64) {
+        self.split_finalization_duration_us
             .fetch_max(duration_us, Ordering::Relaxed);
     }
 
@@ -244,8 +267,10 @@ impl PartitionMetrics {
         self.split_aborts.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn materialization(&self, result: Result<(u64, bool), ()>) {
+    pub(crate) fn materialization(&self, result: Result<(u64, bool), ()>, duration_us: u64) {
         self.materialization_passes.fetch_add(1, Ordering::Relaxed);
+        self.materialization_duration_us
+            .fetch_add(duration_us, Ordering::Relaxed);
         match result {
             Ok((bytes, _)) => {
                 self.materialization_bytes.fetch_add(bytes, Ordering::Relaxed);

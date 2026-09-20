@@ -59,12 +59,7 @@ impl Drop for ProcessGuard {
 }
 
 fn tempdir(tag: &str) -> PathBuf {
-    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("test-logs");
+    let base = crowdb_test_harness::test_dirs::ephemeral_root().join("web-e2e");
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

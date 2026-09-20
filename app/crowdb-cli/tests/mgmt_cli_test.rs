@@ -1,7 +1,7 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>.
 
 //! CLI e2e for the KV logical plane: `kv store / group / replica` verbs
-//! through `--sysmd-ip` / `--sysmd-port` / `--config` against a real
+//! through a system-group endpoint against a real
 //! `crowdb-kv-server` with group 0 initialized.
 
 mod common;

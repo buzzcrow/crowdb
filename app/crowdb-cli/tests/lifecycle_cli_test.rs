@@ -1,8 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 
 //! CLI e2e for the physical lifecycle verbs: `cluster rack/node` and
-//! `kv server` round-trips through `--sysmd-ip` / `--sysmd-port` /
-//! `--config` against a real `crowdb-kv-server` with group 0
+//! `kv server` round-trips through a system-group endpoint against a real
+//! `crowdb-kv-server` with the system group
 //! initialized — no `crowdb-web` intermediary.
 
 mod common;

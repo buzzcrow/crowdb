@@ -4,10 +4,28 @@
 //! `crowdb-cli` CLI entrypoint (R126 restructure).
 //!
 //! Four top-level domains: `cluster`, `kv`, `chunk`, `bench`. The CLI
-//! talks directly to group-0 system metadata via `CrowdbSysmdClient`
+//! talks directly to the system group via `CrowdbSysmdClient`
 //! and to individual `crowdb-kv-server` management APIs — no
-//! `crowdb-web` intermediary. The connection target is
-//! `--sysmd-ip`/`--sysmd-port` (a group-0 leader's crowdb-rpc endpoint).
+//! `crowdb-web` intermediary. The connection target can be any system-group
+//! node; leader discovery is automatic.
+
+macro_rules! eprintln {
+    () => {
+        std::eprintln!()
+    };
+    ($($arg:tt)*) => {{
+        let message = format!($($arg)*);
+        if let Some(detail) = message.strip_prefix("error: ") {
+            std::eprintln!("\x1b[1;31mERROR\x1b[0m {detail}");
+        } else if let Some(detail) = message.strip_prefix("warn: ") {
+            std::eprintln!("\x1b[1;33mWARNING\x1b[0m {detail}");
+        } else if let Some(detail) = message.strip_prefix("warning: ") {
+            std::eprintln!("\x1b[1;33mWARNING\x1b[0m {detail}");
+        } else {
+            std::eprintln!("{message}");
+        }
+    }};
+}
 
 mod commands;
 
@@ -19,43 +37,30 @@ use crowdb_protocol::KV_SERVER_MGMT_BASE;
 
 use commands::{
     run_bench_verb, run_chunk_diskdb_verb, run_chunk_stub_verb, run_cluster_verb, run_group_verb,
-    run_kv_data_verb, run_kv_server_verb, run_port_alloc, run_replica_verb, run_store_verb, BenchVerb,
-    ChunkDiskdbVerb, ChunkStubVerb, ClusterVerb, GroupVerb, KvDataVerb, KvServerVerb, PortAllocArgs,
-    ReplicaVerb, StoreVerb,
+    run_kv_data_verb, run_kv_server_verb, run_port_alloc, run_replica_verb, run_s3_verb, run_store_verb,
+    BenchVerb, ChunkDiskdbVerb, ChunkStubVerb, ClusterVerb, GroupVerb, KvDataVerb, KvServerVerb,
+    PortAllocArgs, ReplicaVerb, S3Verb, StoreVerb,
 };
 
 #[derive(Parser, Debug)]
 #[command(name = "crowdb-cli", version, about = "CrowDB cluster console (CLI)")]
 struct Cli {
-    /// Group-0 leader's IP address (the sysmd endpoint).
-    #[arg(long, global = true, env = "CROWDB_SYSMD_IP", default_value = "127.0.0.1")]
-    sysmd_ip: String,
+    /// IP address of any system-group node; leader discovery is automatic.
+    #[arg(
+        long,
+        global = true,
+        alias = "sysmd-ip",
+        env = "CROWDB_SYSTEM_IP",
+        default_value = "127.0.0.1"
+    )]
+    system_ip: String,
 
-    /// Group-0 leader's port (the sysmd endpoint's mgmt port).
-    #[arg(long, global = true, env = "CROWDB_SYSMD_PORT", default_value_t = KV_SERVER_MGMT_BASE, value_parser = clap::value_parser!(u16).range(1..))]
-    sysmd_port: u16,
+    /// Management port of any system-group node; leader discovery is automatic.
+    #[arg(long, global = true, alias = "sysmd-port", env = "CROWDB_SYSTEM_PORT", default_value_t = KV_SERVER_MGMT_BASE, value_parser = clap::value_parser!(u16).range(1..))]
+    system_port: u16,
 
-    /// Path to the console config file. Defaults to
-    /// `$CROWDB_CONSOLE_CONFIG` or `~/.config/crowdb-kv/console.toml`.
-    #[arg(short = 'p', long, global = true, env = "CROWDB_CONSOLE_CONFIG")]
-    config: Option<PathBuf>,
-
-    /// Emit JSON instead of human-readable output where applicable.
-    #[arg(short = 'j', long, global = true)]
-    json: bool,
-
-    /// Root directory for this run's logs. Each invocation creates a
-    /// per-run subfolder `<root>/cli-<command-chain>-<YYYYMMDD-HHMMSS>/`
-    /// holding the tracing log, crowdb-rpc transport log, and ops log.
-    /// Defaults to `cli-log/` (resolved from CWD). Regression scripts
-    /// typically pass a fixed root (e.g. `bench-log`) so runs accumulate
-    /// a reviewable history.
-    #[arg(long, global = true, env = "CROWDB_LOG_ROOT")]
-    log_root: Option<PathBuf>,
-
-    /// Per-invocation log directory, computed in `main()` after parse
-    /// (not a CLI flag). Read by command handlers (e.g. `local-deploy`
-    /// lands its workspace under here).
+    /// Latest-run benchmark log directory, computed in `main()` after parse.
+    /// This is not a CLI flag and remains empty for non-benchmark commands.
     #[arg(skip)]
     log_dir: PathBuf,
 
@@ -64,57 +69,18 @@ struct Cli {
 }
 
 impl Cli {
-    /// Kebab-case command chain for the per-invocation log folder name
-    /// (e.g. `bench-kv`, `cluster-local-deploy`, `kv-server`). Two
-    /// levels deep — enough to distinguish the high-value commands
-    /// (bench-kv vs bench-rpc, cluster-local-deploy vs cluster-init)
-    /// without walking every leaf verb.
-    fn command_slug(&self) -> String {
+    /// Stable folder name for the latest run of each benchmark family.
+    fn benchmark_slug(&self) -> Option<&'static str> {
         match &self.command {
-            Domain::Cluster { verb } => {
-                let v = match verb {
-                    ClusterVerb::Init { .. } => "init",
-                    ClusterVerb::LocalDeploy { .. } => "local-deploy",
-                    ClusterVerb::Destroy => "destroy",
-                    ClusterVerb::Reset => "reset",
-                    ClusterVerb::Clean { .. } => "clean",
-                    ClusterVerb::Status => "status",
-                    ClusterVerb::Topology { .. } => "topology",
-                    ClusterVerb::Rack { .. } => "rack",
-                    ClusterVerb::Node { .. } => "node",
-                    ClusterVerb::DiskGroup { .. } => "disk-group",
-                    ClusterVerb::Disk { .. } => "disk",
-                };
-                format!("cluster-{v}")
-            }
-            Domain::Kv { verb } => {
-                let v = match verb {
-                    KvVerb::Server(_) => "server",
-                    KvVerb::Store(_) => "store",
-                    KvVerb::Group(_) => "group",
-                    KvVerb::Replica(_) => "replica",
-                    KvVerb::Data(_) => "data",
-                };
-                format!("kv-{v}")
-            }
-            Domain::Chunk { verb } => {
-                let v = match verb {
-                    ChunkVerb::Diskdb(_) => "diskdb",
-                    ChunkVerb::Stub(_) => "stub",
-                };
-                format!("chunk-{v}")
-            }
-            Domain::Bench { verb } => {
-                let v = match verb {
-                    BenchVerb::Kv(_) => "kv",
-                    BenchVerb::Rpc(_) => "rpc",
-                    BenchVerb::Diskdb(_) => "diskdb",
-                    BenchVerb::Chunkdb(_) => "chunkdb",
-                    BenchVerb::Chunkio(_) => "chunkio",
-                };
-                format!("bench-{v}")
-            }
-            Domain::PortAlloc { .. } => "port-alloc".to_string(),
+            Domain::Bench { verb } => Some(match verb {
+                BenchVerb::Kv(_) => "bench-kv",
+                BenchVerb::Rpc(_) => "bench-rpc",
+                BenchVerb::Diskdb(_) => "bench-diskdb",
+                BenchVerb::Chunkdb(_) => "bench-chunkdb",
+                BenchVerb::Chunkio(_) => "bench-chunkio",
+                BenchVerb::S3(_) => "bench-s3",
+            }),
+            _ => None,
         }
     }
 }
@@ -141,6 +107,11 @@ enum Domain {
     Bench {
         #[command(subcommand)]
         verb: BenchVerb,
+    },
+    /// Persistent S3 mini-cluster and bucket/object operations.
+    S3 {
+        #[command(subcommand)]
+        verb: S3Verb,
     },
     /// Flock-coordinated port allocation for tests and cluster
     /// bootstrap. No tokio, no RPC — handled before the runtime is
@@ -175,49 +146,59 @@ enum ChunkVerb {
 
 fn main() -> ExitCode {
     let mut cli = Cli::parse();
+    print_command();
 
     // Port-alloc is a synchronous bootstrap tool: no tokio runtime,
     // no RPC, no log files. Short-circuit before the heavy init so
     // the E2E fixture (which calls it many times) stays fast and
-    // doesn't litter `cli-log/` directories.
+    // doesn't create invocation log directories.
     if let Domain::PortAlloc { args } = &cli.command {
-        return run_port_alloc(args);
+        return finish(run_port_alloc(args));
     }
 
-    // Each CLI run gets its own log folder so logs from different
-    // invocations don't interleave. The folder is
-    // `<log_root>/cli-<command-chain>-<YYYYMMDD-HHMMSS>/` and holds the
-    // tracing log, the C++ crowdb-rpc transport log, and the ops log.
-    // `--log-root` defaults to `cli-log/` (CWD-relative); regression
-    // scripts pass a fixed root (e.g. `bench-log`) to accumulate runs.
-    let log_root = cli.log_root.clone().unwrap_or_else(|| {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join("cli-log")
-    });
-    let invocation_dir = log_root.join(format!(
-        "cli-{}-{}",
-        cli.command_slug(),
-        crowdb_common::logging::timestamp_secs()
-    ));
-    let _ = std::fs::create_dir_all(&invocation_dir);
-    cli.log_dir.clone_from(&invocation_dir);
-    eprintln!("log dir: {}", invocation_dir.display());
+    let _log_guards = match cli.benchmark_slug() {
+        None => {
+            let _ = crowdb_common::logging::init_console_logging("warn");
+            crowdb_rpc_ffi::init_logging("", "warn", 30, 5, "crowdb-cli-rpc");
+            None
+        }
+        Some(benchmark_slug) => {
+            // Each benchmark family keeps only its latest run. The fixed,
+            // command-derived path is safe to replace and avoids unbounded
+            // accumulation of timestamped run directories.
+            let log_root = crowdb_protocol::port::namespace::runtime_root()
+                .join("artifacts")
+                .join("cli");
+            let invocation_dir = log_root.join(benchmark_slug);
+            if let Err(error) = std::fs::remove_dir_all(&invocation_dir) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("warning: cannot replace previous benchmark log: {error}");
+                }
+            }
+            let _ = std::fs::create_dir_all(&invocation_dir);
+            cli.log_dir.clone_from(&invocation_dir);
+            eprintln!("log dir: {}", invocation_dir.display());
 
-    let _log_guards = crowdb_common::logging::init_file_logging(
-        &invocation_dir,
-        "crowdb-cli",
-        50,
-        5,
-        "warn,crowdb_cli=info,crowdb_console_shared=info,crowdb_kv_client=info",
-    );
-    crowdb_rpc_ffi::init_logging(
-        invocation_dir.to_str().unwrap_or("cli-log"),
-        "info",
-        50,
-        5,
-        "crowdb-cli-rpc",
-    );
+            let guards = crowdb_common::logging::init_file_and_console_logging_split(
+                &invocation_dir,
+                "crowdb-cli",
+                30,
+                1,
+                "warn,crowdb_cli=info,crowdb_console_shared=info,crowdb_kv_client=info",
+                "warn,crowdb_cli=info,crowdb_console_shared=info,crowdb_kv_client=info",
+            )
+            .ok();
+            crowdb_rpc_ffi::init_logging(
+                invocation_dir.to_str().unwrap_or(".crowdb-runtime/artifacts/cli"),
+                "warn",
+                30,
+                1,
+                "crowdb-cli-rpc",
+            );
+            crowdb_rpc_ffi::add_log_stderr("warn");
+            guards
+        }
+    };
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -225,7 +206,43 @@ fn main() -> ExitCode {
         .expect("tokio runtime");
 
     let cid = crowdb_console_shared::corr_id::generate();
-    runtime.block_on(async move { Box::pin(crowdb_console_shared::corr_id::scope(cid, dispatch(cli))).await })
+    finish(
+        runtime.block_on(
+            async move { Box::pin(crowdb_console_shared::corr_id::scope(cid, dispatch(cli))).await },
+        ),
+    )
+}
+
+fn print_command() {
+    let command = std::env::args_os()
+        .map(|value| shell_quote(&value.to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    eprintln!("\x1b[1;36mCOMMAND\x1b[0m {command}");
+}
+
+fn finish(code: ExitCode) -> ExitCode {
+    use std::io::Write as _;
+
+    let _ = std::io::stdout().flush();
+    if code == ExitCode::SUCCESS {
+        eprintln!("\x1b[1;32mRESULT\x1b[0m success");
+    } else {
+        eprintln!("\x1b[1;31mRESULT\x1b[0m failed");
+    }
+    code
+}
+
+fn shell_quote(value: &str) -> String {
+    if !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'/' | b':' | b'=')
+        })
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
 }
 
 async fn dispatch(mut cli: Cli) -> ExitCode {
@@ -249,6 +266,7 @@ async fn dispatch(mut cli: Cli) -> ExitCode {
             ChunkVerb::Stub(sv) => run_chunk_stub_verb(&cli, sv).await,
         },
         Domain::Bench { verb } => run_bench_verb(&cli, verb).await,
+        Domain::S3 { verb } => run_s3_verb(&cli, verb).await,
         Domain::PortAlloc { args } => run_port_alloc(&args),
     }
 }

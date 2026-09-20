@@ -17,17 +17,24 @@ requires complete, non-overlapping coverage of the binary keyspace. A valid
 generation is published through `ArcSwap`; invalid or regressing refreshes do
 not replace a warm map.
 
-Point lookup binary-searches partition starts. No data server acts as a
-forwarding proxy. A cold client must load group 0 before sending a nonempty
-operation. A warm client may continue trying the cached owner while refresh is
-unavailable, but the server's owner epoch and serving lease remain the final
-authority.
+Point lookup binary-searches partition starts. No data server acts as a network
+forwarding proxy. During same-owner split grace, the old endpoint may dispatch
+an old parent point route directly to the exact child handle already hosted in
+that process. This preserves the logical request identity and never reopens the
+parent writer. Scan and seek topology are not forwarded. A cold client must
+load group 0 before sending a nonempty operation. A warm client may continue
+trying the cached owner while refresh is unavailable, but the server's owner
+epoch and serving lease remain the final authority.
 
 Each operation has one total deadline covering discovery, refresh, transport,
 and backoff. `NotMyRange`, `RefreshRequired`, lease loss, and connection loss
-cause bounded rerouting. Overload, recovery, and write-stall responses retry
-without inventing a new owner. The route-refresh and total-attempt budgets are
-independent and explicit in `ClientConfig`.
+cause bounded rerouting. Only `TargetNotReady` enters the initialization retry
+path: it uses the server retry delay without refreshing the route, inventing
+another owner, or changing request identity, and returns the third unsuccessful
+response to the caller. Normal serving requests do not execute this retry
+bookkeeping. Overload, recovery, and write-stall responses retain the general
+retry policy. The route-refresh and total-attempt budgets are independent and
+explicit in `ClientConfig`.
 
 ## Request Identity
 
@@ -49,6 +56,12 @@ conditional delete, ceiling, higher, floor, and lower. It returns the complete
 `ChunkKvResponse`, including journal position, applied or observed revision,
 condition outcome, map revision, retry hint, and typed failure. Gets can carry
 a minimum journal position for explicit read-after-write ordering.
+
+After split, a get routed to a child may carry either a retained parent-stream
+position at or below the split cutover or a child-stream position. The server
+resolves the former through the inherited overlay and the latter through the
+child applied frontier. A client never compares offsets from different stream
+names. After balance, new writes return only the target stream position.
 
 Seek is an owner-local ordered operation. It is transported directly and is
 not emulated with point reads. Directional scan likewise consumes native
@@ -93,6 +106,12 @@ interval. This prevents repeated emitted keys and stable-key gaps across
 topology replacement. It does not make the scan a cross-partition snapshot;
 concurrent changes to already consumed keys need not appear.
 
+A parent continuation is always refresh-only after split. A balance catalog
+entry in `TargetCatchingUp` is also non-readable: the routed client retains the
+same logical operation and waits or retries `TargetNotReady` until a later
+catalog generation marks the target `Serving`. It never resumes a scan from an
+incomplete target prefix.
+
 An empty scan limit, empty multi-get, or empty batch succeeds without catalog
 discovery. Malformed bounds, mismatched continuations, oversized requests or
 responses, out-of-order server pages, and request-sequence exhaustion fail
@@ -118,8 +137,9 @@ and serving-fence semantics of `crowdb-chunk-kv`. Multi-get and batch are
 partition-local compositions with partial success. Multi-partition scan is
 globally ordered but not globally snapshot-consistent.
 
-TTL, watches, range delete, atomic multi-key transactions, forwarding proxies,
-and merge-specific continuation behavior are outside this client contract.
+TTL, watches, range delete, atomic multi-key transactions, network forwarding
+proxies, and merge-specific continuation behavior are outside this client
+contract.
 
 ## Open Issues
 

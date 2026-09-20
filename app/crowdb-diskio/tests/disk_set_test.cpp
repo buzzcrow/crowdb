@@ -3,6 +3,7 @@
 
 // DiskSet + BlockDisk tests: add/find_disk, unknown disk returns nullptr,
 // shutdown clears the map.
+#include "crowdb-common/runtime_path.h"
 #include "disk/block_disk.h"
 #include "disk/disk_set.h"
 #include "disk/types.h"
@@ -24,7 +25,7 @@ namespace
 {
 std::string temp_path()
 {
-    std::string root = "/tmp/crowdb-diskio-diskset-tests";
+    std::string root = crowdb::common::test_runtime_path("crowdb-diskio-diskset").string();
     std::filesystem::create_directories(root);
     char tmpl[128];
     std::snprintf(tmpl, sizeof(tmpl), "%s/dx_XXXXXX", root.c_str());
@@ -53,11 +54,11 @@ TEST(DiskSet, AddAndFindDisk)
     std::string path = temp_path();
     ASSERT_EQ(::truncate(path.c_str(), 4096), 0);
 
-    auto                            engine = std::make_shared<crowdb::diskio::BlockingEngine>(2);
+    auto                              engine = std::make_shared<crowdb::diskio::BlockingEngine>(2);
     std::vector<crowdb::diskio::Zone> zones;
     zones.push_back({0, 0, 1 << 24});
-    auto disk =
-        std::make_shared<crowdb::diskio::BlockDisk>(crowdb::diskio::DiskId{1, 1}, path, engine, std::move(zones), false);
+    auto disk = std::make_shared<crowdb::diskio::BlockDisk>(crowdb::diskio::DiskId{1, 1}, path, engine,
+                                                            std::move(zones), false);
 
     crowdb::diskio::DiskSet set;
     set.add(disk);
@@ -87,13 +88,15 @@ TEST(DiskSet, MultipleDisksAllFindable)
     ASSERT_EQ(::truncate(path1.c_str(), 4096), 0);
     ASSERT_EQ(::truncate(path2.c_str(), 4096), 0);
 
-    auto                            engine1 = std::make_shared<crowdb::diskio::BlockingEngine>(2);
-    auto                            engine2 = std::make_shared<crowdb::diskio::BlockingEngine>(2);
+    auto                              engine1 = std::make_shared<crowdb::diskio::BlockingEngine>(2);
+    auto                              engine2 = std::make_shared<crowdb::diskio::BlockingEngine>(2);
     std::vector<crowdb::diskio::Zone> zones;
     zones.push_back({0, 0, 1 << 24});
 
-    auto disk1 = std::make_shared<crowdb::diskio::BlockDisk>(crowdb::diskio::DiskId{1, 1}, path1, engine1, zones, false);
-    auto disk2 = std::make_shared<crowdb::diskio::BlockDisk>(crowdb::diskio::DiskId{2, 2}, path2, engine2, zones, false);
+    auto disk1 =
+        std::make_shared<crowdb::diskio::BlockDisk>(crowdb::diskio::DiskId{1, 1}, path1, engine1, zones, false);
+    auto disk2 =
+        std::make_shared<crowdb::diskio::BlockDisk>(crowdb::diskio::DiskId{2, 2}, path2, engine2, zones, false);
 
     crowdb::diskio::DiskSet set;
     set.add(disk1);
@@ -114,12 +117,12 @@ TEST(BlockDisk, WriteReadRoundTripViaEngine)
     std::string path = temp_path();
     ASSERT_EQ(::truncate(path.c_str(), 1 << 16), 0);
 
-    auto                            engine     = std::make_shared<crowdb::diskio::BlockingEngine>(4);
-    auto                           *engine_ptr = engine.get();
+    auto                              engine     = std::make_shared<crowdb::diskio::BlockingEngine>(4);
+    auto                             *engine_ptr = engine.get();
     std::vector<crowdb::diskio::Zone> zones;
     zones.push_back({0, 0, 1 << 24});
-    auto disk =
-        std::make_shared<crowdb::diskio::BlockDisk>(crowdb::diskio::DiskId{5, 5}, path, engine, std::move(zones), false);
+    auto disk = std::make_shared<crowdb::diskio::BlockDisk>(crowdb::diskio::DiskId{5, 5}, path, engine,
+                                                            std::move(zones), false);
 
     std::vector<uint8_t> in(4096);
     for (size_t i = 0; i < in.size(); ++i) {
@@ -152,14 +155,14 @@ TEST(BlockDisk, FindZoneReturnsCorrectZone)
     std::string path = temp_path();
     ASSERT_EQ(::truncate(path.c_str(), 4096), 0);
 
-    auto                            engine = std::make_shared<crowdb::diskio::BlockingEngine>(1);
+    auto                              engine = std::make_shared<crowdb::diskio::BlockingEngine>(1);
     std::vector<crowdb::diskio::Zone> zones;
     zones.push_back({0, 0, 4096});
     zones.push_back({1, 4096, 4096});
     zones.push_back({2, 8192, 4096});
 
-    auto disk =
-        std::make_shared<crowdb::diskio::BlockDisk>(crowdb::diskio::DiskId{6, 6}, path, engine, std::move(zones), false);
+    auto disk = std::make_shared<crowdb::diskio::BlockDisk>(crowdb::diskio::DiskId{6, 6}, path, engine,
+                                                            std::move(zones), false);
 
     auto *z0 = disk->find_zone(0);
     auto *z1 = disk->find_zone(1);

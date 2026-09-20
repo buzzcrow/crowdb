@@ -42,8 +42,8 @@ struct Cli {
     rpc_addr: Option<String>,
 
     /// Log directory.
-    #[arg(long, default_value = "log")]
-    log_dir: String,
+    #[arg(long)]
+    log_dir: Option<String>,
 
     /// Also emit warning and error logs to the console.
     #[arg(short = 'l', long)]
@@ -62,9 +62,15 @@ struct Cli {
 #[allow(clippy::too_many_lines)]
 async fn main() {
     let args = Cli::parse();
+    let log_dir = args.log_dir.clone().unwrap_or_else(|| {
+        crowdb_protocol::port::namespace::runtime_root()
+            .join("persistent/manual/chunk-kv/log")
+            .to_string_lossy()
+            .into_owned()
+    });
     let _log_guards = if args.log {
         crowdb_common::logging::init_file_and_console_logging_split(
-            &args.log_dir,
+            &log_dir,
             "crowdb-chunk-kv-server",
             args.log_max_file_mb,
             args.log_max_files,
@@ -73,7 +79,7 @@ async fn main() {
         )
     } else {
         crowdb_common::logging::init_file_logging(
-            &args.log_dir,
+            &log_dir,
             "crowdb-chunk-kv-server",
             args.log_max_file_mb,
             args.log_max_files,
@@ -82,14 +88,14 @@ async fn main() {
     }
     .expect("failed to initialize chunk KV server logging");
     crowdb_tree_ffi::ct_init_logging(
-        &args.log_dir,
+        &log_dir,
         "info",
         args.log_max_file_mb,
         args.log_max_files,
         "crowdb-chunk-kv-server-tree",
     );
     crowdb_rpc_ffi::init_logging(
-        &args.log_dir,
+        &log_dir,
         "info",
         args.log_max_file_mb,
         args.log_max_files,
@@ -255,13 +261,6 @@ async fn main() {
                             continue;
                         }
                     };
-                    if let Err(error) = refresh_service
-                        .commit_catalog_splits(head.generation, &pages)
-                        .await
-                    {
-                        warn!(%error, "catalog refresh could not commit a fenced split parent");
-                        continue;
-                    }
                     match refresh_service.install_catalog_and_reconcile(&head, &pages, &recovered) {
                         Ok(()) => info!(
                             generation = head.generation,
@@ -283,7 +282,7 @@ async fn main() {
         config.instance_id,
         Arc::clone(&service),
         Arc::clone(&storage),
-        config.max_split_fence_lag_records,
+        config.max_split_catchup_lag_records,
     ) {
         Ok(executor) => Arc::new(executor),
         Err(error) => {
@@ -355,6 +354,18 @@ async fn main() {
         return;
     }
     install_latest_grant(&control_store, &service, &config).await;
+    let materialization_service = Arc::clone(&service);
+    let materialization_interval = std::time::Duration::from_millis(config.catalog_refresh_interval_ms);
+    let materialization_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(materialization_interval);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if let Err(error) = materialization_service.materialize_split_overlays().await {
+                warn!(%error, "chunk KV split-overlay materialization pass failed");
+            }
+        }
+    });
     let heartbeat_service = Arc::clone(&service);
     let heartbeat_registry = Arc::clone(&service_registry);
     let heartbeat_store = Arc::clone(&control_store);
@@ -436,6 +447,7 @@ async fn main() {
         error!(%error, "HTTP management server failed");
     }
     heartbeat_task.abort();
+    materialization_task.abort();
     transition_task.abort();
     refresh_task.abort();
     if let Err(error) = service_registry.unregister("chunk-kv", config.instance_id).await {
@@ -479,6 +491,7 @@ async fn bootstrap_initial_catalog(
             artifact: PartitionArtifact {
                 tree_id: bootstrap.tree_id,
                 stream_name: bootstrap.stream_name,
+                tail_overlay: None,
             },
             transition_id: None,
         }],
@@ -529,9 +542,7 @@ async fn install_latest_grant(
                 warn!(%error, "rejected chunk KV serving grant");
             } else if service.health(now_monotonic_ms).catalog_generation == catalog_generation {
                 for assignment in assignments {
-                    if let Err(error) =
-                        service.activate_recovered_partition(assignment.partition_id, assignment.owner_epoch)
-                    {
+                    if let Err(error) = activate_granted_assignment(store, service, &assignment).await {
                         warn!(
                             partition_id_high = assignment.partition_id.high,
                             partition_id_low = assignment.partition_id.low,
@@ -546,6 +557,34 @@ async fn install_latest_grant(
         Ok(None) => service.authority().clear(),
         Err(error) => warn!(%error, "serving-grant refresh failed; retaining local lease deadline"),
     }
+}
+
+async fn activate_granted_assignment(
+    store: &Group0ControlStore,
+    service: &ChunkKvService,
+    assignment: &crowdb_protocol::chunk_kv::ServingAssignment,
+) -> Result<(), String> {
+    let Some(transition_id) = service.catalog_transition_id(assignment.partition_id) else {
+        return service
+            .activate_recovered_partition(assignment.partition_id, assignment.owner_epoch)
+            .map_err(|error| error.to_string());
+    };
+    let transition = store
+        .load_transfer_transition(transition_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Some((transition, _)) = transition {
+        return service
+            .activate_recovered_transfer_partition(
+                assignment.partition_id,
+                assignment.owner_epoch,
+                &transition,
+            )
+            .map_err(|error| error.to_string());
+    }
+    service
+        .activate_recovered_partition(assignment.partition_id, assignment.owner_epoch)
+        .map_err(|error| error.to_string())
 }
 
 async fn recover_assigned_partitions(

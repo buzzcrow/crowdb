@@ -148,6 +148,7 @@ using ct_chunk_page_store_options = struct
 {
     uint64_t tree_id;
     uint64_t owner_epoch;
+    uint64_t open_generation; // 0 => latest; otherwise exact immutable generation
     size_t   pack_bytes;
     uint32_t iu_size;                        // 0 => 64 KiB page framing
     size_t   max_concurrent_packs;           // 0 => 8
@@ -234,6 +235,9 @@ struct ct_root_catalog_callbacks
     uint64_t (*discard_reference_segments)(void *context, uint64_t tree_id, const uint64_t *object_ids,
                                            size_t object_count);
     uint64_t (*reclaim_before)(void *context, uint64_t tree_id, uint64_t generation);
+    ct_status (*pin_generation)(void *context, uint64_t tree_id, uint64_t transition_high, uint64_t transition_low,
+                                uint64_t generation);
+    ct_status (*unpin_generation)(void *context, uint64_t tree_id, uint64_t transition_high, uint64_t transition_low);
     void (*drop_context)(void *context);
 };
 
@@ -249,8 +253,13 @@ void      ct_chunk_transport_free(ct_chunk_transport *transport);
 ct_status ct_chunk_page_store_get_stats(const ct_page_store *store, ct_chunk_page_store_stats *out);
 ct_status ct_chunk_page_store_set_wal_replay_offset(ct_page_store *store, uint64_t offset);
 ct_status ct_chunk_page_store_get_wal_replay_offset(const ct_page_store *store, uint64_t *offset);
+ct_status ct_chunk_page_store_get_manifest_generation(const ct_page_store *store, uint64_t *generation);
 uint64_t  ct_chunk_page_store_reclaim_orphans(ct_page_store *store);
 uint64_t  ct_root_catalog_reclaim_before(ct_root_catalog *catalog, uint64_t tree_id, uint64_t generation);
+ct_status ct_root_catalog_pin_generation(ct_root_catalog *catalog, uint64_t tree_id, uint64_t transition_high,
+                                         uint64_t transition_low, uint64_t generation);
+ct_status ct_root_catalog_unpin_generation(ct_root_catalog *catalog, uint64_t tree_id, uint64_t transition_high,
+                                           uint64_t transition_low);
 ct_status ct_open(const ct_options *opt, ct_tree **out);
 ct_status ct_rebuild_range(ct_tree *source, const ct_options *destination_options, ct_tree **out,
                            ct_range_rebuild_stats *stats);
@@ -435,6 +444,14 @@ ct_status ct_put(ct_tree *t, const uint8_t *key, size_t klen, const uint8_t *val
 ct_status ct_del(ct_tree *t, const uint8_t *key, size_t klen);
 
 ct_status ct_flush(ct_tree *t);
+ct_status ct_begin_split_memtable_view(ct_tree *t, uint64_t *out_generation, uint64_t *out_journal_frontier);
+ct_status ct_install_split_memtable_overlay(ct_tree *destination, ct_tree *source, uint64_t journal_frontier);
+ct_status ct_clear_split_memtable_overlay(ct_tree *destination, ct_tree *source);
+ct_status ct_publish_split_memtable_view(ct_tree *source, uint64_t generation, uint64_t journal_frontier,
+                                         ct_tree *destination, const uint8_t *range_start, size_t range_start_len,
+                                         int has_range_start, const uint8_t *range_end, size_t range_end_len,
+                                         int has_range_end);
+ct_status ct_release_split_memtable_view(ct_tree *t, uint64_t generation);
 
 // Point read. *found is 0/1; on found, *slot and *value (owned) are set.
 ct_status ct_get(ct_tree *t, const uint8_t *key, size_t klen, int32_t *found, uint64_t *slot, ct_buf *value);
@@ -550,9 +567,10 @@ void      ct_uring_submit_writev(ct_uring *uring, int32_t fd, const uint8_t *con
 void ct_uring_submit_sync(ct_uring *uring, int32_t fd, int32_t data_only, ct_uring_callback callback, void *context);
 
 // Range scan over `prefix` (empty = whole keyspace), up to `limit` (0 = all).
-// `start_after` (null or salen = 0 = start from beginning) is an exclusive
-// lower bound: only keys strictly greater than `start_after` are returned,
-// enabling cursor-based pagination without over-fetching the prefix range.
+// `has_start_bound` distinguishes no lower bound from an empty-key lower
+// bound. When it is 1, `start_key` is used as the lower bound and
+// `start_inclusive` selects >= (1) or > (0). Cursor pagination uses
+// `has_start_bound = 1, start_inclusive = 0`.
 // `end_key` (null or elen = 0 = unbounded) is an exclusive upper bound: only
 // keys strictly less than `end_key` are returned. When `include_tombstones`
 // is 1, tombstone entries are included in results. When `keys_only` is 1,
@@ -561,16 +579,10 @@ void ct_uring_submit_sync(ct_uring *uring, int32_t fd, int32_t data_only, ct_uri
 // `out_entries` is a packed owned buffer of records:
 //   [u32 klen][key bytes][u64 slot][u8 tombstone][u32 vlen][value bytes] * count
 // `out_count` receives the number of records; *truncated is set if more matched.
-ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_after, size_t salen,
-                  const uint8_t *end_key, size_t elen, size_t limit, size_t byte_budget, int keys_only,
-                  uint64_t deadline_ms, int include_tombstones, ct_buf *out_entries, uint64_t *out_count,
-                  int32_t *truncated);
-// Inclusive/exclusive lower-bound variant used by ordered seek. Existing
-// ct_scan remains the exclusive ABI.
-ct_status ct_scan_from(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_key, size_t sklen,
-                       int start_inclusive, const uint8_t *end_key, size_t elen, size_t limit, size_t byte_budget,
-                       int keys_only, uint64_t deadline_ms, int include_tombstones, ct_buf *out_entries,
-                       uint64_t *out_count, int32_t *truncated);
+ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_key, size_t sklen,
+                  int has_start_bound, int start_inclusive, const uint8_t *end_key, size_t elen, size_t limit,
+                  size_t byte_budget, int keys_only, uint64_t deadline_ms, int include_tombstones, ct_buf *out_entries,
+                  uint64_t *out_count, int32_t *truncated);
 ct_status ct_seek_reverse(ct_tree *t, const uint8_t *start_key, size_t sklen, int start_inclusive,
                           const uint8_t *begin_key, size_t bklen, int32_t *found, ct_buf *out_key, uint64_t *out_slot,
                           ct_buf *out_value);

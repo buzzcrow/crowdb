@@ -38,14 +38,6 @@ pub enum IoError {
     Internal(String),
 }
 
-impl IoError {
-    /// Whether a read failure is evidence that the segment itself is unavailable.
-    #[must_use]
-    pub(crate) fn is_durable_read_failure(&self) -> bool {
-        matches!(self, Self::ReadFailed(_))
-    }
-}
-
 /// Error returned by object and range reads.
 #[derive(Debug, Error)]
 pub enum ReadError {

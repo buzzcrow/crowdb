@@ -6,21 +6,22 @@ use std::sync::Arc;
 use crowdb_chunk_kv::memory::MemoryPartitionTree;
 use crowdb_chunk_kv::{
     Checkpoint, Partition, PartitionConfig, PartitionId, PartitionJournal, PartitionLifecycle,
-    PartitionRange, PartitionTree, PreparedChildArtifact, SplitArtifact, SplitChild, SplitPlan,
+    PartitionRange, PartitionTree, PreparedSplitWriterArtifact, SplitArtifact, SplitChild, SplitPlan,
     StreamPartitionJournal, TransitionId,
 };
-use crowdb_chunk_kv_server::{ChunkKvService, ServerLifecycle};
+use crowdb_chunk_kv_server::{ChunkKvService, ServerLifecycle, TransferStateMachine};
 use crowdb_chunk_stream::memory::MemoryStreamStore;
 use crowdb_chunk_stream::{
     ChunkStream, StreamBinding, StreamBindingState, StreamChunkStore, StreamConfig, StreamMetadataStore,
     StreamName, StreamRegistry,
 };
 use crowdb_protocol::chunk_kv::{
-    ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
-    ChunkKvRangeCatalogPartitionState, ChunkKvRpcErrorCode, ClientRequestId, DomainFailurePolicy,
-    DomainMonitorDescriptor, Id128, KeyRange, OperationResult, OwnerDescriptor, PartitionArtifact,
-    PointOperation, PointRequest, RequestRouting, ScanDirection, ScanRequest, SeekKind, SeekRequest,
-    ServingAssignment, ServingGrant,
+    AuthorityReleaseProof, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage,
+    ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState, ChunkKvRpcErrorCode, ClientRequestId,
+    DomainFailurePolicy, DomainMonitorDescriptor, Id128, KeyRange, MultiGetRequest, OperationResult,
+    OwnerDescriptor, PartitionArtifact, PointOperation, PointRequest, RequestRouting, ScanDirection,
+    ScanRequest, SeekKind, SeekRequest, ServingAssignment, ServingGrant, TailOverlayArtifact,
+    TargetReadinessProof, TransferPhase, TransferReadinessLimits, TransferTransition,
 };
 
 const INSTANCE_ID: u64 = 7;
@@ -83,6 +84,7 @@ fn catalog(
             artifact: PartitionArtifact {
                 tree_id: 1,
                 stream_name,
+                tail_overlay: None,
             },
             transition_id: None,
         }],
@@ -104,10 +106,52 @@ fn catalog(
     (head, page)
 }
 
+fn prepared_writer_artifact(writer: &Partition) -> PreparedSplitWriterArtifact {
+    let snapshot = writer.snapshot();
+    PreparedSplitWriterArtifact {
+        partition_id: snapshot.partition_id,
+        range: snapshot.range,
+        ownership_epoch: snapshot.ownership_epoch,
+        tree_id: 1,
+        tree_manifest: 0,
+        root_manifest_generation: 1,
+        stream_name: snapshot.stream_name,
+        base_applied_seq: 0,
+        parent_id: PartitionId { high: 1, low: 2 },
+        parent_epoch: EPOCH,
+        parent_stream_name: StreamName { high: 30, low: 31 },
+        parent_stream_manifest_generation: 1,
+        parent_replay_offset: 0,
+        parent_cutover_offset: 0,
+        applied_seq: 0,
+        child_stream_start_seq: 1,
+    }
+}
+
 async fn prepared_partition(
     partition_id: PartitionId,
     stream_name: StreamName,
     owner_epoch: u64,
+) -> Partition {
+    prepared_partition_range(
+        partition_id,
+        PartitionRange {
+            start: Some(Vec::new()),
+            end: None,
+        },
+        stream_name,
+        owner_epoch,
+        1,
+    )
+    .await
+}
+
+async fn prepared_partition_range(
+    partition_id: PartitionId,
+    range: PartitionRange,
+    stream_name: StreamName,
+    owner_epoch: u64,
+    tree_id: u64,
 ) -> Partition {
     let store = Arc::new(MemoryStreamStore::new(4_096));
     let stream = ChunkStream::create(
@@ -128,25 +172,479 @@ async fn prepared_partition(
     .unwrap();
     Partition::recover_prepared_assignment(
         partition_id,
-        PartitionRange {
-            start: Some(Vec::new()),
-            end: None,
-        },
+        range,
         owner_epoch,
         Checkpoint {
-            tree_id: 1,
+            tree_id,
             tree_manifest: 0,
+            root_manifest_generation: 1,
             applied_seq: 0,
             stream_name,
             stream_manifest_generation: 1,
             replay_offset: 0,
         },
         PartitionConfig::default(),
-        Arc::new(MemoryPartitionTree::default()),
+        Arc::new(MemoryPartitionTree::with_tree_id(tree_id)),
         Arc::new(StreamPartitionJournal::new(stream, stream_name)),
     )
     .await
     .unwrap()
+}
+
+async fn pending_transfer_fixture() -> (Partition, PreparedSplitWriterArtifact, Arc<dyn PartitionJournal>) {
+    let store = Arc::new(MemoryStreamStore::new(4_096));
+    let source_name = StreamName { high: 50, low: 1 };
+    let target_name = StreamName { high: 50, low: 2 };
+    let open_journal = |stream: ChunkStream, name| -> Arc<dyn PartitionJournal> {
+        Arc::new(StreamPartitionJournal::new(stream, name))
+    };
+    let binding = |stream_name| StreamBinding {
+        stream_name,
+        metadata_group_id: 7,
+        binding_generation: 1,
+        state: StreamBindingState::Active,
+        owner_kind: Some("chunk-kv-partition".into()),
+    };
+    let source = ChunkStream::create(
+        binding(source_name),
+        EPOCH,
+        StreamConfig::default(),
+        store.clone() as Arc<dyn StreamRegistry>,
+        store.clone() as Arc<dyn StreamMetadataStore>,
+        store.clone() as Arc<dyn StreamChunkStore>,
+    )
+    .await
+    .unwrap();
+    let target = ChunkStream::create(
+        binding(target_name),
+        EPOCH + 1,
+        StreamConfig::default(),
+        store.clone() as Arc<dyn StreamRegistry>,
+        store.clone() as Arc<dyn StreamMetadataStore>,
+        store as Arc<dyn StreamChunkStore>,
+    )
+    .await
+    .unwrap();
+    let artifact = PreparedSplitWriterArtifact {
+        partition_id: PartitionId { high: 1, low: 2 },
+        range: PartitionRange {
+            start: Some(Vec::new()),
+            end: None,
+        },
+        ownership_epoch: EPOCH + 1,
+        tree_id: 55,
+        tree_manifest: 0,
+        root_manifest_generation: 1,
+        stream_name: target_name,
+        base_applied_seq: 0,
+        parent_id: PartitionId { high: 9, low: 9 },
+        parent_epoch: EPOCH,
+        parent_stream_name: source_name,
+        parent_stream_manifest_generation: 1,
+        parent_replay_offset: 0,
+        parent_cutover_offset: 0,
+        applied_seq: 0,
+        child_stream_start_seq: 1,
+    };
+    let source_journal = open_journal(source, source_name);
+    let partition = Partition::recover_prepared_overlay(
+        artifact.clone(),
+        Checkpoint {
+            tree_id: 55,
+            tree_manifest: 0,
+            root_manifest_generation: 1,
+            applied_seq: 0,
+            stream_name: target_name,
+            stream_manifest_generation: 1,
+            replay_offset: 0,
+        },
+        PartitionConfig::default(),
+        Arc::new(MemoryPartitionTree::with_tree_id(55)),
+        open_journal(target, target_name),
+        Arc::clone(&source_journal),
+    )
+    .await
+    .unwrap();
+    (partition, artifact, source_journal)
+}
+
+async fn pending_transfer_partition() -> Partition {
+    pending_transfer_fixture().await.0
+}
+
+fn committed_transfer(artifact: &PreparedSplitWriterArtifact) -> TransferTransition {
+    let source_artifact = PartitionArtifact {
+        tree_id: artifact.tree_id,
+        stream_name: artifact.parent_stream_name,
+        tail_overlay: None,
+    };
+    let target_artifact = PartitionArtifact {
+        tree_id: artifact.tree_id,
+        stream_name: artifact.stream_name,
+        tail_overlay: Some(TailOverlayArtifact {
+            source_partition_id: Id128 {
+                high: artifact.parent_id.high,
+                low: artifact.parent_id.low,
+            },
+            source_epoch: artifact.parent_epoch,
+            source_stream_name: artifact.parent_stream_name,
+            source_stream_manifest_generation: artifact.parent_stream_manifest_generation,
+            replay_offset: artifact.parent_replay_offset,
+            cutover_offset: artifact.parent_cutover_offset,
+            base_root_manifest_generation: artifact.root_manifest_generation,
+            base_tree_manifest: artifact.tree_manifest,
+            base_applied_seq: artifact.base_applied_seq,
+            cutover_seq: artifact.applied_seq,
+            target_stream_start_seq: artifact.child_stream_start_seq,
+        }),
+    };
+    let mut machine = TransferStateMachine::restore(TransferTransition {
+        transition_id: Id128 { high: 60, low: 61 },
+        partition_id: Id128 {
+            high: artifact.partition_id.high,
+            low: artifact.partition_id.low,
+        },
+        range: KeyRange {
+            start: artifact.range.start.clone().unwrap_or_default(),
+            end: artifact.range.end.clone(),
+        },
+        source: OwnerDescriptor {
+            instance_id: 6,
+            rpc_endpoint: "127.0.0.1:9906".into(),
+        },
+        source_epoch: artifact.parent_epoch,
+        target: OwnerDescriptor {
+            instance_id: INSTANCE_ID,
+            rpc_endpoint: "127.0.0.1:9900".into(),
+        },
+        target_epoch: artifact.ownership_epoch,
+        artifact: source_artifact,
+        target_artifact,
+        readiness_limits: TransferReadinessLimits {
+            max_tail_records: 100,
+            max_tail_bytes: 1_000_000,
+            max_estimated_catchup_ms: 1_000,
+            prepare_deadline_ms: 1_000,
+            forwarding_grace_ms: 1_000,
+        },
+        planned_at_ms: 0,
+        old_grant_expires_at_ms: 100,
+        phase: TransferPhase::Planned,
+        release_proof: None,
+        readiness_proof: None,
+        catchup_proof: None,
+        failure: None,
+    })
+    .unwrap();
+    machine.begin_source_prepare().unwrap();
+    machine
+        .record_source_base(machine.transition().target_artifact.clone())
+        .unwrap();
+    machine.begin_target_prepare().unwrap();
+    let readiness = TargetReadinessProof {
+        target_instance_id: INSTANCE_ID,
+        target_epoch: artifact.ownership_epoch,
+        artifact: machine.transition().target_artifact.clone(),
+        durable_tail: artifact.applied_seq,
+    };
+    machine.record_target_ready(readiness.clone()).unwrap();
+    machine.authorize_source_fence().unwrap();
+    machine
+        .record_source_fence(AuthorityReleaseProof::ExplicitFence {
+            source_instance_id: 6,
+            source_epoch: artifact.parent_epoch,
+            durable_tail: artifact.applied_seq,
+            durable_tail_offset: artifact.parent_cutover_offset,
+        })
+        .unwrap();
+    machine.mark_catchup_published().unwrap();
+    machine.record_target_caught_up(readiness).unwrap();
+    machine.commit_catalog().unwrap();
+    machine.transition().clone()
+}
+
+fn install_local_split_catalog(
+    service: &ChunkKvService,
+    retained: &Partition,
+    child: &Partition,
+    split_key: &[u8],
+) {
+    let owner = OwnerDescriptor {
+        instance_id: INSTANCE_ID,
+        rpc_endpoint: "127.0.0.1:9900".into(),
+    };
+    let entry = |partition_id, range, tree_id, stream_name| ChunkKvRangeCatalogEntry {
+        partition_id,
+        range,
+        owner: owner.clone(),
+        owner_epoch: EPOCH + 1,
+        state: ChunkKvRangeCatalogPartitionState::Serving,
+        artifact: PartitionArtifact {
+            tree_id,
+            stream_name,
+            tail_overlay: None,
+        },
+        transition_id: Some(Id128 { high: 22, low: 23 }),
+    };
+    let mut page = ChunkKvRangeCatalogPage {
+        generation: 2,
+        page_index: 0,
+        entries: vec![
+            entry(
+                Id128 { high: 1, low: 2 },
+                KeyRange {
+                    start: Vec::new(),
+                    end: Some(split_key.to_vec()),
+                },
+                40,
+                retained.snapshot().stream_name,
+            ),
+            entry(
+                Id128 { high: 22, low: 25 },
+                KeyRange {
+                    start: split_key.to_vec(),
+                    end: None,
+                },
+                41,
+                child.snapshot().stream_name,
+            ),
+        ],
+        checksum: [0; 32],
+    };
+    page.seal().unwrap();
+    let mut head = ChunkKvRangeCatalogHead {
+        generation: 2,
+        previous_generation: Some(1),
+        pages: vec![ChunkKvRangeCatalogPageRef {
+            page_generation: 2,
+            page_index: 0,
+            first_key: Vec::new(),
+            page_checksum: page.checksum,
+        }],
+        checksum: [0; 32],
+    };
+    head.seal().unwrap();
+    service
+        .install_catalog_and_reconcile(&head, &[page], &[])
+        .unwrap();
+    let mut grant = ServingGrant {
+        instance_id: INSTANCE_ID,
+        lease_sequence: 2,
+        catalog_generation: 2,
+        issued_at_ms: 1_100,
+        expires_at_ms: 13_100,
+        assignments: vec![
+            ServingAssignment {
+                partition_id: Id128 { high: 1, low: 2 },
+                owner_epoch: EPOCH + 1,
+            },
+            ServingAssignment {
+                partition_id: Id128 { high: 22, low: 25 },
+                owner_epoch: EPOCH + 1,
+            },
+        ],
+        assignment_digest: [0; 32],
+    };
+    grant.seal();
+    service
+        .authority()
+        .install(grant, &policy(), 1_100, 50_000)
+        .unwrap();
+}
+
+async fn assert_old_parent_ordered_reads(service: &ChunkKvService) {
+    for (sequence, key) in [(80, b"b".as_slice()), (81, b"t".as_slice())] {
+        let response = service
+            .handle_point(
+                PointRequest {
+                    routing: routing(sequence),
+                    operation: PointOperation::Put {
+                        key: key.to_vec(),
+                        value: key.to_vec(),
+                    },
+                },
+                1_500,
+                50_100,
+            )
+            .await;
+        assert!(response.result.is_ok());
+    }
+    let seek = service
+        .handle_seek(
+            SeekRequest {
+                routing: routing(82),
+                key: b"b".to_vec(),
+                kind: SeekKind::Higher,
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    let OperationResult::Value(Some(value)) = seek.result.unwrap() else {
+        panic!("expected seek to cross the local writer boundary")
+    };
+    assert_eq!(value.key, b"t");
+    let reverse_seek = service
+        .handle_seek(
+            SeekRequest {
+                routing: routing(86),
+                key: b"t".to_vec(),
+                kind: SeekKind::Lower,
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    let OperationResult::Value(Some(value)) = reverse_seek.result.unwrap() else {
+        panic!("expected reverse seek to cross the local writer boundary")
+    };
+    assert_eq!(value.key, b"b");
+    let scan = service
+        .handle_scan(
+            ScanRequest {
+                routing: routing(83),
+                start: Some(b"b".to_vec()),
+                end: Some(b"z".to_vec()),
+                direction: ScanDirection::Forward,
+                limit: 8,
+                continuation: None,
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    let OperationResult::Scan { items, continuation } = scan.result.unwrap() else {
+        panic!("expected scan result")
+    };
+    assert_eq!(
+        items.iter().map(|item| item.key.as_slice()).collect::<Vec<_>>(),
+        [b"b", b"t"]
+    );
+    assert!(continuation.is_none());
+    let reverse = service
+        .handle_scan(
+            ScanRequest {
+                routing: routing(87),
+                start: Some(b"b".to_vec()),
+                end: Some(b"z".to_vec()),
+                direction: ScanDirection::Reverse,
+                limit: 8,
+                continuation: None,
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    let OperationResult::Scan { items, .. } = reverse.result.unwrap() else {
+        panic!("expected reverse scan result")
+    };
+    assert_eq!(
+        items.iter().map(|item| item.key.as_slice()).collect::<Vec<_>>(),
+        [b"t", b"b"]
+    );
+}
+
+async fn assert_old_parent_scan_continuation(service: &ChunkKvService) {
+    let request = |sequence, continuation| ScanRequest {
+        routing: routing(sequence),
+        start: Some(b"b".to_vec()),
+        end: Some(b"z".to_vec()),
+        direction: ScanDirection::Forward,
+        limit: 1,
+        continuation,
+    };
+    let first_page = service.handle_scan(request(84, None), 1_500, 50_100).await;
+    let OperationResult::Scan {
+        items,
+        continuation: Some(continuation),
+    } = first_page.result.unwrap()
+    else {
+        panic!("expected a split-lineage continuation")
+    };
+    assert_eq!(items[0].key, b"b");
+    let second_page = service
+        .handle_scan(request(85, Some(continuation)), 1_500, 50_100)
+        .await;
+    let OperationResult::Scan { items, .. } = second_page.result.unwrap() else {
+        panic!("expected continued split-lineage scan")
+    };
+    assert_eq!(items[0].key, b"t");
+}
+
+async fn assert_retained_seek_needs_no_child_grant(service: &ChunkKvService) {
+    let mut grant = ServingGrant {
+        instance_id: INSTANCE_ID,
+        lease_sequence: 3,
+        catalog_generation: 2,
+        issued_at_ms: 1_200,
+        expires_at_ms: 13_200,
+        assignments: vec![ServingAssignment {
+            partition_id: Id128 { high: 1, low: 2 },
+            owner_epoch: EPOCH + 1,
+        }],
+        assignment_digest: [0; 32],
+    };
+    grant.seal();
+    service
+        .authority()
+        .install(grant, &policy(), 1_200, 50_200)
+        .unwrap();
+    let response = service
+        .handle_seek(
+            SeekRequest {
+                routing: routing(88),
+                key: b"b".to_vec(),
+                kind: SeekKind::Ceiling,
+            },
+            1_500,
+            50_300,
+        )
+        .await;
+    let OperationResult::Value(Some(value)) = response.result.unwrap() else {
+        panic!("expected the resolved retained writer without child authority")
+    };
+    assert_eq!(value.key, b"b");
+}
+
+async fn assert_all_partition_loads_recoverable(service: &ChunkKvService, expected: bool) {
+    let observation = service
+        .registry_observation_with_load_samples(1_024, 0, 0)
+        .await
+        .unwrap();
+    assert!(
+        observation
+            .partition_loads
+            .iter()
+            .all(|load| load.independently_recoverable == expected),
+        "all observed partition writers should have recoverability={expected}"
+    );
+}
+
+fn assert_hosts_exact_child_assignment(service: &ChunkKvService, child: &Partition, split_key: Vec<u8>) {
+    let child_snapshot = child.snapshot();
+    let entry = ChunkKvRangeCatalogEntry {
+        partition_id: Id128 { high: 22, low: 25 },
+        range: KeyRange {
+            start: split_key,
+            end: None,
+        },
+        owner: OwnerDescriptor {
+            instance_id: INSTANCE_ID,
+            rpc_endpoint: "127.0.0.1:9900".into(),
+        },
+        owner_epoch: child_snapshot.ownership_epoch,
+        state: ChunkKvRangeCatalogPartitionState::Serving,
+        artifact: PartitionArtifact {
+            tree_id: 41,
+            stream_name: child_snapshot.stream_name,
+            tail_overlay: None,
+        },
+        transition_id: Some(Id128 { high: 22, low: 23 }),
+    };
+    assert!(service.hosts_catalog_assignment(&entry));
+    let mut stale_entry = entry;
+    stale_entry.owner_epoch = stale_entry.owner_epoch.saturating_add(1);
+    assert!(!service.hosts_catalog_assignment(&stale_entry));
 }
 
 async fn fixture() -> (ChunkKvService, Partition) {
@@ -234,19 +732,98 @@ async fn matching_grant_activation_promotes_a_replayed_partition() {
 }
 
 #[tokio::test]
-async fn catalog_cutover_commits_the_exact_fenced_split_parent() {
+async fn committed_transfer_activates_a_recovered_overlay() {
+    let (partition, artifact, _) = pending_transfer_fixture().await;
+    let transition = committed_transfer(&artifact);
+    let mut page = ChunkKvRangeCatalogPage {
+        generation: 1,
+        page_index: 0,
+        entries: vec![ChunkKvRangeCatalogEntry {
+            partition_id: transition.partition_id,
+            range: transition.range.clone(),
+            owner: transition.target.clone(),
+            owner_epoch: transition.target_epoch,
+            state: ChunkKvRangeCatalogPartitionState::Serving,
+            artifact: transition.target_artifact.clone(),
+            transition_id: Some(transition.transition_id),
+        }],
+        checksum: [0; 32],
+    };
+    page.seal().unwrap();
+    let mut head = ChunkKvRangeCatalogHead {
+        generation: 1,
+        previous_generation: None,
+        pages: vec![ChunkKvRangeCatalogPageRef {
+            page_generation: 1,
+            page_index: 0,
+            first_key: Vec::new(),
+            page_checksum: page.checksum,
+        }],
+        checksum: [0; 32],
+    };
+    head.seal().unwrap();
+    let service = ChunkKvService::new(INSTANCE_ID, 4).unwrap();
+    service
+        .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&partition))
+        .unwrap();
+
+    assert!(service
+        .activate_recovered_partition(transition.partition_id, transition.target_epoch)
+        .is_err());
+    let mut mismatched = transition.clone();
+    mismatched.transition_id.low += 1;
+    assert!(service
+        .activate_recovered_transfer_partition(transition.partition_id, transition.target_epoch, &mismatched)
+        .is_err());
+    service
+        .activate_recovered_transfer_partition(transition.partition_id, transition.target_epoch, &transition)
+        .unwrap();
+    assert_eq!(partition.lifecycle(), PartitionLifecycle::Serving);
+}
+
+#[tokio::test]
+async fn matching_grant_refresh_keeps_a_preparing_parent_active() {
+    let (service, partition) = fixture().await;
+    partition
+        .begin_split(SplitPlan {
+            transition_id: TransitionId { high: 22, low: 23 },
+            parent_id: PartitionId { high: 1, low: 2 },
+            parent_epoch: EPOCH,
+            parent_range: PartitionRange {
+                start: Some(Vec::new()),
+                end: None,
+            },
+            parent_next_epoch: EPOCH + 1,
+            split_key: b"m".to_vec(),
+            child: SplitChild {
+                partition_id: PartitionId { high: 22, low: 25 },
+                range: PartitionRange {
+                    start: Some(b"m".to_vec()),
+                    end: None,
+                },
+                ownership_epoch: EPOCH + 1,
+            },
+        })
+        .await
+        .unwrap();
+
+    service
+        .activate_recovered_partition(Id128 { high: 1, low: 2 }, EPOCH)
+        .unwrap();
+
+    assert_eq!(partition.snapshot().lifecycle, PartitionLifecycle::SplitPreparing);
+    assert!(
+        !service.registry_observation(1_024, 0).hosted[0].recovering,
+        "a preparing parent must remain eligible for serving-grant renewal"
+    );
+}
+
+#[tokio::test]
+async fn prepared_split_lineage_suppresses_catalog_recovery() {
     let (service, parent) = fixture().await;
-    let transition_id = TransitionId { high: 8, low: 9 };
-    let left_id = PartitionId { high: 8, low: 10 };
-    let right_id = PartitionId { high: 8, low: 11 };
-    let left_range = PartitionRange {
-        start: Some(Vec::new()),
-        end: Some(b"m".to_vec()),
-    };
-    let right_range = PartitionRange {
-        start: Some(b"m".to_vec()),
-        end: None,
-    };
+    let transition_id = TransitionId { high: 22, low: 23 };
+    let child_id = PartitionId { high: 22, low: 25 };
+    let split_key = b"m".to_vec();
     parent
         .begin_split(SplitPlan {
             transition_id,
@@ -256,85 +833,73 @@ async fn catalog_cutover_commits_the_exact_fenced_split_parent() {
                 start: Some(Vec::new()),
                 end: None,
             },
-            split_key: b"m".to_vec(),
-            left: SplitChild {
-                partition_id: left_id,
+            parent_next_epoch: EPOCH + 1,
+            split_key: split_key.clone(),
+            child: SplitChild {
+                partition_id: child_id,
+                range: PartitionRange {
+                    start: Some(split_key.clone()),
+                    end: None,
+                },
                 ownership_epoch: EPOCH + 1,
-                range: left_range.clone(),
-            },
-            right: SplitChild {
-                partition_id: right_id,
-                ownership_epoch: EPOCH + 1,
-                range: right_range.clone(),
             },
         })
         .await
         .unwrap();
-    parent.fence_split(transition_id).await.unwrap();
-    let cutover_seq = parent.snapshot().applied_seq;
+    let retained = prepared_partition_range(
+        PartitionId { high: 1, low: 2 },
+        PartitionRange {
+            start: Some(Vec::new()),
+            end: Some(split_key.clone()),
+        },
+        StreamName { high: 40, low: 41 },
+        EPOCH + 1,
+        40,
+    )
+    .await;
+    let child = prepared_partition_range(
+        child_id,
+        PartitionRange {
+            start: Some(split_key.clone()),
+            end: None,
+        },
+        StreamName { high: 40, low: 42 },
+        EPOCH + 1,
+        41,
+    )
+    .await;
+    parent
+        .install_split_ingress(retained.clone(), child.clone())
+        .await
+        .unwrap();
     let artifact = SplitArtifact {
         transition_id,
         parent_id: PartitionId { high: 1, low: 2 },
         parent_epoch: EPOCH,
-        cutover_seq,
-        left: PreparedChildArtifact {
-            partition_id: left_id,
-            range: left_range,
-            ownership_epoch: EPOCH + 1,
-            tree_id: 81,
-            tree_manifest: 1,
-            stream_name: StreamName { high: 81, low: 1 },
-            applied_seq: cutover_seq,
-        },
-        right: PreparedChildArtifact {
-            partition_id: right_id,
-            range: right_range,
-            ownership_epoch: EPOCH + 1,
-            tree_id: 82,
-            tree_manifest: 1,
-            stream_name: StreamName { high: 82, low: 1 },
-            applied_seq: cutover_seq,
-        },
+        parent_next_epoch: EPOCH + 1,
+        shared_view_generation: 1,
+        cutover_seq: 0,
+        retained_parent: prepared_writer_artifact(&retained),
+        child: prepared_writer_artifact(&child),
     };
+    retained.activate_recovered(EPOCH + 1).unwrap();
+    child.activate_recovered(EPOCH + 1).unwrap();
+    parent.begin_split_finalization(transition_id).await.unwrap();
     parent.record_split_artifact(artifact.clone()).await.unwrap();
-    let mut page = ChunkKvRangeCatalogPage {
-        generation: 2,
-        page_index: 0,
-        entries: [&artifact.left, &artifact.right]
-            .into_iter()
-            .map(|child| ChunkKvRangeCatalogEntry {
-                partition_id: Id128 {
-                    high: child.partition_id.high,
-                    low: child.partition_id.low,
-                },
-                range: KeyRange {
-                    start: child.range.start.clone().unwrap_or_default(),
-                    end: child.range.end.clone(),
-                },
-                owner: OwnerDescriptor {
-                    instance_id: INSTANCE_ID,
-                    rpc_endpoint: "127.0.0.1:9900".into(),
-                },
-                owner_epoch: child.ownership_epoch,
-                state: ChunkKvRangeCatalogPartitionState::Serving,
-                artifact: PartitionArtifact {
-                    tree_id: child.tree_id,
-                    stream_name: child.stream_name,
-                },
-                transition_id: Some(Id128 {
-                    high: transition_id.high,
-                    low: transition_id.low,
-                }),
-            })
-            .collect(),
-        checksum: [0; 32],
-    };
-    page.seal().unwrap();
+    service.record_local_split_ready(&artifact).await.unwrap();
+    assert_eq!(parent.lifecycle(), PartitionLifecycle::Serving);
+    assert_all_partition_loads_recoverable(&service, false).await;
 
-    service.commit_catalog_splits(2, &[page]).await.unwrap();
+    assert_old_parent_ordered_reads(&service).await;
+    install_local_split_catalog(&service, &retained, &child, &split_key);
+    assert_all_partition_loads_recoverable(&service, true).await;
+    assert_old_parent_ordered_reads(&service).await;
+    assert_old_parent_scan_continuation(&service).await;
+    assert_retained_seek_needs_no_child_grant(&service).await;
 
-    assert_eq!(parent.lifecycle(), PartitionLifecycle::Retired);
-    assert_eq!(service.metrics_snapshot().split_commits, 1);
+    service.remove_partition(Id128 { high: 1, low: 2 });
+    service.remove_partition(Id128 { high: 22, low: 25 });
+    assert_hosts_exact_child_assignment(&service, &child, split_key);
 }
 
 #[tokio::test]
@@ -368,6 +933,148 @@ async fn newer_catalog_replaces_hosted_assignments_only_after_recovery() {
     assert_eq!(health.partitions[0].partition_id, partition_id);
     assert_eq!(health.partitions[0].owner_epoch, next_epoch);
     assert_eq!(health.partitions[0].lifecycle, PartitionLifecycle::Prepared);
+}
+
+#[tokio::test]
+async fn catching_up_target_appends_unconditional_write_before_initialization() {
+    let (service, _) = fixture().await;
+    let partition_id = Id128 { high: 1, low: 2 };
+    let (target, final_artifact, source_journal) = pending_transfer_fixture().await;
+    let stream_name = target.snapshot().stream_name;
+    let (head, mut page) = catalog(partition_id, stream_name, EPOCH + 1, 2, Some(1));
+    page.entries[0].state = ChunkKvRangeCatalogPartitionState::TargetCatchingUp;
+    page.entries[0].transition_id = Some(Id128 { high: 40, low: 41 });
+    page.entries[0].artifact.tree_id = final_artifact.tree_id;
+    page.entries[0].artifact.tail_overlay = Some(TailOverlayArtifact {
+        source_partition_id: Id128 {
+            high: final_artifact.parent_id.high,
+            low: final_artifact.parent_id.low,
+        },
+        source_epoch: final_artifact.parent_epoch,
+        source_stream_name: final_artifact.parent_stream_name,
+        source_stream_manifest_generation: final_artifact.parent_stream_manifest_generation,
+        replay_offset: final_artifact.parent_replay_offset,
+        cutover_offset: final_artifact.parent_cutover_offset,
+        base_root_manifest_generation: final_artifact.root_manifest_generation,
+        base_tree_manifest: final_artifact.tree_manifest,
+        base_applied_seq: final_artifact.base_applied_seq,
+        cutover_seq: final_artifact.applied_seq,
+        target_stream_start_seq: final_artifact.child_stream_start_seq,
+    });
+    page.seal().unwrap();
+    let mut head = head;
+    head.pages[0].page_checksum = page.checksum;
+    head.seal().unwrap();
+    service
+        .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&target))
+        .unwrap();
+    let stale = service
+        .handle_point(
+            PointRequest {
+                routing: routing(49),
+                operation: PointOperation::Put {
+                    key: b"object".to_vec(),
+                    value: b"stale".to_vec(),
+                },
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    let stale_failure = stale.result.unwrap_err();
+    assert_eq!(stale_failure.code, ChunkKvRpcErrorCode::NotMyRange);
+    assert_eq!(
+        stale_failure.owner_hint.unwrap().owner_epoch,
+        final_artifact.ownership_epoch
+    );
+    assert_eq!(target.snapshot().journal_durable_seq, 0);
+
+    let mut route = routing(50);
+    route.map_revision = 2;
+    route.owner_epoch = EPOCH + 1;
+    let response = service
+        .handle_point(
+            PointRequest {
+                routing: route,
+                operation: PointOperation::Put {
+                    key: b"object".to_vec(),
+                    value: b"metadata".to_vec(),
+                },
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    assert!(response.result.is_ok());
+    assert_eq!(target.snapshot().journal_durable_seq, 1);
+    assert_eq!(target.snapshot().applied_seq, 0);
+    assert_eq!(target.lifecycle(), PartitionLifecycle::Prepared);
+
+    target
+        .catch_up_prepared_transfer(final_artifact, source_journal)
+        .await
+        .unwrap();
+    assert_eq!(target.snapshot().applied_seq, 1);
+    assert_eq!(target.lifecycle(), PartitionLifecycle::Serving);
+    assert_eq!(
+        target
+            .get(EPOCH + 1, b"object", None)
+            .await
+            .unwrap()
+            .unwrap()
+            .value,
+        b"metadata"
+    );
+}
+
+#[tokio::test]
+async fn catching_up_read_waits_are_time_and_count_bounded() {
+    let target = pending_transfer_partition().await;
+    let service = Arc::new(ChunkKvService::new_with_limits(7, 4, 1_024, 1, 20).unwrap());
+    let (head, mut page) = catalog(
+        Id128 { high: 1, low: 2 },
+        target.snapshot().stream_name,
+        EPOCH + 1,
+        1,
+        None,
+    );
+    page.entries[0].state = ChunkKvRangeCatalogPartitionState::TargetCatchingUp;
+    page.entries[0].transition_id = Some(Id128 { high: 40, low: 42 });
+    page.seal().unwrap();
+    let mut head = head;
+    head.pages[0].page_checksum = page.checksum;
+    head.seal().unwrap();
+    service
+        .install_catalog_and_reconcile(&head, &[page], std::slice::from_ref(&target))
+        .unwrap();
+    let request = |sequence| {
+        let mut route = routing(sequence);
+        route.owner_epoch = EPOCH + 1;
+        route.deadline_ms = Some(10_000);
+        PointRequest {
+            routing: route,
+            operation: PointOperation::Get {
+                key: b"object".to_vec(),
+            },
+        }
+    };
+    let first = tokio::spawn({
+        let service = Arc::clone(&service);
+        async move { service.handle_point(request(51), 1_500, 50_100).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+
+    let capacity_limited = service.handle_point(request(52), 1_500, 50_100).await;
+    let timed_out = first.await.unwrap();
+
+    assert_eq!(
+        capacity_limited.result.unwrap_err().code,
+        ChunkKvRpcErrorCode::TargetNotReady
+    );
+    assert_eq!(
+        timed_out.result.unwrap_err().code,
+        ChunkKvRpcErrorCode::TargetNotReady
+    );
 }
 
 #[tokio::test]
@@ -413,7 +1120,42 @@ async fn direct_put_get_preserves_object_metadata_and_position() {
 }
 
 #[tokio::test]
-async fn stale_route_and_expired_deadline_append_nothing() {
+async fn multi_get_accepts_a_stale_catalog_route() {
+    let (service, _) = fixture().await;
+    let key = b"bucket/object".to_vec();
+    let put = service
+        .handle_point(
+            PointRequest {
+                routing: routing(71),
+                operation: PointOperation::Put {
+                    key: key.clone(),
+                    value: b"chunk=44".to_vec(),
+                },
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    assert!(put.result.is_ok());
+
+    let mut stale = routing(72);
+    stale.map_revision = 99;
+    stale.owner_epoch = EPOCH + 99;
+    let response = service
+        .handle_multi_get(
+            MultiGetRequest {
+                routing: stale,
+                keys: vec![key],
+            },
+            1_500,
+            50_100,
+        )
+        .await;
+    assert!(response.result.is_ok());
+}
+
+#[tokio::test]
+async fn stale_route_is_served_and_expired_deadline_appends_nothing() {
     let (service, partition) = fixture().await;
     assert_eq!(service.health(50_100).lifecycle, ServerLifecycle::Serving);
     let before = partition.snapshot().journal_durable_seq;
@@ -432,7 +1174,8 @@ async fn stale_route_and_expired_deadline_append_nothing() {
             50_100,
         )
         .await;
-    assert_eq!(response.result.unwrap_err().code, ChunkKvRpcErrorCode::NotMyRange);
+    assert!(response.result.is_ok());
+    let after_stale_route = partition.snapshot().journal_durable_seq;
 
     let response = service
         .handle_point(
@@ -450,7 +1193,8 @@ async fn stale_route_and_expired_deadline_append_nothing() {
         response.result.unwrap_err().code,
         ChunkKvRpcErrorCode::RequestExpired
     );
-    assert_eq!(partition.snapshot().journal_durable_seq, before);
+    assert!(after_stale_route > before);
+    assert_eq!(partition.snapshot().journal_durable_seq, after_stale_route);
 }
 
 #[tokio::test]

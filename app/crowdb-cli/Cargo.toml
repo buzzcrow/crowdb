@@ -39,14 +39,14 @@ thiserror = "1"
 # in front of crowdb-kv-server, previously a dev-dependency-only use).
 crowdb-web = { path = "../crowdb-web" }
 axum = "0.7"
-dirs = "5"
 libc = "0.2.189"
 crossbeam-channel = "0.5.16"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+quick-xml = "0.38"
 
 [dev-dependencies]
 crowdb-rpc-ffi = { path = "../../lib/crowdb-rpc/ffi", features = ["test-util"] }
 crowdb-test-harness = { path = "../../lib/crowdb-test-harness" }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
 [[test]]
 name = "cluster_cli_test"
@@ -79,3 +79,7 @@ path = "tests/disk_workload_test.rs"
 [[test]]
 name = "chunkdb_bench_test"
 path = "tests/chunkdb_bench_test.rs"
+
+[[test]]
+name = "s3_cli_test"
+path = "tests/s3_cli_test.rs"

@@ -584,6 +584,31 @@ class Crowdbtree
     // flush().
     Status flush();
 
+    // Moves the currently visible L0 tables into one split-owned shared view
+    // and installs a fresh active table for post-prepare writes. Normal flush
+    // and reclamation leave that shared view alone until its split session
+    // explicitly releases it.
+    Status begin_split_memtable_view(uint64_t *out_generation, uint64_t *out_journal_frontier);
+
+    // Makes the source's current L0 generations immediately visible to this
+    // range-bounded writer at `journal_frontier`. The source outlives the
+    // destination until clear_split_memtable_overlay() completes.
+    Status install_split_memtable_overlay(Crowdbtree &source, uint64_t journal_frontier);
+
+    // Stops consulting the source L0 after its filtered entries have been
+    // bulk-published into this writer.
+    Status clear_split_memtable_overlay(Crowdbtree &source);
+
+    // Releases the split-owned shared view after both derived range trees have
+    // durably published it. The generation fences stale release attempts.
+    Status release_split_memtable_view(uint64_t generation);
+
+    // Bulk-publishes the split-owned shared view into one range-bounded
+    // destination. Source entries remain owned by the session; callers release
+    // them only after every destination has durably snapshotted its result.
+    Status publish_split_memtable_view(uint64_t generation, uint64_t journal_frontier, Crowdbtree &destination,
+                                       const KeyRange &range);
+
     // Async twin of flush(). flush() only drains
     // L0 (MemTable) into L1 (in-memory B+tree) -- it never touches
     // Config::page_store (only snapshot() writes durable bytes), so unlike
@@ -768,6 +793,16 @@ class Crowdbtree
         return version_.load();
     }
 
+    [[nodiscard]] uint64_t durable_snapshot_seq() const
+    {
+        return durable_snapshot_seq_.load(std::memory_order_acquire);
+    }
+
+    [[nodiscard]] uint64_t durable_snapshot_last_applied_slot() const
+    {
+        return durable_snapshot_last_applied_slot_.load(std::memory_order_acquire);
+    }
+
     [[nodiscard]] uint64_t root_page_id() const
     {
         return root_page_id_.load();
@@ -926,6 +961,7 @@ class Crowdbtree
     // another thread (drain empties a table's *contents*; it does not free
     // the MemTable object out from under a reader still holding a ref).
     [[nodiscard]] std::vector<std::shared_ptr<MemTable>> all_memtables() const;
+    [[nodiscard]] std::vector<std::shared_ptr<MemTable>> local_memtables() const;
     // If active_ meets the size/entry threshold (or `force`), freeze it
     // (push onto frozen_) and install a fresh active_. `force` also bypasses
     // the max_memtable_count cap on the frozen_ queue depth (flush() always
@@ -1328,10 +1364,13 @@ class Crowdbtree
     // through several freeze/relocate cycles under a sustained out-of-order
     // write pattern, which is expected and bounded by how long the
     // underlying gap stays open, not by this mechanism.
-    mutable std::shared_mutex             memtable_mutex_;
-    std::shared_ptr<MemTable>             active_;
-    std::deque<std::shared_ptr<MemTable>> frozen_;
-    std::atomic<uint64_t>                 memtable_next_id_{1}; // monotonic MemTable id for logging
+    mutable std::shared_mutex              memtable_mutex_;
+    std::shared_ptr<MemTable>              active_;
+    std::deque<std::shared_ptr<MemTable>>  frozen_;
+    std::vector<std::shared_ptr<MemTable>> split_shared_memtables_;
+    std::atomic<Crowdbtree *>              split_overlay_source_{nullptr};
+    uint64_t                               split_memtable_generation_ = 0;
+    std::atomic<uint64_t>                  memtable_next_id_{1}; // monotonic MemTable id for logging
 
     // internal_error slot tracker (replaces the caller-supplied contiguous_slot). Holds
     // received-but-not-yet-contiguous slots above contiguous_slot_; the contiguous
@@ -1346,6 +1385,8 @@ class Crowdbtree
     std::atomic<uint64_t> contiguous_slot_{0};
     std::atomic<uint64_t> last_applied_slot_{0};
     std::atomic<uint64_t> version_{0};
+    std::atomic<uint64_t> durable_snapshot_seq_{0};
+    std::atomic<uint64_t> durable_snapshot_last_applied_slot_{0};
 
     struct MappingMaterializationState
     {
@@ -1429,9 +1470,12 @@ class Crowdbtree
         Gauge   *buf_resident   = nullptr;
         Gauge   *buf_dirty      = nullptr;
         // Flush (L0 → L1)
-        LatencySummary *flush_l         = nullptr;
-        Counter        *flush_drain_c   = nullptr;
-        Counter        *flush_entries_c = nullptr;
+        LatencySummary *flush_l              = nullptr;
+        Counter        *flush_drain_c        = nullptr;
+        Counter        *flush_entries_c      = nullptr;
+        LatencySummary *split_view_begin_l   = nullptr;
+        LatencySummary *split_view_publish_l = nullptr;
+        LatencySummary *split_view_release_l = nullptr;
         // MemTable (L0) operation latency
         LatencySummary *mt_apply_l   = nullptr;
         Counter        *mt_get_c     = nullptr;

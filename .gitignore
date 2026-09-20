@@ -18,61 +18,16 @@ lib/crowdb-tree/build*/
 lib/crowdb-tree/Testing/
 Testing/
 lib/crowdb-tree/.cache/
-lib/crowdb-tree/.test-tmp/
-.test-tmp/
 
 # ── Frontend (app/crowdb-web/ui) ────────────────────────────
 app/crowdb-web/ui/node_modules/
 app/crowdb-web/ui/dist/
 app/crowdb-web/ui/.vite/
 app/crowdb-web/ui/*.tsbuildinfo
-app/crowdb-web/ui/e2e/runtime-data/
-app/crowdb-web/ui/e2e/log/
 
 # ── Runtime artifacts (WAL, config, logs) ───────────────────────
-# Top-level artifact dirs (anchored to repo root).
-/log/
-/runtime-data/
-# CLI local-deploy workspaces + CLI ops logs.
-/cli-deploy/
-/cli-log/
-# CLI --log-root used by regression scripts (per-run log folders).
-/bench-log/
-test-logs/
-test-data/
-temp-data/
-
-# Per-crate runtime dirs — these names don't appear in source code,
-# so globbing is safe and avoids repeating per crate.
-**/waldata/
-**/ctdata/
-# Runtime config dirs (operator-supplied real configs, not tracked).
-# Tracked default configs live in app/<crate>/conf/*.json.
-app/crowdb-diskdb/conf/runtime/
-
-# `log/` is dangerous as a glob — "log" is a common Rust module name.
-# List explicitly per crate to avoid ignoring source directories.
-app/crowdb-kv-server/log/
-app/crowdb-access-server/log/
-app/crowdb-cli/log/
-app/crowdb-cli/cli-log/
-lib/crowdb-console-shared/log/
-app/crowdb-web/log/
-app/crowdb-diskdb/log/
-app/crowdb-chunkdb/log/
-lib/crowdb-diskdb-client/log/
-lib/crowdb-diskio-client/log/
-
-# ── Profiling artifacts ─────────────────────────────────────────
-# samply / perf / flamegraph output (profile-write-*.zip, profile-write-*/)
-doc/working/profile-*
-# bench sweep raw output (bench-write-*.tsv, bench-read-*.tsv, etc.)
-doc/working/bench-*.tsv
-# sanitize regression raw output (sanitize-regression.tsv)
-doc/working/sanitize-regression.tsv
-perf.data*
-perf-script.txt
-flamegraph.svg
+# All generated data, configs, logs, port claims, and exported diagnostics.
+/.crowdb-runtime/
 
 # ── IDE / OS ────────────────────────────────────────────────────
 .idea/
@@ -89,8 +44,3 @@ lib/crowdb-rpc/.cache/
 app/crowdb-diskio/build/
 app/crowdb-diskio/build*/
 app/crowdb-diskio/.cache/
-lib/crowdb-chunk-client/log/
-lib/crowdb-chunk-stream/log/
-
-# port allocator claim files (runtime-generated)
-.crowdb-port-alloc/

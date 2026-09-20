@@ -285,7 +285,11 @@ The storage path uses three RPC services:
   anti-affinity), `FreeBlocks`, `QueryCapacityStats`,
   `GetDiskGroupInfo`, `GetDiskInfo`, `RebuildZoneBitmap` (on-demand
   full-scan rebuild, strategy 1, zone-management §6), `MarkBlockSuspect`,
-  `MarkBlockCorrupt` (per-block state transitions, zone-management §6). The service ships
+  `MarkBlocksCorrupt` (exact committed BusyBlock incarnation transition). A
+  caller uses this operation only after frame parse or write-frame checksum
+  proves corruption; the server checks owner, geometry, allocation timestamp,
+  and committed state before a revision-fenced `Corrupt` update. Ordinary I/O
+  failures do not change the block state. The service ships
   with allocate/free returning `Unimplemented`; the rest are later
   requirements.
 - **Hardware admin** (no rpc surface): rack/node/disk-group/disk

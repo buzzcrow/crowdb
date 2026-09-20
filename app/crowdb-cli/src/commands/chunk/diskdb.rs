@@ -84,22 +84,9 @@ async fn run_list(cli: &Cli, explicit_endpoint: Option<&str>) -> ExitCode {
         return ExitCode::from(1);
     }
 
-    if cli.json {
-        let json: Vec<serde_json::Value> = instances
-            .iter()
-            .map(|(id, ep)| {
-                serde_json::json!({
-                    "instance_id": id,
-                    "rpc_endpoint": ep,
-                })
-            })
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&json).unwrap_or_default());
-    } else {
-        println!("living diskdb instances ({}):", instances.len());
-        for (id, ep) in &instances {
-            println!("  instance {id}: {ep}");
-        }
+    println!("living diskdb instances ({}):", instances.len());
+    for (id, ep) in &instances {
+        println!("  instance {id}: {ep}");
     }
 
     ExitCode::SUCCESS

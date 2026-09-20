@@ -11,7 +11,7 @@ complexity, and dependency. Before implementation, follow the
 
 ## Item Index
 
-**Next R number: R173** — Bump this line in the same commit when adding a new item.
+**Next R number: R177** — Bump this line in the same commit when adding a new item.
 
 ### Next Milestone — Chunk-backed range KV
 
@@ -36,12 +36,10 @@ requirement is implemented.
 
 ### Planned — S3 data access service
 
-R152–R166 delivered the limited basic S3 service, including the single-service
-restart acceptance baseline. R172 carries the expanded fault and scale-out E2E
-matrix. R167–R169 defer multipart upload and
-shared-storage GC without blocking basic large-object deletion. R170 separately
-adds optional cuObject/RDMA acceleration after the TCP baseline is correct and
-measured.
+R152–R166 delivered the limited basic S3 service, including the restart
+acceptance baseline. R167–R169 defer multipart upload and shared-storage GC
+without blocking basic large-object deletion. R170 separately adds optional
+cuObject/RDMA acceleration after the TCP baseline is correct and measured.
 - **[R167](R167-s3-multipart-upload.md)** — multipart upload — Area: access
   server / S3 — **Deferred.** Add durable part state, atomic completion, cleanup,
   and multipart integrity after the basic milestone stabilizes.
@@ -57,11 +55,6 @@ measured.
   stable.** Keep acceleration in a separate optional library and requirement;
   AccessServer coordinates while DiskIO-owned cuObjServer endpoints transfer
   parallel logical spans directly to or from client registered memory.
-- **[R172](R172-s3-fault-scaleout-e2e.md)** — fault and scale-out E2E matrix —
-  Area: access server / S3 / testing — Validate the basic CRUD service across
-  process recovery, routing changes, concurrency races, and multiple owners;
-  performance measurement is explicitly deferred.
-
 ### High Priority
 
 - **[R103](R103-chunkdb-range-migration.md)** — chunkdb range ownership
@@ -108,11 +101,6 @@ end-to-end Chunk IO performance workloads are landed. The RPC migration items
 
 ### Medium Priority
 
-- **[R171](R171-chunkdb-ad-hoc-ec-read-recovery.md)** — ad-hoc EC read
-  recovery — Area: chunk-client / chunkdb / diskdb — Preserve slice-only ISA-L
-  reconstruction for small reads, while routing eligible full-fragment
-  recoveries to a bounded ChunkDB in-memory coalescer that reuses rebuilt bytes
-  and hands one target to the existing durable repair publication sequence.
 - **[R83](R83-chunkdb-complete-recovery-flow.md)** — chunkdb
   complete recovery flow (real data recovery + speed control) —
   Area: chunkdb / diskdb / diskio — diskdb's recovery is disk-layer

@@ -27,6 +27,12 @@ impl FileRootCatalogStore {
         };
         self.dir.join(format!("{tree_id}-{suffix}"))
     }
+
+    fn pin_path(&self, tree_id: u64, transition_high: u64, transition_low: u64) -> PathBuf {
+        self.dir.join(format!(
+            "{tree_id}-pin-{transition_high:016x}{transition_low:016x}"
+        ))
+    }
 }
 
 impl RootCatalogStore for FileRootCatalogStore {
@@ -67,6 +73,43 @@ impl RootCatalogStore for FileRootCatalogStore {
 
     fn allocate_reference_segment_id(&self, _tree_id: u64) -> Result<u64, CtError> {
         Ok(self.next_reference.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn pin_generation(
+        &self,
+        tree_id: u64,
+        transition_high: u64,
+        transition_low: u64,
+        generation: u64,
+    ) -> Result<(), CtError> {
+        if self
+            .load(tree_id, RootCatalogObject::Manifest(generation))?
+            .is_none()
+        {
+            return Err(CtError::NotFound);
+        }
+        let path = self.pin_path(tree_id, transition_high, transition_low);
+        match std::fs::read(&path) {
+            Ok(value) if value == generation.to_be_bytes() => Ok(()),
+            Ok(_) => Err(CtError::InvalidArgument),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                std::fs::write(path, generation.to_be_bytes()).map_err(|_| CtError::IoError)
+            }
+            Err(_) => Err(CtError::IoError),
+        }
+    }
+
+    fn unpin_generation(
+        &self,
+        tree_id: u64,
+        transition_high: u64,
+        transition_low: u64,
+    ) -> Result<(), CtError> {
+        match std::fs::remove_file(self.pin_path(tree_id, transition_high, transition_low)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(CtError::IoError),
+        }
     }
 }
 
@@ -153,6 +196,28 @@ fn scan_from_honors_inclusive_and_exclusive_lower_bounds() {
         .scan_from(b"", b"", false, b"", 1, 1024, false, 0, false)
         .unwrap();
     assert_eq!(after_empty[0].key.as_ref(), b"b");
+}
+
+#[test]
+fn scan_start_after_pages_with_the_unified_scan_ffi() {
+    let tree = Crowdbtree::open(&Config::default()).unwrap();
+    for index in 0..300_u64 {
+        tree.apply_put(index + 1, format!("key-{index:04}").as_bytes(), b"value")
+            .unwrap();
+    }
+    tree.flush().unwrap();
+    let (first, truncated) = tree
+        .scan(b"", b"", b"", 256, 1024 * 1024, false, 0, false)
+        .unwrap();
+    assert!(truncated);
+    assert_eq!(first.len(), 256);
+    let cursor = first.last().unwrap().key.clone();
+    let (second, truncated) = tree
+        .scan(b"", &cursor, b"", 256, 1024 * 1024, false, 0, false)
+        .unwrap();
+    assert!(!truncated);
+    assert_eq!(second.len(), 44);
+    assert!(second.iter().all(|entry| entry.key > cursor));
 }
 
 #[test]
@@ -252,6 +317,7 @@ fn injected_chunk_store_round_trip_and_stats() {
             ChunkPageStoreOptions {
                 tree_id: 41,
                 owner_epoch: 7,
+                open_generation: 0,
                 pack_bytes: 4096,
                 iu_size: 1,
                 max_concurrent_packs: 2,
@@ -298,6 +364,7 @@ fn callback_root_catalog_reopens_published_manifest() {
     let options = ChunkPageStoreOptions {
         tree_id: 42,
         owner_epoch: 9,
+        open_generation: 0,
         pack_bytes: 4096,
         iu_size: 1,
         max_concurrent_packs: 2,
@@ -335,6 +402,218 @@ fn callback_root_catalog_reopens_published_manifest() {
 }
 
 #[test]
+fn callback_root_catalog_persists_transition_generation_pin() {
+    let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-callback-root-pin");
+    let backend = Arc::new(FileRootCatalogStore {
+        dir: dir.path().to_path_buf(),
+        generation: AtomicU64::new(0),
+        next_reference: AtomicU64::new(1),
+        hide_current: AtomicBool::new(false),
+    });
+    let catalog = Arc::new(ChunkRootCatalog::open_callback(backend.clone()).unwrap());
+    let options = ChunkPageStoreOptions {
+        tree_id: 43,
+        owner_epoch: 9,
+        open_generation: 0,
+        pack_bytes: 4096,
+        iu_size: 1,
+        max_concurrent_packs: 2,
+        materialization_bytes_per_pass: 4096,
+    };
+    let store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
+    let tree = Crowdbtree::open(&Config {
+        page_store: Some(Arc::clone(&store)),
+        ..Config::default()
+    })
+    .unwrap();
+    tree.apply_put(1, b"key", b"value").unwrap();
+    tree.flush().unwrap();
+    tree.snapshot_info().unwrap();
+    let generation = store.chunk_manifest_generation().unwrap();
+    store.pin_chunk_generation(43, 7, 8, generation).unwrap();
+    drop(tree);
+    drop(store);
+    drop(catalog);
+
+    let reopened = ChunkRootCatalog::open_callback(backend).unwrap();
+    reopened.pin_generation(43, 7, 8, generation).unwrap();
+    assert_eq!(
+        reopened.pin_generation(43, 7, 8, generation + 1),
+        Err(CtError::NotFound)
+    );
+    reopened.unpin_generation(43, 7, 8).unwrap();
+    reopened.unpin_generation(43, 7, 8).unwrap();
+}
+
+#[test]
+fn memory_root_catalog_pin_blocks_generation_reclaim_until_unpin() {
+    let catalog = Arc::new(ChunkRootCatalog::open_memory(9).unwrap());
+    let options = ChunkPageStoreOptions {
+        tree_id: 45,
+        owner_epoch: 9,
+        open_generation: 0,
+        pack_bytes: 4096,
+        iu_size: 1,
+        max_concurrent_packs: 2,
+        materialization_bytes_per_pass: 4096,
+    };
+    let store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
+    let tree = Crowdbtree::open(&Config {
+        page_store: Some(Arc::clone(&store)),
+        ..Config::default()
+    })
+    .unwrap();
+    for sequence in 1..=3 {
+        tree.apply_put(sequence, b"key", &[sequence as u8]).unwrap();
+        tree.flush().unwrap();
+        tree.snapshot_info().unwrap();
+        if sequence == 1 {
+            store.pin_chunk_generation(45, 9, 10, 1).unwrap();
+        }
+    }
+    assert_eq!(catalog.reclaim_before(45, 4), 0);
+    PageStore::open_chunk(
+        ChunkPageStoreOptions {
+            open_generation: 1,
+            ..options
+        },
+        Arc::clone(&catalog),
+        None,
+    )
+    .unwrap();
+
+    store.unpin_chunk_generation(45, 9, 10).unwrap();
+    assert!(catalog.reclaim_before(45, 4) > 0);
+    assert_eq!(
+        PageStore::open_chunk(
+            ChunkPageStoreOptions {
+                open_generation: 1,
+                ..options
+            },
+            catalog,
+            None,
+        )
+        .unwrap_err(),
+        CtError::NotFound
+    );
+}
+
+#[test]
+fn callback_root_catalog_opens_exact_manifest_without_latest_fallback() {
+    let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-callback-exact-root");
+    let backend = Arc::new(FileRootCatalogStore {
+        dir: dir.path().to_path_buf(),
+        generation: AtomicU64::new(0),
+        next_reference: AtomicU64::new(1),
+        hide_current: AtomicBool::new(false),
+    });
+    let catalog_backend: Arc<dyn RootCatalogStore> = backend.clone();
+    let catalog = Arc::new(ChunkRootCatalog::open_callback(catalog_backend).unwrap());
+    let latest_options = ChunkPageStoreOptions {
+        tree_id: 44,
+        owner_epoch: 11,
+        open_generation: 0,
+        pack_bytes: 4096,
+        iu_size: 1,
+        max_concurrent_packs: 2,
+        materialization_bytes_per_pass: 4096,
+    };
+    let latest_store = Arc::new(PageStore::open_chunk(latest_options, Arc::clone(&catalog), None).unwrap());
+    let latest = Crowdbtree::open(&Config {
+        page_store: Some(Arc::clone(&latest_store)),
+        ..Config::default()
+    })
+    .unwrap();
+    latest.apply_put(1, b"key", b"generation-one").unwrap();
+    latest.flush().unwrap();
+    assert_eq!(latest.snapshot_info().unwrap(), (1, 1));
+    latest.apply_put(2, b"key", b"generation-two").unwrap();
+    latest.flush().unwrap();
+    assert_eq!(latest.snapshot_info().unwrap(), (2, 2));
+    assert_eq!(latest_store.chunk_manifest_generation().unwrap(), 2);
+    drop(latest);
+    drop(latest_store);
+
+    let exact_options = ChunkPageStoreOptions {
+        open_generation: 1,
+        ..latest_options
+    };
+    let exact_store = Arc::new(PageStore::open_chunk(exact_options, Arc::clone(&catalog), None).unwrap());
+    let exact = Crowdbtree::open(&Config {
+        page_store: Some(Arc::clone(&exact_store)),
+        ..Config::default()
+    })
+    .unwrap();
+    assert_eq!(exact_store.chunk_manifest_generation().unwrap(), 1);
+    assert_eq!(exact.snapshot_state().unwrap(), (1, 1));
+    assert_eq!(exact.get(b"key").unwrap(), Some((1, b"generation-one".to_vec())));
+    exact.apply_put(2, b"key", b"stale-branch").unwrap();
+    exact.flush().unwrap();
+    assert_eq!(exact.snapshot_info(), Err(CtError::Unavailable));
+
+    let missing_options = ChunkPageStoreOptions {
+        open_generation: 3,
+        ..latest_options
+    };
+    assert_eq!(
+        PageStore::open_chunk(missing_options, catalog, None).unwrap_err(),
+        CtError::NotFound
+    );
+}
+
+#[test]
+fn exact_manifest_tracks_durable_snapshot_after_range_rebuild() {
+    let catalog = Arc::new(ChunkRootCatalog::open_memory(12).unwrap());
+    let source = Crowdbtree::open(&Config::default()).unwrap();
+    source.apply_put(1, b"b", b"base").unwrap();
+    source.flush().unwrap();
+
+    let options = ChunkPageStoreOptions {
+        tree_id: 46,
+        owner_epoch: 12,
+        open_generation: 0,
+        pack_bytes: 4096,
+        iu_size: 1,
+        max_concurrent_packs: 2,
+        materialization_bytes_per_pass: 4096,
+    };
+    let store = Arc::new(PageStore::open_chunk(options, Arc::clone(&catalog), None).unwrap());
+    let config = Config {
+        page_store: Some(Arc::clone(&store)),
+        ..Config::default()
+    };
+    let (rebuilt, _) = source.rebuild_range(&config).unwrap();
+    assert_eq!(rebuilt.snapshot_state().unwrap(), (1, 1));
+
+    rebuilt.apply_put(2, b"c", b"tail").unwrap();
+    rebuilt.flush().unwrap();
+    let checkpoint = rebuilt.snapshot_info().unwrap();
+    let generation = store.chunk_manifest_generation().unwrap();
+    assert_eq!(rebuilt.snapshot_state().unwrap(), checkpoint);
+    drop(rebuilt);
+    drop(store);
+
+    let exact_store = Arc::new(
+        PageStore::open_chunk(
+            ChunkPageStoreOptions {
+                open_generation: generation,
+                ..options
+            },
+            Arc::clone(&catalog),
+            None,
+        )
+        .unwrap(),
+    );
+    let exact = Crowdbtree::open(&Config {
+        page_store: Some(exact_store),
+        ..Config::default()
+    })
+    .unwrap();
+    assert_eq!(exact.snapshot_state().unwrap(), checkpoint);
+    assert_eq!(exact.get(b"c").unwrap(), Some((2, b"tail".to_vec())));
+}
+
+#[test]
 fn published_manifest_is_visible_through_the_same_page_store() {
     let dir = crowdb_test_harness::test_dirs::tempdir_in_test_data("tree-callback-read-own-write");
     let backend = Arc::new(FileRootCatalogStore {
@@ -350,6 +629,7 @@ fn published_manifest_is_visible_through_the_same_page_store() {
             ChunkPageStoreOptions {
                 tree_id: 43,
                 owner_epoch: 10,
+                open_generation: 0,
                 pack_bytes: 4096,
                 iu_size: 65_536,
                 max_concurrent_packs: 2,

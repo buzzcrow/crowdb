@@ -16,6 +16,7 @@ use crowdb_protocol::chunk_stream::StreamName;
 use crowdb_protocol::common::{ChunkKvExtra, ChunkKvPartitionLoad, InstanceValue};
 use crowdb_protocol::key::{ChunkKvSplitKey, ChunkKvTransferKey, TextKey};
 use sha2::{Digest, Sha256};
+use tracing::info;
 
 use crate::group0_control_plane::Group0ControlPlane;
 
@@ -32,9 +33,10 @@ struct PlanningState {
 }
 
 pub async fn plan(control: &Group0ControlPlane, descriptor: &DomainMonitorDescriptor) -> Result<(), String> {
-    let Some(catalog) = catalog::load_current(control).await? else {
+    let Some(mut catalog) = catalog::load_current(control).await? else {
         return Ok(());
     };
+    let child_owner_balance_enabled = descriptor.chunk_kv_range_balance.is_some();
     let policy = descriptor.chunk_kv_range_balance.clone().unwrap_or_default();
     policy.validate().map_err(|error| error.to_string())?;
     let now_ms = wall_time_ms();
@@ -47,10 +49,46 @@ pub async fn plan(control: &Group0ControlPlane, descriptor: &DomainMonitorDescri
         .iter()
         .flat_map(|page| page.entries.iter())
         .collect();
+    if let Some(entry) = entries.iter().copied().find(|entry| {
+        entry.state == ChunkKvRangeCatalogPartitionState::Serving
+            && entry.artifact.tail_overlay.is_some()
+            && partition_load(&state, entry).is_some_and(|load| load.independently_recoverable)
+    }) {
+        let committed_transfer = read_transfers(control).await?.into_iter().any(|(transition, _)| {
+            transition.phase == TransferPhase::CatalogCommitted
+                && entry.transition_id == Some(transition.transition_id)
+                && entry.partition_id == transition.partition_id
+                && entry.range == transition.range
+                && entry.owner == transition.target
+                && entry.owner_epoch == transition.target_epoch
+                && entry.artifact == transition.target_artifact
+        });
+        if committed_transfer {
+            catalog::publish_materialized_transfer(control, entry.partition_id).await?;
+        } else {
+            catalog::publish_materialized_partition(control, entry.partition_id).await?;
+        }
+        // Materialization only releases an immutable parent-stream overlay.
+        // It does not affect request routing, so immediately plan from the
+        // refreshed catalog instead of inserting a control-plane idle cycle
+        // before the next independent split.
+        catalog = catalog::load_current(control)
+            .await?
+            .ok_or_else(|| "catalog disappeared after split materialization".to_string())?;
+    }
+    let entries: Vec<_> = catalog
+        .pages
+        .iter()
+        .flat_map(|page| page.entries.iter())
+        .collect();
     if plan_split(control, &entries, &state, &policy, now_ms).await? {
         return Ok(());
     }
-    plan_transfer(control, &entries, &state, &policy, now_ms).await
+    if child_owner_balance_enabled {
+        plan_transfer(control, &entries, &state, &policy, now_ms).await
+    } else {
+        Ok(())
+    }
 }
 
 async fn planning_state(
@@ -95,11 +133,7 @@ async fn planning_state(
         }
     }
     for (transition, _) in read_splits(control).await? {
-        for partition_id in [
-            transition.parent_id,
-            transition.left.partition_id,
-            transition.right.partition_id,
-        ] {
+        for partition_id in [transition.parent_id, transition.child.partition_id] {
             remember_change(&mut state.last_changed_ms, partition_id, transition.planned_at_ms);
         }
         if !matches!(
@@ -109,8 +143,7 @@ async fn planning_state(
             state.pending_split_increase = state.pending_split_increase.saturating_add(1);
             state.active_partitions.insert(transition.parent_id);
             state.busy_owners.insert(transition.parent_owner.instance_id);
-            state.busy_owners.insert(transition.left.owner.instance_id);
-            state.busy_owners.insert(transition.right.owner.instance_id);
+            state.busy_owners.insert(transition.child.owner.instance_id);
         }
     }
     Ok(state)
@@ -161,9 +194,7 @@ async fn plan_split(
     let Some((entry, split_key, _)) = candidates.into_iter().next() else {
         return Ok(false);
     };
-    let target = least_loaded_owner(entries, state)
-        .ok_or_else(|| "chunk-KV split has no healthy child owner".to_string())?;
-    let transition = split_transition(entry, split_key, target, now_ms)?;
+    let transition = split_transition(entry, split_key, now_ms)?;
     persist_new(
         control,
         ChunkKvSplitKey {
@@ -173,6 +204,17 @@ async fn plan_split(
         &transition,
     )
     .await?;
+    info!(
+        transition_id_high = transition.transition_id.high,
+        transition_id_low = transition.transition_id.low,
+        parent_id_high = transition.parent_id.high,
+        parent_id_low = transition.parent_id.low,
+        parent_epoch = transition.parent_epoch,
+        parent_next_epoch = transition.parent_next_epoch,
+        child_id_high = transition.child.partition_id.high,
+        child_id_low = transition.child.partition_id.low,
+        "local split planned"
+    );
     Ok(true)
 }
 
@@ -195,8 +237,15 @@ async fn plan_transfer(
         .owner_epoch
         .checked_add(1)
         .ok_or_else(|| "chunk-KV owner epoch overflowed".to_string())?;
+    let transition_id = transfer_id(entry, target_id, target_epoch);
+    let mut target_artifact = entry.artifact.clone();
+    target_artifact.stream_name = crowdb_protocol::chunk_stream::StreamName {
+        high: transition_id.high,
+        low: transition_id.low,
+    };
+    target_artifact.tail_overlay = None;
     let transition = TransferTransition {
-        transition_id: transfer_id(entry, target_id, target_epoch),
+        transition_id,
         partition_id: entry.partition_id,
         range: entry.range.clone(),
         source: entry.owner.clone(),
@@ -207,11 +256,20 @@ async fn plan_transfer(
         },
         target_epoch,
         artifact: entry.artifact.clone(),
+        target_artifact,
+        readiness_limits: crowdb_protocol::chunk_kv::TransferReadinessLimits {
+            max_tail_records: 65_536,
+            max_tail_bytes: 256 * 1024 * 1024,
+            max_estimated_catchup_ms: policy.cooldown_ms.max(1),
+            prepare_deadline_ms: now_ms.saturating_add(policy.cooldown_ms.max(1)),
+            forwarding_grace_ms: policy.cooldown_ms.max(1),
+        },
         planned_at_ms: now_ms,
         old_grant_expires_at_ms: 0,
         phase: TransferPhase::Planned,
         release_proof: None,
         readiness_proof: None,
+        catchup_proof: None,
         failure: None,
     };
     transition.validate().map_err(|error| error.to_string())?;
@@ -341,6 +399,9 @@ fn eligible(
     now_ms: u64,
 ) -> bool {
     entry.state == ChunkKvRangeCatalogPartitionState::Serving
+        && entry.transition_id.is_none()
+        && entry.artifact.tail_overlay.is_none()
+        && partition_load(state, entry).is_some_and(|load| load.independently_recoverable)
         && state.healthy.contains_key(&entry.owner.instance_id)
         && !state.active_partitions.contains(&entry.partition_id)
         && !state.busy_owners.contains(&entry.owner.instance_id)
@@ -351,24 +412,6 @@ fn eligible(
                 .copied()
                 .unwrap_or_default(),
         ) >= policy.cooldown_ms
-}
-
-fn least_loaded_owner<'a>(
-    entries: &[&ChunkKvRangeCatalogEntry],
-    state: &'a PlanningState,
-) -> Option<&'a InstanceValue> {
-    state
-        .healthy
-        .values()
-        .filter(|(instance, _)| !state.busy_owners.contains(&instance.instance_id))
-        .min_by_key(|(instance, extra)| {
-            let count = entries
-                .iter()
-                .filter(|entry| entry.owner.instance_id == instance.instance_id)
-                .count();
-            (count, extra.durable_bytes, instance.instance_id)
-        })
-        .map(|(instance, _)| instance)
 }
 
 fn live_byte_median(range: &KeyRange, samples: &[(Vec<u8>, u64)]) -> Option<Vec<u8>> {
@@ -393,7 +436,6 @@ fn live_byte_median(range: &KeyRange, samples: &[(Vec<u8>, u64)]) -> Option<Vec<
 fn split_transition(
     parent: &ChunkKvRangeCatalogEntry,
     split_key: Vec<u8>,
-    right_owner: &InstanceValue,
     now_ms: u64,
 ) -> Result<SplitTransition, String> {
     let transition_id = derived_id(parent, &split_key, b"transition");
@@ -401,26 +443,12 @@ fn split_transition(
         .owner_epoch
         .checked_add(1)
         .ok_or_else(|| "chunk-KV split owner epoch overflowed".to_string())?;
-    let left = split_child(
-        parent,
-        &split_key,
-        b"left",
-        parent.owner.clone(),
-        child_epoch,
-        KeyRange {
-            start: parent.range.start.clone(),
-            end: Some(split_key.clone()),
-        },
-    );
-    let right = split_child(
+    let child = split_child(
         parent,
         &split_key,
         b"right",
-        OwnerDescriptor {
-            instance_id: right_owner.instance_id,
-            rpc_endpoint: right_owner.rpc_endpoint.clone(),
-        },
-        1,
+        parent.owner.clone(),
+        child_epoch,
         KeyRange {
             start: split_key.clone(),
             end: parent.range.end.clone(),
@@ -433,9 +461,10 @@ fn split_transition(
         parent_owner: parent.owner.clone(),
         parent_epoch: parent.owner_epoch,
         parent_artifact: parent.artifact.clone(),
+        retained_parent_artifact: split_artifact(parent, &split_key, b"left"),
+        parent_next_epoch: child_epoch,
         split_key,
-        left,
-        right,
+        child,
         planned_at_ms: now_ms,
         phase: SplitPhase::Planned,
         readiness_proof: None,
@@ -458,13 +487,18 @@ fn split_child(
         range,
         owner,
         owner_epoch,
-        artifact: PartitionArtifact {
-            tree_id: derived_u64(parent, split_key, &[side, b"-tree"].concat()),
-            stream_name: StreamName {
-                high: derived_u64(parent, split_key, &[side, b"-stream-high"].concat()),
-                low: derived_u64(parent, split_key, &[side, b"-stream-low"].concat()),
-            },
+        artifact: split_artifact(parent, split_key, side),
+    }
+}
+
+fn split_artifact(parent: &ChunkKvRangeCatalogEntry, split_key: &[u8], side: &[u8]) -> PartitionArtifact {
+    PartitionArtifact {
+        tree_id: derived_u64(parent, split_key, &[side, b"-tree"].concat()),
+        stream_name: StreamName {
+            high: derived_u64(parent, split_key, &[side, b"-stream-high"].concat()),
+            low: derived_u64(parent, split_key, &[side, b"-stream-low"].concat()),
         },
+        tail_overlay: None,
     }
 }
 

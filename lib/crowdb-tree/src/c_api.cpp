@@ -572,8 +572,8 @@ ct_status ct_snapshot_state(const ct_tree *t, uint64_t *out_snapshot_seq, uint64
     if (t == nullptr || out_snapshot_seq == nullptr || out_last_applied == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
     }
-    *out_snapshot_seq = t->tree->version();
-    *out_last_applied = t->tree->last_applied_slot();
+    *out_snapshot_seq = t->tree->durable_snapshot_seq();
+    *out_last_applied = t->tree->durable_snapshot_last_applied_slot();
     return static_cast<ct_status>(Code::kOk);
 }
 
@@ -958,6 +958,59 @@ ct_status ct_flush(ct_tree *t)
     return to_status(t->tree->flush());
 }
 
+ct_status ct_begin_split_memtable_view(ct_tree *t, uint64_t *out_generation, uint64_t *out_journal_frontier)
+{
+    if (t == nullptr || out_generation == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    return to_status(t->tree->begin_split_memtable_view(out_generation, out_journal_frontier));
+}
+
+ct_status ct_install_split_memtable_overlay(ct_tree *destination, ct_tree *source, uint64_t journal_frontier)
+{
+    if (destination == nullptr || source == nullptr) {
+        return to_status(Status::invalid_argument("split memtable overlay requires two trees"));
+    }
+    return to_status(destination->tree->install_split_memtable_overlay(*source->tree, journal_frontier));
+}
+
+ct_status ct_clear_split_memtable_overlay(ct_tree *destination, ct_tree *source)
+{
+    if (destination == nullptr || source == nullptr) {
+        return to_status(Status::invalid_argument("split memtable overlay requires two trees"));
+    }
+    return to_status(destination->tree->clear_split_memtable_overlay(*source->tree));
+}
+
+ct_status ct_publish_split_memtable_view(ct_tree *source, uint64_t generation, uint64_t journal_frontier,
+                                         ct_tree *destination, const uint8_t *range_start, size_t range_start_len,
+                                         int has_range_start, const uint8_t *range_end, size_t range_end_len,
+                                         int has_range_end)
+{
+    if (source == nullptr || destination == nullptr || (has_range_start != 0 && range_start == nullptr) ||
+        (has_range_end != 0 && range_end == nullptr)) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    std::optional<std::string> start;
+    std::optional<std::string> end;
+    if (has_range_start != 0) {
+        start.emplace(reinterpret_cast<const char *>(range_start), range_start_len);
+    }
+    if (has_range_end != 0) {
+        end.emplace(reinterpret_cast<const char *>(range_end), range_end_len);
+    }
+    return to_status(source->tree->publish_split_memtable_view(generation, journal_frontier, *destination->tree,
+                                                               KeyRange::bounded(std::move(start), std::move(end))));
+}
+
+ct_status ct_release_split_memtable_view(ct_tree *t, uint64_t generation)
+{
+    if (t == nullptr) {
+        return static_cast<ct_status>(Code::kInvalidArgument);
+    }
+    return to_status(t->tree->release_split_memtable_view(generation));
+}
+
 ct_status ct_get(ct_tree *t, const uint8_t *key, size_t klen, int32_t *found, uint64_t *slot, ct_buf *value)
 {
     if (t == nullptr || found == nullptr) {
@@ -1286,10 +1339,10 @@ void ct_uring_submit_sync(ct_uring *uring, int32_t fd, int32_t data_only, ct_uri
     callback(context, -ENOSYS);
 }
 
-ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_after, size_t salen,
-                  const uint8_t *end_key, size_t elen, size_t limit, size_t byte_budget, int keys_only,
-                  uint64_t deadline_ms, int include_tombstones, ct_buf *out_entries, uint64_t *out_count,
-                  int32_t *truncated)
+ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_key, size_t sklen,
+                  int has_start_bound, int start_inclusive, const uint8_t *end_key, size_t elen, size_t limit,
+                  size_t byte_budget, int keys_only, uint64_t deadline_ms, int include_tombstones, ct_buf *out_entries,
+                  uint64_t *out_count, int32_t *truncated)
 {
     if (t == nullptr || out_entries == nullptr) {
         return static_cast<ct_status>(Code::kInvalidArgument);
@@ -1300,46 +1353,10 @@ ct_status ct_scan(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t 
     ScanPackedBuf packed;
     size_t        count = 0;
     bool          tr    = false;
-    Status s = t->tree->scan(Slice(reinterpret_cast<const char *>(prefix), plen),
-                             Slice(reinterpret_cast<const char *>(start_after), salen),
-                             Slice(reinterpret_cast<const char *>(end_key), elen), limit, byte_budget, keys_only != 0,
-                             deadline_ms, nullptr, &tr, include_tombstones != 0, &packed, &count, salen != 0);
-    if (!s.ok()) {
-        return to_status(s);
-    }
-    size_t sz = packed.size();
-    if (sz > 0) {
-        out_entries->data = packed.release();
-        out_entries->len  = sz;
-    }
-    else {
-        out_entries->data = nullptr;
-        out_entries->len  = 0;
-    }
-    if (out_count != nullptr) {
-        *out_count = count;
-    }
-    if (truncated != nullptr) {
-        *truncated = tr ? 1 : 0;
-    }
-    return static_cast<ct_status>(Code::kOk);
-}
-
-ct_status ct_scan_from(ct_tree *t, const uint8_t *prefix, size_t plen, const uint8_t *start_key, size_t sklen,
-                       int start_inclusive, const uint8_t *end_key, size_t elen, size_t limit, size_t byte_budget,
-                       int keys_only, uint64_t deadline_ms, int include_tombstones, ct_buf *out_entries,
-                       uint64_t *out_count, int32_t *truncated)
-{
-    if (t == nullptr || out_entries == nullptr) {
-        return static_cast<ct_status>(Code::kInvalidArgument);
-    }
-    ScanPackedBuf packed;
-    size_t        count = 0;
-    bool          tr    = false;
     Status        s     = t->tree->scan(
         Slice(reinterpret_cast<const char *>(prefix), plen), Slice(reinterpret_cast<const char *>(start_key), sklen),
         Slice(reinterpret_cast<const char *>(end_key), elen), limit, byte_budget, keys_only != 0, deadline_ms, nullptr,
-        &tr, include_tombstones != 0, &packed, &count, true, start_inclusive != 0);
+        &tr, include_tombstones != 0, &packed, &count, has_start_bound != 0, start_inclusive != 0);
     if (!s.ok()) {
         return to_status(s);
     }

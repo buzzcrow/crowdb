@@ -14,9 +14,9 @@
 #
 # Output:
 #   samply -> opens Firefox Profiler tab (also saves to
-#             doc/working/profile-write-<timestamp>.zip)
-#   perf   -> perf.data + folded stacks + flamegraph SVG under
-#             doc/working/profile-write-<timestamp>/
+#             .crowdb-runtime/artifacts/profile/profile-write-<timestamp>.zip)
+#   perf   -> perf.data + folded stacks + flamegraph SVG under the same
+#             runtime artifact directory.
 #
 # Prerequisites:
 #   - pixi installed, project deps resolved
@@ -32,7 +32,8 @@ else
 fi
 SAMPLER="${1:-$DEFAULT_SAMPLER}"
 DURATION="${2:-15}"
-RESULTS_DIR="doc/working"
+RUNTIME_ROOT="${CROWDB_RUNTIME_ROOT:-${PIXI_PROJECT_ROOT:-$(pwd)}/.crowdb-runtime}"
+RESULTS_DIR="$RUNTIME_ROOT/artifacts/profile"
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
 # Write config: 24T:24C max-inflight=32

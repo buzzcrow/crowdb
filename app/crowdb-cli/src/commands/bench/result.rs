@@ -1,11 +1,10 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-//! `BenchResult` — the JSON shape emitted by every `bench` subcommand.
+//! `BenchResult` — the structured result shared by `bench` subcommands.
 //!
-//! The regression scripts parse this with `jq` from stdout. A
-//! human-readable plain-text version is logged via `tracing::info!`
-//! to the CLI's tracing log file. Optional sections
+//! The CLI prints its human-readable [`fmt::Display`] representation and
+//! retains the serializable shape for metrics reports. Optional sections
 //! (`correctness_errors`, `client_transport_stats`, `server_metrics`)
 //! are present only on the subcommands that produce them; `jq`'s `// 0`
 //! fallback tolerates their absence.

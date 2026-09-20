@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0.
 
 use crowdb_console_shared::lifecycle::{process_is_alive, stop_pid, stop_pid_with_timeout};
+use crowdb_test_harness::test_dirs::TestDir;
 use std::process::Command;
 use std::time::Duration;
 
@@ -51,8 +52,8 @@ fn stop_pid_force_kills_unresponsive_process() {
     // sending SIGTERM. A fixed sleep is racy under CI load — if SIGTERM
     // arrives before the trap, the shell dies instantly (~1ms) and the
     // timing assertion below fails.
-    let sentinel = std::env::temp_dir().join(format!("stop_pid_test_{}.ready", std::process::id()));
-    let _ = std::fs::remove_file(&sentinel);
+    let runtime = TestDir::new("stop-pid").expect("create stop-pid runtime");
+    let sentinel = runtime.path().join("ready");
     let sentinel_str = sentinel.to_string_lossy();
     let mut child = Command::new("sh")
         .arg("-c")

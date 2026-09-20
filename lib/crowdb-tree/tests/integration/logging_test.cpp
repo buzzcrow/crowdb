@@ -6,6 +6,7 @@
 // after the engine is destroyed. These tests only exercise the spdlog-backed
 // CMake build.
 #include "crowdb-common/log.h"
+#include "crowdb-common/runtime_path.h"
 #include "crowdb-tree/backend/page_store.h"
 #include "crowdb-tree/crowdb-tree.h"
 
@@ -36,7 +37,7 @@ struct TempDir
 
     TempDir()
     {
-        path = fs::temp_directory_path() /
+        path = crowdb::common::test_runtime_path("crowdb-tree-logging") /
                ("crowtree_log_" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()) + "_" +
                 std::to_string(reinterpret_cast<uintptr_t>(this)));
         fs::create_directories(path);

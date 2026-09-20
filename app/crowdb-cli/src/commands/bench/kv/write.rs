@@ -162,7 +162,8 @@ pub async fn run(cli: &Cli, args: WriteArgs) -> ExitCode {
         server_metrics,
     };
     metrics.write_report(&result);
-    crate::commands::print_json(cli, &result)
+    println!("{result}");
+    ExitCode::SUCCESS
 }
 
 /// Build a deterministic value for key `id`: byte `i` = `(id + i) % 256`.

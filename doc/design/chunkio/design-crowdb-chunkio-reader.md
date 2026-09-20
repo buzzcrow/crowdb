@@ -33,8 +33,9 @@ lock-free DiskIO route snapshot. It exposes:
 - `read_stream`: return a pull-based `ChunkReadStream` whose item size is
   bounded by policy.
 
-`ChunkReadPolicy` configures stream-window bytes, EC-recovery scratch bytes,
-layout safety margin, and bounded layout retries.
+`ChunkReadPolicy` configures stream-window bytes, a 256-MiB process-wide
+EC-recovery budget, layout safety margin, bounded layout retries, and the
+ad-hoc full-fragment threshold.
 
 ## 2. Location mapping
 
@@ -86,8 +87,12 @@ Sealed strips expose `sealed_length`. An active shared mirror strip may also
 expose bytes below the chunk's durable `acknowledged_cursor`; later bytes are
 `NotYetAvailable`.
 
-Observed failed segment identities are durably added to the exact old strip
-before bytes from the attempt are returned. This metadata update can advance
+Only an unparseable returned frame or a write-frame checksum mismatch proves
+physical corruption. The reader reports its exact serving segment to ChunkDB;
+ChunkDB first fences the DiskDB BusyBlock to `Corrupt`, then adds the segment
+to `unavailable_segments` and admits `RepairStrip`. Network, timeout, and
+unknown I/O failures may be decoded around but never create these markers.
+This metadata update can advance
 the revision of an active shared chunk. Its owning writer refreshes the chunk,
 verifies state and writer epoch, recognizes an ambiguously committed cursor,
 and retries the cursor advance against the new revision.
@@ -116,17 +121,21 @@ objects and empty ranges perform no RPC or DiskIO.
 
 ## 7. Durable repair handoff
 
-Every live DiskIO failure and every segment already marked unavailable is
-retained as an observation. `ChunkReader` submits the observed chunk revision,
-exact old strip, and a geometry-identical replacement containing the sorted
-`unavailable_segments` set through `replace_chunk_strip_range`. A deterministic
-operation ID makes an ambiguous response replayable.
+Verified corruption is reported through a versioned chunk-routed RPC carrying
+the expected revision, strip sequence, exact segment incarnation, and
+operation ID. A small read still decodes only its requested slice; repair
+admission proceeds independently and may begin before that read returns.
+Matching client failures accumulate for one second. At a complete fragment or
+the lesser of 1 MiB and half a fragment, one bounded full-fragment request is
+sent to ChunkDB and same-key readers share its result future. Saturation falls
+back to slice recovery and the durable repair task.
 
-Successful fallback waits for this marker, not for a full rebuild. ChunkDB's
-rotating scanner turns the marker into a persistent `RepairStrip` task. The
-background handler rebuilds full mirror or EC shards so later reads return to
-the direct path. Task key/value, scheduling, publication, and crash behavior
-are defined by
+ChunkDB coalesces full-fragment requests across clients under 32 concurrent
+jobs and a 512-MiB shared decode/result budget by default. The existing
+`RepairStrip` task provides the only allocation and publication authority;
+rebuilt bytes can reach waiters after target fsync while fenced publication
+continues. Task key/value, scheduling, publication, and crash behavior are
+defined by
 [Mirror-to-EC Conversion and Chunk Tasks](../chunkdb/design-crowdb-chunkdb-mirror-to-ec.md).
 
 ## 8. Invariants
@@ -137,6 +146,6 @@ are defined by
 - I4: EC recovery never exceeds its shared scratch-memory budget.
 - I5: stream items never exceed the configured window.
 - I6: unrecoverable redundancy loss is explicit and never zero-filled.
-- I7: a successful fallback is not returned until its failed segment identity
-  is durable in chunk metadata.
+- I7: a verified-corrupt segment is durably marked before its recovery is
+  returned; an ordinary I/O error is never persisted as corruption.
 - I8: incomplete parity is never used to reconstruct a data shard.

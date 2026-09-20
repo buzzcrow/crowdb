@@ -100,8 +100,11 @@ redundancy, while conversion only reclaims space.
 
 ### 2.4 Read Repair Admission and Execution
 
-Readers durably add exact failed segment identities to
-`ChunkStrip.unavailable_segments`. A bounded rotating metadata scan admits one
+Readers report only verified frame parse or checksum failures. ChunkDB first
+marks the exact committed DiskDB BusyBlock incarnation `Corrupt`, then records
+its segment in `ChunkStrip.unavailable_segments` and immediately admits
+`RepairStrip`. Network and unknown I/O errors do not mark or admit repair.
+A bounded rotating metadata scan also admits one
 task per strip and failure set. An existing pending, running, or retry-wait
 task deduplicates admission. A terminal task is revived at a higher revision
 when its marker remains, preventing a stale completion or failure from
@@ -122,6 +125,15 @@ segments to the normal layout-validity cleanup intent. A changed layout causes
 re-query and retry. Repair tasks have unlimited attempts and use delayed retry
 rather than tight polling when memory, placement, parity, or I/O is temporarily
 unavailable.
+
+The read-triggered ad-hoc manager joins routed requests by chunk, strip, and
+failed segment incarnation. It uses an in-memory shared future, at most 32
+concurrent jobs, and a 512-MiB decode/result budget by default; it never owns
+a second durable task or replacement target. It may return reconstructed
+bytes after the task writes and fsyncs its checkpointed target, while the task
+continues fenced publication and confirmation. Restart discards the future,
+not the task or target checkpoint. Stale revisions and healed incarnations
+cannot join or allocate.
 
 ## 3. Foreground Conversion
 

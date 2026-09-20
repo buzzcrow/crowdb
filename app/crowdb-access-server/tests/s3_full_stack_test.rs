@@ -1,10 +1,8 @@
 // Copyright 2026-present Gian <crow.db@outlook.com>
 // Licensed under the Apache License, Version 2.0.
 
-#![cfg(feature = "s3-e2e")]
-
 use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -20,6 +18,7 @@ use crowdb_kv_client::HardwareClient;
 use crowdb_protocol::chunkdb::rpc::DeleteChunkRangeRequest;
 use crowdb_protocol::common::{ChunkId, DiskId, HwStatus, NodeValue, RackValue};
 use crowdb_protocol::diskdb::rpc::{DiskGroupValue, DiskType, DiskValue};
+use crowdb_protocol::ServicePort;
 use crowdb_rpc_ffi::RpcServer;
 use crowdb_test_harness::chunk_kv::ChunkKvProcess;
 use crowdb_test_harness::chunkdb::{
@@ -28,25 +27,56 @@ use crowdb_test_harness::chunkdb::{
 use crowdb_test_harness::cluster::KvCluster;
 use crowdb_test_harness::diskdb::DiskdbProcess;
 use crowdb_test_harness::diskio::{DiskArg, DiskioGroup0Identity, DiskioProcess, DiskioStartOpts};
-use crowdb_test_harness::test_dirs::TestDir;
+use crowdb_test_harness::test_dirs::TestRuntime;
 use hyper::body::Bytes;
 use serde_json::json;
 
 const MASTER_KEY: &str = "1111111111111111111111111111111111111111111111111111111111111111";
-
-struct DiskioRestartContext<'a> {
-    cluster: &'a KvCluster,
-    rpc: &'a Arc<RpcServer>,
-    identity: DiskioGroup0Identity,
-    disk: &'a DiskArg,
-    listen: &'a str,
-    access_key: &'a str,
-    secret_key: &'a str,
-}
+const TEST_COUNT: usize = 17;
+const BOTO3_CASES: &[&str] = &[
+    "test_signed_raw_http_wire_contract",
+    "test_independent_frontends_share_one_namespace",
+    "test_slow_signed_upload_releases_native_buffers",
+    "test_truncated_signed_upload_does_not_publish_and_releases_credit",
+    "test_concurrent_overwrite_delete_and_get_are_portable",
+    "test_slow_response_reader_keeps_full_object_consistent",
+    "test_basic_bucket_object_matrix",
+    "test_fragmentation_and_storage_boundaries",
+];
 
 struct AccessServerProcess {
     child: Child,
     log_path: PathBuf,
+}
+
+struct FullStackSetup {
+    access_binary: PathBuf,
+    cluster: KvCluster,
+    identity: DiskioGroup0Identity,
+    disk_arg: DiskArg,
+    diskdb: DiskdbProcess,
+    rpc: Arc<RpcServer>,
+    diskio: Option<DiskioProcess>,
+    chunkdb_options: ChunkdbStartOptions,
+    chunkdb: Option<ChunkdbProcess>,
+    chunk_kv: ChunkKvProcess,
+    seeds: String,
+    access_key: String,
+    secret_key: String,
+    access_server: Option<AccessServerProcess>,
+    listen: String,
+    second_access_server: AccessServerProcess,
+    second_listen: String,
+    restarted_access: Option<AccessServerProcess>,
+}
+
+struct Boto3CaseContext<'a> {
+    listen: &'a str,
+    second_listen: &'a str,
+    access_key: &'a str,
+    secret_key: &'a str,
+    access_server: &'a AccessServerProcess,
+    chunk_kv: &'a ChunkKvProcess,
 }
 
 impl AccessServerProcess {
@@ -62,14 +92,193 @@ impl Drop for AccessServerProcess {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
+struct TestCase {
+    passed: bool,
+}
+
+impl TestCase {
+    fn start(name: &str) -> Self {
+        print!("test {name} ... ");
+        std::io::stdout().flush().expect("flush test name");
+        Self { passed: false }
+    }
+
+    fn pass(mut self) {
+        self.passed = true;
+        println!("ok");
+    }
+}
+
+impl Drop for TestCase {
+    fn drop(&mut self) {
+        if !self.passed {
+            eprintln!("FAILED");
+        }
+    }
+}
+
+fn main() {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .expect("build S3 E2E runtime")
+        .block_on(run_suite());
+}
+
+async fn run_suite() {
+    let mut stack = start_full_stack().await;
+    println!("\nrunning {TEST_COUNT} tests");
+    stack.run_boto3_cases();
+    stack.run_restart_cases().await;
+    stack.run_benchmarks().await;
+    stack.cleanup();
+    println!("\ntest result: ok. {TEST_COUNT} passed; 0 failed\n");
+}
+
+impl FullStackSetup {
+    fn run_boto3_cases(&self) {
+        let context = Boto3CaseContext {
+            listen: &self.listen,
+            second_listen: &self.second_listen,
+            access_key: &self.access_key,
+            secret_key: &self.secret_key,
+            access_server: self.access_server.as_ref().expect("primary access server"),
+            chunk_kv: &self.chunk_kv,
+        };
+        for method in BOTO3_CASES {
+            let case = TestCase::start(&format!("boto3::{method}"));
+            run_boto3_case(method, &context);
+            case.pass();
+        }
+        let case = TestCase::start("boto3::lost_put_reply_is_idempotent");
+        run_restart_phase("lost-reply", &self.listen, &self.access_key, &self.secret_key);
+        assert_native_write_metrics(&self.listen);
+        case.pass();
+    }
+
+    async fn run_restart_cases(&mut self) {
+        run_restart_phase("prepare", &self.listen, &self.access_key, &self.secret_key);
+        self.restart_group0().await;
+        self.restart_access_server().await;
+        self.restart_chunkdb().await;
+        self.restart_diskdb().await;
+        self.restart_diskio().await;
+        self.restart_chunk_kv().await;
+    }
+
+    async fn restart_group0(&mut self) {
+        let case = TestCase::start("restart::group0_recovers_objects");
+        self.cluster.crash_and_restart().await;
+        self.verify_restart("verify-after-group0-restart", &self.second_listen);
+        case.pass();
+    }
+
+    async fn restart_access_server(&mut self) {
+        let case = TestCase::start("restart::access_server_recovers_objects");
+        drop(self.access_server.take().expect("primary access server"));
+        self.verify_restart("verify", &self.second_listen);
+        let (mut process, listen) = start_access_server(
+            self.cluster.runtime_mut(),
+            &self.access_binary,
+            &self.seeds,
+            "primary",
+        );
+        wait_for_tcp(&mut process, &listen).await;
+        self.verify_restart("verify", &listen);
+        self.restarted_access = Some(process);
+        case.pass();
+    }
+
+    async fn restart_chunkdb(&mut self) {
+        let case = TestCase::start("restart::chunkdb_recovers_objects");
+        let previous = self.chunkdb.take().expect("chunkdb process");
+        drop(previous);
+        let seeds = self.cluster.mgmt_endpoints.clone();
+        let chunkdb =
+            ChunkdbProcess::start_with_options_in(self.cluster.runtime_mut(), &seeds, self.chunkdb_options);
+        chunkdb.wait_for_ready().await;
+        self.verify_restart("verify-after-chunkdb-restart", &self.second_listen);
+        self.chunkdb = Some(chunkdb);
+        case.pass();
+    }
+
+    async fn restart_diskdb(&mut self) {
+        let case = TestCase::start("restart::diskdb_recovers_objects");
+        verify_diskdb_restart(
+            &mut self.diskdb,
+            &self.cluster.mgmt_endpoints,
+            self.identity.disk_group_id,
+            &self.second_listen,
+            &self.access_key,
+            &self.secret_key,
+        )
+        .await;
+        self.cluster
+            .runtime_mut()
+            .record_process(self.diskdb.child.id())
+            .expect("record restarted DiskDB process");
+        case.pass();
+    }
+
+    async fn restart_diskio(&mut self) {
+        let case = TestCase::start("restart::diskio_recovers_objects");
+        drop(self.diskio.take().expect("diskio process"));
+        self.diskio =
+            Some(start_durable_diskio(&mut self.cluster, &self.rpc, self.identity, &self.disk_arg).await);
+        self.verify_restart("verify-after-diskio-restart", &self.second_listen);
+        case.pass();
+    }
+
+    async fn restart_chunk_kv(&mut self) {
+        let case = TestCase::start("restart::chunk_kv_recovers_objects");
+        self.chunk_kv.restart_in(self.cluster.runtime_mut()).await;
+        self.verify_restart("verify-after-chunk-kv-restart", &self.second_listen);
+        case.pass();
+    }
+
+    async fn run_benchmarks(&self) {
+        let case = TestCase::start("benchmark::direct_chunk_path");
+        run_direct_chunk_benchmark(
+            &self.cluster.mgmt_endpoints,
+            &self.cluster.runtime().artifacts_dir(),
+        )
+        .await;
+        case.pass();
+
+        let case = TestCase::start("benchmark::s3_request_path");
+        run_benchmark(
+            &self.second_listen,
+            self.second_access_server.child.id(),
+            &self.access_key,
+            &self.secret_key,
+            &self.cluster.runtime().artifacts_dir(),
+        );
+        case.pass();
+    }
+
+    fn verify_restart(&self, phase: &str, listen: &str) {
+        run_restart_phase(phase, listen, &self.access_key, &self.secret_key);
+    }
+
+    fn cleanup(mut self) {
+        self.verify_restart("cleanup", &self.second_listen);
+        drop(self.restarted_access.take());
+        self.rpc.stop();
+    }
+}
+
+async fn start_full_stack() -> FullStackSetup {
     let access_binary = binary("crowdb-access-server", "CROWDB_ACCESS_SERVER_BIN");
-    let cluster = KvCluster::start().await;
+    let mut cluster = KvCluster::start().await;
     let identities = seed_compact_hardware(&cluster.make_hardware_client()).await;
     let identity = identities[0];
-    let disk_data = TestDir::new("s3-durable-disk").expect("create disk test directory");
-    let disk_path = disk_data.path().join("disk.dat");
+    let disk_path = cluster
+        .runtime_mut()
+        .service_dir("diskio", &format!("instance-{}", identity.instance_id))
+        .expect("create durable DiskIO directory")
+        .join("data")
+        .join("disk.dat");
     let capacity = 16_384_u64 * 1024 * 1024;
     std::fs::File::create(&disk_path)
         .expect("create block disk")
@@ -83,7 +292,8 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
     };
 
     let diskdb_started_at = unix_time_ms();
-    let diskdb = DiskdbProcess::start_for_instance(&cluster.mgmt_endpoints, 999, Some(16_384));
+    let seeds = cluster.mgmt_endpoints.clone();
+    let diskdb = DiskdbProcess::start_for_instance_in(cluster.runtime_mut(), &seeds, 999, Some(16_384));
     diskdb.wait_for_ready().await;
     diskdb
         .wait_for_registry_ready(
@@ -97,132 +307,65 @@ async fn boto3_runs_against_a_self_hosted_complete_storage_stack() {
         .expect("listen for diskio readiness client");
     rpc.start();
     std::thread::sleep(Duration::from_millis(50));
-    let diskio = start_durable_diskio(&cluster, &rpc, identity, &disk_arg).await;
+    let diskio = start_durable_diskio(&mut cluster, &rpc, identity, &disk_arg).await;
 
     let chunkdb_options = ChunkdbStartOptions {
         placement_mode: ChunkdbPlacementMode::UnsafeColocated,
         repair_allow_unsafe_placement: true,
         ..ChunkdbStartOptions::default()
     };
-    let chunkdb = ChunkdbProcess::start_with_options(&cluster.mgmt_endpoints, chunkdb_options);
+    let chunkdb = ChunkdbProcess::start_with_options_in(cluster.runtime_mut(), &seeds, chunkdb_options);
     chunkdb.wait_for_ready().await;
     chunkdb
         .wait_for_registry_ready(&cluster.make_service_registry_client())
         .await;
     assert_range_delete_contract(&cluster).await;
-    let mut chunk_kv = ChunkKvProcess::start(&cluster.mgmt_endpoints);
+    let mut chunk_kv = ChunkKvProcess::start_in(cluster.runtime_mut(), &seeds);
     chunk_kv.wait_for_ready().await;
 
     let seeds = cluster.mgmt_endpoints.join(",");
     let (access_key, secret_key) = issue_credentials(&access_binary, &seeds);
-    let (mut access_server, listen) = start_access_server(&access_binary, &seeds);
+    let (mut access_server, listen) =
+        start_access_server(cluster.runtime_mut(), &access_binary, &seeds, "primary");
     wait_for_tcp(&mut access_server, &listen).await;
-    let (mut second_access_server, second_listen) = start_access_server(&access_binary, &seeds);
+    let (mut second_access_server, second_listen) =
+        start_access_server(cluster.runtime_mut(), &access_binary, &seeds, "secondary");
     wait_for_tcp(&mut second_access_server, &second_listen).await;
     assert_access_ready(&listen);
-
-    run_boto3(
-        &listen,
-        &second_listen,
-        &access_key,
-        &secret_key,
-        &access_server,
-        &chunk_kv,
-    );
-    run_restart_phase("lost-reply", &listen, &access_key, &secret_key);
-    assert_native_write_metrics(&listen);
-
-    run_restart_phase("prepare", &listen, &access_key, &secret_key);
-    drop(access_server);
-    run_restart_phase("verify", &second_listen, &access_key, &secret_key);
-    let (mut restarted_access, restarted_listen) = start_access_server(&access_binary, &seeds);
-    wait_for_tcp(&mut restarted_access, &restarted_listen).await;
-    run_restart_phase("verify", &restarted_listen, &access_key, &secret_key);
-    let chunkdb = verify_chunkdb_restart(
-        chunkdb,
-        &cluster.mgmt_endpoints,
-        chunkdb_options,
-        &second_listen,
-        &access_key,
-        &secret_key,
-    )
-    .await;
-    let diskdb = verify_diskdb_restart(
+    FullStackSetup {
+        access_binary,
+        cluster,
+        identity,
+        disk_arg,
         diskdb,
-        &cluster.mgmt_endpoints,
-        identity.disk_group_id,
-        &second_listen,
-        &access_key,
-        &secret_key,
-    )
-    .await;
-    let (diskio, chunk_kv) = verify_durable_diskio_restart(
-        diskio,
+        rpc,
+        diskio: Some(diskio),
+        chunkdb_options,
+        chunkdb: Some(chunkdb),
         chunk_kv,
-        DiskioRestartContext {
-            cluster: &cluster,
-            rpc: &rpc,
-            identity,
-            disk: &disk_arg,
-            listen: &second_listen,
-            access_key: &access_key,
-            secret_key: &secret_key,
-        },
-    )
-    .await;
-    run_direct_chunk_benchmark(&cluster.mgmt_endpoints).await;
-    run_benchmark(
-        &second_listen,
-        second_access_server.child.id(),
-        &access_key,
-        &secret_key,
-    );
-    run_restart_phase("cleanup", &second_listen, &access_key, &secret_key);
-    drop(restarted_access);
-    drop(second_access_server);
-    drop(chunk_kv);
-    drop(chunkdb);
-    drop(diskio);
-    drop(diskdb);
-    rpc.stop();
-    drop(disk_data);
-}
-
-async fn verify_durable_diskio_restart(
-    previous_diskio: DiskioProcess,
-    previous_chunk_kv: ChunkKvProcess,
-    context: DiskioRestartContext<'_>,
-) -> (DiskioProcess, ChunkKvProcess) {
-    drop(previous_diskio);
-    let diskio = start_durable_diskio(context.cluster, context.rpc, context.identity, context.disk).await;
-    run_restart_phase(
-        "verify-after-diskio-restart",
-        context.listen,
-        context.access_key,
-        context.secret_key,
-    );
-    drop(previous_chunk_kv);
-    let mut chunk_kv = ChunkKvProcess::start(&context.cluster.mgmt_endpoints);
-    chunk_kv.wait_for_ready().await;
-    run_restart_phase(
-        "verify-after-diskio-restart",
-        context.listen,
-        context.access_key,
-        context.secret_key,
-    );
-    (diskio, chunk_kv)
+        seeds,
+        access_key,
+        secret_key,
+        access_server: Some(access_server),
+        listen,
+        second_access_server,
+        second_listen,
+        restarted_access: None,
+    }
 }
 
 async fn start_durable_diskio(
-    cluster: &KvCluster,
+    cluster: &mut KvCluster,
     rpc: &Arc<RpcServer>,
     identity: DiskioGroup0Identity,
     disk: &DiskArg,
 ) -> DiskioProcess {
-    let diskio = DiskioProcess::start_for_group(
+    let seeds = cluster.mgmt_endpoints.clone();
+    let diskio = DiskioProcess::start_for_group_in(
+        cluster.runtime_mut(),
         &DiskioStartOpts {
             dummy_disk: "null",
-            kv_seeds: &cluster.mgmt_endpoints,
+            kv_seeds: &seeds,
             disks: std::slice::from_ref(disk),
             fault_error_rate: 0.0,
             fault_latency_ms: None,
@@ -269,41 +412,23 @@ async fn assert_range_delete_contract(cluster: &KvCluster) {
     assert!(matches!(range_delete, Err(ChunkdbClientError::Unimplemented(_))));
 }
 
-async fn verify_chunkdb_restart(
-    previous: ChunkdbProcess,
-    seeds: &[String],
-    options: ChunkdbStartOptions,
-    listen: &str,
-    access_key: &str,
-    secret_key: &str,
-) -> ChunkdbProcess {
-    drop(previous);
-    let chunkdb = ChunkdbProcess::start_with_options(seeds, options);
-    chunkdb.wait_for_ready().await;
-    run_restart_phase("verify-after-chunkdb-restart", listen, access_key, secret_key);
-    chunkdb
-}
-
 async fn verify_diskdb_restart(
-    previous: DiskdbProcess,
+    process: &mut DiskdbProcess,
     seeds: &[String],
     disk_group_id: u64,
     listen: &str,
     access_key: &str,
     secret_key: &str,
-) -> DiskdbProcess {
-    drop(previous);
+) {
     let diskdb_started_at = unix_time_ms();
-    let diskdb = DiskdbProcess::start_for_instance(seeds, 999, Some(16_384));
-    diskdb.wait_for_ready().await;
+    process.restart().await;
     let service_registry = crowdb_kv_client::ServiceRegistryClient::new(
         crowdb_kv_client::CrowdbKvClient::new(crowdb_kv_client::ClientConfig::new(seeds.to_vec())),
     );
-    diskdb
+    process
         .wait_for_registry_ready(&service_registry, disk_group_id, diskdb_started_at)
         .await;
     run_restart_phase("verify-after-diskdb-restart", listen, access_key, secret_key);
-    diskdb
 }
 
 fn unix_time_ms() -> u64 {
@@ -354,13 +479,20 @@ fn issue_credentials(access_binary: &Path, seeds: &str) -> (String, String) {
     )
 }
 
-fn start_access_server(access_binary: &Path, seeds: &str) -> (AccessServerProcess, String) {
-    let listen = format!("127.0.0.1:{}", reserve_ephemeral_port());
-    let log_path = crowdb_test_harness::test_dirs::test_log_dir().join(format!(
-        "crowdb-access-s3-e2e-{}-{}.log",
-        std::process::id(),
-        listen.replace(':', "-")
-    ));
+fn start_access_server(
+    runtime: &mut TestRuntime,
+    access_binary: &Path,
+    seeds: &str,
+    identity: &str,
+) -> (AccessServerProcess, String) {
+    let port = runtime
+        .assign_named_port(ServicePort::AccessServerHttp, identity)
+        .expect("assign access-server port");
+    let listen = format!("127.0.0.1:{port}");
+    let service_root = runtime
+        .service_dir("access-server", identity)
+        .expect("create access-server runtime directory");
+    let log_path = service_root.join("log").join("access-server.log");
     let log = std::fs::File::create(&log_path).expect("create access-server log");
     let child = Command::new(access_binary)
         .env("CROWDB_S3_LISTEN", &listen)
@@ -377,34 +509,34 @@ fn start_access_server(access_binary: &Path, seeds: &str) -> (AccessServerProces
         .stderr(Stdio::from(log))
         .spawn()
         .expect("start crowdb-access-server");
+    runtime
+        .record_process(child.id())
+        .expect("record access-server process");
     (AccessServerProcess { child, log_path }, listen)
 }
 
-fn run_boto3(
-    listen: &str,
-    second_listen: &str,
-    access_key: &str,
-    secret_key: &str,
-    access_server: &AccessServerProcess,
-    chunk_kv: &ChunkKvProcess,
-) {
+fn run_boto3_case(method: &str, context: &Boto3CaseContext<'_>) {
     let python_binary = std::env::var_os("CROWDB_S3_E2E_PYTHON").unwrap_or_else(|| "python".into());
     let python = Command::new(python_binary)
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/s3_e2e/basic.py"))
-        .env("CROWDB_S3_E2E_ENDPOINT", format!("http://{listen}"))
-        .env("CROWDB_S3_E2E_SECOND_ENDPOINT", format!("http://{second_listen}"))
+        .arg(format!("BasicS3CompatibilityTest.{method}"))
+        .env("CROWDB_S3_E2E_ENDPOINT", format!("http://{}", context.listen))
+        .env(
+            "CROWDB_S3_E2E_SECOND_ENDPOINT",
+            format!("http://{}", context.second_listen),
+        )
         .env("CROWDB_S3_E2E_REGION", "us-east-1")
-        .env("CROWDB_S3_E2E_ACCESS_KEY", access_key)
-        .env("CROWDB_S3_E2E_SECRET_KEY", secret_key)
+        .env("CROWDB_S3_E2E_ACCESS_KEY", context.access_key)
+        .env("CROWDB_S3_E2E_SECRET_KEY", context.secret_key)
         .output()
         .expect("run boto3 compatibility suite");
     assert!(
         python.status.success(),
-        "boto3 suite failed:\nstdout:\n{}\nstderr:\n{}\naccess server:\n{}\nchunk-kv:\n{}",
+        "boto3 case {method} failed:\nstdout:\n{}\nstderr:\n{}\naccess server:\n{}\nchunk-kv:\n{}",
         String::from_utf8_lossy(&python.stdout),
         String::from_utf8_lossy(&python.stderr),
-        access_server.log_content(),
-        chunk_kv.log_content(),
+        context.access_server.log_content(),
+        context.chunk_kv.log_content(),
     );
 }
 
@@ -434,7 +566,7 @@ fn run_restart_phase(phase: &str, listen: &str, access_key: &str, secret_key: &s
     );
 }
 
-fn run_benchmark(listen: &str, server_pid: u32, access_key: &str, secret_key: &str) {
+fn run_benchmark(listen: &str, server_pid: u32, access_key: &str, secret_key: &str, artifacts_dir: &Path) {
     let python_binary = std::env::var_os("CROWDB_S3_E2E_PYTHON").unwrap_or_else(|| "python".into());
     let result = Command::new(python_binary)
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/s3_e2e/benchmark.py"))
@@ -463,13 +595,12 @@ fn run_benchmark(listen: &str, server_pid: u32, access_key: &str, secret_key: &s
         String::from_utf8_lossy(&result.stdout).contains("\"server_process\": {"),
         "benchmark did not capture access-server CPU/RSS"
     );
-    let artifact = crowdb_test_harness::test_dirs::test_log_dir()
-        .join(format!("crowdb-s3-e2e-benchmark-{}.json", std::process::id()));
+    let artifact = artifacts_dir.join("s3-request-path.json");
     std::fs::write(&artifact, result.stdout).expect("write S3 baseline samples");
     eprintln!("S3 benchmark samples: {}", artifact.display());
 }
 
-async fn run_direct_chunk_benchmark(seeds: &[String]) {
+async fn run_direct_chunk_benchmark(seeds: &[String], artifacts_dir: &Path) {
     let chunks = Arc::new(
         ChunkIoClient::connect(ChunkIoClientConfig {
             management_seeds: seeds.to_vec(),
@@ -539,10 +670,7 @@ async fn run_direct_chunk_benchmark(seeds: &[String]) {
             }
         }
     }
-    let artifact = crowdb_test_harness::test_dirs::test_log_dir().join(format!(
-        "crowdb-direct-chunk-e2e-benchmark-{}.json",
-        std::process::id()
-    ));
+    let artifact = artifacts_dir.join("direct-chunk-path.json");
     std::fs::write(
         &artifact,
         serde_json::to_vec_pretty(&json!({
@@ -700,14 +828,6 @@ fn output_value<'a>(output: &'a str, name: &str) -> &'a str {
         .lines()
         .find_map(|line| line.strip_prefix(name).and_then(|value| value.strip_prefix('=')))
         .unwrap_or_else(|| panic!("issuer omitted {name}: {output}"))
-}
-
-fn reserve_ephemeral_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("reserve access-server port")
-        .local_addr()
-        .expect("reserved address")
-        .port()
 }
 
 async fn wait_for_tcp(process: &mut AccessServerProcess, address: &str) {

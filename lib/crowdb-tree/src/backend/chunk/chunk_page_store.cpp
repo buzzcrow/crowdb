@@ -566,6 +566,65 @@ void MemoryRootCatalog::downgrade_active_manifest_for_tests(uint64_t tree_id)
     }
 }
 
+Status MemoryRootCatalog::pin_generation(uint64_t tree_id, uint64_t transition_high, uint64_t transition_low,
+                                         uint64_t generation)
+{
+    if ((transition_high == 0 && transition_low == 0) || generation == 0) {
+        return Status::invalid_argument("chunk root generation pin identity is invalid");
+    }
+    auto state = state_.load(std::memory_order_acquire);
+    for (;;) {
+        if (state == nullptr ||
+            std::none_of(state->history.begin(), state->history.end(), [tree_id, generation](const auto &manifest) {
+                return manifest->tree_id == tree_id && manifest->generation == generation;
+            })) {
+            return Status::not_found("pinned chunk root generation does not exist");
+        }
+        auto existing = std::find_if(state->pins.begin(), state->pins.end(),
+                                     [tree_id, transition_high, transition_low](const auto &pin) {
+                                         return pin.tree_id == tree_id && pin.transition_high == transition_high &&
+                                                pin.transition_low == transition_low;
+                                     });
+        if (existing != state->pins.end()) {
+            return existing->generation == generation
+                     ? Status::Ok()
+                     : Status::invalid_argument("chunk root generation pin conflicts with persisted transition");
+        }
+        auto next = std::make_shared<CatalogState>(*state);
+        next->pins.push_back({.tree_id         = tree_id,
+                              .transition_high = transition_high,
+                              .transition_low  = transition_low,
+                              .generation      = generation,
+                              .pinned_at_ms    = monotonic_millis()});
+        if (state_.compare_exchange_weak(state, next, std::memory_order_release, std::memory_order_acquire)) {
+            return Status::Ok();
+        }
+    }
+}
+
+Status MemoryRootCatalog::unpin_generation(uint64_t tree_id, uint64_t transition_high, uint64_t transition_low)
+{
+    auto state = state_.load(std::memory_order_acquire);
+    for (;;) {
+        if (state == nullptr) {
+            return Status::Ok();
+        }
+        auto next = std::make_shared<CatalogState>(*state);
+        next->pins.erase(std::remove_if(next->pins.begin(), next->pins.end(),
+                                        [tree_id, transition_high, transition_low](const auto &pin) {
+                                            return pin.tree_id == tree_id && pin.transition_high == transition_high &&
+                                                   pin.transition_low == transition_low;
+                                        }),
+                         next->pins.end());
+        if (next->pins.size() == state->pins.size()) {
+            return Status::Ok();
+        }
+        if (state_.compare_exchange_weak(state, next, std::memory_order_release, std::memory_order_acquire)) {
+            return Status::Ok();
+        }
+    }
+}
+
 uint64_t MemoryRootCatalog::reclaim_before(uint64_t tree_id, uint64_t generation)
 {
     auto                                              state = state_.load(std::memory_order_acquire);
@@ -576,6 +635,11 @@ uint64_t MemoryRootCatalog::reclaim_before(uint64_t tree_id, uint64_t generation
         }
         if (state->reclaiming) {
             return 0;
+        }
+        for (const auto &pin : state->pins) {
+            if (pin.tree_id == tree_id) {
+                generation = std::min(generation, pin.generation);
+            }
         }
         const auto     current = std::find_if(state->current.begin(), state->current.end(),
                                               [tree_id](const auto &entry) { return entry->tree_id == tree_id; });
@@ -716,8 +780,12 @@ uint64_t MemoryRootCatalog::pinned_bytes(uint64_t tree_id) const
                                     [tree_id](const auto &entry) { return entry->tree_id == tree_id; });
     uint64_t bytes   = 0;
     for (const auto &manifest : state->history) {
+        const bool persistent_pin =
+            std::any_of(state->pins.begin(), state->pins.end(), [tree_id, &manifest](const auto &pin) {
+                return pin.tree_id == tree_id && pin.generation == manifest->generation;
+            });
         if ((current == state->current.end() || manifest != *current) && manifest->tree_id == tree_id &&
-            manifest.use_count() > 1) {
+            (manifest.use_count() > 1 || persistent_pin)) {
             bytes += manifest->logical_size;
         }
     }
@@ -734,9 +802,17 @@ uint64_t MemoryRootCatalog::oldest_pin_age_ms(uint64_t tree_id) const
                                     [tree_id](const auto &entry) { return entry->tree_id == tree_id; });
     uint64_t oldest  = 0;
     for (const auto &manifest : state->history) {
+        const auto persistent_pin =
+            std::find_if(state->pins.begin(), state->pins.end(), [tree_id, &manifest](const auto &pin) {
+                return pin.tree_id == tree_id && pin.generation == manifest->generation;
+            });
         if ((current == state->current.end() || manifest != *current) && manifest->tree_id == tree_id &&
-            manifest.use_count() > 1 && (oldest == 0 || manifest->published_at_ms < oldest)) {
-            oldest = manifest->published_at_ms;
+            (manifest.use_count() > 1 || persistent_pin != state->pins.end())) {
+            const uint64_t pinned_at =
+                persistent_pin == state->pins.end() ? manifest->published_at_ms : persistent_pin->pinned_at_ms;
+            if (oldest == 0 || pinned_at < oldest) {
+                oldest = pinned_at;
+            }
         }
     }
     return oldest == 0 ? 0 : monotonic_millis() - oldest;
@@ -772,8 +848,24 @@ ChunkPageStore::ChunkPageStore(Config config, std::shared_ptr<RootCatalog> catal
     if (transport_ == nullptr) {
         transport_ = std::make_shared<MemoryChunkTransport>();
     }
-    if (auto current = catalog_->load(config_.tree_id); current != nullptr && current->format_version >= 4) {
-        wal_replay_offset_.store(current->wal_replay_offset, std::memory_order_relaxed);
+    if (config_.open_generation == 0) {
+        if (auto current = catalog_->load(config_.tree_id); current != nullptr && current->format_version >= 4) {
+            wal_replay_offset_.store(current->wal_replay_offset, std::memory_order_relaxed);
+        }
+    }
+    else if (auto opened = catalog_->load_generation(config_.tree_id, config_.open_generation); opened != nullptr) {
+        open_status_ = validate_manifest(*opened, *catalog_);
+        if (open_status_.ok()) {
+            cached_layout_.store(opened, std::memory_order_release);
+            layout_valid_until_ms_.store(monotonic_millis() + config_.layout_validity_ms, std::memory_order_release);
+            bootstrap_layout_.store(opened, std::memory_order_release);
+            if (opened->format_version >= 4) {
+                wal_replay_offset_.store(opened->wal_replay_offset, std::memory_order_relaxed);
+            }
+        }
+    }
+    else {
+        open_status_ = Status::not_found("exact chunk manifest generation does not exist");
     }
     config_.max_chunk_bytes            = std::min(config_.max_chunk_bytes, kMaxChunkBytes);
     config_.pack_bytes                 = std::min<uint64_t>(config_.pack_bytes, config_.max_chunk_bytes);
@@ -937,6 +1029,10 @@ bool ChunkPageStore::inherited_snapshot_matches(const PageStore &source_store) c
 
 std::shared_ptr<const ChunkManifest> ChunkPageStore::reuse_base_manifest() const
 {
+    auto bootstrap = bootstrap_layout_.load(std::memory_order_acquire);
+    if (bootstrap != nullptr) {
+        return bootstrap;
+    }
     auto cached = cached_layout_.load(std::memory_order_acquire);
     if (cached != nullptr && monotonic_millis() < layout_valid_until_ms_.load(std::memory_order_acquire)) {
         return cached;
@@ -1198,8 +1294,14 @@ Status ChunkPageStore::read_at_cancellable(uint64_t off, uint8_t *buf, size_t le
 Status ChunkPageStore::load_layout(std::shared_ptr<const ChunkManifest> *out) const
 {
     const uint64_t load_started = monotonic_nanos();
-    const uint64_t now          = monotonic_millis();
-    auto           cached       = cached_layout_.load(std::memory_order_acquire);
+    auto           bootstrap    = bootstrap_layout_.load(std::memory_order_acquire);
+    if (bootstrap != nullptr) {
+        cache_hits_.fetch_add(1, std::memory_order_relaxed);
+        *out = std::move(bootstrap);
+        return Status::Ok();
+    }
+    const uint64_t now    = monotonic_millis();
+    auto           cached = cached_layout_.load(std::memory_order_acquire);
     if (cached != nullptr && now < layout_valid_until_ms_.load(std::memory_order_acquire)) {
         cache_hits_.fetch_add(1, std::memory_order_relaxed);
         *out = std::move(cached);
@@ -1228,6 +1330,22 @@ Status ChunkPageStore::load_layout(std::shared_ptr<const ChunkManifest> *out) co
     cached_layout_.store(manifest, std::memory_order_release);
     layout_valid_until_ms_.store(now + config_.layout_validity_ms, std::memory_order_release);
     *out = std::move(manifest);
+    return Status::Ok();
+}
+
+Status ChunkPageStore::publication_base(std::shared_ptr<const ChunkManifest> *out) const
+{
+    auto bootstrap = bootstrap_layout_.load(std::memory_order_acquire);
+    if (bootstrap == nullptr) {
+        *out = catalog_->load(config_.tree_id);
+        return Status::Ok();
+    }
+    auto current = catalog_->load(config_.tree_id);
+    if (current == nullptr || current->generation != bootstrap->generation ||
+        current->checksum != bootstrap->checksum) {
+        return Status::unavailable("exact chunk manifest is no longer the current publication base");
+    }
+    *out = std::move(bootstrap);
     return Status::Ok();
 }
 
@@ -1724,6 +1842,7 @@ Status ChunkPageStore::materialize_ownership(uint64_t *bytes_written, bool *comp
                                              std::memory_order_relaxed);
     materialization_bytes_written_.fetch_add(copied_bytes, std::memory_order_relaxed);
     cached_layout_.store(manifest, std::memory_order_release);
+    bootstrap_layout_.store(nullptr, std::memory_order_release);
     layout_valid_until_ms_.store(monotonic_millis() + config_.layout_validity_ms, std::memory_order_release);
     *bytes_written = copied_bytes;
     *complete      = !shared_remains;
@@ -1749,7 +1868,11 @@ Status ChunkPageStore::sync_cancellable(ChunkCancellation cancellation)
         CRB_LOG_ERROR("chunk page store tree={} rejected root publication before data durability", config_.tree_id);
         return Status::internal_error("chunk root cannot publish before data durability barrier");
     }
-    auto                           prior               = catalog_->load(config_.tree_id);
+    std::shared_ptr<const ChunkManifest> prior;
+    Status                               publication_status = publication_base(&prior);
+    if (!publication_status.ok()) {
+        return publication_status;
+    }
     const uint64_t                 expected_generation = prior == nullptr ? 0 : prior->generation;
     std::shared_ptr<ChunkManifest> manifest;
     uint64_t                       new_pack_bytes = 0;
@@ -1793,6 +1916,7 @@ Status ChunkPageStore::sync_cancellable(ChunkCancellation cancellation)
     packs_reused_.fetch_add(manifest->packs_reused, std::memory_order_relaxed);
     pack_bytes_reused_.fetch_add(manifest->pack_bytes_reused, std::memory_order_relaxed);
     cached_layout_.store(manifest, std::memory_order_release);
+    bootstrap_layout_.store(nullptr, std::memory_order_release);
     layout_valid_until_ms_.store(monotonic_millis() + config_.layout_validity_ms, std::memory_order_release);
     staged_initialized_ = false;
     staged_.clear();
@@ -1823,7 +1947,12 @@ std::shared_ptr<void> ChunkPageStore::start_sync_cancellable(ChunkCancellation c
         catalog_->discard_reference_segments(config_.tree_id, orphan_reference_segments_);
         orphan_reference_segments_.clear();
     }
-    auto           prior               = catalog_->load(config_.tree_id);
+    std::shared_ptr<const ChunkManifest> prior;
+    Status                               publication_status = publication_base(&prior);
+    if (!publication_status.ok()) {
+        completion.complete(std::move(publication_status));
+        return {};
+    }
     const uint64_t expected_generation = prior == nullptr ? 0 : prior->generation;
     Status         start_status;
     auto           state = ChunkPackPipeline::start(this, expected_generation, cancellation, completion, &start_status);
@@ -1904,7 +2033,7 @@ void ChunkPageStore::cancel(uint64_t op_id)
 
 Status ChunkPageStore::set_wal_replay_offset(uint64_t offset)
 {
-    auto current = catalog_->load(config_.tree_id);
+    auto current = reuse_base_manifest();
     if (current != nullptr) {
         Status status = validate_manifest(*current, *catalog_);
         if (!status.ok()) {
@@ -1933,7 +2062,7 @@ Status ChunkPageStore::wal_replay_offset(uint64_t *offset) const
     if (offset == nullptr) {
         return Status::invalid_argument("WAL replay offset output is null");
     }
-    auto current = catalog_->load(config_.tree_id);
+    auto current = reuse_base_manifest();
     if (current == nullptr) {
         *offset = 0;
         return Status::Ok();
@@ -1943,6 +2072,19 @@ Status ChunkPageStore::wal_replay_offset(uint64_t *offset) const
         return status;
     }
     *offset = current->format_version >= 4 ? current->wal_replay_offset : 0;
+    return Status::Ok();
+}
+
+Status ChunkPageStore::manifest_generation(uint64_t *generation) const
+{
+    if (generation == nullptr) {
+        return Status::invalid_argument("chunk manifest generation output is null");
+    }
+    auto manifest = reuse_base_manifest();
+    if (manifest == nullptr) {
+        return Status::not_found("chunk manifest generation is unavailable");
+    }
+    *generation = manifest->generation;
     return Status::Ok();
 }
 
@@ -2090,6 +2232,25 @@ uint64_t CallbackRootCatalog::reclaim_before(uint64_t tree_id, uint64_t generati
     return callbacks_.reclaim_before == nullptr ? 0 : callbacks_.reclaim_before(context_, tree_id, generation);
 }
 
+Status CallbackRootCatalog::pin_generation(uint64_t tree_id, uint64_t transition_high, uint64_t transition_low,
+                                           uint64_t generation)
+{
+    if (callbacks_.pin_generation == nullptr) {
+        return Status::invalid_argument("callback root catalog pin is unavailable");
+    }
+    return callback_status(callbacks_.pin_generation(context_, tree_id, transition_high, transition_low, generation),
+                           "callback root catalog pin failed");
+}
+
+Status CallbackRootCatalog::unpin_generation(uint64_t tree_id, uint64_t transition_high, uint64_t transition_low)
+{
+    if (callbacks_.unpin_generation == nullptr) {
+        return Status::invalid_argument("callback root catalog unpin is unavailable");
+    }
+    return callback_status(callbacks_.unpin_generation(context_, tree_id, transition_high, transition_low),
+                           "callback root catalog unpin failed");
+}
+
 } // namespace crowdb::tree::detail
 
 ct_status ct_memory_root_catalog_open(uint64_t owner_epoch, ct_root_catalog **out)
@@ -2136,12 +2297,16 @@ ct_status ct_chunk_page_store_open(const ct_chunk_page_store_options *options, c
         crowdb::tree::detail::ChunkPageStore::Config{
             .tree_id                        = options->tree_id,
             .owner_epoch                    = options->owner_epoch,
+            .open_generation                = options->open_generation,
             .pack_bytes                     = options->pack_bytes,
             .iu_size                        = options->iu_size,
             .max_concurrent_packs           = options->max_concurrent_packs,
             .materialization_bytes_per_pass = options->materialization_bytes_per_pass,
         },
         catalog->catalog, catalog->transport);
+    if (!store->open_status().ok()) {
+        return static_cast<ct_status>(store->open_status().code());
+    }
     handle->bundle->async_store_view = store.get();
     handle->bundle->store            = std::move(store);
     handle->bundle->backend_label    = "chunk";
@@ -2162,12 +2327,16 @@ ct_status ct_chunk_page_store_open_with_transport(const ct_chunk_page_store_opti
         crowdb::tree::detail::ChunkPageStore::Config{
             .tree_id                        = options->tree_id,
             .owner_epoch                    = options->owner_epoch,
+            .open_generation                = options->open_generation,
             .pack_bytes                     = options->pack_bytes,
             .iu_size                        = options->iu_size,
             .max_concurrent_packs           = options->max_concurrent_packs,
             .materialization_bytes_per_pass = options->materialization_bytes_per_pass,
         },
         catalog->catalog, transport->transport);
+    if (!store->open_status().ok()) {
+        return static_cast<ct_status>(store->open_status().code());
+    }
     handle->bundle->async_store_view = store.get();
     handle->bundle->store            = std::move(store);
     handle->bundle->backend_label    = "chunk";
@@ -2244,6 +2413,16 @@ ct_status ct_chunk_page_store_get_wal_replay_offset(const ct_page_store *store, 
     return static_cast<ct_status>(chunk->wal_replay_offset(offset).code());
 }
 
+ct_status ct_chunk_page_store_get_manifest_generation(const ct_page_store *store, uint64_t *generation)
+{
+    if (store == nullptr || store->bundle == nullptr || generation == nullptr) {
+        return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
+    }
+    const auto *chunk = dynamic_cast<const crowdb::tree::detail::ChunkPageStore *>(store->bundle->store.get());
+    return chunk == nullptr ? static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument)
+                            : static_cast<ct_status>(chunk->manifest_generation(generation).code());
+}
+
 uint64_t ct_chunk_page_store_reclaim_orphans(ct_page_store *store)
 {
     if (store == nullptr || store->bundle == nullptr) {
@@ -2259,4 +2438,23 @@ uint64_t ct_root_catalog_reclaim_before(ct_root_catalog *catalog, uint64_t tree_
         return 0;
     }
     return catalog->catalog->reclaim_before(tree_id, generation);
+}
+
+ct_status ct_root_catalog_pin_generation(ct_root_catalog *catalog, uint64_t tree_id, uint64_t transition_high,
+                                         uint64_t transition_low, uint64_t generation)
+{
+    if (catalog == nullptr || catalog->catalog == nullptr) {
+        return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
+    }
+    return static_cast<ct_status>(
+        catalog->catalog->pin_generation(tree_id, transition_high, transition_low, generation).code());
+}
+
+ct_status ct_root_catalog_unpin_generation(ct_root_catalog *catalog, uint64_t tree_id, uint64_t transition_high,
+                                           uint64_t transition_low)
+{
+    if (catalog == nullptr || catalog->catalog == nullptr) {
+        return static_cast<ct_status>(crowdb::tree::Code::kInvalidArgument);
+    }
+    return static_cast<ct_status>(catalog->catalog->unpin_generation(tree_id, transition_high, transition_low).code());
 }

@@ -524,6 +524,38 @@ pub struct ReplaceChunkStripRangeResponse {
     pub chunk: Option<Chunk>,
 }
 
+/// Versioned routed request for a verified corrupt EC fragment recovery.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct AdHocEcRecoveryRequest {
+    pub version: u16,
+    pub chunk_id: Option<ChunkId>,
+    pub expected_modify_ts: u64,
+    pub strip_sequence: u32,
+    pub failed_segment: Option<Segment>,
+    pub operation_id: Option<ChunkId>,
+    /// False records verified corruption; true also waits for rebuilt bytes.
+    pub request_full_block: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AdHocEcRecoveryDisposition {
+    #[default]
+    Started,
+    Coalesced,
+    Stale,
+    Healed,
+    Incompatible,
+    InsufficientShards,
+    Saturated,
+    Marked,
+}
+
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct AdHocEcRecoveryResponse {
+    pub disposition: AdHocEcRecoveryDisposition,
+    pub data: Vec<u8>,
+}
+
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct ListChunksRequest {
     pub start_token: Option<ChunkId>,

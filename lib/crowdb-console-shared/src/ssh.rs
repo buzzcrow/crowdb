@@ -285,11 +285,13 @@ fn known_hosts_store_for_session() -> Result<Arc<KnownHostsStore>> {
         return Ok(s.clone());
     }
     let path = KnownHostsStore::default_path().unwrap_or_else(|| {
-        // No HOME, no override: write to a temp path scoped to the
-        // process. Persisting somewhere arbitrary would be surprising;
-        // logging the fallback is the right escalation.
+        // No HOME or override: keep the fallback inside the workspace runtime
+        // namespace so cleanup and inspection remain deterministic.
         warn!("ssh: cannot resolve $HOME or $CROWDB_KV_KNOWN_HOSTS; using in-memory known_hosts (keys will not persist)");
-        std::path::Path::new("temp-data").join(format!("crowdb-kv-known_hosts-{}", std::process::id()))
+        crowdb_protocol::port::namespace::runtime_root()
+            .join("persistent")
+            .join("ssh")
+            .join(format!("known-hosts-{}", std::process::id()))
     });
     let store = KnownHostsStore::open(&path)
         .map_err(|e| Error::Config(format!("open known_hosts {}: {e}", path.display())))?;
@@ -426,10 +428,10 @@ mod tests {
 
     #[test]
     fn resolve_explicit_key_path_wins() {
-        let n = node("h", "u", Some("/tmp/k"), Some("p"));
+        let n = node("h", "u", Some("/example/key"), Some("p"));
         let c = SshCreds::resolve(&n).unwrap();
         match c {
-            SshCreds::KeyPath(p) => assert_eq!(p, Path::new("/tmp/k")),
+            SshCreds::KeyPath(p) => assert_eq!(p, Path::new("/example/key")),
             SshCreds::Password(_) => panic!("should pick key over password"),
         }
     }

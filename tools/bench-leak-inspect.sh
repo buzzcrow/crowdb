@@ -9,7 +9,9 @@ DURATION=20
 KEYSPACE=1000000
 VALUE_SIZE=512
 DEPLOY="leak-inspect-$$-$(date +%s)"
-CFG="/tmp/${DEPLOY}.toml"
+RUNTIME_ROOT="${CROWDB_RUNTIME_ROOT:-${PIXI_PROJECT_ROOT:-$(pwd)}/.crowdb-runtime}"
+mkdir -p "$RUNTIME_ROOT/ephemeral/bench-leak-inspect"
+CFG="$RUNTIME_ROOT/ephemeral/bench-leak-inspect/${DEPLOY}.toml"
 BENCH_STORE=0
 BENCH_GROUP=1
 

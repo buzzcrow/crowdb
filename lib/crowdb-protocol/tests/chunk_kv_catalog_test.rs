@@ -6,6 +6,7 @@ use crowdb_protocol::chunk_kv::{
     ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState,
     DomainFailurePolicy, DomainMonitorDescriptor, Id128, KeyRange, OwnerDescriptor, PartitionArtifact,
     ServingAssignment, ServingGrant, SplitChildAssignment, SplitPhase, SplitReadinessProof, SplitTransition,
+    TailOverlayArtifact,
 };
 use crowdb_protocol::chunk_stream::StreamName;
 
@@ -25,6 +26,7 @@ fn entry(id: u64, start: &[u8], end: Option<&[u8]>, epoch: u64) -> ChunkKvRangeC
         artifact: PartitionArtifact {
             tree_id: id,
             stream_name: StreamName { high: 2, low: id },
+            tail_overlay: None,
         },
         transition_id: None,
     }
@@ -184,7 +186,7 @@ fn successor_reuses_unchanged_pages_and_rejects_epoch_regression() {
 }
 
 #[test]
-fn split_transition_requires_exact_coverage_and_common_cutover() {
+fn split_transition_requires_retained_parent_and_exact_child_cutover() {
     let owner = OwnerDescriptor {
         instance_id: 8,
         rpc_endpoint: "127.0.0.1:9008".into(),
@@ -192,6 +194,7 @@ fn split_transition_requires_exact_coverage_and_common_cutover() {
     let artifact = |tree_id, low| PartitionArtifact {
         tree_id,
         stream_name: StreamName { high: 9, low },
+        tail_overlay: None,
     };
     let child = |partition_low, start: &[u8], end: Option<&[u8]>, tree_id| SplitChildAssignment {
         partition_id: Id128 {
@@ -216,32 +219,60 @@ fn split_transition_requires_exact_coverage_and_common_cutover() {
         parent_owner: owner.clone(),
         parent_epoch: 4,
         parent_artifact: artifact(5, 5),
+        retained_parent_artifact: artifact(6, 6),
+        parent_next_epoch: 5,
         split_key: b"m".to_vec(),
-        left: child(2, b"a", Some(b"m"), 6),
-        right: child(3, b"m", Some(b"z"), 7),
+        child: child(3, b"m", Some(b"z"), 7),
         planned_at_ms: 0,
         phase: SplitPhase::ParentPreparing,
         readiness_proof: None,
         failure: None,
     };
     transition.validate().unwrap();
-    transition.phase = SplitPhase::ChildrenPrepared;
+    let overlay = TailOverlayArtifact {
+        source_partition_id: transition.parent_id,
+        source_epoch: transition.parent_epoch,
+        source_stream_name: transition.parent_artifact.stream_name,
+        source_stream_manifest_generation: 1,
+        replay_offset: 0,
+        cutover_offset: 11,
+        base_root_manifest_generation: 1,
+        base_tree_manifest: 1,
+        base_applied_seq: 11,
+        cutover_seq: 11,
+        target_stream_start_seq: 12,
+    };
+    transition.retained_parent_artifact.tail_overlay = Some(overlay.clone());
+    transition.child.artifact.tail_overlay = Some(overlay.clone());
+    transition.phase = SplitPhase::ChildPrepared;
     transition.readiness_proof = Some(SplitReadinessProof {
         cutover_seq: 11,
-        left_applied_seq: 11,
-        right_applied_seq: 11,
+        parent_next_epoch: 5,
+        retained_parent_artifact: transition.retained_parent_artifact.clone(),
+        retained_parent_tree_manifest: 1,
+        retained_parent_root_manifest_generation: 1,
+        retained_parent_applied_seq: 11,
+        child_applied_seq: 11,
+        child_tree_manifest: 1,
+        child_root_manifest_generation: 1,
+        retained_parent_tail_overlay: overlay.clone(),
+        child_tail_overlay: overlay,
     });
     transition.validate().unwrap();
 
-    transition.right.range.start = b"n".to_vec();
+    transition.child.range.start = b"n".to_vec();
     assert_eq!(
         transition.validate(),
-        Err(ChunkKvProtocolError::InvalidSplitTransition)
+        Err(ChunkKvProtocolError::InvalidSplitTransition(
+            "identity, artifact, epoch, or range coverage"
+        ))
     );
-    transition.right.range.start = b"m".to_vec();
-    transition.readiness_proof.as_mut().unwrap().right_applied_seq = 10;
+    transition.child.range.start = b"m".to_vec();
+    transition.readiness_proof.as_mut().unwrap().child_applied_seq = 10;
     assert_eq!(
         transition.validate(),
-        Err(ChunkKvProtocolError::InvalidSplitTransition)
+        Err(ChunkKvProtocolError::InvalidSplitTransition(
+            "child cutover frontier"
+        ))
     );
 }

@@ -26,10 +26,11 @@ pub enum RequestKind {
     DeleteChunkRange,
     UpdateChunkStrip,
     ListChunks,
+    AdHocEcRecovery,
 }
 
 impl RequestKind {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::AllocateChunk,
         Self::AppendChunk,
         Self::ReserveStripGroup,
@@ -41,6 +42,7 @@ impl RequestKind {
         Self::DeleteChunkRange,
         Self::UpdateChunkStrip,
         Self::ListChunks,
+        Self::AdHocEcRecovery,
     ];
 
     const fn name(self) -> &'static str {
@@ -56,6 +58,7 @@ impl RequestKind {
             Self::DeleteChunkRange => "delete_chunk_range",
             Self::UpdateChunkStrip => "update_chunk_strip",
             Self::ListChunks => "list_chunks",
+            Self::AdHocEcRecovery => "ad_hoc_ec_recovery",
         }
     }
 
@@ -71,7 +74,7 @@ struct RequestMetric {
 
 /// Uniform completed-request count, inflight, and error metrics.
 pub struct RequestMetrics {
-    methods: [RequestMetric; 11],
+    methods: [RequestMetric; 12],
 }
 
 impl RequestMetrics {
@@ -238,6 +241,13 @@ pub struct RepairMetricsSnapshot {
     pub active: u64,
     pub memory_bytes: u64,
     pub memory_limit_bytes: u64,
+    pub ad_hoc_starts: u64,
+    pub ad_hoc_coalesced: u64,
+    pub ad_hoc_bytes_reused: u64,
+    pub ad_hoc_rejected: u64,
+    pub ad_hoc_stale: u64,
+    pub ad_hoc_published: u64,
+    pub ad_hoc_fallback_background: u64,
 }
 
 pub struct RepairMetrics {
@@ -250,6 +260,13 @@ pub struct RepairMetrics {
     active: Arc<Gauge>,
     memory_bytes: Arc<Gauge>,
     memory_limit_bytes: Arc<Gauge>,
+    ad_hoc_starts: Arc<Counter>,
+    ad_hoc_coalesced: Arc<Counter>,
+    ad_hoc_bytes_reused: Arc<Counter>,
+    ad_hoc_rejected: Arc<Counter>,
+    ad_hoc_stale: Arc<Counter>,
+    ad_hoc_published: Arc<Counter>,
+    ad_hoc_fallback_background: Arc<Counter>,
 }
 
 impl RepairMetrics {
@@ -264,7 +281,34 @@ impl RepairMetrics {
             active: registry.register_gauge("repair.active.g"),
             memory_bytes: registry.register_gauge("repair.memory_bytes.g"),
             memory_limit_bytes: registry.register_gauge("repair.memory_limit_bytes.g"),
+            ad_hoc_starts: registry.register_counter("repair.ad_hoc.starts.c"),
+            ad_hoc_coalesced: registry.register_counter("repair.ad_hoc.coalesced.c"),
+            ad_hoc_bytes_reused: registry.register_counter("repair.ad_hoc.bytes_reused.c"),
+            ad_hoc_rejected: registry.register_counter("repair.ad_hoc.rejected.c"),
+            ad_hoc_stale: registry.register_counter("repair.ad_hoc.stale.c"),
+            ad_hoc_published: registry.register_counter("repair.ad_hoc.published.c"),
+            ad_hoc_fallback_background: registry.register_counter("repair.ad_hoc.fallback_background.c"),
         }
+    }
+
+    pub(crate) fn ad_hoc_start(&self) {
+        self.ad_hoc_starts.inc();
+    }
+    pub(crate) fn ad_hoc_join(&self, bytes: u64) {
+        self.ad_hoc_coalesced.inc();
+        self.ad_hoc_bytes_reused.inc_by(bytes);
+    }
+    pub(crate) fn ad_hoc_reject(&self) {
+        self.ad_hoc_rejected.inc();
+    }
+    pub(crate) fn ad_hoc_stale(&self) {
+        self.ad_hoc_stale.inc();
+    }
+    pub(crate) fn ad_hoc_publish(&self) {
+        self.ad_hoc_published.inc();
+    }
+    pub(crate) fn ad_hoc_fallback(&self) {
+        self.ad_hoc_fallback_background.inc();
     }
 
     pub(crate) fn set_memory_limit(&self, bytes: usize) {
@@ -314,6 +358,13 @@ impl RepairMetrics {
             active: self.active.snapshot(),
             memory_bytes: self.memory_bytes.snapshot(),
             memory_limit_bytes: self.memory_limit_bytes.snapshot(),
+            ad_hoc_starts: self.ad_hoc_starts.snapshot().total,
+            ad_hoc_coalesced: self.ad_hoc_coalesced.snapshot().total,
+            ad_hoc_bytes_reused: self.ad_hoc_bytes_reused.snapshot().total,
+            ad_hoc_rejected: self.ad_hoc_rejected.snapshot().total,
+            ad_hoc_stale: self.ad_hoc_stale.snapshot().total,
+            ad_hoc_published: self.ad_hoc_published.snapshot().total,
+            ad_hoc_fallback_background: self.ad_hoc_fallback_background.snapshot().total,
         }
     }
 }
@@ -579,6 +630,7 @@ mod tests {
                 active: 0,
                 memory_bytes: 0,
                 memory_limit_bytes: 64,
+                ..RepairMetricsSnapshot::default()
             }
         );
     }

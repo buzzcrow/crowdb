@@ -10,11 +10,12 @@ use crowdb_chunk_kv_server::{
     Group0Kv, Group0KvError, SplitAction, SplitStateMachine, TransferStateMachine, VersionedValue,
 };
 use crowdb_protocol::chunk_kv::{
-    AuthorityReleaseProof, ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage,
-    ChunkKvRangeCatalogPageRef, ChunkKvRangeCatalogPartitionState, DomainFailurePolicy,
-    DomainMonitorDescriptor, EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest, Id128, KeyRange,
-    OwnerDescriptor, PartitionArtifact, ServingAssignment, ServingGrant, SplitChildAssignment, SplitPhase,
-    SplitReadinessProof, SplitTransition, TransferPhase, TransferTransition,
+    ChunkKvRangeCatalogEntry, ChunkKvRangeCatalogHead, ChunkKvRangeCatalogPage, ChunkKvRangeCatalogPageRef,
+    ChunkKvRangeCatalogPartitionState, DomainFailurePolicy, DomainMonitorDescriptor,
+    EnsureDomainMonitorOutcome, EnsureDomainMonitorRequest, Id128, KeyRange, OwnerDescriptor,
+    PartitionArtifact, ServingAssignment, ServingGrant, SplitChildAssignment, SplitPhase,
+    SplitReadinessProof, SplitTransition, TailOverlayArtifact, TransferPhase, TransferReadinessLimits,
+    TransferTransition,
 };
 use crowdb_protocol::chunk_stream::StreamName;
 use crowdb_protocol::key::{ChunkKvRangeCatalogHeadKey, ServingGrantKey, TextKey};
@@ -108,6 +109,7 @@ fn page(generation: u64) -> ChunkKvRangeCatalogPage {
             artifact: PartitionArtifact {
                 tree_id: 1,
                 stream_name: StreamName { high: 2, low: 3 },
+                tail_overlay: None,
             },
             transition_id: None,
         }],
@@ -156,6 +158,28 @@ fn descriptor() -> DomainMonitorDescriptor {
 }
 
 fn transfer() -> TransferTransition {
+    let source_artifact = PartitionArtifact {
+        tree_id: 5,
+        stream_name: StreamName { high: 6, low: 7 },
+        tail_overlay: None,
+    };
+    let target_artifact = PartitionArtifact {
+        tree_id: 5,
+        stream_name: StreamName { high: 8, low: 9 },
+        tail_overlay: Some(TailOverlayArtifact {
+            source_partition_id: Id128 { high: 1, low: 2 },
+            source_epoch: 3,
+            source_stream_name: source_artifact.stream_name,
+            source_stream_manifest_generation: 1,
+            replay_offset: 0,
+            cutover_offset: 0,
+            base_root_manifest_generation: 1,
+            base_tree_manifest: 1,
+            base_applied_seq: 0,
+            cutover_seq: 0,
+            target_stream_start_seq: 1,
+        }),
+    };
     TransferTransition {
         transition_id: Id128 { high: 9, low: 10 },
         partition_id: Id128 { high: 1, low: 2 },
@@ -173,15 +197,21 @@ fn transfer() -> TransferTransition {
             rpc_endpoint: "127.0.0.1:9912".into(),
         },
         target_epoch: 4,
-        artifact: PartitionArtifact {
-            tree_id: 5,
-            stream_name: StreamName { high: 6, low: 7 },
+        artifact: source_artifact,
+        target_artifact,
+        readiness_limits: TransferReadinessLimits {
+            max_tail_records: 100,
+            max_tail_bytes: 1_000_000,
+            max_estimated_catchup_ms: 1_000,
+            prepare_deadline_ms: 1_000,
+            forwarding_grace_ms: 1_000,
         },
         planned_at_ms: 0,
         old_grant_expires_at_ms: 10_000,
         phase: TransferPhase::Planned,
         release_proof: None,
         readiness_proof: None,
+        catchup_proof: None,
         failure: None,
     }
 }
@@ -202,44 +232,52 @@ fn split() -> SplitTransition {
         parent_artifact: PartitionArtifact {
             tree_id: 5,
             stream_name: StreamName { high: 6, low: 7 },
+            tail_overlay: None,
         },
+        retained_parent_artifact: PartitionArtifact {
+            tree_id: 8,
+            stream_name: StreamName { high: 6, low: 8 },
+            tail_overlay: None,
+        },
+        parent_next_epoch: 4,
         split_key: b"m".to_vec(),
-        left: SplitChildAssignment {
-            partition_id: Id128 { high: 22, low: 23 },
-            range: KeyRange {
-                start: Vec::new(),
-                end: Some(b"m".to_vec()),
-            },
-            owner: OwnerDescriptor {
-                instance_id: 11,
-                rpc_endpoint: "127.0.0.1:9911".into(),
-            },
-            owner_epoch: 1,
-            artifact: PartitionArtifact {
-                tree_id: 24,
-                stream_name: StreamName { high: 25, low: 26 },
-            },
-        },
-        right: SplitChildAssignment {
+        child: SplitChildAssignment {
             partition_id: Id128 { high: 27, low: 28 },
             range: KeyRange {
                 start: b"m".to_vec(),
                 end: None,
             },
             owner: OwnerDescriptor {
-                instance_id: 12,
-                rpc_endpoint: "127.0.0.1:9912".into(),
+                instance_id: 11,
+                rpc_endpoint: "127.0.0.1:9911".into(),
             },
-            owner_epoch: 1,
+            owner_epoch: 4,
             artifact: PartitionArtifact {
                 tree_id: 29,
                 stream_name: StreamName { high: 30, low: 31 },
+                tail_overlay: None,
             },
         },
         planned_at_ms: 0,
         phase: SplitPhase::Planned,
         readiness_proof: None,
         failure: None,
+    }
+}
+
+fn split_overlay(cutover_seq: u64) -> TailOverlayArtifact {
+    TailOverlayArtifact {
+        source_partition_id: Id128 { high: 1, low: 2 },
+        source_epoch: 3,
+        source_stream_name: StreamName { high: 6, low: 7 },
+        source_stream_manifest_generation: 1,
+        replay_offset: 0,
+        cutover_offset: cutover_seq,
+        base_root_manifest_generation: 1,
+        base_tree_manifest: 1,
+        base_applied_seq: cutover_seq,
+        cutover_seq,
+        target_stream_start_seq: cutover_seq + 1,
     }
 }
 
@@ -345,13 +383,9 @@ async fn group0_transfer_store_reconciles_and_resumes_exact_phase() {
     );
 
     let mut machine = TransferStateMachine::restore(planned).unwrap();
-    machine
-        .record_source_fence(AuthorityReleaseProof::ExplicitFence {
-            source_instance_id: 11,
-            source_epoch: 3,
-            durable_tail: 19,
-        })
-        .unwrap();
+    machine.begin_source_prepare().unwrap();
+    let artifact = machine.transition().target_artifact.clone();
+    machine.record_source_base(artifact).unwrap();
     machine.begin_target_prepare().unwrap();
     let preparing = machine.transition().clone();
     let path = crowdb_protocol::key::ChunkKvTransferKey {
@@ -413,18 +447,29 @@ async fn group0_transfer_store_reconciles_and_resumes_exact_phase() {
 }
 
 #[tokio::test]
-async fn group0_split_store_resumes_prepared_children_before_catalog_cutover() {
+async fn group0_split_store_resumes_prepared_child_before_catalog_cutover() {
     let kv = Arc::new(TestKv::default());
     let store = Group0ControlStore::new(kv.clone());
     let planned = split();
     let revision = store.persist_split_transition(&planned, 0).await.unwrap();
     let mut machine = SplitStateMachine::restore(planned).unwrap();
     machine.begin_parent_prepare().unwrap();
+    let retained_parent_tail_overlay = split_overlay(41);
+    let mut retained_parent_artifact = split().retained_parent_artifact;
+    retained_parent_artifact.tail_overlay = Some(retained_parent_tail_overlay.clone());
     machine
-        .record_children_ready(SplitReadinessProof {
+        .record_child_ready(SplitReadinessProof {
             cutover_seq: 41,
-            left_applied_seq: 41,
-            right_applied_seq: 41,
+            parent_next_epoch: 4,
+            retained_parent_artifact,
+            retained_parent_tree_manifest: 1,
+            retained_parent_root_manifest_generation: 1,
+            retained_parent_applied_seq: 41,
+            child_applied_seq: 41,
+            child_tree_manifest: 1,
+            child_root_manifest_generation: 1,
+            retained_parent_tail_overlay,
+            child_tail_overlay: split_overlay(41),
         })
         .unwrap();
     let prepared = machine.transition().clone();

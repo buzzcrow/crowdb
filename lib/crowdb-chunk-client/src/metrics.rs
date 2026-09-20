@@ -83,6 +83,7 @@ pub struct ChunkClientMetrics {
     pub large_write_repair: Arc<LargeWriteRepairMetrics>,
     pub large_write_buffer: Arc<LargeWriteBufferMetrics>,
     pub small_write: Arc<SmallWriteMetrics>,
+    pub read_recovery: Arc<ReadRecoveryMetrics>,
 }
 
 impl ChunkClientMetrics {
@@ -105,6 +106,47 @@ impl ChunkClientMetrics {
             large_write_repair: Arc::new(LargeWriteRepairMetrics::register(registry)),
             large_write_buffer: Arc::new(LargeWriteBufferMetrics::register(registry)),
             small_write: Arc::new(SmallWriteMetrics::register(registry)),
+            read_recovery: Arc::new(ReadRecoveryMetrics::register(registry)),
+        }
+    }
+}
+
+/// Aggregate read-recovery counters; no per-chunk or per-disk labels.
+#[derive(Debug)]
+pub struct ReadRecoveryMetrics {
+    pub(crate) slices: Arc<Counter>,
+    pub(crate) full_starts: Arc<Counter>,
+    pub(crate) coalesced: Arc<Counter>,
+    pub(crate) bytes_reused: Arc<Counter>,
+    pub(crate) rejected: Arc<Counter>,
+    pub(crate) stale: Arc<Counter>,
+    pub(crate) fallback_background: Arc<Counter>,
+}
+
+impl Default for ReadRecoveryMetrics {
+    fn default() -> Self {
+        Self {
+            slices: Arc::new(Counter::new("chunkio.read_recovery.slices.c".into())),
+            full_starts: Arc::new(Counter::new("chunkio.read_recovery.full_starts.c".into())),
+            coalesced: Arc::new(Counter::new("chunkio.read_recovery.coalesced.c".into())),
+            bytes_reused: Arc::new(Counter::new("chunkio.read_recovery.bytes_reused.c".into())),
+            rejected: Arc::new(Counter::new("chunkio.read_recovery.rejected.c".into())),
+            stale: Arc::new(Counter::new("chunkio.read_recovery.stale.c".into())),
+            fallback_background: Arc::new(Counter::new("chunkio.read_recovery.fallback_background.c".into())),
+        }
+    }
+}
+
+impl ReadRecoveryMetrics {
+    fn register(registry: &mut MetricsRegistry) -> Self {
+        Self {
+            slices: registry.register_counter("chunkio.read_recovery.slices.c"),
+            full_starts: registry.register_counter("chunkio.read_recovery.full_starts.c"),
+            coalesced: registry.register_counter("chunkio.read_recovery.coalesced.c"),
+            bytes_reused: registry.register_counter("chunkio.read_recovery.bytes_reused.c"),
+            rejected: registry.register_counter("chunkio.read_recovery.rejected.c"),
+            stale: registry.register_counter("chunkio.read_recovery.stale.c"),
+            fallback_background: registry.register_counter("chunkio.read_recovery.fallback_background.c"),
         }
     }
 }
