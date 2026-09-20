@@ -19,7 +19,7 @@ delete path needs
 a restart-safe way to turn pending logical garbage into safe range deletion.
 
 The lifecycle boundary is
-`doc/design/accessserver/design-crowdb-access-server-s3.md` §5.
+`doc/design/access-server/s3/design-crowdb-access-s3.md` §5.
 
 ## Solution
 

@@ -11,7 +11,7 @@ Rust dependency graph.
 This document is the source of truth for fork ownership, upstream
 synchronization, submodule updates, Cargo integration, validation, and release
 recovery. The data-path design remains in the
-[Access Server S3 design](../design/accessserver/design-crowdb-access-server-s3.md).
+[Access Server S3 design](../design/access-server/s3/design-crowdb-access-s3.md).
 
 Upstream references:
 

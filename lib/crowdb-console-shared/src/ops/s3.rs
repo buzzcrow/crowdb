@@ -37,6 +37,10 @@ pub enum StorageProfile {
 pub struct MiniClusterRecord {
     pub version: u32,
     pub endpoint: String,
+    #[serde(default)]
+    pub web_endpoint: String,
+    #[serde(default)]
+    pub web_pid: Option<u32>,
     pub tenant: String,
     #[serde(default)]
     pub storage_profile: StorageProfile,
@@ -46,6 +50,7 @@ pub struct MiniClusterRecord {
 pub struct MiniClusterStatus {
     pub created: bool,
     pub endpoint: String,
+    pub web_endpoint: String,
     pub data_dir: PathBuf,
     pub running_services: usize,
     pub total_services: usize,
@@ -171,23 +176,27 @@ async fn start_with_profile(
     let mut record = MiniClusterRecord {
         version: 1,
         endpoint: String::new(),
+        web_endpoint: String::new(),
+        web_pid: None,
         tenant: "local".into(),
         storage_profile,
     };
     save_record(&data_dir.join(INITIALIZING_FILE), &record)?;
     let initialized = initialize_new(&ctx, data_dir, &disk, &chunk, storage_profile).await;
-    let endpoint = match initialized {
-        Ok(endpoint) => endpoint,
+    let endpoints = match initialized {
+        Ok(endpoints) => endpoints,
         Err(error) => {
             stop_config_processes(&mut ctx.config_mut());
             let _ = ctx.config().save(&config_path(data_dir));
             return Err(error);
         }
     };
-    record.endpoint.clone_from(&endpoint);
+    record.endpoint = endpoints.s3;
+    record.web_endpoint = endpoints.web;
+    record.web_pid = Some(endpoints.web_pid);
     save_record(&marker_path, &record)?;
     let _ = std::fs::remove_file(data_dir.join(INITIALIZING_FILE));
-    let status = status_from(data_dir, true, &ctx.config(), endpoint);
+    let status = status_from(data_dir, true, &ctx.config(), &record);
     Ok(status)
 }
 
@@ -222,7 +231,7 @@ async fn initialize_new(
     disk: &LocalDiskdbDeployConfig,
     chunk: &LocalChunkdbDeployConfig,
     storage_profile: StorageProfile,
-) -> Result<String> {
+) -> Result<StartedEndpoints> {
     let tunables = KvDeployTunables {
         kv_backend: (storage_profile == StorageProfile::Memory).then(|| "mem-block".into()),
         wal_backend: (storage_profile == StorageProfile::Memory).then(|| "mem-block".into()),
@@ -246,11 +255,20 @@ async fn initialize_new(
     let endpoint = access.entry.url.clone();
     add_service(ctx, access)?;
     ctx.config().save(&config_path(data_dir))?;
-    Ok(endpoint)
+    let (web_endpoint, web_pid) = spawn_web(data_dir).await?;
+    Ok(StartedEndpoints {
+        s3: endpoint,
+        web: web_endpoint,
+        web_pid,
+    })
 }
 
 async fn restart(data_dir: &Path) -> Result<MiniClusterStatus> {
     let (config, mut record) = load(data_dir)?;
+    if let Some(pid) = record.web_pid.take() {
+        let _ = lifecycle::stop_pid_with_timeout(pid, Duration::from_secs(5));
+        save_record(&data_dir.join(MARKER_FILE), &record)?;
+    }
     let seeds = management_seeds(&config);
     let group0 = config
         .servers
@@ -314,8 +332,11 @@ async fn restart(data_dir: &Path) -> Result<MiniClusterStatus> {
         ctx.config().save(&config_path(data_dir))?;
     }
     ctx.config().save(&config_path(data_dir))?;
+    let (web_endpoint, web_pid) = spawn_web(data_dir).await?;
+    record.web_endpoint = web_endpoint;
+    record.web_pid = Some(web_pid);
     save_record(&data_dir.join(MARKER_FILE), &record)?;
-    let status = status_from(data_dir, false, &ctx.config(), record.endpoint);
+    let status = status_from(data_dir, false, &ctx.config(), &record);
     Ok(status)
 }
 
@@ -333,7 +354,7 @@ fn save_record(path: &Path, record: &MiniClusterRecord) -> Result<()> {
 /// Returns an error when the directory is not a valid mini-cluster.
 pub fn status(data_dir: &Path) -> Result<MiniClusterStatus> {
     let (config, record) = load(data_dir)?;
-    Ok(status_from(data_dir, false, &config, record.endpoint))
+    Ok(status_from(data_dir, false, &config, &record))
 }
 
 /// Stop all recorded processes while preserving data and configuration.
@@ -341,10 +362,14 @@ pub fn status(data_dir: &Path) -> Result<MiniClusterStatus> {
 /// # Errors
 /// Returns an error when persisted state cannot be loaded or saved.
 pub fn stop(data_dir: &Path) -> Result<MiniClusterStatus> {
-    let (mut config, record) = load(data_dir)?;
+    let (mut config, mut record) = load(data_dir)?;
+    if let Some(pid) = record.web_pid.take() {
+        let _ = lifecycle::stop_pid_with_timeout(pid, Duration::from_secs(5));
+    }
     stop_config_processes(&mut config);
     config.save(&config_path(data_dir))?;
-    Ok(status_from(data_dir, false, &config, record.endpoint))
+    save_record(&data_dir.join(MARKER_FILE), &record)?;
+    Ok(status_from(data_dir, false, &config, &record))
 }
 
 /// Stop and permanently delete a persistent local S3 mini-cluster.
@@ -399,6 +424,12 @@ fn management_seeds(config: &ConsoleConfig) -> Vec<String> {
 struct SpawnedService {
     entry: ServerEntry,
     launch: LocalLaunchSpec,
+}
+
+struct StartedEndpoints {
+    s3: String,
+    web: String,
+    web_pid: u32,
 }
 
 fn add_service(ctx: &OpContext, service: SpawnedService) -> Result<()> {
@@ -474,6 +505,34 @@ async fn spawn_access(data_dir: &Path, seeds: &[String]) -> Result<SpawnedServic
         entry: server_entry("access-server-1", ServiceType::AccessServer, port, port, pid),
         launch: persisted_launch,
     })
+}
+
+async fn spawn_web(data_dir: &Path) -> Result<(String, u32)> {
+    let binary = find_binary("CROWDB_WEB_BIN", "crowdb-web")?;
+    let port = assign_cluster_port(data_dir, ServicePort::Web, "web-1")?;
+    let workdir = data_dir.join("services/web-1");
+    let log_dir = workdir.join("log");
+    std::fs::create_dir_all(&log_dir)?;
+    let endpoint = format!("http://127.0.0.1:{port}");
+    let launch = LocalLaunchSpec {
+        program: binary.to_string_lossy().into_owned(),
+        args: vec![
+            "--bind".into(),
+            "127.0.0.1".into(),
+            "--port".into(),
+            port.to_string(),
+            "--config".into(),
+            config_path(data_dir).to_string_lossy().into_owned(),
+            "--skip-startup-restore".into(),
+            "--log-dir".into(),
+            log_dir.to_string_lossy().into_owned(),
+        ],
+        workdir: workdir.to_string_lossy().into_owned(),
+        env: BTreeMap::new(),
+        readiness_url: Some(format!("{endpoint}/healthz")),
+    };
+    let pid = spawn(&launch, "web-1").await?;
+    Ok((endpoint, pid))
 }
 
 fn assign_cluster_port(data_dir: &Path, service: ServicePort, identity: &str) -> Result<u16> {
@@ -597,18 +656,21 @@ fn status_from(
     data_dir: &Path,
     created: bool,
     config: &ConsoleConfig,
-    endpoint: String,
+    record: &MiniClusterRecord,
 ) -> MiniClusterStatus {
+    let web_is_running = record.web_pid.is_some_and(lifecycle::process_is_alive);
     MiniClusterStatus {
         created,
-        endpoint,
+        endpoint: record.endpoint.clone(),
+        web_endpoint: record.web_endpoint.clone(),
         data_dir: data_dir.to_path_buf(),
         running_services: config
             .servers
             .iter()
             .filter(|server| server.pid.is_some_and(lifecycle::process_is_alive))
-            .count(),
-        total_services: config.servers.len(),
+            .count()
+            + usize::from(web_is_running),
+        total_services: config.servers.len() + usize::from(!record.web_endpoint.is_empty()),
     }
 }
 

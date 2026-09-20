@@ -17,7 +17,7 @@ before the basic publication and cleanup paths stabilize would duplicate
 unsettled recovery rules and delay the deliberately limited first service.
 
 The scope boundary is
-`doc/design/accessserver/design-crowdb-access-server-s3.md` §1.
+`doc/design/access-server/s3/design-crowdb-access-s3.md` §1.
 
 ## Solution
 

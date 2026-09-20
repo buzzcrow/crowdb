@@ -24,8 +24,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         port: u16,
 
         /// Use an in-memory registry instead of the persisted console config.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "config")]
         test_mode: bool,
+
+        /// Console registry to load and persist instead of the default path.
+        #[arg(long, value_name = "PATH")]
+        config: Option<std::path::PathBuf>,
+
+        /// Load the registry without reconciling service processes at startup.
+        #[arg(long)]
+        skip_startup_restore: bool,
 
         /// Log directory. Default: ~/.crowdb-kv/log.
         #[arg(long)]
@@ -130,7 +138,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let path = if args.test_mode {
         None
     } else {
-        crowdb_console_shared::TomlFileEngine::default_path()
+        args.config
+            .or_else(crowdb_console_shared::TomlFileEngine::default_path)
     };
     let cfg = match path.as_ref() {
         Some(p) => {
@@ -142,7 +151,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let server_count = cfg.servers.len();
     let state = crowdb_web::AppState::with_config(cfg, path).with_test_mode(args.test_mode);
     tracing::info!(servers = server_count, "loaded registry");
-    crowdb_web::mgmt::startup_topology_check(&state).await;
+    if !args.skip_startup_restore {
+        crowdb_web::mgmt::startup_topology_check(&state).await;
+    }
 
     axum::serve(listener, crowdb_web::router(state)).await?;
     Ok(())

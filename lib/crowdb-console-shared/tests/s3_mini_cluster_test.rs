@@ -30,7 +30,19 @@ fn incomplete_marker_fails_closed() {
 #[ignore = "starts the complete local storage and S3 process stack"]
 async fn persistent_cluster_survives_stop_restart_and_range_read() {
     let dir = TestDir::new("s3-mini-persistent-e2e").expect("create test directory");
-    s3::start(dir.path()).await.expect("start persistent cluster");
+    let started = s3::start(dir.path()).await.expect("start persistent cluster");
+    assert!(started.web_endpoint.starts_with("http://127.0.0.1:"));
+    let health = reqwest::get(format!("{}/healthz", started.web_endpoint))
+        .await
+        .expect("web health request");
+    assert!(health.status().is_success());
+    let servers = reqwest::get(format!("{}/api/servers", started.web_endpoint))
+        .await
+        .expect("web server-list request")
+        .text()
+        .await
+        .expect("web server-list body");
+    assert!(servers.contains("access-server-1"));
     let client = s3::S3HttpClient::from_data_dir(dir.path()).expect("S3 client");
     client
         .request(Method::PUT, Some("durable-bucket"), None, &[], None, None)

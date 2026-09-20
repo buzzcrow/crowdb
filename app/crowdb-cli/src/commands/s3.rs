@@ -163,14 +163,14 @@ async fn run_cluster(_cli: &Cli, verb: S3ClusterVerb) -> ExitCode {
     };
     match result {
         Ok(status) => {
+            println!("S3 mini-cluster{}:", if status.created { " created" } else { "" });
+            println!("  S3 endpoint: {}", status.endpoint);
+            println!("  Web console: {}", status.web_endpoint);
             println!(
-                "S3 mini-cluster: endpoint={} services={}/{} root={}{}",
-                status.endpoint,
-                status.running_services,
-                status.total_services,
-                status.data_dir.display(),
-                if status.created { " (created)" } else { "" }
+                "  Services: {}/{}",
+                status.running_services, status.total_services
             );
+            println!("  Root: {}", status.data_dir.display());
             ExitCode::SUCCESS
         }
         Err(error) => {

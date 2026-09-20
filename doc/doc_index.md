@@ -8,20 +8,20 @@ listed document or section needed by the task.
 
 ## Top-Level Docs
 
-| Doc                                                      | When to read                                               |
-| -------------------------------------------------------- | ---------------------------------------------------------- |
-| `doc/design/kv/design-crowdb-kv.md`                      | KV architecture and sub-design map.                        |
-| `doc/design/protocol/design-crowdb-protocol.md`          | Protocol and key encoding architecture.                    |
-| `doc/design/diskdb/design-crowdb-diskdb.md`              | Diskdb lifecycle, placement, and concurrency.              |
-| `doc/design/diskio/design-crowdb-diskio.md`              | Disk I/O engine, fallbacks, cancellation, and RPC.         |
-| `doc/design/chunkdb/design-crowdb-chunkdb.md`            | Chunk lifecycle, placement, reservation, and recovery.     |
-| `doc/design/chunkio/design-crowdb-chunkio.md`            | Chunk I/O write pipeline, backpressure, and rotation.      |
-| `doc/design/tree/design-crowdb-tree.md`                  | Storage-engine architecture and sub-design map.            |
-| `doc/design/rpc/design-crowdb-rpc.md`                    | RPC engine, wire format, FFI, and transport.               |
-| `doc/design/console/design-crowdb-console.md`            | Console architecture and service lifecycle.                |
-| `doc/design/config/design-crowdb-config.md`              | Configuration ownership, precedence, validation, reload.   |
-| `doc/design/accessserver/design-crowdb-access-server.md` | External S3, Catalog/Table, Dataset, and transfer service. |
-| `doc/user-manual/user-guide.md`                          | Web UI, CLI, REST API, setup, operations, upgrade.         |
+| Doc                                                       | When to read                                               |
+| --------------------------------------------------------- | ---------------------------------------------------------- |
+| `doc/design/kv/design-crowdb-kv.md`                       | KV architecture and sub-design map.                        |
+| `doc/design/protocol/design-crowdb-protocol.md`           | Protocol and key encoding architecture.                    |
+| `doc/design/diskdb/design-crowdb-diskdb.md`               | Diskdb lifecycle, placement, and concurrency.              |
+| `doc/design/diskio/design-crowdb-diskio.md`               | Disk I/O engine, fallbacks, cancellation, and RPC.         |
+| `doc/design/chunkdb/design-crowdb-chunkdb.md`             | Chunk lifecycle, placement, reservation, and recovery.     |
+| `doc/design/chunkio/design-crowdb-chunkio.md`             | Chunk I/O write pipeline, backpressure, and rotation.      |
+| `doc/design/tree/design-crowdb-tree.md`                   | Storage-engine architecture and sub-design map.            |
+| `doc/design/rpc/design-crowdb-rpc.md`                     | RPC engine, wire format, FFI, and transport.               |
+| `doc/design/console/design-crowdb-console.md`             | Console architecture and service lifecycle.                |
+| `doc/design/config/design-crowdb-config.md`               | Configuration ownership, precedence, validation, reload.   |
+| `doc/design/access-server/design-crowdb-access-server.md` | S3, Iceberg, native Dataset access, and GPU delivery.      |
+| `doc/user-manual/user-guide.md`                           | Web UI, CLI, REST API, setup, operations, upgrade.         |
 
 ## Backlog (`doc/backlog/`)
 
@@ -61,7 +61,7 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `SECURITY.md`        | Vulnerability handling.                     |
 | `CODE_OF_CONDUCT.md` | Community behavior.                         |
 
-## Sub-Designs (`doc/design/{accessserver,kv,tree,console,protocol,diskdb,diskio,chunkdb,chunkio,chunkds,rpc}/`)
+## Sub-Designs (`doc/design/{access-server,kv,tree,console,protocol,diskdb,diskio,chunkdb,chunkio,chunkds,rpc}/`)
 
 | Doc                                                                           | Read when working on                                    |
 | ----------------------------------------------------------------------------- | ------------------------------------------------------- |
@@ -101,10 +101,12 @@ Temporary plans live under `doc/working/`; flow analyses live under
 | `doc/design/rpc/design-crowdb-rpc-tcp.md`                                     | TCP engines, worker loop, zero-copy I/O, scaling.       |
 | `doc/design/rpc/design-crowdb-rpc-rdma.md`                                    | RDMA setup, CQ polling, registered buffers.             |
 | `doc/design/rpc/design-crowdb-rpc-diskdb-migration.md`                        | Diskdb RPC migration, rollout, connection lifetime.     |
-| `doc/design/accessserver/design-crowdb-access-server-s3.md`                   | S3 namespace, publication, TCP streaming, list, delete. |
-| `doc/design/accessserver/design-crowdb-access-server-catalog.md`              | Iceberg Catalog, table commits, Parquet processing.     |
-| `doc/design/accessserver/design-crowdb-access-server-dataset.md`              | AI dataset, sample, shard, tensor, batch, and streams.  |
-| `doc/design/accessserver/design-crowdb-access-server-accelerated-transfer.md` | Optional cuObject/native RDMA data planes.              |
+| `doc/design/access-server/s3/design-crowdb-access-s3.md`                      | S3 namespace, publication, TCP streaming, list, delete. |
+| `doc/design/access-server/s3/design-crowdb-access-s3-rdma.md`                 | Optional RDMA and direct-to-GPU data planes.            |
+| `doc/design/access-server/iceberge/design-crowdb-iceberg.md`                  | Native Iceberg authority, commits, files, and recovery. |
+| `doc/design/access-server/iceberge/iceberg-table-spec-1.11.0.md`              | Backed-up normative Iceberg table format specification. |
+| `doc/design/access-server/iceberge/iceberg-rest-catalog-open-api-1.11.0.yaml` | Backed-up normative Iceberg REST Catalog OpenAPI.       |
+| `doc/design/access-server/dataset/design-crowdb-access-dataset.md`            | Dataset HTTP, native topology access, and GPU delivery. |
 
 Prefer the most specific match. Open a root design only for cross-topic work;
 update its row when a permanent document is renamed or materially rescoped.
