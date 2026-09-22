@@ -58,17 +58,14 @@ cuObject/RDMA acceleration after the TCP baseline is correct and measured.
 
 ### Planned — Native Iceberg storage
 
-R177 is the program blueprint and resolves the shared design questions. R178
-through R184 form the correctness milestone; R185 is a later cache optimization.
+R177 is the program blueprint and resolves the shared design questions. The
+catalog/service foundation is implemented. R179 through R184 complete the
+correctness milestone; R185 is a later cache optimization.
 
 - **[R177](R177-access-iceberg-catalog-foundation.md)** — native Iceberg storage
   blueprint — Area: access server / Iceberg / Chunk-KV / chunk I/O — Fix the
   authority model, v1/v2/v3 core profile, program invariants, requirement order,
   and all cross-cutting design decisions.
-- **[R178](R178-access-iceberg-catalog-domain.md)** — catalog domain and service
-  foundation — Area: access server / Iceberg / Chunk-KV — Build the Iceberg
-  library, one active CatalogId domain, management lifecycle, key/value envelope,
-  server wiring, and `/v1/config` baseline.
 - **[R179](R179-access-iceberg-namespace.md)** — namespace authority and REST
   operations — Area: access server / Iceberg / Chunk-KV — Add stable NamespaceId,
   multipart identifiers, properties, bounded listing, and fenced empty-only drop.
