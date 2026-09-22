@@ -104,6 +104,16 @@ impl NamespaceCreator {
             StorageRecord::NamespaceMapping(Self::mapping(operation, NamespaceMappingState::Reserved))
                 .encode()?;
         self.repository.check_context(operation.context).await?;
+        if self
+            .names
+            .get(&key)
+            .await?
+            .as_ref()
+            .map(|value| value.bytes.as_slice())
+            != Some(bytes.as_slice())
+        {
+            return Ok(());
+        }
         self.names
             .delete_mapping(&key, &bytes, mutation_identity(&key, Some(&bytes), &[]))
             .await?;

@@ -135,13 +135,8 @@ impl NamespaceDropper {
                 let after = StorageRecord::NamespaceAuthority(authority).encode()?;
                 let key = key.encode()?;
                 self.creator
-                    .names
-                    .compare_exchange(
-                        &key,
-                        Some(&before),
-                        &after,
-                        mutation_identity(&key, Some(&before), &after),
-                    )
+                    .repository
+                    .cleanup_marker(&key, &before, &after)
                     .await?;
             }
             404 => {}

@@ -22,6 +22,8 @@ iceberg = [
     "dep:hyper-util",
     "dep:percent-encoding",
     "dep:serde_json",
+    "dep:serde",
+    "dep:sha2",
 ]
 s3-e2e = ["s3"]
 iceberg-e2e = ["iceberg"]
@@ -56,6 +58,8 @@ hyper = { workspace = true, features = ["http1", "server"], optional = true }
 hyper-util = { version = "0.1", features = ["tokio"], optional = true }
 percent-encoding = { version = "2", optional = true }
 serde_json = { version = "1", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+sha2 = { version = "0.10", optional = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }

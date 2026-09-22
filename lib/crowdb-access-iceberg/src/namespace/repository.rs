@@ -14,6 +14,32 @@ pub struct NamespaceRepository {
 }
 
 impl NamespaceRepository {
+    pub(super) async fn cleanup_marker(
+        &self,
+        key: &[u8],
+        before: &[u8],
+        after: &[u8],
+    ) -> Result<(), CatalogError> {
+        if self
+            .store
+            .get(key)
+            .await?
+            .as_ref()
+            .map(|value| value.bytes.as_slice())
+            != Some(before)
+        {
+            return Ok(());
+        }
+        self.store
+            .compare_exchange(
+                key,
+                Some(before),
+                after,
+                crate::operation::mutation_identity(key, Some(before), after),
+            )
+            .await?;
+        Ok(())
+    }
     #[must_use]
     pub fn new<Store: super::NamespaceStore + 'static>(store: Arc<Store>) -> Self {
         Self {

@@ -142,13 +142,8 @@ impl NamespaceCreator {
         authority.pending_operation = None;
         authority.mutation_revision += 1;
         let after = StorageRecord::NamespaceAuthority(authority).encode()?;
-        self.names
-            .compare_exchange(
-                &mutation.key,
-                Some(&before),
-                &after,
-                mutation_identity(&mutation.key, Some(&before), &after),
-            )
+        self.repository
+            .cleanup_marker(&mutation.key, &before, &after)
             .await?;
         Ok(())
     }

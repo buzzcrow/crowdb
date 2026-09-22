@@ -14,6 +14,7 @@ pub(super) struct NamespaceHttp {
     repository: NamespaceRepository,
     lister: NamespaceLister,
     spools: Arc<AtomicUsize>,
+    writes: super::namespace_write::NamespaceWrites,
 }
 
 impl NamespaceHttp {
@@ -22,10 +23,24 @@ impl NamespaceHttp {
         secret: &[u8; 32],
     ) -> Result<Self, crowdb_access_iceberg::error::ValidationError> {
         Ok(Self {
+            writes: super::namespace_write::NamespaceWrites::new(store.clone()),
             repository: NamespaceRepository::new(store.clone()),
             lister: NamespaceLister::new(store, secret)?,
             spools: Arc::new(AtomicUsize::new(0)),
         })
+    }
+
+    pub(super) async fn dispatch(
+        &self,
+        context: CatalogContext,
+        principal: crowdb_access_iceberg::wire::Principal,
+        request: hyper::Request<hyper::body::Incoming>,
+    ) -> Result<Response<IcebergBody>, IcebergErrorResponse> {
+        if request.method() == Method::GET || request.method() == Method::HEAD {
+            self.read(context, request.method(), request.uri()).await
+        } else {
+            self.writes.execute(context, principal, request).await
+        }
     }
 
     pub(super) async fn read(
@@ -164,7 +179,7 @@ fn parameters(
     Ok((parent, limit, values.remove("pageToken")))
 }
 
-fn decode_path(value: &str) -> Result<String, IcebergErrorResponse> {
+pub(super) fn decode_path(value: &str) -> Result<String, IcebergErrorResponse> {
     decode_query(&value.replace('+', "%2B"))
 }
 

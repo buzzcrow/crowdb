@@ -3,6 +3,8 @@
 mod body;
 mod http;
 mod namespace_read;
+mod namespace_request;
+mod namespace_write;
 mod recovery;
 mod runtime;
 

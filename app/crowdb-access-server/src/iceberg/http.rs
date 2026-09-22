@@ -56,7 +56,10 @@ impl IcebergHttpService {
         let mut response = match result {
             Ok(Ok(response)) => response,
             Ok(Err(error)) => response(error.error.code, serde_json::to_vec(&error).unwrap_or_default()),
-            Err(_) => unavailable(),
+            Err(_) => {
+                tracing::warn!("Iceberg request deadline exhausted; durable recovery remains active");
+                unavailable()
+            }
         };
         if head {
             *response.body_mut() = IcebergBody::new(Vec::new());
@@ -73,13 +76,13 @@ impl IcebergHttpService {
             .get(hyper::header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default();
-        if self.authentication.authenticate(authorization).is_none() {
+        let Some(principal) = self.authentication.authenticate(authorization) else {
             return Err(IcebergErrorResponse::new(
                 401,
                 "NotAuthorizedException",
                 "Valid bearer authentication is required",
             ));
-        }
+        };
         if request.uri().to_string().len() > 32 * 1024 {
             return Err(bad_request());
         }
@@ -110,9 +113,13 @@ impl IcebergHttpService {
                     "GET /v1/{prefix}/namespaces",
                     "GET /v1/{prefix}/namespaces/{namespace}",
                     "HEAD /v1/{prefix}/namespaces/{namespace}",
+                    "POST /v1/{prefix}/namespaces",
+                    "POST /v1/{prefix}/namespaces/{namespace}/properties",
+                    "DELETE /v1/{prefix}/namespaces/{namespace}",
                 ]
                 .map(str::to_owned)
                 .to_vec();
+                config.idempotency_key_lifetime = Some("PT24H".into());
             }
             return Ok(response(
                 200,
@@ -120,11 +127,7 @@ impl IcebergHttpService {
             ));
         }
         match &self.namespaces {
-            Some(namespaces) => {
-                namespaces
-                    .read(root.context, request.method(), request.uri())
-                    .await
-            }
+            Some(namespaces) => namespaces.dispatch(root.context, principal, request).await,
             None => Err(IcebergErrorResponse::new(
                 406,
                 "UnsupportedOperationException",

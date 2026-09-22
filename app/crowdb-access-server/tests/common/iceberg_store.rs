@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use crowdb_access_iceberg::catalog::{CasOutcome, CatalogStore, StoreError, StoredValue};
 use crowdb_protocol::chunk_kv::ClientRequestId;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 
 #[derive(Default)]
@@ -12,6 +12,7 @@ pub struct TestStore {
     pub read_delay_ms: AtomicU64,
     pub scan_delay_ms: AtomicU64,
     pub scans: AtomicU64,
+    pub lose_reply_kind: AtomicU8,
 }
 
 #[async_trait]
@@ -117,6 +118,19 @@ impl CatalogStore for TestStore {
                 },
             );
             if Arc::ptr_eq(&current, &self.values.compare_and_swap(&current, Arc::new(next))) {
+                let mode = self.lose_reply_kind.load(Ordering::SeqCst);
+                let lose = mode == 1
+                    || match crowdb_access_iceberg::key::IcebergKey::decode(key) {
+                        Ok(crowdb_access_iceberg::key::IcebergKey::Catalog { scope, .. }) => {
+                            (mode == 2
+                                && scope == crowdb_access_iceberg::key::CatalogScope::NamespaceAuthority)
+                                || (mode == 3 && scope == crowdb_access_iceberg::key::CatalogScope::Operation)
+                        }
+                        _ => false,
+                    };
+                if lose && self.lose_reply_kind.swap(0, Ordering::SeqCst) != 0 {
+                    return Err(StoreError::Response);
+                }
                 return Ok(CasOutcome::Applied(revision));
             }
         }

@@ -282,6 +282,18 @@ All unresolved human decisions for R179 through R184 are collected here. Continu
 independent implementation while awaiting confirmation; settled contracts and
 ordinary implementation tasks are not open questions.
 
+- **Namespace latency acceptance:** should every uncontended native namespace
+  mutation complete within the existing real-stack fixture's 500-ms admission
+  bound, or should functional CRUD use a separate bounded deployment profile
+  while retaining that fixture for fast clear/restart testing? The current durable
+  journal and HTTP retry ledger sometimes exhaust 500 ms; responses remain
+  retryable and publication recoverable. Keeping 500 ms requires further critical
+  path/batching work; a separate realistic profile distinguishes semantic
+  conformance from a subsecond latency target. Do not enlarge existing timeouts or
+  add test-side retries without confirmation. Five diagnostic/fix runs and the
+  exact outstanding failure are recorded in the R179 execution plan. Continue
+  independent work, but do not claim R179 E2E acceptance or completion.
+
 - **Release engine profiles:** which Spark, Flink, and Trino versions and
   deployment profiles must gate the first functional release? Testing all three
   immediately provides broader interoperability evidence but increases fixture

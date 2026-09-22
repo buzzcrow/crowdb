@@ -53,6 +53,25 @@ async fn payload_boundaries_round_trip_without_large_storage_records() {
 }
 
 #[tokio::test]
+async fn existing_immutable_pages_are_verified_without_repeating_backend_mutations() {
+    let store = Arc::new(TestStore::default());
+    let payloads = PayloadStore::new(store.clone());
+    let catalog = CatalogId::random();
+    let operation = OperationId::random();
+    let bytes = vec![19; PAYLOAD_PAGE_BYTES + 1];
+    let reference = payloads.put(catalog, operation, &bytes).await.unwrap();
+    let writes = store.writes.load(Ordering::SeqCst);
+    assert_eq!(payloads.put(catalog, operation, &bytes).await.unwrap(), reference);
+    assert_eq!(store.writes.load(Ordering::SeqCst), writes);
+    let key = reference.page_key(0).unwrap().encode().unwrap();
+    let mut values = (*store.values.load_full()).clone();
+    values.get_mut(&key).unwrap().bytes = b"corrupt".to_vec();
+    store.values.store(Arc::new(values));
+    assert!(payloads.put(catalog, operation, &bytes).await.is_err());
+    assert_eq!(store.writes.load(Ordering::SeqCst), writes);
+}
+
+#[tokio::test]
 async fn lost_page_replies_resume_immutable_payload_on_another_instance() {
     let bytes = vec![21; PAYLOAD_PAGE_BYTES * 2 + 1];
     for lost_page in 1..=3 {

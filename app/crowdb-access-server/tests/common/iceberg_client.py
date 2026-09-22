@@ -1,8 +1,9 @@
 import sys
+import uuid
 
 import requests
 from pyiceberg.catalog import load_catalog
-from pyiceberg.exceptions import RESTError, UnauthorizedError
+from pyiceberg.exceptions import RESTError, UnauthorizedError, NamespaceAlreadyExistsError, NamespaceNotEmptyError
 
 
 def main():
@@ -33,8 +34,11 @@ def main():
         "GET /v1/{prefix}/namespaces",
         "GET /v1/{prefix}/namespaces/{namespace}",
         "HEAD /v1/{prefix}/namespaces/{namespace}",
+        "POST /v1/{prefix}/namespaces",
+        "POST /v1/{prefix}/namespaces/{namespace}/properties",
+        "DELETE /v1/{prefix}/namespaces/{namespace}",
     }
-    assert "idempotency-key-lifetime" not in response.json()
+    assert response.json()["idempotency-key-lifetime"] == "PT24H"
     catalog = load_catalog("crowdb", **properties)
     namespaces = catalog.list_namespaces()
     assert isinstance(namespaces, list)
@@ -46,7 +50,39 @@ def main():
     assert len(complete.json()["namespaces"]) == len(namespaces)
     missing = requests.head(uri + "/v1/namespaces/missing-namespace", headers={"Authorization": "Bearer " + "r" * 32}, timeout=5)
     assert missing.status_code == 404 and missing.content == b""
-    print("PyIceberg config, warehouse selection and authentication passed")
+    verify_namespaces(uri, properties)
+    print("PyIceberg config, authentication and namespace CRUD passed")
+
+
+def verify_namespaces(uri, properties):
+    writer = load_catalog("crowdb", **(properties | {"token": "w" * 32}))
+    namespace = ("client-" + uuid.uuid4().hex,)
+    child = namespace + ("冰+a%2F",)
+    writer.create_namespace(namespace, {"owner": "original"})
+    assert writer.namespace_exists(namespace)
+    assert writer.load_namespace_properties(namespace) == {"owner": "original"}
+    try:
+        writer.create_namespace(namespace)
+    except NamespaceAlreadyExistsError:
+        pass
+    else:
+        raise AssertionError("duplicate namespace was accepted")
+    writer.create_namespace(child)
+    assert writer.list_namespaces(namespace) == [child]
+    update = writer.update_namespace_properties(namespace, removals={"owner", "absent"}, updates={"owner2": "retained"})
+    assert update.removed == ["owner"] and update.missing == ["absent"]
+    assert writer.load_namespace_properties(namespace) == {"owner2": "retained"}
+    try:
+        writer.drop_namespace(namespace)
+    except NamespaceNotEmptyError:
+        pass
+    else:
+        raise AssertionError("nonempty namespace was dropped")
+    denied = requests.post(uri + "/v1/namespaces", json={"namespace": ["denied"]}, headers={"Authorization": "Bearer " + "r" * 32}, timeout=5)
+    assert denied.status_code == 403
+    writer.drop_namespace(child)
+    writer.drop_namespace(namespace)
+    assert not writer.namespace_exists(namespace)
 
 
 if __name__ == "__main__":

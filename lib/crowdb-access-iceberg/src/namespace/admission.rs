@@ -202,13 +202,8 @@ impl NamespaceCreator {
             .checked_add(1)
             .ok_or(ValidationError::GenerationExhausted)?;
         let after = StorageRecord::NamespaceAuthority(authority).encode()?;
-        self.names
-            .compare_exchange(
-                &mutation.key,
-                Some(&before),
-                &after,
-                mutation_identity(&mutation.key, Some(&before), &after),
-            )
+        self.repository
+            .cleanup_marker(&mutation.key, &before, &after)
             .await?;
         Ok(())
     }

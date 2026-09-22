@@ -60,6 +60,16 @@ async fn bounded_sweep_recovers_operations_without_client_retries() {
     }
     assert!(cursor.is_none());
     assert_eq!(visited, 9);
+    let writes = fixture.store.writes.load(Ordering::SeqCst);
+    loop {
+        let page = recovery.recover_page(fixture.context, cursor).await.unwrap();
+        assert!(page.failures.is_empty());
+        cursor = page.continuation;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(fixture.store.writes.load(Ordering::SeqCst), writes);
     let journal = NamespaceJournal::new(fixture.store.clone());
     for identity in identities {
         assert_eq!(

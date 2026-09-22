@@ -70,7 +70,7 @@ remain centralized in R177.
   cleanup too; isolate manual crash checkpoints from active recovery workers.
   Verify abandoned creation using two real listener processes and no client retry.
   Files: namespace recovery/scan, listener runtime and library/full-stack tests.
-- [ ] **Recovery integration**: verify remaining stale-index repair and the
+- [~] **Recovery integration**: verify remaining stale-index repair and the
   table-create/rename-in admission seam. Real-backend drop restart tests pass. Until table
   records land, any table-child record fails closed rather than proving emptiness.
   Files: namespace recovery, server runtime and integration tests.
@@ -83,9 +83,12 @@ remain centralized in R177.
   frames. Three HTTP tests cover decoding, absent/empty/continuing tokens,
   admission release and each exhaustion dimension without truncated success.
   Official PyIceberg namespace list/load and raw HEAD pass against real listeners.
-- [~] **REST integration**: add bounded request parsing, endpoint advertisement,
+- [ ] **REST integration**: add bounded request parsing, endpoint advertisement,
   role checks, error mapping, and shared retry-ledger participation.
   Files: library wire modules, access-server Iceberg modules.
+  Write routes, UUIDv7/shared-ledger handling, terminal 4xx replay and large result
+  paging are implemented with three passing focused HTTP tests. Official-client
+  CRUD is not accepted yet: see the bounded-latency E2E blocker below.
   Size URL and JSON limits for the identifier/property bounds. Validate against
   the 2-MiB retry-body bound before publication; larger-than-16-KiB results use
   immutable pages and a final response manifest rather than an oversized record.
@@ -175,3 +178,29 @@ namespaces, but may not initialize, rename or clear the catalog. Reader remains
 read-only; manager and clearer retain administrative privileges without inheriting
 namespace writes. Bind retries to the distinct writer principal. The design
 decision is resolved; remaining implementation work is tracked above.
+
+## Blocked
+
+Only the real-stack namespace CRUD acceptance task is blocked; continue unrelated
+work under the user's authorization. The latency decision is centralized in R177.
+
+- Command: `pixi run clean-env && RUST_LOG=crowdb_access_server=debug CROWDB_RUNTIME_ROOT="$PWD/.crowdb-runtime/ephemeral/iceberg-e2e" CROWDB_ICEBERG_E2E_PYTHON="$PWD/.pixi/envs/iceberg-e2e/bin/python" pixi run -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_full_stack_test -- --nocapture`.
+- Setup: two real listeners, real durable Chunk-KV, and the existing 500-ms catalog
+  request bound used by the clear/restart fixture. PyIceberg performs namespace
+  CRUD without caller-side retries.
+- First divergence: root or nested `create_namespace` returns HTTP 503 rather
+  than success. Server diagnostics confirm the request deadline expires; no
+  namespace validation or publication corruption was reported.
+- Five runs: initial CRUD integration; structured error/deadline diagnostics;
+  per-phase timing (roughly 45–75 ms per durable phase, body read about 100 μs);
+  authoritative read-before-put for existing immutable payload pages; and
+  authoritative no-op checks before terminal marker/reservation cleanup.
+- The latter changes remove redundant writes without changing publication CAS,
+  and focused loss/replay tests pass. A complete client CRUD pass was observed,
+  but a following client's root create still exceeded 500 ms. Latest run fails
+  `catalog_recovery_survives_real_chunk_kv_restart` at the official-client check
+  with `ServiceUnavailableError: ServiceUnavailableException: Catalog is not ready`.
+- Temporary phase/body instrumentation was removed. Do not increase timeouts,
+  add caller retries, suppress the failure, or mark the requirement complete.
+  Resume this acceptance task after confirmation of the latency profile or
+  authorization for further critical-path redesign.

@@ -149,6 +149,13 @@ impl PayloadStore {
     async fn put_page(&self, page: PayloadPage) -> Result<(), CatalogError> {
         let key = page.reference.page_key(page.index)?.encode()?;
         let bytes = StorageRecord::PayloadPage(Box::new(page)).encode()?;
+        if let Some(existing) = self.store.get(&key).await? {
+            return if existing.bytes == bytes {
+                Ok(())
+            } else {
+                Err(ValidationError::Record.into())
+            };
+        }
         match self
             .store
             .compare_exchange(&key, None, &bytes, mutation_identity(&key, None, &bytes))

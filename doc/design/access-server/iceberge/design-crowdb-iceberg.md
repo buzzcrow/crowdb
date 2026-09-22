@@ -113,7 +113,8 @@ path. Work is bounded and exhaustion remains retryable, not a terminal conflict.
 Property preparation uses the same holder-bound marker dispatcher as creation
 and drop. It can finish interrupted child admission or a nonempty drop before
 publishing properties; recursive helpers consume the caller's phase budget.
-Namespace mutations are not yet exposed through REST.
+Namespace mutations use the shared HTTP retry ledger before executing their
+durable operation driver; terminal client errors are retained alongside success.
 
 Namespace creation installs a recoverable parent/name reservation before a parent
 authority CAS. Nested admission leaves a pending-operation marker and advances only
@@ -159,17 +160,20 @@ derived from the configured credentials so equally configured listeners interope
 The REST Catalog is the portable control surface. It exposes only capabilities
 CROWDB implements with compliant Iceberg semantics.
 
-The catalog foundation exposes only authenticated `GET /v1/config`. An absent or
+The catalog listener exposes authenticated config and namespace REST. An absent or
 empty warehouse selects the sole active catalog; other selectors fail with
-`NoSuchWarehouseException`. Its endpoint list advertises namespace reads and all table
-format capabilities are disabled. The shared retry mechanism is not advertised
-as HTTP idempotency until mutation endpoints consume it. Static bearer credentials
+`NoSuchWarehouseException`. Its endpoint list advertises namespace CRUD and all table
+format capabilities are disabled. Namespace mutations advertise a 24-hour UUIDv7
+idempotency window, bind canonical route, exact request input, principal and catalog
+activation, and retain large results in immutable payload pages. Server errors
+remain retryable, never terminal ledger outcomes. Exhausting the configured request
+deadline leaves durable recovery evidence; subsecond completion is not guaranteed.
+Static bearer credentials
 separate reader, writer, management and clear roles; this is not an OAuth token
 issuer. All four credentials are required and distinct. Writer has a separate
 namespace-write capability and no catalog management or clear privilege; reader,
 manager and clearer do not inherit namespace-write rights. All four can read the
-configuration endpoint. Namespace mutation endpoints remain unadvertised until
-their durable operation protocols are implemented.
+configuration endpoint and namespaces. Only writer may invoke namespace mutations.
 Management commands are separate from the Iceberg REST listener. Operational
 configuration is in the [user guide](../../../user-manual/user-guide.md#9-iceberg-catalog-foundation).
 
