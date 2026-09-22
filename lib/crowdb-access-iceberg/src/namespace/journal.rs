@@ -94,6 +94,7 @@ impl NamespaceJournal {
         previous.validate()?;
         next.validate()?;
         if !previous.same_request(next)
+            || (previous.outcome.is_some() && previous.outcome != next.outcome)
             || previous.namespace != next.namespace
             || previous.parent != next.parent
             || previous.revision.checked_add(1) != Some(next.revision)
@@ -101,11 +102,13 @@ impl NamespaceJournal {
         {
             return Err(ValidationError::Record.into());
         }
-        if previous.action == super::NamespaceAction::Update
+        let resets_mutation = (previous.action == super::NamespaceAction::Update
             && previous.phase == NamespacePhase::Publishing
-            && next.phase == NamespacePhase::Prepared
-            && next.mutation.is_some()
-        {
+            && next.phase == NamespacePhase::Prepared)
+            || (previous.action == super::NamespaceAction::Create
+                && previous.phase == NamespacePhase::Admitting
+                && next.phase == NamespacePhase::Reserved);
+        if resets_mutation && next.mutation.is_some() {
             return Err(ValidationError::Record.into());
         }
         if previous.action == super::NamespaceAction::Update
@@ -116,10 +119,7 @@ impl NamespaceJournal {
             return Err(ValidationError::Record.into());
         }
         if previous.mutation != next.mutation
-            && !(previous.action == super::NamespaceAction::Update
-                && previous.phase == NamespacePhase::Publishing
-                && next.phase == NamespacePhase::Prepared
-                && next.mutation.is_none())
+            && !resets_mutation
             && !matches!(
                 next.phase,
                 NamespacePhase::Admitting

@@ -50,7 +50,7 @@ impl NamespacePhase {
                 (self, next),
                 (Prepared, Reserved | Aborting)
                     | (Reserved, Admitting | Aborting)
-                    | (Admitting, Admitted | Aborting)
+                    | (Admitting, Admitted | Aborting | Reserved)
                     | (Admitted, Publishing | Aborting)
                     | (Publishing, Published)
                     | (Published, Complete)
@@ -128,7 +128,8 @@ impl NamespaceOperation {
             || self.parent.is_some() != self.identifier.parent().is_some()
             || self.parent == Some(self.namespace)
             || self.scan_after.len() > MAX_KEY_BYTES
-            || self.phase.terminal() != self.outcome.is_some()
+            || (self.phase.terminal() && self.outcome.is_none())
+            || (!self.phase.terminal() && self.phase != NamespacePhase::Aborting && self.outcome.is_some())
         {
             return Err(ValidationError::Record);
         }
@@ -170,7 +171,8 @@ impl NamespaceOperation {
             if !matches!(
                 outcome.status,
                 200 | 201 | 204 | 400 | 403 | 404 | 406 | 409 | 422
-            ) || (self.phase == NamespacePhase::Aborted && outcome.status < 400)
+            ) || (matches!(self.phase, NamespacePhase::Aborting | NamespacePhase::Aborted)
+                && outcome.status < 400)
             {
                 return Err(ValidationError::Record);
             }

@@ -19,6 +19,8 @@ pub struct TestStore {
     pub fencing_visits: AtomicUsize,
     pub namespace_update_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub namespace_update_visits: AtomicUsize,
+    pub namespace_reservation_barrier: Option<Arc<tokio::sync::Barrier>>,
+    pub namespace_reservation_visits: AtomicUsize,
 }
 
 #[async_trait]
@@ -35,6 +37,20 @@ impl CatalogStore for TestStore {
         identity: ClientRequestId,
     ) -> Result<CasOutcome, StoreError> {
         identity.validate().unwrap();
+        if expected.is_none() {
+            if let Ok(crowdb_access_iceberg::record::StorageRecord::NamespaceMapping(mapping)) =
+                crowdb_access_iceberg::key::IcebergKey::decode(key)
+                    .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
+            {
+                if mapping.state == crowdb_access_iceberg::namespace::NamespaceMappingState::Reserved {
+                    if let Some(barrier) = &self.namespace_reservation_barrier {
+                        if self.namespace_reservation_visits.fetch_add(1, Ordering::SeqCst) < 2 {
+                            barrier.wait().await;
+                        }
+                    }
+                }
+            }
+        }
         if let Ok(crowdb_access_iceberg::record::StorageRecord::NamespaceAuthority(authority)) =
             crowdb_access_iceberg::key::IcebergKey::decode(key)
                 .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))

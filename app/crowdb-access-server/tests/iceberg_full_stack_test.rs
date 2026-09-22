@@ -1,5 +1,7 @@
 #[path = "common/iceberg_stack.rs"]
 mod common;
+#[path = "common/iceberg_creation.rs"]
+mod creation;
 #[path = "common/iceberg_fault.rs"]
 mod fault;
 #[path = "common/iceberg_journal.rs"]

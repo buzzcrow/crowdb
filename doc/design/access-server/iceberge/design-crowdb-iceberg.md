@@ -112,6 +112,18 @@ may return to preparation with fresh snapshots; unknown outcomes never take that
 path. Work is bounded and exhaustion remains retryable, not a terminal conflict.
 These repository operations do not yet expose namespace REST endpoints.
 
+Namespace creation installs a recoverable parent/name reservation before a parent
+authority CAS. Nested admission leaves a pending-operation marker and advances only
+the mutation revision; a top-level admission conditionally validates the active
+root without replacing its management operation. Helpers resolve uncertain parent
+writes before allowing subsequent parent mutation. Definitive admission conflicts
+may retry with fresh parent snapshots while retaining the name reservation.
+Publication selects an initial authority and replaces the reservation with its
+published mapping; a creation marker remains until the result is durable. Abort
+records retain their exact failure outcome before conditional reservation cleanup.
+Recursive creation helping shares one bounded phase budget. Namespace drop and
+namespace REST composition remain unimplemented.
+
 ## 3. HTTP and FileIO surfaces
 
 The REST Catalog is the portable control surface. It exposes only capabilities

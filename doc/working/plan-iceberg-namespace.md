@@ -43,10 +43,15 @@ identity, empty-drop safety, or bounded REST responses.
   durable, and recover lost replies without changing the original result. Rebase
   only after a definitive conflicting revision; bound helping and retries.
   Files: namespace update/recovery modules, journal transitions and tests.
-- [~] **Admission and recovery**: persist reserve-before-admit transitions and
-  publication evidence; resolve pending admission before subsequent parent writes.
-  Implement create, drop, shared writer-marker settlement, stale repair, and
-  durable two-range probes. Reuse the landed load/property-update driver.
+- [x] **Create and admission**: persist a name reservation before the actual parent
+  CAS; preserve uncertain admission evidence until the journal advances, then
+  publish authority and mapping. Persist abort outcomes before reservation cleanup.
+  Bound recursive helping with one shared phase budget. Verify every lost create
+  write, duplicate names, different-child contention and a pre-admission drop fence.
+  Files: namespace create/admission/publication/recovery modules and tests.
+- [~] **Drop and recovery**: implement shared writer-marker settlement, stale
+  repair, durable two-range probes, not-empty restoration and tombstoning. Reuse
+  the landed load/property-update/create drivers.
   Files: namespace repository/admission/recovery modules and concurrency tests.
 - [ ] **Listing**: bind authenticated tokens to catalog, parent identity/spelling,
   page parameters and scan cursor; bound scan work and unpaginated spool resources.
@@ -82,6 +87,13 @@ identity, empty-drop safety, or bounded REST responses.
 - Lint: `pixi run rs-lint`.
 
 ## Verified checkpoint
+
+- Native top-level and nested create plus admission recovery pass eight additional
+  tests; the library has 78 passing tests. Simulated drop-fence races validate the
+  create side only, not a complete empty-drop driver. Completed abort outcomes
+  replay unchanged and conditional reservation deletion preserves a recreated name.
+  Real Chunk-KV restart after a lost nested mapping-publication reply preserves
+  the chosen NamespaceId and completes both parent and child marker cleanup.
 
 - Authoritative namespace load/exists and durable property publication pass 13
   new repository tests, including every lost write reply, competing property CAS,

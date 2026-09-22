@@ -1,17 +1,23 @@
 //! Multipart namespace identity and bounded authority properties.
 
+mod admission;
 mod authority;
+mod create;
+mod create_recovery;
 mod identifier;
 mod journal;
 mod key;
 mod operation;
 mod properties;
+mod publication;
 mod repository;
+mod reservation;
 mod storage;
 mod update;
 mod update_recovery;
 
 pub use authority::{NamespaceAuthority, NamespaceLifecycle, NamespaceMapping, NamespaceMappingState};
+pub use create::{NamespaceCreateRequest, NamespaceCreator};
 pub use identifier::{NamespaceIdentifier, MAX_IDENTIFIER_BYTES, MAX_NAMESPACE_LEVELS};
 pub use journal::NamespaceJournal;
 pub use key::{authority_key, child_range, name_key};
