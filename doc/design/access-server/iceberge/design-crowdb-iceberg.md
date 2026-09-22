@@ -121,8 +121,18 @@ may retry with fresh parent snapshots while retaining the name reservation.
 Publication selects an initial authority and replaces the reservation with its
 published mapping; a creation marker remains until the result is durable. Abort
 records retain their exact failure outcome before conditional reservation cleanup.
-Recursive creation helping shares one bounded phase budget. Namespace drop and
-namespace REST composition remain unimplemented.
+Recursive creation helping shares one bounded phase budget. Root-admission
+backend identities include the individual creation operation, so a different
+creator cannot reuse a cached no-op CAS result from before its reservation.
+
+Namespace drop persists a Ready-to-Dropping fence before scanning its two child
+index ranges. Durable cursors advance across bounded pages; reservations are
+helped, stale namespace mappings are conditionally removed, and corruption blocks
+the proof. A live child restores Ready without changing the name epoch or property
+revision. Only completion of both ranges permits the fenced tombstone CAS.
+Terminal replay and conditional cleanup cannot delete a recreated NamespaceId.
+Table-child records currently fail closed until table authority is implemented.
+Background namespace repair and namespace REST composition remain unimplemented.
 
 ## 3. HTTP and FileIO surfaces
 

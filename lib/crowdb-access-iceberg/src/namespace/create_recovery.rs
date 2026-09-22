@@ -97,6 +97,7 @@ impl NamespaceCreator {
     pub(super) async fn help_marker(
         &self,
         context: CatalogContext,
+        holder: crate::key::NamespaceId,
         identity: OperationId,
         budget: &mut usize,
     ) -> Result<(), CatalogError> {
@@ -104,6 +105,11 @@ impl NamespaceCreator {
             .load(context, identity)
             .await?
             .ok_or(ValidationError::Record)?;
+        if operation.namespace != holder
+            && !(operation.action == NamespaceAction::Create && operation.parent == Some(holder))
+        {
+            return Err(ValidationError::IdentityMismatch.into());
+        }
         match operation.action {
             NamespaceAction::Update => {
                 if !matches!(
@@ -129,7 +135,12 @@ impl NamespaceCreator {
                 }
                 Box::pin(self.resume_with_budget(context, identity, budget)).await?;
             }
-            NamespaceAction::Drop => return Err(CatalogError::Busy),
+            NamespaceAction::Drop => {
+                let dropper = super::NamespaceDropper {
+                    creator: self.clone(),
+                };
+                Box::pin(dropper.resume_with_budget(context, identity, budget)).await?;
+            }
         }
         Ok(())
     }

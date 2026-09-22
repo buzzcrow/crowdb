@@ -5,6 +5,11 @@ Upstream: [namespace requirement](../backlog/R179-access-iceberg-namespace.md).
 Goal: expose recoverable namespace operations without weakening authoritative
 identity, empty-drop safety, or bounded REST responses.
 
+Execution checkpoint: development stopped at the user's below-25% context guard.
+No test failure is pending. Resume recovery integration, listing and REST work;
+do not treat this checkpoint as requirement completion. Outstanding human
+decisions remain centralized in R177.
+
 ## Execution
 
 - [x] **Writer credential**: add required `CROWDB_ICEBERG_WRITE_TOKEN`, distinct
@@ -49,10 +54,16 @@ identity, empty-drop safety, or bounded REST responses.
   Bound recursive helping with one shared phase budget. Verify every lost create
   write, duplicate names, different-child contention and a pre-admission drop fence.
   Files: namespace create/admission/publication/recovery modules and tests.
-- [~] **Drop and recovery**: implement shared writer-marker settlement, stale
-  repair, durable two-range probes, not-empty restoration and tombstoning. Reuse
-  the landed load/property-update/create drivers.
-  Files: namespace repository/admission/recovery modules and concurrency tests.
+- [x] **Drop driver**: fence admission, persist both child-range probes, restore
+  nonempty namespaces, tombstone empty namespaces and conditionally clean mappings.
+  Bound cross-operation helping and stale-page traversal. Validate create/drop
+  races and every empty/nonempty drop write-reply loss. Files: namespace drop,
+  fence/probe/finish modules and tests.
+- [ ] **Recovery integration**: wire all mutation entry points through shared
+  marker settlement, add bounded periodic stale repair and real-backend drop
+  restart tests, and verify the table-create/rename-in admission seam. Until table
+  records land, any table-child record fails closed rather than proving emptiness.
+  Files: namespace recovery, server runtime and integration tests.
 - [ ] **Listing**: bind authenticated tokens to catalog, parent identity/spelling,
   page parameters and scan cursor; bound scan work and unpaginated spool resources.
   Files: namespace listing/token modules, access-server spool implementation.
@@ -87,6 +98,14 @@ identity, empty-drop safety, or bounded REST responses.
 - Lint: `pixi run rs-lint`.
 
 ## Verified checkpoint
+
+- Empty/nonempty namespace drop has six passing tests; the library has 84 passing
+  tests. Coverage includes every lost drop write reply, create versus drop,
+  recreated-name cleanup, corruption in both ranges, and a live child after 260
+  stale mappings with an intervening bounded-work exhaustion. Table lifecycle
+  records and real-backend drop-specific restart coverage remain pending.
+  Formatting, workspace clippy, feature-enabled server clippy and the existing
+  real-backend create/property restart regression pass at this checkpoint.
 
 - Native top-level and nested create plus admission recovery pass eight additional
   tests; the library has 78 passing tests. Simulated drop-fence races validate the

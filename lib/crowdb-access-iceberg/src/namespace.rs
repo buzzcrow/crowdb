@@ -4,6 +4,10 @@ mod admission;
 mod authority;
 mod create;
 mod create_recovery;
+mod drop;
+mod drop_fence;
+mod drop_finish;
+mod drop_probe;
 mod identifier;
 mod journal;
 mod key;
@@ -18,6 +22,7 @@ mod update_recovery;
 
 pub use authority::{NamespaceAuthority, NamespaceLifecycle, NamespaceMapping, NamespaceMappingState};
 pub use create::{NamespaceCreateRequest, NamespaceCreator};
+pub use drop::{NamespaceDropRequest, NamespaceDropper};
 pub use identifier::{NamespaceIdentifier, MAX_IDENTIFIER_BYTES, MAX_NAMESPACE_LEVELS};
 pub use journal::NamespaceJournal;
 pub use key::{authority_key, child_range, name_key};

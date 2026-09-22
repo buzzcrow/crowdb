@@ -65,8 +65,8 @@ impl NamespacePhase {
             ),
             NamespaceAction::Drop => matches!(
                 (self, next),
-                (Prepared, Fencing | Aborting)
-                    | (Fencing, ProbingNamespaces)
+                (Prepared, Fencing | Aborting | Complete)
+                    | (Fencing, ProbingNamespaces | Prepared | Complete)
                     | (ProbingNamespaces, ProbingNamespaces | ProbingTables | Restoring)
                     | (ProbingTables, ProbingTables | Tombstoning | Restoring)
                     | (Tombstoning | Restoring, Complete)

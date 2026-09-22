@@ -34,7 +34,8 @@ impl NamespaceCreator {
                     return self.abort(operation, 400).await;
                 }
                 if let Some(pending) = parent.pending_operation {
-                    self.help_marker(operation.context, pending, budget).await?;
+                    self.help_marker(operation.context, parent.namespace, pending, budget)
+                        .await?;
                     return Ok(());
                 }
                 parent
@@ -91,7 +92,7 @@ impl NamespaceCreator {
                 &mutation.key,
                 Some(&before),
                 &after,
-                mutation_identity(&mutation.key, Some(&before), &after),
+                mutation_identity(&operation.key().encode()?, Some(&before), &after),
             )
             .await?;
         if matches!(&result, CasOutcome::Applied(_))

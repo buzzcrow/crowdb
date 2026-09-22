@@ -22,6 +22,7 @@ pub struct NamespaceCreateRequest {
     pub properties: NamespaceProperties,
 }
 
+#[derive(Clone)]
 pub struct NamespaceCreator {
     pub(super) repository: NamespaceRepository,
     pub(super) names: Arc<dyn NamespaceStore>,

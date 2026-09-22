@@ -7,6 +7,7 @@ use crate::record::StorageRecord;
 
 use super::{authority_key, name_key, NamespaceAuthority, NamespaceIdentifier, NamespaceMappingState};
 
+#[derive(Clone)]
 pub struct NamespaceRepository {
     pub(super) store: Arc<dyn CatalogStore>,
 }
