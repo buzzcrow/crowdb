@@ -15,6 +15,7 @@ async-trait = "0.1"
 base64 = "0.22"
 data-encoding = "2"
 hmac = "0.12"
+lz4_flex = { version = "0.11", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
 crowdb-chunk-kv-client = { path = "../crowdb-chunk-kv-client" }
 crowdb-protocol = { path = "../crowdb-protocol" }
 flatbuffers = { workspace = true }

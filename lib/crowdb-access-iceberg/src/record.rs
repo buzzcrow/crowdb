@@ -2,6 +2,7 @@
 
 mod authority;
 mod envelope;
+mod file;
 mod management;
 mod namespace;
 mod namespace_operation;

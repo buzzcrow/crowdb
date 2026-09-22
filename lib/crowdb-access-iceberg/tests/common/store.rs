@@ -21,6 +21,8 @@ pub struct TestStore {
     pub namespace_update_visits: AtomicUsize,
     pub namespace_reservation_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub namespace_reservation_visits: AtomicUsize,
+    pub file_mapping_barrier: Option<Arc<tokio::sync::Barrier>>,
+    pub file_mapping_visits: AtomicUsize,
 }
 
 #[async_trait]
@@ -37,6 +39,19 @@ impl CatalogStore for TestStore {
         identity: ClientRequestId,
     ) -> Result<CasOutcome, StoreError> {
         identity.validate().unwrap();
+        if matches!(
+            crowdb_access_iceberg::key::IcebergKey::decode(key),
+            Ok(crowdb_access_iceberg::key::IcebergKey::Catalog {
+                scope: crowdb_access_iceberg::key::CatalogScope::FileLocation,
+                ..
+            })
+        ) {
+            if let Some(barrier) = &self.file_mapping_barrier {
+                if self.file_mapping_visits.fetch_add(1, Ordering::SeqCst) < 2 {
+                    barrier.wait().await;
+                }
+            }
+        }
         if expected.is_none() {
             if let Ok(crowdb_access_iceberg::record::StorageRecord::NamespaceMapping(mapping)) =
                 crowdb_access_iceberg::key::IcebergKey::decode(key)

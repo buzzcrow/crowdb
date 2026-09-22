@@ -30,6 +30,7 @@ pub enum CatalogScope {
     Reclamation = 7,
     OperationPayload = 8,
     NamespaceOperation = 9,
+    FileLocation = 10,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -158,6 +159,7 @@ fn catalog_scope(value: u8) -> Result<CatalogScope, ValidationError> {
         7 => Ok(CatalogScope::Reclamation),
         8 => Ok(CatalogScope::OperationPayload),
         9 => Ok(CatalogScope::NamespaceOperation),
+        10 => Ok(CatalogScope::FileLocation),
         _ => Err(ValidationError::Key),
     }
 }
@@ -201,6 +203,11 @@ fn validate_catalog(scope: CatalogScope, suffix: &[u8]) -> Result<(), Validation
                 return Err(ValidationError::Key);
             }
             super::OperationId::from_bytes(&suffix[..16]).map(|_| ())
+        }
+        CatalogScope::FileLocation => {
+            super::TableId::from_bytes(suffix.get(..16).ok_or(ValidationError::Key)?)?;
+            let relative = std::str::from_utf8(&suffix[16..]).map_err(|_| ValidationError::Key)?;
+            crate::file::validate_relative_key(relative)
         }
     }
 }

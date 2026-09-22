@@ -14,14 +14,25 @@ integration. Independent FileIO work proceeds under the approved ordering.
   keys, lower-case unpadded base32 catalog IDs and lower-case hex table IDs.
   Keep S3 URI keys distinct from HTTP percent decoding; reject escape rather than
   normalize. Files: `src/file.rs`, `src/file/location.rs`, location tests.
-- [~] **File records and keys**: extend the versioned envelope with bounded native
+- [x] **File records and keys**: extend the versioned envelope with bounded native
   file authority and exact-location binding; separate file kind, content format,
   digest, length, inline payload and chunk root. Bind every record to identities.
   Files: file model/key modules, record codecs, protocol schema and codec tests.
-- [ ] **Seal and publication**: validate complete input and fixed-size hints;
+- [x] **Immutable publication primitive**: stage an immutable FileId record before
+  exact-location CAS; equal digest/length/kind/format returns the original file,
+  conflicts never overwrite and losing candidates remain discoverable. Shared
+  authoritative context checks fence retired catalog access. Four fault/concurrency
+  tests cover lost stage/publication replies, collisions and corrupt bindings.
+  Files: file repository, shared context helper and repository tests.
+- [~] **Seal and publication**: validate complete input and fixed-size hints;
   select inline only for eligible metadata within 16-KiB stored/64-KiB compression
   limits. Publish exact-location bindings conditionally, retaining losing uploads
   for future reclamation. Files: file repository/writer and fault tests.
+  Inline selection and bounded LZ4 decoding are implemented: metadata can remain
+  raw through 16 KiB or compress from at most 64 KiB; other file kinds always use
+  the chunk variant. Five record tests cover codec/key/tag/corruption boundaries.
+  The publication primitive requires already sealed chunk input; no HTTP route
+  exposes it until the streaming seal pipeline verifies canonical bytes/formats.
 - [ ] **Streaming reads**: bounded chunk writes, full and single-range reads,
   response credits and cancellation. Files: file reader/writer, server body path.
 - [ ] **Delegation and HTTP**: short-lived catalog/table/prefix-scoped operation

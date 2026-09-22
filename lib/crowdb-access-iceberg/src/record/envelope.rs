@@ -3,6 +3,7 @@ use flatbuffers::FlatBufferBuilder;
 
 use crate::catalog::{ActiveCatalogRecord, CatalogAuthority};
 use crate::error::ValidationError;
+use crate::file::{file_key, location_key, FileMapping, FileRecord};
 use crate::key::{CatalogScope, IcebergKey, SystemScope};
 use crate::namespace::{authority_key, name_key, NamespaceAuthority, NamespaceMapping, NamespaceOperation};
 use crate::operation::{ledger_key, ManagementOperation, PayloadPage, RetryRecord, RetryResult};
@@ -21,6 +22,8 @@ pub enum StorageRecord {
     PayloadPage(Box<PayloadPage>),
     RetryResult(Box<RetryResult>),
     NamespaceOperation(Box<NamespaceOperation>),
+    File(Box<FileRecord>),
+    FileMapping(FileMapping),
 }
 
 impl StorageRecord {
@@ -29,6 +32,14 @@ impl StorageRecord {
     pub fn encode(&self) -> Result<Vec<u8>, ValidationError> {
         let mut builder = FlatBufferBuilder::with_capacity(2048);
         let (value_type, value) = match self {
+            Self::File(record) => (
+                FBRecordValue::FBFileRecord,
+                super::file::encode(&mut builder, record)?.as_union_value(),
+            ),
+            Self::FileMapping(mapping) => (
+                FBRecordValue::FBFileMapping,
+                super::file::encode_mapping(&mut builder, mapping).as_union_value(),
+            ),
             Self::NamespaceOperation(operation) => (
                 FBRecordValue::FBNamespaceOperation,
                 super::namespace_operation::encode(&mut builder, operation)?.as_union_value(),
@@ -96,6 +107,14 @@ impl StorageRecord {
             return Err(ValidationError::RecordVersion(envelope.schema_version()));
         }
         let record = match envelope.value_type() {
+            FBRecordValue::FBFileRecord => Self::File(Box::new(super::file::decode(
+                envelope.value_as_fbfile_record().ok_or(ValidationError::Record)?,
+            )?)),
+            FBRecordValue::FBFileMapping => Self::FileMapping(super::file::decode_mapping(
+                envelope
+                    .value_as_fbfile_mapping()
+                    .ok_or(ValidationError::Record)?,
+            )?),
             FBRecordValue::FBNamespaceOperation => {
                 Self::NamespaceOperation(Box::new(super::namespace_operation::decode(
                     envelope
@@ -153,6 +172,10 @@ impl StorageRecord {
 
     fn validate_key(&self, key: &IcebergKey) -> Result<(), ValidationError> {
         match (self, key) {
+            (Self::File(record), key) if *key == file_key(record.location.table().catalog, record.file) => {
+                Ok(())
+            }
+            (Self::FileMapping(mapping), key) if *key == location_key(&mapping.location) => Ok(()),
             (Self::NamespaceOperation(operation), key) if *key == operation.key() => Ok(()),
             (Self::PayloadPage(page), key) if *key == page.reference.page_key(page.index)? => Ok(()),
             (Self::RetryResult(result), key) if *key == result.binding.result_key() => Ok(()),

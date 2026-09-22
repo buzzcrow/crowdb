@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
-use crate::catalog::{CatalogContext, CatalogError, CatalogStore, RootState};
+use crate::catalog::{CatalogContext, CatalogError, CatalogStore};
 use crate::error::ValidationError;
-use crate::key::{IcebergKey, SystemScope};
 use crate::record::StorageRecord;
 
 use super::{authority_key, name_key, NamespaceAuthority, NamespaceIdentifier, NamespaceMappingState};
@@ -110,25 +109,6 @@ impl NamespaceRepository {
     }
 
     pub(super) async fn check_context(&self, context: CatalogContext) -> Result<(), CatalogError> {
-        context.validate()?;
-        let key = IcebergKey::System {
-            scope: SystemScope::ActiveRoot,
-            suffix: Vec::new(),
-        };
-        let value = self
-            .store
-            .get(&key.encode()?)
-            .await?
-            .ok_or(CatalogError::Uninitialized)?;
-        let StorageRecord::Active(root) = StorageRecord::decode(&key, &value.bytes)? else {
-            return Err(ValidationError::Record.into());
-        };
-        if root.context != context {
-            return Err(CatalogError::Conflict);
-        }
-        if root.state != RootState::Ready {
-            return Err(CatalogError::Busy);
-        }
-        Ok(())
+        crate::catalog::check_context(self.store.as_ref(), context).await
     }
 }

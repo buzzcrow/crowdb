@@ -146,7 +146,38 @@ table FBNamespaceOperation {
     outcome_body:FBPayloadReference;
 }
 
-union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation }
+table FBFileChunkRoot {
+    chunk_high:ulong;
+    chunk_low:ulong;
+    offset:ulong;
+    physical_length:ulong;
+    logical_offset:ulong;
+    logical_length:ulong;
+    height:ubyte;
+    digest:[ubyte] (required);
+}
+
+table FBFileRecord {
+    file_id:[ubyte] (required);
+    location:string (required);
+    kind:ubyte = 255;
+    format:ubyte = 255;
+    length:ulong;
+    digest:[ubyte] (required);
+    storage:ubyte = 255;
+    inline_bytes:[ubyte];
+    root:FBFileChunkRoot;
+    has_hint:bool;
+    hint_offset:ulong;
+    hint_length:ulong;
+}
+
+table FBFileMapping {
+    location:string (required);
+    file_id:[ubyte] (required);
+}
+
+union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation, FBFileRecord, FBFileMapping }
 
 table FBIcebergRecord {
     schema_version:ushort;

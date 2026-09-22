@@ -191,6 +191,16 @@ bytes. Dot traversal, leading slash, backslash, controls, query and fragment
 delimiters are rejected rather than normalized. HTTP percent decoding belongs
 only at the transport boundary, not in stored S3-shaped locations.
 
+Native file records bind FileId to exact location, kind, format, canonical length
+and SHA-256 digest. Eligible metadata stores at most 16 KiB inline; bounded LZ4
+compression considers at most 64 KiB original input, and decoding verifies the
+canonical length and digest. Other file kinds retain a fixed-size chunk root,
+never a growing location vector. Hints are non-authoritative and out-of-bounds
+hints are ignored. The publication primitive stages an immutable authority before
+the exact-location CAS; equal-content retries return the selected FileId, while
+conflicts retain losing candidates without overwriting or physical deletion.
+Streaming format sealing and the native FileIO HTTP surface remain unexposed.
+
 Writes and reads stream through bounded CROWDB storage clients. Delegated FileIO
 access may move immutable ranges without an Access Server payload bounce, but
 cannot overwrite published files or bypass table reachability.

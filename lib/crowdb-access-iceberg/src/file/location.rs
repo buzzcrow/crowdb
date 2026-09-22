@@ -131,7 +131,7 @@ fn parse_table(bucket: &str, prefix: &str) -> Result<TableLocation, ValidationEr
     Ok(location)
 }
 
-fn validate_relative_key(key: &str) -> Result<(), ValidationError> {
+pub(crate) fn validate_relative_key(key: &str) -> Result<(), ValidationError> {
     if key.len() > MAX_OBJECT_KEY_BYTES - TABLE_PREFIX_BYTES {
         return Err(ValidationError::KeyTooLarge);
     }
