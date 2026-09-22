@@ -57,8 +57,11 @@ system root -> active CatalogId/activation epoch
   spec field in table metadata.
 - Name mappings are ordered lookup indexes. Stable-ID records are authoritative;
   list and load filter mappings whose ID, lifecycle, or name epoch is stale.
-- All Iceberg keys use a versioned `ICE\0` protocol prefix and live below the
-  current CatalogId except the single active-catalog root.
+- All Iceberg keys use a versioned `ICE\0` protocol prefix. Resource authorities,
+  indexes, and operation payloads live below their CatalogId. A separate bounded
+  system scope holds the active root, management operations/audit, and REST
+  idempotency bindings that must survive catalog replacement. System records never
+  provide a resource lookup path into a retired catalog.
 - Chunk-KV stores bounded authorities, mappings, heads, operation state, and file
   records. Chunk storage owns all non-inline file bytes. Disk, EC, placement, and
   node identities never enter Iceberg metadata or locations.
@@ -83,7 +86,9 @@ system root -> active CatalogId/activation epoch
   phase, and result make response-loss retry safe on another Access Server. Reuse
   of one identity with different input fails.
 - **ICE-I7 — Domain clear:** after clear completes, no new request, cache entry,
-  credential, location, or retry record can expose the retired CatalogId.
+  credential, location, or resource retry can expose retired catalog resources.
+  Authorized management status, audit, and result replay may identify the retired
+  CatalogId without granting access to its resources.
 - **ICE-I8 — Spec honesty:** only implemented endpoints and format capabilities are
   advertised; unknown, disabled, or lossy requirements and updates fail closed.
 - **ICE-I9 — Protocol ownership:** the Iceberg FileIO surface shares low-level
@@ -119,11 +124,16 @@ All open issues from the former R177-A through R177-D drafts and the former R178
 cache draft are answered here. Child requirements must reference these decisions
 and must not carry independent open questions.
 
-1. **Clear boundary:** clear enters maintenance, stops new admission, publishes the
-   new active pointer, and returns only after the maximum old-root cache lease plus
-   bounded admitted-request and delegated-access grace. It does not wait for
-   acknowledgements from a possibly stale instance registry. Reclamation also
-   waits for durable reader and operator pins.
+1. **Clear boundary:** a root CAS enters durable maintenance and stops fresh
+   authoritative admission and lease renewal. Existing root leases may still admit
+   old-context work until their fixed expiry. A later root CAS selects the new
+   catalog while maintenance remains active. Clear completes and new-catalog
+   admission opens only after the persisted old-lease, request, and delegated-access
+   deadlines have passed. Lease validity starts before the authoritative root read,
+   never on receipt of a delayed response; delegation cannot extend the bound.
+   Restart and reconciliation preserve those deadlines and configured clock-skew
+   allowance. No instance-registry acknowledgement is required. Reclamation also
+   waits for durable reader and operator pins. R178 owns this state machine.
 2. **Tenant:** the first milestone stores no default tenant and puts no fixed
    TenantId in hot keys. A later tenant root may map to an active CatalogId without
    changing catalog-scoped keys.
@@ -135,20 +145,31 @@ and must not carry independent open questions.
 5. **Catalog management:** R178 owns authenticated initialize/status/rename/clear
    management commands. Clear requires a dedicated privilege, explicit destructive
    confirmation, request identity, and durable audit record; it is not an Iceberg
-   REST endpoint.
+   REST endpoint. System-scoped management records preserve the original result
+   across later clears; authentication and digest validation precede replay, and
+   replay precedes checking the current epoch for a new mutation.
 6. **Namespaces:** arbitrary multipart identifiers are supported within configured
    maximum levels and encoded bytes. Parent listing is complete. Namespace rename
    is not implemented because it is non-standard; table rename may move across
    namespaces.
-7. **Namespace drop:** CAS the namespace to `Dropping`, reject new children, then
-   perform bounded existence probes of child namespace and table indexes. Restore
-   `Ready` on a non-empty result; tombstone only an empty fenced authority.
+7. **Namespace drop:** child creation and rename-in first durably reserve their
+   parent/name index entry, then validate the parent through a `Ready` CAS before
+   publication. Drop CASes the parent to `Dropping` before probing those same index
+   ranges. Unresolved reservations prevent an empty proof; recovery settles them
+   before removal. A published child restores `Ready` and returns not-empty;
+   tombstoning requires a complete empty proof. R179 owns the bounded recovery and
+   single-key-CAS protocol; there is no cross-key transaction or process lock.
 8. **Namespace listing:** scan ordered mappings with bounded over-fetch, validate
    targets in bounded batches, and bind the opaque continuation token to catalog,
-   parent, parameters, and last scanned key. Stale mappings are omitted.
+   parent, parameters, and last scanned key. Stale mappings are omitted. An absent
+   `pageToken` requires one complete response with a null next token; an empty
+   `pageToken` starts pagination. R179 defines bounded spooling and a pre-response
+   503 on resource exhaustion, never a successful truncated listing.
 9. **Namespace properties:** at most 256 entries; keys and values are UTF-8 without
    NUL, at most 1 KiB and 8 KiB respectively; the encoded authority is at most
-   64 KiB. Duplicate remove/update keys return the standard 422 response.
+   64 KiB. Duplicate remove/update keys return the standard 422 response. Mapping
+   name epochs, property revisions, and admission fences are distinct; property
+   updates and failed drops never invalidate an otherwise current name mapping.
 10. **Metadata projections:** metadata JSON gets a durable, disposable,
     generation-local root/page/child projection. Other parsed format structures
     stay in R185's memory cache until measurements justify a later requirement.
@@ -189,6 +210,13 @@ and must not carry independent open questions.
     queue, batch, fill, and fanout dimension. Initial defaults come from its focused
     benchmark gate and configuration tests; no class inherits an unbounded or
     universal one-size value.
+23. **REST retries:** R178 supplies optional UUIDv7 `Idempotency-Key` handling and
+    an advertised retention window before namespace endpoints land. Durable system
+    bindings fix the principal, operation, digest, CatalogId, and activation epoch;
+    retired bindings reject resource replay and cannot initiate work in the new
+    catalog. Final successes and deterministic terminal 4xx are replayed; 5xx do
+    not finalize the operation. Requests without a key have internal recovery
+    identities but no cross-request exactly-once guarantee.
 
 ## Dependencies
 

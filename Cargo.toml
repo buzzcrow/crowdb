@@ -24,6 +24,7 @@ members = [
     "app/crowdb-chunk-kv-server",
     "app/crowdb-access-server",
     "lib/crowdb-access-s3",
+    "lib/crowdb-access-iceberg",
 ]
 exclude = ["third-party/hyper"]
 # : crowdb-tree/ffi moved from `exclude` into `members` now that

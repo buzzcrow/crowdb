@@ -41,12 +41,17 @@ supplies immutable metadata files and projections.
    JSON for full REST and FileIO responses; projections cannot re-encode authority.
 4. Implement list, load, exists, rename, and drop. Support `snapshot-loading-mode`
    `ALL` and `REFS` from one selected generation. Bind ETag and conditional loads to
-   TableId, generation, and metadata digest.
+   TableId, generation, and metadata digest. Table listing uses R179's distinction
+   between absent and empty page tokens, complete bounded-spool responses, and
+   pre-response resource-exhaustion errors.
 5. Rename, including a move across namespaces, reserves the destination mapping,
    advances `TableHead` name epoch and canonical identifier by CAS, and tombstones
    the source through a durable operation record. Source and destination namespace
-   lifecycle fences are checked at every transition. Reconciliation completes or
-   removes reservations after crashes.
+   lifecycle fences follow R179's reserve-before-admit protocol. Destination
+   admission CAS occurs after its reservation is durable and before publication;
+   an unresolved reservation blocks destination drop. Reconciliation resolves the
+   head publication outcome before removing a reservation. Repeated lifecycle
+   reads alone do not fence a cross-key move.
 6. The old name is never an alias. A known old-name cache may later produce an
    authorization-filtered hint under R185, but the repository returns not-found
    once the head selects the new name. List filters every stale reservation or
@@ -80,6 +85,10 @@ supplies immutable metadata files and projections.
   reconciliation and concurrent list/load run, assert one canonical name resolves,
   the old name is not an alias, and TableId, table UUID, and file locations do not
   change. Invariants: TABLE-I1, TABLE-I3, and TABLE-I5. Integration test.
+- Given concurrent destination drop and rename-in with delayed head-CAS responses,
+  when recovery runs, assert the destination cannot tombstone while publication is
+  possible and no source or destination cleanup deletes a recreated mapping.
+  Invariants: TABLE-I3 and TABLE-I5. Integration test.
 - Given stale mappings, reservations, tombstones, and valid entries over multiple
   pages, when list and exists run, assert only head-qualified tables are exposed and
   work per page remains bounded. Invariant: TABLE-I3. Integration test.

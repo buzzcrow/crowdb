@@ -64,7 +64,11 @@ preserving correct behavior when notifications or the complete cache are disable
    old-name entry to an authorization-neutral tombstone; only request-time current
    authorization may disclose the destination.
 8. Integrate clear with R177: notification prompts eviction, but completion waits
-   for the maximum root lease and admitted/delegated grace. Retired-catalog GC uses
+   for R178's persisted maintenance deadline and admitted/delegated grace. Start
+   lease age before the authoritative root read, never when a delayed reply arrives;
+   maintenance prevents fresh leases, while an existing lease may admit old-context
+   requests only until its original expiry. New-domain admission opens after the
+   grace proof. Retired-catalog GC uses
    durable fences and never waits for physical cache eviction acknowledgements.
 9. Expose per-class hit, miss, stale, fill, bypass, bytes, entries, eviction, expiry,
    rebuild, notification, fanout, drop, and refresh-failure metrics. Benchmark hit
@@ -106,6 +110,10 @@ preserving correct behavior when notifications or the complete cache are disable
   instances, and a late server, when fanout runs, assert work remains bounded,
   newest generations converge, committed mutation latency is unaffected, and the
   late server loads authority before readiness. Invariant: CACHE-I4. E2E test.
+- Given a disconnected old-root lease holder and delayed cache fills, when clear
+  enters maintenance and publishes a new pointer, assert no lease extension and
+  no old-context response after the persisted completion boundary, even across a
+  recovering clear coordinator. Invariants: CACHE-I3 and CACHE-I4. E2E test.
 - Given concurrent hits, fills, invalidations, expiry, and eviction across classes,
   when contention benchmarks run, assert hot lookup takes no global lock and its
   latency is independent of unrelated class activity. Invariant: CACHE-I5.

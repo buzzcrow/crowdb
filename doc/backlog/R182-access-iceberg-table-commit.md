@@ -37,6 +37,9 @@ conflicts, idempotency, and crash recovery without a table-wide lock.
    namespace fence, validate initial schema/spec/order/properties and target format,
    persist immutable metadata, then publish one initial `TableHead`. Staged state is
    durable, expires, and can be completed only by its bound commit identity.
+   Use R179's durable reservation before parent admission CAS, including final
+   staged-create publication. Expiry initiates phase-fenced abort/recovery; it
+   never removes a reservation with an unknown publication outcome.
 3. For update, retain one head revision and canonical metadata input; validate all
    requirements; apply updates in request order to a bounded builder; revalidate
    the complete output; serialize one canonical standard metadata JSON file; then
@@ -58,6 +61,9 @@ conflicts, idempotency, and crash recovery without a table-wide lock.
    digest, table/name context, input generation, phase, candidate FileId, and final
    response. Phase transitions use CAS. Same identity plus a different digest
    conflicts; same identity plus the same digest resumes or returns the result.
+   Consume R178's standard optional HTTP key, system binding, retention, final 4xx
+   replay, and non-final 5xx rules. A retired catalog result cannot be replayed as
+   a resource response or rebound to the current domain.
 8. Bound request bytes, update and requirement counts, metadata input/output bytes,
    projection work, serialization buffers, candidate writes, and concurrent commits
    independently. Stream large canonical JSON where possible and fail admission
@@ -91,6 +97,10 @@ conflicts, idempotency, and crash recovery without a table-wide lock.
   and head-CAS boundary, when another server resumes with the same request identity,
   assert one table/generation/result is visible and different input under that
   identity conflicts. Invariant: COMMIT-I4. E2E test.
+- Given parent drop racing immediate or staged-create publication and expiration,
+  when recovery resolves uncertain CAS outcomes, assert reservations protect every
+  publishable child and aborted publishers cannot later expose a table beneath a
+  tombstone. Invariants: COMMIT-I2 and COMMIT-I4. Integration test.
 - Given a failed requirement, stale generation, duplicate name, lifecycle fence,
   malformed metadata, unsupported update, and CAS loss, when official clients commit,
   assert each receives the standard status and error type and no case is collapsed

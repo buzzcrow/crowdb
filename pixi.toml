@@ -204,6 +204,7 @@ pixi run test-chunk-kv
 pixi run test-chunk-stream
 pixi run test-chunk-kv-client
 pixi run test-chunk-kv-server
+pixi run test-access-iceberg
 '
 ''', depends-on = ["build-tests"] }
 
@@ -215,6 +216,7 @@ test-chunkdb = { cmd = "cargo test -p crowdb-chunkdb --all-targets" }
 test-chunk-client = { cmd = "cargo test -p crowdb-chunk-client --all-targets" }
 test-diskio-client = { cmd = "cargo test -p crowdb-diskio-client --all-targets" }
 test-access-s3 = { cmd = "cargo test -p crowdb-access-s3 --all-targets" }
+test-access-iceberg = { cmd = "cargo test -p crowdb-access-iceberg --all-targets" }
 test-access-server-s3 = { cmd = "cargo test -p crowdb-access-server --all-targets" }
 test-server = { cmd = '''
 bash -c '

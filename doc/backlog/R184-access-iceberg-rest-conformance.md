@@ -36,7 +36,9 @@ behavior, and conformance evidence for the first usable milestone.
    drop/exists/rename, credentials, and metrics only when their requirements and
    runtime dependencies are enabled. Do not advertise register-table, views,
    transactions, or scan planning.
-3. Implement common decoding for prefix, multipart namespace, table identifier,
+3. Extend R178's common identity/authentication boundary and R179's namespace
+   decoding and pagination contracts to the complete surface. Implement decoding
+   for prefix, multipart namespace, table identifier,
    pagination, idempotency key, data-access, snapshot-loading-mode, ETag, warehouse,
    and purge parameters. Enforce header, URI, query, JSON, and response bounds
    before allocating domain work.
@@ -80,6 +82,11 @@ behavior, and conformance evidence for the first usable milestone.
   bodies, deadlines, and cancellation at mutation crash points, when requests run,
   assert common errors are stable and durable operations are absent or recoverable.
   Invariants: REST-I2 and REST-I4. E2E test.
+- Given requests without page tokens, empty tokens, UUIDv7 retry keys, terminal
+  conflicts, response loss, and catalog clear, when official clients list and retry,
+  assert complete unpaginated success, bounded resource errors, advertised key
+  retention, and no replay of retired resources. Invariants: REST-I2 and REST-I3.
+  E2E test.
 - Given principals with catalog, namespace, table, file, management, and no access,
   when all route classes and rename hints are exercised, assert only authorized
   information and credentials are returned. Invariant: REST-I2. E2E test.
