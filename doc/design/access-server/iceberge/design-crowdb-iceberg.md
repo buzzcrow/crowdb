@@ -135,7 +135,11 @@ the proof. A live child restores Ready without changing the name epoch or proper
 revision. Only completion of both ranges permits the fenced tombstone CAS.
 Terminal replay and conditional cleanup cannot delete a recreated NamespaceId.
 Table-child records currently fail closed until table authority is implemented.
-Background namespace repair and namespace REST composition remain unimplemented.
+Each listener runs a namespace-journal sweep with bounded pages, per-operation
+phase budgets and a wall-clock deadline. The sweep resumes abandoned operations
+and their conditional mapping cleanup without requiring a client retry. Catalog
+changes invalidate its cursor; cancellation preserves durable recovery evidence.
+Namespace REST composition remains unimplemented.
 
 ## 3. HTTP and FileIO surfaces
 

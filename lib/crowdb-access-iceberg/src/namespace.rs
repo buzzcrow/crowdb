@@ -14,6 +14,8 @@ mod key;
 mod operation;
 mod properties;
 mod publication;
+mod recovery;
+mod recovery_scan;
 mod repository;
 mod reservation;
 mod storage;
@@ -30,6 +32,8 @@ pub use operation::{
     NamespaceAction, NamespaceMutation, NamespaceOperation, NamespaceOutcome, NamespacePhase,
 };
 pub use properties::{NamespaceProperties, PropertyChanges, PropertyUpdate, MAX_PROPERTIES};
+pub use recovery::{NamespaceRecovery, NamespaceRecoveryPage};
+pub use recovery_scan::{NamespaceRecoveryScan, NamespaceRecoveryStore};
 pub use repository::NamespaceRepository;
 pub use storage::{ChildScan, NamespaceStore};
 pub use update::NamespacePropertyRequest;

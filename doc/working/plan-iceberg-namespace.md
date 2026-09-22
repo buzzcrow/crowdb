@@ -64,7 +64,13 @@ remain centralized in R177.
   holder-bound create/update/drop helper with shared phase budgets. Verify every
   interrupted parent admission and nonempty drop followed by a property writer.
   Files: namespace repository/update modules and cross-action recovery tests.
-- [~] **Recovery integration**: add bounded periodic stale repair and verify the
+- [x] **Background operation recovery**: scan four journal entries per page,
+  resume each with 16 shared phase steps, and run a listener-owned periodic sweep
+  with a one-second deadline and catalog-bound cursor. Recover terminal mapping
+  cleanup too; isolate manual crash checkpoints from active recovery workers.
+  Verify abandoned creation using two real listener processes and no client retry.
+  Files: namespace recovery/scan, listener runtime and library/full-stack tests.
+- [~] **Recovery integration**: verify remaining stale-index repair and the
   table-create/rename-in admission seam. Real-backend drop restart tests pass. Until table
   records land, any table-child record fails closed rather than proving emptiness.
   Files: namespace recovery, server runtime and integration tests.

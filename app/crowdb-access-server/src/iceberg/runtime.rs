@@ -67,9 +67,9 @@ pub async fn run() -> Result<(), BoxError> {
     if arguments.len() > 5 {
         return Err("too many Iceberg command arguments".into());
     }
-    let (repository, chunks) = connect(config.management_seeds).await?;
+    let (repository, store, chunks) = connect(config.management_seeds).await?;
     let result = if arguments.is_empty() || arguments == ["serve"] {
-        start_listener(&config.listen, repository, config.authentication).await
+        start_listener(&config.listen, repository, store, config.authentication).await
     } else {
         manage(&repository, &config.authentication, &arguments).await
     };
@@ -79,7 +79,9 @@ pub async fn run() -> Result<(), BoxError> {
     Ok(())
 }
 
-async fn connect(seeds: Vec<String>) -> Result<(Arc<CatalogRepository>, ChunkIoClient), BoxError> {
+async fn connect(
+    seeds: Vec<String>,
+) -> Result<(Arc<CatalogRepository>, Arc<RoutedCatalogStore>, ChunkIoClient), BoxError> {
     let control = Arc::new(CrowdbKvClient::new(KvConfig::new(seeds.clone())));
     let client_config = ClientConfig::default();
     let source = Arc::new(Group0ChunkKvRangeCatalogSource::from_shared(Arc::clone(&control)));
@@ -100,16 +102,15 @@ async fn connect(seeds: Vec<String>) -> Result<(Arc<CatalogRepository>, ChunkIoC
         control,
     )
     .await?;
-    let repository = Arc::new(CatalogRepository::new(
-        Arc::new(RoutedCatalogStore::new(client)),
-        ClearBounds::default(),
-    )?);
-    Ok((repository, chunks))
+    let store = Arc::new(RoutedCatalogStore::new(client));
+    let repository = Arc::new(CatalogRepository::new(store.clone(), ClearBounds::default())?);
+    Ok((repository, store, chunks))
 }
 
 async fn start_listener(
     address: &str,
     repository: Arc<CatalogRepository>,
+    store: Arc<RoutedCatalogStore>,
     authentication: BearerAuthenticator,
 ) -> Result<(), BoxError> {
     for _ in 0..600 {
@@ -130,13 +131,20 @@ async fn start_listener(
     if timeout.is_zero() || timeout > Duration::from_secs(60) {
         return Err("catalog request timeout is outside server bounds".into());
     }
-    let service = Arc::new(IcebergHttpService::new(repository, authentication, timeout));
+    let service = Arc::new(IcebergHttpService::new(
+        repository.clone(),
+        authentication,
+        timeout,
+    ));
     let listener = TcpListener::bind(address).await?;
     tracing::info!(%address, "Iceberg listener ready");
-    serve(listener, service, async {
+    let serving = serve(listener, service, async {
         let _ = tokio::signal::ctrl_c().await;
-    })
-    .await?;
+    });
+    tokio::select! {
+        result = serving => result?,
+        () = super::recovery::run(repository, crowdb_access_iceberg::namespace::NamespaceRecovery::new(store)) => {}
+    }
     tracing::info!("Iceberg listener drained");
     Ok(())
 }

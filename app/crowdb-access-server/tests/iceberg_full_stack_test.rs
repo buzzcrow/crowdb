@@ -1,3 +1,5 @@
+#[path = "common/iceberg_background.rs"]
+mod background;
 #[path = "common/iceberg_stack.rs"]
 mod common;
 #[path = "common/iceberg_creation.rs"]
@@ -127,8 +129,13 @@ async fn catalog_recovery_survives_real_chunk_kv_restart() {
     assert_eq!(repository.status().await.unwrap().0.context.activation_epoch, 3);
     verify_retry_scan(&stack, &repository).await;
     namespace::verify_name_index(&stack, latest.catalog).await;
+    background::verify(stack.store().await, repository.status().await.unwrap().0.context).await;
+    drop(frontend);
+    drop(second_frontend);
     journal::verify_recovery(&mut stack, repository.status().await.unwrap().0.context).await;
     verify_interrupted_clear(&stack, &repository).await;
+    let frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+    let second_frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
     frontend.check_official_client();
     second_frontend.check_official_client();
 }
