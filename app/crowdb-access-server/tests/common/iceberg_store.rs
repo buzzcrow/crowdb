@@ -8,8 +8,79 @@ use std::sync::Arc;
 
 #[derive(Default)]
 pub struct TestStore {
-    values: ArcSwap<BTreeMap<Vec<u8>, StoredValue>>,
+    pub values: ArcSwap<BTreeMap<Vec<u8>, StoredValue>>,
     pub read_delay_ms: AtomicU64,
+    pub scan_delay_ms: AtomicU64,
+    pub scans: AtomicU64,
+}
+
+#[async_trait]
+impl crowdb_access_iceberg::namespace::NamespaceStore for TestStore {
+    async fn scan_children(
+        &self,
+        scan: crowdb_access_iceberg::namespace::ChildScan,
+    ) -> Result<crowdb_chunk_kv_client::MultiScanPage, StoreError> {
+        let request = scan.request()?;
+        self.scans.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(
+            self.scan_delay_ms.load(Ordering::SeqCst),
+        ))
+        .await;
+        let snapshot = self.values.load_full();
+        let mut candidates = snapshot.iter().filter(|(key, _)| {
+            *key >= request.start.as_ref().unwrap()
+                && *key < request.end.as_ref().unwrap()
+                && request
+                    .continuation
+                    .as_ref()
+                    .map_or(true, |cursor| *key > &cursor.last_key)
+        });
+        let items: Vec<_> = candidates
+            .by_ref()
+            .take(request.max_items)
+            .map(|(key, value)| crowdb_protocol::chunk_kv::RpcValue {
+                key: key.clone(),
+                value: value.bytes.clone(),
+                revision: value.revision,
+            })
+            .collect();
+        let continuation = candidates
+            .next()
+            .map(|_| crowdb_chunk_kv_client::MultiScanContinuation {
+                direction: request.direction,
+                original_start: request.start,
+                original_end: request.end,
+                last_key: items.last().unwrap().key.clone(),
+                catalog_generation: 1,
+            });
+        Ok(crowdb_chunk_kv_client::MultiScanPage {
+            items,
+            continuation,
+            terminal_failure: None,
+        })
+    }
+
+    async fn delete_mapping(
+        &self,
+        key: &[u8],
+        expected: &[u8],
+        identity: ClientRequestId,
+    ) -> Result<CasOutcome, StoreError> {
+        identity.validate().unwrap();
+        loop {
+            let current = self.values.load_full();
+            let previous = current.get(key);
+            if previous.map(|value| value.bytes.as_slice()) != Some(expected) {
+                return Ok(CasOutcome::Conflict(previous.cloned()));
+            }
+            let revision = previous.unwrap().revision + 1;
+            let mut next = (*current).clone();
+            next.remove(key);
+            if Arc::ptr_eq(&current, &self.values.compare_and_swap(&current, Arc::new(next))) {
+                return Ok(CasOutcome::Applied(revision));
+            }
+        }
+    }
 }
 
 #[async_trait]

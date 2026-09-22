@@ -29,8 +29,23 @@ def main():
         timeout=5,
     )
     response.raise_for_status()
-    assert response.json()["endpoints"] == []
+    assert set(response.json()["endpoints"]) == {
+        "GET /v1/{prefix}/namespaces",
+        "GET /v1/{prefix}/namespaces/{namespace}",
+        "HEAD /v1/{prefix}/namespaces/{namespace}",
+    }
     assert "idempotency-key-lifetime" not in response.json()
+    catalog = load_catalog("crowdb", **properties)
+    namespaces = catalog.list_namespaces()
+    assert isinstance(namespaces, list)
+    for namespace in namespaces:
+        assert isinstance(catalog.load_namespace_properties(namespace), dict)
+    complete = requests.get(uri + "/v1/namespaces", headers={"Authorization": "Bearer " + "r" * 32}, timeout=5)
+    complete.raise_for_status()
+    assert complete.json()["next-page-token"] is None
+    assert len(complete.json()["namespaces"]) == len(namespaces)
+    missing = requests.head(uri + "/v1/namespaces/missing-namespace", headers={"Authorization": "Bearer " + "r" * 32}, timeout=5)
+    assert missing.status_code == 404 and missing.content == b""
     print("PyIceberg config, warehouse selection and authentication passed")
 
 

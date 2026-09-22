@@ -74,13 +74,16 @@ remain centralized in R177.
   table-create/rename-in admission seam. Real-backend drop restart tests pass. Until table
   records land, any table-child record fails closed rather than proving emptiness.
   Files: namespace recovery, server runtime and integration tests.
-- [~] **Listing**: bind authenticated tokens to catalog, parent identity/spelling,
+- [x] **Listing**: bind authenticated tokens to catalog, parent identity/spelling,
   page parameters and scan cursor; bound scan work and unpaginated spool resources.
   Files: namespace listing/token modules, access-server spool implementation.
   Bounded authority-validated pages and HMAC-SHA256 tokens now have three focused
   tests: stale empty pages, parameter/key/recreated-parent binding, and corruption.
-  Complete-response spool and HTTP pagination semantics remain unfinished.
-- [ ] **REST integration**: add bounded request parsing, endpoint advertisement,
+  Complete-response spool caps bytes/items/scans/concurrency and streams 16-KiB
+  frames. Three HTTP tests cover decoding, absent/empty/continuing tokens,
+  admission release and each exhaustion dimension without truncated success.
+  Official PyIceberg namespace list/load and raw HEAD pass against real listeners.
+- [~] **REST integration**: add bounded request parsing, endpoint advertisement,
   role checks, error mapping, and shared retry-ledger participation.
   Files: library wire modules, access-server Iceberg modules.
   Size URL and JSON limits for the identifier/property bounds. Validate against
@@ -111,6 +114,11 @@ remain centralized in R177.
 - Lint: `pixi run rs-lint`.
 
 ## Verified checkpoint
+
+- Namespace list/load/exists are now exposed and advertised, with bounded complete
+  spooling. Library tests total 92; namespace HTTP tests, config HTTP regression,
+  real-backend official-client reads/restarts, fmt and clippy pass. Namespace
+  mutations still await shared HTTP retry-ledger integration and advertisement.
 
 - Empty/nonempty namespace drop has six passing tests; the library has 85 passing
   tests. Coverage includes every lost drop write reply, create versus drop,

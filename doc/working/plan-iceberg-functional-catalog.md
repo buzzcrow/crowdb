@@ -22,7 +22,7 @@ do not stop unrelated tasks. No user-guide tasks.
 ## Review checkpoint
 
 - R178 supplies catalog management, authentication, recovery, and config. The
-  current HTTP dispatcher accepts only authenticated `GET /v1/config`.
+  current HTTP dispatcher accepts authenticated config and namespace reads.
 - R179 has identifiers, properties, authority/mapping records, bounded scans,
   conditional deletion, separate writer credentials, payload pages, and durable
   create/property/drop drivers. Shared recovery integration, periodic repair,

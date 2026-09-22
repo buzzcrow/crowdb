@@ -3,10 +3,11 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+use super::body::IcebergBody;
+use super::namespace_read::NamespaceHttp;
 use crowdb_access_iceberg::catalog::{CatalogError, CatalogLifecycle, CatalogRepository, RootState};
 use crowdb_access_iceberg::wire::{BearerAuthenticator, CatalogConfig, IcebergErrorResponse};
-use http_body_util::Full;
-use hyper::body::{Bytes, Incoming};
+use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
@@ -18,6 +19,7 @@ pub struct IcebergHttpService {
     repository: Arc<CatalogRepository>,
     authentication: BearerAuthenticator,
     request_timeout: Duration,
+    namespaces: Option<NamespaceHttp>,
 }
 
 impl IcebergHttpService {
@@ -31,19 +33,41 @@ impl IcebergHttpService {
             repository,
             authentication,
             request_timeout,
+            namespaces: None,
         }
     }
 
-    async fn handle(&self, request: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
-        let result = tokio::time::timeout(self.request_timeout, self.dispatch(request)).await;
-        Ok(match result {
-            Ok(Ok(config)) => response(200, serde_json::to_vec(&config).unwrap_or_default()),
-            Ok(Err(error)) => response(error.error.code, serde_json::to_vec(&error).unwrap_or_default()),
-            Err(_) => unavailable(),
-        })
+    /// # Errors
+    /// Rejects invalid namespace token signing configuration.
+    pub fn with_namespaces<Store: crowdb_access_iceberg::namespace::NamespaceStore + 'static>(
+        mut self,
+        store: Arc<Store>,
+    ) -> Result<Self, crowdb_access_iceberg::error::ValidationError> {
+        self.namespaces = Some(NamespaceHttp::new(
+            store,
+            &self.authentication.namespace_token_key(),
+        )?);
+        Ok(self)
     }
 
-    async fn dispatch(&self, request: Request<Incoming>) -> Result<CatalogConfig, IcebergErrorResponse> {
+    async fn handle(&self, request: Request<Incoming>) -> Result<Response<IcebergBody>, Infallible> {
+        let head = request.method() == hyper::Method::HEAD;
+        let result = tokio::time::timeout(self.request_timeout, self.dispatch(request)).await;
+        let mut response = match result {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => response(error.error.code, serde_json::to_vec(&error).unwrap_or_default()),
+            Err(_) => unavailable(),
+        };
+        if head {
+            *response.body_mut() = IcebergBody::new(Vec::new());
+        }
+        Ok(response)
+    }
+
+    async fn dispatch(
+        &self,
+        request: Request<Incoming>,
+    ) -> Result<Response<IcebergBody>, IcebergErrorResponse> {
         let authorization = request
             .headers()
             .get(hyper::header::AUTHORIZATION)
@@ -56,17 +80,16 @@ impl IcebergHttpService {
                 "Valid bearer authentication is required",
             ));
         }
-        if request.uri().to_string().len() > 4096 {
+        if request.uri().to_string().len() > 32 * 1024 {
             return Err(bad_request());
         }
-        if request.method() != hyper::Method::GET || request.uri().path() != "/v1/config" {
+        if request.uri().path() != "/v1/config" && self.namespaces.is_none() {
             return Err(IcebergErrorResponse::new(
                 406,
                 "UnsupportedOperationException",
                 "This endpoint is not implemented",
             ));
         }
-        let warehouse = warehouse(request.uri().query())?;
         let (root, authority) = self
             .repository
             .status()
@@ -79,7 +102,35 @@ impl IcebergHttpService {
         {
             return Err(service_unavailable());
         }
-        CatalogConfig::foundation(warehouse.as_deref())
+        if request.method() == hyper::Method::GET && request.uri().path() == "/v1/config" {
+            let warehouse = warehouse(request.uri().query())?;
+            let mut config = CatalogConfig::foundation(warehouse.as_deref())?;
+            if self.namespaces.is_some() {
+                config.endpoints = [
+                    "GET /v1/{prefix}/namespaces",
+                    "GET /v1/{prefix}/namespaces/{namespace}",
+                    "HEAD /v1/{prefix}/namespaces/{namespace}",
+                ]
+                .map(str::to_owned)
+                .to_vec();
+            }
+            return Ok(response(
+                200,
+                serde_json::to_vec(&config).map_err(|_| service_unavailable())?,
+            ));
+        }
+        match &self.namespaces {
+            Some(namespaces) => {
+                namespaces
+                    .read(root.context, request.method(), request.uri())
+                    .await
+            }
+            None => Err(IcebergErrorResponse::new(
+                406,
+                "UnsupportedOperationException",
+                "This endpoint is not implemented",
+            )),
+        }
     }
 }
 
@@ -106,7 +157,7 @@ pub async fn serve(
                 connections.spawn(async move {
                     let timeout = service.request_timeout;
                     let handler = service_fn(move |request| { let service = Arc::clone(&service); async move { service.handle(request).await } });
-                    let connection = http1::Builder::new().keep_alive(false).max_buf_size(16 * 1024)
+                    let connection = http1::Builder::new().keep_alive(false).max_buf_size(64 * 1024)
                         .serve_connection(TokioIo::new(stream), handler);
                     if let Ok(Err(error)) = tokio::time::timeout(timeout, connection).await {
                         tracing::debug!(%peer, %error, "Iceberg HTTP connection failed");
@@ -159,7 +210,7 @@ fn warehouse(query: Option<&str>) -> Result<Option<String>, IcebergErrorResponse
     Ok(warehouse)
 }
 
-fn decode_query(value: &str) -> Result<String, IcebergErrorResponse> {
+pub(super) fn decode_query(value: &str) -> Result<String, IcebergErrorResponse> {
     for (index, byte) in value.bytes().enumerate() {
         if byte == b'%'
             && !value
@@ -177,8 +228,8 @@ fn decode_query(value: &str) -> Result<String, IcebergErrorResponse> {
         .map_err(|_| bad_request())
 }
 
-fn response(status: u16, bytes: Vec<u8>) -> Response<Full<Bytes>> {
-    let mut response = Response::new(Full::new(Bytes::from(bytes)));
+pub(super) fn response(status: u16, bytes: Vec<u8>) -> Response<IcebergBody> {
+    let mut response = Response::new(IcebergBody::new(bytes));
     *response.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     response.headers_mut().insert(
         hyper::header::CONTENT_TYPE,
@@ -193,13 +244,13 @@ fn response(status: u16, bytes: Vec<u8>) -> Response<Full<Bytes>> {
     response
 }
 
-fn bad_request() -> IcebergErrorResponse {
+pub(super) fn bad_request() -> IcebergErrorResponse {
     IcebergErrorResponse::new(400, "BadRequestException", "Invalid request parameters")
 }
-fn service_unavailable() -> IcebergErrorResponse {
+pub(super) fn service_unavailable() -> IcebergErrorResponse {
     IcebergErrorResponse::new(503, "ServiceUnavailableException", "Catalog is not ready")
 }
-fn unavailable() -> Response<Full<Bytes>> {
+fn unavailable() -> Response<IcebergBody> {
     response(
         503,
         serde_json::to_vec(&service_unavailable()).unwrap_or_default(),

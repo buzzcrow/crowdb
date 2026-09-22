@@ -113,7 +113,7 @@ path. Work is bounded and exhaustion remains retryable, not a terminal conflict.
 Property preparation uses the same holder-bound marker dispatcher as creation
 and drop. It can finish interrupted child admission or a nonempty drop before
 publishing properties; recursive helpers consume the caller's phase budget.
-These repository operations do not yet expose namespace REST endpoints.
+Namespace mutations are not yet exposed through REST.
 
 Namespace creation installs a recoverable parent/name reservation before a parent
 authority CAS. Nested admission leaves a pending-operation marker and advances only
@@ -139,14 +139,20 @@ Each listener runs a namespace-journal sweep with bounded pages, per-operation
 phase budgets and a wall-clock deadline. The sweep resumes abandoned operations
 and their conditional mapping cleanup without requiring a client retry. Catalog
 changes invalidate its cursor; cancellation preserves durable recovery evidence.
-Namespace REST composition remains unimplemented.
+The listener exposes authenticated namespace listing, load and exists routes.
 
 Namespace list pages scan bounded direct-child ranges and validate each published
 mapping against its authority and canonical parent spelling. Reserved and stale
 entries are omitted; corruption fails the page. HMAC-authenticated continuations
 bind the catalog activation, stable parent identity, spelling, page size and last
 scanned key. A stale-only page can therefore be empty while retaining a token.
-Complete unpaginated response spooling remains part of pending REST composition.
+Unpaginated lists build a complete in-memory spool before success headers, capped
+independently at 2 MiB, 1024 results, 4096 scanned mappings and four concurrent
+spools. Atomic admission rejects excess work without waiting. The request deadline
+bounds construction and sending; cancellation drops the spool permit. Completed
+responses stream in 16-KiB frames. Absent page tokens request complete results;
+empty page tokens begin paginated mode. Tokens use a domain-separated signing key
+derived from the configured credentials so equally configured listeners interoperate.
 
 ## 3. HTTP and FileIO surfaces
 
@@ -155,7 +161,7 @@ CROWDB implements with compliant Iceberg semantics.
 
 The catalog foundation exposes only authenticated `GET /v1/config`. An absent or
 empty warehouse selects the sole active catalog; other selectors fail with
-`NoSuchWarehouseException`. Its endpoint list is explicitly empty and all table
+`NoSuchWarehouseException`. Its endpoint list advertises namespace reads and all table
 format capabilities are disabled. The shared retry mechanism is not advertised
 as HTTP idempotency until mutation endpoints consume it. Static bearer credentials
 separate reader, writer, management and clear roles; this is not an OAuth token

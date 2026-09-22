@@ -16,6 +16,15 @@ pub struct BearerAuthenticator {
 }
 
 impl BearerAuthenticator {
+    #[must_use]
+    pub fn namespace_token_key(&self) -> [u8; 32] {
+        let mut digest = Sha256::new();
+        digest.update(b"crowdb-iceberg-namespace-token-key-v1");
+        for token in self.tokens {
+            digest.update(token);
+        }
+        digest.finalize().into()
+    }
     /// # Errors
     /// Rejects weak, oversized, duplicate or syntactically invalid bearer tokens.
     pub fn new(reader: &str, writer: &str, manager: &str, clearer: &str) -> Result<Self, ValidationError> {

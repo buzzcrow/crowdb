@@ -130,6 +130,8 @@ async fn catalog_recovery_survives_real_chunk_kv_restart() {
     verify_retry_scan(&stack, &repository).await;
     namespace::verify_name_index(&stack, latest.catalog).await;
     background::verify(stack.store().await, repository.status().await.unwrap().0.context).await;
+    frontend.check_official_client();
+    second_frontend.check_official_client();
     drop(frontend);
     drop(second_frontend);
     journal::verify_recovery(&mut stack, repository.status().await.unwrap().0.context).await;

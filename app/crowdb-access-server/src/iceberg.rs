@@ -1,6 +1,8 @@
 //! Independent Iceberg listener and catalog-management runtime.
 
+mod body;
 mod http;
+mod namespace_read;
 mod recovery;
 mod runtime;
 

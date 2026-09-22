@@ -131,11 +131,10 @@ async fn start_listener(
     if timeout.is_zero() || timeout > Duration::from_secs(60) {
         return Err("catalog request timeout is outside server bounds".into());
     }
-    let service = Arc::new(IcebergHttpService::new(
-        repository.clone(),
-        authentication,
-        timeout,
-    ));
+    let service = Arc::new(
+        IcebergHttpService::new(repository.clone(), authentication, timeout)
+            .with_namespaces(store.clone())?,
+    );
     let listener = TcpListener::bind(address).await?;
     tracing::info!(%address, "Iceberg listener ready");
     let serving = serve(listener, service, async {
