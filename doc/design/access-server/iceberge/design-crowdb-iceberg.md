@@ -141,6 +141,13 @@ and their conditional mapping cleanup without requiring a client retry. Catalog
 changes invalidate its cursor; cancellation preserves durable recovery evidence.
 Namespace REST composition remains unimplemented.
 
+Namespace list pages scan bounded direct-child ranges and validate each published
+mapping against its authority and canonical parent spelling. Reserved and stale
+entries are omitted; corruption fails the page. HMAC-authenticated continuations
+bind the catalog activation, stable parent identity, spelling, page size and last
+scanned key. A stale-only page can therefore be empty while retaining a token.
+Complete unpaginated response spooling remains part of pending REST composition.
+
 ## 3. HTTP and FileIO surfaces
 
 The REST Catalog is the portable control surface. It exposes only capabilities

@@ -70,13 +70,16 @@ remain centralized in R177.
   cleanup too; isolate manual crash checkpoints from active recovery workers.
   Verify abandoned creation using two real listener processes and no client retry.
   Files: namespace recovery/scan, listener runtime and library/full-stack tests.
-- [~] **Recovery integration**: verify remaining stale-index repair and the
+- [ ] **Recovery integration**: verify remaining stale-index repair and the
   table-create/rename-in admission seam. Real-backend drop restart tests pass. Until table
   records land, any table-child record fails closed rather than proving emptiness.
   Files: namespace recovery, server runtime and integration tests.
-- [ ] **Listing**: bind authenticated tokens to catalog, parent identity/spelling,
+- [~] **Listing**: bind authenticated tokens to catalog, parent identity/spelling,
   page parameters and scan cursor; bound scan work and unpaginated spool resources.
   Files: namespace listing/token modules, access-server spool implementation.
+  Bounded authority-validated pages and HMAC-SHA256 tokens now have three focused
+  tests: stale empty pages, parameter/key/recreated-parent binding, and corruption.
+  Complete-response spool and HTTP pagination semantics remain unfinished.
 - [ ] **REST integration**: add bounded request parsing, endpoint advertisement,
   role checks, error mapping, and shared retry-ledger participation.
   Files: library wire modules, access-server Iceberg modules.

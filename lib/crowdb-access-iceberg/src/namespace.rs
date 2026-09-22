@@ -11,6 +11,8 @@ mod drop_probe;
 mod identifier;
 mod journal;
 mod key;
+mod list;
+mod list_token;
 mod operation;
 mod properties;
 mod publication;
@@ -28,6 +30,7 @@ pub use drop::{NamespaceDropRequest, NamespaceDropper};
 pub use identifier::{NamespaceIdentifier, MAX_IDENTIFIER_BYTES, MAX_NAMESPACE_LEVELS};
 pub use journal::NamespaceJournal;
 pub use key::{authority_key, child_range, name_key};
+pub use list::{NamespaceListPage, NamespaceLister};
 pub use operation::{
     NamespaceAction, NamespaceMutation, NamespaceOperation, NamespaceOutcome, NamespacePhase,
 };
