@@ -29,8 +29,11 @@ The architecture boundary is [Native Iceberg Storage](../design/access-server/ic
 
 1. Add `namespace/id.rs`, `key.rs`, `record.rs`, `repository.rs`, and
    `wire.rs`. Encode multipart identifiers as a sequence of length-delimited UTF-8
-   components with maximum levels and total encoded bytes; accept the advertised
-   separator and legacy unit separator at the REST boundary.
+   components with at most 32 levels and 4096 total encoded bytes, including
+   two-byte component lengths; each component must also fit the name-index key.
+   Advertise the standard URL-encoded unit separator `%1F` and accept it at the
+   REST boundary after exactly one URL decode. Empty components and embedded NUL
+   or unit separators in JSON components are invalid.
 2. Store an ordered parent/name mapping to NamespaceId and a separate authority
    containing the canonical identifier, name epoch, property revision, admission
    fence, lifecycle, and bounded properties. Validate mapping CatalogId,
@@ -145,6 +148,15 @@ The architecture boundary is [Native Iceberg Storage](../design/access-server/ic
 - Given official REST clients invoking every declared namespace endpoint, when
   success, not-found, conflict, not-empty, and pagination cases execute, assert
   status and error payloads match the OpenAPI. Invariant: NS-I2. E2E test.
+
+## Open Questions
+
+- Which principal may create, update and drop namespaces? The existing REST
+  foundation has read, management and clear credentials but no writer role.
+  Reusing management/clear credentials avoids new configuration but grants daily
+  Iceberg clients administrative authority. A separate writer credential isolates
+  namespace writes from catalog management and clear, at the cost of another
+  credential. Reader credentials remain read-only under either choice.
 
 Required gates:
 

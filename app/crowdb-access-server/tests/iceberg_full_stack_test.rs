@@ -2,6 +2,8 @@
 mod common;
 #[path = "common/iceberg_fault.rs"]
 mod fault;
+#[path = "common/iceberg_namespace.rs"]
+mod namespace;
 #[path = "common/iceberg_process.rs"]
 mod process;
 
@@ -107,6 +109,7 @@ async fn catalog_recovery_survives_real_chunk_kv_restart() {
     assert_eq!(execute(&repository, initialize).await, original);
     assert_eq!(repository.status().await.unwrap().0.context.activation_epoch, 3);
     verify_retry_scan(&stack, &repository).await;
+    namespace::verify_name_index(&stack, latest.catalog).await;
     verify_interrupted_clear(&stack, &repository).await;
     frontend.check_official_client();
     second_frontend.check_official_client();

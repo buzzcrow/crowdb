@@ -4,6 +4,7 @@ use flatbuffers::FlatBufferBuilder;
 use crate::catalog::{ActiveCatalogRecord, CatalogAuthority};
 use crate::error::ValidationError;
 use crate::key::{CatalogScope, IcebergKey, SystemScope};
+use crate::namespace::{authority_key, name_key, NamespaceAuthority, NamespaceMapping};
 use crate::operation::{ledger_key, ManagementOperation, RetryRecord};
 
 pub const MAX_RECORD_BYTES: usize = 64 * 1024;
@@ -15,6 +16,8 @@ pub enum StorageRecord {
     Authority(CatalogAuthority),
     Management(Box<ManagementOperation>),
     Retry(Box<RetryRecord>),
+    NamespaceAuthority(Box<NamespaceAuthority>),
+    NamespaceMapping(NamespaceMapping),
 }
 
 impl StorageRecord {
@@ -23,6 +26,14 @@ impl StorageRecord {
     pub fn encode(&self) -> Result<Vec<u8>, ValidationError> {
         let mut builder = FlatBufferBuilder::with_capacity(2048);
         let (value_type, value) = match self {
+            Self::NamespaceAuthority(authority) => (
+                FBRecordValue::FBNamespaceAuthority,
+                super::namespace::encode_authority(&mut builder, authority)?.as_union_value(),
+            ),
+            Self::NamespaceMapping(mapping) => (
+                FBRecordValue::FBNamespaceMapping,
+                super::namespace::encode_mapping(&mut builder, mapping)?.as_union_value(),
+            ),
             Self::Retry(record) => (
                 FBRecordValue::FBRetryRecord,
                 super::retry::encode(&mut builder, record)?.as_union_value(),
@@ -70,6 +81,18 @@ impl StorageRecord {
             return Err(ValidationError::RecordVersion(envelope.schema_version()));
         }
         let record = match envelope.value_type() {
+            FBRecordValue::FBNamespaceAuthority => {
+                Self::NamespaceAuthority(Box::new(super::namespace::decode_authority(
+                    envelope
+                        .value_as_fbnamespace_authority()
+                        .ok_or(ValidationError::Record)?,
+                )?))
+            }
+            FBRecordValue::FBNamespaceMapping => Self::NamespaceMapping(super::namespace::decode_mapping(
+                envelope
+                    .value_as_fbnamespace_mapping()
+                    .ok_or(ValidationError::Record)?,
+            )?),
             FBRecordValue::FBRetryRecord => Self::Retry(Box::new(super::retry::decode(
                 envelope
                     .value_as_fbretry_record()
@@ -98,6 +121,16 @@ impl StorageRecord {
 
     fn validate_key(&self, key: &IcebergKey) -> Result<(), ValidationError> {
         match (self, key) {
+            (Self::NamespaceAuthority(authority), key)
+                if *key == authority_key(authority.catalog, authority.namespace) =>
+            {
+                Ok(())
+            }
+            (Self::NamespaceMapping(mapping), key)
+                if *key == name_key(mapping.catalog, mapping.parent, &mapping.name)? =>
+            {
+                Ok(())
+            }
             (
                 Self::Retry(record),
                 IcebergKey::System {

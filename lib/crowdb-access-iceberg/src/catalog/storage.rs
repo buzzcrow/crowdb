@@ -8,7 +8,7 @@ use crowdb_protocol::chunk_kv::{
 };
 
 use crate::error::ValidationError;
-use crate::key::{IcebergKey, MAX_KEY_BYTES};
+use crate::key::{CatalogScope, IcebergKey, MAX_KEY_BYTES};
 use crate::record::MAX_RECORD_BYTES;
 
 #[derive(Debug, thiserror::Error)]
@@ -55,6 +55,50 @@ impl RoutedCatalogStore {
     #[must_use]
     pub fn new(client: Arc<ChunkKvClient>) -> Self {
         Self { client }
+    }
+
+    pub(crate) async fn delete_mapping_if(
+        &self,
+        key: &[u8],
+        expected: &[u8],
+        identity: ClientRequestId,
+    ) -> Result<CasOutcome, StoreError> {
+        if !matches!(
+            IcebergKey::decode(key)?,
+            IcebergKey::Catalog {
+                scope: CatalogScope::NamespaceName | CatalogScope::TableName,
+                ..
+            }
+        ) {
+            return Err(ValidationError::Key.into());
+        }
+        validate_value(expected)?;
+        let response = self
+            .client
+            .execute_with_identity(
+                PointOperation::ConditionalDelete {
+                    key: key.to_vec(),
+                    condition: RpcCompareCondition::Value(expected.to_vec()),
+                },
+                None,
+                identity,
+            )
+            .await?;
+        match response.result.map_err(StoreError::Rejected)? {
+            OperationResult::Mutation {
+                applied: true,
+                revision: Some(revision),
+                ..
+            } if revision != 0 => Ok(CasOutcome::Applied(revision)),
+            OperationResult::Mutation {
+                applied: false,
+                observed,
+                ..
+            } => Ok(CasOutcome::Conflict(
+                observed.map(|value| stored(key, value)).transpose()?,
+            )),
+            _ => Err(StoreError::Response),
+        }
     }
 
     /// # Errors

@@ -3,6 +3,7 @@
 mod authority;
 mod envelope;
 mod management;
+mod namespace;
 mod retry;
 mod root;
 

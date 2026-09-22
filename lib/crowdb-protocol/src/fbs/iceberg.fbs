@@ -73,7 +73,36 @@ table FBRetryRecord {
     body:[ubyte] (required);
 }
 
-union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord }
+table FBNamespaceProperty {
+    key:string (required);
+    value:string (required);
+}
+
+table FBNamespaceAuthority {
+    catalog:[ubyte] (required);
+    namespace_id:[ubyte] (required);
+    parent:[ubyte];
+    identifier:[ubyte] (required);
+    name_epoch:ulong;
+    property_revision:ulong;
+    admission_fence:ulong;
+    mutation_revision:ulong;
+    lifecycle:ubyte = 255;
+    pending_operation:[ubyte] (required);
+    properties:[FBNamespaceProperty] (required);
+}
+
+table FBNamespaceMapping {
+    catalog:[ubyte] (required);
+    parent:[ubyte];
+    name:string (required);
+    namespace_id:[ubyte] (required);
+    name_epoch:ulong;
+    operation:[ubyte] (required);
+    state:ubyte;
+}
+
+union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping }
 
 table FBIcebergRecord {
     schema_version:ushort;

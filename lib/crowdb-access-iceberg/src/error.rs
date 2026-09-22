@@ -26,4 +26,6 @@ pub enum ValidationError {
     Capabilities,
     #[error("invalid Iceberg deadline configuration")]
     Deadline,
+    #[error("namespace property removals and updates overlap")]
+    PropertyOverlap,
 }
