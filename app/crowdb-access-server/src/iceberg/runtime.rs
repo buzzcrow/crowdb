@@ -43,9 +43,12 @@ impl IcebergRuntimeConfig {
         }
         let authentication = BearerAuthenticator::new(
             &std::env::var("CROWDB_ICEBERG_READ_TOKEN")?,
+            &std::env::var("CROWDB_ICEBERG_WRITE_TOKEN")
+                .map_err(|_| "CROWDB_ICEBERG_WRITE_TOKEN must be set")?,
             &std::env::var("CROWDB_ICEBERG_MANAGE_TOKEN")?,
             &std::env::var("CROWDB_ICEBERG_CLEAR_TOKEN")?,
-        )?;
+        )
+        .map_err(|error| format!("invalid Iceberg bearer credential configuration: {error}"))?;
         let listen = std::env::var("CROWDB_ICEBERG_LISTEN").unwrap_or_else(|_| "127.0.0.1:8181".into());
         let _: std::net::SocketAddr = listen.parse()?;
         Ok(Self {

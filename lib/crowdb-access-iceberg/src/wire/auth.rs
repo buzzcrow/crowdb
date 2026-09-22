@@ -8,26 +8,28 @@ use crate::error::ValidationError;
 pub struct Principal {
     pub name: &'static str,
     pub management: ManagementPrivilege,
+    pub namespace_write: bool,
 }
 
 pub struct BearerAuthenticator {
-    tokens: [[u8; 32]; 3],
+    tokens: [[u8; 32]; 4],
 }
 
 impl BearerAuthenticator {
     /// # Errors
     /// Rejects weak, oversized, duplicate or syntactically invalid bearer tokens.
-    pub fn new(reader: &str, manager: &str, clearer: &str) -> Result<Self, ValidationError> {
-        let tokens = [reader, manager, clearer];
+    pub fn new(reader: &str, writer: &str, manager: &str, clearer: &str) -> Result<Self, ValidationError> {
+        let tokens = [reader, writer, manager, clearer];
         if tokens.iter().any(|token| {
             token.len() < 32
                 || token.len() > 256
                 || !token
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || b"-._~+/=".contains(&byte))
-        }) || reader == manager
-            || reader == clearer
-            || manager == clearer
+        }) || tokens
+            .iter()
+            .enumerate()
+            .any(|(index, token)| tokens[..index].contains(token))
         {
             return Err(ValidationError::Text);
         }
@@ -45,17 +47,25 @@ impl BearerAuthenticator {
         let digest: [u8; 32] = Sha256::digest(token.as_bytes()).into();
         let matches = self.tokens.map(|expected| bool::from(expected.ct_eq(&digest)));
         match matches {
-            [true, false, false] => Some(Principal {
+            [true, false, false, false] => Some(Principal {
                 name: "reader",
                 management: ManagementPrivilege::None,
+                namespace_write: false,
             }),
-            [false, true, false] => Some(Principal {
+            [false, true, false, false] => Some(Principal {
+                name: "writer",
+                management: ManagementPrivilege::None,
+                namespace_write: true,
+            }),
+            [false, false, true, false] => Some(Principal {
                 name: "manager",
                 management: ManagementPrivilege::Manage,
+                namespace_write: false,
             }),
-            [false, false, true] => Some(Principal {
+            [false, false, false, true] => Some(Principal {
                 name: "clearer",
                 management: ManagementPrivilege::Clear,
+                namespace_write: false,
             }),
             _ => None,
         }

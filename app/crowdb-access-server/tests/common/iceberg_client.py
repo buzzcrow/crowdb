@@ -8,7 +8,7 @@ from pyiceberg.exceptions import RESTError, UnauthorizedError
 def main():
     uri = sys.argv[1]
     properties = {"type": "rest", "uri": uri, "token": "r" * 32}
-    for extra in ({}, {"warehouse": ""}):
+    for extra in ({}, {"warehouse": ""}, {"token": "w" * 32}):
         catalog = load_catalog("crowdb", **(properties | extra))
         assert catalog.properties["crowdb.iceberg.v1.read"] == "false"
         assert catalog.properties["crowdb.iceberg.v3.write"] == "false"

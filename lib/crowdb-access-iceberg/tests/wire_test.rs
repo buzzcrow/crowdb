@@ -20,25 +20,45 @@ fn config_advertises_only_landed_support_and_rejects_nonempty_warehouse() {
 }
 
 #[test]
-fn bearer_tokens_keep_clear_privilege_separate() {
+fn bearer_tokens_separate_namespace_writes_from_management() {
     let reader = "r".repeat(32);
+    let writer = "w".repeat(32);
     let manager = "m".repeat(32);
     let clearer = "c".repeat(32);
-    let auth = BearerAuthenticator::new(&reader, &manager, &clearer).unwrap();
-    for (token, privilege) in [
-        (reader.as_str(), ManagementPrivilege::None),
-        (manager.as_str(), ManagementPrivilege::Manage),
-        (clearer.as_str(), ManagementPrivilege::Clear),
+    let auth = BearerAuthenticator::new(&reader, &writer, &manager, &clearer).unwrap();
+    for (token, name, privilege, namespace_write) in [
+        (reader.as_str(), "reader", ManagementPrivilege::None, false),
+        (writer.as_str(), "writer", ManagementPrivilege::None, true),
+        (manager.as_str(), "manager", ManagementPrivilege::Manage, false),
+        (clearer.as_str(), "clearer", ManagementPrivilege::Clear, false),
     ] {
-        assert_eq!(
-            auth.authenticate(&format!("Bearer {token}")).unwrap().management,
-            privilege
-        );
+        let principal = auth.authenticate(&format!("Bearer {token}")).unwrap();
+        assert_eq!(principal.name, name);
+        assert_eq!(principal.management, privilege);
+        assert_eq!(principal.namespace_write, namespace_write);
     }
     assert!(auth.authenticate("Bearer wrong").is_none());
     assert!(auth.authenticate(&format!("Basic {manager}")).is_none());
-    assert!(BearerAuthenticator::new(&reader, &reader, &clearer).is_err());
-    assert!(BearerAuthenticator::new("short", &manager, &clearer).is_err());
+    assert!(BearerAuthenticator::new(&reader, &writer, &reader, &clearer).is_err());
+    assert!(BearerAuthenticator::new("short", &writer, &manager, &clearer).is_err());
+}
+
+#[test]
+fn writer_credentials_reject_duplicates_and_invalid_tokens() {
+    let reader = "r".repeat(32);
+    let manager = "m".repeat(32);
+    let clearer = "c".repeat(32);
+    for writer in [
+        &reader,
+        &manager,
+        &clearer,
+        "",
+        "short",
+        &"w".repeat(257),
+        &format!("{}\0", "w".repeat(32)),
+    ] {
+        assert!(BearerAuthenticator::new(&reader, writer, &manager, &clearer).is_err());
+    }
 }
 #[test]
 fn absent_idempotency_keys_allocate_distinct_internal_recovery_identities() {

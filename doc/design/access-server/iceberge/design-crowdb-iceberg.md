@@ -91,7 +91,12 @@ empty warehouse selects the sole active catalog; other selectors fail with
 `NoSuchWarehouseException`. Its endpoint list is explicitly empty and all table
 format capabilities are disabled. The shared retry mechanism is not advertised
 as HTTP idempotency until mutation endpoints consume it. Static bearer credentials
-separate read, management and clear roles; this is not an OAuth token issuer.
+separate reader, writer, management and clear roles; this is not an OAuth token
+issuer. All four credentials are required and distinct. Writer has a separate
+namespace-write capability and no catalog management or clear privilege; reader,
+manager and clearer do not inherit namespace-write rights. All four can read the
+configuration endpoint. Namespace mutation endpoints remain unadvertised until
+their durable operation protocols are implemented.
 Management commands are separate from the Iceberg REST listener. Operational
 configuration is in the [user guide](../../../user-manual/user-guide.md#9-iceberg-catalog-foundation).
 

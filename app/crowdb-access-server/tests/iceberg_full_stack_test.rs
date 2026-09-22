@@ -81,6 +81,15 @@ async fn catalog_recovery_survives_real_chunk_kv_restart() {
         .unwrap();
     assert!(!denied.status.success());
     assert!(String::from_utf8_lossy(&denied.stderr).contains("management privilege"));
+    for action in ["status", "initialize", "rename", "clear"] {
+        let denied = process::command(&stack.cluster.mgmt_endpoints)
+            .env("CROWDB_ICEBERG_TOKEN", "w".repeat(32))
+            .arg(action)
+            .output()
+            .unwrap();
+        assert!(!denied.status.success());
+        assert!(String::from_utf8_lossy(&denied.stderr).contains("management privilege"));
+    }
     let rename = request(ManagementAction::Rename, "renamed", Some((1, &original)));
     let renamed = execute(&repository, rename).await;
     assert_eq!(renamed.catalog, original.catalog);

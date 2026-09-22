@@ -47,6 +47,11 @@ The architecture boundary is [Native Iceberg Storage](../design/access-server/ic
    root is the parent context for top-level names.
 3. Implement list, create, load, exists, property update, and drop endpoints from
    the backed-up OpenAPI. Namespace rename is unsupported and unadvertised.
+   Use a separate writer credential for namespace mutations. Writer permits reads
+   and namespace writes but never catalog management or clear. Reader remains
+   read-only; manager and clearer do not implicitly acquire namespace write rights.
+   All four credentials must be distinct, and a writer credential is required at
+   service startup. Retry bindings retain the distinct writer principal.
 4. Enforce R177's property contract: 256 entries, 1 KiB key, 8 KiB value, 64 KiB
    encoded authority, UTF-8 without NUL. Apply removals and updates atomically;
    duplicate keys across both sets return 422.
@@ -149,14 +154,11 @@ The architecture boundary is [Native Iceberg Storage](../design/access-server/ic
   success, not-found, conflict, not-empty, and pagination cases execute, assert
   status and error payloads match the OpenAPI. Invariant: NS-I2. E2E test.
 
-## Open Questions
-
-- Which principal may create, update and drop namespaces? The existing REST
-  foundation has read, management and clear credentials but no writer role.
-  Reusing management/clear credentials avoids new configuration but grants daily
-  Iceberg clients administrative authority. A separate writer credential isolates
-  namespace writes from catalog management and clear, at the cost of another
-  credential. Reader credentials remain read-only under either choice.
+- Given four distinct credentials, when authenticating and invoking data or
+  management operations, assert writer has namespace write rights without
+  initialize/rename/clear rights, reader cannot write, and manager/clearer do not
+  inherit namespace writes. Missing, invalid or duplicate writer credentials fail
+  startup. Invariant: NS-I2. Unit test and E2E test.
 
 Required gates:
 

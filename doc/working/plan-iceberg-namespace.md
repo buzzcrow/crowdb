@@ -7,6 +7,11 @@ identity, empty-drop safety, or bounded REST responses.
 
 ## Execution
 
+- [x] **Writer credential**: add required `CROWDB_ICEBERG_WRITE_TOKEN`, distinct
+  principal and namespace-write capability; keep management/clear privileges
+  separate and verify startup validation and writer management denial.
+  Files: library auth, runtime configuration, library/server/full-stack tests.
+
 - [x] **Identifiers and properties**: validate multipart storage and REST names,
   establish explicit identifier bounds, and validate atomic property changes.
   Files: `lib/crowdb-access-iceberg/src/namespace/`, crate integration tests.
@@ -62,6 +67,10 @@ identity, empty-drop safety, or bounded REST responses.
 
 ## Verified checkpoint
 
+- Writer credential validation, read access and management denial pass library,
+  HTTP and real-process tests. The official client authenticates using the writer
+  token. Missing or invalid writer configuration fails before backend connection.
+
 - Multipart/property and namespace-record integration tests pass, including
   encoded authority overhead, fixed lifecycle-marker capacity, parent-scoped
   range bounds and continuation rejection.
@@ -72,22 +81,10 @@ identity, empty-drop safety, or bounded REST responses.
   are not implemented or advertised yet; this is not namespace REST acceptance.
 - Formatting, workspace clippy and feature-enabled access-server clippy pass.
 
-## Blocked
+## Authorization decision
 
-The namespace write principal is not specified by the requirement or existing
-authentication contract. Existing credentials distinguish reader, catalog manager
-and destructive clearer; there is no data-writer role. The user has been asked
-which public authorization contract to implement:
-
-- Reuse manager/clearer for namespace mutations and preserve reader as read-only.
-  This avoids a new credential but makes daily clients hold catalog-management
-  authority.
-- Add a separate writer credential with namespace mutation rights and no catalog
-  management/clear privilege. This separates authority but adds configuration and
-  credential lifecycle choices.
-
-Neither choice is implied by the existing read-only REST surface. Do not silently
-grant mutation rights or conflate daily data access with administrative authority.
-The independently testable model and storage foundation is complete; resume the
-remaining mutation/retry/HTTP work after this public privilege decision. This is
-a design decision, not a failing-test block or an unsafe-code exception.
+The user selected a separate writer credential. Writer may read and mutate
+namespaces, but may not initialize, rename or clear the catalog. Reader remains
+read-only; manager and clearer retain administrative privileges without inheriting
+namespace writes. Bind retries to the distinct writer principal. The design
+decision is resolved; remaining implementation work is tracked above.

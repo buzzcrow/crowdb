@@ -35,7 +35,8 @@ async fn authenticated_config_warehouse_errors_and_shutdown_use_real_http() {
         )
         .await
         .unwrap();
-    let authentication = BearerAuthenticator::new(&"r".repeat(32), &"m".repeat(32), &"c".repeat(32)).unwrap();
+    let authentication =
+        BearerAuthenticator::new(&"r".repeat(32), &"w".repeat(32), &"m".repeat(32), &"c".repeat(32)).unwrap();
     let service = Arc::new(IcebergHttpService::new(
         repository,
         authentication,
@@ -73,6 +74,9 @@ async fn authenticated_config_warehouse_errors_and_shutdown_use_real_http() {
             assert_eq!(json["error"]["type"], "NoSuchWarehouseException");
         }
     }
+    assert!(get(address, "/v1/config", &"w".repeat(32))
+        .await
+        .starts_with("HTTP/1.1 200"));
     assert!(get(address, "/v1/config", "wrong")
         .await
         .starts_with("HTTP/1.1 401"));

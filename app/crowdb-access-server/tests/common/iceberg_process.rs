@@ -57,6 +57,7 @@ pub fn command(seeds: &[String]) -> Command {
     command
         .env("CROWDB_MANAGEMENT_SEEDS", seeds.join(","))
         .env("CROWDB_ICEBERG_READ_TOKEN", "r".repeat(32))
+        .env("CROWDB_ICEBERG_WRITE_TOKEN", "w".repeat(32))
         .env("CROWDB_ICEBERG_MANAGE_TOKEN", "m".repeat(32))
         .env("CROWDB_ICEBERG_CLEAR_TOKEN", "c".repeat(32));
     command
