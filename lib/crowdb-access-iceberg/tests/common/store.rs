@@ -17,6 +17,8 @@ pub struct TestStore {
     pub fencing_delay_ms: AtomicUsize,
     pub fencing_barrier: Option<Arc<tokio::sync::Barrier>>,
     pub fencing_visits: AtomicUsize,
+    pub namespace_update_barrier: Option<Arc<tokio::sync::Barrier>>,
+    pub namespace_update_visits: AtomicUsize,
 }
 
 #[async_trait]
@@ -33,6 +35,18 @@ impl CatalogStore for TestStore {
         identity: ClientRequestId,
     ) -> Result<CasOutcome, StoreError> {
         identity.validate().unwrap();
+        if let Ok(crowdb_access_iceberg::record::StorageRecord::NamespaceAuthority(authority)) =
+            crowdb_access_iceberg::key::IcebergKey::decode(key)
+                .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
+        {
+            if authority.pending_operation.is_some() && expected.is_some() {
+                if let Some(barrier) = &self.namespace_update_barrier {
+                    if self.namespace_update_visits.fetch_add(1, Ordering::SeqCst) < 2 {
+                        barrier.wait().await;
+                    }
+                }
+            }
+        }
         if let Ok(crowdb_access_iceberg::record::StorageRecord::Active(root)) =
             crowdb_access_iceberg::key::IcebergKey::decode(key)
                 .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))

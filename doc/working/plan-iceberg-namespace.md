@@ -35,9 +35,18 @@ identity, empty-drop safety, or bounded REST responses.
   Payload pages are 32 KiB with a 2-MiB aggregate cap. Namespace operation records
   have their own key scope, distinct from retained HTTP responses. Freeze mutation
   snapshots once a write phase starts; persist forward-only child-probe cursors.
-- [ ] **Admission and recovery**: persist reserve-before-admit transitions and
+- [x] **Authoritative reads**: walk stable parent identities, qualify every mapping
+  against its authority and full identifier, distinguish corruption from absence,
+  and reject maintenance/retired contexts. Files: namespace repository and tests.
+- [x] **Property mutation driver**: persist input and snapshots, publish properties
+  with whole-authority CAS, retain pending-operation evidence until the outcome is
+  durable, and recover lost replies without changing the original result. Rebase
+  only after a definitive conflicting revision; bound helping and retries.
+  Files: namespace update/recovery modules, journal transitions and tests.
+- [~] **Admission and recovery**: persist reserve-before-admit transitions and
   publication evidence; resolve pending admission before subsequent parent writes.
-  Implement create, load, update, drop, stale repair, and durable two-range probes.
+  Implement create, drop, shared writer-marker settlement, stale repair, and
+  durable two-range probes. Reuse the landed load/property-update driver.
   Files: namespace repository/admission/recovery modules and concurrency tests.
 - [ ] **Listing**: bind authenticated tokens to catalog, parent identity/spelling,
   page parameters and scan cursor; bound scan work and unpaginated spool resources.
@@ -73,6 +82,15 @@ identity, empty-drop safety, or bounded REST responses.
 - Lint: `pixi run rs-lint`.
 
 ## Verified checkpoint
+
+- Authoritative namespace load/exists and durable property publication pass 13
+  new repository tests, including every lost write reply, competing property CAS,
+  identity-bound replay, stale/recreated parents, corruption and size limits.
+  The library has 70 passing tests and focused clippy passes. Real Chunk-KV restart
+  after a lost property-publication reply preserves exactly one property revision
+  and replays the original response; workspace and feature-enabled clippy pass.
+  Namespace create,
+  drop, list and REST remain incomplete; these tests are not full REST acceptance.
 
 - Operation payload and journal gates pass: 57 library tests, protocol tests,
   feature-enabled server tests, workspace/feature clippy and formatting. Real

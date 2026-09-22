@@ -26,7 +26,11 @@ impl CatalogStore for TestFaultStore {
         identity: ClientRequestId,
     ) -> Result<CasOutcome, StoreError> {
         let record = StorageRecord::decode(&IcebergKey::decode(key)?, value)?;
-        let mode = if matches!(record, StorageRecord::Active(root) if root.state == RootState::Fencing) {
+        let intercept = matches!(&record, StorageRecord::Active(root) if root.state == RootState::Fencing)
+            || (self.mode.load(Ordering::SeqCst) == 3
+                && expected.is_some()
+                && matches!(&record, StorageRecord::NamespaceAuthority(authority) if authority.pending_operation.is_some()));
+        let mode = if intercept {
             self.mode.swap(0, Ordering::SeqCst)
         } else {
             0
@@ -38,7 +42,7 @@ impl CatalogStore for TestFaultStore {
             .inner
             .compare_exchange(key, expected, value, identity)
             .await?;
-        if mode == 2 {
+        if mode == 2 || mode == 3 {
             return Err(StoreError::Response);
         }
         Ok(result)

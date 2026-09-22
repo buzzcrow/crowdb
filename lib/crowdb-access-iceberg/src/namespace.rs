@@ -6,7 +6,10 @@ mod journal;
 mod key;
 mod operation;
 mod properties;
+mod repository;
 mod storage;
+mod update;
+mod update_recovery;
 
 pub use authority::{NamespaceAuthority, NamespaceLifecycle, NamespaceMapping, NamespaceMappingState};
 pub use identifier::{NamespaceIdentifier, MAX_IDENTIFIER_BYTES, MAX_NAMESPACE_LEVELS};
@@ -16,4 +19,6 @@ pub use operation::{
     NamespaceAction, NamespaceMutation, NamespaceOperation, NamespaceOutcome, NamespacePhase,
 };
 pub use properties::{NamespaceProperties, PropertyChanges, PropertyUpdate, MAX_PROPERTIES};
+pub use repository::NamespaceRepository;
 pub use storage::{ChildScan, NamespaceStore};
+pub use update::NamespacePropertyRequest;

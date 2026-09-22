@@ -11,6 +11,7 @@ use super::common::{now_ms, TestIcebergStack};
 
 pub async fn verify_recovery(stack: &mut TestIcebergStack, context: CatalogContext) {
     let store = stack.store().await;
+    let property_request = super::property::prepare(store.clone(), context).await;
     let identity = fresh_identity(store.as_ref()).await;
     let body = vec![23; 70 * 1024];
     let input = PayloadStore::new(store.clone())
@@ -57,6 +58,7 @@ pub async fn verify_recovery(stack: &mut TestIcebergStack, context: CatalogConte
         .unwrap();
     stack.chunk_kv.restart().await;
     let recovered_store = stack.store().await;
+    super::property::verify(recovered_store.clone(), &property_request).await;
     let recovered_journal = NamespaceJournal::new(recovered_store.clone());
     assert_eq!(
         recovered_journal

@@ -8,6 +8,8 @@ mod journal;
 mod namespace;
 #[path = "common/iceberg_process.rs"]
 mod process;
+#[path = "common/iceberg_property.rs"]
+mod property;
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -66,6 +66,9 @@ behavior, and conformance evidence for the first usable milestone.
 
 - Depends on R177 through R183. R184 is the integration gate for the core
   correctness milestone.
+- R177 also permits an earlier foreground functional checkpoint before R183.
+  Run REST and client integration incrementally with R179 through R182; retain
+  reclamation-dependent gates as pending and do not close R184 at that checkpoint.
 - Reuses the Access Server HTTP runtime and authentication infrastructure but keeps
   an independent listener, routes, admission budgets, metrics, and shutdown drain.
 - R185 is deliberately not a dependency. Conformance must pass with caches disabled.

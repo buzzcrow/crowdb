@@ -42,6 +42,17 @@ server-side scan planning, multiple active catalogs, tenants, or warehouses.
 Unsupported endpoints and optional features return the precise standard
 unsupported response and perform no mutation.
 
+The user approved an earlier functional checkpoint in this order: finish R179,
+then R180, R181, R182, and foreground R184 conformance; implement R183 afterward
+and finish the remaining R184 gates. This does not remove R183 or complete the
+original correctness milestone early. Before reclamation, unreachable storage is
+retained, physical file/chunk deletion remains disabled, and logical purge records
+a durable pending proof task without claiming that space has been reclaimed.
+Ownership and recovery evidence must survive until later candidate discovery.
+The functional checkpoint requires capacity monitoring and write admission that
+fails before storage exhaustion; per-request bounds alone do not bound retained
+storage. No mandatory semantics of an advertised version are deferred.
+
 ### 2. Authority hierarchy
 
 ```text
@@ -264,3 +275,23 @@ Required gates:
 - `pixi run -- cargo test -p crowdb-access-server --all-targets`
 - `pixi run -- cargo fmt --all -- --check`
 - `pixi run rs-lint`
+
+## Open Questions
+
+All unresolved human decisions for R179 through R184 are collected here. Continue
+independent implementation while awaiting confirmation; settled contracts and
+ordinary implementation tasks are not open questions.
+
+- **Release engine profiles:** which Spark, Flink, and Trino versions and
+  deployment profiles must gate the first functional release? Testing all three
+  immediately provides broader interoperability evidence but increases fixture
+  and environment work; selecting one initial release profile accelerates the
+  checkpoint while the other profiles remain pending R184 acceptance. Implement
+  the common harness and specification fixtures without waiting for this choice;
+  do not silently claim untested engine support.
+- **No-GC trial capacity:** what deployment storage budget and reserved free-space
+  margin should apply until R183 lands? A fixed byte budget is predictable for a
+  dedicated trial; a backend-capacity-based threshold accommodates shared storage
+  but needs reliable capacity accounting. Bounded request/session implementation
+  is independent of this choice. Do not enable unattended sustained writes or
+  invent a production capacity guarantee before the deployment policy is set.

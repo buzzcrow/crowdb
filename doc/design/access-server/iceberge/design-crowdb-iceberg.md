@@ -95,6 +95,23 @@ arbitrates publication versus abort; publishing cannot transition back to abort.
 Snapshots cannot change after their write phase starts. Probe cursors advance
 within one parent-scoped child range and reset when switching ranges.
 
+Authoritative namespace reads resolve each parent/name mapping against the
+selected stable authority and full canonical identifier. Reservations, stale
+epochs, missing targets and tombstones are not visible; corruption is an error.
+Active-context checks bracket resolution so retirement cannot turn an old-domain
+lookup into a response from the replacement catalog.
+
+Property updates persist their input and immutable before/after snapshots, then
+CAS the whole namespace authority. Publication advances the property and mutation
+revisions but preserves the name epoch and admission fence. An operation marker
+protects uncertain publication evidence until the terminal result is durable;
+another writer can finish that operation before replacing its marker. Cleanup
+uses a conditional write and advances the mutation revision again. After a
+definitive CAS conflict proves the input revision is obsolete, a property update
+may return to preparation with fresh snapshots; unknown outcomes never take that
+path. Work is bounded and exhaustion remains retryable, not a terminal conflict.
+These repository operations do not yet expose namespace REST endpoints.
+
 ## 3. HTTP and FileIO surfaces
 
 The REST Catalog is the portable control surface. It exposes only capabilities

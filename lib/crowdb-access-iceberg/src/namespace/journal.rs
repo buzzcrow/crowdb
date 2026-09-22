@@ -101,7 +101,25 @@ impl NamespaceJournal {
         {
             return Err(ValidationError::Record.into());
         }
+        if previous.action == super::NamespaceAction::Update
+            && previous.phase == NamespacePhase::Publishing
+            && next.phase == NamespacePhase::Prepared
+            && next.mutation.is_some()
+        {
+            return Err(ValidationError::Record.into());
+        }
+        if previous.action == super::NamespaceAction::Update
+            && next.phase == NamespacePhase::Complete
+            && previous.phase != NamespacePhase::Published
+            && next.outcome.as_ref().map_or(true, |outcome| outcome.status < 400)
+        {
+            return Err(ValidationError::Record.into());
+        }
         if previous.mutation != next.mutation
+            && !(previous.action == super::NamespaceAction::Update
+                && previous.phase == NamespacePhase::Publishing
+                && next.phase == NamespacePhase::Prepared
+                && next.mutation.is_none())
             && !matches!(
                 next.phase,
                 NamespacePhase::Admitting

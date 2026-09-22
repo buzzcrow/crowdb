@@ -9,7 +9,7 @@ const MAX_VALUE_BYTES: usize = 8192;
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct NamespaceProperties(BTreeMap<String, String>);
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PropertyChanges {
     pub removals: Vec<String>,
     pub updates: BTreeMap<String, String>,
