@@ -3,3 +3,4 @@
 pub mod catalog;
 pub mod error;
 pub mod key;
+pub mod record;

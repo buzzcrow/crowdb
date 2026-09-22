@@ -11,5 +11,7 @@ description = "Native Iceberg catalog authority and immutable storage access."
 workspace = true
 
 [dependencies]
+crowdb-protocol = { path = "../crowdb-protocol" }
+flatbuffers = { workspace = true }
 thiserror = { workspace = true }
 uuid = { version = "1", features = ["v4"] }

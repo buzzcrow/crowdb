@@ -1,0 +1,44 @@
+namespace crowdb.access.iceberg;
+
+enum FBRootPhase : ubyte { Ready, Initializing, Maintenance, Published, Fencing }
+enum FBCatalogLifecycle : ubyte { Ready, Retired }
+
+table FBClearTransition {
+    previous_catalog:[ubyte] (required);
+    previous_epoch:ulong;
+    replacement_catalog:[ubyte] (required);
+    replacement_epoch:ulong;
+    maintenance_observed_ms:ulong;
+    complete_after_ms:ulong;
+    root_lease_ms:ulong;
+    request_ms:ulong;
+    delegated_access_ms:ulong;
+    clock_skew_ms:ulong;
+}
+
+table FBActiveCatalog {
+    catalog:[ubyte] (required);
+    activation_epoch:ulong;
+    operation:[ubyte] (required);
+    phase:FBRootPhase;
+    transition:FBClearTransition;
+}
+
+table FBCatalogAuthority {
+    catalog:[ubyte] (required);
+    display_name:string (required);
+    name_generation:ulong;
+    config_generation:ulong;
+    lifecycle:FBCatalogLifecycle;
+    capabilities:ushort;
+}
+
+union FBRecordValue { FBActiveCatalog, FBCatalogAuthority }
+
+table FBIcebergRecord {
+    schema_version:ushort;
+    value:FBRecordValue (required);
+}
+
+root_type FBIcebergRecord;
+file_identifier "ICE1";
