@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::{atomic::AtomicU8, Arc};
 
-use crowdb_access_iceberg::catalog::{CatalogContext, CatalogStore};
+use crowdb_access_iceberg::catalog::{CatalogContext, CatalogStore, RoutedCatalogStore};
 use crowdb_access_iceberg::key::{NamespaceId, OperationId};
 use crowdb_access_iceberg::namespace::{
     authority_key, name_key, NamespaceAuthority, NamespaceIdentifier, NamespaceJournal, NamespaceLifecycle,
@@ -13,7 +13,7 @@ use crowdb_access_iceberg::record::StorageRecord;
 
 use super::{common::now_ms, fault::TestFaultStore};
 
-pub async fn prepare(store: Arc<dyn CatalogStore>, context: CatalogContext) -> NamespacePropertyRequest {
+pub async fn prepare(store: Arc<RoutedCatalogStore>, context: CatalogContext) -> NamespacePropertyRequest {
     let request = NamespacePropertyRequest {
         context,
         identity: RequestIdentity {
@@ -86,7 +86,7 @@ pub async fn prepare(store: Arc<dyn CatalogStore>, context: CatalogContext) -> N
     request
 }
 
-pub async fn verify(store: Arc<dyn CatalogStore>, request: &NamespacePropertyRequest) {
+pub async fn verify(store: Arc<RoutedCatalogStore>, request: &NamespacePropertyRequest) {
     let repository = NamespaceRepository::new(store.clone());
     let outcome = repository.update_properties(request).await.unwrap().unwrap();
     assert_eq!(outcome.status, 200);

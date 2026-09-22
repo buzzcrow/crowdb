@@ -10,12 +10,16 @@ use super::{authority_key, name_key, NamespaceAuthority, NamespaceIdentifier, Na
 #[derive(Clone)]
 pub struct NamespaceRepository {
     pub(super) store: Arc<dyn CatalogStore>,
+    pub(super) names: Arc<dyn super::NamespaceStore>,
 }
 
 impl NamespaceRepository {
     #[must_use]
-    pub fn new(store: Arc<dyn CatalogStore>) -> Self {
-        Self { store }
+    pub fn new<Store: super::NamespaceStore + 'static>(store: Arc<Store>) -> Self {
+        Self {
+            store: store.clone(),
+            names: store,
+        }
     }
 
     /// # Errors

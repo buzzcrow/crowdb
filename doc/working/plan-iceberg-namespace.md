@@ -60,9 +60,12 @@ remain centralized in R177.
   Bound cross-operation helping and stale-page traversal. Validate create/drop
   races and every empty/nonempty drop write-reply loss. Files: namespace drop,
   fence/probe/finish modules and tests.
-- [~] **Recovery integration**: wire all mutation entry points through shared
-  marker settlement, add bounded periodic stale repair and real-backend drop
-  restart tests, and verify the table-create/rename-in admission seam. Until table
+- [x] **Marker settlement**: route property preparation and retries through the
+  holder-bound create/update/drop helper with shared phase budgets. Verify every
+  interrupted parent admission and nonempty drop followed by a property writer.
+  Files: namespace repository/update modules and cross-action recovery tests.
+- [~] **Recovery integration**: add bounded periodic stale repair and verify the
+  table-create/rename-in admission seam. Real-backend drop restart tests pass. Until table
   records land, any table-child record fails closed rather than proving emptiness.
   Files: namespace recovery, server runtime and integration tests.
 - [ ] **Listing**: bind authenticated tokens to catalog, parent identity/spelling,
@@ -105,8 +108,9 @@ remain centralized in R177.
   recreated-name cleanup, corruption in both ranges, and a live child after 260
   stale mappings with an intervening bounded-work exhaustion. Foreign property
   markers fail before helping another namespace; property helping consumes the
-  caller's shared create/drop phase budget. Shared cross-action entry-point
-  settlement, periodic repair and table lifecycle integration remain pending.
+  caller's shared create/drop phase budget. Cross-action property recovery adds
+  two passing fault-matrix tests, bringing the library total to 87. Periodic
+  repair and table lifecycle integration remain pending.
   Real Chunk-KV restart after a lost tombstone write reply recovers the original
   204 result, retains the tombstone and protects a recreated name from old replay.
   Formatting, workspace clippy, feature-enabled server clippy and real-backend

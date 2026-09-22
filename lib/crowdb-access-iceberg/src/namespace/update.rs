@@ -125,8 +125,12 @@ impl NamespaceRepository {
     pub(super) async fn prepare_property_mutation(
         &self,
         operation: &NamespaceOperation,
+        budget: &mut usize,
     ) -> Result<(), CatalogError> {
-        let Some(authority) = self.load(operation.context, &operation.identifier).await? else {
+        let Some(authority) = self
+            .settle_property_target_with_budget(operation.context, &operation.identifier, budget)
+            .await?
+        else {
             return self.finish_property_error(operation, 404).await;
         };
         if authority.namespace != operation.namespace || authority.parent != operation.parent {
@@ -171,6 +175,16 @@ impl NamespaceRepository {
         context: CatalogContext,
         identifier: &NamespaceIdentifier,
     ) -> Result<Option<NamespaceAuthority>, CatalogError> {
+        self.settle_property_target_with_budget(context, identifier, &mut 16)
+            .await
+    }
+
+    async fn settle_property_target_with_budget(
+        &self,
+        context: CatalogContext,
+        identifier: &NamespaceIdentifier,
+        budget: &mut usize,
+    ) -> Result<Option<NamespaceAuthority>, CatalogError> {
         let selected = self.load(context, identifier).await?;
         let Some(pending) = selected
             .as_ref()
@@ -178,26 +192,12 @@ impl NamespaceRepository {
         else {
             return Ok(selected);
         };
-        let operation = NamespaceJournal::new(self.store.clone())
-            .load(context, pending)
-            .await?
-            .ok_or(ValidationError::Record)?;
         let authority = selected.as_ref().ok_or(ValidationError::Record)?;
-        if operation.namespace != authority.namespace
-            && !(operation.action == NamespaceAction::Create && operation.parent == Some(authority.namespace))
-        {
-            return Err(ValidationError::IdentityMismatch.into());
-        }
-        if operation.action != NamespaceAction::Update {
-            return Err(CatalogError::Busy);
-        }
-        if !matches!(
-            operation.phase,
-            NamespacePhase::Publishing | NamespacePhase::Published | NamespacePhase::Complete
-        ) {
-            return Err(ValidationError::Record.into());
-        }
-        self.resume_property_update(context, pending).await?;
+        let creator = super::NamespaceCreator {
+            repository: self.clone(),
+            names: self.names.clone(),
+        };
+        Box::pin(creator.help_marker(context, authority.namespace, pending, budget)).await?;
         self.load(context, identifier).await
     }
 }

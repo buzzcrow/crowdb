@@ -2,6 +2,8 @@
 mod common;
 #[path = "common/namespace.rs"]
 mod fixture;
+#[path = "common/namespace_store.rs"]
+mod namespace_store;
 
 use std::sync::atomic::Ordering;
 

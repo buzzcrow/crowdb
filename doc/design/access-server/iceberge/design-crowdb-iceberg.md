@@ -110,6 +110,9 @@ uses a conditional write and advances the mutation revision again. After a
 definitive CAS conflict proves the input revision is obsolete, a property update
 may return to preparation with fresh snapshots; unknown outcomes never take that
 path. Work is bounded and exhaustion remains retryable, not a terminal conflict.
+Property preparation uses the same holder-bound marker dispatcher as creation
+and drop. It can finish interrupted child admission or a nonempty drop before
+publishing properties; recursive helpers consume the caller's phase budget.
 These repository operations do not yet expose namespace REST endpoints.
 
 Namespace creation installs a recoverable parent/name reservation before a parent

@@ -2,14 +2,34 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use crowdb_access_iceberg::catalog::{CasOutcome, CatalogStore, RootState, StoreError, StoredValue};
+use crowdb_access_iceberg::catalog::{
+    CasOutcome, CatalogStore, RootState, RoutedCatalogStore, StoreError, StoredValue,
+};
 use crowdb_access_iceberg::key::IcebergKey;
+use crowdb_access_iceberg::namespace::{ChildScan, NamespaceStore};
 use crowdb_access_iceberg::record::StorageRecord;
+use crowdb_chunk_kv_client::MultiScanPage;
 use crowdb_protocol::chunk_kv::ClientRequestId;
 
 pub struct TestFaultStore {
-    pub inner: Arc<dyn CatalogStore>,
+    pub inner: Arc<RoutedCatalogStore>,
     pub mode: AtomicU8,
+}
+
+#[async_trait]
+impl NamespaceStore for TestFaultStore {
+    async fn scan_children(&self, request: ChildScan) -> Result<MultiScanPage, StoreError> {
+        self.inner.scan_children(request).await
+    }
+
+    async fn delete_mapping(
+        &self,
+        key: &[u8],
+        expected: &[u8],
+        identity: ClientRequestId,
+    ) -> Result<CasOutcome, StoreError> {
+        self.inner.delete_mapping(key, expected, identity).await
+    }
 }
 
 #[async_trait]

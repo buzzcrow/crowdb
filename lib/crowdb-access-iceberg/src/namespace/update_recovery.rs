@@ -38,7 +38,7 @@ impl NamespaceRepository {
                 return Err(ValidationError::Record.into());
             }
             match operation.phase {
-                NamespacePhase::Prepared => self.prepare_property_mutation(&operation).await?,
+                NamespacePhase::Prepared => self.prepare_property_mutation(&operation, budget).await?,
                 NamespacePhase::Publishing => self.publish_property_mutation(&operation).await?,
                 NamespacePhase::Published => self.finish_property_success(&operation).await?,
                 NamespacePhase::Complete | NamespacePhase::Aborted => {
