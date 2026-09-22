@@ -81,6 +81,20 @@ catalog replacement prevents old-body replay or rebinding. Terminal results are
 immutable, while transient failures retain recoverable state. Requests without
 client keys receive distinct internal identities, not cross-request deduplication.
 
+Immutable operation payloads use 32-KiB pages with a 2-MiB aggregate limit. Each
+reference binds catalog, operation, content digest and total size; readers validate
+every page and the complete digest. Small retry responses remain inline. Larger
+responses publish one immutable manifest only after all pages are durable, then
+complete the system retry binding. A lost reply resumes page writes or replays the
+published manifest without changing the original response.
+
+Namespace operation journals occupy a separate key scope from HTTP responses.
+They preserve request identity, principal, stable target and parent IDs, immutable
+mutation snapshots, phase revisions and bounded child-probe cursors. Phase CAS
+arbitrates publication versus abort; publishing cannot transition back to abort.
+Snapshots cannot change after their write phase starts. Probe cursors advance
+within one parent-scoped child range and reset when switching ranges.
+
 ## 3. HTTP and FileIO surfaces
 
 The REST Catalog is the portable control surface. It exposes only capabilities

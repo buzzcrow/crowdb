@@ -4,6 +4,8 @@ mod authority;
 mod envelope;
 mod management;
 mod namespace;
+mod namespace_operation;
+mod payload;
 mod retry;
 mod root;
 

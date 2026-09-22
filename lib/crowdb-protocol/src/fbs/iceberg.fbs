@@ -102,7 +102,51 @@ table FBNamespaceMapping {
     state:ubyte;
 }
 
-union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping }
+table FBPayloadReference {
+    catalog:[ubyte] (required);
+    operation:[ubyte] (required);
+    digest:[ubyte] (required);
+    length:uint;
+}
+
+table FBPayloadPage {
+    reference:FBPayloadReference (required);
+    index:ushort;
+    bytes:[ubyte] (required);
+}
+
+table FBRetryResult {
+    binding:FBRetryRecord (required);
+    body:FBPayloadReference (required);
+}
+
+table FBNamespaceMutation {
+    key:[ubyte] (required);
+    before:FBPayloadReference;
+    after:FBPayloadReference (required);
+}
+
+table FBNamespaceOperation {
+    catalog:[ubyte] (required);
+    activation_epoch:ulong;
+    operation:[ubyte] (required);
+    issued_ms:ulong;
+    principal:string (required);
+    action:ubyte;
+    identifier:[ubyte] (required);
+    namespace_id:[ubyte] (required);
+    parent:[ubyte];
+    phase:ubyte;
+    revision:ulong;
+    input:FBPayloadReference (required);
+    mutation:FBNamespaceMutation;
+    scan_after:[ubyte] (required);
+    scan_generation:ulong;
+    outcome_status:ushort;
+    outcome_body:FBPayloadReference;
+}
+
+union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord, FBNamespaceAuthority, FBNamespaceMapping, FBPayloadPage, FBRetryResult, FBNamespaceOperation }
 
 table FBIcebergRecord {
     schema_version:ushort;

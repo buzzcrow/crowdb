@@ -222,3 +222,50 @@ async fn collisions_preserve_unfinished_and_retained_results_then_admit_fresh_ke
     ));
     assert!(ledger.begin(request, expired).await.is_err());
 }
+
+#[tokio::test]
+async fn large_retry_bodies_recover_after_every_page_manifest_and_binding_reply_loss() {
+    use crowdb_access_iceberg::operation::PAYLOAD_PAGE_BYTES;
+    let body = vec![31; PAYLOAD_PAGE_BYTES * 2 + 1];
+    for lost_write in 1..=5 {
+        let (store, _, mut request) = setup().await;
+        request.principal = "writer".into();
+        let ledger = RetryLedger::new(store.clone());
+        ledger.begin(request.clone(), 100).await.unwrap();
+        store
+            .fail_after
+            .store(store.writes.load(Ordering::SeqCst) + lost_write, Ordering::SeqCst);
+        assert!(ledger
+            .finish(request.clone(), 200, body.clone(), 101)
+            .await
+            .is_err());
+        let recovered = RetryLedger::new(store.clone());
+        match recovered.begin(request.clone(), 102).await.unwrap() {
+            RetryAdmission::Resume(_) => {
+                recovered
+                    .finish(request.clone(), 200, body.clone(), 103)
+                    .await
+                    .unwrap();
+            }
+            RetryAdmission::Replay(result) => assert_eq!(result.body, body),
+            RetryAdmission::New(_) => panic!("existing identity must not be readmitted"),
+        }
+        let RetryAdmission::Replay(result) = recovered.begin(request.clone(), 104).await.unwrap() else {
+            panic!("replay")
+        };
+        assert_eq!(result.body, body);
+        assert_eq!(result.principal, "writer");
+        let mut changed = request.clone();
+        changed.principal = "reader".into();
+        assert!(matches!(
+            recovered.begin(changed, 104).await,
+            Err(CatalogError::Conflict)
+        ));
+        let writes = store.writes.load(Ordering::SeqCst);
+        assert!(matches!(
+            recovered.finish(request, 200, vec![0; body.len()], 104).await,
+            Err(CatalogError::Conflict)
+        ));
+        assert_eq!(store.writes.load(Ordering::SeqCst), writes);
+    }
+}

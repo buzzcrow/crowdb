@@ -100,6 +100,11 @@ The architecture boundary is [Native Iceberg Storage](../design/access-server/ic
    loss. Use R178's shared HTTP identity, retention, terminal-error replay, and
    retired-domain rules from the first exposed endpoint. Repair stale mappings
    asynchronously with bounded work and conditional deletion.
+   Keep operation input and mutation snapshots separate from the small phase
+   record. Large immutable payloads and retained responses use bounded pages
+   under a 2-MiB aggregate cap; each storage envelope remains within 64 KiB.
+   Validate response capacity before any visible mutation. Publish a response
+   manifest only after every referenced page is durable and checksum-valid.
 
 ## Dependencies
 

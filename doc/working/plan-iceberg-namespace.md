@@ -24,10 +24,17 @@ identity, empty-drop safety, or bounded REST responses.
   mapping deletion, retaining routed continuations and backend request identities.
   Verify recreation safety against real Chunk-KV. Files: namespace storage,
   catalog storage, access-server full-stack fixture.
-- [ ] **Durable operation records**: persist admission/publication/abort phases,
+- [x] **Durable payloads**: store immutable hashed payload pages for operation
+  input, authority snapshots and large retry responses without exceeding the
+  64-KiB record limit. Verify lost replies, corruption and cross-domain isolation.
+  Files: operation payload modules, retry ledger, storage envelope, protocol schema.
+- [x] **Durable operation records**: persist admission/publication/abort phases,
   immutable mutation input and outcome evidence. Keep these keys separate from
   retained HTTP responses. Avoid embedding multiple near-64-KiB authorities in
   one 64-KiB envelope. Files: namespace operation/record modules, protocol schema.
+  Payload pages are 32 KiB with a 2-MiB aggregate cap. Namespace operation records
+  have their own key scope, distinct from retained HTTP responses. Freeze mutation
+  snapshots once a write phase starts; persist forward-only child-probe cursors.
 - [ ] **Admission and recovery**: persist reserve-before-admit transitions and
   publication evidence; resolve pending admission before subsequent parent writes.
   Implement create, load, update, drop, stale repair, and durable two-range probes.
@@ -36,11 +43,11 @@ identity, empty-drop safety, or bounded REST responses.
   page parameters and scan cursor; bound scan work and unpaginated spool resources.
   Files: namespace listing/token modules, access-server spool implementation.
 - [ ] **REST integration**: add bounded request parsing, endpoint advertisement,
-  role checks, error mapping, and shared retry-ledger participation. Do not modify
-  the user guide. Files: library wire modules, access-server Iceberg modules.
-  Size URL and JSON limits for the identifier/property bounds; the foundation's
-  16-KiB retry-body bound must not reject a valid large namespace response after
-  publication. Preserve bounded storage records using a durable response layout.
+  role checks, error mapping, and shared retry-ledger participation.
+  Files: library wire modules, access-server Iceberg modules.
+  Size URL and JSON limits for the identifier/property bounds. Validate against
+  the 2-MiB retry-body bound before publication; larger-than-16-KiB results use
+  immutable pages and a final response manifest rather than an oversized record.
 - [ ] **Verification**: run boundary/codec, failure-injection, concurrent recovery,
   and official-client acceptance tests; run formatting and clippy separately.
   Files: library tests, access-server tests and official-client fixture.
@@ -66,6 +73,14 @@ identity, empty-drop safety, or bounded REST responses.
 - Lint: `pixi run rs-lint`.
 
 ## Verified checkpoint
+
+- Operation payload and journal gates pass: 57 library tests, protocol tests,
+  feature-enabled server tests, workspace/feature clippy and formatting. Real
+  Chunk-KV restart preserves a namespace journal and a 70-KiB retry response.
+- Phase CAS tests cover publication versus abort, lost phase replies, fixed
+  mutation snapshots, forward child-range cursors and retired catalog rejection.
+  These verify journal semantics, not the still-unimplemented namespace mutation
+  driver or complete namespace REST acceptance.
 
 - Writer credential validation, read access and management denial pass library,
   HTTP and real-process tests. The official client authenticates using the writer

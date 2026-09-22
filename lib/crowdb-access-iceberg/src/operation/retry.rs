@@ -5,7 +5,9 @@ use crate::error::ValidationError;
 use crate::key::{CatalogScope, IcebergKey, SystemScope};
 use crate::record::StorageRecord;
 
-use super::{ledger_key, mutation_identity, RequestIdentity, RETRY_WINDOW_MS};
+use super::{
+    ledger_key, mutation_identity, PayloadStore, RequestIdentity, MAX_PAYLOAD_BYTES, RETRY_WINDOW_MS,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetryRecord {
@@ -30,7 +32,7 @@ impl RetryRecord {
             || self.route.is_empty()
             || self.route.len() > 1024
             || self.route.contains('\0')
-            || self.body.len() > 16 * 1024
+            || self.body.len() > MAX_PAYLOAD_BYTES
             || (self.status == 0 && !self.body.is_empty())
             || !(self.status == 0 || terminal_status(self.status))
             || self.retained_until_ms <= self.identity.issued_ms
@@ -148,7 +150,18 @@ impl RetryLedger {
         request.body = body;
         request.validate()?;
         let result_key = request.result_key();
-        let result = StorageRecord::Retry(Box::new(request.clone())).encode()?;
+        let payloads = PayloadStore::new(self.store.clone());
+        let result = if let Some(existing) = self.store.get(&result_key.encode()?).await? {
+            let record =
+                super::result::decode_result(&payloads, StorageRecord::decode(&result_key, &existing.bytes)?)
+                    .await?;
+            if record != request {
+                return Err(CatalogError::Conflict);
+            }
+            existing.bytes
+        } else {
+            super::result::encode_result(&payloads, &request).await?
+        };
         if !self.cas(&result_key, None, &result).await? {
             let existing = self
                 .store
@@ -173,9 +186,9 @@ impl RetryLedger {
             }
             return Ok(RetryAdmission::Resume(binding));
         };
-        let StorageRecord::Retry(result) = StorageRecord::decode(&key, &value.bytes)? else {
-            return Err(ValidationError::Record.into());
-        };
+        let payloads = PayloadStore::new(self.store.clone());
+        let result =
+            super::result::decode_result(&payloads, StorageRecord::decode(&key, &value.bytes)?).await?;
         if !binding.same_request(&result)
             || result.status == 0
             || binding.retained_until_ms != result.retained_until_ms
@@ -195,7 +208,7 @@ impl RetryLedger {
             )
             .await?;
         }
-        Ok(RetryAdmission::Replay(*result))
+        Ok(RetryAdmission::Replay(result))
     }
 
     async fn check_context(&self, context: CatalogContext) -> Result<(), CatalogError> {

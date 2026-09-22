@@ -4,8 +4,8 @@ use flatbuffers::FlatBufferBuilder;
 use crate::catalog::{ActiveCatalogRecord, CatalogAuthority};
 use crate::error::ValidationError;
 use crate::key::{CatalogScope, IcebergKey, SystemScope};
-use crate::namespace::{authority_key, name_key, NamespaceAuthority, NamespaceMapping};
-use crate::operation::{ledger_key, ManagementOperation, RetryRecord};
+use crate::namespace::{authority_key, name_key, NamespaceAuthority, NamespaceMapping, NamespaceOperation};
+use crate::operation::{ledger_key, ManagementOperation, PayloadPage, RetryRecord, RetryResult};
 
 pub const MAX_RECORD_BYTES: usize = 64 * 1024;
 const SCHEMA_VERSION: u16 = 1;
@@ -18,6 +18,9 @@ pub enum StorageRecord {
     Retry(Box<RetryRecord>),
     NamespaceAuthority(Box<NamespaceAuthority>),
     NamespaceMapping(NamespaceMapping),
+    PayloadPage(Box<PayloadPage>),
+    RetryResult(Box<RetryResult>),
+    NamespaceOperation(Box<NamespaceOperation>),
 }
 
 impl StorageRecord {
@@ -26,6 +29,18 @@ impl StorageRecord {
     pub fn encode(&self) -> Result<Vec<u8>, ValidationError> {
         let mut builder = FlatBufferBuilder::with_capacity(2048);
         let (value_type, value) = match self {
+            Self::NamespaceOperation(operation) => (
+                FBRecordValue::FBNamespaceOperation,
+                super::namespace_operation::encode(&mut builder, operation)?.as_union_value(),
+            ),
+            Self::PayloadPage(page) => (
+                FBRecordValue::FBPayloadPage,
+                super::payload::encode_page(&mut builder, page)?.as_union_value(),
+            ),
+            Self::RetryResult(result) => (
+                FBRecordValue::FBRetryResult,
+                super::payload::encode_result(&mut builder, result)?.as_union_value(),
+            ),
             Self::NamespaceAuthority(authority) => (
                 FBRecordValue::FBNamespaceAuthority,
                 super::namespace::encode_authority(&mut builder, authority)?.as_union_value(),
@@ -81,6 +96,23 @@ impl StorageRecord {
             return Err(ValidationError::RecordVersion(envelope.schema_version()));
         }
         let record = match envelope.value_type() {
+            FBRecordValue::FBNamespaceOperation => {
+                Self::NamespaceOperation(Box::new(super::namespace_operation::decode(
+                    envelope
+                        .value_as_fbnamespace_operation()
+                        .ok_or(ValidationError::Record)?,
+                )?))
+            }
+            FBRecordValue::FBPayloadPage => Self::PayloadPage(Box::new(super::payload::decode_page(
+                envelope
+                    .value_as_fbpayload_page()
+                    .ok_or(ValidationError::Record)?,
+            )?)),
+            FBRecordValue::FBRetryResult => Self::RetryResult(Box::new(super::payload::decode_result(
+                envelope
+                    .value_as_fbretry_result()
+                    .ok_or(ValidationError::Record)?,
+            )?)),
             FBRecordValue::FBNamespaceAuthority => {
                 Self::NamespaceAuthority(Box::new(super::namespace::decode_authority(
                     envelope
@@ -121,6 +153,9 @@ impl StorageRecord {
 
     fn validate_key(&self, key: &IcebergKey) -> Result<(), ValidationError> {
         match (self, key) {
+            (Self::NamespaceOperation(operation), key) if *key == operation.key() => Ok(()),
+            (Self::PayloadPage(page), key) if *key == page.reference.page_key(page.index)? => Ok(()),
+            (Self::RetryResult(result), key) if *key == result.binding.result_key() => Ok(()),
             (Self::NamespaceAuthority(authority), key)
                 if *key == authority_key(authority.catalog, authority.namespace) =>
             {

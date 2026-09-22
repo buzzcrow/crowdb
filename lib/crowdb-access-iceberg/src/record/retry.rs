@@ -11,6 +11,9 @@ pub(super) fn encode<'buffer>(
     record: &RetryRecord,
 ) -> Result<WIPOffset<FBRetryRecord<'buffer>>, ValidationError> {
     record.validate()?;
+    if record.body.len() > 16 * 1024 {
+        return Err(ValidationError::RecordTooLarge);
+    }
     let operation = builder.create_vector(record.identity.operation.as_bytes());
     let principal = builder.create_string(&record.principal);
     let route = builder.create_string(&record.route);

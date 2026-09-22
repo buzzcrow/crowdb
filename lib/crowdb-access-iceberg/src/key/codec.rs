@@ -28,6 +28,8 @@ pub enum CatalogScope {
     File = 5,
     Operation = 6,
     Reclamation = 7,
+    OperationPayload = 8,
+    NamespaceOperation = 9,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -154,6 +156,8 @@ fn catalog_scope(value: u8) -> Result<CatalogScope, ValidationError> {
         5 => Ok(CatalogScope::File),
         6 => Ok(CatalogScope::Operation),
         7 => Ok(CatalogScope::Reclamation),
+        8 => Ok(CatalogScope::OperationPayload),
+        9 => Ok(CatalogScope::NamespaceOperation),
         _ => Err(ValidationError::Key),
     }
 }
@@ -175,7 +179,8 @@ fn validate_catalog(scope: CatalogScope, suffix: &[u8]) -> Result<(), Validation
         CatalogScope::NamespaceAuthority
         | CatalogScope::TableHead
         | CatalogScope::File
-        | CatalogScope::Operation => super::OperationId::from_bytes(suffix).map(|_| ()),
+        | CatalogScope::Operation
+        | CatalogScope::NamespaceOperation => super::OperationId::from_bytes(suffix).map(|_| ()),
         CatalogScope::NamespaceName | CatalogScope::TableName => {
             let name = super::NameSuffix::decode(suffix)?;
             if scope == CatalogScope::TableName && name.parent.is_none() {
@@ -190,6 +195,12 @@ fn validate_catalog(scope: CatalogScope, suffix: &[u8]) -> Result<(), Validation
             super::TableId::from_bytes(&suffix[..16])?;
             super::FileId::from_bytes(&suffix[24..])?;
             Ok(())
+        }
+        CatalogScope::OperationPayload => {
+            if suffix.len() != 50 || u16::from_be_bytes([suffix[48], suffix[49]]) >= 64 {
+                return Err(ValidationError::Key);
+            }
+            super::OperationId::from_bytes(&suffix[..16]).map(|_| ())
         }
     }
 }
