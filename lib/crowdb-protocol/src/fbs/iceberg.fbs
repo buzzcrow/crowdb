@@ -31,9 +31,49 @@ table FBCatalogAuthority {
     config_generation:ulong;
     lifecycle:FBCatalogLifecycle;
     capabilities:ushort;
+    request_ms:ulong;
+    root_lease_ms:ulong;
+    delegated_access_ms:ulong;
+    clock_skew_ms:ulong;
 }
 
-union FBRecordValue { FBActiveCatalog, FBCatalogAuthority }
+table FBManagementOperation {
+    operation:[ubyte] (required);
+    issued_ms:ulong;
+    principal:string (required);
+    action:ubyte;
+    expected_epoch:ulong;
+    display_name:string (required);
+    confirmation:[ubyte];
+    request_digest:[ubyte] (required);
+    phase:ubyte;
+    candidate:[ubyte] (required);
+    original_root:[ubyte] (required);
+    original_authority:[ubyte] (required);
+    result_authority:[ubyte] (required);
+    root_lease_ms:ulong;
+    request_ms:ulong;
+    delegated_access_ms:ulong;
+    clock_skew_ms:ulong;
+    retained_until_ms:ulong;
+    publication_proof:[ubyte] (required);
+    grace_completed_ms:ulong;
+}
+
+table FBRetryRecord {
+    operation:[ubyte] (required);
+    issued_ms:ulong;
+    principal:string (required);
+    route:string (required);
+    digest:[ubyte] (required);
+    catalog:[ubyte] (required);
+    activation_epoch:ulong;
+    retained_until_ms:ulong;
+    status:ushort;
+    body:[ubyte] (required);
+}
+
+union FBRecordValue { FBActiveCatalog, FBCatalogAuthority, FBManagementOperation, FBRetryRecord }
 
 table FBIcebergRecord {
     schema_version:ushort;

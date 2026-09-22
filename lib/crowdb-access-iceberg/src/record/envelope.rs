@@ -4,6 +4,7 @@ use flatbuffers::FlatBufferBuilder;
 use crate::catalog::{ActiveCatalogRecord, CatalogAuthority};
 use crate::error::ValidationError;
 use crate::key::{CatalogScope, IcebergKey, SystemScope};
+use crate::operation::{ledger_key, ManagementOperation, RetryRecord};
 
 pub const MAX_RECORD_BYTES: usize = 64 * 1024;
 const SCHEMA_VERSION: u16 = 1;
@@ -12,6 +13,8 @@ const SCHEMA_VERSION: u16 = 1;
 pub enum StorageRecord {
     Active(ActiveCatalogRecord),
     Authority(CatalogAuthority),
+    Management(Box<ManagementOperation>),
+    Retry(Box<RetryRecord>),
 }
 
 impl StorageRecord {
@@ -20,6 +23,14 @@ impl StorageRecord {
     pub fn encode(&self) -> Result<Vec<u8>, ValidationError> {
         let mut builder = FlatBufferBuilder::with_capacity(2048);
         let (value_type, value) = match self {
+            Self::Retry(record) => (
+                FBRecordValue::FBRetryRecord,
+                super::retry::encode(&mut builder, record)?.as_union_value(),
+            ),
+            Self::Management(operation) => (
+                FBRecordValue::FBManagementOperation,
+                super::management::encode(&mut builder, operation)?.as_union_value(),
+            ),
             Self::Active(root) => (
                 FBRecordValue::FBActiveCatalog,
                 super::root::encode(&mut builder, *root)?.as_union_value(),
@@ -59,6 +70,16 @@ impl StorageRecord {
             return Err(ValidationError::RecordVersion(envelope.schema_version()));
         }
         let record = match envelope.value_type() {
+            FBRecordValue::FBRetryRecord => Self::Retry(Box::new(super::retry::decode(
+                envelope
+                    .value_as_fbretry_record()
+                    .ok_or(ValidationError::Record)?,
+            )?)),
+            FBRecordValue::FBManagementOperation => Self::Management(Box::new(super::management::decode(
+                envelope
+                    .value_as_fbmanagement_operation()
+                    .ok_or(ValidationError::Record)?,
+            )?)),
             FBRecordValue::FBActiveCatalog => Self::Active(super::root::decode(
                 envelope
                     .value_as_fbactive_catalog()
@@ -77,6 +98,28 @@ impl StorageRecord {
 
     fn validate_key(&self, key: &IcebergKey) -> Result<(), ValidationError> {
         match (self, key) {
+            (
+                Self::Retry(record),
+                IcebergKey::System {
+                    scope: SystemScope::RetryBinding,
+                    ..
+                },
+            ) if record.body.is_empty()
+                && *key == ledger_key(SystemScope::RetryBinding, record.identity.operation)? =>
+            {
+                Ok(())
+            }
+            (Self::Retry(record), IcebergKey::Catalog { .. })
+                if record.status != 0 && *key == record.result_key() =>
+            {
+                Ok(())
+            }
+            (Self::Management(operation), IcebergKey::System { scope, .. })
+                if matches!(scope, SystemScope::ManagementOperation | SystemScope::Audit)
+                    && *key == ledger_key(*scope, operation.id())? =>
+            {
+                Ok(())
+            }
             (
                 Self::Active(_),
                 IcebergKey::System {

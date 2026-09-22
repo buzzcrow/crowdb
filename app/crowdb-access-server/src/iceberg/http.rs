@@ -1,0 +1,207 @@
+use std::convert::Infallible;
+use std::future::Future;
+use std::sync::Arc;
+use std::time::Duration;
+
+use crowdb_access_iceberg::catalog::{CatalogError, CatalogLifecycle, CatalogRepository, RootState};
+use crowdb_access_iceberg::wire::{BearerAuthenticator, CatalogConfig, IcebergErrorResponse};
+use http_body_util::Full;
+use hyper::body::{Bytes, Incoming};
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::{Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
+use tokio::net::TcpListener;
+use tokio::task::JoinSet;
+
+pub struct IcebergHttpService {
+    repository: Arc<CatalogRepository>,
+    authentication: BearerAuthenticator,
+    request_timeout: Duration,
+}
+
+impl IcebergHttpService {
+    #[must_use]
+    pub fn new(
+        repository: Arc<CatalogRepository>,
+        authentication: BearerAuthenticator,
+        request_timeout: Duration,
+    ) -> Self {
+        Self {
+            repository,
+            authentication,
+            request_timeout,
+        }
+    }
+
+    async fn handle(&self, request: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
+        let result = tokio::time::timeout(self.request_timeout, self.dispatch(request)).await;
+        Ok(match result {
+            Ok(Ok(config)) => response(200, serde_json::to_vec(&config).unwrap_or_default()),
+            Ok(Err(error)) => response(error.error.code, serde_json::to_vec(&error).unwrap_or_default()),
+            Err(_) => unavailable(),
+        })
+    }
+
+    async fn dispatch(&self, request: Request<Incoming>) -> Result<CatalogConfig, IcebergErrorResponse> {
+        let authorization = request
+            .headers()
+            .get(hyper::header::AUTHORIZATION)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        if self.authentication.authenticate(authorization).is_none() {
+            return Err(IcebergErrorResponse::new(
+                401,
+                "NotAuthorizedException",
+                "Valid bearer authentication is required",
+            ));
+        }
+        if request.uri().to_string().len() > 4096 {
+            return Err(bad_request());
+        }
+        if request.method() != hyper::Method::GET || request.uri().path() != "/v1/config" {
+            return Err(IcebergErrorResponse::new(
+                406,
+                "UnsupportedOperationException",
+                "This endpoint is not implemented",
+            ));
+        }
+        let warehouse = warehouse(request.uri().query())?;
+        let (root, authority) = self
+            .repository
+            .status()
+            .await
+            .map_err(|_| service_unavailable())?;
+        if root.state != RootState::Ready
+            || authority.lifecycle != CatalogLifecycle::Ready
+            || self.request_timeout.as_millis() > u128::from(authority.admission_bounds.request_ms)
+            || authority.capabilities.bits() != 0
+        {
+            return Err(service_unavailable());
+        }
+        CatalogConfig::foundation(warehouse.as_deref())
+    }
+}
+
+/// # Errors
+/// Returns listener failures after stopping admission and draining connections.
+pub async fn serve(
+    listener: TcpListener,
+    service: Arc<IcebergHttpService>,
+    shutdown: impl Future<Output = ()>,
+) -> std::io::Result<()> {
+    tokio::pin!(shutdown);
+    let recovery = reconcile(&service.repository);
+    tokio::pin!(recovery);
+    let mut connections = JoinSet::new();
+    let mut failure = None;
+    loop {
+        tokio::select! {
+            () = &mut shutdown => break,
+            () = &mut recovery => break,
+            Some(_) = connections.join_next(), if !connections.is_empty() => {},
+            accepted = listener.accept(), if connections.len() < 128 => {
+                let (stream, peer) = match accepted { Ok(value) => value, Err(error) => { failure = Some(error); break; } };
+                let service = Arc::clone(&service);
+                connections.spawn(async move {
+                    let timeout = service.request_timeout;
+                    let handler = service_fn(move |request| { let service = Arc::clone(&service); async move { service.handle(request).await } });
+                    let connection = http1::Builder::new().keep_alive(false).max_buf_size(16 * 1024)
+                        .serve_connection(TokioIo::new(stream), handler);
+                    if let Ok(Err(error)) = tokio::time::timeout(timeout, connection).await {
+                        tracing::debug!(%peer, %error, "Iceberg HTTP connection failed");
+                    }
+                });
+            }
+        }
+    }
+    drop(listener);
+    while connections.join_next().await.is_some() {}
+    failure.map_or(Ok(()), Err)
+}
+
+async fn reconcile(repository: &CatalogRepository) {
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        interval.tick().await;
+        let Ok(elapsed) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+            tracing::error!("Iceberg recovery paused: system clock precedes Unix epoch");
+            continue;
+        };
+        let Ok(now_ms) = u64::try_from(elapsed.as_millis()) else {
+            tracing::error!("Iceberg recovery paused: system clock exceeds supported range");
+            continue;
+        };
+        match repository.recover(now_ms).await {
+            Ok(()) | Err(CatalogError::Busy) => {}
+            Err(error) => tracing::error!(%error, "Iceberg recovery failed; retrying on next interval"),
+        }
+    }
+}
+
+fn warehouse(query: Option<&str>) -> Result<Option<String>, IcebergErrorResponse> {
+    let mut warehouse = None;
+    for pair in query
+        .unwrap_or_default()
+        .split('&')
+        .filter(|value| !value.is_empty())
+    {
+        let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let name = decode_query(name)?;
+        if name == "warehouse" {
+            if warehouse.is_some() {
+                return Err(bad_request());
+            }
+            warehouse = Some(decode_query(value)?);
+        }
+    }
+    Ok(warehouse)
+}
+
+fn decode_query(value: &str) -> Result<String, IcebergErrorResponse> {
+    for (index, byte) in value.bytes().enumerate() {
+        if byte == b'%'
+            && !value
+                .as_bytes()
+                .get(index + 1..index + 3)
+                .is_some_and(|bytes| bytes.iter().all(u8::is_ascii_hexdigit))
+        {
+            return Err(bad_request());
+        }
+    }
+    let value = value.replace('+', " ");
+    percent_encoding::percent_decode_str(&value)
+        .decode_utf8()
+        .map(std::borrow::Cow::into_owned)
+        .map_err(|_| bad_request())
+}
+
+fn response(status: u16, bytes: Vec<u8>) -> Response<Full<Bytes>> {
+    let mut response = Response::new(Full::new(Bytes::from(bytes)));
+    *response.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    response.headers_mut().insert(
+        hyper::header::CONTENT_TYPE,
+        hyper::header::HeaderValue::from_static("application/json"),
+    );
+    if status == 401 {
+        response.headers_mut().insert(
+            hyper::header::WWW_AUTHENTICATE,
+            hyper::header::HeaderValue::from_static("Bearer"),
+        );
+    }
+    response
+}
+
+fn bad_request() -> IcebergErrorResponse {
+    IcebergErrorResponse::new(400, "BadRequestException", "Invalid request parameters")
+}
+fn service_unavailable() -> IcebergErrorResponse {
+    IcebergErrorResponse::new(503, "ServiceUnavailableException", "Catalog is not ready")
+}
+fn unavailable() -> Response<Full<Bytes>> {
+    response(
+        503,
+        serde_json::to_vec(&service_unavailable()).unwrap_or_default(),
+    )
+}

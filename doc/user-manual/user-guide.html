@@ -284,6 +284,7 @@ tr:hover td { background: var(--code-bg); }
 <a href="#6-emergency-loss-of-quorum" class="sub">6. Emergency: Loss of Quorum</a>
 <a href="#7-backup" class="sub">7. Backup</a>
 <a href="#8-api-reference" class="sub">8. API Reference</a>
+<a href="#9-iceberg-catalog-foundation" class="sub">9. Iceberg Catalog Foundation</a>
 </nav>
   </aside>
   <main class="content">
@@ -1029,6 +1030,52 @@ curl "http://$IP:$PORT/api/stores/3/groups/3"
 <p><code>/system/init</code> across nodes and auto-finalizes.</p>
 </div>
 </div>
+<h2 id="9-iceberg-catalog-foundation">9. Iceberg Catalog Foundation</h2>
+<p>The independent <code>crowdb-iceberg</code> binary exposes authenticated catalog configuration</p>
+<p>only. Namespace, table and FileIO endpoints are not enabled. It uses an existing</p>
+<p>healthy Group 0, Chunk-KV and chunk-storage deployment; S3 credentials and buckets</p>
+<p>do not select or authorize an Iceberg catalog.</p>
+<pre><code class="bash">pixi run -- cargo build -p crowdb-access-server --no-default-features --features iceberg --bin crowdb-iceberg
+export CROWDB_MANAGEMENT_SEEDS=127.0.0.1:10000
+export CROWDB_ICEBERG_LISTEN=127.0.0.1:8181</code></pre>
+<p>Supply three distinct, randomly generated 32–256-character ASCII tokens through</p>
+<p>your secret-management environment: <code>CROWDB_ICEBERG_READ_TOKEN</code>,</p>
+<p><code>CROWDB_ICEBERG_MANAGE_TOKEN</code> and <code>CROWDB_ICEBERG_CLEAR_TOKEN</code>. Configure every</p>
+<p>instance consistently. Management credentials can rename/initialize; only the</p>
+<p>clear credential can replace the catalog. All three can read configuration.</p>
+<p>The listener is plain HTTP: keep it on a trusted loopback/private hop behind a</p>
+<p>TLS-terminating proxy. Do not transmit bearer credentials over public plain HTTP.</p>
+<p>Set <code>CROWDB_ICEBERG_TOKEN</code> to the appropriate management token for CLI commands.</p>
+<p>Each mutation takes a fresh UUIDv7 request identity. Preserve both that identity</p>
+<p>and the exact arguments when retrying an interrupted command.</p>
+<pre><code class="bash">export CROWDB_ICEBERG_TOKEN="$CROWDB_ICEBERG_MANAGE_TOKEN"
+pixi run -- target/debug/crowdb-iceberg initialize "$INIT_UUIDV7" primary
+pixi run -- target/debug/crowdb-iceberg status
+pixi run -- target/debug/crowdb-iceberg rename "$RENAME_UUIDV7" renamed "$ACTIVE_EPOCH"
+pixi run -- target/debug/crowdb-iceberg serve</code></pre>
+<p>Status reports CatalogId, activation epoch, name and phase. Rename preserves the</p>
+<p>CatalogId. The server validates dependencies and reconciles the root before</p>
+<p>opening its listener. Ctrl-C stops admission and drains accepted connections.</p>
+<pre><code class="bash">pixi run -- curl -H "Authorization: Bearer $CROWDB_ICEBERG_READ_TOKEN" \
+  http://127.0.0.1:8181/v1/config</code></pre>
+<p>Absent or empty <code>warehouse</code> selects the active catalog. A nonempty warehouse</p>
+<p>returns 404 <code>NoSuchWarehouseException</code>. Unsupported endpoints return 406; all</p>
+<p>table-format capabilities are false and HTTP idempotency is not advertised.</p>
+<p>Clear makes the old domain inaccessible and selects a new empty catalog. It is</p>
+<p>not physical erasure. Obtain the exact epoch and CatalogId from <code>status</code>, then</p>
+<p>explicitly confirm both:</p>
+<pre><code class="bash">export CROWDB_ICEBERG_TOKEN="$CROWDB_ICEBERG_CLEAR_TOKEN"
+pixi run -- target/debug/crowdb-iceberg clear "$CLEAR_UUIDV7" empty \
+  "$ACTIVE_EPOCH" "$ACTIVE_CATALOG_ID"</code></pre>
+<p>Admission returns 503 during maintenance. Default persisted limits require an</p>
+<p>11-second grace after the durable fence is observed. Restart cannot shorten it.</p>
+<p>Another healthy instance resumes interrupted operations. An uncertain command</p>
+<p>must be retried with its original identity and input, not a newly generated key.</p>
+<p>Requests have a 24-hour retry window; expired identities are rejected. Bounded</p>
+<p>ledger-slot collisions can reject new operations without evicting live receipts.</p>
+<p>Run backend restart, two-instance and official-client checks with</p>
+<p><code>pixi run -e iceberg-e2e test-pyiceberg-e2e</code>. This uses a separate disposable runtime</p>
+<p>registry and leaves persistent local cluster reservations intact.</p>
 
   </main>
 </div>

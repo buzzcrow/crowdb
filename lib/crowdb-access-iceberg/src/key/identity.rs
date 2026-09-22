@@ -35,6 +35,18 @@ macro_rules! identity {
                 Ok(())
             }
         }
+
+        impl std::str::FromStr for $name {
+            type Err = ValidationError;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                if value.len() != 32 && value.len() != 36 {
+                    return Err(ValidationError::Identity);
+                }
+                let identity = uuid::Uuid::parse_str(value).map_err(|_| ValidationError::Identity)?;
+                Self::from_bytes(identity.as_bytes())
+            }
+        }
     };
 }
 

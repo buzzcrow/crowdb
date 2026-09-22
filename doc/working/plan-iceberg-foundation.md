@@ -31,38 +31,38 @@ recovery and independently bounded protocol admission.
   The generated-code-only unsafe exception was raised before implementation, as
   AGENTS.md requires. The rule requires disclosure, not a separate approval gate;
   continue with an isolated generated module and no hand-written unsafe.
-- [~] **Operation records**: add management operation, audit and REST retry binding
+- [x] **Operation records**: add management operation, audit and REST retry binding
   records using the versioned envelope. Files:
   `lib/crowdb-protocol/src/fbs/iceberg.fbs`,
   `lib/crowdb-access-iceberg/src/operation/`, `src/record/`.
-- [ ] **Storage adapter**: wrap routed Chunk-KV point CAS and scans, preserving
+- [x] **Storage adapter**: wrap routed Chunk-KV point CAS and scans, preserving
   typed outcomes and persisted request identities. Files:
   `lib/crowdb-access-iceberg/src/catalog/storage.rs` and integration tests.
-- [ ] **Management recovery**: implement initialize/status/rename/clear, durable
+- [x] **Management recovery**: implement initialize/status/rename/clear, durable
   management receipts, bounded audit, retained results, maintenance and persisted
   completion deadlines. Add crash and concurrent-operation tests. Files:
   `lib/crowdb-access-iceberg/src/catalog/repository.rs`, `src/operation/`.
-- [ ] **REST retry boundary**: implement optional UUIDv7 keys, principal/digest/domain
+- [x] **REST retry boundary**: implement optional UUIDv7 keys, principal/digest/domain
   bindings, retention and capacity admission, final 4xx replay, and non-final 5xx
   recovery. Files: `lib/crowdb-access-iceberg/src/operation/`, `src/wire/`.
 
 ## Service and verification
 
-- [ ] **Service boundary**: add independently feature-gated Iceberg configuration,
+- [x] **Service boundary**: add independently feature-gated Iceberg configuration,
   authenticated management commands, bearer authentication, startup dependency
   checks, separate listener, bounded admission, graceful drain and `/v1/config`.
   Files: `app/crowdb-access-server/Cargo.toml`, `src/main.rs`, `src/lib.rs`,
   `src/iceberg/`, `lib/crowdb-access-iceberg/src/wire/`.
-- [ ] **Unit coverage**: validate IDs, binary-safe key boundaries, unknown versions,
+- [x] **Unit coverage**: validate IDs, binary-safe key boundaries, unknown versions,
   record bounds, capabilities, epoch overflow, and deadline arithmetic. Files:
   `lib/crowdb-access-iceberg/tests/*_test.rs`.
-- [ ] **Integration coverage**: test same/different identity retries, root CAS loss,
+- [x] **Integration coverage**: test same/different identity retries, root CAS loss,
   crash recovery, consecutive clear, admission expiry, and authorization. Files:
   `lib/crowdb-access-iceberg/tests/*_test.rs`.
-- [ ] **E2E coverage**: run HTTP/config and multi-instance clear scenarios against
+- [x] **E2E coverage**: run HTTP/config and multi-instance clear scenarios against
   production clients; prefix server-spawning tests with `pixi run clean-env &&`.
   Files: `app/crowdb-access-server/tests/iceberg_*_test.rs`.
-- [ ] **Gates and cleanup**: run affected tests, fmt, and clippy separately; commit
+- [~] **Gates and cleanup**: run affected tests, fmt, and clippy separately; commit
   coherent verified tasks. Remove R178 and its backlog entry only after all its
   acceptance claims pass. Keep this plan while the requirement remains unfinished.
 
@@ -73,6 +73,7 @@ recovery and independently bounded protocol admission.
 - `pixi run -- cargo fmt --all -- --check`
 - `pixi run rs-lint`
 - `pixi run -- cargo clippy -p crowdb-access-server --features iceberg --all-targets -- -D warnings`
+- `pixi run -e iceberg-e2e test-pyiceberg-e2e`
 
 ## Follow-on
 
@@ -82,7 +83,7 @@ recovery and independently bounded protocol admission.
 
 ## Verification so far
 
-- The foundation now has 16 passing tests for identity/key validation,
+- The foundation now has 34 passing tests for identity/key validation,
   scope/range isolation, binary-safe names, capability coherence, rename identity,
   epoch overflow, persisted clear timing, FlatBuffer corruption/version handling,
   phase validation and record/key identity matching.
@@ -91,5 +92,37 @@ recovery and independently bounded protocol admission.
 - Workspace formatting, test-task coverage, and `git diff --check` passed.
 - `pixi run -- cargo test -p crowdb-protocol --all-targets` passed after adding
   the schema; workspace fmt and clippy passed again with the generated module.
-- These checks do not complete R178: durable records/repositories, security,
-  retry-ledger persistence, management commands, HTTP and crash/E2E coverage remain.
+- Management/retry records, routed storage, bearer authorization, CLI, isolated
+  HTTP listener, and background recovery are implemented. Library tests cover
+  every management write's lost reply, concurrent initialize convergence, delayed
+  maintenance CAS, restart with shorter configuration, retained grace proof,
+  final 409 replay, recoverable 503, principal/digest/domain mismatch, slot
+  collisions and expiry. TCP config/authentication tests pass.
+- The ledger uses 4096 fixed hash slots per system ledger. A collision with an
+  unfinished or retained operation returns Busy; no live slot is evicted. Audit
+  and management slots share the identity mapping. Retired response bodies remain
+  catalog-scoped until reclamation lands.
+- Concurrent management calls may return Busy after bounded helping; convergence
+  tests reconcile the root and verify exactly one winning identity and every
+  loser's conflict, rather than requiring one initial call to finish under load.
+- Full-stack verification passed with real Group 0, DiskDB, DiskIO, ChunkDB,
+  routed Chunk-KV and two Iceberg processes plus PyIceberg. It covers backend
+  restart during maintenance, repeated clear and original-result replay,
+  interrupted root CAS before and after application, durable retry results,
+  bounded scan continuation, configuration, warehouse selection and authentication.
+  An initial run exposed the existing ChunkDB harness's paired-port assumption
+  against persistent reservations. The E2E task uses a separate disposable runtime
+  registry; persistent reservations and unrelated harness code remain untouched.
+- An intermittent concurrent-initialize test failure was traced to two random
+  identities mapping to slot 2576. Concurrency fixtures now select disjoint slots;
+  capacity collision/retention is tested independently. The convergence case runs
+  100 independent races without weakening its single-winner assertion.
+- Library and protocol tests, S3-plus-Iceberg and Iceberg-only access-server
+  tests, workspace fmt/clippy and Iceberg/E2E-feature clippy passed. The named
+  E2E task also passed, including its build and isolated environment wiring with
+  PyIceberg 0.11.1.
+- Foundation acceptance exercises authoritative admission and connection expiry
+  with L=0 and D=0. Lease arithmetic is unit-tested; lease cache holders and
+  delegated FileIO are not exposed. Their live expiry scenarios remain owned by
+  R180/R185. REST retry persistence is tested directly on routed storage; R179
+  wires it to namespace mutation endpoints before HTTP idempotency is advertised.

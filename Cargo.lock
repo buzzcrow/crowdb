@@ -594,9 +594,17 @@ checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 name = "crowdb-access-iceberg"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
+ "async-trait",
+ "crowdb-chunk-kv-client",
  "crowdb-protocol",
  "flatbuffers",
+ "serde",
+ "serde_json",
+ "sha2",
+ "subtle",
  "thiserror 2.0.18",
+ "tokio",
  "uuid",
 ]
 
@@ -635,8 +643,10 @@ dependencies = [
 name = "crowdb-access-server"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "async-trait",
  "chrono",
+ "crowdb-access-iceberg",
  "crowdb-access-s3",
  "crowdb-chunk-client",
  "crowdb-chunk-kv-client",

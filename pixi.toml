@@ -85,6 +85,24 @@ CROWDB_S3_E2E_PYTHON="$PIXI_PROJECT_ROOT/.pixi/envs/s3-e2e/bin/python" pixi run 
 
 [environments]
 s3-e2e = { features = ["s3-e2e"], no-default-feature = true }
+iceberg-e2e = { features = ["iceberg-e2e"], no-default-feature = true }
+
+[feature.iceberg-e2e.dependencies]
+python = "3.12.*"
+pyiceberg = ">=0.10,<0.12"
+
+[feature.iceberg-e2e.tasks]
+test-pyiceberg-e2e = '''
+bash -c '
+set -e
+pixi run -e default -- cmake -S app/crowdb-diskio -B app/crowdb-diskio/build -DCMAKE_BUILD_TYPE=Release
+pixi run -e default -- cmake --build app/crowdb-diskio/build -j 4 --target crowdb-diskio
+pixi run -e default -- cargo build -p crowdb-kv-server -p crowdb-diskdb -p crowdb-chunkdb -p crowdb-chunk-kv-server -p crowdb-access-server --features crowdb-access-server/iceberg
+pixi run -e default clean-env
+pixi run -e default test-access-server-iceberg
+CROWDB_RUNTIME_ROOT="$PIXI_PROJECT_ROOT/.crowdb-runtime/ephemeral/iceberg-e2e" CROWDB_ICEBERG_E2E_PYTHON="$PIXI_PROJECT_ROOT/.pixi/envs/iceberg-e2e/bin/python" pixi run -e default -- cargo test -p crowdb-access-server --features iceberg-e2e --test iceberg_full_stack_test -- --nocapture
+'
+'''
 
 [tasks]
 
@@ -217,6 +235,7 @@ test-chunk-client = { cmd = "cargo test -p crowdb-chunk-client --all-targets" }
 test-diskio-client = { cmd = "cargo test -p crowdb-diskio-client --all-targets" }
 test-access-s3 = { cmd = "cargo test -p crowdb-access-s3 --all-targets" }
 test-access-iceberg = { cmd = "cargo test -p crowdb-access-iceberg --all-targets" }
+test-access-server-iceberg = { cmd = "cargo test -p crowdb-access-server --features iceberg --all-targets" }
 test-access-server-s3 = { cmd = "cargo test -p crowdb-access-server --all-targets" }
 test-server = { cmd = '''
 bash -c '
@@ -228,6 +247,7 @@ pixi run test-diskdb-client
 pixi run test-chunkdb
 pixi run test-chunk-client
 pixi run test-diskio-client
+pixi run test-access-server-iceberg
 '
 ''', depends-on = ["build-tests"] }
 
@@ -259,6 +279,7 @@ pixi run test-cpp
 pixi run test-unit
 pixi run test-server
 pixi run -e s3-e2e test-boto3-e2e
+pixi run -e iceberg-e2e test-pyiceberg-e2e
 pixi run test-console
 pixi run clean-env
 pixi run test-console-ui

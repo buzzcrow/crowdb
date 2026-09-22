@@ -136,6 +136,10 @@ fn authority_codec_rejects_unknown_lifecycle_capabilities_and_invalid_generation
                 capabilities,
                 name_generation: generation,
                 config_generation: 1,
+                request_ms: 1,
+                root_lease_ms: 0,
+                delegated_access_ms: 0,
+                clock_skew_ms: 0,
             },
         );
         let record = FBIcebergRecord::create(

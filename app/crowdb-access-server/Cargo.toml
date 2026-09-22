@@ -12,7 +12,19 @@ workspace = true
 
 [features]
 default = ["s3"]
+iceberg = [
+    "dep:crowdb-access-iceberg",
+    "dep:crowdb-chunk-client",
+    "dep:crowdb-chunk-kv-client",
+    "dep:crowdb-kv-client",
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:hyper-util",
+    "dep:percent-encoding",
+    "dep:serde_json",
+]
 s3-e2e = ["s3"]
+iceberg-e2e = ["iceberg"]
 s3 = [
     "dep:async-trait",
     "dep:chrono",
@@ -32,6 +44,7 @@ s3 = [
 [dependencies]
 async-trait = { version = "0.1", optional = true }
 chrono = { version = "0.4", default-features = false, features = ["std"], optional = true }
+crowdb-access-iceberg = { path = "../../lib/crowdb-access-iceberg", optional = true }
 crowdb-access-s3 = { path = "../../lib/crowdb-access-s3", optional = true }
 crowdb-chunk-client = { path = "../../lib/crowdb-chunk-client", optional = true }
 crowdb-chunk-kv-client = { path = "../../lib/crowdb-chunk-kv-client", optional = true }
@@ -42,12 +55,15 @@ http-body-util = { version = "0.1", optional = true }
 hyper = { workspace = true, features = ["http1", "server"], optional = true }
 hyper-util = { version = "0.1", features = ["tokio"], optional = true }
 percent-encoding = { version = "2", optional = true }
+serde_json = { version = "1", optional = true }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 thiserror = { workspace = true, optional = true }
 
 [dev-dependencies]
+arc-swap = "1.9"
+async-trait = "0.1"
 crowdb-chunkdb-client = { path = "../../lib/crowdb-chunkdb-client" }
 crowdb-diskio-client = { path = "../../lib/crowdb-diskio-client", features = ["test-util"] }
 crowdb-protocol = { path = "../../lib/crowdb-protocol" }
@@ -61,3 +77,13 @@ name = "s3_full_stack_test"
 path = "tests/s3_full_stack_test.rs"
 harness = false
 required-features = ["s3-e2e"]
+
+[[bin]]
+name = "crowdb-iceberg"
+path = "src/iceberg_main.rs"
+required-features = ["iceberg"]
+
+[[test]]
+name = "iceberg_full_stack_test"
+path = "tests/iceberg_full_stack_test.rs"
+required-features = ["iceberg-e2e"]

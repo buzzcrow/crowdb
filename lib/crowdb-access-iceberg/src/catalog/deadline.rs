@@ -8,6 +8,17 @@ pub struct ClearBounds {
     pub clock_skew_ms: u64,
 }
 
+impl Default for ClearBounds {
+    fn default() -> Self {
+        Self {
+            root_lease_ms: 0,
+            request_ms: 10_000,
+            delegated_access_ms: 0,
+            clock_skew_ms: 1_000,
+        }
+    }
+}
+
 impl ClearBounds {
     /// # Errors
     /// Rejects an unbounded request lifetime or overflowing deadline.

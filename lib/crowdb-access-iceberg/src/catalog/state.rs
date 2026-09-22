@@ -50,6 +50,7 @@ pub struct CatalogAuthority {
     pub config_generation: u64,
     pub lifecycle: CatalogLifecycle,
     pub capabilities: Capabilities,
+    pub admission_bounds: ClearBounds,
 }
 
 impl CatalogAuthority {
@@ -63,6 +64,7 @@ impl CatalogAuthority {
             config_generation: 1,
             lifecycle: CatalogLifecycle::Ready,
             capabilities: Capabilities::default(),
+            admission_bounds: ClearBounds::default(),
         };
         authority.validate()?;
         Ok(authority)
@@ -75,6 +77,7 @@ impl CatalogAuthority {
         if self.name_generation == 0 || self.config_generation == 0 {
             return Err(ValidationError::Record);
         }
+        self.admission_bounds.completion_deadline(0)?;
         self.capabilities.validate()
     }
 
@@ -97,6 +100,7 @@ impl CatalogAuthority {
             config_generation: self.config_generation,
             lifecycle: self.lifecycle,
             capabilities: self.capabilities,
+            admission_bounds: self.admission_bounds,
         })
     }
 }

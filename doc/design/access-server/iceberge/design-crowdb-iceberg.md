@@ -50,10 +50,50 @@ become a second table authority.
 Iceberg metadata stores bounded logical records and opaque data references.
 Physical chunk placement and storage topology remain below the access boundary.
 
+### Catalog foundation
+
+One active root selects a random stable CatalogId and activation epoch. Display
+rename updates its authority without moving descendant keys. System-scoped
+management receipts, audit and retry bindings survive catalog replacement;
+resource records and retained REST response bodies are catalog-scoped.
+
+Initialize, rename and clear use bounded single-key CAS state machines, not a
+global lock or a multi-key transaction. A root retains the operation identity
+until its durable outcome and audit can be recovered by any instance. Clear
+fences admission, records a maintenance observation after the durable fence,
+publishes an empty replacement under maintenance, and persists the grace proof
+before reopening admission. Completion uses persisted lease, request, delegated
+access and clock-skew limits, never shorter restart configuration. Retired
+authorities remain unreachable; physical deletion is not implemented.
+
+The baseline has no root lease or delegated credentials. Each HTTP connection
+has an absolute lifetime starting before its authoritative root read and covering
+response transmission. Listeners stop admission before bounded draining;
+startup and periodic reconciliation resume interrupted management operations.
+
+Management and shared REST retry ledgers each use 4096 deterministic hash slots.
+A slot occupied by an unfinished or unexpired operation rejects new admission;
+it is never evicted for capacity. Management audit uses the same slot mapping.
+Client identities use UUIDv7 issuance time with a 24-hour admission window and
+30-second future-clock allowance. Retention starts at first admission and includes
+grace. Principal, digest and catalog context must match before REST replay;
+catalog replacement prevents old-body replay or rebinding. Terminal results are
+immutable, while transient failures retain recoverable state. Requests without
+client keys receive distinct internal identities, not cross-request deduplication.
+
 ## 3. HTTP and FileIO surfaces
 
 The REST Catalog is the portable control surface. It exposes only capabilities
 CROWDB implements with compliant Iceberg semantics.
+
+The catalog foundation exposes only authenticated `GET /v1/config`. An absent or
+empty warehouse selects the sole active catalog; other selectors fail with
+`NoSuchWarehouseException`. Its endpoint list is explicitly empty and all table
+format capabilities are disabled. The shared retry mechanism is not advertised
+as HTTP idempotency until mutation endpoints consume it. Static bearer credentials
+separate read, management and clear roles; this is not an OAuth token issuer.
+Management commands are separate from the Iceberg REST listener. Operational
+configuration is in the [user guide](../../../user-manual/user-guide.md#9-iceberg-catalog-foundation).
 
 Iceberg FileIO uses reserved S3-shaped locations so existing Iceberg clients can
 address immutable metadata and data files. The shape is a compatibility

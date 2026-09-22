@@ -1,7 +1,7 @@
 use crowdb_protocol::iceberg_fb::{FBCatalogAuthority, FBCatalogAuthorityArgs, FBCatalogLifecycle};
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 
-use crate::catalog::{Capabilities, CatalogAuthority, CatalogLifecycle};
+use crate::catalog::{Capabilities, CatalogAuthority, CatalogLifecycle, ClearBounds};
 use crate::error::ValidationError;
 use crate::key::CatalogId;
 
@@ -24,6 +24,10 @@ pub(super) fn encode<'buffer>(
                 CatalogLifecycle::Retired => FBCatalogLifecycle::Retired,
             },
             capabilities: authority.capabilities.bits(),
+            request_ms: authority.admission_bounds.request_ms,
+            root_lease_ms: authority.admission_bounds.root_lease_ms,
+            delegated_access_ms: authority.admission_bounds.delegated_access_ms,
+            clock_skew_ms: authority.admission_bounds.clock_skew_ms,
         },
     ))
 }
@@ -44,6 +48,12 @@ pub(super) fn decode(value: FBCatalogAuthority<'_>) -> Result<CatalogAuthority, 
         config_generation: value.config_generation(),
         lifecycle,
         capabilities: Capabilities::from_bits(value.capabilities())?,
+        admission_bounds: ClearBounds {
+            request_ms: value.request_ms(),
+            root_lease_ms: value.root_lease_ms(),
+            delegated_access_ms: value.delegated_access_ms(),
+            clock_skew_ms: value.clock_skew_ms(),
+        },
     };
     authority.validate()?;
     Ok(authority)

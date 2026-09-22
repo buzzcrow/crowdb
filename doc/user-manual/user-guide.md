@@ -943,3 +943,70 @@ These endpoints are on the `crowdb-kv-server` management API (internal,
 only called by `crowdb-kv-client`'s `KVClusterAdmin`). The console's
 `POST /api/cluster/init` orchestrates
 `/system/init` across nodes and auto-finalizes.
+
+## 9. Iceberg Catalog Foundation
+
+The independent `crowdb-iceberg` binary exposes authenticated catalog configuration
+only. Namespace, table and FileIO endpoints are not enabled. It uses an existing
+healthy Group 0, Chunk-KV and chunk-storage deployment; S3 credentials and buckets
+do not select or authorize an Iceberg catalog.
+
+```bash
+pixi run -- cargo build -p crowdb-access-server --no-default-features --features iceberg --bin crowdb-iceberg
+export CROWDB_MANAGEMENT_SEEDS=127.0.0.1:10000
+export CROWDB_ICEBERG_LISTEN=127.0.0.1:8181
+```
+
+Supply three distinct, randomly generated 32–256-character ASCII tokens through
+your secret-management environment: `CROWDB_ICEBERG_READ_TOKEN`,
+`CROWDB_ICEBERG_MANAGE_TOKEN` and `CROWDB_ICEBERG_CLEAR_TOKEN`. Configure every
+instance consistently. Management credentials can rename/initialize; only the
+clear credential can replace the catalog. All three can read configuration.
+The listener is plain HTTP: keep it on a trusted loopback/private hop behind a
+TLS-terminating proxy. Do not transmit bearer credentials over public plain HTTP.
+
+Set `CROWDB_ICEBERG_TOKEN` to the appropriate management token for CLI commands.
+Each mutation takes a fresh UUIDv7 request identity. Preserve both that identity
+and the exact arguments when retrying an interrupted command.
+
+```bash
+export CROWDB_ICEBERG_TOKEN="$CROWDB_ICEBERG_MANAGE_TOKEN"
+pixi run -- target/debug/crowdb-iceberg initialize "$INIT_UUIDV7" primary
+pixi run -- target/debug/crowdb-iceberg status
+pixi run -- target/debug/crowdb-iceberg rename "$RENAME_UUIDV7" renamed "$ACTIVE_EPOCH"
+pixi run -- target/debug/crowdb-iceberg serve
+```
+
+Status reports CatalogId, activation epoch, name and phase. Rename preserves the
+CatalogId. The server validates dependencies and reconciles the root before
+opening its listener. Ctrl-C stops admission and drains accepted connections.
+
+```bash
+pixi run -- curl -H "Authorization: Bearer $CROWDB_ICEBERG_READ_TOKEN" \
+  http://127.0.0.1:8181/v1/config
+```
+
+Absent or empty `warehouse` selects the active catalog. A nonempty warehouse
+returns 404 `NoSuchWarehouseException`. Unsupported endpoints return 406; all
+table-format capabilities are false and HTTP idempotency is not advertised.
+
+Clear makes the old domain inaccessible and selects a new empty catalog. It is
+not physical erasure. Obtain the exact epoch and CatalogId from `status`, then
+explicitly confirm both:
+
+```bash
+export CROWDB_ICEBERG_TOKEN="$CROWDB_ICEBERG_CLEAR_TOKEN"
+pixi run -- target/debug/crowdb-iceberg clear "$CLEAR_UUIDV7" empty \
+  "$ACTIVE_EPOCH" "$ACTIVE_CATALOG_ID"
+```
+
+Admission returns 503 during maintenance. Default persisted limits require an
+11-second grace after the durable fence is observed. Restart cannot shorten it.
+Another healthy instance resumes interrupted operations. An uncertain command
+must be retried with its original identity and input, not a newly generated key.
+Requests have a 24-hour retry window; expired identities are rejected. Bounded
+ledger-slot collisions can reject new operations without evicting live receipts.
+
+Run backend restart, two-instance and official-client checks with
+`pixi run -e iceberg-e2e test-pyiceberg-e2e`. This uses a separate disposable runtime
+registry and leaves persistent local cluster reservations intact.

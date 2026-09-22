@@ -1,0 +1,75 @@
+use std::collections::BTreeMap;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
+
+use arc_swap::ArcSwap;
+use async_trait::async_trait;
+use crowdb_access_iceberg::catalog::{CasOutcome, CatalogStore, StoreError, StoredValue};
+use crowdb_protocol::chunk_kv::ClientRequestId;
+
+#[derive(Default)]
+pub struct TestStore {
+    pub values: ArcSwap<BTreeMap<Vec<u8>, StoredValue>>,
+    pub fail_after: AtomicUsize,
+    pub writes: AtomicUsize,
+    pub fencing_delay_ms: AtomicUsize,
+    pub fencing_barrier: Option<Arc<tokio::sync::Barrier>>,
+    pub fencing_visits: AtomicUsize,
+}
+
+#[async_trait]
+impl CatalogStore for TestStore {
+    async fn get(&self, key: &[u8]) -> Result<Option<StoredValue>, StoreError> {
+        Ok(self.values.load().get(key).cloned())
+    }
+
+    async fn compare_exchange(
+        &self,
+        key: &[u8],
+        expected: Option<&[u8]>,
+        value: &[u8],
+        identity: ClientRequestId,
+    ) -> Result<CasOutcome, StoreError> {
+        identity.validate().unwrap();
+        if let Ok(crowdb_access_iceberg::record::StorageRecord::Active(root)) =
+            crowdb_access_iceberg::key::IcebergKey::decode(key)
+                .and_then(|key| crowdb_access_iceberg::record::StorageRecord::decode(&key, value))
+        {
+            if root.state == crowdb_access_iceberg::catalog::RootState::Fencing {
+                if let Some(barrier) = &self.fencing_barrier {
+                    if self.fencing_visits.fetch_add(1, Ordering::SeqCst) < 2 {
+                        barrier.wait().await;
+                    }
+                }
+                let delay = self.fencing_delay_ms.swap(0, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(delay.try_into().unwrap())).await;
+            }
+        }
+        loop {
+            let current = self.values.load_full();
+            let previous = current.get(key);
+            if previous.map(|value| value.bytes.as_slice()) != expected {
+                return Ok(CasOutcome::Conflict(previous.cloned()));
+            }
+            let revision = previous.map_or(1, |value| value.revision + 1);
+            let mut next = (*current).clone();
+            next.insert(
+                key.to_vec(),
+                StoredValue {
+                    bytes: value.to_vec(),
+                    revision,
+                },
+            );
+            let observed = self.values.compare_and_swap(&current, Arc::new(next));
+            if Arc::ptr_eq(&current, &observed) {
+                let writes = self.writes.fetch_add(1, Ordering::SeqCst) + 1;
+                if self.fail_after.load(Ordering::SeqCst) == writes {
+                    return Err(StoreError::Response);
+                }
+                return Ok(CasOutcome::Applied(revision));
+            }
+        }
+    }
+}

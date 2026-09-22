@@ -11,7 +11,17 @@ description = "Native Iceberg catalog authority and immutable storage access."
 workspace = true
 
 [dependencies]
+async-trait = "0.1"
+crowdb-chunk-kv-client = { path = "../crowdb-chunk-kv-client" }
 crowdb-protocol = { path = "../crowdb-protocol" }
 flatbuffers = { workspace = true }
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+subtle = "2"
 thiserror = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+arc-swap = "1.9"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }

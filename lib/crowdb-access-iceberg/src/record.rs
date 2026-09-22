@@ -2,6 +2,8 @@
 
 mod authority;
 mod envelope;
+mod management;
+mod retry;
 mod root;
 
 pub use envelope::{StorageRecord, MAX_RECORD_BYTES};
