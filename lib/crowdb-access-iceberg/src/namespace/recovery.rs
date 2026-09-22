@@ -13,8 +13,8 @@ use super::{
 };
 
 pub struct NamespaceRecovery {
-    creator: NamespaceCreator,
-    store: Arc<dyn NamespaceRecoveryStore>,
+    pub(super) creator: NamespaceCreator,
+    pub(super) store: Arc<dyn NamespaceRecoveryStore>,
 }
 
 #[derive(Debug)]

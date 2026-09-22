@@ -6,8 +6,8 @@ Goal: expose recoverable namespace operations without weakening authoritative
 identity, empty-drop safety, or bounded REST responses.
 
 Execution checkpoint: development resumed. The user clarified that only weekly
-quota remaining below 25% stops development; context usage does not. No test
-failure is pending. Continue recovery integration, listing and REST work without
+quota remaining below 25% stops development; context usage does not. The real-stack
+CRUD latency acceptance is blocked as recorded below. Continue independent work without
 treating this checkpoint as requirement completion. Outstanding human decisions
 remain centralized in R177.
 
@@ -70,7 +70,12 @@ remain centralized in R177.
   cleanup too; isolate manual crash checkpoints from active recovery workers.
   Verify abandoned creation using two real listener processes and no client retry.
   Files: namespace recovery/scan, listener runtime and library/full-stack tests.
-- [~] **Recovery integration**: verify remaining stale-index repair and the
+- [x] **Stale-index repair**: alternate bounded mapping and operation sweeps;
+  preserve live mappings and unresolved reservations, help durable creators,
+  and conditionally delete only authority-disproved published mappings. Three
+  focused tests cover page limits, corruption and interrupted reservation recovery.
+  Files: namespace repair/scan, listener worker and namespace repair tests.
+- [ ] **Recovery integration**: verify the
   table-create/rename-in admission seam. Real-backend drop restart tests pass. Until table
   records land, any table-child record fails closed rather than proving emptiness.
   Files: namespace recovery, server runtime and integration tests.
@@ -117,6 +122,12 @@ remain centralized in R177.
 - Lint: `pixi run rs-lint`.
 
 ## Verified checkpoint
+
+- Current: 96 library tests pass, including bounded stale-mapping repair. Workspace
+  and feature-enabled server clippy and formatting pass. Write routes and shared
+  retry integration are implemented; official CRUD acceptance remains blocked
+  below. The following bullets retain earlier milestone-specific verification,
+  not the current implementation status.
 
 - Namespace list/load/exists are now exposed and advertised, with bounded complete
   spooling. Library tests total 92; namespace HTTP tests, config HTTP regression,

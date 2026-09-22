@@ -18,6 +18,7 @@ mod properties;
 mod publication;
 mod recovery;
 mod recovery_scan;
+mod repair;
 mod repository;
 mod reservation;
 mod storage;

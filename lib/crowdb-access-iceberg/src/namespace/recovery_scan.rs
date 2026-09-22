@@ -19,10 +19,20 @@ impl NamespaceRecoveryScan {
     /// # Errors
     /// Rejects foreign, backward or malformed continuations.
     pub fn request(&self) -> Result<MultiScanRequest, ValidationError> {
+        self.scoped_request(CatalogScope::NamespaceOperation)
+    }
+
+    /// # Errors
+    /// Rejects continuations outside the namespace mapping index.
+    pub fn mappings_request(&self) -> Result<MultiScanRequest, ValidationError> {
+        self.scoped_request(CatalogScope::NamespaceName)
+    }
+
+    fn scoped_request(&self, scope: CatalogScope) -> Result<MultiScanRequest, ValidationError> {
         let mut start = IcebergKey::catalog_range(self.catalog).start;
         let mut end = start.clone();
-        start.push(CatalogScope::NamespaceOperation as u8);
-        end.push(CatalogScope::NamespaceOperation as u8 + 1);
+        start.push(scope as u8);
+        end.push(scope as u8 + 1);
         if let Some(cursor) = &self.continuation {
             if cursor.original_start.as_ref() != Some(&start)
                 || cursor.original_end.as_ref() != Some(&end)
@@ -47,6 +57,8 @@ impl NamespaceRecoveryScan {
 
 #[async_trait]
 pub trait NamespaceRecoveryStore: NamespaceStore {
+    async fn scan_namespace_mappings(&self, scan: NamespaceRecoveryScan)
+        -> Result<MultiScanPage, StoreError>;
     async fn scan_namespace_operations(
         &self,
         scan: NamespaceRecoveryScan,
@@ -55,6 +67,12 @@ pub trait NamespaceRecoveryStore: NamespaceStore {
 
 #[async_trait]
 impl NamespaceRecoveryStore for RoutedCatalogStore {
+    async fn scan_namespace_mappings(
+        &self,
+        scan: NamespaceRecoveryScan,
+    ) -> Result<MultiScanPage, StoreError> {
+        self.scan(scan.mappings_request()?).await
+    }
     async fn scan_namespace_operations(
         &self,
         scan: NamespaceRecoveryScan,

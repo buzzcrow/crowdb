@@ -140,6 +140,9 @@ Each listener runs a namespace-journal sweep with bounded pages, per-operation
 phase budgets and a wall-clock deadline. The sweep resumes abandoned operations
 and their conditional mapping cleanup without requiring a client retry. Catalog
 changes invalidate its cursor; cancellation preserves durable recovery evidence.
+Alternating mapping sweeps help durable reservations and conditionally remove
+published bindings disproved by authoritative state. Corruption and unresolved
+reservations never authorize deletion; no sweep physically removes file bytes.
 The listener exposes authenticated namespace listing, load and exists routes.
 
 Namespace list pages scan bounded direct-child ranges and validate each published

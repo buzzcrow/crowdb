@@ -8,11 +8,22 @@ use crate::common::TestStore;
 
 #[async_trait]
 impl NamespaceRecoveryStore for TestStore {
+    async fn scan_namespace_mappings(
+        &self,
+        scan: NamespaceRecoveryScan,
+    ) -> Result<MultiScanPage, StoreError> {
+        Ok(self.namespace_scan_page(scan.mappings_request()?))
+    }
     async fn scan_namespace_operations(
         &self,
         scan: NamespaceRecoveryScan,
     ) -> Result<MultiScanPage, StoreError> {
-        let request = scan.request()?;
+        Ok(self.namespace_scan_page(scan.request()?))
+    }
+}
+
+impl TestStore {
+    fn namespace_scan_page(&self, request: crowdb_chunk_kv_client::MultiScanRequest) -> MultiScanPage {
         let snapshot = self.values.load_full();
         let mut candidates = snapshot.iter().filter(|(key, _)| {
             *key >= request.start.as_ref().unwrap()
@@ -38,10 +49,10 @@ impl NamespaceRecoveryStore for TestStore {
             last_key: items.last().unwrap().key.clone(),
             catalog_generation: 1,
         });
-        Ok(MultiScanPage {
+        MultiScanPage {
             items,
             continuation,
             terminal_failure: None,
-        })
+        }
     }
 }

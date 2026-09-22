@@ -128,7 +128,11 @@ async fn catalog_recovery_survives_real_chunk_kv_restart() {
     assert_eq!(execute(&repository, initialize).await, original);
     assert_eq!(repository.status().await.unwrap().0.context.activation_epoch, 3);
     verify_retry_scan(&stack, &repository).await;
+    drop(frontend);
+    drop(second_frontend);
     namespace::verify_name_index(&stack, latest.catalog).await;
+    let frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
+    let second_frontend = process::TestIcebergProcess::start(&stack.cluster.mgmt_endpoints).await;
     background::verify(stack.store().await, repository.status().await.unwrap().0.context).await;
     frontend.check_official_client();
     second_frontend.check_official_client();
