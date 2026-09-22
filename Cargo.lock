@@ -599,6 +599,7 @@ dependencies = [
  "base64",
  "crowdb-chunk-kv-client",
  "crowdb-protocol",
+ "data-encoding",
  "flatbuffers",
  "hmac",
  "serde",

@@ -184,6 +184,12 @@ Iceberg FileIO uses reserved S3-shaped locations so existing Iceberg clients can
 address immutable metadata and data files. The shape is a compatibility
 contract, not delegation to the general S3 authority. File publication,
 immutability, authorization, and deletion remain under Iceberg control.
+Typed locations use lower-case unpadded base32 catalog IDs and lower-case hex
+table IDs. Relative UTF-8 object keys preserve case, literal percent signs, plus
+signs and repeated internal slashes; the whole object key is bounded to 1,024
+bytes. Dot traversal, leading slash, backslash, controls, query and fragment
+delimiters are rejected rather than normalized. HTTP percent decoding belongs
+only at the transport boundary, not in stored S3-shaped locations.
 
 Writes and reads stream through bounded CROWDB storage clients. Delegated FileIO
 access may move immutable ranges without an Access Server payload bounce, but

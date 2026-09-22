@@ -2,6 +2,7 @@
 
 pub mod catalog;
 pub mod error;
+pub mod file;
 pub mod key;
 pub mod namespace;
 pub mod operation;

@@ -22,11 +22,12 @@ do not stop unrelated tasks. No user-guide tasks.
 ## Review checkpoint
 
 - R178 supplies catalog management, authentication, recovery, and config. The
-  current HTTP dispatcher accepts authenticated config and namespace reads.
+  current HTTP dispatcher accepts authenticated config and namespace CRUD.
 - R179 has identifiers, properties, authority/mapping records, bounded scans,
   conditional deletion, separate writer credentials, payload pages, and durable
-  create/property/drop drivers. Shared recovery integration, periodic repair,
-  listing, and namespace REST remain unfinished.
+  create/property/drop drivers, shared helping, periodic repair, listing and REST.
+  Official CRUD acceptance awaits the R177 latency decision; future table
+  create/rename-in admission remains pending.
 - R180 through R184 have no corresponding completed feature implementations.
   Shared infrastructure is reusable, but is not acceptance of these requirements.
 - A listening config service already works. A namespace catalog needs R179.
@@ -63,18 +64,9 @@ do not stop unrelated tasks. No user-guide tasks.
 
 ## Dependency-ordered execution
 
-- [ ] **Finish namespace recovery integration**: unify marker settlement across
-  create/property/drop entry points and add bounded periodic repair. Preserve
-  verified reserve-before-admit and durable publication recovery behavior.
-  Files: `lib/crowdb-access-iceberg/src/namespace/`, library tests, existing
-  `plan-iceberg-namespace.md`.
-- [ ] **Finish namespace drop**: fence admission, reconcile publishable children,
-  persist both child-range probes, restore nonempty parents, and conditionally
-  remove mappings without deleting recreated names. Exercise the future table
-  create and rename-in admission contract. Files: namespace modules and tests.
-- [ ] **Finish namespace surface**: authenticated continuation tokens, bounded
-  complete-list spool, REST handlers, independent writer authorization, retry
-  ledger integration, and official-client CRUD/restart tests. Close R179 only
+- [ ] **Finish namespace acceptance**: resolve the recorded 500-ms real-stack
+  CRUD latency decision, then verify official-client CRUD/restarts and the future
+  table create/rename-in admission contract. Close R179 only
   after its full gates. Files: namespace/wire modules, server Iceberg modules,
   library/server tests and namespace execution plan.
 - [ ] **Implement immutable file authority**: canonical locations, bounded file

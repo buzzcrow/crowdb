@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 async-trait = "0.1"
 base64 = "0.22"
+data-encoding = "2"
 hmac = "0.12"
 crowdb-chunk-kv-client = { path = "../crowdb-chunk-kv-client" }
 crowdb-protocol = { path = "../crowdb-protocol" }
