@@ -257,3 +257,27 @@ async fn absent_dropping_and_retired_namespaces_do_not_accept_property_writes() 
         Err(CatalogError::Conflict)
     ));
 }
+
+#[tokio::test]
+async fn foreign_property_marker_is_rejected_without_helping_its_owner() {
+    let (fixture, original) = setup().await;
+    let repository = NamespaceRepository::new(fixture.store.clone());
+    let owner = request(&fixture, &original);
+    repository.update_properties(&owner).await.unwrap();
+    let mut foreign = fixture.authority(None, &["foreign"]);
+    foreign.pending_operation = Some(owner.identity.operation);
+    fixture.publish(&foreign).await;
+    let writes = fixture.store.writes.load(Ordering::SeqCst);
+    assert!(matches!(
+        repository.update_properties(&request(&fixture, &foreign)).await,
+        Err(CatalogError::Invalid(ValidationError::IdentityMismatch))
+    ));
+    assert_eq!(fixture.store.writes.load(Ordering::SeqCst), writes);
+    assert_eq!(
+        repository
+            .load(fixture.context, &foreign.identifier)
+            .await
+            .unwrap(),
+        Some(foreign)
+    );
+}

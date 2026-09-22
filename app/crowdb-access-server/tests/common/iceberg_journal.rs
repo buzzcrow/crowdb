@@ -13,6 +13,7 @@ pub async fn verify_recovery(stack: &mut TestIcebergStack, context: CatalogConte
     let store = stack.store().await;
     let property_request = super::property::prepare(store.clone(), context).await;
     let creation_request = super::creation::prepare(store.clone(), context).await;
+    let drop_request = super::dropping::prepare(store.clone(), context).await;
     let identity = fresh_identity(store.as_ref()).await;
     let body = vec![23; 70 * 1024];
     let input = PayloadStore::new(store.clone())
@@ -61,6 +62,7 @@ pub async fn verify_recovery(stack: &mut TestIcebergStack, context: CatalogConte
     let recovered_store = stack.store().await;
     super::property::verify(recovered_store.clone(), &property_request).await;
     super::creation::verify(recovered_store.clone(), &creation_request).await;
+    super::dropping::verify(recovered_store.clone(), &drop_request).await;
     let recovered_journal = NamespaceJournal::new(recovered_store.clone());
     assert_eq!(
         recovered_journal

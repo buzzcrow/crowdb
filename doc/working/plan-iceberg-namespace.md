@@ -5,10 +5,11 @@ Upstream: [namespace requirement](../backlog/R179-access-iceberg-namespace.md).
 Goal: expose recoverable namespace operations without weakening authoritative
 identity, empty-drop safety, or bounded REST responses.
 
-Execution checkpoint: development stopped at the user's below-25% context guard.
-No test failure is pending. Resume recovery integration, listing and REST work;
-do not treat this checkpoint as requirement completion. Outstanding human
-decisions remain centralized in R177.
+Execution checkpoint: development resumed. The user clarified that only weekly
+quota remaining below 25% stops development; context usage does not. No test
+failure is pending. Continue recovery integration, listing and REST work without
+treating this checkpoint as requirement completion. Outstanding human decisions
+remain centralized in R177.
 
 ## Execution
 
@@ -59,7 +60,7 @@ decisions remain centralized in R177.
   Bound cross-operation helping and stale-page traversal. Validate create/drop
   races and every empty/nonempty drop write-reply loss. Files: namespace drop,
   fence/probe/finish modules and tests.
-- [ ] **Recovery integration**: wire all mutation entry points through shared
+- [~] **Recovery integration**: wire all mutation entry points through shared
   marker settlement, add bounded periodic stale repair and real-backend drop
   restart tests, and verify the table-create/rename-in admission seam. Until table
   records land, any table-child record fails closed rather than proving emptiness.
@@ -99,17 +100,20 @@ decisions remain centralized in R177.
 
 ## Verified checkpoint
 
-- Empty/nonempty namespace drop has six passing tests; the library has 84 passing
+- Empty/nonempty namespace drop has six passing tests; the library has 85 passing
   tests. Coverage includes every lost drop write reply, create versus drop,
   recreated-name cleanup, corruption in both ranges, and a live child after 260
-  stale mappings with an intervening bounded-work exhaustion. Table lifecycle
-  records and real-backend drop-specific restart coverage remain pending.
-  Formatting, workspace clippy, feature-enabled server clippy and the existing
-  real-backend create/property restart regression pass at this checkpoint.
+  stale mappings with an intervening bounded-work exhaustion. Foreign property
+  markers fail before helping another namespace; property helping consumes the
+  caller's shared create/drop phase budget. Shared cross-action entry-point
+  settlement, periodic repair and table lifecycle integration remain pending.
+  Real Chunk-KV restart after a lost tombstone write reply recovers the original
+  204 result, retains the tombstone and protects a recreated name from old replay.
+  Formatting, workspace clippy, feature-enabled server clippy and real-backend
+  create/property/drop restart tests pass at this checkpoint.
 
-- Native top-level and nested create plus admission recovery pass eight additional
-  tests; the library has 78 passing tests. Simulated drop-fence races validate the
-  create side only, not a complete empty-drop driver. Completed abort outcomes
+- Native top-level and nested create plus admission recovery pass eight tests.
+  Completed abort outcomes
   replay unchanged and conditional reservation deletion preserves a recreated name.
   Real Chunk-KV restart after a lost nested mapping-publication reply preserves
   the chosen NamespaceId and completes both parent and child marker cleanup.
@@ -117,19 +121,17 @@ decisions remain centralized in R177.
 - Authoritative namespace load/exists and durable property publication pass 13
   new repository tests, including every lost write reply, competing property CAS,
   identity-bound replay, stale/recreated parents, corruption and size limits.
-  The library has 70 passing tests and focused clippy passes. Real Chunk-KV restart
+  Real Chunk-KV restart
   after a lost property-publication reply preserves exactly one property revision
   and replays the original response; workspace and feature-enabled clippy pass.
-  Namespace create,
-  drop, list and REST remain incomplete; these tests are not full REST acceptance.
+  Listing and REST remain incomplete; these tests are not full REST acceptance.
 
-- Operation payload and journal gates pass: 57 library tests, protocol tests,
+- Operation payload and journal gates pass alongside protocol tests,
   feature-enabled server tests, workspace/feature clippy and formatting. Real
   Chunk-KV restart preserves a namespace journal and a 70-KiB retry response.
 - Phase CAS tests cover publication versus abort, lost phase replies, fixed
   mutation snapshots, forward child-range cursors and retired catalog rejection.
-  These verify journal semantics, not the still-unimplemented namespace mutation
-  driver or complete namespace REST acceptance.
+  These verify journal semantics, not complete namespace REST acceptance.
 
 - Writer credential validation, read access and management denial pass library,
   HTTP and real-process tests. The official client authenticates using the writer

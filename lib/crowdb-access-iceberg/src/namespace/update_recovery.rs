@@ -18,8 +18,18 @@ impl NamespaceRepository {
         context: CatalogContext,
         identity: OperationId,
     ) -> Result<NamespaceOutcome, CatalogError> {
+        self.resume_property_with_budget(context, identity, &mut 8).await
+    }
+
+    pub(super) async fn resume_property_with_budget(
+        &self,
+        context: CatalogContext,
+        identity: OperationId,
+        budget: &mut usize,
+    ) -> Result<NamespaceOutcome, CatalogError> {
         let journal = NamespaceJournal::new(self.store.clone());
-        for _ in 0..8 {
+        while *budget > 0 {
+            *budget -= 1;
             let operation = journal
                 .load(context, identity)
                 .await?

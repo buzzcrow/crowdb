@@ -182,6 +182,12 @@ impl NamespaceRepository {
             .load(context, pending)
             .await?
             .ok_or(ValidationError::Record)?;
+        let authority = selected.as_ref().ok_or(ValidationError::Record)?;
+        if operation.namespace != authority.namespace
+            && !(operation.action == NamespaceAction::Create && operation.parent == Some(authority.namespace))
+        {
+            return Err(ValidationError::IdentityMismatch.into());
+        }
         if operation.action != NamespaceAction::Update {
             return Err(CatalogError::Busy);
         }

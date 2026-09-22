@@ -24,9 +24,9 @@ do not stop unrelated tasks. No user-guide tasks.
 - R178 supplies catalog management, authentication, recovery, and config. The
   current HTTP dispatcher accepts only authenticated `GET /v1/config`.
 - R179 has identifiers, properties, authority/mapping records, bounded scans,
-  conditional deletion, separate writer credentials, payload pages, and a phase
-  journal. The journal does not execute namespace mutations. Actual admission,
-  publication, drop recovery, listing, and namespace REST remain unfinished.
+  conditional deletion, separate writer credentials, payload pages, and durable
+  create/property/drop drivers. Shared recovery integration, periodic repair,
+  listing, and namespace REST remain unfinished.
 - R180 through R184 have no corresponding completed feature implementations.
   Shared infrastructure is reusable, but is not acceptance of these requirements.
 - A listening config service already works. A namespace catalog needs R179.
@@ -63,9 +63,9 @@ do not stop unrelated tasks. No user-guide tasks.
 
 ## Dependency-ordered execution
 
-- [ ] **Finish namespace admission**: implement reserve-before-admit, actual
-  parent CAS evidence, create/load/property update, publication, and recovery.
-  Verify phase replay against uncertain backend outcomes, not just journal CAS.
+- [ ] **Finish namespace recovery integration**: unify marker settlement across
+  create/property/drop entry points and add bounded periodic repair. Preserve
+  verified reserve-before-admit and durable publication recovery behavior.
   Files: `lib/crowdb-access-iceberg/src/namespace/`, library tests, existing
   `plan-iceberg-namespace.md`.
 - [ ] **Finish namespace drop**: fence admission, reconcile publishable children,
@@ -143,8 +143,8 @@ do not stop unrelated tasks. No user-guide tasks.
   is not a delivery estimate for six requirements; start with remaining R179
   execution/recovery and continue in the approved order, bypassing only tasks that
   depend on unresolved human decisions recorded in R177.
-- During active execution, check the current session's reported quota and context
-  remaining roughly every ten minutes. Stop development below 25% remaining,
-  preserve the current diff and record unfinished work. The session token-count
-  events expose both rate-limit usage and context-window usage; no interactive
-  user command is needed to read those local status records.
+- During active execution, check the current session's reported weekly quota
+  roughly every ten minutes. Stop development only when weekly quota remaining
+  falls below 25%; preserve the current diff and record unfinished work. Context
+  window usage is not a stopping criterion. Read the weekly rate-limit window
+  from local session token-count events without requiring an interactive command.

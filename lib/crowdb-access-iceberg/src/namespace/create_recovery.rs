@@ -118,7 +118,9 @@ impl NamespaceCreator {
                 ) {
                     return Err(ValidationError::Record.into());
                 }
-                self.repository.resume_property_update(context, identity).await?;
+                self.repository
+                    .resume_property_with_budget(context, identity, budget)
+                    .await?;
             }
             NamespaceAction::Create => {
                 if !matches!(
