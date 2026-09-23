@@ -230,6 +230,12 @@ table FBMultipartSession {
     staged_bytes:ulong;
     completion:FBMultipartCompletion;
     published:[ubyte];
+    pending:FBMultipartPartMutation;
+}
+
+table FBMultipartPartMutation {
+    before:FBMultipartPart;
+    after:FBMultipartPart (required);
 }
 
 table FBMultipartPart {

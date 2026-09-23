@@ -38,6 +38,7 @@ pub fn session() -> MultipartSession {
         staged_bytes: 0,
         completion: None,
         published: None,
+        pending: None,
     }
 }
 

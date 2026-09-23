@@ -12,6 +12,7 @@ mod json;
 mod key;
 mod location;
 mod multipart;
+mod multipart_repository;
 mod range;
 mod reader;
 mod record;
@@ -34,7 +35,11 @@ pub use json::{JsonSealError, JsonSealer};
 pub use key::{file_key, location_key};
 pub(crate) use location::validate_relative_key;
 pub use location::{FileLocation, TableLocation, MAX_OBJECT_KEY_BYTES};
-pub use multipart::{MultipartCompletion, MultipartLimits, MultipartPart, MultipartPhase, MultipartSession};
+pub use multipart::{
+    MultipartCompletion, MultipartLimits, MultipartPart, MultipartPartMutation, MultipartPhase,
+    MultipartSession,
+};
+pub use multipart_repository::MultipartRepository;
 pub use range::{resolve_range, ByteRange, RangeError};
 pub use reader::{FileReader, MAX_READ_FRAME_BYTES};
 pub use record::{ContentFormat, FileKind, FileMapping, FileRecord, FormatHint};

@@ -66,6 +66,7 @@ pub struct MultipartSession {
     pub staged_bytes: u64,
     pub completion: Option<MultipartCompletion>,
     pub published: Option<FileId>,
+    pub pending: Option<MultipartPartMutation>,
 }
 
 impl MultipartSession {
@@ -96,6 +97,9 @@ impl MultipartSession {
         }
         if let Some(completion) = &self.completion {
             completion.validate(self)?;
+        }
+        if let Some(pending) = &self.pending {
+            pending.validate(self)?;
         }
         let candidate = self
             .completion
@@ -201,14 +205,48 @@ impl MultipartPart {
     /// # Errors
     /// Rejects foreign sessions, tables, output identity reuse and independent limits.
     pub fn validate_for(&self, session: &MultipartSession) -> Result<(), ValidationError> {
-        self.validate()?;
         session.validate()?;
+        self.validate_binding(session)
+    }
+
+    fn validate_binding(&self, session: &MultipartSession) -> Result<(), ValidationError> {
+        self.validate()?;
         if self.upload != session.upload
             || self.owner.table != session.owner.table
             || self.owner.file == session.owner.file
             || self.number > session.limits.max_parts
             || self.tree.length > session.limits.max_part_bytes
         {
+            return Err(ValidationError::Record);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultipartPartMutation {
+    pub before: Option<MultipartPart>,
+    pub after: MultipartPart,
+}
+
+impl MultipartPartMutation {
+    fn validate(&self, session: &MultipartSession) -> Result<(), ValidationError> {
+        self.after.validate_binding(session)?;
+        if session.phase != MultipartPhase::Open
+            || session.part_count == 0
+            || session.staged_bytes < self.after.tree.length
+        {
+            return Err(ValidationError::Record);
+        }
+        if let Some(before) = &self.before {
+            before.validate_binding(session)?;
+            if before.number != self.after.number
+                || before.revision.checked_add(1) != Some(self.after.revision)
+                || before.owner.file == self.after.owner.file
+            {
+                return Err(ValidationError::Record);
+            }
+        } else if self.after.revision != 1 {
             return Err(ValidationError::Record);
         }
         Ok(())

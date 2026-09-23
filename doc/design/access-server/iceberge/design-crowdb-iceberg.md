@@ -236,7 +236,13 @@ require a selected FileId, and abort retains completion evidence without claimin
 publication. Their FlatBuffers envelopes bind session and part identities to
 separate catalog key scopes, retaining only bounded checkpoint references and
 current-part digest state. Unknown phases and invalid revisions fail closed.
-A multipart authority driver and runtime admission are not yet connected.
+The native multipart repository reserves one part mutation in the session before
+changing its part authority. A bounded before/after snapshot and monotonically
+increasing revisions make the write and fence release recoverable across servers.
+Counts and current staged bytes are reserved once at the session CAS. Abort cannot
+bypass an unresolved mutation; stale helpers cannot restore an older part. Abort
+retains parts and completion evidence rather than deleting physical storage.
+Global runtime admission, completion selection and HTTP integration remain separate.
 
 Metadata JSON structural validation uses a bounded pull-reader bridge and an
 ignored-value parser rather than retaining the metadata graph. A separate scanner

@@ -89,13 +89,11 @@ integration. Independent FileIO work proceeds under the approved ordering.
   unsafe code or toolchain requirement. Three digest tests compare padding,
   update/restart boundaries and a million-byte vector against the standard hasher.
   Three writer tests cover resumed partial leaves, directories, orphan retention,
-  failed checkpoint writes, corruption and wrong identities. Durable session/part
-  authority, completion freezing and recovery workers remain unimplemented.
+  failed checkpoint writes, corruption and wrong identities. Completion freezing
+  and recovery workers remain unimplemented.
   Real native storage also passes checkpoint restoration through a newly connected
   chunk client before final publication and the existing Chunk-KV restart checks.
-  Next steps: define immutable per-session limits and phase invariants; add scoped
-  session/part authority codecs; serialize admission and part replacement through
-  durable CAS journals; freeze bounded completion pages; checkpoint completion
+  Next steps: reserve global admission; freeze bounded completion pages; checkpoint completion
   progress by byte budget; recover abandoned sessions without physical deletion.
   Staged-tree reads now validate physical identity/bytes without constructing a
   fictitious complete-file format record. Two tests cover multipart fragments,
@@ -108,12 +106,20 @@ integration. Independent FileIO work proceeds under the approved ordering.
   persistence layer; it does not yet authorize or publish multipart uploads.
   Session/part models now validate separate part/file/staged-byte limits, TTL,
   identity/revision, selection binding and Open/Completing/Publishing/Published/
-  Aborted phase coherence. Four model tests cover normal and invalid transitions;
+  Aborted phase coherence. Four model tests cover normal and invalid transitions.
   Session/part FlatBuffers records now use independent catalog key scopes, bind
   decoded identities to keys and reject unknown phases, invalid revisions and
   oversized digest checkpoints. Three persistence tests cover every phase,
-  partial assembly, corruption and cross-domain keys. CAS mutation journals and
-  runtime admission remain next; codecs alone do not admit uploads.
+  partial assembly, corruption and cross-domain keys. Codecs alone do not admit uploads.
+  The native multipart repository now persists initial sessions and reserves one
+  part mutation by session CAS before replacing its part authority. Its bounded
+  before/after snapshot permits recovery after every reservation, part write and
+  fence-clear reply loss. Counts and current staged bytes change once, stale
+  helpers cannot rewrite later revisions, and abort waits for a pending mutation
+  before fencing further writes. Five tests cover insert/replacement crash points,
+  competing abort, exact expiry, resource limits and retained completion evidence.
+  This is not public admission: global credits, upload streaming, duplicate-part
+  HTTP responses, frozen selection and autonomous sweeps remain to be connected.
 - [ ] **Projections**: generation-local bounded derived JSON pages and canonical
   fallback on every invalid projection. Files: metadata projection modules/tests.
 - [ ] **Format validation**: bounded Avro blocks, v1/v2/v3 inheritance and row IDs,
@@ -157,7 +163,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Verified Checkpoint
 
-- 161 library tests pass, covering namespace, file records, range/streaming,
+- 166 library tests pass, covering namespace, file records, range/streaming,
   credentials, JSON, format framing, Avro blocks/codecs, manifest inheritance,
   digest/writer checkpoints, staged assembly and multipart models/records.
   Focused native request authentication, pull-body and request parsing tests pass

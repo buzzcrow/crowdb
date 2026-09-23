@@ -1,12 +1,12 @@
 use crowdb_protocol::iceberg_fb::{
-    FBMultipartLimits, FBMultipartLimitsArgs, FBMultipartPart, FBMultipartPartArgs, FBMultipartSession,
-    FBMultipartSessionArgs,
+    FBMultipartLimits, FBMultipartLimitsArgs, FBMultipartPart, FBMultipartPartArgs, FBMultipartPartMutation,
+    FBMultipartPartMutationArgs, FBMultipartSession, FBMultipartSessionArgs,
 };
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
 
 use crate::catalog::CatalogContext;
 use crate::error::ValidationError;
-use crate::file::{MultipartLimits, MultipartPart, MultipartPhase, MultipartSession};
+use crate::file::{MultipartLimits, MultipartPart, MultipartPartMutation, MultipartPhase, MultipartSession};
 use crate::key::{FileId, OperationId};
 
 mod completion;
@@ -39,6 +39,25 @@ pub(super) fn encode_session<'buffer>(
     let published = session
         .published
         .map(|file| builder.create_vector(file.as_bytes()));
+    let pending = session
+        .pending
+        .as_ref()
+        .map(|pending| {
+            let before = pending
+                .before
+                .as_ref()
+                .map(|part| encode_part(builder, part))
+                .transpose()?;
+            let after = encode_part(builder, &pending.after)?;
+            Ok::<_, ValidationError>(FBMultipartPartMutation::create(
+                builder,
+                &FBMultipartPartMutationArgs {
+                    before,
+                    after: Some(after),
+                },
+            ))
+        })
+        .transpose()?;
     Ok(FBMultipartSession::create(
         builder,
         &FBMultipartSessionArgs {
@@ -62,6 +81,7 @@ pub(super) fn encode_session<'buffer>(
             staged_bytes: session.staged_bytes,
             completion,
             published,
+            pending,
         },
     ))
 }
@@ -106,6 +126,15 @@ pub(super) fn decode_session(value: FBMultipartSession<'_>) -> Result<MultipartS
         published: value
             .published()
             .map(|bytes| FileId::from_bytes(bytes.bytes()))
+            .transpose()?,
+        pending: value
+            .pending()
+            .map(|pending| {
+                Ok::<_, ValidationError>(MultipartPartMutation {
+                    before: pending.before().map(decode_part).transpose()?,
+                    after: decode_part(pending.after())?,
+                })
+            })
             .transpose()?,
     };
     session.validate()?;
