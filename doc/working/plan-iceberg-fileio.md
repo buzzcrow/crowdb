@@ -181,6 +181,15 @@ integration. Independent FileIO work proceeds under the approved ordering.
   without trusting stored hints or allocating advertised footer sizes. They check
   magic, signed Puffin lengths, reserved flags and cross-leaf reads. Four tests
   pass; this is not footer decoding, semantic validation or complete file sealing.
+  Puffin footer reading now bounds both encoded and decoded metadata to at most
+  1 MiB, caps blob/field/property collections and rejects duplicate properties,
+  overlapping or escaped blob ranges and invalid deletion-vector descriptors.
+  Plain JSON and one sized LZ4 frame are supported; concatenated/truncated frames,
+  bad checksums and expansion beyond the output ceiling fail closed. The existing
+  LZ4 dependency's frame feature supplies checksum verification. Four tests cover
+  canonical reads, compression, resource caps and exact manifest-to-footer
+  offset/length/referenced-file/cardinality matching. Bitmap/CRC validation and
+  snapshot-wide deletion-vector uniqueness remain separate pending work.
   ORC probing reads at most 255 postscript bytes and validates protobuf framing,
   footer/metadata spans and optional postscript magic. Three additional tests cover
   unknown fields, legacy header magic, maximum size and malformed wire inputs.
@@ -223,7 +232,7 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 ## Verified Checkpoint
 
-- 203 library tests pass, covering namespace, file records, range/streaming,
+- 207 library tests pass, covering namespace, file records, range/streaming,
   credentials, JSON, format framing, Avro blocks/codecs, manifest inheritance,
   digest/writer checkpoints, staged assembly and multipart models/records.
   Focused native request authentication, pull-body and request parsing tests pass

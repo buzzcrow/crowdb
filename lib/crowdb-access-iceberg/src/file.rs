@@ -18,6 +18,7 @@ mod multipart_list;
 mod multipart_recovery;
 mod multipart_repository;
 mod multipart_selection;
+mod puffin;
 mod range;
 mod reader;
 mod record;
@@ -58,6 +59,7 @@ pub use multipart_recovery::{
 };
 pub use multipart_repository::{MultipartRepository, MultipartWorkError};
 pub use multipart_selection::{MultipartSelection, SelectedPart};
+pub use puffin::{read_puffin_metadata, PuffinBlob, PuffinMetadata, PuffinMetadataError};
 pub use range::{resolve_range, ByteRange, RangeError};
 pub use reader::{FileReader, MAX_READ_FRAME_BYTES};
 pub use record::{ContentFormat, FileKind, FileMapping, FileRecord, FormatHint};

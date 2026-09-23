@@ -308,6 +308,13 @@ ignoring stored hints even when those hints happen to be in bounds. Their reads
 retain one bounded leaf and only fixed-size framing bytes, independent of the
 advertised footer size. Puffin probing also checks footer-start magic and reserved
 flags. Container framing does not validate footer contents or data semantics.
+Puffin metadata parsing separately caps encoded and decoded footer payloads at
+1 MiB and bounds blob, field and property collections. It accepts plain JSON or
+one sized, checksum-verified LZ4 frame and rejects overlapping blob ranges. Footer
+deletion-vector descriptors validate their reserved snapshot/sequence markers,
+uncompressed storage, referenced file and cardinality; manifest checks require
+exact offset/length and referenced-file/cardinality agreement. Bitmap bytes and
+snapshot-wide deletion-vector uniqueness remain separate validation stages.
 ORC probing retains at most 255 postscript bytes, checks protobuf wire framing
 and resolves footer/metadata spans without decoding stripe directories. It accepts
 legacy header-only magic and skips bounded unknown protobuf fields.
