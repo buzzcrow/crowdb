@@ -8,9 +8,13 @@ use super::{
     ManifestListEntry, ManifestMetadata, ManifestVersion,
 };
 
+mod bounds;
 mod decode;
 mod metrics;
+mod partition;
+mod semantic;
 pub use metrics::ManifestMetrics;
+pub use partition::PartitionValue;
 
 const PATHS: [&[i32]; 22] = [
     &[0],
@@ -45,6 +49,8 @@ pub enum ManifestEntryError {
     Inheritance(#[from] ManifestInheritanceError),
     #[error("invalid manifest scalar field, descriptor or decoding context")]
     Field,
+    #[error(transparent)]
+    Context(#[from] super::ManifestContextError),
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -57,6 +63,7 @@ pub struct ManifestFileFields {
     pub deletion_vector: Option<FormatHint>,
     pub equality_ids: Option<Vec<i32>>,
     pub metrics: ManifestMetrics,
+    pub partition: Option<Vec<(i32, PartitionValue)>>,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -66,6 +73,7 @@ pub struct ManifestScalarEntry {
     pub inherited: InheritedEntry,
 }
 
+#[derive(Clone)]
 pub struct ManifestEntryState {
     version: ManifestVersion,
     table: TableLocation,
@@ -127,12 +135,16 @@ pub struct ManifestEntryProjection<'schema> {
     projection: AvroProjection<'schema>,
     version: ManifestVersion,
     table: TableLocation,
+    context: Option<&'schema super::ManifestContext>,
+    partition: Option<partition::PartitionProjection<'schema>>,
 }
 
 pub struct ManifestEntryRecords<'projection, 'schema, 'data, 'state> {
     records: AvroProjectedRecords<'projection, 'schema, 'data>,
     state: &'state mut ManifestEntryState,
     failed: bool,
+    projection: &'projection ManifestEntryProjection<'schema>,
+    limits: AvroDatumLimits,
 }
 
 impl<'schema> ManifestEntryProjection<'schema> {
@@ -211,7 +223,24 @@ impl<'schema> ManifestEntryProjection<'schema> {
             projection,
             version,
             table,
+            context: None,
+            partition: None,
         })
+    }
+
+    /// Compiles partition and metric semantics against a historical table context.
+    /// # Errors
+    /// Rejects incompatible partition field IDs, writer layouts and logical types.
+    pub fn with_context(
+        schema: &'schema AvroSchema,
+        version: ManifestVersion,
+        table: TableLocation,
+        context: &'schema super::ManifestContext,
+    ) -> Result<Self, ManifestEntryError> {
+        let mut projection = Self::new(schema, version, table)?;
+        projection.partition = Some(partition::PartitionProjection::new(schema, context)?);
+        projection.context = Some(context);
+        Ok(projection)
     }
 
     /// Borrows shared inheritance state for one bounded decoded block.
@@ -231,11 +260,17 @@ impl<'schema> ManifestEntryProjection<'schema> {
             records: self.projection.records(bytes, count, limits)?,
             state,
             failed: false,
+            projection: self,
+            limits,
         })
     }
 }
 
 impl ManifestEntryRecords<'_, '_, '_, '_> {
+    #[must_use]
+    pub fn last_record_length(&self) -> usize {
+        self.records.last_record_bytes().len()
+    }
     /// Resolves one scalar entry only after every selected and skipped binary field is valid.
     /// This is not full manifest acceptance: collection and cross-file semantics remain separate.
     /// # Errors
@@ -246,7 +281,17 @@ impl ManifestEntryRecords<'_, '_, '_, '_> {
         }
         self.failed = true;
         let result = if let Some(values) = self.records.next_record()? {
-            let (entry, file) = decode::entry(&values, self.state.version, self.state.table)?;
+            let (entry, mut file) = decode::entry(&values, self.state.version, self.state.table)?;
+            if let Some(context) = self.projection.context {
+                semantic::validate(context, entry.content, &file)?;
+                file.partition = Some(
+                    self.projection
+                        .partition
+                        .as_ref()
+                        .ok_or(ManifestEntryError::Field)?
+                        .read(self.records.last_record_bytes(), self.limits, context)?,
+                );
+            }
             let inherited = self.state.inheritance.resolve(entry)?;
             Some(ManifestScalarEntry {
                 entry,

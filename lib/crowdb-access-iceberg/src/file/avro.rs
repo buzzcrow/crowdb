@@ -12,7 +12,7 @@ use input::Input;
 pub use records::{AvroDecodedBlock, AvroRecords};
 pub use schema::{
     AvroDatumLimits, AvroFieldPath, AvroIntList, AvroMetricMap, AvroMetricValue, AvroProjectedRecords,
-    AvroProjection, AvroScalar, AvroScalarType, AvroSchema,
+    AvroProjection, AvroScalar, AvroScalarType, AvroSchema, AvroTuple, AvroTupleField,
 };
 
 #[derive(Debug, thiserror::Error)]

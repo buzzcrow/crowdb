@@ -14,11 +14,13 @@ pub(super) fn compile(bytes: &[u8]) -> Result<AvroSchema, AvroContainerError> {
         nodes: Vec::new(),
         names: BTreeMap::new(),
         edges: 0,
+        annotations: BTreeMap::new(),
     };
     let root = parser.schema(&value, "", 1)?;
     Ok(AvroSchema {
         nodes: parser.nodes,
         root,
+        annotations: parser.annotations,
     })
 }
 
@@ -26,6 +28,7 @@ struct Parser {
     nodes: Vec<Node>,
     names: BTreeMap<String, usize>,
     edges: usize,
+    annotations: BTreeMap<usize, Value>,
 }
 
 impl Parser {
@@ -48,7 +51,7 @@ impl Parser {
             Value::Array(branches) => self.union(branches, namespace, depth),
             Value::Object(object) => {
                 let kind = text(object, "type")?;
-                match kind {
+                let index = match kind {
                     "record" | "enum" | "fixed" => self.named(object, kind, namespace, depth),
                     "array" | "map" => {
                         let property = if kind == "array" { "items" } else { "values" };
@@ -68,7 +71,15 @@ impl Parser {
                         })
                     }
                     _ => self.reference(kind, namespace),
+                }?;
+                let annotation: Map<String, Value> = ["logicalType", "precision", "scale", "adjust-to-utc"]
+                    .into_iter()
+                    .filter_map(|key| object.get(key).map(|value| (key.to_owned(), value.clone())))
+                    .collect();
+                if !annotation.is_empty() {
+                    self.annotations.insert(index, Value::Object(annotation));
                 }
+                Ok(index)
             }
             _ => Err(AvroContainerError::Schema),
         }

@@ -1,13 +1,19 @@
 //! Streaming manifest semantics, separate from physical file content identity.
 
+mod context;
 mod entry;
 mod inheritance;
 mod list;
 mod metadata;
+mod reader;
+pub use context::{
+    ManifestContext, ManifestContextError, PartitionField, PartitionTransform, PrimitiveType, SchemaField,
+};
+pub use reader::ManifestReader;
 
 pub use entry::{
     ManifestEntryError, ManifestEntryProjection, ManifestEntryRecords, ManifestEntryState,
-    ManifestFileFields, ManifestMetrics, ManifestScalarEntry,
+    ManifestFileFields, ManifestMetrics, ManifestScalarEntry, PartitionValue,
 };
 
 pub use list::{ManifestListEntry, ManifestListError, ManifestListProjection, ManifestListRecords};

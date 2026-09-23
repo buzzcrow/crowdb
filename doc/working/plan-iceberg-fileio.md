@@ -290,7 +290,8 @@ integration. Independent FileIO work proceeds under the approved ordering.
 
 The initial handover boundary was typed scalar manifest-entry decoding plus
 cross-block inheritance. Subsequent work added bounded equality-ID list decoding,
-schema element-ID checks, typed OCF manifest metadata and bounded metric maps. This is not requirement
+schema element-ID checks, typed OCF manifest metadata, bounded metric maps,
+historical context, typed partition/bound semantics and a bound streaming reader. This is not requirement
 completion or a new blocker.
 No user-guide edits, public FileIO exposure, new unsafe exceptions, locks or
 physical deletion were added. Resume with the next task below, not a rewrite of
@@ -349,16 +350,30 @@ the landed storage primitives. The broader ordering is in
   null/deflate, cross-leaf/block fixtures pass. No locks or unsafe were added.
   Numeric interpretation of binary bounds and schema membership remain dependent
   on typed table context; these maps alone do not establish full metric semantics.
-- [ ] **Remaining collections and manifest metadata**: projection does not yet
-  expose partition tuples or partition summaries.
-  Extend bounded traversal only as needed; do not deserialize full datum graphs.
-  Check field IDs plus array `element-id` and map `key-id`/`value-id` metadata,
-  including Iceberg's logical-map array representation. Decode metrics under
-  independent entry/work bounds and check equality-ID membership against the table schema.
-  Validate complete schema/partition-spec semantics and list-to-manifest context;
-  the actual manifest version is not necessarily the table or enclosing manifest-list version.
-  Position deletes ignore sort order; do not reject solely for a non-null value.
-  Files: Avro schema/projection children, manifest modules, focused fixtures.
+- [x] **Historical schema/spec context**: `ManifestContext` indexes nested IDs,
+  required ancestry and collection ancestry, validates primitive parameters and
+  version gates, and derives partition transform result types. Limits: 1 MiB JSON,
+  32 nesting levels, 4096 fields and 256 partition fields. v1 missing partition IDs
+  use sequential IDs from 1000. Header definitions bind to trusted historical
+  schema/spec definitions, not current table IDs. Optional trusted schema history
+  retains dropped metric/equality columns under independent history/work/byte caps.
+- [x] **Partition tuples**: `AvroTuple` retains writer logical annotations and
+  validates required parent records, exact tuple IDs and bounded values.
+  `ManifestEntryProjection::with_context` checks logical types, decimal fixed
+  precision/scale, timestamp zone/precision, nulls, bucket/truncate domains and void.
+  Unknown transforms preserve bounded values without asserting filtering semantics.
+  Tuple failures precede inheritance, including null unpartitioned records.
+- [x] **Typed metrics/equality semantics**: the contextual projection validates
+  retained column IDs, NaN applicability and equality-field eligibility, including
+  collection ancestry. Bounds check encodings and ordering for scalar types and
+  geospatial points, including numeric promotions, signed decimals, signed zero,
+  UTF-8 and geography dateline wrapping. Position-delete reserved columns are
+  recognized. Variant bound values return explicit unsupported errors; their
+  specialized nested representation remains separate work below.
+- [ ] **Remaining format semantics**: partition summaries, variant bound decoding,
+  full default-value validation, encryption key metadata and split offsets remain.
+  Actual data/delete-file field presence and true bounds against data require
+  format/file context. No complete manifest/seal acceptance is claimed here.
 - [x] **Scalar block integration**: `manifest_entry_stream_test.rs` composes
   `AvroRecords::next()` with a projection per decoded block and shared
   `ManifestEntryState`. Tests cross 64-byte stored leaves and Avro block boundaries
@@ -367,10 +382,15 @@ the landed storage primitives. The broader ordering is in
   projection before the next mutable reader pull; no unsafe/self-referential state
   is needed. `common/manifest_entry.rs` provides typed schema and OCF datum fixtures.
   These use the test block store, not a new real-ChunkDB process acceptance run.
-- [ ] **Complete block semantics**: extend that integration with collection,
-  OCF metadata, cancellation and cross-file checks as they land. Reuse
-  `file_avro_test.rs`, `common/file_blocks.rs` and `common/manifest_list.rs`.
-  Do not report complete manifest acceptance while those checks are missing.
+- [x] **Bound manifest reader**: `ManifestReader::open` binds exact native location,
+  length, kind/format, parsed header and trusted schema/spec context. `next_entry`
+  retains one decoded block, checks added/existing/deleted counts and rows, live
+  minimum sequence and sequence ceilings. EOF is required before `is_complete`.
+  Cancellation/errors poison the reader; reopening canonical bytes starts fresh.
+  Candidate inheritance is installed only after semantic and list-total checks.
+  Tests cover v1/v2/v3, null/deflate, 64-byte leaves, multiple records per block,
+  multiple blocks, bad later entries, wrong identity/spec, totals and cancellation.
+  These are chunk-backed library tests, not new real-server or client E2E acceptance.
 - [ ] **DV cross-file checks**: reuse `read_puffin_metadata` and
   `validate_deletion_vector`; those already verify exact descriptor reference,
   span, cardinality, portable bitmap structure, maximum position and CRC.
@@ -385,23 +405,18 @@ the landed storage primitives. The broader ordering is in
 
 ### Reuse and integration boundaries
 
-#### Next complex slice after bounded metric maps
+#### Handover after contextual manifest validation
 
-- Build a bounded typed schema/spec context from the manifest writer metadata
-  before compiling partition validation. Keep writer schema/spec IDs distinct
-  from the current table IDs: evolution requires historical context, not merely
-  equality with the table's current schema. Bound nested depth, field count and
-  retained bytes, and validate uniqueness of nested field/element/key/value IDs.
-- Compile partition field IDs and transform result types against that context.
-  Include v1 partition-ID compatibility, nullable tuple values and known versus
-  unknown transform read behavior. Do not equate Avro primitive encoding with
-  logical type compatibility. Then add bounded tuple projection and validate it
-  before `ManifestInheritance::resolve` in the existing entry pull.
-- Use the same typed context for equality-ID membership and metric bound
-  decoding/comparison. Current binary bounds are opaque bytes; checking unsigned
-  lexicographic order would be wrong for numeric encodings. NaN eligibility,
-  nested column membership, schema evolution and delete-file reserved columns
-  also require explicit handling. Do not infer absent metric entries as zero.
+- The four approved slices now have a contextual library path: build the trusted
+  `ManifestContext` from the corresponding table schema/spec, optionally attach
+  bounded trusted schema history, then use `ManifestReader::open`. Do not use the
+  legacy `ManifestEntryProjection::new` as full semantic acceptance; it remains
+  the deliberately partial scalar/collection API for existing callers.
+- Reader completion verifies this pipeline and list totals, not whole-snapshot
+  correctness or content-file truth. Callers must exhaust the reader and handle
+  final EOF errors. Unknown transform values are retained for reads; write
+  admission must reject unknown transforms. Variant bounds explicitly fail closed
+  until a bounded Variant decoder is implemented.
 - Full delete-file column presence and actual bound correctness require file
   context, not only manifest schema. Keep snapshot-wide DV uniqueness in commit
   admission. These remain complex tasks, not ordinary wiring for a cheaper model.
@@ -449,13 +464,17 @@ the landed storage primitives. The broader ordering is in
 ### Resume verification
 
 - Latest library gate: `pixi run -- cargo test -p crowdb-access-iceberg --all-targets`
-  passes 241 tests. `pixi run rs-lint` and
+  passes 262 tests. `pixi run rs-lint` and
   `pixi run -- cargo fmt --all -- --check` pass. These latest changes are library
   and test code only; the previously recorded native E2E run is not a new run.
+- Server compatibility gates also pass: default `--all-targets` (2 tests) and
+  `pixi run clean-env && pixi run -- cargo test -p crowdb-access-server --features iceberg --all-targets`
+  (24 tests). This does not run the `iceberg-e2e` native-storage acceptance suite.
 - Start the next change with focused `--test avro_nested_projection_test`,
   `--test avro_projection_test`, `--test manifest_list_test`,
   `--test manifest_inheritance_test`, `--test manifest_entry_test` and
-  `--test manifest_entry_stream_test`, then the full library
+  `--test manifest_entry_stream_test`, `--test manifest_context_test`,
+  `--test manifest_semantic_test` and `--test manifest_reader_test`, then the full library
   gate and separate lint/fmt gates. Use `pixi run` for every executable.
 - For server transport changes, run
   `pixi run -- cargo test -p crowdb-access-server --no-default-features --features iceberg --test iceberg_file_upload_test --test iceberg_file_body_test --test iceberg_file_auth_test --test iceberg_file_request_test`.

@@ -7,6 +7,8 @@ pub struct TestManifestEntry {
     pub root: Vec<(i32, &'static str, Value)>,
     pub file: Vec<(i32, &'static str, Value)>,
     pub null_file: bool,
+    pub partition_fields: Vec<Value>,
+    pub partition_bytes: Vec<u8>,
 }
 
 pub fn table() -> TableLocation {
@@ -44,6 +46,8 @@ impl TestManifestEntry {
                 (135, "int-array", json!(null)),
             ],
             null_file: false,
+            partition_fields: Vec::new(),
+            partition_bytes: Vec::new(),
         };
         if version == ManifestVersion::V1 {
             fixture.root.retain(|field| field.0 < 3);
@@ -95,7 +99,7 @@ impl TestManifestEntry {
         };
         let mut root: Vec<_> = self.root.iter().map(field).collect();
         let mut file: Vec<_> = self.file.iter().map(field).collect();
-        file.push(json!({"name":"partition","field-id":102,"type":{"type":"record","name":"Partition","fields":[]}}));
+        file.push(json!({"name":"partition","field-id":102,"type":{"type":"record","name":"Partition","fields":self.partition_fields}}));
         root.push(json!({"name":"renamed_file","field-id":2,"type":["null",{"type":"record","name":"File","fields":file}]}));
         serde_json::to_vec(&json!({"type":"record","name":"Entry","fields":root})).unwrap()
     }
@@ -112,6 +116,7 @@ impl TestManifestEntry {
             for field in &self.file {
                 encode(field, &mut bytes);
             }
+            bytes.extend_from_slice(&self.partition_bytes);
         }
         bytes
     }
@@ -136,9 +141,18 @@ fn encode((_, kind, value): &(i32, &'static str, Value), bytes: &mut Vec<u8>) {
                 if *kind == "long-map" {
                     long(item[1].as_i64().unwrap(), bytes);
                 } else {
-                    let value = item[1].as_str().unwrap().as_bytes();
+                    let value: Vec<u8> = if let Some(text) = item[1].as_str() {
+                        text.as_bytes().to_vec()
+                    } else {
+                        item[1]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|value| u8::try_from(value.as_u64().unwrap()).unwrap())
+                            .collect()
+                    };
                     long(i64::try_from(value.len()).unwrap(), bytes);
-                    bytes.extend_from_slice(value);
+                    bytes.extend_from_slice(&value);
                 }
             }
         }

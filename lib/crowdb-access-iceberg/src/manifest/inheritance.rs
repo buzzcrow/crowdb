@@ -56,6 +56,7 @@ pub enum ManifestInheritanceError {
     Overflow,
 }
 
+#[derive(Clone)]
 pub struct ManifestInheritance {
     version: ManifestVersion,
     content: ManifestContent,

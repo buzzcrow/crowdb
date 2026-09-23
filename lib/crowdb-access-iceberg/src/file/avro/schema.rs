@@ -3,6 +3,8 @@ use super::AvroContainerError;
 mod binary;
 mod parse;
 mod projection;
+mod tuple;
+pub use tuple::{AvroTuple, AvroTupleField};
 
 pub use projection::{
     AvroFieldPath, AvroIntList, AvroMetricMap, AvroMetricValue, AvroProjectedRecords, AvroProjection,
@@ -34,6 +36,7 @@ impl AvroDatumLimits {
 pub struct AvroSchema {
     nodes: Vec<Node>,
     root: usize,
+    annotations: std::collections::BTreeMap<usize, serde_json::Value>,
 }
 
 #[derive(Debug)]

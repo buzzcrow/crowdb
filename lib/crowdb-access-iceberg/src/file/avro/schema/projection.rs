@@ -21,6 +21,11 @@ pub enum AvroScalar<'data> {
     String(&'data str),
     IntList(AvroIntList<'data>),
     MetricMap(AvroMetricMap<'data>),
+    Boolean(bool),
+    Float(f32),
+    Double(f64),
+    Bytes(&'data [u8]),
+    Opaque(&'data [u8]),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,6 +65,7 @@ pub struct AvroProjectedRecords<'projection, 'schema, 'data> {
     remaining: u64,
     limits: AvroDatumLimits,
     failed: bool,
+    last_start: usize,
 }
 
 impl<'schema> AvroProjection<'schema> {
@@ -142,6 +148,7 @@ impl<'schema> AvroProjection<'schema> {
             remaining: records,
             limits,
             failed: false,
+            last_start: 0,
         })
     }
 }
@@ -158,6 +165,7 @@ impl<'data> AvroProjectedRecords<'_, '_, 'data> {
             return Ok(None);
         }
         self.failed = true;
+        self.last_start = self.input.position();
         let mut values = vec![AvroScalar::Null; self.projection.count];
         self.project_record(&self.projection.root, 1, &mut values)?;
         self.remaining -= 1;
@@ -166,6 +174,11 @@ impl<'data> AvroProjectedRecords<'_, '_, 'data> {
         }
         self.failed = false;
         Ok(Some(values))
+    }
+
+    #[must_use]
+    pub fn last_record_bytes(&self) -> &'data [u8] {
+        &self.bytes[self.last_start..self.input.position()]
     }
 
     fn project_record(
@@ -239,13 +252,31 @@ fn scalar_layout(schema: &AvroSchema, index: usize) -> bool {
     }
 }
 
-fn read_scalar<'data>(
+pub(super) fn read_scalar<'data>(
     schema: &AvroSchema,
     index: usize,
     input: &mut Input<'data>,
 ) -> Result<AvroScalar<'data>, AvroContainerError> {
     Ok(match &schema.nodes[index] {
         Node::Null => AvroScalar::Null,
+        Node::Boolean => AvroScalar::Boolean(input.take(1)?[0] != 0),
+        Node::Float => AvroScalar::Float(f32::from_le_bytes(
+            input
+                .take(4)?
+                .try_into()
+                .map_err(|_| AvroContainerError::Schema)?,
+        )),
+        Node::Double => AvroScalar::Double(f64::from_le_bytes(
+            input
+                .take(8)?
+                .try_into()
+                .map_err(|_| AvroContainerError::Schema)?,
+        )),
+        Node::Bytes => {
+            let size = input.size()?;
+            AvroScalar::Bytes(input.take(size)?)
+        }
+        Node::Fixed(size) => AvroScalar::Bytes(input.take(*size)?),
         Node::Int => AvroScalar::Int(i32::try_from(input.long()?).map_err(|_| AvroContainerError::Schema)?),
         Node::Long => AvroScalar::Long(input.long()?),
         Node::String => {

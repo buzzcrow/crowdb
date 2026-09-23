@@ -135,6 +135,7 @@ fn file(
         deletion_vector,
         equality_ids,
         metrics: super::metrics::decode(&values[16..22])?,
+        partition: None,
     })
 }
 
