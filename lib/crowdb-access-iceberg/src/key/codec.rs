@@ -34,6 +34,7 @@ pub enum CatalogScope {
     MultipartSession = 11,
     MultipartPart = 12,
     MultipartAdmission = 13,
+    MetadataProjection = 14,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -166,6 +167,7 @@ fn catalog_scope(value: u8) -> Result<CatalogScope, ValidationError> {
         11 => Ok(CatalogScope::MultipartSession),
         12 => Ok(CatalogScope::MultipartPart),
         13 => Ok(CatalogScope::MultipartAdmission),
+        14 => Ok(CatalogScope::MetadataProjection),
         _ => Err(ValidationError::Key),
     }
 }
@@ -182,6 +184,18 @@ fn validate_system(scope: SystemScope, suffix: &[u8]) -> Result<(), ValidationEr
 
 fn validate_catalog(scope: CatalogScope, suffix: &[u8]) -> Result<(), ValidationError> {
     match scope {
+        CatalogScope::MetadataProjection => {
+            if suffix.len() != 62 {
+                return Err(ValidationError::Key);
+            }
+            let version = u16::from_be_bytes([suffix[56], suffix[57]]);
+            let child = u16::from_be_bytes([suffix[58], suffix[59]]);
+            let page = u16::from_be_bytes([suffix[60], suffix[61]]);
+            if version == 0 || child > 64 || page >= 64 || (child == 0 && page != 0) {
+                return Err(ValidationError::Key);
+            }
+            super::TableId::from_bytes(&suffix[..16]).map(|_| ())
+        }
         CatalogScope::Authority | CatalogScope::MultipartAdmission if suffix.is_empty() => Ok(()),
         CatalogScope::Authority | CatalogScope::MultipartAdmission => Err(ValidationError::Key),
         CatalogScope::NamespaceAuthority

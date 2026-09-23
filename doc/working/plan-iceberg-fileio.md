@@ -172,8 +172,30 @@ integration. Independent FileIO work proceeds under the approved ordering.
   write, concurrent admission, policy mismatch, duplicate release and stale helpers.
   Public HTTP admission/configuration remains to be connected. Capacity of retained
   physical orphans remains the separate R177 trial-policy decision.
-- [ ] **Projections**: generation-local bounded derived JSON pages and canonical
+- [x] **Projections**: generation-local bounded derived JSON pages and canonical
   fallback on every invalid projection. Files: metadata projection modules/tests.
+  `ProjectionStore::put` derives raw top-level JSON children from already sealed
+  canonical bytes; SHA-256 must match the authoritative FileRecord. Optional
+  construction is capped at 2 MiB, 64 children and 1024-byte field names. Larger
+  metadata remains readable through the ordinary bounded canonical stream.
+  Scope 14 keys bind catalog/table, generation, JSON digest, projection version,
+  child and page. A checksummed root (at most 32 KiB) describes deterministic
+  children; their exact JSON bytes occupy immutable pages of at most 32 KiB.
+  Child digests and exact page sizes are checked before selected bytes escape.
+  Children publish before the root; failures return false and cannot gate file
+  publication. Lost-write retries converge through immutable compare-exchange.
+  `select` returns bounded selected child bytes only after all requested children
+  verify; absent, corrupt, wrong-identity/version, oversized or unavailable required
+  projection records return a fresh canonical FileReader. An empty selection
+  always streams the byte-identical complete file. Invalid canonical records and
+  corruption encountered during fallback remain errors. Hits do not probe unused
+  canonical blocks; unrequested children are not read.
+  Ten focused tests cover multi-page values, exact whitespace, no canonical block
+  reads on hits, identity/version bounds, every missing/corrupt page, unavailable
+  storage, write-loss replay, oversized inputs/records and malformed keys.
+  Load/commit integration still belongs to R181/R182: callers must supply the
+  selected generation's authenticated FileRecord and consume fallback streams.
+  This is not a whole-file materialization path or full metadata semantic validator.
 - [~] **Format validation**: bounded Avro blocks, v1/v2/v3 inheritance and row IDs,
   deletion vectors and fixed-size Parquet/ORC/Avro/Puffin hints. Files: format
   validation/probing and streaming fixtures.
@@ -398,7 +420,7 @@ the landed storage primitives. The broader ordering is in
   the referenced data-file row count, and enforce one DV per data file per
   snapshot using bounded cross-file state. Snapshot-wide validation belongs in
   commit admission, not a whole-snapshot in-memory collection in the file reader.
-- [ ] **Finish other independent FileIO work**: metadata projection fallback,
+- [ ] **Finish other independent FileIO work**: metadata projection load/commit integration,
   semantic seal orchestration, delegation vending, multipart HTTP composition and
   official client acceptance remain unfinished. Use the existing execution tasks
   above; the standard-PUT semantic-kind decision blocks only its dependent wiring.
@@ -421,8 +443,25 @@ the landed storage primitives. The broader ordering is in
   context, not only manifest schema. Keep snapshot-wide DV uniqueness in commit
   admission. These remain complex tasks, not ordinary wiring for a cheaper model.
 - Independent ordinary follow-ups remain multipart XML/error response fixtures
-  and grant-limit intersection tests. Metadata projection fallback is a separate
-  medium task. None requires changing or replacing the landed metric decoder.
+  and grant-limit intersection tests. Metadata projection storage/fallback is now
+  implemented; table-load wiring remains pending with table heads. None requires
+  changing or replacing the landed metric decoder.
+
+#### Handover after metadata projection fallback
+
+- `src/metadata_projection/{model,repository}.rs` implements the optional derived
+  store, independently of canonical publication. Use `put` only on bounded,
+  already sealed canonical input; false must never reject publication. No public
+  HTTP route or table load has been wired, and R180 remains unfinished.
+- `MetadataRead::Selected` contains exact raw JSON values for requested top-level
+  fields (including object/array children). `MetadataRead::Canonical` contains a
+  boxed streaming reader of the whole original JSON; callers must choose their
+  bounded parse/stream behavior, not reinterpret it as selected-field bytes.
+- No eviction or physical deletion was added. Generation-local derived pages may
+  leak until R183 just like other unreachable staged data. Keys never cross the
+  catalog/table/generation/digest/version boundary, and no new lock or unsafe
+  exception is needed. Admission/fencing still belongs to the calling catalog
+  operation; this optional store is not an alternate authority.
 
 - `src/file/avro/schema/projection.rs` and `projection/compile.rs`: root or nested
   scalar cursor; required means schema presence, not a non-null runtime value.
@@ -464,13 +503,14 @@ the landed storage primitives. The broader ordering is in
 ### Resume verification
 
 - Latest library gate: `pixi run -- cargo test -p crowdb-access-iceberg --all-targets`
-  passes 262 tests. `pixi run rs-lint` and
+  passes 272 tests (including 10 metadata projection tests). `pixi run rs-lint` and
   `pixi run -- cargo fmt --all -- --check` pass. These latest changes are library
   and test code only; the previously recorded native E2E run is not a new run.
 - Server compatibility gates also pass: default `--all-targets` (2 tests) and
   `pixi run clean-env && pixi run -- cargo test -p crowdb-access-server --features iceberg --all-targets`
   (24 tests). This does not run the `iceberg-e2e` native-storage acceptance suite.
-- Start the next change with focused `--test avro_nested_projection_test`,
+- Projection changes start with `--test metadata_projection_test`; format changes
+  start with focused `--test avro_nested_projection_test`,
   `--test avro_projection_test`, `--test manifest_list_test`,
   `--test manifest_inheritance_test`, `--test manifest_entry_test` and
   `--test manifest_entry_stream_test`, `--test manifest_context_test`,

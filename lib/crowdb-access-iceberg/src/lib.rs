@@ -5,6 +5,7 @@ pub mod error;
 pub mod file;
 pub mod key;
 pub mod manifest;
+pub mod metadata_projection;
 pub mod namespace;
 pub mod operation;
 pub mod record;

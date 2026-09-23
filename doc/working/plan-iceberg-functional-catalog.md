@@ -21,7 +21,9 @@ do not stop unrelated tasks. No user-guide tasks.
 
 Handover checkpoint (2026-09-23): contextual manifest decoding now includes
 historical schema/spec binding, partition tuples, typed bounds/equality fields and
-a list-bound reader with EOF totals and cancellation poisoning. Resume instructions, exact next implementation slices,
+a list-bound reader with EOF totals and cancellation poisoning. Generation-local
+metadata projection pages and canonical streaming fallback are also implemented;
+table load/commit wiring remains pending. Resume instructions, exact next implementation slices,
 landed APIs, remaining integration gaps and test commands are in
 `plan-iceberg-fileio.md` under `Handover — 2026-09-23`. Do not interpret this
 pause as R179/R180 completion. R181/R182/R183 and full R184 are still pending.
@@ -55,8 +57,8 @@ pause as R179/R180 completion. R181/R182/R183 and full R184 are still pending.
   drop needs shared admission and crash recovery; bounded table heads, logical
   drop and purge intent are still prerequisites. Preserve the separate namespace
   latency blocker instead of weakening its acceptance fixture.
-- **Medium, good bounded follow-ups**: metadata projection pages with canonical
-  fallback; multipart response serialization and LastModified once their contract
+- **Medium, good bounded follow-ups**: multipart response serialization and
+  LastModified once their contract
   is read; grant/byte-limit intersection tests; additional negative format fixtures.
   Take one small verified slice per commit. None alone completes a catalog server.
 - **Broad integration cost (R184)**: official FileIO/REST clients, cancellation,
@@ -180,8 +182,3 @@ pause as R179/R180 completion. R181/R182/R183 and full R184 are still pending.
   is not a delivery estimate for six requirements; start with remaining R179
   execution/recovery and continue in the approved order, bypassing only tasks that
   depend on unresolved human decisions recorded in R177.
-- During active execution, check the current session's reported weekly quota
-  roughly every ten minutes. Stop development only when weekly quota remaining
-  falls below 25%; preserve the current diff and record unfinished work. Context
-  window usage is not a stopping criterion. Read the weekly rate-limit window
-  from local session token-count events without requiring an interactive command.
