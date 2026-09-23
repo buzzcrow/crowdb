@@ -168,6 +168,35 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
   canonical-corruption/invalid-authority tests, fmt and workspace lint. No table
   capability is advertised by these helpers; production credential endpoints
   remain dependent on live table authority, not arbitrary caller TableIds.
+  Verified selection slice: `ManifestListSelection` and `open_selected` bind the
+  list to trusted historical snapshot ID, parent, sequence and v3 row-ID range.
+  Validate optional OCF linkage against that selection, reject future manifest
+  sequences and require newly added manifests to use the snapshot sequence.
+  Preserve compatibility with writers that omit these non-required OCF keys;
+  never substitute current table format version for the historical writer.
+  Standard evidence: pinned specification, Snapshots and Manifest Lists, and
+  [official ManifestListWriter](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/core/src/main/java/org/apache/iceberg/ManifestListWriter.java)
+  (including literal `null` parent metadata). The official
+  [ManifestLists reader](https://github.com/apache/iceberg/blob/apache-iceberg-1.11.0/core/src/main/java/org/apache/iceberg/ManifestLists.java)
+  projects fields rather than requiring the writer's optional OCF linkage.
+  Historical writer selection still comes from the caller; this slice does not
+  derive history, prove row-ID assignment
+  intervals, or validate data/delete bytes. Tests cover optional/official-style
+  headers, empty-list mismatches, scope overflow, reused/new manifest sequences,
+  and poisoned cursors after selection failure.
+  Enumeration slice: `SnapshotManifestReader` owns a fresh selected list and
+  sequentially resolves each canonical manifest plus trusted historical context.
+  It cannot skip missing/corrupt manifests or bypass EOF totals. Retain one list
+  block and one manifest reader; separately cap manifests, entries and aggregate
+  manifest bytes. `finish` exposes counts only after the list and every manifest
+  reached verified EOF. Cancellation during authority resolution or inner reads
+  poisons the outer cursor. `SnapshotManifestSource` implementations must fence
+  the candidate generation; none is wired to production table authority yet.
+  Enumeration completion is not cross-manifest uniqueness, row-ID allocation,
+  data/delete byte validation, DV enumeration binding, or publication proof.
+  Verification: 12 added selection/enumeration tests pass; library all-target
+  tests, workspace fmt check and workspace clippy pass. Fixture chunk copies
+  preserve owner binding by writing fresh trees rather than relabeling FileIds.
 - [ ] **Selected table metadata**: implement bounded table heads/mappings,
   metadata version validation and generation-consistent load/projection fallback.
   Wire credential vending only after table authorization and lifecycle checks.

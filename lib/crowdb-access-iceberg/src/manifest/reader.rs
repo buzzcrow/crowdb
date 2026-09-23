@@ -27,6 +27,10 @@ pub struct ManifestReader {
 }
 
 impl ManifestReader {
+    pub(super) fn selection(&self) -> (&crate::file::FileLocation, &ManifestContext) {
+        (&self.list.location, &self.context)
+    }
+
     /// Opens exactly the file named by a manifest list using trusted historical table context.
     /// # Errors
     /// Rejects file identity/length/kind, header, history and partition-schema mismatches.

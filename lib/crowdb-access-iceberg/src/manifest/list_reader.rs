@@ -5,7 +5,10 @@ use crate::file::{
     FileBlockStore, FileKind, FileLocation, FileRecord,
 };
 
-use super::{ManifestListEntry, ManifestListError as Error, ManifestListProjection, ManifestVersion};
+use super::{
+    ManifestListEntry, ManifestListError as Error, ManifestListProjection, ManifestListSelection,
+    ManifestVersion,
+};
 
 pub struct ManifestListReader {
     reader: AvroRecords,
@@ -17,6 +20,7 @@ pub struct ManifestListReader {
     remaining: u64,
     failed: bool,
     complete: bool,
+    selection: Option<ManifestListSelection>,
 }
 
 impl ManifestListReader {
@@ -52,7 +56,35 @@ impl ManifestListReader {
             remaining: 0,
             failed: false,
             complete: false,
+            selection: None,
         })
+    }
+
+    /// Opens a list against trusted historical snapshot metadata. Optional OCF linkage
+    /// emitted by the Java writer must agree when present; it is not table authority.
+    /// # Errors
+    /// Rejects inconsistent snapshot fields, writer version, header linkage or file identity.
+    pub async fn open_selected(
+        store: Arc<dyn FileBlockStore>,
+        record: FileRecord,
+        selection: ManifestListSelection,
+        framing: AvroLimits,
+        limits: AvroDatumLimits,
+        decoded_bytes: usize,
+    ) -> Result<Self, Error> {
+        selection.validate()?;
+        let mut reader = Self::open(
+            store,
+            record,
+            (selection.location.clone(), selection.writer_version),
+            framing,
+            limits,
+            decoded_bytes,
+        )
+        .await?;
+        selection.validate_metadata(reader.reader.metadata())?;
+        reader.selection = Some(selection);
+        Ok(reader)
     }
 
     #[must_use]
@@ -87,6 +119,9 @@ impl ManifestListReader {
             ManifestListProjection::new(self.reader.schema(), self.version, self.location.table())?;
         let mut records = projection.records(&block.bytes[self.offset..], self.remaining, self.limits)?;
         let entry = records.next_entry()?.ok_or(Error::Field)?;
+        if let Some(selection) = &self.selection {
+            selection.validate_entry(&entry)?;
+        }
         self.offset += records.last_record_length();
         self.remaining -= 1;
         self.failed = false;

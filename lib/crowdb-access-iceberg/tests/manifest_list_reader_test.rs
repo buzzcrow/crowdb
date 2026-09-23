@@ -10,7 +10,9 @@ use crowdb_access_iceberg::file::{
     FileTreeWriter,
 };
 use crowdb_access_iceberg::key::FileId;
-use crowdb_access_iceberg::manifest::{ManifestListProjection, ManifestListReader, ManifestVersion};
+use crowdb_access_iceberg::manifest::{
+    ManifestListProjection, ManifestListReader, ManifestListSelection, ManifestVersion,
+};
 
 fn long(value: usize, output: &mut Vec<u8>) {
     let mut encoded = u64::try_from(value).unwrap() << 1;
@@ -22,14 +24,28 @@ fn long(value: usize, output: &mut Vec<u8>) {
 }
 
 async fn stored(corrupt: bool, empty: bool) -> (Arc<blocks::TestBlocks>, FileRecord) {
+    stored_metadata(corrupt, empty, &[]).await
+}
+
+async fn stored_metadata(
+    corrupt: bool,
+    empty: bool,
+    metadata: &[(&str, &str)],
+) -> (Arc<blocks::TestBlocks>, FileRecord) {
     let mut fixture = fixture::TestManifestList::new();
     let schema = fixture.schema_bytes();
     let mut bytes = b"Obj\x01".to_vec();
-    long(1, &mut bytes);
+    long(1 + metadata.len(), &mut bytes);
     long(11, &mut bytes);
     bytes.extend(b"avro.schema");
     long(schema.len(), &mut bytes);
     bytes.extend(schema);
+    for (key, value) in metadata {
+        long(key.len(), &mut bytes);
+        bytes.extend(key.as_bytes());
+        long(value.len(), &mut bytes);
+        bytes.extend(value.as_bytes());
+    }
     bytes.push(0);
     bytes.extend([42; 16]);
     if !empty {
@@ -204,4 +220,133 @@ async fn canonical_storage_corruption_poisoning_cannot_be_retried_in_place() {
     assert!(!reader.is_complete());
     store.corrupt_reads.store(false, Ordering::SeqCst);
     assert!(reader.next_entry().await.is_err());
+}
+
+fn selection(record: &FileRecord, version: ManifestVersion) -> ManifestListSelection {
+    ManifestListSelection {
+        location: record.location.clone(),
+        writer_version: version,
+        snapshot_id: 99,
+        parent_snapshot_id: None,
+        sequence: if version == ManifestVersion::V1 { 0 } else { 8 },
+        first_row_id: (version == ManifestVersion::V3).then_some(100),
+        added_rows: (version == ManifestVersion::V3).then_some(30),
+    }
+}
+
+async fn selected(
+    store: Arc<blocks::TestBlocks>,
+    record: FileRecord,
+    selection: ManifestListSelection,
+) -> Result<ManifestListReader, crowdb_access_iceberg::manifest::ManifestListError> {
+    ManifestListReader::open_selected(
+        store,
+        record,
+        selection,
+        AvroLimits {
+            header_bytes: 8192,
+            metadata_entries: 8,
+            block_bytes: 4096,
+            records_per_block: 8,
+        },
+        AvroDatumLimits {
+            depth: 64,
+            values: 1000,
+            value_bytes: 1024,
+        },
+        4096,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn selected_snapshot_accepts_official_writer_headers_and_optional_absence() {
+    for (version, label) in [
+        (ManifestVersion::V1, "1"),
+        (ManifestVersion::V2, "2"),
+        (ManifestVersion::V3, "3"),
+    ] {
+        let mut metadata = vec![
+            ("format-version", label),
+            ("snapshot-id", "99"),
+            ("parent-snapshot-id", "null"),
+        ];
+        if version != ManifestVersion::V1 {
+            metadata.push(("sequence-number", "8"));
+        }
+        if version == ManifestVersion::V3 {
+            metadata.push(("first-row-id", "100"));
+        }
+        for headers in [metadata.as_slice(), &[]] {
+            let (store, record) = stored_metadata(false, false, headers).await;
+            let scope = selection(&record, version);
+            let mut reader = selected(store, record, scope).await.unwrap();
+            for _ in 0..4 {
+                assert!(reader.next_entry().await.unwrap().is_some());
+                assert!(!reader.is_complete());
+            }
+            assert!(reader.next_entry().await.unwrap().is_none());
+            assert!(reader.is_complete());
+        }
+    }
+}
+
+#[tokio::test]
+async fn selected_snapshot_rejects_header_mismatch_even_for_empty_lists() {
+    for metadata in [
+        ("format-version", "2"),
+        ("format-version", "4"),
+        ("snapshot-id", "98"),
+        ("snapshot-id", "bad"),
+        ("parent-snapshot-id", "12"),
+        ("parent-snapshot-id", ""),
+        ("sequence-number", "9"),
+        ("first-row-id", "101"),
+        ("sequence-number", "9223372036854775808"),
+    ] {
+        let (store, record) = stored_metadata(false, true, &[metadata]).await;
+        let scope = selection(&record, ManifestVersion::V3);
+        assert!(selected(store, record, scope).await.is_err(), "{metadata:?}");
+    }
+    let (store, record) = stored_metadata(false, true, &[("parent-snapshot-id", "42")]).await;
+    let mut scope = selection(&record, ManifestVersion::V3);
+    scope.parent_snapshot_id = Some(42);
+    assert!(selected(store, record, scope).await.is_ok());
+}
+
+#[tokio::test]
+async fn invalid_snapshot_scope_is_rejected_before_canonical_reads() {
+    let (store, record) = stored(false, true).await;
+    for invalid in 0..8 {
+        let mut scope = selection(&record, ManifestVersion::V3);
+        match invalid {
+            0 => scope.sequence = -1,
+            1 => scope.parent_snapshot_id = Some(scope.snapshot_id),
+            2 => scope.first_row_id = None,
+            3 => scope.added_rows = None,
+            4 => scope.first_row_id = Some(-1),
+            5 => scope.added_rows = Some(-1),
+            6 => scope.first_row_id = Some(i64::MAX),
+            _ => scope.writer_version = ManifestVersion::V1,
+        }
+        let before = store.reads.load(Ordering::SeqCst);
+        assert!(selected(store.clone(), record.clone(), scope).await.is_err());
+        assert_eq!(store.reads.load(Ordering::SeqCst), before);
+    }
+}
+
+#[tokio::test]
+async fn snapshot_sequence_checks_distinguish_new_and_reused_manifests() {
+    for (snapshot, sequence, accepted) in [(99, 7, false), (99, 9, false), (100, 7, false), (100, 9, true)] {
+        let (store, record) = stored(false, false).await;
+        let mut scope = selection(&record, ManifestVersion::V3);
+        scope.snapshot_id = snapshot;
+        scope.sequence = sequence;
+        let mut reader = selected(store, record, scope).await.unwrap();
+        assert_eq!(reader.next_entry().await.is_ok(), accepted);
+        if !accepted {
+            assert!(!reader.is_complete());
+            assert!(reader.next_entry().await.is_err());
+        }
+    }
 }
