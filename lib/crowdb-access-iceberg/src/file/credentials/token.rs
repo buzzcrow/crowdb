@@ -52,7 +52,32 @@ impl FileGrantIssuer {
         context: CatalogContext,
         now_ms: u64,
     ) -> Result<FileCredentials, FileGrantError> {
-        if session_token.len() != TOKEN_CHARACTERS || access_key_id.len() != 20 {
+        if access_key_id.len() != 20 {
+            return Err(FileGrantError::Invalid);
+        }
+        let credentials = self.verify_token(session_token, context, now_ms)?;
+        if !bool::from(
+            credentials
+                .access_key_id
+                .as_bytes()
+                .ct_eq(access_key_id.as_bytes()),
+        ) {
+            return Err(FileGrantError::Invalid);
+        }
+        Ok(credentials)
+    }
+
+    /// Reconstructs credentials for request signature verification, not bearer access.
+    /// Requires the caller's freshly validated Ready catalog context.
+    /// # Errors
+    /// Rejects altered tokens, stale catalogs and grants outside their validity window.
+    pub fn verify_token(
+        &self,
+        session_token: &str,
+        context: CatalogContext,
+        now_ms: u64,
+    ) -> Result<FileCredentials, FileGrantError> {
+        if session_token.len() != TOKEN_CHARACTERS {
             return Err(FileGrantError::Invalid);
         }
         let bytes = URL_SAFE_NO_PAD
@@ -72,16 +97,7 @@ impl FileGrantIssuer {
         if now_ms < grant.issued_ms || now_ms >= grant.expires_ms {
             return Err(FileGrantError::Expired);
         }
-        let credentials = self.credentials(grant, &bytes);
-        if !bool::from(
-            credentials
-                .access_key_id
-                .as_bytes()
-                .ct_eq(access_key_id.as_bytes()),
-        ) {
-            return Err(FileGrantError::Invalid);
-        }
-        Ok(credentials)
+        Ok(self.credentials(grant, &bytes))
     }
 
     fn signer(&self, domain: &[u8], bytes: &[u8]) -> Signer {

@@ -248,7 +248,13 @@ nonce, exact operation set, issue/expiry times and independent request/file byte
 limits. Domain-separated HMAC authenticates bounded claims and derives per-grant
 S3 credential material without a mutable credential registry. Verification requires
 a freshly checked Ready context; file DELETE is not representable. These token
-primitives are not yet credential vending or FileIO request-signature verification.
+primitives feed native request-signature verification through a request-local
+credential provider. Only the shared SigV4 algorithm is reused; general S3
+credentials and metadata are never consulted. Header and presigned requests have
+bounded authentication input and reject duplicate authentication fields. Grant
+expiry remains exact even when signature timestamps allow clock skew. Table
+credential vending, routed operation checks and streaming enforcement remain
+separate integration work; a session token alone never authenticates a request.
 
 Writes and reads stream through bounded CROWDB storage clients. Delegated FileIO
 access may move immutable ranges without an Access Server payload bounce, but

@@ -13,6 +13,7 @@ workspace = true
 [features]
 default = ["s3"]
 iceberg = [
+    "dep:crowdb-access-s3",
     "dep:crowdb-access-iceberg",
     "dep:crowdb-chunk-client",
     "dep:crowdb-chunk-kv-client",
@@ -66,6 +67,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 thiserror = { workspace = true, optional = true }
 
 [dev-dependencies]
+hmac = "0.12"
 arc-swap = "1.9"
 async-trait = "0.1"
 crowdb-chunkdb-client = { path = "../../lib/crowdb-chunkdb-client" }

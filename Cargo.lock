@@ -665,6 +665,7 @@ dependencies = [
  "crowdb-rpc-ffi",
  "crowdb-test-harness",
  "futures",
+ "hmac",
  "http-body-util",
  "hyper",
  "hyper-util",

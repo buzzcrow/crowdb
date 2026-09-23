@@ -67,8 +67,11 @@ integration. Independent FileIO work proceeds under the approved ordering.
 - [ ] **Delegation and HTTP**: short-lived catalog/table/prefix-scoped operation
   and byte limits, no DELETE; isolated S3-shaped routing and errors. Files: file
   credentials/S3 compatibility and server FileIO modules, real HTTP tests.
-  Token primitives are verified; SigV4 request verification, streaming enforcement
-  and credential vending through authorized table endpoints remain unimplemented.
+  Native request authentication now reconstructs one grant's credentials and
+  reuses only the shared SigV4 verifier, never general S3 credential/metadata
+  authority. Three server tests cover header and presigned requests, exact grant
+  expiry, tampering, duplicate fields and byte caps. HTTP routing, streaming limit
+  enforcement and credential vending through table endpoints remain unimplemented.
 - [ ] **Multipart state**: independently bounded durable sessions/parts/bytes/TTL;
   recover completion, duplicate uploads and logical abort without physical delete.
   Files: file multipart modules, record schema and crash/restart tests.
