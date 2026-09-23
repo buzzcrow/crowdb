@@ -34,7 +34,7 @@ struct RawRequest<'request> {
 
 impl CommitRequest {
     /// Decodes the complete closed requirement/update union under independent JSON and count limits.
-    /// Payload objects are shape-checked only; this is not semantic update evaluation or admission.
+    /// Scalar parameters are checked, but nested payloads and selected-state semantics still need evaluation.
     /// # Errors
     /// Rejects unknown variants, duplicate keys, malformed fields and excessive work before returning a request.
     pub fn decode(bytes: &[u8], limits: CommitRequestLimits) -> Result<Self, Error> {
@@ -55,6 +55,7 @@ impl CommitRequest {
         let mut request: Self = serde_json::from_value(value)?;
         let raw: RawRequest<'_> = serde_json::from_slice(bytes)?;
         for (update, raw) in request.updates.iter_mut().zip(raw.updates) {
+            update.validate_parameters()?;
             update.retain_payload(raw)?;
         }
         if let Some(identifier) = &request.identifier {

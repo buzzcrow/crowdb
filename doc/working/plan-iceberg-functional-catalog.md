@@ -439,6 +439,16 @@ commands are in `plan-iceberg-fileio.md`, official Java checkpoint.
      not update evaluation or semantic admission. Direct v1-to-v3 upgrade policy
      conflicts with the pinned SDK and is now a human decision in R177; other
      work continues without exposing that unsupported path.
+     Scalar admission now rejects malformed UUIDs, unsupported target versions,
+     invalid schema/spec/order selectors and invalid branch/tag retention values.
+     The `-1` last-added selector remains legal; actual existence, source-version
+     transitions and native location authority belong to ordered evaluation.
+     Reference retention follows the pinned Java `SnapshotRef.Builder`: positive
+     values only, with branch-only minimum-count and snapshot-age settings.
+     Six request tests pass, including null retention, integer boundaries and
+     duplicate removal IDs. Deprecated last-column/statistics snapshot fields
+     must not become authority: the pinned `MetadataUpdateParser` derives these
+     from nested payloads instead. Nested payload semantics remain unfinished.
      Keep `TableMetadataDocument` explicitly documented as a partial validation
      result, not a publishable generation or a REST capability. No endpoint is
      advertised by this checkpoint. Files: `src/table/metadata.rs`, its children,

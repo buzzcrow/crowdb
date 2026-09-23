@@ -4,6 +4,8 @@ use serde::Deserialize;
 use serde_json::value::RawValue;
 use serde_json::{Map, Value};
 
+mod parameters;
+
 /// An object-shaped schema, layout, snapshot or auxiliary payload, not a semantic proof.
 /// The selected-version evaluator must validate its nested fields before applying it.
 #[derive(Clone, Debug, Deserialize)]
